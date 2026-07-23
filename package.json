@@ -1,0 +1,30 @@
+{
+  "name": "commissary",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Commissary Monorepo",
+  "license": "MIT",
+  "author": "Spirit-Led Software <admin@spiritledsoftware.com>",
+  "type": "module",
+  "scripts": {
+    "format": "oxfmt",
+    "format:check": "oxfmt --check",
+    "lint": "oxlint",
+    "lint:fix": "oxlint --fix",
+    "typecheck": "tsc --noEmit && turbo typecheck"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "oxfmt": "^0.60.0",
+    "oxlint": "^1.75.0",
+    "turbo": "^2.10.5",
+    "typescript": "^7.0.2"
+  },
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "version": "^11.15.1",
+      "onFail": "download"
+    }
+  }
+}
