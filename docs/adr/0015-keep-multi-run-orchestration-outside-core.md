@@ -1,0 +1,3 @@
+# Keep multi-Run orchestration outside core
+
+Commissary core ends at one Run and defines no handoff protocol, Subagent primitive, Follow-up queue, Run chaining, or durable post-commit Job system. Hosts and official adapters may compose ordinary Tools, Tool Suspension, `readResult`, and idempotent `admit` calls to provide those capabilities, while crash-atomic multi-Run workflows, outboxes, recovery workers, routing, permissions, retries, and result composition remain owned by the host's durable workflow or persistence seam. Work required for one Run to succeed must complete as part of that Run before guarded finalization; process-bound Hooks and Signal consumers provide no durable delivery guarantee.

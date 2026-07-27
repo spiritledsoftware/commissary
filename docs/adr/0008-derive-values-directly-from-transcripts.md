@@ -1,0 +1,3 @@
+# Derive values directly from Transcripts
+
+Context contributions and other Render-time integrations receive the immutable current Transcript and Run identity and derive any invocation-local values they need with ordinary functions; reusable folds or decoders remain ordinary helpers shared by integration factories. Durable application data remains in application storage reached through captured clients, while durable conversation data remains in Message Entries, so core defines no reducer installation, derived-value registry, replay scheduler, or snapshot cache. A managed projection module may be introduced later if repeated real integrations need shared deterministic folds, without making that abstraction part of every Agent.

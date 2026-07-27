@@ -3,3 +3,6 @@ node_modules/
 
 # TurboRepo
 .turbo/
+
+# Local reference repositories
+.repos/

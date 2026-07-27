@@ -1,0 +1,32 @@
+import type { ModelSchema } from "../src/index.js";
+
+export function testSchema<Output>(
+  guard: (value: unknown) => value is Output,
+  jsonSchema: Record<string, unknown>,
+): ModelSchema<Output> {
+  return {
+    "~standard": {
+      version: 1,
+      vendor: "commissary-test",
+      validate(value) {
+        return guard(value) ? { value } : { issues: [{ message: "invalid test value" }] };
+      },
+      jsonSchema: {
+        input() {
+          return jsonSchema;
+        },
+        output() {
+          return jsonSchema;
+        },
+      },
+    },
+  };
+}
+
+export const stringSchema = testSchema((value): value is string => typeof value === "string", {
+  type: "string",
+});
+
+export const numberSchema = testSchema((value): value is number => typeof value === "number", {
+  type: "number",
+});

@@ -1,0 +1,3 @@
+# Identify Agents by installed composition
+
+Callers assign each Agent a stable Agent ID, Agent Installation computes its Agent Revision from installed static composition and stable contracts, and durable work records both as an Agent Reference. Ordinary continuation rerenders the current Agent because stored Messages use Commissary's stable protocol; Agent Compatibility is checked only for deferred work whose earlier semantics must be preserved, such as a suspended Tool Call, and incompatibility ends the Execution Attempt with a Stale Agent Interruption so the host may install compatible code and retry explicitly. Per-invocation plan and Tool compatibility hashes are private storage details, not public versions, configuration, or result fields.

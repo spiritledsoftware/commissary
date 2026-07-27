@@ -2,7 +2,7 @@
   "$schema": "https://turborepo.dev/schema.json",
   "tasks": {
     "typecheck": {
-      "dependsOn": ["^build", "^typecheck"]
+      "dependsOn": ["^typecheck"]
     }
   }
 }

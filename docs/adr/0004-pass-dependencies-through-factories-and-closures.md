@@ -1,0 +1,15 @@
+# Pass dependencies through factories and closures
+
+Runtime dependencies such as the Thread Store, registered Agents, and optional Driver are passed to the top-level `commissary` constructor, which returns a Commissary Instance while keeping Runtime construction internal. Models, Context contributions, Tools, Tool Providers, Hooks, and reusable integrations receive application clients through factory arguments or ordinary JavaScript closures. The host owns acquisition, sharing, and release of those clients; public callbacks receive `AbortSignal` where cooperative cancellation matters, and Effect may manage only Commissary's internal lifecycles. Core defines no dependency container, typed-key registry, provider graph, or public scope taxonomy; a managed-lifecycle module should be added only after concrete adapters demonstrate that closures and host ownership are insufficient.
+
+Provider integrations own their authentication protocols and concurrency-safe token refresh, but the host owns credential persistence and every user interaction or UX decision in an OAuth flow. An integration receives plain-JavaScript credential-store and interaction callbacks, never opens a browser, prints a device code, prompts a user, or chooses a credential-storage mechanism by itself; core remains unaware of authentication.
+
+Interactive authentication and reauthentication occur only through an explicit host call to the provider integration. A Model invocation may refresh valid credentials silently and with single-flight coordination, but missing credentials or a failed refresh never opens an interaction channel or waits for a person during an Execution Attempt.
+
+Each provider package exposes a synchronous pure-JavaScript factory for a reusable Provider Integration Instance bound to one provider configuration and credential scope. The instance performs no I/O when created, exposes explicit authentication operations, creates opaque Model contributions, and internally shares transport and single-flight refresh across those Models. The host owns the instance's sharing scope and may create application-wide, tenant-specific, or request-specific instances.
+
+A Commissary Instance acquires no application-lifetime Model resources and therefore exposes no mandatory close or disposal operation. Long-lived provider transports and credential coordination remain host-owned through Provider Integration Instances; specialized integrations may define their own lifecycle interfaces without burdening the ordinary Commissary Instance.
+
+The optional Artifact Store is an application-level runtime dependency supplied by the host alongside the Thread Store. Provider integrations use the Commissary-owned Artifact Store seam for Model files rather than receiving separate provider-specific blob stores; a storage package may conveniently construct both contracts from one backend.
+
+When a Run requires file content and no Artifact Store was supplied, execution ends with an Artifact Storage Required Interruption. The host may add the dependency and explicitly execute the same Run again; core does not introduce a second storage path or silently inline bytes.
