@@ -29,8 +29,13 @@ sync_repo() {
     return 1
   fi
 
+  if [ -n "$(git -C "$path" status --porcelain)" ]; then
+    printf 'error: %s has local changes; preserve or discard before syncing\n' "$path" >&2
+    return 1
+  fi
+
   printf 'Updating %s reference repository...\n' "$name"
-  git -C "$path" fetch --quiet origin "$branch"
+  git -C "$path" fetch --quiet --prune origin "$branch"
   git -C "$path" merge --quiet --ff-only FETCH_HEAD
 }
 
@@ -39,6 +44,9 @@ sync_repo opencode https://github.com/anomalyco/opencode.git dev
 sync_repo better-auth https://github.com/better-auth/better-auth.git main
 sync_repo pi-mono https://github.com/badlogic/pi-mono.git main
 sync_repo vercel-ai https://github.com/vercel/ai.git main
+sync_repo tanstack-ai https://github.com/TanStack/ai.git main
+sync_repo hermes-agent https://github.com/NousResearch/hermes-agent.git main
 sync_repo hono https://github.com/honojs/hono.git main
 sync_repo flue https://github.com/withastro/flue.git main
 sync_repo eve https://github.com/vercel/eve.git main
+sync_repo agents https://github.com/cloudflare/agents.git main

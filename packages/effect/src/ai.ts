@@ -1,11 +1,13 @@
 import {
   Content,
   Model,
-  type AgentFragment,
+  ArtifactStoreError,
+  type ArtifactContent,
+  type ArtifactReference,
   type ArtifactStore,
   type ContentPart,
   type EncodedProviderData,
-  type FragmentMetadata,
+  type ModelDefinition,
   type JsonValue,
   type ModelAcquisitionContext,
   type ModelEvent,
@@ -18,7 +20,6 @@ import {
   type ModelSession,
   type ModelUsage,
   type ProviderOption,
-  type ProviderToolDescriptor,
   type ToolCallContentPart,
   type ToolResultContentPart,
 } from "@commissary/core";
@@ -47,18 +48,18 @@ export class EffectAiBridgeDefect extends Error {
     message: string,
     readonly cause?: unknown,
   ) {
-    super(message);
+    super(message, { cause });
     this.name = "EffectAiBridgeDefect";
   }
 }
 
-export type EffectAiProviderToolResolver = (
-  descriptor: ProviderToolDescriptor,
-) => EffectTool.AnyProviderDefined | undefined;
+/** Translate one canonical Commissary Tool to a provider-specific callback definition. */
+export type EffectAiToolTranslator = (tool: ModelTool) => EffectTool.AnyProviderDefined | undefined;
 
 export interface EffectAiModelOptions<Id extends string = string> {
   readonly id?: Id;
-  readonly resolveProviderTool?: EffectAiProviderToolResolver;
+  readonly providerCapabilities?: readonly EffectTool.AnyProviderDefined[];
+  readonly translateTool?: EffectAiToolTranslator;
 }
 
 type StreamItem =
@@ -76,6 +77,7 @@ type PreparedRequest =
       readonly prompt: Prompt.Prompt;
       readonly toolkit?: Toolkit.WithHandler<Record<string, EffectTool.Any>>;
       readonly tools: ReadonlyMap<string, ModelTool>;
+      readonly providerCapabilities: ReadonlySet<string>;
     }
   | { readonly type: "interruption"; readonly interruption: ModelInterruption };
 
@@ -101,6 +103,59 @@ function providerOptions(
 
 function isJsonRecord(value: JsonValue): value is { readonly [key: string]: JsonValue } {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isJsonValue(value: unknown, active = new Set<object>()): value is JsonValue {
+  if (value === null || typeof value === "string" || typeof value === "boolean") {
+    return true;
+  }
+  if (typeof value === "number") {
+    return Number.isFinite(value);
+  }
+  if (typeof value !== "object" || active.has(value)) {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (!Array.isArray(value) && prototype !== Object.prototype && prototype !== null) {
+    return false;
+  }
+  active.add(value);
+  const valid = Array.isArray(value)
+    ? value.every((item) => isJsonValue(item, active))
+    : Object.values(value).every((item) => isJsonValue(item, active));
+  active.delete(value);
+  return valid;
+}
+
+function providerJson(value: unknown, detail: string): JsonValue {
+  if (!isJsonValue(value)) {
+    throw new EffectAiBridgeDefect(`Effect AI emitted non-JSON ${detail}`);
+  }
+  return value;
+}
+
+async function readArtifact(
+  store: ArtifactStore,
+  reference: ArtifactReference,
+  signal: AbortSignal,
+): Promise<ArtifactContent> {
+  try {
+    return await store.read(reference, { signal });
+  } catch (cause) {
+    throw cause instanceof ArtifactStoreError ? cause : new ArtifactStoreError("read", cause);
+  }
+}
+
+async function writeArtifact(
+  store: ArtifactStore,
+  content: ArtifactContent,
+  signal: AbortSignal,
+): Promise<ArtifactReference> {
+  try {
+    return await store.write(content, { signal });
+  } catch (cause) {
+    throw cause instanceof ArtifactStoreError ? cause : new ArtifactStoreError("write", cause);
+  }
 }
 
 function partOptions(
@@ -161,7 +216,7 @@ async function promptPart(
           detail: `Cannot read artifact ${part.artifact.id} without an Artifact Store`,
         };
       }
-      const content = await artifactStore.read(part.artifact, { signal });
+      const content = await readArtifact(artifactStore, part.artifact, signal);
       return Prompt.makePart("file", {
         data: content.data,
         mediaType: content.mediaType,
@@ -174,7 +229,7 @@ async function promptPart(
         id: part.toolCallId,
         name: part.toolName,
         params: part.input,
-        providerExecuted: part.providerExecuted ?? false,
+        providerExecuted: false,
         options,
       });
     case "tool-result":
@@ -220,7 +275,8 @@ async function prepareRequest(
   provider: string,
   artifactStore: ArtifactStore | undefined,
   signal: AbortSignal,
-  resolveProviderTool: EffectAiProviderToolResolver | undefined,
+  providerCapabilities: readonly EffectTool.AnyProviderDefined[],
+  translateTool: EffectAiToolTranslator | undefined,
 ): Promise<PreparedRequest> {
   const options = providerOptions(request.providerOptions, provider);
   const messages: Prompt.Message[] = [];
@@ -246,47 +302,67 @@ async function prepareRequest(
   }
 
   const definitions: EffectTool.Any[] = [];
+  const providerCapabilityNames = new Set<string>();
+  for (const capability of providerCapabilities) {
+    if (capability.requiresHandler) {
+      return {
+        type: "interruption",
+        interruption: {
+          type: "provider-compatibility",
+          provider,
+          capability: "provider-capability",
+          detail: `Provider capability '${capability.name}' requires a host handler`,
+        },
+      };
+    }
+    if (providerCapabilityNames.has(capability.name)) {
+      return {
+        type: "interruption",
+        interruption: {
+          type: "provider-compatibility",
+          provider,
+          capability: "provider-capability",
+          detail: `Provider capability '${capability.name}' is configured more than once`,
+        },
+      };
+    }
+    providerCapabilityNames.add(capability.name);
+    definitions.push(capability);
+  }
   for (const tool of request.tools) {
-    const owner = tool.execution ?? "commissary";
-    if (owner === "commissary") {
+    if (providerCapabilityNames.has(tool.name)) {
+      return {
+        type: "interruption",
+        interruption: {
+          type: "provider-compatibility",
+          provider,
+          capability: "provider-capability",
+          detail: `Provider capability '${tool.name}' conflicts with a Commissary Tool`,
+        },
+      };
+    }
+    const translated = translateTool?.(tool);
+    if (translated !== undefined) {
+      if (translated.name !== tool.name || !translated.requiresHandler) {
+        return {
+          type: "interruption",
+          interruption: {
+            type: "provider-compatibility",
+            provider,
+            capability: "provider-callback",
+            detail: `Provider callback translation for '${tool.name}' is invalid`,
+          },
+        };
+      }
+      definitions.push(translated);
+    } else {
       definitions.push(
         EffectTool.dynamic(tool.name, {
           ...(tool.description === undefined ? {} : { description: tool.description }),
           parameters: tool.inputSchema as never,
         }),
       );
-      continue;
     }
-    if (tool.provider === undefined || tool.provider.namespace !== provider) {
-      return {
-        type: "interruption",
-        interruption: {
-          type: "provider-compatibility",
-          provider,
-          capability: "provider-tool",
-          detail: `Provider Tool '${tool.name}' is not compatible with ${provider}`,
-        },
-      };
-    }
-    const resolved = resolveProviderTool?.(tool.provider);
-    const needsHandler = owner === "provider-callback";
-    if (
-      resolved === undefined ||
-      resolved.id !== tool.provider.id ||
-      resolved.name !== tool.name ||
-      resolved.requiresHandler !== needsHandler
-    ) {
-      return {
-        type: "interruption",
-        interruption: {
-          type: "provider-compatibility",
-          provider,
-          capability: "provider-tool",
-          detail: `Provider Tool '${tool.name}' could not be resolved by ${provider}`,
-        },
-      };
-    }
-    definitions.push(resolved);
   }
 
   const toolkit =
@@ -306,6 +382,7 @@ async function prepareRequest(
     prompt: Prompt.fromMessages(messages),
     ...(toolkit === undefined ? {} : { toolkit }),
     tools: new Map(request.tools.map((tool) => [tool.name, tool])),
+    providerCapabilities: providerCapabilityNames,
   };
 }
 
@@ -328,7 +405,11 @@ function finishReason(reason: Response.FinishReason): ModelFinishReason {
 function metadata(value: Readonly<Record<string, unknown>>): EncodedProviderData[] {
   const entries: EncodedProviderData[] = [];
   for (const [namespace, item] of Object.entries(value)) {
-    entries.push({ namespace, version: 1, value: item as JsonValue });
+    entries.push({
+      namespace,
+      version: 1,
+      value: providerJson(item, `metadata for '${namespace}'`),
+    });
   }
   return entries;
 }
@@ -509,6 +590,7 @@ async function* streamEvents(
   provider: string,
   iterable: AsyncIterable<StreamItem>,
   tools: ReadonlyMap<string, ModelTool>,
+  providerCapabilities: ReadonlySet<string>,
   artifactStore: ArtifactStore | undefined,
   signal: AbortSignal,
 ): AsyncIterable<ModelEvent> {
@@ -574,12 +656,14 @@ async function* streamEvents(
       case "tool-call": {
         const tool = tools.get(part.name);
         if (tool === undefined) {
+          if (providerCapabilities.has(part.name) && part.providerExecuted) {
+            break;
+          }
           throw new EffectAiBridgeDefect(`Effect AI emitted unknown Tool '${part.name}'`);
         }
-        const providerExecuted = (tool.execution ?? "commissary") === "provider";
-        if (part.providerExecuted !== providerExecuted) {
+        if (part.providerExecuted) {
           throw new EffectAiBridgeDefect(
-            `Effect AI reported invalid execution ownership for Tool '${part.name}'`,
+            `Effect AI executed Commissary Tool '${part.name}' inside the provider`,
           );
         }
         const call = withMetadata(
@@ -587,9 +671,8 @@ async function* streamEvents(
             type: "tool-call",
             toolCallId: part.id,
             toolName: part.name,
-            input: part.params as JsonValue,
-            ...(providerExecuted ? { providerExecuted: true } : {}),
-          }) as unknown as ToolCallContentPart,
+            input: providerJson(part.params, `Tool input for '${part.name}'`),
+          }) as ToolCallContentPart,
           metadata(part.metadata),
         );
         state.content.push(call);
@@ -602,12 +685,14 @@ async function* streamEvents(
         }
         const tool = tools.get(part.name);
         if (tool === undefined) {
+          if (providerCapabilities.has(part.name) && part.providerExecuted) {
+            break;
+          }
           throw new EffectAiBridgeDefect(`Effect AI emitted unknown Tool '${part.name}'`);
         }
-        const providerExecuted = (tool.execution ?? "commissary") === "provider";
-        if (part.providerExecuted !== providerExecuted) {
+        if (part.providerExecuted) {
           throw new EffectAiBridgeDefect(
-            `Effect AI reported invalid execution ownership for Tool '${part.name}'`,
+            `Effect AI executed Commissary Tool '${part.name}' inside the provider`,
           );
         }
         state.content.push(
@@ -616,10 +701,9 @@ async function* streamEvents(
               type: "tool-result",
               toolCallId: part.id,
               toolName: part.name,
-              output: part.result as JsonValue,
+              output: providerJson(part.result, `Tool result for '${part.name}'`),
               ...(part.isFailure ? { isFailure: true } : {}),
-              ...(providerExecuted ? { providerExecuted: true } : {}),
-            }) as unknown as ToolResultContentPart,
+            }) as ToolResultContentPart,
             metadata(part.metadata),
           ),
         );
@@ -633,7 +717,11 @@ async function* streamEvents(
         state.content.push(
           withMetadata(
             Content.file(
-              await artifactStore.write({ data: part.data, mediaType: part.mediaType }, { signal }),
+              await writeArtifact(
+                artifactStore,
+                { data: part.data, mediaType: part.mediaType },
+                signal,
+              ),
             ),
             metadata(part.metadata),
           ),
@@ -725,66 +813,124 @@ function waitForAbort(signal: AbortSignal): Effect.Effect<void> {
   });
 }
 
-function makeSession<Requirements>(
+interface SharedExecutionScope {
+  readonly scope: Scope.Closeable;
+  references: number;
+}
+
+interface ExecutionScopeLease {
+  readonly scope: Scope.Closeable;
+  readonly release: () => Promise<void>;
+}
+
+const executionScopes = new WeakMap<AbortSignal, Promise<SharedExecutionScope>>();
+
+async function acquireExecutionScope(signal: AbortSignal): Promise<ExecutionScopeLease> {
+  let current = executionScopes.get(signal);
+  if (current === undefined) {
+    current = Effect.runPromise(Effect.map(Scope.make(), (scope) => ({ scope, references: 0 })));
+    executionScopes.set(signal, current);
+  }
+  let shared: SharedExecutionScope;
+  try {
+    shared = await current;
+  } catch (cause) {
+    if (executionScopes.get(signal) === current) {
+      executionScopes.delete(signal);
+    }
+    throw cause;
+  }
+  shared.references += 1;
+  let released = false;
+  return {
+    scope: shared.scope,
+    release: async () => {
+      if (released) {
+        return;
+      }
+      released = true;
+      shared.references -= 1;
+      if (shared.references !== 0) {
+        return;
+      }
+      if (executionScopes.get(signal) === current) {
+        executionScopes.delete(signal);
+      }
+      await Effect.runPromise(Scope.close(shared.scope, Exit.void));
+    },
+  };
+}
+
+async function makeSession<Requirements>(
   effectModel: EffectModel.Model<string, LanguageModel.LanguageModel, Requirements>,
   provider: string,
   acquisition: ModelAcquisitionContext,
-  resolveProviderTool: EffectAiProviderToolResolver | undefined,
+  providerCapabilities: readonly EffectTool.AnyProviderDefined[],
+  translateTool: EffectAiToolTranslator | undefined,
 ): Promise<ModelSession> {
   const environment = (acquisition.environment ??
     EffectContext.empty()) as EffectContext.Context<Requirements>;
-  return Effect.runPromiseWith(environment)(
-    Effect.gen(function* () {
-      const scope = yield* Scope.make();
-      const built = yield* Layer.buildWithScope(effectModel, scope).pipe(
-        Effect.onExit((exit) => (Exit.isSuccess(exit) ? Effect.void : Scope.close(scope, exit))),
-      );
-      const service = EffectContext.get(built, LanguageModel.LanguageModel);
-      return {
-        invoke: async (request: ModelRequest, invocation: { readonly signal: AbortSignal }) => {
-          const prepared = await prepareRequest(
-            request,
-            provider,
-            acquisition.artifactStore,
-            invocation.signal,
-            resolveProviderTool,
-          );
-          if (prepared.type === "interruption") {
-            return (async function* () {
-              yield { type: "interruption", interruption: prepared.interruption } as const;
-            })();
-          }
-          const source = (
-            prepared.toolkit === undefined
-              ? service.streamText({
-                  prompt: prepared.prompt,
-                  disableToolCallResolution: true,
-                })
-              : service.streamText({
-                  prompt: prepared.prompt,
-                  toolkit: prepared.toolkit,
-                  disableToolCallResolution: true,
-                })
-          ) as Stream.Stream<Response.StreamPart<Record<string, EffectTool.Any>>, unknown, never>;
-          const safe = source.pipe(
-            Stream.interruptWhen(waitForAbort(invocation.signal)),
-            Stream.map((part) => ({ type: "part", part }) as StreamItem),
-            Stream.catch((error) => Stream.make({ type: "error", error } as StreamItem)),
-          );
-          const iterable = Stream.toAsyncIterableWith(safe, built);
-          return streamEvents(
-            provider,
-            iterable,
-            prepared.tools,
-            acquisition.artifactStore,
-            invocation.signal,
-          );
-        },
-        close: () => Effect.runPromise(Scope.close(scope, Exit.void)),
-      } satisfies ModelSession;
-    }),
-    { signal: acquisition.signal },
-  );
+  const lease = await acquireExecutionScope(acquisition.signal);
+  try {
+    return await Effect.runPromiseWith(environment)(
+      Effect.gen(function* () {
+        const built = yield* Layer.buildWithScope(effectModel, lease.scope);
+        const service = EffectContext.get(built, LanguageModel.LanguageModel);
+        return {
+          invoke: async (request: ModelRequest, invocation: { readonly signal: AbortSignal }) => {
+            const prepared = await prepareRequest(
+              request,
+              provider,
+              acquisition.artifactStore,
+              invocation.signal,
+              providerCapabilities,
+              translateTool,
+            );
+            if (prepared.type === "interruption") {
+              return (async function* () {
+                yield { type: "interruption", interruption: prepared.interruption } as const;
+              })();
+            }
+            const source = (
+              prepared.toolkit === undefined
+                ? service.streamText({
+                    prompt: prepared.prompt,
+                    disableToolCallResolution: true,
+                  })
+                : service.streamText({
+                    prompt: prepared.prompt,
+                    toolkit: prepared.toolkit,
+                    disableToolCallResolution: true,
+                  })
+            ) as Stream.Stream<Response.StreamPart<Record<string, EffectTool.Any>>, unknown, never>;
+            const safe = source.pipe(
+              Stream.interruptWhen(waitForAbort(invocation.signal)),
+              Stream.map((part) => ({ type: "part", part }) as StreamItem),
+              Stream.catch((error) => Stream.make({ type: "error", error } as StreamItem)),
+            );
+            const iterable = Stream.toAsyncIterableWith(safe, built);
+            return streamEvents(
+              provider,
+              iterable,
+              prepared.tools,
+              prepared.providerCapabilities,
+              acquisition.artifactStore,
+              invocation.signal,
+            );
+          },
+          close: lease.release,
+        } satisfies ModelSession;
+      }),
+      { signal: acquisition.signal },
+    );
+  } catch (cause) {
+    try {
+      await lease.release();
+    } catch {
+      // Preserve the Model acquisition error.
+    }
+    throw cause;
+  }
 }
 
 export const EffectAi = {
@@ -796,7 +942,7 @@ export const EffectAi = {
   >(
     effectModel: EffectModel.Model<Provider, Provides, Requirements>,
     options?: EffectAiModelOptions<Id>,
-  ): AgentFragment<FragmentMetadata<never, never, never, Requirements>> {
+  ): ModelDefinition<Id, Requirements> {
     const id = options?.id ?? (`effect-ai:${effectModel.provider}` as Id);
     const capability = {
       id,
@@ -809,7 +955,8 @@ export const EffectAi = {
           >,
           effectModel.provider,
           context,
-          options?.resolveProviderTool,
+          options?.providerCapabilities ?? [],
+          options?.translateTool,
         ),
       invoke: async (request: ModelRequest, context: { readonly signal: AbortSignal }) => {
         const session = await makeSession(
@@ -820,7 +967,8 @@ export const EffectAi = {
           >,
           effectModel.provider,
           { signal: context.signal },
-          options?.resolveProviderTool,
+          options?.providerCapabilities ?? [],
+          options?.translateTool,
         );
         const stream = await session.invoke(request, context);
         return (async function* () {

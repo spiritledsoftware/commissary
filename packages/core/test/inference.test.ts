@@ -25,16 +25,8 @@ const progressSchema = testSchema(
   },
 );
 
-const resumeInput = Codec.define({
-  encode(value: boolean) {
-    return value;
-  },
-  decode(value) {
-    if (typeof value !== "boolean") {
-      throw new TypeError("expected boolean");
-    }
-    return value;
-  },
+const resumeInput = testSchema((value): value is boolean => typeof value === "boolean", {
+  type: "boolean",
 });
 
 const continuation = Codec.define({
@@ -54,7 +46,7 @@ const calculate = Tool.define({
   input: stringSchema,
   output: numberSchema,
   failure: failureSchema,
-  signal: progressSchema,
+  event: progressSchema,
   handler(input, context) {
     expectTypeOf(input).toEqualTypeOf<string>();
     expectTypeOf(context.emit).parameter(0).toEqualTypeOf<{
@@ -73,30 +65,9 @@ const calculate = Tool.define({
   },
 });
 
-const providerSearch = Tool.provider({
-  name: "provider-search",
-  provider: {
-    namespace: "example",
-    id: "example.search",
-    args: { depth: 2 },
-  },
-  input: stringSchema,
-  output: stringSchema,
-});
-
-const providerCallback = Tool.providerCallback({
-  name: "provider-callback",
-  provider: {
-    namespace: "example",
-    id: "example.callback",
-    args: {},
-  },
-  input: stringSchema,
-  output: numberSchema,
-  handler(input) {
-    expectTypeOf(input).toEqualTypeOf<string>();
-    return input.length;
-  },
+const dynamicProvider = Tool.dynamic({
+  id: "mcp",
+  resolve: () => [],
 });
 
 const model = Model.define({
@@ -125,10 +96,10 @@ it("preserves value-driven Tool and Agent inference", () => {
   }>();
   expectTypeOf<Tool.ResumeInput<typeof calculate>>().toEqualTypeOf<boolean>();
   expectTypeOf<Agent.Tools<typeof agent>>().toEqualTypeOf<typeof calculate>();
-  expectTypeOf<Tool.Input<typeof providerSearch>>().toEqualTypeOf<string>();
-  expectTypeOf<Tool.Output<typeof providerSearch>>().toEqualTypeOf<string>();
-  expectTypeOf<Tool.Input<typeof providerCallback>>().toEqualTypeOf<string>();
-  expectTypeOf<Tool.Output<typeof providerCallback>>().toEqualTypeOf<number>();
+  expectTypeOf<Agent.Events<typeof agent>>().toEqualTypeOf<{
+    readonly percent: number;
+  }>();
+  expectTypeOf<Agent.FragmentTools<typeof dynamicProvider>>().not.toBeNever();
   expectTypeOf(agent.id).toEqualTypeOf<"typed-agent">();
 });
 
@@ -136,4 +107,11 @@ it("requires notification Hooks to return exactly undefined", () => {
   Hook.onModelEvent(() => undefined);
   // @ts-expect-error notification Hooks cannot accidentally return a patch
   Hook.onModelEvent(() => ({ request: undefined }));
+});
+
+it("keeps provider capabilities out of core Tool constructors", () => {
+  // @ts-expect-error provider-executed capabilities belong to Model adapters
+  void Tool.provider;
+  // @ts-expect-error provider callback capabilities use ordinary Tool definitions
+  void Tool.providerCallback;
 });

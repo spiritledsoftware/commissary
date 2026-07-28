@@ -1,3 +1,9 @@
 # Accept active-Run Steering durably
 
-`Runtime.steer` accepts a canonical Model Message only while its Run is nonterminal and records it as Pending Steering without advancing the Branch head; an optional caller-owned Steering Request ID makes equivalent uncertain retries return the original acceptance while conflicting reuse fails. The Thread Store assigns accepted items a stable FIFO order, and at a safe boundary the Machine atomically appends them and marks them consumed before rerendering for the next Step; accepted Steering cannot be cancelled, replaced, reordered, or discarded, and it does not interrupt active Model or Tool work. Guarded finalization rejects while accepted Steering remains, so a terminal finalization that wins the admission race returns not-active and custom Drivers must apply every acceptance before completing the Run.
+`Runtime.steer` accepts a canonical Model Message only while its Run is nonterminal. It records the Message as Pending Steering and does not advance the Branch head.
+
+The caller can supply a Steering Request ID. Without an ID, each call creates a new submission. An unknown ID records the submission. An exact replay returns the first acceptance. Conflicting reuse fails.
+
+The Thread Store assigns accepted Steering a stable FIFO order. At a safe boundary, the Machine appends the Messages and marks them as consumed in one atomic operation. It then renders the next Step.
+
+The host cannot cancel or reorder accepted Steering. Steering is a durable command, not a Hook side channel.

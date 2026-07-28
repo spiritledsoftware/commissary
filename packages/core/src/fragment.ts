@@ -2,14 +2,15 @@ import type { JsonValue } from "./types.js";
 
 const fragmentMetadata: unique symbol = Symbol("commissary.fragment.metadata");
 
+/** Compile-time metadata carried by an opaque Agent Fragment. */
 export interface FragmentMetadata<
   Tools = never,
-  ToolSignals = never,
+  Events = never,
   ToolResumptions = never,
   Requirements = never,
 > {
   readonly tools: Tools;
-  readonly toolSignals: ToolSignals;
+  readonly events: Events;
   readonly toolResumptions: ToolResumptions;
   readonly requirements: Requirements;
 }
@@ -27,7 +28,7 @@ export type MetadataOf<Fragment> =
 export type CombinedMetadata<Fragments extends readonly AgentFragment<AnyFragmentMetadata>[]> =
   FragmentMetadata<
     MetadataOf<Fragments[number]>["tools"],
-    MetadataOf<Fragments[number]>["toolSignals"],
+    MetadataOf<Fragments[number]>["events"],
     MetadataOf<Fragments[number]>["toolResumptions"],
     MetadataOf<Fragments[number]>["requirements"]
   >;

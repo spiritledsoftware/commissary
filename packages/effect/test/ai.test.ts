@@ -5,12 +5,15 @@ import {
   Hook,
   type AgentFragment,
   type ArtifactId,
+  ArtifactStoreError,
   type ArtifactStore,
+  Model,
   type FragmentMetadata,
   type ModelSchema,
   type ProviderOption,
+  type StartRunCommand,
 } from "@commissary/core";
-import { Duration, Effect, Layer, Schema, Stream } from "effect";
+import { Duration, Effect, Layer, Schema, Scope, Stream } from "effect";
 import {
   AiError,
   LanguageModel,
@@ -22,9 +25,10 @@ import {
 } from "effect/unstable/ai";
 import { expect, it } from "vitest";
 
-import { EffectAi, EffectAiBridgeDefect, type EffectAiProviderToolResolver } from "../src/ai.js";
+import { MemoryThreadStore } from "@commissary/store-memory";
+
+import { EffectAi, EffectAiBridgeDefect, type EffectAiToolTranslator } from "../src/ai.js";
 import { EffectCommissary } from "../src/index.js";
-import { MemoryThreadStore } from "./support.js";
 
 const stringSchema: ModelSchema<string> = {
   "~standard": {
@@ -88,7 +92,8 @@ async function run(
     readonly fragments?: readonly AgentFragment<
       FragmentMetadata<unknown, unknown, unknown, never>
     >[];
-    readonly resolveProviderTool?: EffectAiProviderToolResolver;
+    readonly providerCapabilities?: readonly AiTool.AnyProviderDefined[];
+    readonly translateTool?: EffectAiToolTranslator;
   } = {},
 ) {
   let acquired = 0;
@@ -112,10 +117,12 @@ async function run(
     ),
   );
   const aiModel = AiModel.make("example", "test-model", layer);
-  const model =
-    options.resolveProviderTool === undefined
-      ? EffectAi.model(aiModel)
-      : EffectAi.model(aiModel, { resolveProviderTool: options.resolveProviderTool });
+  const model = EffectAi.model(aiModel, {
+    ...(options.providerCapabilities === undefined
+      ? {}
+      : { providerCapabilities: options.providerCapabilities }),
+    ...(options.translateTool === undefined ? {} : { translateTool: options.translateTool }),
+  });
   const agent = Agent.define({
     id: "effect-ai-test",
     fragments: Agent.combine(model, ...(options.fragments ?? [])),
@@ -125,21 +132,127 @@ async function run(
     EffectCommissary.make({
       threadStore: store,
       ...(options.artifactStore === undefined ? {} : { artifactStore: options.artifactStore }),
-      agents: [agent] as const,
     }),
   );
-  const thread = await app.createThread();
-  const branch = await app.createBranch({ threadId: thread.id, name: "main" });
-  const client = app.agent(agent);
+  const thread = await Effect.runPromise(app.createThread());
+  const branch = await Effect.runPromise(app.createBranch({ threadId: thread.id, name: "main" }));
+  const effectClient = await Effect.runPromise(app.agent(agent));
+  const coreClient = effectClient.core;
+  const client = {
+    ...coreClient,
+    async run(input: Omit<StartRunCommand, "type">) {
+      const submission = await coreClient.submit({ type: "start", ...input });
+      if (submission.type !== "submitted") {
+        return submission;
+      }
+      return (await coreClient.execute(submission.runId)).result;
+    },
+    async stream(input: Omit<StartRunCommand, "type">) {
+      const submission = await coreClient.submit({ type: "start", ...input });
+      if (submission.type !== "submitted") {
+        return submission;
+      }
+      return coreClient.execute(submission.runId);
+    },
+  };
   return {
     store,
     branch,
     client,
+    effectClient,
     modelAcquired,
     acquired: () => acquired,
     released: () => released,
   };
 }
+
+it("exposes Agent operations as native Effects", async () => {
+  const fake = service(() =>
+    Stream.make(
+      Response.makePart("finish", {
+        reason: "stop",
+        usage: modelUsage,
+        response: undefined,
+      }),
+    ),
+  );
+  const fixture = await run(fake);
+  const submission = await Effect.runPromise(
+    fixture.effectClient.submit({
+      type: "start",
+      threadId: fixture.branch.threadId,
+      branchId: fixture.branch.id,
+      message: { role: "user", content: [Content.text("native")] },
+    }),
+  );
+  if (submission.type !== "submitted") {
+    throw new Error(`Unexpected submission result '${submission.type}'`);
+  }
+  const execution = await Effect.runPromise(fixture.effectClient.execute(submission.runId));
+
+  await expect(Effect.runPromise(execution.result)).resolves.toMatchObject({
+    type: "completed",
+  });
+});
+
+it("releases every selected Model scope when one Execution ends", async () => {
+  const scopes: Scope.Scope[] = [];
+  const modelLayer = () =>
+    Layer.effect(
+      LanguageModel.LanguageModel,
+      Effect.gen(function* () {
+        scopes.push(yield* Effect.scope);
+        return service(() =>
+          Stream.make(
+            Response.makePart("finish", {
+              reason: "stop",
+              usage: modelUsage,
+              response: undefined,
+            }),
+          ),
+        );
+      }),
+    );
+  const first = EffectAi.model(AiModel.make("first", "first-model", modelLayer()), {
+    id: "first-effect-model",
+  });
+  const second = EffectAi.model(AiModel.make("second", "second-model", modelLayer()), {
+    id: "second-effect-model",
+  });
+  const composite = Model.composite({
+    id: "effect-scope-composite",
+    children: [first, second],
+    async invoke(request, context) {
+      await context.invoke(first, request, { key: "first" });
+      return context.forward(second, request, { key: "second" });
+    },
+  });
+  const agent = Agent.define({ id: "effect-scope-agent", fragments: composite });
+  const app = await Effect.runPromise(
+    EffectCommissary.make({ threadStore: new MemoryThreadStore() }),
+  );
+  const thread = await Effect.runPromise(app.createThread());
+  const branch = await Effect.runPromise(app.createBranch({ threadId: thread.id, name: "main" }));
+  const client = await Effect.runPromise(app.agent(agent));
+  const submission = await Effect.runPromise(
+    client.submit({
+      type: "start",
+      threadId: thread.id,
+      branchId: branch.id,
+      message: { role: "user", content: [Content.text("scope")] },
+    }),
+  );
+  if (submission.type !== "submitted") {
+    throw new Error(`Unexpected submission result '${submission.type}'`);
+  }
+
+  const execution = await Effect.runPromise(client.execute(submission.runId));
+  await expect(Effect.runPromise(execution.result)).resolves.toMatchObject({
+    type: "completed",
+  });
+  expect(scopes).toHaveLength(2);
+  expect(scopes.every((scope) => scope.state._tag === "Closed")).toBe(true);
+});
 
 it("translates canonical requests and responses while scoping one model service per Attempt", async () => {
   const requests: StreamOptions[] = [];
@@ -263,6 +376,15 @@ it("streams canonical reasoning deltas as Model Events", async () => {
     ),
   );
   const fixture = await run(fake);
+  const deltas: string[] = [];
+  const unsubscribe = fixture.client.subscribe(
+    Hook.onExecutionEvent(({ event }) => {
+      if (event.type === "model-event" && event.event.type === "reasoning-delta") {
+        deltas.push(event.event.delta);
+      }
+      return undefined;
+    }),
+  );
   const attempt = await fixture.client.stream({
     threadId: fixture.branch.threadId,
     branchId: fixture.branch.id,
@@ -271,18 +393,9 @@ it("streams canonical reasoning deltas as Model Events", async () => {
   if ("type" in attempt) {
     throw new Error(`Unexpected admission failure: ${attempt.type}`);
   }
-  const reasoning = (async () => {
-    const deltas: string[] = [];
-    for await (const signal of attempt.signals) {
-      if (signal.type === "model-event" && signal.event.type === "reasoning-delta") {
-        deltas.push(signal.event.delta);
-      }
-    }
-    return deltas;
-  })();
-
-  await expect(attempt.outcome).resolves.toMatchObject({ type: "completed" });
-  await expect(reasoning).resolves.toEqual(["checking"]);
+  await expect(attempt.result).resolves.toMatchObject({ type: "completed" });
+  unsubscribe();
+  expect(deltas).toEqual(["checking"]);
 });
 
 it("interrupts rather than dropping canonical Source Parts during replay", async () => {
@@ -448,7 +561,7 @@ it("maps declared invalid output to a recoverable interruption with usage", asyn
   });
 });
 
-it("rejects unclassified Effect AI errors as Defects", async () => {
+it("wraps unclassified Effect AI errors as unexpected Execution errors", async () => {
   const fake = service(() =>
     Stream.fail(
       new AiError.AiError({
@@ -466,7 +579,11 @@ it("rejects unclassified Effect AI errors as Defects", async () => {
       branchId: fixture.branch.id,
       message: { role: "user", content: [Content.text("hello")] },
     }),
-  ).rejects.toBeInstanceOf(EffectAiBridgeDefect);
+  ).rejects.toMatchObject({
+    name: "UnexpectedExecutionError",
+    phase: "model",
+    cause: expect.any(EffectAiBridgeDefect),
+  });
   expect(fixture.released()).toBe(1);
 });
 
@@ -497,7 +614,7 @@ it("interrupts after metered file output when no Artifact Store is available", a
     },
   });
   expect(
-    await fixture.store.readBranchPath({
+    await fixture.store.readBranchHistory({
       threadId: fixture.branch.threadId,
       branchId: fixture.branch.id,
     }),
@@ -517,8 +634,8 @@ it("interrupts an in-flight Effect stream when the Attempt aborts", async () => 
   }
 
   await fixture.modelAcquired;
-  attempt.abort("cancelled");
-  const outcome = await attempt.outcome;
+  await attempt.abort("cancelled");
+  const outcome = await attempt.result;
 
   expect(outcome).toMatchObject({ type: "aborted", reason: "cancelled" });
   expect(fixture.released()).toBe(1);
@@ -567,6 +684,58 @@ it("persists generated bytes before returning a canonical File Part", async () =
       },
     },
   });
+});
+
+it("reports Artifact Store write failures as specific store errors", async () => {
+  const artifactStore: ArtifactStore = {
+    read: () => Promise.reject(new Error("Unexpected read")),
+    write: () => Promise.reject(new Error("write failed")),
+  };
+  const fake = service(() =>
+    Stream.make(
+      Response.makePart("file", {
+        data: new Uint8Array([1, 2, 3]),
+        mediaType: "image/png",
+      }),
+      Response.makePart("finish", { reason: "stop", usage: modelUsage, response: undefined }),
+    ),
+  );
+  const fixture = await run(fake, { artifactStore });
+
+  const execution = fixture.client.run({
+    threadId: fixture.branch.threadId,
+    branchId: fixture.branch.id,
+    message: { role: "user", content: [Content.text("make an image")] },
+  });
+
+  await expect(execution).rejects.toBeInstanceOf(ArtifactStoreError);
+  await expect(execution).rejects.toMatchObject({ operation: "write" });
+});
+
+it("reports Artifact Store read failures as specific store errors", async () => {
+  let invocations = 0;
+  const artifactStore: ArtifactStore = {
+    read: () => Promise.reject(new Error("read failed")),
+    write: () => Promise.reject(new Error("Unexpected write")),
+  };
+  const fake = service(() => {
+    invocations += 1;
+    return Stream.empty;
+  });
+  const fixture = await run(fake, { artifactStore });
+
+  const execution = fixture.client.run({
+    threadId: fixture.branch.threadId,
+    branchId: fixture.branch.id,
+    message: {
+      role: "user",
+      content: [Content.file({ id: "missing-artifact" as ArtifactId, mediaType: "image/png" })],
+    },
+  });
+
+  await expect(execution).rejects.toBeInstanceOf(ArtifactStoreError);
+  await expect(execution).rejects.toMatchObject({ operation: "read" });
+  expect(invocations).toBe(0);
 });
 
 it("preflights Artifact reads before invoking the provider", async () => {
@@ -637,7 +806,7 @@ it("interrupts before invocation when matching Provider Data has an unsupported 
   expect(invocations).toBe(0);
 });
 
-it("passes Provider Tools through Effect AI without creating durable Tool Attempts", async () => {
+it("keeps provider-executed capabilities in Model configuration", async () => {
   const nativeSearch = AiTool.providerDefined({
     id: "example.search",
     customName: "provider-search",
@@ -646,16 +815,6 @@ it("passes Provider Tools through Effect AI without creating durable Tool Attemp
     parameters: Schema.String,
     success: Schema.String,
   })({ depth: 1 });
-  const providerSearch = Tool.provider({
-    name: "provider-search",
-    provider: {
-      namespace: "example",
-      id: "example.search",
-      args: { depth: 1 },
-    },
-    input: stringSchema,
-    output: stringSchema,
-  });
   const requests: StreamOptions[] = [];
   const fake = service((options) => {
     requests.push(options);
@@ -666,13 +825,15 @@ it("passes Provider Tools through Effect AI without creating durable Tool Attemp
         params: "query",
         providerExecuted: true,
       }),
-      Response.makePart("finish", { reason: "stop", usage: modelUsage, response: undefined }),
+      Response.makePart("finish", {
+        reason: "stop",
+        usage: modelUsage,
+        response: undefined,
+      }),
     );
   });
   const fixture = await run(fake, {
-    fragments: [providerSearch],
-    resolveProviderTool: (descriptor) =>
-      descriptor.id === nativeSearch.id ? nativeSearch : undefined,
+    providerCapabilities: [nativeSearch],
   });
 
   const outcome = await fixture.client.run({
@@ -683,23 +844,19 @@ it("passes Provider Tools through Effect AI without creating durable Tool Attemp
 
   expect(outcome).toMatchObject({
     type: "completed",
-    response: {
-      message: {
-        content: [
-          {
-            type: "tool-call",
-            toolName: "provider-search",
-            providerExecuted: true,
-          },
-        ],
-      },
-    },
+    response: { message: { content: [] } },
   });
   expect(requests).toHaveLength(1);
   expect(requests[0]?.toolkit?.tools["provider-search"]).toBe(nativeSearch);
+  if (!("runId" in outcome)) {
+    throw new Error(`Unexpected submission result '${outcome.type}'`);
+  }
+  await expect(fixture.client.readRunSnapshot(outcome.runId)).resolves.toMatchObject({
+    toolCalls: [],
+  });
 });
 
-it("round-trips Provider Callback Tool data through a durable Tool Attempt", async () => {
+it("maps an ordinary durable Tool through a provider callback definition", async () => {
   const nativeCallback = AiTool.providerDefined({
     id: "example.callback",
     customName: "provider-callback",
@@ -710,13 +867,8 @@ it("round-trips Provider Callback Tool data through a durable Tool Attempt", asy
     success: Schema.Number,
   })({});
   let executions = 0;
-  const callback = Tool.providerCallback({
+  const callback = Tool.define({
     name: "provider-callback",
-    provider: {
-      namespace: "example",
-      id: "example.callback",
-      args: {},
-    },
     input: stringSchema,
     output: numberSchema,
     handler(input) {
@@ -749,8 +901,7 @@ it("round-trips Provider Callback Tool data through a durable Tool Attempt", asy
   });
   const fixture = await run(fake, {
     fragments: [callback],
-    resolveProviderTool: (descriptor) =>
-      descriptor.id === nativeCallback.id ? nativeCallback : undefined,
+    translateTool: (tool) => (tool.name === nativeCallback.name ? nativeCallback : undefined),
   });
 
   const outcome = await fixture.client.run({
@@ -768,5 +919,42 @@ it("round-trips Provider Callback Tool data through a durable Tool Attempt", asy
     name: "provider-callback",
     result: 5,
     options: { example: { callbackToken: "token-1" } },
+  });
+});
+
+it("rejects non-JSON provider Tool input at the bridge boundary", async () => {
+  const callback = Tool.define({
+    name: "invalid-json",
+    input: stringSchema,
+    output: numberSchema,
+    handler: () => 0,
+  });
+  const fake = service(() =>
+    Stream.make(
+      Response.makePart("tool-call", {
+        id: "invalid-call",
+        name: "invalid-json",
+        params: { value: undefined } as never,
+        providerExecuted: false,
+      }),
+      Response.makePart("finish", {
+        reason: "tool-calls",
+        usage: modelUsage,
+        response: undefined,
+      }),
+    ),
+  );
+  const fixture = await run(fake, { fragments: [callback] });
+
+  await expect(
+    fixture.client.run({
+      threadId: fixture.branch.threadId,
+      branchId: fixture.branch.id,
+      message: { role: "user", content: [Content.text("call")] },
+    }),
+  ).rejects.toMatchObject({
+    name: "UnexpectedExecutionError",
+    phase: "model",
+    cause: expect.any(EffectAiBridgeDefect),
   });
 });

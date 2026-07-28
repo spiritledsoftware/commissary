@@ -1,307 +1,385 @@
 # Commissary
 
-Commissary is a composable agent-building system. It separates durable Thread history from process-bound execution so an Agent can be rendered from the current Transcript before each model invocation.
+Commissary is a system for composable agents. It keeps durable Thread history separate from process-bound execution. An Agent renders the current Transcript before each Model invocation.
+
+This file defines the domain terms. The ADRs in `docs/adr/` define the design rules and their reasons.
 
 ## Agents and composition
 
 **Agent**:
-A reusable definition whose executable form is rendered from the current Transcript.
+A reusable definition. Core renders its executable form from the current Transcript.
 _Avoid_: Live agent, runtime instance
 
 **Agent ID**:
-A caller-owned stable identity for resolving one Agent across processes and deployments.
+A caller-owned stable ID that identifies one Agent across processes and deployments.
 _Avoid_: Agent Reference, display name, Thread ID
 
 **Agent Revision**:
-A deterministic identity for one Agent's installed static composition and stable contracts.
+A deterministic ID for an Agent's installed static composition and stable contracts.
 _Avoid_: Manual version, application release, per-invocation hash
 
 **Agent Reference**:
-A durable reference pairing an Agent ID with the Agent Revision that produced some work.
+A durable pair of an Agent ID and the Agent Revision that produced the work.
 _Avoid_: In-memory Agent object, Agent ID alone, Model name
 
 **Agent Compatibility**:
-The determination that an installed Agent can safely continue deferred work produced by another Agent Revision.
+A check that an installed Agent can safely continue deferred work from another Agent Revision.
 _Avoid_: Revision equality, unchecked latest version, Execution Plan equality
 
 **Agent Installation**:
-The validation and fixation of an Agent's Hooks and stable contracts before execution.
+The validation and fixation of an Agent's static Hooks and stable contracts.
 _Avoid_: Render, model invocation, Agent Tree
 
 **Agent Fragment**:
-An opaque composable authoring value containing named Agent contributions.
-_Avoid_: Plugin manifest, generic property bag, runtime object
+An opaque additive value that contains named Agent contributions. Its factory defines its customization options.
+_Avoid_: Plugin manifest, generic property bag, runtime object, editable contribution collection
 
 **Render**:
-The derivation of an Agent Tree from the current Transcript for one model invocation.
+The derivation of an Agent Tree from the current Transcript for one Model invocation.
 _Avoid_: Installation, execution, compilation
 
 **Agent Tree**:
-A declarative description of the Context, Model, and Tools selected for one model invocation.
+A declarative selection of Context, Model, and Tools for one Model invocation.
 _Avoid_: Agent configuration, Execution Plan, live agent
 
 **Execution Plan**:
-The immutable, fully resolved form of an Agent Tree for one model invocation.
+The immutable and fully resolved form of an Agent Tree for one Model invocation.
 _Avoid_: Agent Tree, mutable runtime, Agent Revision
 
 **Context**:
-A contribution of model-visible information derived during Render.
+Model-visible information that core derives during Render.
 _Avoid_: Effect Context, dependency container, Transcript
 
 **Context Tree**:
-The ordered model-visible information selected for one model invocation.
+The ordered Context that core selects for one Model invocation.
 _Avoid_: Effect Context, runtime environment, Transcript
 
 ## Messages and history
 
 **Model Message**:
-A provider-neutral role-bearing turn composed of ordered Content Parts and optional Message Data.
-_Avoid_: Provider message, Signal, Message Entry
+A provider-neutral turn with a role, ordered Content Parts, and optional Message Data.
+_Avoid_: Provider message, Execution Event, Message Entry
 
 **Content Part**:
-A typed provider-neutral piece of model-visible content, such as text, reasoning, a source, a file, a Tool call, or a Tool result.
-_Avoid_: Provider event, Signal, Message Data
+A typed provider-neutral item of model-visible content. Examples include text, reasoning, sources, files, Tool calls, and Tool results.
+_Avoid_: Provider event, Execution Event, Message Data
 
 **Provider Data**:
-A namespaced, versioned provider-owned payload attached to one Content Part, preserved for replay through the matching provider adapter but never rendered as content.
+A namespaced and versioned provider payload on one Content Part. Only the matching provider adapter uses it for replay.
 _Avoid_: Message Data, Provider Options, raw provider object
 
 **Reasoning Part**:
-A provider-returned reasoning summary or explanation preserved separately from ordinary assistant text.
+A provider-returned reasoning summary or explanation that is separate from assistant text.
 _Avoid_: Hidden chain-of-thought, provider metadata, ordinary Text Part
 
 **Source Part**:
-A normalized provider-neutral citation or source reference returned by a Model, such as a URL or document source.
+A provider-neutral source reference from a Model, such as a URL or document.
 _Avoid_: Provider metadata, inline citation text, raw provider source object
 
 **Message Data**:
-A model-safe, namespaced, versioned payload attached to a Model Message and preserved with it in Thread history.
+A model-visible, namespaced, and versioned payload on a Model Message. Thread history preserves it with that Message.
 _Avoid_: Arbitrary metadata, Provider Options, secrets, credentials
 
 **Message Entry**:
-An immutable node in a Thread's history tree containing one canonical Model Message.
+An immutable node in a Thread history tree. It contains one canonical Model Message.
 _Avoid_: Agent input, provider payload, custom entry
 
 **Transcript**:
-The ordered model-visible conversation projected from one Branch of Message Entries.
+The ordered model-visible conversation from one Branch of Message Entries.
 _Avoid_: Thread tree, provider payload, application database
 
 **Artifact Reference**:
-An opaque durable reference to file-like content used by Message Data and Content Parts.
+An opaque durable reference to file content in Message Data or a Content Part.
 _Avoid_: Inline bytes, external URL, provider file ID
 
 **Artifact Store**:
-The host-supplied persistence contract for bytes addressed by Artifact References.
+The host-supplied persistence contract for bytes that Artifact References identify.
 _Avoid_: Thread Store, inline Message bytes, provider file storage
+
+**Artifact Store Error**:
+An exported error for a failed Artifact Store read or write. It keeps the adapter error as its cause.
+_Avoid_: Artifact Storage Required Interruption, provider file error, raw storage error contract
 
 ## Threads and Runs
 
 **Thread**:
-The durable identity whose parent-linked Message Entries form a tree of agent work.
+A durable identity. Its parent-linked Message Entries form a tree of agent work.
 _Avoid_: Session, mutable conversation object, Branch
 
 **Branch**:
-A durably identified, human-named line of work within a Thread.
+A durably identified and human-named line of work in one Thread.
 _Avoid_: Thread, global active leaf, linear transcript
 
 **Thread Store**:
-The host-supplied persistence contract for Threads, Branches, Runs, Execution Claims, Message Entries, and their atomic transitions.
-_Avoid_: Transcript, memory provider, Agent-selected persistence
+The required persistence contract for durable core state and its atomic changes. Every host supplies an implementation.
+_Avoid_: Application repository, public Instance property, Agent-selected persistence
+
+**Memory Thread Store**:
+The process-local Thread Store from `@commissary/store-memory`.
+_Avoid_: Automatic default, global singleton, durable storage
+
+**Thread Store Error**:
+An exported error for a failed Thread Store operation. It keeps the adapter error as its cause.
+_Avoid_: Run Failure, Interruption, raw database error contract
 
 **Run**:
-One durably admitted effort to advance a Branch from a Message Entry or Tool resumption to a durable outcome.
-_Avoid_: Thread, process, Execution Attempt
+One durable effort to advance a Branch from a Message Entry or Tool resumption to a result.
+_Avoid_: Thread, process, Execution
 
-**Run Request ID**:
-An optional caller-owned idempotency identity for Run admission.
-_Avoid_: Run ID, Message Entry ID, Tool Call ID
+**Run ID**:
+The durable ID of one Run. Core generates it unless the caller supplies it for idempotent submission.
+_Avoid_: Execution ID, Resume Request ID, Thread ID
 
-**Run Admission**:
-The durable result of creating or finding one Run and admitting its initial Message Entry.
+**Run Submission**:
+The durable record of one new or existing Run and its initial Message or Tool resume inputs.
 _Avoid_: Job enqueue, execution start, Run Result
 
-**Execution Attempt**:
-One process-bound effort to advance an admitted Run.
+**Run Snapshot**:
+A typed point-in-time view of a Run's durable public state.
+_Avoid_: Execution Snapshot, Store record, event replay, stream cursor
+
+**Abort Request**:
+A durable request to stop a nonterminal Run. Recording the request acknowledges it, but does not confirm final settlement.
+_Avoid_: Process-local signal, immediate settlement acknowledgment, unguarded cancellation flag
+
+**Execution**:
+One process-bound effort to advance a submitted Run. It exposes IDs, an awaitable result, and an abort operation.
 _Avoid_: Run, Step, retry policy
 
+**Execution Unavailable Error**:
+An exported call error that reports why `execute` could not start an Execution.
+_Avoid_: Run Result, Interruption, generic Error message
+
 **Execution Claim**:
-An expiring fenced grant authorizing one Execution Attempt to advance a Run.
+An expiring fenced grant that lets one Execution advance a Run.
 _Avoid_: Run ownership, job lease, unfenced lock
 
+**Execution Claim Policy**:
+The positive lease duration that core requests for an Execution Claim.
+_Avoid_: Public heartbeat interval, Store-computed duration, infinite claim
+
+**Execution Control Watch**:
+An optional cancellable Thread Store operation that reports an Abort Request or lost Execution Claim.
+_Avoid_: Mandatory pub/sub, correctness authority, public heartbeat
+
+**Execution Claim Lost Error**:
+An exported error that rejects an Execution result after the Execution loses its Claim.
+_Avoid_: Aborted Run Result, Interruption, Execution Unavailable Error
+
+**Unexpected Execution Error**:
+An exported error for an undeclared exception during execution. It keeps the original value as its cause.
+_Avoid_: Defect Error, Failure, Interruption, raw thrown value
+
 **Run Result**:
-The durable resolved outcome of a Run together with its Run, Thread, Branch, head, and usage identities.
-_Avoid_: Execution Attempt outcome, Transcript, Message Entries
+The durable result of a Run. It includes the Run, Thread, Branch, head, Agent, and cumulative Model Usage.
+_Avoid_: Execution result, Transcript, Message Entries
 
 **Step**:
-One model invocation and the Tool executions it requests before the Machine advances again.
+One Run-local Model invocation and its requested Tool executions. Core assigns a durable sequence number to each Step.
 _Avoid_: Run, Message Entry, Tool Attempt
 
+**Model Usage**:
+Provider-reported token counts that core adds to one Run as neutral execution facts.
+_Avoid_: Cost, budget, Step limit, exact provider billing
+
 **Interruption**:
-A typed recoverable reason that a Run cannot currently advance.
-_Avoid_: Failure, Defect, Signal
+A typed recoverable reason that prevents a Run from advancing now.
+_Avoid_: Failure, Defect, Execution Event
 
 **Stale Agent Interruption**:
-An Interruption indicating that the installed Agent cannot safely continue deferred work created by an earlier Agent Revision.
+An Interruption that reports an incompatible Agent contract for deferred work.
 _Avoid_: Failure, Defect, terminal Run Result, automatic retry
 
 **Authentication Required Interruption**:
-An Interruption indicating that a Model provider cannot proceed until the host explicitly obtains valid credentials.
+An Interruption that requires the host to obtain valid provider credentials.
 _Avoid_: OAuth prompt, Tool Suspension, terminal Failure, automatic login
 
 **Provider Compatibility Interruption**:
-An Interruption indicating that the selected provider adapter cannot safely translate the canonical request or replay history because a required capability or Provider Data contract is unavailable.
+An Interruption that reports an unsupported provider capability or Provider Data contract.
 _Avoid_: Model Failure, Defect, silent metadata loss
 
 **Provider Unavailable Interruption**:
-An Interruption indicating that a Model provider cannot currently serve the Run because of a transient condition or exhausted quota, with retry or reset timing preserved when available.
-_Avoid_: automatic retry, terminal Failure, Authentication Required Interruption
+An Interruption for a temporary provider condition or exhausted quota. It can include retry or reset time.
+_Avoid_: Automatic retry, terminal Failure, Authentication Required Interruption
 
 **Model Output Interruption**:
-An Interruption indicating that a Model produced invalid or schema-nonconforming output and another sample may succeed.
+An Interruption for invalid Model output when another sample can succeed.
 _Avoid_: Provider Unavailable Interruption, committed Model Response, adapter Defect
 
 **Artifact Storage Required Interruption**:
-An Interruption indicating that a Run needs to read or persist file content but the host supplied no Artifact Store.
-_Avoid_: inline-byte fallback, Model Failure, Defect
+An Interruption that reports a required but absent Artifact Store.
+_Avoid_: Inline-byte fallback, Model Failure, Defect
 
 **Steering**:
-A command that contributes another canonical Model Message to an active Run between Steps.
+A command that adds a canonical Model Message to an active Run between Steps.
 _Avoid_: Follow-up Run, Tool resumption, Hook patch
 
 **Steering Request ID**:
-An optional caller-owned idempotency identity for a Steering submission.
-_Avoid_: Run Request ID, Message Entry ID, content hash
+An optional caller-owned ID that makes one Steering submission idempotent.
+_Avoid_: Run ID, Message Entry ID, content hash
 
 **Pending Steering**:
-A durably accepted Steering Message waiting for application at a safe Run boundary.
+An accepted durable Steering Message that waits for a safe Run boundary.
 _Avoid_: Follow-up queue, Branch history, Tool Suspension
 
 ## Models and Tools
 
 **Model**:
-A capability that transforms one Model Request into a stream of Model Events.
+A capability that changes one Model Request into a stream of Model Events.
 _Avoid_: Provider configuration, raw LLM client, Effect AI LanguageModel
 
+**Composite Model**:
+A Model that uses declared child Models through core. It can route, sequence, decorate, or use fallback behavior.
+_Avoid_: Second root Model contribution, direct child implementation call, core routing policy
+
 **Model Request**:
-The provider-neutral input assembled from a Context Tree, Transcript, Tools, and model options.
+The provider-neutral input that core builds from Context, Transcript, Tools, and Provider Options.
 _Avoid_: Provider payload, raw SDK request
 
 **Model Event**:
-A provider-neutral update emitted during one Model invocation.
-_Avoid_: Signal, raw provider chunk, Model Response
+A provider-neutral update from one Model invocation.
+_Avoid_: Execution Event, raw provider chunk, Model Response
 
 **Model Response**:
 The provider-neutral completed result of one Model invocation.
 _Avoid_: Agent output, raw provider response, Run Result
 
 **Finish Reason**:
-The provider-neutral reason that a completed Model Response stopped, including refusal, content filtering, or provider-requested continuation.
+The provider-neutral reason that stopped a Model Response. Examples include refusal, content filtering, and provider-requested continuation.
 _Avoid_: Run Result, Failure, Interruption
 
 **Model Failure**:
-A terminal provider-neutral Run failure produced when a Model provider rejects a request before returning a Model Response and changing the request is required.
-_Avoid_: completed refusal, Interruption, Defect, raw provider error
+A terminal Run Failure for a provider rejection that requires a changed request.
+_Avoid_: Completed refusal, Interruption, Defect, raw provider error
 
 **Provider Options**:
-Typed namespaced request data interpreted by one Model provider and ignored by core.
+Typed and namespaced request data for one Model provider. Core does not interpret it.
 _Avoid_: Core model setting, untyped metadata
 
+**Provider Package**:
+An official package that connects one Model provider to Commissary. Its root API is plain JavaScript.
+_Avoid_: Provider implementation in core, Effect-only public API
+
 **Provider Integration Instance**:
-A host-bound value for one Model provider configuration and credential scope that creates Model contributions and exposes explicit authentication operations.
+A host-owned value for one provider configuration and credential scope. It creates Model contributions and authentication operations.
 _Avoid_: Model, raw provider client, Effect Layer, global singleton
 
 **Tool**:
-A named model-callable capability with validated input, output, and declared outcomes.
+A named model-callable capability with validated input, output, and declared results.
 _Avoid_: Host dependency, arbitrary function
 
-**Provider Tool**:
-A Tool executed by a Model provider within its Model invocation rather than by the Commissary Machine.
-_Avoid_: Tool Provider, Provider Options, durable Tool Attempt
-
-**Provider Callback Tool**:
-A provider-defined Tool whose wire contract belongs to the Model provider but whose handler runs as a durable Commissary Tool Attempt.
-_Avoid_: Provider Tool, provider-hosted execution, in-memory Effect AI callback
+**Canonical Tool Schema**:
+The immutable Draft-07 JSON Schema that Agent Installation creates for a Tool input.
+_Avoid_: Effect Schema, provider SDK schema, invocation-time conversion
 
 **Tool Provider**:
-A declarative contribution that resolves Tools for one model invocation using dependencies captured by its factory.
-_Avoid_: Static Tool, dependency container, effectful Agent Fragment
+A named value that resolves Tools for one Model invocation. Its factory captures its dependencies.
+_Avoid_: Static Tool, global Tool registry, dependency container
 
 **Tool Call**:
-A durable semantic request to invoke one Tool.
+A durable semantic request from a Model or parent Tool to invoke one Tool.
 _Avoid_: Tool definition, provider call, Tool Attempt
 
+**Tool Call Graph**:
+The durable acyclic graph of Model-requested and delegated Tool Calls in one Run.
+_Avoid_: Branch transcript, Agent Tree, process-bound call stack
+
 **Tool Attempt**:
-One process-bound execution of a Tool Call.
-_Avoid_: Tool Call, Execution Attempt
+One process-bound execution of a Tool Call. A Tool Call can have multiple Tool Attempts.
+_Avoid_: Tool Call, Execution
 
 **Tool Suspension**:
-A nonterminal Tool outcome that durably pauses its Run pending compatible resumption.
-_Avoid_: Tool result, Tool Failure, Interruption
+A nonterminal Tool result that pauses its Run. It includes encoded state for later resumption.
+_Avoid_: Tool output, Tool Failure, Interruption
 
 **Tool Resume**:
-A durable command supplying Codec-validated external input to one Tool Suspension so its Run may execute again.
+One durable resume input for one suspended Tool Call.
 _Avoid_: Steering, Tool result, immediate execution
 
-**Tool Resume Request ID**:
-An optional caller-owned idempotency identity for a Tool Resume.
-_Avoid_: Tool Call ID, Run Request ID, suspension ID
+**Resume Request ID**:
+An optional caller-owned ID that makes one atomic Tool Resume batch idempotent.
+_Avoid_: Tool Call ID, Run ID, suspension ID
 
 **Tool Execution Context**:
-The immutable core execution identity, cancellation, idempotency, and progress data supplied to one Tool Attempt.
+The immutable execution identity, cancellation, idempotency, and progress data for one Tool Attempt.
 _Avoid_: Effect Context, ambient state, dependency container, extension map
 
 ## Runtime and extension seams
 
+**Clock**:
+An optional plain-JavaScript dependency for current time and cancellable sleep. Core uses it for local scheduling.
+_Avoid_: Agent input, Transcript data, replacement for backend claim time
+
+**ID Generator**:
+An optional function that creates all core-owned opaque IDs. It receives no ID type.
+_Avoid_: ID-kind registry, caller ID override, Agent-visible randomness
+
 **Commissary Instance**:
-The host-bound application interface returned by `commissary`, owning Thread Store access, registered Agents, and Driver selection.
-_Avoid_: Agent, Runtime, global singleton
+The host interface from `commissary`. It binds one Thread Store and installs Agents when the host requests them.
+_Avoid_: Agent, Runtime, Thread Store, global singleton
 
 **Agent Client**:
-A typed interface binding one registered Agent to a Commissary Instance for durable commands and process-bound execution.
+A typed interface for one installed Agent. It provides durable commands, execution, and dynamic Hook subscriptions.
 _Avoid_: Agent, Runtime Client, Run Handle
 
 **Runtime**:
-The invariant-preserving core module behind a Commissary Instance and its Runtime Clients.
-_Avoid_: Commissary Instance, Machine, Driver, Execution Attempt
+The core module that preserves invariants behind the Commissary Instance and Agent Clients.
+_Avoid_: Commissary Instance, Machine, Loop, Execution
 
 **Machine**:
-The default state machine that advances Runs using safe policy defaults.
-_Avoid_: Driver, Agent contribution, callback collection
+The default state machine that advances Runs with safe policy defaults.
+_Avoid_: Loop, Agent contribution, callback collection
 
 **Runtime Operation**:
-A typed phase action that preserves one local runtime invariant while exposing orchestration.
+A typed phase action that preserves one Runtime invariant. It returns a value that only Runtime can create.
 _Avoid_: Hook, Machine transition replacement, extension event
 
 **Runtime Client**:
-The capability through which a Driver invokes Runtime Operations.
+The capability that lets a Loop invoke Runtime Operations.
 _Avoid_: Provider client, mutable Runtime, Hook continuation
 
-**Driver**:
-A host-controlled orchestration of Runtime Operations.
-_Avoid_: Machine plugin, Agent contribution
+**Loop**:
+A host-controlled orchestration of Runtime Operations. It replaces the Machine decision loop.
+_Avoid_: Machine plugin, Agent contribution, Driver
 
 **Hook Point**:
-A core-owned adaptation or Machine-decision seam with a point-specific event and composition law.
-_Avoid_: Runtime Operation, extension event, Signal
+A core-owned seam with a specific event, result, and composition rule.
+_Avoid_: Runtime Operation, extension event, Execution Event
 
 **Hook**:
-A process-bound installed handler for one Hook Point.
-_Avoid_: Signal subscriber, Runtime Operation interceptor, durable callback
+A typed process-bound handler for one Hook Point. A Hook can change a value, make a decision, or observe work.
+_Avoid_: Runtime Operation interceptor, durable callback, live-mutated Execution policy
 
-**Signal**:
-An ephemeral observation of work performed by an Execution Attempt.
-_Avoid_: Message Entry, Model Event, durable event
+**Dynamic Hook Subscription**:
+A process-local Hook registration on an Agent Client. Each Execution captures the active registrations when it starts.
+_Avoid_: Mid-Execution policy mutation, durable Hook, cross-process subscription
 
-## Contracts and outcomes
+**Execution Event**:
+An ephemeral observation of one Execution. Core dispatches it through the `onExecutionEvent` Hook Point.
+_Avoid_: Message Entry, Model Event, durable event, derived text event
+
+**Stream Adapter**:
+An adapter that changes Execution Events into a bounded, single-consumer stream.
+_Avoid_: Core event queue, relay, replay log, transport
+
+**Events Dropped Event**:
+An adapter Event that reports how many buffered Events a Stream Adapter discarded.
+_Avoid_: Error Event, durable gap marker, execution backpressure, core event
+
+**Error Event**:
+The `{ type: "error", error }` Execution Event that reports an error after an Execution starts.
+_Avoid_: Failure, Interruption, thrown stream error, error-specific event name
+
+## Contracts and results
 
 **Codec**:
-A reversible contract between a durable domain value and its JSON-compatible representation.
+A reversible mapping between a durable domain value and its JSON-compatible form.
 _Avoid_: Validation schema, store-specific serializer
 
 **Failure**:
-An expected typed outcome declared by an operation contract.
+An expected typed result that an operation contract declares.
 _Avoid_: Defect, thrown exception, model refusal
 
 **Defect**:
-An unexpected exception, invariant violation, or adapter fault outside declared outcomes.
+An unexpected exception, invariant violation, or adapter fault outside declared results.
 _Avoid_: Failure, Interruption, model refusal

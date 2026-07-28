@@ -18,13 +18,12 @@ export type ThreadId = Opaque<string, "ThreadId">;
 export type BranchId = Opaque<string, "BranchId">;
 export type MessageEntryId = Opaque<string, "MessageEntryId">;
 export type RunId = Opaque<string, "RunId">;
-export type AttemptId = Opaque<string, "AttemptId">;
+export type ExecutionId = Opaque<string, "ExecutionId">;
 export type ExecutionClaimToken = Opaque<string, "ExecutionClaimToken">;
 export type ToolCallId = Opaque<string, "ToolCallId">;
 export type ToolAttemptId = Opaque<string, "ToolAttemptId">;
 export type ArtifactId = Opaque<string, "ArtifactId">;
 export type CommitId = Opaque<string, "CommitId">;
-export type RunRequestId = string;
 export type SteeringRequestId = string;
 export type ToolResumeRequestId = string;
 

@@ -1,3 +1,33 @@
-# Separate Run admission from execution
+# Separate Run submission from execution
 
-Core Runtime exposes durable `admit`, `resume`, `steer`, and `abort` commands independently from process-bound `execute`, while `readResult` recovers committed outcomes. The ordinary host entry point is `commissary({ threadStore, agents, driver? })`; its Commissary Instance exposes `agent(agent)` to return a typed Agent Client, while unbound Runtime Operations remain available to dynamic workflow hosts and custom Drivers. An Agent Client's `run` convenience composes `admit`, `execute`, and awaiting the Attempt outcome, whereas `stream` composes the same admission and execution but immediately returns the Execution Attempt so its Signals can be consumed; neither defines separate execution semantics. `admit` performs one Thread Store transaction that checks Branch ordering, assigns the Run ID, appends the initial Message Entry, and optionally binds a caller-owned Run Request ID so equivalent retries find the same Run while conflicting reuse fails; `resume` similarly admits Codec-validated input for one current Tool Suspension with an optional Tool Resume Request ID but does not start execution. A Run retains one durable identity and at most one terminal result across any number of Execution Attempts; core defines no Run Handle, attachment, or receipt wrapper.
+## Commands
+
+The typed Agent Client separates durable submission from process-bound execution.
+
+`submit(command)` records a start command or a Tool resume command. `execute(runId)` starts one Execution for a submitted Run.
+
+An Execution contains branded Execution and Run IDs, an independently awaitable result, and an abort operation. The core Agent Client has no combined `run`, `stream`, or `resume` convenience.
+
+Streaming belongs to the adapter in [ADR 0010](0010-fence-and-resolve-executions.md). Tool resume races belong to [ADR 0013](0013-make-tool-execution-durable-and-resumable.md).
+
+Steering, abort, snapshot reads, and result reads remain separate operations.
+
+## Run Snapshot
+
+`readRunSnapshot(runId)` returns one typed point-in-time view of durable public Run state. One atomic Thread Store read returns:
+
+- Run status.
+- Branch and head IDs.
+- The complete public Tool Call Graph.
+- Unresolved suspensions.
+- The terminal Run Result, when it exists.
+
+The Tool Call Graph includes Model-requested and delegated calls. It contains public parent links, status, and results.
+
+The snapshot excludes Execution Claims, fences, idempotency keys, private Tool continuations, Provider Data, and raw Thread Store records. It has no Run revision or Execution Event cursor. It does not create an atomic snapshot-to-live handoff.
+
+## Result read
+
+`readResult(runId)` returns only the durable terminal Run Result. It returns `undefined` before a terminal result exists.
+
+This operation does not derive its value from `readRunSnapshot`. A result-only read must not build the complete Tool Call Graph. It adds no state or semantics that are absent from the snapshot.

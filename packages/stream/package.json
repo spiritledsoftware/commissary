@@ -1,18 +1,19 @@
 {
-  "name": "@commissary/core",
+  "name": "@commissary/stream",
   "version": "0.0.0",
   "private": true,
   "type": "module",
   "sideEffects": false,
   "exports": {
     ".": "./src/index.ts",
-    "./internal": "./src/internal.ts"
+    "./effect": "./src/effect.ts"
   },
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@standard-schema/spec": "^1.1.0"
+    "@commissary/core": "workspace:*",
+    "effect": "4.0.0-beta.101"
   }
 }

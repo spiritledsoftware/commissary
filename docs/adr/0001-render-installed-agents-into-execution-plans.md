@@ -1,3 +1,19 @@
 # Render installed Agents into Execution Plans
 
-Public authoring starts with `Agent.define({ id, fragments })`; registering that value performs Agent Installation, so users never construct Agent Trees, Execution Plans, or a separate installed-Agent wrapper. Named Context, Model, Tool, and Hook constructors return opaque Agent Fragments, `Agent.combine(...fragments)` is the variadic associative composition primitive for integration factories, and `Agent.define` accepts the resulting readonly tuple directly; each named module owns its laws, while core has no generic slots, features, behavior contribution, third-party contribution kind, or inspectable Fragment representation. For each model invocation, Render derives an Agent Tree of Context, Model, and Tools from the current Transcript and Run identity, then resolves Model, Context, and Tools in that fixed order before validating and freezing one immutable Execution Plan; identity conflicts are reported at installation with contribution positions rather than through brittle type-level conflict proofs.
+## Decision
+
+Public authoring starts with `Agent.define({ id, fragments })`. Binding this value to a Commissary Instance performs Agent Installation.
+
+Users do not construct Agent Trees, Execution Plans, or an installed-Agent wrapper. Named Context, Model, and Tool constructors return opaque Agent Fragments. [ADR 0012](0012-compose-machine-policy-through-typed-hooks.md) defines the equivalent Hook behavior.
+
+`Agent.combine(...fragments)` is the variadic and associative composition operation. `Agent.define` accepts its readonly result directly.
+
+For each Model invocation, Render uses the current Transcript and Run identity. It derives one Agent Tree. Core resolves Model, Context, and Tools in that order. Core then validates and freezes one Execution Plan.
+
+## Composition rules
+
+Each named module owns the rules for its contributions. Core has no generic slot, feature, behavior, or third-party contribution type.
+
+Agent Fragments have no generic inspection, removal, replacement, override, or precedence API. Duplicate non-Hook identities cause an Agent Installation error. The error identifies the contribution positions.
+
+Reusable integrations must expose their supported changes through options or smaller factories. A consumer must replace or fork an integration when those interfaces are not sufficient.

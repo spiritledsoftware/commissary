@@ -1,5 +1,11 @@
 # Store versioned Data with core Messages
 
-`MessageData.define` accepts one literal namespaced key, version, and Codec, infers the domain value without an explicit generic, and returns ordinary typed helpers to attach, decode, and collect matching data from a Transcript; optional upcasters remain local helpers rather than installed consumers. Message Data is appended atomically with its Model Message, the Thread Store preserves its encoded payload opaquely, Render receives it intact, and Model Request construction appends every item in stored order as deterministic JSON text containing its key, version, and value after that Message's Content Parts. Core does not hide recognized items, reconstruct derived values, interpret version compatibility, or define generic Entries and load callbacks.
+`MessageData.define` accepts a namespaced key, a version, and a Codec. It infers the domain type and returns typed attach, decode, and collect helpers.
 
-Message Data is always message-scoped and model-visible. It does not carry Provider Data: provider-owned replay state is namespaced and versioned separately, attached to the exact Content Part it belongs to, preserved by core without generic interpretation, and consumed only by the matching provider adapter rather than appended to model content.
+Core appends Message Data atomically with its Model Message. The Thread Store keeps the encoded value without interpretation. Render receives the value unchanged.
+
+Model Request construction adds each Message Data item after that Message's Content Parts. It uses stored order and deterministic JSON with the key, version, and value.
+
+Core does not hide recognized data or rebuild derived values. It does not interpret version compatibility. Optional upcasters remain local helper functions.
+
+Message Data is always message-scoped and model-visible. It does not contain Provider Data. [ADR 0005](0005-own-the-provider-neutral-model-protocol.md) defines provider-owned replay data.

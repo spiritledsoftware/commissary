@@ -1,10 +1,15 @@
-import { Agent, type CommissaryInstance, type ThreadStore } from "@commissary/core";
+import { Agent, type ThreadStore } from "@commissary/core";
 import { Context, Effect, Layer } from "effect";
 import { LanguageModel, Model as AiModel } from "effect/unstable/ai";
 import { expect, expectTypeOf, it } from "vitest";
 
 import { EffectAi } from "../src/ai.js";
-import { Commissary, EffectCommissary } from "../src/index.js";
+import {
+  Commissary,
+  EffectCommissary,
+  type EffectCommissaryInstance,
+  type EffectAgentClient,
+} from "../src/index.js";
 
 class ModelDependency extends Context.Service<ModelDependency, { readonly value: string }>()(
   "commissary/test/ModelDependency",
@@ -19,18 +24,23 @@ const agent = Agent.define({ id: "effect-agent", fragments: fragment });
 const threadStore = {} as ThreadStore;
 const construction = EffectCommissary.make({
   threadStore,
-  agents: [agent] as const,
 });
 const commissaryLayer = EffectCommissary.layer({
   threadStore,
-  agents: [agent] as const,
 });
+const installation = Effect.flatMap(construction, (instance) => instance.agent(agent));
 
-it("preserves open Effect Model requirements through Agent composition", () => {
+it("preserves open Effect Model requirements through lazy Agent installation", async () => {
   expect(fragment).toBeDefined();
   expectTypeOf<Agent.Requirements<typeof agent>>().toEqualTypeOf<ModelDependency>();
-  expectTypeOf(construction).toMatchTypeOf<
-    Effect.Effect<CommissaryInstance<readonly [typeof agent]>, never, ModelDependency>
+  expectTypeOf(construction).toEqualTypeOf<Effect.Effect<EffectCommissaryInstance, never>>();
+  expectTypeOf(commissaryLayer).toEqualTypeOf<Layer.Layer<Commissary>>();
+  expectTypeOf(installation).toEqualTypeOf<
+    Effect.Effect<EffectAgentClient<typeof agent>, unknown, ModelDependency>
   >();
-  expectTypeOf(commissaryLayer).toMatchTypeOf<Layer.Layer<Commissary, never, ModelDependency>>();
+  const instance = await Effect.runPromise(construction);
+  const client = await Effect.runPromise(
+    instance.agent(agent).pipe(Effect.provideService(ModelDependency, { value: "available" })),
+  );
+  expect(client.reference.id).toBe("effect-agent");
 });

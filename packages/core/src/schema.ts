@@ -30,6 +30,47 @@ export async function validateSchema<Schema extends StandardSchema>(
   throw new SchemaValidationError(value, result.issues ?? []);
 }
 
+function canonicalJson(value: unknown, active = new Set<object>()): JsonValue {
+  if (value === null || typeof value === "string" || typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value !== "object" || active.has(value)) {
+    throw new TypeError("JSON Schema contains a non-JSON value");
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (!Array.isArray(value) && prototype !== Object.prototype && prototype !== null) {
+    throw new TypeError("JSON Schema contains a non-JSON object");
+  }
+  active.add(value);
+  try {
+    if (Array.isArray(value)) {
+      return Object.freeze(value.map((item) => canonicalJson(item, active)));
+    }
+    const result: Record<string, JsonValue> = {};
+    for (const [key, item] of Object.entries(value)) {
+      result[key] = canonicalJson(item, active);
+    }
+    return Object.freeze(result);
+  } finally {
+    active.delete(value);
+  }
+}
+
+function isJsonObject(value: JsonValue): value is { readonly [key: string]: JsonValue } {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+export function canonicalJsonObject(value: unknown): { readonly [key: string]: JsonValue } {
+  const canonical = canonicalJson(value);
+  if (!isJsonObject(canonical)) {
+    throw new TypeError("Tool input JSON Schema must be an object");
+  }
+  return canonical;
+}
+
 export function schemaJson(schema: ModelSchema): JsonValue {
   const converter = schema["~standard"].jsonSchema;
   if (converter === undefined) {
@@ -37,5 +78,5 @@ export function schemaJson(schema: ModelSchema): JsonValue {
       `Standard Schema vendor '${schema["~standard"].vendor}' does not provide JSON Schema`,
     );
   }
-  return converter.input({ target: "draft-07" }) as JsonValue;
+  return canonicalJsonObject(converter.input({ target: "draft-07" }));
 }

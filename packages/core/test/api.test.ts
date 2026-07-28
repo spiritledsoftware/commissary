@@ -10,9 +10,11 @@ import {
   ProviderOptions,
   ProviderData,
   Transcript,
+  Tool,
   commissary,
   type ThreadStore,
 } from "../src/index.js";
+import { stringSchema, testSchema } from "./support.js";
 
 const model = Model.define({
   id: "test-model",
@@ -182,6 +184,30 @@ describe("canonical protocol", () => {
   });
 });
 
+describe("Tool schema installation", () => {
+  it("defers invalid input schema rejection until Agent installation", () => {
+    const invalidInput = testSchema(
+      (value): value is Record<string, unknown> => typeof value === "object" && value !== null,
+      { type: "object", invalid: undefined },
+    );
+    const invalidTool = Tool.define({
+      name: "invalid-schema",
+      input: invalidInput,
+      output: stringSchema,
+      handler: () => "unused",
+    });
+    const agent = Agent.define({
+      id: "invalid-schema-agent",
+      fragments: Agent.combine(model, invalidTool),
+    });
+    const app = commissary({ threadStore: unusedStore });
+
+    expect(() => app.agent(agent)).toThrowError(
+      "Tool 'invalid-schema' has an invalid input JSON Schema",
+    );
+  });
+});
+
 describe("Agent composition", () => {
   it("preserves contribution order across parenthesization", () => {
     const first = Context.define({ id: "first", render: () => [] });
@@ -195,8 +221,8 @@ describe("Agent composition", () => {
       fragments: Agent.combine(first, Agent.combine(second, model)),
     });
 
-    const leftApp = commissary({ threadStore: unusedStore, agents: [left] });
-    const rightApp = commissary({ threadStore: unusedStore, agents: [right] });
+    const leftApp = commissary({ threadStore: unusedStore });
+    const rightApp = commissary({ threadStore: unusedStore });
 
     expect(leftApp.agent(left).reference.revision).toBe(rightApp.agent(right).reference.revision);
   });
@@ -208,8 +234,18 @@ describe("Agent composition", () => {
       fragments: Agent.combine(duplicate, duplicate, model),
     });
 
-    expect(() => commissary({ threadStore: unusedStore, agents: [agent] })).toThrow(
-      AgentInstallationError,
+    const app = commissary({ threadStore: unusedStore });
+    expect(() => app.agent(agent)).toThrow(AgentInstallationError);
+  });
+
+  it("rejects a different Agent definition with an installed ID", () => {
+    const first = Agent.define({ id: "assistant", fragments: model });
+    const second = Agent.define({ id: "assistant", fragments: model });
+    const app = commissary({ threadStore: unusedStore });
+
+    app.agent(first);
+    expect(() => app.agent(second)).toThrowError(
+      "Agent ID 'assistant' is installed by a different Agent definition",
     );
   });
 });

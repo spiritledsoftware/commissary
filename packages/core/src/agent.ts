@@ -11,6 +11,7 @@ import {
   type MetadataOf,
 } from "./fragment.js";
 import type { AgentReference } from "./identity.js";
+import { isToolRuntimeDefinition } from "./tool.js";
 import { stableJson, type AgentRevision } from "./types.js";
 
 const agentMetadata: unique symbol = Symbol("commissary.agent.metadata");
@@ -58,8 +59,9 @@ export class AgentInstallationError extends Error {
     message: string,
     readonly agentId: string,
     readonly contributions: readonly number[],
+    cause?: unknown,
   ) {
-    super(message);
+    super(message, { cause });
     this.name = "AgentInstallationError";
   }
 }
@@ -87,6 +89,39 @@ function normalizeFragments(input: FragmentInput) {
     : (input as AgentFragment<AnyFragmentMetadata>);
 }
 
+function installContributions(
+  agentId: string,
+  contributions: readonly Contribution[],
+): readonly Contribution[] {
+  return Object.freeze(
+    contributions.map((contribution, position) => {
+      if (!isToolRuntimeDefinition(contribution.value)) {
+        return contribution;
+      }
+      try {
+        return Object.freeze({
+          ...contribution,
+          contract: Object.freeze({
+            name: contribution.value.name,
+            input: contribution.value.modelTool.inputSchema,
+            outputVendor: contribution.value.output["~standard"].vendor,
+            resumable: contribution.value.suspension !== undefined,
+          }),
+        });
+      } catch (cause) {
+        throw new AgentInstallationError(
+          cause instanceof Error
+            ? cause.message
+            : `Tool '${contribution.value.name}' has an invalid input JSON Schema`,
+          agentId,
+          [position],
+          cause,
+        );
+      }
+    }),
+  );
+}
+
 export function installAgent<Id extends string, Metadata extends AnyFragmentMetadata>(
   definition: AgentDefinition<Id, Metadata>,
 ): InstalledAgentData<Id, Metadata> {
@@ -103,7 +138,7 @@ export function installAgent<Id extends string, Metadata extends AnyFragmentMeta
       [],
     );
   }
-  const contributions = contributionsOf(source.fragment);
+  const contributions = installContributions(definition.id, contributionsOf(source.fragment));
   const identities = new Map<string, number>();
   const modelPositions: number[] = [];
 
@@ -175,7 +210,7 @@ export namespace Agent {
     AgentFragment<Metadata>;
   export type Metadata<Definition> = AgentMetadataOf<Definition>;
   export type Tools<Definition> = AgentMetadataOf<Definition>["tools"];
-  export type ToolSignals<Definition> = AgentMetadataOf<Definition>["toolSignals"];
+  export type Events<Definition> = AgentMetadataOf<Definition>["events"];
   export type ToolResumptions<Definition> = AgentMetadataOf<Definition>["toolResumptions"];
   export type Requirements<Definition> = AgentMetadataOf<Definition>["requirements"];
   export type FragmentTools<Fragment> = MetadataOf<Fragment>["tools"];

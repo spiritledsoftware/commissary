@@ -7,6 +7,7 @@
   "author": "Spirit-Led Software <social@spiritledsoftware.com>",
   "type": "module",
   "scripts": {
+    "bootstrap": "pnpm install && sh scripts/sync-reference-repos.sh",
     "format": "oxfmt",
     "format:check": "oxfmt --check",
     "lint": "oxlint",
@@ -18,6 +19,7 @@
     "verify": "pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm run test"
   },
   "devDependencies": {
+    "@commissary/store-memory": "workspace:*",
     "@types/node": "^26.1.1",
     "husky": "^9.1.7",
     "lint-staged": "^17.1.1",

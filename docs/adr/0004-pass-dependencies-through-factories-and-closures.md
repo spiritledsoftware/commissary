@@ -1,15 +1,62 @@
 # Pass dependencies through factories and closures
 
-Runtime dependencies such as the Thread Store, registered Agents, and optional Driver are passed to the top-level `commissary` constructor, which returns a Commissary Instance while keeping Runtime construction internal. Models, Context contributions, Tools, Tool Providers, Hooks, and reusable integrations receive application clients through factory arguments or ordinary JavaScript closures. The host owns acquisition, sharing, and release of those clients; public callbacks receive `AbortSignal` where cooperative cancellation matters, and Effect may manage only Commissary's internal lifecycles. Core defines no dependency container, typed-key registry, provider graph, or public scope taxonomy; a managed-lifecycle module should be added only after concrete adapters demonstrate that closures and host ownership are insufficient.
+## Application dependencies
 
-Provider integrations own their authentication protocols and concurrency-safe token refresh, but the host owns credential persistence and every user interaction or UX decision in an OAuth flow. An integration receives plain-JavaScript credential-store and interaction callbacks, never opens a browser, prints a device code, prompts a user, or chooses a credential-storage mechanism by itself; core remains unaware of authentication.
+The host passes Runtime dependencies to `commissary`. It must pass a Thread Store. It can also pass a Loop, Clock, ID generator, and Artifact Store.
 
-Interactive authentication and reauthentication occur only through an explicit host call to the provider integration. A Model invocation may refresh valid credentials silently and with single-flight coordination, but missing credentials or a failed refresh never opens an interaction channel or waits for a person during an Execution Attempt.
+Models, Context contributions, Tools, Tool Providers, Hooks, and integrations receive application clients through factories or closures. The host acquires, shares, and releases these clients. Public callbacks receive `AbortSignal` when they support cancellation.
 
-Each provider package exposes a synchronous pure-JavaScript factory for a reusable Provider Integration Instance bound to one provider configuration and credential scope. The instance performs no I/O when created, exposes explicit authentication operations, creates opaque Model contributions, and internally shares transport and single-flight refresh across those Models. The host owns the instance's sharing scope and may create application-wide, tenant-specific, or request-specific instances.
+Core has no dependency container, typed-key registry, provider graph, or public scope system. A managed integration must acquire its client and close over it.
 
-A Commissary Instance acquires no application-lifetime Model resources and therefore exposes no mandatory close or disposal operation. Long-lived provider transports and credential coordination remain host-owned through Provider Integration Instances; specialized integrations may define their own lifecycle interfaces without burdening the ordinary Commissary Instance.
+## Clock and IDs
 
-The optional Artifact Store is an application-level runtime dependency supplied by the host alongside the Thread Store. Provider integrations use the Commissary-owned Artifact Store seam for Model files rather than receiving separate provider-specific blob stores; a storage package may conveniently construct both contracts from one backend.
+The optional Clock provides synchronous `now()` and cancellable `sleep(milliseconds, signal)` operations. Core uses it for claim renewal and Execution-local delay. The default uses the runtime clock and timers.
 
-When a Run requires file content and no Artifact Store was supplied, execution ends with an Artifact Storage Required Interruption. The host may add the dependency and explicitly execute the same Run again; core does not introduce a second storage path or silently inline bytes.
+Core does not pass this Clock to Thread Store adapters. A durable Thread Store uses its backend clock for claim expiry. A Memory Thread Store can accept a test Clock explicitly. The Effect adapter maps the active Effect Clock to the core Clock.
+
+The optional `generateId` function creates every core-owned ID. It takes no ID type and defaults to `crypto.randomUUID()`. Caller-owned Run IDs and request IDs pass through unchanged.
+
+## Thread Store
+
+Every host passes a Thread Store to `commissary`. Core has no automatic storage default.
+
+`MemoryThreadStore.make()` comes from `@commissary/store-memory`. It is process-local and not durable. It is suitable for examples, tests, and local development.
+
+The Commissary Instance does not expose its Thread Store. Only Runtime can use claim, fencing, commit, suspension, interruption, and finalization operations. A storage package can expose separate administration or indexing APIs.
+
+A `ThreadStoreError` names the failed Thread Store operation and keeps the original error as its cause. [ADR 0010](0010-fence-and-resolve-executions.md) defines error delivery during an Execution.
+
+## Safe Thread facade
+
+The Commissary Instance exposes these flat methods:
+
+- `createThread`.
+- `readThread`.
+- `createBranch`.
+- `readBranch`.
+- `renameBranch`.
+- `readBranchHistory`.
+
+`createBranch({ from })` forks from a known Message Entry. [ADR 0006](0006-store-thread-history-as-branching-messages.md) defines Branch history.
+
+Core does not provide Thread or Branch listing, search, deletion, retention, or administration. Those operations depend on application tenancy and storage policy.
+
+## Provider integration lifetime
+
+Provider integrations own authentication protocols and safe token refresh. The host owns credential storage and all user interaction.
+
+A provider integration never opens a browser, prints a code, or prompts during Model execution. The host starts authentication through an explicit integration operation. A Model call can refresh valid credentials without user interaction.
+
+Each provider package exposes a synchronous factory for a Provider Integration Instance. Factory creation performs no I/O. The instance creates Model contributions and shares its transport and refresh coordination.
+
+The host selects the instance lifetime and credential scope. A Commissary Instance acquires no application-lifetime Model resources and needs no required close operation.
+
+## Artifact Store
+
+The host can pass one Artifact Store beside the Thread Store. All leaf Models use this provider-neutral store for Artifact References. This rule keeps replay possible across providers.
+
+Concrete Artifact Stores remain adapters. One storage package can implement the Thread Store and Artifact Store contracts for one backend.
+
+An `ArtifactStoreError` names the failed `read` or `write` operation and keeps the original error as its cause. If no Artifact Store exists when core needs one, the Execution ends with an Artifact Storage Required Interruption.
+
+The host can add the Artifact Store and execute the same Run again. Core does not inline bytes or use a second storage path.

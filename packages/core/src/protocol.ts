@@ -37,7 +37,6 @@ export interface ToolCallContentPart extends ContentPartBase {
   readonly toolCallId: ToolCallId;
   readonly toolName: string;
   readonly input: JsonValue;
-  readonly providerExecuted?: boolean;
 }
 
 export interface ToolResultContentPart extends ContentPartBase {
@@ -46,7 +45,6 @@ export interface ToolResultContentPart extends ContentPartBase {
   readonly toolName: string;
   readonly output: JsonValue;
   readonly isFailure?: boolean;
-  readonly providerExecuted?: boolean;
 }
 
 export interface ReasoningContentPart extends ContentPartBase {
@@ -116,24 +114,10 @@ export interface ProviderOption<
   readonly value: Value;
 }
 
-export type ToolExecutionOwner = "commissary" | "provider" | "provider-callback";
-
-export interface ProviderToolDescriptor<
-  Namespace extends string = string,
-  Id extends `${string}.${string}` = `${string}.${string}`,
-  Args extends JsonValue = JsonValue,
-> {
-  readonly namespace: Namespace;
-  readonly id: Id;
-  readonly args: Args;
-}
-
 export interface ModelTool {
   readonly name: string;
   readonly description?: string;
   readonly inputSchema: JsonValue;
-  readonly execution?: ToolExecutionOwner;
-  readonly provider?: ProviderToolDescriptor;
 }
 
 export interface ModelRequest {
