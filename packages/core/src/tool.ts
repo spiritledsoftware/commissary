@@ -7,14 +7,26 @@ import {
   type FragmentMetadata,
 } from "./fragment.js";
 import type { RunIdentity } from "./identity.js";
-import type { ModelTool, Transcript } from "./protocol.js";
+import type { ContentPart, ModelTool, Transcript } from "./protocol.js";
 import type { ModelSchema, SchemaOutput, StandardSchema } from "./schema.js";
 import { schemaJson } from "./schema.js";
 import type { JsonValue, MaybePromise, RunId, ToolAttemptId, ToolCallId } from "./types.js";
 
 const toolType: unique symbol = Symbol("commissary.tool.type");
 const failureType: unique symbol = Symbol("commissary.tool.failure");
+const successType: unique symbol = Symbol("commissary.tool.success");
 const suspensionType: unique symbol = Symbol("commissary.tool.suspension");
+
+/** Extra ordered model-visible content attached to one declared Tool result. */
+export interface ToolResultContent {
+  readonly content: readonly ContentPart[];
+}
+
+/** A declared Tool success value with extra model-visible content. */
+export interface ToolSuccess<Value> {
+  readonly type: "success";
+  readonly [successType]: Value;
+}
 
 /** A declared Tool Failure value. */
 export interface ToolFailure<Value> {
@@ -33,7 +45,13 @@ export type ToolInvocationResult<Output = unknown, Failure = unknown> =
   | { readonly type: "success"; readonly output: Output }
   | { readonly type: "failure"; readonly failure: Failure };
 
-const failureValues = new WeakMap<object, unknown>();
+interface ToolResultMarker {
+  readonly value: unknown;
+  readonly content: readonly ContentPart[];
+}
+
+const successValues = new WeakMap<object, ToolResultMarker>();
+const failureValues = new WeakMap<object, ToolResultMarker>();
 const suspensionValues = new WeakMap<object, unknown>();
 
 /** Input for one dynamic Tool Provider resolution. */
@@ -43,14 +61,26 @@ export interface DynamicToolProviderInput {
   readonly signal: AbortSignal;
 }
 
-/** One Tool definition produced at Render time. */
+/** One complete Tool contract produced at Render time. */
 export interface DynamicTool {
   readonly type: "dynamic-tool";
-  readonly definition: ModelTool;
+  readonly name: string;
+  readonly description?: string;
+  readonly input: ModelSchema;
+  readonly output?: StandardSchema;
+  readonly failure?: StandardSchema;
+  readonly event?: StandardSchema;
   readonly execute: (
     input: unknown,
     context: ToolExecutionContext<unknown>,
   ) => MaybePromise<unknown>;
+  readonly suspension?: ToolSuspensionDefinition<
+    StandardSchema,
+    unknown,
+    unknown,
+    unknown,
+    unknown
+  >;
 }
 
 /** A named process-bound source of dynamic Tools. */
@@ -61,7 +91,7 @@ export interface DynamicToolProvider<Id extends string = string> {
 
 /** An installed Agent Fragment that owns one dynamic Tool Provider. */
 export interface DynamicToolProviderFragment<Id extends string = string> extends AgentFragment<
-  FragmentMetadata<DynamicTool, unknown, never>
+  FragmentMetadata<DynamicTool, unknown, ToolResumeRequest<string, JsonValue>>
 > {
   readonly [toolType]: { readonly providerId: Id };
 }
@@ -155,7 +185,7 @@ export interface ToolRuntimeDefinition {
   readonly name: string;
   readonly modelTool: ModelTool;
   readonly input: StandardSchema;
-  readonly output: StandardSchema;
+  readonly output?: StandardSchema;
   readonly failure?: StandardSchema;
   readonly event?: StandardSchema;
   readonly handler: (
@@ -215,10 +245,13 @@ type ToolSuspensionOutcome<Definition> = Definition extends {
       }
   : never;
 
+type OutputFor<OutputSchema extends StandardSchema | undefined> =
+  OutputSchema extends StandardSchema ? SchemaOutput<OutputSchema> : JsonValue;
+
 type DefinitionFor<
   Name extends string,
   InputSchema extends ModelSchema,
-  OutputSchema extends StandardSchema,
+  OutputSchema extends StandardSchema | undefined,
   FailureSchema extends StandardSchema | undefined,
   EventSchema extends StandardSchema | undefined,
   ResumeInputSchema extends StandardSchema | undefined,
@@ -226,7 +259,7 @@ type DefinitionFor<
 > = ToolDefinition<
   Name,
   SchemaOutput<InputSchema>,
-  SchemaOutput<OutputSchema>,
+  OutputFor<OutputSchema>,
   FailureSchema extends StandardSchema ? SchemaOutput<FailureSchema> : never,
   EventSchema extends StandardSchema ? SchemaOutput<EventSchema> : never,
   ResumeInputSchema extends StandardSchema ? SchemaOutput<ResumeInputSchema> : never,
@@ -242,7 +275,7 @@ export const Tool = {
   define<
     const Name extends string,
     const InputSchema extends ModelSchema,
-    const OutputSchema extends StandardSchema,
+    const OutputSchema extends StandardSchema | undefined = undefined,
     const FailureSchema extends StandardSchema | undefined = undefined,
     const EventSchema extends StandardSchema | undefined = undefined,
     const ResumeInputSchema extends StandardSchema | undefined = undefined,
@@ -251,7 +284,7 @@ export const Tool = {
     readonly name: Name;
     readonly description?: string;
     readonly input: InputSchema;
-    readonly output: OutputSchema;
+    readonly output?: OutputSchema;
     readonly failure?: FailureSchema;
     readonly event?: EventSchema;
     readonly handler: (
@@ -260,7 +293,8 @@ export const Tool = {
         EventSchema extends StandardSchema ? SchemaOutput<EventSchema> : never
       >,
     ) => MaybePromise<
-      | SchemaOutput<OutputSchema>
+      | OutputFor<OutputSchema>
+      | ToolSuccess<OutputFor<OutputSchema>>
       | ToolFailure<FailureSchema extends StandardSchema ? SchemaOutput<FailureSchema> : never>
       | ToolSuspension<Continuation>
     >;
@@ -268,7 +302,7 @@ export const Tool = {
       ? ToolSuspensionDefinition<
           ResumeInputSchema,
           Continuation,
-          SchemaOutput<OutputSchema>,
+          OutputFor<OutputSchema>,
           FailureSchema extends StandardSchema ? SchemaOutput<FailureSchema> : never,
           EventSchema extends StandardSchema ? SchemaOutput<EventSchema> : never
         >
@@ -308,7 +342,7 @@ export const Tool = {
         return readModelTool();
       },
       input: definition.input,
-      output: definition.output,
+      ...(definition.output === undefined ? {} : { output: definition.output }),
       ...(definition.failure === undefined ? {} : { failure: definition.failure }),
       ...(definition.event === undefined ? {} : { event: definition.event }),
       // SAFETY: The public generic contract proves the handler and suspension types. Runtime validates every boundary before invocation.
@@ -342,7 +376,9 @@ export const Tool = {
         id: definition.name,
         contract: {
           name: definition.name,
-          outputVendor: definition.output["~standard"].vendor,
+          ...(definition.output === undefined
+            ? {}
+            : { outputVendor: definition.output["~standard"].vendor }),
           resumable: definition.suspension !== undefined,
         },
         value: runtime,
@@ -365,7 +401,9 @@ export const Tool = {
   dynamic<const Id extends string>(
     provider: DynamicToolProvider<Id>,
   ): DynamicToolProviderFragment<Id> {
-    const fragment = createFragment<FragmentMetadata<DynamicTool, unknown, never>>([
+    const fragment = createFragment<
+      FragmentMetadata<DynamicTool, unknown, ToolResumeRequest<string, JsonValue>>
+    >([
       {
         kind: "tool",
         id: `dynamic:${provider.id}`,
@@ -375,13 +413,26 @@ export const Tool = {
     ]);
     dynamicProviders.set(fragment, provider);
     // SAFETY: The hidden marker carries only the provider ID. The provider value stays in a WeakMap and the Agent contribution.
-    return fragment as DynamicToolProviderFragment<Id>;
+    return fragment as unknown as DynamicToolProviderFragment<Id>;
   },
 
-  failure<const Value>(value: Value): ToolFailure<Value> {
+  success<const Value>(value: Value, options: ToolResultContent): ToolSuccess<Value> {
+    // SAFETY: The WeakMap binds this frozen marker to Value. Callers cannot create a valid marker directly.
+    const success = Object.freeze({ type: "success" }) as ToolSuccess<Value>;
+    successValues.set(success, {
+      value,
+      content: Object.freeze([...options.content]),
+    });
+    return success;
+  },
+
+  failure<const Value>(value: Value, options?: ToolResultContent): ToolFailure<Value> {
     // SAFETY: The WeakMap binds this frozen marker to Value. Callers cannot create a valid marker directly.
     const failure = Object.freeze({ type: "failure" }) as ToolFailure<Value>;
-    failureValues.set(failure, value);
+    failureValues.set(failure, {
+      value,
+      content: Object.freeze([...(options?.content ?? [])]),
+    });
     return failure;
   },
 
@@ -403,6 +454,11 @@ export namespace Tool {
   export type Suspension<Definition> = ToolSuspensionOutcome<Definition>;
 }
 
+/** Test whether a value is a Tool success marker. */
+export function isToolSuccess(value: unknown): value is ToolSuccess<unknown> {
+  return typeof value === "object" && value !== null && successValues.has(value);
+}
+
 /** Test whether a value is a Tool Failure marker. */
 export function isToolFailure(value: unknown): value is ToolFailure<unknown> {
   return typeof value === "object" && value !== null && failureValues.has(value);
@@ -413,13 +469,35 @@ export function isToolSuspension(value: unknown): value is ToolSuspension<unknow
   return typeof value === "object" && value !== null && suspensionValues.has(value);
 }
 
+/** Read the value from a valid Tool success marker. */
+export function toolSuccessValue<Value>(success: ToolSuccess<Value>): Value {
+  const stored = successValues.get(success);
+  if (stored === undefined) {
+    throw new TypeError("Expected a Tool success created by Tool.success");
+  }
+  // SAFETY: isToolSuccess and Tool.success preserve the Value association in successValues.
+  return stored.value as Value;
+}
+
+/** Read extra model-visible content from a declared Tool success or Failure. */
+export function toolResultContent(
+  result: ToolSuccess<unknown> | ToolFailure<unknown>,
+): readonly ContentPart[] {
+  const stored = isToolSuccess(result) ? successValues.get(result) : failureValues.get(result);
+  if (stored === undefined) {
+    throw new TypeError("Expected a declared Tool result created by Tool.success or Tool.failure");
+  }
+  return stored.content;
+}
+
 /** Read the value from a valid Tool Failure marker. */
 export function toolFailureValue<Value>(failure: ToolFailure<Value>): Value {
-  if (!failureValues.has(failure)) {
+  const stored = failureValues.get(failure);
+  if (stored === undefined) {
     throw new TypeError("Expected a Tool Failure created by Tool.failure");
   }
   // SAFETY: isToolFailure and Tool.failure preserve the Value association in failureValues.
-  return failureValues.get(failure) as Value;
+  return stored.value as Value;
 }
 
 /** Read the continuation from a valid Tool Suspension marker. */

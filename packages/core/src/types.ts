@@ -25,6 +25,8 @@ export type ToolAttemptId = Opaque<string, "ToolAttemptId">;
 export type ArtifactId = Opaque<string, "ArtifactId">;
 export type CommitId = Opaque<string, "CommitId">;
 export type SteeringRequestId = string;
+/** A caller-owned ID for one idempotent Redirect submission. */
+export type RedirectRequestId = string;
 export type ToolResumeRequestId = string;
 
 export function stableJson(value: JsonValue): string {

@@ -5,8 +5,20 @@ import {
   type EmptyFragmentMetadata,
 } from "./fragment.js";
 import type { RunIdentity } from "./identity.js";
-import type { ModelEvent, ModelRequest } from "./protocol.js";
-import type { ExecutionEvent, ExecutionResult, ModelInvocation } from "./runtime.js";
+import type {
+  ModelEvent,
+  ModelFailure,
+  ModelInterruption,
+  ModelMessage,
+  ModelRequest,
+  ModelResponse,
+} from "./protocol.js";
+import type {
+  ExecutionEvent,
+  ExecutionResult,
+  ModelInvocation,
+  ToolCallResult,
+} from "./runtime.js";
 import type { MaybePromise, ToolCallId } from "./types.js";
 
 const hookPointType: unique symbol = Symbol("commissary.hook.point");
@@ -79,6 +91,49 @@ export interface AfterModelInvocationEvent {
   readonly signal: AbortSignal;
 }
 
+/** Input to one root Model Event transformation. */
+export interface TransformModelEventEvent {
+  readonly run: RunIdentity;
+  readonly event: ModelEvent;
+  readonly signal: AbortSignal;
+}
+
+/** An unbranded replacement candidate for the root Model result. */
+export type ModelInvocationCandidate =
+  | { readonly type: "response"; readonly response: ModelResponse }
+  | { readonly type: "failure"; readonly failure: ModelFailure }
+  | { readonly type: "interruption"; readonly interruption: ModelInterruption };
+
+/** A replacement for the current root Model invocation candidate. */
+export interface ModelInvocationReplacement {
+  readonly invocation: ModelInvocationCandidate;
+}
+
+/** One completed Tool result available to transformation Hooks. */
+export type CompletedToolCallResult = Exclude<ToolCallResult, { readonly type: "aborted" }>;
+
+/** Input to the Tool result transformation pipeline. */
+export interface AfterToolExecutionEvent {
+  readonly run: RunIdentity;
+  readonly toolName: string;
+  readonly toolCallId: ToolCallId;
+  readonly result: CompletedToolCallResult;
+  readonly signal: AbortSignal;
+}
+
+/** Input to the durable Run settlement gate. */
+export interface BeforeSettlementEvent<Result = ExecutionResult> {
+  readonly run: RunIdentity;
+  readonly result: Result;
+  readonly signal: AbortSignal;
+}
+
+/** One canonical instruction that continues the current Run. */
+export interface SettlementContinuation {
+  readonly type: "continue";
+  readonly instruction: ModelMessage;
+}
+
 /** A retry instruction for one declared Model Interruption. */
 export interface ModelRetryInstruction {
   readonly type: "retry";
@@ -122,11 +177,26 @@ export const HookPoints = Object.freeze({
     BeforeToolExecutionEvent,
     { readonly input?: unknown } | HookBlock | undefined
   >("beforeToolExecution", "transform"),
+  transformModelEvent: point<
+    "transformModelEvent",
+    TransformModelEventEvent,
+    { readonly event?: ModelEvent } | HookBlock | undefined
+  >("transformModelEvent", "transform"),
   afterModelInvocation: point<
     "afterModelInvocation",
     AfterModelInvocationEvent,
-    ModelRetryInstruction | HookBlock | undefined
+    ModelInvocationReplacement | ModelRetryInstruction | HookBlock | undefined
   >("afterModelInvocation", "decision"),
+  afterToolExecution: point<
+    "afterToolExecution",
+    AfterToolExecutionEvent,
+    { readonly result: CompletedToolCallResult } | HookBlock | undefined
+  >("afterToolExecution", "transform"),
+  beforeSettlement: point<
+    "beforeSettlement",
+    BeforeSettlementEvent,
+    SettlementContinuation | undefined
+  >("beforeSettlement", "decision"),
   onModelEvent: point<"onModelEvent", ModelEventNotification, undefined>(
     "onModelEvent",
     "notification",
@@ -186,12 +256,31 @@ export const Hook = {
   ): HookFragment {
     return hook(HookPoints.beforeToolExecution, handler);
   },
+  transformModelEvent(
+    handler: (
+      event: TransformModelEventEvent,
+    ) => MaybePromise<{ readonly event?: ModelEvent } | HookBlock | undefined>,
+  ): HookFragment {
+    return hook(HookPoints.transformModelEvent, handler);
+  },
   afterModelInvocation(
     handler: (
       event: AfterModelInvocationEvent,
-    ) => MaybePromise<ModelRetryInstruction | HookBlock | undefined>,
+    ) => MaybePromise<ModelInvocationReplacement | ModelRetryInstruction | HookBlock | undefined>,
   ): HookFragment {
     return hook(HookPoints.afterModelInvocation, handler);
+  },
+  afterToolExecution(
+    handler: (
+      event: AfterToolExecutionEvent,
+    ) => MaybePromise<{ readonly result: CompletedToolCallResult } | HookBlock | undefined>,
+  ): HookFragment {
+    return hook(HookPoints.afterToolExecution, handler);
+  },
+  beforeSettlement(
+    handler: (event: BeforeSettlementEvent) => MaybePromise<SettlementContinuation | undefined>,
+  ): HookFragment {
+    return hook(HookPoints.beforeSettlement, handler);
   },
   onModelEvent(handler: (event: ModelEventNotification) => MaybePromise<undefined>): HookFragment {
     return hook(HookPoints.onModelEvent, handler);

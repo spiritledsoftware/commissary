@@ -2,12 +2,13 @@ import type { AgentDefinition } from "./agent.js";
 import type { HookDefinition } from "./hook.js";
 import type { AgentReference, RunIdentity } from "./identity.js";
 import type {
+  ContentPart,
   ModelEvent,
   ModelFailure,
   ModelInterruption,
   ModelMessage,
   ModelResponse,
-  ModelUsage,
+  RunUsage,
   ToolCallContentPart,
 } from "./protocol.js";
 import type { ThreadStore } from "./store.js";
@@ -16,15 +17,18 @@ import type {
   BranchId,
   ExecutionId,
   JsonValue,
+  MaybePromise,
   MessageEntryId,
   RunId,
+  RedirectRequestId,
   SteeringRequestId,
   ThreadId,
   ToolCallId,
   ToolResumeRequestId,
 } from "./types.js";
 
-const preparedRunType: unique symbol = Symbol("commissary.runtime.prepared");
+const preparedWorkType: unique symbol = Symbol("commissary.runtime.prepared-work");
+const preparedToolCallType: unique symbol = Symbol("commissary.runtime.prepared-tool-call");
 const executionEventType: unique symbol = Symbol("commissary.runtime.execution-event");
 const modelInvocationType: unique symbol = Symbol("commissary.runtime.model");
 const toolExecutionType: unique symbol = Symbol("commissary.runtime.tool");
@@ -137,6 +141,28 @@ export type SteeringResult =
       readonly steeringRequestId: SteeringRequestId;
     };
 
+/** A durable Redirect submission. */
+export interface RedirectInput {
+  readonly runId: RunId;
+  readonly message: ModelMessage;
+  readonly redirectRequestId?: RedirectRequestId;
+}
+
+/** The result of durable Redirect submission. */
+export type RedirectResult =
+  | {
+      readonly type: "accepted";
+      readonly runId: RunId;
+      readonly sequence: number;
+      readonly admitted: boolean;
+    }
+  | { readonly type: "not-active"; readonly runId: RunId }
+  | {
+      readonly type: "redirect-request-conflict";
+      readonly runId: RunId;
+      readonly redirectRequestId: RedirectRequestId;
+    };
+
 /** The result of a durable Abort Request. */
 export type AbortResult =
   | { readonly type: "accepted"; readonly runId: RunId }
@@ -160,7 +186,7 @@ interface RunResultBase {
   readonly branchId: BranchId;
   readonly head: MessageEntryId;
   readonly agent: AgentReference;
-  readonly usage?: ModelUsage;
+  readonly usage?: RunUsage;
 }
 
 /** A successfully completed Run. */
@@ -212,8 +238,16 @@ export type ExecutionResult<Failure = unknown> = RunResult<Failure> | Interrupte
 
 /** A public Tool Call result in a Run Snapshot. */
 export type ToolCallResult =
-  | { readonly type: "success"; readonly output: JsonValue }
-  | { readonly type: "failure"; readonly failure: JsonValue }
+  | {
+      readonly type: "success";
+      readonly output: JsonValue;
+      readonly content?: readonly ContentPart[];
+    }
+  | {
+      readonly type: "failure";
+      readonly failure: JsonValue;
+      readonly content?: readonly ContentPart[];
+    }
   | { readonly type: "aborted" };
 
 /** One public node in the complete Tool Call Graph. */
@@ -234,6 +268,7 @@ export interface RunSnapshot<Failure = unknown> {
   readonly head: MessageEntryId;
   readonly agent: AgentReference;
   readonly status: "active" | "suspended" | "completed" | "failed" | "aborted";
+  readonly settlementContinuations: number;
   readonly toolCalls: readonly ToolCallSnapshot[];
   readonly suspensions: readonly ToolSuspensionRecord[];
   readonly result?: RunResult<Failure>;
@@ -265,6 +300,37 @@ export type ExecutionEvent<ToolEvent = unknown> =
       readonly result: ToolInvocationResult;
     }
   | { readonly type: "error"; readonly error: unknown };
+
+/** One Event batch item awaiting durable Run-local sequence assignment. */
+export interface ExecutionEventAppend<ToolEvent = unknown> {
+  readonly runId: RunId;
+  readonly executionId: ExecutionId;
+  readonly event: ExecutionEvent<ToolEvent>;
+}
+
+/** One durable Event envelope appended in canonical Run order. */
+export interface ExecutionEventRecord<ToolEvent = unknown> extends ExecutionEventAppend<ToolEvent> {
+  readonly sequence: number;
+}
+
+/**
+ * Append-only persistence for ordered Execution Event batches.
+ *
+ * The Store assigns and persists a strictly increasing sequence within each Run.
+ */
+export interface ExecutionEventStore {
+  readonly append: (
+    events: readonly [ExecutionEventAppend, ...ExecutionEventAppend[]],
+  ) => MaybePromise<void>;
+}
+
+/** An error reported when durable Execution Event append fails. */
+export class ExecutionEventStoreError extends Error {
+  constructor(readonly cause: unknown) {
+    super("Execution Event Store append failed", { cause });
+    this.name = "ExecutionEventStoreError";
+  }
+}
 
 /** One process-bound attempt to advance a durable Run. */
 export interface Execution<ToolEvent = never, Failure = unknown> {
@@ -318,12 +384,38 @@ export class UnexpectedExecutionError extends Error {
   }
 }
 
-/** A Runtime-created prepared view accepted by later Runtime Operations. */
-export interface PreparedRun<Definition extends AgentDefinition = AgentDefinition> {
-  readonly [preparedRunType]: Definition;
+interface PreparedWorkBase<Definition extends AgentDefinition> {
+  readonly [preparedWorkType]: Definition;
   readonly run: RunIdentity;
   readonly transcriptHead: MessageEntryId;
 }
+
+/** Runtime-created permission to invoke the root Model for one prepared Run state. */
+export interface PreparedModelWork<
+  Definition extends AgentDefinition = AgentDefinition,
+> extends PreparedWorkBase<Definition> {
+  readonly type: "model";
+}
+
+/** One committed top-level Tool Call that a custom Loop can execute. */
+export interface PreparedToolCall<
+  Definition extends AgentDefinition = AgentDefinition,
+> extends ToolCallContentPart {
+  readonly [preparedToolCallType]: Definition;
+}
+
+/** Runtime-created permission to advance committed top-level Tool Calls. */
+export interface PreparedToolWork<
+  Definition extends AgentDefinition = AgentDefinition,
+> extends PreparedWorkBase<Definition> {
+  readonly type: "tools";
+  readonly calls: readonly PreparedToolCall<Definition>[];
+}
+
+/** The next executable work for one claimed Run. */
+export type PreparedWork<Definition extends AgentDefinition = AgentDefinition> =
+  | PreparedModelWork<Definition>
+  | PreparedToolWork<Definition>;
 
 /** A successful Model invocation whose Tool Calls are already durable. */
 export interface ModelResponseInvocation<Definition extends AgentDefinition = AgentDefinition> {
@@ -372,16 +464,24 @@ export interface ResolvedExecution<Failure = unknown> {
 
 /** The closed set of invariant-preserving operations available to a custom Loop. */
 export interface RuntimeOperations<Definition extends AgentDefinition = AgentDefinition> {
-  readonly prepare: (runId: RunId) => Promise<PreparedRun<Definition>>;
-  readonly invokeModel: (prepared: PreparedRun<Definition>) => Promise<ModelInvocation<Definition>>;
+  readonly prepare: (runId: RunId) => Promise<PreparedWork<Definition>>;
+  readonly invokeModel: (
+    prepared: PreparedModelWork<Definition>,
+  ) => Promise<ModelInvocation<Definition>>;
   readonly executeTool: (
-    prepared: PreparedRun<Definition>,
-    call: ToolCallContentPart,
+    prepared: PreparedToolWork<Definition>,
+    call: PreparedToolCall<Definition>,
   ) => Promise<ToolExecution<Definition>>;
-  readonly settle: (
-    prepared: PreparedRun<Definition>,
-    product: ModelInvocation<Definition> | ToolExecution<Definition>,
-  ) => Promise<ResolvedExecution>;
+  readonly settle: {
+    (
+      prepared: PreparedModelWork<Definition>,
+      product: ModelInvocation<Definition>,
+    ): Promise<ResolvedExecution>;
+    (
+      prepared: PreparedToolWork<Definition>,
+      product: ToolExecution<Definition>,
+    ): Promise<ResolvedExecution>;
+  };
 }
 
 /** The capabilities supplied to a custom Loop. */
@@ -404,6 +504,7 @@ export interface Runtime {
   readonly threadStore: ThreadStore;
   readonly submit: (agent: AgentReference, command: RunCommand) => Promise<SubmitResult>;
   readonly steer: (input: SteerInput) => Promise<SteeringResult>;
+  readonly redirect: (input: RedirectInput) => Promise<RedirectResult>;
   readonly abort: (runId: RunId, reason?: JsonValue) => Promise<AbortResult>;
   readonly execute: <Definition extends AgentDefinition>(
     agent: Definition,

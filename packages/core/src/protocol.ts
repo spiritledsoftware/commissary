@@ -136,10 +136,40 @@ export type ModelFinishReason =
   | "pause"
   | "other";
 
+/** Detailed input-token counts reported by one Model call. */
+export interface ModelInputUsage {
+  readonly total?: number;
+  readonly uncached?: number;
+  readonly cacheRead?: number;
+  readonly cacheWrite?: number;
+}
+
+/** Detailed output-token counts reported by one Model call. */
+export interface ModelOutputUsage {
+  readonly total?: number;
+  readonly text?: number;
+  readonly reasoning?: number;
+}
+
+/** Provider-neutral authoritative Usage for one Model call. */
 export interface ModelUsage {
-  readonly inputTokens?: number;
-  readonly outputTokens?: number;
+  readonly input: ModelInputUsage;
+  readonly output: ModelOutputUsage;
   readonly totalTokens?: number;
+}
+
+/** Aggregated Usage and reporting completeness for one leaf Model. */
+export interface ModelRunUsage {
+  readonly modelId: string;
+  readonly calls: number;
+  readonly reportedCalls: number;
+  readonly usage: ModelUsage;
+}
+
+/** Durable combined and per-Model Usage for one Run. */
+export interface RunUsage {
+  readonly total: ModelUsage;
+  readonly models: readonly ModelRunUsage[];
 }
 
 export interface AuthenticationRequiredInterruption {

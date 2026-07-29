@@ -10,9 +10,12 @@ import type {
   Clock,
   CommitId,
   CommitModelInvocationInput,
+  CommitModelInvocationStoreResult,
   CommitStepInput,
   CommitToolResultsInput,
   CompleteToolCallInput,
+  ContinueSettlementInput,
+  ContinueSettlementStoreResult,
   ExecutionClaim,
   ExecutionClaimToken,
   ExecutionControl,
@@ -24,16 +27,21 @@ import type {
   JsonValue,
   MessageEntry,
   ModelUsage,
+  ModelRunUsage,
   MessageEntryId,
+  PendingRedirect,
   PendingSteering,
   RecordDelegatedToolCallInput,
-  RecordModelUsageInput,
+  RecordModelCallInput,
   RecordToolInputInput,
+  RedirectRequestId,
+  RedirectResult,
   RunConflict,
   RunId,
   RunRecord,
   RunResult,
   RunSnapshot,
+  RunUsage,
   RunSubmission,
   SteeringRequestId,
   SteeringResult,
@@ -47,6 +55,7 @@ import type {
   ToolCallId,
   ToolResumeConflict,
   ToolResumeRequestConflict,
+  ToolResumeContext,
 } from "@commissary/core";
 
 interface ControlWaiter {
@@ -65,6 +74,11 @@ interface ResumeRequestRecord {
 interface SteeringRequestRecord {
   readonly fingerprint: string;
   readonly result: SteeringResult;
+}
+
+interface RedirectRequestRecord {
+  readonly fingerprint: string;
+  readonly result: RedirectResult;
 }
 
 /** Configuration for one process-local Thread Store. */
@@ -89,6 +103,10 @@ function canonical(value: unknown): string {
     .join(",")}}`;
 }
 
+function requestKey(runId: RunId, requestId: string): string {
+  return canonical([runId, requestId]);
+}
+
 function same(left: unknown, right: unknown): boolean {
   return canonical(left) === canonical(right);
 }
@@ -101,14 +119,42 @@ function addTokenCount(left: number | undefined, right: number | undefined): num
   return left === undefined && right === undefined ? undefined : (left ?? 0) + (right ?? 0);
 }
 
+function emptyModelUsage(): ModelUsage {
+  return Object.freeze({
+    input: Object.freeze({}),
+    output: Object.freeze({}),
+  });
+}
+
 function addUsage(current: ModelUsage | undefined, delta: ModelUsage): ModelUsage {
-  const inputTokens = addTokenCount(current?.inputTokens, delta.inputTokens);
-  const outputTokens = addTokenCount(current?.outputTokens, delta.outputTokens);
+  const inputTotal = addTokenCount(current?.input.total, delta.input.total);
+  const inputUncached = addTokenCount(current?.input.uncached, delta.input.uncached);
+  const cacheRead = addTokenCount(current?.input.cacheRead, delta.input.cacheRead);
+  const cacheWrite = addTokenCount(current?.input.cacheWrite, delta.input.cacheWrite);
+  const outputTotal = addTokenCount(current?.output.total, delta.output.total);
+  const outputText = addTokenCount(current?.output.text, delta.output.text);
+  const outputReasoning = addTokenCount(current?.output.reasoning, delta.output.reasoning);
   const totalTokens = addTokenCount(current?.totalTokens, delta.totalTokens);
   return Object.freeze({
-    ...(inputTokens === undefined ? {} : { inputTokens }),
-    ...(outputTokens === undefined ? {} : { outputTokens }),
+    input: Object.freeze({
+      ...(inputTotal === undefined ? {} : { total: inputTotal }),
+      ...(inputUncached === undefined ? {} : { uncached: inputUncached }),
+      ...(cacheRead === undefined ? {} : { cacheRead }),
+      ...(cacheWrite === undefined ? {} : { cacheWrite }),
+    }),
+    output: Object.freeze({
+      ...(outputTotal === undefined ? {} : { total: outputTotal }),
+      ...(outputText === undefined ? {} : { text: outputText }),
+      ...(outputReasoning === undefined ? {} : { reasoning: outputReasoning }),
+    }),
     ...(totalTokens === undefined ? {} : { totalTokens }),
+  });
+}
+
+function emptyRunUsage(): RunUsage {
+  return Object.freeze({
+    total: emptyModelUsage(),
+    models: Object.freeze([]),
   });
 }
 
@@ -132,13 +178,18 @@ export class MemoryThreadStore implements ThreadStore {
   readonly #claims = new Map<RunId, ExecutionClaim>();
   readonly #fences = new Map<RunId, number>();
   readonly #pendingSteering = new Map<RunId, PendingSteering[]>();
+  readonly #pendingRedirects = new Map<RunId, PendingRedirect[]>();
+  readonly #commandSequences = new Map<RunId, number>();
   readonly #toolCalls = new Map<RunId, Map<ToolCallId, StoredToolCall>>();
   readonly #startFingerprints = new Map<RunId, string>();
   readonly #startSubmissions = new Map<RunId, RunSubmission>();
   readonly #resumeRequests = new Map<string, ResumeRequestRecord>();
   readonly #steeringRequests = new Map<string, SteeringRequestRecord>();
+  readonly #redirectRequests = new Map<string, RedirectRequestRecord>();
   readonly #commits = new Map<string, string>();
   readonly #finalizationOutcomes = new Map<CommitId, FinalizeRunStoreResult>();
+  readonly #modelCommitOutcomes = new Map<CommitId, CommitModelInvocationStoreResult>();
+  readonly #settlementOutcomes = new Map<CommitId, ContinueSettlementStoreResult>();
   readonly #controlWaiters = new Map<RunId, Set<ControlWaiter>>();
   constructor(options: MemoryThreadStoreOptions = {}) {
     this.#now = options.clock?.now ?? Date.now;
@@ -271,6 +322,7 @@ export class MemoryThreadStore implements ThreadStore {
       admittedHead: input.entryId,
       status: "active",
       abortRequested: false,
+      settlementContinuations: 0,
     });
     this.#runs.set(run.id, run);
     this.#toolCalls.set(run.id, new Map());
@@ -292,6 +344,7 @@ export class MemoryThreadStore implements ThreadStore {
   submitToolResumes(input: {
     readonly runId: RunId;
     readonly agent: AgentReference;
+    readonly expectedHead: MessageEntryId;
     readonly items: readonly {
       readonly toolCallId: ToolCallId;
       readonly toolName: string;
@@ -309,7 +362,7 @@ export class MemoryThreadStore implements ThreadStore {
     }
     const fingerprint = canonical({ agent: input.agent, items: input.items });
     if (input.toolResumeRequestId !== undefined) {
-      const key = `${input.runId}:${input.toolResumeRequestId}`;
+      const key = requestKey(input.runId, input.toolResumeRequestId);
       const prior = this.#resumeRequests.get(key);
       if (prior !== undefined) {
         if (prior.fingerprint !== fingerprint) {
@@ -321,6 +374,14 @@ export class MemoryThreadStore implements ThreadStore {
         }
         return Promise.resolve(Object.freeze({ ...prior.result, admitted: false }));
       }
+    }
+    const currentBranch = this.#branch(run.threadId, run.branchId);
+    if (currentBranch.head !== input.expectedHead) {
+      return Promise.resolve({
+        type: "tool-resume-conflict",
+        runId: input.runId,
+        toolCallIds: input.items.map((item) => item.toolCallId),
+      });
     }
 
     const calls = this.#calls(input.runId);
@@ -375,7 +436,7 @@ export class MemoryThreadStore implements ThreadStore {
       admitted,
     });
     if (input.toolResumeRequestId !== undefined) {
-      this.#resumeRequests.set(`${input.runId}:${input.toolResumeRequestId}`, {
+      this.#resumeRequests.set(requestKey(input.runId, input.toolResumeRequestId), {
         fingerprint,
         result,
       });
@@ -391,7 +452,7 @@ export class MemoryThreadStore implements ThreadStore {
     const run = this.#run(input.runId);
     const fingerprint = canonical(input.message);
     if (input.steeringRequestId !== undefined) {
-      const key = `${input.runId}:${input.steeringRequestId}`;
+      const key = requestKey(input.runId, input.steeringRequestId);
       const prior = this.#steeringRequests.get(key);
       if (prior !== undefined) {
         if (prior.fingerprint !== fingerprint) {
@@ -413,13 +474,59 @@ export class MemoryThreadStore implements ThreadStore {
     const result: SteeringResult = {
       type: "accepted",
       runId: run.id,
-      sequence: (pending.at(-1)?.sequence ?? 0) + 1,
+      sequence: (this.#commandSequences.get(run.id) ?? 0) + 1,
       admitted: true,
     };
+    this.#commandSequences.set(run.id, result.sequence);
     pending.push({ sequence: result.sequence, message: input.message });
     this.#pendingSteering.set(run.id, pending);
     if (input.steeringRequestId !== undefined) {
-      this.#steeringRequests.set(`${input.runId}:${input.steeringRequestId}`, {
+      this.#steeringRequests.set(requestKey(input.runId, input.steeringRequestId), {
+        fingerprint,
+        result,
+      });
+    }
+    return Promise.resolve(result);
+  }
+
+  acceptRedirect(input: {
+    readonly runId: RunId;
+    readonly message: import("@commissary/core").ModelMessage;
+    readonly redirectRequestId?: RedirectRequestId;
+  }): PromiseLike<RedirectResult> {
+    const run = this.#run(input.runId);
+    const fingerprint = canonical(input.message);
+    if (input.redirectRequestId !== undefined) {
+      const key = requestKey(input.runId, input.redirectRequestId);
+      const prior = this.#redirectRequests.get(key);
+      if (prior !== undefined) {
+        if (prior.fingerprint !== fingerprint) {
+          return Promise.resolve({
+            type: "redirect-request-conflict",
+            runId: input.runId,
+            redirectRequestId: input.redirectRequestId,
+          });
+        }
+        return Promise.resolve(
+          prior.result.type === "accepted" ? { ...prior.result, admitted: false } : prior.result,
+        );
+      }
+    }
+    if (terminal(run.status)) {
+      return Promise.resolve({ type: "not-active", runId: input.runId });
+    }
+    const pending = this.#pendingRedirects.get(run.id) ?? [];
+    const result: RedirectResult = {
+      type: "accepted",
+      runId: run.id,
+      sequence: (this.#commandSequences.get(run.id) ?? 0) + 1,
+      admitted: true,
+    };
+    this.#commandSequences.set(run.id, result.sequence);
+    pending.push({ sequence: result.sequence, message: input.message });
+    this.#pendingRedirects.set(run.id, pending);
+    if (input.redirectRequestId !== undefined) {
+      this.#redirectRequests.set(requestKey(input.runId, input.redirectRequestId), {
         fingerprint,
         result,
       });
@@ -468,6 +575,7 @@ export class MemoryThreadStore implements ThreadStore {
       head: branch.head!,
       agent: run.agent,
       status: run.status,
+      settlementContinuations: run.settlementContinuations,
       toolCalls: Object.freeze(
         calls.map((call) =>
           Object.freeze({
@@ -499,6 +607,26 @@ export class MemoryThreadStore implements ThreadStore {
 
   readRunResult(runId: RunId): PromiseLike<RunResult | undefined> {
     return Promise.resolve(this.#runs.get(runId)?.result);
+  }
+
+  async readToolResumeContext(runId: RunId): Promise<ToolResumeContext | undefined> {
+    const run = this.#runs.get(runId);
+    if (run === undefined) {
+      return undefined;
+    }
+    const branch = this.#branch(run.threadId, run.branchId);
+    const path = await this.readBranchHistory({
+      threadId: run.threadId,
+      branchId: run.branchId,
+    });
+    return Object.freeze({
+      run,
+      transcript: Object.freeze(path.map((entry) => entry.message)),
+      head: branch.head!,
+      toolCalls: Object.freeze(
+        [...this.#calls(run.id).values()].sort((left, right) => left.sequence - right.sequence),
+      ),
+    });
   }
 
   acquireExecutionClaim(input: {
@@ -620,6 +748,7 @@ export class MemoryThreadStore implements ThreadStore {
       transcript: Object.freeze(path.map((entry) => entry.message)),
       head: branch.head!,
       pendingSteering: Object.freeze([...(this.#pendingSteering.get(run.id) ?? [])]),
+      pendingRedirects: Object.freeze([...(this.#pendingRedirects.get(run.id) ?? [])]),
       toolCalls: Object.freeze(
         [...this.#calls(run.id).values()].sort((left, right) => left.sequence - right.sequence),
       ),
@@ -649,26 +778,40 @@ export class MemoryThreadStore implements ThreadStore {
         ),
       );
     }
+    if (input.consumedRedirectsThrough !== undefined) {
+      this.#pendingRedirects.set(
+        run.id,
+        (this.#pendingRedirects.get(run.id) ?? []).filter(
+          (item) => item.sequence > input.consumedRedirectsThrough!,
+        ),
+      );
+    }
     this.#commits.set(input.commitId, fingerprint);
     return Promise.resolve({ type: "committed", value: branch });
   }
 
   commitModelInvocation(
     input: CommitModelInvocationInput,
-  ): PromiseLike<GuardedStoreResult<BranchRecord>> {
+  ): PromiseLike<CommitModelInvocationStoreResult> {
     const fingerprint = this.#newCommit(input.commitId, input);
     if (fingerprint === undefined) {
-      const run = this.#run(input.claim.runId);
-      return Promise.resolve({
-        type: "committed",
-        value: this.#branch(run.threadId, run.branchId),
-      });
+      const outcome = this.#modelCommitOutcomes.get(input.commitId);
+      if (outcome === undefined) {
+        throw new Error(`Commit '${input.commitId}' has no stored Model outcome`);
+      }
+      return Promise.resolve(outcome);
     }
     const failure = this.#guard(input.claim, input.expectedHead);
     if (failure !== undefined) {
       return Promise.resolve(failure);
     }
     const run = this.#run(input.claim.runId);
+    if ((this.#pendingRedirects.get(run.id)?.length ?? 0) > 0) {
+      const outcome = Object.freeze({ type: "work-ready" as const });
+      this.#commits.set(input.commitId, fingerprint);
+      this.#modelCommitOutcomes.set(input.commitId, outcome);
+      return Promise.resolve(outcome);
+    }
     const calls = this.#calls(run.id);
     for (const call of input.toolCalls) {
       if (calls.has(call.toolCallId)) {
@@ -695,15 +838,17 @@ export class MemoryThreadStore implements ThreadStore {
       );
     }
     this.#commits.set(input.commitId, fingerprint);
-    return Promise.resolve({ type: "committed", value: branch });
+    const outcome = Object.freeze({ type: "committed" as const, value: branch });
+    this.#modelCommitOutcomes.set(input.commitId, outcome);
+    return Promise.resolve(outcome);
   }
 
-  recordModelUsage(input: RecordModelUsageInput): PromiseLike<GuardedStoreResult<ModelUsage>> {
+  recordModelCall(input: RecordModelCallInput): PromiseLike<GuardedStoreResult<RunUsage>> {
     const fingerprint = this.#newCommit(input.commitId, input);
     if (fingerprint === undefined) {
       return Promise.resolve({
         type: "committed",
-        value: this.#run(input.claim.runId).usage ?? Object.freeze({}),
+        value: this.#run(input.claim.runId).usage ?? emptyRunUsage(),
       });
     }
     if (!this.#validClaim(input.claim)) {
@@ -716,7 +861,31 @@ export class MemoryThreadStore implements ThreadStore {
         ...(run.result === undefined ? {} : { result: run.result }),
       });
     }
-    const usage = addUsage(run.usage, input.usage);
+    const current = run.usage ?? emptyRunUsage();
+    const index = current.models.findIndex((entry) => entry.modelId === input.modelId);
+    const previous = index < 0 ? undefined : current.models[index];
+    const modelUsage =
+      input.usage === undefined
+        ? (previous?.usage ?? emptyModelUsage())
+        : addUsage(previous?.usage, input.usage);
+    const entry: ModelRunUsage = Object.freeze({
+      modelId: input.modelId,
+      calls: (previous?.calls ?? 0) + 1,
+      reportedCalls: (previous?.reportedCalls ?? 0) + (input.usage === undefined ? 0 : 1),
+      usage: modelUsage,
+    });
+    const models =
+      index < 0
+        ? Object.freeze([...current.models, entry])
+        : Object.freeze(
+            current.models.map((candidate, candidateIndex) =>
+              candidateIndex === index ? entry : candidate,
+            ),
+          );
+    const usage: RunUsage = Object.freeze({
+      total: input.usage === undefined ? current.total : addUsage(current.total, input.usage),
+      models,
+    });
     this.#runs.set(run.id, Object.freeze({ ...run, usage }));
     this.#commits.set(input.commitId, fingerprint);
     return Promise.resolve({ type: "committed", value: usage });
@@ -856,6 +1025,56 @@ export class MemoryThreadStore implements ThreadStore {
     return Promise.resolve({ type: "committed", value: branch });
   }
 
+  continueSettlement(input: ContinueSettlementInput): PromiseLike<ContinueSettlementStoreResult> {
+    const fingerprint = this.#newCommit(input.commitId, input);
+    if (fingerprint === undefined) {
+      const outcome = this.#settlementOutcomes.get(input.commitId);
+      if (outcome === undefined) {
+        throw new Error(`Commit '${input.commitId}' has no stored settlement outcome`);
+      }
+      return Promise.resolve(outcome);
+    }
+    const failure = this.#guard(input.claim, input.expectedHead);
+    if (failure !== undefined) {
+      return Promise.resolve(failure);
+    }
+    const run = this.#run(input.claim.runId);
+    if ((this.#pendingRedirects.get(run.id)?.length ?? 0) > 0) {
+      const outcome = Object.freeze({ type: "work-ready" as const });
+      this.#commits.set(input.commitId, fingerprint);
+      this.#settlementOutcomes.set(input.commitId, outcome);
+      return Promise.resolve(outcome);
+    }
+    if ((this.#pendingSteering.get(run.id)?.length ?? 0) > 0) {
+      this.#append(run.threadId, run.branchId, input.expectedHead, input.candidateEntries);
+      const outcome = Object.freeze({ type: "work-ready" as const });
+      this.#commits.set(input.commitId, fingerprint);
+      this.#settlementOutcomes.set(input.commitId, outcome);
+      return Promise.resolve(outcome);
+    }
+    if (run.settlementContinuations >= 32) {
+      const outcome = Object.freeze({ type: "limit-reached" as const });
+      this.#commits.set(input.commitId, fingerprint);
+      this.#settlementOutcomes.set(input.commitId, outcome);
+      return Promise.resolve(outcome);
+    }
+    const branch = this.#append(run.threadId, run.branchId, input.expectedHead, [
+      ...input.candidateEntries,
+      input.instructionEntry,
+    ]);
+    this.#runs.set(
+      run.id,
+      Object.freeze({
+        ...run,
+        settlementContinuations: run.settlementContinuations + 1,
+      }),
+    );
+    this.#commits.set(input.commitId, fingerprint);
+    const outcome = Object.freeze({ type: "committed" as const, value: branch });
+    this.#settlementOutcomes.set(input.commitId, outcome);
+    return Promise.resolve(outcome);
+  }
+
   suspendRun(input: {
     readonly claim: ExecutionClaim;
     readonly expectedHead: MessageEntryId;
@@ -902,6 +1121,12 @@ export class MemoryThreadStore implements ThreadStore {
     const branch = this.#branch(run.threadId, run.branchId);
     if (branch.head !== input.expectedHead) {
       return Promise.resolve({ type: "head-changed", actualHead: branch.head! });
+    }
+    if (input.result.type !== "aborted" && (this.#pendingRedirects.get(run.id)?.length ?? 0) > 0) {
+      const outcome = Object.freeze({ type: "work-ready" as const });
+      this.#commits.set(input.commitId, fingerprint);
+      this.#finalizationOutcomes.set(input.commitId, outcome);
+      return Promise.resolve(outcome);
     }
     if (input.result.type !== "aborted" && (this.#pendingSteering.get(run.id)?.length ?? 0) > 0) {
       this.#append(run.threadId, run.branchId, input.expectedHead, input.entries);

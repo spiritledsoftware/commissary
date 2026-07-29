@@ -179,8 +179,12 @@ One Run-local Model invocation and its requested Tool executions. Core assigns a
 _Avoid_: Run, Message Entry, Tool Attempt
 
 **Model Usage**:
-Provider-reported token counts that core adds to one Run as neutral execution facts.
-_Avoid_: Cost, budget, Step limit, exact provider billing
+Provider-reported optional token counts for input total, uncached input, cache reads, cache writes, output total, text output, reasoning output, and provider total. Core adds each count independently to one Run.
+_Avoid_: Cost, budget, Step limit, exact provider billing, missing count treated as zero
+
+**Run Usage**:
+The cumulative Model Usage for one Run, with one combined total and a per-Model breakdown containing Model ID, call count, reported-Usage call count, and token counts.
+_Avoid_: Single total, cost ledger, provider invoice, Composite Model summary
 
 **Interruption**:
 A typed recoverable reason that prevents a Run from advancing now.
@@ -214,6 +218,18 @@ _Avoid_: Inline-byte fallback, Model Failure, Defect
 A command that adds a canonical Model Message to an active Run between Steps.
 _Avoid_: Follow-up Run, Tool resumption, Hook patch
 
+**Redirect**:
+A durable command that adds a canonical Model Message at the next safe Run boundary and requests cancellation of an active uncommitted Model invocation.
+_Avoid_: Steering, Abort Request, Tool resumption
+
+**Redirect Request ID**:
+An optional caller-owned ID that makes one Redirect submission idempotent.
+_Avoid_: Steering Request ID, Run ID, Message Entry ID
+
+**Pending Redirect**:
+An accepted durable Redirect Message that waits for an active uncommitted Model invocation to stop or for the next safe Run boundary.
+_Avoid_: Pending Steering, Abort Request, committed Model Message
+
 **Steering Request ID**:
 An optional caller-owned ID that makes one Steering submission idempotent.
 _Avoid_: Run ID, Message Entry ID, content hash
@@ -232,6 +248,10 @@ _Avoid_: Provider configuration, raw LLM client, Effect AI LanguageModel
 A Model that uses declared child Models through core. It can route, sequence, decorate, or use fallback behavior.
 _Avoid_: Second root Model contribution, direct child implementation call, core routing policy
 
+**Root Model Invocation**:
+The one core-owned invocation of the Execution Plan's Model. Model Hooks run once around it, even when a Composite Model invokes child Models.
+_Avoid_: Leaf provider call, Composite child invocation, Step
+
 **Model Request**:
 The provider-neutral input that core builds from Context, Transcript, Tools, and Provider Options.
 _Avoid_: Provider payload, raw SDK request
@@ -240,9 +260,17 @@ _Avoid_: Provider payload, raw SDK request
 A provider-neutral update from one Model invocation.
 _Avoid_: Execution Event, raw provider chunk, Model Response
 
+**Model Stream Transformation**:
+An ordered Hook pipeline that changes Model Events before core derives, publishes, or saves the Model result.
+_Avoid_: Provider stream wrapper, post-delivery edit, Model Response replacement
+
 **Model Response**:
 The provider-neutral completed result of one Model invocation.
 _Avoid_: Agent output, raw provider response, Run Result
+
+**Authoritative Model Result**:
+The complete terminal Model Event that core emits after final-result Hooks and then saves unchanged. Clients replace any streamed preview with this result.
+_Avoid_: Streamed preview, host display edit, late Thread mutation
 
 **Finish Reason**:
 The provider-neutral reason that stopped a Model Response. Examples include refusal, content filtering, and provider-requested continuation.
@@ -256,6 +284,10 @@ _Avoid_: Completed refusal, Interruption, Defect, raw provider error
 Typed and namespaced request data for one Model provider. Core does not interpret it.
 _Avoid_: Core model setting, untyped metadata
 
+**Routing Hint**:
+A host-owned namespaced Provider Option that a Hook adds to a Model Request and a Composite Model can use to choose a declared child Model.
+_Avoid_: Root Model replacement, core routing policy, provider model ID
+
 **Provider Package**:
 An official package that connects one Model provider to Commissary. Its root API is plain JavaScript.
 _Avoid_: Provider implementation in core, Effect-only public API
@@ -265,16 +297,28 @@ A host-owned value for one provider configuration and credential scope. It creat
 _Avoid_: Model, raw provider client, Effect Layer, global singleton
 
 **Tool**:
-A named model-callable capability with validated input, output, and declared results.
-_Avoid_: Host dependency, arbitrary function
+A named model-callable capability with validated input, JSON output, and declared results. Its output schema is optional. It can use host-owned clients captured through a factory or closure; core sees only its declared result.
+_Avoid_: Host dependency, arbitrary function, core-owned inner Model call
 
 **Canonical Tool Schema**:
 The immutable Draft-07 JSON Schema that Agent Installation creates for a Tool input.
 _Avoid_: Effect Schema, provider SDK schema, invocation-time conversion
 
+**Tool Output**:
+The durable JSON success value of one Tool Call. An optional output schema narrows its type and validates it.
+_Avoid_: Tool Result Content, handler return, Tool Failure
+
+**Tool Result Content**:
+An ordered durable list of extra model-visible Content Parts that supplements one Tool Output or declared Tool Failure. Parent Tool invocations do not receive it.
+_Avoid_: Tool Output, replacement result, UI-only metadata, inline Artifact bytes
+
 **Tool Provider**:
 A named value that resolves Tools for one Model invocation. Its factory captures its dependencies.
 _Avoid_: Static Tool, global Tool registry, dependency container
+
+**Dynamic Tool Contract**:
+The complete output, Failure, Event, and Suspension behavior of one resolved dynamic Tool.
+_Avoid_: Model Tool definition, Tool Provider, unvalidated execute function
 
 **Tool Call**:
 A durable semantic request from a Model or parent Tool to invoke one Tool.
@@ -334,6 +378,10 @@ _Avoid_: Loop, Agent contribution, callback collection
 A typed phase action that preserves one Runtime invariant. It returns a value that only Runtime can create.
 _Avoid_: Hook, Machine transition replacement, extension event
 
+**Prepared Work**:
+A Runtime-created choice of the next executable work for one claimed Run. It is either Model work or committed top-level Tool work.
+_Avoid_: Prepared Run, Execution Snapshot, pending-work query
+
 **Runtime Client**:
 The capability that lets a Loop invoke Runtime Operations.
 _Avoid_: Provider client, mutable Runtime, Hook continuation
@@ -348,7 +396,27 @@ _Avoid_: Runtime Operation, extension event, Execution Event
 
 **Hook**:
 A typed process-bound handler for one Hook Point. A Hook can change a value, make a decision, or observe work.
-_Avoid_: Runtime Operation interceptor, durable callback, live-mutated Execution policy
+_Avoid_: Runtime Operation interceptor, host command wrapper, durable callback, live-mutated Execution policy
+
+**Tool Result Hook**:
+The Hook Point that can change or block a validated Tool success or declared Failure before core validates it again and saves it.
+_Avoid_: Post-commit observer, Tool handler wrapper, persisted-result mutation
+
+**Settlement Gate**:
+The Hook Point that runs when a Run would finish. It can accept the candidate result or durably add one instruction for another Step in the same Run and active Execution.
+_Avoid_: Settled-result mutation, unbounded follow-up loop, host command
+
+**Settlement Continuation Ceiling**:
+The maximum of 32 extra Steps that Settlement Gates can add. At the ceiling, core saves the current candidate result.
+_Avoid_: Run Failure, general Step budget, host workflow limit
+
+**Settlement Hook Deadline**:
+The 30-second limit for one Settlement Gate handler. On timeout, core reports the Hook error and treats that handler as accepting the candidate result.
+_Avoid_: Execution timeout, Run deadline, continuation ceiling
+
+**Settlement Observer**:
+The read-only Hook Point that receives a Run Result after core saves it.
+_Avoid_: Settlement Gate, result transform, finalization blocker
 
 **Dynamic Hook Subscription**:
 A process-local Hook registration on an Agent Client. Each Execution captures the active registrations when it starts.
@@ -357,6 +425,14 @@ _Avoid_: Mid-Execution policy mutation, durable Hook, cross-process subscription
 **Execution Event**:
 An ephemeral observation of one Execution. Core dispatches it through the `onExecutionEvent` Hook Point.
 _Avoid_: Message Entry, Model Event, durable event, derived text event
+
+**Execution Event Record**:
+A durable envelope that orders one Execution Event within a Run and identifies the Execution that emitted it.
+_Avoid_: Execution Event, Message Entry, Run Snapshot
+
+**Execution Event Store**:
+An optional persistence contract that assigns Run-local sequences and durably appends ordered Execution Event Record batches before process-local observation.
+_Avoid_: Thread Store, Stream Adapter, relay, transport
 
 **Stream Adapter**:
 An adapter that changes Execution Events into a bounded, single-consumer stream.

@@ -6,6 +6,7 @@ import {
   Codec,
   Content,
   ExecutionClaimLostError,
+  ExecutionEventStoreError,
   Hook,
   ThreadStoreError,
   Model,
@@ -16,6 +17,8 @@ import {
   type AgentDefinition,
   type ClaimRenewalResult,
   type Clock,
+  type ExecutionEventRecord,
+  type ExecutionEventStore,
   type ExecutionClaim,
   type Loop,
   type ModelMessage,
@@ -46,6 +49,26 @@ async function fixture<Definition extends AgentDefinition>(agent: Definition) {
   const branch = await app.createBranch({ threadId: thread.id, name: "main" });
   const client = app.agent(agent);
   return { app, store, thread, branch, client };
+}
+
+function recordingEventStore(
+  batches: Array<readonly ExecutionEventRecord[]>,
+  order?: string[],
+): ExecutionEventStore {
+  const sequenceByRun = new Map<RunId, number>();
+  return {
+    append(events) {
+      const records = events.map((event) => {
+        const sequence = (sequenceByRun.get(event.runId) ?? 0) + 1;
+        sequenceByRun.set(event.runId, sequence);
+        return Object.freeze({ ...event, sequence });
+      });
+      batches.push(records);
+      if (order !== undefined) {
+        order.push(`store:${records[0]?.event.type}`);
+      }
+    },
+  };
 }
 
 async function submitStart<Definition extends AgentDefinition>(
@@ -110,11 +133,128 @@ describe("durable Runtime", () => {
     expect(settled).toEqual([result]);
   });
 
+  it("durably appends ordered Event batches before local observation", async () => {
+    const order: string[] = [];
+    const batches: Array<readonly ExecutionEventRecord[]> = [];
+    const store = new MemoryThreadStore();
+    const app = commissary({
+      threadStore: store,
+      executionEventStore: recordingEventStore(batches, order),
+    });
+    const thread = await app.createThread();
+    const branch = await app.createBranch({ threadId: thread.id, name: "main" });
+    const model = Model.define({
+      id: "durable-event-model",
+      async *invoke() {
+        yield { type: "text-delta" as const, delta: "a" };
+        yield { type: "text-delta" as const, delta: "b" };
+        yield {
+          type: "finish" as const,
+          response: {
+            message: { role: "assistant" as const, content: [Content.text("ab")] },
+            finishReason: "stop" as const,
+          },
+        };
+      },
+    });
+    const agent = Agent.define({
+      id: "durable-event-agent",
+      fragments: Agent.combine(
+        model,
+        Hook.onExecutionEvent(({ event }) => {
+          order.push(`hook:${event.type}`);
+        }),
+      ),
+    });
+    const client = app.agent(agent);
+    const submission = await submitStart(client, branch);
+
+    await expect((await client.execute(submission.runId)).result).resolves.toMatchObject({
+      type: "completed",
+    });
+    expect(batches[0]?.map((record) => record.event)).toEqual([
+      { type: "model-event", event: { type: "text-delta", delta: "ab" } },
+    ]);
+    expect(order.slice(0, 2)).toEqual(["store:model-event", "hook:model-event"]);
+    expect(
+      batches.flatMap((batch) => batch).every((record) => record.runId === submission.runId),
+    ).toBe(true);
+  });
+
+  it("durably appends observer Error Events before their local delivery", async () => {
+    const batches: Array<readonly ExecutionEventRecord[]> = [];
+    let observedErrors = 0;
+    const store = new MemoryThreadStore();
+    const app = commissary({
+      threadStore: store,
+      executionEventStore: recordingEventStore(batches),
+    });
+    const thread = await app.createThread();
+    const branch = await app.createBranch({ threadId: thread.id, name: "main" });
+    const agent = Agent.define({
+      id: "durable-observer-error-agent",
+      fragments: Agent.combine(
+        completingModel,
+        Hook.onExecutionEvent(({ event }) => {
+          if (event.type === "model-event") {
+            throw new Error("observer failed");
+          }
+          return undefined;
+        }),
+        Hook.onExecutionEvent(({ event }) => {
+          if (event.type === "error") {
+            const persisted = batches
+              .flatMap((batch) => batch)
+              .some((record) => record.event === event);
+            expect(persisted).toBe(true);
+            observedErrors += 1;
+          }
+          return undefined;
+        }),
+      ),
+    });
+    const client = app.agent(agent);
+    const submission = await submitStart(client, branch);
+
+    await expect((await client.execute(submission.runId)).result).resolves.toMatchObject({
+      type: "completed",
+    });
+    expect(observedErrors).toBeGreaterThan(0);
+    const sequences = batches.flatMap((batch) => batch.map((record) => record.sequence));
+    expect(sequences).toEqual([...sequences].sort((left, right) => left - right));
+  });
+
+  it("rejects an Execution when durable Event append fails", async () => {
+    const store = new MemoryThreadStore();
+    const app = commissary({
+      threadStore: store,
+      executionEventStore: {
+        append() {
+          throw new Error("event storage unavailable");
+        },
+      },
+    });
+    const thread = await app.createThread();
+    const branch = await app.createBranch({ threadId: thread.id, name: "main" });
+    const client = app.agent(
+      Agent.define({ id: "event-failure-agent", fragments: completingModel }),
+    );
+    const submission = await submitStart(client, branch);
+
+    await expect((await client.execute(submission.runId)).result).rejects.toBeInstanceOf(
+      ExecutionEventStoreError,
+    );
+    await expect(client.readResult(submission.runId)).resolves.toBeUndefined();
+  });
+
   it("lets a custom Loop orchestrate work only through Runtime Operations", async () => {
     const store = new MemoryThreadStore();
     const loop: Loop = {
       async execute(context) {
         const prepared = await context.runtime.prepare(context.runId);
+        if (prepared.type !== "model") {
+          throw new Error("Unexpected Tool work");
+        }
         const invocation = await context.runtime.invokeModel(prepared);
         if (invocation.type !== "response") {
           throw new Error(`Unexpected Model result '${invocation.type}'`);
@@ -176,11 +316,14 @@ describe("durable Runtime", () => {
       async execute(context) {
         while (true) {
           const prepared = await context.runtime.prepare(context.runId);
-          const invocation = await context.runtime.invokeModel(prepared);
-          if (invocation.type === "response" && invocation.toolCalls.length > 0) {
-            for (const call of invocation.toolCalls) {
+          if (prepared.type === "tools") {
+            for (const call of prepared.calls) {
               await context.runtime.executeTool(prepared, call);
             }
+            continue;
+          }
+          const invocation = await context.runtime.invokeModel(prepared);
+          if (invocation.type === "response" && invocation.toolCalls.length > 0) {
             continue;
           }
           return context.runtime.settle(prepared, invocation);
@@ -203,6 +346,189 @@ describe("durable Runtime", () => {
       response: { message: { content: [Content.text("complete")] } },
     });
     expect(modelCalls).toBe(2);
+  });
+
+  it("commits concurrent Tool results in durable call order", async () => {
+    let modelCalls = 0;
+    let releaseTools!: () => void;
+    const toolsReady = new Promise<void>((resolve) => {
+      releaseTools = resolve;
+    });
+    let enteredTools = 0;
+    const echo = Tool.define({
+      name: "concurrent-echo",
+      input: stringSchema,
+      output: stringSchema,
+      async handler(input) {
+        enteredTools += 1;
+        if (enteredTools === 2) {
+          releaseTools();
+        }
+        await toolsReady;
+        return input;
+      },
+    });
+    let secondRequest: readonly ModelMessage[] = [];
+    const model = Model.define({
+      id: "concurrent-tool-model",
+      async *invoke(request) {
+        modelCalls += 1;
+        if (modelCalls === 1) {
+          yield {
+            type: "finish" as const,
+            response: {
+              message: {
+                role: "assistant" as const,
+                content: [
+                  Content.toolCall("concurrent-call-1" as ToolCallId, "concurrent-echo", "one"),
+                  Content.toolCall("concurrent-call-2" as ToolCallId, "concurrent-echo", "two"),
+                ],
+              },
+              finishReason: "tool-calls" as const,
+            },
+          };
+          return;
+        }
+        secondRequest = request.messages;
+        yield {
+          type: "finish" as const,
+          response: {
+            message: {
+              role: "assistant" as const,
+              content: [Content.text("complete")],
+            },
+            finishReason: "stop" as const,
+          },
+        };
+      },
+    });
+    const loop: Loop = {
+      async execute(context) {
+        while (true) {
+          const prepared = await context.runtime.prepare(context.runId);
+          if (prepared.type === "tools") {
+            await Promise.all(
+              prepared.calls.map((call) => context.runtime.executeTool(prepared, call)),
+            );
+            continue;
+          }
+          const invocation = await context.runtime.invokeModel(prepared);
+          if (invocation.type === "response" && invocation.toolCalls.length > 0) {
+            continue;
+          }
+          return context.runtime.settle(prepared, invocation);
+        }
+      },
+    };
+    const store = new MemoryThreadStore();
+    const app = commissary({ threadStore: store, loop });
+    const thread = await app.createThread();
+    const branch = await app.createBranch({ threadId: thread.id, name: "main" });
+    const agent = Agent.define({
+      id: "concurrent-tool-agent",
+      fragments: Agent.combine(model, echo),
+    });
+    const client = app.agent(agent);
+    const submission = await submitStart(client, branch);
+
+    await expect((await client.execute(submission.runId)).result).resolves.toMatchObject({
+      type: "completed",
+    });
+    expect(
+      secondRequest
+        .filter((message) => message.role === "tool")
+        .flatMap((message) => message.content)
+        .filter((part) => part.type === "tool-result")
+        .map((part) => [part.toolCallId, part.output]),
+    ).toEqual([
+      ["concurrent-call-1", "one"],
+      ["concurrent-call-2", "two"],
+    ]);
+  });
+
+  it("recovers committed Tool work after an Execution stops", async () => {
+    let executionCalls = 0;
+    let modelCalls = 0;
+    let toolCalls = 0;
+    const echo = Tool.define({
+      name: "recovery-echo",
+      input: stringSchema,
+      output: stringSchema,
+      handler: (input) => {
+        toolCalls += 1;
+        return input;
+      },
+    });
+    const model = Model.define({
+      id: "recovery-model",
+      async *invoke() {
+        modelCalls += 1;
+        if (modelCalls === 1) {
+          yield {
+            type: "finish" as const,
+            response: {
+              message: {
+                role: "assistant" as const,
+                content: [
+                  Content.toolCall("recovery-call" as ToolCallId, "recovery-echo", "value"),
+                ],
+              },
+              finishReason: "tool-calls" as const,
+            },
+          };
+          return;
+        }
+        yield {
+          type: "finish" as const,
+          response: {
+            message: {
+              role: "assistant" as const,
+              content: [Content.text("recovered")],
+            },
+            finishReason: "stop" as const,
+          },
+        };
+      },
+    });
+    const loop: Loop = {
+      async execute(context) {
+        executionCalls += 1;
+        while (true) {
+          const work = await context.runtime.prepare(context.runId);
+          if (work.type === "tools") {
+            for (const call of work.calls) {
+              await context.runtime.executeTool(work, call);
+            }
+            continue;
+          }
+          const invocation = await context.runtime.invokeModel(work);
+          if (executionCalls === 1) {
+            throw new Error("process stopped after Model commit");
+          }
+          return context.runtime.settle(work, invocation);
+        }
+      },
+    };
+    const store = new MemoryThreadStore();
+    const app = commissary({ threadStore: store, loop });
+    const thread = await app.createThread();
+    const branch = await app.createBranch({ threadId: thread.id, name: "main" });
+    const agent = Agent.define({
+      id: "recovery-agent",
+      fragments: Agent.combine(model, echo),
+    });
+    const client = app.agent(agent);
+    const submission = await submitStart(client, branch);
+
+    await expect((await client.execute(submission.runId)).result).rejects.toMatchObject({
+      name: "UnexpectedExecutionError",
+    });
+    await expect((await client.execute(submission.runId)).result).resolves.toMatchObject({
+      type: "completed",
+      response: { message: { content: [Content.text("recovered")] } },
+    });
+    expect(modelCalls).toBe(2);
+    expect(toolCalls).toBe(1);
   });
 
   it("rejects a custom Loop result that was not created by Runtime Operations", async () => {
@@ -284,6 +610,44 @@ describe("durable Runtime", () => {
         message: { role: "user", content: [Content.text("different")] },
       }),
     ).resolves.toEqual({ type: "run-conflict", runId });
+  });
+
+  it("keeps colon-delimited command request identities separate", async () => {
+    const agent = Agent.define({ id: "request-key-agent", fragments: completingModel });
+    const { app, thread, branch, client } = await fixture(agent);
+    const secondBranch = await app.createBranch({
+      threadId: thread.id,
+      name: "second",
+    });
+    await client.submit({
+      type: "start",
+      runId: "run:one" as RunId,
+      threadId: branch.threadId,
+      branchId: branch.id,
+      message: { role: "user", content: [Content.text("first")] },
+    });
+    await client.submit({
+      type: "start",
+      runId: "run" as RunId,
+      threadId: secondBranch.threadId,
+      branchId: secondBranch.id,
+      message: { role: "user", content: [Content.text("second")] },
+    });
+
+    await expect(
+      client.redirect({
+        runId: "run:one" as RunId,
+        redirectRequestId: "redirect",
+        message: { role: "user", content: [Content.text("first redirect")] },
+      }),
+    ).resolves.toMatchObject({ type: "accepted", admitted: true });
+    await expect(
+      client.redirect({
+        runId: "run" as RunId,
+        redirectRequestId: "one:redirect",
+        message: { role: "user", content: [Content.text("second redirect")] },
+      }),
+    ).resolves.toMatchObject({ type: "accepted", admitted: true });
   });
 
   it("captures static and dynamic Hooks in stable order for each Execution", async () => {
@@ -429,6 +793,605 @@ describe("durable Runtime", () => {
     });
   });
 
+  it.each([
+    [
+      "Failure Event",
+      {
+        type: "failure",
+        failure: {
+          type: "model-failure",
+          reason: "content-policy",
+          message: "blocked",
+        },
+      },
+    ],
+    [
+      "Interruption Event",
+      {
+        type: "interruption",
+        interruption: {
+          type: "provider-unavailable",
+          provider: "provider",
+          reason: "unknown",
+        },
+      },
+    ],
+    [
+      "rich Content",
+      {
+        type: "finish",
+        response: {
+          message: {
+            role: "assistant",
+            content: [
+              {
+                type: "file",
+                artifact: { id: "artifact", mediaType: 1 },
+              },
+            ],
+          },
+          finishReason: "stop",
+        },
+      },
+    ],
+  ] as const)("rejects malformed transformed %s", async (label, event) => {
+    const agent = Agent.define({
+      id: `malformed-${label.toLowerCase().replaceAll(" ", "-")}`,
+      fragments: Agent.combine(
+        completingModel,
+        Hook.transformModelEvent(() => ({ event }) as never),
+      ),
+    });
+    const { branch, client } = await fixture(agent);
+    const submission = await submitStart(client, branch);
+
+    await expect((await client.execute(submission.runId)).result).rejects.toMatchObject({
+      name: "UnexpectedExecutionError",
+      phase: "hook",
+    });
+  });
+
+  it("lets beforeModelRequest hide installed Tools without changing their contracts", async () => {
+    let advertisedTools: readonly string[] = [];
+    const hidden = Tool.define({
+      name: "hidden-tool",
+      input: stringSchema,
+      handler: (input) => input,
+    });
+    const model = Model.define({
+      id: "hidden-tool-model",
+      async *invoke(request) {
+        advertisedTools = request.tools.map((tool) => tool.name);
+        yield {
+          type: "finish" as const,
+          response: {
+            message: {
+              role: "assistant" as const,
+              content: [Content.text("done")],
+            },
+            finishReason: "stop" as const,
+          },
+        };
+      },
+    });
+    const agent = Agent.define({
+      id: "hidden-tool-agent",
+      fragments: Agent.combine(
+        model,
+        hidden,
+        Hook.beforeModelRequest(({ request }) => ({
+          request: { ...request, tools: [] },
+        })),
+      ),
+    });
+    const { branch, client } = await fixture(agent);
+    const submission = await submitStart(client, branch);
+
+    await expect((await client.execute(submission.runId)).result).resolves.toMatchObject({
+      type: "completed",
+    });
+    expect(advertisedTools).toEqual([]);
+  });
+
+  it("publishes only transformed root Model Events and the final replacement", async () => {
+    const observed: unknown[] = [];
+    const model = Model.define({
+      id: "model-transform",
+      async *invoke() {
+        yield { type: "text-delta" as const, delta: "preview" };
+        yield {
+          type: "finish" as const,
+          response: {
+            message: {
+              role: "assistant" as const,
+              content: [Content.text("source")],
+            },
+            finishReason: "stop" as const,
+          },
+        };
+      },
+    });
+    const agent = Agent.define({
+      id: "model-transform-agent",
+      fragments: Agent.combine(
+        model,
+        Hook.transformModelEvent(({ event }) =>
+          event.type === "text-delta"
+            ? { event: { type: "text-delta", delta: event.delta.toUpperCase() } }
+            : undefined,
+        ),
+        Hook.afterModelInvocation(({ invocation }) =>
+          invocation.type === "response"
+            ? {
+                invocation: {
+                  type: "response",
+                  response: {
+                    message: {
+                      role: "assistant",
+                      content: [Content.text("replacement")],
+                    },
+                    finishReason: "stop",
+                  },
+                },
+              }
+            : undefined,
+        ),
+      ),
+    });
+    const { branch, client } = await fixture(agent);
+    client.subscribe(
+      Hook.onExecutionEvent(({ event }) => {
+        if (event.type === "model-event") {
+          observed.push(event.event);
+        }
+        return undefined;
+      }),
+    );
+    const submission = await submitStart(client, branch);
+
+    await expect((await client.execute(submission.runId)).result).resolves.toMatchObject({
+      type: "completed",
+      response: {
+        message: { content: [Content.text("replacement")] },
+      },
+    });
+    expect(observed).toEqual([
+      { type: "text-delta", delta: "PREVIEW" },
+      {
+        type: "finish",
+        response: {
+          message: {
+            role: "assistant",
+            content: [Content.text("replacement")],
+          },
+          finishReason: "stop",
+        },
+      },
+    ]);
+  });
+
+  it("validates and saves replacements from afterToolExecution", async () => {
+    const requests: Array<readonly ModelMessage[]> = [];
+    let modelCalls = 0;
+    const echo = Tool.define({
+      name: "replace-tool-result",
+      input: stringSchema,
+      output: stringSchema,
+      handler: (input) => input,
+    });
+    const model = Model.define({
+      id: "replace-tool-result-model",
+      async *invoke(request) {
+        requests.push(request.messages);
+        modelCalls += 1;
+        yield {
+          type: "finish" as const,
+          response:
+            modelCalls === 1
+              ? {
+                  message: {
+                    role: "assistant" as const,
+                    content: [
+                      Content.toolCall(
+                        "replace-tool-result-call" as ToolCallId,
+                        "replace-tool-result",
+                        "source",
+                      ),
+                    ],
+                  },
+                  finishReason: "tool-calls" as const,
+                }
+              : {
+                  message: {
+                    role: "assistant" as const,
+                    content: [Content.text("done")],
+                  },
+                  finishReason: "stop" as const,
+                },
+        };
+      },
+    });
+    const agent = Agent.define({
+      id: "replace-tool-result-agent",
+      fragments: Agent.combine(
+        model,
+        echo,
+        Hook.afterToolExecution(({ result }) =>
+          result.type === "success"
+            ? {
+                result: {
+                  type: "success",
+                  output: "replacement",
+                  content: [Content.text("extra")],
+                },
+              }
+            : undefined,
+        ),
+      ),
+    });
+    const { branch, client } = await fixture(agent);
+    const submission = await submitStart(client, branch);
+
+    await expect((await client.execute(submission.runId)).result).resolves.toMatchObject({
+      type: "completed",
+    });
+    expect(requests[1]?.at(-1)).toEqual({
+      role: "tool",
+      content: [
+        {
+          type: "tool-result",
+          toolName: "replace-tool-result",
+          toolCallId: "replace-tool-result-call",
+          output: "replacement",
+        },
+        Content.text("extra"),
+      ],
+    });
+    await expect(client.readRunSnapshot(submission.runId)).resolves.toMatchObject({
+      toolCalls: [
+        {
+          result: {
+            type: "success",
+            output: "replacement",
+            content: [Content.text("extra")],
+          },
+        },
+      ],
+    });
+  });
+
+  it("limits durable settlement continuations to 32 Steps", async () => {
+    let modelCalls = 0;
+    const model = Model.define({
+      id: "settlement-continuation-model",
+      async *invoke() {
+        modelCalls += 1;
+        yield {
+          type: "finish" as const,
+          response: {
+            message: {
+              role: "assistant" as const,
+              content: [Content.text(`turn-${modelCalls}`)],
+            },
+            finishReason: "stop" as const,
+          },
+        };
+      },
+    });
+    const agent = Agent.define({
+      id: "settlement-continuation-agent",
+      fragments: Agent.combine(
+        model,
+        Hook.beforeSettlement(() => ({
+          type: "continue",
+          instruction: {
+            role: "user",
+            content: [Content.text("continue")],
+          },
+        })),
+      ),
+    });
+    const { branch, client } = await fixture(agent);
+    const submission = await submitStart(client, branch);
+
+    await expect((await client.execute(submission.runId)).result).resolves.toMatchObject({
+      type: "completed",
+      response: {
+        message: { content: [Content.text("turn-33")] },
+      },
+    });
+    expect(modelCalls).toBe(33);
+    await expect(client.readRunSnapshot(submission.runId)).resolves.toMatchObject({
+      settlementContinuations: 32,
+    });
+  });
+
+  it("lets Redirect win a race with settlement continuation", async () => {
+    let client!: AgentClient<typeof agent>;
+    let modelCalls = 0;
+    const requests: Array<readonly ModelMessage[]> = [];
+    const model = Model.define({
+      id: "settlement-redirect-model",
+      async *invoke(request) {
+        requests.push(request.messages);
+        modelCalls += 1;
+        yield {
+          type: "finish" as const,
+          response: {
+            message: {
+              role: "assistant" as const,
+              content: [Content.text(`candidate-${modelCalls}`)],
+            },
+            finishReason: "stop" as const,
+          },
+        };
+      },
+    });
+    const agent = Agent.define({
+      id: "settlement-redirect-agent",
+      fragments: Agent.combine(
+        model,
+        Hook.beforeSettlement(async ({ run }) => {
+          if (modelCalls !== 1) {
+            return undefined;
+          }
+          await client.redirect({
+            runId: run.runId,
+            message: {
+              role: "user",
+              content: [Content.text("redirect")],
+            },
+          });
+          return {
+            type: "continue",
+            instruction: {
+              role: "user",
+              content: [Content.text("gate")],
+            },
+          };
+        }),
+      ),
+    });
+    const built = await fixture(agent);
+    client = built.client;
+    const submission = await submitStart(client, built.branch);
+
+    await expect((await client.execute(submission.runId)).result).resolves.toMatchObject({
+      type: "completed",
+      response: {
+        message: { content: [Content.text("candidate-2")] },
+      },
+    });
+    expect(requests[1]).toEqual([
+      { role: "user", content: [Content.text("start")] },
+      { role: "user", content: [Content.text("redirect")] },
+    ]);
+    await expect(client.readRunSnapshot(submission.runId)).resolves.toMatchObject({
+      settlementContinuations: 0,
+    });
+  });
+
+  it("lets Steering replace a raced settlement continuation", async () => {
+    let client!: AgentClient<typeof agent>;
+    let modelCalls = 0;
+    const requests: Array<readonly ModelMessage[]> = [];
+    const model = Model.define({
+      id: "settlement-steering-model",
+      async *invoke(request) {
+        requests.push(request.messages);
+        modelCalls += 1;
+        yield {
+          type: "finish" as const,
+          response: {
+            message: {
+              role: "assistant" as const,
+              content: [Content.text(`candidate-${modelCalls}`)],
+            },
+            finishReason: "stop" as const,
+          },
+        };
+      },
+    });
+    const agent = Agent.define({
+      id: "settlement-steering-agent",
+      fragments: Agent.combine(
+        model,
+        Hook.beforeSettlement(async ({ run }) => {
+          if (modelCalls !== 1) {
+            return undefined;
+          }
+          await client.steer({
+            runId: run.runId,
+            message: {
+              role: "user",
+              content: [Content.text("steer")],
+            },
+          });
+          return {
+            type: "continue",
+            instruction: {
+              role: "user",
+              content: [Content.text("gate")],
+            },
+          };
+        }),
+      ),
+    });
+    const built = await fixture(agent);
+    client = built.client;
+    const submission = await submitStart(client, built.branch);
+
+    await expect((await client.execute(submission.runId)).result).resolves.toMatchObject({
+      type: "completed",
+      response: {
+        message: { content: [Content.text("candidate-2")] },
+      },
+    });
+    expect(requests[1]).toEqual([
+      { role: "user", content: [Content.text("start")] },
+      {
+        role: "assistant",
+        content: [Content.text("candidate-1")],
+      },
+      { role: "user", content: [Content.text("steer")] },
+    ]);
+    await expect(client.readRunSnapshot(submission.runId)).resolves.toMatchObject({
+      settlementContinuations: 0,
+    });
+  });
+
+  it("times out one settlement gate and runs the remaining gates", async () => {
+    let laterGateCalls = 0;
+    let reported: unknown;
+    let timedOutSignal: AbortSignal | undefined;
+    const agent = Agent.define({
+      id: "settlement-timeout-agent",
+      fragments: Agent.combine(
+        completingModel,
+        Hook.beforeSettlement(({ signal }) => {
+          timedOutSignal = signal;
+          return new Promise<never>(() => undefined);
+        }),
+        Hook.beforeSettlement(() => {
+          laterGateCalls += 1;
+          return undefined;
+        }),
+      ),
+    });
+    const clock: Clock = {
+      now: () => 0,
+      sleep(milliseconds, signal) {
+        if (milliseconds === 30_000) {
+          return Promise.resolve();
+        }
+        return new Promise<void>((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), {
+            once: true,
+          });
+        });
+      },
+    };
+    const store = new MemoryThreadStore();
+    const app = commissary({ threadStore: store, clock });
+    const thread = await app.createThread();
+    const branch = await app.createBranch({ threadId: thread.id, name: "main" });
+    const client = app.agent(agent);
+    client.subscribe(
+      Hook.onExecutionEvent(({ event }) => {
+        if (event.type === "error") {
+          reported = event.error;
+        }
+        return undefined;
+      }),
+    );
+    const submission = await submitStart(client, branch);
+
+    await expect((await client.execute(submission.runId)).result).resolves.toMatchObject({
+      type: "completed",
+    });
+    expect(laterGateCalls).toBe(1);
+    expect(reported).toBeInstanceOf(UnexpectedExecutionError);
+    expect(timedOutSignal?.aborted).toBe(true);
+  });
+
+  it("records detailed per-Model Usage and calls without reported Usage", async () => {
+    let modelCalls = 0;
+    const model = Model.define({
+      id: "detailed-usage-model",
+      async *invoke() {
+        modelCalls += 1;
+        yield {
+          type: "finish" as const,
+          response: {
+            message: {
+              role: "assistant" as const,
+              content: [Content.text(`usage-${modelCalls}`)],
+            },
+            finishReason: "stop" as const,
+            ...(modelCalls === 1
+              ? {
+                  usage: {
+                    input: {
+                      total: 10,
+                      uncached: 6,
+                      cacheRead: 4,
+                      cacheWrite: 2,
+                    },
+                    output: {
+                      total: 5,
+                      text: 3,
+                      reasoning: 2,
+                    },
+                    totalTokens: 17,
+                  },
+                }
+              : {}),
+          },
+        };
+      },
+    });
+    const agent = Agent.define({
+      id: "detailed-usage-agent",
+      fragments: Agent.combine(
+        model,
+        Hook.beforeSettlement(() =>
+          modelCalls === 1
+            ? {
+                type: "continue",
+                instruction: {
+                  role: "user",
+                  content: [Content.text("one more")],
+                },
+              }
+            : undefined,
+        ),
+      ),
+    });
+    const { branch, client } = await fixture(agent);
+    const submission = await submitStart(client, branch);
+
+    await expect((await client.execute(submission.runId)).result).resolves.toMatchObject({
+      type: "completed",
+      usage: {
+        total: {
+          input: {
+            total: 10,
+            uncached: 6,
+            cacheRead: 4,
+            cacheWrite: 2,
+          },
+          output: {
+            total: 5,
+            text: 3,
+            reasoning: 2,
+          },
+          totalTokens: 17,
+        },
+        models: [
+          {
+            modelId: "detailed-usage-model",
+            calls: 2,
+            reportedCalls: 1,
+            usage: {
+              input: {
+                total: 10,
+                uncached: 6,
+                cacheRead: 4,
+                cacheWrite: 2,
+              },
+              output: {
+                total: 5,
+                text: 3,
+                reasoning: 2,
+              },
+              totalTokens: 17,
+            },
+          },
+        ],
+      },
+    });
+  });
+
   it("commits Tool Calls before attempts and fixes transformed input once", async () => {
     let client!: AgentClient<typeof agent>;
     let hookCalls = 0;
@@ -507,6 +1470,76 @@ describe("durable Runtime", () => {
     });
   });
 
+  it("stores JSON Tool output with ordered model-visible content", async () => {
+    const requests: Array<readonly ModelMessage[]> = [];
+    let invocations = 0;
+    const rich = Tool.define({
+      name: "rich-result",
+      input: stringSchema,
+      handler: (input) =>
+        Tool.success(
+          { echoed: input },
+          { content: [Content.text("extra text"), Content.reasoning("extra reason")] },
+        ),
+    });
+    const model = Model.define({
+      id: "rich-result-model",
+      async *invoke(request) {
+        requests.push(request.messages);
+        invocations += 1;
+        if (invocations === 1) {
+          yield {
+            type: "finish" as const,
+            response: {
+              message: {
+                role: "assistant" as const,
+                content: [Content.toolCall("rich-call" as ToolCallId, "rich-result", "value")],
+              },
+              finishReason: "tool-calls" as const,
+            },
+          };
+          return;
+        }
+        yield {
+          type: "finish" as const,
+          response: {
+            message: { role: "assistant" as const, content: [Content.text("done")] },
+            finishReason: "stop" as const,
+          },
+        };
+      },
+    });
+    const agent = Agent.define({
+      id: "rich-result-agent",
+      fragments: Agent.combine(model, rich),
+    });
+    const { branch, client } = await fixture(agent);
+    const submission = await submitStart(client, branch);
+
+    await expect((await client.execute(submission.runId)).result).resolves.toMatchObject({
+      type: "completed",
+    });
+    expect(requests[1]?.at(-1)).toEqual({
+      role: "tool",
+      content: [
+        Content.toolResult("rich-call" as ToolCallId, "rich-result", { echoed: "value" }),
+        Content.text("extra text"),
+        Content.reasoning("extra reason"),
+      ],
+    });
+    await expect(client.readRunSnapshot(submission.runId)).resolves.toMatchObject({
+      toolCalls: [
+        {
+          result: {
+            type: "success",
+            output: { echoed: "value" },
+            content: [Content.text("extra text"), Content.reasoning("extra reason")],
+          },
+        },
+      ],
+    });
+  });
+
   it("suspends and resumes multiple Tool Calls in one atomic command", async () => {
     const continuation = Codec.define({
       encode: (value: string) => value,
@@ -556,7 +1589,7 @@ describe("durable Runtime", () => {
                 ],
               },
               finishReason: "tool-calls" as const,
-              usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 },
+              usage: { input: { total: 1 }, output: { total: 2 }, totalTokens: 3 },
             },
           };
           return;
@@ -566,7 +1599,7 @@ describe("durable Runtime", () => {
           response: {
             message: { role: "assistant" as const, content: [Content.text("done")] },
             finishReason: "stop" as const,
-            usage: { inputTokens: 4, outputTokens: 5, totalTokens: 9 },
+            usage: { input: { total: 4 }, output: { total: 5 }, totalTokens: 9 },
           },
         };
       },
@@ -596,7 +1629,17 @@ describe("durable Runtime", () => {
     const suspended = await (await client.execute(submission.runId)).result;
     expect(suspended).toMatchObject({
       type: "suspended",
-      usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 },
+      usage: {
+        total: { input: { total: 1 }, output: { total: 2 }, totalTokens: 3 },
+        models: [
+          {
+            modelId: "multi-suspension-model",
+            calls: 1,
+            reportedCalls: 1,
+            usage: { input: { total: 1 }, output: { total: 2 }, totalTokens: 3 },
+          },
+        ],
+      },
       suspensions: [
         { toolName: "first", toolCallId: "call-first" },
         { toolName: "second", toolCallId: "call-second" },
@@ -640,7 +1683,17 @@ describe("durable Runtime", () => {
     ).resolves.toMatchObject({ type: "submitted", admitted: true });
     await expect((await client.execute(submission.runId)).result).resolves.toMatchObject({
       type: "completed",
-      usage: { inputTokens: 5, outputTokens: 7, totalTokens: 12 },
+      usage: {
+        total: { input: { total: 5 }, output: { total: 7 }, totalTokens: 12 },
+        models: [
+          {
+            modelId: "multi-suspension-model",
+            calls: 2,
+            reportedCalls: 2,
+            usage: { input: { total: 5 }, output: { total: 7 }, totalTokens: 12 },
+          },
+        ],
+      },
     });
     await expect(client.readRunSnapshot(submission.runId)).resolves.toMatchObject({
       status: "completed",
@@ -840,10 +1893,8 @@ describe("durable Runtime", () => {
       resolve: () => [
         {
           type: "dynamic-tool" as const,
-          definition: {
-            name: "square",
-            inputSchema: { type: "number" },
-          },
+          name: "square",
+          input: numberSchema,
           execute(input: unknown) {
             dynamicAttempts += 1;
             if (typeof input !== "number") {
@@ -918,6 +1969,211 @@ describe("durable Runtime", () => {
     });
   });
 
+  it("interrupts recovered Dynamic Tool work when its current contract is missing", async () => {
+    let available = true;
+    let executionCalls = 0;
+    let modelCalls = 0;
+    let toolCalls = 0;
+    const provider = Tool.dynamic({
+      id: "recoverable-tools",
+      resolve: () =>
+        available
+          ? [
+              {
+                type: "dynamic-tool" as const,
+                name: "recoverable-echo",
+                input: stringSchema,
+                execute(input: unknown) {
+                  toolCalls += 1;
+                  return input;
+                },
+              },
+            ]
+          : [],
+    });
+    const model = Model.define({
+      id: "dynamic-recovery-model",
+      async *invoke() {
+        modelCalls += 1;
+        yield {
+          type: "finish" as const,
+          response: {
+            message: {
+              role: "assistant" as const,
+              content: [
+                Content.toolCall(
+                  "dynamic-recovery-call" as ToolCallId,
+                  "recoverable-echo",
+                  "value",
+                ),
+              ],
+            },
+            finishReason: "tool-calls" as const,
+          },
+        };
+      },
+    });
+    const loop: Loop = {
+      async execute(context) {
+        executionCalls += 1;
+        const work = await context.runtime.prepare(context.runId);
+        if (work.type === "tools") {
+          for (const call of work.calls) {
+            await context.runtime.executeTool(work, call);
+          }
+          throw new Error("Recovered Dynamic Tool work did not interrupt");
+        }
+        const invocation = await context.runtime.invokeModel(work);
+        if (executionCalls === 1) {
+          throw new Error("process stopped after Model commit");
+        }
+        return context.runtime.settle(work, invocation);
+      },
+    };
+    const store = new MemoryThreadStore();
+    const app = commissary({ threadStore: store, loop });
+    const thread = await app.createThread();
+    const branch = await app.createBranch({ threadId: thread.id, name: "main" });
+    const agent = Agent.define({
+      id: "dynamic-recovery-agent",
+      fragments: Agent.combine(model, provider),
+    });
+    const client = app.agent(agent);
+    const submission = await submitStart(client, branch);
+
+    await expect((await client.execute(submission.runId)).result).rejects.toMatchObject({
+      name: "UnexpectedExecutionError",
+    });
+    available = false;
+    await expect((await client.execute(submission.runId)).result).resolves.toMatchObject({
+      type: "interrupted",
+      interruption: {
+        type: "stale-agent",
+        toolName: "recoverable-echo",
+      },
+    });
+    expect(modelCalls).toBe(1);
+    expect(toolCalls).toBe(0);
+  });
+
+  it("resumes a Dynamic Tool through its current suspension contract", async () => {
+    const continuation = Codec.define<unknown, string>({
+      encode: (value: unknown) => {
+        if (typeof value !== "string") {
+          throw new Error("Expected string continuation state");
+        }
+        return value;
+      },
+      decode: (value) => String(value),
+    });
+    const provider = Tool.dynamic({
+      id: "suspending-tools",
+      resolve: () => [
+        {
+          type: "dynamic-tool" as const,
+          name: "dynamic-suspension",
+          input: stringSchema,
+          output: stringSchema,
+          execute: () => Tool.suspend("dynamic-state"),
+          suspension: {
+            resumeInput: stringSchema,
+            continuation,
+            resume: ({ input, continuation: state }) => {
+              if (typeof input !== "string" || typeof state !== "string") {
+                throw new Error("Expected decoded Dynamic Tool suspension state");
+              }
+              return `${state}:${input}`;
+            },
+          },
+        },
+      ],
+    });
+    let modelCalls = 0;
+    const model = Model.define({
+      id: "dynamic-suspension-model",
+      async *invoke() {
+        modelCalls += 1;
+        yield {
+          type: "finish" as const,
+          response:
+            modelCalls === 1
+              ? {
+                  message: {
+                    role: "assistant" as const,
+                    content: [
+                      Content.toolCall(
+                        "dynamic-suspension-call" as ToolCallId,
+                        "dynamic-suspension",
+                        "start",
+                      ),
+                    ],
+                  },
+                  finishReason: "tool-calls" as const,
+                }
+              : {
+                  message: {
+                    role: "assistant" as const,
+                    content: [Content.text("complete")],
+                  },
+                  finishReason: "stop" as const,
+                },
+        };
+      },
+    });
+    const agent = Agent.define({
+      id: "dynamic-suspension-agent",
+      fragments: Agent.combine(model, provider),
+    });
+    const { branch, client } = await fixture(agent);
+    const submission = await submitStart(client, branch);
+
+    await expect((await client.execute(submission.runId)).result).resolves.toMatchObject({
+      type: "suspended",
+      suspensions: [{ toolName: "dynamic-suspension" }],
+    });
+    await expect(
+      client.submit({
+        type: "resume",
+        runId: submission.runId,
+        items: [
+          {
+            toolName: "dynamic-suspension",
+            toolCallId: "dynamic-suspension-call" as ToolCallId,
+            input: 1 as never,
+          },
+        ],
+      }),
+    ).rejects.toThrow();
+    await expect(client.readRunSnapshot(submission.runId)).resolves.toMatchObject({
+      status: "suspended",
+      suspensions: [{ toolName: "dynamic-suspension" }],
+    });
+    await expect(
+      client.submit({
+        type: "resume",
+        runId: submission.runId,
+        items: [
+          {
+            toolName: "dynamic-suspension",
+            toolCallId: "dynamic-suspension-call" as ToolCallId,
+            input: "resume",
+          },
+        ],
+      }),
+    ).resolves.toMatchObject({ type: "submitted", admitted: true });
+    await expect((await client.execute(submission.runId)).result).resolves.toMatchObject({
+      type: "completed",
+    });
+    await expect(client.readRunSnapshot(submission.runId)).resolves.toMatchObject({
+      toolCalls: [
+        {
+          toolName: "dynamic-suspension",
+          result: { type: "success", output: "dynamic-state:resume" },
+        },
+      ],
+    });
+  });
+
   it("durably aborts a suspended Run and its unresolved Tool graph", async () => {
     const continuation = Codec.define({
       encode: (value: string) => value,
@@ -978,6 +2234,86 @@ describe("durable Runtime", () => {
     expect(path.at(-1)?.message).toMatchObject({
       role: "tool",
       content: [{ output: { type: "aborted" }, isFailure: true }],
+    });
+  });
+
+  it("redirects active Model work without saving its partial response", async () => {
+    let firstStarted!: () => void;
+    const firstModelStarted = new Promise<void>((resolve) => {
+      firstStarted = resolve;
+    });
+    let secondStarted!: () => void;
+    const secondModelStarted = new Promise<void>((resolve) => {
+      secondStarted = resolve;
+    });
+    let releaseSecond!: () => void;
+    const secondGate = new Promise<void>((resolve) => {
+      releaseSecond = resolve;
+    });
+    const requests: ModelMessage[][] = [];
+    let invocations = 0;
+    const model = Model.define({
+      id: "redirect-model",
+      async *invoke(request, context) {
+        requests.push([...request.messages]);
+        invocations += 1;
+        if (invocations === 1) {
+          yield { type: "text-delta" as const, delta: "discarded" };
+          firstStarted();
+          await new Promise<void>((_resolve, reject) => {
+            if (context.signal.aborted) {
+              reject(context.signal.reason);
+              return;
+            }
+            context.signal.addEventListener("abort", () => reject(context.signal.reason), {
+              once: true,
+            });
+          });
+          return;
+        }
+        secondStarted();
+        await secondGate;
+        yield {
+          type: "finish" as const,
+          response: {
+            message: { role: "assistant" as const, content: [Content.text("redirected")] },
+            finishReason: "stop" as const,
+          },
+        };
+      },
+    });
+    const agent = Agent.define({ id: "redirect-agent", fragments: model });
+    const { branch, client } = await fixture(agent);
+    const submission = await submitStart(client, branch);
+    const execution = await client.execute(submission.runId);
+    await firstModelStarted;
+    const message = { role: "user" as const, content: [Content.text("new direction")] };
+    const redirect = {
+      runId: submission.runId,
+      redirectRequestId: "redirect-once",
+      message,
+    };
+
+    await expect(client.redirect(redirect)).resolves.toMatchObject({
+      type: "accepted",
+      admitted: true,
+    });
+    await secondModelStarted;
+    await expect(client.redirect(redirect)).resolves.toMatchObject({
+      type: "accepted",
+      admitted: false,
+    });
+    releaseSecond();
+
+    await expect(execution.result).resolves.toMatchObject({
+      type: "completed",
+      response: { message: { content: [Content.text("redirected")] } },
+    });
+    expect(invocations).toBe(2);
+    expect(requests[1]).toContainEqual(message);
+    expect(requests[1]).not.toContainEqual({
+      role: "assistant",
+      content: [Content.text("discarded")],
     });
   });
 
@@ -1149,7 +2485,7 @@ describe("durable Runtime", () => {
     expect(reported).toBeInstanceOf(ExecutionClaimLostError);
   });
 
-  it("routes through a declared child Model and applies Model Hooks only to the leaf", async () => {
+  it("applies Model Hooks once around the root Composite invocation", async () => {
     let beforeCalls = 0;
     const child = Model.define({
       id: "routed-child",
@@ -1216,7 +2552,7 @@ describe("durable Runtime", () => {
             type: "model-output" as const,
             provider: "primary",
             detail: "Primary output was unusable",
-            usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 },
+            usage: { input: { total: 1 }, output: { total: 2 }, totalTokens: 3 },
           },
         };
       },
@@ -1233,7 +2569,7 @@ describe("durable Runtime", () => {
               content: [Content.text("visible")],
             },
             finishReason: "stop" as const,
-            usage: { inputTokens: 4, outputTokens: 5, totalTokens: 9 },
+            usage: { input: { total: 4 }, output: { total: 5 }, totalTokens: 9 },
           },
         };
       },
@@ -1263,7 +2599,23 @@ describe("durable Runtime", () => {
 
     await expect((await client.execute(submission.runId)).result).resolves.toMatchObject({
       type: "completed",
-      usage: { inputTokens: 5, outputTokens: 7, totalTokens: 12 },
+      usage: {
+        total: { input: { total: 5 }, output: { total: 7 }, totalTokens: 12 },
+        models: [
+          {
+            modelId: "primary-child",
+            calls: 1,
+            reportedCalls: 1,
+            usage: { input: { total: 1 }, output: { total: 2 }, totalTokens: 3 },
+          },
+          {
+            modelId: "fallback-child",
+            calls: 1,
+            reportedCalls: 1,
+            usage: { input: { total: 4 }, output: { total: 5 }, totalTokens: 9 },
+          },
+        ],
+      },
       response: { message: { content: [Content.text("visible")] } },
     });
     expect(deltas).toEqual(["visible"]);
@@ -1282,7 +2634,7 @@ describe("durable Runtime", () => {
               type: "model-output" as const,
               provider: "test",
               detail: "retry",
-              usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+              usage: { input: { total: 1 }, output: { total: 1 }, totalTokens: 2 },
             },
           };
           return;
@@ -1292,7 +2644,7 @@ describe("durable Runtime", () => {
           response: {
             message: { role: "assistant" as const, content: [Content.text("done")] },
             finishReason: "stop" as const,
-            usage: { inputTokens: 2, outputTokens: 3, totalTokens: 5 },
+            usage: { input: { total: 2 }, output: { total: 3 }, totalTokens: 5 },
           },
         };
       },
@@ -1330,7 +2682,17 @@ describe("durable Runtime", () => {
 
     await expect((await client.execute(submission.runId)).result).resolves.toMatchObject({
       type: "completed",
-      usage: { inputTokens: 3, outputTokens: 4, totalTokens: 7 },
+      usage: {
+        total: { input: { total: 3 }, output: { total: 4 }, totalTokens: 7 },
+        models: [
+          {
+            modelId: "retry-model",
+            calls: 2,
+            reportedCalls: 2,
+            usage: { input: { total: 3 }, output: { total: 4 }, totalTokens: 7 },
+          },
+        ],
+      },
     });
     expect(invocations).toBe(2);
     expect(sleeps).toEqual([30_000, 25]);

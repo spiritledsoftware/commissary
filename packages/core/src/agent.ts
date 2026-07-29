@@ -104,7 +104,9 @@ function installContributions(
           contract: Object.freeze({
             name: contribution.value.name,
             input: contribution.value.modelTool.inputSchema,
-            outputVendor: contribution.value.output["~standard"].vendor,
+            ...(contribution.value.output === undefined
+              ? {}
+              : { outputVendor: contribution.value.output["~standard"].vendor }),
             resumable: contribution.value.suspension !== undefined,
           }),
         });

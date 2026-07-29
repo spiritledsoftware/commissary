@@ -34,7 +34,7 @@ Each generated Tool Result contains `{ "type": "aborted" }`. The caller's reason
 
 ## Execution Events and streaming
 
-Core dispatches typed Execution Events through `onExecutionEvent`. Core has no event queue, `AsyncIterable`, or durable Event log.
+Core dispatches typed Execution Events through `onExecutionEvent`. Core has no reader queue or transport; [ADR 0018](0018-record-execution-events-optionally.md) defines the optional append-only Execution Event Store.
 
 The first official adapter after core is `@commissary/stream`. It provides plain JavaScript streams from the package root and Effect-native streams from `@commissary/stream/effect`.
 
@@ -52,9 +52,7 @@ After an Events Dropped Event, a host can mark its view as stale. It can call `r
 
 The snapshot is not an Event cursor. The host must not infer gapless order between the snapshot and concurrent Events.
 
-A later relay adapter owns fan-out, downstream queues, transport, replay, reconnect, retention, and authorization. It consumes the Stream Adapter once. Core does not let a new process attach to an existing Execution.
-
-A relay cannot promise crash-lossless capture with the current Hook boundary. A future lossless adapter would need an awaited bounded append at the core emission boundary. Readers, cursors, and retention would remain outside core.
+A later relay adapter owns fan-out, downstream queues, transport, replay, reconnect, retention, and authorization. It can read from a concrete Execution Event Store adapter when durable capture is configured. Readers and cursors remain outside core.
 
 ## Errors
 

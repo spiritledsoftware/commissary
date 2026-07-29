@@ -8,6 +8,14 @@ Models, Context contributions, Tools, Tool Providers, Hooks, and integrations re
 
 Core has no dependency container, typed-key registry, provider graph, or public scope system. A managed integration must acquire its client and close over it.
 
+## Tool-owned Model calls
+
+Core does not add Model invocation to the Tool Execution Context. A Tool that needs a Model receives a host-owned client through its factory or closure and converts that client's output into its declared Tool result.
+
+The host owns Model selection, retries, usage accounting, and client lifetime for that call. It can connect the Tool's AbortSignal when the client supports cancellation. The call does not dispatch core Model Hooks, record core Model Usage or Model Events, enter Thread history, or become a Composite Model child.
+
+This is not a subagent. Subagent orchestration remains outside core.
+
 ## Clock and IDs
 
 The optional Clock provides synchronous `now()` and cancellable `sleep(milliseconds, signal)` operations. Core uses it for claim renewal and Execution-local delay. The default uses the runtime clock and timers.

@@ -387,14 +387,24 @@ async function prepareRequest(
 }
 
 function usage(value: Response.Usage): ModelUsage {
-  const inputTokens = value.inputTokens.total;
-  const outputTokens = value.outputTokens.total;
   return {
-    ...(inputTokens === undefined ? {} : { inputTokens }),
-    ...(outputTokens === undefined ? {} : { outputTokens }),
-    ...(inputTokens === undefined || outputTokens === undefined
-      ? {}
-      : { totalTokens: inputTokens + outputTokens }),
+    input: {
+      ...(value.inputTokens.total === undefined ? {} : { total: value.inputTokens.total }),
+      ...(value.inputTokens.uncached === undefined ? {} : { uncached: value.inputTokens.uncached }),
+      ...(value.inputTokens.cacheRead === undefined
+        ? {}
+        : { cacheRead: value.inputTokens.cacheRead }),
+      ...(value.inputTokens.cacheWrite === undefined
+        ? {}
+        : { cacheWrite: value.inputTokens.cacheWrite }),
+    },
+    output: {
+      ...(value.outputTokens.total === undefined ? {} : { total: value.outputTokens.total }),
+      ...(value.outputTokens.text === undefined ? {} : { text: value.outputTokens.text }),
+      ...(value.outputTokens.reasoning === undefined
+        ? {}
+        : { reasoning: value.outputTokens.reasoning }),
+    },
   };
 }
 
@@ -557,12 +567,14 @@ function mapAiError(
           ...("usage" in reason && reason.usage !== undefined
             ? {
                 usage: {
-                  ...(reason.usage.promptTokens === undefined
-                    ? {}
-                    : { inputTokens: reason.usage.promptTokens }),
-                  ...(reason.usage.completionTokens === undefined
-                    ? {}
-                    : { outputTokens: reason.usage.completionTokens }),
+                  input:
+                    reason.usage.promptTokens === undefined
+                      ? {}
+                      : { total: reason.usage.promptTokens },
+                  output:
+                    reason.usage.completionTokens === undefined
+                      ? {}
+                      : { total: reason.usage.completionTokens },
                   ...(reason.usage.totalTokens === undefined
                     ? {}
                     : { totalTokens: reason.usage.totalTokens }),

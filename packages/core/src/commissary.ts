@@ -12,8 +12,11 @@ import type { ModelFailure } from "./protocol.js";
 import type {
   AbortResult,
   Execution,
+  ExecutionEventStore,
   Clock,
   Loop,
+  RedirectInput,
+  RedirectResult,
   ResumeRunCommand,
   GenerateId,
   RunCommand,
@@ -69,6 +72,7 @@ export interface AgentClient<Definition extends AgentDefinition> {
   ) => Promise<RunSnapshot<AgentFailure<Definition>> | undefined>;
   readonly readResult: (runId: RunId) => Promise<RunResult<AgentFailure<Definition>> | undefined>;
   readonly steer: (input: SteerInput) => Promise<SteeringResult>;
+  readonly redirect: (input: RedirectInput) => Promise<RedirectResult>;
   readonly abort: (runId: RunId, reason?: JsonValue) => Promise<AbortResult>;
   readonly subscribe: (hook: HookFragment) => () => void;
 }
@@ -138,6 +142,7 @@ export function commissary(
   configuration: {
     readonly threadStore: ThreadStore;
     readonly artifactStore?: ArtifactStore;
+    readonly executionEventStore?: ExecutionEventStore;
     readonly loop?: Loop;
     readonly executionClaims?: ExecutionClaimOptions;
     readonly clock?: Clock;
@@ -156,6 +161,9 @@ export function commissary(
     ...(configuration.artifactStore === undefined
       ? {}
       : { artifactStore: configuration.artifactStore }),
+    ...(configuration.executionEventStore === undefined
+      ? {}
+      : { executionEventStore: configuration.executionEventStore }),
     ...(configuration[modelEnvironment] === undefined
       ? {}
       : { modelEnvironment: configuration[modelEnvironment] }),
@@ -263,6 +271,9 @@ export function commissary(
         },
         steer(input: SteerInput) {
           return runtime.steer(input);
+        },
+        redirect(input: RedirectInput) {
+          return runtime.redirect(input);
         },
         abort(runId: RunId, reason?: JsonValue) {
           return runtime.abort(runId, reason);

@@ -2,11 +2,21 @@
 
 ## Tool contracts
 
-`Tool.define` accepts a literal name and Standard Schema values for input and output. It can also accept a Failure schema.
+`Tool.define` accepts a literal name and a Standard Schema value for input. Its output Standard Schema is optional. It can also accept a Failure schema.
 
-The constructor infers handler inputs and all declared results. `Tool.Input`, `Tool.Output`, and `Tool.Failure` expose these types. `Tool.dynamic` is the explicit interface for runtime-discovered Tools.
+With an output schema, the constructor infers and validates the successful output type. Without one, successful output uses the provider-neutral JSON value type and core still rejects values that cannot be stored as JSON. `Tool.Input`, `Tool.Output`, and `Tool.Failure` expose these types. `Tool.dynamic` is the explicit interface for runtime-discovered Tools and can represent an MCP Tool that declares no output schema.
 
 A Tool handler receives validated input and one fixed Tool Execution Context. It returns successful output directly. It uses `Tool.failure` or `Tool.suspend` for other declared results.
+
+## Rich Tool results
+
+A successful Tool can return output directly or use `Tool.success(output, { content })` to add Tool Result Content. A declared failure can use `Tool.failure(failure, { content })` for the same purpose. Defects and Tool Suspensions cannot carry Tool Result Content.
+
+The optional output schema validates only output. The optional Failure schema validates only the Failure value. Core validates Tool Result Content against its provider-neutral Content contract. Neither channel is an unvalidated extension point.
+
+Core records the result value and content atomically in the durable Tool Call result. For a top-level Tool Call, its Tool Message contains the structured Tool Result followed by the ordered extra Content Parts. Content supplements the result value; it does not replace or hide that value from the Model.
+
+A delegated child result stays outside Model history. Its parent invocation receives only the typed output or Failure value. Only the parent Tool result becomes model-visible, as defined by ADR 0006.
 
 The Tool Execution Context contains a stable Tool Call ID and idempotency key. These values stay equal across Tool Attempts.
 
@@ -39,6 +49,16 @@ Tool Attempts have at-least-once semantics. A Tool or its integration must use t
 Before the first external attempt, core runs the captured Tool Hooks. It validates and atomically records the effective input, including any Hook change.
 
 Each later attempt uses this recorded input and the same idempotency key. It does not apply a later Execution's Hooks again.
+
+## Dynamic Tool recovery
+
+Core records the Provider ID and Tool name on every committed dynamic Tool Call. Each initial attempt, retry, or resume resolves the current Tool with that identity. Core does not store a Dynamic Tool Revision, schema hash, server version, or compatible-revision list.
+
+For unresolved attempts, the recorded effective input must validate against the current Tool contract. For suspended work, the current Tool and Suspension select the continuation Codec, and that Codec must decode the stored state. A missing Tool, missing Suspension, invalid effective input, or continuation decode failure produces a Stale Agent Interruption. Core does not start a new Run or silently reinterpret incompatible state.
+
+Each resolved dynamic Tool carries the same optional output, Failure, Event, and Suspension contracts as a static Tool. The dynamic boundary is type-erased, but it is not validation-free.
+
+Without an output schema, successful output must still be a provider-neutral JSON value. Returning a declared Failure, emitting an Event, or returning a Suspension requires the matching declared contract. Core validates result values and resume input, validates Events, and encodes continuation state before any durable commit.
 
 ## Tool delegation
 

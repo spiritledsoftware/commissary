@@ -333,7 +333,10 @@ it("translates canonical requests and responses while scoping one model service 
     type: "completed",
     response: {
       finishReason: "stop",
-      usage: { inputTokens: 3, outputTokens: 2, totalTokens: 5 },
+      usage: {
+        input: { total: 3 },
+        output: { total: 2, text: 1, reasoning: 1 },
+      },
       message: {
         role: "assistant",
         content: [
@@ -556,7 +559,7 @@ it("maps declared invalid output to a recoverable interruption with usage", asyn
       type: "model-output",
       provider: "example",
       detail: "malformed response",
-      usage: { inputTokens: 4, outputTokens: 2, totalTokens: 6 },
+      usage: { input: { total: 4 }, output: { total: 2 }, totalTokens: 6 },
     },
   });
 });
@@ -610,7 +613,10 @@ it("interrupts after metered file output when no Artifact Store is available", a
     interruption: {
       type: "artifact-storage-required",
       operation: "write",
-      usage: { inputTokens: 3, outputTokens: 2, totalTokens: 5 },
+      usage: {
+        input: { total: 3 },
+        output: { total: 2, text: 1, reasoning: 1 },
+      },
     },
   });
   expect(

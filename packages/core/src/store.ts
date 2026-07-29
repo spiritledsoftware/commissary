@@ -4,6 +4,7 @@ import type {
   EncodedProviderData,
   ModelMessage,
   ModelUsage,
+  RunUsage,
   Transcript,
 } from "./protocol.js";
 import type {
@@ -11,6 +12,7 @@ import type {
   BranchConflict,
   Interruption,
   RunConflict,
+  RedirectResult,
   RunResult,
   RunSnapshot,
   RunSubmission,
@@ -28,6 +30,7 @@ import type {
   JsonValue,
   MessageEntryId,
   RunId,
+  RedirectRequestId,
   SteeringRequestId,
   ThreadId,
   ToolCallId,
@@ -83,7 +86,8 @@ export interface RunRecord {
   readonly admittedHead: MessageEntryId;
   readonly status: "active" | "suspended" | "completed" | "failed" | "aborted";
   readonly abortRequested: boolean;
-  readonly usage?: ModelUsage;
+  readonly settlementContinuations: number;
+  readonly usage?: RunUsage;
   readonly abortReason?: JsonValue;
   readonly result?: Exclude<RunResult, SuspendedRunResult>;
 }
@@ -99,6 +103,12 @@ export interface ExecutionClaim {
 
 /** One durable Steering Message waiting for the next preparation step. */
 export interface PendingSteering {
+  readonly sequence: number;
+  readonly message: ModelMessage;
+}
+
+/** One durable Redirect Message waiting for the next safe Run boundary. */
+export interface PendingRedirect {
   readonly sequence: number;
   readonly message: ModelMessage;
 }
@@ -135,6 +145,15 @@ export interface ExecutionSnapshot {
   readonly transcript: Transcript;
   readonly head: MessageEntryId;
   readonly pendingSteering: readonly PendingSteering[];
+  readonly pendingRedirects: readonly PendingRedirect[];
+  readonly toolCalls: readonly StoredToolCall[];
+}
+
+/** Current durable context used to validate one Tool resume submission. */
+export interface ToolResumeContext {
+  readonly run: RunRecord;
+  readonly transcript: Transcript;
+  readonly head: MessageEntryId;
   readonly toolCalls: readonly StoredToolCall[];
 }
 
@@ -198,6 +217,7 @@ export interface CommitStepInput {
     readonly message: ModelMessage;
   }[];
   readonly consumedSteeringThrough?: number;
+  readonly consumedRedirectsThrough?: number;
 }
 
 /** One Tool Call created by a committed Model Message. */
@@ -236,11 +256,12 @@ export interface RecordDelegatedToolCallInput {
   readonly input: JsonValue;
 }
 
-/** Input that atomically adds one leaf Model invocation's Usage to a Run. */
-export interface RecordModelUsageInput {
+/** Input that records one leaf Model call and its optional authoritative Usage. */
+export interface RecordModelCallInput {
   readonly claim: ExecutionClaim;
   readonly commitId: CommitId;
-  readonly usage: ModelUsage;
+  readonly modelId: string;
+  readonly usage?: ModelUsage;
 }
 
 /** Input that records one declared Tool success or Failure. */
@@ -269,6 +290,21 @@ export interface CommitToolResultsInput {
   }[];
 }
 
+/** Input that commits one settlement continuation Step. */
+export interface ContinueSettlementInput {
+  readonly claim: ExecutionClaim;
+  readonly expectedHead: MessageEntryId;
+  readonly commitId: CommitId;
+  readonly candidateEntries: readonly {
+    readonly id: MessageEntryId;
+    readonly message: ModelMessage;
+  }[];
+  readonly instructionEntry: {
+    readonly id: MessageEntryId;
+    readonly message: ModelMessage;
+  };
+}
+
 /** Input for durable Run finalization. */
 export interface FinalizeRunStoreInput {
   readonly claim: ExecutionClaim;
@@ -286,6 +322,16 @@ export interface FinalizeRunStoreInput {
 export type SuspendRunStoreResult =
   | GuardedStoreResult<SuspendedRunResult>
   | { readonly type: "work-ready" };
+/** The guarded result of committing a root Model result against a Redirect race. */
+export type CommitModelInvocationStoreResult =
+  | GuardedStoreResult<BranchRecord>
+  | { readonly type: "work-ready" };
+
+/** The guarded result of a settlement continuation commit. */
+export type ContinueSettlementStoreResult =
+  | GuardedStoreResult<BranchRecord>
+  | { readonly type: "work-ready" }
+  | { readonly type: "limit-reached" };
 
 /** The guarded result of a terminal settlement race with accepted Steering. */
 export type FinalizeRunStoreResult =
@@ -321,6 +367,7 @@ export interface ThreadStore {
   readonly submitToolResumes: (input: {
     readonly runId: RunId;
     readonly agent: AgentReference;
+    readonly expectedHead: MessageEntryId;
     readonly items: readonly {
       readonly toolCallId: ToolCallId;
       readonly toolName: string;
@@ -333,12 +380,18 @@ export interface ThreadStore {
     readonly message: ModelMessage;
     readonly steeringRequestId?: SteeringRequestId;
   }) => PromiseLike<SteeringResult>;
+  readonly acceptRedirect: (input: {
+    readonly runId: RunId;
+    readonly message: ModelMessage;
+    readonly redirectRequestId?: RedirectRequestId;
+  }) => PromiseLike<RedirectResult>;
   readonly requestAbort: (input: {
     readonly runId: RunId;
     readonly reason?: JsonValue;
   }) => PromiseLike<AbortResult>;
   readonly readRunSnapshot: (runId: RunId) => PromiseLike<RunSnapshot | undefined>;
   readonly readRunResult: (runId: RunId) => PromiseLike<RunResult | undefined>;
+  readonly readToolResumeContext: (runId: RunId) => PromiseLike<ToolResumeContext | undefined>;
 
   readonly acquireExecutionClaim: (input: {
     readonly runId: RunId;
@@ -359,10 +412,10 @@ export interface ThreadStore {
   readonly commitStep: (input: CommitStepInput) => PromiseLike<GuardedStoreResult<BranchRecord>>;
   readonly commitModelInvocation: (
     input: CommitModelInvocationInput,
-  ) => PromiseLike<GuardedStoreResult<BranchRecord>>;
-  readonly recordModelUsage: (
-    input: RecordModelUsageInput,
-  ) => PromiseLike<GuardedStoreResult<ModelUsage>>;
+  ) => PromiseLike<CommitModelInvocationStoreResult>;
+  readonly recordModelCall: (
+    input: RecordModelCallInput,
+  ) => PromiseLike<GuardedStoreResult<RunUsage>>;
   readonly recordToolInput: (
     input: RecordToolInputInput,
   ) => PromiseLike<GuardedStoreResult<StoredToolCall>>;
@@ -378,6 +431,9 @@ export interface ThreadStore {
   readonly commitToolResults: (
     input: CommitToolResultsInput,
   ) => PromiseLike<GuardedStoreResult<BranchRecord>>;
+  readonly continueSettlement: (
+    input: ContinueSettlementInput,
+  ) => PromiseLike<ContinueSettlementStoreResult>;
   readonly suspendRun: (input: {
     readonly claim: ExecutionClaim;
     readonly expectedHead: MessageEntryId;

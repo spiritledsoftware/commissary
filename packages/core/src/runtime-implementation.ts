@@ -1,11 +1,19 @@
 import type { AgentDefinition, InstalledAgentData } from "./agent.js";
 import type { Contribution } from "./fragment.js";
-import type { HookBlock, HookDefinition } from "./hook.js";
+import type {
+  CompletedToolCallResult,
+  HookBlock,
+  HookDefinition,
+  ModelInvocationCandidate,
+  SettlementContinuation,
+} from "./hook.js";
 import type { AgentReference, RunIdentity } from "./identity.js";
 import type {
   ContextNode,
+  ContentPart,
   ModelCapability,
   ModelEvent,
+  ModelTool,
   ModelMessage,
   ModelRequest,
   ModelResponse,
@@ -25,13 +33,20 @@ import type {
   AbortResult,
   Execution,
   ExecutionEvent,
+  ExecutionEventAppend,
+  ExecutionEventStore,
   ExecutionResult,
   Clock,
   GenerateId,
   InterruptedExecutionResult,
   Loop,
   ModelInvocation,
-  PreparedRun,
+  PreparedModelWork,
+  PreparedToolCall,
+  PreparedToolWork,
+  PreparedWork,
+  RedirectInput,
+  RedirectResult,
   ResolvedExecution,
   RunCommand,
   RunResult,
@@ -48,10 +63,11 @@ import type {
 } from "./runtime.js";
 import {
   ExecutionClaimLostError,
+  ExecutionEventStoreError,
   ExecutionUnavailableError,
   UnexpectedExecutionError,
 } from "./runtime.js";
-import { canonicalJsonObject, validateSchema } from "./schema.js";
+import { schemaJson, validateSchema } from "./schema.js";
 import type {
   ArtifactStore,
   ExecutionClaim,
@@ -63,11 +79,14 @@ import { ArtifactStoreError, ThreadStoreError } from "./store.js";
 import {
   isDynamicToolProviderFragment,
   isToolFailure,
+  isToolSuccess,
   isToolSuspension,
   isToolRuntimeDefinition,
   runtimeDynamicToolProvider,
   runtimeToolDefinition,
+  toolResultContent,
   toolFailureValue,
+  toolSuccessValue,
   toolSuspensionValue,
   type DynamicTool,
   type DynamicToolProvider,
@@ -90,6 +109,7 @@ import {
 interface RuntimeOptions {
   readonly threadStore: ThreadStore;
   readonly artifactStore?: ArtifactStore;
+  readonly executionEventStore?: ExecutionEventStore;
   readonly agents: ReadonlyMap<string, InstalledAgentData>;
   readonly loop?: Loop;
   readonly executionClaims?: { readonly leaseDurationMs?: number };
@@ -107,15 +127,33 @@ type RuntimeTool =
       readonly type: "dynamic";
       readonly providerId: string;
       readonly definition: DynamicTool;
+      readonly modelTool: ModelTool;
     };
 
-interface PreparedState {
-  readonly prepared: PreparedRun;
+interface PreparedStateBase {
   readonly snapshot: ExecutionSnapshot;
   readonly run: RunIdentity;
-  readonly model: RuntimeModel;
   readonly tools: ReadonlyMap<string, RuntimeTool>;
+}
+
+interface PreparedModelState extends PreparedStateBase {
+  readonly prepared: PreparedModelWork;
+  readonly model: RuntimeModel;
   readonly request: ModelRequest;
+}
+
+interface PreparedToolState extends PreparedStateBase {
+  readonly prepared: PreparedToolWork;
+}
+
+type PreparedState = PreparedModelState | PreparedToolState;
+
+function isPreparedModelState(state: PreparedState): state is PreparedModelState {
+  return state.prepared.type === "model";
+}
+
+function isPreparedToolState(state: PreparedState): state is PreparedToolState {
+  return state.prepared.type === "tools";
 }
 
 interface ToolAttemptSuccess {
@@ -142,6 +180,8 @@ class RuntimeInvariantError extends Error {
 class AbortExecution {
   constructor(readonly reason?: JsonValue) {}
 }
+
+class RedirectModelInvocation {}
 
 class InterruptExecution {
   constructor(readonly result: InterruptedExecutionResult) {}
@@ -173,11 +213,183 @@ function isJsonValue(value: unknown): value is JsonValue {
   return Object.entries(value).every(([, child]) => child !== undefined && isJsonValue(child));
 }
 
+function modelDelta(
+  event: ExecutionEvent,
+): { readonly type: "text-delta" | "reasoning-delta"; readonly delta: string } | undefined {
+  if (
+    event.type !== "model-event" ||
+    (event.event.type !== "text-delta" && event.event.type !== "reasoning-delta")
+  ) {
+    return undefined;
+  }
+  return event.event;
+}
+
+function utf8ByteLength(value: string): number {
+  let bytes = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code < 0x80) {
+      bytes += 1;
+    } else if (code < 0x800) {
+      bytes += 2;
+    } else if (code >= 0xd800 && code <= 0xdbff && index + 1 < value.length) {
+      const next = value.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        bytes += 4;
+        index += 1;
+      } else {
+        bytes += 3;
+      }
+    } else {
+      bytes += 3;
+    }
+  }
+  return bytes;
+}
+
 function requireJson(value: unknown, description: string): JsonValue {
   if (!isJsonValue(value)) {
     throw new RuntimeInvariantError(`${description} is not JSON-compatible`);
   }
   return value;
+}
+
+function parseModelUsage(value: unknown, description: string): ModelUsage {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new RuntimeInvariantError(`${description} is malformed`);
+  }
+  const object = value as Record<string, unknown>;
+  if (
+    typeof object.input !== "object" ||
+    object.input === null ||
+    Array.isArray(object.input) ||
+    typeof object.output !== "object" ||
+    object.output === null ||
+    Array.isArray(object.output) ||
+    Object.keys(object).some((key) => key !== "input" && key !== "output" && key !== "totalTokens")
+  ) {
+    throw new RuntimeInvariantError(`${description} is malformed`);
+  }
+  const input = object.input as Record<string, unknown>;
+  const output = object.output as Record<string, unknown>;
+  const validCount = (count: unknown): boolean =>
+    count === undefined ||
+    (typeof count === "number" && Number.isFinite(count) && Number.isInteger(count) && count >= 0);
+  if (
+    Object.keys(input).some(
+      (key) => key !== "total" && key !== "uncached" && key !== "cacheRead" && key !== "cacheWrite",
+    ) ||
+    Object.keys(output).some((key) => key !== "total" && key !== "text" && key !== "reasoning") ||
+    !validCount(input.total) ||
+    !validCount(input.uncached) ||
+    !validCount(input.cacheRead) ||
+    !validCount(input.cacheWrite) ||
+    !validCount(output.total) ||
+    !validCount(output.text) ||
+    !validCount(output.reasoning) ||
+    !validCount(object.totalTokens)
+  ) {
+    throw new RuntimeInvariantError(`${description} counts must be finite nonnegative integers`);
+  }
+  // SAFETY: Every allowed field was checked above and the returned groups are immutable.
+  return Object.freeze({
+    input: Object.freeze({ ...input }),
+    output: Object.freeze({ ...output }),
+    ...(object.totalTokens === undefined ? {} : { totalTokens: object.totalTokens }),
+  }) as ModelUsage;
+}
+
+function parseContentParts(
+  content: readonly ContentPart[],
+  description: string,
+): readonly ContentPart[] {
+  if (!Array.isArray(content)) {
+    throw new RuntimeInvariantError(`${description} Content is not an array`);
+  }
+  return Object.freeze(
+    content.map((part, index) => {
+      requireJson(part, `${description} Content ${index}`);
+      if (typeof part !== "object" || part === null || Array.isArray(part)) {
+        throw new RuntimeInvariantError(`${description} Content ${index} is malformed`);
+      }
+      // SAFETY: requireJson and the object check establish a string-keyed JSON object.
+      const object = part as Record<string, unknown>;
+      const providerDataIsValid =
+        object.providerData === undefined ||
+        (Array.isArray(object.providerData) &&
+          object.providerData.every(
+            (item) =>
+              typeof item === "object" &&
+              item !== null &&
+              !Array.isArray(item) &&
+              "namespace" in item &&
+              typeof item.namespace === "string" &&
+              "version" in item &&
+              typeof item.version === "number" &&
+              Number.isFinite(item.version) &&
+              Number.isInteger(item.version) &&
+              "value" in item,
+          ));
+      if (!providerDataIsValid) {
+        throw new RuntimeInvariantError(
+          `${description} Content ${index} has invalid Provider Data`,
+        );
+      }
+
+      let valid: boolean;
+      switch (object.type) {
+        case "text":
+        case "reasoning":
+          valid = typeof object.text === "string";
+          break;
+        case "file": {
+          const artifact = object.artifact;
+          valid =
+            typeof artifact === "object" &&
+            artifact !== null &&
+            !Array.isArray(artifact) &&
+            "id" in artifact &&
+            typeof artifact.id === "string" &&
+            (!("mediaType" in artifact) ||
+              artifact.mediaType === undefined ||
+              typeof artifact.mediaType === "string") &&
+            (!("name" in artifact) ||
+              artifact.name === undefined ||
+              typeof artifact.name === "string");
+          break;
+        }
+        case "tool-call":
+          valid =
+            typeof object.toolCallId === "string" &&
+            typeof object.toolName === "string" &&
+            "input" in object;
+          break;
+        case "tool-result":
+          valid =
+            typeof object.toolCallId === "string" &&
+            typeof object.toolName === "string" &&
+            "output" in object &&
+            (object.isFailure === undefined || typeof object.isFailure === "boolean");
+          break;
+        case "source":
+          valid =
+            typeof object.id === "string" &&
+            typeof object.title === "string" &&
+            ((object.sourceType === "url" && typeof object.url === "string") ||
+              (object.sourceType === "document" &&
+                typeof object.mediaType === "string" &&
+                (object.fileName === undefined || typeof object.fileName === "string")));
+          break;
+        default:
+          valid = false;
+      }
+      if (!valid) {
+        throw new RuntimeInvariantError(`${description} Content ${index} is malformed`);
+      }
+      return Object.freeze({ ...part });
+    }),
+  );
 }
 
 function malformedHookResult(point: string, detail: string): never {
@@ -195,19 +407,290 @@ function hookResultObject(point: string, result: unknown): Record<string, unknow
 }
 
 function isModelRequest(value: unknown): value is ModelRequest {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value) ||
+    !("context" in value) ||
+    !Array.isArray(value.context) ||
+    !("messages" in value) ||
+    !Array.isArray(value.messages) ||
+    !("tools" in value) ||
+    !Array.isArray(value.tools) ||
+    !("providerOptions" in value) ||
+    !Array.isArray(value.providerOptions)
+  ) {
+    return false;
+  }
   return (
-    typeof value === "object" &&
-    value !== null &&
-    !Array.isArray(value) &&
-    "context" in value &&
-    Array.isArray(value.context) &&
-    "messages" in value &&
-    Array.isArray(value.messages) &&
-    "tools" in value &&
-    Array.isArray(value.tools) &&
-    "providerOptions" in value &&
-    Array.isArray(value.providerOptions)
+    value.context.every(
+      (node) =>
+        typeof node === "object" &&
+        node !== null &&
+        !Array.isArray(node) &&
+        "id" in node &&
+        typeof node.id === "string" &&
+        "content" in node &&
+        Array.isArray(node.content),
+    ) &&
+    value.messages.every(isModelMessage) &&
+    value.tools.every(
+      (tool) =>
+        typeof tool === "object" &&
+        tool !== null &&
+        !Array.isArray(tool) &&
+        "name" in tool &&
+        typeof tool.name === "string" &&
+        "inputSchema" in tool &&
+        (!("description" in tool) ||
+          tool.description === undefined ||
+          typeof tool.description === "string"),
+    ) &&
+    value.providerOptions.every(
+      (option) =>
+        typeof option === "object" &&
+        option !== null &&
+        !Array.isArray(option) &&
+        "namespace" in option &&
+        typeof option.namespace === "string" &&
+        "value" in option,
+    )
   );
+}
+
+function isModelMessage(value: unknown): value is ModelMessage {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value) ||
+    !("role" in value) ||
+    !["system", "user", "assistant", "tool"].includes(String(value.role)) ||
+    !("content" in value) ||
+    !Array.isArray(value.content) ||
+    ("data" in value &&
+      value.data !== undefined &&
+      (!Array.isArray(value.data) ||
+        value.data.some(
+          (item) =>
+            typeof item !== "object" ||
+            item === null ||
+            Array.isArray(item) ||
+            !("key" in item) ||
+            typeof item.key !== "string" ||
+            !("version" in item) ||
+            typeof item.version !== "number" ||
+            !Number.isFinite(item.version) ||
+            !Number.isInteger(item.version) ||
+            !("value" in item),
+        )))
+  ) {
+    return false;
+  }
+  try {
+    parseContentParts(value.content, "Model Message");
+    requireJson(value, "Model Message");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function parseModelEvent(value: unknown, pointName: string): ModelEvent {
+  try {
+    requireJson(value, `Model Event from Hook '${pointName}'`);
+  } catch {
+    return malformedHookResult(pointName, "a non-JSON Model Event");
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value) || !("type" in value)) {
+    return malformedHookResult(pointName, "a malformed Model Event");
+  }
+  const object = value as Record<string, unknown>;
+  switch (object.type) {
+    case "text-delta":
+    case "reasoning-delta":
+      if (typeof object.delta !== "string") {
+        return malformedHookResult(pointName, "a malformed Model delta Event");
+      }
+      break;
+    case "tool-call":
+      if (!("call" in object)) {
+        return malformedHookResult(pointName, "a malformed Tool Call Event");
+      }
+      try {
+        const [call] = parseContentParts([object.call as ContentPart], "Model Event");
+        if (call?.type !== "tool-call") {
+          return malformedHookResult(pointName, "a malformed Tool Call Event");
+        }
+      } catch {
+        return malformedHookResult(pointName, "a malformed Tool Call Event");
+      }
+      break;
+    case "usage":
+      try {
+        parseModelUsage(object.usage, `Usage Event from Hook '${pointName}'`);
+      } catch {
+        return malformedHookResult(pointName, "a malformed Usage Event");
+      }
+      break;
+    case "finish": {
+      const response = object.response;
+      if (
+        typeof response !== "object" ||
+        response === null ||
+        Array.isArray(response) ||
+        !("message" in response) ||
+        !isModelMessage(response.message) ||
+        !("finishReason" in response) ||
+        !["stop", "tool-calls", "length", "content-filter", "error", "pause", "other"].includes(
+          String(response.finishReason),
+        )
+      ) {
+        return malformedHookResult(pointName, "a malformed finish Event");
+      }
+      if ("usage" in response && response.usage !== undefined) {
+        try {
+          parseModelUsage(response.usage, `finish Usage from Hook '${pointName}'`);
+        } catch {
+          return malformedHookResult(pointName, "a malformed finish Usage");
+        }
+      }
+      break;
+    }
+    case "failure": {
+      const failure = object.failure;
+      if (
+        typeof failure !== "object" ||
+        failure === null ||
+        Array.isArray(failure) ||
+        !("type" in failure) ||
+        failure.type !== "model-failure" ||
+        !("reason" in failure) ||
+        (failure.reason !== "content-policy" && failure.reason !== "invalid-request") ||
+        !("provider" in failure) ||
+        typeof failure.provider !== "string" ||
+        !("message" in failure) ||
+        typeof failure.message !== "string"
+      ) {
+        return malformedHookResult(pointName, "a malformed Failure Event");
+      }
+      break;
+    }
+    case "interruption": {
+      const interruption = object.interruption;
+      if (
+        typeof interruption !== "object" ||
+        interruption === null ||
+        Array.isArray(interruption) ||
+        !("type" in interruption)
+      ) {
+        return malformedHookResult(pointName, "a malformed Interruption Event");
+      }
+      // SAFETY: The object check above establishes a string-keyed object.
+      const fields = interruption as Record<string, unknown>;
+      const optionalString = (item: unknown): boolean =>
+        item === undefined || typeof item === "string";
+      let valid: boolean;
+      switch (fields.type) {
+        case "authentication-required":
+          valid = typeof fields.provider === "string" && optionalString(fields.detail);
+          break;
+        case "provider-compatibility":
+          valid =
+            typeof fields.provider === "string" &&
+            typeof fields.detail === "string" &&
+            optionalString(fields.capability) &&
+            optionalString(fields.providerDataNamespace) &&
+            (fields.providerDataVersion === undefined ||
+              (typeof fields.providerDataVersion === "number" &&
+                Number.isFinite(fields.providerDataVersion) &&
+                Number.isInteger(fields.providerDataVersion)));
+          break;
+        case "provider-unavailable":
+          valid =
+            typeof fields.provider === "string" &&
+            ["rate-limit", "transport", "internal-provider", "quota-exhausted"].includes(
+              String(fields.reason),
+            ) &&
+            (fields.retryAfterMs === undefined ||
+              (typeof fields.retryAfterMs === "number" &&
+                Number.isFinite(fields.retryAfterMs) &&
+                fields.retryAfterMs >= 0)) &&
+            optionalString(fields.resetAt) &&
+            optionalString(fields.detail);
+          break;
+        case "model-output":
+          valid = typeof fields.provider === "string" && typeof fields.detail === "string";
+          break;
+        case "artifact-storage-required":
+          valid =
+            (fields.operation === "read" || fields.operation === "write") &&
+            optionalString(fields.detail);
+          break;
+        default:
+          valid = false;
+      }
+      if (!valid) {
+        return malformedHookResult(pointName, "a malformed Interruption Event");
+      }
+      if (fields.usage !== undefined) {
+        try {
+          parseModelUsage(fields.usage, `Interruption Usage from Hook '${pointName}'`);
+        } catch {
+          return malformedHookResult(pointName, "a malformed Interruption Usage");
+        }
+      }
+      break;
+    }
+    default:
+      return malformedHookResult(pointName, "an unknown Model Event");
+  }
+  return Object.freeze({ ...value }) as ModelEvent;
+}
+
+function parseModelInvocationCandidate(value: unknown, pointName: string): ModelInvocation {
+  if (typeof value !== "object" || value === null || Array.isArray(value) || !("type" in value)) {
+    return malformedHookResult(pointName, "a malformed Model invocation");
+  }
+  const candidate = value as ModelInvocationCandidate;
+  switch (candidate.type) {
+    case "response": {
+      const event = parseModelEvent({ type: "finish", response: candidate.response }, pointName);
+      if (event.type !== "finish") {
+        return malformedHookResult(pointName, "a malformed Model response");
+      }
+      const toolCalls = event.response.message.content.filter(
+        (part): part is ToolCallContentPart => part.type === "tool-call",
+      );
+      // SAFETY: The candidate and derived Tool Calls passed the canonical Model Event checks.
+      return Object.freeze({
+        type: "response",
+        response: event.response,
+        toolCalls,
+      }) as unknown as ModelInvocation;
+    }
+    case "failure": {
+      const event = parseModelEvent({ type: "failure", failure: candidate.failure }, pointName);
+      if (event.type !== "failure") {
+        return malformedHookResult(pointName, "a malformed Model Failure");
+      }
+      return Object.freeze({ type: "failure", failure: event.failure }) as ModelInvocation;
+    }
+    case "interruption": {
+      const event = parseModelEvent(
+        { type: "interruption", interruption: candidate.interruption },
+        pointName,
+      );
+      if (event.type !== "interruption") {
+        return malformedHookResult(pointName, "a malformed Model Interruption");
+      }
+      return Object.freeze({
+        type: "interruption",
+        interruption: event.interruption,
+      }) as ModelInvocation;
+    }
+    default:
+      return malformedHookResult(pointName, "an unknown Model invocation");
+  }
 }
 
 function values(
@@ -261,7 +744,7 @@ function wait(delayMs: number, signal: AbortSignal): Promise<void> {
 function toolTarget(tool: RuntimeTool): string {
   return tool.type === "static"
     ? `static:${tool.definition.name}`
-    : `dynamic:${tool.providerId}:${tool.definition.definition.name}`;
+    : `dynamic:${tool.providerId}:${tool.definition.name}`;
 }
 
 function toolResult(call: StoredToolCall): ToolInvocationResult<JsonValue, JsonValue> | undefined {
@@ -303,7 +786,7 @@ function invocationUsage(invocation: ModelInvocation): ModelUsage | undefined {
 
 /** Build the core Runtime behind one Commissary Instance. */
 export function makeRuntime(options: RuntimeOptions): Runtime {
-  const { threadStore, agents, loop } = options;
+  const { threadStore, executionEventStore, agents, loop } = options;
   const leaseDurationMs = options.executionClaims?.leaseDurationMs ?? 60_000;
   if (!Number.isFinite(leaseDurationMs) || leaseDurationMs <= 0) {
     throw new RangeError("executionClaims.leaseDurationMs must be finite and positive");
@@ -316,7 +799,12 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
   function newId<Id extends string>(): Id {
     return generateId() as Id;
   }
-  const active = new Map<RunId, AbortController>();
+  interface ActiveExecution {
+    readonly execution: AbortController;
+    model?: AbortController;
+  }
+
+  const active = new Map<RunId, ActiveExecution>();
 
   const requestAbort = async (runId: RunId, reason?: JsonValue): Promise<AbortResult> => {
     const result = await storeCall("requestAbort", () =>
@@ -326,7 +814,7 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
       }),
     );
     if (result.type === "accepted") {
-      active.get(runId)?.abort(new AbortExecution(reason));
+      active.get(runId)?.execution.abort(new AbortExecution(reason));
     }
     return result;
   };
@@ -358,16 +846,74 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
           toolCallIds: command.items.map((item) => item.toolCallId),
         };
       }
+      const context = await storeCall("readToolResumeContext", () =>
+        threadStore.readToolResumeContext(command.runId),
+      );
+      if (
+        context === undefined ||
+        context.run.agent.id !== installed.reference.id ||
+        context.run.agent.revision !== installed.reference.revision
+      ) {
+        return {
+          type: "tool-resume-conflict",
+          runId: command.runId,
+          toolCallIds: command.items.map((item) => item.toolCallId),
+        };
+      }
+      const run: RunIdentity = Object.freeze({
+        runId: context.run.id,
+        threadId: context.run.threadId,
+        branchId: context.run.branchId,
+        agent: installed.reference,
+      });
+      const providerSignal = new AbortController().signal;
+      const resolvedProviders = new Map<string, Promise<readonly DynamicTool[]>>();
       const encodedItems: Array<{
         toolCallId: ToolCallId;
         toolName: string;
         encodedInput: JsonValue;
       }> = [];
       for (const item of command.items) {
-        const contribution = installed.contributions.find(
-          (candidate) => candidate.kind === "tool" && candidate.id === item.toolName,
+        const call = context.toolCalls.find(
+          (candidate) =>
+            candidate.toolCallId === item.toolCallId && candidate.toolName === item.toolName,
         );
-        const definition = contribution?.value as ToolRuntimeDefinition | undefined;
+        if (call === undefined) {
+          return {
+            type: "tool-resume-conflict",
+            runId: command.runId,
+            toolCallIds: [item.toolCallId],
+          };
+        }
+        let definition: ToolRuntimeDefinition | DynamicTool | undefined;
+        if (call.providerId === undefined) {
+          const contribution = installed.contributions.find(
+            (candidate) => candidate.kind === "tool" && candidate.id === item.toolName,
+          );
+          if (contribution !== undefined && isToolRuntimeDefinition(contribution.value)) {
+            definition = contribution.value;
+          }
+        } else {
+          const contribution = installed.contributions.find(
+            (candidate) =>
+              candidate.kind === "tool" && candidate.id === `dynamic:${call.providerId}`,
+          );
+          if (contribution !== undefined && !isToolRuntimeDefinition(contribution.value)) {
+            let resolved = resolvedProviders.get(call.providerId);
+            if (resolved === undefined) {
+              const provider = contribution.value as DynamicToolProvider<string>;
+              resolved = Promise.resolve(
+                provider.resolve({
+                  transcript: context.transcript,
+                  run,
+                  signal: providerSignal,
+                }),
+              );
+              resolvedProviders.set(call.providerId, resolved);
+            }
+            definition = (await resolved).find((candidate) => candidate.name === item.toolName);
+          }
+        }
         if (definition?.suspension === undefined) {
           return {
             type: "tool-resume-conflict",
@@ -386,6 +932,7 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
         threadStore.submitToolResumes({
           runId: command.runId,
           agent: installed.reference,
+          expectedHead: context.head,
           items: encodedItems,
           ...(command.toolResumeRequestId === undefined
             ? {}
@@ -396,6 +943,14 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
 
     steer(input: SteerInput): Promise<SteeringResult> {
       return storeCall("acceptSteering", () => threadStore.acceptSteering(input));
+    },
+
+    async redirect(input: RedirectInput): Promise<RedirectResult> {
+      const result = await storeCall("acceptRedirect", () => threadStore.acceptRedirect(input));
+      if (result.type === "accepted" && result.admitted) {
+        active.get(input.runId)?.model?.abort(new RedirectModelInvocation());
+      }
+      return result;
     },
 
     abort(runId: RunId, reason?: JsonValue): Promise<AbortResult> {
@@ -447,12 +1002,14 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
         throw new ExecutionUnavailableError(runId, "wrong-agent");
       }
 
-      const modelProducts = new WeakMap<object, PreparedRun>();
-      const toolProducts = new WeakMap<object, PreparedRun>();
+      const modelProducts = new WeakMap<object, PreparedModelWork>();
+      const toolProducts = new WeakMap<object, PreparedToolWork>();
+      const preparedToolCalls = new WeakMap<object, PreparedToolWork>();
       const hooks = Object.freeze([...staticHooks(installed.contributions), ...dynamicHooks]);
       const controller = new AbortController();
       const lifecycleController = new AbortController();
-      active.set(runId, controller);
+      const activeExecution: ActiveExecution = { execution: controller };
+      active.set(runId, activeExecution);
       const preparedStates = new WeakMap<object, PreparedState>();
       const resolvedExecutions = new WeakSet<object>();
       let currentRun: RunIdentity = Object.freeze({
@@ -470,7 +1027,10 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
         if (!controller.signal.aborted) {
           return;
         }
-        if (controller.signal.reason instanceof ExecutionClaimLostError) {
+        if (
+          controller.signal.reason instanceof ExecutionClaimLostError ||
+          controller.signal.reason instanceof ExecutionEventStoreError
+        ) {
           throw controller.signal.reason;
         }
         if (controller.signal.reason instanceof AbortExecution) {
@@ -479,6 +1039,13 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
         throw new AbortExecution(
           isJsonValue(controller.signal.reason) ? controller.signal.reason : undefined,
         );
+      };
+
+      const assertModelActive = (signal: AbortSignal): void => {
+        assertActive();
+        if (signal.aborted) {
+          throw signal.reason;
+        }
       };
 
       const publishObserverError = async (
@@ -490,6 +1057,18 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
             ? cause
             : new UnexpectedExecutionError("hook", cause);
         const event: ExecutionEvent = Object.freeze({ type: "error", error });
+        if (executionEventStore !== undefined) {
+          const record = Object.freeze({
+            runId,
+            executionId,
+            event,
+          });
+          try {
+            await executionEventStore.append([record]);
+          } catch (appendCause) {
+            throw failEventStore(appendCause);
+          }
+        }
         for (const candidate of hooks) {
           if (candidate === failedHook || candidate.point.name !== "onExecutionEvent") {
             continue;
@@ -524,15 +1103,145 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
         }
       };
 
-      const emit = async (event: ExecutionEvent): Promise<void> => {
+      const observeEvent = async (event: ExecutionEvent): Promise<void> => {
         if (event.type === "model-event") {
           await notify("onModelEvent", { run: currentRun, event: event.event });
         }
         await notify("onExecutionEvent", { run: currentRun, event }, event.type !== "error");
       };
 
-      const transformModelRequest = async (request: ModelRequest): Promise<ModelRequest> => {
+      let eventBuffer: ExecutionEventAppend[] = [];
+      let bufferedSourceEvents = 0;
+      let bufferedBytes = 0;
+      let flushScheduled = false;
+      let eventStoreFailure: ExecutionEventStoreError | undefined;
+      let flushChain = Promise.resolve();
+
+      const failEventStore = (cause: unknown): ExecutionEventStoreError => {
+        const error =
+          cause instanceof ExecutionEventStoreError ? cause : new ExecutionEventStoreError(cause);
+        eventStoreFailure ??= error;
+        if (!controller.signal.aborted) {
+          controller.abort(error);
+        }
+        return eventStoreFailure;
+      };
+
+      const flushEvents = (): Promise<void> => {
+        if (eventStoreFailure !== undefined) {
+          return Promise.reject(eventStoreFailure);
+        }
+        if (eventBuffer.length === 0) {
+          return flushChain;
+        }
+        const records = eventBuffer;
+        eventBuffer = [];
+        bufferedSourceEvents = 0;
+        bufferedBytes = 0;
+        const operation = flushChain.then(async () => {
+          if (executionEventStore !== undefined) {
+            // SAFETY: flushEvents returns before append when the batch is empty.
+            await executionEventStore.append(
+              records as [ExecutionEventAppend, ...ExecutionEventAppend[]],
+            );
+          }
+          for (const record of records) {
+            await observeEvent(record.event);
+          }
+        });
+        flushChain = operation.catch((cause: unknown) => {
+          throw failEventStore(cause);
+        });
+        return flushChain;
+      };
+
+      const scheduleEventFlush = (): void => {
+        if (flushScheduled) {
+          return;
+        }
+        flushScheduled = true;
+        void Promise.resolve(clock.sleep(16, lifecycleController.signal))
+          .then(() => {
+            flushScheduled = false;
+            return flushEvents();
+          })
+          .catch((cause: unknown) => {
+            flushScheduled = false;
+            if (
+              !lifecycleController.signal.aborted &&
+              !(cause instanceof ExecutionEventStoreError)
+            ) {
+              failEventStore(cause);
+            }
+          });
+      };
+
+      const emit = async (event: ExecutionEvent): Promise<void> => {
+        if (executionEventStore === undefined) {
+          await observeEvent(event);
+          return;
+        }
+        if (eventStoreFailure !== undefined) {
+          throw eventStoreFailure;
+        }
+
+        const delta = modelDelta(event);
+        if (delta === undefined) {
+          await flushEvents();
+          eventBuffer.push(
+            Object.freeze({
+              runId,
+              executionId,
+              event,
+            }),
+          );
+          bufferedSourceEvents += 1;
+          await flushEvents();
+          return;
+        }
+
+        const previous = eventBuffer.at(-1);
+        const previousDelta = previous === undefined ? undefined : modelDelta(previous.event);
+        if (previous !== undefined && previousDelta?.type === delta.type) {
+          eventBuffer[eventBuffer.length - 1] = Object.freeze({
+            ...previous,
+            event: Object.freeze({
+              type: "model-event" as const,
+              event: Object.freeze({
+                type: delta.type,
+                delta: previousDelta.delta + delta.delta,
+              }),
+            }),
+          });
+        } else {
+          eventBuffer.push(
+            Object.freeze({
+              runId,
+              executionId,
+              event,
+            }),
+          );
+        }
+        bufferedSourceEvents += 1;
+        bufferedBytes += utf8ByteLength(delta.delta);
+        if (bufferedSourceEvents >= 64 || bufferedBytes >= 64 * 1024) {
+          await flushEvents();
+          return;
+        }
+        scheduleEventFlush();
+      };
+
+      const transformModelRequest = async (
+        request: ModelRequest,
+        signal: AbortSignal,
+      ): Promise<ModelRequest> => {
         let current = request;
+        const availableTools = new Map(
+          request.tools.map(
+            (tool) =>
+              [tool.name, stableJson(requireJson(tool, `Installed Tool '${tool.name}'`))] as const,
+          ),
+        );
         for (const hook of hooks) {
           if (hook.point.name !== "beforeModelRequest") {
             continue;
@@ -542,7 +1251,7 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
             result = (await hook.handler({
               run: currentRun,
               request: current,
-              signal: controller.signal,
+              signal,
             })) as typeof result;
           } catch (cause) {
             throw new UnexpectedExecutionError("hook", cause);
@@ -568,8 +1277,75 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
             if (!isModelRequest(object.request)) {
               return malformedHookResult("beforeModelRequest", "an invalid request patch");
             }
+            try {
+              requireJson(object.request, "Transformed Model Request");
+            } catch {
+              return malformedHookResult("beforeModelRequest", "a non-JSON request patch");
+            }
+            const names = new Set<string>();
+            for (const tool of object.request.tools) {
+              if (
+                typeof tool !== "object" ||
+                tool === null ||
+                Array.isArray(tool) ||
+                typeof tool.name !== "string" ||
+                names.has(tool.name) ||
+                availableTools.get(tool.name) !==
+                  stableJson(requireJson(tool, `Transformed Tool '${tool.name}'`))
+              ) {
+                return malformedHookResult(
+                  "beforeModelRequest",
+                  "a request patch that adds or changes a Tool",
+                );
+              }
+              names.add(tool.name);
+            }
             current = object.request;
           }
+        }
+        return current;
+      };
+
+      const transformModelEvent = async (
+        event: ModelEvent,
+        signal: AbortSignal,
+      ): Promise<ModelEvent | undefined> => {
+        let current: ModelEvent | undefined = event;
+        for (const hook of hooks) {
+          if (hook.point.name !== "transformModelEvent" || current === undefined) {
+            continue;
+          }
+          let result: { readonly event?: ModelEvent } | HookBlock | undefined;
+          try {
+            result = (await hook.handler({
+              run: currentRun,
+              event: current,
+              signal,
+            })) as typeof result;
+          } catch (cause) {
+            throw new UnexpectedExecutionError("hook", cause);
+          }
+          const object = hookResultObject("transformModelEvent", result);
+          if (object === undefined) {
+            continue;
+          }
+          if ("type" in object) {
+            if (
+              object.type !== "block" ||
+              !("failure" in object) ||
+              Object.keys(object).some((key) => key !== "type" && key !== "failure")
+            ) {
+              return malformedHookResult("transformModelEvent", "an invalid block result");
+            }
+            throw new HookBlockedExecution("transformModelEvent", object.failure);
+          }
+          if (!("event" in object) || Object.keys(object).some((key) => key !== "event")) {
+            return malformedHookResult("transformModelEvent", "an invalid Event patch");
+          }
+          current =
+            object.event === undefined
+              ? undefined
+              : parseModelEvent(object.event, "transformModelEvent");
         }
         return current;
       };
@@ -618,23 +1394,42 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
 
       const afterModelInvocation = async (
         invocation: ModelInvocation,
-      ): Promise<"continue" | { readonly type: "retry"; readonly delayMs?: number }> => {
+        signal: AbortSignal,
+      ): Promise<
+        | { readonly type: "continue"; readonly invocation: ModelInvocation }
+        | { readonly type: "retry"; readonly delayMs?: number }
+      > => {
+        let current = invocation;
         for (const hook of hooks) {
           if (hook.point.name !== "afterModelInvocation") {
             continue;
           }
-          let result: { readonly type: "retry"; readonly delayMs?: number } | HookBlock | undefined;
+          let result:
+            | { readonly invocation: ModelInvocationCandidate }
+            | { readonly type: "retry"; readonly delayMs?: number }
+            | HookBlock
+            | undefined;
           try {
             result = (await hook.handler({
               run: currentRun,
-              invocation,
-              signal: controller.signal,
+              invocation: current,
+              signal,
             })) as typeof result;
           } catch (cause) {
             throw new UnexpectedExecutionError("hook", cause);
           }
           const object = hookResultObject("afterModelInvocation", result);
           if (object === undefined) {
+            continue;
+          }
+          if ("invocation" in object) {
+            if (Object.keys(object).some((key) => key !== "invocation")) {
+              return malformedHookResult(
+                "afterModelInvocation",
+                "an invalid invocation replacement",
+              );
+            }
+            current = parseModelInvocationCandidate(object.invocation, "afterModelInvocation");
             continue;
           }
           if (object.type === "block") {
@@ -656,9 +1451,14 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
           ) {
             return malformedHookResult("afterModelInvocation", "an invalid retry result");
           }
+          if (current.type !== "interruption") {
+            throw new RuntimeInvariantError(
+              "afterModelInvocation requested a retry for a non-Interruption result",
+            );
+          }
           return object as { readonly type: "retry"; readonly delayMs?: number };
         }
-        return "continue";
+        return { type: "continue", invocation: current };
       };
 
       const guarded = <Value>(
@@ -693,23 +1493,35 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
         return snapshot;
       };
 
-      const prepare = async (): Promise<PreparedRun> => {
+      const prepare = async (): Promise<PreparedWork> => {
         currentPhase = "prepare";
         assertActive();
         let snapshot = await load();
         if (snapshot.run.abortRequested) {
           throw new AbortExecution(snapshot.run.abortReason);
         }
+        const pendingCommands = [
+          ...snapshot.pendingSteering.map((pending) => ({
+            type: "steering" as const,
+            ...pending,
+          })),
+          ...snapshot.pendingRedirects.map((pending) => ({
+            type: "redirect" as const,
+            ...pending,
+          })),
+        ].sort((left, right) => left.sequence - right.sequence);
         if (
-          snapshot.pendingSteering.length > 0 &&
+          pendingCommands.length > 0 &&
           !snapshot.toolCalls.some(
             (call) => call.parentToolCallId === undefined && !call.historyCommitted,
           )
         ) {
-          const entries = snapshot.pendingSteering.map((pending) => ({
+          const entries = pendingCommands.map((pending) => ({
             id: newId<MessageEntryId>(),
             message: pending.message,
           }));
+          const consumedSteering = snapshot.pendingSteering.at(-1);
+          const consumedRedirect = snapshot.pendingRedirects.at(-1);
           guarded(
             await storeCall("commitStep", () =>
               threadStore.commitStep({
@@ -717,7 +1529,12 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
                 expectedHead: snapshot.head,
                 commitId: newId<CommitId>(),
                 entries,
-                consumedSteeringThrough: snapshot.pendingSteering.at(-1)!.sequence,
+                ...(consumedSteering === undefined
+                  ? {}
+                  : { consumedSteeringThrough: consumedSteering.sequence }),
+                ...(consumedRedirect === undefined
+                  ? {}
+                  : { consumedRedirectsThrough: consumedRedirect.sequence }),
               }),
             ),
           );
@@ -730,18 +1547,6 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
           branchId: snapshot.run.branchId,
           agent: installed.reference,
         });
-        const context: ContextNode[] = [];
-        for (const value of values(installed.contributions, "context")) {
-          const contribution = value as ContextContribution;
-          const content = await contribution.render({
-            transcript: snapshot.transcript,
-            run: currentRun,
-            signal: controller.signal,
-          });
-          context.push(Object.freeze({ id: contribution.id, content }));
-        }
-
-        const model = values(installed.contributions, "model")[0] as RuntimeModel;
         const tools = new Map<string, RuntimeTool>();
         for (const contribution of installed.contributions) {
           if (contribution.kind !== "tool") {
@@ -764,39 +1569,89 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
             signal: controller.signal,
           })) {
             const modelTool = Object.freeze({
-              ...definition.definition,
-              inputSchema: canonicalJsonObject(definition.definition.inputSchema),
+              name: definition.name,
+              ...(definition.description === undefined
+                ? {}
+                : { description: definition.description }),
+              inputSchema: schemaJson(definition.input),
             });
-            const installedDefinition = Object.freeze({
-              ...definition,
-              definition: modelTool,
-            });
-            const name = modelTool.name;
+            const installedDefinition = Object.freeze({ ...definition });
+            const name = definition.name;
             if (tools.has(name)) {
               throw new RuntimeInvariantError(`Dynamic Tool '${name}' conflicts with another Tool`);
             }
             tools.set(name, {
               type: "dynamic",
               providerId: provider.id,
+              modelTool,
               definition: installedDefinition,
             });
           }
         }
+        const pendingToolCalls = snapshot.toolCalls
+          .filter((call) => call.parentToolCallId === undefined && !call.historyCommitted)
+          .sort((left, right) => left.sequence - right.sequence);
+        if (pendingToolCalls.length > 0) {
+          const calls = Object.freeze(
+            pendingToolCalls.map((call) => {
+              // SAFETY: The private map below proves that only this Runtime-created call can authorize execution.
+              const preparedCall = Object.freeze({
+                type: "tool-call" as const,
+                toolCallId: call.toolCallId,
+                toolName: call.toolName,
+                input: call.input,
+                ...(call.providerData === undefined ? {} : { providerData: call.providerData }),
+              }) as PreparedToolCall;
+              return preparedCall;
+            }),
+          );
+          // SAFETY: Runtime creates this opaque capability and keeps its state in preparedStates.
+          const prepared = Object.freeze({
+            type: "tools" as const,
+            run: currentRun,
+            transcriptHead: snapshot.head,
+            calls,
+          }) as PreparedToolWork;
+          preparedStates.set(prepared, {
+            prepared,
+            snapshot,
+            run: currentRun,
+            tools,
+          });
+          for (const call of calls) {
+            preparedToolCalls.set(call, prepared);
+          }
+          return prepared;
+        }
+
+        const context: ContextNode[] = [];
+        for (const value of values(installed.contributions, "context")) {
+          const contribution = value as ContextContribution;
+          const content = await contribution.render({
+            transcript: snapshot.transcript,
+            run: currentRun,
+            signal: controller.signal,
+          });
+          context.push(Object.freeze({ id: contribution.id, content }));
+        }
+        const model = values(installed.contributions, "model")[0] as RuntimeModel;
 
         const request: ModelRequest = Object.freeze({
           context: Object.freeze(context),
           messages: Transcript.toModelMessages(snapshot.transcript),
           tools: Object.freeze(
             [...tools.values()].map((tool) =>
-              tool.type === "static" ? tool.definition.modelTool : tool.definition.definition,
+              tool.type === "static" ? tool.definition.modelTool : tool.modelTool,
             ),
           ),
           providerOptions: Object.freeze([]),
         });
+        // SAFETY: Runtime creates this opaque capability and keeps its state in preparedStates.
         const prepared = Object.freeze({
+          type: "model" as const,
           run: currentRun,
           transcriptHead: snapshot.head,
-        }) as PreparedRun;
+        }) as PreparedModelWork;
         preparedStates.set(prepared, {
           prepared,
           snapshot,
@@ -908,67 +1763,41 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
       const leafEvents = (
         model: ModelCapability<string, unknown>,
         request: ModelRequest,
+        signal: AbortSignal,
       ): AsyncIterable<ModelEvent> => ({
         async *[Symbol.asyncIterator]() {
-          while (true) {
-            assertActive();
-            const transformed = await transformModelRequest(request);
-            const session = await acquireModelSession(model);
-            const source = await session.invoke(transformed, {
-              signal: controller.signal,
-            });
-            let terminal = false;
-            let retry: { readonly type: "retry"; readonly delayMs?: number } | undefined;
-            for await (const event of source) {
-              assertActive();
-              if (terminal) {
-                throw new RuntimeInvariantError("Model emitted an Event after its terminal Event");
-              }
-              const invocation = terminalInvocation(event);
-              if (invocation === undefined) {
-                yield event;
-                continue;
-              }
-              const usage = invocationUsage(invocation);
-              if (usage !== undefined) {
-                guarded(
-                  await storeCall("recordModelUsage", () =>
-                    threadStore.recordModelUsage({
-                      claim,
-                      commitId: newId<CommitId>(),
-                      usage,
-                    }),
-                  ),
-                );
-              }
-              const decision = await afterModelInvocation(invocation);
-              if (decision !== "continue") {
-                if (invocation.type !== "interruption") {
-                  throw new RuntimeInvariantError(
-                    "afterModelInvocation requested a retry for a non-Interruption result",
-                  );
-                }
-                retry = decision;
-                break;
-              }
+          assertModelActive(signal);
+          const session = await acquireModelSession(model);
+          const source = await session.invoke(request, { signal });
+          let terminal = false;
+          for await (const event of source) {
+            assertModelActive(signal);
+            if (terminal) {
+              throw new RuntimeInvariantError("Model emitted an Event after its terminal Event");
+            }
+            const invocation = terminalInvocation(event);
+            if (invocation !== undefined) {
               terminal = true;
-              yield event;
+              const reportedUsage = invocationUsage(invocation);
+              const usage =
+                reportedUsage === undefined
+                  ? undefined
+                  : parseModelUsage(reportedUsage, `Usage from Model '${model.id}'`);
+              guarded(
+                await storeCall("recordModelCall", () =>
+                  threadStore.recordModelCall({
+                    claim,
+                    commitId: newId<CommitId>(),
+                    modelId: model.id,
+                    ...(usage === undefined ? {} : { usage }),
+                  }),
+                ),
+              );
             }
-            if (retry !== undefined) {
-              if (retry.delayMs !== undefined) {
-                if (!Number.isFinite(retry.delayMs) || retry.delayMs < 0) {
-                  throw new RuntimeInvariantError(
-                    "Model retry delay must be finite and nonnegative",
-                  );
-                }
-                await clock.sleep(retry.delayMs, controller.signal);
-              }
-              continue;
-            }
-            if (!terminal) {
-              throw new RuntimeInvariantError("Model stream ended without a terminal Event");
-            }
-            return;
+            yield event;
+          }
+          if (!terminal) {
+            throw new RuntimeInvariantError("Model stream ended without a terminal Event");
           }
         },
       });
@@ -977,13 +1806,14 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
         model: RuntimeModel,
         request: ModelRequest,
         activeModels: readonly RuntimeModel[],
+        signal: AbortSignal,
       ): Promise<AsyncIterable<ModelEvent>> => {
         if (activeModels.includes(model)) {
           const id = model.type === "leaf" ? model.capability.id : model.id;
           throw new RuntimeInvariantError(`Composite Model cycle reached '${id}'`);
         }
         if (model.type === "leaf") {
-          return leafEvents(model.capability, request);
+          return leafEvents(model.capability, request, signal);
         }
 
         const path = [...activeModels, model];
@@ -1023,7 +1853,7 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
           ]);
         };
         const context: CompositeModelContext = Object.freeze({
-          signal: controller.signal,
+          signal,
           invoke: (
             child: ModelDefinition<string, unknown>,
             childRequest: ModelRequest,
@@ -1044,7 +1874,9 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
               }
               return current.result;
             }
-            const result = invokeRuntimeModel(runtime, childRequest, path).then(nestedResult);
+            const result = invokeRuntimeModel(runtime, childRequest, path, signal).then(
+              nestedResult,
+            );
             records.set(invocationOptions.key, {
               signature: fingerprint,
               mode: "invoke",
@@ -1088,7 +1920,7 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
                   yield eventForNestedResult(await current.result);
                   return;
                 }
-                const events = await invokeRuntimeModel(runtime, childRequest, path);
+                const events = await invokeRuntimeModel(runtime, childRequest, path, signal);
                 for await (const event of events) {
                   if (committedKey !== undefined && committedKey !== invocationOptions.key) {
                     throw new RuntimeInvariantError(
@@ -1105,114 +1937,312 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
         return model.invoke(request, context);
       };
 
-      const invokeModel = async (prepared: PreparedRun): Promise<ModelInvocation> => {
+      const invokeModel = async (prepared: PreparedModelWork): Promise<ModelInvocation> => {
         const state = preparedStates.get(prepared);
-        if (state === undefined) {
-          throw new RuntimeInvariantError("Prepared Run belongs to another Execution");
+        if (state === undefined || !isPreparedModelState(state)) {
+          throw new RuntimeInvariantError("Model Work belongs to another Execution");
         }
         currentPhase = "model";
         assertActive();
-        let response: ModelResponse | undefined;
-        let invocation: ModelInvocation | undefined;
-        const events = await invokeRuntimeModel(state.model, state.request, []);
-        for await (const event of events) {
-          assertActive();
-          await emit(Object.freeze({ type: "model-event", event }));
-          const terminal = terminalInvocation(event);
-          if (terminal === undefined) {
-            if (response !== undefined || invocation !== undefined) {
-              throw new RuntimeInvariantError("Model emitted an Event after its terminal Event");
-            }
-            continue;
-          }
-          if (response !== undefined || invocation !== undefined) {
-            throw new RuntimeInvariantError("Model emitted more than one terminal Event");
-          }
-          if (terminal.type === "response") {
-            response = terminal.response;
-          } else {
-            invocation = terminal;
-          }
-        }
-        if (invocation === undefined && response === undefined) {
-          throw new RuntimeInvariantError("Model stream ended without a terminal Event");
-        }
-        if (invocation === undefined) {
-          const toolCalls = response!.message.content.filter(
-            (part): part is ToolCallContentPart => part.type === "tool-call",
-          );
-          const seen = new Set<ToolCallId>();
-          for (const call of toolCalls) {
-            if (seen.has(call.toolCallId)) {
-              throw new RuntimeInvariantError(`Duplicate Tool Call ID '${call.toolCallId}'`);
-            }
-            seen.add(call.toolCallId);
-            if (!state.tools.has(call.toolName)) {
-              throw new RuntimeInvariantError(`Model requested unknown Tool '${call.toolName}'`);
-            }
-          }
-          invocation = Object.freeze({
-            type: "response",
-            response: response!,
-            toolCalls,
-          }) as unknown as ModelInvocation;
-        }
-
-        if (invocation.type === "response") {
-          const mustCommit =
-            invocation.toolCalls.length > 0 || invocation.response.finishReason === "pause";
-          if (mustCommit) {
-            const entry = {
-              id: newId<MessageEntryId>(),
-              message: invocation.response.message,
-            };
-            guarded(
-              await storeCall("commitModelInvocation", () =>
-                threadStore.commitModelInvocation({
-                  claim,
-                  expectedHead: state.snapshot.head,
-                  commitId: newId<CommitId>(),
-                  entry,
-                  toolCalls: invocation.toolCalls.map((call) => {
-                    const tool = state.tools.get(call.toolName)!;
-                    return {
-                      toolCallId: call.toolCallId,
-                      toolName: call.toolName,
-                      input: call.input,
-                      ...(tool.type === "dynamic" ? { providerId: tool.providerId } : {}),
-                      ...(call.providerData === undefined
-                        ? {}
-                        : { providerData: call.providerData }),
-                    };
-                  }),
-                }),
-              ),
+        const modelController = new AbortController();
+        const abortModel = (): void => {
+          modelController.abort(controller.signal.reason);
+        };
+        controller.signal.addEventListener("abort", abortModel, { once: true });
+        activeExecution.model = modelController;
+        const runModel = async (): Promise<ModelInvocation> => {
+          while (true) {
+            assertModelActive(modelController.signal);
+            const request = await transformModelRequest(state.request, modelController.signal);
+            const advertisedTools = new Set(request.tools.map((tool) => tool.name));
+            const events = await invokeRuntimeModel(
+              state.model,
+              request,
+              [],
+              modelController.signal,
             );
+            let invocation: ModelInvocation | undefined;
+            for await (const sourceEvent of events) {
+              assertModelActive(modelController.signal);
+              const event = await transformModelEvent(sourceEvent, modelController.signal);
+              if (event === undefined) {
+                continue;
+              }
+              if (invocation !== undefined) {
+                throw new RuntimeInvariantError("Model emitted an Event after its terminal Event");
+              }
+              const terminal = terminalInvocation(event);
+              if (terminal === undefined) {
+                await emit(Object.freeze({ type: "model-event", event }));
+                continue;
+              }
+              invocation = terminal;
+            }
+            if (invocation === undefined) {
+              throw new RuntimeInvariantError("Model stream ended without a terminal Event");
+            }
+
+            const decision = await afterModelInvocation(invocation, modelController.signal);
+            if (decision.type === "retry") {
+              if (decision.delayMs !== undefined) {
+                await clock.sleep(decision.delayMs, modelController.signal);
+              }
+              continue;
+            }
+            invocation = decision.invocation;
+            if (invocation.type === "response") {
+              const seen = new Set<ToolCallId>();
+              for (const call of invocation.toolCalls) {
+                if (seen.has(call.toolCallId)) {
+                  throw new RuntimeInvariantError(`Duplicate Tool Call ID '${call.toolCallId}'`);
+                }
+                seen.add(call.toolCallId);
+                if (!state.tools.has(call.toolName)) {
+                  throw new RuntimeInvariantError(
+                    `Model requested unknown Tool '${call.toolName}'`,
+                  );
+                }
+                if (!advertisedTools.has(call.toolName)) {
+                  throw new RuntimeInvariantError(`Model requested hidden Tool '${call.toolName}'`);
+                }
+              }
+            }
+
+            const terminalEvent = eventForNestedResult(invocation);
+            await emit(
+              Object.freeze({
+                type: "model-event",
+                event: Object.freeze(terminalEvent),
+              }),
+            );
+
+            assertModelActive(modelController.signal);
+            if (invocation.type === "response") {
+              const mustCommit =
+                invocation.toolCalls.length > 0 || invocation.response.finishReason === "pause";
+              if (mustCommit) {
+                const entry = {
+                  id: newId<MessageEntryId>(),
+                  message: invocation.response.message,
+                };
+                const committed = await storeCall("commitModelInvocation", () =>
+                  threadStore.commitModelInvocation({
+                    claim,
+                    expectedHead: state.snapshot.head,
+                    commitId: newId<CommitId>(),
+                    entry,
+                    toolCalls: invocation.toolCalls.map((call) => {
+                      const tool = state.tools.get(call.toolName);
+                      if (tool === undefined) {
+                        throw new RuntimeInvariantError(
+                          `Model requested unknown Tool '${call.toolName}'`,
+                        );
+                      }
+                      return {
+                        toolCallId: call.toolCallId,
+                        toolName: call.toolName,
+                        input: call.input,
+                        ...(tool.type === "dynamic" ? { providerId: tool.providerId } : {}),
+                        ...(call.providerData === undefined
+                          ? {}
+                          : { providerData: call.providerData }),
+                      };
+                    }),
+                  }),
+                );
+                if (committed.type === "work-ready") {
+                  throw new ContinueLoop();
+                }
+                guarded(committed);
+              }
+            }
+            modelProducts.set(invocation, prepared);
+            return invocation;
+          }
+        };
+        try {
+          return await runModel();
+        } catch (cause) {
+          if (modelController.signal.reason instanceof RedirectModelInvocation) {
+            throw new ContinueLoop();
+          }
+          throw cause;
+        } finally {
+          controller.signal.removeEventListener("abort", abortModel);
+          if (activeExecution.model === modelController) {
+            activeExecution.model = undefined;
           }
         }
-        modelProducts.set(invocation, prepared);
-        return invocation;
       };
 
-      const resolveRuntimeTool = (state: PreparedState, call: StoredToolCall): RuntimeTool => {
+      const interruptStaleAgent = async (
+        call: StoredToolCall,
+        snapshot: ExecutionSnapshot,
+        detail: string,
+      ): Promise<never> => {
+        const interruption: InterruptedExecutionResult = {
+          type: "interrupted",
+          runId,
+          interruption: {
+            type: "stale-agent",
+            expected: call.suspension?.agent ?? snapshot.run.agent,
+            installed: installed.reference,
+            toolName: call.toolName,
+            detail,
+          },
+        };
+        guarded(
+          await storeCall("recordInterruption", () =>
+            threadStore.recordInterruption({
+              claim,
+              interruption: interruption.interruption,
+            }),
+          ),
+        );
+        throw new InterruptExecution(interruption);
+      };
+
+      const resolveRuntimeTool = async (
+        state: PreparedState,
+        call: StoredToolCall,
+        snapshot: ExecutionSnapshot,
+      ): Promise<RuntimeTool> => {
         const tool = state.tools.get(call.toolName);
         if (tool === undefined) {
+          if (call.providerId !== undefined) {
+            return interruptStaleAgent(
+              call,
+              snapshot,
+              `Dynamic Tool '${call.toolName}' is no longer available`,
+            );
+          }
           throw new RuntimeInvariantError(`Stored Tool '${call.toolName}' is not installed`);
         }
         if ((tool.type === "dynamic" ? tool.providerId : undefined) !== call.providerId) {
+          if (call.providerId !== undefined) {
+            return interruptStaleAgent(
+              call,
+              snapshot,
+              `Dynamic Tool '${call.toolName}' changed Provider ownership`,
+            );
+          }
           throw new RuntimeInvariantError(`Stored Tool '${call.toolName}' changed ownership`);
         }
         return tool;
       };
 
+      const validateCompletedToolResult = async (
+        tool: RuntimeTool,
+        toolName: string,
+        value: unknown,
+      ): Promise<CompletedToolCallResult> => {
+        if (typeof value !== "object" || value === null || Array.isArray(value)) {
+          return malformedHookResult("afterToolExecution", "a malformed Tool result");
+        }
+        const object = value as Record<string, unknown>;
+        const content =
+          object.content === undefined
+            ? Object.freeze([])
+            : parseContentParts(object.content as readonly ContentPart[], toolName);
+        if (object.type === "success") {
+          if (
+            !("output" in object) ||
+            Object.keys(object).some(
+              (key) => key !== "type" && key !== "output" && key !== "content",
+            )
+          ) {
+            return malformedHookResult("afterToolExecution", "a malformed Tool success");
+          }
+          const output =
+            tool.definition.output === undefined
+              ? object.output
+              : await validateSchema(tool.definition.output, object.output);
+          return Object.freeze({
+            type: "success",
+            output: requireJson(output, `Output from Tool '${toolName}'`),
+            ...(content.length === 0 ? {} : { content }),
+          });
+        }
+        if (object.type === "failure") {
+          const failureSchema = tool.definition.failure;
+          if (
+            failureSchema === undefined ||
+            !("failure" in object) ||
+            Object.keys(object).some(
+              (key) => key !== "type" && key !== "failure" && key !== "content",
+            )
+          ) {
+            return malformedHookResult("afterToolExecution", "a malformed Tool Failure");
+          }
+          const failure = await validateSchema(failureSchema, object.failure);
+          return Object.freeze({
+            type: "failure",
+            failure: requireJson(failure, `Failure from Tool '${toolName}'`),
+            ...(content.length === 0 ? {} : { content }),
+          });
+        }
+        return malformedHookResult("afterToolExecution", "an unknown Tool result");
+      };
+
+      const transformCompletedToolResult = async (
+        call: StoredToolCall,
+        tool: RuntimeTool,
+        result: CompletedToolCallResult,
+      ): Promise<CompletedToolCallResult> => {
+        let current = result;
+        for (const hook of hooks) {
+          if (hook.point.name !== "afterToolExecution") {
+            continue;
+          }
+          let hookResult: { readonly result: CompletedToolCallResult } | HookBlock | undefined;
+          try {
+            hookResult = (await hook.handler({
+              run: currentRun,
+              toolName: call.toolName,
+              toolCallId: call.toolCallId,
+              result: current,
+              signal: controller.signal,
+            })) as typeof hookResult;
+          } catch (cause) {
+            throw new UnexpectedExecutionError("hook", cause);
+          }
+          const object = hookResultObject("afterToolExecution", hookResult);
+          if (object === undefined) {
+            continue;
+          }
+          if ("type" in object) {
+            if (
+              object.type !== "block" ||
+              !("failure" in object) ||
+              Object.keys(object).some((key) => key !== "type" && key !== "failure")
+            ) {
+              return malformedHookResult("afterToolExecution", "an invalid block result");
+            }
+            throw new HookBlockedExecution("afterToolExecution", object.failure);
+          }
+          if (!("result" in object) || Object.keys(object).some((key) => key !== "result")) {
+            return malformedHookResult("afterToolExecution", "an invalid result replacement");
+          }
+          try {
+            current = await validateCompletedToolResult(tool, call.toolName, object.result);
+          } catch (cause) {
+            if (cause instanceof UnexpectedExecutionError) {
+              throw cause;
+            }
+            throw new UnexpectedExecutionError("hook", cause);
+          }
+        }
+        return current;
+      };
+
       const attemptToolCall = async (
-        prepared: PreparedRun,
+        prepared: PreparedToolWork,
         originalCall: StoredToolCall,
         activeTargets: readonly string[],
       ): Promise<ToolAttemptOutcome> => {
         const state = preparedStates.get(prepared);
-        if (state === undefined) {
-          throw new RuntimeInvariantError("Prepared Run belongs to another Execution");
+        if (state === undefined || !isPreparedToolState(state)) {
+          throw new RuntimeInvariantError("Tool Work belongs to another Execution");
         }
         currentPhase = "tool";
         assertActive();
@@ -1235,7 +2265,26 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
 
         const toolCallId = call.toolCallId;
         const toolName = call.toolName;
-        const tool = resolveRuntimeTool(state, call);
+        const tool = await resolveRuntimeTool(state, call, snapshot);
+        const validateToolInput = async (
+          currentCall: StoredToolCall,
+          value: unknown,
+        ): Promise<unknown> => {
+          try {
+            return await validateSchema(tool.definition.input, value);
+          } catch (cause) {
+            if (tool.type === "dynamic") {
+              return interruptStaleAgent(
+                currentCall,
+                snapshot,
+                cause instanceof Error
+                  ? cause.message
+                  : `Dynamic Tool '${currentCall.toolName}' rejected its stored input`,
+              );
+            }
+            throw cause;
+          }
+        };
         const target = toolTarget(tool);
         if (activeTargets.includes(target)) {
           throw new RuntimeInvariantError(`Tool delegation cycle reached '${call.toolName}'`);
@@ -1245,9 +2294,7 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
         let input: unknown = call.effectiveInput;
         if (input === undefined) {
           input = await transformToolInput(call);
-          if (tool.type === "static") {
-            input = await validateSchema(tool.definition.input, input);
-          }
+          input = await validateToolInput(call, input);
           const encoded = requireJson(input, `Effective input for Tool '${call.toolName}'`);
           call = guarded(
             await storeCall("recordToolInput", () =>
@@ -1259,8 +2306,8 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
             ),
           );
           input = call.effectiveInput;
-        } else if (tool.type === "static") {
-          input = await validateSchema(tool.definition.input, input);
+        } else {
+          input = await validateToolInput(call, input);
         }
 
         const invokeChild = async (
@@ -1345,12 +2392,11 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
           signal: controller.signal,
           emit: async (event: unknown) => {
             let value = event;
-            if (tool.type === "static") {
-              if (tool.definition.event === undefined) {
-                throw new RuntimeInvariantError(`Tool '${toolName}' emitted an undeclared Event`);
-              }
-              value = await validateSchema(tool.definition.event, event);
+            const eventSchema = tool.definition.event;
+            if (eventSchema === undefined) {
+              throw new RuntimeInvariantError(`Tool '${toolName}' emitted an undeclared Event`);
             }
+            value = await validateSchema(eventSchema, event);
             await emit(
               Object.freeze({
                 type: "tool-event",
@@ -1396,60 +2442,61 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
           }),
         );
 
-        const interruptStaleAgent = async (detail: string): Promise<never> => {
-          const interruption: InterruptedExecutionResult = {
-            type: "interrupted",
-            runId,
-            interruption: {
-              type: "stale-agent",
-              expected: call.suspension!.agent,
-              installed: installed.reference,
-              toolName: call.toolName,
-              detail,
-            },
-          };
-          guarded(
-            await storeCall("recordInterruption", () =>
-              threadStore.recordInterruption({
-                claim,
-                interruption: interruption.interruption,
-              }),
-            ),
-          );
-          throw new InterruptExecution(interruption);
-        };
-
         try {
           let rawResult: unknown;
           if (call.suspension?.resumeInput !== undefined) {
-            if (tool.type !== "static" || tool.definition.suspension === undefined) {
+            const suspension = tool.definition.suspension;
+            if (suspension === undefined) {
+              if (tool.type === "dynamic") {
+                await interruptStaleAgent(
+                  call,
+                  snapshot,
+                  `Dynamic Tool '${call.toolName}' no longer declares Suspension`,
+                );
+              }
               throw new RuntimeInvariantError(
                 `Tool '${call.toolName}' has resume input without a suspension contract`,
               );
             }
-            if (call.suspension.agent.revision !== installed.reference.revision) {
+            if (
+              tool.type === "static" &&
+              call.suspension.agent.revision !== installed.reference.revision
+            ) {
               await interruptStaleAgent(
+                call,
+                snapshot,
                 "Suspended Tool state was created by a different Agent revision",
               );
             }
             let continuation: unknown;
             try {
-              continuation = await tool.definition.suspension.continuation.decode(
-                call.suspension.continuation,
-              );
+              continuation = await suspension.continuation.decode(call.suspension.continuation);
             } catch (cause) {
               await interruptStaleAgent(
+                call,
+                snapshot,
                 cause instanceof Error ? cause.message : "Continuation Codec rejected stored state",
               );
             }
-            const resumeInput = await validateSchema(
-              tool.definition.suspension.resumeInput,
-              call.suspension.resumeInput,
-            );
-            rawResult = await tool.definition.suspension.resume(
-              { input: resumeInput, continuation },
-              context,
-            );
+            let resumeInput: unknown;
+            try {
+              resumeInput = await validateSchema(
+                suspension.resumeInput,
+                call.suspension.resumeInput,
+              );
+            } catch (cause) {
+              if (tool.type === "dynamic") {
+                await interruptStaleAgent(
+                  call,
+                  snapshot,
+                  cause instanceof Error
+                    ? cause.message
+                    : `Dynamic Tool '${call.toolName}' rejected its stored resume input`,
+                );
+              }
+              throw cause;
+            }
+            rawResult = await suspension.resume({ input: resumeInput, continuation }, context);
           } else if (call.status === "suspended") {
             return { type: "suspended" };
           } else if (tool.type === "dynamic") {
@@ -1459,22 +2506,21 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
           }
 
           if (isToolFailure(rawResult)) {
-            let failure: unknown;
-            if (tool.type === "dynamic") {
-              failure = toolFailureValue(rawResult);
-            } else {
-              const failureSchema = tool.definition.failure;
-              if (failureSchema === undefined) {
-                throw new RuntimeInvariantError(
-                  `Tool '${toolName}' returned an undeclared Failure`,
-                );
-              }
-              failure = await validateSchema(failureSchema, toolFailureValue(rawResult));
+            const failureSchema = tool.definition.failure;
+            if (failureSchema === undefined) {
+              throw new RuntimeInvariantError(`Tool '${toolName}' returned an undeclared Failure`);
             }
-            const result = {
-              type: "failure" as const,
-              failure: requireJson(failure, `Failure from Tool '${call.toolName}'`),
-            };
+            const failure = await validateSchema(failureSchema, toolFailureValue(rawResult));
+            const content = parseContentParts(toolResultContent(rawResult), toolName);
+            const result = await transformCompletedToolResult(
+              call,
+              tool,
+              Object.freeze({
+                type: "failure" as const,
+                failure: requireJson(failure, `Failure from Tool '${call.toolName}'`),
+                ...(content.length === 0 ? {} : { content }),
+              }),
+            );
             guarded(
               await storeCall("completeToolCall", () =>
                 threadStore.completeToolCall({
@@ -1496,13 +2542,14 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
           }
 
           if (isToolSuspension(rawResult)) {
-            if (tool.type !== "static" || tool.definition.suspension === undefined) {
+            const suspension = tool.definition.suspension;
+            if (suspension === undefined) {
               throw new RuntimeInvariantError(
                 `Tool '${call.toolName}' returned an undeclared Suspension`,
               );
             }
             const continuation = requireJson(
-              await tool.definition.suspension.continuation.encode(toolSuspensionValue(rawResult)),
+              await suspension.continuation.encode(toolSuspensionValue(rawResult)),
               `Continuation from Tool '${call.toolName}'`,
             );
             guarded(
@@ -1524,14 +2571,23 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
             return { type: "suspended" };
           }
 
+          const content = isToolSuccess(rawResult)
+            ? parseContentParts(toolResultContent(rawResult), toolName)
+            : Object.freeze([]);
+          const rawOutput = isToolSuccess(rawResult) ? toolSuccessValue(rawResult) : rawResult;
           const output =
-            tool.type === "static"
-              ? await validateSchema(tool.definition.output, rawResult)
-              : rawResult;
-          const result = {
-            type: "success" as const,
-            output: requireJson(output, `Output from Tool '${call.toolName}'`),
-          };
+            tool.definition.output === undefined
+              ? rawOutput
+              : await validateSchema(tool.definition.output, rawOutput);
+          const result = await transformCompletedToolResult(
+            call,
+            tool,
+            Object.freeze({
+              type: "success" as const,
+              output: requireJson(output, `Output from Tool '${call.toolName}'`),
+              ...(content.length === 0 ? {} : { content }),
+            }),
+          );
           guarded(
             await storeCall("completeToolCall", () =>
               threadStore.completeToolCall({
@@ -1557,6 +2613,7 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
           throw cause;
         }
       };
+      let toolResultCommitChain = Promise.resolve(false);
 
       const commitResolvedToolResults = async (): Promise<boolean> => {
         const snapshot = await load();
@@ -1570,7 +2627,12 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
           return false;
         }
         const entries = calls.map((call) => {
-          const result = toolResult(call)!;
+          const result = call.result;
+          if (result === undefined || result.type === "aborted") {
+            throw new RuntimeInvariantError(
+              `Resolved Tool Call '${call.toolCallId}' has no declared result`,
+            );
+          }
           return {
             id: newId<MessageEntryId>(),
             toolCallId: call.toolCallId,
@@ -1585,6 +2647,7 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
                   ...(result.type === "failure" ? { isFailure: true as const } : {}),
                   ...(call.providerData === undefined ? {} : { providerData: call.providerData }),
                 },
+                ...(result.content ?? []),
               ],
             },
           };
@@ -1601,11 +2664,18 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
         );
         return true;
       };
+      const commitResolvedToolResultsInOrder = (): Promise<boolean> => {
+        toolResultCommitChain = toolResultCommitChain.then(commitResolvedToolResults);
+        return toolResultCommitChain;
+      };
 
       const executeTool = async (
-        prepared: PreparedRun,
-        requested: ToolCallContentPart,
+        prepared: PreparedToolWork,
+        requested: PreparedToolCall,
       ): Promise<ToolExecution> => {
+        if (preparedToolCalls.get(requested) !== prepared) {
+          throw new RuntimeInvariantError("Tool Call belongs to another Prepared Work value");
+        }
         const snapshot = await load();
         const call = snapshot.toolCalls.find(
           (candidate) => candidate.toolCallId === requested.toolCallId,
@@ -1625,9 +2695,80 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
         }) as ToolExecution;
         toolProducts.set(product, prepared);
         if (outcome.type === "success") {
-          await commitResolvedToolResults();
+          await commitResolvedToolResultsInOrder();
         }
         return product;
+      };
+
+      const beforeSettlement = async (
+        result: Exclude<RunResult, SuspendedRunResult>,
+      ): Promise<ModelMessage | undefined> => {
+        for (const hook of hooks) {
+          if (hook.point.name !== "beforeSettlement") {
+            continue;
+          }
+          const deadline = new AbortController();
+          const abortDeadline = (): void => {
+            deadline.abort(controller.signal.reason);
+          };
+          controller.signal.addEventListener("abort", abortDeadline, {
+            once: true,
+          });
+          const handler = Promise.resolve()
+            .then(() =>
+              hook.handler({
+                run: currentRun,
+                result,
+                signal: deadline.signal,
+              }),
+            )
+            .then(
+              (value) => ({ type: "result" as const, value }),
+              (cause: unknown) => ({ type: "failure" as const, cause }),
+            );
+          const timeout = Promise.resolve(clock.sleep(30_000, deadline.signal)).then(
+            () => ({ type: "timeout" as const }),
+            (cause: unknown) => ({ type: "timer-failure" as const, cause }),
+          );
+          const outcome = await Promise.race([handler, timeout]);
+          controller.signal.removeEventListener("abort", abortDeadline);
+          if (!deadline.signal.aborted) {
+            deadline.abort();
+          }
+          if (outcome.type === "timeout") {
+            await emit(
+              Object.freeze({
+                type: "error",
+                error: new UnexpectedExecutionError(
+                  "hook",
+                  new Error("Hook 'beforeSettlement' exceeded its 30000 ms deadline"),
+                ),
+              }),
+            );
+            continue;
+          }
+          if (outcome.type === "timer-failure") {
+            assertActive();
+            throw new UnexpectedExecutionError("hook", outcome.cause);
+          }
+          if (outcome.type === "failure") {
+            throw new UnexpectedExecutionError("hook", outcome.cause);
+          }
+          const object = hookResultObject("beforeSettlement", outcome.value);
+          if (object === undefined) {
+            continue;
+          }
+          if (
+            object.type !== "continue" ||
+            !("instruction" in object) ||
+            !isModelMessage(object.instruction) ||
+            Object.keys(object).some((key) => key !== "type" && key !== "instruction")
+          ) {
+            return malformedHookResult("beforeSettlement", "an invalid continuation instruction");
+          }
+          return (object as unknown as SettlementContinuation).instruction;
+        }
+        return undefined;
       };
 
       type FinalizeTerminalResult = RunResult | { readonly type: "work-ready" };
@@ -1694,6 +2835,33 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
             ...(value === undefined ? {} : { reason: value as JsonValue }),
           });
         }
+        if (type !== "aborted") {
+          const instruction = await beforeSettlement(result);
+          if (instruction !== undefined && snapshot.run.settlementContinuations < 32) {
+            const continued = await storeCall("continueSettlement", () =>
+              threadStore.continueSettlement({
+                claim,
+                expectedHead: snapshot.head,
+                commitId: newId<CommitId>(),
+                candidateEntries: entries,
+                instructionEntry: {
+                  id: newId<MessageEntryId>(),
+                  message: instruction,
+                },
+              }),
+            );
+            if (continued.type === "abort-requested") {
+              return finalizeTerminal("aborted", continued.reason);
+            }
+            if (continued.type === "work-ready") {
+              return continued;
+            }
+            if (continued.type !== "limit-reached") {
+              guarded(continued);
+              return { type: "work-ready" };
+            }
+          }
+        }
         const committed = await storeCall("finalizeRun", () =>
           threadStore.finalizeRun({
             claim,
@@ -1733,11 +2901,11 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
       };
 
       const settle = async (
-        prepared: PreparedRun,
+        prepared: PreparedWork,
         product: ModelInvocation | ToolExecution,
       ): Promise<ResolvedExecution> => {
         if (!preparedStates.has(prepared)) {
-          throw new RuntimeInvariantError("Prepared Run belongs to another Execution");
+          throw new RuntimeInvariantError("Prepared Work belongs to another Execution");
         }
         let value: ExecutionResult;
         if (modelProducts.get(product) === prepared) {
@@ -1773,6 +2941,18 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
             );
           }
           const snapshot = await load();
+          if (
+            snapshot.toolCalls.some(
+              (call) =>
+                call.parentToolCallId === undefined &&
+                !call.historyCommitted &&
+                (call.status === "pending" || call.status === "running"),
+            )
+          ) {
+            throw new RuntimeInvariantError(
+              "Cannot settle while a top-level Tool Call is still executable",
+            );
+          }
           const suspensions = publicSuspensions(snapshot);
           if (suspensions.length === 0) {
             throw new RuntimeInvariantError("Cannot settle without a durable Tool Suspension");
@@ -1814,21 +2994,18 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
         while (true) {
           assertActive();
           const prepared = await prepare();
-          let snapshot = preparedStates.get(prepared)!.snapshot;
-          const topLevel = snapshot.toolCalls
-            .filter((call) => call.parentToolCallId === undefined && !call.historyCommitted)
-            .sort((left, right) => left.sequence - right.sequence);
-
-          if (topLevel.length > 0) {
-            for (const call of topLevel) {
-              if (call.status !== "succeeded" && call.status !== "failed") {
-                await attemptToolCall(prepared, call, []);
-              }
+          if (prepared.type === "tools") {
+            for (const call of prepared.calls) {
+              await executeTool(prepared, call);
             }
-            if (await commitResolvedToolResults()) {
+            const snapshot = await load();
+            if (
+              !snapshot.toolCalls.some(
+                (call) => call.parentToolCallId === undefined && !call.historyCommitted,
+              )
+            ) {
               continue;
             }
-            snapshot = await load();
 
             const suspensions = publicSuspensions(snapshot);
             if (suspensions.length > 0) {
@@ -1985,6 +3162,7 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
             }
             currentPhase = "loop";
             await closeModelSessions();
+            await flushEvents();
             await notify("onSettlement", { run: currentRun, result: settled });
             return settled;
           } catch (cause) {
@@ -2001,12 +3179,14 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
                   cause instanceof AbortExecution ? cause.reason : controller.signal.reason.reason;
                 settled = requireTerminal(await finalizeTerminal("aborted", reason));
                 await closeModelSessions();
+                await flushEvents();
                 await notify("onSettlement", { run: currentRun, result: settled });
                 return settled;
               }
               if (cause instanceof InterruptExecution) {
                 settled = cause.result;
                 await closeModelSessions();
+                await flushEvents();
                 await notify("onSettlement", { run: currentRun, result: settled });
                 return settled;
               }
@@ -2022,17 +3202,27 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
                 }
                 settled = terminal;
                 await closeModelSessions();
+                await flushEvents();
                 await notify("onSettlement", { run: currentRun, result: settled });
                 return settled;
               }
+              const eventStoreError =
+                cause instanceof ExecutionEventStoreError
+                  ? cause
+                  : controller.signal.reason instanceof ExecutionEventStoreError
+                    ? controller.signal.reason
+                    : undefined;
               const error =
-                cause instanceof ExecutionClaimLostError ||
+                eventStoreError ??
+                (cause instanceof ExecutionClaimLostError ||
                 cause instanceof ThreadStoreError ||
                 cause instanceof ArtifactStoreError ||
                 cause instanceof UnexpectedExecutionError
                   ? cause
-                  : new UnexpectedExecutionError(currentPhase, cause);
-              await emit(Object.freeze({ type: "error", error }));
+                  : new UnexpectedExecutionError(currentPhase, cause));
+              if (!(error instanceof ExecutionEventStoreError)) {
+                await emit(Object.freeze({ type: "error", error }));
+              }
               throw error;
             } finally {
               if (!restarting && !modelSessionsClosed) {

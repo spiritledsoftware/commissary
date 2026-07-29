@@ -29,13 +29,39 @@ Core keeps `Model.define` as the advanced plain JavaScript implementation interf
 
 An installed Agent resolves one root Model. A Composite Model declares each child Model and invokes it through the core nested invocation interface. The caller supplies a stable key for each child invocation.
 
-Core rejects active Model invocation cycles. Core keeps cancellation, resource scope, Model Usage, Execution Events, Hooks, and error classification for every leaf call.
+Core rejects active Model invocation cycles. Core keeps cancellation, resource scope, Model Usage, Execution Events, and error classification for every leaf call. Core Model Hooks run once around the root Model invocation; a provider adapter or Model implementation owns policy for its internal calls.
 
 Core has no routing, fallback, decoration, cache, or capability-routing policy. Composite Models implement these policies.
 
 A Composite Model can consume one child response without forwarding its Events. It can then call another child or use an unforwarded failure for fallback.
 
 Forwarding a child Event that contributes to output commits the Composite Model to that child. It cannot switch children for that invocation. A later child failure propagates.
+
+## Model Usage
+
+Model Usage has two required groups with optional counts:
+
+- Input Tokens: `total`, `uncached`, `cacheRead`, and `cacheWrite`.
+- Output Tokens: `total`, `text`, and `reasoning`.
+
+An optional top-level `totalTokens` preserves the provider-reported total. Core does not derive or correct it because a provider can include overhead that is absent from the detailed buckets.
+
+Each count is a finite nonnegative integer. A missing count stays missing; it is not zero. Run aggregation adds each reported field independently and leaves a field missing when no invocation reported it.
+
+Core does not calculate or store money cost in Model Usage or Run Usage. Prices, discounts, and billing rules belong to the host. A host can calculate cost from the per-Model Run Usage breakdown.
+
+Core does not store the provider's raw Usage object in durable Model Usage or Run Usage. Provider-specific Usage fields belong in provider telemetry.
+
+Run Usage uses one shape for single and Composite Models. It contains:
+
+- A combined Model Usage total.
+- One entry for each leaf Model ID, ordered by first invocation.
+- A call count and a reported-Usage call count for each entry.
+- The independently aggregated Model Usage for each entry.
+
+Each retry is another leaf Model call. A call increments the reported-Usage count only when its terminal response or Interruption contains Model Usage. This makes partial reporting visible instead of presenting a known subtotal as complete.
+
+Only Usage on a terminal response or Interruption is authoritative for durable Run Usage. Streaming Usage Events remain observable, but core does not add them to Run Usage.
 
 ## Content and replay
 
