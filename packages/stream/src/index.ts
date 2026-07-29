@@ -44,14 +44,22 @@ export class StreamAlreadyConsumedError extends Error {
 class BoundedEventQueue<Value extends ExecutionEvent> implements AsyncIterable<
   Value | EventsDroppedEvent
 > {
-  readonly #values: Value[] = [];
-  readonly #waiters: Array<(result: IteratorResult<Value | EventsDroppedEvent>) => void> = [];
+  readonly #values: Array<Value | undefined>;
+  readonly #waiters: Array<
+    ((result: IteratorResult<Value | EventsDroppedEvent>) => void) | undefined
+  > = [];
+  #valueHead = 0;
+  #valueSize = 0;
+  #waiterHead = 0;
   #dropped = 0;
   #closed = false;
   #consumed = false;
   #pendingError: Value | undefined;
 
-  constructor(readonly capacity: number) {}
+  constructor(readonly capacity: number) {
+    this.#values = [];
+    this.#values.length = capacity;
+  }
 
   push(value: Value): void {
     if (this.#closed) {
@@ -72,14 +80,14 @@ class BoundedEventQueue<Value extends ExecutionEvent> implements AsyncIterable<
   }
 
   #pushNormal(value: Value): void {
-    if (this.#dropped > 0 && this.#waiters.length > 0) {
-      this.#waiters.shift()!({
+    if (this.#dropped > 0 && this.#hasWaiter()) {
+      this.#takeWaiter()({
         done: false,
         value: this.#takeDropped(),
       });
     }
-    if (this.#waiters.length > 0) {
-      this.#waiters.shift()!({ done: false, value });
+    if (this.#hasWaiter()) {
+      this.#takeWaiter()({ done: false, value });
       return;
     }
 
@@ -88,11 +96,11 @@ class BoundedEventQueue<Value extends ExecutionEvent> implements AsyncIterable<
       this.#dropped += 1;
       return;
     }
-    if (this.#values.length === normalCapacity) {
-      this.#values.shift();
+    if (this.#valueSize === normalCapacity) {
+      this.#dequeueValue();
       this.#dropped += 1;
     }
-    this.#values.push(value);
+    this.#enqueueValue(value);
   }
 
   close(): void {
@@ -134,7 +142,7 @@ class BoundedEventQueue<Value extends ExecutionEvent> implements AsyncIterable<
     if (this.#dropped > 0) {
       return Promise.resolve({ done: false, value: this.#takeDropped() });
     }
-    const value = this.#values.shift();
+    const value = this.#dequeueValue();
     if (value !== undefined) {
       return Promise.resolve({ done: false, value });
     }
@@ -147,17 +155,52 @@ class BoundedEventQueue<Value extends ExecutionEvent> implements AsyncIterable<
   }
 
   #enqueueTerminal(value: Value): void {
-    if (this.#dropped > 0 && this.#waiters.length > 0) {
-      this.#waiters.shift()!({
+    if (this.#dropped > 0 && this.#hasWaiter()) {
+      this.#takeWaiter()({
         done: false,
         value: this.#takeDropped(),
       });
     }
-    if (this.#waiters.length > 0) {
-      this.#waiters.shift()!({ done: false, value });
+    if (this.#hasWaiter()) {
+      this.#takeWaiter()({ done: false, value });
       return;
     }
-    this.#values.push(value);
+    this.#enqueueValue(value);
+  }
+
+  #enqueueValue(value: Value): void {
+    const index = (this.#valueHead + this.#valueSize) % this.#values.length;
+    this.#values[index] = value;
+    this.#valueSize += 1;
+  }
+
+  #dequeueValue(): Value | undefined {
+    if (this.#valueSize === 0) {
+      return undefined;
+    }
+    const value = this.#values[this.#valueHead];
+    this.#values[this.#valueHead] = undefined;
+    this.#valueHead = (this.#valueHead + 1) % this.#values.length;
+    this.#valueSize -= 1;
+    return value;
+  }
+
+  #hasWaiter(): boolean {
+    return this.#waiterHead < this.#waiters.length;
+  }
+
+  #takeWaiter(): (result: IteratorResult<Value | EventsDroppedEvent>) => void {
+    const waiter = this.#waiters[this.#waiterHead];
+    if (waiter === undefined) {
+      throw new Error("Event queue waiter index is inconsistent");
+    }
+    this.#waiters[this.#waiterHead] = undefined;
+    this.#waiterHead += 1;
+    if (this.#waiterHead === this.#waiters.length) {
+      this.#waiters.length = 0;
+      this.#waiterHead = 0;
+    }
+    return waiter;
   }
 
   #takeDropped(): EventsDroppedEvent {
@@ -170,14 +213,18 @@ class BoundedEventQueue<Value extends ExecutionEvent> implements AsyncIterable<
   }
 
   #drainClosed(): void {
-    while (this.#waiters.length > 0 && this.#dropped > 0) {
-      this.#waiters.shift()!({ done: false, value: this.#takeDropped() });
+    while (this.#hasWaiter() && this.#dropped > 0) {
+      this.#takeWaiter()({ done: false, value: this.#takeDropped() });
     }
-    while (this.#waiters.length > 0 && this.#values.length > 0) {
-      this.#waiters.shift()!({ done: false, value: this.#values.shift()! });
+    while (this.#hasWaiter() && this.#valueSize > 0) {
+      const value = this.#dequeueValue();
+      if (value === undefined) {
+        throw new Error("Event queue value index is inconsistent");
+      }
+      this.#takeWaiter()({ done: false, value });
     }
-    while (this.#waiters.length > 0) {
-      this.#waiters.shift()!({ done: true, value: undefined });
+    while (this.#hasWaiter()) {
+      this.#takeWaiter()({ done: true, value: undefined });
     }
   }
 }

@@ -67,6 +67,45 @@ it("bounds Events, discards the oldest values, and combines the loss count", asy
   ]);
 });
 
+it("keeps a large Event burst bounded in arrival order", async () => {
+  const eventCount = 4_096;
+  const capacity = 1_024;
+  const droppedCount = eventCount + 1 - (capacity - 1);
+  const model = Model.define({
+    id: "large-bounded",
+    async *invoke() {
+      for (let index = 0; index < eventCount; index += 1) {
+        yield { type: "text-delta" as const, delta: String(index) };
+      }
+      yield {
+        type: "finish" as const,
+        response: {
+          message: { role: "assistant" as const, content: [Content.text("done")] },
+          finishReason: "stop" as const,
+        },
+      };
+    },
+  });
+  const { client, runId } = await clientFor(model);
+  const streamed = await execute(client, runId, { capacity });
+  await streamed.execution.result;
+
+  const events = await collect(streamed.events);
+  expect(events).toHaveLength(capacity);
+  expect(events[0]).toEqual({
+    type: "events-dropped",
+    count: droppedCount,
+  });
+  expect(events[1]).toMatchObject({
+    type: "model-event",
+    event: { type: "text-delta", delta: String(droppedCount) },
+  });
+  expect(events.at(-1)).toMatchObject({
+    type: "model-event",
+    event: { type: "finish" },
+  });
+});
+
 it("reserves terminal capacity for the Error Event", async () => {
   const model = Model.define({
     id: "error",

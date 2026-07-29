@@ -328,6 +328,10 @@ _Avoid_: Tool definition, provider call, Tool Attempt
 The durable acyclic graph of Model-requested and delegated Tool Calls in one Run.
 _Avoid_: Branch transcript, Agent Tree, process-bound call stack
 
+**Tool Execution Mode**:
+A Tool-declared constraint that lets top-level Tool Calls in one Model-requested batch run concurrently or requires the complete batch to run in durable Tool Call order.
+_Avoid_: Loop, Tool Attempt, provider concurrency
+
 **Tool Attempt**:
 One process-bound execution of a Tool Call. A Tool Call can have multiple Tool Attempts.
 _Avoid_: Tool Call, Execution

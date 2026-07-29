@@ -12,6 +12,7 @@ import {
   Transcript,
   Tool,
   commissary,
+  type ModelSchema,
   type ThreadStore,
 } from "../src/index.js";
 import { stringSchema, testSchema } from "./support.js";
@@ -175,6 +176,47 @@ describe("canonical protocol", () => {
     await expect(profile.collect([message])).resolves.toEqual([{ name: "Ada" }]);
   });
 
+  it("decodes matching Message Data concurrently and preserves transcript order", async () => {
+    let firstDecodeActive = false;
+    let secondDecodeOverlapped = false;
+    const item = MessageData.define({
+      key: "example/concurrent",
+      version: 1,
+      codec: Codec.define({
+        encode(value: string) {
+          return value;
+        },
+        async decode(value) {
+          if (typeof value !== "string") {
+            throw new TypeError("invalid item");
+          }
+          if (value === "first") {
+            firstDecodeActive = true;
+            await new Promise((resolve) => setTimeout(resolve, 25));
+            firstDecodeActive = false;
+          } else {
+            secondDecodeOverlapped = firstDecodeActive;
+          }
+          return value;
+        },
+      }),
+    });
+
+    await expect(
+      item.collect([
+        {
+          role: "user",
+          content: [Content.text("hello")],
+          data: [
+            { key: "example/concurrent", version: 1, value: "first" },
+            { key: "example/concurrent", version: 1, value: "second" },
+          ],
+        },
+      ]),
+    ).resolves.toEqual(["first", "second"]);
+    expect(secondDecodeOverlapped).toBe(true);
+  });
+
   it("creates typed namespaced Provider Options", () => {
     const options = ProviderOptions.define("openai");
     expect(options.make({ reasoningEffort: "high" })).toEqual({
@@ -205,6 +247,82 @@ describe("Tool schema installation", () => {
     expect(() => app.agent(agent)).toThrowError(
       "Tool 'invalid-schema' has an invalid input JSON Schema",
     );
+  });
+  it("caches successful JSON Schema conversions by Model Schema identity", () => {
+    let successfulConversions = 0;
+    const sharedInput: ModelSchema<string> = {
+      "~standard": {
+        version: 1,
+        vendor: "schema-cache-test",
+        validate(value) {
+          return typeof value === "string"
+            ? { value }
+            : { issues: [{ message: "Expected string" }] };
+        },
+        jsonSchema: {
+          input() {
+            successfulConversions += 1;
+            return { type: "string" };
+          },
+          output() {
+            return { type: "string" };
+          },
+        },
+      },
+    };
+
+    const first = Tool.define({
+      name: "schema-cache-first",
+      input: sharedInput,
+      output: stringSchema,
+      handler: (value) => value,
+    });
+    const second = Tool.define({
+      name: "schema-cache-second",
+      input: sharedInput,
+      output: stringSchema,
+      handler: (value) => value,
+    });
+    commissary({ threadStore: unusedStore }).agent(
+      Agent.define({
+        id: "schema-cache-agent",
+        fragments: Agent.combine(model, first, second),
+      }),
+    );
+    expect(successfulConversions).toBe(1);
+
+    let failedConversions = 0;
+    const invalidInput: ModelSchema<string> = {
+      "~standard": {
+        ...sharedInput["~standard"],
+        jsonSchema: {
+          input() {
+            failedConversions += 1;
+            return { type: "string", invalid: undefined };
+          },
+          output() {
+            return { type: "string" };
+          },
+        },
+      },
+    };
+    for (const name of ["schema-cache-invalid-first", "schema-cache-invalid-second"]) {
+      const invalidTool = Tool.define({
+        name,
+        input: invalidInput,
+        output: stringSchema,
+        handler: (value) => value,
+      });
+      expect(() =>
+        commissary({ threadStore: unusedStore }).agent(
+          Agent.define({
+            id: `${name}-agent`,
+            fragments: Agent.combine(model, invalidTool),
+          }),
+        ),
+      ).toThrow("invalid input JSON Schema");
+    }
+    expect(failedConversions).toBe(2);
   });
 });
 

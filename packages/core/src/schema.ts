@@ -6,6 +6,9 @@ export type StandardSchema<Output = unknown> = StandardSchemaV1<unknown, Output>
 export type ModelSchema<Output = unknown> = StandardSchema<Output> &
   StandardJSONSchemaV1<unknown, Output>;
 
+// The process-local cache does not own Schema lifetimes and records only successful conversions.
+const schemaJsonCache = new WeakMap<ModelSchema, JsonValue>();
+
 export type SchemaOutput<Schema> =
   Schema extends StandardSchemaV1<unknown, infer Output> ? Output : never;
 
@@ -72,11 +75,17 @@ export function canonicalJsonObject(value: unknown): { readonly [key: string]: J
 }
 
 export function schemaJson(schema: ModelSchema): JsonValue {
+  const cached = schemaJsonCache.get(schema);
+  if (cached !== undefined) {
+    return cached;
+  }
   const converter = schema["~standard"].jsonSchema;
   if (converter === undefined) {
     throw new TypeError(
       `Standard Schema vendor '${schema["~standard"].vendor}' does not provide JSON Schema`,
     );
   }
-  return canonicalJsonObject(converter.input({ target: "draft-07" }));
+  const converted = canonicalJsonObject(converter.input({ target: "draft-07" }));
+  schemaJsonCache.set(schema, converted);
+  return converted;
 }

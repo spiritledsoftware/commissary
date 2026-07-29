@@ -7,6 +7,7 @@ import type {
   ModelInvocationCandidate,
   SettlementContinuation,
 } from "./hook.js";
+import { HookPoints } from "./hook.js";
 import type { AgentReference, RunIdentity } from "./identity.js";
 import type {
   ContextNode,
@@ -93,6 +94,7 @@ import {
   type DynamicToolProviderFragment,
   type ToolDefinition,
   type ToolInvocationResult,
+  type ToolExecutionMode,
   type ToolRuntimeDefinition,
 } from "./tool.js";
 import {
@@ -134,6 +136,9 @@ interface PreparedStateBase {
   readonly snapshot: ExecutionSnapshot;
   readonly run: RunIdentity;
   readonly tools: ReadonlyMap<string, RuntimeTool>;
+  readonly resolveDynamicProvider: (
+    providerId: string,
+  ) => Promise<ReadonlyMap<string, RuntimeTool>>;
 }
 
 interface PreparedModelState extends PreparedStateBase {
@@ -144,6 +149,8 @@ interface PreparedModelState extends PreparedStateBase {
 
 interface PreparedToolState extends PreparedStateBase {
   readonly prepared: PreparedToolWork;
+  readonly outcomes: Map<ToolCallId, StoredToolCall>;
+  readonly executionMode: ToolExecutionMode;
 }
 
 type PreparedState = PreparedModelState | PreparedToolState;
@@ -159,6 +166,7 @@ function isPreparedToolState(state: PreparedState): state is PreparedToolState {
 interface ToolAttemptSuccess {
   readonly type: "success";
   readonly result: ToolInvocationResult<JsonValue, JsonValue>;
+  readonly stored: StoredToolCall;
 }
 
 interface ToolAttemptSuspended {
@@ -706,6 +714,37 @@ function staticHooks(contributions: readonly Contribution[]): readonly HookDefin
   return values(contributions, "hook") as readonly HookDefinition[];
 }
 
+const noHooks: readonly HookDefinition[] = Object.freeze([]);
+
+type HookPointName = keyof typeof HookPoints;
+
+function isHookPointName(value: string): value is HookPointName {
+  return Object.hasOwn(HookPoints, value);
+}
+
+function indexHooks(
+  hooks: readonly HookDefinition[],
+): ReadonlyMap<HookPointName, readonly HookDefinition[]> {
+  const grouped = new Map<HookPointName, HookDefinition[]>();
+  for (const hook of hooks) {
+    const pointName = hook.point.name;
+    if (!isHookPointName(pointName)) {
+      throw new RuntimeInvariantError(`Unknown Hook Point '${pointName}'`);
+    }
+    const pointHooks = grouped.get(pointName);
+    if (pointHooks === undefined) {
+      grouped.set(pointName, [hook]);
+    } else {
+      pointHooks.push(hook);
+    }
+  }
+  const indexed = new Map<HookPointName, readonly HookDefinition[]>();
+  for (const [pointName, pointHooks] of grouped) {
+    indexed.set(pointName, Object.freeze(pointHooks));
+  }
+  return indexed;
+}
+
 async function storeCall<Value>(
   operation: string,
   evaluate: () => PromiseLike<Value>,
@@ -739,6 +778,11 @@ function wait(delayMs: number, signal: AbortSignal): Promise<void> {
     }, delayMs);
     signal.addEventListener("abort", onAbort, { once: true });
   });
+}
+function toolExecutionMode(tool: RuntimeTool): ToolExecutionMode {
+  return tool.type === "static"
+    ? tool.definition.executionMode
+    : (tool.definition.executionMode ?? "parallel");
 }
 
 function toolTarget(tool: RuntimeTool): string {
@@ -1005,13 +1049,23 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
       const modelProducts = new WeakMap<object, PreparedModelWork>();
       const toolProducts = new WeakMap<object, PreparedToolWork>();
       const preparedToolCalls = new WeakMap<object, PreparedToolWork>();
-      const hooks = Object.freeze([...staticHooks(installed.contributions), ...dynamicHooks]);
+      const preparedToolCommits = new WeakMap<object, Promise<void>>();
+      const hooksByPoint = indexHooks([...staticHooks(installed.contributions), ...dynamicHooks]);
+      const hooksAt = (pointName: HookPointName): readonly HookDefinition[] =>
+        hooksByPoint.get(pointName) ?? noHooks;
       const controller = new AbortController();
       const lifecycleController = new AbortController();
       const activeExecution: ActiveExecution = { execution: controller };
       active.set(runId, activeExecution);
       const preparedStates = new WeakMap<object, PreparedState>();
       const resolvedExecutions = new WeakSet<object>();
+      function preparedToolState(prepared: PreparedToolWork): PreparedToolState {
+        const state = preparedStates.get(prepared);
+        if (state === undefined || !isPreparedToolState(state)) {
+          throw new RuntimeInvariantError("Tool Work belongs to another Execution");
+        }
+        return state;
+      }
       let currentRun: RunIdentity = Object.freeze({
         runId,
         threadId: initialSnapshot.run.threadId,
@@ -1069,8 +1123,8 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
             throw failEventStore(appendCause);
           }
         }
-        for (const candidate of hooks) {
-          if (candidate === failedHook || candidate.point.name !== "onExecutionEvent") {
+        for (const candidate of hooksAt("onExecutionEvent")) {
+          if (candidate === failedHook) {
             continue;
           }
           try {
@@ -1082,14 +1136,11 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
       };
 
       const notify = async (
-        pointName: string,
+        pointName: HookPointName,
         event: unknown,
         reportObserverErrors = true,
       ): Promise<void> => {
-        for (const hook of hooks) {
-          if (hook.point.name !== pointName) {
-            continue;
-          }
+        for (const hook of hooksAt(pointName)) {
           try {
             const result = await hook.handler(event);
             if (result !== undefined) {
@@ -1242,10 +1293,7 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
               [tool.name, stableJson(requireJson(tool, `Installed Tool '${tool.name}'`))] as const,
           ),
         );
-        for (const hook of hooks) {
-          if (hook.point.name !== "beforeModelRequest") {
-            continue;
-          }
+        for (const hook of hooksAt("beforeModelRequest")) {
           let result: { readonly request?: ModelRequest } | HookBlock | undefined;
           try {
             result = (await hook.handler({
@@ -1311,8 +1359,8 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
         signal: AbortSignal,
       ): Promise<ModelEvent | undefined> => {
         let current: ModelEvent | undefined = event;
-        for (const hook of hooks) {
-          if (hook.point.name !== "transformModelEvent" || current === undefined) {
+        for (const hook of hooksAt("transformModelEvent")) {
+          if (current === undefined) {
             continue;
           }
           let result: { readonly event?: ModelEvent } | HookBlock | undefined;
@@ -1352,10 +1400,7 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
 
       const transformToolInput = async (call: StoredToolCall): Promise<unknown> => {
         let current: unknown = call.input;
-        for (const hook of hooks) {
-          if (hook.point.name !== "beforeToolExecution") {
-            continue;
-          }
+        for (const hook of hooksAt("beforeToolExecution")) {
           let result: { readonly input?: unknown } | HookBlock | undefined;
           try {
             result = (await hook.handler({
@@ -1400,10 +1445,7 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
         | { readonly type: "retry"; readonly delayMs?: number }
       > => {
         let current = invocation;
-        for (const hook of hooks) {
-          if (hook.point.name !== "afterModelInvocation") {
-            continue;
-          }
+        for (const hook of hooksAt("afterModelInvocation")) {
           let result:
             | { readonly invocation: ModelInvocationCandidate }
             | { readonly type: "retry"; readonly delayMs?: number }
@@ -1547,7 +1589,11 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
           branchId: snapshot.run.branchId,
           agent: installed.reference,
         });
+        const pendingToolCalls = snapshot.toolCalls
+          .filter((call) => call.parentToolCallId === undefined && !call.historyCommitted)
+          .sort((left, right) => left.sequence - right.sequence);
         const tools = new Map<string, RuntimeTool>();
+        const providers = new Map<string, DynamicToolProvider<string>>();
         for (const contribution of installed.contributions) {
           if (contribution.kind !== "tool") {
             continue;
@@ -1563,34 +1609,98 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
             continue;
           }
           const provider = contribution.value as DynamicToolProvider<string>;
-          for (const definition of await provider.resolve({
-            transcript: snapshot.transcript,
-            run: currentRun,
-            signal: controller.signal,
-          })) {
-            const modelTool = Object.freeze({
-              name: definition.name,
-              ...(definition.description === undefined
-                ? {}
-                : { description: definition.description }),
-              inputSchema: schemaJson(definition.input),
+          providers.set(provider.id, provider);
+        }
+        const resolvedProviders = new Map<string, Promise<ReadonlyMap<string, RuntimeTool>>>();
+        const emptyDynamicTools: ReadonlyMap<string, RuntimeTool> = new Map();
+        const emptyDynamicToolsPromise = Promise.resolve(emptyDynamicTools);
+        const resolveDynamicProvider = (
+          providerId: string,
+        ): Promise<ReadonlyMap<string, RuntimeTool>> => {
+          const current = resolvedProviders.get(providerId);
+          if (current !== undefined) {
+            return current;
+          }
+          const provider = providers.get(providerId);
+          if (provider === undefined) {
+            resolvedProviders.set(providerId, emptyDynamicToolsPromise);
+            return emptyDynamicToolsPromise;
+          }
+          const resolved = Promise.resolve()
+            .then(() =>
+              provider.resolve({
+                transcript: snapshot.transcript,
+                run: currentRun,
+                signal: controller.signal,
+              }),
+            )
+            .then((definitions) => {
+              const providerTools = new Map<string, RuntimeTool>();
+              for (const definition of definitions) {
+                const name = definition.name;
+                if (providerTools.has(name)) {
+                  throw new RuntimeInvariantError(
+                    `Dynamic Tool '${name}' conflicts with another Tool`,
+                  );
+                }
+                providerTools.set(name, {
+                  type: "dynamic",
+                  providerId,
+                  modelTool: Object.freeze({
+                    name,
+                    ...(definition.description === undefined
+                      ? {}
+                      : { description: definition.description }),
+                    inputSchema: schemaJson(definition.input),
+                  }),
+                  definition: Object.freeze({ ...definition }),
+                });
+              }
+              return providerTools;
             });
-            const installedDefinition = Object.freeze({ ...definition });
-            const name = definition.name;
+          resolvedProviders.set(providerId, resolved);
+          return resolved;
+        };
+        const pendingProviderIds = new Set<string>();
+        for (const call of pendingToolCalls) {
+          if (call.providerId !== undefined) {
+            pendingProviderIds.add(call.providerId);
+          }
+        }
+        const selectedProviderIds = [...providers.keys()].filter(
+          (providerId) => pendingToolCalls.length === 0 || pendingProviderIds.has(providerId),
+        );
+        const providerToolsPromise = Promise.all(selectedProviderIds.map(resolveDynamicProvider));
+        const contextPromise: Promise<readonly ContextNode[]> =
+          pendingToolCalls.length > 0
+            ? Promise.resolve([])
+            : Promise.all(
+                values(installed.contributions, "context").map((value) => {
+                  // SAFETY: values selects only installed Context contributions by their discriminant.
+                  const contribution = value as ContextContribution;
+                  return Promise.resolve()
+                    .then(() =>
+                      contribution.render({
+                        transcript: snapshot.transcript,
+                        run: currentRun,
+                        signal: controller.signal,
+                      }),
+                    )
+                    .then((content) => Object.freeze({ id: contribution.id, content }));
+                }),
+              );
+        const [providerToolSets, context] = await Promise.all([
+          providerToolsPromise,
+          contextPromise,
+        ]);
+        for (const providerTools of providerToolSets) {
+          for (const [name, tool] of providerTools) {
             if (tools.has(name)) {
               throw new RuntimeInvariantError(`Dynamic Tool '${name}' conflicts with another Tool`);
             }
-            tools.set(name, {
-              type: "dynamic",
-              providerId: provider.id,
-              modelTool,
-              definition: installedDefinition,
-            });
+            tools.set(name, tool);
           }
         }
-        const pendingToolCalls = snapshot.toolCalls
-          .filter((call) => call.parentToolCallId === undefined && !call.historyCommitted)
-          .sort((left, right) => left.sequence - right.sequence);
         if (pendingToolCalls.length > 0) {
           const calls = Object.freeze(
             pendingToolCalls.map((call) => {
@@ -1617,6 +1727,14 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
             snapshot,
             run: currentRun,
             tools,
+            resolveDynamicProvider,
+            outcomes: new Map(),
+            executionMode: pendingToolCalls.some((call) => {
+              const tool = tools.get(call.toolName);
+              return tool !== undefined && toolExecutionMode(tool) === "sequential";
+            })
+              ? "sequential"
+              : "parallel",
           });
           for (const call of calls) {
             preparedToolCalls.set(call, prepared);
@@ -1624,16 +1742,6 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
           return prepared;
         }
 
-        const context: ContextNode[] = [];
-        for (const value of values(installed.contributions, "context")) {
-          const contribution = value as ContextContribution;
-          const content = await contribution.render({
-            transcript: snapshot.transcript,
-            run: currentRun,
-            signal: controller.signal,
-          });
-          context.push(Object.freeze({ id: contribution.id, content }));
-        }
         const model = values(installed.contributions, "model")[0] as RuntimeModel;
 
         const request: ModelRequest = Object.freeze({
@@ -1658,6 +1766,7 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
           run: currentRun,
           model,
           tools,
+          resolveDynamicProvider,
           request,
         });
         return prepared;
@@ -2102,12 +2211,24 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
         throw new InterruptExecution(interruption);
       };
 
+      const resolveAvailableTool = async (
+        state: PreparedState,
+        toolName: string,
+        providerId: string | undefined,
+      ): Promise<RuntimeTool | undefined> => {
+        const installedTool = state.tools.get(toolName);
+        if (installedTool !== undefined || providerId === undefined) {
+          return installedTool;
+        }
+        return (await state.resolveDynamicProvider(providerId)).get(toolName);
+      };
+
       const resolveRuntimeTool = async (
         state: PreparedState,
         call: StoredToolCall,
         snapshot: ExecutionSnapshot,
       ): Promise<RuntimeTool> => {
-        const tool = state.tools.get(call.toolName);
+        const tool = await resolveAvailableTool(state, call.toolName, call.providerId);
         if (tool === undefined) {
           if (call.providerId !== undefined) {
             return interruptStaleAgent(
@@ -2190,10 +2311,7 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
         result: CompletedToolCallResult,
       ): Promise<CompletedToolCallResult> => {
         let current = result;
-        for (const hook of hooks) {
-          if (hook.point.name !== "afterToolExecution") {
-            continue;
-          }
+        for (const hook of hooksAt("afterToolExecution")) {
           let hookResult: { readonly result: CompletedToolCallResult } | HookBlock | undefined;
           try {
             hookResult = (await hook.handler({
@@ -2240,24 +2358,14 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
         originalCall: StoredToolCall,
         activeTargets: readonly string[],
       ): Promise<ToolAttemptOutcome> => {
-        const state = preparedStates.get(prepared);
-        if (state === undefined || !isPreparedToolState(state)) {
-          throw new RuntimeInvariantError("Tool Work belongs to another Execution");
-        }
+        const state = preparedToolState(prepared);
         currentPhase = "tool";
         assertActive();
-        let snapshot = await load();
-        let call = snapshot.toolCalls.find(
-          (candidate) => candidate.toolCallId === originalCall.toolCallId,
-        );
-        if (call === undefined) {
-          throw new RuntimeInvariantError(
-            `Stored Tool Call '${originalCall.toolCallId}' is missing`,
-          );
-        }
+        const snapshot = state.snapshot;
+        let call = originalCall;
         const existing = toolResult(call);
         if (existing !== undefined) {
-          return { type: "success", result: existing };
+          return { type: "success", result: existing, stored: call };
         }
         if (call.status === "aborted") {
           throw new AbortExecution(snapshot.run.abortReason);
@@ -2346,7 +2454,7 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
                 `Dynamic Tool Provider '${provider.id}' is not installed in this Agent`,
               );
             }
-            const candidate = state.tools.get(dynamicToolName);
+            const candidate = await resolveAvailableTool(state, dynamicToolName, provider.id);
             if (candidate?.type !== "dynamic" || candidate.providerId !== provider.id) {
               throw new RuntimeInvariantError(
                 `Dynamic Tool '${dynamicToolName}' is not available from Provider '${provider.id}'`,
@@ -2521,7 +2629,7 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
                 ...(content.length === 0 ? {} : { content }),
               }),
             );
-            guarded(
+            const stored = guarded(
               await storeCall("completeToolCall", () =>
                 threadStore.completeToolCall({
                   claim,
@@ -2538,7 +2646,7 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
                 result,
               }),
             );
-            return { type: "success", result };
+            return { type: "success", result, stored };
           }
 
           if (isToolSuspension(rawResult)) {
@@ -2588,7 +2696,7 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
               ...(content.length === 0 ? {} : { content }),
             }),
           );
-          guarded(
+          const stored = guarded(
             await storeCall("completeToolCall", () =>
               threadStore.completeToolCall({
                 claim,
@@ -2605,7 +2713,7 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
               result,
             }),
           );
-          return { type: "success", result };
+          return { type: "success", result, stored };
         } catch (cause) {
           if (cause instanceof ChildSuspended) {
             return { type: "suspended" };
@@ -2613,60 +2721,61 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
           throw cause;
         }
       };
-      let toolResultCommitChain = Promise.resolve(false);
-
-      const commitResolvedToolResults = async (): Promise<boolean> => {
-        const snapshot = await load();
-        const calls = snapshot.toolCalls
-          .filter((call) => call.parentToolCallId === undefined && !call.historyCommitted)
-          .sort((left, right) => left.sequence - right.sequence);
-        if (
-          calls.length === 0 ||
-          !calls.every((call) => call.status === "succeeded" || call.status === "failed")
-        ) {
-          return false;
+      const commitPreparedToolResults = async (state: PreparedToolState): Promise<void> => {
+        if (state.outcomes.size !== state.prepared.calls.length) {
+          return;
         }
-        const entries = calls.map((call) => {
-          const result = call.result;
-          if (result === undefined || result.type === "aborted") {
-            throw new RuntimeInvariantError(
-              `Resolved Tool Call '${call.toolCallId}' has no declared result`,
-            );
-          }
-          return {
-            id: newId<MessageEntryId>(),
-            toolCallId: call.toolCallId,
-            message: {
-              role: "tool" as const,
-              content: [
-                {
-                  type: "tool-result" as const,
-                  toolName: call.toolName,
-                  toolCallId: call.toolCallId,
-                  output: result.type === "success" ? result.output : result.failure,
-                  ...(result.type === "failure" ? { isFailure: true as const } : {}),
-                  ...(call.providerData === undefined ? {} : { providerData: call.providerData }),
+        let commit = preparedToolCommits.get(state.prepared);
+        if (commit === undefined) {
+          commit = (async () => {
+            const entries = state.prepared.calls.map((preparedCall) => {
+              const call = state.outcomes.get(preparedCall.toolCallId);
+              if (call === undefined) {
+                throw new RuntimeInvariantError(
+                  `Prepared Tool Call '${preparedCall.toolCallId}' has no stored outcome`,
+                );
+              }
+              const result = call.result;
+              if (result === undefined || result.type === "aborted") {
+                throw new RuntimeInvariantError(
+                  `Resolved Tool Call '${call.toolCallId}' has no declared result`,
+                );
+              }
+              return {
+                id: newId<MessageEntryId>(),
+                toolCallId: call.toolCallId,
+                message: {
+                  role: "tool" as const,
+                  content: [
+                    {
+                      type: "tool-result" as const,
+                      toolName: call.toolName,
+                      toolCallId: call.toolCallId,
+                      output: result.type === "success" ? result.output : result.failure,
+                      ...(result.type === "failure" ? { isFailure: true as const } : {}),
+                      ...(call.providerData === undefined
+                        ? {}
+                        : { providerData: call.providerData }),
+                    },
+                    ...(result.content ?? []),
+                  ],
                 },
-                ...(result.content ?? []),
-              ],
-            },
-          };
-        });
-        guarded(
-          await storeCall("commitToolResults", () =>
-            threadStore.commitToolResults({
-              claim,
-              expectedHead: snapshot.head,
-              commitId: newId<CommitId>(),
-              entries,
-            }),
-          ),
-        );
-        return true;
-      };
-      const commitResolvedToolResultsInOrder = (): Promise<boolean> => {
-        toolResultCommitChain = toolResultCommitChain.then(commitResolvedToolResults);
-        return toolResultCommitChain;
+              };
+            });
+            guarded(
+              await storeCall("commitToolResults", () =>
+                threadStore.commitToolResults({
+                  claim,
+                  expectedHead: state.snapshot.head,
+                  commitId: newId<CommitId>(),
+                  entries,
+                }),
+              ),
+            );
+          })();
+          preparedToolCommits.set(state.prepared, commit);
+        }
+        await commit;
       };
 
       const executeTool = async (
@@ -2676,11 +2785,14 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
         if (preparedToolCalls.get(requested) !== prepared) {
           throw new RuntimeInvariantError("Tool Call belongs to another Prepared Work value");
         }
-        const snapshot = await load();
-        const call = snapshot.toolCalls.find(
-          (candidate) => candidate.toolCallId === requested.toolCallId,
+        const state = preparedToolState(prepared);
+        const call = await storeCall("loadToolCall", () =>
+          threadStore.loadToolCall(claim, requested.toolCallId),
         );
-        if (call === undefined || call.toolName !== requested.toolName) {
+        if (call === undefined) {
+          throw new ExecutionClaimLostError(runId);
+        }
+        if (call.toolName !== requested.toolName) {
           throw new RuntimeInvariantError(
             `Tool Call '${requested.toolCallId}' was not committed by this Runtime`,
           );
@@ -2695,7 +2807,8 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
         }) as ToolExecution;
         toolProducts.set(product, prepared);
         if (outcome.type === "success") {
-          await commitResolvedToolResultsInOrder();
+          state.outcomes.set(call.toolCallId, outcome.stored);
+          await commitPreparedToolResults(state);
         }
         return product;
       };
@@ -2703,10 +2816,7 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
       const beforeSettlement = async (
         result: Exclude<RunResult, SuspendedRunResult>,
       ): Promise<ModelMessage | undefined> => {
-        for (const hook of hooks) {
-          if (hook.point.name !== "beforeSettlement") {
-            continue;
-          }
+        for (const hook of hooksAt("beforeSettlement")) {
           const deadline = new AbortController();
           const abortDeadline = (): void => {
             deadline.abort(controller.signal.reason);
@@ -2995,8 +3105,21 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
           assertActive();
           const prepared = await prepare();
           if (prepared.type === "tools") {
-            for (const call of prepared.calls) {
-              await executeTool(prepared, call);
+            const state = preparedToolState(prepared);
+            let executions: ToolExecution[];
+            if (state.executionMode === "sequential") {
+              executions = [];
+              for (const call of prepared.calls) {
+                executions.push(await executeTool(prepared, call));
+              }
+            } else {
+              executions = await Promise.all(
+                prepared.calls.map((call) => executeTool(prepared, call)),
+              );
+            }
+            const suspended = executions.find((execution) => execution.result.type === "suspended");
+            if (suspended === undefined) {
+              continue;
             }
             const snapshot = await load();
             if (

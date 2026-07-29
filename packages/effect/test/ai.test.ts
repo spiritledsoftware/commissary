@@ -79,6 +79,11 @@ type StreamOptions = {
   readonly disableToolCallResolution?: boolean;
 };
 
+function artifactId(value: string): ArtifactId {
+  // SAFETY: Tests use deterministic unique strings at the Artifact ID boundary.
+  return value as ArtifactId;
+}
+
 function service(
   streamText: (options: StreamOptions) => Stream.Stream<StreamPart, AiError.AiError>,
 ): LanguageModel.Service {
@@ -742,6 +747,52 @@ it("reports Artifact Store read failures as specific store errors", async () => 
   await expect(execution).rejects.toBeInstanceOf(ArtifactStoreError);
   await expect(execution).rejects.toMatchObject({ operation: "read" });
   expect(invocations).toBe(0);
+});
+
+it("reads request Artifacts concurrently and preserves Prompt order", async () => {
+  let firstReadActive = false;
+  let secondReadOverlapped = false;
+  const artifactStore: ArtifactStore = {
+    async read(reference) {
+      if (reference.id === "artifact-first") {
+        firstReadActive = true;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        firstReadActive = false;
+        return { data: new Uint8Array([1]), mediaType: "image/png" };
+      }
+      secondReadOverlapped = firstReadActive;
+      return { data: new Uint8Array([2]), mediaType: "image/png" };
+    },
+    write: () => Promise.reject(new Error("Unexpected write")),
+  };
+  const requests: StreamOptions[] = [];
+  const fake = service((options) => {
+    requests.push(options);
+    return Stream.make(
+      Response.makePart("finish", { reason: "stop", usage: modelUsage, response: undefined }),
+    );
+  });
+  const fixture = await run(fake, { artifactStore });
+
+  await expect(
+    fixture.client.run({
+      threadId: fixture.branch.threadId,
+      branchId: fixture.branch.id,
+      message: {
+        role: "user",
+        content: [
+          Content.file({ id: artifactId("artifact-first"), mediaType: "image/png" }),
+          Content.file({ id: artifactId("artifact-second"), mediaType: "image/png" }),
+        ],
+      },
+    }),
+  ).resolves.toMatchObject({ type: "completed" });
+  const userMessage = requests[0]?.prompt.content.find((message) => message.role === "user");
+  expect(secondReadOverlapped).toBe(true);
+  expect(userMessage?.content).toMatchObject([
+    { type: "file", data: new Uint8Array([1]) },
+    { type: "file", data: new Uint8Array([2]) },
+  ]);
 });
 
 it("preflights Artifact reads before invoking the provider", async () => {

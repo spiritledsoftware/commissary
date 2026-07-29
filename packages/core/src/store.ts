@@ -408,6 +408,11 @@ export interface ThreadStore {
   }) => PromiseLike<ExecutionControl>;
   readonly releaseExecutionClaim: (claim: ExecutionClaim) => PromiseLike<boolean>;
   readonly loadExecution: (claim: ExecutionClaim) => PromiseLike<ExecutionSnapshot | undefined>;
+  /** Read one Tool Call while its Run is owned by the supplied Execution Claim. */
+  readonly loadToolCall: (
+    claim: ExecutionClaim,
+    toolCallId: ToolCallId,
+  ) => PromiseLike<StoredToolCall | undefined>;
 
   readonly commitStep: (input: CommitStepInput) => PromiseLike<GuardedStoreResult<BranchRecord>>;
   readonly commitModelInvocation: (

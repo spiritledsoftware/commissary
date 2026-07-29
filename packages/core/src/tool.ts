@@ -54,6 +54,9 @@ const successValues = new WeakMap<object, ToolResultMarker>();
 const failureValues = new WeakMap<object, ToolResultMarker>();
 const suspensionValues = new WeakMap<object, unknown>();
 
+/** Tool scheduling constraint for one Model-requested batch. */
+export type ToolExecutionMode = "parallel" | "sequential";
+
 /** Input for one dynamic Tool Provider resolution. */
 export interface DynamicToolProviderInput {
   readonly transcript: Transcript;
@@ -66,6 +69,7 @@ export interface DynamicTool {
   readonly type: "dynamic-tool";
   readonly name: string;
   readonly description?: string;
+  readonly executionMode?: ToolExecutionMode;
   readonly input: ModelSchema;
   readonly output?: StandardSchema;
   readonly failure?: StandardSchema;
@@ -183,6 +187,7 @@ export interface ToolDefinition<
 /** Runtime data hidden behind a Tool Fragment. */
 export interface ToolRuntimeDefinition {
   readonly name: string;
+  readonly executionMode: ToolExecutionMode;
   readonly modelTool: ModelTool;
   readonly input: StandardSchema;
   readonly output?: StandardSchema;
@@ -283,6 +288,7 @@ export const Tool = {
   >(definition: {
     readonly name: Name;
     readonly description?: string;
+    readonly executionMode?: ToolExecutionMode;
     readonly input: InputSchema;
     readonly output?: OutputSchema;
     readonly failure?: FailureSchema;
@@ -338,6 +344,7 @@ export const Tool = {
     };
     const runtime: ToolRuntimeDefinition = Object.freeze({
       name: definition.name,
+      executionMode: definition.executionMode ?? "parallel",
       get modelTool() {
         return readModelTool();
       },

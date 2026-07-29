@@ -257,8 +257,12 @@ async function promptMessage(
   signal: AbortSignal,
 ): Promise<Prompt.Message | ReplayInterruption> {
   const content: Prompt.Part[] = [];
-  for (const part of message.content) {
-    const mapped = await promptPart(part, provider, requestOptions, artifactStore, signal);
+  const mappedParts = await Promise.all(
+    message.content.map((part) =>
+      promptPart(part, provider, requestOptions, artifactStore, signal),
+    ),
+  );
+  for (const mapped of mappedParts) {
     if (mapped.type === "provider-compatibility" || mapped.type === "artifact-storage-required") {
       return mapped;
     }
@@ -279,22 +283,22 @@ async function prepareRequest(
   translateTool: EffectAiToolTranslator | undefined,
 ): Promise<PreparedRequest> {
   const options = providerOptions(request.providerOptions, provider);
+  const pendingMessages = [
+    ...request.context.map((node) =>
+      promptMessage(
+        { role: "system", content: node.content },
+        provider,
+        options,
+        artifactStore,
+        signal,
+      ),
+    ),
+    ...request.messages.map((message) =>
+      promptMessage(message, provider, options, artifactStore, signal),
+    ),
+  ];
   const messages: Prompt.Message[] = [];
-  for (const node of request.context) {
-    const mapped = await promptMessage(
-      { role: "system", content: node.content },
-      provider,
-      options,
-      artifactStore,
-      signal,
-    );
-    if ("type" in mapped) {
-      return { type: "interruption", interruption: mapped };
-    }
-    messages.push(mapped);
-  }
-  for (const message of request.messages) {
-    const mapped = await promptMessage(message, provider, options, artifactStore, signal);
+  for (const mapped of await Promise.all(pendingMessages)) {
     if ("type" in mapped) {
       return { type: "interruption", interruption: mapped };
     }

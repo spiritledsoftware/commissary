@@ -69,15 +69,15 @@ export const MessageData = {
       },
       decode,
       async collect(transcript: Transcript): Promise<readonly Value[]> {
-        const values: Value[] = [];
+        const pending: Promise<Value>[] = [];
         for (const message of transcript) {
           for (const item of message.data ?? []) {
             if (item.key === key && item.version === version) {
-              values.push(await decode(item));
+              pending.push(decode(item));
             }
           }
         }
-        return Object.freeze(values);
+        return Object.freeze(await Promise.all(pending));
       },
     });
   },

@@ -71,6 +71,14 @@ interface ResumeRequestRecord {
   readonly result: RunSubmission;
 }
 
+interface ToolCallGraph {
+  readonly calls: Map<ToolCallId, StoredToolCall>;
+  readonly order: ToolCallId[];
+  readonly delegated: Map<ToolCallId, Map<string, ToolCallId>>;
+  readonly resumable: Set<ToolCallId>;
+  nextSequence: number;
+}
+
 interface SteeringRequestRecord {
   readonly fingerprint: string;
   readonly result: SteeringResult;
@@ -180,7 +188,7 @@ export class MemoryThreadStore implements ThreadStore {
   readonly #pendingSteering = new Map<RunId, PendingSteering[]>();
   readonly #pendingRedirects = new Map<RunId, PendingRedirect[]>();
   readonly #commandSequences = new Map<RunId, number>();
-  readonly #toolCalls = new Map<RunId, Map<ToolCallId, StoredToolCall>>();
+  readonly #toolCalls = new Map<RunId, ToolCallGraph>();
   readonly #startFingerprints = new Map<RunId, string>();
   readonly #startSubmissions = new Map<RunId, RunSubmission>();
   readonly #resumeRequests = new Map<string, ResumeRequestRecord>();
@@ -325,7 +333,13 @@ export class MemoryThreadStore implements ThreadStore {
       settlementContinuations: 0,
     });
     this.#runs.set(run.id, run);
-    this.#toolCalls.set(run.id, new Map());
+    this.#toolCalls.set(run.id, {
+      calls: new Map(),
+      order: [],
+      delegated: new Map(),
+      resumable: new Set(),
+      nextSequence: 0,
+    });
     const submission: RunSubmission = Object.freeze({
       type: "submitted",
       runId: run.id,
@@ -384,7 +398,8 @@ export class MemoryThreadStore implements ThreadStore {
       });
     }
 
-    const calls = this.#calls(input.runId);
+    const graph = this.#graph(input.runId);
+    const calls = graph.calls;
     const conflicts: ToolCallId[] = [];
     for (const item of input.items) {
       const call = calls.get(item.toolCallId);
@@ -412,8 +427,8 @@ export class MemoryThreadStore implements ThreadStore {
       const call = calls.get(item.toolCallId)!;
       if (call.suspension!.resumeInput === undefined) {
         admitted = true;
-        calls.set(
-          call.toolCallId,
+        this.#setCall(
+          graph,
           Object.freeze({
             ...call,
             suspension: Object.freeze({
@@ -565,9 +580,7 @@ export class MemoryThreadStore implements ThreadStore {
       return Promise.resolve(undefined);
     }
     const branch = this.#branch(run.threadId, run.branchId);
-    const calls = [...this.#calls(run.id).values()].sort(
-      (left, right) => left.sequence - right.sequence,
-    );
+    const calls = this.#orderedCalls(run.id);
     const snapshot: RunSnapshot = Object.freeze({
       runId: run.id,
       threadId: run.threadId,
@@ -623,9 +636,7 @@ export class MemoryThreadStore implements ThreadStore {
       run,
       transcript: Object.freeze(path.map((entry) => entry.message)),
       head: branch.head!,
-      toolCalls: Object.freeze(
-        [...this.#calls(run.id).values()].sort((left, right) => left.sequence - right.sequence),
-      ),
+      toolCalls: Object.freeze(this.#orderedCalls(run.id)),
     });
   }
 
@@ -647,9 +658,7 @@ export class MemoryThreadStore implements ThreadStore {
       this.#notifyControl(run.id, { type: "claim-lost" }, current.token);
       this.#claims.delete(run.id);
     }
-    const readyResume = [...this.#calls(run.id).values()].some(
-      (call) => call.suspension?.resumeInput !== undefined,
-    );
+    const readyResume = this.#graph(run.id).resumable.size > 0;
     if (
       terminal(run.status) ||
       (run.status === "suspended" && !readyResume && !run.abortRequested)
@@ -749,10 +758,18 @@ export class MemoryThreadStore implements ThreadStore {
       head: branch.head!,
       pendingSteering: Object.freeze([...(this.#pendingSteering.get(run.id) ?? [])]),
       pendingRedirects: Object.freeze([...(this.#pendingRedirects.get(run.id) ?? [])]),
-      toolCalls: Object.freeze(
-        [...this.#calls(run.id).values()].sort((left, right) => left.sequence - right.sequence),
-      ),
+      toolCalls: Object.freeze(this.#orderedCalls(run.id)),
     });
+  }
+  /** Read one Tool Call only while the supplied Execution Claim remains valid. */
+  loadToolCall(
+    claim: ExecutionClaim,
+    toolCallId: ToolCallId,
+  ): PromiseLike<StoredToolCall | undefined> {
+    if (!this.#validClaim(claim)) {
+      return Promise.resolve(undefined);
+    }
+    return Promise.resolve(this.#calls(claim.runId).get(toolCallId));
   }
 
   commitStep(input: CommitStepInput): PromiseLike<GuardedStoreResult<BranchRecord>> {
@@ -812,22 +829,21 @@ export class MemoryThreadStore implements ThreadStore {
       this.#modelCommitOutcomes.set(input.commitId, outcome);
       return Promise.resolve(outcome);
     }
-    const calls = this.#calls(run.id);
+    const graph = this.#graph(run.id);
+    const calls = graph.calls;
     for (const call of input.toolCalls) {
       if (calls.has(call.toolCallId)) {
         throw new Error(`Tool Call '${call.toolCallId}' already exists`);
       }
     }
     const branch = this.#append(run.threadId, run.branchId, input.expectedHead, [input.entry]);
-    let sequence = Math.max(0, ...[...calls.values()].map((call) => call.sequence));
     for (const call of input.toolCalls) {
-      sequence += 1;
-      calls.set(
-        call.toolCallId,
+      this.#setCall(
+        graph,
         Object.freeze({
           toolCallId: call.toolCallId,
           runId: run.id,
-          sequence,
+          sequence: this.#nextToolSequence(graph),
           toolName: call.toolName,
           ...(call.providerId === undefined ? {} : { providerId: call.providerId }),
           input: call.input,
@@ -896,8 +912,8 @@ export class MemoryThreadStore implements ThreadStore {
     if (failure !== undefined) {
       return Promise.resolve(failure);
     }
-    const calls = this.#calls(input.claim.runId);
-    const call = this.#call(calls, input.toolCallId);
+    const graph = this.#graph(input.claim.runId);
+    const call = this.#call(graph.calls, input.toolCallId);
     if (call.effectiveInput !== undefined && !same(call.effectiveInput, input.input)) {
       throw new Error(`Effective input for Tool Call '${call.toolCallId}' changed`);
     }
@@ -905,7 +921,7 @@ export class MemoryThreadStore implements ThreadStore {
       ...call,
       effectiveInput: call.effectiveInput ?? input.input,
     });
-    calls.set(call.toolCallId, stored);
+    this.#setCall(graph, stored);
     return Promise.resolve({ type: "committed", value: stored });
   }
 
@@ -916,12 +932,11 @@ export class MemoryThreadStore implements ThreadStore {
     if (failure !== undefined) {
       return Promise.resolve(failure);
     }
-    const calls = this.#calls(input.claim.runId);
+    const graph = this.#graph(input.claim.runId);
+    const calls = graph.calls;
     this.#call(calls, input.parentToolCallId);
-    const current = [...calls.values()].find(
-      (call) =>
-        call.parentToolCallId === input.parentToolCallId && call.delegationKey === input.key,
-    );
+    const currentId = graph.delegated.get(input.parentToolCallId)?.get(input.key);
+    const current = currentId === undefined ? undefined : this.#call(calls, currentId);
     if (current !== undefined) {
       if (
         current.toolName !== input.toolName ||
@@ -935,11 +950,10 @@ export class MemoryThreadStore implements ThreadStore {
     if (calls.has(input.toolCallId)) {
       throw new Error(`Tool Call ID '${input.toolCallId}' is already in use`);
     }
-    const sequence = Math.max(0, ...[...calls.values()].map((call) => call.sequence)) + 1;
     const stored: StoredToolCall = Object.freeze({
       toolCallId: input.toolCallId,
       runId: input.claim.runId,
-      sequence,
+      sequence: this.#nextToolSequence(graph),
       toolName: input.toolName,
       parentToolCallId: input.parentToolCallId,
       ...(input.providerId === undefined ? {} : { providerId: input.providerId }),
@@ -948,7 +962,7 @@ export class MemoryThreadStore implements ThreadStore {
       status: "pending",
       historyCommitted: false,
     });
-    calls.set(stored.toolCallId, stored);
+    this.#setCall(graph, stored);
     return Promise.resolve({ type: "committed", value: stored });
   }
 
@@ -957,8 +971,8 @@ export class MemoryThreadStore implements ThreadStore {
     if (failure !== undefined) {
       return Promise.resolve(failure);
     }
-    const calls = this.#calls(input.claim.runId);
-    const call = this.#call(calls, input.toolCallId);
+    const graph = this.#graph(input.claim.runId);
+    const call = this.#call(graph.calls, input.toolCallId);
     if (call.result !== undefined) {
       if (!same(call.result, input.result)) {
         throw new Error(`Tool Call '${call.toolCallId}' completed with different results`);
@@ -971,7 +985,7 @@ export class MemoryThreadStore implements ThreadStore {
       result: Object.freeze({ ...input.result }),
       suspension: undefined,
     });
-    calls.set(stored.toolCallId, stored);
+    this.#setCall(graph, stored);
     return Promise.resolve({ type: "committed", value: stored });
   }
 
@@ -980,15 +994,15 @@ export class MemoryThreadStore implements ThreadStore {
     if (failure !== undefined) {
       return Promise.resolve(failure);
     }
-    const calls = this.#calls(input.claim.runId);
-    const call = this.#call(calls, input.toolCallId);
+    const graph = this.#graph(input.claim.runId);
+    const call = this.#call(graph.calls, input.toolCallId);
     const stored: StoredToolCall = Object.freeze({
       ...call,
       status: "suspended",
       result: undefined,
       suspension: Object.freeze({ ...input.suspension }),
     });
-    calls.set(stored.toolCallId, stored);
+    this.#setCall(graph, stored);
     return Promise.resolve({ type: "committed", value: stored });
   }
 
@@ -1006,7 +1020,8 @@ export class MemoryThreadStore implements ThreadStore {
       return Promise.resolve(failure);
     }
     const run = this.#run(input.claim.runId);
-    const calls = this.#calls(run.id);
+    const graph = this.#graph(run.id);
+    const calls = graph.calls;
     for (const entry of input.entries) {
       const call = this.#call(calls, entry.toolCallId);
       if (
@@ -1019,7 +1034,7 @@ export class MemoryThreadStore implements ThreadStore {
     const branch = this.#append(run.threadId, run.branchId, input.expectedHead, input.entries);
     for (const entry of input.entries) {
       const call = this.#call(calls, entry.toolCallId);
-      calls.set(call.toolCallId, Object.freeze({ ...call, historyCommitted: true }));
+      this.#setCall(graph, Object.freeze({ ...call, historyCommitted: true }));
     }
     this.#commits.set(input.commitId, fingerprint);
     return Promise.resolve({ type: "committed", value: branch });
@@ -1084,11 +1099,7 @@ export class MemoryThreadStore implements ThreadStore {
     if (failure !== undefined) {
       return Promise.resolve(failure);
     }
-    if (
-      [...this.#calls(input.claim.runId).values()].some(
-        (call) => call.suspension?.resumeInput !== undefined,
-      )
-    ) {
+    if (this.#graph(input.claim.runId).resumable.size > 0) {
       return Promise.resolve({ type: "work-ready" });
     }
     const run = this.#run(input.claim.runId);
@@ -1137,11 +1148,11 @@ export class MemoryThreadStore implements ThreadStore {
     }
     this.#append(run.threadId, run.branchId, input.expectedHead, input.entries);
     if (input.abortUnresolvedTools) {
-      const calls = this.#calls(run.id);
-      for (const call of calls.values()) {
+      const graph = this.#graph(run.id);
+      for (const call of graph.calls.values()) {
         if (call.status !== "succeeded" && call.status !== "failed" && call.status !== "aborted") {
-          calls.set(
-            call.toolCallId,
+          this.#setCall(
+            graph,
             Object.freeze({
               ...call,
               status: "aborted",
@@ -1209,12 +1220,48 @@ export class MemoryThreadStore implements ThreadStore {
     return run;
   }
 
-  #calls(runId: RunId): Map<ToolCallId, StoredToolCall> {
-    const calls = this.#toolCalls.get(runId);
-    if (calls === undefined) {
+  #graph(runId: RunId): ToolCallGraph {
+    const graph = this.#toolCalls.get(runId);
+    if (graph === undefined) {
       throw new Error(`Unknown Tool Call Graph for Run '${runId}'`);
     }
-    return calls;
+    return graph;
+  }
+
+  #calls(runId: RunId): Map<ToolCallId, StoredToolCall> {
+    return this.#graph(runId).calls;
+  }
+
+  #orderedCalls(runId: RunId): StoredToolCall[] {
+    const graph = this.#graph(runId);
+    return graph.order.map((toolCallId) => this.#call(graph.calls, toolCallId));
+  }
+
+  #nextToolSequence(graph: ToolCallGraph): number {
+    graph.nextSequence += 1;
+    return graph.nextSequence;
+  }
+
+  #setCall(graph: ToolCallGraph, call: StoredToolCall): void {
+    const current = graph.calls.get(call.toolCallId);
+    if (current === undefined) {
+      graph.order.push(call.toolCallId);
+      graph.nextSequence = Math.max(graph.nextSequence, call.sequence);
+      if (call.parentToolCallId !== undefined && call.delegationKey !== undefined) {
+        let delegated = graph.delegated.get(call.parentToolCallId);
+        if (delegated === undefined) {
+          delegated = new Map();
+          graph.delegated.set(call.parentToolCallId, delegated);
+        }
+        delegated.set(call.delegationKey, call.toolCallId);
+      }
+    }
+    graph.calls.set(call.toolCallId, call);
+    if (call.suspension?.resumeInput === undefined) {
+      graph.resumable.delete(call.toolCallId);
+    } else {
+      graph.resumable.add(call.toolCallId);
+    }
   }
 
   #call(calls: Map<ToolCallId, StoredToolCall>, toolCallId: ToolCallId): StoredToolCall {

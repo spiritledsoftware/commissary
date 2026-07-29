@@ -197,6 +197,7 @@ export type {
   DynamicToolProviderInput,
   ToolDefinition,
   ToolExecutionContext,
+  ToolExecutionMode,
   ToolFailure,
   ToolInvocationOptions,
   ToolInvocationResult,

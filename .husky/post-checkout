@@ -1,3 +1,0 @@
-if [ "${3:-0}" = 1 ]; then
-  sh "$(git rev-parse --show-toplevel)/scripts/sync-reference-repos.sh"
-fi

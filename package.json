@@ -14,9 +14,9 @@
     "lint:fix": "oxlint --fix",
     "lint:staged": "lint-staged",
     "prepare": "husky",
-    "test": "vitest run",
-    "typecheck": "tsc --noEmit && turbo typecheck",
-    "verify": "pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm run test"
+    "test": "turbo test",
+    "typecheck": "turbo typecheck",
+    "verify": "pnpm run format:check && pnpm run lint && turbo run typecheck test"
   },
   "devDependencies": {
     "@commissary/store-memory": "workspace:*",
