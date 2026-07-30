@@ -1,6 +1,6 @@
 {
   "name": "commissary",
-  "version": "1.0.0",
+  "version": "0.0.0",
   "private": true,
   "description": "Durable, provider-neutral agent runtime for TypeScript",
   "homepage": "https://github.com/spiritledsoftware/commissary#readme",
@@ -60,13 +60,6 @@
     "turbo": "^2.10.5",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10"
-  },
-  "devEngines": {
-    "packageManager": {
-      "name": "pnpm",
-      "version": "11.16.0",
-      "onFail": "download"
-    }
   },
   "engines": {
     "node": ">=22.14.0"
