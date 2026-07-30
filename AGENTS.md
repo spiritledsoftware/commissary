@@ -1,18 +1,20 @@
-## Agent skills
+# Commissary Project Instructions
 
-### Issue tracker
+## Engineering standards
 
-Issues are tracked in GitHub Issues via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+### Coding standards
 
-### Triage labels
+Use the project-local `coding-standards` skill for all TypeScript and Effect engineering. Read the applicable references that the skill identifies before design or implementation.
 
-Triage uses the default five canonical label names. See `docs/agents/triage-labels.md`.
+### Architecture decision records
 
-### Domain docs
+Read the related files in `docs/adr/` before focused changes.
 
-Domain documentation uses the single-context layout. See `docs/agents/domain.md`.
+Read all ADRs before changes to public APIs, package boundaries, runtime state, or repository-wide architecture.
 
-## Reference repositories
+Accepted ADRs are the source of truth. If requested work conflicts with an accepted ADR, update or supersede the ADR before changing the implementation.
+
+### Reference repositories
 
 The `pnpm run bootstrap` command materializes these read-only references in `.repos/`. Run `./scripts/sync-reference-repos.sh` to refresh them directly.
 
@@ -31,3 +33,39 @@ The `pnpm run bootstrap` command materializes these read-only references in `.re
 | [Cloudflare Agents](https://github.com/cloudflare/agents)    | `.repos/agents`       | Durable Object agent state, typed RPC, scheduling, resumable streaming, MCP, Code Mode, and React client patterns |
 
 Before implementing related functionality, consult the relevant repository for established APIs, architecture, and implementation patterns. Treat these repositories as read-only references: do not modify them, add them to this workspace, or copy code without adapting it to this project's domain and conventions.
+
+## Project workflow
+
+### Issue tracker
+
+Issues are tracked in GitHub Issues via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Triage uses the default five canonical label names. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Domain documentation uses the single-context layout. See `docs/agents/domain.md`.
+
+## Git conventions
+
+### Commit messages
+
+Use Conventional Commits for commit messages:
+
+```text
+<type>[optional scope][!]: <description>
+```
+
+Use a short, lowercase, imperative description with no final period. Use a scope only when it identifies a useful package or subsystem. Use `!` and a `BREAKING CHANGE:` footer for breaking changes.
+
+### Pull request titles
+
+Use the Conventional Commit format for pull request titles. The title must describe the net effect of the complete pull request, not one individual commit. Use `!` when the pull request introduces a breaking change.
+
+## Verification
+
+Run `pnpm run verify` after changes to source code, tests, package configuration, or build configuration.
+
+For documentation-only changes, run only the applicable documentation or formatting check.
