@@ -38,7 +38,7 @@ Core dispatches typed Execution Events through `onExecutionEvent`. Core has no r
 
 The first official adapter after core is `@commissary/stream`. It provides plain JavaScript streams from the package root and Effect-native streams from `@commissary/stream/effect`.
 
-The adapter registers a dynamic `onExecutionEvent` Hook before it calls `execute`. The Hook capture rule in [ADR 0012](0012-compose-machine-policy-through-typed-hooks.md) keeps that Hook on the new Execution. The adapter can remove the process registration after `execute` returns.
+The adapter registers `client.on(HookPoints.onExecutionEvent, handler)` before it calls `execute`. The Hook capture rule in [ADR 0012](0012-compose-machine-policy-through-typed-hooks.md) keeps that handler on the new Execution. The adapter can remove the process registration after `execute` returns.
 
 The adapter exposes one bounded single-consumer stream. Its capacity must be positive and defaults to 64. Stream consumption does not control execution or abort the Run.
 

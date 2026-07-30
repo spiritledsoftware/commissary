@@ -1,18 +1,14 @@
 import {
-  Hook,
+  HookPoints,
   type Agent,
   type AgentClient,
+  type AgentClientRunId,
   type AgentDefinition,
+  type AgentRunId,
   type Execution,
   type ExecutionEvent,
   type RunId,
 } from "@commissary/core";
-
-type ClientExecution<Definition extends AgentDefinition> = Awaited<
-  ReturnType<AgentClient<Definition>["execute"]>
->;
-type ClientFailure<Value> = Value extends Execution<unknown, infer Failure> ? Failure : never;
-
 /** Adapter Event that reports discarded core Execution Events. */
 export interface EventsDroppedEvent {
   readonly type: "events-dropped";
@@ -28,9 +24,9 @@ export interface StreamOptions {
 }
 
 /** One core Execution paired with its bounded single-consumer Events. */
-export interface StreamExecution<ToolEvent = unknown, Failure = unknown> {
-  readonly execution: Execution<ToolEvent, Failure>;
-  readonly events: AsyncIterable<StreamEvent<ToolEvent>>;
+export interface StreamExecution<Tools = unknown, Failure = unknown, Run extends RunId = RunId> {
+  readonly execution: Execution<Tools, Failure, Run>;
+  readonly events: AsyncIterable<StreamEvent<Tools>>;
 }
 
 /** An error caused by a second consumer of one adapter stream. */
@@ -236,26 +232,32 @@ class BoundedEventQueue<Value extends ExecutionEvent> implements AsyncIterable<
  */
 export async function execute<Definition extends AgentDefinition>(
   client: AgentClient<Definition>,
-  runId: RunId,
+  runId: AgentClientRunId<Definition>,
   options: StreamOptions = {},
-): Promise<StreamExecution<Agent.Events<Definition>, ClientFailure<ClientExecution<Definition>>>> {
+): Promise<
+  StreamExecution<Agent.Tools<Definition>, Agent.Failure<Definition>, AgentRunId<Definition>>
+> {
   const capacity = options.capacity ?? 64;
   if (!Number.isSafeInteger(capacity) || capacity <= 0) {
     throw new RangeError("Stream capacity must be a positive safe integer");
   }
 
-  const queue = new BoundedEventQueue<ExecutionEvent>(capacity);
-  let latestError: Extract<ExecutionEvent, { readonly type: "error" }> | undefined;
-  const unsubscribe = client.subscribe(
-    Hook.onExecutionEvent(({ event }) => {
-      if (event.type === "error") {
-        latestError = event;
-      }
-      queue.push(event);
-      return undefined;
-    }),
-  );
-  let execution: ClientExecution<Definition>;
+  const queue = new BoundedEventQueue<ExecutionEvent<Agent.Tools<Definition>>>(capacity);
+  let latestError:
+    | Extract<ExecutionEvent<Agent.Tools<Definition>>, { readonly type: "error" }>
+    | undefined;
+  const unsubscribe = client.on(HookPoints.onExecutionEvent, ({ event }) => {
+    if (event.type === "error") {
+      latestError = event;
+    }
+    queue.push(event);
+    return undefined;
+  });
+  let execution: Execution<
+    Agent.Tools<Definition>,
+    Agent.Failure<Definition>,
+    AgentRunId<Definition>
+  >;
   try {
     execution = await client.execute(runId);
   } finally {
@@ -273,8 +275,7 @@ export async function execute<Definition extends AgentDefinition>(
   );
   return {
     execution,
-    // SAFETY: Agent metadata narrows only Tool Event payloads. Core supplied every queued Event for this Agent Execution.
-    events: queue as AsyncIterable<StreamEvent<Agent.Events<Definition>>>,
+    events: queue,
   };
 }
 

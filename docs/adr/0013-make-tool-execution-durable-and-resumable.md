@@ -2,11 +2,11 @@
 
 ## Tool contracts
 
-`Tool.define` accepts a literal name and a Standard Schema value for input. Its output Standard Schema is optional. It can also accept a Failure schema.
+`Tool.define` accepts a literal name and a Standard Schema value for input. Model-requested input must be JSON, but the schema can decode it to a richer handler-only value. Its output Standard Schema is optional. It can also accept a Failure schema.
 
-With an output schema, the constructor infers and validates the successful output type. Without one, successful output uses the provider-neutral JSON value type and core still rejects values that cannot be stored as JSON. `Tool.Input`, `Tool.Output`, and `Tool.Failure` expose these types. `Tool.dynamic` is the explicit interface for runtime-discovered Tools and can represent an MCP Tool that declares no output schema.
+Successful Tool outputs and declared Failure values are always provider-neutral JSON. With a schema, the constructor infers and validates the JSON output. Without an output schema, core still rejects values that cannot be stored as JSON. `Tool.Input`, `Tool.RequestedInput`, `Tool.Output`, `Tool.FailureValue`, and the identity-tagged terminal `Tool.Failure` expose the distinct types.
 
-A Tool handler receives validated input and one fixed Tool Execution Context. It returns successful output directly. It uses `Tool.failure` or `Tool.suspend` for other declared results.
+A Tool handler receives decoded input and one fixed Tool Execution Context. It returns successful output directly. It uses `Tool.failure` or `Tool.suspend` for other declared results.
 
 ## Rich Tool results
 
@@ -26,7 +26,7 @@ A suspension configuration supplies:
 - A Codec for durable continuation state.
 - A resume handler.
 
-[ADR 0002](0002-identify-agents-by-installed-composition.md) defines continuation compatibility. `AgentClient.submit` records typed resume input independently from `execute`.
+The Agent Client `resumeRun` method records typed JSON resume input independently from `execute`. The resume schema validates it before acceptance. The Store keeps the submitted JSON, and each resume attempt decodes it again for the callback.
 
 ## Canonical Tool schema
 
@@ -46,9 +46,9 @@ Recovery resumes unresolved committed Tool Calls. It keeps their Tool Call IDs a
 
 Tool Attempts have at-least-once semantics. A Tool or its integration must use the idempotency key for exactly-once external effects. Core cannot transact with arbitrary external systems.
 
-Before the first external attempt, core runs the captured Tool Hooks. It validates and atomically records the effective input, including any Hook change.
+Before the first external attempt, core runs the captured Tool Hooks. It requires the Hook-effective input to be JSON, validates and decodes that JSON, and only then records the effective JSON atomically.
 
-Each later attempt uses this recorded input and the same idempotency key. It does not apply a later Execution's Hooks again.
+Each later attempt validates and decodes the recorded effective JSON again. It keeps the same idempotency key and does not apply a later Execution's Hooks again. Public snapshots expose both `requestedInput` and optional `effectiveInput`; one field never changes meaning.
 
 ## Dynamic Tool recovery
 
@@ -59,6 +59,10 @@ For unresolved attempts, the recorded effective input must validate against the 
 Each resolved dynamic Tool carries the same optional output, Failure, Event, and Suspension contracts as a static Tool. The dynamic boundary is type-erased, but it is not validation-free.
 
 Without an output schema, successful output must still be a provider-neutral JSON value. Returning a declared Failure, emitting an Event, or returning a Suspension requires the matching declared contract. Core validates result values and resume input, validates Events, and encodes continuation state before any durable commit.
+
+Static Tool Events, snapshots, suspensions, terminal Failures, and resume items form distributive unions keyed by the literal Tool name. Dynamic records require `dynamic: true` and `providerId`. Static records use optional `dynamic?: false` and have no Provider ID. Installing a dynamic provider does not widen valid static Tool names or inputs.
+
+Every stored terminal Tool Failure contains `type: "tool-failure"`, the exact Tool name, Tool Call ID, and JSON `value`. Dynamic failures also contain their Provider ID. Model history and parent Tool handlers receive the declared raw Failure value; host observability receives the tagged durable value.
 
 ## Tool delegation
 

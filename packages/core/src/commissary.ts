@@ -1,31 +1,32 @@
 import { installAgent, type AgentDefinition, type InstalledAgentData } from "./agent.js";
 import type { Agent } from "./agent.js";
 import {
-  hookDefinitionOf,
-  type HookBlockedFailure,
+  agentHookDefinition,
+  type AgentHookEvent,
+  type AgentHookResult,
   type HookDefinition,
-  type HookFragment,
+  type HookPoint,
 } from "./hook.js";
 import type { AgentReference } from "./identity.js";
 import { modelEnvironment, type InternalCommissaryConfiguration } from "./internal.js";
-import type { ModelFailure } from "./protocol.js";
 import type {
   AbortResult,
+  AcceptedRun,
+  BranchConflict,
+  Clock,
+  CreateRunInput,
   Execution,
   ExecutionEventStore,
-  Clock,
+  GenerateId,
   Loop,
   RedirectInput,
   RedirectResult,
-  ResumeRunCommand,
-  GenerateId,
-  RunCommand,
-  RunResult,
-  RunSnapshot,
-  StartRunCommand,
+  ResumeRunInput,
+  RunConflict,
+  ToolResumeConflict,
+  ToolResumeRequestConflict,
   SteeringResult,
   SteerInput,
-  SubmitResult,
   ToolResumeItem,
 } from "./runtime.js";
 import { makeRuntime } from "./runtime-implementation.js";
@@ -37,13 +38,13 @@ import type {
   ThreadStore,
 } from "./store.js";
 import { ThreadStoreError } from "./store.js";
-import type { Tool } from "./tool.js";
-import type { BranchId, JsonValue, MessageEntryId, RunId, ThreadId } from "./types.js";
+import { BranchId, RunId, ThreadId } from "./types.js";
+import type { AgentRunId, DecodedRunId, JsonValue, MaybePromise, MessageEntryId } from "./types.js";
 
-type AgentFailure<Definition extends AgentDefinition> =
-  | Tool.Failure<Agent.Tools<Definition>>
-  | HookBlockedFailure
-  | ModelFailure;
+/** A Run ID accepted by one bound Agent Client. */
+export type AgentClientRunId<Definition extends AgentDefinition> =
+  | AgentRunId<Definition>
+  | DecodedRunId;
 
 type AgentResumeItem<Definition extends AgentDefinition> =
   Agent.ToolResumptions<Definition> extends infer Item
@@ -52,29 +53,79 @@ type AgentResumeItem<Definition extends AgentDefinition> =
       : never
     : never;
 
-/** A start or typed Tool resume command accepted by one Agent. */
-export type AgentCommand<Definition extends AgentDefinition> =
-  | StartRunCommand
-  | ([AgentResumeItem<Definition>] extends [never]
-      ? never
-      : ResumeRunCommand<AgentResumeItem<Definition>>);
+/** Input that creates a Run for one bound Agent. */
+export type AgentCreateRunInput = CreateRunInput<DecodedRunId>;
+
+/** Typed resume input for one bound Agent. */
+export type AgentResumeRunInput<Definition extends AgentDefinition> = Omit<
+  ResumeRunInput<AgentResumeItem<Definition>>,
+  "runId"
+> & {
+  readonly runId: AgentClientRunId<Definition>;
+};
+
+/** Result of Run creation through one bound Agent Client. */
+export type AgentCreateRunResult<Definition extends AgentDefinition> =
+  | AcceptedRun<AgentRunId<Definition>>
+  | BranchConflict
+  | RunConflict<DecodedRunId>;
+
+/** Result of Tool resumption through one bound Agent Client. */
+export type AgentResumeRunResult<Definition extends AgentDefinition> =
+  | AcceptedRun<AgentRunId<Definition>>
+  | ToolResumeConflict<AgentClientRunId<Definition>>
+  | ToolResumeRequestConflict<AgentClientRunId<Definition>>;
+
+/** Typed Steering input for one bound Agent. */
+export type AgentSteerInput<Definition extends AgentDefinition> = Omit<SteerInput, "runId"> & {
+  readonly runId: AgentClientRunId<Definition>;
+};
+
+/** Typed Redirect input for one bound Agent. */
+export type AgentRedirectInput<Definition extends AgentDefinition> = Omit<
+  RedirectInput,
+  "runId"
+> & {
+  readonly runId: AgentClientRunId<Definition>;
+};
 
 /** The typed host interface bound to one lazily installed Agent. */
 export interface AgentClient<Definition extends AgentDefinition> {
   readonly definition: Definition;
   readonly reference: AgentReference<Definition["id"]>;
-  readonly submit: (command: AgentCommand<Definition>) => Promise<SubmitResult>;
+  readonly createRun: (input: AgentCreateRunInput) => Promise<AgentCreateRunResult<Definition>>;
+  readonly resumeRun: (
+    input: AgentResumeRunInput<Definition>,
+  ) => Promise<AgentResumeRunResult<Definition>>;
   readonly execute: (
-    runId: RunId,
-  ) => Promise<Execution<Agent.Events<Definition>, AgentFailure<Definition>>>;
+    runId: AgentClientRunId<Definition>,
+  ) => Promise<
+    Execution<Agent.Tools<Definition>, Agent.Failure<Definition>, AgentRunId<Definition>>
+  >;
   readonly readRunSnapshot: (
-    runId: RunId,
-  ) => Promise<RunSnapshot<AgentFailure<Definition>> | undefined>;
-  readonly readResult: (runId: RunId) => Promise<RunResult<AgentFailure<Definition>> | undefined>;
-  readonly steer: (input: SteerInput) => Promise<SteeringResult>;
-  readonly redirect: (input: RedirectInput) => Promise<RedirectResult>;
-  readonly abort: (runId: RunId, reason?: JsonValue) => Promise<AbortResult>;
-  readonly subscribe: (hook: HookFragment) => () => void;
+    runId: AgentClientRunId<Definition>,
+  ) => Promise<Agent.RunSnapshots<Definition> | undefined>;
+  readonly readResult: (
+    runId: AgentClientRunId<Definition>,
+  ) => Promise<Agent.RunResults<Definition> | undefined>;
+  readonly steer: (
+    input: AgentSteerInput<Definition>,
+  ) => Promise<SteeringResult<AgentRunId<Definition>>>;
+  readonly redirect: (
+    input: AgentRedirectInput<Definition>,
+  ) => Promise<RedirectResult<AgentRunId<Definition>>>;
+  readonly abort: (
+    runId: AgentClientRunId<Definition>,
+    reason?: JsonValue,
+  ) => Promise<
+    AbortResult<Agent.Failure<Definition>, Agent.Tools<Definition>, AgentRunId<Definition>>
+  >;
+  readonly on: <Point extends HookPoint<string, unknown, unknown>>(
+    point: Point,
+    handler: (
+      event: AgentHookEvent<Definition, Point>,
+    ) => MaybePromise<AgentHookResult<Definition, Point>>,
+  ) => () => void;
 }
 
 /** Options for fenced Execution Claims. */
@@ -150,9 +201,8 @@ export function commissary(
   } & InternalCommissaryConfiguration,
 ): CommissaryInstance {
   const generateId = configuration.generateId ?? (() => globalThis.crypto.randomUUID());
-  function newId<Id extends string>(): Id {
-    return generateId() as Id;
-  }
+  const newThreadId = () => ThreadId.decode(generateId());
+  const newBranchId = () => BranchId.decode(generateId());
   const installedById = new Map<string, InstalledAgentData>();
   const runtime = makeRuntime({
     threadStore: configuration.threadStore,
@@ -178,7 +228,7 @@ export function commissary(
   return Object.freeze({
     createThread(input: { readonly id?: ThreadId } = {}): Promise<ThreadRecord> {
       return storeCall("createThread", () =>
-        configuration.threadStore.createThread({ id: input.id ?? newId<ThreadId>() }),
+        configuration.threadStore.createThread({ id: input.id ?? newThreadId() }),
       );
     },
 
@@ -193,7 +243,7 @@ export function commissary(
       readonly from?: MessageEntryId;
     }): Promise<BranchRecord> {
       const branch: BranchRecord = {
-        id: input.id ?? newId<BranchId>(),
+        id: input.id ?? newBranchId(),
         threadId: input.threadId,
         name: input.name,
         ...(input.from === undefined ? {} : { head: input.from }),
@@ -246,48 +296,77 @@ export function commissary(
       const client: AgentClient<Definition> = Object.freeze({
         definition,
         reference: installed.reference as AgentReference<Definition["id"]>,
-        submit(command: AgentCommand<Definition>) {
-          return runtime.submit(installed.reference, command as RunCommand);
+        async createRun(input: AgentCreateRunInput): Promise<AgentCreateRunResult<Definition>> {
+          const result = await runtime.createRun(installed.reference, input);
+          if (result.type === "accepted") {
+            // SAFETY: The Store accepted the Run with this installed Agent reference.
+            return result as AcceptedRun<AgentRunId<Definition>>;
+          }
+          return result.type === "run-conflict"
+            ? Object.freeze({ ...result, runId: RunId.decode(result.runId) })
+            : result;
         },
-        async execute(runId: RunId) {
+        async resumeRun(
+          input: AgentResumeRunInput<Definition>,
+        ): Promise<AgentResumeRunResult<Definition>> {
+          const result = await runtime.resumeRun(installed.reference, input);
+          if (result.type === "accepted") {
+            // SAFETY: The Store accepted the submitted Run ID for this installed Agent.
+            return result as AcceptedRun<AgentRunId<Definition>>;
+          }
+          return Object.freeze({ ...result, runId: input.runId });
+        },
+        async execute(runId: AgentClientRunId<Definition>) {
           const captured = Object.freeze([...subscriptions]);
-          // SAFETY: Agent metadata carries the union of Tool Events and declared Failures for this definition.
+          // SAFETY: Claim acquisition checks the stored Agent before returning the Execution.
           return (await runtime.execute(definition, runId, captured)) as Execution<
-            Agent.Events<Definition>,
-            AgentFailure<Definition>
+            Agent.Tools<Definition>,
+            Agent.Failure<Definition>,
+            AgentRunId<Definition>
           >;
         },
-        async readRunSnapshot(runId: RunId) {
-          // SAFETY: The Run belongs to this installed Agent Client when submitted through it.
-          return (await runtime.readRunSnapshot(runId)) as
-            | RunSnapshot<AgentFailure<Definition>>
+        async readRunSnapshot(runId: AgentClientRunId<Definition>) {
+          // SAFETY: The Store checks the stored Agent before returning the typed Snapshot.
+          return (await runtime.readRunSnapshot(installed.reference, runId)) as
+            | Agent.RunSnapshots<Definition>
             | undefined;
         },
-        async readResult(runId: RunId) {
-          // SAFETY: The Run belongs to this installed Agent Client when submitted through it.
-          return (await runtime.readResult(runId)) as
-            | RunResult<AgentFailure<Definition>>
+        async readResult(runId: AgentClientRunId<Definition>) {
+          // SAFETY: The Store checks the stored Agent before returning the typed result.
+          return (await runtime.readResult(installed.reference, runId)) as
+            | Agent.RunResults<Definition>
             | undefined;
         },
-        steer(input: SteerInput) {
-          return runtime.steer(input);
+        steer(input: AgentSteerInput<Definition>) {
+          return runtime.steer(installed.reference, input) as Promise<
+            SteeringResult<AgentRunId<Definition>>
+          >;
         },
-        redirect(input: RedirectInput) {
-          return runtime.redirect(input);
+        redirect(input: AgentRedirectInput<Definition>) {
+          return runtime.redirect(installed.reference, input) as Promise<
+            RedirectResult<AgentRunId<Definition>>
+          >;
         },
-        abort(runId: RunId, reason?: JsonValue) {
-          return runtime.abort(runId, reason);
+        abort(runId: AgentClientRunId<Definition>, reason?: JsonValue) {
+          return runtime.abort(installed.reference, runId, reason) as Promise<
+            AbortResult<Agent.Failure<Definition>, Agent.Tools<Definition>, AgentRunId<Definition>>
+          >;
         },
-        subscribe(fragment: HookFragment) {
-          const definition = hookDefinitionOf(fragment);
-          subscriptions.push(definition);
+        on<Point extends HookPoint<string, unknown, unknown>>(
+          point: Point,
+          handler: (
+            event: AgentHookEvent<Definition, Point>,
+          ) => MaybePromise<AgentHookResult<Definition, Point>>,
+        ) {
+          const subscription = agentHookDefinition<Definition, Point>(point, handler);
+          subscriptions.push(subscription);
           let subscribed = true;
           return () => {
             if (!subscribed) {
               return;
             }
             subscribed = false;
-            const index = subscriptions.indexOf(definition);
+            const index = subscriptions.indexOf(subscription);
             if (index !== -1) {
               subscriptions.splice(index, 1);
             }

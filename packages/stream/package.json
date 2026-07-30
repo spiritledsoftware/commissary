@@ -1,19 +1,49 @@
 {
   "name": "@commissary/stream",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
+  "description": "JavaScript and Effect stream adapters for Commissary executions",
+  "homepage": "https://github.com/spiritledsoftware/commissary#readme",
+  "bugs": {
+    "url": "https://github.com/spiritledsoftware/commissary/issues"
+  },
+  "license": "MIT",
+  "author": "Spirit-Led Software LLC <social@spiritledsoftware.com>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/spiritledsoftware/commissary.git",
+    "directory": "packages/stream"
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
   "type": "module",
   "sideEffects": false,
   "exports": {
-    ".": "./src/index.ts",
-    "./effect": "./src/effect.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./effect": {
+      "types": "./dist/effect.d.ts",
+      "import": "./dist/effect.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "pack:check": "node ../../scripts/check-package-archive.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@commissary/core": "workspace:*",
+    "@commissary/core": "workspace:^",
+    "@commissary/effect": "workspace:^",
     "effect": "4.0.0-beta.101"
+  },
+  "engines": {
+    "node": ">=22.14.0"
   }
 }

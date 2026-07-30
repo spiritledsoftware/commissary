@@ -1,39 +1,51 @@
 import type {
   Agent,
   AgentClient,
+  AgentClientRunId,
   AgentDefinition,
+  AgentRunId,
   Execution,
   ExecutionResult,
   RunId,
 } from "@commissary/core";
+import type { EffectAgentClient } from "@commissary/effect";
 import { Effect, Stream } from "effect";
 
 import { execute as executeJavaScript, type StreamEvent, type StreamOptions } from "./index.js";
 
-type ClientExecution<Definition extends AgentDefinition> = Awaited<
-  ReturnType<AgentClient<Definition>["execute"]>
->;
-type ClientFailure<Value> = Value extends Execution<unknown, infer Failure> ? Failure : never;
-
 /** An Effect-native view of one bounded Execution stream. */
-export interface EffectStreamExecution<ToolEvent = unknown, Failure = unknown> {
-  readonly execution: Execution<ToolEvent, Failure>;
-  readonly events: Stream.Stream<StreamEvent<ToolEvent>, unknown>;
-  readonly result: Effect.Effect<ExecutionResult<Failure>, unknown>;
+export interface EffectStreamExecution<
+  Tools = unknown,
+  Failure = unknown,
+  Run extends RunId = RunId,
+> {
+  readonly execution: Execution<Tools, Failure, Run>;
+  readonly events: Stream.Stream<StreamEvent<Tools>, unknown>;
+  readonly result: Effect.Effect<ExecutionResult<Failure, Tools, Run>, unknown>;
+}
+
+type SupportedClient<Definition extends AgentDefinition> =
+  | AgentClient<Definition>
+  | EffectAgentClient<Definition>;
+
+function coreClient<Definition extends AgentDefinition>(
+  client: SupportedClient<Definition>,
+): AgentClient<Definition> {
+  return "core" in client ? client.core : client;
 }
 
 /** Capture one new Execution as an Effect-native bounded stream. */
 export function execute<Definition extends AgentDefinition>(
-  client: AgentClient<Definition>,
-  runId: RunId,
+  client: SupportedClient<Definition>,
+  runId: AgentClientRunId<Definition>,
   options: StreamOptions = {},
 ): Effect.Effect<
-  EffectStreamExecution<Agent.Events<Definition>, ClientFailure<ClientExecution<Definition>>>,
+  EffectStreamExecution<Agent.Tools<Definition>, Agent.Failure<Definition>, AgentRunId<Definition>>,
   unknown
 > {
   return Effect.map(
     Effect.tryPromise({
-      try: () => executeJavaScript(client, runId, options),
+      try: () => executeJavaScript(coreClient(client), runId, options),
       catch: (cause) => cause,
     }),
     ({ execution, events }) => ({

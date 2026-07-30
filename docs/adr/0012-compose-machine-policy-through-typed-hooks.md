@@ -6,13 +6,13 @@ The public `Hook` namespace has one constructor for each closed Hook Point. For 
 
 `Hook.on(point, handler)` is the generic interface for adapter authors. Each constructor returns an opaque Hook value.
 
-A host can install the same Hook as a static Agent Fragment or pass it to `client.subscribe(hook)`. Static Hooks contribute to Agent Revision. Dynamic Hooks are process-local and do not change the Agent contract or revision.
+Reusable static Hooks remain broadly typed Agent Fragments and contribute to Agent Revision. `Agent.define({ hooks })` supplies an Agent-specialized builder for static Hooks that need the closed Tool Event, Failure, suspension, and result contracts.
 
-`client.subscribe` returns an idempotent unsubscribe function.
+A bound host installs a dynamic Hook with `client.on(point, handler)`. The handler is specialized to that Agent. Dynamic Hooks are process-local, do not change Agent Revision, and cannot add new contract variants. `client.on` returns an idempotent unsubscribe function.
 
 ## Execution capture and order
 
-At `execute`, core captures the current dynamic subscriptions. It runs installed static Hooks first. It then runs dynamic Hooks in subscription order.
+At `execute`, core captures the current `client.on` handlers. It runs installed static Hooks first. It then runs dynamic Hooks in subscription order.
 
 This Hook set does not change during the Execution. A later subscription change affects only later Executions.
 
@@ -39,7 +39,7 @@ Model Hooks run once around the root Model invocation. Composite Model frames an
 
 ## Host commands
 
-Hooks do not wrap Agent Client commands such as start, Steering, Redirect, resume, or abort. They also do not wrap Thread and Branch administration. The host owns these calls and can apply its own policy before it calls core.
+Hooks do not wrap Agent Client commands such as Run creation, Steering, Redirect, Tool resume, or abort. They also do not wrap Thread and Branch administration. The host owns these calls and can apply its own policy before it calls core.
 
 An idempotent command replay never re-runs a Hook or applies current process policy to an accepted command.
 

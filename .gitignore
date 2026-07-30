@@ -4,5 +4,8 @@ node_modules/
 # TurboRepo
 .turbo/
 
+# Package build outputs
+dist/
+
 # Local reference repositories
 .repos/

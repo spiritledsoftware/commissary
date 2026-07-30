@@ -12,7 +12,7 @@ import type {
   ToolCallContentPart,
 } from "./protocol.js";
 import type { ThreadStore } from "./store.js";
-import type { ToolInvocationResult } from "./tool.js";
+import type { DynamicTool, Tool, ToolDefinition, ToolInvocationResult } from "./tool.js";
 import type {
   BranchId,
   ExecutionId,
@@ -34,6 +34,24 @@ const modelInvocationType: unique symbol = Symbol("commissary.runtime.model");
 const toolExecutionType: unique symbol = Symbol("commissary.runtime.tool");
 const resolvedExecutionType: unique symbol = Symbol("commissary.runtime.resolved");
 
+type OpenTools = ToolDefinition | DynamicTool;
+
+type DynamicToolBranch<Tools, Value> = [Tool.Dynamic<Tools>] extends [never] ? never : Value;
+
+type StaticToolIdentity<Definition extends ToolDefinition> = {
+  readonly dynamic?: false;
+  readonly providerId?: never;
+  readonly toolName: Tool.Name<Definition>;
+  readonly toolCallId: ToolCallId;
+};
+
+type DynamicToolIdentity = {
+  readonly dynamic: true;
+  readonly providerId: string;
+  readonly toolName: string;
+  readonly toolCallId: ToolCallId;
+};
+
 /** Process-local time operations used by the Runtime. */
 export interface Clock {
   readonly now: () => number;
@@ -43,40 +61,46 @@ export interface Clock {
 /** Create one opaque core-owned ID. */
 export type GenerateId = () => string;
 
-/** A command that creates a durable Run from one user Message. */
-export interface StartRunCommand {
-  readonly type: "start";
-  readonly runId?: RunId;
+/** Input that creates a durable Run from one user Message. */
+export interface CreateRunInput<Run extends RunId = RunId> {
+  readonly runId?: Run;
   readonly threadId: ThreadId;
   readonly branchId: BranchId;
   readonly message: ModelMessage;
   readonly expectedHead?: MessageEntryId;
 }
 
-/** One typed resume input addressed to a suspended Tool Call. */
-export interface ToolResumeItem<Value = unknown> {
-  readonly toolCallId: ToolCallId;
-  readonly toolName: string;
-  readonly input: Value;
-}
+/** One JSON resume input for either a static or dynamic suspended Tool Call. */
+export type ToolResumeItem<Value extends JsonValue = JsonValue> =
+  | {
+      readonly dynamic?: false;
+      readonly providerId?: never;
+      readonly toolCallId: ToolCallId;
+      readonly toolName: string;
+      readonly input: Value;
+    }
+  | {
+      readonly dynamic: true;
+      readonly providerId: string;
+      readonly toolCallId: ToolCallId;
+      readonly toolName: string;
+      readonly input: Value;
+    };
 
-/** A command that atomically attaches input to one or more suspended Tool Calls. */
-export interface ResumeRunCommand<Item extends ToolResumeItem = ToolResumeItem> {
-  readonly type: "resume";
-  readonly runId: RunId;
+/** Input that atomically attaches JSON input to one or more suspended Tool Calls. */
+export interface ResumeRunInput<
+  Item extends ToolResumeItem = ToolResumeItem,
+  Run extends RunId = RunId,
+> {
+  readonly runId: Run;
   readonly items: readonly [Item, ...Item[]];
   readonly toolResumeRequestId?: ToolResumeRequestId;
 }
 
-/** A durable command accepted by an Agent Client. */
-export type RunCommand<Item extends ToolResumeItem = ToolResumeItem> =
-  | StartRunCommand
-  | ResumeRunCommand<Item>;
-
-/** The durable identity and head returned after a successful submission. */
-export interface RunSubmission {
-  readonly type: "submitted";
-  readonly runId: RunId;
+/** The durable identity and head returned after a command is accepted. */
+export interface AcceptedRun<Run extends RunId = RunId> {
+  readonly type: "accepted";
+  readonly runId: Run;
   readonly threadId: ThreadId;
   readonly branchId: BranchId;
   readonly head: MessageEntryId;
@@ -84,90 +108,94 @@ export interface RunSubmission {
   readonly admitted: boolean;
 }
 
-/** A start command that observed a different current Branch head. */
+/** A create command that observed a different current Branch head. */
 export interface BranchConflict {
   readonly type: "branch-conflict";
   readonly expectedHead?: MessageEntryId;
   readonly actualHead?: MessageEntryId;
 }
 
-/** A Run ID that was already used for a different start command. */
-export interface RunConflict {
+/** A Run ID that was already used for a different create command. */
+export interface RunConflict<Run extends RunId = RunId> {
   readonly type: "run-conflict";
-  readonly runId: RunId;
+  readonly runId: Run;
 }
 
 /** A resume command that did not address the current suspended Tool Calls. */
-export interface ToolResumeConflict {
+export interface ToolResumeConflict<Run extends RunId = RunId> {
   readonly type: "tool-resume-conflict";
-  readonly runId: RunId;
+  readonly runId: Run;
   readonly toolCallIds: readonly ToolCallId[];
 }
 
 /** A request ID that was already used for different resume input. */
-export interface ToolResumeRequestConflict {
+export interface ToolResumeRequestConflict<Run extends RunId = RunId> {
   readonly type: "tool-resume-request-conflict";
-  readonly runId: RunId;
+  readonly runId: Run;
   readonly toolResumeRequestId: ToolResumeRequestId;
 }
 
-/** The result of durable Run submission. */
-export type SubmitResult =
-  | RunSubmission
+/** The result of durable Run creation. */
+export type CreateRunResult<Run extends RunId = RunId> =
+  | AcceptedRun<Run>
   | BranchConflict
-  | RunConflict
-  | ToolResumeConflict
-  | ToolResumeRequestConflict;
+  | RunConflict<Run>;
+
+/** The result of a durable Tool resume command. */
+export type ResumeRunResult<Run extends RunId = RunId> =
+  | AcceptedRun<Run>
+  | ToolResumeConflict<Run>
+  | ToolResumeRequestConflict<Run>;
 
 /** A durable Steering submission. */
-export interface SteerInput {
-  readonly runId: RunId;
+export interface SteerInput<Run extends RunId = RunId> {
+  readonly runId: Run;
   readonly message: ModelMessage;
   readonly steeringRequestId?: SteeringRequestId;
 }
 
 /** The result of durable Steering submission. */
-export type SteeringResult =
+export type SteeringResult<Run extends RunId = RunId> =
   | {
       readonly type: "accepted";
-      readonly runId: RunId;
+      readonly runId: Run;
       readonly sequence: number;
       readonly admitted: boolean;
     }
-  | { readonly type: "not-active"; readonly runId: RunId }
+  | { readonly type: "not-active"; readonly runId: Run }
   | {
       readonly type: "steering-request-conflict";
-      readonly runId: RunId;
+      readonly runId: Run;
       readonly steeringRequestId: SteeringRequestId;
     };
 
 /** A durable Redirect submission. */
-export interface RedirectInput {
-  readonly runId: RunId;
+export interface RedirectInput<Run extends RunId = RunId> {
+  readonly runId: Run;
   readonly message: ModelMessage;
   readonly redirectRequestId?: RedirectRequestId;
 }
 
 /** The result of durable Redirect submission. */
-export type RedirectResult =
+export type RedirectResult<Run extends RunId = RunId> =
   | {
       readonly type: "accepted";
-      readonly runId: RunId;
+      readonly runId: Run;
       readonly sequence: number;
       readonly admitted: boolean;
     }
-  | { readonly type: "not-active"; readonly runId: RunId }
+  | { readonly type: "not-active"; readonly runId: Run }
   | {
       readonly type: "redirect-request-conflict";
-      readonly runId: RunId;
+      readonly runId: Run;
       readonly redirectRequestId: RedirectRequestId;
     };
 
 /** The result of a durable Abort Request. */
-export type AbortResult =
-  | { readonly type: "accepted"; readonly runId: RunId }
-  | { readonly type: "already-resolved"; readonly result: RunResult };
-
+export type AbortResult<Failure = unknown, Tools = OpenTools, Run extends RunId = RunId> =
+  | { readonly type: "accepted"; readonly runId: Run }
+  | { readonly type: "not-active"; readonly runId: Run }
+  | { readonly type: "already-resolved"; readonly result: RunResult<Failure, Tools, Run> };
 /** An interruption caused by incompatible deferred Tool state. */
 export interface StaleAgentInterruption {
   readonly type: "stale-agent";
@@ -180,8 +208,8 @@ export interface StaleAgentInterruption {
 /** A declared nonterminal stop in one Execution. */
 export type Interruption = StaleAgentInterruption | ModelInterruption;
 
-interface RunResultBase {
-  readonly runId: RunId;
+interface RunResultBase<Run extends RunId = RunId> {
+  readonly runId: Run;
   readonly threadId: ThreadId;
   readonly branchId: BranchId;
   readonly head: MessageEntryId;
@@ -190,126 +218,169 @@ interface RunResultBase {
 }
 
 /** A successfully completed Run. */
-export interface CompletedRunResult extends RunResultBase {
+export interface CompletedRunResult<Run extends RunId = RunId> extends RunResultBase<Run> {
   readonly type: "completed";
   readonly response: ModelResponse;
 }
 
-/** The public identity of one unresolved Tool Suspension. */
-export interface ToolSuspensionRecord {
-  readonly toolName: string;
-  readonly toolCallId: ToolCallId;
-}
+/** The public identity of one unresolved static or dynamic Tool Suspension. */
+export type ToolSuspensionRecord<Tools = OpenTools> =
+  | Tool.Suspension<Tool.Static<Tools>>
+  | DynamicToolBranch<Tools, DynamicToolIdentity>;
 
 /** A Run that has no ready work and one or more unresolved suspensions. */
-export interface SuspendedRunResult extends RunResultBase {
+export interface SuspendedRunResult<
+  Tools = OpenTools,
+  Run extends RunId = RunId,
+> extends RunResultBase<Run> {
   readonly type: "suspended";
-  readonly suspensions: readonly ToolSuspensionRecord[];
+  readonly suspensions: readonly ToolSuspensionRecord<Tools>[];
 }
 
 /** A Run that ended with a declared failure. */
-export interface FailedRunResult<Failure = unknown> extends RunResultBase {
+export interface FailedRunResult<
+  Failure = unknown,
+  Run extends RunId = RunId,
+> extends RunResultBase<Run> {
   readonly type: "failed";
   readonly failure: Failure;
 }
 
 /** A Run that ended after a durable Abort Request. */
-export interface AbortedRunResult extends RunResultBase {
+export interface AbortedRunResult<Run extends RunId = RunId> extends RunResultBase<Run> {
   readonly type: "aborted";
   readonly reason?: JsonValue;
 }
 
 /** A durable Run settlement value. */
-export type RunResult<Failure = unknown> =
-  | CompletedRunResult
-  | SuspendedRunResult
-  | FailedRunResult<Failure>
-  | AbortedRunResult;
+export type RunResult<Failure = unknown, Tools = OpenTools, Run extends RunId = RunId> =
+  | CompletedRunResult<Run>
+  | SuspendedRunResult<Tools, Run>
+  | FailedRunResult<Failure, Run>
+  | AbortedRunResult<Run>;
 
 /** A nonterminal Execution result with a recorded Interruption. */
-export interface InterruptedExecutionResult {
+export interface InterruptedExecutionResult<Run extends RunId = RunId> {
   readonly type: "interrupted";
-  readonly runId: RunId;
+  readonly runId: Run;
   readonly interruption: Interruption;
 }
 
 /** The resolved value of one Execution. */
-export type ExecutionResult<Failure = unknown> = RunResult<Failure> | InterruptedExecutionResult;
+export type ExecutionResult<Failure = unknown, Tools = OpenTools, Run extends RunId = RunId> =
+  | RunResult<Failure, Tools, Run>
+  | InterruptedExecutionResult<Run>;
 
 /** A public Tool Call result in a Run Snapshot. */
-export type ToolCallResult =
+export type ToolCallResult<Output extends JsonValue = JsonValue, Failure = JsonValue> =
   | {
       readonly type: "success";
-      readonly output: JsonValue;
+      readonly output: Output;
       readonly content?: readonly ContentPart[];
     }
   | {
       readonly type: "failure";
-      readonly failure: JsonValue;
+      readonly failure: Failure;
       readonly content?: readonly ContentPart[];
     }
   | { readonly type: "aborted" };
 
-/** One public node in the complete Tool Call Graph. */
-export interface ToolCallSnapshot {
+interface ToolCallSnapshotBase {
   readonly toolCallId: ToolCallId;
-  readonly toolName: string;
   readonly parentToolCallId?: ToolCallId;
   readonly status: "pending" | "running" | "suspended" | "succeeded" | "failed" | "aborted";
-  readonly input: JsonValue;
-  readonly result?: ToolCallResult;
 }
 
+type StaticToolCallSnapshot<Tools> =
+  Tool.Static<Tools> extends infer Definition
+    ? Definition extends ToolDefinition
+      ? ToolCallSnapshotBase &
+          StaticToolIdentity<Definition> & {
+            readonly requestedInput: Tool.RequestedInput<Definition>;
+            readonly effectiveInput?: Tool.RequestedInput<Definition>;
+            readonly result?: ToolCallResult<Tool.Output<Definition>, Tool.Failure<Definition>>;
+          }
+      : never
+    : never;
+
+type DynamicToolCallSnapshot<Tools> = DynamicToolBranch<
+  Tools,
+  ToolCallSnapshotBase &
+    DynamicToolIdentity & {
+      readonly requestedInput: JsonValue;
+      readonly effectiveInput?: JsonValue;
+      readonly result?: ToolCallResult<JsonValue, Tool.Failure<DynamicTool>>;
+    }
+>;
+
+/** One public node in the complete Tool Call Graph. */
+export type ToolCallSnapshot<Tools = OpenTools> =
+  | StaticToolCallSnapshot<Tools>
+  | DynamicToolCallSnapshot<Tools>;
+
 /** One atomic point-in-time view of public durable Run state. */
-export interface RunSnapshot<Failure = unknown> {
-  readonly runId: RunId;
+export interface RunSnapshot<Failure = unknown, Tools = OpenTools, Run extends RunId = RunId> {
+  readonly runId: Run;
   readonly threadId: ThreadId;
   readonly branchId: BranchId;
   readonly head: MessageEntryId;
   readonly agent: AgentReference;
   readonly status: "active" | "suspended" | "completed" | "failed" | "aborted";
   readonly settlementContinuations: number;
-  readonly toolCalls: readonly ToolCallSnapshot[];
-  readonly suspensions: readonly ToolSuspensionRecord[];
-  readonly result?: RunResult<Failure>;
+  readonly toolCalls: readonly ToolCallSnapshot<Tools>[];
+  readonly suspensions: readonly ToolSuspensionRecord<Tools>[];
+  readonly result?: RunResult<Failure, Tools, Run>;
 }
 
-/** Canonical process-local progress from one Execution. */
-export type ExecutionEvent<ToolEvent = unknown> =
-  | { readonly type: "model-event"; readonly event: ModelEvent }
-  | {
-      readonly type: "tool-started";
-      readonly toolName: string;
-      readonly toolCallId: ToolCallId;
-    }
-  | {
-      readonly type: "tool-event";
-      readonly toolName: string;
-      readonly toolCallId: ToolCallId;
-      readonly event: ToolEvent;
-    }
-  | {
-      readonly type: "tool-suspended";
-      readonly toolName: string;
-      readonly toolCallId: ToolCallId;
-    }
-  | {
+type StaticExecutionEvent<Tools> =
+  Tool.Static<Tools> extends infer Definition
+    ? Definition extends ToolDefinition
+      ?
+          | (StaticToolIdentity<Definition> & { readonly type: "tool-started" })
+          | (StaticToolIdentity<Definition> & {
+              readonly type: "tool-event";
+              readonly event: Tool.Event<Definition>;
+            })
+          | ([Tool.ResumeInput<Definition>] extends [never]
+              ? never
+              : StaticToolIdentity<Definition> & { readonly type: "tool-suspended" })
+          | (StaticToolIdentity<Definition> & {
+              readonly type: "tool-finished";
+              readonly result: ToolInvocationResult<
+                Tool.Output<Definition>,
+                Tool.Failure<Definition>
+              >;
+            })
+      : never
+    : never;
+
+type DynamicExecutionEvent<Tools> = DynamicToolBranch<
+  Tools,
+  | (DynamicToolIdentity & { readonly type: "tool-started" })
+  | (DynamicToolIdentity & { readonly type: "tool-event"; readonly event: unknown })
+  | (DynamicToolIdentity & { readonly type: "tool-suspended" })
+  | (DynamicToolIdentity & {
       readonly type: "tool-finished";
-      readonly toolName: string;
-      readonly toolCallId: ToolCallId;
-      readonly result: ToolInvocationResult;
-    }
+      readonly result: ToolInvocationResult<JsonValue, Tool.Failure<DynamicTool>>;
+    })
+>;
+
+/** Canonical process-local progress from one Execution. */
+export type ExecutionEvent<Tools = OpenTools> =
+  | { readonly type: "model-event"; readonly event: ModelEvent }
+  | StaticExecutionEvent<Tools>
+  | DynamicExecutionEvent<Tools>
   | { readonly type: "error"; readonly error: unknown };
 
 /** One Event batch item awaiting durable Run-local sequence assignment. */
-export interface ExecutionEventAppend<ToolEvent = unknown> {
+export interface ExecutionEventAppend<Tools = OpenTools> {
   readonly runId: RunId;
   readonly executionId: ExecutionId;
-  readonly event: ExecutionEvent<ToolEvent>;
+  readonly event: ExecutionEvent<Tools>;
 }
 
 /** One durable Event envelope appended in canonical Run order. */
-export interface ExecutionEventRecord<ToolEvent = unknown> extends ExecutionEventAppend<ToolEvent> {
+export interface ExecutionEventRecord<Tools = OpenTools> extends ExecutionEventAppend<Tools> {
   readonly sequence: number;
 }
 
@@ -326,19 +397,19 @@ export interface ExecutionEventStore {
 
 /** An error reported when durable Execution Event append fails. */
 export class ExecutionEventStoreError extends Error {
-  constructor(readonly cause: unknown) {
+  constructor(override readonly cause: unknown) {
     super("Execution Event Store append failed", { cause });
     this.name = "ExecutionEventStoreError";
   }
 }
 
 /** One process-bound attempt to advance a durable Run. */
-export interface Execution<ToolEvent = never, Failure = unknown> {
-  readonly [executionEventType]?: ToolEvent;
+export interface Execution<Tools = OpenTools, Failure = unknown, Run extends RunId = RunId> {
+  readonly [executionEventType]?: Tools;
   readonly id: ExecutionId;
-  readonly runId: RunId;
-  readonly result: PromiseLike<ExecutionResult<Failure>>;
-  readonly abort: (reason?: JsonValue) => Promise<AbortResult>;
+  readonly runId: Run;
+  readonly result: PromiseLike<ExecutionResult<Failure, Tools, Run>>;
+  readonly abort: (reason?: JsonValue) => Promise<AbortResult<Failure, Tools, Run>>;
 }
 
 /** A stable reason why an Execution could not start. */
@@ -363,7 +434,7 @@ export class ExecutionUnavailableError extends Error {
 export class ExecutionClaimLostError extends Error {
   constructor(
     readonly runId: RunId,
-    readonly cause?: unknown,
+    override readonly cause?: unknown,
   ) {
     super(`Execution Claim for Run '${runId}' was lost`, { cause });
     this.name = "ExecutionClaimLostError";
@@ -377,7 +448,7 @@ export type UnexpectedExecutionPhase = "prepare" | "model" | "tool" | "hook" | "
 export class UnexpectedExecutionError extends Error {
   constructor(
     readonly phase: UnexpectedExecutionPhase,
-    readonly cause: unknown,
+    override readonly cause: unknown,
   ) {
     super(`Unexpected exception during Execution phase '${phase}'`, { cause });
     this.name = "UnexpectedExecutionError";
@@ -502,15 +573,19 @@ export interface Loop {
 /** Internal core operations used by typed Agent Clients. */
 export interface Runtime {
   readonly threadStore: ThreadStore;
-  readonly submit: (agent: AgentReference, command: RunCommand) => Promise<SubmitResult>;
-  readonly steer: (input: SteerInput) => Promise<SteeringResult>;
-  readonly redirect: (input: RedirectInput) => Promise<RedirectResult>;
-  readonly abort: (runId: RunId, reason?: JsonValue) => Promise<AbortResult>;
+  readonly createRun: (agent: AgentReference, input: CreateRunInput) => Promise<CreateRunResult>;
+  readonly resumeRun: (agent: AgentReference, input: ResumeRunInput) => Promise<ResumeRunResult>;
+  readonly steer: (agent: AgentReference, input: SteerInput) => Promise<SteeringResult>;
+  readonly redirect: (agent: AgentReference, input: RedirectInput) => Promise<RedirectResult>;
+  readonly abort: (agent: AgentReference, runId: RunId, reason?: JsonValue) => Promise<AbortResult>;
   readonly execute: <Definition extends AgentDefinition>(
     agent: Definition,
     runId: RunId,
     dynamicHooks: readonly HookDefinition[],
-  ) => Promise<Execution<unknown>>;
-  readonly readRunSnapshot: (runId: RunId) => Promise<RunSnapshot | undefined>;
-  readonly readResult: (runId: RunId) => Promise<RunResult | undefined>;
+  ) => Promise<Execution>;
+  readonly readRunSnapshot: (
+    agent: AgentReference,
+    runId: RunId,
+  ) => Promise<RunSnapshot | undefined>;
+  readonly readResult: (agent: AgentReference, runId: RunId) => Promise<RunResult | undefined>;
 }

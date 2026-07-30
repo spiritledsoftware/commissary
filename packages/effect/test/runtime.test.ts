@@ -64,14 +64,13 @@ it("maps the active Effect Clock and the configured ID generator", async () => {
   const branch = await Effect.runPromise(app.createBranch({ threadId: thread.id, name: "main" }));
   const client = await Effect.runPromise(app.agent(agent));
   const submission = await Effect.runPromise(
-    client.submit({
-      type: "start",
+    client.createRun({
       threadId: thread.id,
       branchId: branch.id,
       message: { role: "user", content: [Content.text("start")] },
     }),
   );
-  if (submission.type !== "submitted") {
+  if (submission.type !== "accepted") {
     throw new Error(`Unexpected submission result '${submission.type}'`);
   }
   const execution = await Effect.runPromise(client.execute(submission.runId));

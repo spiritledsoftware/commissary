@@ -8,7 +8,7 @@ Core uses semantic events for Machine behavior. It does not use provider metadat
 
 Provider adapters define typed and namespaced Provider Options. Core passes these options without interpretation. Core does not accept raw string-keyed option bags or global type augmentation.
 
-Start submissions and Steering accept canonical Model Messages. They do not use Agent input schemas. A completed Run returns a Model Response. Application output conversion and validation stay outside core.
+Run creation and Steering accept canonical Model Messages. They do not use Agent input schemas. A completed Run returns a Model Response. Application output conversion and validation stay outside core.
 
 ## Provider packages
 

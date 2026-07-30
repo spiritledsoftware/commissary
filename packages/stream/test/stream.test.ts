@@ -7,10 +7,11 @@ import {
   UnexpectedExecutionError,
   commissary,
 } from "@commissary/core";
+import { EffectCommissary } from "@commissary/effect";
+import { execute as executeEffect } from "@commissary/stream/effect";
 import { Effect, Stream } from "effect";
 import { expect, it } from "vitest";
 
-import { execute as executeEffect } from "../src/effect.js";
 import { StreamAlreadyConsumedError, execute, text, type StreamEvent } from "../src/index.js";
 
 async function clientFor(model: ReturnType<typeof Model.define>) {
@@ -19,13 +20,12 @@ async function clientFor(model: ReturnType<typeof Model.define>) {
   const thread = await app.createThread();
   const branch = await app.createBranch({ threadId: thread.id, name: "main" });
   const client = app.agent(agent);
-  const submission = await client.submit({
-    type: "start",
+  const submission = await client.createRun({
     threadId: thread.id,
     branchId: branch.id,
     message: { role: "user", content: [Content.text("start")] },
   });
-  if (submission.type !== "submitted") {
+  if (submission.type !== "accepted") {
     throw new Error(`Unexpected submission result '${submission.type}'`);
   }
   return { client, runId: submission.runId };
@@ -160,13 +160,12 @@ it("keeps streaming after an isolated observer error", async () => {
   const thread = await app.createThread();
   const branch = await app.createBranch({ threadId: thread.id, name: "main" });
   const client = app.agent(agent);
-  const submission = await client.submit({
-    type: "start",
+  const submission = await client.createRun({
     threadId: thread.id,
     branchId: branch.id,
     message: { role: "user", content: [Content.text("start")] },
   });
-  if (submission.type !== "submitted") {
+  if (submission.type !== "accepted") {
     throw new Error(`Unexpected submission result '${submission.type}'`);
   }
 
@@ -226,4 +225,47 @@ it("provides the same bounded stream through Effect", async () => {
     event: { type: "text-delta", delta: "effect" },
   });
   await expect(Effect.runPromise(streamed.result)).resolves.toMatchObject({ type: "completed" });
+});
+
+it("accepts an Effect Agent Client directly", async () => {
+  const model = Model.define({
+    id: "effect-client-stream",
+    async *invoke() {
+      yield { type: "text-delta" as const, delta: "direct" };
+      yield {
+        type: "finish" as const,
+        response: {
+          message: { role: "assistant" as const, content: [Content.text("direct")] },
+          finishReason: "stop" as const,
+        },
+      };
+    },
+  });
+  const agent = Agent.define({ id: "effect-client-stream-agent", fragments: model });
+  const app = await Effect.runPromise(
+    EffectCommissary.make({ threadStore: new MemoryThreadStore() }),
+  );
+  const thread = await Effect.runPromise(app.createThread());
+  const branch = await Effect.runPromise(app.createBranch({ threadId: thread.id, name: "main" }));
+  const client = await Effect.runPromise(app.agent(agent));
+  const accepted = await Effect.runPromise(
+    client.createRun({
+      threadId: thread.id,
+      branchId: branch.id,
+      message: { role: "user", content: [Content.text("start")] },
+    }),
+  );
+  if (accepted.type !== "accepted") {
+    throw new Error(`Unexpected submission result '${accepted.type}'`);
+  }
+
+  const streamed = await Effect.runPromise(executeEffect(client, accepted.runId));
+  const events = Array.from(await Effect.runPromise(Stream.runCollect(streamed.events)));
+  expect(events).toContainEqual({
+    type: "model-event",
+    event: { type: "text-delta", delta: "direct" },
+  });
+  await expect(Effect.runPromise(streamed.result)).resolves.toMatchObject({
+    type: "completed",
+  });
 });

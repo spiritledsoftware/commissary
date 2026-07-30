@@ -1,20 +1,33 @@
 import { describe, expect, it } from "vitest";
 import {
   Agent,
+  AgentRevision,
+  ArtifactId,
+  BranchId,
+  CommitId,
   AgentInstallationError,
   Codec,
   Content,
   Context,
   MessageData,
+  ExecutionClaimToken,
+  ExecutionId,
+  MessageEntryId,
   Model,
   ProviderOptions,
   ProviderData,
   Transcript,
   Tool,
+  RunId,
+  ThreadId,
+  ToolAttemptId,
+  ToolCallId,
   commissary,
+  type JsonValue,
   type ModelSchema,
   type ThreadStore,
-} from "../src/index.js";
+} from "@commissary/core";
+import { isJsonValue } from "../src/runtime/protocol-parsing.js";
 import { stringSchema, testSchema } from "./support.js";
 
 const model = Model.define({
@@ -225,11 +238,76 @@ describe("canonical protocol", () => {
     });
   });
 });
+describe("Runtime boundary values", () => {
+  it("decodes every opaque ID from a non-empty external string", () => {
+    const decoders = [
+      AgentRevision,
+      ThreadId,
+      BranchId,
+      MessageEntryId,
+      RunId,
+      ExecutionId,
+      ExecutionClaimToken,
+      ToolCallId,
+      ToolAttemptId,
+      ArtifactId,
+      CommitId,
+    ];
+
+    for (const decoder of decoders) {
+      expect(decoder.decode("id")).toBe("id");
+      expect(decoder.is("id")).toBe(true);
+      expect(decoder.is("")).toBe(false);
+      expect(() => decoder.decode("")).toThrow("must be a non-empty string");
+      expect(decoder["~standard"].validate(1)).toMatchObject({
+        issues: [{ message: expect.stringContaining("must be a non-empty string") }],
+      });
+    }
+  });
+
+  it("accepts only finite acyclic JSON values with JSON prototypes", () => {
+    const shared = { value: 1 };
+    const nullPrototype = Object.assign(Object.create(null) as Record<string, unknown>, {
+      shared,
+    });
+    const cycle: Record<string, unknown> = {};
+    cycle.self = cycle;
+    const sparse: unknown[] = [];
+    sparse.length = 2;
+    sparse[0] = 1;
+    const extra = [1] as number[] & { extra?: number };
+    extra.extra = 2;
+    class RecordInstance {
+      readonly value = 1;
+    }
+    let deep: Record<string, unknown> = {};
+    const root = deep;
+    for (let index = 0; index < 20_000; index += 1) {
+      const child: Record<string, unknown> = {};
+      deep.child = child;
+      deep = child;
+    }
+
+    expect(isJsonValue([shared, shared, nullPrototype, root])).toBe(true);
+    expect(isJsonValue(Number.NaN)).toBe(false);
+    expect(isJsonValue(Number.POSITIVE_INFINITY)).toBe(false);
+    expect(isJsonValue(undefined)).toBe(false);
+    expect(isJsonValue(1n)).toBe(false);
+    expect(isJsonValue(Symbol("value"))).toBe(false);
+    expect(isJsonValue(new Date())).toBe(false);
+    expect(isJsonValue(new Map())).toBe(false);
+    expect(isJsonValue(new Set())).toBe(false);
+    expect(isJsonValue(new RecordInstance())).toBe(false);
+    expect(isJsonValue(cycle)).toBe(false);
+    expect(isJsonValue(sparse)).toBe(false);
+    expect(isJsonValue(extra)).toBe(false);
+  });
+});
 
 describe("Tool schema installation", () => {
   it("defers invalid input schema rejection until Agent installation", () => {
     const invalidInput = testSchema(
-      (value): value is Record<string, unknown> => typeof value === "object" && value !== null,
+      (value): value is Record<string, JsonValue> => typeof value === "object" && value !== null,
       { type: "object", invalid: undefined },
     );
     const invalidTool = Tool.define({

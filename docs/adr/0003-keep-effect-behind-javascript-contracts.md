@@ -32,14 +32,16 @@ First-party onboarding starts with the plain JavaScript root APIs. A separate Ef
 
 Packages are ESM-only and target ES2022. They have no CommonJS build.
 
-V1 supports these targets:
+Published package exports point to unbundled `dist` JavaScript and declaration files. Packages also include `src` for source inspection, but they do not expose arbitrary source subpaths. Builds emit source maps and declaration maps.
 
-- Node.js 22 and later.
+The `0.x` release line supports these targets:
+
+- Node.js 22.14 and later.
 - The current stable Bun.
 - The current stable Deno.
 - Modern browsers.
 - Cloudflare Workers.
 
-Release CI runs the shared conformance suite on each supported server or edge runtime. A Chromium smoke test checks the published browser artifacts. Another platform becomes supported only after CI covers it.
+Release CI covers every supported runtime. A target joins the supported list only after CI runs the shared conformance suite on that server or edge runtime. Browser support also requires a Chromium smoke test of the published artifacts.
 
 Core uses portable Web APIs. It does not use Node-specific APIs at portable boundaries.

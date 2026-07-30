@@ -9,13 +9,13 @@ import type {
 } from "./protocol.js";
 import type {
   AbortResult,
+  AcceptedRun,
   BranchConflict,
   Interruption,
   RunConflict,
   RedirectResult,
   RunResult,
   RunSnapshot,
-  RunSubmission,
   SteeringResult,
   SuspendedRunResult,
   ToolCallResult,
@@ -120,6 +120,25 @@ export interface StoredToolSuspension {
   readonly agent: AgentReference;
 }
 
+/** A durable terminal Tool Failure with its exact Tool identity. */
+export type StoredToolFailure =
+  | {
+      readonly type: "tool-failure";
+      readonly dynamic?: false;
+      readonly providerId?: never;
+      readonly toolName: string;
+      readonly toolCallId: ToolCallId;
+      readonly value: JsonValue;
+    }
+  | {
+      readonly type: "tool-failure";
+      readonly dynamic: true;
+      readonly providerId: string;
+      readonly toolName: string;
+      readonly toolCallId: ToolCallId;
+      readonly value: JsonValue;
+    };
+
 /** Internal durable state for one Tool Call Graph node. */
 export interface StoredToolCall {
   readonly toolCallId: ToolCallId;
@@ -129,10 +148,10 @@ export interface StoredToolCall {
   readonly parentToolCallId?: ToolCallId;
   readonly providerId?: string;
   readonly delegationKey?: string;
-  readonly input: JsonValue;
+  readonly requestedInput: JsonValue;
   readonly effectiveInput?: JsonValue;
   readonly status: "pending" | "running" | "suspended" | "succeeded" | "failed" | "aborted";
-  readonly result?: ToolCallResult;
+  readonly result?: ToolCallResult<JsonValue, StoredToolFailure>;
   readonly suspension?: StoredToolSuspension;
   readonly providerData?: readonly EncodedProviderData[];
   readonly historyCommitted: boolean;
@@ -157,11 +176,18 @@ export interface ToolResumeContext {
   readonly toolCalls: readonly StoredToolCall[];
 }
 
+/** A cheap Agent-aware read of one Run settlement slot. */
+export interface RunResultRecord {
+  readonly agent: AgentReference;
+  readonly result?: RunResult;
+}
+
 /** The result of fenced Claim acquisition. */
 export type ClaimResult =
   | { readonly type: "acquired"; readonly claim: ExecutionClaim }
   | { readonly type: "already-claimed"; readonly expiresAt: number }
   | { readonly type: "run-not-found" }
+  | { readonly type: "wrong-agent" }
   | { readonly type: "not-executable"; readonly result?: RunResult };
 
 /** The result of Claim renewal and Abort Request observation. */
@@ -268,7 +294,7 @@ export interface RecordModelCallInput {
 export interface CompleteToolCallInput {
   readonly claim: ExecutionClaim;
   readonly toolCallId: ToolCallId;
-  readonly result: Exclude<ToolCallResult, { readonly type: "aborted" }>;
+  readonly result: Exclude<ToolCallResult<JsonValue, JsonValue>, { readonly type: "aborted" }>;
 }
 
 /** Input that durably suspends one Tool Call. */
@@ -363,7 +389,7 @@ export interface ThreadStore {
 
   readonly submitRun: (
     input: SubmitRunStoreInput,
-  ) => PromiseLike<RunSubmission | BranchConflict | RunConflict>;
+  ) => PromiseLike<AcceptedRun | BranchConflict | RunConflict>;
   readonly submitToolResumes: (input: {
     readonly runId: RunId;
     readonly agent: AgentReference;
@@ -371,29 +397,42 @@ export interface ThreadStore {
     readonly items: readonly {
       readonly toolCallId: ToolCallId;
       readonly toolName: string;
-      readonly encodedInput: JsonValue;
+      readonly input: JsonValue;
     }[];
     readonly toolResumeRequestId?: ToolResumeRequestId;
-  }) => PromiseLike<RunSubmission | ToolResumeConflict | ToolResumeRequestConflict>;
+  }) => PromiseLike<AcceptedRun | ToolResumeConflict | ToolResumeRequestConflict>;
   readonly acceptSteering: (input: {
+    readonly agent: AgentReference;
     readonly runId: RunId;
     readonly message: ModelMessage;
     readonly steeringRequestId?: SteeringRequestId;
   }) => PromiseLike<SteeringResult>;
   readonly acceptRedirect: (input: {
+    readonly agent: AgentReference;
     readonly runId: RunId;
     readonly message: ModelMessage;
     readonly redirectRequestId?: RedirectRequestId;
   }) => PromiseLike<RedirectResult>;
   readonly requestAbort: (input: {
+    readonly agent: AgentReference;
     readonly runId: RunId;
     readonly reason?: JsonValue;
   }) => PromiseLike<AbortResult>;
-  readonly readRunSnapshot: (runId: RunId) => PromiseLike<RunSnapshot | undefined>;
-  readonly readRunResult: (runId: RunId) => PromiseLike<RunResult | undefined>;
-  readonly readToolResumeContext: (runId: RunId) => PromiseLike<ToolResumeContext | undefined>;
+  readonly readRunSnapshot: (input: {
+    readonly agent: AgentReference;
+    readonly runId: RunId;
+  }) => PromiseLike<RunSnapshot | undefined>;
+  readonly readRunResult: (input: {
+    readonly agent: AgentReference;
+    readonly runId: RunId;
+  }) => PromiseLike<RunResultRecord | undefined>;
+  readonly readToolResumeContext: (input: {
+    readonly agent: AgentReference;
+    readonly runId: RunId;
+  }) => PromiseLike<ToolResumeContext | undefined>;
 
   readonly acquireExecutionClaim: (input: {
+    readonly agent: AgentReference;
     readonly runId: RunId;
     readonly executionId: ExecutionId;
     readonly leaseDurationMs: number;
@@ -455,7 +494,7 @@ export interface ThreadStore {
 export class ThreadStoreError extends Error {
   constructor(
     readonly operation: string,
-    readonly cause?: unknown,
+    override readonly cause?: unknown,
   ) {
     super(`Thread Store operation '${operation}' failed`, { cause });
     this.name = "ThreadStoreError";
@@ -466,7 +505,7 @@ export class ThreadStoreError extends Error {
 export class ArtifactStoreError extends Error {
   constructor(
     readonly operation: "read" | "write",
-    readonly cause?: unknown,
+    override readonly cause?: unknown,
   ) {
     super(`Artifact Store operation '${operation}' failed`, { cause });
     this.name = "ArtifactStoreError";

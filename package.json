@@ -2,29 +2,61 @@
   "name": "commissary",
   "version": "1.0.0",
   "private": true,
-  "description": "Commissary Monorepo",
+  "description": "Durable, provider-neutral agent runtime for TypeScript",
+  "homepage": "https://github.com/spiritledsoftware/commissary#readme",
+  "bugs": {
+    "url": "https://github.com/spiritledsoftware/commissary/issues"
+  },
   "license": "MIT",
-  "author": "Spirit-Led Software <social@spiritledsoftware.com>",
+  "author": "Spirit-Led Software LLC <social@spiritledsoftware.com>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/spiritledsoftware/commissary.git"
+  },
   "type": "module",
   "scripts": {
     "bootstrap": "pnpm install && sh scripts/sync-reference-repos.sh",
+    "changeset": "changeset",
+    "build": "turbo run build",
+    "check:changeset": "node scripts/check-changeset.mjs",
+    "check:imports": "node scripts/check-built-imports.mjs",
+    "conformance:browser": "node scripts/check-browser-runtime.mjs",
+    "conformance:bun": "bun scripts/smoke-runtime.mjs",
+    "conformance:cloudflare": "node scripts/check-cloudflare-runtime.mjs",
+    "conformance:deno": "deno run --allow-env=MSGPACKR_NATIVE_ACCELERATION_DISABLED --allow-read --node-modules-dir=manual scripts/smoke-runtime.mjs",
+    "conformance:node": "node scripts/smoke-runtime.mjs",
     "format": "oxfmt",
     "format:check": "oxfmt --check",
     "lint": "oxlint",
     "lint:fix": "oxlint --fix",
     "lint:staged": "lint-staged",
+    "pack:check": "turbo run pack:check",
     "prepare": "husky",
-    "test": "turbo test",
-    "typecheck": "turbo typecheck",
-    "verify": "pnpm run format:check && pnpm run lint && turbo run typecheck test"
+    "smoke": "pnpm run conformance:node",
+    "release": "pnpm run build && changeset publish",
+    "test": "turbo run test",
+    "test:release-policy": "node --test scripts/*.test.mjs",
+    "typecheck": "turbo run typecheck",
+    "verify": "pnpm run format:check && pnpm run lint && pnpm run test:release-policy && turbo run typecheck test",
+    "version-packages": "changeset version && pnpm install --lockfile-only"
   },
   "devDependencies": {
+    "@changesets/changelog-github": "0.7.0",
+    "@changesets/cli": "2.31.1",
+    "@commissary/core": "workspace:*",
+    "@commissary/effect": "workspace:*",
     "@commissary/store-memory": "workspace:*",
+    "@commissary/stream": "workspace:*",
     "@types/node": "^26.1.1",
+    "bun": "^1.3.14",
+    "deno": "^2.9.4",
+    "esbuild": "0.28.1",
     "husky": "^9.1.7",
     "lint-staged": "^17.1.1",
+    "miniflare": "4.20260722.1",
     "oxfmt": "^0.60.0",
     "oxlint": "^1.75.0",
+    "playwright": "1.62.0",
     "turbo": "^2.10.5",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10"
@@ -32,8 +64,12 @@
   "devEngines": {
     "packageManager": {
       "name": "pnpm",
-      "version": "^11.15.1",
+      "version": "11.16.0",
       "onFail": "download"
     }
-  }
+  },
+  "engines": {
+    "node": ">=22.14.0"
+  },
+  "packageManager": "pnpm@11.16.0"
 }

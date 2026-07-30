@@ -12,12 +12,12 @@ Dynamic Hook subscriptions do not change the Agent Revision. They are process-lo
 
 The Instance rejects a different definition that reuses an installed Agent ID. The `commissary` constructor does not require an eager Agent list.
 
-## Compatibility
+The typed Agent Client binds every accepted Run ID to the Agent definition that created it. A Run ID decoded from storage is unbound. Any Agent Client can accept an unbound ID, but the Thread Store checks the complete stored Agent Reference in the same read, control, resume, or claim operation.
 
-Normal continuation renders the current Agent because stored Messages use the stable Commissary protocol. Core checks Agent Compatibility only for deferred work that must keep earlier semantics.
+## Authority and compatibility
 
-Compatibility uses the specific deferred contract. It does not require equal Agent Revisions. An incompatible contract produces a Stale Agent Interruption. Core does not start a new Run or silently use incompatible behavior.
+Only the exact Agent Reference that created a Run can read, control, resume, or execute it. A different Agent ID or Revision is a wrong Agent. Reads return `undefined`; Steering, Redirect, and abort return `not-active`; resume returns its Tool resume conflict; and execute rejects with `ExecutionUnavailableError` and `wrong-agent`.
 
-For a Tool Suspension, the stored Agent ID and Tool name select the current Tool. The current continuation Codec must decode the stored state. A declared decode failure produces a Stale Agent Interruption.
+Compatibility checks still apply to process-bound dynamic Tool contracts within that Agent Reference. Core resolves each dynamic Tool from its recorded Provider ID and Tool name. A missing Tool, missing Suspension, invalid stored effective input, or continuation decode failure produces a Stale Agent Interruption. Core does not start a new Run or silently reinterpret incompatible state.
 
-A Tool can use a versioned encoded value and Codec migrations. Unrelated Agent changes do not prevent Tool resumption.
+For a Tool Suspension, the current continuation Codec can support versioned encoded values and migrations. Unrelated process-local changes do not change the Agent Revision. Dynamic Hook subscriptions remain outside durable identity.

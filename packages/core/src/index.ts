@@ -5,7 +5,13 @@ export type { Codec as CodecContract } from "./codec.js";
 export { AgentRegistrationError, commissary } from "./commissary.js";
 export type {
   AgentClient,
-  AgentCommand,
+  AgentClientRunId,
+  AgentCreateRunInput,
+  AgentCreateRunResult,
+  AgentRedirectInput,
+  AgentResumeRunInput,
+  AgentResumeRunResult,
+  AgentSteerInput,
   CommissaryInstance,
   ExecutionClaimOptions,
 } from "./commissary.js";
@@ -13,6 +19,10 @@ export type { AgentFragment, FragmentMetadata } from "./fragment.js";
 export { Hook, HookPoints } from "./hook.js";
 export type {
   AfterModelInvocationEvent,
+  AgentHookBuilder,
+  AgentHookEvent,
+  AgentHookPoint,
+  AgentHookResult,
   AfterToolExecutionEvent,
   BeforeSettlementEvent,
   BeforeModelRequestEvent,
@@ -98,10 +108,13 @@ export {
 } from "./runtime.js";
 export type {
   AbortResult,
+  AcceptedRun,
   AbortedRunResult,
   BranchConflict,
   Clock,
   CompletedRunResult,
+  CreateRunInput,
+  CreateRunResult,
   Execution,
   ExecutionEvent,
   ExecutionEventAppend,
@@ -126,18 +139,15 @@ export type {
   RedirectInput,
   RedirectResult,
   ResolvedExecution,
-  ResumeRunCommand,
-  RunCommand,
+  ResumeRunInput,
+  ResumeRunResult,
   RunConflict,
   RunResult,
   RunSnapshot,
-  RunSubmission,
   RuntimeOperations,
   StaleAgentInterruption,
-  StartRunCommand,
   SteeringResult,
   SteerInput,
-  SubmitResult,
   SuspendedRunResult,
   ToolCallResult,
   ToolExecutionResult,
@@ -150,7 +160,7 @@ export type {
   UnexpectedExecutionPhase,
 } from "./runtime.js";
 export { SchemaValidationError } from "./schema.js";
-export type { ModelSchema, SchemaOutput, StandardSchema } from "./schema.js";
+export type { ModelSchema, SchemaInput, SchemaOutput, StandardSchema } from "./schema.js";
 export { ArtifactStoreError, ThreadStoreError } from "./store.js";
 export type {
   AppendMessagesInput,
@@ -178,10 +188,12 @@ export type {
   RecordDelegatedToolCallInput,
   RecordModelCallInput,
   RecordToolInputInput,
+  RunResultRecord,
   RunRecord,
   StoredModelToolCallInput,
   StoredToolCall,
   StoredToolSuspension,
+  StoredToolFailure,
   SubmitRunStoreInput,
   SuspendRunStoreResult,
   SuspendToolCallInput,
@@ -192,6 +204,7 @@ export type {
 export { Tool } from "./tool.js";
 export type {
   DynamicTool,
+  DynamicToolResumeRequest,
   DynamicToolProvider,
   DynamicToolProviderFragment,
   DynamicToolProviderInput,
@@ -208,24 +221,29 @@ export type {
   ToolSuccess,
   ToolSuspensionDefinition,
 } from "./tool.js";
-export type {
-  AgentId,
+export {
   AgentRevision,
   ArtifactId,
   BranchId,
   CommitId,
   ExecutionClaimToken,
   ExecutionId,
-  JsonPrimitive,
-  JsonValue,
-  MaybePromise,
   MessageEntryId,
-  Opaque,
   RunId,
-  RedirectRequestId,
-  SteeringRequestId,
   ThreadId,
   ToolAttemptId,
   ToolCallId,
+} from "./types.js";
+export type {
+  AgentId,
+  JsonPrimitive,
+  JsonValue,
+  MaybePromise,
+  Opaque,
+  AgentRunId,
+  DecodedRunId,
+  OpaqueIdDecoder,
+  RedirectRequestId,
+  SteeringRequestId,
   ToolResumeRequestId,
 } from "./types.js";

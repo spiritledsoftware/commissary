@@ -5,9 +5,17 @@ export interface Codec<Value, Encoded extends JsonValue = JsonValue> {
   readonly decode: (encoded: JsonValue) => MaybePromise<Value>;
 }
 
-type CodecValue<Definition> = Definition extends Codec<infer Value, JsonValue> ? Value : never;
+type CodecValue<Definition> = Definition extends {
+  readonly encode: (value: infer Value) => unknown;
+}
+  ? Value
+  : never;
 
-type CodecEncoded<Definition> = Definition extends Codec<unknown, infer Encoded> ? Encoded : never;
+type CodecEncoded<Definition> = Definition extends {
+  readonly encode: (...arguments_: never[]) => infer Encoded;
+}
+  ? Awaited<Encoded>
+  : never;
 
 export const Codec = {
   define<const Value, const Encoded extends JsonValue>(

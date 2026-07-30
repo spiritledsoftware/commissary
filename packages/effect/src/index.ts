@@ -1,10 +1,18 @@
 import {
-  Agent,
+  type Agent,
   AgentRegistrationError,
   commissary,
+  type AbortResult,
   type AgentClient,
-  type AgentCommand,
+  type AgentClientRunId,
+  type AgentCreateRunInput,
+  type AgentCreateRunResult,
   type AgentDefinition,
+  type AgentRedirectInput,
+  type AgentResumeRunInput,
+  type AgentResumeRunResult,
+  type AgentRunId,
+  type AgentSteerInput,
   type ArtifactStore,
   type BranchId,
   type BranchRecord,
@@ -13,31 +21,20 @@ import {
   type Execution,
   type ExecutionClaimOptions,
   type ExecutionResult,
-  type HookFragment,
   type GenerateId,
   type JsonValue,
   type Loop,
   type MessageEntry,
   type MessageEntryId,
+  type RedirectResult,
   type RunId,
-  type RunResult,
-  type RunSnapshot,
   type SteeringResult,
-  type SteerInput,
-  type SubmitResult,
   type ThreadId,
   type ThreadRecord,
   type ThreadStore,
 } from "@commissary/core";
 import { modelEnvironment } from "@commissary/core/internal";
 import { Clock as EffectClock, Context, Duration, Effect, Layer } from "effect";
-
-type CoreExecution<Definition extends AgentDefinition> = Awaited<
-  ReturnType<AgentClient<Definition>["execute"]>
->;
-type ExecutionToolEvent<Value> =
-  Value extends Execution<infer ToolEvent, unknown> ? ToolEvent : never;
-type ExecutionFailure<Value> = Value extends Execution<unknown, infer Failure> ? Failure : never;
 
 /** Configuration for one Effect-native Commissary Instance. */
 export interface EffectCommissaryConfiguration {
@@ -49,42 +46,50 @@ export interface EffectCommissaryConfiguration {
 }
 
 /** An Effect-native view of one process-bound core Execution. */
-export interface EffectExecution<ToolEvent = unknown, Failure = unknown> {
+export interface EffectExecution<Tools = unknown, Failure = unknown, Run extends RunId = RunId> {
   readonly id: import("@commissary/core").ExecutionId;
-  readonly runId: RunId;
-  readonly result: Effect.Effect<ExecutionResult<Failure>, unknown>;
-  readonly abort: (
-    reason?: JsonValue,
-  ) => Effect.Effect<import("@commissary/core").AbortResult, unknown>;
-  readonly core: Execution<ToolEvent, Failure>;
+  readonly runId: Run;
+  readonly result: Effect.Effect<ExecutionResult<Failure, Tools, Run>, unknown>;
+  readonly abort: (reason?: JsonValue) => Effect.Effect<AbortResult<Failure, Tools, Run>, unknown>;
+  readonly core: Execution<Tools, Failure, Run>;
 }
 
 /** The Effect-native client bound to one lazily installed Agent. */
 export interface EffectAgentClient<Definition extends AgentDefinition> {
   readonly definition: Definition;
   readonly reference: import("@commissary/core").AgentReference<Definition["id"]>;
-  readonly submit: (command: AgentCommand<Definition>) => Effect.Effect<SubmitResult, unknown>;
+  readonly createRun: (
+    input: AgentCreateRunInput,
+  ) => Effect.Effect<AgentCreateRunResult<Definition>, unknown>;
+  readonly resumeRun: (
+    input: AgentResumeRunInput<Definition>,
+  ) => Effect.Effect<AgentResumeRunResult<Definition>, unknown>;
   readonly execute: (
-    runId: RunId,
+    runId: AgentClientRunId<Definition>,
   ) => Effect.Effect<
-    EffectExecution<
-      ExecutionToolEvent<CoreExecution<Definition>>,
-      ExecutionFailure<CoreExecution<Definition>>
-    >,
+    EffectExecution<Agent.Tools<Definition>, Agent.Failure<Definition>, AgentRunId<Definition>>,
     unknown
   >;
   readonly readRunSnapshot: (
-    runId: RunId,
-  ) => Effect.Effect<RunSnapshot<ExecutionFailure<CoreExecution<Definition>>> | undefined, unknown>;
+    runId: AgentClientRunId<Definition>,
+  ) => Effect.Effect<Agent.RunSnapshots<Definition> | undefined, unknown>;
   readonly readResult: (
-    runId: RunId,
-  ) => Effect.Effect<RunResult<ExecutionFailure<CoreExecution<Definition>>> | undefined, unknown>;
-  readonly steer: (input: SteerInput) => Effect.Effect<SteeringResult, unknown>;
+    runId: AgentClientRunId<Definition>,
+  ) => Effect.Effect<Agent.RunResults<Definition> | undefined, unknown>;
+  readonly steer: (
+    input: AgentSteerInput<Definition>,
+  ) => Effect.Effect<SteeringResult<AgentRunId<Definition>>, unknown>;
+  readonly redirect: (
+    input: AgentRedirectInput<Definition>,
+  ) => Effect.Effect<RedirectResult<AgentRunId<Definition>>, unknown>;
   readonly abort: (
-    runId: RunId,
+    runId: AgentClientRunId<Definition>,
     reason?: JsonValue,
-  ) => Effect.Effect<import("@commissary/core").AbortResult, unknown>;
-  readonly subscribe: (hook: HookFragment) => () => void;
+  ) => Effect.Effect<
+    AbortResult<Agent.Failure<Definition>, Agent.Tools<Definition>, AgentRunId<Definition>>,
+    unknown
+  >;
+  readonly on: AgentClient<Definition>["on"];
   readonly core: AgentClient<Definition>;
 }
 
@@ -131,9 +136,9 @@ function fromPromise<Value>(evaluate: () => PromiseLike<Value>): Effect.Effect<V
   });
 }
 
-function wrapExecution<ToolEvent, Failure>(
-  execution: Execution<ToolEvent, Failure>,
-): EffectExecution<ToolEvent, Failure> {
+function wrapExecution<Tools, Failure, Run extends RunId>(
+  execution: Execution<Tools, Failure, Run>,
+): EffectExecution<Tools, Failure, Run> {
   return Object.freeze({
     id: execution.id,
     runId: execution.runId,
@@ -149,17 +154,23 @@ function wrapAgent<Definition extends AgentDefinition>(
   return Object.freeze({
     definition: client.definition,
     reference: client.reference,
-    submit: (command: AgentCommand<Definition>) => fromPromise(() => client.submit(command)),
-    execute: (runId: RunId) =>
+    createRun: (input: AgentCreateRunInput) => fromPromise(() => client.createRun(input)),
+    resumeRun: (input: AgentResumeRunInput<Definition>) =>
+      fromPromise(() => client.resumeRun(input)),
+    execute: (runId: AgentClientRunId<Definition>) =>
       Effect.map(
         fromPromise(() => client.execute(runId)),
         wrapExecution,
       ),
-    readRunSnapshot: (runId: RunId) => fromPromise(() => client.readRunSnapshot(runId)),
-    readResult: (runId: RunId) => fromPromise(() => client.readResult(runId)),
-    steer: (input: SteerInput) => fromPromise(() => client.steer(input)),
-    abort: (runId: RunId, reason?: JsonValue) => fromPromise(() => client.abort(runId, reason)),
-    subscribe: (hook: HookFragment) => client.subscribe(hook),
+    readRunSnapshot: (runId: AgentClientRunId<Definition>) =>
+      fromPromise(() => client.readRunSnapshot(runId)),
+    readResult: (runId: AgentClientRunId<Definition>) =>
+      fromPromise(() => client.readResult(runId)),
+    steer: (input: AgentSteerInput<Definition>) => fromPromise(() => client.steer(input)),
+    redirect: (input: AgentRedirectInput<Definition>) => fromPromise(() => client.redirect(input)),
+    abort: (runId: AgentClientRunId<Definition>, reason?: JsonValue) =>
+      fromPromise(() => client.abort(runId, reason)),
+    on: client.on,
     core: client,
   });
 }
@@ -198,7 +209,7 @@ function wrapInstance(
   core: CommissaryInstance,
 ): EffectCommissaryInstance {
   const definitions = new Map<string, AgentDefinition>();
-  const clients = new WeakMap<object, EffectAgentClient<AgentDefinition>>();
+  const clients = new WeakMap<object, object>();
 
   function install<Definition extends AgentDefinition>(
     definition: Definition,

@@ -8,7 +8,7 @@ import {
 } from "./fragment.js";
 import type { RunIdentity } from "./identity.js";
 import type { ContentPart, ModelTool, Transcript } from "./protocol.js";
-import type { ModelSchema, SchemaOutput, StandardSchema } from "./schema.js";
+import type { ModelSchema, SchemaInput, SchemaOutput, StandardSchema } from "./schema.js";
 import { schemaJson } from "./schema.js";
 import type { JsonValue, MaybePromise, RunId, ToolAttemptId, ToolCallId } from "./types.js";
 
@@ -16,6 +16,9 @@ const toolType: unique symbol = Symbol("commissary.tool.type");
 const failureType: unique symbol = Symbol("commissary.tool.failure");
 const successType: unique symbol = Symbol("commissary.tool.success");
 const suspensionType: unique symbol = Symbol("commissary.tool.suspension");
+
+type JsonInputSchema = StandardSchema<JsonValue, unknown>;
+type JsonOutputSchema = StandardSchema<unknown, JsonValue>;
 
 /** Extra ordered model-visible content attached to one declared Tool result. */
 export interface ToolResultContent {
@@ -71,18 +74,18 @@ export interface DynamicTool {
   readonly description?: string;
   readonly executionMode?: ToolExecutionMode;
   readonly input: ModelSchema;
-  readonly output?: StandardSchema;
-  readonly failure?: StandardSchema;
+  readonly output?: JsonOutputSchema;
+  readonly failure?: JsonOutputSchema;
   readonly event?: StandardSchema;
   readonly execute: (
     input: unknown,
     context: ToolExecutionContext<unknown>,
   ) => MaybePromise<unknown>;
   readonly suspension?: ToolSuspensionDefinition<
-    StandardSchema,
+    JsonInputSchema,
     unknown,
-    unknown,
-    unknown,
+    JsonValue,
+    JsonValue,
     unknown
   >;
 }
@@ -95,7 +98,7 @@ export interface DynamicToolProvider<Id extends string = string> {
 
 /** An installed Agent Fragment that owns one dynamic Tool Provider. */
 export interface DynamicToolProviderFragment<Id extends string = string> extends AgentFragment<
-  FragmentMetadata<DynamicTool, unknown, ToolResumeRequest<string, JsonValue>>
+  FragmentMetadata<DynamicTool, unknown, DynamicToolResumeRequest>
 > {
   readonly [toolType]: { readonly providerId: Id };
 }
@@ -109,7 +112,7 @@ export interface ToolInvocationOptions {
 export interface ToolInvoker {
   <Definition extends ToolDefinition>(
     tool: Definition,
-    input: ToolInput<Definition>,
+    input: ToolRequestedInput<Definition>,
     options: ToolInvocationOptions,
   ): Promise<ToolInvocationResult<ToolOutput<Definition>, ToolFailureValue<Definition>>>;
 
@@ -131,19 +134,30 @@ export interface ToolExecutionContext<Event = never> {
   readonly invoke: ToolInvoker;
 }
 
-/** One typed item in a Tool resume submission. */
+/** One typed item in a static Tool resume submission. */
 export interface ToolResumeRequest<Name extends string, Input> {
+  readonly dynamic?: false;
+  readonly providerId?: never;
   readonly toolName: Name;
   readonly toolCallId: ToolCallId;
   readonly input: Input;
 }
 
+/** One submitted resume item for a Tool resolved by a dynamic provider. */
+export interface DynamicToolResumeRequest {
+  readonly dynamic: true;
+  readonly providerId: string;
+  readonly toolName: string;
+  readonly toolCallId: ToolCallId;
+  readonly input: JsonValue;
+}
+
 /** Durable suspension and resume behavior for one Tool. */
 export interface ToolSuspensionDefinition<
-  ResumeInputSchema extends StandardSchema,
+  ResumeInputSchema extends JsonInputSchema,
   Continuation,
-  Output,
-  Failure,
+  Output extends JsonValue,
+  Failure extends JsonValue,
   Event,
 > {
   readonly resumeInput: ResumeInputSchema;
@@ -161,14 +175,15 @@ export interface ToolSuspensionDefinition<
 export interface ToolDefinition<
   Name extends string = string,
   Input = unknown,
-  Output = unknown,
-  Failure = unknown,
+  Output extends JsonValue = JsonValue,
+  Failure extends JsonValue = JsonValue,
   Event = unknown,
-  ResumeInput = unknown,
+  ResumeInput extends JsonValue = JsonValue,
   Continuation = unknown,
+  RequestedInput extends JsonValue = JsonValue,
 > extends AgentFragment<
   FragmentMetadata<
-    ToolDefinition<Name, Input, Output, Failure, Event, ResumeInput, Continuation>,
+    ToolDefinition<Name, Input, Output, Failure, Event, ResumeInput, Continuation, RequestedInput>,
     Event,
     [ResumeInput] extends [never] ? never : ToolResumeRequest<Name, ResumeInput>
   >
@@ -176,6 +191,7 @@ export interface ToolDefinition<
   readonly [toolType]: {
     readonly name: Name;
     readonly input: Input;
+    readonly requestedInput: RequestedInput;
     readonly output: Output;
     readonly failure: Failure;
     readonly event: Event;
@@ -190,24 +206,30 @@ export interface ToolRuntimeDefinition {
   readonly executionMode: ToolExecutionMode;
   readonly modelTool: ModelTool;
   readonly input: StandardSchema;
-  readonly output?: StandardSchema;
-  readonly failure?: StandardSchema;
+  readonly output?: JsonOutputSchema;
+  readonly failure?: JsonOutputSchema;
   readonly event?: StandardSchema;
   readonly handler: (
     input: unknown,
     context: ToolExecutionContext<unknown>,
   ) => MaybePromise<unknown>;
   readonly suspension?: ToolSuspensionDefinition<
-    StandardSchema,
+    JsonInputSchema,
     unknown,
-    unknown,
-    unknown,
+    JsonValue,
+    JsonValue,
     unknown
   >;
 }
 
 type ToolInput<Definition> = Definition extends {
   readonly [toolType]: { readonly input: infer Input };
+}
+  ? Input
+  : never;
+
+type ToolRequestedInput<Definition> = Definition extends {
+  readonly [toolType]: { readonly requestedInput: infer Input };
 }
   ? Input
   : never;
@@ -223,6 +245,39 @@ type ToolFailureValue<Definition> = Definition extends {
 }
   ? Failure
   : never;
+
+type ToolName<Definition> = Definition extends {
+  readonly [toolType]: { readonly name: infer Name extends string };
+}
+  ? Name
+  : never;
+
+type ToolTerminalFailure<Definition> = Definition extends {
+  readonly [toolType]: {
+    readonly name: infer Name extends string;
+    readonly failure: infer Failure extends JsonValue;
+  };
+}
+  ? [Failure] extends [never]
+    ? never
+    : {
+        readonly type: "tool-failure";
+        readonly dynamic?: false;
+        readonly providerId?: never;
+        readonly toolName: Name;
+        readonly toolCallId: ToolCallId;
+        readonly value: Failure;
+      }
+  : Definition extends DynamicTool
+    ? {
+        readonly type: "tool-failure";
+        readonly dynamic: true;
+        readonly providerId: string;
+        readonly toolName: string;
+        readonly toolCallId: ToolCallId;
+        readonly value: JsonValue;
+      }
+    : never;
 
 type ToolEvent<Definition> = Definition extends {
   readonly [toolType]: { readonly event: infer Event };
@@ -245,21 +300,23 @@ type ToolSuspensionOutcome<Definition> = Definition extends {
   ? [ResumeInput] extends [never]
     ? never
     : {
+        readonly dynamic?: false;
+        readonly providerId?: never;
         readonly toolName: Name;
         readonly toolCallId: ToolCallId;
       }
   : never;
 
-type OutputFor<OutputSchema extends StandardSchema | undefined> =
-  OutputSchema extends StandardSchema ? SchemaOutput<OutputSchema> : JsonValue;
+type OutputFor<OutputSchema extends JsonOutputSchema | undefined> =
+  OutputSchema extends JsonOutputSchema ? SchemaOutput<OutputSchema> : JsonValue;
 
 type DefinitionFor<
   Name extends string,
   InputSchema extends ModelSchema,
-  OutputSchema extends StandardSchema | undefined,
-  FailureSchema extends StandardSchema | undefined,
+  OutputSchema extends JsonOutputSchema | undefined,
+  FailureSchema extends JsonOutputSchema | undefined,
   EventSchema extends StandardSchema | undefined,
-  ResumeInputSchema extends StandardSchema | undefined,
+  ResumeInputSchema extends JsonInputSchema | undefined,
   Continuation,
 > = ToolDefinition<
   Name,
@@ -267,8 +324,9 @@ type DefinitionFor<
   OutputFor<OutputSchema>,
   FailureSchema extends StandardSchema ? SchemaOutput<FailureSchema> : never,
   EventSchema extends StandardSchema ? SchemaOutput<EventSchema> : never,
-  ResumeInputSchema extends StandardSchema ? SchemaOutput<ResumeInputSchema> : never,
-  Continuation
+  ResumeInputSchema extends JsonInputSchema ? SchemaInput<ResumeInputSchema> : never,
+  Continuation,
+  SchemaInput<InputSchema>
 >;
 
 const runtimeDefinitions = new WeakMap<object, ToolRuntimeDefinition>();
@@ -280,10 +338,10 @@ export const Tool = {
   define<
     const Name extends string,
     const InputSchema extends ModelSchema,
-    const OutputSchema extends StandardSchema | undefined = undefined,
-    const FailureSchema extends StandardSchema | undefined = undefined,
+    const OutputSchema extends JsonOutputSchema | undefined = undefined,
+    const FailureSchema extends JsonOutputSchema | undefined = undefined,
     const EventSchema extends StandardSchema | undefined = undefined,
-    const ResumeInputSchema extends StandardSchema | undefined = undefined,
+    const ResumeInputSchema extends JsonInputSchema | undefined = undefined,
     Continuation = never,
   >(definition: {
     readonly name: Name;
@@ -304,7 +362,7 @@ export const Tool = {
       | ToolFailure<FailureSchema extends StandardSchema ? SchemaOutput<FailureSchema> : never>
       | ToolSuspension<Continuation>
     >;
-    readonly suspension?: ResumeInputSchema extends StandardSchema
+    readonly suspension?: ResumeInputSchema extends JsonInputSchema
       ? ToolSuspensionDefinition<
           ResumeInputSchema,
           Continuation,
@@ -342,6 +400,7 @@ export const Tool = {
       });
       return installedModelTool;
     };
+    const suspension = definition.suspension;
     const runtime: ToolRuntimeDefinition = Object.freeze({
       name: definition.name,
       executionMode: definition.executionMode ?? "parallel",
@@ -354,11 +413,11 @@ export const Tool = {
       ...(definition.event === undefined ? {} : { event: definition.event }),
       // SAFETY: The public generic contract proves the handler and suspension types. Runtime validates every boundary before invocation.
       handler: definition.handler as ToolRuntimeDefinition["handler"],
-      ...(definition.suspension === undefined
+      ...(suspension === undefined
         ? {}
         : {
             // SAFETY: The public generic contract proves the suspension types. Runtime parses resume input and decodes continuation state.
-            suspension: definition.suspension as ToolRuntimeDefinition["suspension"],
+            suspension: suspension as NonNullable<ToolRuntimeDefinition["suspension"]>,
           }),
     });
     const fragment = createFragment<
@@ -373,8 +432,8 @@ export const Tool = {
           Continuation
         >,
         EventSchema extends StandardSchema ? SchemaOutput<EventSchema> : never,
-        ResumeInputSchema extends StandardSchema
-          ? ToolResumeRequest<Name, SchemaOutput<ResumeInputSchema>>
+        ResumeInputSchema extends JsonInputSchema
+          ? ToolResumeRequest<Name, SchemaInput<ResumeInputSchema>>
           : never
       >
     >([
@@ -453,12 +512,22 @@ export const Tool = {
 
 /** Inferred contracts for Tool values. */
 export namespace Tool {
+  /** The literal installed name inferred from a Tool definition. */
+  export type Name<Definition> = ToolName<Definition>;
   export type Input<Definition> = ToolInput<Definition>;
+  /** The JSON input accepted before a Tool schema decodes its handler value. */
+  export type RequestedInput<Definition> = ToolRequestedInput<Definition>;
   export type Output<Definition> = ToolOutput<Definition>;
-  export type Failure<Definition> = ToolFailureValue<Definition>;
+  /** The declared JSON Failure value before Runtime identity tagging. */
+  export type FailureValue<Definition> = ToolFailureValue<Definition>;
+  export type Failure<Definition> = ToolTerminalFailure<Definition>;
   export type Event<Definition> = ToolEvent<Definition>;
   export type ResumeInput<Definition> = ToolResumeInput<Definition>;
   export type Suspension<Definition> = ToolSuspensionOutcome<Definition>;
+  /** The static Tool definitions selected from a mixed Tool union. */
+  export type Static<Definitions> = Definitions extends ToolDefinition ? Definitions : never;
+  /** The dynamic Tool definitions selected from a mixed Tool union. */
+  export type Dynamic<Definitions> = Definitions extends DynamicTool ? Definitions : never;
 }
 
 /** Test whether a value is a Tool success marker. */

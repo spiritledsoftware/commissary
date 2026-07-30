@@ -20,8 +20,7 @@ import {
   type ModelSession,
   type ModelUsage,
   type ProviderOption,
-  type ToolCallContentPart,
-  type ToolResultContentPart,
+  ToolCallId,
 } from "@commissary/core";
 import {
   Context as EffectContext,
@@ -46,7 +45,7 @@ import {
 export class EffectAiBridgeDefect extends Error {
   constructor(
     message: string,
-    readonly cause?: unknown,
+    override readonly cause?: unknown,
   ) {
     super(message, { cause });
     this.name = "EffectAiBridgeDefect";
@@ -685,10 +684,10 @@ async function* streamEvents(
         const call = withMetadata(
           Object.freeze({
             type: "tool-call",
-            toolCallId: part.id,
+            toolCallId: ToolCallId.decode(part.id),
             toolName: part.name,
             input: providerJson(part.params, `Tool input for '${part.name}'`),
-          }) as ToolCallContentPart,
+          }),
           metadata(part.metadata),
         );
         state.content.push(call);
@@ -715,11 +714,11 @@ async function* streamEvents(
           withMetadata(
             Object.freeze({
               type: "tool-result",
-              toolCallId: part.id,
+              toolCallId: ToolCallId.decode(part.id),
               toolName: part.name,
               output: providerJson(part.result, `Tool result for '${part.name}'`),
               ...(part.isFailure ? { isFailure: true } : {}),
-            }) as ToolResultContentPart,
+            }),
             metadata(part.metadata),
           ),
         );

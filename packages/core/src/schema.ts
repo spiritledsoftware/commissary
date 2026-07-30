@@ -1,16 +1,21 @@
 import type { StandardJSONSchemaV1, StandardSchemaV1 } from "@standard-schema/spec";
 import type { JsonValue } from "./types.js";
 
-export type StandardSchema<Output = unknown> = StandardSchemaV1<unknown, Output>;
+export type StandardSchema<Input = unknown, Output = Input> = StandardSchemaV1<Input, Output>;
 
-export type ModelSchema<Output = unknown> = StandardSchema<Output> &
-  StandardJSONSchemaV1<unknown, Output>;
+export type ModelSchema<Output = unknown, Input extends JsonValue = JsonValue> = StandardSchema<
+  Input,
+  Output
+> &
+  StandardJSONSchemaV1<Input, Output>;
 
 // The process-local cache does not own Schema lifetimes and records only successful conversions.
 const schemaJsonCache = new WeakMap<ModelSchema, JsonValue>();
 
-export type SchemaOutput<Schema> =
-  Schema extends StandardSchemaV1<unknown, infer Output> ? Output : never;
+/** The external input representation accepted by one Standard Schema. */
+export type SchemaInput<Schema extends StandardSchema> = StandardSchemaV1.InferInput<Schema>;
+
+export type SchemaOutput<Schema extends StandardSchema> = StandardSchemaV1.InferOutput<Schema>;
 
 export class SchemaValidationError extends Error {
   constructor(

@@ -1,9 +1,9 @@
-import type { ModelSchema } from "../src/index.js";
+import type { JsonValue, ModelSchema } from "@commissary/core";
 
-export function testSchema<Output>(
+export function testSchema<Output extends JsonValue>(
   guard: (value: unknown) => value is Output,
   jsonSchema: Record<string, unknown>,
-): ModelSchema<Output> {
+): ModelSchema<Output, Output> {
   return {
     "~standard": {
       version: 1,

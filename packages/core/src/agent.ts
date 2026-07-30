@@ -10,9 +10,22 @@ import {
   type FragmentMetadata,
   type MetadataOf,
 } from "./fragment.js";
+import {
+  hooksForAgent,
+  type AgentHookBuilder,
+  type HookBlockedFailure,
+  type HookFragment,
+} from "./hook.js";
 import type { AgentReference } from "./identity.js";
-import { isToolRuntimeDefinition } from "./tool.js";
-import { stableJson, type AgentRevision } from "./types.js";
+import type { ModelFailure } from "./protocol.js";
+import type {
+  ExecutionEvent as RuntimeExecutionEvent,
+  ExecutionResult as RuntimeExecutionResult,
+  RunResult as RuntimeRunResult,
+  RunSnapshot as RuntimeRunSnapshot,
+} from "./runtime.js";
+import { isToolRuntimeDefinition, type Tool } from "./tool.js";
+import { AgentRevision, stableJson, type AgentRunId } from "./types.js";
 
 const agentMetadata: unique symbol = Symbol("commissary.agent.metadata");
 
@@ -34,6 +47,13 @@ type InputMetadata<Input extends FragmentInput> =
     : Input extends readonly AgentFragment<AnyFragmentMetadata>[]
       ? CombinedMetadata<Input>
       : never;
+
+type DefinitionFor<Id extends string, Fragments extends FragmentInput> = AgentDefinition<
+  Id,
+  InputMetadata<Fragments>
+>;
+
+type HookInput = HookFragment | readonly HookFragment[];
 
 type AgentMetadataOf<Definition> =
   Definition extends AgentDefinition<string, infer Metadata> ? Metadata : never;
@@ -80,7 +100,7 @@ function revisionFor(id: string, contributions: readonly Contribution[]) {
     hash ^= BigInt(character.codePointAt(0)!);
     hash = BigInt.asUintN(64, hash * 0x100000001b3n);
   }
-  return `r_${hash.toString(16).padStart(16, "0")}` as AgentRevision;
+  return AgentRevision.decode(`r_${hash.toString(16).padStart(16, "0")}`);
 }
 
 function normalizeFragments(input: FragmentInput) {
@@ -195,13 +215,14 @@ export const Agent = {
   define<const Id extends string, const Fragments extends FragmentInput>(definition: {
     readonly id: Id;
     readonly fragments: Fragments;
-  }): AgentDefinition<Id, InputMetadata<Fragments>> {
-    const agent = Object.freeze({ id: definition.id }) as AgentDefinition<
-      Id,
-      InputMetadata<Fragments>
-    >;
+    readonly hooks?: (hooks: AgentHookBuilder<DefinitionFor<Id, Fragments>>) => HookInput;
+  }): DefinitionFor<Id, Fragments> {
+    const agent = Object.freeze({ id: definition.id }) as DefinitionFor<Id, Fragments>;
+    const base = normalizeFragments(definition.fragments);
+    const hookInput = definition.hooks?.(hooksForAgent<DefinitionFor<Id, Fragments>>());
     sources.set(agent, {
-      fragment: normalizeFragments(definition.fragments),
+      fragment:
+        hookInput === undefined ? base : combineFragments([base, normalizeFragments(hookInput)]),
     });
     return agent;
   },
@@ -215,6 +236,33 @@ export namespace Agent {
   export type Events<Definition> = AgentMetadataOf<Definition>["events"];
   export type ToolResumptions<Definition> = AgentMetadataOf<Definition>["toolResumptions"];
   export type Requirements<Definition> = AgentMetadataOf<Definition>["requirements"];
+  /** Every declared terminal Failure that an installed Agent can produce. */
+  export type Failure<Definition extends AgentDefinition> =
+    | Tool.Failure<Tools<Definition>>
+    | HookBlockedFailure
+    | ModelFailure;
+  /** Execution Events specialized to an installed Agent's static and dynamic Tools. */
+  export type ExecutionEvents<Definition extends AgentDefinition> = RuntimeExecutionEvent<
+    Tools<Definition>
+  >;
+  /** Process-bound Execution results specialized to one installed Agent. */
+  export type ExecutionResults<Definition extends AgentDefinition> = RuntimeExecutionResult<
+    Failure<Definition>,
+    Tools<Definition>,
+    AgentRunId<Definition>
+  >;
+  /** Durable Run results specialized to one installed Agent. */
+  export type RunResults<Definition extends AgentDefinition> = RuntimeRunResult<
+    Failure<Definition>,
+    Tools<Definition>,
+    AgentRunId<Definition>
+  >;
+  /** Durable Run snapshots specialized to one installed Agent. */
+  export type RunSnapshots<Definition extends AgentDefinition> = RuntimeRunSnapshot<
+    Failure<Definition>,
+    Tools<Definition>,
+    AgentRunId<Definition>
+  >;
   export type FragmentTools<Fragment> = MetadataOf<Fragment>["tools"];
   export type Empty = FragmentMetadata<never, never, never, never>;
 }

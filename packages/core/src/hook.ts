@@ -1,3 +1,4 @@
+import type { Agent, AgentDefinition } from "./agent.js";
 import {
   contributionsOf,
   createFragment,
@@ -19,7 +20,8 @@ import type {
   ModelInvocation,
   ToolCallResult,
 } from "./runtime.js";
-import type { MaybePromise, ToolCallId } from "./types.js";
+import type { Tool } from "./tool.js";
+import type { AgentRunId, MaybePromise, ToolCallId } from "./types.js";
 
 const hookPointType: unique symbol = Symbol("commissary.hook.point");
 const hookFragmentType: unique symbol = Symbol("commissary.hook.fragment");
@@ -56,8 +58,10 @@ export interface HookDefinition<
 }
 
 /** An opaque Agent Fragment that contains exactly one Hook. */
-export interface HookFragment extends AgentFragment<EmptyFragmentMetadata> {
-  readonly [hookFragmentType]: true;
+export interface HookFragment<
+  Point extends HookPoint<string, unknown, unknown> = HookPoint<string, unknown, unknown>,
+> extends AgentFragment<EmptyFragmentMetadata> {
+  readonly [hookFragmentType]: Point;
 }
 
 /** The event type accepted by one Hook Point. */
@@ -211,10 +215,53 @@ export const HookPoints = Object.freeze({
   ),
 });
 
+type AgentFailure<Definition extends AgentDefinition> =
+  | Tool.Failure<Agent.Tools<Definition>>
+  | HookBlockedFailure
+  | ModelFailure;
+
+type AgentExecutionResult<Definition extends AgentDefinition> = ExecutionResult<
+  AgentFailure<Definition>,
+  Agent.Tools<Definition>,
+  AgentRunId<Definition>
+>;
+
+/** One core Hook Point specialized from an Agent's installed contracts. */
+export type AgentHookPoint<
+  Definition extends AgentDefinition,
+  Point extends HookPoint<string, unknown, unknown>,
+> = Point extends typeof HookPoints.onExecutionEvent
+  ? HookPoint<
+      "onExecutionEvent",
+      ExecutionEventNotification<ExecutionEvent<Agent.Tools<Definition>>>,
+      undefined
+    >
+  : Point extends typeof HookPoints.onSettlement
+    ? HookPoint<"onSettlement", SettlementNotification<AgentExecutionResult<Definition>>, undefined>
+    : Point extends typeof HookPoints.beforeSettlement
+      ? HookPoint<
+          "beforeSettlement",
+          BeforeSettlementEvent<AgentExecutionResult<Definition>>,
+          SettlementContinuation | undefined
+        >
+      : Point;
+
+/** The Agent-specialized event accepted by one core Hook Point. */
+export type AgentHookEvent<
+  Definition extends AgentDefinition,
+  Point extends HookPoint<string, unknown, unknown>,
+> = HookEvent<AgentHookPoint<Definition, Point>>;
+
+/** The Agent-specialized result accepted by one core Hook Point. */
+export type AgentHookResult<
+  Definition extends AgentDefinition,
+  Point extends HookPoint<string, unknown, unknown>,
+> = HookResult<AgentHookPoint<Definition, Point>>;
+
 function hook<Point extends HookPoint<string, unknown, unknown>>(
   hookPoint: Point,
   handler: (event: HookEvent<Point>) => MaybePromise<HookResult<Point>>,
-): HookFragment {
+): HookFragment<Point> {
   return createFragment<EmptyFragmentMetadata>([
     {
       kind: "hook",
@@ -222,16 +269,18 @@ function hook<Point extends HookPoint<string, unknown, unknown>>(
       contract: { point: hookPoint.name },
       value: Object.freeze({ point: hookPoint, handler }),
     },
-  ]) as HookFragment;
+  ]) as HookFragment<Point>;
 }
 
 /** Return the one internal definition carried by an opaque Hook Fragment. */
-export function hookDefinitionOf(fragment: HookFragment): HookDefinition {
+export function hookDefinitionOf<Point extends HookPoint<string, unknown, unknown>>(
+  fragment: HookFragment<Point>,
+): HookDefinition<Point> {
   const contributions = contributionsOf(fragment);
   if (contributions.length !== 1 || contributions[0]?.kind !== "hook") {
     throw new TypeError("Expected a Hook created by Commissary");
   }
-  return contributions[0].value as HookDefinition;
+  return contributions[0].value as HookDefinition<Point>;
 }
 
 /** Constructors and helpers for closed typed Hooks. */
@@ -239,61 +288,139 @@ export const Hook = {
   on<Point extends HookPoint<string, unknown, unknown>>(
     hookPoint: Point,
     handler: (event: HookEvent<Point>) => MaybePromise<HookResult<Point>>,
-  ): HookFragment {
+  ): HookFragment<Point> {
     return hook(hookPoint, handler);
   },
   beforeModelRequest(
     handler: (
       event: BeforeModelRequestEvent,
     ) => MaybePromise<{ readonly request?: ModelRequest } | HookBlock | undefined>,
-  ): HookFragment {
+  ): HookFragment<typeof HookPoints.beforeModelRequest> {
     return hook(HookPoints.beforeModelRequest, handler);
   },
   beforeToolExecution(
     handler: (
       event: BeforeToolExecutionEvent,
     ) => MaybePromise<{ readonly input?: unknown } | HookBlock | undefined>,
-  ): HookFragment {
+  ): HookFragment<typeof HookPoints.beforeToolExecution> {
     return hook(HookPoints.beforeToolExecution, handler);
   },
   transformModelEvent(
     handler: (
       event: TransformModelEventEvent,
     ) => MaybePromise<{ readonly event?: ModelEvent } | HookBlock | undefined>,
-  ): HookFragment {
+  ): HookFragment<typeof HookPoints.transformModelEvent> {
     return hook(HookPoints.transformModelEvent, handler);
   },
   afterModelInvocation(
     handler: (
       event: AfterModelInvocationEvent,
     ) => MaybePromise<ModelInvocationReplacement | ModelRetryInstruction | HookBlock | undefined>,
-  ): HookFragment {
+  ): HookFragment<typeof HookPoints.afterModelInvocation> {
     return hook(HookPoints.afterModelInvocation, handler);
   },
   afterToolExecution(
     handler: (
       event: AfterToolExecutionEvent,
     ) => MaybePromise<{ readonly result: CompletedToolCallResult } | HookBlock | undefined>,
-  ): HookFragment {
+  ): HookFragment<typeof HookPoints.afterToolExecution> {
     return hook(HookPoints.afterToolExecution, handler);
   },
   beforeSettlement(
     handler: (event: BeforeSettlementEvent) => MaybePromise<SettlementContinuation | undefined>,
-  ): HookFragment {
+  ): HookFragment<typeof HookPoints.beforeSettlement> {
     return hook(HookPoints.beforeSettlement, handler);
   },
-  onModelEvent(handler: (event: ModelEventNotification) => MaybePromise<undefined>): HookFragment {
+  onModelEvent(
+    handler: (event: ModelEventNotification) => MaybePromise<undefined>,
+  ): HookFragment<typeof HookPoints.onModelEvent> {
     return hook(HookPoints.onModelEvent, handler);
   },
   onExecutionEvent(
     handler: (event: ExecutionEventNotification) => MaybePromise<undefined>,
-  ): HookFragment {
+  ): HookFragment<typeof HookPoints.onExecutionEvent> {
     return hook(HookPoints.onExecutionEvent, handler);
   },
-  onSettlement(handler: (event: SettlementNotification) => MaybePromise<undefined>): HookFragment {
+  onSettlement(
+    handler: (event: SettlementNotification) => MaybePromise<undefined>,
+  ): HookFragment<typeof HookPoints.onSettlement> {
     return hook(HookPoints.onSettlement, handler);
   },
   block<const Failure>(failure: Failure): HookBlock<Failure> {
     return Object.freeze({ type: "block", failure });
   },
 };
+
+/** Agent-specialized Hook constructors used by static Agent definitions. */
+export type AgentHookBuilder<Definition extends AgentDefinition> = Omit<
+  typeof Hook,
+  "on" | "beforeSettlement" | "onExecutionEvent" | "onSettlement"
+> & {
+  readonly on: <Point extends HookPoint<string, unknown, unknown>>(
+    point: Point,
+    handler: (
+      event: AgentHookEvent<Definition, Point>,
+    ) => MaybePromise<AgentHookResult<Definition, Point>>,
+  ) => HookFragment<AgentHookPoint<Definition, Point>>;
+  readonly beforeSettlement: (
+    handler: (
+      event: AgentHookEvent<Definition, typeof HookPoints.beforeSettlement>,
+    ) => MaybePromise<AgentHookResult<Definition, typeof HookPoints.beforeSettlement>>,
+  ) => HookFragment<AgentHookPoint<Definition, typeof HookPoints.beforeSettlement>>;
+  readonly onExecutionEvent: (
+    handler: (
+      event: AgentHookEvent<Definition, typeof HookPoints.onExecutionEvent>,
+    ) => MaybePromise<undefined>,
+  ) => HookFragment<AgentHookPoint<Definition, typeof HookPoints.onExecutionEvent>>;
+  readonly onSettlement: (
+    handler: (
+      event: AgentHookEvent<Definition, typeof HookPoints.onSettlement>,
+    ) => MaybePromise<undefined>,
+  ) => HookFragment<AgentHookPoint<Definition, typeof HookPoints.onSettlement>>;
+};
+
+/** Create Agent-specialized Hook constructors without a second Hook engine. */
+export function hooksForAgent<Definition extends AgentDefinition>(): AgentHookBuilder<Definition> {
+  const on = <Point extends HookPoint<string, unknown, unknown>>(
+    point: Point,
+    handler: (
+      event: AgentHookEvent<Definition, Point>,
+    ) => MaybePromise<AgentHookResult<Definition, Point>>,
+  ): HookFragment<AgentHookPoint<Definition, Point>> => {
+    // SAFETY: AgentHookPoint changes only process-local event/result types for this installed Agent.
+    return hook(point, handler as never) as HookFragment<AgentHookPoint<Definition, Point>>;
+  };
+  return Object.freeze({
+    ...Hook,
+    on,
+    beforeSettlement: (
+      handler: (
+        event: AgentHookEvent<Definition, typeof HookPoints.beforeSettlement>,
+      ) => MaybePromise<AgentHookResult<Definition, typeof HookPoints.beforeSettlement>>,
+    ) => on(HookPoints.beforeSettlement, handler),
+    onExecutionEvent: (
+      handler: (
+        event: AgentHookEvent<Definition, typeof HookPoints.onExecutionEvent>,
+      ) => MaybePromise<undefined>,
+    ) => on(HookPoints.onExecutionEvent, handler),
+    onSettlement: (
+      handler: (
+        event: AgentHookEvent<Definition, typeof HookPoints.onSettlement>,
+      ) => MaybePromise<undefined>,
+    ) => on(HookPoints.onSettlement, handler),
+  });
+}
+
+/** Create one dynamic Agent-specialized Hook definition. */
+export function agentHookDefinition<
+  Definition extends AgentDefinition,
+  Point extends HookPoint<string, unknown, unknown>,
+>(
+  point: Point,
+  handler: (
+    event: AgentHookEvent<Definition, Point>,
+  ) => MaybePromise<AgentHookResult<Definition, Point>>,
+): HookDefinition {
+  // SAFETY: Runtime dispatches the canonical Point; the bound client supplies the Agent specialization.
+  return Object.freeze({ point, handler }) as HookDefinition;
+}

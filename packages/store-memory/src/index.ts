@@ -1,5 +1,7 @@
+import { ExecutionClaimToken } from "@commissary/core";
 import type {
   AgentReference,
+  AcceptedRun,
   AbortResult,
   AppendMessagesInput,
   BranchConflict,
@@ -17,7 +19,6 @@ import type {
   ContinueSettlementInput,
   ContinueSettlementStoreResult,
   ExecutionClaim,
-  ExecutionClaimToken,
   ExecutionControl,
   ExecutionSnapshot,
   FinalizeRunStoreInput,
@@ -42,7 +43,7 @@ import type {
   RunResult,
   RunSnapshot,
   RunUsage,
-  RunSubmission,
+  RunResultRecord,
   SteeringRequestId,
   SteeringResult,
   StoredToolCall,
@@ -68,7 +69,7 @@ interface ControlWaiter {
 
 interface ResumeRequestRecord {
   readonly fingerprint: string;
-  readonly result: RunSubmission;
+  readonly result: AcceptedRun;
 }
 
 interface ToolCallGraph {
@@ -190,7 +191,7 @@ export class MemoryThreadStore implements ThreadStore {
   readonly #commandSequences = new Map<RunId, number>();
   readonly #toolCalls = new Map<RunId, ToolCallGraph>();
   readonly #startFingerprints = new Map<RunId, string>();
-  readonly #startSubmissions = new Map<RunId, RunSubmission>();
+  readonly #startSubmissions = new Map<RunId, AcceptedRun>();
   readonly #resumeRequests = new Map<string, ResumeRequestRecord>();
   readonly #steeringRequests = new Map<string, SteeringRequestRecord>();
   readonly #redirectRequests = new Map<string, RedirectRequestRecord>();
@@ -293,7 +294,7 @@ export class MemoryThreadStore implements ThreadStore {
     return Promise.resolve(updated);
   }
 
-  submitRun(input: SubmitRunStoreInput): PromiseLike<RunSubmission | BranchConflict | RunConflict> {
+  submitRun(input: SubmitRunStoreInput): PromiseLike<AcceptedRun | BranchConflict | RunConflict> {
     const fingerprint = canonical({
       agent: input.agent,
       threadId: input.threadId,
@@ -340,8 +341,8 @@ export class MemoryThreadStore implements ThreadStore {
       resumable: new Set(),
       nextSequence: 0,
     });
-    const submission: RunSubmission = Object.freeze({
-      type: "submitted",
+    const submission: AcceptedRun = Object.freeze({
+      type: "accepted",
       runId: run.id,
       threadId: run.threadId,
       branchId: run.branchId,
@@ -362,12 +363,12 @@ export class MemoryThreadStore implements ThreadStore {
     readonly items: readonly {
       readonly toolCallId: ToolCallId;
       readonly toolName: string;
-      readonly encodedInput: JsonValue;
+      readonly input: JsonValue;
     }[];
     readonly toolResumeRequestId?: string;
-  }): PromiseLike<RunSubmission | ToolResumeConflict | ToolResumeRequestConflict> {
-    const run = this.#run(input.runId);
-    if (!same(run.agent, input.agent)) {
+  }): PromiseLike<AcceptedRun | ToolResumeConflict | ToolResumeRequestConflict> {
+    const run = this.#runs.get(input.runId);
+    if (run === undefined || !same(run.agent, input.agent)) {
       return Promise.resolve({
         type: "tool-resume-conflict",
         runId: input.runId,
@@ -409,7 +410,7 @@ export class MemoryThreadStore implements ThreadStore {
         call.status !== "suspended" ||
         call.suspension === undefined ||
         (call.suspension.resumeInput !== undefined &&
-          !same(call.suspension.resumeInput, item.encodedInput))
+          !same(call.suspension.resumeInput, item.input))
       ) {
         conflicts.push(item.toolCallId);
       }
@@ -433,7 +434,7 @@ export class MemoryThreadStore implements ThreadStore {
             ...call,
             suspension: Object.freeze({
               ...call.suspension!,
-              resumeInput: item.encodedInput,
+              resumeInput: item.input,
             }),
           }),
         );
@@ -441,8 +442,8 @@ export class MemoryThreadStore implements ThreadStore {
     }
     this.#runs.set(run.id, Object.freeze({ ...run, status: "active" }));
     const branch = this.#branch(run.threadId, run.branchId);
-    const result: RunSubmission = Object.freeze({
-      type: "submitted",
+    const result: AcceptedRun = Object.freeze({
+      type: "accepted",
       runId: run.id,
       threadId: run.threadId,
       branchId: run.branchId,
@@ -460,11 +461,15 @@ export class MemoryThreadStore implements ThreadStore {
   }
 
   acceptSteering(input: {
+    readonly agent: AgentReference;
     readonly runId: RunId;
     readonly message: import("@commissary/core").ModelMessage;
     readonly steeringRequestId?: SteeringRequestId;
   }): PromiseLike<SteeringResult> {
-    const run = this.#run(input.runId);
+    const run = this.#runs.get(input.runId);
+    if (run === undefined || !same(run.agent, input.agent)) {
+      return Promise.resolve({ type: "not-active", runId: input.runId });
+    }
     const fingerprint = canonical(input.message);
     if (input.steeringRequestId !== undefined) {
       const key = requestKey(input.runId, input.steeringRequestId);
@@ -505,11 +510,15 @@ export class MemoryThreadStore implements ThreadStore {
   }
 
   acceptRedirect(input: {
+    readonly agent: AgentReference;
     readonly runId: RunId;
     readonly message: import("@commissary/core").ModelMessage;
     readonly redirectRequestId?: RedirectRequestId;
   }): PromiseLike<RedirectResult> {
-    const run = this.#run(input.runId);
+    const run = this.#runs.get(input.runId);
+    if (run === undefined || !same(run.agent, input.agent)) {
+      return Promise.resolve({ type: "not-active", runId: input.runId });
+    }
     const fingerprint = canonical(input.message);
     if (input.redirectRequestId !== undefined) {
       const key = requestKey(input.runId, input.redirectRequestId);
@@ -550,10 +559,14 @@ export class MemoryThreadStore implements ThreadStore {
   }
 
   requestAbort(input: {
+    readonly agent: AgentReference;
     readonly runId: RunId;
     readonly reason?: JsonValue;
   }): PromiseLike<AbortResult> {
-    const run = this.#run(input.runId);
+    const run = this.#runs.get(input.runId);
+    if (run === undefined || !same(run.agent, input.agent)) {
+      return Promise.resolve({ type: "not-active", runId: input.runId });
+    }
     if (run.result !== undefined) {
       return Promise.resolve({ type: "already-resolved", result: run.result });
     }
@@ -574,14 +587,18 @@ export class MemoryThreadStore implements ThreadStore {
     return Promise.resolve({ type: "accepted", runId: run.id });
   }
 
-  readRunSnapshot(runId: RunId): PromiseLike<RunSnapshot | undefined> {
-    const run = this.#runs.get(runId);
-    if (run === undefined) {
+  readRunSnapshot(input: {
+    readonly agent: AgentReference;
+    readonly runId: RunId;
+  }): PromiseLike<RunSnapshot | undefined> {
+    const run = this.#runs.get(input.runId);
+    if (run === undefined || !same(run.agent, input.agent)) {
       return Promise.resolve(undefined);
     }
     const branch = this.#branch(run.threadId, run.branchId);
     const calls = this.#orderedCalls(run.id);
-    const snapshot: RunSnapshot = Object.freeze({
+    // SAFETY: Tool provider identity and tagged stored Failures are written atomically for each call.
+    const snapshot = Object.freeze({
       runId: run.id,
       threadId: run.threadId,
       branchId: run.branchId,
@@ -590,41 +607,70 @@ export class MemoryThreadStore implements ThreadStore {
       status: run.status,
       settlementContinuations: run.settlementContinuations,
       toolCalls: Object.freeze(
-        calls.map((call) =>
-          Object.freeze({
+        calls.map((call) => {
+          const common = {
             toolCallId: call.toolCallId,
             toolName: call.toolName,
             ...(call.parentToolCallId === undefined
               ? {}
               : { parentToolCallId: call.parentToolCallId }),
             status: call.status,
-            input: call.effectiveInput ?? call.input,
+            requestedInput: call.requestedInput,
+            ...(call.effectiveInput === undefined ? {} : { effectiveInput: call.effectiveInput }),
             ...(call.result === undefined ? {} : { result: call.result }),
-          }),
-        ),
+          };
+          return call.providerId === undefined
+            ? Object.freeze(common)
+            : Object.freeze({
+                ...common,
+                dynamic: true as const,
+                providerId: call.providerId,
+              });
+        }),
       ),
       suspensions: Object.freeze(
         calls
           .filter((call) => call.status === "suspended")
           .map((call) =>
-            Object.freeze({
-              toolCallId: call.toolCallId,
-              toolName: call.toolName,
-            }),
+            call.providerId === undefined
+              ? Object.freeze({
+                  toolCallId: call.toolCallId,
+                  toolName: call.toolName,
+                })
+              : Object.freeze({
+                  dynamic: true as const,
+                  providerId: call.providerId,
+                  toolCallId: call.toolCallId,
+                  toolName: call.toolName,
+                }),
           ),
       ),
       ...(run.result === undefined ? {} : { result: run.result }),
-    });
+    }) as RunSnapshot;
     return Promise.resolve(snapshot);
   }
 
-  readRunResult(runId: RunId): PromiseLike<RunResult | undefined> {
-    return Promise.resolve(this.#runs.get(runId)?.result);
+  readRunResult(input: {
+    readonly agent: AgentReference;
+    readonly runId: RunId;
+  }): PromiseLike<RunResultRecord | undefined> {
+    const run = this.#runs.get(input.runId);
+    return Promise.resolve(
+      run === undefined || !same(run.agent, input.agent)
+        ? undefined
+        : Object.freeze({
+            agent: run.agent,
+            ...(run.result === undefined ? {} : { result: run.result }),
+          }),
+    );
   }
 
-  async readToolResumeContext(runId: RunId): Promise<ToolResumeContext | undefined> {
-    const run = this.#runs.get(runId);
-    if (run === undefined) {
+  async readToolResumeContext(input: {
+    readonly agent: AgentReference;
+    readonly runId: RunId;
+  }): Promise<ToolResumeContext | undefined> {
+    const run = this.#runs.get(input.runId);
+    if (run === undefined || !same(run.agent, input.agent)) {
       return undefined;
     }
     const branch = this.#branch(run.threadId, run.branchId);
@@ -641,6 +687,7 @@ export class MemoryThreadStore implements ThreadStore {
   }
 
   acquireExecutionClaim(input: {
+    readonly agent: AgentReference;
     readonly runId: RunId;
     readonly executionId: import("@commissary/core").ExecutionId;
     readonly leaseDurationMs: number;
@@ -648,6 +695,9 @@ export class MemoryThreadStore implements ThreadStore {
     const run = this.#runs.get(input.runId);
     if (run === undefined) {
       return Promise.resolve({ type: "run-not-found" });
+    }
+    if (!same(run.agent, input.agent)) {
+      return Promise.resolve({ type: "wrong-agent" });
     }
     const now = this.#now();
     const current = this.#claims.get(run.id);
@@ -673,7 +723,7 @@ export class MemoryThreadStore implements ThreadStore {
     const claim: ExecutionClaim = Object.freeze({
       runId: run.id,
       executionId: input.executionId,
-      token: globalThis.crypto.randomUUID() as ExecutionClaimToken,
+      token: ExecutionClaimToken.decode(globalThis.crypto.randomUUID()),
       fence,
       expiresAt: now + input.leaseDurationMs,
     });
@@ -846,7 +896,7 @@ export class MemoryThreadStore implements ThreadStore {
           sequence: this.#nextToolSequence(graph),
           toolName: call.toolName,
           ...(call.providerId === undefined ? {} : { providerId: call.providerId }),
-          input: call.input,
+          requestedInput: call.input,
           status: "pending",
           historyCommitted: false,
           ...(call.providerData === undefined ? {} : { providerData: call.providerData }),
@@ -941,7 +991,7 @@ export class MemoryThreadStore implements ThreadStore {
       if (
         current.toolName !== input.toolName ||
         current.providerId !== input.providerId ||
-        !same(current.input, input.input)
+        !same(current.requestedInput, input.input)
       ) {
         throw new Error(`Delegation key '${input.key}' was reused with different data`);
       }
@@ -958,7 +1008,7 @@ export class MemoryThreadStore implements ThreadStore {
       parentToolCallId: input.parentToolCallId,
       ...(input.providerId === undefined ? {} : { providerId: input.providerId }),
       delegationKey: input.key,
-      input: input.input,
+      requestedInput: input.input,
       status: "pending",
       historyCommitted: false,
     });
@@ -973,18 +1023,41 @@ export class MemoryThreadStore implements ThreadStore {
     }
     const graph = this.#graph(input.claim.runId);
     const call = this.#call(graph.calls, input.toolCallId);
+    const result =
+      input.result.type === "success"
+        ? Object.freeze({ ...input.result })
+        : Object.freeze({
+            ...input.result,
+            failure:
+              call.providerId === undefined
+                ? Object.freeze({
+                    type: "tool-failure" as const,
+                    toolName: call.toolName,
+                    toolCallId: call.toolCallId,
+                    value: input.result.failure,
+                  })
+                : Object.freeze({
+                    type: "tool-failure" as const,
+                    dynamic: true as const,
+                    providerId: call.providerId,
+                    toolName: call.toolName,
+                    toolCallId: call.toolCallId,
+                    value: input.result.failure,
+                  }),
+          });
     if (call.result !== undefined) {
-      if (!same(call.result, input.result)) {
+      if (!same(call.result, result)) {
         throw new Error(`Tool Call '${call.toolCallId}' completed with different results`);
       }
       return Promise.resolve({ type: "committed", value: call });
     }
-    const stored: StoredToolCall = Object.freeze({
+    const terminal = {
       ...call,
-      status: input.result.type === "success" ? "succeeded" : "failed",
-      result: Object.freeze({ ...input.result }),
-      suspension: undefined,
-    });
+      status: input.result.type === "success" ? ("succeeded" as const) : ("failed" as const),
+      result,
+    };
+    delete terminal.suspension;
+    const stored: StoredToolCall = Object.freeze(terminal);
     this.#setCall(graph, stored);
     return Promise.resolve({ type: "committed", value: stored });
   }
@@ -996,12 +1069,13 @@ export class MemoryThreadStore implements ThreadStore {
     }
     const graph = this.#graph(input.claim.runId);
     const call = this.#call(graph.calls, input.toolCallId);
-    const stored: StoredToolCall = Object.freeze({
+    const suspended = {
       ...call,
-      status: "suspended",
-      result: undefined,
+      status: "suspended" as const,
       suspension: Object.freeze({ ...input.suspension }),
-    });
+    };
+    delete suspended.result;
+    const stored: StoredToolCall = Object.freeze(suspended);
     this.#setCall(graph, stored);
     return Promise.resolve({ type: "committed", value: stored });
   }
@@ -1151,15 +1225,13 @@ export class MemoryThreadStore implements ThreadStore {
       const graph = this.#graph(run.id);
       for (const call of graph.calls.values()) {
         if (call.status !== "succeeded" && call.status !== "failed" && call.status !== "aborted") {
-          this.#setCall(
-            graph,
-            Object.freeze({
-              ...call,
-              status: "aborted",
-              result: Object.freeze({ type: "aborted" as const }),
-              suspension: undefined,
-            }),
-          );
+          const aborted = {
+            ...call,
+            status: "aborted" as const,
+            result: Object.freeze({ type: "aborted" as const }),
+          };
+          delete aborted.suspension;
+          this.#setCall(graph, Object.freeze(aborted));
         }
       }
     }

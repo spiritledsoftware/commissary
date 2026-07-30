@@ -1,31 +1,26 @@
 import {
-  type AgentRevision,
-  type BranchId,
-  type CommitId,
+  AgentRevision,
+  BranchId,
+  CommitId,
   Content,
-  type ExecutionId,
-  type MessageEntryId,
-  type RunId,
-  type ThreadId,
-  type ToolCallId,
+  ExecutionId,
+  MessageEntryId,
+  RunId,
+  ThreadId,
+  ToolCallId,
 } from "@commissary/core";
 import { expect, it } from "vitest";
 
 import { MemoryThreadStore } from "../src/index.js";
-
-function testId<Id extends string>(value: string): Id {
-  // SAFETY: Store tests use deterministic unique strings at branded ID boundaries.
-  return value as Id;
-}
 
 it("uses its backend clock for claim expiry", async () => {
   let now = 100;
   const store = MemoryThreadStore.make({
     clock: { now: () => now },
   });
-  const threadId = "thread" as ThreadId;
-  const branchId = "branch" as BranchId;
-  const runId = "run" as RunId;
+  const threadId = ThreadId.decode("thread");
+  const branchId = BranchId.decode("branch");
+  const runId = RunId.decode("run");
   await store.createThread({ id: threadId });
   await store.createBranch({
     branch: { id: branchId, threadId, name: "main" },
@@ -33,10 +28,10 @@ it("uses its backend clock for claim expiry", async () => {
   const append = {
     threadId,
     branchId,
-    commitId: "append" as CommitId,
+    commitId: CommitId.decode("append"),
     entries: [
       {
-        id: "seed-entry" as MessageEntryId,
+        id: MessageEntryId.decode("seed-entry"),
         message: {
           role: "user" as const,
           content: [Content.text("seed")],
@@ -50,17 +45,19 @@ it("uses its backend clock for claim expiry", async () => {
 
   await store.submitRun({
     runId,
-    entryId: "entry" as MessageEntryId,
-    commitId: "commit" as CommitId,
-    agent: { id: "agent", revision: "revision" as AgentRevision },
+    entryId: MessageEntryId.decode("entry"),
+    commitId: CommitId.decode("commit"),
+    agent: { id: "agent", revision: AgentRevision.decode("revision") },
     threadId,
     branchId,
     message: { role: "user", content: [Content.text("start")] },
   });
 
+  const agent = { id: "agent", revision: AgentRevision.decode("revision") };
   const first = await store.acquireExecutionClaim({
     runId,
-    executionId: "execution-1" as ExecutionId,
+    agent,
+    executionId: ExecutionId.decode("execution-1"),
     leaseDurationMs: 50,
   });
   expect(first).toMatchObject({
@@ -71,7 +68,8 @@ it("uses its backend clock for claim expiry", async () => {
   now = 151;
   const second = await store.acquireExecutionClaim({
     runId,
-    executionId: "execution-2" as ExecutionId,
+    agent,
+    executionId: ExecutionId.decode("execution-2"),
     leaseDurationMs: 50,
   });
   expect(second).toMatchObject({
@@ -82,29 +80,30 @@ it("uses its backend clock for claim expiry", async () => {
 
 it("keeps large Tool Call graphs ordered and reuses delegation keys", async () => {
   const store = MemoryThreadStore.make();
-  const threadId = testId<ThreadId>("graph-thread");
-  const branchId = testId<BranchId>("graph-branch");
-  const runId = testId<RunId>("graph-run");
-  const parentToolCallId = testId<ToolCallId>("graph-parent");
+  const threadId = ThreadId.decode("graph-thread");
+  const branchId = BranchId.decode("graph-branch");
+  const runId = RunId.decode("graph-run");
+  const parentToolCallId = ToolCallId.decode("graph-parent");
   await store.createThread({ id: threadId });
   await store.createBranch({
     branch: { id: branchId, threadId, name: "main" },
   });
   const submission = await store.submitRun({
     runId,
-    entryId: testId<MessageEntryId>("graph-entry"),
-    commitId: testId<CommitId>("graph-start"),
-    agent: { id: "graph-agent", revision: testId<AgentRevision>("graph-revision") },
+    entryId: MessageEntryId.decode("graph-entry"),
+    commitId: CommitId.decode("graph-start"),
+    agent: { id: "graph-agent", revision: AgentRevision.decode("graph-revision") },
     threadId,
     branchId,
     message: { role: "user", content: [Content.text("start")] },
   });
-  if (submission.type !== "submitted") {
+  if (submission.type !== "accepted") {
     throw new Error(`Unexpected Run submission '${submission.type}'`);
   }
   const acquired = await store.acquireExecutionClaim({
     runId,
-    executionId: testId<ExecutionId>("graph-execution"),
+    agent: { id: "graph-agent", revision: AgentRevision.decode("graph-revision") },
+    executionId: ExecutionId.decode("graph-execution"),
     leaseDurationMs: 60_000,
   });
   if (acquired.type !== "acquired") {
@@ -113,9 +112,9 @@ it("keeps large Tool Call graphs ordered and reuses delegation keys", async () =
   await store.commitModelInvocation({
     claim: acquired.claim,
     expectedHead: submission.head,
-    commitId: testId<CommitId>("graph-model"),
+    commitId: CommitId.decode("graph-model"),
     entry: {
-      id: testId<MessageEntryId>("graph-model-entry"),
+      id: MessageEntryId.decode("graph-model-entry"),
       message: {
         role: "assistant",
         content: [Content.toolCall(parentToolCallId, "graph-parent-tool", {})],
@@ -135,7 +134,7 @@ it("keeps large Tool Call graphs ordered and reuses delegation keys", async () =
     await store.recordDelegatedToolCall({
       claim: acquired.claim,
       parentToolCallId,
-      toolCallId: testId<ToolCallId>(`graph-child-${index}`),
+      toolCallId: ToolCallId.decode(`graph-child-${index}`),
       toolName: "graph-child-tool",
       key: `key-${index}`,
       input: index,
@@ -144,7 +143,7 @@ it("keeps large Tool Call graphs ordered and reuses delegation keys", async () =
   const reused = await store.recordDelegatedToolCall({
     claim: acquired.claim,
     parentToolCallId,
-    toolCallId: testId<ToolCallId>("graph-unused-id"),
+    toolCallId: ToolCallId.decode("graph-unused-id"),
     toolName: "graph-child-tool",
     key: "key-0",
     input: 0,

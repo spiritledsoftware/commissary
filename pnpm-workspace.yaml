@@ -3,4 +3,8 @@ packages:
   - packages/*
   - tools/*
 allowBuilds:
+  bun: true
+  deno: true
+  esbuild: true
   msgpackr-extract: false
+  workerd: true

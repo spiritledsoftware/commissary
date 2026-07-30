@@ -2,7 +2,7 @@
 
 Commissary core ends at one Run. It has no handoff protocol, Subagent type, Follow-up queue, Run chain, or durable post-commit Job system.
 
-Hosts and adapters can build these features from Tools, Tool Suspension, `readResult`, and idempotent `submit` calls.
+Hosts and adapters can build these features from Tools, Tool Suspension, `readResult`, and idempotent `createRun` calls.
 
 The host's durable workflow owns cross-Run transactions, outboxes, recovery workers, routing, permissions, retries, and result composition.
 
