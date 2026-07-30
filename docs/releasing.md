@@ -35,7 +35,7 @@ git push --set-upstream origin main
 
 Wait for the CI and Release workflows to pass. The Release workflow can create a Version Packages pull request, but it cannot publish while `NPM_PUBLISH_ENABLED` is `false`.
 
-## Publish version 0.1.0 once
+## Publish bootstrap version 0.0.0 once
 
 Log in to npm from a package directory with an `@commissary` owner account and 2FA:
 
@@ -54,17 +54,13 @@ pnpm run pack:check
 pnpm run release
 ```
 
-This publishes all four packages at `0.1.0` and creates local package tags.
-
-Push the tags and create the first GitHub Releases:
+This publishes all four packages at `0.0.0` and creates local package tags. Push the tags:
 
 ```sh
 git push origin --follow-tags
-gh release create '@commissary/core@0.1.0' --title '@commissary/core 0.1.0' --notes 'Initial public release.'
-gh release create '@commissary/effect@0.1.0' --title '@commissary/effect 0.1.0' --notes 'Initial public release.'
-gh release create '@commissary/store-memory@0.1.0' --title '@commissary/store-memory 0.1.0' --notes 'Initial public release.'
-gh release create '@commissary/stream@0.1.0' --title '@commissary/stream 0.1.0' --notes 'Initial public release.'
 ```
+
+Do not create GitHub Releases for the `0.0.0` bootstrap packages.
 
 ## Enable trusted publishing
 
@@ -83,6 +79,14 @@ Enable later automated publications:
 ```sh
 gh variable set NPM_PUBLISH_ENABLED --env npm --body true
 ```
+
+## Publish the first supported version
+
+Create and merge a pull request with a minor Changeset for all four packages. After CI passes on `main`, the Release workflow opens the **Version Packages** pull request.
+
+Review that pull request and confirm that it changes all four package versions from `0.0.0` to `0.1.0`. Merge it after every required check passes.
+
+The next successful Release workflow publishes all four `0.1.0` packages through npm trusted publishing. It also creates the four `0.1.0` GitHub Releases.
 
 ## Configure repository policy
 
