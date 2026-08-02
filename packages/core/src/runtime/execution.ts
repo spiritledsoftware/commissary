@@ -1,3 +1,5 @@
+import { StoreError } from "@commissary/store";
+
 import type { AgentDefinition, InstalledAgentData } from "../agent.js";
 import type { Contribution } from "../fragment.js";
 import type { HookDefinition } from "../hook.js";
@@ -33,7 +35,7 @@ import {
   UnexpectedExecutionError,
 } from "../runtime.js";
 import type { ArtifactStore, ExecutionClaim, ExecutionSnapshot, ThreadStore } from "../store.js";
-import { ArtifactStoreError, ThreadStoreError } from "../store.js";
+import { ArtifactStoreError } from "../store.js";
 import {
   CommitId,
   ExecutionId,
@@ -66,7 +68,6 @@ import {
   publicSuspensions,
   toolExecutionMode,
 } from "./tools.js";
-import { threadStoreCall as storeCall } from "./thread-store-call.js";
 
 /** Dependencies for one Runtime execution coordinator. */
 export interface ExecutionCoordinatorOptions {
@@ -185,14 +186,12 @@ export function createExecutionCoordinator(
       }
 
       const executionId = newExecutionId();
-      const claimResult = await storeCall("acquireExecutionClaim", () =>
-        threadStore.acquireExecutionClaim({
-          agent: installed.reference,
-          runId,
-          executionId,
-          leaseDurationMs,
-        }),
-      );
+      const claimResult = await threadStore.acquireExecutionClaim({
+        agent: installed.reference,
+        runId,
+        executionId,
+        leaseDurationMs,
+      });
       if (claimResult.type === "run-not-found") {
         throw new ExecutionUnavailableError(runId, "run-not-found");
       }
@@ -207,11 +206,9 @@ export function createExecutionCoordinator(
       }
 
       let claim: ExecutionClaim = claimResult.claim;
-      const initialSnapshot = await storeCall("loadExecution", () =>
-        threadStore.loadExecution(claim),
-      );
+      const initialSnapshot = await threadStore.loadExecution(claim);
       if (initialSnapshot === undefined) {
-        await storeCall("releaseExecutionClaim", () => threadStore.releaseExecutionClaim(claim));
+        await threadStore.releaseExecutionClaim(claim);
         throw new ExecutionUnavailableError(runId, "not-executable");
       }
 
@@ -297,7 +294,7 @@ export function createExecutionCoordinator(
       };
 
       const load = async (): Promise<ExecutionSnapshot> => {
-        const snapshot = await storeCall("loadExecution", () => threadStore.loadExecution(claim));
+        const snapshot = await threadStore.loadExecution(claim);
         if (snapshot === undefined) {
           throw new ExecutionClaimLostError(runId);
         }
@@ -327,26 +324,22 @@ export function createExecutionCoordinator(
         newMessageEntryId: () => newMessageEntryId(),
         recordModelCall: async ({ modelId, usage }) => {
           guarded(
-            await storeCall("recordModelCall", () =>
-              threadStore.recordModelCall({
-                claim,
-                commitId: newCommitId(),
-                modelId,
-                ...(usage === undefined ? {} : { usage }),
-              }),
-            ),
+            await threadStore.recordModelCall({
+              claim,
+              commitId: newCommitId(),
+              modelId,
+              ...(usage === undefined ? {} : { usage }),
+            }),
           );
         },
         commitModelInvocation: async ({ expectedHead, entry, toolCalls }) => {
-          const committed = await storeCall("commitModelInvocation", () =>
-            threadStore.commitModelInvocation({
-              claim,
-              expectedHead,
-              commitId: newCommitId(),
-              entry,
-              toolCalls,
-            }),
-          );
+          const committed = await threadStore.commitModelInvocation({
+            claim,
+            expectedHead,
+            commitId: newCommitId(),
+            entry,
+            toolCalls,
+          });
           if (committed.type === "work-ready") {
             return "work-ready";
           }
@@ -372,53 +365,32 @@ export function createExecutionCoordinator(
         newMessageEntryId: () => newMessageEntryId(),
         store: {
           recordInterruption: async (interruption) => {
-            guarded(
-              await storeCall("recordInterruption", () =>
-                threadStore.recordInterruption({ claim, interruption }),
-              ),
-            );
+            guarded(await threadStore.recordInterruption({ claim, interruption }));
           },
-          loadToolCall: (toolCallId) =>
-            storeCall("loadToolCall", () => threadStore.loadToolCall(claim, toolCallId)),
+          loadToolCall: (toolCallId) => threadStore.loadToolCall(claim, toolCallId),
           recordToolInput: async (toolCallId, input) =>
-            guarded(
-              await storeCall("recordToolInput", () =>
-                threadStore.recordToolInput({ claim, toolCallId, input }),
-              ),
-            ),
+            guarded(await threadStore.recordToolInput({ claim, toolCallId, input })),
           recordDelegatedToolCall: async (input) =>
-            guarded(
-              await storeCall("recordDelegatedToolCall", () =>
-                threadStore.recordDelegatedToolCall({ claim, ...input }),
-              ),
-            ),
+            guarded(await threadStore.recordDelegatedToolCall({ claim, ...input })),
           completeToolCall: async (toolCallId, result) =>
-            guarded(
-              await storeCall("completeToolCall", () =>
-                threadStore.completeToolCall({ claim, toolCallId, result }),
-              ),
-            ),
+            guarded(await threadStore.completeToolCall({ claim, toolCallId, result })),
           suspendToolCall: async (toolCallId, continuation, agent) => {
             guarded(
-              await storeCall("suspendToolCall", () =>
-                threadStore.suspendToolCall({
-                  claim,
-                  toolCallId,
-                  suspension: { continuation, agent },
-                }),
-              ),
+              await threadStore.suspendToolCall({
+                claim,
+                toolCallId,
+                suspension: { continuation, agent },
+              }),
             );
           },
           commitToolResults: async (expectedHead, entries) => {
             guarded(
-              await storeCall("commitToolResults", () =>
-                threadStore.commitToolResults({
-                  claim,
-                  expectedHead,
-                  commitId: newCommitId(),
-                  entries,
-                }),
-              ),
+              await threadStore.commitToolResults({
+                claim,
+                expectedHead,
+                commitId: newCommitId(),
+                entries,
+              }),
             );
           },
         },
@@ -455,20 +427,18 @@ export function createExecutionCoordinator(
           const consumedSteering = snapshot.pendingSteering.at(-1);
           const consumedRedirect = snapshot.pendingRedirects.at(-1);
           guarded(
-            await storeCall("commitStep", () =>
-              threadStore.commitStep({
-                claim,
-                expectedHead: snapshot.head,
-                commitId: newCommitId(),
-                entries,
-                ...(consumedSteering === undefined
-                  ? {}
-                  : { consumedSteeringThrough: consumedSteering.sequence }),
-                ...(consumedRedirect === undefined
-                  ? {}
-                  : { consumedRedirectsThrough: consumedRedirect.sequence }),
-              }),
-            ),
+            await threadStore.commitStep({
+              claim,
+              expectedHead: snapshot.head,
+              commitId: newCommitId(),
+              entries,
+              ...(consumedSteering === undefined
+                ? {}
+                : { consumedSteeringThrough: consumedSteering.sequence }),
+              ...(consumedRedirect === undefined
+                ? {}
+                : { consumedRedirectsThrough: consumedRedirect.sequence }),
+            }),
           );
           snapshot = await load();
         }
@@ -659,18 +629,16 @@ export function createExecutionCoordinator(
         if (type !== "aborted") {
           const instruction = await beforeSettlement(result);
           if (instruction !== undefined && snapshot.run.settlementContinuations < 32) {
-            const continued = await storeCall("continueSettlement", () =>
-              threadStore.continueSettlement({
-                claim,
-                expectedHead: snapshot.head,
-                commitId: newCommitId(),
-                candidateEntries: entries,
-                instructionEntry: {
-                  id: newMessageEntryId(),
-                  message: instruction,
-                },
-              }),
-            );
+            const continued = await threadStore.continueSettlement({
+              claim,
+              expectedHead: snapshot.head,
+              commitId: newCommitId(),
+              candidateEntries: entries,
+              instructionEntry: {
+                id: newMessageEntryId(),
+                message: instruction,
+              },
+            });
             if (continued.type === "abort-requested") {
               return finalizeTerminal("aborted", continued.reason);
             }
@@ -683,16 +651,14 @@ export function createExecutionCoordinator(
             }
           }
         }
-        const committed = await storeCall("finalizeRun", () =>
-          threadStore.finalizeRun({
-            claim,
-            expectedHead: snapshot.head,
-            commitId: newCommitId(),
-            entries,
-            result,
-            ...(type === "aborted" ? { abortUnresolvedTools: true } : {}),
-          }),
-        );
+        const committed = await threadStore.finalizeRun({
+          claim,
+          expectedHead: snapshot.head,
+          commitId: newCommitId(),
+          entries,
+          result,
+          ...(type === "aborted" ? { abortUnresolvedTools: true } : {}),
+        });
         if (committed.type === "work-ready") {
           return committed;
         }
@@ -713,11 +679,7 @@ export function createExecutionCoordinator(
         interruption: InterruptedExecutionResult["interruption"],
       ): Promise<InterruptedExecutionResult> => {
         const result: InterruptedExecutionResult = { type: "interrupted", runId, interruption };
-        guarded(
-          await storeCall("recordInterruption", () =>
-            threadStore.recordInterruption({ claim, interruption }),
-          ),
-        );
+        guarded(await threadStore.recordInterruption({ claim, interruption }));
         return result;
       };
 
@@ -787,13 +749,11 @@ export function createExecutionCoordinator(
             type: "suspended",
             suspensions,
           };
-          const stored = await storeCall("suspendRun", () =>
-            threadStore.suspendRun({
-              claim,
-              expectedHead: snapshot.head,
-              result,
-            }),
-          );
+          const stored = await threadStore.suspendRun({
+            claim,
+            expectedHead: snapshot.head,
+            result,
+          });
           if (stored.type === "work-ready") {
             throw new RuntimeInvariantError("Cannot settle while Tool resume work is ready");
           }
@@ -853,13 +813,11 @@ export function createExecutionCoordinator(
                 type: "suspended",
                 suspensions,
               };
-              const result = await storeCall("suspendRun", () =>
-                threadStore.suspendRun({
-                  claim,
-                  expectedHead: snapshot.head,
-                  result: suspended,
-                }),
-              );
+              const result = await threadStore.suspendRun({
+                claim,
+                expectedHead: snapshot.head,
+                result: suspended,
+              });
               if (result.type === "work-ready") {
                 continue;
               }
@@ -901,9 +859,7 @@ export function createExecutionCoordinator(
           }
           let renewal;
           try {
-            renewal = await storeCall("renewExecutionClaim", () =>
-              threadStore.renewExecutionClaim({ claim, leaseDurationMs }),
-            );
+            renewal = await threadStore.renewExecutionClaim({ claim, leaseDurationMs });
           } catch (cause) {
             controller.abort(new ExecutionClaimLostError(runId, cause));
             return;
@@ -920,15 +876,14 @@ export function createExecutionCoordinator(
         }
       })();
 
+      const waitForExecutionControl = threadStore.waitForExecutionControl;
       const controlWatch =
-        threadStore.waitForExecutionControl === undefined
+        waitForExecutionControl === undefined
           ? Promise.resolve()
-          : storeCall("waitForExecutionControl", () =>
-              threadStore.waitForExecutionControl!({
-                claim,
-                signal: lifecycleController.signal,
-              }),
-            )
+          : waitForExecutionControl({
+              claim,
+              signal: lifecycleController.signal,
+            })
               .then((control) => {
                 if (control.type === "abort-requested") {
                   controller.abort(new AbortExecution(control.reason));
@@ -1033,7 +988,7 @@ export function createExecutionCoordinator(
               const error =
                 eventStoreError ??
                 (cause instanceof ExecutionClaimLostError ||
-                cause instanceof ThreadStoreError ||
+                cause instanceof StoreError ||
                 cause instanceof ArtifactStoreError ||
                 cause instanceof UnexpectedExecutionError
                   ? cause
@@ -1064,7 +1019,7 @@ export function createExecutionCoordinator(
           failure = cause;
         }
         try {
-          await storeCall("releaseExecutionClaim", () => threadStore.releaseExecutionClaim(claim));
+          await threadStore.releaseExecutionClaim(claim);
         } catch (cause) {
           failure ??= cause;
         }
@@ -1083,7 +1038,7 @@ export function createExecutionCoordinator(
         }
         if (cleanupFailure !== undefined) {
           const error =
-            cleanupFailure instanceof ThreadStoreError
+            cleanupFailure instanceof StoreError
               ? cleanupFailure
               : new UnexpectedExecutionError("finalize", cleanupFailure);
           await emit(Object.freeze({ type: "error", error }));

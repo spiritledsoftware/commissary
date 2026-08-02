@@ -457,7 +457,7 @@ describe("Runtime Hooks", () => {
     });
     expect(modelCalls).toBe(33);
     await expect(client.readRunSnapshot(submission.runId)).resolves.toMatchObject({
-      settlementContinuations: 32,
+      run: { settlementContinuations: 32 },
     });
   });
 
@@ -522,7 +522,7 @@ describe("Runtime Hooks", () => {
       { role: "user", content: [Content.text("redirect")] },
     ]);
     await expect(client.readRunSnapshot(submission.runId)).resolves.toMatchObject({
-      settlementContinuations: 0,
+      run: { settlementContinuations: 0 },
     });
   });
 
@@ -591,7 +591,7 @@ describe("Runtime Hooks", () => {
       { role: "user", content: [Content.text("steer")] },
     ]);
     await expect(client.readRunSnapshot(submission.runId)).resolves.toMatchObject({
-      settlementContinuations: 0,
+      run: { settlementContinuations: 0 },
     });
   });
 
@@ -626,7 +626,7 @@ describe("Runtime Hooks", () => {
         });
       },
     };
-    const store = new MemoryThreadStore();
+    const store = MemoryThreadStore.make();
     const app = commissary({ threadStore: store, clock });
     const thread = await app.createThread();
     const branch = await app.createBranch({ threadId: thread.id, name: "main" });

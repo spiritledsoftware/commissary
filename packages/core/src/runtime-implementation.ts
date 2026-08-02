@@ -24,7 +24,6 @@ import type { ArtifactStore, ThreadStore } from "./store.js";
 import { CommitId, MessageEntryId, RunId } from "./types.js";
 import type { JsonValue } from "./types.js";
 import { createExecutionCoordinator } from "./runtime/execution.js";
-import { threadStoreCall } from "./runtime/thread-store-call.js";
 import { submitToolResumes } from "./runtime/tools.js";
 
 interface RuntimeOptions {
@@ -52,13 +51,11 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
     runId: RunId,
     reason?: JsonValue,
   ): Promise<AbortResult> => {
-    const result = await threadStoreCall("requestAbort", () =>
-      threadStore.requestAbort({
-        agent,
-        runId,
-        ...(reason === undefined ? {} : { reason }),
-      }),
-    );
+    const result = await threadStore.requestAbort({
+      agent,
+      runId,
+      ...(reason === undefined ? {} : { reason }),
+    });
     if (result.type === "accepted") {
       coordinator.abortActive(runId, reason);
     }
@@ -75,18 +72,17 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
     threadStore,
 
     createRun(agent: AgentReference, input: CreateRunInput): Promise<CreateRunResult> {
-      return threadStoreCall("submitRun", () =>
-        threadStore.submitRun({
-          runId: input.runId ?? newRunId(),
-          entryId: newMessageEntryId(),
-          commitId: newCommitId(),
-          agent,
-          threadId: input.threadId,
-          branchId: input.branchId,
-          message: input.message,
-          ...(input.expectedHead === undefined ? {} : { expectedHead: input.expectedHead }),
-        }),
-      );
+      return threadStore.submitRun({
+        runId: input.runId ?? newRunId(),
+        entryId: newMessageEntryId(),
+        commitId: newCommitId(),
+        agent,
+        threadId: input.threadId,
+        branchId: input.branchId,
+        message: input.message,
+        ...(input.expectedHead === undefined ? {} : { expectedHead: input.expectedHead }),
+        ...(input.fields === undefined ? {} : { fields: input.fields }),
+      });
     },
 
     resumeRun(agent: AgentReference, input: ResumeRunInput): Promise<ResumeRunResult> {
@@ -102,20 +98,15 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
         installed,
         input,
         threadStore,
-        storeCall: threadStoreCall,
       });
     },
 
     steer(agent: AgentReference, input: SteerInput): Promise<SteeringResult> {
-      return threadStoreCall("acceptSteering", () =>
-        threadStore.acceptSteering({ agent, ...input }),
-      );
+      return threadStore.acceptSteering({ agent, ...input });
     },
 
     async redirect(agent: AgentReference, input: RedirectInput): Promise<RedirectResult> {
-      const result = await threadStoreCall("acceptRedirect", () =>
-        threadStore.acceptRedirect({ agent, ...input }),
-      );
+      const result = await threadStore.acceptRedirect({ agent, ...input });
       if (result.type === "accepted" && result.admitted) {
         coordinator.redirectActive(input.runId);
       }
@@ -125,17 +116,15 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
     abort(agent: AgentReference, runId: RunId, reason?: JsonValue): Promise<AbortResult> {
       return requestAbort(agent, runId, reason);
     },
-
     readRunSnapshot(agent: AgentReference, runId: RunId): Promise<RunSnapshot | undefined> {
-      return threadStoreCall("readRunSnapshot", () =>
-        threadStore.readRunSnapshot({ agent, runId }),
-      );
+      // SAFETY: Runtime uses the built-in Core Record projection, which is the public Run Snapshot contract.
+      return threadStore.readRunSnapshot({ agent, runId }) as unknown as Promise<
+        RunSnapshot | undefined
+      >;
     },
 
     async readResult(agent: AgentReference, runId: RunId): Promise<RunResult | undefined> {
-      const record = await threadStoreCall("readRunResult", () =>
-        threadStore.readRunResult({ agent, runId }),
-      );
+      const record = await threadStore.readRunResult({ agent, runId });
       return record?.result;
     },
 

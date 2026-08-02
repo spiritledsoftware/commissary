@@ -45,6 +45,7 @@
     "@changesets/cli": "2.31.1",
     "@commissary/core": "workspace:*",
     "@commissary/effect": "workspace:*",
+    "@commissary/store": "workspace:*",
     "@commissary/store-memory": "workspace:*",
     "@commissary/stream": "workspace:*",
     "@types/node": "^26.1.1",

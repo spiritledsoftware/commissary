@@ -27,7 +27,7 @@ export const completingModel = Model.define({
 });
 
 export async function fixture<Definition extends AgentDefinition>(agent: Definition) {
-  const store = new MemoryThreadStore();
+  const store = MemoryThreadStore.make();
   const app = commissary({ threadStore: store });
   const thread = await app.createThread();
   const branch = await app.createBranch({ threadId: thread.id, name: "main" });

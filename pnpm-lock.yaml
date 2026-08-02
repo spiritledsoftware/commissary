@@ -219,6 +219,9 @@ importers:
       '@commissary/effect':
         specifier: workspace:*
         version: link:packages/effect
+      '@commissary/store':
+        specifier: workspace:*
+        version: link:packages/store
       '@commissary/store-memory':
         specifier: workspace:*
         version: link:packages/store-memory
@@ -267,6 +270,9 @@ importers:
 
   packages/core:
     dependencies:
+      '@commissary/store':
+        specifier: workspace:^
+        version: link:../store
       '@standard-schema/spec':
         specifier: ^1.1.0
         version: 1.1.0
@@ -280,11 +286,20 @@ importers:
         specifier: 4.0.0-beta.101
         version: 4.0.0-beta.101
 
+  packages/store:
+    dependencies:
+      '@standard-schema/spec':
+        specifier: ^1.1.0
+        version: 1.1.0
+
   packages/store-memory:
     dependencies:
       '@commissary/core':
         specifier: workspace:^
         version: link:../core
+      '@commissary/store':
+        specifier: workspace:^
+        version: link:../store
 
   packages/stream:
     dependencies:

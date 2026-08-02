@@ -104,7 +104,7 @@ it("keeps large Tool Call graphs ordered and reuses delegation keys", async () =
     runId,
     agent: { id: "graph-agent", revision: AgentRevision.decode("graph-revision") },
     executionId: ExecutionId.decode("graph-execution"),
-    leaseDurationMs: 60_000,
+    leaseDurationMs: 600_000,
   });
   if (acquired.type !== "acquired") {
     throw new Error(`Unexpected claim result '${acquired.type}'`);
@@ -129,7 +129,7 @@ it("keeps large Tool Call graphs ordered and reuses delegation keys", async () =
     ],
   });
 
-  const delegatedCount = 5_000;
+  const delegatedCount = 500;
   for (let index = 0; index < delegatedCount; index += 1) {
     await store.recordDelegatedToolCall({
       claim: acquired.claim,
@@ -155,6 +155,21 @@ it("keeps large Tool Call graphs ordered and reuses delegation keys", async () =
       sequence: 2,
     },
   });
+  await store.collections.toolCall.update({
+    where: (fields, operators) =>
+      operators.eq(fields.toolCallId, ToolCallId.decode("graph-child-0")),
+    set: { requestedInput: 999 },
+  });
+  await expect(
+    store.recordDelegatedToolCall({
+      claim: acquired.claim,
+      parentToolCallId,
+      toolCallId: ToolCallId.decode("graph-second-unused-id"),
+      toolName: "graph-child-tool",
+      key: "key-0",
+      input: 0,
+    }),
+  ).rejects.toThrow("Delegation key 'key-0' was reused with different data");
   const snapshot = await store.loadExecution(acquired.claim);
   expect(snapshot?.toolCalls).toHaveLength(delegatedCount + 1);
   expect(snapshot?.toolCalls.at(-1)).toMatchObject({

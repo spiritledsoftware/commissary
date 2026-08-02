@@ -15,7 +15,7 @@ describe("Runtime Events", () => {
   it("durably appends ordered Event batches before local observation", async () => {
     const order: string[] = [];
     const batches: Array<readonly ExecutionEventRecord[]> = [];
-    const store = new MemoryThreadStore();
+    const store = MemoryThreadStore.make();
     const app = commissary({
       threadStore: store,
       executionEventStore: recordingEventStore(batches, order),
@@ -63,7 +63,7 @@ describe("Runtime Events", () => {
   it("flushes accumulated streamed text by UTF-8 byte size", async () => {
     const batches: Array<readonly ExecutionEventRecord[]> = [];
     const chunk = "😀".repeat(8_192);
-    const store = new MemoryThreadStore();
+    const store = MemoryThreadStore.make();
     const app = commissary({
       threadStore: store,
       executionEventStore: recordingEventStore(batches),
@@ -109,7 +109,7 @@ describe("Runtime Events", () => {
   it("durably appends observer Error Events before their local delivery", async () => {
     const batches: Array<readonly ExecutionEventRecord[]> = [];
     let observedErrors = 0;
-    const store = new MemoryThreadStore();
+    const store = MemoryThreadStore.make();
     const app = commissary({
       threadStore: store,
       executionEventStore: recordingEventStore(batches),
@@ -150,7 +150,7 @@ describe("Runtime Events", () => {
   });
 
   it("rejects an Execution when durable Event append fails", async () => {
-    const store = new MemoryThreadStore();
+    const store = MemoryThreadStore.make();
     const app = commissary({
       threadStore: store,
       executionEventStore: {

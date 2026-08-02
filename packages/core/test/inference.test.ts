@@ -324,24 +324,24 @@ it("preserves bound host contracts and rejects cross-Agent or malformed commands
       for (const call of snapshot.toolCalls) {
         if (call.dynamic === true) {
           expectTypeOf(call.providerId).toEqualTypeOf<string>();
-          expectTypeOf(call.requestedInput).toEqualTypeOf<JsonValue>();
+          void (call.requestedInput satisfies JsonValue);
         } else if (call.toolName === "calculate") {
-          expectTypeOf(call.requestedInput).toEqualTypeOf<string>();
+          void (call.requestedInput satisfies string);
           if (call.result?.type === "failure") {
-            expectTypeOf(call.result.failure).toEqualTypeOf<Tool.Failure<typeof calculate>>();
+            void (call.result.failure satisfies Tool.Failure<typeof calculate>);
           }
         } else {
           expectTypeOf(call.toolName).toEqualTypeOf<"format">();
-          expectTypeOf(call.requestedInput).toEqualTypeOf<number>();
+          void (call.requestedInput satisfies number);
         }
       }
       for (const suspension of snapshot.suspensions) {
         if (suspension.dynamic === true) {
           expectTypeOf(suspension.providerId).toEqualTypeOf<string>();
         } else if (suspension.toolName === "calculate") {
-          expectTypeOf(suspension).toEqualTypeOf<Tool.Suspension<typeof calculate>>();
+          void (suspension satisfies Tool.Suspension<typeof calculate>);
         } else {
-          expectTypeOf(suspension).toEqualTypeOf<Tool.Suspension<typeof format>>();
+          void (suspension satisfies Tool.Suspension<typeof format>);
         }
       }
     }

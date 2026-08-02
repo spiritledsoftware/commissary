@@ -3,6 +3,7 @@ import type { HookDefinition } from "./hook.js";
 import type { AgentReference, RunIdentity } from "./identity.js";
 import type {
   ContentPart,
+  EncodedProviderData,
   ModelEvent,
   ModelFailure,
   ModelInterruption,
@@ -68,6 +69,7 @@ export interface CreateRunInput<Run extends RunId = RunId> {
   readonly branchId: BranchId;
   readonly message: ModelMessage;
   readonly expectedHead?: MessageEntryId;
+  readonly fields?: Readonly<Record<string, JsonValue | undefined>>;
 }
 
 /** One JSON resume input for either a static or dynamic suspended Tool Call. */
@@ -284,11 +286,20 @@ export type ToolCallResult<Output extends JsonValue = JsonValue, Failure = JsonV
       readonly content?: readonly ContentPart[];
     }
   | { readonly type: "aborted" };
-
 interface ToolCallSnapshotBase {
   readonly toolCallId: ToolCallId;
+  readonly runId: RunId;
+  readonly sequence: number;
   readonly parentToolCallId?: ToolCallId;
+  readonly delegationKey?: string;
   readonly status: "pending" | "running" | "suspended" | "succeeded" | "failed" | "aborted";
+  readonly suspension?: {
+    readonly continuation: JsonValue;
+    readonly resumeInput?: JsonValue;
+    readonly agent: AgentReference;
+  };
+  readonly providerData?: readonly EncodedProviderData[];
+  readonly historyCommitted: boolean;
 }
 
 type StaticToolCallSnapshot<Tools> =
@@ -317,19 +328,31 @@ type DynamicToolCallSnapshot<Tools> = DynamicToolBranch<
 export type ToolCallSnapshot<Tools = OpenTools> =
   | StaticToolCallSnapshot<Tools>
   | DynamicToolCallSnapshot<Tools>;
+/** Complete built-in stored Run Record in one public Snapshot. */
+export interface RunSnapshotRecord<
+  Failure = unknown,
+  Tools = OpenTools,
+  Run extends RunId = RunId,
+> {
+  readonly id: Run;
+  readonly threadId: ThreadId;
+  readonly branchId: BranchId;
+  readonly agent: AgentReference;
+  readonly admittedHead: MessageEntryId;
+  readonly status: "active" | "suspended" | "completed" | "failed" | "aborted";
+  readonly abortRequested: boolean;
+  readonly settlementContinuations: number;
+  readonly usage?: RunUsage;
+  readonly abortReason?: JsonValue;
+  readonly result?: Exclude<RunResult<Failure, Tools, Run>, SuspendedRunResult<Tools, Run>>;
+}
 
 /** One atomic point-in-time view of public durable Run state. */
 export interface RunSnapshot<Failure = unknown, Tools = OpenTools, Run extends RunId = RunId> {
-  readonly runId: Run;
-  readonly threadId: ThreadId;
-  readonly branchId: BranchId;
+  readonly run: RunSnapshotRecord<Failure, Tools, Run>;
   readonly head: MessageEntryId;
-  readonly agent: AgentReference;
-  readonly status: "active" | "suspended" | "completed" | "failed" | "aborted";
-  readonly settlementContinuations: number;
   readonly toolCalls: readonly ToolCallSnapshot<Tools>[];
   readonly suspensions: readonly ToolSuspensionRecord<Tools>[];
-  readonly result?: RunResult<Failure, Tools, Run>;
 }
 
 type StaticExecutionEvent<Tools> =
