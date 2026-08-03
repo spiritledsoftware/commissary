@@ -7,6 +7,13 @@ import {
   type TransactionStore,
 } from "@commissary/store";
 import {
+  AgentRevision,
+  BranchId,
+  CommitId,
+  Content,
+  ExecutionId,
+  MessageEntryId,
+  RunId,
   ThreadId,
   coreRecordDefinitions,
   createThreadStore,
@@ -94,6 +101,69 @@ it("serializes overlapping transactions without a lost update", async () => {
   releaseFirst();
   await Promise.all([first, second]);
   await expect(store.collections.accounts.find()).resolves.toEqual([{ id: "one", balance: 2 }]);
+});
+
+it("serializes concurrent mutations inside one transaction view", async () => {
+  let delaySelect = false;
+  let releaseSelect = (): void => undefined;
+  const holdSelect = new Promise<void>((resolve) => {
+    releaseSelect = resolve;
+  });
+  let markSelectStarted = (): void => undefined;
+  const selectStarted = new Promise<void>((resolve) => {
+    markSelectStarted = resolve;
+  });
+  const delayedStringField: FieldSchema<string, string> = {
+    "~standard": {
+      version: 1,
+      vendor: "commissary-transaction-serialization-test",
+      async validate(value) {
+        if (delaySelect && value === "one") {
+          markSelectStarted();
+          await holdSelect;
+        }
+        return typeof value === "string"
+          ? { value }
+          : { issues: [{ message: "Expected a string" }] };
+      },
+    },
+  };
+  const store = MemoryStore.make({
+    records: {
+      accounts: {
+        fields: {
+          id: delayedStringField,
+          balance: numberField,
+        },
+      },
+    },
+  });
+  await store.collections.accounts.create({ id: "one", balance: 0 });
+  await store.collections.accounts.create({ id: "two", balance: 0 });
+  delaySelect = true;
+
+  await store.transaction(async (transaction) => {
+    const update = transaction.collections.accounts.update({
+      where: (fields, operators) => operators.eq(fields.id, "one"),
+      set: { balance: 1 },
+    });
+    await selectStarted;
+    let deleteBuilderCalls = 0;
+    const deletion = transaction.collections.accounts.delete({
+      where: (fields, operators) => {
+        deleteBuilderCalls += 1;
+        return operators.eq(fields.id, "two");
+      },
+    });
+    await Promise.resolve();
+    expect(deleteBuilderCalls).toBe(0);
+
+    releaseSelect();
+    await Promise.all([update, deletion]);
+    expect(deleteBuilderCalls).toBe(1);
+  });
+
+  await expect(store.collections.accounts.find()).resolves.toEqual([{ id: "one", balance: 1 }]);
 });
 
 it("rolls back every Collection and preserves callback failure identity", async () => {
@@ -348,6 +418,80 @@ it("retries Core storage work and before-create hooks at most three times", asyn
   expect(fails.attempts()).toBe(3);
   expect(failedHookCalls).toBe(3);
   await expect(failedStore.collections.thread.find()).resolves.toEqual([]);
+});
+
+it("registers a control waiter only after transaction retries commit", async () => {
+  const memory = MemoryStore.make({ records: coreRecordDefinitions });
+  const setupStore = createThreadStore({ backend: memory });
+  const threadId = ThreadId.decode("waiter-thread");
+  const branchId = BranchId.decode("waiter-branch");
+  const runId = RunId.decode("waiter-run");
+  const agent = { id: "waiter-agent", revision: AgentRevision.decode("waiter-revision") };
+  await setupStore.createThread({ id: threadId });
+  await setupStore.createBranch({
+    branch: { id: branchId, threadId, name: "main" },
+  });
+  const submission = await setupStore.submitRun({
+    runId,
+    entryId: MessageEntryId.decode("waiter-entry"),
+    commitId: CommitId.decode("waiter-submit"),
+    agent,
+    threadId,
+    branchId,
+    message: { role: "user", content: [Content.text("wait")] },
+  });
+  if (submission.type !== "accepted") {
+    throw new Error(`Unexpected Run submission '${submission.type}'`);
+  }
+  const acquired = await setupStore.acquireExecutionClaim({
+    agent,
+    runId,
+    executionId: ExecutionId.decode("waiter-execution"),
+    leaseDurationMs: 60_000,
+  });
+  if (acquired.type !== "acquired") {
+    throw new Error(`Unexpected claim result '${acquired.type}'`);
+  }
+
+  let attempts = 0;
+  let markWaitReadCommitted = (): void => undefined;
+  const waitReadCommitted = new Promise<void>((resolve) => {
+    markWaitReadCommitted = resolve;
+  });
+  const conflictingBackend: TransactionStore<CoreRecordDefinitions> = {
+    collections: memory.collections,
+    transaction: (use) =>
+      memory.transaction(async (transaction) => {
+        attempts += 1;
+        const value = await use(transaction);
+        if (attempts <= 2) {
+          throw new TransactionConflictError();
+        }
+        markWaitReadCommitted();
+        return value;
+      }),
+  };
+  const store = createThreadStore({ backend: conflictingBackend });
+  const controller = new AbortController();
+  const addEventListener = vi.spyOn(controller.signal, "addEventListener");
+  if (store.waitForExecutionControl === undefined) {
+    throw new Error("Expected Memory Thread Store control waiting");
+  }
+  const waiting = store.waitForExecutionControl({
+    claim: acquired.claim,
+    signal: controller.signal,
+  });
+  await waitReadCommitted;
+  for (let turn = 0; turn < 20 && addEventListener.mock.calls.length === 0; turn += 1) {
+    await Promise.resolve();
+  }
+
+  expect(attempts).toBe(3);
+  expect(addEventListener).toHaveBeenCalledTimes(1);
+  await expect(store.requestAbort({ agent, runId, reason: "stop" })).resolves.toMatchObject({
+    type: "accepted",
+  });
+  await expect(waiting).resolves.toEqual({ type: "abort-requested", reason: "stop" });
 });
 
 it("does not retry a rollback failure", async () => {

@@ -1,3 +1,5 @@
+import type { FieldSchema } from "@commissary/store";
+
 import { Agent, type AgentDefinition } from "./agent.js";
 import { Codec } from "./codec.js";
 import { commissary } from "./commissary.js";
@@ -5,9 +7,10 @@ import { Hook } from "./hook.js";
 import { Content } from "./protocol.js";
 import { Model } from "./render.js";
 import type { ModelSchema } from "./schema.js";
+import type { EffectiveRecordDefinitions, ThreadStoreFactoryConfig } from "./store-records.js";
 import type { ThreadStore } from "./store.js";
 import { Tool } from "./tool.js";
-import { ExecutionId, RunId, ToolCallId } from "./types.js";
+import { ExecutionId, RunId, ThreadId, ToolCallId } from "./types.js";
 
 /** One Thread Store adapter factory for Core Runtime conformance. */
 export interface CoreRuntimeConformanceAdapter {
@@ -15,6 +18,12 @@ export interface CoreRuntimeConformanceAdapter {
   readonly adapter: string;
   /** Make a new, empty Thread Store for one isolated conformance scenario. */
   readonly makeThreadStore: () => ThreadStore | Promise<ThreadStore>;
+  /** Make a Thread Store with the host Record catalog used by conformance. */
+  readonly makeConfiguredThreadStore: (
+    configuration: ThreadStoreFactoryConfig<typeof conformanceHostRecordDefinitions>,
+  ) =>
+    | ThreadStore<EffectiveRecordDefinitions<typeof conformanceHostRecordDefinitions>>
+    | Promise<ThreadStore<EffectiveRecordDefinitions<typeof conformanceHostRecordDefinitions>>>;
 }
 
 /** One independently executable Core Runtime conformance scenario. */
@@ -59,6 +68,44 @@ const conformanceStringSchema: ModelSchema<string, string> = {
     },
   },
 };
+declare const conformanceThreadIdType: unique symbol;
+type ConformanceThreadId = ThreadId & { readonly [conformanceThreadIdType]: true };
+
+const conformanceThreadIdSchema: FieldSchema<ThreadId, ConformanceThreadId> = {
+  "~standard": {
+    version: 1,
+    vendor: "commissary-core-conformance",
+    validate(value) {
+      return typeof value === "string" && value.length > 0
+        ? { value: value as ConformanceThreadId }
+        : { issues: [{ message: "Expected a Thread ID" }] };
+    },
+  },
+};
+
+const conformanceHostRecordDefinitions = {
+  thread: {
+    fields: {
+      id: conformanceThreadIdSchema,
+      owner: conformanceStringSchema,
+    },
+  },
+  branch: {
+    fields: {
+      label: conformanceStringSchema,
+    },
+  },
+  message: {
+    fields: {
+      source: conformanceStringSchema,
+    },
+  },
+  run: {
+    fields: {
+      category: conformanceStringSchema,
+    },
+  },
+} as const;
 
 const conformanceContinuationCodec = Codec.define({
   encode: (value: string) => value,
@@ -100,7 +147,7 @@ export function createCoreRuntimeConformanceSuite(
     {
       name: "executes and persists one completed Run",
       async run() {
-        const { branch, client } = await makeFixture(adapter, conformanceAgent);
+        const { branch, client, threadStore } = await makeFixture(adapter, conformanceAgent);
         const submission = await client.createRun({
           threadId: branch.threadId,
           branchId: branch.id,
@@ -130,6 +177,11 @@ export function createCoreRuntimeConformanceSuite(
           snapshot.toolCalls.length === 0,
           adapter.adapter,
           "Run Snapshot contains unexpected Tool Calls",
+        );
+        assertCoreConformance(
+          (await threadStore.collections.toolCallSequence.count()) === 0,
+          adapter.adapter,
+          "Run without Tool Calls persisted an empty Tool Call sequence",
         );
       },
     },
@@ -229,6 +281,124 @@ export function createCoreRuntimeConformanceSuite(
           await threadStore.releaseExecutionClaim(reacquired.claim),
           adapter.adapter,
           "reacquired Execution Claim was not released",
+        );
+      },
+    },
+    {
+      name: "replaces an expired Execution Claim and fences the prior claim",
+      async run() {
+        const { branch, client, threadStore } = await makeFixture(adapter, conformanceAgent);
+        const submission = await client.createRun({
+          threadId: branch.threadId,
+          branchId: branch.id,
+          message: { role: "user", content: [Content.text("claim takeover")] },
+        });
+        assertCoreConformance(
+          submission.type === "accepted",
+          adapter.adapter,
+          "claim takeover submission was not accepted",
+        );
+        const first = await threadStore.acquireExecutionClaim({
+          agent: client.reference,
+          runId: submission.runId,
+          executionId: ExecutionId.decode("core-runtime-conformance-expiring-execution"),
+          leaseDurationMs: 1,
+        });
+        assertCoreConformance(
+          first.type === "acquired",
+          adapter.adapter,
+          "expiring Execution Claim was not acquired",
+        );
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, 10);
+        });
+        const replacement = await threadStore.acquireExecutionClaim({
+          agent: client.reference,
+          runId: submission.runId,
+          executionId: ExecutionId.decode("core-runtime-conformance-replacement-execution"),
+          leaseDurationMs: 60_000,
+        });
+        assertCoreConformance(
+          replacement.type === "acquired" && replacement.claim.fence > first.claim.fence,
+          adapter.adapter,
+          "expired Execution Claim was not replaced with a higher fence",
+        );
+        const staleRenewal = await threadStore.renewExecutionClaim({
+          claim: first.claim,
+          leaseDurationMs: 60_000,
+        });
+        assertCoreConformance(
+          staleRenewal.type === "claim-lost",
+          adapter.adapter,
+          "replaced Execution Claim retained its fence",
+        );
+        assertCoreConformance(
+          await threadStore.releaseExecutionClaim(replacement.claim),
+          adapter.adapter,
+          "replacement Execution Claim was not released",
+        );
+      },
+    },
+    {
+      name: "preserves host Records and compatible Core field overrides",
+      async run() {
+        let messageHookCalls = 0;
+        const threadStore = await adapter.makeConfiguredThreadStore({
+          records: conformanceHostRecordDefinitions,
+          hooks: {
+            message: {
+              beforeCreate: ({ draft }) => {
+                messageHookCalls += 1;
+                return { ...draft, source: "core-runtime-conformance" };
+              },
+            },
+          },
+        });
+        const app = commissary({ threadStore });
+        const thread = await app.createThread({
+          fields: { owner: "conformance-owner" },
+        });
+        const branch = await app.createBranch({
+          threadId: thread.id,
+          name: "main",
+          fields: { label: "conformance-branch" },
+        });
+        const client = app.agent(conformanceAgent);
+        const submission = await client.createRun({
+          threadId: thread.id,
+          branchId: branch.id,
+          message: { role: "user", content: [Content.text("host records")] },
+          fields: { category: "conformance-run" },
+        });
+        assertCoreConformance(
+          submission.type === "accepted",
+          adapter.adapter,
+          "host Record submission was not accepted",
+        );
+        const result = await (await client.execute(submission.runId)).result;
+        assertCoreConformance(
+          result.type === "completed",
+          adapter.adapter,
+          "host Record Run did not complete",
+        );
+        const snapshot = await client.readRunSnapshot(submission.runId);
+        assertCoreConformance(
+          thread.owner === "conformance-owner" &&
+            branch.label === "conformance-branch" &&
+            snapshot?.run.category === "conformance-run",
+          adapter.adapter,
+          "host Record fields were not preserved",
+        );
+        const history = await app.readBranchHistory({
+          threadId: thread.id,
+          branchId: branch.id,
+        });
+        assertCoreConformance(
+          messageHookCalls > 0 &&
+            history.length > 0 &&
+            history.every((entry) => entry.source === "core-runtime-conformance"),
+          adapter.adapter,
+          "required host Message hook output was not preserved",
         );
       },
     },

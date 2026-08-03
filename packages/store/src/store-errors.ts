@@ -43,7 +43,7 @@ export class StoreValidationError extends StoreError {
   /** Validation phase that rejected the value. */
   readonly phase: StoreValidationPhase;
   /** Top-level Field that failed, when present. */
-  readonly field?: string;
+  declare readonly field?: string;
   /** Normalized schema issues. */
   readonly issues: readonly StoreValidationIssue[];
 
@@ -130,7 +130,7 @@ export class StoreAdapterError extends StoreError {
   /** Original adapter or backend failure. */
   override readonly cause: unknown;
   /** Collection that failed, when present. */
-  readonly collection?: string;
+  declare readonly collection?: string;
   /** Store operation that failed. */
   readonly operation: StoreOperation;
 
@@ -155,7 +155,7 @@ export class TransactionConflictError extends StoreError {
   /** Stable error class name. */
   override readonly name = "TransactionConflictError";
   /** Optional adapter conflict detail. */
-  override readonly cause?: unknown;
+  declare readonly cause?: unknown;
 
   /** Create one transaction conflict. */
   constructor(cause?: unknown) {
@@ -220,15 +220,15 @@ export class StoreAdapterContractError extends Error {
   /** Stable error class name. */
   override readonly name = "StoreAdapterContractError";
   /** Original defect detail. */
-  override readonly cause?: unknown;
+  declare readonly cause?: unknown;
   /** Collection involved in the violation, when present. */
-  readonly collection?: string;
+  declare readonly collection?: string;
   /** Store operation during which the adapter violated the contract. */
   readonly operation: StoreOperation;
   /** Stable contract violation code. */
   readonly violation: StoreAdapterContractViolation;
   /** Top-level Field involved in the violation, when present. */
-  readonly field?: string;
+  declare readonly field?: string;
 
   /** Create one adapter contract defect. */
   constructor(options: StoreAdapterContractErrorOptions) {

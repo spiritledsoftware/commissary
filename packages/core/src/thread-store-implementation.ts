@@ -197,7 +197,7 @@ function canonical(value: unknown): string {
   }
   return `{${Object.entries(value)
     .filter(([, child]) => child !== undefined)
-    .sort(([left], [right]) => left.localeCompare(right))
+    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
     .map(([key, child]) => `${JSON.stringify(key)}:${canonical(child)}`)
     .join(",")}}`;
 }
@@ -672,10 +672,12 @@ class CoreThreadStore<
           sequence,
         }));
       case "toolCallSequence":
-        return [...this.#toolCalls].map(([runId, graph]) => ({
-          runId,
-          sequence: graph.nextSequence,
-        }));
+        return [...this.#toolCalls]
+          .filter(([, graph]) => graph.nextSequence > 0)
+          .map(([runId, graph]) => ({
+            runId,
+            sequence: graph.nextSequence,
+          }));
       case "runSubmission":
         return [...this.#startFingerprints].map(([runId, fingerprint]) => ({
           runId,
@@ -891,9 +893,10 @@ class CoreThreadStore<
     return Promise.resolve(updated);
   }
 
-  submitRun(
+  async submitRun(
     input: SubmitRunStoreInput<Definitions>,
-  ): PromiseLike<AcceptedRun | BranchConflict | RunConflict> {
+  ): Promise<AcceptedRun | BranchConflict | RunConflict> {
+    const commitFingerprint = this.#newCommit(input.commitId, input);
     const fingerprint = canonical({
       agent: input.agent,
       threadId: input.threadId,
@@ -902,6 +905,17 @@ class CoreThreadStore<
       expectedHead: input.expectedHead,
       fields: input.fields,
     });
+    const priorFingerprint = this.#startFingerprints.get(input.runId);
+    if (priorFingerprint !== undefined) {
+      if (priorFingerprint !== fingerprint) {
+        return { type: "run-conflict", runId: input.runId };
+      }
+      const prior = requireThreadStoreState(
+        this.#startSubmissions.get(input.runId),
+        `Run Submission '${input.runId}'`,
+      );
+      return Object.freeze({ ...prior, admitted: false });
+    }
     const current = this.#runs.get(input.runId);
     if (current !== undefined) {
       if (this.#startFingerprints.get(input.runId) !== fingerprint) {
@@ -912,6 +926,9 @@ class CoreThreadStore<
         `Run Submission '${input.runId}'`,
       );
       return Promise.resolve(Object.freeze({ ...prior, admitted: false }));
+    }
+    if (commitFingerprint === undefined) {
+      throw new Error(`Commit '${input.commitId}' has no stored Run submission`);
     }
 
     const branch = this.#branch(input.threadId, input.branchId);
@@ -926,18 +943,24 @@ class CoreThreadStore<
     const updated = this.#append(input.threadId, input.branchId, expectedHead, [
       { id: input.entryId, message: input.message },
     ]);
-    const run: RunRecord = Object.freeze({
+    const runDraft = Object.freeze({
       ...input.fields,
       id: input.runId,
       threadId: input.threadId,
       branchId: input.branchId,
       agent: input.agent,
       admittedHead: input.entryId,
-      status: "active",
+      status: "active" as const,
       abortRequested: false,
       settlementContinuations: 0,
     });
+    const selectedRun = await this.collections.run.create(
+      runDraft as unknown as CreateInput<Definitions["run"]>,
+    );
+    // SAFETY: The effective Run Definition preserves every built-in Run output used by Core.
+    const run = selectedRun as unknown as RunRecord;
     this.#runs.set(run.id, run);
+    this.#rememberCreatedRecord("run", selectedRun as CoreStoredRecord);
     this.#toolCalls.set(run.id, {
       calls: new Map(),
       order: [],
@@ -955,9 +978,9 @@ class CoreThreadStore<
       agent: run.agent,
       admitted: true,
     });
-    this.#startFingerprints.set(run.id, fingerprint);
-    this.#startSubmissions.set(run.id, submission);
-    this.#commits.set(input.commitId, canonical(input));
+    this.#startFingerprints.set(input.runId, fingerprint);
+    this.#startSubmissions.set(input.runId, submission);
+    this.#commits.set(input.commitId, commitFingerprint);
     return Promise.resolve(submission);
   }
 
@@ -1215,11 +1238,7 @@ class CoreThreadStore<
     const snapshot = Object.freeze({
       run,
       head: requireThreadStoreState(branch.head, `Branch head '${run.branchId}'`),
-      toolCalls: Object.freeze(
-        calls.map((call) =>
-          call.providerId === undefined ? call : Object.freeze({ ...call, dynamic: true as const }),
-        ),
-      ),
+      toolCalls: Object.freeze(calls),
       suspensions: Object.freeze(
         calls
           .filter((call) => call.status === "suspended")
@@ -1298,6 +1317,9 @@ class CoreThreadStore<
     }
     if (current !== undefined) {
       this.#notifyControl(run.id, { type: "claim-lost" }, current.token);
+      await this.#collection("executionClaim").delete({
+        where: this.#recordWhere("executionClaim", current as unknown as CoreStoredRecord),
+      });
       this.#claims.delete(run.id);
     }
     const readyResume = this.#graph(run.id).resumable.size > 0;
@@ -1338,16 +1360,13 @@ class CoreThreadStore<
       fence,
       expiresAt: now + input.leaseDurationMs,
     });
-    let claim = claimDraft;
-    if (current === undefined) {
-      // SAFETY: The required hook supplies any host create fields before strict Collection validation.
-      const createdClaim = await this.collections.executionClaim.create(
-        claimDraft as unknown as CreateInput<Definitions["executionClaim"]>,
-      );
-      // SAFETY: Compatible Core field overrides preserve every Execution Claim output used by Core.
-      claim = createdClaim as unknown as ExecutionClaim;
-      this.#rememberCreatedRecord("executionClaim", createdClaim as CoreStoredRecord);
-    }
+    // SAFETY: The required hook supplies any host create fields before strict Collection validation.
+    const createdClaim = await this.collections.executionClaim.create(
+      claimDraft as unknown as CreateInput<Definitions["executionClaim"]>,
+    );
+    // SAFETY: Compatible Core field overrides preserve every Execution Claim output used by Core.
+    const claim = createdClaim as unknown as ExecutionClaim;
+    this.#rememberCreatedRecord("executionClaim", createdClaim as CoreStoredRecord);
     this.#claims.set(claim.runId, claim);
     return { type: "acquired", claim };
   }
@@ -1600,47 +1619,6 @@ class CoreThreadStore<
     const stored = Object.freeze({
       ...call,
       effectiveInput: call.effectiveInput ?? input.input,
-    });
-    this.#setCall(graph, stored);
-    return Promise.resolve({ type: "committed", value: stored });
-  }
-
-  recordDelegatedToolCall(
-    input: RecordDelegatedToolCallInput,
-  ): PromiseLike<GuardedStoreResult<StoredToolCall>> {
-    const failure = this.#guard(input.claim);
-    if (failure !== undefined) {
-      return Promise.resolve(failure);
-    }
-    const graph = this.#graph(input.claim.runId);
-    const calls = graph.calls;
-    this.#call(calls, input.parentToolCallId);
-    const currentId = graph.delegated.get(input.parentToolCallId)?.get(input.key);
-    const current = currentId === undefined ? undefined : this.#call(calls, currentId);
-    if (current !== undefined) {
-      if (
-        current.toolName !== input.toolName ||
-        current.providerId !== input.providerId ||
-        !same(current.requestedInput, input.input)
-      ) {
-        throw new Error(`Delegation key '${input.key}' was reused with different data`);
-      }
-      return Promise.resolve({ type: "committed", value: current });
-    }
-    if (calls.has(input.toolCallId)) {
-      throw new Error(`Tool Call ID '${input.toolCallId}' is already in use`);
-    }
-    const stored: StoredToolCall = Object.freeze({
-      toolCallId: input.toolCallId,
-      runId: input.claim.runId,
-      sequence: this.#nextToolSequence(graph),
-      toolName: input.toolName,
-      parentToolCallId: input.parentToolCallId,
-      ...(input.providerId === undefined ? {} : { providerId: input.providerId }),
-      delegationKey: input.key,
-      requestedInput: input.input,
-      status: "pending",
-      historyCommitted: false,
     });
     this.#setCall(graph, stored);
     return Promise.resolve({ type: "committed", value: stored });
@@ -2096,6 +2074,8 @@ class CoreThreadStore<
   }
 }
 
+const directCoreThreadStoreOperations = new Set(["recordDelegatedToolCall"]);
+
 const readOnlyThreadStoreOperations = new Set([
   "readThread",
   "readBranch",
@@ -2129,23 +2109,18 @@ async function executeCoreThreadStoreOperation<
       }
 
       if (methodName === "waitForExecutionControl") {
-        const pending = await options.backend.transaction(async (transaction) => {
+        const state = await options.backend.transaction(async (transaction) => {
           const store = addThreadStoreCreateHooks(transaction, options.hooks);
-          const state = new CoreThreadStore({
+          const loadedState = new CoreThreadStore({
             store,
             controlWaiters,
             ...(options.clock === undefined ? {} : { clock: options.clock }),
           });
-          await state.loadState();
-          // SAFETY: createThreadStore exposes this branch only for waitForExecutionControl, whose method returns a PromiseLike.
-          const wait = Reflect.apply(
-            state.waitForExecutionControl,
-            state,
-            args,
-          ) as Promise<unknown>;
-          return { wait };
+          await loadedState.loadState();
+          return loadedState;
         });
-        return await pending.wait;
+        // SAFETY: createThreadStore exposes this branch only for waitForExecutionControl, whose method returns a PromiseLike.
+        return await Reflect.apply(state.waitForExecutionControl, state, args);
       }
 
       const value = await options.backend.transaction(async (transaction) => {
@@ -2203,7 +2178,8 @@ export function createThreadStore<
       if (
         typeof property !== "string" ||
         hiddenMethods.has(property) ||
-        typeof Reflect.get(CoreThreadStore.prototype, property) !== "function"
+        (!directCoreThreadStoreOperations.has(property) &&
+          typeof Reflect.get(CoreThreadStore.prototype, property) !== "function")
       ) {
         return undefined;
       }

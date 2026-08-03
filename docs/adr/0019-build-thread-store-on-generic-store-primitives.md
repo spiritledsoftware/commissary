@@ -22,6 +22,8 @@ Core owns the specialized Thread Store transitions for claims, fencing, idempote
 
 `TransactionStore.transaction` is the only atomic grouping primitive. Its callback runs at most once and receives a transaction-bound Store without `transaction`. Each adapter enforces serializable overlap and rollback in its storage system. Core can start a new storage-only transaction after a conflict, with at most three total attempts.
 
+The first Core specialization can materialize and diff the complete Core Collection catalog for each operation. This tradeoff is accepted for the process-local Memory Thread Store only. It is not a Store conformance requirement. Before Commissary supports a database-backed Thread Store, Core must scope these reads and writes to the records required by each transition without moving transition rules into the adapter.
+
 ## Capabilities and adapters
 
 An integration requires the exact primitive Store interface that it needs. Store has no runtime `supports` registry. An operator that an adapter never supports is absent from its operator-set type. Support that depends on input or backend state rejects with `UnsupportedStoreOperationError`.

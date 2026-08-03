@@ -69,6 +69,7 @@ export function addThreadStoreCreateHooks<
 
   // SAFETY: The loop preserves every Collection key and operation and changes only create to run the matching typed hook first.
   return {
+    ...store,
     collections: collections as StoreCollections<Definitions, Operators>,
   };
 }

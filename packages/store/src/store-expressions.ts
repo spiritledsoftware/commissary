@@ -872,7 +872,8 @@ function isJsonArray(value: JsonValue): value is JsonArray {
   return Array.isArray(value);
 }
 
-function structuralJsonEqual(left: JsonValue, right: JsonValue): boolean {
+/** Compare JSON values structurally while ignoring object key order. */
+export function structuralJsonEqual(left: JsonValue, right: JsonValue): boolean {
   if (left === right) {
     return true;
   }

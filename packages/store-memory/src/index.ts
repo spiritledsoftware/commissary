@@ -18,6 +18,7 @@ import {
   StoreValidationError,
   TransactionRollbackError,
   type CountOptions,
+  type CompiledStoreUpdate,
   type Collection,
   type CreateInput,
   type DeleteOptions,
@@ -106,6 +107,25 @@ function requireMemoryValue<Value>(value: Value | undefined, description: string
   return value;
 }
 
+function cloneMemoryJsonValue(value: JsonValue): JsonValue {
+  if (Array.isArray(value)) {
+    return value.map(cloneMemoryJsonValue);
+  }
+  if (value !== null && typeof value === "object") {
+    const cloned: Record<string, JsonValue> = {};
+    for (const [key, child] of Object.entries(value)) {
+      cloned[key] = cloneMemoryJsonValue(child);
+    }
+    return cloned;
+  }
+  return value;
+}
+
+function cloneMemoryJsonObject(value: JsonObject): JsonObject {
+  // SAFETY: cloneMemoryJsonValue preserves object roots and recursively copies only JSON values.
+  return cloneMemoryJsonValue(value) as JsonObject;
+}
+
 class MemoryCollection<Definition extends RecordDefinition> implements Collection<Definition> {
   readonly #definition: Definition;
   readonly #name: string;
@@ -172,7 +192,7 @@ class MemoryCollection<Definition extends RecordDefinition> implements Collectio
         fields,
       );
       // SAFETY: Callers expose only the requested fields. Full-result callers request every definition field.
-      return parsed as unknown as SelectedRecord<Definition>;
+      return cloneMemoryJsonObject(parsed) as unknown as SelectedRecord<Definition>;
     } catch (cause) {
       throw new StoreAdapterContractError({
         collection: this.#name,
@@ -214,7 +234,9 @@ class MemoryCollection<Definition extends RecordDefinition> implements Collectio
   }
 
   readonly create = async (input: CreateInput<Definition>): Promise<SelectedRecord<Definition>> => {
-    const stored = await parseStoreCreateInput(this.#definition, this.#name, input);
+    const stored = cloneMemoryJsonObject(
+      await parseStoreCreateInput(this.#definition, this.#name, input),
+    );
     this.#records.push(stored);
     const index = this.#records.length - 1;
     this.#recordUndo(() => {
@@ -292,15 +314,13 @@ class MemoryCollection<Definition extends RecordDefinition> implements Collectio
   readonly update = async (
     input: UpdateOptions<Definition, BaseStoreOperatorTypes>,
   ): Promise<number> => {
-    let matches: StoreWhereEvaluator<SelectedRecord<Definition>>;
-    let update;
-    if (typeof input.set === "function") {
-      matches = compileStoreWhere(this.#name, input.where, "update");
-      update = await compileStoreUpdate(this.#definition, this.#name, input.set);
-    } else {
-      update = await compileStoreUpdate(this.#definition, this.#name, input.set);
-      matches = compileStoreWhere(this.#name, input.where, "update");
-    }
+    // Compile the query first so invalid where input has consistent precedence for every set form.
+    const matches = compileStoreWhere(this.#name, input.where, "update");
+    const update: CompiledStoreUpdate = await compileStoreUpdate(
+      this.#definition,
+      this.#name,
+      input.set,
+    );
     const matching = await this.#matchingRecords(matches, "update", update.fields);
     const candidates: { readonly index: number; readonly record: JsonObject }[] = [];
     for (const { index, record } of matching) {
@@ -334,7 +354,7 @@ class MemoryCollection<Definition extends RecordDefinition> implements Collectio
       }
     });
     for (const candidate of candidates) {
-      this.#records[candidate.index] = candidate.record;
+      this.#records[candidate.index] = cloneMemoryJsonObject(candidate.record);
     }
     return matching.length;
   };
@@ -408,14 +428,13 @@ export class MemoryStore {
     const transaction: TransactionStore<Definitions>["transaction"] = async (use) =>
       lock.run(async () => {
         const journal = new MemoryTransactionJournal();
+        const transactionLock = new MemoryTransactionLock();
         const transactionCollections: Record<string, Collection<RecordDefinition>> = {};
         for (const [name, definition] of definitions) {
           // SAFETY: definitions and storage contain the same keys created by the loop above.
-          transactionCollections[name] = new MemoryCollection(
-            name,
-            definition,
-            storage[name] as JsonObject[],
-            journal,
+          transactionCollections[name] = lockMemoryCollection(
+            new MemoryCollection(name, definition, storage[name] as JsonObject[], journal),
+            transactionLock,
           );
         }
         // SAFETY: The loop creates one transaction-bound Collection over the same storage and matching Definition for every key.

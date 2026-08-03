@@ -1,5 +1,6 @@
 import type { FieldSchema } from "./record.js";
-import type { JsonValue } from "./json.js";
+import { isJsonValue, type JsonValue } from "./json.js";
+import { structuralJsonEqual } from "./store-expressions.js";
 import type { TransactionStore } from "./store.js";
 
 /** Operator semantics that an adapter's own conformance suite must exercise. */
@@ -116,7 +117,7 @@ function assertConformance(condition: unknown, message: string): asserts conditi
 
 function assertConformanceEqual(actual: unknown, expected: unknown, message: string): void {
   assertConformance(
-    JSON.stringify(actual) === JSON.stringify(expected),
+    isJsonValue(actual) && isJsonValue(expected) && structuralJsonEqual(actual, expected),
     `${message}; expected ${JSON.stringify(expected)}, received ${JSON.stringify(actual)}`,
   );
 }
@@ -150,7 +151,7 @@ export function createStoreAdapterConformanceSuite(
           orderBy: (fields, operators) => [operators.desc(fields.rank)],
           select: { id: true, rank: true },
         });
-        assertConformanceEqual(found, [{ id: "two", rank: 3 }], "find result differs");
+        assertConformanceEqual(found, [{ rank: 3, id: "two" }], "find result differs");
         assertConformanceEqual(await jobs.count(), 2, "count result differs");
         assertConformanceEqual(
           await jobs.delete({

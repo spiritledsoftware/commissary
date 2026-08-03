@@ -974,6 +974,8 @@ describe("Runtime Tools", () => {
       toolCalls: [
         { toolName: "dynamic-parent", result: { output: 16 } },
         {
+          dynamic: true,
+          providerId: "runtime-tools",
           toolName: "square",
           parentToolCallId: "dynamic-parent-call",
           result: { output: 16 },

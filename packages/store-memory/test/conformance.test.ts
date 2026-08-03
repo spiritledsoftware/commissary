@@ -18,6 +18,7 @@ for (const scenario of createStoreAdapterConformanceSuite({
 for (const scenario of createCoreRuntimeConformanceSuite({
   adapter: "MemoryThreadStore",
   makeThreadStore: () => MemoryThreadStore.make(),
+  makeConfiguredThreadStore: (configuration) => MemoryThreadStore.make(configuration),
 })) {
   it(`Core Runtime conformance: ${scenario.name}`, scenario.run);
 }

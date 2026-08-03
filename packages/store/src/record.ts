@@ -1,7 +1,11 @@
 import type { StandardSchemaV1 } from "@standard-schema/spec";
 
 import { isJsonValue, type JsonObject, type JsonValue } from "./json.js";
-import { StoreValidationError, type StoreValidationIssue } from "./store-errors.js";
+import {
+  StoreValidationError,
+  type StoreValidationIssue,
+  type StoreValidationPhase,
+} from "./store-errors.js";
 
 /** A Standard Schema for one JSON-compatible Record Field. */
 export type FieldSchema<
@@ -196,52 +200,67 @@ function normalizeSchemaIssues(
   }));
 }
 
+interface ParseRecordFieldsOptions {
+  readonly fieldNames?: readonly string[];
+  readonly allowedInputFields?: ReadonlySet<string>;
+  readonly fieldOperation?: "select" | "create" | "update";
+}
+
 async function parseRecordFields(
   definition: RecordDefinition,
   collection: string,
   operation: "find" | "create" | "update",
   input: unknown,
-  fieldNames: readonly string[] = Object.keys(definition.fields),
-  allowedInputFields?: ReadonlySet<string>,
-  fieldOperation: "select" | "create" | "update" = operation === "find" ? "select" : operation,
+  options: ParseRecordFieldsOptions = {},
 ): Promise<JsonObject> {
+  const phase: StoreValidationPhase = operation === "find" ? "query" : operation;
+  const fieldNames = options.fieldNames ?? Object.keys(definition.fields);
+  const fieldOperation = options.fieldOperation ?? (operation === "find" ? "select" : operation);
   if (typeof input !== "object" || input === null || Array.isArray(input)) {
     throw new StoreValidationError({
       collection,
       operation,
-      phase: operation === "find" ? "query" : operation,
+      phase,
       issues: [{ message: "Expected a Record object", path: [] }],
     });
   }
 
   for (const key of Object.keys(input)) {
     const allowed =
-      allowedInputFields === undefined
+      options.allowedInputFields === undefined
         ? Object.hasOwn(definition.fields, key)
-        : allowedInputFields.has(key);
+        : options.allowedInputFields.has(key);
     if (!allowed) {
       throw new StoreValidationError({
         collection,
         operation,
-        phase: operation === "find" ? "query" : operation,
+        phase,
         field: key,
         issues: [{ message: `Unknown Record field '${key}'`, path: [key] }],
       });
     }
   }
 
-  const parsed: Record<string, JsonValue> = {};
   for (const field of fieldNames) {
     if (!Object.hasOwn(definition.fields, field)) {
       throw new StoreValidationError({
         collection,
         operation,
-        phase: operation === "find" ? "query" : operation,
+        phase,
         field,
         issues: [{ message: `Unknown Record field '${field}'`, path: [field] }],
       });
     }
-    // SAFETY: The preceding Object.hasOwn check proves this key exists in the Field Definition map.
+  }
+
+  const validateField = async (
+    field: string,
+  ): Promise<{
+    readonly field: string;
+    readonly value?: JsonValue;
+    readonly error?: StoreValidationError;
+  }> => {
+    // SAFETY: The preceding Object.hasOwn pass proves this key exists in the Field Definition map.
     const fieldDefinition = Reflect.get(definition.fields, field) as FieldDefinition;
     const schema =
       fieldOperation === "create"
@@ -251,27 +270,53 @@ async function parseRecordFields(
           : selectFieldSchema(fieldDefinition);
     const fieldResult = await schema["~standard"].validate(Reflect.get(input, field));
     if (fieldResult.issues !== undefined) {
-      throw new StoreValidationError({
-        collection,
-        operation,
-        phase: operation === "find" ? "query" : operation,
+      return {
         field,
-        issues: normalizeSchemaIssues(fieldResult.issues),
-      });
+        error: new StoreValidationError({
+          collection,
+          operation,
+          phase,
+          field,
+          issues: normalizeSchemaIssues(fieldResult.issues),
+        }),
+      };
     }
     if (fieldResult.value === undefined) {
-      continue;
+      return { field };
     }
     if (!isJsonValue(fieldResult.value)) {
-      throw new StoreValidationError({
-        collection,
-        operation,
-        phase: operation === "find" ? "query" : operation,
+      return {
         field,
-        issues: [{ message: "Field Schema produced a non-JSON value", path: [] }],
-      });
+        error: new StoreValidationError({
+          collection,
+          operation,
+          phase,
+          field,
+          issues: [{ message: "Field Schema produced a non-JSON value", path: [] }],
+        }),
+      };
     }
-    parsed[field] = fieldResult.value;
+    return { field, value: fieldResult.value };
+  };
+
+  const parsed: Record<string, JsonValue> = {};
+  const applyResult = (result: Awaited<ReturnType<typeof validateField>>): void => {
+    if (result.error !== undefined) {
+      throw result.error;
+    }
+    if (result.value !== undefined) {
+      parsed[result.field] = result.value;
+    }
+  };
+  if (operation === "find") {
+    const results = await Promise.all(fieldNames.map(validateField));
+    for (const result of results) {
+      applyResult(result);
+    }
+  } else {
+    for (const field of fieldNames) {
+      applyResult(await validateField(field));
+    }
   }
   return parsed;
 }
@@ -300,7 +345,9 @@ export async function parseStoreUpdateInput(
     });
   }
   const fields = Object.freeze(Object.keys(input));
-  const values = await parseRecordFields(definition, collection, "update", input, fields);
+  const values = await parseRecordFields(definition, collection, "update", input, {
+    fieldNames: fields,
+  });
   return Object.freeze({ fields, values });
 }
 
@@ -310,33 +357,24 @@ export async function validateStoreUpdatedRecord(
   collection: string,
   input: unknown,
 ): Promise<void> {
-  await parseRecordFields(
-    definition,
-    collection,
-    "update",
-    input,
-    Object.keys(definition.fields),
-    undefined,
-    "select",
-  );
+  await parseRecordFields(definition, collection, "update", input, {
+    fieldNames: Object.keys(definition.fields),
+    fieldOperation: "select",
+  });
 }
 
 /** Parse only requested stored fields through their effective Select Field Schemas. */
-export function parseStoreSelectedFields(
+export async function parseStoreSelectedFields(
   definition: RecordDefinition,
   collection: string,
   input: unknown,
   fields: readonly string[],
 ): Promise<JsonObject> {
   const selectedFields = Object.freeze([...new Set(fields)]);
-  return parseRecordFields(
-    definition,
-    collection,
-    "find",
-    input,
-    selectedFields,
-    new Set(selectedFields),
-  );
+  return parseRecordFields(definition, collection, "find", input, {
+    fieldNames: selectedFields,
+    allowedInputFields: new Set(selectedFields),
+  });
 }
 
 /** Parse one stored Record through every effective Select Field Schema. */

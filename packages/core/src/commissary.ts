@@ -278,8 +278,8 @@ export function commissary<
     input?: CreateThreadInput<Definitions>,
   ): Promise<SelectedRecord<Definitions["thread"]>> => {
     const draft = {
-      id: input?.id ?? newThreadId(),
       ...input?.fields,
+      id: input?.id ?? newThreadId(),
     };
     // SAFETY: Core supplies id, and the public conditional command type requires every host-defined command field before this merge.
     const createInput = draft as unknown as CreateInput<Definitions["thread"]>;
@@ -299,11 +299,11 @@ export function commissary<
       input: CreateBranchInput<Definitions>,
     ): Promise<SelectedRecord<Definitions["branch"]>> {
       const branch: BranchRecord = {
+        ...input.fields,
         id: input.id ?? newBranchId(),
         threadId: input.threadId,
         name: input.name,
         ...(input.from === undefined ? {} : { head: input.from }),
-        ...input.fields,
       };
       // SAFETY: Core supplies every built-in Branch field, and CreateBranchInput requires every host-defined command field.
       return configuration.threadStore.createBranch({

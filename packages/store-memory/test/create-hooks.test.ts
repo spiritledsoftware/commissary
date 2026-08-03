@@ -3,9 +3,12 @@ import {
   Agent,
   Content,
   ExecutionClaimToken,
+  ExecutionId,
   Model,
   commissary,
   ThreadId,
+  RunId,
+  type CoreCreateDrafts,
   type CoreRecordDefinitions,
 } from "@commissary/core";
 import {
@@ -254,4 +257,121 @@ it("uses the selected Execution Claim returned after a hook replacement", async 
 
   const execution = await client.execute(submission.runId);
   await expect(execution.result).resolves.toMatchObject({ type: "completed" });
+});
+
+it("uses the selected Run returned after a hook replacement", async () => {
+  const hookedRunId = RunId.decode("hooked-run");
+  const store = MemoryThreadStore.make({
+    records: {},
+    hooks: {
+      run: {
+        beforeCreate: ({ draft }: { readonly draft: CoreCreateDrafts["run"] }) => ({
+          ...draft,
+          id: hookedRunId,
+        }),
+      },
+    },
+  });
+  const model = Model.define({
+    id: "hooked-run-model",
+    async *invoke() {
+      yield {
+        type: "finish" as const,
+        response: {
+          message: { role: "assistant" as const, content: [Content.text("done")] },
+          finishReason: "stop" as const,
+        },
+      };
+    },
+  });
+  const app = commissary({ threadStore: store });
+  const thread = await app.createThread();
+  const branch = await app.createBranch({ threadId: thread.id, name: "main" });
+  const client = app.agent(Agent.define({ id: "hooked-run-agent", fragments: model }));
+  const submission = await client.createRun({
+    runId: RunId.decode("caller-run"),
+    threadId: thread.id,
+    branchId: branch.id,
+    message: { role: "user", content: [Content.text("start")] },
+  });
+
+  expect(submission).toMatchObject({ type: "accepted", runId: hookedRunId });
+  if (submission.type !== "accepted") {
+    throw new Error(`Unexpected Run submission '${submission.type}'`);
+  }
+  const execution = await client.execute(submission.runId);
+  await expect(execution.result).resolves.toMatchObject({ type: "completed" });
+});
+
+it("validates expired replacement claims through the create hook", async () => {
+  let now = 100;
+  let claimHookCalls = 0;
+  const store = MemoryThreadStore.make({
+    clock: { now: () => now },
+    records: {},
+    hooks: {
+      executionClaim: {
+        beforeCreate: ({ draft }: { readonly draft: CoreCreateDrafts["executionClaim"] }) => {
+          claimHookCalls += 1;
+          return {
+            ...draft,
+            token: ExecutionClaimToken.decode(`hooked-claim-${claimHookCalls}`),
+          };
+        },
+      },
+    },
+  });
+  const model = Model.define({
+    id: "replacement-claim-model",
+    async *invoke() {
+      yield {
+        type: "finish" as const,
+        response: {
+          message: { role: "assistant" as const, content: [Content.text("done")] },
+          finishReason: "stop" as const,
+        },
+      };
+    },
+  });
+  const app = commissary({ threadStore: store });
+  const thread = await app.createThread();
+  const branch = await app.createBranch({ threadId: thread.id, name: "main" });
+  const client = app.agent(Agent.define({ id: "replacement-claim-agent", fragments: model }));
+  const submission = await client.createRun({
+    threadId: thread.id,
+    branchId: branch.id,
+    message: { role: "user", content: [Content.text("start")] },
+  });
+  if (submission.type !== "accepted") {
+    throw new Error(`Unexpected Run submission '${submission.type}'`);
+  }
+
+  const first = await store.acquireExecutionClaim({
+    agent: client.reference,
+    runId: submission.runId,
+    executionId: ExecutionId.decode("replacement-claim-first"),
+    leaseDurationMs: 10,
+  });
+  if (first.type !== "acquired") {
+    throw new Error(`Unexpected claim result '${first.type}'`);
+  }
+  now = 111;
+  const replacement = await store.acquireExecutionClaim({
+    agent: client.reference,
+    runId: submission.runId,
+    executionId: ExecutionId.decode("replacement-claim-second"),
+    leaseDurationMs: 10,
+  });
+
+  expect(replacement).toMatchObject({
+    type: "acquired",
+    claim: { token: "hooked-claim-2", fence: 2 },
+  });
+  expect(claimHookCalls).toBe(2);
+  await expect(
+    store.renewExecutionClaim({ claim: first.claim, leaseDurationMs: 10 }),
+  ).resolves.toEqual({ type: "claim-lost" });
+  await expect(store.collections.executionClaim.find()).resolves.toEqual([
+    expect.objectContaining({ token: "hooked-claim-2", fence: 2 }),
+  ]);
 });

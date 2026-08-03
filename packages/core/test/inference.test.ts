@@ -324,14 +324,17 @@ it("preserves bound host contracts and rejects cross-Agent or malformed commands
       for (const call of snapshot.toolCalls) {
         if (call.dynamic === true) {
           expectTypeOf(call.providerId).toEqualTypeOf<string>();
+          expectTypeOf(call.requestedInput).not.toBeAny();
           void (call.requestedInput satisfies JsonValue);
         } else if (call.toolName === "calculate") {
+          expectTypeOf(call.requestedInput).not.toBeAny();
           void (call.requestedInput satisfies string);
           if (call.result?.type === "failure") {
             void (call.result.failure satisfies Tool.Failure<typeof calculate>);
           }
         } else {
           expectTypeOf(call.toolName).toEqualTypeOf<"format">();
+          expectTypeOf(call.requestedInput).not.toBeAny();
           void (call.requestedInput satisfies number);
         }
       }

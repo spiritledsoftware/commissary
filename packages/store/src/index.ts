@@ -9,6 +9,7 @@ export {
   compileStoreWhere,
   compileStoreOrder,
   compileStoreUpdate,
+  structuralJsonEqual,
   type ArrayFilterElement,
   type ArrayFilterExpression,
   type BaseStoreOperators,

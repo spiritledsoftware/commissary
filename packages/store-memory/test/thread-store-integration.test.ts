@@ -94,6 +94,7 @@ it("preserves effective Records at the Run Snapshot boundary", async () => {
       toolCall: {
         fields: {
           traceId: stringField,
+          dynamic: stringField,
           status: toolStatusField,
         },
       },
@@ -108,6 +109,7 @@ it("preserves effective Records at the Run Snapshot boundary", async () => {
         beforeCreate: ({ draft }) => ({
           ...draft,
           traceId: "tool-trace",
+          dynamic: "host-dynamic",
         }),
       },
       executionClaim: {
@@ -171,6 +173,7 @@ it("preserves effective Records at the Run Snapshot boundary", async () => {
       {
         toolCallId,
         toolName: "custom-tool",
+        providerId: "host-provider",
         input: {},
       },
     ],
@@ -221,6 +224,7 @@ it("preserves effective Records at the Run Snapshot boundary", async () => {
     expect.objectContaining({
       toolCallId,
       traceId: "tool-trace",
+      dynamic: "host-dynamic",
       status: "aborted",
     }),
   ]);

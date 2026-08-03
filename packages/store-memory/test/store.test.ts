@@ -78,6 +78,41 @@ it("uses its backend clock for claim expiry", async () => {
   });
 });
 
+it("rejects a submission commit reused with different data", async () => {
+  const store = MemoryThreadStore.make();
+  const threadId = ThreadId.decode("commit-thread");
+  const branchId = BranchId.decode("commit-branch");
+  const commitId = CommitId.decode("shared-submission-commit");
+  const agent = { id: "commit-agent", revision: AgentRevision.decode("commit-revision") };
+  await store.createThread({ id: threadId });
+  await store.createBranch({
+    branch: { id: branchId, threadId, name: "main" },
+  });
+
+  await expect(
+    store.submitRun({
+      runId: RunId.decode("commit-run-one"),
+      entryId: MessageEntryId.decode("commit-entry-one"),
+      commitId,
+      agent,
+      threadId,
+      branchId,
+      message: { role: "user", content: [Content.text("first")] },
+    }),
+  ).resolves.toMatchObject({ type: "accepted" });
+  await expect(
+    store.submitRun({
+      runId: RunId.decode("commit-run-two"),
+      entryId: MessageEntryId.decode("commit-entry-two"),
+      commitId,
+      agent,
+      threadId,
+      branchId,
+      message: { role: "user", content: [Content.text("second")] },
+    }),
+  ).rejects.toThrow(`Commit '${commitId}' was reused with different data`);
+});
+
 it("keeps large Tool Call graphs ordered and reuses delegation keys", async () => {
   const store = MemoryThreadStore.make();
   const threadId = ThreadId.decode("graph-thread");

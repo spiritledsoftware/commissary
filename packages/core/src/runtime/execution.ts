@@ -876,14 +876,14 @@ export function createExecutionCoordinator(
         }
       })();
 
-      const waitForExecutionControl = threadStore.waitForExecutionControl;
       const controlWatch =
-        waitForExecutionControl === undefined
+        threadStore.waitForExecutionControl === undefined
           ? Promise.resolve()
-          : waitForExecutionControl({
-              claim,
-              signal: lifecycleController.signal,
-            })
+          : threadStore
+              .waitForExecutionControl({
+                claim,
+                signal: lifecycleController.signal,
+              })
               .then((control) => {
                 if (control.type === "abort-requested") {
                   controller.abort(new AbortExecution(control.reason));

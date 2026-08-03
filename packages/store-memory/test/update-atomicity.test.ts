@@ -63,3 +63,37 @@ it("validates every final Record before any matching update commits", async () =
     { id: "valid", attempts: 0 },
   ]);
 });
+
+it("reports where compilation failures before set failures for every set form", async () => {
+  const jobs = MemoryStore.make({
+    records: {
+      jobs: {
+        fields: {
+          id: stringField,
+          attempts: numberField,
+        },
+      },
+    },
+  }).collections.jobs;
+  const whereFailure = { type: "where-failure" };
+  const setFailure = { type: "set-failure" };
+
+  await expect(
+    jobs.update({
+      where() {
+        throw whereFailure;
+      },
+      set: { attempts: "invalid" as never },
+    }),
+  ).rejects.toBe(whereFailure);
+  await expect(
+    jobs.update({
+      where() {
+        throw whereFailure;
+      },
+      set() {
+        throw setFailure;
+      },
+    }),
+  ).rejects.toBe(whereFailure);
+});

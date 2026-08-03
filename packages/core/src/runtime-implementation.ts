@@ -116,11 +116,25 @@ export function makeRuntime(options: RuntimeOptions): Runtime {
     abort(agent: AgentReference, runId: RunId, reason?: JsonValue): Promise<AbortResult> {
       return requestAbort(agent, runId, reason);
     },
-    readRunSnapshot(agent: AgentReference, runId: RunId): Promise<RunSnapshot | undefined> {
-      // SAFETY: Runtime uses the built-in Core Record projection, which is the public Run Snapshot contract.
-      return threadStore.readRunSnapshot({ agent, runId }) as unknown as Promise<
-        RunSnapshot | undefined
-      >;
+    async readRunSnapshot(agent: AgentReference, runId: RunId): Promise<RunSnapshot | undefined> {
+      const snapshot = await threadStore.readRunSnapshot({ agent, runId });
+      if (snapshot === undefined) {
+        return undefined;
+      }
+      // Runtime adds Agent-facing Tool discrimination after the raw Store Record boundary.
+      return Object.freeze({
+        ...snapshot,
+        toolCalls: Object.freeze(
+          snapshot.toolCalls.map((call) =>
+            call.providerId === undefined
+              ? call
+              : Object.freeze({
+                  ...call,
+                  dynamic: true as const,
+                }),
+          ),
+        ),
+      }) as unknown as RunSnapshot;
     },
 
     async readResult(agent: AgentReference, runId: RunId): Promise<RunResult | undefined> {

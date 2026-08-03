@@ -1,4 +1,4 @@
-import { type FieldSchema, type JsonValue } from "@commissary/store";
+import { isJsonValue, type FieldSchema, type JsonObject, type JsonValue } from "@commissary/store";
 import { expect, it } from "vitest";
 
 import { MemoryStore } from "../src/index.js";
@@ -28,6 +28,26 @@ const numberField = fieldSchema<number, number>((value) =>
     ? { value }
     : { issues: [{ message: "Expected a finite number" }] },
 );
+
+const stringArrayField = fieldSchema<string[], string[]>((value) =>
+  Array.isArray(value) && value.every((item) => typeof item === "string")
+    ? { value: value as string[] }
+    : { issues: [{ message: "Expected a string array" }] },
+);
+
+const jsonObjectField = fieldSchema<JsonObject, JsonObject>((value) =>
+  isJsonValue(value) && value !== null && typeof value === "object" && !Array.isArray(value)
+    ? { value: value as JsonObject }
+    : { issues: [{ message: "Expected a JSON object" }] },
+);
+
+function setNestedLabel(metadata: JsonObject, label: string): void {
+  const state = Reflect.get(metadata, "state");
+  if (state === null || typeof state !== "object" || Array.isArray(state)) {
+    throw new Error("Expected nested metadata state");
+  }
+  Reflect.set(state, "label", label);
+}
 
 it("returns one created Record and affected mutation counts", async () => {
   const store = MemoryStore.make({
@@ -65,6 +85,43 @@ it("returns one created Record and affected mutation counts", async () => {
   await expect(jobs.delete({ where: (fields, op) => op.eq(fields.id, "one") })).resolves.toBe(1);
   await expect(jobs.delete()).resolves.toBe(1);
   await expect(jobs.count()).resolves.toBe(0);
+});
+
+it("detaches nested values from inputs and returned Records", async () => {
+  const jobs = MemoryStore.make({
+    records: {
+      jobs: {
+        fields: {
+          id: stringField,
+          tags: stringArrayField,
+          metadata: jsonObjectField,
+        },
+      },
+    },
+  }).collections.jobs;
+  const tags = ["a"];
+  const state = { label: "original" };
+  const metadata = { state };
+  const created = await jobs.create({ id: "one", tags, metadata });
+
+  tags.push("input-mutation");
+  state.label = "input-mutation";
+  created.tags.push("created-output-mutation");
+  setNestedLabel(created.metadata, "created-output-mutation");
+  const firstRead = await jobs.find();
+  expect(firstRead).toEqual([
+    { id: "one", tags: ["a"], metadata: { state: { label: "original" } } },
+  ]);
+
+  const firstRecord = firstRead[0];
+  if (firstRecord === undefined) {
+    throw new Error("Expected one stored Record");
+  }
+  firstRecord.tags.push("find-output-mutation");
+  setNestedLabel(firstRecord.metadata, "find-output-mutation");
+  await expect(jobs.find()).resolves.toEqual([
+    { id: "one", tags: ["a"], metadata: { state: { label: "original" } } },
+  ]);
 });
 
 it("does not add cancellation to base Collection methods", () => {
