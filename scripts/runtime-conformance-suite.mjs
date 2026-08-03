@@ -44,7 +44,7 @@ export const runRuntimeConformance = async () => {
     },
   });
   const agent = Core.Agent.define({ id: "smoke-agent", fragments: model });
-  const app = Core.commissary({ threadStore: new StoreMemory.MemoryThreadStore() });
+  const app = Core.commissary({ threadStore: StoreMemory.MemoryThreadStore.make() });
   const thread = await app.createThread();
   const branch = await app.createBranch({ threadId: thread.id, name: "main" });
   const client = app.agent(agent);
