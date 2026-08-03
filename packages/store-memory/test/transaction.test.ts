@@ -482,16 +482,96 @@ it("registers a control waiter only after transaction retries commit", async () 
     signal: controller.signal,
   });
   await waitReadCommitted;
-  for (let turn = 0; turn < 20 && addEventListener.mock.calls.length === 0; turn += 1) {
-    await Promise.resolve();
-  }
+  await vi.waitFor(() => {
+    expect(addEventListener).toHaveBeenCalledTimes(1);
+  });
 
   expect(attempts).toBe(3);
-  expect(addEventListener).toHaveBeenCalledTimes(1);
   await expect(store.requestAbort({ agent, runId, reason: "stop" })).resolves.toMatchObject({
     type: "accepted",
   });
   await expect(waiting).resolves.toEqual({ type: "abort-requested", reason: "stop" });
+});
+
+it("observes control committed after the wait read transaction", async () => {
+  const memory = MemoryStore.make({ records: coreRecordDefinitions });
+  const setupStore = createThreadStore({ backend: memory });
+  const threadId = ThreadId.decode("raced-waiter-thread");
+  const branchId = BranchId.decode("raced-waiter-branch");
+  const runId = RunId.decode("raced-waiter-run");
+  const agent = {
+    id: "raced-waiter-agent",
+    revision: AgentRevision.decode("raced-waiter-revision"),
+  };
+  await setupStore.createThread({ id: threadId });
+  await setupStore.createBranch({
+    branch: { id: branchId, threadId, name: "main" },
+  });
+  const submission = await setupStore.submitRun({
+    runId,
+    entryId: MessageEntryId.decode("raced-waiter-entry"),
+    commitId: CommitId.decode("raced-waiter-submit"),
+    agent,
+    threadId,
+    branchId,
+    message: { role: "user", content: [Content.text("wait")] },
+  });
+  if (submission.type !== "accepted") {
+    throw new Error(`Unexpected Run submission '${submission.type}'`);
+  }
+  const acquired = await setupStore.acquireExecutionClaim({
+    agent,
+    runId,
+    executionId: ExecutionId.decode("raced-waiter-execution"),
+    leaseDurationMs: 60_000,
+  });
+  if (acquired.type !== "acquired") {
+    throw new Error(`Unexpected claim result '${acquired.type}'`);
+  }
+
+  let transactionCount = 0;
+  let markWaitReadCommitted = (): void => undefined;
+  const waitReadCommitted = new Promise<void>((resolve) => {
+    markWaitReadCommitted = resolve;
+  });
+  let releaseWaitRead = (): void => undefined;
+  const holdWaitRead = new Promise<void>((resolve) => {
+    releaseWaitRead = resolve;
+  });
+  const backend: TransactionStore<CoreRecordDefinitions> = {
+    collections: memory.collections,
+    async transaction(use) {
+      transactionCount += 1;
+      const value = await memory.transaction(use);
+      if (transactionCount === 1) {
+        markWaitReadCommitted();
+        await holdWaitRead;
+      }
+      return value;
+    },
+  };
+  const store = createThreadStore({ backend });
+  const controller = new AbortController();
+  const addEventListener = vi.spyOn(controller.signal, "addEventListener");
+  if (store.waitForExecutionControl === undefined) {
+    throw new Error("Expected Memory Thread Store control waiting");
+  }
+  const waiting = store.waitForExecutionControl({
+    claim: acquired.claim,
+    signal: controller.signal,
+  });
+
+  await waitReadCommitted;
+  await expect(store.requestAbort({ agent, runId, reason: "raced-stop" })).resolves.toMatchObject({
+    type: "accepted",
+  });
+  releaseWaitRead();
+  await vi.waitFor(() => {
+    expect(addEventListener).toHaveBeenCalledTimes(1);
+  });
+  controller.abort(new Error("waiter test cleanup"));
+
+  await expect(waiting).resolves.toEqual({ type: "abort-requested", reason: "raced-stop" });
 });
 
 it("does not retry a rollback failure", async () => {

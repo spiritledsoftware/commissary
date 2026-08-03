@@ -90,10 +90,84 @@ interface ControlWaiter {
   readonly onAbort: () => void;
 }
 
+interface RegisteredControlWaiter {
+  readonly waiter: ControlWaiter;
+  readonly promise: Promise<ExecutionControl>;
+}
+
+interface WaitForExecutionControlInput {
+  readonly claim: ExecutionClaim;
+  readonly signal: AbortSignal;
+}
+
 interface ControlNotification {
   readonly runId: RunId;
   readonly control: ExecutionControl;
   readonly token?: ExecutionClaimToken;
+}
+
+function removeControlWaiter(
+  controlWaiters: Map<RunId, Set<ControlWaiter>>,
+  runId: RunId,
+  waiter: ControlWaiter,
+): boolean {
+  const waiters = controlWaiters.get(runId);
+  if (waiters === undefined || !waiters.delete(waiter)) {
+    return false;
+  }
+  if (waiters.size === 0) {
+    controlWaiters.delete(runId);
+  }
+  waiter.signal.removeEventListener("abort", waiter.onAbort);
+  return true;
+}
+
+function settleControlWaiter(
+  controlWaiters: Map<RunId, Set<ControlWaiter>>,
+  runId: RunId,
+  waiter: ControlWaiter,
+  control: ExecutionControl,
+): void {
+  if (removeControlWaiter(controlWaiters, runId, waiter)) {
+    waiter.resolve(control);
+  }
+}
+
+function rejectControlWaiter(
+  controlWaiters: Map<RunId, Set<ControlWaiter>>,
+  runId: RunId,
+  waiter: ControlWaiter,
+  cause: unknown,
+): void {
+  if (removeControlWaiter(controlWaiters, runId, waiter)) {
+    waiter.reject(cause);
+  }
+}
+
+function registerControlWaiter(
+  controlWaiters: Map<RunId, Set<ControlWaiter>>,
+  input: WaitForExecutionControlInput,
+): RegisteredControlWaiter {
+  let waiter!: ControlWaiter;
+  const promise = new Promise<ExecutionControl>((resolve, reject) => {
+    const waiters = controlWaiters.get(input.claim.runId) ?? new Set<ControlWaiter>();
+    waiter = {
+      token: input.claim.token,
+      resolve,
+      reject,
+      signal: input.signal,
+      onAbort: () => {
+        rejectControlWaiter(controlWaiters, input.claim.runId, waiter, input.signal.reason);
+      },
+    };
+    waiters.add(waiter);
+    controlWaiters.set(input.claim.runId, waiters);
+    input.signal.addEventListener("abort", waiter.onAbort, { once: true });
+    if (input.signal.aborted) {
+      rejectControlWaiter(controlWaiters, input.claim.runId, waiter, input.signal.reason);
+    }
+  });
+  return { waiter, promise };
 }
 
 interface ResumeRequestRecord {
@@ -1393,38 +1467,21 @@ class CoreThreadStore<
     return Promise.resolve({ type: "renewed", claim });
   }
 
-  waitForExecutionControl(input: {
-    readonly claim: ExecutionClaim;
-    readonly signal: AbortSignal;
-  }): PromiseLike<ExecutionControl> {
-    const immediate = this.#readControl(input.claim);
-    if (immediate !== undefined) {
-      return Promise.resolve(immediate);
+  waitForExecutionControl(
+    input: WaitForExecutionControlInput,
+    registered = registerControlWaiter(this.#controlWaiters, input),
+  ): PromiseLike<ExecutionControl> {
+    let immediate: ExecutionControl | undefined;
+    try {
+      immediate = this.#readControl(input.claim);
+    } catch (cause) {
+      rejectControlWaiter(this.#controlWaiters, input.claim.runId, registered.waiter, cause);
+      return registered.promise;
     }
-    return new Promise((resolve, reject) => {
-      if (input.signal.aborted) {
-        reject(input.signal.reason);
-        return;
-      }
-      const waiters = this.#controlWaiters.get(input.claim.runId) ?? new Set<ControlWaiter>();
-      const waiter: ControlWaiter = {
-        token: input.claim.token,
-        resolve,
-        reject,
-        signal: input.signal,
-        onAbort: () => {
-          waiters.delete(waiter);
-          reject(input.signal.reason);
-        },
-      };
-      waiters.add(waiter);
-      this.#controlWaiters.set(input.claim.runId, waiters);
-      input.signal.addEventListener("abort", waiter.onAbort, { once: true });
-      const raced = this.#readControl(input.claim);
-      if (raced !== undefined) {
-        this.#settleWaiter(input.claim.runId, waiter, raced);
-      }
-    });
+    if (immediate !== undefined) {
+      settleControlWaiter(this.#controlWaiters, input.claim.runId, registered.waiter, immediate);
+    }
+    return registered.promise;
   }
 
   releaseExecutionClaim(claim: ExecutionClaim): PromiseLike<boolean> {
@@ -2068,10 +2125,50 @@ class CoreThreadStore<
   }
 
   #settleWaiter(runId: RunId, waiter: ControlWaiter, control: ExecutionControl): void {
-    this.#controlWaiters.get(runId)?.delete(waiter);
-    waiter.signal.removeEventListener("abort", waiter.onAbort);
-    waiter.resolve(control);
+    settleControlWaiter(this.#controlWaiters, runId, waiter, control);
   }
+}
+
+async function executeWaitForExecutionControl<
+  Definitions extends ThreadRecordDefinitions,
+  Operators extends CoreStoreOperatorTypes,
+>(
+  options: CoreThreadStoreOptions<Definitions, Operators>,
+  controlWaiters: Map<RunId, Set<ControlWaiter>>,
+  input: WaitForExecutionControlInput,
+): Promise<ExecutionControl> {
+  const registered = registerControlWaiter(controlWaiters, input);
+  void registered.promise.catch(() => undefined);
+  if (input.signal.aborted) {
+    return registered.promise;
+  }
+
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    let state: CoreThreadStore<Definitions, Operators>;
+    try {
+      state = await options.backend.transaction(async (transaction) => {
+        const store = addThreadStoreCreateHooks(transaction, options.hooks);
+        const loadedState = new CoreThreadStore({
+          store,
+          controlWaiters,
+          ...(options.clock === undefined ? {} : { clock: options.clock }),
+        });
+        await loadedState.loadState();
+        return loadedState;
+      });
+    } catch (cause) {
+      if (!controlWaiters.get(input.claim.runId)?.has(registered.waiter)) {
+        return registered.promise;
+      }
+      if (cause instanceof TransactionConflictError && attempt < 3) {
+        continue;
+      }
+      rejectControlWaiter(controlWaiters, input.claim.runId, registered.waiter, cause);
+      return registered.promise;
+    }
+    return state.waitForExecutionControl(input, registered);
+  }
+  throw new Error("Unreachable Thread Store control wait retry state");
 }
 
 const directCoreThreadStoreOperations = new Set(["recordDelegatedToolCall"]);
@@ -2096,6 +2193,15 @@ async function executeCoreThreadStoreOperation<
   methodName: string,
   args: readonly unknown[],
 ): Promise<unknown> {
+  if (methodName === "waitForExecutionControl") {
+    // SAFETY: createThreadStore exposes this branch only for waitForExecutionControl.
+    return executeWaitForExecutionControl(
+      options,
+      controlWaiters,
+      args[0] as WaitForExecutionControlInput,
+    );
+  }
+
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     let committedState: CoreThreadStore<Definitions, Operators> | undefined;
     try {
@@ -2106,21 +2212,6 @@ async function executeCoreThreadStoreOperation<
           const store = addThreadStoreCreateHooks(transaction, options.hooks);
           return recordDelegatedToolCallInStore(store, options.clock?.now ?? Date.now, input);
         });
-      }
-
-      if (methodName === "waitForExecutionControl") {
-        const state = await options.backend.transaction(async (transaction) => {
-          const store = addThreadStoreCreateHooks(transaction, options.hooks);
-          const loadedState = new CoreThreadStore({
-            store,
-            controlWaiters,
-            ...(options.clock === undefined ? {} : { clock: options.clock }),
-          });
-          await loadedState.loadState();
-          return loadedState;
-        });
-        // SAFETY: createThreadStore exposes this branch only for waitForExecutionControl, whose method returns a PromiseLike.
-        return await Reflect.apply(state.waitForExecutionControl, state, args);
       }
 
       const value = await options.backend.transaction(async (transaction) => {

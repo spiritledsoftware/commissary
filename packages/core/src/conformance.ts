@@ -302,7 +302,7 @@ export function createCoreRuntimeConformanceSuite(
           agent: client.reference,
           runId: submission.runId,
           executionId: ExecutionId.decode("core-runtime-conformance-expiring-execution"),
-          leaseDurationMs: 1,
+          leaseDurationMs: 25,
         });
         assertCoreConformance(
           first.type === "acquired",
@@ -310,7 +310,7 @@ export function createCoreRuntimeConformanceSuite(
           "expiring Execution Claim was not acquired",
         );
         await new Promise<void>((resolve) => {
-          setTimeout(resolve, 10);
+          setTimeout(resolve, 250);
         });
         const replacement = await threadStore.acquireExecutionClaim({
           agent: client.reference,
