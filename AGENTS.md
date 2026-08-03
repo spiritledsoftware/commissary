@@ -34,11 +34,11 @@ The `pnpm run bootstrap` command materializes these read-only references in `.re
 
 Before implementing related functionality, consult the relevant repository for established APIs, architecture, and implementation patterns. Treat these repositories as read-only references: do not modify them, add them to this workspace, or copy code without adapting it to this project's domain and conventions.
 
-## Project workflow
+## Agent skills
 
 ### Issue tracker
 
-Issues are tracked in GitHub Issues via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+Issues are tracked in GitHub Issues through the `gh` CLI. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
@@ -46,7 +46,7 @@ Triage uses the default five canonical label names. See `docs/agents/triage-labe
 
 ### Domain docs
 
-Domain documentation uses the single-context layout. See `docs/agents/domain.md`.
+Domain documentation uses the multi-context layout. See `docs/agents/domain.md`.
 
 ## Git conventions
 
