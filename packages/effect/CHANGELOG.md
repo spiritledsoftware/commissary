@@ -1,5 +1,12 @@
 # @commissary/effect
 
+## 0.1.1
+
+### Patch Changes
+
+- Updated dependencies [[`abff236`](https://github.com/spiritledsoftware/commissary/commit/abff2365a387446f9b4fe2119cd8aed70d7f4be9)]:
+  - @commissary/core@0.2.0
+
 ## 0.1.0
 
 ### Minor Changes
