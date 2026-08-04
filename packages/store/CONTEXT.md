@@ -171,8 +171,20 @@ A public Store-family interface that extends a more general Store capability con
 _Avoid_: Effect Layer, concrete adapter, runtime capability registry
 
 **SQL Store**:
-A future primitive Store contract for SQL capabilities. Its exact API and package are outside the current Store specification and will be designed before concrete SQL adapters.
-_Avoid_: Contract extracted from SQL adapters, current specification deliverable, one adapter's API renamed as shared
+A Store specialization that lets an integration execute ORM-independent, parameter-safe SQL Statements. It retains Collections and promises only one unchecked Row set; transactions, preparation, streaming, cancellation, session scope, batches, and multiple results require separate Store interfaces.
+_Avoid_: Standalone SQL client, concrete Adapter, ORM Store, runtime capability probe
+
+**SQL Statement**:
+An inert, composable value that keeps SQL structure separate from bound values until a SQL Store Adapter executes it. Its SQL text can use one database dialect.
+_Avoid_: Portable SQL language, driver query object, executed query, mutable text-and-values bag
+
+**SQL Execution Result**:
+The generic result of one SQL Statement, containing exactly one readonly `rows` array of unchecked driver values. A Store specialization adds only result facts that it guarantees.
+_Avoid_: Selected Records, normalized row values, guessed mutation facts, multiple result sets
+
+**Raw SQL Text**:
+SQL structure inserted by `sql.raw()` without parameter handling. It can be a fragment or a complete statement, and its caller owns its safety.
+_Avoid_: Unchecked SQL Row, bound parameter, driver result
 
 **Store Error**:
 The base Error class for expected Store operational failures. Specific subclasses identify validation, Hook, unsupported-operation, adapter I/O, transaction-conflict, and rollback failures. Successful result types do not include these errors.
