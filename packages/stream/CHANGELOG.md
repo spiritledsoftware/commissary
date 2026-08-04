@@ -1,5 +1,16 @@
 # @commissary/stream
 
+## 0.2.0
+
+### Minor Changes
+
+- [#31](https://github.com/spiritledsoftware/commissary/pull/31) [`b0cc585`](https://github.com/spiritledsoftware/commissary/commit/b0cc585ff2fdc649d720737908dee01ccc62c5f1) Thanks [@ian-pascoe](https://github.com/ian-pascoe)! - Preserve declared Core and stream failures in precise Effect error channels, and convert undeclared Promise rejections to Effect defects.
+
+### Patch Changes
+
+- Updated dependencies [[`b0cc585`](https://github.com/spiritledsoftware/commissary/commit/b0cc585ff2fdc649d720737908dee01ccc62c5f1)]:
+  - @commissary/effect@0.2.0
+
 ## 0.1.1
 
 ### Patch Changes
