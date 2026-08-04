@@ -12,11 +12,11 @@ const validFiles = [
   { path: "src/index.ts" },
 ];
 
-test("accepts a complete public package archive", () => {
+void test("accepts a complete public package archive", () => {
   assert.doesNotThrow(() => validatePackageArchive("@commissary/example", validFiles));
 });
 
-test("requires public package metadata and entry points", () => {
+void test("requires public package metadata and entry points", () => {
   for (const requiredPath of [
     "dist/index.d.ts",
     "dist/index.js",
@@ -36,7 +36,7 @@ test("requires public package metadata and entry points", () => {
   }
 });
 
-test("rejects test files and nested archives", () => {
+void test("rejects test files and nested archives", () => {
   for (const unwantedPath of ["test/api.test.ts", "package.tgz"]) {
     assert.throws(
       () => validatePackageArchive("@commissary/example", [...validFiles, { path: unwantedPath }]),

@@ -6,6 +6,7 @@ import * as StoreMemory from "@commissary/store-memory";
 import * as Stream from "@commissary/stream";
 import * as StreamEffect from "@commissary/stream/effect";
 
+/** @type {ReadonlyArray<readonly [string, object]>} */
 const publicModules = [
   ["@commissary/core", Core],
   ["@commissary/core/internal", CoreInternal],

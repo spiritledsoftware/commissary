@@ -117,7 +117,12 @@ const formatEventSchema = testSchema(
 
 const formatContinuation = Codec.define({
   encode: (value: string) => value,
-  decode: (value: JsonValue) => String(value),
+  decode(value) {
+    if (typeof value !== "string") {
+      throw new Error("Expected a format string continuation");
+    }
+    return value;
+  },
 });
 
 const format = Tool.define({

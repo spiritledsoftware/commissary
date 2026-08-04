@@ -192,8 +192,6 @@ it("rolls back every Collection and preserves callback failure identity", async 
   });
 
   expect(result).toBeInstanceOf(Promise);
-  expect(result.catch).toBeTypeOf("function");
-  expect(result.finally).toBeTypeOf("function");
   await expect(result).rejects.toBe(callbackFailure);
   expect(callbackCount).toBe(1);
   await expect(store.collections.accounts.find()).resolves.toEqual([{ id: "one", balance: 4 }]);

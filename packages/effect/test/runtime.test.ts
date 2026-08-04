@@ -1,9 +1,10 @@
 import { Agent, Content, Hook, Model } from "@commissary/core";
+import { StoreValidationError } from "@commissary/store";
 import { MemoryThreadStore } from "@commissary/store-memory";
-import { Clock, Duration, Effect } from "effect";
+import { Cause, Clock, Duration, Effect, Exit } from "effect";
 import { expect, it } from "vitest";
 
-import { EffectCommissary } from "../src/index.js";
+import { EffectCommissary, EffectCommissaryDefect } from "../src/index.js";
 
 it("maps the active Effect Clock and the configured ID generator", async () => {
   let invocations = 0;
@@ -82,4 +83,51 @@ it("maps the active Effect Clock and the configured ID generator", async () => {
   expect(submission.runId).toBe("effect-3");
   expect(execution.id).toBe("effect-6");
   expect(sleeps).toEqual([30_000, 25]);
+});
+
+it("preserves known store errors in the Effect error channel", async () => {
+  const expected = new StoreValidationError({
+    collection: "thread",
+    operation: "create",
+    phase: "create",
+    issues: [{ message: "Rejected by the test store", path: [] }],
+  });
+  const app = await Effect.runPromise(
+    EffectCommissary.make({
+      threadStore: {
+        ...MemoryThreadStore.make(),
+        createThread: () => Promise.reject(expected),
+      },
+    }),
+  );
+
+  const error = await Effect.runPromise(Effect.flip(app.createThread()));
+
+  expect(error).toBe(expected);
+});
+
+it("converts undeclared JavaScript rejections to Effect defects", async () => {
+  const app = await Effect.runPromise(
+    EffectCommissary.make({
+      threadStore: MemoryThreadStore.make(),
+      generateId: () => "",
+    }),
+  );
+
+  const exit = await Effect.runPromiseExit(app.createThread());
+
+  expect(Exit.isFailure(exit)).toBe(true);
+  if (Exit.isSuccess(exit)) {
+    throw new Error("Expected thread creation to fail");
+  }
+  const reason = exit.cause.reasons[0];
+  if (reason === undefined || !Cause.isDieReason(reason)) {
+    throw new Error("Expected thread creation to fail with a defect");
+  }
+  expect(reason.defect).toBeInstanceOf(EffectCommissaryDefect);
+  if (!(reason.defect instanceof EffectCommissaryDefect)) {
+    throw new Error("Expected an Effect Commissary defect");
+  }
+  expect(reason.defect.operation).toBe("createThread");
+  expect(reason.defect.cause).toBeInstanceOf(TypeError);
 });

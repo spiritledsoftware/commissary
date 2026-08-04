@@ -5,7 +5,7 @@ import { checkChangesetPolicy } from "./check-changeset.mjs";
 
 const packageSource = "packages/core/src/index.ts";
 
-test("requires a Changeset for publishable package code", () => {
+void test("requires a Changeset for publishable package code", () => {
   assert.deepEqual(
     checkChangesetPolicy({
       changedFiles: [packageSource],
@@ -20,7 +20,7 @@ test("requires a Changeset for publishable package code", () => {
   );
 });
 
-test("accepts a package change with a Changeset", () => {
+void test("accepts a package change with a Changeset", () => {
   assert.deepEqual(
     checkChangesetPolicy({
       changedFiles: [packageSource, ".changeset/calm-tools-smile.md"],
@@ -31,7 +31,7 @@ test("accepts a package change with a Changeset", () => {
   );
 });
 
-test("accepts an explicit no-changeset exception", () => {
+void test("accepts an explicit no-changeset exception", () => {
   assert.deepEqual(
     checkChangesetPolicy({
       changedFiles: [packageSource],
@@ -42,7 +42,7 @@ test("accepts an explicit no-changeset exception", () => {
   );
 });
 
-test("does not require a Changeset for non-publishable changes", () => {
+void test("does not require a Changeset for non-publishable changes", () => {
   assert.deepEqual(
     checkChangesetPolicy({
       changedFiles: ["packages/core/test/api.test.ts", ".github/workflows/ci.yml"],
@@ -53,7 +53,7 @@ test("does not require a Changeset for non-publishable changes", () => {
   );
 });
 
-test("requires a Changeset for package manifest changes", () => {
+void test("requires a Changeset for package manifest changes", () => {
   assert.equal(
     checkChangesetPolicy({
       changedFiles: ["packages/effect/package.json"],
@@ -64,7 +64,7 @@ test("requires a Changeset for package manifest changes", () => {
   );
 });
 
-test("allows the generated Version Packages pull request", () => {
+void test("allows the generated Version Packages pull request", () => {
   assert.deepEqual(
     checkChangesetPolicy({
       changedFiles: ["packages/core/package.json", "packages/core/CHANGELOG.md"],

@@ -563,7 +563,7 @@ export function createExecutionCoordinator(
 
       const finalizeTerminal = async (
         type: "completed" | "failed" | "aborted",
-        value: ModelResponse | unknown | JsonValue | undefined,
+        value: unknown,
       ): Promise<FinalizeTerminalResult> => {
         currentPhase = "finalize";
         const snapshot = await load();

@@ -181,8 +181,6 @@ it("returns native Promises before builders run and preserves thrown values", as
       result = operation();
     }).not.toThrow();
     expect(result).toBeInstanceOf(Promise);
-    expect(result?.catch).toBeTypeOf("function");
-    expect(result?.finally).toBeTypeOf("function");
     await expect(result).rejects.toBe(callbackFailure);
   }
 });

@@ -70,14 +70,15 @@ describe("Runtime Tools", () => {
     });
     const agent = Agent.define({
       id: "tool-agent",
-      fragments: Agent.combine(
-        model,
-        echo,
-        Hook.beforeToolExecution(({ input }) => {
+      fragments: Agent.combine(model, echo),
+      hooks: (hooks) =>
+        hooks.on(HookPoints.beforeToolExecution, ({ input }) => {
+          if (typeof input !== "string") {
+            throw new Error("Expected a string Tool input");
+          }
           hookCalls += 1;
           return { input: `${input}!` };
         }),
-      ),
     });
     const built = await fixture(agent);
     client = built.client;
@@ -704,7 +705,12 @@ describe("Runtime Tools", () => {
   it("rejects execution through a different Agent revision", async () => {
     const continuation = Codec.define({
       encode: (value: string) => value,
-      decode: (value) => String(value),
+      decode(value) {
+        if (typeof value !== "string") {
+          throw new Error("Expected a revisioned Tool string continuation");
+        }
+        return value;
+      },
     });
     const oldTool = Tool.define({
       name: "revisioned-tool",
@@ -1079,7 +1085,12 @@ describe("Runtime Tools", () => {
         }
         return value;
       },
-      decode: (value) => String(value),
+      decode(value) {
+        if (typeof value !== "string") {
+          throw new Error("Expected a Dynamic Tool string continuation");
+        }
+        return value;
+      },
     });
     const provider = Tool.dynamic({
       id: "suspending-tools",
@@ -1194,7 +1205,12 @@ describe("Runtime Tools", () => {
   it("durably aborts a suspended Run and its unresolved Tool graph", async () => {
     const continuation = Codec.define({
       encode: (value: string) => value,
-      decode: (value) => String(value),
+      decode(value) {
+        if (typeof value !== "string") {
+          throw new Error("Expected a waiting Tool string continuation");
+        }
+        return value;
+      },
     });
     const waiting = Tool.define({
       name: "waiting",
