@@ -1,3 +1,44 @@
+import type {
+  BaseStoreOperatorTypes,
+  CreateInput,
+  Field,
+  JsonValue as StoreJsonValue,
+  RecordDefinition,
+  SelectedRecord,
+  Store,
+  StoreOperatorTypes,
+} from "@commissary/store";
+
+import type {
+  CommandFieldsConfig,
+  CoreRecordDefinitions,
+  ThreadRecordDefinitions,
+} from "./store-records.js";
+export {
+  coreRecordDefinitions,
+  durableEntityRecordDefinitions,
+  mergeCoreRecordDefinitions,
+  runtimeStateRecordDefinitions,
+  type BeforeCreateDraft,
+  type BeforeCreateHook,
+  type CommandFieldsConfig,
+  type CompatibleThreadRecordDefinitions,
+  type CoreDurableRecordCompatibility,
+  type CoreRecordDefinitions,
+  type CoreCommandCreatedRecordName,
+  type CoreCreateDrafts,
+  type CoreInternallyCreatedRecordName,
+  type EffectiveRecordDefinitions,
+  type CreateBranchInput,
+  type CreateThreadInput,
+  type ThreadRecordDefinitions,
+  type RequiredBeforeCreateHookNames,
+  type ThreadStoreFactoryConfig,
+  type ThreadStoreHooks,
+  type ThreadStoreHooksConfig,
+} from "./store-records.js";
+export { addThreadStoreCreateHooks } from "./store-hooks.js";
+
 import type { AgentReference } from "./identity.js";
 import type {
   ArtifactReference,
@@ -210,7 +251,9 @@ export type GuardedStoreResult<Value> =
   | { readonly type: "not-active"; readonly result?: RunResult };
 
 /** Input for atomic start command submission. */
-export interface SubmitRunStoreInput {
+export type SubmitRunStoreInput<
+  Definitions extends ThreadRecordDefinitions = CoreRecordDefinitions,
+> = {
   readonly runId: RunId;
   readonly entryId: MessageEntryId;
   readonly commitId: CommitId;
@@ -219,7 +262,7 @@ export interface SubmitRunStoreInput {
   readonly branchId: BranchId;
   readonly message: ModelMessage;
   readonly expectedHead?: MessageEntryId;
-}
+} & CommandFieldsConfig<"run", Definitions>;
 
 /** Input for atomic Message append to one Branch. */
 export interface AppendMessagesInput {
@@ -349,47 +392,85 @@ export type SuspendRunStoreResult =
   | GuardedStoreResult<SuspendedRunResult>
   | { readonly type: "work-ready" };
 /** The guarded result of committing a root Model result against a Redirect race. */
-export type CommitModelInvocationStoreResult =
-  | GuardedStoreResult<BranchRecord>
-  | { readonly type: "work-ready" };
+export type CommitModelInvocationStoreResult<
+  Definitions extends { readonly branch: RecordDefinition },
+> = GuardedStoreResult<SelectedRecord<Definitions["branch"]>> | { readonly type: "work-ready" };
 
 /** The guarded result of a settlement continuation commit. */
-export type ContinueSettlementStoreResult =
-  | GuardedStoreResult<BranchRecord>
+export type ContinueSettlementStoreResult<
+  Definitions extends { readonly branch: RecordDefinition },
+> =
+  | GuardedStoreResult<SelectedRecord<Definitions["branch"]>>
   | { readonly type: "work-ready" }
   | { readonly type: "limit-reached" };
 
 /** The guarded result of a terminal settlement race with accepted Steering. */
-export type FinalizeRunStoreResult =
+export type FinalizeRunStoreResult<_Definitions extends { readonly run: RecordDefinition }> =
   | GuardedStoreResult<RunResult>
   | { readonly type: "work-ready" };
 
+/** Run Snapshot with complete effective Run and Tool Call Records. */
+export type ThreadStoreRunSnapshot<
+  Definitions extends ThreadRecordDefinitions = CoreRecordDefinitions,
+> = Pick<RunSnapshot, "head" | "suspensions"> & {
+  readonly run: SelectedRecord<Definitions["run"]>;
+  readonly toolCalls: readonly SelectedRecord<Definitions["toolCall"]>[];
+};
+
+/** Query operator surface required by Core Thread Store transitions. */
+export interface CoreQueryOperators<PredicateValue> {
+  /** Compare one Field or JSON value with another value of the same type. */
+  readonly eq: <Value extends StoreJsonValue>(
+    left: Field<Value | undefined> | Value,
+    right: Field<Value | undefined> | Value,
+  ) => PredicateValue;
+  /** Require every supplied Core Predicate to match. */
+  readonly and: (...predicates: readonly (PredicateValue | undefined)[]) => PredicateValue;
+  /** Require at least one supplied Core Predicate to match. */
+  readonly or: (...predicates: readonly (PredicateValue | undefined)[]) => PredicateValue;
+}
+
+/** Capability-honest Store operator types that can execute Core transitions. */
+export interface CoreStoreOperatorTypes extends StoreOperatorTypes {
+  /** Query operators used by Core persistence logic. */
+  readonly operators: CoreQueryOperators<this["predicate"]>;
+}
+
 /** Durable persistence required by Commissary core. */
-export interface ThreadStore {
-  readonly createThread: (record: ThreadRecord) => PromiseLike<ThreadRecord>;
-  readonly readThread: (threadId: ThreadId) => PromiseLike<ThreadRecord | undefined>;
+export interface ThreadStore<
+  Definitions extends ThreadRecordDefinitions = CoreRecordDefinitions,
+  Operators extends CoreStoreOperatorTypes = BaseStoreOperatorTypes,
+> extends Store<Definitions, Operators> {
+  readonly createThread: (
+    record: CreateInput<Definitions["thread"]>,
+  ) => Promise<SelectedRecord<Definitions["thread"]>>;
+  readonly readThread: (
+    threadId: ThreadId,
+  ) => Promise<SelectedRecord<Definitions["thread"]> | undefined>;
   readonly createBranch: (input: {
-    readonly branch: BranchRecord;
+    readonly branch: CreateInput<Definitions["branch"]>;
     readonly from?: MessageEntryId;
-  }) => PromiseLike<BranchRecord>;
+  }) => Promise<SelectedRecord<Definitions["branch"]>>;
   readonly readBranch: (input: {
     readonly threadId: ThreadId;
     readonly branchId: BranchId;
-  }) => PromiseLike<BranchRecord | undefined>;
+  }) => Promise<SelectedRecord<Definitions["branch"]> | undefined>;
   readonly renameBranch: (input: {
     readonly threadId: ThreadId;
     readonly branchId: BranchId;
     readonly name: string;
-  }) => PromiseLike<BranchRecord>;
+  }) => Promise<SelectedRecord<Definitions["branch"]>>;
   readonly readBranchHistory: (input: {
     readonly threadId: ThreadId;
     readonly branchId: BranchId;
-  }) => PromiseLike<readonly MessageEntry[]>;
-  readonly appendMessages: (input: AppendMessagesInput) => PromiseLike<BranchRecord>;
+  }) => Promise<readonly SelectedRecord<Definitions["message"]>[]>;
+  readonly appendMessages: (
+    input: AppendMessagesInput,
+  ) => Promise<SelectedRecord<Definitions["branch"]>>;
 
   readonly submitRun: (
-    input: SubmitRunStoreInput,
-  ) => PromiseLike<AcceptedRun | BranchConflict | RunConflict>;
+    input: SubmitRunStoreInput<Definitions>,
+  ) => Promise<AcceptedRun | BranchConflict | RunConflict>;
   readonly submitToolResumes: (input: {
     readonly runId: RunId;
     readonly agent: AgentReference;
@@ -400,114 +481,110 @@ export interface ThreadStore {
       readonly input: JsonValue;
     }[];
     readonly toolResumeRequestId?: ToolResumeRequestId;
-  }) => PromiseLike<AcceptedRun | ToolResumeConflict | ToolResumeRequestConflict>;
+  }) => Promise<AcceptedRun | ToolResumeConflict | ToolResumeRequestConflict>;
   readonly acceptSteering: (input: {
     readonly agent: AgentReference;
     readonly runId: RunId;
     readonly message: ModelMessage;
     readonly steeringRequestId?: SteeringRequestId;
-  }) => PromiseLike<SteeringResult>;
+  }) => Promise<SteeringResult>;
   readonly acceptRedirect: (input: {
     readonly agent: AgentReference;
     readonly runId: RunId;
     readonly message: ModelMessage;
     readonly redirectRequestId?: RedirectRequestId;
-  }) => PromiseLike<RedirectResult>;
+  }) => Promise<RedirectResult>;
   readonly requestAbort: (input: {
     readonly agent: AgentReference;
     readonly runId: RunId;
     readonly reason?: JsonValue;
-  }) => PromiseLike<AbortResult>;
+  }) => Promise<AbortResult>;
   readonly readRunSnapshot: (input: {
     readonly agent: AgentReference;
     readonly runId: RunId;
-  }) => PromiseLike<RunSnapshot | undefined>;
+  }) => Promise<ThreadStoreRunSnapshot<Definitions> | undefined>;
   readonly readRunResult: (input: {
     readonly agent: AgentReference;
     readonly runId: RunId;
-  }) => PromiseLike<RunResultRecord | undefined>;
+  }) => Promise<RunResultRecord | undefined>;
   readonly readToolResumeContext: (input: {
     readonly agent: AgentReference;
     readonly runId: RunId;
-  }) => PromiseLike<ToolResumeContext | undefined>;
+  }) => Promise<ToolResumeContext | undefined>;
 
   readonly acquireExecutionClaim: (input: {
     readonly agent: AgentReference;
     readonly runId: RunId;
     readonly executionId: ExecutionId;
     readonly leaseDurationMs: number;
-  }) => PromiseLike<ClaimResult>;
+  }) => Promise<ClaimResult>;
   readonly renewExecutionClaim: (input: {
     readonly claim: ExecutionClaim;
     readonly leaseDurationMs: number;
-  }) => PromiseLike<ClaimRenewalResult>;
+  }) => Promise<ClaimRenewalResult>;
   readonly waitForExecutionControl?: (input: {
     readonly claim: ExecutionClaim;
     readonly signal: AbortSignal;
-  }) => PromiseLike<ExecutionControl>;
-  readonly releaseExecutionClaim: (claim: ExecutionClaim) => PromiseLike<boolean>;
-  readonly loadExecution: (claim: ExecutionClaim) => PromiseLike<ExecutionSnapshot | undefined>;
+  }) => Promise<ExecutionControl>;
+  readonly releaseExecutionClaim: (claim: ExecutionClaim) => Promise<boolean>;
+  readonly loadExecution: (claim: ExecutionClaim) => Promise<ExecutionSnapshot | undefined>;
   /** Read one Tool Call while its Run is owned by the supplied Execution Claim. */
   readonly loadToolCall: (
     claim: ExecutionClaim,
     toolCallId: ToolCallId,
-  ) => PromiseLike<StoredToolCall | undefined>;
+  ) => Promise<StoredToolCall | undefined>;
 
-  readonly commitStep: (input: CommitStepInput) => PromiseLike<GuardedStoreResult<BranchRecord>>;
+  readonly commitStep: (
+    input: CommitStepInput,
+  ) => Promise<GuardedStoreResult<SelectedRecord<Definitions["branch"]>>>;
   readonly commitModelInvocation: (
     input: CommitModelInvocationInput,
-  ) => PromiseLike<CommitModelInvocationStoreResult>;
-  readonly recordModelCall: (
-    input: RecordModelCallInput,
-  ) => PromiseLike<GuardedStoreResult<RunUsage>>;
+  ) => Promise<CommitModelInvocationStoreResult<Definitions>>;
+  readonly recordModelCall: (input: RecordModelCallInput) => Promise<GuardedStoreResult<RunUsage>>;
   readonly recordToolInput: (
     input: RecordToolInputInput,
-  ) => PromiseLike<GuardedStoreResult<StoredToolCall>>;
+  ) => Promise<GuardedStoreResult<SelectedRecord<Definitions["toolCall"]>>>;
   readonly recordDelegatedToolCall: (
     input: RecordDelegatedToolCallInput,
-  ) => PromiseLike<GuardedStoreResult<StoredToolCall>>;
+  ) => Promise<GuardedStoreResult<SelectedRecord<Definitions["toolCall"]>>>;
   readonly completeToolCall: (
     input: CompleteToolCallInput,
-  ) => PromiseLike<GuardedStoreResult<StoredToolCall>>;
+  ) => Promise<GuardedStoreResult<SelectedRecord<Definitions["toolCall"]>>>;
   readonly suspendToolCall: (
     input: SuspendToolCallInput,
-  ) => PromiseLike<GuardedStoreResult<StoredToolCall>>;
+  ) => Promise<GuardedStoreResult<SelectedRecord<Definitions["toolCall"]>>>;
   readonly commitToolResults: (
     input: CommitToolResultsInput,
-  ) => PromiseLike<GuardedStoreResult<BranchRecord>>;
+  ) => Promise<GuardedStoreResult<SelectedRecord<Definitions["branch"]>>>;
   readonly continueSettlement: (
     input: ContinueSettlementInput,
-  ) => PromiseLike<ContinueSettlementStoreResult>;
+  ) => Promise<ContinueSettlementStoreResult<Definitions>>;
   readonly suspendRun: (input: {
     readonly claim: ExecutionClaim;
     readonly expectedHead: MessageEntryId;
     readonly result: SuspendedRunResult;
-  }) => PromiseLike<SuspendRunStoreResult>;
-  readonly finalizeRun: (input: FinalizeRunStoreInput) => PromiseLike<FinalizeRunStoreResult>;
+  }) => Promise<SuspendRunStoreResult>;
+  readonly finalizeRun: (
+    input: FinalizeRunStoreInput,
+  ) => Promise<FinalizeRunStoreResult<Definitions>>;
   readonly recordInterruption: (input: {
     readonly claim: ExecutionClaim;
     readonly interruption: Interruption;
-  }) => PromiseLike<GuardedStoreResult<Interruption>>;
-}
-
-/** A specific Thread Store operation failure. */
-export class ThreadStoreError extends Error {
-  constructor(
-    readonly operation: string,
-    override readonly cause?: unknown,
-  ) {
-    super(`Thread Store operation '${operation}' failed`, { cause });
-    this.name = "ThreadStoreError";
-  }
+  }) => Promise<GuardedStoreResult<Interruption>>;
 }
 
 /** A specific Artifact Store operation failure. */
 export class ArtifactStoreError extends Error {
-  constructor(
-    readonly operation: "read" | "write",
-    override readonly cause?: unknown,
-  ) {
+  /** Artifact Store operation that failed. */
+  readonly operation: "read" | "write";
+  /** Original Artifact Store failure. */
+  override readonly cause?: unknown;
+
+  /** Create one Artifact Store operation failure. */
+  constructor(operation: "read" | "write", cause?: unknown) {
     super(`Artifact Store operation '${operation}' failed`, { cause });
     this.name = "ArtifactStoreError";
+    this.operation = operation;
+    this.cause = cause;
   }
 }

@@ -71,6 +71,6 @@ An isolated notification Hook error does not reject the Execution result. [ADR 0
 
 Core wraps an undeclared execution exception in `UnexpectedExecutionError`. The error contains a stable phase code and keeps the original value as its cause.
 
-`ExecutionClaimLostError`, `ThreadStoreError`, and `ArtifactStoreError` remain specific errors. Core does not wrap them again.
+`ExecutionClaimLostError`, expected `StoreError` values, and `ArtifactStoreError` remain specific errors. Core does not wrap them again. Core wraps undeclared Store adapter defects in `UnexpectedExecutionError`.
 
 Failures and Interruptions remain declared result values. Core does not report them as errors.

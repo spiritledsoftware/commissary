@@ -423,6 +423,13 @@ describe("Agent composition", () => {
     expect(leftApp.agent(left).reference.revision).toBe(rightApp.agent(right).reference.revision);
   });
 
+  it("reuses the client and its subscription registry for one Agent definition", () => {
+    const agent = Agent.define({ id: "assistant", fragments: model });
+    const app = commissary({ threadStore: unusedStore });
+
+    expect(app.agent(agent)).toBe(app.agent(agent));
+  });
+
   it("reports duplicate contribution positions during installation", () => {
     const duplicate = Context.define({ id: "duplicate", render: () => [] });
     const agent = Agent.define({

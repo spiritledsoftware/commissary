@@ -16,7 +16,7 @@ import { StreamAlreadyConsumedError, execute, text, type StreamEvent } from "../
 
 async function clientFor(model: ReturnType<typeof Model.define>) {
   const agent = Agent.define({ id: "stream-test-agent", fragments: model });
-  const app = commissary({ threadStore: new MemoryThreadStore() });
+  const app = commissary({ threadStore: MemoryThreadStore.make() });
   const thread = await app.createThread();
   const branch = await app.createBranch({ threadId: thread.id, name: "main" });
   const client = app.agent(agent);
@@ -156,7 +156,7 @@ it("keeps streaming after an isolated observer error", async () => {
       }),
     ),
   });
-  const app = commissary({ threadStore: new MemoryThreadStore() });
+  const app = commissary({ threadStore: MemoryThreadStore.make() });
   const thread = await app.createThread();
   const branch = await app.createBranch({ threadId: thread.id, name: "main" });
   const client = app.agent(agent);
@@ -243,7 +243,7 @@ it("accepts an Effect Agent Client directly", async () => {
   });
   const agent = Agent.define({ id: "effect-client-stream-agent", fragments: model });
   const app = await Effect.runPromise(
-    EffectCommissary.make({ threadStore: new MemoryThreadStore() }),
+    EffectCommissary.make({ threadStore: MemoryThreadStore.make() }),
   );
   const thread = await Effect.runPromise(app.createThread());
   const branch = await Effect.runPromise(app.createBranch({ threadId: thread.id, name: "main" }));

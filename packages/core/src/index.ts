@@ -5,6 +5,7 @@ export type { Codec as CodecContract } from "./codec.js";
 export { AgentRegistrationError, commissary } from "./commissary.js";
 export type {
   AgentClient,
+  AgentRunSnapshot,
   AgentClientRunId,
   AgentCreateRunInput,
   AgentCreateRunResult,
@@ -13,6 +14,7 @@ export type {
   AgentResumeRunResult,
   AgentSteerInput,
   CommissaryInstance,
+  CreateThreadOperation,
   ExecutionClaimOptions,
 } from "./commissary.js";
 export type { AgentFragment, FragmentMetadata } from "./fragment.js";
@@ -144,6 +146,7 @@ export type {
   RunConflict,
   RunResult,
   RunSnapshot,
+  RunSnapshotRecord,
   RuntimeOperations,
   StaleAgentInterruption,
   SteeringResult,
@@ -161,13 +164,25 @@ export type {
 } from "./runtime.js";
 export { SchemaValidationError } from "./schema.js";
 export type { ModelSchema, SchemaInput, SchemaOutput, StandardSchema } from "./schema.js";
-export { ArtifactStoreError, ThreadStoreError } from "./store.js";
+export {
+  ArtifactStoreError,
+  addThreadStoreCreateHooks,
+  coreRecordDefinitions,
+  durableEntityRecordDefinitions,
+  mergeCoreRecordDefinitions,
+  runtimeStateRecordDefinitions,
+} from "./store.js";
+export { createThreadStore } from "./thread-store-implementation.js";
+export type { CoreThreadStoreOptions } from "./thread-store-implementation.js";
 export type {
   AppendMessagesInput,
+  BeforeCreateDraft,
+  BeforeCreateHook,
   ArtifactContent,
   ArtifactStore,
   BranchRecord,
   ClaimRenewalResult,
+  CommandFieldsConfig,
   ClaimResult,
   CommitModelInvocationInput,
   CommitModelInvocationStoreResult,
@@ -176,6 +191,17 @@ export type {
   CompleteToolCallInput,
   ContinueSettlementInput,
   ContinueSettlementStoreResult,
+  CompatibleThreadRecordDefinitions,
+  CoreDurableRecordCompatibility,
+  CoreRecordDefinitions,
+  CoreQueryOperators,
+  CoreStoreOperatorTypes,
+  CoreCommandCreatedRecordName,
+  CoreCreateDrafts,
+  CoreInternallyCreatedRecordName,
+  CreateBranchInput,
+  CreateThreadInput,
+  EffectiveRecordDefinitions,
   ExecutionClaim,
   ExecutionControl,
   ExecutionSnapshot,
@@ -191,6 +217,7 @@ export type {
   RunResultRecord,
   RunRecord,
   StoredModelToolCallInput,
+  RequiredBeforeCreateHookNames,
   StoredToolCall,
   StoredToolSuspension,
   StoredToolFailure,
@@ -199,7 +226,12 @@ export type {
   SuspendToolCallInput,
   ToolResumeContext,
   ThreadRecord,
+  ThreadRecordDefinitions,
   ThreadStore,
+  ThreadStoreRunSnapshot,
+  ThreadStoreFactoryConfig,
+  ThreadStoreHooks,
+  ThreadStoreHooksConfig,
 } from "./store.js";
 export { Tool } from "./tool.js";
 export type {

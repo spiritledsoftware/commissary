@@ -663,7 +663,7 @@ describe("Runtime Tools", () => {
       suspensions: [{ toolName: "second", toolCallId: "call-second" }],
     });
     await expect(client.readRunSnapshot(submission.runId)).resolves.toMatchObject({
-      status: "suspended",
+      run: { status: "suspended" },
       suspensions: [{ toolName: "second", toolCallId: "call-second" }],
       toolCalls: [
         { status: "succeeded", result: { output: "first-state:1" } },
@@ -692,7 +692,7 @@ describe("Runtime Tools", () => {
       },
     });
     await expect(client.readRunSnapshot(submission.runId)).resolves.toMatchObject({
-      status: "completed",
+      run: { status: "completed" },
       suspensions: [],
       toolCalls: [
         { status: "succeeded", result: { output: "first-state:1" } },
@@ -773,7 +773,7 @@ describe("Runtime Tools", () => {
         Hook.beforeModelRequest(() => undefined),
       ),
     });
-    const store = new MemoryThreadStore();
+    const store = MemoryThreadStore.make();
     const oldApp = commissary({ threadStore: store });
     const thread = await oldApp.createThread();
     const branch = await oldApp.createBranch({ threadId: thread.id, name: "main" });
@@ -870,7 +870,7 @@ describe("Runtime Tools", () => {
       fragments: Agent.combine(model, parent, child),
     });
     let generated = 0;
-    const store = new MemoryThreadStore();
+    const store = MemoryThreadStore.make();
     const app = commissary({
       threadStore: store,
       generateId: () => `generated-${(generated += 1)}`,
@@ -974,6 +974,8 @@ describe("Runtime Tools", () => {
       toolCalls: [
         { toolName: "dynamic-parent", result: { output: 16 } },
         {
+          dynamic: true,
+          providerId: "runtime-tools",
           toolName: "square",
           parentToolCallId: "dynamic-parent-call",
           result: { output: 16 },
@@ -1043,7 +1045,7 @@ describe("Runtime Tools", () => {
         return context.runtime.settle(work, invocation);
       },
     };
-    const store = new MemoryThreadStore();
+    const store = MemoryThreadStore.make();
     const app = commissary({ threadStore: store, loop });
     const thread = await app.createThread();
     const branch = await app.createBranch({ threadId: thread.id, name: "main" });
@@ -1159,7 +1161,7 @@ describe("Runtime Tools", () => {
       }),
     ).rejects.toThrow();
     await expect(client.readRunSnapshot(submission.runId)).resolves.toMatchObject({
-      status: "suspended",
+      run: { status: "suspended" },
       suspensions: [{ toolName: "dynamic-suspension" }],
     });
     await expect(
@@ -1239,7 +1241,7 @@ describe("Runtime Tools", () => {
       reason: "stop",
     });
     await expect(client.readRunSnapshot(submission.runId)).resolves.toMatchObject({
-      status: "aborted",
+      run: { status: "aborted" },
       toolCalls: [{ status: "aborted", result: { type: "aborted" } }],
     });
     const path = await app.readBranchHistory({

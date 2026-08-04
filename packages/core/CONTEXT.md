@@ -1,10 +1,10 @@
-# Commissary
+# Core
 
-Commissary is a system for composable agents. It keeps durable Thread history separate from process-bound execution. An Agent renders the current Transcript before each Model invocation.
+Core defines composable Agents, the provider-neutral Model and Tool protocol, durable Threads and Runs, and the Runtime that advances them.
 
-This file defines the domain terms. The ADRs in `docs/adr/` define the design rules and their reasons.
+## Language
 
-## Agents and composition
+### Agents and composition
 
 **Agent**:
 A reusable definition. Core renders its executable form from the current Transcript.
@@ -54,7 +54,7 @@ _Avoid_: Effect Context, dependency container, Transcript
 The ordered Context that core selects for one Model invocation.
 _Avoid_: Effect Context, runtime environment, Transcript
 
-## Messages and history
+### Messages and history
 
 **Model Message**:
 A provider-neutral turn with a role, ordered Content Parts, and optional Message Data.
@@ -100,7 +100,11 @@ _Avoid_: Thread Store, inline Message bytes, provider file storage
 An exported error for a failed Artifact Store read or write. It keeps the adapter error as its cause.
 _Avoid_: Artifact Storage Required Interruption, provider file error, raw storage error contract
 
-## Threads and Runs
+### Threads and Runs
+
+**Durable Entity Record**:
+A stored value with its own durable identity and lifecycle. Threads, Branches, Message Entries, Runs, and Tool Calls are Durable Entity Records.
+_Avoid_: Store command, snapshot, Execution Claim, pending command, all Thread Store values
 
 **Thread**:
 A durable identity. Its parent-linked Message Entries form a tree of agent work.
@@ -111,16 +115,8 @@ A durably identified and human-named line of work in one Thread.
 _Avoid_: Thread, global active leaf, linear transcript
 
 **Thread Store**:
-The required persistence contract for durable core state and its atomic changes. Every host supplies an implementation.
-_Avoid_: Application repository, public Instance property, Agent-selected persistence
-
-**Memory Thread Store**:
-The process-local Thread Store from `@commissary/store-memory`.
-_Avoid_: Automatic default, global singleton, durable storage
-
-**Thread Store Error**:
-An exported error for a failed Thread Store operation. It keeps the adapter error as its cause.
-_Avoid_: Run Failure, Interruption, raw database error contract
+A Store specialization that exposes every Core and Custom Collection plus atomic durable operations implemented by core over a Thread Store Backend.
+_Avoid_: Generic Store, public Instance property, Agent-selected persistence
 
 **Run**:
 One durable effort to advance a Branch from a Message Entry or Tool resumption to a result.
@@ -135,8 +131,12 @@ The durable record of one new or existing Run and its initial Message or Tool re
 _Avoid_: Job enqueue, execution start, Run Result
 
 **Run Snapshot**:
-A typed point-in-time view of a Run's durable public state.
-_Avoid_: Execution Snapshot, Store record, event replay, stream cursor
+A typed point-in-time object that keeps snapshot state at the top level and the complete effective Run Record under `run`. Host-added and narrowed Core Run fields stay inside `run`, so `snapshot.head` and `snapshot.run.head` can be different values.
+_Avoid_: Execution Snapshot, flattened Run Record, duplicated top-level Run fields, event replay, stream cursor
+
+**Tool Call Snapshot**:
+One item in a Run Snapshot's `toolCalls` array. It is the complete effective selected Stored Tool Call Record, with host-added fields, compatible Core field narrowings, and agent-aware field types directly on the item. It has no extra Record wrapper.
+_Avoid_: `{ toolCall: record }` wrapper, Tool result only, untyped storage value
 
 **Abort Request**:
 A durable request to stop a nonterminal Run. Recording the request acknowledges it, but does not confirm final settlement.
@@ -238,7 +238,7 @@ _Avoid_: Run ID, Message Entry ID, content hash
 An accepted durable Steering Message that waits for a safe Run boundary.
 _Avoid_: Follow-up queue, Branch history, Tool Suspension
 
-## Models and Tools
+### Models and Tools
 
 **Model**:
 A capability that changes one Model Request into a stream of Model Events.
@@ -352,7 +352,7 @@ _Avoid_: Tool Call ID, Run ID, suspension ID
 The immutable execution identity, cancellation, idempotency, and progress data for one Tool Attempt.
 _Avoid_: Effect Context, ambient state, dependency container, extension map
 
-## Runtime and extension seams
+### Runtime and extension seams
 
 **Clock**:
 An optional plain-JavaScript dependency for current time and cancellable sleep. Core uses it for local scheduling.
@@ -438,19 +438,11 @@ _Avoid_: Execution Event, Message Entry, Run Snapshot
 An optional persistence contract that assigns Run-local sequences and durably appends ordered Execution Event Record batches before process-local observation.
 _Avoid_: Thread Store, Stream Adapter, relay, transport
 
-**Stream Adapter**:
-An adapter that changes Execution Events into a bounded, single-consumer stream.
-_Avoid_: Core event queue, relay, replay log, transport
-
-**Events Dropped Event**:
-An adapter Event that reports how many buffered Events a Stream Adapter discarded.
-_Avoid_: Error Event, durable gap marker, execution backpressure, core event
-
 **Error Event**:
 The `{ type: "error", error }` Execution Event that reports an error after an Execution starts.
 _Avoid_: Failure, Interruption, thrown stream error, error-specific event name
 
-## Contracts and results
+### Contracts and results
 
 **Codec**:
 A reversible mapping between a durable domain value and its JSON-compatible form.

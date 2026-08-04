@@ -1,4 +1,5 @@
 import { MemoryThreadStore } from "@commissary/store-memory";
+import { StoreAdapterError } from "@commissary/store";
 import { describe, expect, it } from "vitest";
 import {
   Agent,
@@ -8,7 +9,6 @@ import {
   Hook,
   HookPoints,
   RunId,
-  ThreadStoreError,
   Model,
   UnexpectedExecutionError,
   commissary,
@@ -49,8 +49,10 @@ describe("Runtime lifecycle", () => {
     });
     await expect(client.readResult(submission.runId)).resolves.toEqual(result);
     await expect(client.readRunSnapshot(submission.runId)).resolves.toMatchObject({
-      status: "completed",
-      result,
+      run: {
+        status: "completed",
+        result,
+      },
       toolCalls: [],
       suspensions: [],
     });
@@ -60,7 +62,7 @@ describe("Runtime lifecycle", () => {
   it("uses the injected generator for core-owned IDs", async () => {
     let sequence = 0;
     const app = commissary({
-      threadStore: new MemoryThreadStore(),
+      threadStore: MemoryThreadStore.make(),
       generateId: () => `generated-${++sequence}`,
     });
     const thread = await app.createThread();
@@ -80,7 +82,7 @@ describe("Runtime lifecycle", () => {
   it("rejects an invalid generated Execution ID", async () => {
     let sequence = 0;
     const app = commissary({
-      threadStore: new MemoryThreadStore(),
+      threadStore: MemoryThreadStore.make(),
       generateId: () => (++sequence === 6 ? "" : `generated-${sequence}`),
     });
     const thread = await app.createThread();
@@ -288,7 +290,7 @@ describe("Runtime lifecycle", () => {
   it("checks unbound Run IDs against the stored Agent atomically", async () => {
     const firstAgent = Agent.define({ id: "authority-first", fragments: completingModel });
     const secondAgent = Agent.define({ id: "authority-second", fragments: completingModel });
-    const store = new MemoryThreadStore();
+    const store = MemoryThreadStore.make();
     const app = commissary({ threadStore: store });
     const thread = await app.createThread();
     const branch = await app.createBranch({ threadId: thread.id, name: "main" });
@@ -317,8 +319,10 @@ describe("Runtime lifecycle", () => {
     );
 
     await expect(firstClient.readRunSnapshot(runId)).resolves.toMatchObject({
-      runId,
-      status: "active",
+      run: {
+        id: runId,
+        status: "active",
+      },
     });
     await expect(
       firstClient.steer({
@@ -351,12 +355,14 @@ describe("Runtime lifecycle", () => {
   });
 
   it("rejects the Execution result with the same reported Claim loss error", async () => {
-    class LosingStore extends MemoryThreadStore {
-      override renewExecutionClaim(): PromiseLike<ClaimRenewalResult> {
-        return Promise.resolve({ type: "claim-lost" });
-      }
-    }
-    const store = new LosingStore();
+    const store = new Proxy(MemoryThreadStore.make(), {
+      get(target, property, receiver) {
+        if (property === "renewExecutionClaim") {
+          return async (): Promise<ClaimRenewalResult> => ({ type: "claim-lost" });
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
     const waitingModel = Model.define({
       id: "waiting-model",
       async *invoke(_request, context) {
@@ -390,14 +396,22 @@ describe("Runtime lifecycle", () => {
     expect(reported).toBeInstanceOf(ExecutionClaimLostError);
   });
 
-  it("emits a specific Error Event when Claim release fails", async () => {
-    class FailingReleaseStore extends MemoryThreadStore {
-      override releaseExecutionClaim(_claim: ExecutionClaim): PromiseLike<boolean> {
-        return Promise.reject(new Error("release failed"));
-      }
-    }
-
-    const store = new FailingReleaseStore();
+  it("emits the same Store Error when Claim release fails", async () => {
+    const storeFailure = new StoreAdapterError({
+      collection: "executionClaim",
+      operation: "delete",
+      cause: new Error("release failed"),
+    });
+    const store = new Proxy(MemoryThreadStore.make(), {
+      get(target, property, receiver) {
+        if (property === "releaseExecutionClaim") {
+          return async (_claim: ExecutionClaim): Promise<boolean> => {
+            throw storeFailure;
+          };
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
     const app = commissary({ threadStore: store });
     const thread = await app.createThread();
     const branch = await app.createBranch({ threadId: thread.id, name: "main" });
@@ -415,7 +429,7 @@ describe("Runtime lifecycle", () => {
       () => undefined,
       (cause: unknown) => cause,
     );
-    expect(error).toBeInstanceOf(ThreadStoreError);
+    expect(error).toBe(storeFailure);
     expect(events).toContainEqual({ type: "error", error });
   });
 

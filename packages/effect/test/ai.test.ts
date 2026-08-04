@@ -132,7 +132,7 @@ async function run(
     id: "effect-ai-test",
     fragments: Agent.combine(model, ...(options.fragments ?? [])),
   });
-  const store = new MemoryThreadStore();
+  const store = MemoryThreadStore.make();
   const app = await Effect.runPromise(
     EffectCommissary.make({
       threadStore: store,
@@ -233,7 +233,7 @@ it("releases every selected Model scope when one Execution ends", async () => {
   });
   const agent = Agent.define({ id: "effect-scope-agent", fragments: composite });
   const app = await Effect.runPromise(
-    EffectCommissary.make({ threadStore: new MemoryThreadStore() }),
+    EffectCommissary.make({ threadStore: MemoryThreadStore.make() }),
   );
   const thread = await Effect.runPromise(app.createThread());
   const branch = await Effect.runPromise(app.createBranch({ threadId: thread.id, name: "main" }));

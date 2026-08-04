@@ -317,29 +317,21 @@ export function createToolCatalog(options: {
   return Object.freeze({ tools, resolveDynamicProvider, prepare });
 }
 
-/** Execute one Thread Store call with Runtime error translation. */
-export interface ToolStoreCall {
-  <Value>(operation: string, evaluate: () => PromiseLike<Value>): Promise<Value>;
-}
-
 /** Validate and submit one Tool resume command. */
 export async function submitToolResumes(options: {
   readonly installed: InstalledAgentData;
   readonly input: ResumeRunInput;
   readonly threadStore: ThreadStore;
-  readonly storeCall: ToolStoreCall;
 }): Promise<ResumeRunResult> {
   const conflict = (toolCallIds: readonly ToolCallId[]): ResumeRunResult => ({
     type: "tool-resume-conflict",
     runId: options.input.runId,
     toolCallIds,
   });
-  const context = await options.storeCall("readToolResumeContext", () =>
-    options.threadStore.readToolResumeContext({
-      runId: options.input.runId,
-      agent: options.installed.reference,
-    }),
-  );
+  const context = await options.threadStore.readToolResumeContext({
+    runId: options.input.runId,
+    agent: options.installed.reference,
+  });
   if (context === undefined) {
     return conflict(options.input.items.map((item) => item.toolCallId));
   }
@@ -396,17 +388,15 @@ export async function submitToolResumes(options: {
       input: submitted,
     });
   }
-  return options.storeCall("submitToolResumes", () =>
-    options.threadStore.submitToolResumes({
-      runId: options.input.runId,
-      agent: options.installed.reference,
-      expectedHead: context.head,
-      items: submittedItems,
-      ...(options.input.toolResumeRequestId === undefined
-        ? {}
-        : { toolResumeRequestId: options.input.toolResumeRequestId }),
-    }),
-  );
+  return options.threadStore.submitToolResumes({
+    runId: options.input.runId,
+    agent: options.installed.reference,
+    expectedHead: context.head,
+    items: submittedItems,
+    ...(options.input.toolResumeRequestId === undefined
+      ? {}
+      : { toolResumeRequestId: options.input.toolResumeRequestId }),
+  });
 }
 
 /** Create Tool execution for one claimed Execution. */

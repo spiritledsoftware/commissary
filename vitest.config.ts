@@ -10,6 +10,7 @@ export default defineConfig({
         },
       },
       "./apps/*",
+      "./examples/*",
       "./packages/*",
       "./tools/*",
     ],

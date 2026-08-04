@@ -1,0 +1,47 @@
+{
+  "name": "@commissary/store",
+  "version": "0.0.0",
+  "description": "Typed persistence contracts and Store operator fallbacks for Commissary",
+  "homepage": "https://github.com/spiritledsoftware/commissary#readme",
+  "bugs": {
+    "url": "https://github.com/spiritledsoftware/commissary/issues"
+  },
+  "license": "MIT",
+  "author": "Spirit-Led Software LLC <social@spiritledsoftware.com>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/spiritledsoftware/commissary.git",
+    "directory": "packages/store"
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./conformance": {
+      "types": "./dist/conformance.d.ts",
+      "import": "./dist/conformance.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "pack:check": "node ../../scripts/check-package-archive.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@standard-schema/spec": "^1.1.0"
+  },
+  "engines": {
+    "node": ">=22.14.0"
+  }
+}

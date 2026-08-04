@@ -375,7 +375,7 @@ describe("Runtime Models", () => {
         });
       },
     };
-    const store = new MemoryThreadStore();
+    const store = MemoryThreadStore.make();
     const app = commissary({ threadStore: store, clock });
     const thread = await app.createThread();
     const branch = await app.createBranch({ threadId: thread.id, name: "main" });

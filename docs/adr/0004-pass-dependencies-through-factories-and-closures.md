@@ -26,13 +26,13 @@ The optional `generateId` function creates every core-owned ID. It takes no ID t
 
 ## Thread Store
 
-Every host passes a Thread Store to `commissary`. Core has no automatic storage default.
+Every host passes a Thread Store to `commissary`. Core has no automatic storage default. [ADR 0019](0019-build-thread-store-on-generic-store-primitives.md) supersedes this section's original Thread Store boundary and defines the generic Store primitives, complete Collection catalog, raw host access, Core specialization, adapter capabilities, and Store failure hierarchy.
 
 `MemoryThreadStore.make()` comes from `@commissary/store-memory`. It is process-local and not durable. It is suitable for examples, tests, and local development.
 
-The Commissary Instance does not expose its Thread Store. Only Runtime can use claim, fencing, commit, suspension, interruption, and finalization operations. A storage package can expose separate administration or indexing APIs.
+The Commissary Instance does not expose its Thread Store. The host keeps the Store value that it supplied and can use its Core and Custom Collections directly. Core still owns the specialized Runtime transition rules. Raw host changes can break Runtime invariants.
 
-A `ThreadStoreError` names the failed Thread Store operation and keeps the original error as its cause. [ADR 0010](0010-fence-and-resolve-executions.md) defines error delivery during an Execution.
+The `StoreError` hierarchy replaces `ThreadStoreError`. [ADR 0010](0010-fence-and-resolve-executions.md) defines error delivery during an Execution.
 
 ## Safe Thread facade
 
@@ -47,7 +47,7 @@ The Commissary Instance exposes these flat methods:
 
 `createBranch({ from })` forks from a known Message Entry. [ADR 0006](0006-store-thread-history-as-branching-messages.md) defines Branch history.
 
-Core does not provide Thread or Branch listing, search, deletion, retention, or administration. Those operations depend on application tenancy and storage policy.
+The Commissary Instance does not provide Thread or Branch listing, search, deletion, retention, or administration. A host that needs these operations uses its retained Store value or adapter-specific interfaces and owns the related tenancy and storage policy.
 
 ## Provider integration lifetime
 

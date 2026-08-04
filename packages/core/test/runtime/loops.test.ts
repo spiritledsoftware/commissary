@@ -18,7 +18,7 @@ import { completingModel, fixture, submitStart, toolCallId } from "./support.js"
 
 describe("Runtime Loops", () => {
   it("lets a custom Loop orchestrate work only through Runtime Operations", async () => {
-    const store = new MemoryThreadStore();
+    const store = MemoryThreadStore.make();
     const loop: Loop = {
       async execute(context) {
         const prepared = await context.runtime.prepare(context.runId);
@@ -102,7 +102,7 @@ describe("Runtime Loops", () => {
         }
       },
     };
-    const store = new MemoryThreadStore();
+    const store = MemoryThreadStore.make();
     const app = commissary({ threadStore: store, loop });
     const thread = await app.createThread();
     const branch = await app.createBranch({ threadId: thread.id, name: "main" });
@@ -200,7 +200,7 @@ describe("Runtime Loops", () => {
         }
       },
     };
-    const store = new MemoryThreadStore();
+    const store = MemoryThreadStore.make();
     const app = commissary({ threadStore: store, loop });
     const thread = await app.createThread();
     const branch = await app.createBranch({ threadId: thread.id, name: "main" });
@@ -559,20 +559,26 @@ describe("Runtime Loops", () => {
   });
 
   it("loads each prepared Tool Call without reloading the full Execution", async () => {
-    class CountingStore extends MemoryThreadStore {
-      executionLoads = 0;
-      toolCallLoads = 0;
-
-      override loadExecution(claim: ExecutionClaim) {
-        this.executionLoads += 1;
-        return super.loadExecution(claim);
-      }
-
-      override loadToolCall(claim: ExecutionClaim, toolCallId: ToolCallId) {
-        this.toolCallLoads += 1;
-        return super.loadToolCall(claim, toolCallId);
-      }
-    }
+    let executionLoads = 0;
+    let toolCallLoads = 0;
+    const baseStore = MemoryThreadStore.make();
+    const store = new Proxy(baseStore, {
+      get(target, property, receiver) {
+        if (property === "loadExecution") {
+          return async (claim: ExecutionClaim) => {
+            executionLoads += 1;
+            return target.loadExecution(claim);
+          };
+        }
+        if (property === "loadToolCall") {
+          return async (claim: ExecutionClaim, id: ToolCallId) => {
+            toolCallLoads += 1;
+            return target.loadToolCall(claim, id);
+          };
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
 
     const echo = Tool.define({
       name: "narrow-load-echo",
@@ -603,7 +609,6 @@ describe("Runtime Loops", () => {
         };
       },
     });
-    const store = new CountingStore();
     const app = commissary({ threadStore: store });
     const thread = await app.createThread();
     const branch = await app.createBranch({ threadId: thread.id, name: "main" });
@@ -617,8 +622,8 @@ describe("Runtime Loops", () => {
     await expect((await client.execute(submission.runId)).result).resolves.toMatchObject({
       type: "completed",
     });
-    expect(store.toolCallLoads).toBe(2);
-    expect(store.executionLoads).toBe(5);
+    expect(toolCallLoads).toBe(2);
+    expect(executionLoads).toBe(5);
   });
 
   it("recovers committed Tool work after an Execution stops", async () => {
@@ -684,7 +689,7 @@ describe("Runtime Loops", () => {
         }
       },
     };
-    const store = new MemoryThreadStore();
+    const store = MemoryThreadStore.make();
     const app = commissary({ threadStore: store, loop });
     const thread = await app.createThread();
     const branch = await app.createBranch({ threadId: thread.id, name: "main" });
@@ -707,7 +712,7 @@ describe("Runtime Loops", () => {
   });
 
   it("rejects a custom Loop result that was not created by Runtime Operations", async () => {
-    const store = new MemoryThreadStore();
+    const store = MemoryThreadStore.make();
     const loop: Loop = {
       async execute(context) {
         return {
@@ -729,7 +734,6 @@ describe("Runtime Loops", () => {
     const agent = Agent.define({ id: "custom-loop-agent", fragments: completingModel });
     const client = app.agent(agent);
     const submission = await submitStart(client, branch);
-
     await expect((await client.execute(submission.runId)).result).rejects.toMatchObject({
       name: "UnexpectedExecutionError",
       phase: "loop",
