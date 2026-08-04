@@ -1,10 +1,13 @@
 import {
   type Agent,
+  AgentInstallationError,
   AgentRegistrationError,
+  ArtifactStoreError,
   commissary,
   type AbortResult,
   type AgentClient,
   type AgentClientRunId,
+  type AgentReference,
   type AgentCreateRunInput,
   type AgentCreateRunResult,
   type AgentDefinition,
@@ -20,7 +23,11 @@ import {
   type CommissaryInstance,
   type Execution,
   type ExecutionClaimOptions,
+  ExecutionClaimLostError,
+  ExecutionEventStoreError,
+  type ExecutionId,
   type ExecutionResult,
+  ExecutionUnavailableError,
   type GenerateId,
   type JsonValue,
   type Loop,
@@ -29,11 +36,13 @@ import {
   type RedirectResult,
   type RunId,
   type SteeringResult,
+  UnexpectedExecutionError,
   type ThreadId,
   type ThreadRecord,
   type ThreadStore,
 } from "@commissary/core";
 import { modelEnvironment } from "@commissary/core/internal";
+import { StoreError } from "@commissary/store";
 import { Clock as EffectClock, Context, Duration, Effect, Layer } from "effect";
 
 /** Configuration for one Effect-native Commissary Instance. */
@@ -45,49 +54,102 @@ export interface EffectCommissaryConfiguration {
   readonly generateId?: GenerateId;
 }
 
+/** Operation that can reject while the Effect adapter calls the JavaScript core API. */
+export type EffectCommissaryOperation =
+  | "abortExecution"
+  | "abortRun"
+  | "createBranch"
+  | "createRun"
+  | "createThread"
+  | "readBranch"
+  | "readBranchHistory"
+  | "readRunResult"
+  | "readRunSnapshot"
+  | "installAgent"
+  | "readThread"
+  | "redirectRun"
+  | "renameBranch"
+  | "resumeRun"
+  | "startExecution"
+  | "steerRun"
+  | "waitForExecutionResult";
+
+/** Expected failures that can prevent an Effect Execution from starting. */
+export type EffectCommissaryStartError = ExecutionUnavailableError | StoreError;
+
+/** Expected failures that can reject a running Effect Execution. */
+export type EffectCommissaryExecutionError =
+  | ArtifactStoreError
+  | ExecutionClaimLostError
+  | ExecutionEventStoreError
+  | StoreError
+  | UnexpectedExecutionError;
+
+/** Defect raised when a JavaScript core operation rejects with an undeclared value. */
+export class EffectCommissaryDefect extends Error {
+  /** JavaScript core operation that rejected unexpectedly. */
+  readonly operation: EffectCommissaryOperation;
+
+  /** Undeclared JavaScript rejection value. */
+  override readonly cause: unknown;
+
+  /** Create an Effect defect that preserves the undeclared JavaScript rejection. */
+  constructor(operation: EffectCommissaryOperation, cause: unknown) {
+    super(`Unexpected Effect Commissary operation failure: ${operation}`, { cause });
+    this.name = "EffectCommissaryDefect";
+    this.operation = operation;
+    this.cause = cause;
+  }
+}
+
 /** An Effect-native view of one process-bound core Execution. */
 export interface EffectExecution<Tools = unknown, Failure = unknown, Run extends RunId = RunId> {
-  readonly id: import("@commissary/core").ExecutionId;
+  readonly id: ExecutionId;
   readonly runId: Run;
-  readonly result: Effect.Effect<ExecutionResult<Failure, Tools, Run>, unknown>;
-  readonly abort: (reason?: JsonValue) => Effect.Effect<AbortResult<Failure, Tools, Run>, unknown>;
+  readonly result: Effect.Effect<
+    ExecutionResult<Failure, Tools, Run>,
+    EffectCommissaryExecutionError
+  >;
+  readonly abort: (
+    reason?: JsonValue,
+  ) => Effect.Effect<AbortResult<Failure, Tools, Run>, StoreError>;
   readonly core: Execution<Tools, Failure, Run>;
 }
 
 /** The Effect-native client bound to one lazily installed Agent. */
 export interface EffectAgentClient<Definition extends AgentDefinition> {
   readonly definition: Definition;
-  readonly reference: import("@commissary/core").AgentReference<Definition["id"]>;
+  readonly reference: AgentReference<Definition["id"]>;
   readonly createRun: (
     input: AgentCreateRunInput,
-  ) => Effect.Effect<AgentCreateRunResult<Definition>, unknown>;
+  ) => Effect.Effect<AgentCreateRunResult<Definition>, StoreError>;
   readonly resumeRun: (
     input: AgentResumeRunInput<Definition>,
-  ) => Effect.Effect<AgentResumeRunResult<Definition>, unknown>;
+  ) => Effect.Effect<AgentResumeRunResult<Definition>, StoreError>;
   readonly execute: (
     runId: AgentClientRunId<Definition>,
   ) => Effect.Effect<
     EffectExecution<Agent.Tools<Definition>, Agent.Failure<Definition>, AgentRunId<Definition>>,
-    unknown
+    EffectCommissaryStartError
   >;
   readonly readRunSnapshot: (
     runId: AgentClientRunId<Definition>,
-  ) => Effect.Effect<Agent.RunSnapshots<Definition> | undefined, unknown>;
+  ) => Effect.Effect<Agent.RunSnapshots<Definition> | undefined, StoreError>;
   readonly readResult: (
     runId: AgentClientRunId<Definition>,
-  ) => Effect.Effect<Agent.RunResults<Definition> | undefined, unknown>;
+  ) => Effect.Effect<Agent.RunResults<Definition> | undefined, StoreError>;
   readonly steer: (
     input: AgentSteerInput<Definition>,
-  ) => Effect.Effect<SteeringResult<AgentRunId<Definition>>, unknown>;
+  ) => Effect.Effect<SteeringResult<AgentRunId<Definition>>, StoreError>;
   readonly redirect: (
     input: AgentRedirectInput<Definition>,
-  ) => Effect.Effect<RedirectResult<AgentRunId<Definition>>, unknown>;
+  ) => Effect.Effect<RedirectResult<AgentRunId<Definition>>, StoreError>;
   readonly abort: (
     runId: AgentClientRunId<Definition>,
     reason?: JsonValue,
   ) => Effect.Effect<
     AbortResult<Agent.Failure<Definition>, Agent.Tools<Definition>, AgentRunId<Definition>>,
-    unknown
+    StoreError
   >;
   readonly on: AgentClient<Definition>["on"];
   readonly core: AgentClient<Definition>;
@@ -97,30 +159,34 @@ export interface EffectAgentClient<Definition extends AgentDefinition> {
 export interface EffectCommissaryInstance {
   readonly createThread: (input?: {
     readonly id?: ThreadId;
-  }) => Effect.Effect<ThreadRecord, unknown>;
-  readonly readThread: (threadId: ThreadId) => Effect.Effect<ThreadRecord | undefined, unknown>;
+  }) => Effect.Effect<ThreadRecord, StoreError>;
+  readonly readThread: (threadId: ThreadId) => Effect.Effect<ThreadRecord | undefined, StoreError>;
   readonly createBranch: (input: {
     readonly id?: BranchId;
     readonly threadId: ThreadId;
     readonly name: string;
     readonly from?: MessageEntryId;
-  }) => Effect.Effect<BranchRecord, unknown>;
+  }) => Effect.Effect<BranchRecord, StoreError>;
   readonly readBranch: (input: {
     readonly threadId: ThreadId;
     readonly branchId: BranchId;
-  }) => Effect.Effect<BranchRecord | undefined, unknown>;
+  }) => Effect.Effect<BranchRecord | undefined, StoreError>;
   readonly renameBranch: (input: {
     readonly threadId: ThreadId;
     readonly branchId: BranchId;
     readonly name: string;
-  }) => Effect.Effect<BranchRecord, unknown>;
+  }) => Effect.Effect<BranchRecord, StoreError>;
   readonly readBranchHistory: (input: {
     readonly threadId: ThreadId;
     readonly branchId: BranchId;
-  }) => Effect.Effect<readonly MessageEntry[], unknown>;
+  }) => Effect.Effect<readonly MessageEntry[], StoreError>;
   readonly agent: <Definition extends AgentDefinition>(
     definition: Definition,
-  ) => Effect.Effect<EffectAgentClient<Definition>, unknown, Agent.Requirements<Definition>>;
+  ) => Effect.Effect<
+    EffectAgentClient<Definition>,
+    AgentInstallationError | AgentRegistrationError,
+    Agent.Requirements<Definition>
+  >;
   readonly core: CommissaryInstance;
 }
 
@@ -129,10 +195,37 @@ export class Commissary extends Context.Service<Commissary, EffectCommissaryInst
   "@commissary/effect/Commissary",
 ) {}
 
-function fromPromise<Value>(evaluate: () => PromiseLike<Value>): Effect.Effect<Value, unknown> {
+function isStoreError(cause: unknown): cause is StoreError {
+  return cause instanceof StoreError;
+}
+
+function isEffectCommissaryStartError(cause: unknown): cause is EffectCommissaryStartError {
+  return cause instanceof ExecutionUnavailableError || cause instanceof StoreError;
+}
+
+function isEffectCommissaryExecutionError(cause: unknown): cause is EffectCommissaryExecutionError {
+  return (
+    cause instanceof ArtifactStoreError ||
+    cause instanceof ExecutionClaimLostError ||
+    cause instanceof ExecutionEventStoreError ||
+    cause instanceof StoreError ||
+    cause instanceof UnexpectedExecutionError
+  );
+}
+
+function fromPromise<Value, ErrorType>(
+  operation: EffectCommissaryOperation,
+  isExpectedError: (cause: unknown) => cause is ErrorType,
+  evaluate: () => PromiseLike<Value>,
+): Effect.Effect<Value, ErrorType> {
   return Effect.tryPromise({
     try: () => Promise.resolve(evaluate()),
-    catch: (cause) => cause,
+    catch: (cause) => {
+      if (isExpectedError(cause)) {
+        return cause;
+      }
+      throw new EffectCommissaryDefect(operation, cause);
+    },
   });
 }
 
@@ -142,8 +235,13 @@ function wrapExecution<Tools, Failure, Run extends RunId>(
   return Object.freeze({
     id: execution.id,
     runId: execution.runId,
-    result: fromPromise(() => execution.result),
-    abort: (reason?: JsonValue) => fromPromise(() => execution.abort(reason)),
+    result: fromPromise(
+      "waitForExecutionResult",
+      isEffectCommissaryExecutionError,
+      () => execution.result,
+    ),
+    abort: (reason?: JsonValue) =>
+      fromPromise("abortExecution", isStoreError, () => execution.abort(reason)),
     core: execution,
   });
 }
@@ -154,22 +252,25 @@ function wrapAgent<Definition extends AgentDefinition>(
   return Object.freeze({
     definition: client.definition,
     reference: client.reference,
-    createRun: (input: AgentCreateRunInput) => fromPromise(() => client.createRun(input)),
+    createRun: (input: AgentCreateRunInput) =>
+      fromPromise("createRun", isStoreError, () => client.createRun(input)),
     resumeRun: (input: AgentResumeRunInput<Definition>) =>
-      fromPromise(() => client.resumeRun(input)),
+      fromPromise("resumeRun", isStoreError, () => client.resumeRun(input)),
     execute: (runId: AgentClientRunId<Definition>) =>
       Effect.map(
-        fromPromise(() => client.execute(runId)),
+        fromPromise("startExecution", isEffectCommissaryStartError, () => client.execute(runId)),
         wrapExecution,
       ),
     readRunSnapshot: (runId: AgentClientRunId<Definition>) =>
-      fromPromise(() => client.readRunSnapshot(runId)),
+      fromPromise("readRunSnapshot", isStoreError, () => client.readRunSnapshot(runId)),
     readResult: (runId: AgentClientRunId<Definition>) =>
-      fromPromise(() => client.readResult(runId)),
-    steer: (input: AgentSteerInput<Definition>) => fromPromise(() => client.steer(input)),
-    redirect: (input: AgentRedirectInput<Definition>) => fromPromise(() => client.redirect(input)),
+      fromPromise("readRunResult", isStoreError, () => client.readResult(runId)),
+    steer: (input: AgentSteerInput<Definition>) =>
+      fromPromise("steerRun", isStoreError, () => client.steer(input)),
+    redirect: (input: AgentRedirectInput<Definition>) =>
+      fromPromise("redirectRun", isStoreError, () => client.redirect(input)),
     abort: (runId: AgentClientRunId<Definition>, reason?: JsonValue) =>
-      fromPromise(() => client.abort(runId, reason)),
+      fromPromise("abortRun", isStoreError, () => client.abort(runId, reason)),
     on: client.on,
     core: client,
   });
@@ -215,10 +316,6 @@ function wrapInstance(
     definition: Definition,
     environment: unknown,
   ): EffectAgentClient<Definition> {
-    const current = definitions.get(definition.id);
-    if (current !== undefined && current !== definition) {
-      throw new AgentRegistrationError(definition.id);
-    }
     const existing = clients.get(definition);
     if (existing !== undefined) {
       return existing as EffectAgentClient<Definition>;
@@ -231,30 +328,40 @@ function wrapInstance(
 
   return Object.freeze({
     createThread: (input?: { readonly id?: ThreadId }) =>
-      fromPromise(() => core.createThread(input)),
-    readThread: (threadId: ThreadId) => fromPromise(() => core.readThread(threadId)),
+      fromPromise("createThread", isStoreError, () => core.createThread(input)),
+    readThread: (threadId: ThreadId) =>
+      fromPromise("readThread", isStoreError, () => core.readThread(threadId)),
     createBranch: (input: {
       readonly id?: BranchId;
       readonly threadId: ThreadId;
       readonly name: string;
       readonly from?: MessageEntryId;
-    }) => fromPromise(() => core.createBranch(input)),
+    }) => fromPromise("createBranch", isStoreError, () => core.createBranch(input)),
     readBranch: (input: { readonly threadId: ThreadId; readonly branchId: BranchId }) =>
-      fromPromise(() => core.readBranch(input)),
+      fromPromise("readBranch", isStoreError, () => core.readBranch(input)),
     renameBranch: (input: {
       readonly threadId: ThreadId;
       readonly branchId: BranchId;
       readonly name: string;
-    }) => fromPromise(() => core.renameBranch(input)),
+    }) => fromPromise("renameBranch", isStoreError, () => core.renameBranch(input)),
     readBranchHistory: (input: { readonly threadId: ThreadId; readonly branchId: BranchId }) =>
-      fromPromise(() => core.readBranchHistory(input)),
+      fromPromise("readBranchHistory", isStoreError, () => core.readBranchHistory(input)),
     agent: <Definition extends AgentDefinition>(definition: Definition) =>
-      Effect.flatMap(Effect.context<Agent.Requirements<Definition>>(), (environment) =>
-        Effect.try({
+      Effect.flatMap(Effect.context<Agent.Requirements<Definition>>(), (environment) => {
+        const current = definitions.get(definition.id);
+        if (current !== undefined && current !== definition) {
+          return Effect.fail(new AgentRegistrationError(definition.id));
+        }
+        return Effect.try({
           try: () => install(definition, environment),
-          catch: (cause) => cause,
-        }),
-      ),
+          catch: (cause) => {
+            if (cause instanceof AgentInstallationError) {
+              return cause;
+            }
+            throw new EffectCommissaryDefect("installAgent", cause);
+          },
+        });
+      }),
     core,
   });
 }

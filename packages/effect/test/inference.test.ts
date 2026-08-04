@@ -6,6 +6,8 @@ import {
   Tool,
   ToolCallId,
   type AgentCreateRunInput,
+  type AgentInstallationError,
+  type AgentRegistrationError,
   type AgentCreateRunResult,
   type AgentResumeRunResult,
   type AgentRunId,
@@ -17,9 +19,11 @@ import {
   Commissary,
   EffectCommissary,
   type EffectAgentClient,
+  type EffectCommissaryStartError,
   type EffectCommissaryInstance,
   type EffectExecution,
 } from "@commissary/effect";
+import type { StoreError } from "@commissary/store";
 import { Context, Effect, Layer } from "effect";
 import { LanguageModel, Model as AiModel } from "effect/unstable/ai";
 import { expect, expectTypeOf, it } from "vitest";
@@ -121,7 +125,12 @@ const secondEventSchema: ModelSchema<{ readonly message: string }, { readonly me
 
 const continuation = Codec.define({
   encode: (value: string) => value,
-  decode: (value) => String(value),
+  decode(value) {
+    if (typeof value !== "string") {
+      throw new Error("Expected an Effect string continuation");
+    }
+    return value;
+  },
 });
 
 const firstTool = Tool.define({
@@ -182,7 +191,11 @@ it("preserves open Effect Model requirements through lazy Agent installation", a
   expectTypeOf(construction).toEqualTypeOf<Effect.Effect<EffectCommissaryInstance, never>>();
   expectTypeOf(commissaryLayer).toEqualTypeOf<Layer.Layer<Commissary>>();
   expectTypeOf(installation).toEqualTypeOf<
-    Effect.Effect<EffectAgentClient<typeof agent>, unknown, ModelDependency>
+    Effect.Effect<
+      EffectAgentClient<typeof agent>,
+      AgentInstallationError | AgentRegistrationError,
+      ModelDependency
+    >
   >();
   const instance = await Effect.runPromise(construction);
   const installed = await Effect.runPromise(
@@ -195,7 +208,7 @@ it("mirrors the complete typed core Agent client", () => {
   const checkContracts = async () => {
     const created = client.createRun(createInput);
     expectTypeOf(created).toEqualTypeOf<
-      Effect.Effect<AgentCreateRunResult<typeof agent>, unknown>
+      Effect.Effect<AgentCreateRunResult<typeof agent>, StoreError>
     >();
     const accepted = await Effect.runPromise(created);
     if (accepted.type === "accepted") {
@@ -207,26 +220,26 @@ it("mirrors the complete typed core Agent client", () => {
             Agent.Failure<typeof agent>,
             AgentRunId<typeof agent>
           >,
-          unknown
+          EffectCommissaryStartError
         >
       >();
       // @ts-expect-error bound Run IDs cannot cross Effect Agent clients
-      otherClient.execute(accepted.runId);
+      void otherClient.execute(accepted.runId);
     }
 
     const runId = RunId.decode("effect-stored-run");
-    client.execute(runId);
-    client.readRunSnapshot(runId);
-    client.readResult(runId);
-    client.steer({
+    void client.execute(runId);
+    void client.readRunSnapshot(runId);
+    void client.readResult(runId);
+    void client.steer({
       runId,
       message: { role: "user", content: [] },
     });
-    client.redirect({
+    void client.redirect({
       runId,
       message: { role: "user", content: [] },
     });
-    client.abort(runId);
+    void client.abort(runId);
     const resumed = client.resumeRun({
       runId,
       items: [
@@ -238,9 +251,9 @@ it("mirrors the complete typed core Agent client", () => {
       ],
     });
     expectTypeOf(resumed).toEqualTypeOf<
-      Effect.Effect<AgentResumeRunResult<typeof agent>, unknown>
+      Effect.Effect<AgentResumeRunResult<typeof agent>, StoreError>
     >();
-    client.resumeRun({
+    void client.resumeRun({
       runId,
       items: [
         {
@@ -252,7 +265,7 @@ it("mirrors the complete typed core Agent client", () => {
         },
       ],
     });
-    client.resumeRun({
+    void client.resumeRun({
       runId,
       items: [
         // @ts-expect-error the dynamic provider does not widen static Tool names

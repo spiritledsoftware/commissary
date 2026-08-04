@@ -1,6 +1,10 @@
 {
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["typescript", "unicorn", "oxc"],
+  "$schema": "./node_modules/@effect/tsgo/oxlint-schema.json",
+  "options": {
+    "typeAware": true,
+    "typeCheck": true
+  },
+  "plugins": ["typescript", "unicorn", "oxc", "effecttsgo"],
   "ignorePatterns": [".agents/**"],
   "categories": {
     "correctness": "error"

@@ -227,6 +227,29 @@ it("provides the same bounded stream through Effect", async () => {
   await expect(Effect.runPromise(streamed.result)).resolves.toMatchObject({ type: "completed" });
 });
 
+it("preserves known JavaScript stream errors in the Effect error channel", async () => {
+  const model = Model.define({
+    id: "effect-error",
+    async *invoke() {
+      yield {
+        type: "finish" as const,
+        response: {
+          message: {
+            role: "assistant" as const,
+            content: [Content.text("not-started")],
+          },
+          finishReason: "stop" as const,
+        },
+      };
+    },
+  });
+  const { client, runId } = await clientFor(model);
+
+  const error = await Effect.runPromise(Effect.flip(executeEffect(client, runId, { capacity: 0 })));
+
+  expect(error).toBeInstanceOf(RangeError);
+});
+
 it("accepts an Effect Agent Client directly", async () => {
   const model = Model.define({
     id: "effect-client-stream",

@@ -10,7 +10,11 @@ import {
 } from "@commissary/core";
 import type { EffectAgentClient } from "@commissary/effect";
 import { execute as executeJavaScript, type StreamExecution } from "@commissary/stream";
-import { execute as executeEffect, type EffectStreamExecution } from "@commissary/stream/effect";
+import {
+  execute as executeEffect,
+  type EffectStreamExecution,
+  type EffectStreamStartError,
+} from "@commissary/stream/effect";
 import { Context, Effect } from "effect";
 import { expectTypeOf, it } from "vitest";
 
@@ -76,7 +80,12 @@ const numberFailureSchema: ModelSchema<{ readonly code: "number" }, { readonly c
 
 const continuation = Codec.define({
   encode: (value: string) => value,
-  decode: (value) => String(value),
+  decode(value) {
+    if (typeof value !== "string") {
+      throw new Error("Expected a stream string continuation");
+    }
+    return value;
+  },
 });
 
 const stringTool = Tool.define({
@@ -164,15 +173,15 @@ it("preserves Agent contracts in JavaScript and Effect streams", () => {
           Agent.Failure<typeof agent>,
           AgentRunId<typeof agent>
         >,
-        unknown
+        EffectStreamStartError
       >
     >();
     expectTypeOf(fromEffect).toEqualTypeOf<typeof fromCore>();
 
     // @ts-expect-error a Run ID bound to another Agent is rejected by the stream adapter
-    executeJavaScript(coreClient, otherRunId);
+    void executeJavaScript(coreClient, otherRunId);
     // @ts-expect-error the Effect stream keeps the same Agent-bound Run ID rule
-    executeEffect(effectClient, otherRunId);
+    void executeEffect(effectClient, otherRunId);
   };
   expectTypeOf(checkContracts).returns.toEqualTypeOf<Promise<void>>();
 });

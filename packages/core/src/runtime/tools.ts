@@ -702,7 +702,7 @@ export function createToolRuntime(options: {
       },
       invoke: (
         targetValue: ToolDefinition | DynamicToolProviderFragment,
-        childInput: unknown | { readonly toolName: string; readonly input: JsonValue },
+        childInput: unknown,
         invokeOptions: { readonly key: string },
       ) => {
         if (isDynamicToolProviderFragment(targetValue)) {
