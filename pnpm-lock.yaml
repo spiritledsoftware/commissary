@@ -30,7 +30,7 @@ importers:
         specifier: workspace:*
         version: link:packages/stream
       '@effect/tsgo':
-        specifier: ^0.31.0
+        specifier: 0.31.0
         version: 0.31.0
       '@types/node':
         specifier: ^26.1.2
@@ -57,7 +57,7 @@ importers:
         specifier: ^0.62.0
         version: 0.62.0
       oxlint:
-        specifier: ^1.77.0
+        specifier: 1.77.0
         version: 1.77.0(oxlint-tsgolint@7.0.2001)
       oxlint-tsgolint:
         specifier: 7.0.2001
