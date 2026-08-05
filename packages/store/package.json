@@ -1,6 +1,6 @@
 {
   "name": "@commissary/store",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Typed persistence contracts and Store operator fallbacks for Commissary",
   "homepage": "https://github.com/spiritledsoftware/commissary#readme",
   "bugs": {
