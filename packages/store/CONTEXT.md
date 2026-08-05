@@ -15,8 +15,24 @@ A JSON-compatible object assembled from independently validated Record Fields.
 _Avoid_: Domain object, raw database row, arbitrary JavaScript value
 
 **Record Definition**:
-The base `fields` map that defines one Collection. Each value is one Field Definition. Core and host field maps merge by Record and field name. A concrete adapter factory can accept its own wider typed definition.
+The storage-tier-neutral `fields` map that defines one Collection. Each value is one Field Definition; wider Store tiers can accept definitions with additional intent without changing this base contract.
 _Avoid_: Whole-Record Schema, Record Extension, generic metadata object, adapter configuration standard
+
+**Record Contribution**:
+A complete named Record Definition that Core, an integration, or a host offers for a new Collection Catalog key.
+_Avoid_: Record Override, silent merge, Collection
+
+**Record Override**:
+A host-owned patch that refines or augments an existing Record Definition while preserving every Record, field, selected-output, create-input, and update-input guarantee required by its contributor.
+_Avoid_: Record Contribution, unchecked replacement, integration-owned patch, silent merge
+
+**Effective Record Definition**:
+The immutable Record Definition after Record Contributions and host Record Overrides compose. Every Store adapter uses this one contract for the related Collection.
+_Avoid_: Original contributed definition, mutable merge result, adapter-specific schema copy
+
+**SQL Record Definition**:
+A Record Definition that also states portable and optional database-specific table and column storage intent. It remains a valid base Record Definition, and a Store without SQL capability ignores the wider intent.
+_Avoid_: SQL companion schema, ORM table, database row, separate migration model
 
 **Collection Catalog**:
 The complete effective Core and Custom Record definitions available through the host Store's `collections` map.
@@ -55,8 +71,8 @@ The Field Schema used for full and projected reads, Store Operator field values,
 _Avoid_: Raw stored operator value, Create Field Schema, Update Field Schema, whole-Record validator
 
 **Selected Field Value**:
-The output of one Select Field Schema parse. Public Records and Store Operators use this value. Select parsing alone does not rewrite the stored create, generated, literal-update, or expression output.
-_Avoid_: Raw stored field, automatically persisted select transform, repeated parse of one fallback field value
+The stable output of one Select Field Schema parse. It is the canonical field value that Store operations expose and adapters persist after create, update, or generated values pass through the Select Field Schema.
+_Avoid_: Raw stored field, non-stable Select transform, repeated parse of one fallback field value
 
 **Create Field Schema**:
 The Field Schema used for one field in `create`. It falls back to the Select Field Schema.
@@ -67,15 +83,15 @@ The Field Schema used for a supplied literal field in `update`. It falls back to
 _Avoid_: Complete update validator, Select Field Schema, update expression
 
 **Field Round-Trip Compatibility**:
-The rule that every defined effective select, create, and update output must be accepted as input by the effective Select Field Schema. `undefined` means omission and is excluded. Static types check defined value shapes, and runtime select validation checks refinements.
-_Avoid_: Output equality, unchecked defined transform, adapter conversion promise
+The rule that every defined effective select, create, and update output must be accepted by the effective Select Field Schema, and that parsing a Select output must return the same value. `undefined` means omission and is excluded.
+_Avoid_: Type compatibility alone, non-stable Select transform, raw operation output storage
 
 **Missing Field**:
 A Record Field whose key is absent. Read and create pass `undefined` to the effective Field Schema. A defined output supplies the value or default; an `undefined` output keeps the key absent. An omitted update field remains unchanged.
 _Avoid_: `null`, own property with `undefined`, Unset Expression
 
 **Adapter-Generated Field Value**:
-An adapter-specific default that fills a field only after its Create Field Schema returns `undefined`. A defined host value always wins and cannot be overwritten. The generated value must pass the Select Field Schema.
+An adapter-specific default that fills a field only after its Create Field Schema returns `undefined`. A defined host value always wins, and a generated value becomes a Selected Field Value before storage.
 _Avoid_: Adapter-owned field, write protection, `create: false`, overwritten host value
 
 **Strict Record Parsing**:
@@ -173,6 +189,14 @@ _Avoid_: Effect Layer, concrete adapter, runtime capability registry
 **SQL Store**:
 A Store specialization that lets an integration execute ORM-independent, parameter-safe SQL Statements. It retains Collections and promises only one unchecked Row set; transactions, preparation, streaming, cancellation, session scope, batches, and multiple results require separate Store interfaces.
 _Avoid_: Standalone SQL client, concrete Adapter, ORM Store, runtime capability probe
+
+**SQL Column Type**:
+An opaque storage-family and value-conversion contract for one Selected Field Value. A portable type has stable meaning across SQL adapters, while a database-specific type narrows that intent for one database.
+_Avoid_: Driver type, raw DDL, Field Schema, TypeScript primitive
+
+**SQL Record Reference**:
+An immutable resolved table or column identifier that an SQL definition returns for safe SQL Statement composition. It is independent of one database connection and is neither a Record Definition nor a raw identifier string.
+_Avoid_: Store-scoped token, raw name, database row, unbound definition
 
 **SQL Statement**:
 An inert, composable value that keeps SQL structure separate from bound values until a SQL Store Adapter executes it. Its SQL text can use one database dialect.
