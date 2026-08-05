@@ -60,6 +60,7 @@
     "oxlint": "1.77.0",
     "oxlint-tsgolint": "7.0.2001",
     "playwright": "1.62.1",
+    "skills": "^1.5.21",
     "turbo": "^2.10.8",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10"
