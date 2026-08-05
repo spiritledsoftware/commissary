@@ -187,7 +187,7 @@ A public Store-family interface that extends a more general Store capability con
 _Avoid_: Effect Layer, concrete adapter, runtime capability registry
 
 **SQL Store**:
-A Store specialization that lets an integration execute ORM-independent, parameter-safe SQL Statements. It retains Collections and promises only one unchecked Row set; transactions, preparation, streaming, cancellation, session scope, batches, and multiple results require separate Store interfaces.
+A Store specialization that lets an integration execute ORM-independent, parameter-safe SQL Statements. It retains Collections, promises only one unchecked Row set, and makes at most one driver statement call for each `execute`; transactions, preparation, streaming, cancellation, session scope, batches, and multiple results require separate Store interfaces.
 _Avoid_: Standalone SQL client, concrete Adapter, ORM Store, runtime capability probe
 
 **SQL Column Type**:
@@ -195,12 +195,20 @@ An opaque storage-family and value-conversion contract for one Selected Field Va
 _Avoid_: Driver type, raw DDL, Field Schema, TypeScript primitive
 
 **SQL Record Reference**:
-An immutable resolved table or column identifier that an SQL definition returns for safe SQL Statement composition. It is independent of one database connection and is neither a Record Definition nor a raw identifier string.
+An immutable resolved table or column identifier that an SQL definition returns for safe SQL Statement composition. It is independent of one database connection and is neither a Record Definition nor a raw identifier string. It supplies no direct-SQL parameter conversion.
 _Avoid_: Store-scoped token, raw name, database row, unbound definition
+
+**Integration SQL Record Scope**:
+The resolved SQL Record References that a host passes to an integration factory. They state which Records the integration is intended to use but do not restrict SQL text or create a security boundary.
+_Avoid_: enforced table allowlist, database permission, SQL sandbox, every host database identifier
 
 **SQL Statement**:
 An inert, composable value that keeps SQL structure separate from bound values until a SQL Store Adapter executes it. Its SQL text can use one database dialect.
 _Avoid_: Portable SQL language, driver query object, executed query, mutable text-and-values bag
+
+**SQL Parameter Value**:
+A value kept separate from SQL structure inside an SQL Statement. Every SQL Store Adapter accepts `null`, boolean, finite number, and string values. It converts `null` to SQL `NULL`, converts booleans to the database's normal boolean representation, normalizes negative zero to zero, and rejects non-finite numbers and strings containing NUL. A host or integration converts richer direct-SQL values before interpolation unless it requires a wider SQL Store. A mutable wider value is read when `execute` starts and must not change while that execution remains active.
+_Avoid_: SQL fragment, Raw SQL Text, identifier, direct driver pass-through, non-finite number
 
 **SQL Execution Result**:
 The generic result of one SQL Statement, containing exactly one readonly `rows` array of unchecked driver values. A Store specialization adds only result facts that it guarantees.
@@ -209,6 +217,18 @@ _Avoid_: Selected Records, normalized row values, guessed mutation facts, multip
 **Raw SQL Text**:
 SQL structure inserted by `sql.raw()` without parameter handling. It can be a fragment or a complete statement, and its caller owns its safety.
 _Avoid_: Unchecked SQL Row, bound parameter, driver result
+
+**Manual SQL Transaction Control**:
+`BEGIN`, `COMMIT`, `ROLLBACK`, savepoint, or equivalent SQL submitted through `execute`. It is unsupported because `TransactionStore.transaction()` owns transaction boundaries. An adapter need not detect it, and a caller that uses it breaks the Transaction Store guarantees.
+_Avoid_: Transaction Store operation, supported Raw SQL Text, nested transaction, portable session control
+
+**SQL Statement Error**:
+An expected Store Error reported when `execute` receives a counterfeit SQL Statement or an SQL Parameter Value that the SQL Store Adapter cannot convert. It identifies the safe reason and optional parameter position without copying SQL text or values.
+_Avoid_: SQL Execution Error, database failure, unsafe parameter logging, Adapter Contract Error
+
+**SQL Execution Error**:
+An expected Store Error reported when an SQL Store Adapter cannot execute a valid SQL Statement. Its reason is `execution-failed` or `multiple-results`. It preserves the original failure as its cause and sets `executionMayHaveOccurred` to `false` only when failure occurred before the driver call started. It uses `true` after the call starts or when the outcome is uncertain. It does not copy SQL text or parameter values into safe metadata.
+_Avoid_: SQL Statement Error, driver error exposed directly, database-specific failure taxonomy, safe-to-log cause
 
 **Store Error**:
 The base Error class for expected Store operational failures. Specific subclasses identify validation, Hook, unsupported-operation, adapter I/O, transaction-conflict, and rollback failures. Successful result types do not include these errors.
@@ -227,7 +247,7 @@ An expected Store Error that identifies an adapter I/O failure and preserves the
 _Avoid_: Adapter Contract Error, raw adapter error contract, safe-to-log cause
 
 **Store Adapter Contract Error**:
-A defect Error outside the Store Error hierarchy. It reports that an adapter returned invalid data, overwrote a host value, produced an impossible expression result, or broke its transaction contract.
+A defect Error outside the Store Error hierarchy. It reports that an adapter returned invalid data, overwrote a host value, produced an impossible expression result, returned an invalid SQL result, or broke its transaction contract.
 _Avoid_: Expected Store Error, caller validation failure, unsupported operation, recoverable result
 
 **Safe Store Error Metadata**:
@@ -293,8 +313,16 @@ A Store specialization with one `transaction` operation. Its callback receives a
 _Avoid_: Sequential fallback, shared in-process lock, weaker overlap guarantee, hidden callback retry, `AbortSignal`
 
 **Transaction View**:
-The Store passed to a transaction callback. It uses the transaction's Records and operators, includes adapter capabilities that are safe inside the active transaction, and has no `transaction` method.
+The Store passed to a transaction callback. It uses the transaction's Records and operators, includes adapter capabilities that are safe inside the active transaction, and has no `transaction` method. It closes when the callback settles.
 _Avoid_: Transaction Store, nested transaction, savepoint, independent Store
+
+**Transaction Closed Error**:
+An expected `TransactionClosedError` reported when an operation uses a Transaction View after its callback has settled. The closed View never uses another connection or starts independent work.
+_Avoid_: Adapter I/O failure, implicit new transaction, independent Store operation, use-after-scope
+
+**Transaction Unsettled Operation Error**:
+An expected `TransactionUnsettledOperationError` reported when a transaction callback succeeds while a Store operation that it started remains active. The adapter closes the Transaction View, drains active work, and rolls back instead of committing unawaited work.
+_Avoid_: silent commit, fire-and-forget transaction work, assumed cancellation, Transaction Closed Error
 
 **Transaction Capability**:
 An adapter feature that remains safe and bound to the active transaction. The adapter defines which wider capabilities its Transaction View includes.
@@ -305,15 +333,15 @@ An expected `TransactionConflictError` reported when a transaction cannot commit
 _Avoid_: Adapter I/O failure, partial commit, hidden callback retry, Defect
 
 **Transaction Rollback**:
-The adapter-owned action that discards every write from a failed transaction callback. Each adapter uses its own storage mechanism. Core provides no shared rollback fallback. After rollback succeeds, Store preserves the callback failure. After rollback fails, stored state is unknown.
+The adapter-owned action that discards every write after a transaction callback fails or succeeds with an active Store operation. The adapter closes the Transaction View and drains active work before rollback. Each adapter uses its own storage mechanism. Core provides no shared rollback fallback. After rollback succeeds, Store preserves the callback boundary failure. After rollback fails, stored state is unknown.
 _Avoid_: Failed create cleanup, partial commit, Core rollback, shared rollback implementation
 
 **Transaction Rollback Error**:
-An expected Store Error for a failed Transaction Rollback. It contains the callback failure and rollback failure, sets `writesMayRemain` to `true`, and prevents a Core retry. Its failure values are not safe default telemetry.
+An expected Store Error for a failed Transaction Rollback. It contains the callback boundary failure under `callbackFailure` and the rollback failure under `rollbackFailure`, sets `writesMayRemain` to `true`, and prevents a Core retry. Its failure values are not safe default telemetry.
 _Avoid_: Transaction Callback Failure, Transaction Conflict, known clean state, automatic retry, safe metadata
 
 **Transaction Callback Failure**:
-The exact value that causes a transaction callback to fail. After rollback succeeds, `transaction` rejects with this value unchanged.
+The exact value rejected by a transaction callback, or the Transaction Unsettled Operation Error produced when that callback succeeds with active Store work. After rollback succeeds, `transaction` rejects with this value unchanged.
 _Avoid_: Transaction Conflict, Store wrapper, rollback failure, Adapter I/O failure
 
 **Core Transaction Retry**:
