@@ -170,8 +170,24 @@ _Avoid_: Separate query and update operator objects, global operator registry, h
 Test-only input that states one adapter's operator semantics, string order, equal-value tie behavior, and query limits for shared conformance helpers. It is not available on Store values.
 _Avoid_: Runtime capability registry, production Store metadata, undocumented adapter behavior
 
+**SQL Store Conformance Profile**:
+Test-only input that gives the expected SQL text and ordered driver parameters for one fixed shared SQL Statement. It lets the shared suite check database-specific identifier quoting, placeholder syntax, and portable parameter conversion without guessing a dialect. It is not available on Store values.
+_Avoid_: Runtime dialect registry, production Store metadata, normalized test parameters, shared dialect guess
+
+**SQL Store Conformance Controls**:
+Test-only adapter controls that record driver call count, SQL text, and ordered driver parameters, and script the next driver outcome as rows, failure, multiple results, or an invalid result. A scripted failure states whether it occurs before the statement call starts or during that call so conformance can check `executionMayHaveOccurred`. Each adapter fixture maps the shared outcome to its real driver result shape. The controls are not available on production Store values.
+_Avoid_: Runtime capability, production driver access, hidden call log, optional SQL check
+
+**SQL Store Conformance Fixture**:
+A new empty SQL Store and new SQL Store Conformance Controls created for one independently executable conformance scenario. Shared state and a reset operation are unnecessary.
+_Avoid_: Shared Store, shared call history, reset method, scenario-order dependency
+
+**SQL Transaction Conformance Statements**:
+Adapter-specific SQL Statement factories that insert and delete the fixed conformance Record. The combined SQL Transaction Store suite uses them with Collection operations to prove that both paths share committed and rolled-back data without exposing a physical transaction identifier.
+_Avoid_: Production migration API, raw transaction identifier, driver session handle, mocked shared state
+
 **Transaction Conformance Controls**:
-Test-only adapter controls that hold and release one operation, force rollback failure, and count commits and rollbacks so shared Transaction Store checks are deterministic. They are not available on production Store values.
+Test-only adapter controls that hold and release one operation, force rollback failure, and count physical transaction starts, commits, and rollbacks so shared Transaction Store checks are deterministic and can prove that one public transaction uses one physical transaction. They are not available on production Store values.
 _Avoid_: runtime capability, timing sleep, production failure injection, optional transaction check
 
 **Store Expression**:
@@ -235,7 +251,7 @@ An SQL Parameter Value wrapped by `sql.param(value, options?)` for direct SQL. W
 _Avoid_: SQL Identifier, Raw SQL Text, implicit field conversion, driver parameter
 
 **SQL Execution Result**:
-The generic result of one SQL Statement, containing exactly one readonly `rows` array of unchecked driver values. Generic `execute` rejects multiple result sets; a future Batch Store feature can handle them when a Store supports that feature and a real caller needs it. A Store specialization adds only result facts that it guarantees.
+The generic result of one SQL Statement, containing exactly one readonly `rows` array of unchecked driver values. The adapter can return driver row containers without copying or freezing them, but it must not change them after fulfillment. A later change is an adapter defect and cannot retroactively reject the fulfilled Promise. Generic `execute` rejects multiple result sets; a future Batch Store feature can handle them when a Store supports that feature and a real caller needs it. A Store specialization adds only result facts that it guarantees.
 _Avoid_: Selected Records, normalized row values, guessed mutation facts, multiple result sets
 
 **Raw SQL Text**:
@@ -271,7 +287,7 @@ An expected Store Error that identifies an adapter I/O failure and preserves the
 _Avoid_: Adapter Contract Error, raw adapter error contract, safe-to-log cause
 
 **Store Adapter Contract Error**:
-A defect Error outside the Store Error hierarchy. It reports that an adapter returned invalid data, overwrote a host value, produced an impossible expression result, failed SQL compilation, or broke its transaction contract. SQL compilation callback defects use operation `execute` and violation `invalid-sql-compilation`. An invalid SQL result uses operation `execute` and violation `invalid-sql-result`; it never retains returned data as `cause`, but it can retain a separate failure thrown while checking that data.
+A defect Error outside the Store Error hierarchy. It reports that an adapter returned invalid data, overwrote a host value, produced an impossible expression result, failed SQL compilation, or broke its transaction contract. SQL compilation callback defects use operation `execute` and violation `invalid-sql-compilation`. An SQL result with an invalid shape rejects before fulfillment with operation `execute` and violation `invalid-sql-result`; it never retains returned data as `cause`, but it can retain a separate failure thrown while checking that data.
 _Avoid_: Expected Store Error, caller validation failure, unsupported operation, recoverable result
 
 **Safe Store Error Metadata**:
