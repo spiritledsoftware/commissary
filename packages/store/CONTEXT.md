@@ -228,7 +228,7 @@ _Avoid_: enforced table allowlist, database permission, SQL sandbox, every host 
 
 **SQL Statement**:
 An immutable, composable value that keeps SQL structure separate from bound values until a SQL Store Adapter executes it. Package SQL helpers validate their structural arguments immediately, throw `TypeError` for invalid arguments, and return only valid, immutable SQL Statements. Resolved SQL Record References also create valid SQL Statements. Compatible installed package copies accept each other's Statements; `execute` rejects incompatible or counterfeit values. SQL text can use one database dialect, and the database decides whether genuine empty SQL is valid.
-_Avoid_: Portable SQL language, driver query object, executed query, mutable text-and-values bag
+_Avoid_: Portable SQL, driver query object, executed query, mutable text-and-values bag
 
 **SQL Statement Compiler**:
 The official adapter-facing `@commissary/store/sql-adapter` operation that checks and compiles an opaque SQL Statement with adapter-supplied identifier quoting, zero-based parameter placeholders, a parameter support check, and parameter conversion. It processes parameters from left to right, runs each explicit encoder before that parameter's support check, applies the shared finite-number, negative-zero, and NUL-string rules, then calls adapter conversion. It stops at the first failure without calling the driver. An unsupported value becomes `SqlStatementError` reason `unsupported-parameter`; a thrown encoder, support, or conversion failure becomes `invalid-parameter` with its zero-based position and cause. A failing identifier quote or placeholder callback, or its non-string output, becomes `StoreAdapterContractError` violation `invalid-sql-compilation`. The compiler returns SQL text and ordered driver values without exposing Statement internals.
@@ -259,7 +259,7 @@ SQL structure inserted by `sql.raw()` without parameter handling. It can be a fr
 _Avoid_: Unchecked SQL Row, bound parameter, driver result
 
 **Manual SQL Transaction Control**:
-`BEGIN`, `COMMIT`, `ROLLBACK`, savepoint, or equivalent SQL submitted through `execute`. It is unsupported because `TransactionStore.transaction()` owns transaction boundaries. An adapter need not detect it, and a caller that uses it breaks the Transaction Store guarantees.
+`BEGIN`, `COMMIT`, `ROLLBACK`, savepoint, or equivalent SQL submitted through `execute`. It is unsupported because `TransactionStore.transaction()` owns transaction boundaries. An adapter need not detect it. Transaction Store guarantees apply only when callers do not submit it, and conformance tests never submit it.
 _Avoid_: Transaction Store operation, supported Raw SQL Text, nested transaction, portable session control
 
 **SQL Statement Error**:
@@ -349,7 +349,7 @@ _Avoid_: Required field removal, schema-library metadata, `null`, path-based del
 ### Transactions
 
 **Transaction Store**:
-A Store specialization with one `transaction` operation. Its callback receives a Transaction View without `transaction`, so nesting is not supported. A wider adapter adds each capability that is safe inside the active transaction. Version 1 accepts no cancellation option. Overlapping transactions must act as if they ran one at a time, and two conflicting transactions cannot both commit. Each adapter enforces this rule in its storage system. It can use a database or ORM transaction operation internally, but it must wrap that operation to preserve every Transaction Store guarantee. One transaction call invokes its callback at most once. If the callback fails, the adapter discards all of its writes and then reports the same failure value. A failed rollback reports a Transaction Rollback Error.
+A Store specialization with one `transaction` operation. Its callback receives a Transaction View without `transaction`, so nesting is not supported. A wider adapter adds each capability that is safe inside the active transaction. Version 1 accepts no cancellation option. Overlapping transactions must act as if they ran one at a time, and two conflicting transactions cannot both commit. Each adapter enforces this rule in its storage system. It can use a database or ORM transaction operation internally, but it must wrap that operation to preserve every Transaction Store guarantee. One transaction call invokes its callback at most once. If the callback fails, the adapter discards all of its writes. A successful rollback reports the same failure value; a failed rollback reports a Transaction Rollback Error.
 _Avoid_: Sequential fallback, shared in-process lock, weaker overlap guarantee, hidden callback retry, `AbortSignal`
 
 **Transaction Callback Runner**:
@@ -365,7 +365,7 @@ An expected `TransactionClosedError` reported when an operation uses a Transacti
 _Avoid_: Adapter I/O failure, implicit new transaction, independent Store operation, use-after-scope
 
 **Transaction Unsettled Operation Error**:
-An expected `TransactionUnsettledOperationError` with no constructor options or operation data, reported when a transaction callback succeeds while a Store operation that it started remains active. This error takes priority over settled operation failures when the callback itself succeeded. The adapter closes the Transaction View, drains active work, and rolls back instead of committing unawaited work. JavaScript cannot report whether a settled Promise was awaited, so an operation that finished before the callback settled is not active. If active work never settles, the transaction remains pending because the base contract has no safe timeout or cancellation rule.
+An expected `TransactionUnsettledOperationError` with no constructor options or operation data, reported when a transaction callback succeeds while a Store operation that it started remains active. This error takes priority over settled operation failures when the callback itself succeeded. The adapter closes the Transaction View, drains active work, and rolls back instead of committing unawaited work. JavaScript cannot report whether a settled Promise was awaited, so an operation that finished before the callback settled is not active. If active work never settles, the transaction remains pending because the base contract has no safe timeout or cancellation rule. Hosts must use backend-specific operation, transaction, session, and lock limits plus monitoring to bound resources; these controls are outside the portable Store contract and must make the active operation settle before rollback starts.
 _Avoid_: silent commit, fire-and-forget transaction work, assumed cancellation, Transaction Closed Error
 
 **Transaction Operation Failure**:
