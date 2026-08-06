@@ -23,10 +23,11 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  changeset:
-    name: Changeset
-    if: github.event_name == 'pull_request'
+  policy:
+    name: Policy
     runs-on: ubuntu-24.04
+    outputs:
+      documentation_only: ${{ steps.classify.outputs.documentation_only }}
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -39,20 +40,56 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
+      - name: Classify changed files
+        id: classify
+        run: node scripts/classify-ci-change.mjs
+        env:
+          CI_BASE_SHA: ${{ github.event.before }}
+
       - name: Check Changeset policy
+        if: github.event_name == 'pull_request'
         run: node scripts/check-changeset.mjs
         env:
           PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
 
-  verify:
+  documentation:
+    name: Documentation
+    needs: policy
+    if: needs.policy.outputs.documentation_only == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11.16.0
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check documentation formatting
+        run: pnpm run format:check
+
+  node:
     name: Node ${{ matrix.node-version }}
+    needs: policy
+    if: needs.policy.outputs.documentation_only != 'true'
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
         node-version:
-          - 22.14.0
-          - 24
+          - "22.14.0"
+          - "24"
 
     steps:
       - name: Check out repository
@@ -72,41 +109,63 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: pnpm
 
+      - name: Restore Turbo cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .turbo
+          key: turbo-${{ runner.os }}-${{ runner.arch }}-node-${{ matrix.node-version }}-${{ hashFiles('pnpm-lock.yaml', 'turbo.json') }}-${{ github.sha }}
+          restore-keys: |
+            turbo-${{ runner.os }}-${{ runner.arch }}-node-${{ matrix.node-version }}-${{ hashFiles('pnpm-lock.yaml', 'turbo.json') }}-
+            turbo-${{ runner.os }}-${{ runner.arch }}-node-${{ matrix.node-version }}-
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Verify source
-        run: pnpm run verify
-
+      - name: Check formatting
+        if: matrix.node-version == '24'
+        run: pnpm run format:check
       - name: Build packages
         run: pnpm run build
+
+      - name: Lint source
+        if: matrix.node-version == '24'
+        run: pnpm run lint
+
+      - name: Test repository scripts
+        if: matrix.node-version == '24'
+        run: pnpm run test:scripts
+
+      - name: Type-check affected packages
+        if: matrix.node-version == '24' && github.event_name == 'pull_request'
+        run: pnpm exec turbo run typecheck --affected
+
+      - name: Type-check all packages
+        if: matrix.node-version == '24' && github.event_name != 'pull_request'
+        run: pnpm run typecheck
+
+      - name: Test affected packages
+        if: github.event_name == 'pull_request'
+        run: pnpm exec turbo run test --affected
+
+      - name: Test all packages
+        if: github.event_name != 'pull_request'
+        run: pnpm run test
 
       - name: Check built imports
         run: pnpm run check:imports
 
-      - name: Run runtime smoke test
-        run: pnpm run smoke
+      - name: Run Node.js runtime conformance
+        run: pnpm run conformance:node
 
       - name: Check package archives
         if: matrix.node-version == '24'
         run: pnpm run pack:check
 
-  runtime:
-    name: ${{ matrix.name }}
+  server-runtime:
+    name: Server runtimes
+    needs: policy
+    if: needs.policy.outputs.documentation_only != 'true'
     runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Bun
-            command: pnpm run conformance:bun
-          - name: Deno
-            command: pnpm run conformance:deno
-          - name: Chromium
-            command: pnpm run conformance:browser
-          - name: Cloudflare Workers
-            command: pnpm run conformance:cloudflare
-
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -123,15 +182,110 @@ jobs:
           node-version: 24
           cache: pnpm
 
+      - name: Restore Turbo cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .turbo
+          key: turbo-${{ runner.os }}-${{ runner.arch }}-server-runtimes-${{ hashFiles('pnpm-lock.yaml', 'turbo.json') }}-${{ github.sha }}
+          restore-keys: |
+            turbo-${{ runner.os }}-${{ runner.arch }}-server-runtimes-${{ hashFiles('pnpm-lock.yaml', 'turbo.json') }}-
+            turbo-${{ runner.os }}-${{ runner.arch }}-server-runtimes-
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-
-      - name: Install Chromium
-        if: matrix.name == 'Chromium'
-        run: pnpm exec playwright install --with-deps chromium
 
       - name: Build packages
         run: pnpm run build
 
-      - name: Run runtime conformance
-        run: ${{ matrix.command }}
+      - name: Run Bun runtime conformance
+        id: bun
+        continue-on-error: true
+        run: pnpm run conformance:bun
+
+      - name: Run Deno runtime conformance
+        id: deno
+        continue-on-error: true
+        run: pnpm run conformance:deno
+
+      - name: Run Cloudflare Workers runtime conformance
+        id: cloudflare
+        continue-on-error: true
+        run: pnpm run conformance:cloudflare
+
+      - name: Require every server runtime
+        env:
+          BUN_RESULT: ${{ steps.bun.outcome }}
+          DENO_RESULT: ${{ steps.deno.outcome }}
+          CLOUDFLARE_RESULT: ${{ steps.cloudflare.outcome }}
+        run: |
+          if [[ "$BUN_RESULT" == "success" && "$DENO_RESULT" == "success" && "$CLOUDFLARE_RESULT" == "success" ]]; then
+            exit 0
+          fi
+          echo "Server runtime conformance failed: Bun=$BUN_RESULT, Deno=$DENO_RESULT, Cloudflare Workers=$CLOUDFLARE_RESULT"
+          exit 1
+
+  chromium:
+    name: Chromium
+    needs: policy
+    if: needs.policy.outputs.documentation_only != 'true'
+    runs-on: ubuntu-24.04
+    container:
+      image: mcr.microsoft.com/playwright:v1.62.1-noble@sha256:c091b21d9fae78c76e85cd4356431e9b018402f172a214fc7d7a5e9a7e29d8ac
+      options: --user 1001
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11.16.0
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Restore Turbo cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .turbo
+          key: turbo-${{ runner.os }}-${{ runner.arch }}-chromium-playwright-1.62.1-${{ hashFiles('pnpm-lock.yaml', 'turbo.json') }}-${{ github.sha }}
+          restore-keys: |
+            turbo-${{ runner.os }}-${{ runner.arch }}-chromium-playwright-1.62.1-${{ hashFiles('pnpm-lock.yaml', 'turbo.json') }}-
+            turbo-${{ runner.os }}-${{ runner.arch }}-chromium-playwright-1.62.1-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build packages
+        run: pnpm run build
+
+      - name: Run Chromium runtime conformance
+        run: pnpm run conformance:browser
+
+  ci:
+    name: CI
+    if: always()
+    needs:
+      - policy
+      - documentation
+      - node
+      - server-runtime
+      - chromium
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Require applicable CI jobs
+        run: node scripts/check-ci-gate.mjs
+        env:
+          DOCUMENTATION_ONLY: ${{ needs.policy.outputs.documentation_only }}
+          POLICY_RESULT: ${{ needs.policy.result }}
+          DOCUMENTATION_RESULT: ${{ needs.documentation.result }}
+          NODE_VERIFICATION_RESULT: ${{ needs.node.result }}
+          SERVER_RUNTIME_RESULT: ${{ needs.server-runtime.result }}
+          CHROMIUM_RESULT: ${{ needs.chromium.result }}

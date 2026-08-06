@@ -44,9 +44,27 @@ pnpm changeset
 
 Choose each affected package and the correct semantic version change. Write the summary for package users. Tests, documentation, CI changes, and internal refactoring can omit a Changeset. Explain the reason in the pull request so a maintainer can apply the `no-changeset` label.
 
+## Documentation-only changes
+
+CI treats a change as documentation-only only when every changed file is in one of these locations:
+
+- `docs/**`
+- Root Markdown files or `LICENSE`
+- `packages/*/README.md`, `packages/*/CONTEXT.md`, or `packages/*/docs/**`
+- Markdown files under `.github/**` or `.agents/**`
+- `.changeset/README.md`
+
+A release entry under `.changeset/*.md`, an unknown documentation path, or a change that mixes documentation and other files requires full CI verification.
+
+For a documentation-only change, run:
+
+```sh
+pnpm run format:check
+```
+
 ## Check the change
 
-Run the same checks used by CI:
+Run the same commands used by CI for every other change:
 
 ```sh
 pnpm run verify

@@ -110,4 +110,4 @@ After CI has reported its checks once, create an active ruleset for `main` with 
 - Require resolved review conversations.
 - Require linear history.
 - Block force pushes and branch deletion.
-- Select `Changeset`, `Node 22.14.0`, `Node 24`, `Bun`, `Deno`, `Chromium`, `Cloudflare Workers`, and `Conventional title` as required checks.
+- Select `CI` and `Conventional title` as required checks. The `CI` check accepts only the jobs required for the classified change and gates complete runtime verification on `main`.
