@@ -990,6 +990,275 @@ Preserve the original converter failure as `cause` and include Collection, opera
 
 MySQL metadata, column types, Statements, and resolutions use opaque format identity instead of module-local `instanceof`. Compatible `@commissary/store` package copies interoperate. Incompatible formats and caller-made lookalikes fail. Freeze package-owned objects, arrays, resolutions, and issue lists; keep Schema objects and converter functions by reference.
 
+### SQLite Record specialization
+
+The SQLite specialization targets SQLite 3.45 and later. It defines Drizzle-independent metadata and resolution assets. It does not create a SQLite-named runtime Store interface. Definition is synchronous and performs no database or version check. A concrete adapter rejects an unsupported live engine or driver path during binding.
+
+The Drizzle compatibility authority is commit `b7862528fd8fc39bc2653a6c18dad7c1f4e68d10`. Use the commit, not its manifest version, because that version was not published to npm. Only capabilities that the planned Drizzle adapter can preserve are public.
+
+Do not expose `STRICT`, `WITHOUT ROWID`, attached-database qualification, SQLite JSONB, general constraints, collations, conflict policies, indexes, relations, or migration data. Generated columns and the integer-primary-key ROWID behavior are in scope because the adapter can preserve them.
+
+#### Ownership and authoring
+
+Integrations author one `SqlRecord` with portable `sql.*` metadata and optional `sqlite.*` refinements:
+
+```ts
+const LedgerEntry = SqlRecord.define({
+  table: sql.table({
+    name: "ledger_entries",
+    sqlite: sqlite.table({
+      name: "ledger_entry",
+    }),
+  }),
+  fields: {
+    details: {
+      select: Schema.JsonValue,
+      column: sql.column({
+        type: sql.json(),
+        sqlite: sqlite.column({
+          type: sqlite.jsonBlob(),
+        }),
+      }),
+    },
+  },
+});
+```
+
+`sqlite.table()` and `sqlite.column()` create only SQLite refinements. They do not resolve a catalog or create adapter assets. Do not add `SqliteSql.define()`, `SqliteStore.define()`, `SqliteRecord`, or another host-facing SQLite definition factory. A host calls only its selected concrete adapter.
+
+`@commissary/store/sqlite-adapter` exposes the synchronous, I/O-free resolver used by concrete adapters:
+
+```ts
+export declare function resolveSqliteRecords<
+  const Definitions extends RecordDefinitions,
+  const Overrides extends RecordOverrides<Definitions> = {},
+>(options: {
+  readonly records: Definitions;
+  readonly overrides?: Overrides;
+}): SqliteRecordResolution<ApplyOverrides<Definitions, Overrides>>;
+
+export interface SqliteRecordResolution<Definitions extends RecordDefinitions> {
+  readonly records: SqlRecordReferences<Definitions>;
+  readonly tables: SqliteResolvedTables<Definitions>;
+}
+```
+
+The resolver applies contributions and overrides, activates `sqlite` metadata, rebuilds inference, validates the effective catalog, and returns immutable resolved references and adapter assets. It contains no generated DDL, Drizzle values, indexes, relations, migration data, or driver registry.
+
+#### Public SQLite metadata
+
+The rough public types are:
+
+```ts
+export type SqliteEncodedValue = string | number | boolean | Uint8Array;
+
+export interface SqliteColumnType<in Value extends JsonValue> extends SqlColumnType<Value> {
+  // Opaque package-owned SQLite storage and conversion contract.
+}
+
+export interface SqliteTableDefinition {
+  readonly name?: string | null;
+}
+
+export interface SqliteRowid {
+  readonly reuse?: "allowed" | "forbidden";
+}
+
+export interface SqliteGenerated {
+  readonly expression: SqlStatement<never>;
+  readonly mode: "virtual" | "stored";
+}
+
+export interface SqliteColumnDefinition<Value extends JsonValue> {
+  readonly name?: string | null;
+  readonly type?: SqliteColumnType<Value> | null;
+  readonly default?: SqlLiteral<Extract<Value, SqlLiteralValue>> | SqlStatement<never> | null;
+  readonly notNull?: boolean | null;
+  readonly rowid?: SqliteRowid | null;
+  readonly generated?: SqliteGenerated | null;
+}
+
+export interface SqliteCustomTypeOptions<Value extends JsonValue> {
+  readonly type: SqlStatement<never>;
+  readonly encode: (value: Value) => SqliteEncodedValue;
+  readonly decode: (value: unknown) => Value;
+}
+
+export declare const sqlite: {
+  readonly table: <const Options extends SqliteTableDefinition>(
+    options: Options,
+  ) => Readonly<Options>;
+  readonly column: <Value extends JsonValue, const Options extends SqliteColumnDefinition<Value>>(
+    options: Options,
+  ) => Readonly<Options>;
+
+  readonly integer: () => SqliteColumnType<number>;
+  readonly boolean: () => SqliteColumnType<boolean>;
+  readonly timestampSeconds: () => SqliteColumnType<string>;
+  readonly timestampMilliseconds: () => SqliteColumnType<string>;
+  readonly real: () => SqliteColumnType<number>;
+  readonly text: () => SqliteColumnType<string>;
+  readonly json: () => SqliteColumnType<JsonValue>;
+  readonly blob: () => SqliteColumnType<string>;
+  readonly jsonBlob: () => SqliteColumnType<JsonValue>;
+  readonly bigintBlob: () => SqliteColumnType<string>;
+  readonly numeric: () => SqliteColumnType<string>;
+  readonly numericNumber: () => SqliteColumnType<number>;
+  readonly custom: <Value extends JsonValue>(
+    options: SqliteCustomTypeOptions<Value>,
+  ) => SqliteColumnType<Value>;
+};
+```
+
+Each named helper has one application value and one storage contract. Do not expose Drizzle-style `{ mode }` options, `int` or `customType` aliases, `defaultNow`, text length, TypeScript-only text enums, or a numeric bigint mode.
+
+`SqliteColumnType<Value>` is contravariant. The resolver checks the defined Select output after removing `null` and `undefined`. This permits branded string refinements. Helpers never replace Select, Create, or Update Schema inference.
+
+#### Direct type behavior
+
+Direct helpers use these driver-independent contracts:
+
+| SQLite helper           | SQLite storage | Application value                 |
+| ----------------------- | -------------- | --------------------------------- |
+| `integer`               | `INTEGER`      | safe integer `number`             |
+| `boolean`               | `INTEGER`      | `boolean`                         |
+| `timestampSeconds`      | `INTEGER`      | UTC whole-second `string`         |
+| `timestampMilliseconds` | `INTEGER`      | UTC whole-millisecond `string`    |
+| `real`                  | `REAL`         | finite `number`                   |
+| `text`                  | `TEXT`         | NUL-free `string`                 |
+| `json`                  | `TEXT`         | `JsonValue`                       |
+| `blob`                  | `BLOB`         | padded RFC 4648 base64 `string`   |
+| `jsonBlob`              | `BLOB`         | `JsonValue`                       |
+| `bigintBlob`            | `BLOB`         | canonical signed decimal `string` |
+| `numeric`               | `NUMERIC`      | canonical finite numeric `string` |
+| `numericNumber`         | `NUMERIC`      | finite `number`                   |
+
+`integer` accepts only JavaScript safe integers. SQLite has a wider signed 64-bit integer range, but this helper never implies unsafe number precision.
+
+`boolean` writes zero or one. Reads accept only a normalized numeric zero or one. Another stored value is an invalid selected Record, not implicit truthiness.
+
+`timestampSeconds` uses `YYYY-MM-DDTHH:mm:ssZ`. `timestampMilliseconds` uses `YYYY-MM-DDTHH:mm:ss.SSSZ`. Values use the proleptic Gregorian calendar, years `0000` through `9999`, a literal `Z`, valid calendar fields, and no leap-second value. They encode signed Unix epoch seconds or milliseconds as `INTEGER` and decode the stored integer to the same canonical UTC form.
+
+`real` and `numericNumber` accept only finite numbers and normalize negative zero to zero. `numericNumber` keeps SQLite `NUMERIC` affinity instead of emitting `REAL`.
+
+`text` preserves exact NUL-free Unicode text. It defines no length, collation, or Unicode-normalization policy.
+
+`blob` decodes padded RFC 4648 base64 to exact bytes. `json` stores UTF-8 JSON text. `jsonBlob` stores the same UTF-8 JSON representation as bytes; it is not SQLite JSONB and makes no JSON1 processing guarantee. `bigintBlob` stores the UTF-8 bytes of canonical signed decimal text with no leading plus, whitespace, exponent, redundant leading zero, or negative zero.
+
+`numeric` accepts an optional minus, a nonredundant decimal integer part, an optional fraction with no trailing zero, and an optional lowercase `e` exponent with no plus or redundant leading zero. Zero is exactly `"0"`. Whitespace, non-decimal forms, `NaN`, infinity, and negative zero are invalid. The represented value must be finite. SQLite `NUMERIC` affinity can convert the text to `INTEGER` or `REAL`, normalize it, and round precision. Selected values describe the stored result in the same canonical grammar; they do not preserve input spelling.
+
+A concrete adapter must reject live binding when its driver path cannot preserve the required selected value or precision. Adapters decode the stored result after writes rather than echoing the input.
+
+The operation and Select Schema parsers validate field values first. A direct SQLite codec then validates canonical syntax, JSON safety, and range before database work. Invalid caller values use `StoreValidationError`. An invalid stored direct value uses `StoreAdapterContractViolation` with `"invalid-selected-record"`.
+
+SQL `NULL` bypasses every direct and custom codec. A required `Value | null` field selects SQL `NULL` as `null`. An optional `Value` field treats SQL `NULL` as missing. An optional `Value | null` field needs a custom representation because one SQL `NULL` cannot preserve both states.
+
+#### Custom types
+
+A custom type uses a nonempty `SqlStatement<never>` for exact declared type structure. Definition checks package origin, nonempty structure, and the actual absence of bound parameters. It does not parse the declared type or infer SQLite affinity. This path supports extensions and vendor types without adding package-owned helpers.
+
+Custom conversion is synchronous:
+
+```txt
+write: operation Schema -> Select Schema -> encode -> database
+read:  database -> decode -> Select Schema -> Selected Record
+```
+
+The resolver snapshots function references but never invokes them. An encoder must return a string, finite number, boolean, or `Uint8Array`. Statements, Promises, other objects, arrays, `undefined`, and driver objects are invalid encoded values. A custom decoder accepts `unknown`; its output must be a `JsonValue` before the Select Schema checks it.
+
+Custom encoder throws and invalid outputs use `StoreAdapterContractViolation` with `"invalid-column-encoding"`. Custom decode failures, non-JSON decoded values, and read-side Select Schema failures use `StoreAdapterContractViolation` with `"invalid-selected-record"`. Preserve the original converter failure as `cause` and include Collection, operation, and field.
+
+Resolved direct codecs expose the same synchronous `encode(value)` and `decode(unknown)` shape. They contain no driver-specific `Buffer`, `Date`, or JavaScript `bigint` values. A concrete adapter converts driver-specific output before direct decoding.
+
+#### Defaults, ROWID generation, and generated columns
+
+SQLite defaults and generated expressions accept parameter-free Statements. Definition checks package origin, nonempty structure, and the actual absence of bound parameters. It does not parse SQL or validate functions, column references, subqueries, determinism, or result types. SQLite owns semantic expression validation, and `sql.raw()` remains trusted unchecked structure.
+
+`rowid` is valid only when the effective direct type is `sqlite.integer()`. It describes SQLite's `INTEGER PRIMARY KEY` row identity and generation behavior:
+
+- at most one column per table can have `rowid`;
+- it implies `NOT NULL`, and explicit `notNull: false` conflicts;
+- it conflicts with a default and generated metadata;
+- omission during create lets SQLite generate the value;
+- explicit create and update accept any safe integer, including zero and negative values; and
+- omitted update leaves the value unchanged.
+
+Omitted `reuse` means `"allowed"`. `"allowed"` uses ordinary `INTEGER PRIMARY KEY` behavior. `"forbidden"` emits `AUTOINCREMENT`; it prevents reuse of committed ROWIDs but does not promise consecutive values or prevent gaps.
+
+ROWID metadata is the only constraint-like metadata owned here because it defines physical row identity and generation. General primary keys, unique constraints, checks, foreign keys, collations, conflict policies, indexes, and relations remain host-owned. A concrete adapter must reject a host constraint that conflicts with the resolved ROWID contract.
+
+A generated column has a parameter-free expression and explicit `"virtual"` or `"stored"` mode. Direct and custom types can be generated. Generation conflicts with a default and ROWID metadata. SQLite validates the expression. At least one effective column in each table must be non-generated. Generated columns can be nullable.
+
+Database metadata does not change `SelectedRecord`, `CreateInput`, or `UpdateInput`. Field Schemas remain their only source. Store write behavior is:
+
+| Metadata                    | Omitted create | Explicit create         | Explicit update         |
+| --------------------------- | -------------- | ----------------------- | ----------------------- |
+| ordinary default            | use default    | host value wins         | host value wins         |
+| ROWID                       | generate       | permit any safe integer | permit any safe integer |
+| virtual or stored generated | compute        | reject                  | reject                  |
+
+Prohibited generated writes and invalid direct values use `StoreValidationError` with Collection, operation, phase, field, and a field-local issue. Omitted updates otherwise remain unchanged. Adapters read and decode the stored result after writes so SQLite-owned defaults, ROWIDs, generation, affinity conversion, and rounding are visible.
+
+#### Names, precedence, and collisions
+
+SQLite table and column names are exact separately quoted values. Never split a dotted string. Names must be nonempty NUL-free Unicode text. There is no fixed package length limit and no Unicode normalization. Database and schema qualifiers are not represented.
+
+Collision checks use SQLite ASCII case folding only: `A` through `Z` compare as `a` through `z`, and every other code point compares exactly. Columns conflict only inside their table. Effective table names conflict across the complete catalog. Reject effective table names beginning with `sqlite_` under the same ASCII-insensitive comparison because SQLite reserves that prefix.
+
+Active SQLite metadata can override portable `name`, `type`, `default`, and `notNull`, and it can add `rowid` and `generated`. Type precedence is:
+
+1. active SQLite type;
+2. portable explicit SQL type; and
+3. Select Schema reflection.
+
+Portable types map as follows:
+
+| Portable helper | SQLite helper      |
+| --------------- | ------------------ |
+| `sql.text()`    | `sqlite.text()`    |
+| `sql.number()`  | `sqlite.real()`    |
+| `sql.integer()` | `sqlite.integer()` |
+| `sql.boolean()` | `sqlite.boolean()` |
+| `sql.json()`    | `sqlite.json()`    |
+
+Absence inherits. `null` removes one inherited optional setting. After contributions and overrides, the resolver rebuilds all reflection, names, types, defaults, nullability, ROWID and generated-column facts, codecs, and collisions.
+
+#### Resolution assets and failures
+
+The adapter resolution exposes tables by Record key and columns by field key. Each table contains its exact name, reference, and columns. Each column contains its exact name and reference, resolved nullability, a discriminated direct or custom type, its default, ROWID and generation data, and synchronous encode and decode functions. Adapter authors switch exhaustively on named helper discriminants and do not parse generated SQL type text. Custom columns retain their type Statement.
+
+Metadata and type helper constructors preserve literal inference, snapshot options, and return immutable values. They throw `TypeError` immediately only for malformed values supplied directly to `sqlite.*` helper invocations, including invalid atomic option values, local names, parameterized custom type structure, missing converter functions, and incompatible opaque formats. They never inspect Record field values, Schemas, inherited metadata, overrides, collisions, or cross-property constraints. Plain structural metadata does not pass through constructor validation.
+
+The resolver checks effective values together with inherited metadata, precedence, Schema compatibility, cross-property conflicts, and catalog collisions. Each failure has one owner:
+
+- malformed `sqlite.*` helper invocations use immediate `TypeError`;
+- malformed plain structural metadata and all other effective metadata or catalog failures use aggregated `SqlDefinitionError`;
+- write-side operation and Select Schema failures use `StoreValidationError`;
+- direct SQLite encoding syntax, JSON-safety, or range failures for caller-supplied values use `StoreValidationError`;
+- custom encoder throws and invalid encoded values use `StoreAdapterContractViolation` with `"invalid-column-encoding"`; and
+- direct or custom decode failures, non-JSON decoded values, and read-side Select Schema rejections use `StoreAdapterContractViolation` with `"invalid-selected-record"`.
+
+`resolveSqliteRecords()` reuses the database-neutral issue codes:
+
+- names use `invalid-name`;
+- catalog collisions use `duplicate-name`;
+- missing storage evidence uses `column-type-required`;
+- invalid effective direct contracts, custom structure, or converters use `invalid-column-type`;
+- defaults use `invalid-column-default`;
+- ROWID, generation, nullability, and other SQLite option conflicts use `invalid-database-options`; and
+- composition uses the existing contribution and override codes.
+
+Issues point to the winning `records` or `overrides` source. A conflict points to the later or higher-precedence setting and names the other source in its message. A duplicate issue belongs to the later name. Composition and override issues precede effective-catalog checks. Effective checks then follow Record declaration and this fixed order:
+
+1. table name and table-format validity;
+2. for each field in declaration order: column name, opaque type identity, storage evidence, Select compatibility, direct or custom type contract, default, nullability, ROWID, generation, and cross-property compatibility;
+3. table-wide ROWID count, the non-generated-column rule, and column-name collisions; and
+4. table-name collisions across Records.
+
+When two owned names or references enter the same step, first use controls order and the issue belongs to the later one. Checks that depend on one invalid prerequisite are skipped; every independent check continues.
+
+SQLite metadata, column types, Statements, and resolutions use opaque format identity instead of module-local `instanceof`. Compatible `@commissary/store` package copies interoperate. Incompatible formats and caller-made lookalikes fail. Freeze package-owned objects, arrays, resolutions, references, and issue lists; keep Schema objects and converter functions by reference.
+
 ### SQL Statements
 
 The root public types are:
@@ -1346,6 +1615,17 @@ Package-level SQL Record tests cover:
 - final table and column conflicts; and
 - immutable resolved references for base and SQL definitions.
 
+SQLite Record specialization tests cover:
+
+- every named helper's value inference, storage discriminant, and direct codec boundaries;
+- portable type mapping, active SQLite refinement, deep overrides, and null removal;
+- custom type structure, encoded values, converter failures, and package compatibility;
+- ordinary and `AUTOINCREMENT` ROWID generation, explicit safe integers, and every conflict;
+- virtual and stored generation, write rejection, and the non-generated-column rule;
+- exact names, reserved table names, ASCII-folded collisions, and no Unicode normalization;
+- stable multi-issue order and dependent-check skipping; and
+- immutable table, column, reference, codec, and issue assets.
+
 Statement tests cover:
 
 - immediate helper `TypeError` cases;
@@ -1398,13 +1678,13 @@ Test controls never appear on production Store values.
 
 ```txt
 Integration-authored lower-tier Records
-  -> SqlRecord.define with sql.table/column and optional pg.table/column
-  -> concrete host adapter calls resolvePostgresRecords with records + overrides
+  -> SqlRecord.define with sql.table/column and optional pg/mysql/sqlite refinements
+  -> concrete host adapter calls the matching database resolver with records + overrides
   -> resolver composes one effective Record catalog
   -> resolver checks contributor compatibility
-  -> resolver chooses active PostgreSQL metadata
+  -> resolver chooses the active database metadata
   -> resolver resolves names, types, generated behavior, assets, and conflicts
-  -> freeze PostgreSQL resolution assets + .records references
+  -> freeze the database resolution assets + .records references
   -> concrete adapter maps the plan into its ORM or driver values
 ```
 
@@ -1457,7 +1737,15 @@ A strict TypeScript prototype also proved:
 - resolved Record reference composition; and
 - `execute` in a transaction view without nested `transaction`.
 
-**Verdict**: The portable SQL Store tier and Drizzle-independent PostgreSQL Record specialization are implementation-ready. Concrete adapter interfaces and runtime bindings remain behind the later Drizzle-tier gates.
+The SQLite logic prototype also proved:
+
+- portable mapping and named SQLite refinement without a second Record;
+- ordinary and `AUTOINCREMENT` ROWID ownership;
+- generated-column omission and explicit-write rejection;
+- reserved-name, cross-property, table-wide, and ASCII-collision issue order; and
+- separation between synchronous definition resolution and live driver binding.
+
+**Verdict**: The portable SQL Store tier and the Drizzle-independent PostgreSQL, MySQL, and SQLite Record specializations are implementation-ready. Concrete adapter interfaces and runtime bindings remain behind the later Drizzle-tier gates.
 
 ## Files for Implementation
 
@@ -1467,6 +1755,12 @@ A strict TypeScript prototype also proved:
 - `packages/store/src/postgres-record.ts` — `pg` metadata and column type constructors.
 - `packages/store/src/postgres-adapter.ts` — PostgreSQL Record resolver and readonly adapter assets.
 - PostgreSQL runtime and compile-time tests beside their owning modules.
+- `packages/store/src/mysql-record.ts` — `mysql` metadata and column type constructors.
+- `packages/store/src/mysql-adapter.ts` — MySQL Record resolver and readonly adapter assets.
+- MySQL runtime and compile-time tests beside their owning modules.
+- `packages/store/src/sqlite-record.ts` — `sqlite` metadata and named column type constructors.
+- `packages/store/src/sqlite-adapter.ts` — SQLite Record resolver and readonly adapter assets.
+- SQLite runtime and compile-time tests beside their owning modules.
 - `packages/store/src/sql-statement.ts` — opaque Statement values and `sql` helpers.
 - `packages/store/src/sql-store.ts` — `SqlStore`, results, and SQL errors.
 - `packages/store/src/sql-adapter.ts` — Statement compiler.
@@ -1476,13 +1770,13 @@ A strict TypeScript prototype also proved:
 
 ### Change
 
-- `packages/store/package.json` — export `./sql-adapter`, `./postgres-adapter`, and `./transaction-adapter`.
-- `packages/store/src/index.ts` — export caller-facing SQL and PostgreSQL metadata values and types.
+- `packages/store/package.json` — export `./sql-adapter`, `./postgres-adapter`, `./mysql-adapter`, `./sqlite-adapter`, and `./transaction-adapter`.
+- `packages/store/src/index.ts` — export caller-facing SQL, PostgreSQL, MySQL, and SQLite metadata values and types.
 - `packages/store/src/conformance.ts` — export the three shared SQL groups.
 - `packages/store/src/record.ts` — store effective Select outputs after create and update normalization.
 - `packages/store/src/store.ts` — keep transaction capability typing and use the strengthened callback contract.
 - `packages/store/src/store-errors.ts` — add SQL and transaction-view errors plus `invalid-column-encoding`.
-- `packages/core` Record definitions — publish explicit portable and approved PostgreSQL metadata without importing an ORM.
+- `packages/core` Record definitions — publish explicit portable and approved database-specific metadata without importing an ORM.
 - Every concrete SQL adapter — run the applicable shared conformance groups and use the matching database Record resolver.
 
 No implementation keeps the old create/update storage path, host-record merge alias, or weaker transaction callback behavior.
