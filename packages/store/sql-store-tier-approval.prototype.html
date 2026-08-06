@@ -8,7 +8,13 @@
       :root {
         color-scheme: light;
         font-family:
-          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          Inter,
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
         color: #17212b;
         background: #f4f7f8;
         --ink-muted: #5d6a75;
@@ -246,8 +252,8 @@
       <h1>Can the SQL Store rules select one safe outcome?</h1>
       <p class="question">
         This demo checks the combined SQL Record, Statement, execution, and transaction rules. Push
-        awkward cases through the model. Watch whether definition errors stop early, parameter errors
-        prevent driver work, and transaction failures always select one rollback reason.
+        awkward cases through the model. Watch whether definition errors stop early, parameter
+        errors prevent driver work, and transaction failures always select one rollback reason.
       </p>
 
       <section class="layout" aria-label="Prototype controls and current state">
@@ -400,7 +406,11 @@
             }
             case "start-operation":
               if (state.transaction.view === "closed") {
-                return withEvent(state, "The closed View rejected with TransactionClosedError.", "error");
+                return withEvent(
+                  state,
+                  "The closed View rejected with TransactionClosedError.",
+                  "error",
+                );
               }
               return withEvent(
                 {
@@ -476,10 +486,18 @@
             }
             case "finish-transaction": {
               if (state.transaction.callback === "active") {
-                return withEvent(state, "Settle the callback before finalizing the transaction.", "error");
+                return withEvent(
+                  state,
+                  "Settle the callback before finalizing the transaction.",
+                  "error",
+                );
               }
               if (state.transaction.activeOperations > 0) {
-                return withEvent(state, "Rollback is waiting. Active Store work has not drained.", "error");
+                return withEvent(
+                  state,
+                  "Rollback is waiting. Active Store work has not drained.",
+                  "error",
+                );
               }
               const outcome = state.transaction.boundaryFailure
                 ? `rolled back: ${state.transaction.boundaryFailure}`
@@ -593,12 +611,19 @@
         const transaction = `${state.transaction.view}; callback ${state.transaction.callback}; ${state.transaction.activeOperations} active`;
         stateElement.innerHTML = [
           stateCard("SQL definition", definition),
-          stateCard("Execution", `${state.execution.driverCalls} driver calls; ${state.execution.result}`),
+          stateCard(
+            "Execution",
+            `${state.execution.driverCalls} driver calls; ${state.execution.result}`,
+          ),
           stateCard("Bound parameters", state.execution.parameters.join(", ") || "none"),
           stateCard("Transaction", transaction),
           stateCard("Boundary failure", state.transaction.boundaryFailure || "none"),
           stateCard("Transaction outcome", state.transaction.outcome),
-          stateCard("Last event", state.lastEvent, `event ${state.eventKind === "error" ? "error" : ""}`),
+          stateCard(
+            "Last event",
+            state.lastEvent,
+            `event ${state.eventKind === "error" ? "error" : ""}`,
+          ),
         ].join("");
       };
 
