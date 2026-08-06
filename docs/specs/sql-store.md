@@ -2,13 +2,13 @@
 
 > **Status**: Design complete for implementation. Confirmed decisions in this specification are binding.
 >
-> **Last updated**: 2026-08-05 during SQL Store tier approval.
+> **Last updated**: 2026-08-06 during the database Store seam decision.
 
 ## Summary
 
 Add a portable SQL Store specialization to `@commissary/store`. It keeps the base Collection Map and adds one parameter-safe `execute` operation. It also adds one immutable SQL Record definition form, one opaque SQL Statement algebra, shared adapter helpers, SQL errors, and shared conformance tests.
 
-The interface is portable. SQL text can use one database dialect. Generic execution returns one unchecked row set. Database-specific Stores can accept more parameter types and return more facts without weakening the generic contract.
+The interface is portable. SQL text can use one database dialect. Generic execution returns one unchecked row set. Concrete adapters and focused adapter interfaces can accept more parameter types and return more facts without weakening the generic contract.
 
 This specification extends the [Store Architecture Technical Specification](store.md). That specification remains authoritative for Records, Collections, operators, Store errors, and transactions except where this document gives a later rule.
 
@@ -57,6 +57,7 @@ This specification extends the [Store Architecture Technical Specification](stor
 19. **Caught failure still fails**: A rejected transaction-view operation marks the transaction for rollback even when callback code catches it.
 20. **Exact rollback failure**: Successful rollback preserves the selected callback boundary failure without wrapping it.
 21. **No manual control guarantee**: Transaction guarantees apply only when callers do not submit manual transaction SQL through `execute`.
+22. **Capability over database identity**: Database identity alone does not create a Store specialization. Concrete adapters compose primitive contracts, and a focused capability requires a proven caller workflow.
 
 ## Confirmed Decisions
 
@@ -82,6 +83,23 @@ Concrete adapters own:
 - optional driver features outside this tier.
 
 There is no standalone `SqlExecutor`, exported `SqlTag`, or production alias for a combined SQL Transaction Store. Code can use `typeof sql` when it needs the tag type. Tests use an inline intersection for the combined capability.
+
+### Database-specific runtime seams
+
+Do not export general `PostgresStore`, `MySqlStore`, or `SqliteStore` runtime interfaces or aliases. Database identity, dialect syntax, metadata, result shape, and thin query aliases do not by themselves earn a Store specialization.
+
+A concrete database or ORM adapter returns a structural composition of the primitive Store contracts that it implements, such as `SqlStore` and `TransactionStore`. It can accept more SQL parameter types and return more guaranteed result fields through `execute` while it remains assignable to `SqlStore`. A caller typed against `SqlStore` sees only the portable contract. This structural widening does not earn a database-named tier.
+
+A new focused Store capability requires:
+
+1. a proven integration-facing workflow that a lower-tier Store cannot preserve;
+2. an observable stream, callback, resource scope, cleanup rule, result lifecycle, or engine guarantee;
+3. a deletion test that shows real caller behavior would otherwise be lost; and
+4. at least one working adapter path.
+
+Driver- and ORM-independent primitive contracts belong in `@commissary/store`. Driver- or ORM-specific contracts remain in their adapter package. Do not add speculative optional methods or a runtime capability registry.
+
+PostgreSQL notifications, copy streams, portals, and advisory locks; MySQL local infile streams, ordered multiple results, and session locks; and SQLite backup, serialization, hooks, and changesets are separate workflows. They do not form coherent database-wide Store interfaces. Add one only when a caller and adapter satisfy the focused capability rules.
 
 ### SQL Record definitions
 
