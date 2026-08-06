@@ -62,6 +62,22 @@ _Avoid_: Driver output mode, ORM column type, implicit lossy number conversion, 
 The synchronous adapter-facing step that applies effective definitions, validates MySQL metadata, and produces table, column, and reference assets without database I/O or DDL.
 _Avoid_: Migration execution, database introspection, host-facing Store tier, ORM schema
 
+**SQLite Record Refinement**:
+The `sqlite.table()` and `sqlite.column()` metadata inside one SQL Record Definition. An integration owns this metadata, and the host gives the Record to its concrete SQLite adapter.
+_Avoid_: `SqliteRecord`, SQLite definition factory, Drizzle type, host-authored schema copy
+
+**SQLite Column Type**:
+A named direct or custom SQLite storage contract with one driver-independent JSON-safe selected value and synchronous conversion rules.
+_Avoid_: Drizzle mode option, driver value leak, inferred affinity, implicit lossy number conversion
+
+**SQLite Record Resolution**:
+The synchronous adapter-facing step that applies effective definitions, validates SQLite metadata, and produces table, column, and reference assets without database I/O or DDL.
+_Avoid_: Migration execution, database introspection, host-facing Store tier, ORM schema
+
+**SQLite ROWID Contract**:
+The resolved `INTEGER PRIMARY KEY` identity and generation policy for one SQLite column. It states whether committed ROWID reuse is allowed or prevented with `AUTOINCREMENT`; it is not a general primary-key or index definition.
+_Avoid_: Gap-free sequence, Store-owned constraint model, automatic host index, reusable identifier
+
 **Automatic-Increment Key Requirement**:
 The resolved MySQL fact that a non-serial `AUTO_INCREMENT` column needs a host-owned index that starts with the column. A concrete adapter proves the index; MySQL `SERIAL` satisfies the requirement with its intrinsic unique index.
 _Avoid_: Store-owned index definition, required unique host index, generated migration, runtime capability
