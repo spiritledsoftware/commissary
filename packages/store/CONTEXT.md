@@ -76,7 +76,7 @@ _Avoid_: Migration execution, database introspection, host-facing Store tier, OR
 
 **SQLite ROWID Contract**:
 The resolved `INTEGER PRIMARY KEY` identity and generation policy for one SQLite column. It states whether committed ROWID reuse is allowed or prevented with `AUTOINCREMENT`; it is not a general primary-key or index definition.
-_Avoid_: Gap-free sequence, Store-owned constraint model, automatic host index, reusable identifier
+_Avoid_: Gap-free sequence, Store-owned constraint model, automatic host index, generic identifier abstraction
 
 **Automatic-Increment Key Requirement**:
 The resolved MySQL fact that a non-serial `AUTO_INCREMENT` column needs a host-owned index that starts with the column. A concrete adapter proves the index; MySQL `SERIAL` satisfies the requirement with its intrinsic unique index.
