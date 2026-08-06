@@ -214,6 +214,18 @@ _Avoid_: Standalone SQL client, concrete Adapter, ORM Store, runtime capability 
 An opaque storage-family and value-conversion contract for one Selected Field Value. A portable type has stable meaning across SQL adapters, while a database-specific type narrows that intent for one database.
 _Avoid_: Driver type, raw DDL, Field Schema, TypeScript primitive
 
+**SQL Literal**:
+An opaque portable database default created by `sql.literal()` from one supported scalar value. It is definition metadata, not Raw SQL Text, an SQL Statement, or a Create Schema default.
+_Avoid_: SQL expression, generated value, JSON default, bound parameter
+
+**SQL Definition Resolution**:
+The synchronous, I/O-free stage that combines Record Contributions and Record Overrides, selects active database metadata, resolves storage evidence and physical names, and returns immutable SQL Record References. It rebuilds every resolved fact after overrides.
+_Avoid_: Store construction I/O, migration, schema diff, stale contributor metadata
+
+**SQL Definition Error**:
+One synchronous `SqlDefinitionError` that contains all independent SQL definition issues as stable codes, paths, and diagnostic messages.
+_Avoid_: Store Error, first-error-only throw, database I/O failure, safe-to-log message
+
 **SQL Record Reference**:
 An immutable resolved table or column identifier that an SQL definition returns for safe SQL Statement composition. It is independent of one database connection and is neither a Record Definition nor a raw identifier string. It supplies no direct-SQL parameter conversion.
 _Avoid_: Store-scoped token, raw name, database row, unbound definition

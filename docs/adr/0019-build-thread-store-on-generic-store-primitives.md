@@ -30,7 +30,7 @@ An integration requires the exact primitive Store interface that it needs. Store
 
 A concrete Collection can use native operations, optional shared fallback helpers, or both. There is no required low-level storage driver. A backend can back `ThreadStore` only when the Core Runtime conformance suite passes with that backend's actual operator semantics.
 
-`@commissary/store-memory` uses one storage engine. `MemoryStore.make` exposes it as a generic Transaction Store. `MemoryThreadStore.make` composes it with the Core specialization and exposes a Thread Store. A future SQL Store contract must be designed as a primitive before concrete SQL adapters; it is outside this decision.
+`@commissary/store-memory` uses one storage engine. `MemoryStore.make` exposes it as a generic Transaction Store. `MemoryThreadStore.make` composes it with the Core specialization and exposes a Thread Store. The separately designed [SQL Store tier](../specs/sql-store.md) is another primitive contract; concrete SQL adapters must implement it instead of defining the shared seam.
 
 ## Public boundary and failures
 
