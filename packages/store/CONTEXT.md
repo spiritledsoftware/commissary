@@ -31,7 +31,7 @@ The immutable Record Definition after Record Contributions and host Record Overr
 _Avoid_: Original contributed definition, mutable merge result, adapter-specific schema copy
 
 **SQL Record Definition**:
-A Record Definition that also states portable and optional database-specific table and column storage intent. It remains a valid base Record Definition, and a Store without SQL capability ignores the wider intent.
+A Record Definition that also states portable and optional database-specific table and column storage intent. It remains a valid base Record Definition, and a Store without SQL capability ignores the wider intent. Database-specific Record refinements remain definition seams even though database identity does not create a runtime Store tier.
 _Avoid_: SQL companion schema, ORM table, database row, separate migration model
 
 **Collection Catalog**:
@@ -203,8 +203,12 @@ A storage capability interface designed before its concrete adapters. Adapters i
 _Avoid_: Common interface extracted from adapters, adapter API treated as the primitive, bottom-up contract discovery
 
 **Store Specialization Tier**:
-A public Store-family interface that extends a more general Store capability contract without depending on one concrete adapter implementation. Use `Layer` only for an Effect dependency layer.
-_Avoid_: Effect Layer, concrete adapter, runtime capability registry
+A public Store-family interface that extends a more general Store capability contract without depending on one concrete adapter implementation. It represents one coherent caller capability; database identity alone does not qualify. Use `Layer` only for an Effect dependency layer.
+_Avoid_: Effect Layer, concrete adapter, runtime capability registry, database capability bundle
+
+**Focused Store Capability**:
+A primitive Store contract for one proven caller workflow that a lower-tier Store cannot preserve. It carries an observable stream, callback, resource scope, cleanup rule, result lifecycle, or engine guarantee; its deletion loses observable caller behavior; and it has at least one working adapter path. Name it for the behavior, not for a database. Driver-independent contracts live in `@commissary/store`; driver- or ORM-specific contracts live with their adapter.
+_Avoid_: `PostgresStore`, `MySqlStore`, `SqliteStore`, speculative engine feature, optional method, runtime capability registry
 
 **SQL Store**:
 A Store specialization that lets an integration execute ORM-independent, parameter-safe SQL Statements. It retains Collections, promises only one unchecked Row set, and makes at most one driver statement call for each `execute`; transactions, preparation, streaming, cancellation, session scope, batches, and multiple results require separate Store interfaces.

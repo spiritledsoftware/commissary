@@ -32,6 +32,10 @@ A concrete Collection can use native operations, optional shared fallback helper
 
 `@commissary/store-memory` uses one storage engine. `MemoryStore.make` exposes it as a generic Transaction Store. `MemoryThreadStore.make` composes it with the Core specialization and exposes a Thread Store. The separately designed [SQL Store tier](../specs/sql-store.md) is another primitive contract; concrete SQL adapters must implement it instead of defining the shared seam.
 
+Database identity alone does not create a Store specialization tier. There are no general `PostgresStore`, `MySqlStore`, or `SqliteStore` runtime interfaces or aliases. Concrete database and ORM adapters compose the primitive Store contracts that they implement. Database-specific Record refinements and concrete factory names remain valid definition and adapter seams.
+
+A focused Store capability is added only when a proven caller needs a stream, callback, resource scope, cleanup rule, result lifecycle, or engine guarantee that lower-tier contracts cannot preserve, a deletion test shows that deletion loses observable caller behavior, and at least one working adapter path exists. Driver-independent primitive contracts belong in `@commissary/store`; driver- or ORM-specific contracts remain with their adapter. Store has no speculative optional capability methods.
+
 ## Public boundary and failures
 
 Every asynchronous Store-family method returns a native `Promise`. Base CRUD and transactions accept no `AbortSignal`. Base Store performs no shared CRUD retry, logging, tracing, query-plan reporting, or full-scan warning.
