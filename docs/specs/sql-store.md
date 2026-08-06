@@ -793,17 +793,31 @@ export interface MysqlIntegerOptions {
 export interface MysqlDecimalOptions {
   readonly precision?: number;
   readonly scale?: number;
+  /** @deprecated MySQL 8.4 deprecates UNSIGNED on DECIMAL. */
   readonly unsigned?: boolean;
 }
 
-export interface MysqlApproximateNumberOptions {
+export interface MysqlFloatOptions {
   readonly precision?: number;
+  /** @deprecated MySQL 8.4 deprecates FLOAT(M,D). Supplying scale selects this form. */
   readonly scale?: number;
+  /** @deprecated MySQL 8.4 deprecates UNSIGNED on FLOAT. */
+  readonly unsigned?: boolean;
+}
+
+export interface MysqlDoubleOptions {
+  /** @deprecated MySQL 8.4 deprecates DOUBLE(M,D). */
+  readonly precision?: number;
+  /** @deprecated MySQL 8.4 deprecates DOUBLE(M,D). */
+  readonly scale?: number;
+  /** @deprecated MySQL 8.4 deprecates UNSIGNED on DOUBLE. */
   readonly unsigned?: boolean;
 }
 
 export interface MysqlRealOptions {
+  /** @deprecated MySQL 8.4 deprecates REAL(M,D). */
   readonly precision?: number;
+  /** @deprecated MySQL 8.4 deprecates REAL(M,D). */
   readonly scale?: number;
 }
 
@@ -845,8 +859,8 @@ export declare const mysql: {
   readonly int: (options?: MysqlIntegerOptions) => MysqlColumnType<number>;
   readonly bigint: (options?: MysqlIntegerOptions) => MysqlColumnType<string>;
   readonly decimal: (options?: MysqlDecimalOptions) => MysqlColumnType<string>;
-  readonly float: (options?: MysqlApproximateNumberOptions) => MysqlColumnType<number>;
-  readonly double: (options?: MysqlApproximateNumberOptions) => MysqlColumnType<number>;
+  readonly float: (options?: MysqlFloatOptions) => MysqlColumnType<number>;
+  readonly double: (options?: MysqlDoubleOptions) => MysqlColumnType<number>;
   readonly real: (options?: MysqlRealOptions) => MysqlColumnType<number>;
 
   readonly boolean: () => MysqlColumnType<boolean>;
@@ -1795,6 +1809,7 @@ The SQLite logic prototype also proved:
 - separation between synchronous definition resolution and live driver binding.
 
 The comparative database Record prototype also proved:
+The committed draft asset is `packages/store/prototypes/database-record-specializations.prototype.html` on branch `prototype/database-record-specializations` at commit `1b96bfb`. From that branch, run `agent-browser open "file://$PWD/packages/store/prototypes/database-record-specializations.prototype.html"` to reproduce the free-play and guided cross-database plan, encoder, generated-column, and adapter-binding results.
 
 - one lower-tier SQL Record resolves into complete PostgreSQL, MySQL, and SQLite plans;
 - portable integer, number, boolean, text, and JSON mappings preserve one application contract across different physical types;
