@@ -207,7 +207,7 @@ A public Store-family interface that extends a more general Store capability con
 _Avoid_: Effect Layer, concrete adapter, runtime capability registry, database capability bundle
 
 **Focused Store Capability**:
-A primitive Store contract for one proven caller workflow that a lower-tier Store cannot preserve. It carries an observable stream, callback, resource scope, cleanup rule, result lifecycle, or engine guarantee and has at least one working adapter path. Name it for the behavior, not for a database. Driver-independent contracts live in `@commissary/store`; driver- or ORM-specific contracts live with their adapter.
+A primitive Store contract for one proven caller workflow that a lower-tier Store cannot preserve. It carries an observable stream, callback, resource scope, cleanup rule, result lifecycle, or engine guarantee; its deletion loses observable caller behavior; and it has at least one working adapter path. Name it for the behavior, not for a database. Driver-independent contracts live in `@commissary/store`; driver- or ORM-specific contracts live with their adapter.
 _Avoid_: `PostgresStore`, `MySqlStore`, `SqliteStore`, speculative engine feature, optional method, runtime capability registry
 
 **SQL Store**:
