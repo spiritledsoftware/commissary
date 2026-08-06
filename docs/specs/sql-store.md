@@ -439,6 +439,46 @@ export interface PostgresIdentity {
   readonly sequence?: PostgresIdentitySequence;
 }
 
+export interface PostgresNumericOptions {
+  readonly precision?: number;
+  readonly scale?: number;
+}
+
+export interface PostgresCharacterOptions {
+  readonly length?: number;
+}
+
+export type PostgresTemporalPrecision = 0 | 1 | 2 | 3 | 4 | 5 | 6;
+
+export interface PostgresTemporalOptions {
+  readonly precision?: PostgresTemporalPrecision;
+  readonly withTimezone?: boolean;
+}
+
+export type PostgresIntervalFields =
+  | "year"
+  | "month"
+  | "day"
+  | "hour"
+  | "minute"
+  | "second"
+  | "year to month"
+  | "day to hour"
+  | "day to minute"
+  | "day to second"
+  | "hour to minute"
+  | "hour to second"
+  | "minute to second";
+
+export interface PostgresIntervalOptions {
+  readonly fields?: PostgresIntervalFields;
+  readonly precision?: PostgresTemporalPrecision;
+}
+
+export interface PostgresEnum<
+  Values extends readonly [string, ...string[]],
+> extends PostgresColumnType<Values[number]> {}
+
 export interface PostgresCustomTypeOptions<Value extends JsonValue> {
   readonly type: PostgresQualifiedName & {
     readonly modifier?: SqlStatement<never>;
@@ -537,7 +577,7 @@ Supported type options are:
 
 Do not add aliases such as `int`, `decimal`, or `timestamptz`. Do not expose driver modes such as `Date`, JavaScript `bigint`, or `Buffer`.
 
-PostgreSQL can apply its documented declared-type coercion, including `real` precision, `numeric(p,s)` rounding, `char(n)` padding, and temporal precision. Helpers validate application syntax, JSON safety, and type range before database work. Adapters decode the stored result instead of echoing an input that PostgreSQL can change. `char` decoding removes storage padding, and application strings with trailing spaces fail before database work.
+PostgreSQL can apply its documented declared-type coercion, including `real` precision, `numeric(p,s)` rounding, `char(n)` padding, and temporal precision. The operation and Select Schema parsers validate field values first. The direct PostgreSQL column codec then validates only storage syntax, JSON safety, and type range before database work. It reports an invalid caller-supplied write value as `StoreValidationError`. The `pg.*` metadata constructors never inspect field values. Adapters decode the stored result instead of echoing an input that PostgreSQL can change. An invalid stored direct value uses `StoreAdapterContractViolation` with `"invalid-selected-record"`. `char` decoding removes storage padding, and application strings with trailing spaces fail during direct encoding.
 
 #### Arrays, enums, and custom types
 
@@ -595,7 +635,16 @@ Columns conflict only inside their table. Definition-owned tables, explicit iden
 
 The adapter resolution exposes tables by Record key, columns by field key, and enums in first-use order. Each column includes its exact name and reference, resolved nullability, a discriminated direct, array, enum, or custom type, its default or generated expression, identity metadata, and encode/decode functions. Adapter authors switch exhaustively on the discriminant and do not parse SQL type text.
 
-Metadata and type helpers preserve literal inference, snapshot options, and return immutable values. They throw `TypeError` immediately for malformed arguments, invalid atomic option types or limits, invalid local names, and incompatible opaque formats. They do not check inherited metadata, precedence, cross-property conflicts, Schema compatibility, catalog collisions, or PostgreSQL namespaces.
+Metadata and type helper constructors preserve literal inference, snapshot options, and return immutable values. They throw `TypeError` immediately for malformed constructor arguments, invalid atomic option types or limits, invalid local names, and incompatible opaque formats. They never inspect Record field values. They do not check inherited metadata, precedence, cross-property conflicts, Schema compatibility, catalog collisions, or PostgreSQL namespaces.
+
+Each runtime or definition failure has one owner:
+
+- helper authoring failures use immediate `TypeError`;
+- effective metadata and catalog failures use aggregated `SqlDefinitionError`;
+- write-side operation and Select Schema failures are owned by the Record parser symbols and use `StoreValidationError`;
+- direct PostgreSQL encoding syntax, JSON-safety, or range failures for caller-supplied values use `StoreValidationError`;
+- custom encoder throws and invalid encoded scalars use `StoreAdapterContractViolation` with `"invalid-column-encoding"`; and
+- direct or custom decode failures, non-JSON decoded values, and read-side Select Schema rejections use `StoreAdapterContractViolation` with `"invalid-selected-record"`.
 
 `resolvePostgresRecords()` aggregates effective-catalog failures in one `SqlDefinitionError` and reuses the database-neutral issue codes:
 
@@ -609,7 +658,7 @@ Metadata and type helpers preserve literal inference, snapshot options, and retu
 
 Issues point to the winning `records` or `overrides` source. A conflict points to the later or higher-precedence setting and names the other source in its message. A duplicate issue belongs to the later asset. Order follows Record declaration, table metadata, field declaration, a fixed rule order, and asset first use. Checks that depend on one invalid prerequisite are skipped; every independent check continues.
 
-Add `"invalid-column-encoding"` to `StoreAdapterContractViolation` for an encoder that throws or returns an invalid scalar. Decoder failures, non-JSON decoded values, and Select rejections use `"invalid-selected-record"`. Preserve the original failure as `cause` and include Collection, operation, and field. These are contract defects, not caller validation or database I/O errors.
+Preserve the original converter failure as `cause` and include Collection, operation, and field. Converter failures are contract defects, not caller validation or database I/O errors.
 
 PostgreSQL metadata, column types, enums, Statements, and resolutions use opaque format identity instead of module-local `instanceof`. Compatible `@commissary/store` package copies interoperate. Incompatible formats and caller-made lookalikes fail. Freeze package-owned objects, arrays, assets, and issue lists; keep Schema objects and converter functions by reference.
 
@@ -1022,11 +1071,11 @@ Test controls never appear on production Store values.
 ```txt
 Integration-authored lower-tier Records
   -> SqlRecord.define with sql.table/column and optional pg.table/column
-  -> concrete host adapter receives records + overrides
-  -> compose one effective Record catalog
-  -> check contributor compatibility
-  -> resolvePostgresRecords chooses active PostgreSQL metadata
-  -> resolve names, types, generated behavior, assets, and conflicts
+  -> concrete host adapter calls resolvePostgresRecords with records + overrides
+  -> resolver composes one effective Record catalog
+  -> resolver checks contributor compatibility
+  -> resolver chooses active PostgreSQL metadata
+  -> resolver resolves names, types, generated behavior, assets, and conflicts
   -> freeze PostgreSQL resolution assets + .records references
   -> concrete adapter maps the plan into its ORM or driver values
 ```
