@@ -3,26 +3,32 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
+      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/tsconfig.json"],
       "outputs": ["dist/**"]
     },
     "pack:check": {
       "dependsOn": ["build"],
+      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/scripts/check-package-archive.mjs"],
       "outputs": []
     },
     "typecheck": {
       "dependsOn": ["build"],
+      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/tsconfig.json"],
       "outputs": []
     },
     "test": {
       "dependsOn": ["build"],
+      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/tsconfig.json", "$TURBO_ROOT$/vitest.config.ts"],
       "outputs": []
     },
     "@commissary/core#typecheck": {
       "dependsOn": ["build", "@commissary/store-memory#build"],
+      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/tsconfig.json"],
       "outputs": []
     },
     "@commissary/core#test": {
       "dependsOn": ["build", "@commissary/store-memory#build"],
+      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/tsconfig.json", "$TURBO_ROOT$/vitest.config.ts"],
       "outputs": []
     }
   }

@@ -35,9 +35,9 @@
     "smoke": "pnpm run conformance:node",
     "release": "pnpm run build && changeset publish",
     "test": "turbo run test",
-    "test:release-policy": "node --test scripts/*.test.mjs",
+    "test:scripts": "node --test scripts/*.test.mjs",
     "typecheck": "turbo run typecheck",
-    "verify": "pnpm run format:check && pnpm run build && pnpm run lint && pnpm run test:release-policy && turbo run typecheck test",
+    "verify": "pnpm run format:check && pnpm run build && pnpm run lint && pnpm run test:scripts && turbo run typecheck test",
     "version-packages": "changeset version && pnpm install --lockfile-only"
   },
   "devDependencies": {
