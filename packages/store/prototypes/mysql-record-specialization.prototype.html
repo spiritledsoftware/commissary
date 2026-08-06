@@ -1,0 +1,1280 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MySQL Record specialization — contract prototype</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --canvas: #f4f2ed;
+        --paper: #fffdf8;
+        --ink: #1c2730;
+        --muted: #65717a;
+        --line: #d8d5cc;
+        --accent: #126e82;
+        --accent-soft: #dff1f3;
+        --warn: #a84f23;
+        --warn-soft: #fae9dd;
+        --good: #28724b;
+        --good-soft: #e3f2e8;
+        --code: #17242c;
+        --shadow: 0 18px 45px rgb(31 43 48 / 8%);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-width: 320px;
+        background:
+          linear-gradient(90deg, transparent 49.8%, rgb(18 110 130 / 4%) 50%, transparent 50.2%),
+          var(--canvas);
+        color: var(--ink);
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        line-height: 1.5;
+      }
+
+      button {
+        font: inherit;
+      }
+
+      .shell {
+        width: min(1180px, calc(100% - 32px));
+        margin: 0 auto;
+        padding: 44px 0 72px;
+      }
+
+      header {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 28px;
+        align-items: end;
+        padding-bottom: 28px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .eyebrow {
+        margin: 0 0 8px;
+        color: var(--accent);
+        font-size: 0.75rem;
+        font-weight: 800;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin-top: 0;
+      }
+
+      h1 {
+        max-width: 780px;
+        margin-bottom: 12px;
+        font-family: Georgia, "Times New Roman", serif;
+        font-size: clamp(2.2rem, 6vw, 4.4rem);
+        font-weight: 500;
+        letter-spacing: -0.045em;
+        line-height: 0.98;
+      }
+
+      .question {
+        max-width: 790px;
+        margin-bottom: 0;
+        color: var(--muted);
+        font-size: 1.03rem;
+      }
+
+      .prototype-mark {
+        align-self: start;
+        padding: 8px 11px;
+        border: 1px solid var(--warn);
+        border-radius: 999px;
+        color: var(--warn);
+        font-size: 0.7rem;
+        font-weight: 800;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+
+      .section {
+        margin-top: 34px;
+      }
+
+      .section-heading {
+        display: flex;
+        justify-content: space-between;
+        gap: 20px;
+        align-items: baseline;
+        margin-bottom: 14px;
+      }
+
+      .section-heading h2 {
+        margin-bottom: 0;
+        font-size: 1.05rem;
+        letter-spacing: 0.01em;
+      }
+
+      .section-heading p {
+        margin-bottom: 0;
+        color: var(--muted);
+        font-size: 0.85rem;
+      }
+
+      .controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 9px;
+      }
+
+      .action,
+      .scenario-tab,
+      .step-action {
+        min-height: 42px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--paper);
+        color: var(--ink);
+        cursor: pointer;
+        font-weight: 700;
+      }
+
+      .action {
+        padding: 9px 13px;
+      }
+
+      .action:hover,
+      .action:focus-visible,
+      .step-action:hover,
+      .step-action:focus-visible {
+        border-color: var(--accent);
+        outline: none;
+        box-shadow: 0 0 0 3px rgb(18 110 130 / 14%);
+      }
+
+      .action.primary,
+      .step-action {
+        border-color: var(--accent);
+        background: var(--accent);
+        color: white;
+      }
+
+      .dashboard {
+        display: grid;
+        grid-template-columns: 1.05fr 0.95fr;
+        gap: 18px;
+      }
+
+      .panel {
+        min-width: 0;
+        padding: 22px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: var(--paper);
+        box-shadow: var(--shadow);
+      }
+
+      .panel h2 {
+        margin-bottom: 5px;
+        font-size: 1rem;
+      }
+
+      .panel-note {
+        margin-bottom: 18px;
+        color: var(--muted);
+        font-size: 0.82rem;
+      }
+
+      .definition-panel {
+        grid-row: span 2;
+      }
+
+      .fact-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+        margin-bottom: 18px;
+      }
+
+      .fact {
+        padding: 12px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #faf8f2;
+      }
+
+      .fact-label {
+        display: block;
+        margin-bottom: 2px;
+        color: var(--muted);
+        font-size: 0.7rem;
+        font-weight: 800;
+        letter-spacing: 0.07em;
+        text-transform: uppercase;
+      }
+
+      .fact-value {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 0.86rem;
+        overflow-wrap: anywhere;
+      }
+
+      .field-list,
+      .issue-list,
+      .plan-list,
+      .walkthrough-steps {
+        display: grid;
+        gap: 9px;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .field,
+      .plan-item,
+      .issue,
+      .event {
+        padding: 12px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+      }
+
+      .field-top,
+      .plan-top {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        gap: 8px;
+        align-items: center;
+      }
+
+      code,
+      .mono {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+
+      .field-name,
+      .plan-name {
+        font-weight: 800;
+      }
+
+      .badges {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px;
+        margin-top: 8px;
+      }
+
+      .badge,
+      .status {
+        display: inline-flex;
+        align-items: center;
+        min-height: 23px;
+        padding: 3px 7px;
+        border-radius: 999px;
+        font-size: 0.7rem;
+        font-weight: 800;
+      }
+
+      .badge {
+        background: #e9e6de;
+        color: #4c565d;
+      }
+
+      .badge.accent {
+        background: var(--accent-soft);
+        color: var(--accent);
+      }
+
+      .status.good {
+        background: var(--good-soft);
+        color: var(--good);
+      }
+
+      .status.warn {
+        background: var(--warn-soft);
+        color: var(--warn);
+      }
+
+      .empty {
+        padding: 18px;
+        border: 1px dashed var(--line);
+        border-radius: 8px;
+        color: var(--muted);
+        font-size: 0.85rem;
+        text-align: center;
+      }
+
+      .issue {
+        border-color: #e6b79e;
+        background: var(--warn-soft);
+      }
+
+      .issue-code {
+        color: var(--warn);
+        font-size: 0.72rem;
+        font-weight: 900;
+      }
+
+      .issue-path {
+        display: block;
+        margin: 3px 0;
+        color: #6f3c25;
+        font-size: 0.72rem;
+        overflow-wrap: anywhere;
+      }
+
+      .issue-message,
+      .plan-detail,
+      .event-detail {
+        margin: 0;
+        color: var(--muted);
+        font-size: 0.8rem;
+      }
+
+      .event {
+        border-left: 4px solid var(--accent);
+        background: #faf8f2;
+      }
+
+      .event-title {
+        margin-bottom: 3px;
+        font-weight: 850;
+      }
+
+      .scenarios {
+        overflow: hidden;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: var(--paper);
+        box-shadow: var(--shadow);
+      }
+
+      .scenario-tabs {
+        display: flex;
+        gap: 4px;
+        overflow-x: auto;
+        padding: 8px;
+        border-bottom: 1px solid var(--line);
+        background: #ece9e1;
+      }
+
+      .scenario-tab {
+        flex: 0 0 auto;
+        padding: 8px 12px;
+        background: transparent;
+      }
+
+      .scenario-tab[aria-selected="true"] {
+        border-color: var(--accent);
+        background: var(--paper);
+        color: var(--accent);
+      }
+
+      .scenario-body {
+        padding: 22px;
+      }
+
+      .scenario-body h3 {
+        margin-bottom: 6px;
+      }
+
+      .scenario-description {
+        max-width: 780px;
+        margin-bottom: 18px;
+        color: var(--muted);
+      }
+
+      .walkthrough-steps {
+        counter-reset: step;
+      }
+
+      .walkthrough-step {
+        display: grid;
+        grid-template-columns: 34px minmax(0, 1fr) auto;
+        gap: 12px;
+        align-items: center;
+        padding: 11px 0;
+        border-top: 1px solid var(--line);
+        counter-increment: step;
+      }
+
+      .walkthrough-step::before {
+        display: grid;
+        width: 28px;
+        height: 28px;
+        place-items: center;
+        border-radius: 50%;
+        background: #e9e6de;
+        content: counter(step);
+        font-size: 0.75rem;
+        font-weight: 900;
+      }
+
+      .step-action {
+        min-height: 36px;
+        padding: 7px 11px;
+      }
+
+      footer {
+        margin-top: 28px;
+        color: var(--muted);
+        font-size: 0.76rem;
+        text-align: center;
+      }
+
+      @media (max-width: 800px) {
+        .shell {
+          width: min(100% - 20px, 640px);
+          padding-top: 26px;
+        }
+
+        header {
+          grid-template-columns: 1fr;
+        }
+
+        .prototype-mark {
+          justify-self: start;
+        }
+
+        .dashboard {
+          grid-template-columns: 1fr;
+        }
+
+        .definition-panel {
+          grid-row: auto;
+        }
+
+        .walkthrough-step {
+          grid-template-columns: 30px minmax(0, 1fr);
+        }
+
+        .step-action {
+          grid-column: 2;
+          justify-self: start;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          scroll-behavior: auto !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <header>
+        <div>
+          <p class="eyebrow">Contract review · issue 23</p>
+          <h1>MySQL Record specialization</h1>
+          <p class="question">
+            Does the approved model assign each decision to the correct owner—Record resolver,
+            concrete adapter, MySQL server, or runtime codec—while giving adapters enough
+            information without leaking Drizzle, DDL, or migration concerns?
+          </p>
+        </div>
+        <div class="prototype-mark">Throwaway prototype</div>
+      </header>
+
+      <section class="section" aria-labelledby="free-play-title">
+        <div class="section-heading">
+          <h2 id="free-play-title">Free play</h2>
+          <p>Change the definition, then resolve or bind it.</p>
+        </div>
+        <div class="controls" id="free-play-controls"></div>
+      </section>
+
+      <section class="section dashboard" aria-label="Current contract state">
+        <article class="panel definition-panel">
+          <h2>Effective Record definition</h2>
+          <p class="panel-note">Portable SQL intent plus the active <code>mysql</code> refinement.</p>
+          <div id="definition"></div>
+        </article>
+
+        <article class="panel">
+          <h2>Store resolver</h2>
+          <p class="panel-note">Synchronous, I/O-free catalog composition and validation.</p>
+          <div id="resolver"></div>
+        </article>
+
+        <article class="panel">
+          <h2>Concrete adapter</h2>
+          <p class="panel-note">Host index proof and driver conversion stay here.</p>
+          <div id="adapter"></div>
+        </article>
+
+        <article class="panel">
+          <h2>Last observed result</h2>
+          <p class="panel-note">Runtime write and codec probes report their contract owner.</p>
+          <div id="event"></div>
+        </article>
+      </section>
+
+      <section class="section" aria-labelledby="walkthrough-title">
+        <div class="section-heading">
+          <h2 id="walkthrough-title">Guided walkthroughs</h2>
+          <p>Each scenario resets to a known definition.</p>
+        </div>
+        <div class="scenarios">
+          <div class="scenario-tabs" id="scenario-tabs" role="tablist"></div>
+          <div class="scenario-body" id="scenario-body"></div>
+        </div>
+      </section>
+
+      <footer>
+        This file tests the design only. It is not a Store implementation and must not ship on the main branch.
+      </footer>
+    </main>
+
+    <script>
+      window.MysqlRecordPrototype = (() => {
+        const clone = (value) => JSON.parse(JSON.stringify(value));
+
+        const baseFields = () => [
+          {
+            key: "id",
+            name: "id",
+            type: "int",
+            notNull: true,
+            autoIncrement: false,
+            default: null,
+            generated: null,
+            onUpdate: null,
+          },
+          {
+            key: "email",
+            name: "email_address",
+            type: "varchar(320)",
+            notNull: true,
+            autoIncrement: false,
+            default: null,
+            generated: null,
+            onUpdate: null,
+          },
+          {
+            key: "updatedAt",
+            name: "updated_at",
+            type: "timestamp(6)",
+            notNull: true,
+            autoIncrement: false,
+            default: "CURRENT_TIMESTAMP(6)",
+            generated: null,
+            onUpdate: "current-timestamp",
+          },
+        ];
+
+        const initialState = () => ({
+          table: {
+            key: "Account",
+            portableName: "accounts",
+            database: "commissary",
+            mysqlName: null,
+          },
+          fields: baseFields(),
+          hostIndexes: [],
+          resolution: null,
+          adapter: null,
+          event: {
+            title: "Ready for review",
+            detail: "Choose a free-play action or start a guided walkthrough.",
+            tone: "neutral",
+          },
+        });
+
+        const fieldPath = (field, property) =>
+          `records.Account.fields.${field.key}.column.mysql.${property}`;
+
+        const issue = (code, path, message) => ({ code, path, message });
+        const caseFold = (value) => value.toLocaleLowerCase("und");
+
+        const resolve = (input) => {
+          const state = clone(input);
+          const issues = [];
+          const seenNames = new Map();
+          const autoIncrementFields = [];
+
+          for (const field of state.fields) {
+            const foldedName = caseFold(field.name);
+            const prior = seenNames.get(foldedName);
+            if (prior !== undefined) {
+              issues.push(
+                issue(
+                  "duplicate-name",
+                  fieldPath(field, "name"),
+                  `Column ${field.name} conflicts with ${prior} after case folding.`,
+                ),
+              );
+            } else {
+              seenNames.set(foldedName, field.name);
+            }
+
+            const serial = field.type === "serial";
+            const effectiveAutoIncrement = serial || field.autoIncrement === true;
+            if (effectiveAutoIncrement) autoIncrementFields.push(field);
+
+            if (serial && field.notNull === false) {
+              issues.push(
+                issue(
+                  "invalid-database-options",
+                  fieldPath(field, "notNull"),
+                  "SERIAL is intrinsically NOT NULL.",
+                ),
+              );
+            }
+            if (serial && field.autoIncrement === false) {
+              issues.push(
+                issue(
+                  "invalid-database-options",
+                  fieldPath(field, "autoIncrement"),
+                  "SERIAL has intrinsic AUTO_INCREMENT behavior.",
+                ),
+              );
+            }
+            if (effectiveAutoIncrement && field.default !== null) {
+              issues.push(
+                issue(
+                  "invalid-database-options",
+                  fieldPath(field, "default"),
+                  "AUTO_INCREMENT conflicts with an explicit default.",
+                ),
+              );
+            }
+            if (effectiveAutoIncrement && field.generated !== null) {
+              issues.push(
+                issue(
+                  "invalid-database-options",
+                  fieldPath(field, "generated"),
+                  "AUTO_INCREMENT conflicts with generated metadata.",
+                ),
+              );
+            }
+            if (effectiveAutoIncrement && field.onUpdate !== null) {
+              issues.push(
+                issue(
+                  "invalid-database-options",
+                  fieldPath(field, "onUpdate"),
+                  "AUTO_INCREMENT conflicts with automatic-update metadata.",
+                ),
+              );
+            }
+            if (field.generated !== null && field.default !== null) {
+              issues.push(
+                issue(
+                  "invalid-database-options",
+                  fieldPath(field, "generated"),
+                  "A generated column cannot also have a default.",
+                ),
+              );
+            }
+            if (field.generated !== null && field.onUpdate !== null) {
+              issues.push(
+                issue(
+                  "invalid-database-options",
+                  fieldPath(field, "onUpdate"),
+                  "A generated column cannot use automatic update.",
+                ),
+              );
+            }
+            if (field.onUpdate !== null) {
+              if (!field.type.startsWith("timestamp") && !field.type.startsWith("datetime")) {
+                issues.push(
+                  issue(
+                    "invalid-database-options",
+                    fieldPath(field, "onUpdate"),
+                    "CURRENT_TIMESTAMP update metadata requires DATETIME or TIMESTAMP.",
+                  ),
+                );
+              }
+              if (field.default === null) {
+                issues.push(
+                  issue(
+                    "invalid-column-default",
+                    fieldPath(field, "default"),
+                    "Automatic update requires an explicit default.",
+                  ),
+                );
+              }
+            }
+          }
+
+          if (autoIncrementFields.length > 1) {
+            for (const field of autoIncrementFields.slice(1)) {
+              issues.push(
+                issue(
+                  "invalid-database-options",
+                  fieldPath(field, "autoIncrement"),
+                  `Only one AUTO_INCREMENT column is permitted; ${autoIncrementFields[0].name} is first.`,
+                ),
+              );
+            }
+          }
+
+          state.adapter = null;
+          if (issues.length > 0) {
+            state.resolution = { status: "invalid", issues, columns: [] };
+            state.event = {
+              title: `${issues.length} independent definition issue${issues.length === 1 ? "" : "s"}`,
+              detail: "The resolver returns no partial plan. Review the stable issue paths below.",
+              tone: "warn",
+            };
+            return state;
+          }
+
+          const columns = state.fields.map((field) => {
+            const serial = field.type === "serial";
+            const autoIncrement = serial || field.autoIncrement === true;
+            return {
+              key: field.key,
+              name: field.name,
+              type: field.type,
+              nullable: serial ? false : !field.notNull,
+              default: field.default,
+              generated: field.generated,
+              onUpdate: field.onUpdate,
+              autoIncrement: autoIncrement
+                ? { key: serial ? "serial-unique" : "host-required" }
+                : null,
+              codec: `${field.type}:encode/decode`,
+            };
+          });
+
+          state.resolution = { status: "resolved", issues: [], columns };
+          state.event = {
+            title: "Drizzle-independent plan resolved",
+            detail: "The plan contains field-keyed columns and codecs, but no DDL, indexes, relations, or ORM values.",
+            tone: "good",
+          };
+          return state;
+        };
+
+        const bindAdapter = (input) => {
+          let state = clone(input);
+          if (state.resolution?.status !== "resolved") state = resolve(state);
+          if (state.resolution.status !== "resolved") return state;
+
+          const missing = state.resolution.columns.filter(
+            (column) =>
+              column.autoIncrement?.key === "host-required" &&
+              !state.hostIndexes.some((index) => index[0] === column.key),
+          );
+
+          if (missing.length > 0) {
+            state.adapter = {
+              status: "invalid",
+              issues: missing.map((column) =>
+                issue(
+                  "invalid-database-options",
+                  `adapter.indexes.${column.key}`,
+                  `A host-owned index must start with ${column.name}.`,
+                ),
+              ),
+            };
+            state.event = {
+              title: "Concrete adapter rejected the handoff",
+              detail: "The Store resolver marked a host key requirement. The selected adapter could not prove it.",
+              tone: "warn",
+            };
+            return state;
+          }
+
+          state.adapter = { status: "bound", issues: [] };
+          state.event = {
+            title: "Concrete adapter accepted the plan",
+            detail: "Host index requirements are satisfied. Driver conversion remains adapter-owned.",
+            tone: "good",
+          };
+          return state;
+        };
+
+        const codecProbe = (name, value) => {
+          if (name === "bigint") {
+            const canonical = /^(?:0|-[1-9]\d*|[1-9]\d*)$/u.test(value);
+            const inRange = canonical
+              ? BigInt(value) >= -9223372036854775808n && BigInt(value) <= 9223372036854775807n
+              : false;
+            return canonical && inRange
+              ? ["Codec accepted canonical BIGINT", `${value} is within the signed 64-bit range.`, "good"]
+              : ["StoreValidationError", `${JSON.stringify(value)} is not a canonical signed BIGINT value.`, "warn"];
+          }
+          if (name === "char") {
+            return value.endsWith(" ")
+              ? ["StoreValidationError", "Application CHAR values cannot end with spaces.", "warn"]
+              : ["Codec accepted CHAR", "MySQL may add storage padding; selected decoding removes it.", "good"];
+          }
+          if (name === "boolean-read") {
+            return value === 0 || value === 1 || typeof value === "boolean"
+              ? ["Codec decoded BOOLEAN", `${JSON.stringify(value)} has an exact boolean representation.`, "good"]
+              : ["invalid-selected-record", `${JSON.stringify(value)} is not boolean, 0, or 1.`, "warn"];
+          }
+          if (name === "timestamp") {
+            const canonical = /^20(?:0\d|1\d|2\d|3[0-8])-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/u.test(value);
+            return canonical
+              ? ["Codec accepted UTC TIMESTAMP", `${value} uses the Store UTC form.`, "good"]
+              : ["StoreValidationError", `${JSON.stringify(value)} is not a canonical UTC TIMESTAMP.`, "warn"];
+          }
+          return ["Unknown codec probe", name, "warn"];
+        };
+
+        const reduce = (input, action) => {
+          let state = clone(input);
+          switch (action.type) {
+            case "RESET":
+              return initialState();
+            case "LOAD_AUTO_INCREMENT":
+              state = initialState();
+              state.fields[0].autoIncrement = true;
+              state.event = {
+                title: "AUTO_INCREMENT requested",
+                detail: "Resolve the Record to expose its host-owned key requirement.",
+                tone: "neutral",
+              };
+              return state;
+            case "ADD_HOST_INDEX":
+              state.hostIndexes = [["id"]];
+              state.adapter = null;
+              state.event = {
+                title: "Host index added",
+                detail: "The concrete adapter can now prove that an index starts with id.",
+                tone: "neutral",
+              };
+              return state;
+            case "LOAD_SERIAL":
+              state = initialState();
+              state.fields[0].type = "serial";
+              state.fields[0].notNull = true;
+              state.fields[0].autoIncrement = null;
+              state.event = {
+                title: "SERIAL selected",
+                detail: "Its intrinsic unique index should satisfy AUTO_INCREMENT without host index metadata.",
+                tone: "neutral",
+              };
+              return state;
+            case "LOAD_GENERATED":
+              state = initialState();
+              state.fields.push({
+                key: "emailDomain",
+                name: "email_domain",
+                type: "varchar(255)",
+                notNull: false,
+                autoIncrement: false,
+                default: null,
+                generated: { mode: "stored", expression: "substring_index(email_address, '@', -1)" },
+                onUpdate: null,
+              });
+              state.event = {
+                title: "Stored generated column added",
+                detail: "It is selectable but rejects explicit create and update writes.",
+                tone: "neutral",
+              };
+              return state;
+            case "WRITE_GENERATED":
+              state.event = {
+                title: "StoreValidationError",
+                detail: "Create.emailDomain is explicit, but MySQL owns this generated value.",
+                tone: "warn",
+              };
+              return state;
+            case "OMIT_GENERATED":
+              state.event = {
+                title: "Generated write accepted",
+                detail: "Create omits emailDomain. MySQL computes it and the adapter decodes the stored row.",
+                tone: "good",
+              };
+              return state;
+            case "LOAD_INVALID":
+              state = initialState();
+              state.fields = [
+                {
+                  key: "id",
+                  name: "ID",
+                  type: "int",
+                  notNull: true,
+                  autoIncrement: true,
+                  default: "7",
+                  generated: null,
+                  onUpdate: null,
+                },
+                {
+                  key: "legacyId",
+                  name: "id",
+                  type: "serial",
+                  notNull: false,
+                  autoIncrement: false,
+                  default: null,
+                  generated: null,
+                  onUpdate: null,
+                },
+                {
+                  key: "computed",
+                  name: "computed",
+                  type: "int",
+                  notNull: false,
+                  autoIncrement: false,
+                  default: "0",
+                  generated: { mode: "virtual", expression: "id + 1" },
+                  onUpdate: "current-timestamp",
+                },
+                {
+                  key: "updatedAt",
+                  name: "updated_at",
+                  type: "varchar(30)",
+                  notNull: true,
+                  autoIncrement: false,
+                  default: null,
+                  generated: null,
+                  onUpdate: "current-timestamp",
+                },
+              ];
+              state.event = {
+                title: "Invalid effective catalog loaded",
+                detail: "Resolve it to inspect aggregation and deterministic source paths.",
+                tone: "neutral",
+              };
+              return state;
+            case "RESOLVE":
+              return resolve(state);
+            case "BIND_ADAPTER":
+              return bindAdapter(state);
+            case "PROBE_BIGINT_BAD": {
+              const [title, detail, tone] = codecProbe("bigint", "001");
+              state.event = { title, detail, tone };
+              return state;
+            }
+            case "PROBE_BIGINT_GOOD": {
+              const [title, detail, tone] = codecProbe("bigint", "9223372036854775807");
+              state.event = { title, detail, tone };
+              return state;
+            }
+            case "PROBE_CHAR": {
+              const [title, detail, tone] = codecProbe("char", "code ");
+              state.event = { title, detail, tone };
+              return state;
+            }
+            case "PROBE_BOOLEAN": {
+              const [title, detail, tone] = codecProbe("boolean-read", 2);
+              state.event = { title, detail, tone };
+              return state;
+            }
+            case "PROBE_TIMESTAMP": {
+              const [title, detail, tone] = codecProbe("timestamp", "2026-08-06T12:30:00Z");
+              state.event = { title, detail, tone };
+              return state;
+            }
+            default:
+              return state;
+          }
+        };
+
+        return { initialState, reduce };
+      })();
+    </script>
+
+    <script>
+      (() => {
+        const model = window.MysqlRecordPrototype;
+        let state = model.initialState();
+        let activeScenario = 0;
+
+        const freePlayActions = [
+          ["Reset", "RESET", false],
+          ["Use AUTO_INCREMENT", "LOAD_AUTO_INCREMENT", false],
+          ["Add host index", "ADD_HOST_INDEX", false],
+          ["Use SERIAL", "LOAD_SERIAL", false],
+          ["Add generated column", "LOAD_GENERATED", false],
+          ["Load invalid catalog", "LOAD_INVALID", false],
+          ["Resolve Record", "RESOLVE", true],
+          ["Bind adapter", "BIND_ADAPTER", true],
+        ];
+
+        const scenarios = [
+          {
+            title: "Adapter handoff",
+            description:
+              "See the Store resolver mark an index requirement without owning indexes. The concrete adapter rejects the first handoff, then accepts it after the host supplies an index.",
+            steps: [
+              ["Load an integer AUTO_INCREMENT field.", "Load definition", "LOAD_AUTO_INCREMENT"],
+              ["Resolve a driver-independent column plan.", "Resolve", "RESOLVE"],
+              ["Try to bind without a host index.", "Bind adapter", "BIND_ADAPTER"],
+              ["Add an index that starts with id.", "Add index", "ADD_HOST_INDEX"],
+              ["Bind the same plan again.", "Bind adapter", "BIND_ADAPTER"],
+            ],
+          },
+          {
+            title: "SERIAL shortcut",
+            description:
+              "Confirm that SERIAL carries its intrinsic unique key and does not create a second host index requirement.",
+            steps: [
+              ["Replace the id type with SERIAL.", "Load definition", "LOAD_SERIAL"],
+              ["Resolve the intrinsic type behavior.", "Resolve", "RESOLVE"],
+              ["Bind with no host index metadata.", "Bind adapter", "BIND_ADAPTER"],
+            ],
+          },
+          {
+            title: "Aggregated failures",
+            description:
+              "Push several independent errors through one effective catalog. The resolver must report all valid checks in a stable order and return no partial plan.",
+            steps: [
+              ["Load duplicate names and conflicting options.", "Load invalid catalog", "LOAD_INVALID"],
+              ["Resolve once and inspect every issue path.", "Resolve", "RESOLVE"],
+            ],
+          },
+          {
+            title: "Generated writes",
+            description:
+              "Generated metadata does not change Schema inference. Runtime Store validation still rejects an explicit write and accepts omission.",
+            steps: [
+              ["Add a stored generated column.", "Load definition", "LOAD_GENERATED"],
+              ["Resolve its adapter plan.", "Resolve", "RESOLVE"],
+              ["Try an explicit create value.", "Write explicit value", "WRITE_GENERATED"],
+              ["Omit the generated field instead.", "Omit value", "OMIT_GENERATED"],
+            ],
+          },
+          {
+            title: "Canonical codecs",
+            description:
+              "Probe the driver-independent value boundary. Caller write defects and stored read defects must have different owners.",
+            steps: [
+              ["Try a BIGINT with a redundant zero.", "Write 001", "PROBE_BIGINT_BAD"],
+              ["Try the signed BIGINT maximum.", "Write maximum", "PROBE_BIGINT_GOOD"],
+              ["Try CHAR text with a trailing space.", "Write CHAR", "PROBE_CHAR"],
+              ["Decode stored BOOLEAN value 2.", "Decode 2", "PROBE_BOOLEAN"],
+              ["Write a canonical UTC timestamp.", "Write timestamp", "PROBE_TIMESTAMP"],
+            ],
+          },
+        ];
+
+        const definitionElement = document.querySelector("#definition");
+        const resolverElement = document.querySelector("#resolver");
+        const adapterElement = document.querySelector("#adapter");
+        const eventElement = document.querySelector("#event");
+        const freePlayElement = document.querySelector("#free-play-controls");
+        const tabsElement = document.querySelector("#scenario-tabs");
+        const scenarioBodyElement = document.querySelector("#scenario-body");
+
+        const node = (tag, className, text) => {
+          const element = document.createElement(tag);
+          if (className) element.className = className;
+          if (text !== undefined) element.textContent = text;
+          return element;
+        };
+
+        const badge = (text, accent = false) => node("span", `badge${accent ? " accent" : ""}`, text);
+
+        const dispatch = (type) => {
+          state = model.reduce(state, { type });
+          renderState();
+        };
+
+        const renderDefinition = () => {
+          definitionElement.replaceChildren();
+          const facts = node("div", "fact-grid");
+          const factValues = [
+            ["Record key", state.table.key],
+            ["Table", state.table.mysqlName ?? state.table.portableName],
+            ["Database", state.table.database],
+            ["Host indexes", state.hostIndexes.length ? state.hostIndexes.map((index) => index.join(", ")).join(" · ") : "none"],
+          ];
+          for (const [label, value] of factValues) {
+            const fact = node("div", "fact");
+            fact.append(node("span", "fact-label", label), node("span", "fact-value", value));
+            facts.append(fact);
+          }
+          definitionElement.append(facts);
+
+          const fields = node("ul", "field-list");
+          for (const field of state.fields) {
+            const item = node("li", "field");
+            const top = node("div", "field-top");
+            top.append(node("span", "field-name mono", field.key), node("code", "", field.name));
+            const badges = node("div", "badges");
+            badges.append(badge(field.type, true));
+            if (field.notNull) badges.append(badge("not null"));
+            if (field.autoIncrement === true) badges.append(badge("auto increment"));
+            if (field.autoIncrement === false && field.type === "serial") badges.append(badge("auto increment: false"));
+            if (field.default !== null) badges.append(badge(`default ${field.default}`));
+            if (field.generated !== null) badges.append(badge(`${field.generated.mode} generated`));
+            if (field.onUpdate !== null) badges.append(badge("on update current timestamp"));
+            item.append(top, badges);
+            fields.append(item);
+          }
+          definitionElement.append(fields);
+        };
+
+        const renderResolver = () => {
+          resolverElement.replaceChildren();
+          if (state.resolution === null) {
+            resolverElement.append(node("div", "empty", "Not resolved. The definition is still unbound."));
+            return;
+          }
+
+          const isResolved = state.resolution.status === "resolved";
+          resolverElement.append(
+            node("span", `status ${isResolved ? "good" : "warn"}`, isResolved ? "Resolved" : "Definition failed"),
+          );
+
+          if (!isResolved) {
+            const issues = node("ul", "issue-list");
+            issues.style.marginTop = "12px";
+            for (const item of state.resolution.issues) {
+              const entry = node("li", "issue");
+              entry.append(
+                node("div", "issue-code", item.code),
+                node("code", "issue-path", item.path),
+                node("p", "issue-message", item.message),
+              );
+              issues.append(entry);
+            }
+            resolverElement.append(issues);
+            return;
+          }
+
+          const plan = node("ul", "plan-list");
+          plan.style.marginTop = "12px";
+          for (const column of state.resolution.columns) {
+            const entry = node("li", "plan-item");
+            const top = node("div", "plan-top");
+            top.append(node("span", "plan-name mono", column.key), badge(column.type, true));
+            const details = [
+              column.nullable ? "nullable" : "not null",
+              column.autoIncrement ? `key: ${column.autoIncrement.key}` : null,
+              column.generated ? `${column.generated.mode} generated` : null,
+              column.onUpdate ? "automatic update" : null,
+              column.codec,
+            ].filter(Boolean);
+            entry.append(top, node("p", "plan-detail", details.join(" · ")));
+            plan.append(entry);
+          }
+          resolverElement.append(plan);
+        };
+
+        const renderAdapter = () => {
+          adapterElement.replaceChildren();
+          if (state.adapter === null) {
+            adapterElement.append(node("div", "empty", "No concrete adapter has accepted this plan."));
+            return;
+          }
+          const bound = state.adapter.status === "bound";
+          adapterElement.append(
+            node("span", `status ${bound ? "good" : "warn"}`, bound ? "Adapter bound" : "Adapter rejected"),
+          );
+          if (!bound) {
+            const issues = node("ul", "issue-list");
+            issues.style.marginTop = "12px";
+            for (const item of state.adapter.issues) {
+              const entry = node("li", "issue");
+              entry.append(
+                node("div", "issue-code", item.code),
+                node("code", "issue-path", item.path),
+                node("p", "issue-message", item.message),
+              );
+              issues.append(entry);
+            }
+            adapterElement.append(issues);
+          } else {
+            adapterElement.append(
+              node(
+                "p",
+                "plan-detail",
+                "Host index proof passed. The adapter can now map this plan to its driver or ORM.",
+              ),
+            );
+          }
+        };
+
+        const renderEvent = () => {
+          eventElement.replaceChildren();
+          const event = node("div", "event");
+          if (state.event.tone === "warn") event.style.borderLeftColor = "var(--warn)";
+          if (state.event.tone === "good") event.style.borderLeftColor = "var(--good)";
+          event.append(
+            node("div", "event-title", state.event.title),
+            node("p", "event-detail", state.event.detail),
+          );
+          eventElement.append(event);
+        };
+
+        const renderState = () => {
+          renderDefinition();
+          renderResolver();
+          renderAdapter();
+          renderEvent();
+        };
+
+        const renderFreePlay = () => {
+          for (const [label, type, primary] of freePlayActions) {
+            const button = node("button", `action${primary ? " primary" : ""}`, label);
+            button.type = "button";
+            button.addEventListener("click", () => dispatch(type));
+            freePlayElement.append(button);
+          }
+        };
+
+        const renderScenario = () => {
+          const scenario = scenarios[activeScenario];
+          scenarioBodyElement.replaceChildren();
+          const title = node("h3", "", scenario.title);
+          title.id = `scenario-panel-${activeScenario}`;
+          const description = node("p", "scenario-description", scenario.description);
+          const steps = node("ol", "walkthrough-steps");
+          for (const [instruction, label, action] of scenario.steps) {
+            const step = node("li", "walkthrough-step");
+            const text = node("span", "", instruction);
+            const button = node("button", "step-action", label);
+            button.type = "button";
+            button.addEventListener("click", () => dispatch(action));
+            step.append(text, button);
+            steps.append(step);
+          }
+          scenarioBodyElement.append(title, description, steps);
+        };
+
+        const selectScenario = (index) => {
+          activeScenario = index;
+          state = model.initialState();
+          for (const [tabIndex, tab] of [...tabsElement.children].entries()) {
+            const selected = tabIndex === index;
+            tab.setAttribute("aria-selected", String(selected));
+            tab.tabIndex = selected ? 0 : -1;
+          }
+          renderState();
+          renderScenario();
+        };
+
+        const renderScenarios = () => {
+          for (const [index, scenario] of scenarios.entries()) {
+            const tab = node("button", "scenario-tab", scenario.title);
+            tab.type = "button";
+            tab.role = "tab";
+            tab.id = `scenario-tab-${index}`;
+            tab.setAttribute("aria-controls", `scenario-panel-${index}`);
+            tab.setAttribute("aria-selected", String(index === 0));
+            tab.tabIndex = index === 0 ? 0 : -1;
+            tab.addEventListener("click", () => selectScenario(index));
+            tab.addEventListener("keydown", (event) => {
+              if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
+              event.preventDefault();
+              const direction = event.key === "ArrowRight" ? 1 : -1;
+              const next = (activeScenario + direction + scenarios.length) % scenarios.length;
+              selectScenario(next);
+              tabsElement.children[next].focus();
+            });
+            tabsElement.append(tab);
+          }
+          renderScenario();
+        };
+
+        renderFreePlay();
+        renderScenarios();
+        renderState();
+      })();
+    </script>
+  </body>
+</html>
