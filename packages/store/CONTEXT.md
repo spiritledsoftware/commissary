@@ -50,6 +50,22 @@ _Avoid_: Driver value leak, ORM column type, implicit lossy number conversion
 The synchronous adapter-facing step that applies effective definitions, validates PostgreSQL metadata, and produces table, column, reference, and enum assets without database I/O or DDL.
 _Avoid_: Migration execution, database introspection, host-facing Store tier, ORM schema
 
+**MySQL Record Refinement**:
+The `mysql.table()` and `mysql.column()` metadata inside one SQL Record Definition. An integration owns this metadata, and the host gives the Record to its concrete MySQL adapter.
+_Avoid_: `MySqlRecord`, MySQL definition factory, Drizzle type, host-authored schema copy
+
+**MySQL Column Type**:
+A direct, inline-enum, or custom MySQL storage type with a driver-independent selected value contract and synchronous conversion rules.
+_Avoid_: Driver output mode, ORM column type, implicit lossy number conversion, reusable enum asset
+
+**MySQL Record Resolution**:
+The synchronous adapter-facing step that applies effective definitions, validates MySQL metadata, and produces table, column, and reference assets without database I/O or DDL.
+_Avoid_: Migration execution, database introspection, host-facing Store tier, ORM schema
+
+**Automatic-Increment Key Requirement**:
+The resolved MySQL fact that a non-serial `AUTO_INCREMENT` column needs a host-owned index that starts with the column. A concrete adapter proves the index; MySQL `SERIAL` satisfies the requirement with its intrinsic unique index.
+_Avoid_: Store-owned index definition, required unique host index, generated migration, runtime capability
+
 **Collection Catalog**:
 The complete effective Core and Custom Record definitions available through the host Store's `collections` map.
 _Avoid_: Collection Map, adapter-private table, subset of Core state, all physical storage
