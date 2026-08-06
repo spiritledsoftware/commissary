@@ -1,0 +1,811 @@
+# SQL Store Tier Technical Specification
+
+> **Status**: Design complete for implementation. Confirmed decisions in this specification are binding.
+>
+> **Last updated**: 2026-08-05 during SQL Store tier approval.
+
+## Summary
+
+Add a portable SQL Store specialization to `@commissary/store`. It keeps the base Collection Map and adds one parameter-safe `execute` operation. It also adds one immutable SQL Record definition form, one opaque SQL Statement algebra, shared adapter helpers, SQL errors, and shared conformance tests.
+
+The interface is portable. SQL text can use one database dialect. Generic execution returns one unchecked row set. Database-specific Stores can accept more parameter types and return more facts without weakening the generic contract.
+
+This specification extends the [Store Architecture Technical Specification](store.md). That specification remains authoritative for Records, Collections, operators, Store errors, and transactions except where this document gives a later rule.
+
+## Goals
+
+- Let integrations require SQL without depending on an ORM or driver.
+- Keep SQL structure separate from bound values until execution.
+- Compile lower-tier Record definitions into SQL storage intent.
+- Preserve Standard Schema validation and Store inference.
+- Give hosts safe resolved table and column references.
+- Keep SQL and Collection work in one physical transaction when a Store supports both capabilities.
+- Give adapter authors one Statement compiler and one transaction callback runner.
+- Define deterministic conformance controls without exposing driver state on production Stores.
+
+## Non-Goals
+
+- Make SQL text portable between databases.
+- Parse or validate returned rows.
+- Add preparation, streaming, cancellation, session reservation, batches, or ordered multiple results.
+- Expose affected counts, generated identifiers, warnings, or notices on generic execution.
+- Add indexes, relations, migrations, schema diffing, introspection, or client creation.
+- Make resolved Record references a database permission or security boundary.
+- Apply Collection Field Schemas, Hooks, expressions, generated values, or field conversion to direct SQL.
+- Add an Effect-specific SQL definition interface. `@commissary/store` keeps one plain JavaScript interface. A later `@commissary/effect` adapter must earn its own seam.
+
+## Invariants
+
+1. **One Store specialization**: `SqlStore` extends `Store` and adds only `execute`.
+2. **One Statement algebra**: Complete statements, fragments, raw text, identifiers, parameters, joins, and resolved Record references use `SqlStatement`.
+3. **Opaque values**: Only package helpers and resolved definitions create valid SQL Statements, SQL Column Types, SQL Literals, and SQL Record References.
+4. **Compatible copies**: Compatible installed copies accept the same opaque value format. Incompatible formats and plain lookalikes fail before driver work.
+5. **Immutable structure**: Package-owned Statement and definition structure is snapshotted and frozen. Bound wider values and third-party schema objects remain by reference.
+6. **Native Promise boundary**: `execute` and transaction helpers return a native Promise before validation, conversion, callbacks, or driver work. They never throw synchronously.
+7. **One driver statement call**: One `execute` call makes at most one driver statement call and performs no retry.
+8. **One row set**: Generic execution returns exactly one readonly `rows` array. Multiple ordered results reject.
+9. **Unchecked rows**: Row containers and members are driver values. Callers own parsing and cardinality checks.
+10. **Portable values**: Every generic SQL Store accepts `null`, boolean, finite number, and NUL-free string.
+11. **No array expansion**: An array interpolation is one parameter. Only explicit Statements can add SQL structure.
+12. **Source order**: Parameter encoding, support checks, portable validation, and conversion run from left to right and stop at the first failure.
+13. **Definition precedence**: Active database metadata wins over portable metadata, which wins over Select Schema reflection, which wins over adapter defaults.
+14. **Select-owned storage**: Defined create, update, generated, and decoded values become the output of the effective Select Field Schema before storage or selection.
+15. **No inferred database default**: Create Schema defaults and JSON Schema annotations never become database defaults.
+16. **One physical transaction**: SQL and Collection work in one transaction callback use the same physical transaction.
+17. **Closed transaction view**: A transaction view closes when its callback settles. Later methods reject without driver work.
+18. **No rollback race**: Active transaction work drains before rollback starts.
+19. **Caught failure still fails**: A rejected transaction-view operation marks the transaction for rollback even when callback code catches it.
+20. **Exact rollback failure**: Successful rollback preserves the selected callback boundary failure without wrapping it.
+21. **No manual control guarantee**: Transaction guarantees apply only when callers do not submit manual transaction SQL through `execute`.
+
+## Confirmed Decisions
+
+### Package and interface ownership
+
+`@commissary/store` owns:
+
+- SQL Record definition and reference types;
+- portable SQL Column Types and SQL Literals;
+- SQL Statement construction;
+- `SqlStore` and SQL errors;
+- the `@commissary/store/sql-adapter` Statement compiler;
+- the `@commissary/store/transaction-adapter` callback runner; and
+- SQL Store conformance types and suites.
+
+Concrete adapters own:
+
+- database clients, credentials, pools, and resource lifetime;
+- driver result recognition;
+- physical transaction start, commit, rollback, and release;
+- database-specific Record metadata;
+- database-specific parameter and result facts; and
+- optional driver features outside this tier.
+
+There is no standalone `SqlExecutor`, exported `SqlTag`, or production alias for a combined SQL Transaction Store. Code can use `typeof sql` when it needs the tag type. Tests use an inline intersection for the combined capability.
+
+### SQL Record definitions
+
+A SQL Record definition remains a valid base `RecordDefinition`. Memory and other lower-tier Stores use its Field Schemas and ignore SQL metadata. SQL adapters compile the same effective definition after contributions and host overrides.
+
+Provide two definition helpers:
+
+- `StoreRecord.define()` for immutable base definitions; and
+- `SqlRecord.define()` for immutable definitions with SQL intent.
+
+Plain structural definitions remain valid. Do not add `PostgresRecord`, `MySqlRecord`, or `SqliteRecord` constructors. Database-specific metadata stays under the named `postgres`, `mysql`, and `sqlite` properties and becomes typed at the matching database definition seam.
+
+The public type shape is:
+
+```ts
+export type SqlLiteralValue = string | number | boolean;
+
+export interface SqlColumnType<in Value extends JsonValue> {
+  // Opaque package-owned value family and conversion contract.
+}
+
+export interface SqlLiteral<out Value extends SqlLiteralValue> {
+  // Opaque package-owned portable database default.
+}
+
+export interface SqlTableDefinition {
+  readonly name?: string;
+  readonly postgres?: object;
+  readonly mysql?: object;
+  readonly sqlite?: object;
+}
+
+export interface SqlColumnDefinition<Value extends JsonValue> {
+  readonly name?: string;
+  readonly type?: SqlColumnType<Value>;
+  readonly default?: SqlLiteral<Extract<Value, SqlLiteralValue>>;
+  readonly notNull?: boolean;
+  readonly postgres?: object;
+  readonly mysql?: object;
+  readonly sqlite?: object;
+}
+
+type SqlFieldDefinition<Field extends FieldDefinition> = Field extends FieldSchema
+  ? Field
+  : Field & {
+      readonly column?: SqlColumnDefinition<
+        Exclude<FieldOutput<SelectFieldSchema<Field>>, undefined>
+      >;
+    };
+
+export type SqlRecordDefinition<Definition extends RecordDefinition> = Omit<
+  Definition,
+  "fields"
+> & {
+  readonly table?: SqlTableDefinition;
+  readonly fields: {
+    readonly [Name in keyof Definition["fields"]]: SqlFieldDefinition<Definition["fields"][Name]>;
+  };
+};
+
+type RoundTripDefinition<Definition extends RecordDefinition> = Definition & {
+  readonly fields: RoundTripFieldDefinitions<Definition["fields"]>;
+};
+
+export declare const StoreRecord: {
+  readonly define: <const Definition extends RecordDefinition>(
+    definition: RoundTripDefinition<Definition>,
+  ) => Readonly<Definition>;
+};
+
+export declare const SqlRecord: {
+  readonly define: <const Definition extends RecordDefinition>(
+    definition: RoundTripDefinition<Definition> & SqlRecordDefinition<Definition>,
+  ) => Readonly<Definition & SqlRecordDefinition<Definition>>;
+};
+```
+
+The named database metadata properties accept an object at the portable stage and preserve its inferred type. A database-specific definition function narrows and validates its active property. This rule avoids global type augmentation and keeps database types out of the portable package.
+
+#### Portable column types and defaults
+
+The `sql` value includes these constructors:
+
+```ts
+sql.text();
+sql.number();
+sql.integer();
+sql.boolean();
+sql.json();
+sql.literal(value);
+```
+
+Their contracts are:
+
+- `text()` accepts selected strings and selected null.
+- `number()` accepts finite JavaScript binary64 numbers and selected null.
+- `integer()` accepts safe JavaScript integers and selected null. Storage uses a signed 64-bit integer family, but writes and reads must not lose JavaScript precision.
+- `boolean()` accepts booleans and selected null.
+- `json()` accepts JSON values. SQL `NULL` means a missing field; selected JSON `null` remains JSON `null`.
+- `literal()` accepts a string, finite number, safe integer, or boolean. It rejects NUL strings, non-finite numbers, and unsafe integer values.
+
+Portable defaults do not include `null`, JSON, current time, UUID generation, identity, sequences, or SQL expressions. Those values need database-specific metadata.
+
+#### Select Schema reflection
+
+An explicit `column.type` wins and prevents reflection work for that field. Without an explicit type, the definition resolver:
+
+1. checks for the Standard JSON Schema output converter;
+2. requests Draft 2020-12 output;
+3. retries once with Draft 07 when the first conversion throws or returns unusable output;
+4. resolves local references with cycle detection;
+5. reduces `type`, `const`, `enum`, `anyOf`, `oneOf`, and `allOf` to one storage family; and
+6. reports `column-type-required` when the result is missing, unconstrained, mixed, remote, invalid, or unclear.
+
+A union can include JSON `null` and still resolve from its one non-null family. `integer` plus `number` resolves to `number`. A string and number union is unclear. Object and array both resolve to `json`. Validation constraints, enum checks, lengths, formats, and annotations do not become SQL constraints.
+
+Only Select output reflection controls inference. Create and Update Schemas need no Standard JSON Schema converter.
+
+#### Null and missing fields
+
+Use final Select evidence and explicit metadata:
+
+```txt
+required string | null -> SQL NULL can represent selected null
+optional string        -> SQL NULL can represent missing
+optional string | null -> three states; requires an explicit representation
+```
+
+For `sql.json()`, SQL `NULL` represents missing and a JSON encoding represents selected JSON `null`.
+
+Generate `NOT NULL` only from final evidence or `column.notNull: true`. `column.notNull: false` forces a nullable column. Unknown presence stays nullable. The database-specific tier must reject a representation that cannot preserve every selected state.
+
+#### Contributions and overrides
+
+`records` contains new complete Record contributions. `overrides` changes an existing contribution. A key cannot silently act as both.
+
+Override rules are Store-neutral:
+
+- An override is a typed deep patch.
+- `null` removes exactly one inherited optional setting.
+- Unspecified settings remain unchanged.
+- A new field in an override must be a complete Field Definition.
+- Existing fields accept partial patches.
+- Contributor Record and field keys cannot be removed.
+- Duplicate contributions fail before overrides. The host must select or rename a contribution explicitly.
+- Integration conflicts never merge by order.
+
+Static compatibility requires:
+
+```ts
+SelectedRecord<Effective> extends SelectedRecord<Contributor>;
+CreateInput<Contributor> extends CreateInput<Effective>;
+UpdateInput<Contributor> extends UpdateInput<Effective>;
+```
+
+This rule permits a string-to-UUID refinement and rejects a string-to-number replacement. A runtime refinement can still reject a contributor value. The host owns that risk.
+
+After the patch, the definition stage rebuilds all reflection and physical metadata. It never retains stale facts from the contributor.
+
+#### Definition lifecycle and failures
+
+Definition has two synchronous, I/O-free stages:
+
+1. `StoreRecord.define()` or `SqlRecord.define()` checks local structure, snapshots package-owned containers, and returns an immutable unbound definition.
+2. A concrete database definition combines contributions and overrides, resolves storage intent and physical names, checks conflicts, and returns resolved references plus its database-specific assets.
+
+Do not clone or freeze third-party schema objects. Snapshot and freeze package-owned field wrappers, table and column metadata, override results, SQL opaque values, and references.
+
+A failed SQL definition stage throws one `SqlDefinitionError` with all independent issues:
+
+```ts
+export type SqlDefinitionIssueCode =
+  | "invalid-definition"
+  | "invalid-name"
+  | "duplicate-name"
+  | "conflicting-contribution"
+  | "column-type-required"
+  | "invalid-column-type"
+  | "invalid-column-default"
+  | "invalid-database-options"
+  | "invalid-override"
+  | "incompatible-override";
+
+export interface SqlDefinitionIssue {
+  readonly code: SqlDefinitionIssueCode;
+  readonly path: readonly (string | number)[];
+  readonly message: string;
+}
+
+export declare class SqlDefinitionError extends Error {
+  readonly name: "SqlDefinitionError";
+  readonly issues: readonly SqlDefinitionIssue[];
+}
+```
+
+A table or column name must be a nonempty NUL-free string. Omitted table and column names use their exact catalog and field keys. There is no automatic case conversion, pluralization, or snake-case conversion. Equal final physical names are definition errors. Database-specific qualification and identifier limits belong to the matching database tier.
+
+Core publishes explicit `commissary_` table names and snake-case column names from the same definitions that own its Field Schemas. Core imports no ORM or driver type.
+
+#### Resolved SQL Record references
+
+A concrete definition result exposes every resolved Record under `.records`:
+
+```ts
+export interface SqlFieldReference extends SqlStatement<never> {
+  // Opaque resolved column identifier.
+}
+
+export interface SqlRecordReference<
+  Definition extends RecordDefinition,
+> extends SqlStatement<never> {
+  readonly fields: {
+    readonly [Name in keyof Definition["fields"]]: SqlFieldReference;
+  };
+}
+
+export type SqlRecordReferences<Definitions extends RecordDefinitions> = {
+  readonly [Name in keyof Definitions]: SqlRecordReference<Definitions[Name]>;
+};
+```
+
+A Record reference is the final table identifier. Its field references are final column identifiers. References are connection-independent and have no public raw-name property. They provide SQL structure only and do not convert direct-SQL parameters.
+
+The same immutable definition can be registered under several catalog keys. Each registration gets its own resolved reference. References can be composed across definitions and used on any suitable SQL connection. The database remains the authority for existence and permissions.
+
+### SQL Statements
+
+The root public types are:
+
+```ts
+export type SqlParameterValue = null | boolean | number | string;
+
+export interface SqlStatement<out Parameter> {
+  // Opaque package-owned data. Parameter has no default type argument.
+}
+
+export interface SqlExecutionResult {
+  readonly rows: readonly unknown[];
+}
+
+export interface SqlStore<
+  Definitions extends RecordDefinitions,
+  Operators extends StoreOperatorTypes = BaseStoreOperatorTypes,
+> extends Store<Definitions, Operators> {
+  readonly execute: (statement: SqlStatement<SqlParameterValue>) => Promise<SqlExecutionResult>;
+}
+```
+
+`SqlStatement<never>` has no bound values. `SqlStatement<unknown>` has no known narrower requirement. The type is covariant. Primitive literals widen to `string`, `number`, and `boolean`. A wider Store can accept a wider parameter union and return a result with more guaranteed fields while it remains assignable to generic `SqlStore`.
+
+The complete helper set is:
+
+```ts
+sql`SELECT ${value}`;
+sql.raw(text);
+sql.identifier(name);
+sql.param(value);
+sql.param(value, { encode });
+sql.join(statements, separator?);
+```
+
+All helpers return `SqlStatement` except the SQL Column Type and SQL Literal constructors.
+
+#### Helper behavior
+
+- A nested Statement contributes structure and its parameter requirements.
+- A plain interpolation contributes one bound parameter.
+- `sql.raw()` inserts exact unchecked structure and never inspects placeholder-like text.
+- `sql.identifier()` creates one quoted name part. It rejects a non-string, empty string, or NUL. It never splits on `.`.
+- `sql.param(value)` creates one explicit bound parameter.
+- `sql.param(value, { encode })` snapshots the function reference. The synchronous function runs once per occurrence on every execution after `execute` returns its Promise. Its output becomes the Statement requirement.
+- An encoder output type cannot include `SqlStatement`. A runtime bypass rejects as `invalid-parameter` and never becomes SQL structure.
+- `sql.join()` accepts only Statements, snapshots the input list, preserves order, adds the optional Statement separator only between items, and adds no parentheses.
+- An empty join returns an empty `SqlStatement<never>`.
+- Invalid helper structure throws `TypeError` immediately.
+
+Qualification is explicit:
+
+```ts
+sql`${sql.identifier("public")}.${sql.identifier("users")}`;
+```
+
+### Adapter-facing Statement compiler
+
+The official adapter interface is `@commissary/store/sql-adapter`:
+
+```ts
+export interface SqlStatementCompilerOptions<Parameter, DriverParameter> {
+  readonly quoteIdentifier: (name: string) => string;
+  readonly makePlaceholder: (position: number) => string;
+  readonly isParameter: (value: unknown, position: number) => value is Parameter;
+  readonly convertParameter: (value: Parameter, position: number) => DriverParameter;
+}
+
+export interface CompiledSqlStatement<DriverParameter> {
+  readonly text: string;
+  readonly parameters: DriverParameter[];
+}
+
+export declare function compileSqlStatement<Parameter, DriverParameter>(
+  statement: SqlStatement<Parameter>,
+  options: SqlStatementCompilerOptions<Parameter, DriverParameter>,
+): CompiledSqlStatement<DriverParameter>;
+```
+
+The compiler:
+
+1. checks origin and format compatibility;
+2. composes text and identifiers;
+3. makes placeholders from zero-based parameter positions;
+4. runs explicit encoders;
+5. checks adapter support;
+6. applies portable validation and negative-zero normalization;
+7. converts values for the driver; and
+8. returns one fresh driver-owned parameter array in source order.
+
+`isParameter()` returning false produces `unsupported-parameter`. A thrown encoder, support check, or conversion produces `invalid-parameter` with its position and cause. Invalid finite-number or string rules produce `invalid-parameter` without a cause. A failed quote or placeholder callback, or a non-string callback result, produces `StoreAdapterContractError` with `invalid-sql-compilation`.
+
+### Parameter rules
+
+- `null` becomes SQL `NULL`.
+- PostgreSQL keeps boolean values. MySQL and SQLite use `1` or `0`.
+- Numbers accept every finite JavaScript binary64 value. Negative zero becomes zero.
+- Strings pass unchanged except that NUL is invalid.
+- `undefined` is unsupported.
+- A wider Store can accept additional value types, but not `undefined`.
+- A wider mutable parameter stays by reference and is read when execution starts. The caller must not change it while that execution remains active.
+
+### `execute` behavior
+
+`execute`:
+
+- returns a native Promise before Statement checks, parameter work, or driver work;
+- sends a genuine empty Statement to the driver;
+- makes at most one statement call;
+- performs no retry;
+- returns `{ rows: [] }` when the driver returns no rows;
+- returns only one unchecked row set; and
+- rejects multiple ordered result sets without choosing, joining, or dropping them.
+
+An adapter can return driver row containers without copying or freezing them. It must not change them after fulfillment. A later mutation is an adapter defect, but an already fulfilled Promise cannot become rejected.
+
+### SQL errors
+
+Add `"execute"` to `StoreOperation`.
+
+```ts
+export type SqlStatementErrorOptions =
+  | { readonly reason: "invalid-statement" }
+  | {
+      readonly reason: "unsupported-parameter";
+      readonly parameterPosition: number;
+    }
+  | {
+      readonly reason: "invalid-parameter";
+      readonly parameterPosition: number;
+      readonly cause?: unknown;
+    };
+
+export type SqlExecutionErrorOptions =
+  | {
+      readonly reason: "execution-failed";
+      readonly executionMayHaveOccurred: boolean;
+      readonly cause: unknown;
+    }
+  | {
+      readonly reason: "multiple-results";
+      readonly executionMayHaveOccurred: true;
+    };
+```
+
+`SqlStatementError` and `SqlExecutionError` extend `StoreError` and have fixed operation `execute`. Statement errors contain no SQL text or parameter value. `executionMayHaveOccurred` is false only before the driver statement call starts. It is true after the call starts or when the outcome is uncertain. `multiple-results` has no cause because returned data must not enter the error.
+
+An invalid successful result rejects before fulfillment with:
+
+```ts
+new StoreAdapterContractError({
+  operation: "execute",
+  violation: "invalid-sql-result",
+});
+```
+
+A missing or non-array `rows` property is an invalid result. A failure thrown while checking the result can be its cause, but returned data cannot. Add `invalid-sql-compilation` and `invalid-sql-result` to `StoreAdapterContractViolation`.
+
+## Transactions
+
+A concrete Store with SQL and transactions exposes `execute` at its root and in its Transaction View. The View also exposes its Collections and each safe wider capability. It does not expose `transaction`.
+
+Manual `BEGIN`, `COMMIT`, `ROLLBACK`, savepoints, and equivalent SQL through `execute` are unsupported. Adapters need not parse or detect them. Transaction guarantees apply only when callers do not submit them. Conformance tests never submit them.
+
+### Shared callback runner
+
+The official adapter helper is `@commissary/store/transaction-adapter`:
+
+```ts
+export type TrackTransactionOperation = <Value>(start: () => Promise<Value>) => Promise<Value>;
+
+export declare function runTransactionCallback<View, Value>(
+  makeView: (track: TrackTransactionOperation) => View,
+  use: (view: View) => Promise<Value>,
+): Promise<Value>;
+```
+
+Every Transaction View method wraps its complete operation with `track()`. The helper returns a native Promise before it creates the View or calls user code. It assigns operation order when `track` is called.
+
+The helper:
+
+- calls the public callback at most once;
+- closes the View when that callback settles;
+- rejects each later tracked call with `TransactionClosedError` before `start` runs;
+- records every operation rejection, including one caught by callback code;
+- detects work still active when a successful callback settles;
+- drains all active work before it settles; and
+- returns the callback value or rejects with the selected boundary failure.
+
+It does not start, commit, roll back, or release a physical transaction. The adapter wraps its database transaction operation around this helper.
+
+`TransactionClosedError` and `TransactionUnsettledOperationError` extend `StoreError`, accept no constructor options, and expose no operation input.
+
+Failure priority is:
+
+1. the callback's exact rejection value;
+2. `TransactionUnsettledOperationError` when a successful callback leaves active work;
+3. the first failed View operation in call order when the callback otherwise succeeds; and
+4. commit when no failure exists.
+
+A View operation rejection dooms the transaction even if the callback catches it. Recovery would require an unsupported savepoint or nested transaction. Several operation failures use call order, not completion order.
+
+After the helper rejects, the adapter rolls back. Successful rollback preserves the selected value exactly. Failed rollback creates `TransactionRollbackError` with the selected value as `callbackFailure`, the physical failure as `rollbackFailure`, and `writesMayRemain: true`.
+
+If active work never settles, the transaction remains pending. It never commits and never races rollback against active work. Base Store has no safe timeout or cancellation rule. Hosts must use backend-specific operation, transaction, session, and lock limits plus monitoring so active work settles before rollback starts.
+
+Overlapping View calls are allowed. An adapter can serialize them. Store promises no order or parallel execution. Callers await operations in sequence when order matters.
+
+## Shared Conformance Interface
+
+Keep three shared groups:
+
+1. SQL Statement;
+2. SQL Store; and
+3. combined SQL Transaction Store.
+
+An adapter runs only the groups for the interfaces it implements. SQL Record definition behavior also has package-level runtime and compile-time tests; it does not add a fourth adapter suite.
+
+A fixed conformance Record has portable `id`, `label`, and `rank` fields.
+
+```ts
+export interface SqlStoreConformanceProfile<DriverParameter> {
+  readonly adapter: string;
+  readonly expectedCompilation: {
+    readonly text: string;
+    readonly parameters: readonly DriverParameter[];
+  };
+}
+
+export interface SqlStoreConformanceDriverCall<DriverParameter> {
+  readonly text: string;
+  readonly parameters: readonly DriverParameter[];
+}
+
+export type SqlStoreConformanceExecutionOutcome =
+  | { readonly kind: "rows"; readonly rows: readonly unknown[] }
+  | {
+      readonly kind: "failure";
+      readonly stage: "before-statement-call" | "statement-call";
+      readonly cause: unknown;
+    }
+  | { readonly kind: "multiple-results" }
+  | {
+      readonly kind: "invalid-result";
+      readonly shape: "missing-rows" | "non-array-rows";
+    }
+  | {
+      readonly kind: "invalid-result";
+      readonly shape: "rows-access-failure";
+      readonly cause: unknown;
+    };
+
+export interface SqlStoreConformanceControls<DriverParameter> {
+  readonly driverCalls: readonly SqlStoreConformanceDriverCall<DriverParameter>[];
+  readonly enqueueExecution: (outcome: SqlStoreConformanceExecutionOutcome) => void;
+}
+
+export interface SqlStoreConformanceFixture<DriverParameter> {
+  readonly store: SqlStore<typeof sqlStoreConformanceRecordDefinitions>;
+  readonly controls: SqlStoreConformanceControls<DriverParameter>;
+}
+
+export interface SqlStoreConformanceAdapter<DriverParameter> {
+  readonly profile: SqlStoreConformanceProfile<DriverParameter>;
+  readonly makeFixture: () =>
+    | SqlStoreConformanceFixture<DriverParameter>
+    | Promise<SqlStoreConformanceFixture<DriverParameter>>;
+}
+```
+
+Each scenario gets a new empty Store and new controls. There is no reset operation or shared call history. Queued outcomes are consumed in call order. With no queued outcome, the fixture uses its real test driver path. The profile supplies expected SQL text and driver parameters for one fixed Statement. Shared tests do not guess a dialect.
+
+The combined fixture adds:
+
+```ts
+export interface SqlTransactionStoreConformanceStatements {
+  readonly insertJob: (job: {
+    readonly id: string;
+    readonly label: string;
+    readonly rank: number;
+  }) => SqlStatement<SqlParameterValue>;
+  readonly deleteJob: (id: string) => SqlStatement<SqlParameterValue>;
+}
+
+export interface HeldTransactionConformanceOperation {
+  readonly started: Promise<void>;
+  readonly release: () => void;
+}
+
+export interface TransactionConformanceControls {
+  readonly beginCount: number;
+  readonly commitCount: number;
+  readonly rollbackCount: number;
+  readonly holdNextOperation: () => HeldTransactionConformanceOperation;
+  readonly failNextRollback: (cause: unknown) => void;
+}
+```
+
+The test-only combined Store is an inline intersection of `SqlStore` and `TransactionStore`. Its `TransactionCapabilities` contains `execute`. The fresh fixture contains that Store, SQL controls, transaction controls, and the two adapter-specific Statement factories.
+
+### Exact scenario areas
+
+Package-level SQL Record tests cover:
+
+- frozen definition structure without freezing schema objects;
+- explicit portable types and defaults;
+- Select output reflection and fallback targets;
+- local references, cycles, clear unions and intersections, and unclear storage families;
+- missing, selected null, and JSON null;
+- contribution conflicts, deep overrides, null removal, and compatibility inference;
+- final table and column conflicts; and
+- immutable resolved references for base and SQL definitions.
+
+Statement tests cover:
+
+- immediate helper `TypeError` cases;
+- frozen Statements and copied helper structure;
+- nested composition, exact raw text, one-part identifiers, and empty joins;
+- arrays as one parameter;
+- literal widening, covariance, `never`, nested requirements, and rejected encoder Statement output;
+- left-to-right order and first-failure stopping;
+- encoder timing, occurrence count, option capture, and cause identity;
+- fresh driver parameter arrays;
+- compiler callback defects; and
+- compatible package copies, incompatible formats, and counterfeit values.
+
+SQL Store tests cover:
+
+- native Promise timing and no synchronous throw;
+- the fixed compiled call against the adapter profile;
+- every portable and invalid portable value;
+- exact zero-based parameter positions and zero driver calls after compilation failure;
+- failures before and during the driver statement call;
+- one call and no retry;
+- empty SQL reaching the driver;
+- empty and nonempty unchecked rows;
+- direct SQL bypassing Collection parsing;
+- invalid result shapes and result-check failures;
+- multiple-result rejection; and
+- safe errors with no SQL text or parameter value.
+
+Combined transaction tests cover:
+
+- SQL insert plus Collection read and Collection create plus SQL delete in one commit;
+- the same mixed writes disappearing after rollback;
+- one callback call and one physical begin;
+- one commit or one rollback;
+- `execute` in the View and no nested `transaction`;
+- closed SQL and Collection methods;
+- active-work draining before rollback;
+- callback identity while work drains;
+- caught operation failure;
+- first failed operation in call order;
+- callback, unsettled-work, and operation-failure priority;
+- rollback failure preserving both failures; and
+- adapters that serialize overlapping View calls.
+
+Test controls never appear on production Store values.
+
+## Data Flow
+
+### SQL definition
+
+```txt
+Record contributions + host overrides
+  -> compose one effective Record catalog
+  -> check contributor compatibility
+  -> choose active database metadata
+  -> use explicit portable metadata or Select output reflection
+  -> resolve final physical names and conflicts
+  -> freeze resolved definition assets
+  -> return database-specific assets + .records references
+```
+
+No database I/O occurs in this flow.
+
+### Statement execution
+
+```txt
+execute(Statement)
+  -> return native Promise
+  -> check Statement origin and format
+  -> compile structure and identifiers
+  -> encode, check, validate, and convert parameters in source order
+  -> make at most one driver statement call
+  -> recognize exactly one row set
+  -> fulfill { rows } or reject with one SQL error
+```
+
+### Combined transaction
+
+```txt
+physical database transaction
+  -> runTransactionCallback
+  -> make one View bound to that physical transaction
+  -> SQL and Collection calls enter track()
+  -> callback settles and View closes
+  -> active work drains
+  -> select callback boundary result
+     -> success: physical commit
+     -> failure: physical rollback
+  -> preserve selected failure or report rollback failure
+```
+
+## Approval Scenarios and Verdict
+
+The approval prototype tested four awkward paths:
+
+1. Ambiguous Select reflection stopped before database work. An explicit SQL Column Type then resolved the definition after the host table override.
+2. A supported parameter followed by an unsupported `Date` failed at position `1` and made zero driver calls.
+3. A successful callback with active Store work closed the View, waited for that work, and rolled back with `TransactionUnsettledOperationError`.
+4. A caught transaction-view operation failure still caused rollback and preserved the first failure.
+
+A strict TypeScript prototype also proved:
+
+- nested Statement requirement inference;
+- primitive literal widening and covariance;
+- rejection of `Date` at generic `SqlStore`;
+- wider Store substitution;
+- SQL Column Type and default compatibility;
+- resolved Record reference composition; and
+- `execute` in a transaction view without nested `transaction`.
+
+**Verdict**: The SQL Store tier is implementation-ready. Database-specific metadata and concrete adapter interfaces remain behind later database-tier and Drizzle-tier gates.
+
+## Files for Implementation
+
+### Add
+
+- `packages/store/src/sql-record.ts` — definitions, portable column types, literals, reflection, issues, and references.
+- `packages/store/src/sql-statement.ts` — opaque Statement values and `sql` helpers.
+- `packages/store/src/sql-store.ts` — `SqlStore`, results, and SQL errors.
+- `packages/store/src/sql-adapter.ts` — Statement compiler.
+- `packages/store/src/transaction-adapter.ts` — callback runner.
+- `packages/store/src/sql-conformance.ts` — SQL Store conformance contracts and suites.
+- SQL runtime and compile-time tests beside their owning modules.
+
+### Change
+
+- `packages/store/package.json` — export `./sql-adapter` and `./transaction-adapter`.
+- `packages/store/src/index.ts` — export caller-facing SQL values and types.
+- `packages/store/src/conformance.ts` — export the three shared SQL groups.
+- `packages/store/src/record.ts` — store effective Select outputs after create and update normalization.
+- `packages/store/src/store.ts` — keep transaction capability typing and use the strengthened callback contract.
+- `packages/store/src/store-errors.ts` — add SQL and transaction-view errors and violations.
+- `packages/core` Record definitions — publish explicit portable SQL metadata without importing an ORM.
+- Every concrete SQL adapter — run the applicable shared conformance groups.
+
+No implementation keeps the old create/update storage path, host-record merge alias, or weaker transaction callback behavior.
+
+## Implementation Order
+
+1. Cut create and update storage over to effective Select outputs.
+2. Add Store-neutral contributions, overrides, and definition helpers.
+3. Add SQL Record types, portable storage values, reflection, errors, and references.
+4. Add the Statement algebra and compile-time inference tests.
+5. Add the Statement compiler and SQL errors.
+6. Add the transaction callback runner and transaction-view errors.
+7. Add SQL Store and combined transaction conformance suites.
+8. Add explicit Core SQL metadata after the database-specific metadata tickets settle their active option shapes.
+
+Each step must keep the package root plain JavaScript and native Promise based. Effect can remain an internal implementation tool.
+
+## Deferred Capabilities
+
+Do not define these capabilities in this tier:
+
+- prepared execution;
+- bounded row delivery;
+- streaming;
+- cancellation;
+- physical-session scope;
+- Batch Store;
+- ordered multiple results;
+- database-generated value recovery;
+- PostgreSQL schema qualification;
+- database-specific identifier limits;
+- indexes and relations; and
+- migration execution or schema diffing.
+
+Each needs a real caller and its own cleanup, failure, and conformance rules.
+
+## Residual Risks
+
+- Runtime Standard JSON Schema conversion can be absent or less precise than static schema types. Explicit column types remain required in unclear cases.
+- A runtime schema refinement can reject values that static contributor compatibility accepts. The host owns this risk.
+- Mutable wider parameter values can change during execution. The caller must keep them stable until settlement.
+- A driver can mutate returned row containers after fulfillment. This is an adapter defect that cannot retroactively reject a Promise.
+- A transaction operation that never settles keeps the transaction pending. Portable Store cannot cancel it safely.
+- Manual transaction SQL can break transaction guarantees because adapters do not parse arbitrary SQL.
+
+## References
+
+- [ADR 0019: Build Thread Store on generic Store primitives](../adr/0019-build-thread-store-on-generic-store-primitives.md)
+- [Store Architecture Technical Specification](store.md)
+- [SQL Record definition resolution](https://github.com/spiritledsoftware/commissary/issues/9#issuecomment-5194052181)
+- [SQL Store interface and transaction resolution](https://github.com/spiritledsoftware/commissary/issues/11#issuecomment-5198678963)
+- [SQL Store caller use cases](https://github.com/spiritledsoftware/commissary/issues/13#issuecomment-5179152149)
+- [Standard JSON Schema V1 interface](https://github.com/standard-schema/standard-schema#what-schema-specifications-does-standard-schema-implement)
+- [Drizzle SQL template](https://orm.drizzle.team/docs/sql)
+- [Effect SQL client](https://github.com/Effect-TS/effect/blob/main/packages/effect/src/unstable/sql/SqlClient.ts)

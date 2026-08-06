@@ -2,7 +2,7 @@
 
 > **Status**: Design complete for implementation. Confirmed decisions in this specification are binding.
 >
-> **Last updated**: 2026-08-02 during the Store architecture grilling session.
+> **Last updated**: 2026-08-05 during SQL Store tier approval.
 
 ## Summary
 
@@ -13,6 +13,8 @@ Add a generic `@commissary/store` package. It defines typed Stores, named Collec
 A host can customize every Core Record, add Custom Records, and use raw CRUD on every Collection. This power is intentional. Direct changes to claims, pending commands, idempotency Records, or any other Core state can break Runtime invariants.
 
 The fallback operator list, object merge behavior, array filter behavior, operator edge behavior, transaction guarantees, error contract, and Core catalog are defined.
+
+The [SQL Store Tier Technical Specification](sql-store.md) extends this base design with SQL Record definitions, Statements, execution, adapter helpers, and SQL conformance.
 
 ## Context / Current State
 
@@ -58,9 +60,9 @@ The requested design is broader than adding fields to existing interfaces. It in
 - Add a universal generated-field system in the first version.
 - Guarantee cleanup or rollback after an adapter persists an invalid generated Record.
 - Store `Date`, `Uint8Array`, class instances, or other non-JSON values.
-- Define concrete adapter options, migration behavior, indexes, physical mappings, or relation loading in this change.
+- Define concrete adapter options, migrations, indexes, relation loading, or database-specific physical mappings in this base specification.
 - Standardize every capability or configuration value that one future adapter might expose.
-- Define the future `SqlStore` contract, package, or concrete SQL adapter APIs in this change.
+- Define concrete SQL adapter interfaces here. The separate [SQL Store tier specification](sql-store.md) defines the portable SQL primitive.
 
 ## Invariants
 
@@ -96,10 +98,16 @@ The requested design is broader than adding fields to existing interfaces. It in
 30. **No base CRUD cancellation**: Version 1 Collection CRUD methods accept no `AbortSignal`. A future cancellation-capable Store must define write outcome semantics as a separate primitive contract.
 31. **No shared CRUD retry**: The base Store layer performs no automatic CRUD retry. An adapter can retry internally only when it preserves one logical operation and cannot duplicate a write.
 32. **No base observability side effects**: Base Store performs no logging, tracing, scan warning, or native-versus-fallback reporting. A later observability primitive or higher-level wrapper can add these behaviors.
+33. **Selected storage values**: Defined create, update, generated, and decoded values become effective Select Field Schema outputs before storage or selection.
+34. **Closed transaction views**: A Transaction View closes when its callback settles. Later methods reject without starting Store work.
+35. **No rollback race**: Active Transaction View work drains before rollback starts. A successful callback with active work fails with `TransactionUnsettledOperationError`.
+36. **Caught transaction failures**: A rejected Transaction View operation marks the transaction for rollback even when callback code catches it.
+37. **Transaction failure priority**: Callback rejection wins, then unsettled work, then the first failed View operation in call order.
 
 ## Design Constraints
 
 - [ADR 0019](../adr/0019-build-thread-store-on-generic-store-primitives.md) records the generic Store seam, Core specialization, raw host access, and adapter capability model. This specification defines the detailed contract.
+- The [SQL Store Tier Technical Specification](sql-store.md) is the binding extension for portable SQL Record, Statement, execution, and combined transaction behavior.
 - Public interfaces use plain JavaScript values, native `Promise`, and Standard Schema. Effect remains behind adapters as required by ADR 0003.
 - Public inference follows ADR 0016: no global augmentation, public `any`, required `as const`, or required explicit generics for ordinary use.
 - Thread Store atomicity and fencing from ADRs 0006, 0009, 0010, 0011, 0013, 0014, and 0017 remain unchanged.
@@ -121,13 +129,17 @@ The requested design is broader than adding fields to existing interfaces. It in
 - A backend can back `ThreadStore` only when the Core Runtime conformance suite passes with that backend's actual operator semantics. An adapter profile can describe a difference but cannot waive a Core outcome. A backend that fails can still expose a generic `Store` or `TransactionStore`.
 - A Transaction Store never retries a callback. Core immediately starts a new transaction for its own storage-only work after a reported conflict and makes at most three total attempts.
 - Transaction rollback has no shared fallback. Memory, SQL, and other adapters implement rollback with their own storage mechanisms.
-- A successful rollback does not wrap or replace the callback failure.
-- `TransactionRollbackError` reports both the callback failure and rollback failure. It marks that stored state is unknown and some writes can remain.
+- A successful rollback does not wrap or replace the selected callback boundary failure.
+- `TransactionRollbackError` reports both the callback boundary failure and rollback failure. It marks that stored state is unknown and some writes can remain.
 - The transaction callback view omits `transaction`. Version 1 has no nested transaction or savepoint behavior.
+- The View closes when its callback settles. Each later method rejects with `TransactionClosedError` before it starts Store work.
+- A successful callback with active Store work closes the View, drains that work, and fails with `TransactionUnsettledOperationError`.
+- Every rejected View operation marks the transaction for rollback, even when callback code catches it. The first failed operation in call order wins when the callback otherwise succeeds.
+- Failure priority is callback rejection, unsettled work, first View operation failure, then commit.
 - A wider adapter defines the extra capabilities on its transaction view. Core uses the default plain Store view.
 - Transaction cancellation is not portable while an arbitrary callback can continue running. Version 1 omits it from the base contract.
 - Store specializations are designed as primitive contracts before concrete adapters. Adapters implement those contracts, and higher-level abstractions compose them. Shared primitives are not extracted from existing adapter APIs.
-- A future `SqlStore` is one such primitive contract, but its exact API and package are outside this specification.
+- `SqlStore` is the primitive defined by the [SQL Store tier specification](sql-store.md).
 - One concrete value can implement multiple compatible Store specializations.
 - An integration that needs a wider capability requires the matching Store interface in its own input type. It does not accept a base Store and inspect a runtime capability registry.
 - An operator that an adapter never supports is absent from that adapter's Store Operator Set type.
@@ -136,8 +148,8 @@ The requested design is broader than adding fields to existing interfaces. It in
 - `Store`, `Collection`, and every CRUD option carry an adapter-supplied operator type. Base operators are defaults, not hard-coded callback types.
 - Every asynchronous method on `Store`, `Collection`, `TransactionStore`, and `ThreadStore` returns a native `Promise`. An Effect-based adapter runs its Effect at this boundary.
 - A Store-family method creates its native Promise before it invokes host callbacks or validates input. It never throws synchronously. A value thrown by a `where`, `orderBy`, `set`, or `filter` builder rejects that Promise unchanged and reaches no adapter operation.
-- The base Record definition contains only `fields`. A concrete adapter factory can accept a wider typed Record definition for its own options.
-- `@commissary/store` defines no generic metadata object, adapter namespace, table mapping, index model, or generator configuration.
+- The base `RecordDefinition` contains only `fields`. A wider definition can preserve additional typed intent while remaining a valid base definition.
+- Base Store defines no catch-all metadata object. The SQL Store tier owns only its named SQL table, column, and database-specific metadata seams.
 - The adapter boundary is the public `Collection` API. Each adapter implements `find`, `create`, `update`, `delete`, and `count` directly.
 - `@commissary/store` defines no universal low-level driver such as `scan`, `insert`, or `replace`.
 - Shared fallbacks are optional helpers. An adapter can call them from a Collection method only when its own storage primitives make that fallback safe.
@@ -164,14 +176,14 @@ The requested design is broader than adding fields to existing interfaces. It in
 - An update field that is not present in `set` remains unchanged and its update schema does not run.
 - Record parsing is strict at the top-level boundary. Create and update reject keys absent from the Record definition. Full adapter results reject unknown Record keys, and projected results reject keys that were not selected. Store never passes through or silently strips an unknown top-level key.
 - A Field Schema owns parsing inside its one field value, including nested unknown-key behavior and intentional transformations.
-- Every defined effective select, create, and update output must be assignable to the effective select input. `undefined` means omission and is excluded from this check. Static types check defined value shapes; runtime refinements are checked by the select parser before a value becomes a selected Record.
-- A Select Field Schema produces the public and operator-facing view of a stored field. Running it does not by itself rewrite storage. Create stores parsed create outputs plus generated values; update stores parsed literal outputs, expression outputs, and omissions only after the complete storage candidate passes select validation.
-- Every field in a complete changed Record passes its effective select Field Schema before an atomic update commits.
-- Query and update field references read effective selected field values after their `select` schemas run. A native operator must preserve this boundary. If it cannot, the adapter must use a safe fallback or report `UnsupportedStoreOperationError`.
-- Adapter-specific generation can fill a field only when its parsed create output is `undefined`. A defined host value always wins. An adapter cannot overwrite it and must reject a create it cannot honor. Every generated value still passes the effective select Field Schema.
-- Every built-in Core Record field map is added automatically and merges with host fields.
-- Host fields merge with built-in fields by name. This removes the need for `extendRecord()`.
-- A host can replace a built-in Field Definition only when its select output type remains structurally compatible with the Core field.
+- Every defined effective select, create, and update output must be assignable to the effective select input. `undefined` means omission and is excluded from this check. Static types check defined value shapes; runtime refinements run before a value becomes a selected or stored Record field.
+- The Select Field Schema produces the canonical public, operator-facing, and stored field value. Defined create, update, expression, generated, and decoded values run through it, and Store keeps its output rather than the earlier operation output.
+- Every field in a complete changed Record passes its effective Select Field Schema before an atomic update commits.
+- Query and update field references read effective selected field values. A native operator must preserve this boundary. If it cannot, the adapter must use a safe fallback or report `UnsupportedStoreOperationError`.
+- Adapter-specific generation can fill a field only when its parsed create output is `undefined`. A defined host value always wins. An adapter cannot overwrite it and must reject a create it cannot honor. Every generated value becomes an effective Select Field Schema output before storage.
+- Every built-in Core Record field map is added automatically.
+- `records` contributes complete new Records. `overrides` applies typed deep patches to existing Core, integration, or host contributions. One key never silently serves both roles.
+- An override can refine existing fields or add complete fields, but it cannot remove contributor Record or field keys. Duplicate contributions fail until the host selects or renames one explicitly.
 - Built-in Core Field Schemas can use Effect Schema internally. Public types accept any Standard Schema library.
 - Custom Records are allowed beside Core Records.
 - A Thread Store can define one `beforeCreate` hook for each effective Collection. The hook applies to both Core and host calls to `create`.
@@ -960,7 +972,7 @@ Store methods reject their native Promise with specific exported Error classes. 
 
 ```ts
 export type StoreCollectionOperation = "find" | "create" | "update" | "delete" | "count";
-export type StoreOperation = StoreCollectionOperation | "transaction";
+export type StoreOperation = StoreCollectionOperation | "transaction" | "execute";
 export type StoreValidationPhase = "query" | "create" | "update";
 
 export interface StoreValidationIssue {
@@ -1005,6 +1017,14 @@ export declare class TransactionConflictError extends StoreError {
   readonly cause?: unknown;
 }
 
+export declare class TransactionClosedError extends StoreError {
+  readonly name: "TransactionClosedError";
+}
+
+export declare class TransactionUnsettledOperationError extends StoreError {
+  readonly name: "TransactionUnsettledOperationError";
+}
+
 export declare class TransactionRollbackError extends StoreError {
   readonly name: "TransactionRollbackError";
   readonly callbackFailure: unknown;
@@ -1017,7 +1037,9 @@ export type StoreAdapterContractViolation =
   | "invalid-selected-record"
   | "generated-value-overwrite"
   | "invalid-expression-result"
-  | "transaction-contract";
+  | "transaction-contract"
+  | "invalid-sql-compilation"
+  | "invalid-sql-result";
 
 export declare class StoreAdapterContractError extends Error {
   readonly name: "StoreAdapterContractError";
@@ -1033,12 +1055,12 @@ Store-generated messages and metadata never copy a complete operation input or R
 
 `StoreValidationIssue.message` comes from the Field Schema and can contain application data. Like `cause`, `callbackFailure`, and `rollbackFailure`, it is available for diagnosis but is not safe for default logs or telemetry. Store does not add Record values to these fields.
 
-A transaction callback can still fail with any value. After successful rollback, `transaction` rejects with that exact value rather than wrapping it in `StoreError`.
+A transaction callback can still fail with any value. After successful rollback, `transaction` rejects with the selected callback boundary failure rather than wrapping it in `StoreError`.
 A value thrown by a `where`, `orderBy`, `set`, or `filter` builder is also caller failure, not a Store operational failure. The method rejects its already-created native Promise with that exact value. The separate `beforeCreate` contract still wraps a thrown value in `StoreHookError`.
 
 ### Transaction Store
 
-`TransactionStore.transaction` is the one atomic grouping primitive. Core uses the same operation for specialized Thread Store transitions. Overlapping transactions must produce the same result as some one-at-a-time order. This guarantee is commonly called serializable isolation. One call invokes its callback at most once and reports a conflict instead of rerunning it. If the callback fails, the adapter discards every write from that transaction. After rollback succeeds, `transaction` rejects with the exact callback failure value. If rollback fails, it rejects with `TransactionRollbackError` and does not retry. The callback cannot start a nested transaction. A wider adapter keeps each extra capability that is safe inside its transaction. Version 1 accepts no cancellation option.
+`TransactionStore.transaction` is the one atomic grouping primitive. Core uses the same operation for specialized Thread Store transitions. Overlapping transactions must produce the same result as some one-at-a-time order. One call invokes its callback at most once and reports a conflict instead of rerunning it. The callback View closes when the callback settles. Active Store work drains before rollback, and a rejected View operation marks the transaction for rollback even when callback code catches it. After rollback succeeds, `transaction` rejects with the exact selected boundary failure. If rollback fails, it rejects with `TransactionRollbackError` and does not retry. The callback cannot start a nested transaction. A wider adapter keeps each extra capability that is safe inside its transaction. Version 1 accepts no cancellation option.
 
 ```ts
 export interface TransactionStore<
@@ -1062,6 +1084,12 @@ type ThreadStoreBackend<
 ```
 
 The callback argument intentionally has no `transaction` method. The default view is a plain Store. A wider adapter adds only capabilities that it can bind safely to the active transaction. Adapters do not implement nested transactions, savepoints, or adapter-specific nesting behavior in version 1.
+
+The shared adapter helper at `@commissary/store/transaction-adapter` creates the View, tracks each complete View operation, closes the View, drains active work, and selects the callback boundary result. It does not start, commit, or roll back the adapter's physical transaction.
+
+Failure priority is the callback's exact rejection, `TransactionUnsettledOperationError` for a successful callback with active work, the first failed View operation in call order, then commit. A method called after closure rejects with `TransactionClosedError` and starts no independent Store work.
+
+If active work never settles, the transaction stays pending. It does not commit or race rollback against that work. Hosts must use backend-specific operation, transaction, session, and lock limits plus monitoring because base Store has no safe timeout or cancellation rule.
 
 Core keeps the `ThreadStoreBackend` in a closure and returns `ThreadStore<Definitions, Operators>`. Both use the same complete effective Collection catalog.
 
@@ -1122,13 +1150,22 @@ interface AtomicIntegrationOptions<Definitions extends RecordDefinitions> {
 }
 ```
 
-`SqlStore` will be designed separately as a primitive contract before its concrete adapters are implemented. Its exact methods, package, and adapter APIs are outside this specification. It will not be inferred or extracted from one or more adapter implementations.
+`SqlStore` is the separate primitive contract defined by the [SQL Store Tier Technical Specification](sql-store.md). Concrete SQL adapters must implement that contract rather than infer a shared interface from driver APIs.
 
 ### Core construction and inference
 
 ```ts
 const threadStore = MemoryThreadStore.make({
   records: {
+    scheduledJobs: {
+      fields: {
+        id: z.string().uuid(),
+        status: z.enum(["pending", "running", "done"]),
+      },
+    },
+  },
+
+  overrides: {
     thread: {
       fields: {
         ownerId: z.string().uuid(),
@@ -1138,13 +1175,6 @@ const threadStore = MemoryThreadStore.make({
     executionClaim: {
       fields: {
         traceId: z.string(),
-      },
-    },
-
-    scheduledJobs: {
-      fields: {
-        id: z.string().uuid(),
-        status: z.enum(["pending", "running", "done"]),
       },
     },
   },
@@ -1191,11 +1221,12 @@ Owns:
 - optional read and mutation fallback helpers;
 - adapter capability checks;
 - shared fallback tests and adapter contract test helpers.
+- portable SQL Record, Statement, Store, error, adapter-helper, and conformance contracts defined by the SQL Store tier specification.
 
 Must not know:
 
 - Agent, Run, Thread, Branch, or Tool semantics;
-- SQL, DynamoDB, or any provider protocol;
+- concrete SQL drivers, DynamoDB, or other provider protocols;
 - core Runtime transitions.
 
 ### `@commissary/core`
@@ -1247,11 +1278,11 @@ There is no Field Schema catalog or generic CRUD path.
 ### New Flow: Store construction
 
 ```txt
-host Record field definitions + beforeCreate hooks
+host Record contributions + typed overrides + beforeCreate hooks
   -> Memory Thread Store factory
-  -> core adds every omitted Core Record field map
-  -> core merges host fields for every Core Record
-  -> core checks Core field override output types
+  -> core contributes every built-in Core Record
+  -> compose new Records and explicit Core or integration overrides
+  -> core checks contributor compatibility
   -> types require command fields for command creates and hooks for internal creates
   -> adapter constructs one TransactionStore over the complete effective catalog
   -> core wraps create operations with the effective hook catalog
@@ -1311,14 +1342,15 @@ Core or host create draft
   -> omit every key whose parsed output is undefined
   -> canonical create field outputs
   -> adapter fills only fields whose create output is omitted; defined hook or host values win
-  -> adapter write
+  -> parse every defined candidate value with its effective Select Field Schema
+  -> adapter writes the selected outputs
   -> reject every returned top-level key absent from the Record definition
-  -> parse every field with its effective select Field Schema
+  -> parse database-returned fields with their effective Select Field Schemas
   -> selected Record
 ```
 
-If the final parse fails after the write, the Store reports a defect. Cleanup and rollback are not guaranteed.
-The returned selected Record uses the final select outputs. Select parsing does not rewrite a valid adapter-generated or create-schema storage value.
+If database-generated output fails the final parse after the write, the Store reports a defect. Cleanup and rollback are not guaranteed.
+Create-schema and adapter-generated values use effective Select outputs before storage. Parsing a database-returned value must be stable and returns the same selected value.
 
 ### New Flow: Update with literal values
 
@@ -1331,8 +1363,8 @@ UpdateOptions
      -> parse fields referenced by where with their effective select Field Schemas
      -> select matching Records
      -> merge parsed literal outputs into a storage candidate
-     -> run every candidate field through its effective select Field Schema for validation
-     -> commit the candidate operation outputs, not the select-parser outputs
+     -> run every candidate field through its effective Select Field Schema
+     -> atomically commit those selected outputs
   -> affected count
 ```
 
@@ -1352,8 +1384,8 @@ UpdateOptions with set callback
      -> select matching Records
      -> evaluate expressions against each pre-update selected Record
      -> merge literal outputs and expression outputs into a storage candidate; unset omits its key
-     -> run every candidate field through its effective select Field Schema for validation
-     -> commit the candidate operation outputs, not the select-parser outputs
+     -> run every candidate field through its effective Select Field Schema
+     -> atomically commit those selected outputs
   -> affected count
 ```
 
@@ -1408,8 +1440,11 @@ Confirmed classifications:
 - Core consumes `TransactionConflictError` while fewer than three attempts have run and reports it after the third attempt fails;
 - non-finite fallback arithmetic rejects the complete update with `StoreValidationError`;
 - an unknown adapter Record key, invalid selected Record, overwritten host create value, impossible expression result, or broken transaction guarantee is a `StoreAdapterContractError` defect;
-- a failed transaction callback leaves no writes from that transaction when rollback succeeds;
-- after successful rollback, `transaction` reports the exact callback failure value without wrapping it;
+- a closed Transaction View method rejects with `TransactionClosedError` and starts no Store work;
+- a successful callback with active Store work drains that work and selects `TransactionUnsettledOperationError`;
+- a failed View operation selects rollback even when callback code catches it;
+- rollback removes all transaction writes after any selected callback boundary failure;
+- after successful rollback, `transaction` reports the exact selected failure without wrapping it;
 - failed rollback reports both failures in `TransactionRollbackError`, marks that writes can remain, and causes no Core retry.
 
 Every expected Store failure rejects the Promise. CRUD result types contain only successful values; they do not include error unions.
@@ -1489,8 +1524,8 @@ Each slice is one Red-Green cycle. Do not write all tests first.
 ### Slice 2: Core defaults and field inference
 
 - **Red**: Omit Core Records and prove every Core Collection is still available. Add fields to Thread and Execution Claim and prove both selected Records include them.
-- **Green**: Merge every effective Core and host field map with compatible Core field constraints.
-- **Compile checks**: Reject an incompatible Core field override. Prove a compatible Core field replacement narrows the matching public snapshot property. Require no explicit generic, cast, or `as const` for ordinary use.
+- **Green**: Compose every built-in and Custom Record contribution with explicit compatible overrides.
+- **Compile checks**: Reject an incompatible Core field override and a duplicate contribution. Prove a compatible Core field replacement narrows the matching public snapshot property. Require no explicit generic, cast, or `as const` for ordinary use.
 - **Catalog checks**: Prove all five durable entity Collections and all fourteen Runtime state Collections are present. Prove Tool Call graph indexes are derived and process-local control waiters are absent.
 
 ### Slice 3: Before-create hooks
@@ -1530,6 +1565,7 @@ Each slice is one Red-Green cycle. Do not write all tests first.
 - **Green**: Add only the required operations.
 - **Risk check**: Omitted update/delete `where` changes all matching Records.
 - **No cancellation**: Prove the base Collection methods accept no `AbortSignal` or other cancellation option.
+- **Storage normalization**: Prove create and update store effective Select outputs, including a Select transformation that changes the operation-schema output.
 
 ### Slice 8: Atomic mutation validation
 
@@ -1580,6 +1616,10 @@ Each slice is one Red-Green cycle. Do not write all tests first.
 - **Callback count**: Use a conflict-capable test adapter or backend control to prove one `transaction` call invokes its callback at most once.
 - **Core retry**: Inject conflicts through a test Transaction Store and prove the specialized Thread Store operation makes no more than three immediate transaction attempts without a timer.
 - **Rollback**: Change multiple Collections, fail the callback, and prove that none of its writes remain.
+- **Closed View**: Capture the View, settle the callback, and prove each later method rejects with `TransactionClosedError` without Store work.
+- **Active work**: Hold one View operation, let the callback succeed, prove rollback waits for settlement, and then rejects with `TransactionUnsettledOperationError`.
+- **Caught failure**: Catch one failed View operation, return success, and prove the transaction still rolls back with that exact operation failure.
+- **Failure order**: Prove callback rejection wins over unsettled work and operation failures, unsettled work wins over operation failures, and several operation failures use call order.
 - **Failure identity**: Fail with a unique value, complete rollback, and prove `transaction` rejects with that same value.
 - **Rollback failure**: Force rollback to fail and prove the error contains both failures, sets `writesMayRemain` to `true`, and causes no retry.
 - **No nesting**: Prove the callback Store has no `transaction` method in its public type or runtime value.
@@ -1592,7 +1632,7 @@ Each slice is one Red-Green cycle. Do not write all tests first.
 - Raw host CRUD can break every Runtime invariant because the host owns all Core state.
 - A statically compatible Core field refinement can still reject a Core value at runtime.
 - Adapter-defined operator semantics can change query or update results when a host changes adapters.
-- A failed select validation after adapter-generated create values can leave the backend write in place.
+- A failed Select parse of a database-generated value after create can leave the backend write in place.
 - `beforeCreate` side effects can repeat across Core transaction attempts; the host owns repeat safety.
 - Concrete adapters must migrate and store all five durable entity Collections and fourteen Runtime state Collections.
 - Base Store has no cancellation, shared retry, or observability behavior; integrations that need these capabilities require separately designed primitives or higher-level wrappers.
@@ -1600,6 +1640,7 @@ Each slice is one Red-Green cycle. Do not write all tests first.
 
 ## References
 
+- [SQL Store Tier Technical Specification](sql-store.md)
 - [Better Auth database schema extensions](https://www.better-auth.com/docs/concepts/database#extending-core-schema)
 - [Drizzle query interface](https://orm.drizzle.team/docs/rqb)
 - [Drizzle Zod Select, Insert, and Update schemas](https://orm.drizzle.team/docs/zod)
