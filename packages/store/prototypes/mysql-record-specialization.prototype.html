@@ -33,7 +33,14 @@
           linear-gradient(90deg, transparent 49.8%, rgb(18 110 130 / 4%) 50%, transparent 50.2%),
           var(--canvas);
         color: var(--ink);
-        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-family:
+          Inter,
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
         line-height: 1.5;
       }
 
@@ -495,7 +502,9 @@
       <section class="section dashboard" aria-label="Current contract state">
         <article class="panel definition-panel">
           <h2>Effective Record definition</h2>
-          <p class="panel-note">Portable SQL intent plus the active <code>mysql</code> refinement.</p>
+          <p class="panel-note">
+            Portable SQL intent plus the active <code>mysql</code> refinement.
+          </p>
           <div id="definition"></div>
         </article>
 
@@ -530,7 +539,8 @@
       </section>
 
       <footer>
-        This file tests the design only. It is not a Store implementation and must not ship on the main branch.
+        This file tests the design only. It is not a Store implementation and must not ship on the
+        main branch.
       </footer>
     </main>
 
@@ -749,7 +759,8 @@
           state.resolution = { status: "resolved", issues: [], columns };
           state.event = {
             title: "Drizzle-independent plan resolved",
-            detail: "The plan contains field-keyed columns and codecs, but no DDL, indexes, relations, or ORM values.",
+            detail:
+              "The plan contains field-keyed columns and codecs, but no DDL, indexes, relations, or ORM values.",
             tone: "good",
           };
           return state;
@@ -779,7 +790,8 @@
             };
             state.event = {
               title: "Concrete adapter rejected the handoff",
-              detail: "The Store resolver marked a host key requirement. The selected adapter could not prove it.",
+              detail:
+                "The Store resolver marked a host key requirement. The selected adapter could not prove it.",
               tone: "warn",
             };
             return state;
@@ -788,7 +800,8 @@
           state.adapter = { status: "bound", issues: [] };
           state.event = {
             title: "Concrete adapter accepted the plan",
-            detail: "Host index requirements are satisfied. Driver conversion remains adapter-owned.",
+            detail:
+              "Host index requirements are satisfied. Driver conversion remains adapter-owned.",
             tone: "good",
           };
           return state;
@@ -801,24 +814,51 @@
               ? BigInt(value) >= -9223372036854775808n && BigInt(value) <= 9223372036854775807n
               : false;
             return canonical && inRange
-              ? ["Codec accepted canonical BIGINT", `${value} is within the signed 64-bit range.`, "good"]
-              : ["StoreValidationError", `${JSON.stringify(value)} is not a canonical signed BIGINT value.`, "warn"];
+              ? [
+                  "Codec accepted canonical BIGINT",
+                  `${value} is within the signed 64-bit range.`,
+                  "good",
+                ]
+              : [
+                  "StoreValidationError",
+                  `${JSON.stringify(value)} is not a canonical signed BIGINT value.`,
+                  "warn",
+                ];
           }
           if (name === "char") {
             return value.endsWith(" ")
               ? ["StoreValidationError", "Application CHAR values cannot end with spaces.", "warn"]
-              : ["Codec accepted CHAR", "MySQL may add storage padding; selected decoding removes it.", "good"];
+              : [
+                  "Codec accepted CHAR",
+                  "MySQL may add storage padding; selected decoding removes it.",
+                  "good",
+                ];
           }
           if (name === "boolean-read") {
             return value === 0 || value === 1 || typeof value === "boolean"
-              ? ["Codec decoded BOOLEAN", `${JSON.stringify(value)} has an exact boolean representation.`, "good"]
-              : ["invalid-selected-record", `${JSON.stringify(value)} is not boolean, 0, or 1.`, "warn"];
+              ? [
+                  "Codec decoded BOOLEAN",
+                  `${JSON.stringify(value)} has an exact boolean representation.`,
+                  "good",
+                ]
+              : [
+                  "invalid-selected-record",
+                  `${JSON.stringify(value)} is not boolean, 0, or 1.`,
+                  "warn",
+                ];
           }
           if (name === "timestamp") {
-            const canonical = /^20(?:0\d|1\d|2\d|3[0-8])-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/u.test(value);
+            const canonical =
+              /^20(?:0\d|1\d|2\d|3[0-8])-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/u.test(
+                value,
+              );
             return canonical
               ? ["Codec accepted UTC TIMESTAMP", `${value} uses the Store UTC form.`, "good"]
-              : ["StoreValidationError", `${JSON.stringify(value)} is not a canonical UTC TIMESTAMP.`, "warn"];
+              : [
+                  "StoreValidationError",
+                  `${JSON.stringify(value)} is not a canonical UTC TIMESTAMP.`,
+                  "warn",
+                ];
           }
           return ["Unknown codec probe", name, "warn"];
         };
@@ -853,7 +893,8 @@
               state.fields[0].autoIncrement = null;
               state.event = {
                 title: "SERIAL selected",
-                detail: "Its intrinsic unique index should satisfy AUTO_INCREMENT without host index metadata.",
+                detail:
+                  "Its intrinsic unique index should satisfy AUTO_INCREMENT without host index metadata.",
                 tone: "neutral",
               };
               return state;
@@ -866,7 +907,10 @@
                 notNull: false,
                 autoIncrement: false,
                 default: null,
-                generated: { mode: "stored", expression: "substring_index(email_address, '@', -1)" },
+                generated: {
+                  mode: "stored",
+                  expression: "substring_index(email_address, '@', -1)",
+                },
                 onUpdate: null,
               });
               state.event = {
@@ -885,7 +929,8 @@
             case "OMIT_GENERATED":
               state.event = {
                 title: "Generated write accepted",
-                detail: "Create omits emailDomain. MySQL computes it and the adapter decodes the stored row.",
+                detail:
+                  "Create omits emailDomain. MySQL computes it and the adapter decodes the stored row.",
                 tone: "good",
               };
               return state;
@@ -1022,7 +1067,11 @@
             description:
               "Push several independent errors through one effective catalog. The resolver must report all valid checks in a stable order and return no partial plan.",
             steps: [
-              ["Load duplicate names and conflicting options.", "Load invalid catalog", "LOAD_INVALID"],
+              [
+                "Load duplicate names and conflicting options.",
+                "Load invalid catalog",
+                "LOAD_INVALID",
+              ],
               ["Resolve once and inspect every issue path.", "Resolve", "RESOLVE"],
             ],
           },
@@ -1066,7 +1115,8 @@
           return element;
         };
 
-        const badge = (text, accent = false) => node("span", `badge${accent ? " accent" : ""}`, text);
+        const badge = (text, accent = false) =>
+          node("span", `badge${accent ? " accent" : ""}`, text);
 
         const dispatch = (type) => {
           state = model.reduce(state, { type });
@@ -1080,7 +1130,12 @@
             ["Record key", state.table.key],
             ["Table", state.table.mysqlName ?? state.table.portableName],
             ["Database", state.table.database],
-            ["Host indexes", state.hostIndexes.length ? state.hostIndexes.map((index) => index.join(", ")).join(" · ") : "none"],
+            [
+              "Host indexes",
+              state.hostIndexes.length
+                ? state.hostIndexes.map((index) => index.join(", ")).join(" · ")
+                : "none",
+            ],
           ];
           for (const [label, value] of factValues) {
             const fact = node("div", "fact");
@@ -1098,7 +1153,8 @@
             badges.append(badge(field.type, true));
             if (field.notNull) badges.append(badge("not null"));
             if (field.autoIncrement === true) badges.append(badge("auto increment"));
-            if (field.autoIncrement === false && field.type === "serial") badges.append(badge("auto increment: false"));
+            if (field.autoIncrement === false && field.type === "serial")
+              badges.append(badge("auto increment: false"));
             if (field.default !== null) badges.append(badge(`default ${field.default}`));
             if (field.generated !== null) badges.append(badge(`${field.generated.mode} generated`));
             if (field.onUpdate !== null) badges.append(badge("on update current timestamp"));
@@ -1111,13 +1167,19 @@
         const renderResolver = () => {
           resolverElement.replaceChildren();
           if (state.resolution === null) {
-            resolverElement.append(node("div", "empty", "Not resolved. The definition is still unbound."));
+            resolverElement.append(
+              node("div", "empty", "Not resolved. The definition is still unbound."),
+            );
             return;
           }
 
           const isResolved = state.resolution.status === "resolved";
           resolverElement.append(
-            node("span", `status ${isResolved ? "good" : "warn"}`, isResolved ? "Resolved" : "Definition failed"),
+            node(
+              "span",
+              `status ${isResolved ? "good" : "warn"}`,
+              isResolved ? "Resolved" : "Definition failed",
+            ),
           );
 
           if (!isResolved) {
@@ -1158,12 +1220,18 @@
         const renderAdapter = () => {
           adapterElement.replaceChildren();
           if (state.adapter === null) {
-            adapterElement.append(node("div", "empty", "No concrete adapter has accepted this plan."));
+            adapterElement.append(
+              node("div", "empty", "No concrete adapter has accepted this plan."),
+            );
             return;
           }
           const bound = state.adapter.status === "bound";
           adapterElement.append(
-            node("span", `status ${bound ? "good" : "warn"}`, bound ? "Adapter bound" : "Adapter rejected"),
+            node(
+              "span",
+              `status ${bound ? "good" : "warn"}`,
+              bound ? "Adapter bound" : "Adapter rejected",
+            ),
           );
           if (!bound) {
             const issues = node("ul", "issue-list");
