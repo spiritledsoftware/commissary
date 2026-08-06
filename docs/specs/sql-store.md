@@ -662,6 +662,327 @@ Preserve the original converter failure as `cause` and include Collection, opera
 
 PostgreSQL metadata, column types, enums, Statements, and resolutions use opaque format identity instead of module-local `instanceof`. Compatible `@commissary/store` package copies interoperate. Incompatible formats and caller-made lookalikes fail. Freeze package-owned objects, arrays, assets, and issue lists; keep Schema objects and converter functions by reference.
 
+### MySQL Record specialization
+
+The MySQL specialization targets MySQL 8.4 LTS and later. It defines Drizzle-independent metadata and resolution assets. It does not create a MySQL-named runtime Store interface. Definition performs no server-version check.
+
+#### Ownership and authoring
+
+Integrations author one `SqlRecord` with portable `sql.*` metadata and optional `mysql.*` refinements:
+
+```ts
+const Session = SqlRecord.define({
+  table: sql.table({
+    name: "sessions",
+    mysql: mysql.table({
+      database: "commissary",
+    }),
+  }),
+  fields: {
+    id: {
+      select: sessionIdSchema,
+      column: sql.column({
+        type: sql.text(),
+        mysql: mysql.column({
+          type: mysql.serial(),
+        }),
+      }),
+    },
+  },
+});
+```
+
+`mysql.table()` and `mysql.column()` create only MySQL refinements. They do not resolve a catalog or create adapter assets. Do not add `MysqlSql.define()`, `MysqlSqlStore.define()`, `MySqlRecord`, or another host-facing MySQL definition factory. A host calls only its selected concrete adapter.
+
+`@commissary/store/mysql-adapter` exposes the synchronous, I/O-free resolver used by concrete adapters:
+
+```ts
+export declare function resolveMysqlRecords<
+  const Definitions extends RecordDefinitions,
+  const Overrides extends RecordOverrides<Definitions> = {},
+>(options: {
+  readonly records: Definitions;
+  readonly overrides?: Overrides;
+}): MysqlRecordResolution<ApplyOverrides<Definitions, Overrides>>;
+
+export interface MysqlRecordResolution<Definitions extends RecordDefinitions> {
+  readonly records: SqlRecordReferences<Definitions>;
+  readonly tables: MysqlResolvedTables<Definitions>;
+}
+```
+
+The resolver applies contributions and overrides, activates `mysql` metadata, rebuilds inference, validates the effective catalog, and returns immutable resolved references and adapter assets. It contains no generated DDL, Drizzle values, explicit indexes, relations, or migration data.
+
+#### Public MySQL metadata
+
+The rough public types are:
+
+```ts
+export type MysqlEncodedValue = string | number | boolean | Uint8Array;
+
+export interface MysqlColumnType<in Value extends JsonValue> extends SqlColumnType<Value> {
+  // Opaque package-owned MySQL storage and conversion contract.
+}
+
+export interface MysqlTableDefinition {
+  readonly database?: string | null;
+  readonly name?: string | null;
+}
+
+export interface MysqlGenerated {
+  readonly expression: SqlStatement<never>;
+  readonly mode: "virtual" | "stored";
+}
+
+export interface MysqlColumnDefinition<Value extends JsonValue> {
+  readonly name?: string | null;
+  readonly type?: MysqlColumnType<Value> | null;
+  readonly default?: SqlLiteral<Extract<Value, SqlLiteralValue>> | SqlStatement<never> | null;
+  readonly notNull?: boolean | null;
+  readonly autoIncrement?: boolean | null;
+  readonly generated?: MysqlGenerated | null;
+  readonly onUpdate?: "current-timestamp" | null;
+}
+
+export interface MysqlIntegerOptions {
+  readonly unsigned?: boolean;
+}
+
+export interface MysqlDecimalOptions {
+  readonly precision?: number;
+  readonly scale?: number;
+  readonly unsigned?: boolean;
+}
+
+export interface MysqlApproximateNumberOptions {
+  readonly precision?: number;
+  readonly scale?: number;
+  readonly unsigned?: boolean;
+}
+
+export interface MysqlRealOptions {
+  readonly precision?: number;
+  readonly scale?: number;
+}
+
+export interface MysqlOptionalLengthOptions {
+  readonly length?: number;
+}
+
+export interface MysqlLengthOptions {
+  readonly length: number;
+}
+
+export type MysqlFractionalSecondsPrecision = 0 | 1 | 2 | 3 | 4 | 5 | 6;
+
+export interface MysqlTemporalOptions {
+  readonly fsp?: MysqlFractionalSecondsPrecision;
+}
+
+export interface MysqlEnum<Values extends readonly [string, ...string[]]> extends MysqlColumnType<
+  Values[number]
+> {}
+
+export interface MysqlCustomTypeOptions<Value extends JsonValue> {
+  readonly type: SqlStatement<never>;
+  readonly encode: (value: Value) => MysqlEncodedValue;
+  readonly decode: (value: unknown) => Value;
+}
+
+export declare const mysql: {
+  readonly table: <const Options extends MysqlTableDefinition>(
+    options: Options,
+  ) => Readonly<Options>;
+  readonly column: <Value extends JsonValue, const Options extends MysqlColumnDefinition<Value>>(
+    options: Options,
+  ) => Readonly<Options>;
+
+  readonly tinyint: (options?: MysqlIntegerOptions) => MysqlColumnType<number>;
+  readonly smallint: (options?: MysqlIntegerOptions) => MysqlColumnType<number>;
+  readonly mediumint: (options?: MysqlIntegerOptions) => MysqlColumnType<number>;
+  readonly int: (options?: MysqlIntegerOptions) => MysqlColumnType<number>;
+  readonly bigint: (options?: MysqlIntegerOptions) => MysqlColumnType<string>;
+  readonly decimal: (options?: MysqlDecimalOptions) => MysqlColumnType<string>;
+  readonly float: (options?: MysqlApproximateNumberOptions) => MysqlColumnType<number>;
+  readonly double: (options?: MysqlApproximateNumberOptions) => MysqlColumnType<number>;
+  readonly real: (options?: MysqlRealOptions) => MysqlColumnType<number>;
+
+  readonly boolean: () => MysqlColumnType<boolean>;
+  readonly char: (options?: MysqlOptionalLengthOptions) => MysqlColumnType<string>;
+  readonly varchar: (options: MysqlLengthOptions) => MysqlColumnType<string>;
+  readonly binary: (options?: MysqlOptionalLengthOptions) => MysqlColumnType<string>;
+  readonly varbinary: (options: MysqlLengthOptions) => MysqlColumnType<string>;
+  readonly text: () => MysqlColumnType<string>;
+  readonly tinytext: () => MysqlColumnType<string>;
+  readonly mediumtext: () => MysqlColumnType<string>;
+  readonly longtext: () => MysqlColumnType<string>;
+  readonly json: () => MysqlColumnType<JsonValue>;
+
+  readonly date: () => MysqlColumnType<string>;
+  readonly datetime: (options?: MysqlTemporalOptions) => MysqlColumnType<string>;
+  readonly time: (options?: MysqlTemporalOptions) => MysqlColumnType<string>;
+  readonly timestamp: (options?: MysqlTemporalOptions) => MysqlColumnType<string>;
+  readonly year: () => MysqlColumnType<number>;
+
+  readonly serial: () => MysqlColumnType<string>;
+  readonly enum: <const Values extends readonly [string, ...string[]]>(options: {
+    readonly values: Values;
+  }) => MysqlEnum<Values>;
+  readonly custom: <Value extends JsonValue>(
+    options: MysqlCustomTypeOptions<Value>,
+  ) => MysqlColumnType<Value>;
+};
+```
+
+`MysqlColumnType<Value>` is contravariant. The resolver checks the defined Select output after removing `null` and `undefined`. This permits branded string refinements. Helpers never replace Select, Create, or Update Schema inference.
+
+#### Direct type behavior
+
+Each direct helper has one driver-independent application value:
+
+| MySQL type                                                           | Application value               |
+| -------------------------------------------------------------------- | ------------------------------- |
+| `tinyint`, `smallint`, `mediumint`, `int`, `float`, `double`, `real` | finite `number`                 |
+| `bigint`, `decimal`, `serial`                                        | exact `string`                  |
+| `boolean`                                                            | `boolean`                       |
+| `char`, `varchar`, `text`, `tinytext`, `mediumtext`, `longtext`      | `string`                        |
+| `binary`, `varbinary`                                                | padded RFC 4648 base64 `string` |
+| `json`                                                               | `JsonValue`                     |
+| `date`, `datetime`, `time`, `timestamp`                              | normalized `string`             |
+| `year`                                                               | finite integer `number`         |
+| enum                                                                 | its exact string literal union  |
+
+Signed direct integer ranges are:
+
+- `tinyint`: -128 through 127;
+- `smallint`: -32,768 through 32,767;
+- `mediumint`: -8,388,608 through 8,388,607;
+- `int`: -2,147,483,648 through 2,147,483,647; and
+- `bigint`: -9,223,372,036,854,775,808 through 9,223,372,036,854,775,807.
+
+Unsigned forms start at zero and end at 255, 65,535, 16,777,215, 4,294,967,295, and 18,446,744,073,709,551,615, respectively. `bigint` and `serial` use canonical base-10 text with no leading plus, redundant leading zero, whitespace, exponent, or negative zero. `serial` rejects zero on both write and read.
+
+`decimal` accepts fixed-point text only. It does not accept an exponent or whitespace. Selected decimal text has no redundant integer zeros and contains exactly the effective scale digits. `float`, `double`, and `real` accept only finite numbers. Stored negative zero decodes as zero. MySQL can apply its documented decimal scale and approximate-number precision conversion. The adapter decodes the stored result rather than echoing the input.
+
+Direct boolean writes encode `false` as zero and `true` as one. Reads accept a driver-independent boolean or numeric zero or one. Another stored value is an invalid selected Record, not implicit truthiness.
+
+`char` and `varchar` length counts Unicode code points. Known overlength values fail before database work. Application `char` values with trailing spaces fail because MySQL cannot preserve them reliably. Selected `char` removes server padding. `varchar` and text values preserve trailing spaces. Effective byte and row-size limits remain MySQL and host character-set policy.
+
+`binary` and `varbinary` lengths count decoded bytes. Known overlength values fail before database work. MySQL can add zero bytes to a shorter `binary` value. Selected `binary` base64 includes every pad byte; `varbinary` has no padding.
+
+Temporal values use:
+
+- `date`: `YYYY-MM-DD`, from `1000-01-01` through `9999-12-31`;
+- `datetime`: `YYYY-MM-DDTHH:mm:ss[.ffffff]`, in the documented MySQL range and without a time-zone offset;
+- `timestamp`: the documented MySQL range, normalized to UTC with `Z`;
+- `time`: `[-]HHH:MM:SS[.ffffff]`, from `-838:59:59` through `838:59:59`; and
+- `year`: an integer from 1901 through 2155.
+
+Reject invalid calendar dates, partial and zero dates, abbreviated times, the zero-year sentinel, and noncanonical temporal text. Writes can contain up to six fractional digits. MySQL applies the declared fractional precision. Selected values contain exactly that number of fractional digits; omitted precision means none. A concrete adapter must use a UTC-safe timestamp path or fail during its own live binding.
+
+Supported physical options are:
+
+- `unsigned` on integer types and on `decimal`, `float`, and `double`;
+- `decimal` precision 1 through 65 and scale 0 through 30, with scale no greater than precision and scale requiring precision;
+- one-argument `float(p)` precision 0 through 53;
+- `float`, `double`, and `real` total-digit precision 1 through 255 with scale 0 through 30, with scale no greater than precision and scale requiring precision;
+- `char` and `binary` length 0 through 255, where omission means one;
+- required `varchar` and `varbinary` length 0 through 65,535; and
+- `datetime`, `time`, and `timestamp` fractional precision 0 through 6.
+
+MySQL 8.4 deprecates `unsigned` on fixed- and floating-point types and the nonstandard floating-point precision-and-scale forms. Keep them for parity with the pinned Drizzle ORM 0.45.3 MySQL helper set, but mark them deprecated in API documentation. Do not expose integer display width, `ZEROFILL`, driver output modes, TypeScript-only text enum narrowing, or aliases outside the listed helper set. `real` remains a distinct resolved type and emits exact `REAL`; active SQL mode owns whether MySQL treats it as `FLOAT` or `DOUBLE`.
+
+The operation and Select Schema parsers validate field values first. A direct MySQL codec then validates storage syntax, JSON safety, declared length, and type range before database work. Invalid caller-supplied values use `StoreValidationError`. An invalid stored direct value uses `StoreAdapterContractViolation` with `"invalid-selected-record"`.
+
+#### Inline enums and custom types
+
+`mysql.enum({ values })` creates one inline column type and no separate asset. Value order is significant. Values form one nonempty tuple. Definition rejects exact duplicates, empty values, trailing spaces, values over 255 Unicode code points, and more than 65,535 values. Host collation can impose further restrictions.
+
+A custom type uses a nonempty `SqlStatement<never>` for exact type structure. Definition checks package origin, nonempty structure, and the actual absence of bound parameters. It does not parse the structure. This path supports `BIT`, `SET`, spatial types, BLOB variants, optional extensions, and vendor types. A custom type creates no owned asset.
+
+Custom conversion is synchronous:
+
+```txt
+write: operation Schema -> Select Schema -> encode -> database
+read:  database -> decode -> Select Schema -> Selected Record
+```
+
+SQL `NULL` bypasses conversion. The resolver snapshots function references but never invokes them. An encoder must return a string, finite number, boolean, or `Uint8Array`. Statements, Promises, other objects, arrays, `undefined`, and driver objects are invalid encoded values. Custom encoder throws and invalid outputs are adapter contract violations, not caller validation. A custom decoder accepts `unknown`; its output must be a `JsonValue` before the Select Schema checks it.
+
+Resolved direct codecs expose the same synchronous `encode(value)` and `decode(unknown)` shape but contain no driver-specific `Buffer`, `Date`, or JavaScript `bigint` values. A concrete adapter converts driver-specific output before direct decoding.
+
+#### Defaults, automatic increment, generation, and automatic update
+
+MySQL defaults and generated expressions accept parameter-free Statements. Definition checks package origin, nonempty structure, and the actual absence of bound parameters. It does not parse SQL or validate functions, column references, result types, or generated-column restrictions. MySQL owns semantic expression validation, and `sql.raw()` remains trusted unchecked structure.
+
+`autoIncrement: true` is valid only on direct `tinyint`, `smallint`, `mediumint`, `int`, or `bigint` columns. `serial` supplies the same behavior intrinsically. Automatic increment:
+
+- implies `NOT NULL`;
+- is permitted on at most one column per table;
+- conflicts with an explicit default, generated metadata, and automatic-update metadata;
+- rejects `notNull: false`;
+- generates an omitted create value;
+- permits an explicit nonzero create or update value; and
+- rejects explicit zero because its behavior depends on SQL mode.
+
+MySQL requires an automatic-increment column to be indexed, but not necessarily uniquely. The resolver marks non-serial automatic increment as `{ key: "host-required" }`. The concrete adapter must prove that one host-owned index starts with that column. `serial` resolves as `{ key: "serial-unique" }` because exact MySQL `SERIAL` means `BIGINT UNSIGNED NOT NULL AUTO_INCREMENT UNIQUE`. The resolver creates no separate index asset.
+
+`serial()` takes no options and uses an exact base-10 string instead of Drizzle's unsafe number. It rejects `notNull: false`, `autoIncrement: false`, a default, generated metadata, and automatic-update metadata. Explicit `notNull: true` and `autoIncrement: true` are valid but redundant.
+
+A generated column has a parameter-free expression and explicit `"virtual"` or `"stored"` mode. Direct and custom types can be generated. Generation conflicts with a default, automatic increment, and automatic update. MySQL validates the expression. An explicit create or update value fails before database work; omission lets MySQL compute the value.
+
+`onUpdate: "current-timestamp"` is valid only on direct `datetime` and `timestamp` columns. It requires an explicit default so behavior does not depend on MySQL's implicit-default mode. It conflicts with automatic increment and generation. An explicit update value wins. When the field is omitted, MySQL owns whether the row change qualifies for automatic update.
+
+Database metadata does not change `SelectedRecord`, `CreateInput`, or `UpdateInput`. Field Schemas remain their only source. Store write behavior is:
+
+| Metadata                    | Omitted create       | Explicit create | Explicit update                          |
+| --------------------------- | -------------------- | --------------- | ---------------------------------------- |
+| ordinary default            | use default          | host value wins | host value wins                          |
+| automatic increment         | generate             | permit nonzero  | permit nonzero                           |
+| virtual or stored generated | compute              | reject          | reject                                   |
+| automatic update            | use explicit default | host value wins | host value wins; omission lets MySQL act |
+
+Prohibited writes and invalid direct values use `StoreValidationError` with Collection, operation, phase, field, and a field-local issue. Omitted updates otherwise remain unchanged. Adapters decode the stored result after writes because MySQL can round, pad, generate, and update values.
+
+#### Names, precedence, and collisions
+
+MySQL database, table, and column names are separate values. Never split a dotted string. Adapters quote every part and preserve exact text. Names must be nonempty, NUL-free, and no longer than 64 Unicode code points. Reject rather than rely on host filesystem or `lower_case_table_names` behavior.
+
+Collision checks use locale-independent Unicode default case folding without Unicode normalization. Within one effective catalog, an explicit database spelling must be stable: two spellings that differ but fold equally conflict. Columns conflict only inside their table. Equal unqualified table names conflict. Equal table names in one explicit database conflict. An unqualified table and an explicitly qualified table do not conflict because definition has no active database. Inline enum values and custom type Statements are not identifier assets.
+
+Active MySQL metadata can override portable `name`, `type`, `default`, and `notNull`, and it can add `database`, `autoIncrement`, `generated`, and `onUpdate`. Absence inherits. `null` removes one inherited optional setting. `false` can disable inherited boolean metadata where no intrinsic type behavior prevents it. After overrides, the resolver rebuilds all reflection, names, types, and conflicts.
+
+#### Resolution assets and failures
+
+The adapter resolution exposes tables by Record key and columns by field key. Each column includes its exact name and reference, resolved nullability, a direct, enum, or custom type discriminant, physical option snapshots, its default or generation data, automatic increment and update data, and synchronous encode and decode functions. Adapter authors switch exhaustively on direct helper names and do not parse generated SQL type text. Custom columns retain their type Statement.
+
+Metadata and type helper constructors preserve literal inference, snapshot options, and return immutable values. They throw `TypeError` immediately for malformed constructor arguments, invalid atomic option types or limits, invalid local names or enum values, parameterized custom type structure, and incompatible opaque formats. They never inspect Record field values. They do not check inherited metadata, precedence, cross-property conflicts, Schema compatibility, catalog collisions, or MySQL namespaces.
+
+Each runtime or definition failure has one owner:
+
+- helper authoring failures use immediate `TypeError`;
+- effective metadata and catalog failures use aggregated `SqlDefinitionError`;
+- write-side operation and Select Schema failures are owned by the Record parser symbols and use `StoreValidationError`;
+- direct MySQL encoding syntax, JSON-safety, length, or range failures for caller-supplied values use `StoreValidationError`;
+- custom encoder throws and invalid encoded values use `StoreAdapterContractViolation` with `"invalid-column-encoding"`; and
+- direct or custom decode failures, non-JSON decoded values, and read-side Select Schema rejections use `StoreAdapterContractViolation` with `"invalid-selected-record"`.
+
+`resolveMysqlRecords()` aggregates effective-catalog failures in one `SqlDefinitionError` and reuses the database-neutral issue codes:
+
+- names use `invalid-name`;
+- catalog collisions use `duplicate-name`;
+- missing storage evidence uses `column-type-required`;
+- invalid helper options, enum values, custom structure, or converters use `invalid-column-type`;
+- defaults use `invalid-column-default`;
+- automatic increment, generation, automatic update, nullability, and other MySQL option conflicts use `invalid-database-options`; and
+- composition uses the existing contribution and override codes.
+
+Issues point to the winning `records` or `overrides` source. A conflict points to the later or higher-precedence setting and names the other source in its message. A duplicate issue belongs to the later name. Order follows Record declaration, table metadata, field declaration, and a fixed rule order. Checks that depend on one invalid prerequisite are skipped; every independent check continues.
+
+Preserve the original converter failure as `cause` and include Collection, operation, and field. Converter failures are contract defects, not caller validation or database I/O errors.
+
+MySQL metadata, column types, Statements, and resolutions use opaque format identity instead of module-local `instanceof`. Compatible `@commissary/store` package copies interoperate. Incompatible formats and caller-made lookalikes fail. Freeze package-owned objects, arrays, resolutions, and issue lists; keep Schema objects and converter functions by reference.
+
 ### SQL Statements
 
 The root public types are:
