@@ -1,0 +1,1321 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Database Record specialization comparison prototype</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --canvas: #eef1f5;
+        --surface: #ffffff;
+        --surface-muted: #f7f8fa;
+        --ink: #172033;
+        --muted: #576176;
+        --line: #ccd3df;
+        --line-strong: #9ca8ba;
+        --accent: #2453a6;
+        --accent-soft: #e8effc;
+        --good: #17643a;
+        --good-soft: #e6f4eb;
+        --warn: #814012;
+        --warn-soft: #fff0e5;
+        --bad: #982b39;
+        --bad-soft: #fbe9eb;
+        --focus: #d89a00;
+        --shadow: 0 18px 44px rgb(31 43 65 / 10%);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        background: var(--canvas);
+        scrollbar-color: var(--line-strong) var(--canvas);
+      }
+
+      body {
+        min-width: 320px;
+        margin: 0;
+        background: var(--canvas);
+        color: var(--ink);
+        font-family:
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+        line-height: 1.5;
+      }
+
+      ::selection {
+        background: var(--accent);
+        color: #ffffff;
+      }
+
+      button {
+        font: inherit;
+      }
+
+      button:focus-visible,
+      [role="tab"]:focus-visible,
+      .table-wrap:focus-visible {
+        outline: 3px solid var(--focus);
+        outline-offset: 2px;
+      }
+
+      code,
+      .mono {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .shell {
+        width: min(1240px, calc(100% - 32px));
+        margin: 0 auto;
+        padding: 42px 0 72px;
+      }
+
+      .masthead {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 28px;
+        align-items: start;
+        padding-bottom: 30px;
+        border-bottom: 1px solid var(--line-strong);
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin-top: 0;
+      }
+
+      h1 {
+        max-width: 940px;
+        margin-bottom: 15px;
+        font-size: clamp(2.15rem, 5.5vw, 4.75rem);
+        font-weight: 730;
+        letter-spacing: -0.035em;
+        line-height: 0.98;
+        text-wrap: balance;
+      }
+
+      .question {
+        max-width: 74ch;
+        margin-bottom: 0;
+        color: var(--muted);
+        font-size: 1.04rem;
+      }
+
+      .prototype-label {
+        padding: 8px 12px;
+        border: 1px solid var(--bad);
+        border-radius: 999px;
+        color: var(--bad);
+        font-size: 0.72rem;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+
+      .section {
+        margin-top: 36px;
+      }
+
+      .section-heading {
+        display: flex;
+        justify-content: space-between;
+        gap: 22px;
+        align-items: end;
+        margin-bottom: 14px;
+      }
+
+      .section-heading h2 {
+        margin-bottom: 0;
+        font-size: 1.16rem;
+        letter-spacing: -0.01em;
+      }
+
+      .section-heading p {
+        max-width: 64ch;
+        margin-bottom: 0;
+        color: var(--muted);
+        font-size: 0.88rem;
+        text-align: right;
+      }
+
+      .controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 9px;
+      }
+
+      .action,
+      .tab,
+      .start-button,
+      .step-button {
+        min-height: 44px;
+        border: 1px solid var(--line-strong);
+        border-radius: 9px;
+        background: var(--surface);
+        color: var(--ink);
+        cursor: pointer;
+        font-weight: 720;
+      }
+
+      .action {
+        padding: 9px 14px;
+      }
+
+      .action:hover,
+      .start-button:hover,
+      .step-button:hover:not(:disabled) {
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+
+      .action.primary,
+      .start-button,
+      .step-button.current {
+        border-color: var(--accent);
+        background: var(--accent);
+        color: #ffffff;
+      }
+
+      .action.danger {
+        border-color: #c98d94;
+        color: var(--bad);
+      }
+
+      .workspace {
+        display: grid;
+        gap: 18px;
+        align-items: start;
+      }
+
+      .panel {
+        min-width: 0;
+        padding: 22px;
+        border-radius: 14px;
+        background: var(--surface);
+        box-shadow: var(--shadow);
+      }
+
+      .panel h2 {
+        margin-bottom: 5px;
+        font-size: 1.02rem;
+      }
+
+      .panel h3 {
+        margin-bottom: 5px;
+        font-size: 0.93rem;
+      }
+
+      .panel-note {
+        margin-bottom: 18px;
+        color: var(--muted);
+        font-size: 0.84rem;
+      }
+
+      .status-strip {
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        align-items: center;
+        margin-bottom: 18px;
+        padding: 13px 14px;
+        border-radius: 10px;
+        background: var(--accent-soft);
+      }
+
+      .status-strip.good {
+        background: var(--good-soft);
+      }
+
+      .status-strip.warn {
+        background: var(--warn-soft);
+      }
+
+      .status-strip.bad {
+        background: var(--bad-soft);
+      }
+
+      .status-copy strong,
+      .status-copy span {
+        display: block;
+      }
+
+      .status-copy span {
+        margin-top: 2px;
+        color: var(--muted);
+        font-size: 0.82rem;
+      }
+
+      .status-code {
+        flex: 0 0 auto;
+        color: var(--muted);
+        font-size: 0.78rem;
+      }
+
+      .state-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 1px;
+        overflow: hidden;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: var(--line);
+      }
+
+      .state-cell {
+        min-width: 0;
+        padding: 13px;
+        background: var(--surface-muted);
+      }
+
+      .state-cell dt {
+        margin-bottom: 4px;
+        color: var(--muted);
+        font-size: 0.72rem;
+        font-weight: 760;
+        letter-spacing: 0.055em;
+        text-transform: uppercase;
+      }
+
+      .state-cell dd {
+        margin: 0;
+        overflow-wrap: anywhere;
+        font-size: 0.88rem;
+        font-weight: 680;
+      }
+
+      .flow {
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: 10px;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .flow li {
+        position: relative;
+        min-width: 0;
+        padding: 13px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: var(--surface-muted);
+      }
+
+      .flow li:not(:last-child)::after {
+        position: absolute;
+        top: 50%;
+        right: -8px;
+        width: 6px;
+        height: 6px;
+        border-top: 2px solid var(--line-strong);
+        border-right: 2px solid var(--line-strong);
+        content: "";
+        transform: translateY(-50%) rotate(45deg);
+      }
+
+      .flow strong,
+      .flow span {
+        display: block;
+      }
+
+      .flow strong {
+        font-size: 0.82rem;
+      }
+
+      .flow span {
+        margin-top: 3px;
+        color: var(--muted);
+        font-size: 0.75rem;
+      }
+
+      .dialect-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 14px;
+      }
+
+      .dialect {
+        min-width: 0;
+        padding: 18px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: var(--surface-muted);
+      }
+
+      .dialect-header {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        align-items: start;
+        margin-bottom: 14px;
+      }
+
+      .dialect-header h3 {
+        margin: 0;
+        font-size: 1rem;
+      }
+
+      .badge {
+        padding: 4px 8px;
+        border-radius: 999px;
+        background: var(--accent-soft);
+        color: var(--accent);
+        font-size: 0.7rem;
+        font-weight: 800;
+        white-space: nowrap;
+      }
+
+      .badge.good {
+        background: var(--good-soft);
+        color: var(--good);
+      }
+
+      .badge.bad {
+        background: var(--bad-soft);
+        color: var(--bad);
+      }
+
+      .fact-list,
+      .issue-list,
+      .walkthrough-steps {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .fact-list li {
+        display: grid;
+        grid-template-columns: minmax(100px, 0.72fr) minmax(0, 1.3fr);
+        gap: 10px;
+        padding: 8px 0;
+        border-top: 1px solid var(--line);
+        font-size: 0.79rem;
+      }
+
+      .fact-list span:first-child {
+        color: var(--muted);
+      }
+
+      .fact-list span:last-child {
+        min-width: 0;
+        overflow-wrap: anywhere;
+        font-weight: 680;
+      }
+
+      .table-wrap {
+        overflow-x: auto;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+      }
+
+      table {
+        width: 100%;
+        min-width: 760px;
+        border-collapse: collapse;
+        background: var(--surface);
+        font-size: 0.8rem;
+      }
+
+      th,
+      td {
+        padding: 11px 13px;
+        border-bottom: 1px solid var(--line);
+        text-align: left;
+        vertical-align: top;
+      }
+
+      th {
+        background: var(--surface-muted);
+        font-size: 0.72rem;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+
+      tr:last-child td {
+        border-bottom: 0;
+      }
+
+      .issue-list li {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        gap: 12px;
+        padding: 11px 0;
+        border-top: 1px solid var(--line);
+        font-size: 0.81rem;
+      }
+
+      .issue-index {
+        color: var(--muted);
+        font-variant-numeric: tabular-nums;
+      }
+
+      .issue-list code {
+        display: block;
+        margin-bottom: 2px;
+        color: var(--bad);
+        font-size: 0.74rem;
+      }
+
+      .empty-state {
+        margin: 0;
+        padding: 16px;
+        border: 1px dashed var(--line-strong);
+        border-radius: 10px;
+        color: var(--muted);
+        font-size: 0.84rem;
+        text-align: center;
+      }
+
+      .tabs {
+        display: flex;
+        gap: 6px;
+        overflow-x: auto;
+        padding: 3px 3px 10px;
+      }
+
+      .tab {
+        flex: 0 0 auto;
+        padding: 9px 13px;
+      }
+
+      .tab[aria-selected="true"] {
+        border-color: var(--accent);
+        background: var(--accent-soft);
+        color: var(--accent);
+      }
+
+      .walkthrough {
+        display: grid;
+        grid-template-columns: minmax(220px, 0.65fr) minmax(0, 1.35fr);
+        gap: 22px;
+      }
+
+      .walkthrough-copy p {
+        margin-bottom: 15px;
+        color: var(--muted);
+        font-size: 0.86rem;
+      }
+
+      .start-button {
+        padding: 9px 14px;
+      }
+
+      .walkthrough-steps {
+        display: grid;
+        gap: 8px;
+      }
+
+      .step-button {
+        width: 100%;
+        padding: 10px 12px;
+        text-align: left;
+      }
+
+      .step-button:disabled {
+        cursor: not-allowed;
+        opacity: 0.55;
+      }
+
+      .verdict {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        gap: 16px;
+        align-items: start;
+        padding: 20px;
+        border-radius: 12px;
+        background: var(--good-soft);
+      }
+
+      .verdict strong {
+        color: var(--good);
+        font-size: 1rem;
+      }
+
+      .verdict p {
+        max-width: 78ch;
+        margin-bottom: 0;
+        color: #315d43;
+        font-size: 0.88rem;
+      }
+
+      @media (max-width: 920px) {
+        .state-grid,
+        .dialect-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .dialect:last-child {
+          grid-column: 1 / -1;
+        }
+
+        .flow {
+          grid-template-columns: 1fr;
+        }
+
+        .flow li:not(:last-child)::after {
+          top: auto;
+          right: 50%;
+          bottom: -8px;
+          transform: translateX(50%) rotate(135deg);
+        }
+      }
+
+      @media (max-width: 680px) {
+        .shell {
+          width: min(100% - 22px, 1240px);
+          padding-top: 26px;
+        }
+
+        .masthead,
+        .section-heading,
+        .walkthrough {
+          grid-template-columns: 1fr;
+        }
+
+        .masthead {
+          gap: 18px;
+        }
+
+        .prototype-label {
+          justify-self: start;
+        }
+
+        .section-heading {
+          display: grid;
+          align-items: start;
+        }
+
+        .section-heading p {
+          text-align: left;
+        }
+
+        .state-grid,
+        .dialect-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .dialect:last-child {
+          grid-column: auto;
+        }
+
+        .status-strip,
+        .verdict {
+          display: grid;
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <header class="masthead">
+        <div>
+          <h1>One Record contract, three database plans</h1>
+          <p class="question">
+            Question: Can PostgreSQL, MySQL, and SQLite refine the same lower-tier SQL Record,
+            preserve one shared rule set, and hand complete immutable plans to concrete adapters
+            without adding database-named Store tiers?
+          </p>
+        </div>
+        <span class="prototype-label">Throwaway prototype</span>
+      </header>
+
+      <section class="section" aria-labelledby="free-play-heading">
+        <div class="section-heading">
+          <h2 id="free-play-heading">Free play</h2>
+          <p>
+            Change one contract fact. Every panel below is derived again from the complete state.
+          </p>
+        </div>
+        <div class="controls" id="free-play-controls"></div>
+      </section>
+
+      <section class="section workspace" aria-labelledby="state-heading">
+        <div class="panel">
+          <div class="status-strip" id="status-strip" role="status" aria-live="polite"></div>
+          <h2 id="state-heading">Current contract state</h2>
+          <p class="panel-note">The full relevant state after the last action.</p>
+          <dl class="state-grid" id="state-grid"></dl>
+        </div>
+
+        <div class="panel">
+          <h2>Shared lifecycle</h2>
+          <p class="panel-note">
+            Only the concrete adapter crosses into Drizzle and live driver work.
+          </p>
+          <ol class="flow">
+            <li>
+              <strong>One SqlRecord</strong
+              ><span>Portable fields plus optional database refinements</span>
+            </li>
+            <li><strong>Compose</strong><span>Contributions and typed host overrides</span></li>
+            <li><strong>Resolve</strong><span>One synchronous database resolver</span></li>
+            <li>
+              <strong>Freeze</strong><span>References, tables, columns, codecs, and issues</span>
+            </li>
+            <li>
+              <strong>Bind</strong><span>Concrete Drizzle adapter and configured database</span>
+            </li>
+          </ol>
+        </div>
+
+        <div class="panel">
+          <h2>Resolved database plans</h2>
+          <p class="panel-note">
+            The physical type can differ while the selected application value stays stable.
+          </p>
+          <div class="dialect-grid" id="dialect-grid"></div>
+        </div>
+
+        <div class="panel">
+          <h2>Shared and database-specific facts</h2>
+          <p class="panel-note">
+            Shared concepts use one rule. Physical database facts stay explicit.
+          </p>
+          <div
+            class="table-wrap"
+            role="region"
+            tabindex="0"
+            aria-label="Database specialization comparison"
+          >
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Concern</th>
+                  <th scope="col">PostgreSQL</th>
+                  <th scope="col">MySQL</th>
+                  <th scope="col">SQLite</th>
+                </tr>
+              </thead>
+              <tbody id="comparison-body"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>Definition and operation outcomes</h2>
+          <p class="panel-note">
+            Definition issues aggregate. Operation and contract failures keep their own owners.
+          </p>
+          <div id="outcomes"></div>
+        </div>
+      </section>
+
+      <section class="section" aria-labelledby="walkthrough-heading">
+        <div class="section-heading">
+          <h2 id="walkthrough-heading">Guided walkthroughs</h2>
+          <p>Each walkthrough starts from the same clean state and uses the free-play actions.</p>
+        </div>
+        <div class="panel">
+          <div class="tabs" role="tablist" aria-label="Contract walkthroughs" id="tabs"></div>
+          <div class="walkthrough" role="tabpanel" id="walkthrough-panel" tabindex="0"></div>
+        </div>
+      </section>
+
+      <section class="section" aria-labelledby="verdict-heading">
+        <div class="verdict">
+          <strong id="verdict-heading">Draft verdict</strong>
+          <p>
+            The three specializations can share authoring, composition, precedence, null handling,
+            custom encoded values, generated asset shape, failure ownership, format identity, and
+            adapter handoff. Physical names, types, identity rules, and live driver checks remain
+            database-specific. No database-named runtime Store interface is required.
+          </p>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const ContractModel = (() => {
+        const dialects = Object.freeze(["postgres", "mysql", "sqlite"]);
+
+        const baseState = Object.freeze({
+          selectedEvidence: "explicit-portable-types",
+          opaqueTypeFormat: "compatible",
+          mysqlLeadingIndex: "present",
+          generatedWrite: "omitted",
+          customEncoder: "valid",
+          lastAction: "Reset to the approved comparison state",
+        });
+
+        const definitions = Object.freeze({
+          record: "AuditEntry",
+          table: "audit_entries",
+          fields: Object.freeze({
+            id: "sql.integer()",
+            amount: "sql.number()",
+            payload: "sql.json()",
+            computedLabel: "sql.text() plus stored generation",
+          }),
+        });
+
+        const mappings = Object.freeze({
+          postgres: Object.freeze({
+            label: "PostgreSQL 15+",
+            resolver: "resolvePostgresRecords()",
+            integer: "BIGINT / safe number",
+            number: "DOUBLE PRECISION / finite number",
+            json: "JSON / JsonValue",
+            identity: "BY DEFAULT identity",
+            generated: "stored",
+            qualifier: "optional schema",
+          }),
+          mysql: Object.freeze({
+            label: "MySQL 8.4+",
+            resolver: "resolveMysqlRecords()",
+            integer: "signed BIGINT / safe number",
+            number: "DOUBLE / finite number",
+            json: "JSON / JsonValue",
+            identity: "AUTO_INCREMENT / host leading index",
+            generated: "stored",
+            qualifier: "optional database",
+          }),
+          sqlite: Object.freeze({
+            label: "SQLite 3.45+",
+            resolver: "resolveSqliteRecords()",
+            integer: "INTEGER / safe number",
+            number: "REAL / finite number",
+            json: "TEXT JSON / JsonValue",
+            identity: "ROWID / reuse allowed",
+            generated: "stored",
+            qualifier: "none",
+          }),
+        });
+
+        const actions = Object.freeze({
+          reset: (state) => ({
+            ...baseState,
+            lastAction: "Reset to the approved comparison state",
+          }),
+          resolveAll: (state) => ({ ...state, lastAction: "Resolved all three database plans" }),
+          removePortableEvidence: (state) => ({
+            ...state,
+            selectedEvidence: "ambiguous-select-output",
+            lastAction: "Removed explicit storage evidence from an ambiguous Select output",
+          }),
+          restorePortableEvidence: (state) => ({
+            ...state,
+            selectedEvidence: "explicit-portable-types",
+            lastAction: "Restored the portable SQL Column Types",
+          }),
+          useCounterfeitType: (state) => ({
+            ...state,
+            opaqueTypeFormat: "counterfeit",
+            lastAction: "Replaced one opaque SQL Column Type with a lookalike",
+          }),
+          restoreTypeFormat: (state) => ({
+            ...state,
+            opaqueTypeFormat: "compatible",
+            lastAction: "Restored a compatible opaque SQL Column Type",
+          }),
+          removeMysqlIndex: (state) => ({
+            ...state,
+            mysqlLeadingIndex: "missing",
+            lastAction: "Removed the host index required by MySQL AUTO_INCREMENT",
+          }),
+          restoreMysqlIndex: (state) => ({
+            ...state,
+            mysqlLeadingIndex: "present",
+            lastAction: "Restored the host index required by MySQL AUTO_INCREMENT",
+          }),
+          writeGeneratedValue: (state) => ({
+            ...state,
+            generatedWrite: "explicit",
+            lastAction: "Supplied an explicit value for a generated column",
+          }),
+          omitGeneratedValue: (state) => ({
+            ...state,
+            generatedWrite: "omitted",
+            lastAction: "Omitted the generated column so the database can compute it",
+          }),
+          throwCustomEncoder: (state) => ({
+            ...state,
+            customEncoder: "throws",
+            lastAction: "Made a custom encoder throw during a write",
+          }),
+          restoreCustomEncoder: (state) => ({
+            ...state,
+            customEncoder: "valid",
+            lastAction: "Restored the custom encoder contract",
+          }),
+        });
+
+        function definitionIssues(state, dialect) {
+          const issues = [];
+          if (state.opaqueTypeFormat === "counterfeit") {
+            issues.push({
+              code: "invalid-column-type",
+              path: `records.AuditEntry.fields.payload.column.${dialect}.type`,
+              message: "The active type has an incompatible or counterfeit opaque format.",
+            });
+          }
+          if (state.selectedEvidence === "ambiguous-select-output") {
+            issues.push({
+              code: "column-type-required",
+              path: "records.AuditEntry.fields.amount.column.type",
+              message: "The Select output has no one clear storage family.",
+            });
+          }
+          return Object.freeze(issues);
+        }
+
+        function resolveDialect(state, dialect) {
+          const issues = definitionIssues(state, dialect);
+          if (issues.length > 0) {
+            return Object.freeze({ dialect, status: "definition-error", issues });
+          }
+
+          const mapping = mappings[dialect];
+          const binding =
+            dialect === "mysql" && state.mysqlLeadingIndex === "missing"
+              ? "binding-rejected"
+              : "ready";
+          return Object.freeze({
+            dialect,
+            status: binding,
+            issues,
+            table: definitions.table,
+            integer: mapping.integer,
+            number: mapping.number,
+            json: mapping.json,
+            identity: mapping.identity,
+            generated: Object.freeze({ expression: "normalized_label_expression", mode: "stored" }),
+            customEncodedValue: "string | finite number | boolean | Uint8Array",
+          });
+        }
+
+        function operationOutcomes(state) {
+          const outcomes = [];
+          if (state.generatedWrite === "explicit") {
+            for (const dialect of dialects) {
+              outcomes.push({
+                owner: "StoreValidationError",
+                path: `${dialect}.AuditEntry.computedLabel`,
+                message: "An explicit write cannot supply a generated column.",
+              });
+            }
+          }
+          if (state.customEncoder === "throws") {
+            outcomes.push({
+              owner: "StoreAdapterContractViolation",
+              path: "AuditEntry.payload",
+              message: "The custom encoder failed. The original value is retained as cause.",
+            });
+          }
+          return Object.freeze(outcomes);
+        }
+
+        function evaluate(state) {
+          const plans = Object.freeze(
+            Object.fromEntries(
+              dialects.map((dialect) => [dialect, resolveDialect(state, dialect)]),
+            ),
+          );
+          const allIssues = Object.freeze(dialects.flatMap((dialect) => plans[dialect].issues));
+          const operation = operationOutcomes(state);
+          const status =
+            allIssues.length > 0
+              ? "definition-error"
+              : Object.values(plans).some((plan) => plan.status === "binding-rejected")
+                ? "binding-error"
+                : operation.length > 0
+                  ? "operation-error"
+                  : "ready";
+          return Object.freeze({
+            state: Object.freeze({ ...state }),
+            plans,
+            allIssues,
+            operation,
+            status,
+          });
+        }
+
+        function apply(state, actionName) {
+          const action = actions[actionName];
+          return evaluate(action ? action(state) : state);
+        }
+
+        return Object.freeze({
+          baseState,
+          definitions,
+          mappings,
+          dialects,
+          actions,
+          evaluate,
+          apply,
+        });
+      })();
+
+      const freePlay = Object.freeze([
+        ["resolveAll", "Resolve all plans", "primary"],
+        ["removePortableEvidence", "Make Select evidence ambiguous", "danger"],
+        ["restorePortableEvidence", "Restore portable types", ""],
+        ["useCounterfeitType", "Use a counterfeit type", "danger"],
+        ["restoreTypeFormat", "Restore type identity", ""],
+        ["removeMysqlIndex", "Remove MySQL host index", "danger"],
+        ["restoreMysqlIndex", "Restore MySQL host index", ""],
+        ["writeGeneratedValue", "Write a generated value", "danger"],
+        ["omitGeneratedValue", "Omit generated value", ""],
+        ["throwCustomEncoder", "Break custom encoder", "danger"],
+        ["restoreCustomEncoder", "Restore custom encoder", ""],
+        ["reset", "Reset", ""],
+      ]);
+
+      const walkthroughs = Object.freeze([
+        {
+          id: "composition",
+          label: "Lower-tier composition",
+          description:
+            "Start with one SQL Record. Resolve it three times. Check that each plan keeps the same selected values and uses its database physical types.",
+          steps: [
+            ["reset", "Start from one lower-tier SQL Record"],
+            ["resolveAll", "Resolve PostgreSQL, MySQL, and SQLite plans"],
+          ],
+        },
+        {
+          id: "generation",
+          label: "Generated writes",
+          description:
+            "All resolved generated assets use one expression-and-mode shape. Each database rejects an explicit generated value before database work.",
+          steps: [
+            ["reset", "Start with stored generation in all three refinements"],
+            ["writeGeneratedValue", "Try to write the generated field"],
+            ["omitGeneratedValue", "Omit it and let each database compute it"],
+          ],
+        },
+        {
+          id: "failures",
+          label: "Definition failures",
+          description:
+            "Opaque format checks run before storage evidence. Independent issues aggregate in stable order and no partial plan is returned.",
+          steps: [
+            ["reset", "Start from a valid catalog"],
+            ["removePortableEvidence", "Remove one required portable type"],
+            ["useCounterfeitType", "Add an incompatible opaque type"],
+            ["restorePortableEvidence", "Repair the missing storage evidence"],
+            ["restoreTypeFormat", "Repair the opaque type identity"],
+          ],
+        },
+        {
+          id: "binding",
+          label: "Adapter handoff",
+          description:
+            "Resolution is synchronous and has no live database. The concrete MySQL adapter later proves its required leading index during binding.",
+          steps: [
+            ["reset", "Resolve immutable plans without database I/O"],
+            ["removeMysqlIndex", "Bind without the required MySQL host index"],
+            ["restoreMysqlIndex", "Restore the host index and bind again"],
+          ],
+        },
+      ]);
+
+      let evaluation = ContractModel.evaluate(ContractModel.baseState);
+      let activeWalkthrough = 0;
+      let walkthroughStep = -1;
+
+      const statusStrip = document.querySelector("#status-strip");
+      const stateGrid = document.querySelector("#state-grid");
+      const dialectGrid = document.querySelector("#dialect-grid");
+      const comparisonBody = document.querySelector("#comparison-body");
+      const outcomes = document.querySelector("#outcomes");
+      const tabs = document.querySelector("#tabs");
+      const walkthroughPanel = document.querySelector("#walkthrough-panel");
+
+      function escapeHtml(value) {
+        return String(value)
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#039;");
+      }
+
+      function statusCopy(status) {
+        if (status === "definition-error") {
+          return [
+            "bad",
+            "Definition stopped",
+            "SqlDefinitionError contains every independent issue.",
+          ];
+        }
+        if (status === "binding-error") {
+          return [
+            "warn",
+            "Live binding stopped",
+            "Resolution passed. A concrete adapter rejected an unsupported binding.",
+          ];
+        }
+        if (status === "operation-error") {
+          return [
+            "bad",
+            "Operation stopped",
+            "The definition remains valid. A write or codec contract failed.",
+          ];
+        }
+        return [
+          "good",
+          "All three plans are ready",
+          "One lower-tier Record produced three complete immutable adapter plans.",
+        ];
+      }
+
+      function renderState() {
+        const [tone, title, detail] = statusCopy(evaluation.status);
+        statusStrip.className = `status-strip ${tone}`;
+        statusStrip.innerHTML = `
+          <div class="status-copy"><strong>${escapeHtml(title)}</strong><span>${escapeHtml(detail)}</span></div>
+          <span class="status-code mono">${escapeHtml(evaluation.status)}</span>
+        `;
+
+        const stateFacts = [
+          ["Last action", evaluation.state.lastAction],
+          ["Storage evidence", evaluation.state.selectedEvidence],
+          ["Opaque type", evaluation.state.opaqueTypeFormat],
+          ["MySQL host index", evaluation.state.mysqlLeadingIndex],
+          ["Generated write", evaluation.state.generatedWrite],
+          ["Custom encoder", evaluation.state.customEncoder],
+          ["Record", ContractModel.definitions.record],
+          ["Definition count", "1 Record, 3 active refinements"],
+        ];
+        stateGrid.innerHTML = stateFacts
+          .map(
+            ([term, value]) =>
+              `<div class="state-cell"><dt>${escapeHtml(term)}</dt><dd>${escapeHtml(value)}</dd></div>`,
+          )
+          .join("");
+      }
+
+      function renderDialects() {
+        dialectGrid.innerHTML = ContractModel.dialects
+          .map((dialect) => {
+            const plan = evaluation.plans[dialect];
+            const mapping = ContractModel.mappings[dialect];
+            const badgeClass = plan.status === "ready" ? "good" : "bad";
+            const facts =
+              plan.status === "definition-error"
+                ? [
+                    ["Resolver", mapping.resolver],
+                    ["Result", "No partial plan"],
+                    ["Issues", String(plan.issues.length)],
+                  ]
+                : [
+                    ["Resolver", mapping.resolver],
+                    ["Integer", plan.integer],
+                    ["Number", plan.number],
+                    ["JSON", plan.json],
+                    ["Identity", plan.identity],
+                    ["Generated", `{ expression, mode: ${plan.generated.mode} }`],
+                    ["Custom encode", plan.customEncodedValue],
+                  ];
+            return `
+              <article class="dialect">
+                <div class="dialect-header">
+                  <h3>${escapeHtml(mapping.label)}</h3>
+                  <span class="badge ${badgeClass}">${escapeHtml(plan.status)}</span>
+                </div>
+                <ul class="fact-list">
+                  ${facts
+                    .map(
+                      ([term, value]) =>
+                        `<li><span>${escapeHtml(term)}</span><span class="mono">${escapeHtml(value)}</span></li>`,
+                    )
+                    .join("")}
+                </ul>
+              </article>
+            `;
+          })
+          .join("");
+      }
+
+      function renderComparison() {
+        const rows = [
+          ["Authoring", "sql + pg refinement", "sql + mysql refinement", "sql + sqlite refinement"],
+          ["Table qualifier", "separate schema", "separate database", "none"],
+          [
+            "Portable integer",
+            "BIGINT, safe number",
+            "signed BIGINT, safe number",
+            "INTEGER, safe number",
+          ],
+          ["Portable number", "DOUBLE PRECISION", "DOUBLE", "REAL"],
+          ["Portable JSON", "JSON", "JSON", "TEXT JSON"],
+          [
+            "Generated asset",
+            "expression + stored",
+            "expression + virtual or stored",
+            "expression + virtual or stored",
+          ],
+          [
+            "Identity",
+            "ALWAYS or BY DEFAULT",
+            "AUTO_INCREMENT or SERIAL",
+            "ROWID, optional AUTOINCREMENT",
+          ],
+          [
+            "Custom encoded value",
+            "shared four-value union",
+            "shared four-value union",
+            "shared four-value union",
+          ],
+          ["SQL NULL", "bypasses codecs", "bypasses codecs", "bypasses codecs"],
+          ["Resolver stage", "synchronous, no I/O", "synchronous, no I/O", "synchronous, no I/O"],
+          [
+            "Live checks",
+            "concrete adapter",
+            "concrete adapter + host index",
+            "concrete adapter + engine path",
+          ],
+        ];
+        comparisonBody.innerHTML = rows
+          .map((row) => `<tr>${row.map((cell) => `<td>${escapeHtml(cell)}</td>`).join("")}</tr>`)
+          .join("");
+      }
+
+      function renderOutcomes() {
+        const definition = evaluation.allIssues.map((issue) => ({
+          owner: issue.code,
+          path: issue.path,
+          message: issue.message,
+        }));
+        const combined = [...definition, ...evaluation.operation];
+        if (combined.length === 0) {
+          outcomes.innerHTML = `<p class="empty-state">No failures. Definition, binding, and operation contracts are satisfied.</p>`;
+          return;
+        }
+        outcomes.innerHTML = `<ol class="issue-list">${combined
+          .map(
+            (issue, index) => `
+              <li>
+                <span class="issue-index mono">${String(index + 1).padStart(2, "0")}</span>
+                <div><code>${escapeHtml(issue.owner)} · ${escapeHtml(issue.path)}</code>${escapeHtml(issue.message)}</div>
+              </li>
+            `,
+          )
+          .join("")}</ol>`;
+      }
+
+      function renderWalkthrough() {
+        tabs.innerHTML = walkthroughs
+          .map(
+            (walkthrough, index) => `
+              <button
+                class="tab"
+                type="button"
+                role="tab"
+                id="tab-${escapeHtml(walkthrough.id)}"
+                aria-controls="walkthrough-panel"
+                aria-selected="${index === activeWalkthrough}"
+                data-tab="${index}"
+              >${escapeHtml(walkthrough.label)}</button>
+            `,
+          )
+          .join("");
+
+        const walkthrough = walkthroughs[activeWalkthrough];
+        walkthroughPanel.setAttribute("aria-labelledby", `tab-${walkthrough.id}`);
+        walkthroughPanel.innerHTML = `
+          <div class="walkthrough-copy">
+            <h3>${escapeHtml(walkthrough.label)}</h3>
+            <p>${escapeHtml(walkthrough.description)}</p>
+            <button class="start-button" type="button" data-start-walkthrough>Start walkthrough</button>
+          </div>
+          <ol class="walkthrough-steps">
+            ${walkthrough.steps
+              .map(([, label], index) => {
+                const complete = walkthroughStep > index;
+                const current = walkthroughStep === index;
+                return `
+                  <li>
+                    <button
+                      class="step-button ${current ? "current" : ""}"
+                      type="button"
+                      data-step="${index}"
+                      ${current ? "" : "disabled"}
+                    >${complete ? "Complete: " : `Step ${index + 1}: `}${escapeHtml(label)}</button>
+                  </li>
+                `;
+              })
+              .join("")}
+          </ol>
+        `;
+      }
+
+      function render() {
+        renderState();
+        renderDialects();
+        renderComparison();
+        renderOutcomes();
+        renderWalkthrough();
+      }
+
+      function dispatch(actionName) {
+        evaluation = ContractModel.apply(evaluation.state, actionName);
+        render();
+      }
+
+      document.querySelector("#free-play-controls").innerHTML = freePlay
+        .map(
+          ([action, label, tone]) =>
+            `<button class="action ${tone}" type="button" data-action="${action}">${escapeHtml(label)}</button>`,
+        )
+        .join("");
+
+      document.addEventListener("click", (event) => {
+        const actionButton = event.target.closest("[data-action]");
+        if (actionButton) {
+          walkthroughStep = -1;
+          dispatch(actionButton.dataset.action);
+          return;
+        }
+
+        const tabButton = event.target.closest("[data-tab]");
+        if (tabButton) {
+          activeWalkthrough = Number(tabButton.dataset.tab);
+          walkthroughStep = -1;
+          renderWalkthrough();
+          return;
+        }
+
+        if (event.target.closest("[data-start-walkthrough]")) {
+          evaluation = ContractModel.evaluate(ContractModel.baseState);
+          walkthroughStep = 0;
+          render();
+          return;
+        }
+
+        const stepButton = event.target.closest("[data-step]");
+        if (stepButton && Number(stepButton.dataset.step) === walkthroughStep) {
+          const [action] = walkthroughs[activeWalkthrough].steps[walkthroughStep];
+          evaluation = ContractModel.apply(evaluation.state, action);
+          walkthroughStep += 1;
+          render();
+        }
+      });
+
+      document.addEventListener("keydown", (event) => {
+        const currentTab = event.target.closest('[role="tab"]');
+        if (!currentTab || (event.key !== "ArrowLeft" && event.key !== "ArrowRight")) return;
+        event.preventDefault();
+        const direction = event.key === "ArrowRight" ? 1 : -1;
+        activeWalkthrough =
+          (activeWalkthrough + direction + walkthroughs.length) % walkthroughs.length;
+        walkthroughStep = -1;
+        renderWalkthrough();
+        document.querySelectorAll('[role="tab"]')[activeWalkthrough].focus();
+      });
+
+      render();
+    </script>
+  </body>
+</html>
