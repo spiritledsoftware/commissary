@@ -1,14 +1,14 @@
 # SQL Store Tier Technical Specification
 
-> **Status**: Design complete for implementation. Confirmed decisions in this specification are binding.
+> **Status**: Design complete for implementation. The portable SQL tier and PostgreSQL Record specialization decisions are binding.
 >
-> **Last updated**: 2026-08-06 during the database Store seam decision.
+> **Last updated**: 2026-08-06 during the PostgreSQL Record specialization decision.
 
 ## Summary
 
-Add a portable SQL Store specialization to `@commissary/store`. It keeps the base Collection Map and adds one parameter-safe `execute` operation. It also adds one immutable SQL Record definition form, one opaque SQL Statement algebra, shared adapter helpers, SQL errors, and shared conformance tests.
+Add a portable SQL Store specialization and Drizzle-independent PostgreSQL Record metadata to `@commissary/store`. The package gains one immutable SQL Record definition form, symmetric SQL and PostgreSQL metadata helpers, one opaque SQL Statement algebra, shared adapter helpers, SQL errors, and shared conformance tests.
 
-The interface is portable. SQL text can use one database dialect. Generic execution returns one unchecked row set. Concrete adapters and focused adapter interfaces can accept more parameter types and return more facts without weakening the generic contract.
+The `SqlStore` interface remains portable. SQL text can use one database dialect. Generic execution returns one unchecked row set. Integrations can add PostgreSQL refinements without an ORM dependency, while hosts call only their selected concrete adapter. Concrete adapters and focused adapter interfaces can accept more parameter types and return more facts without weakening the generic contract.
 
 This specification extends the [Store Architecture Technical Specification](store.md). That specification remains authoritative for Records, Collections, operators, Store errors, and transactions except where this document gives a later rule.
 
@@ -68,6 +68,8 @@ This specification extends the [Store Architecture Technical Specification](stor
 - SQL Record definition and reference types;
 - portable SQL Column Types and SQL Literals;
 - SQL Statement construction;
+- Drizzle-independent database Record metadata helpers, beginning with PostgreSQL;
+- the adapter-facing database Record resolvers;
 - `SqlStore` and SQL errors;
 - the `@commissary/store/sql-adapter` Statement compiler;
 - the `@commissary/store/transaction-adapter` callback runner; and
@@ -78,7 +80,8 @@ Concrete adapters own:
 - database clients, credentials, pools, and resource lifetime;
 - driver result recognition;
 - physical transaction start, commit, rollback, and release;
-- database-specific Record metadata;
+- mapping resolved database Record assets into ORM or driver runtime values;
+- concrete adapter definition and live Store factories;
 - database-specific parameter and result facts; and
 - optional driver features outside this tier.
 
@@ -175,15 +178,27 @@ export declare const SqlRecord: {
     definition: RoundTripDefinition<Definition> & SqlRecordDefinition<Definition>,
   ) => Readonly<Definition & SqlRecordDefinition<Definition>>;
 };
+
+export declare const sql: {
+  readonly table: <const Table extends SqlTableDefinition>(table: Table) => Readonly<Table>;
+  readonly column: <Value extends JsonValue, const Column extends SqlColumnDefinition<Value>>(
+    column: Column,
+  ) => Readonly<Column>;
+  // Statement, type, and literal constructors are shown below.
+};
 ```
 
-The named database metadata properties accept an object at the portable stage and preserve its inferred type. A database-specific definition function narrows and validates its active property. This rule avoids global type augmentation and keeps database types out of the portable package.
+The named database metadata properties accept an object at the portable stage and preserve its inferred type. The matching database helper gives integration authors a typed, locally validated object. The matching adapter resolver activates it after contributions and overrides. This rule avoids global type augmentation and keeps ORM and driver types out of `@commissary/store`.
+
+`sql.table()` and `sql.column()` are the recommended metadata authoring helpers. They snapshot and freeze their package-owned options. Plain structural metadata remains valid, and typed deep overrides can use helpers or plain patches.
 
 #### Portable column types and defaults
 
 The `sql` value includes these constructors:
 
 ```ts
+sql.table(options);
+sql.column(options);
 sql.text();
 sql.number();
 sql.integer();
@@ -324,6 +339,328 @@ export type SqlRecordReferences<Definitions extends RecordDefinitions> = {
 A Record reference is the final table identifier. Its field references are final column identifiers. References are connection-independent and have no public raw-name property. They provide SQL structure only and do not convert direct-SQL parameters.
 
 The same immutable definition can be registered under several catalog keys. Each registration gets its own resolved reference. References can be composed across definitions and used on any suitable SQL connection. The database remains the authority for existence and permissions.
+
+### PostgreSQL Record specialization
+
+The PostgreSQL specialization targets PostgreSQL 15 and later. It defines Drizzle-independent metadata and resolution assets. It does not create a PostgreSQL-named runtime Store interface.
+
+#### Ownership and authoring
+
+An integration adds PostgreSQL intent to its one lower-tier SQL Record:
+
+```ts
+const ScheduledJob = SqlRecord.define({
+  table: sql.table({
+    name: "scheduled_jobs",
+    postgres: pg.table({
+      schema: "jobs",
+    }),
+  }),
+  fields: {
+    id: {
+      select: jobIdSchema,
+      column: sql.column({
+        type: sql.text(),
+        postgres: pg.column({
+          type: pg.uuid(),
+          default: sql`gen_random_uuid()`,
+          notNull: true,
+        }),
+      }),
+    },
+  },
+});
+```
+
+`pg.table()` and `pg.column()` create only PostgreSQL refinements. They do not resolve a catalog or create adapter assets. Do not add `PostgresSql.define()`, `PostgresSqlStore.define()`, or another host-facing PostgreSQL definition factory. A host calls only its selected concrete adapter, such as the later `DrizzlePostgresStore.define()`.
+
+`@commissary/store/postgres-adapter` exposes the synchronous, I/O-free resolver used by concrete adapters:
+
+```ts
+export declare function resolvePostgresRecords<
+  const Definitions extends RecordDefinitions,
+  const Overrides extends RecordOverrides<Definitions> = {},
+>(options: {
+  readonly records: Definitions;
+  readonly overrides?: Overrides;
+}): PostgresRecordResolution<ApplyOverrides<Definitions, Overrides>>;
+
+export interface PostgresRecordResolution<Definitions extends RecordDefinitions> {
+  readonly records: SqlRecordReferences<Definitions>;
+  readonly tables: PostgresResolvedTables<Definitions>;
+  readonly enums: readonly PostgresResolvedEnum[];
+}
+```
+
+The resolver applies contributions and overrides, activates `postgres` metadata, rebuilds inference, validates the effective catalog, and returns immutable resolved references and adapter assets. It contains no generated DDL, Drizzle values, indexes, relations, or migration data.
+
+#### Public PostgreSQL metadata
+
+The rough public types are:
+
+```ts
+export type PostgresEncodedScalar = string | number | boolean;
+
+export interface PostgresColumnType<in Value extends JsonValue> extends SqlColumnType<Value> {
+  // Opaque package-owned PostgreSQL storage and conversion contract.
+}
+
+export interface PostgresTableDefinition {
+  readonly schema?: string | null;
+  readonly name?: string | null;
+}
+
+export interface PostgresColumnDefinition<Value extends JsonValue> {
+  readonly name?: string | null;
+  readonly type?: PostgresColumnType<Value> | null;
+  readonly default?: SqlLiteral<Extract<Value, SqlLiteralValue>> | SqlStatement<never> | null;
+  readonly notNull?: boolean | null;
+  readonly identity?: PostgresIdentity | null;
+  readonly generated?: SqlStatement<never> | null;
+}
+
+export interface PostgresQualifiedName {
+  readonly schema?: string;
+  readonly name: string;
+}
+
+export interface PostgresIdentitySequence {
+  readonly name?: PostgresQualifiedName;
+  readonly startWith?: number | bigint;
+  readonly incrementBy?: number | bigint;
+  readonly minValue?: number | bigint;
+  readonly maxValue?: number | bigint;
+  readonly cache?: number | bigint;
+  readonly cycle?: boolean;
+}
+
+export interface PostgresIdentity {
+  readonly mode: "always" | "by-default";
+  readonly sequence?: PostgresIdentitySequence;
+}
+
+export interface PostgresNumericOptions {
+  readonly precision?: number;
+  readonly scale?: number;
+}
+
+export interface PostgresCharacterOptions {
+  readonly length?: number;
+}
+
+export type PostgresTemporalPrecision = 0 | 1 | 2 | 3 | 4 | 5 | 6;
+
+export interface PostgresTemporalOptions {
+  readonly precision?: PostgresTemporalPrecision;
+  readonly withTimezone?: boolean;
+}
+
+export type PostgresIntervalFields =
+  | "year"
+  | "month"
+  | "day"
+  | "hour"
+  | "minute"
+  | "second"
+  | "year to month"
+  | "day to hour"
+  | "day to minute"
+  | "day to second"
+  | "hour to minute"
+  | "hour to second"
+  | "minute to second";
+
+export interface PostgresIntervalOptions {
+  readonly fields?: PostgresIntervalFields;
+  readonly precision?: PostgresTemporalPrecision;
+}
+
+export interface PostgresEnum<
+  Values extends readonly [string, ...string[]],
+> extends PostgresColumnType<Values[number]> {}
+
+export interface PostgresCustomTypeOptions<Value extends JsonValue> {
+  readonly type: PostgresQualifiedName & {
+    readonly modifier?: SqlStatement<never>;
+  };
+  readonly encode: (value: Value) => PostgresEncodedScalar;
+  readonly decode: (value: unknown) => Value;
+}
+
+export declare const pg: {
+  readonly table: <const Options extends PostgresTableDefinition>(
+    options: Options,
+  ) => Readonly<Options>;
+  readonly column: <Value extends JsonValue, const Options extends PostgresColumnDefinition<Value>>(
+    options: Options,
+  ) => Readonly<Options>;
+
+  readonly smallint: () => PostgresColumnType<number>;
+  readonly integer: () => PostgresColumnType<number>;
+  readonly bigint: () => PostgresColumnType<string>;
+  readonly numeric: (options?: PostgresNumericOptions) => PostgresColumnType<string>;
+  readonly real: () => PostgresColumnType<number>;
+  readonly doublePrecision: () => PostgresColumnType<number>;
+
+  readonly boolean: () => PostgresColumnType<boolean>;
+  readonly char: (options?: PostgresCharacterOptions) => PostgresColumnType<string>;
+  readonly varchar: (options?: PostgresCharacterOptions) => PostgresColumnType<string>;
+  readonly text: () => PostgresColumnType<string>;
+  readonly uuid: () => PostgresColumnType<string>;
+  readonly json: () => PostgresColumnType<JsonValue>;
+  readonly jsonb: () => PostgresColumnType<JsonValue>;
+  readonly bytea: () => PostgresColumnType<string>;
+
+  readonly date: () => PostgresColumnType<string>;
+  readonly time: (options?: PostgresTemporalOptions) => PostgresColumnType<string>;
+  readonly timestamp: (options?: PostgresTemporalOptions) => PostgresColumnType<string>;
+  readonly interval: (options?: PostgresIntervalOptions) => PostgresColumnType<string>;
+
+  readonly inet: () => PostgresColumnType<string>;
+  readonly cidr: () => PostgresColumnType<string>;
+  readonly macaddr: () => PostgresColumnType<string>;
+  readonly macaddr8: () => PostgresColumnType<string>;
+  readonly point: () => PostgresColumnType<{
+    readonly x: number;
+    readonly y: number;
+  }>;
+  readonly line: () => PostgresColumnType<{
+    readonly a: number;
+    readonly b: number;
+    readonly c: number;
+  }>;
+
+  readonly enum: <const Values extends readonly [string, ...string[]]>(options: {
+    readonly schema?: string;
+    readonly name: string;
+    readonly values: Values;
+  }) => PostgresEnum<Values>;
+  readonly array: <Value extends JsonValue>(
+    element: PostgresColumnType<Value>,
+  ) => PostgresColumnType<readonly Value[]>;
+  readonly custom: <Value extends JsonValue>(
+    options: PostgresCustomTypeOptions<Value>,
+  ) => PostgresColumnType<Value>;
+};
+```
+
+`PostgresColumnType<Value>` is contravariant. The resolver checks the defined Select output after removing `null` and `undefined`. This permits branded string refinements such as UUIDs. Helpers never replace Select, Create, or Update Schema inference.
+
+#### Direct type behavior
+
+Each direct helper has one driver-independent JSON-safe application value:
+
+| PostgreSQL type                                   | Application value                                                |
+| ------------------------------------------------- | ---------------------------------------------------------------- |
+| `smallint`, `integer`, `real`, `double precision` | finite `number`                                                  |
+| `bigint`, `numeric`                               | exact `string`                                                   |
+| `boolean`                                         | `boolean`                                                        |
+| `char`, `varchar`, `text`, `uuid`                 | `string`                                                         |
+| `json`, `jsonb`                                   | `JsonValue`                                                      |
+| `bytea`                                           | padded RFC 4648 base64 `string`                                  |
+| `date`, `time`, `timestamp`, `interval`           | normalized ISO 8601 `string`                                     |
+| `inet`, `cidr`, `macaddr`, `macaddr8`             | normalized `string`                                              |
+| `point`                                           | `{ readonly x: number; readonly y: number }`                     |
+| `line`                                            | `{ readonly a: number; readonly b: number; readonly c: number }` |
+| enum                                              | its exact string literal union                                   |
+| array                                             | readonly arrays of the element application value                 |
+
+`numeric` preserves exact decimal text plus `NaN`, `Infinity`, and `-Infinity`. Timestamp with time zone normalizes to UTC with `Z`; timestamp without time zone has no offset. Temporal conversion preserves microseconds and expanded years. Interval uses ISO 8601 duration text. Non-finite `real`, `double precision`, point, and line numbers fail because they are not valid `JsonValue` numbers.
+
+Supported type options are:
+
+- `numeric`: precision 1 through 1000 and scale -1000 through 1000; scale requires precision;
+- `char` and `varchar`: length 1 through 10,485,760; omitted `char` length means one and omitted `varchar` length means unlimited;
+- `time` and `timestamp`: precision 0 through 6 and `withTimezone`;
+- `interval`: the PostgreSQL field combinations and precision 0 through 6; a field-qualified precision requires seconds; and
+- arrays: no declared size or dimension option because PostgreSQL does not enforce either.
+
+Do not add aliases such as `int`, `decimal`, or `timestamptz`. Do not expose driver modes such as `Date`, JavaScript `bigint`, or `Buffer`.
+
+PostgreSQL can apply its documented declared-type coercion, including `real` precision, `numeric(p,s)` rounding, `char(n)` padding, and temporal precision. The operation and Select Schema parsers validate field values first. The direct PostgreSQL column codec then validates only storage syntax, JSON safety, and type range before database work. It reports an invalid caller-supplied write value as `StoreValidationError`. The `pg.*` metadata constructors never inspect field values. Adapters decode the stored result instead of echoing an input that PostgreSQL can change. An invalid stored direct value uses `StoreAdapterContractViolation` with `"invalid-selected-record"`. `char` decoding removes storage padding, and application strings with trailing spaces fail during direct encoding.
+
+#### Arrays, enums, and custom types
+
+`pg.array(element)` creates one application dimension. Nest it for more dimensions. Values must be rectangular. Selected PostgreSQL arrays must use one-based lower bounds because a plain JavaScript array cannot preserve another bound. SQL `NULL` elements are preserved and then checked by the Select Schema.
+
+`pg.enum({ schema, name, values })` creates one reusable `PostgresEnum` column type and definition-owned asset. Value order is significant. Reuse the same opaque enum object across fields. Different enum objects with one qualified name conflict even when their values match. A custom type is only an external type reference and never becomes a definition-owned asset.
+
+A custom type uses a separately quoted schema and name. Its optional modifier is a nonempty `SqlStatement<never>` placed inside parentheses, which supports specifications such as `vector(3)` and `geometry(Point, 4326)`. Definition checks that the modifier has no runtime parameters but does not parse it. PostGIS and pgvector types use this custom path.
+
+Custom conversion is synchronous and driver-independent:
+
+```txt
+write: operation Schema -> Select Schema -> encode -> database
+read:  database -> decode -> Select Schema -> Selected Record
+```
+
+SQL `NULL` bypasses conversion. The resolver snapshots function references but never invokes them. An encoder must return a string, finite number, or boolean. Objects, arrays, Statements, Promises, `undefined`, and driver objects are invalid encoded values. Array conversion applies the scalar converter to each element.
+
+#### Defaults, identity, and stored generation
+
+PostgreSQL defaults and stored generated expressions accept `SqlStatement<never>`. Definition checks package origin, nonempty structure, and the actual absence of bound parameters. It does not parse SQL or validate functions, column references, subqueries, volatility, casts, or result types. PostgreSQL owns semantic expression validation, and `sql.raw()` remains trusted unchecked structure.
+
+Identity supports `ALWAYS` and `BY DEFAULT` plus a qualified sequence name, `startWith`, `incrementBy`, `minValue`, `maxValue`, `cache`, and `cycle`. Integer controls accept a safe JavaScript integer or `bigint` and normalize to an exact integer. Definition rejects unsafe numbers, zero increments, cache below one, values outside the column type range, and inconsistent bounds.
+
+Definition rejects:
+
+- generated plus default;
+- generated plus identity;
+- identity plus an explicit default;
+- identity on anything except `smallint`, `integer`, or `bigint`; and
+- identity plus `notNull: false`.
+
+Identity implies `NOT NULL`; explicit `notNull: true` is valid but redundant. A stored generated column can use a custom type and either nullability setting. An ordinary default can use a custom type.
+
+Database metadata does not change `SelectedRecord`, `CreateInput`, or `UpdateInput`. Field Schemas remain their only source. Store write behavior is:
+
+| Metadata              | Omitted create | Explicit create               | Explicit update             |
+| --------------------- | -------------- | ----------------------------- | --------------------------- |
+| ordinary default      | use default    | host value wins               | host value wins             |
+| `BY DEFAULT` identity | generate       | host value wins               | host value wins             |
+| `ALWAYS` identity     | generate       | use `OVERRIDING SYSTEM VALUE` | reject before database work |
+| stored generated      | compute        | reject before database work   | reject before database work |
+
+Prohibited writes use `StoreValidationError` with Collection, operation, phase, field, and a field-local issue. Omitted updates remain unchanged.
+
+#### Names, precedence, and collisions
+
+PostgreSQL schema and object names are separate values. Never split a dotted string. Adapters quote every part and preserve exact case. Names must be nonempty, NUL-free, and no longer than 63 UTF-8 bytes. Reject rather than accept PostgreSQL's silent truncation.
+
+Active PostgreSQL metadata can override portable `name`, `type`, `default`, and `notNull`, and it can add `schema`, `identity`, and `generated`. Absence inherits. `null` removes one inherited optional setting. After overrides, the resolver rebuilds all reflection, names, types, and conflicts.
+
+Columns conflict only inside their table. Definition-owned tables, explicit identity sequences, enums, and table row types use their applicable PostgreSQL namespaces. Equal unqualified names conflict. Equal names in one explicit schema conflict. An unqualified name and a qualified name do not conflict because definition has no `search_path`. External custom types are not owned assets. PostgreSQL remains responsible for conflicts with existing database objects.
+
+#### Resolution assets and failures
+
+The adapter resolution exposes tables by Record key, columns by field key, and enums in first-use order. Each column includes its exact name and reference, resolved nullability, a discriminated direct, array, enum, or custom type, its default or generated expression, identity metadata, and encode/decode functions. Adapter authors switch exhaustively on the discriminant and do not parse SQL type text.
+
+Metadata and type helper constructors preserve literal inference, snapshot options, and return immutable values. They throw `TypeError` immediately for malformed constructor arguments, invalid atomic option types or limits, invalid local names, and incompatible opaque formats. They never inspect Record field values. They do not check inherited metadata, precedence, cross-property conflicts, Schema compatibility, catalog collisions, or PostgreSQL namespaces.
+
+Each runtime or definition failure has one owner:
+
+- helper authoring failures use immediate `TypeError`;
+- effective metadata and catalog failures use aggregated `SqlDefinitionError`;
+- write-side operation and Select Schema failures are owned by the Record parser symbols and use `StoreValidationError`;
+- direct PostgreSQL encoding syntax, JSON-safety, or range failures for caller-supplied values use `StoreValidationError`;
+- custom encoder throws and invalid encoded scalars use `StoreAdapterContractViolation` with `"invalid-column-encoding"`; and
+- direct or custom decode failures, non-JSON decoded values, and read-side Select Schema rejections use `StoreAdapterContractViolation` with `"invalid-selected-record"`.
+
+`resolvePostgresRecords()` aggregates effective-catalog failures in one `SqlDefinitionError` and reuses the database-neutral issue codes:
+
+- names use `invalid-name`;
+- owned-asset collisions use `duplicate-name`;
+- missing storage evidence uses `column-type-required`;
+- invalid helper options, enum values, custom names, or converters use `invalid-column-type`;
+- defaults use `invalid-column-default`;
+- identity, generation, nullability, and other PostgreSQL option conflicts use `invalid-database-options`; and
+- composition uses the existing contribution and override codes.
+
+Issues point to the winning `records` or `overrides` source. A conflict points to the later or higher-precedence setting and names the other source in its message. A duplicate issue belongs to the later asset. Order follows Record declaration, table metadata, field declaration, a fixed rule order, and asset first use. Checks that depend on one invalid prerequisite are skipped; every independent check continues.
+
+Preserve the original converter failure as `cause` and include Collection, operation, and field. Converter failures are contract defects, not caller validation or database I/O errors.
+
+PostgreSQL metadata, column types, enums, Statements, and resolutions use opaque format identity instead of module-local `instanceof`. Compatible `@commissary/store` package copies interoperate. Incompatible formats and caller-made lookalikes fail. Freeze package-owned objects, arrays, assets, and issue lists; keep Schema objects and converter functions by reference.
 
 ### SQL Statements
 
@@ -729,17 +1066,18 @@ Test controls never appear on production Store values.
 
 ## Data Flow
 
-### SQL definition
+### SQL and database Record definition
 
 ```txt
-Record contributions + host overrides
-  -> compose one effective Record catalog
-  -> check contributor compatibility
-  -> choose active database metadata
-  -> use explicit portable metadata or Select output reflection
-  -> resolve final physical names and conflicts
-  -> freeze resolved definition assets
-  -> return database-specific assets + .records references
+Integration-authored lower-tier Records
+  -> SqlRecord.define with sql.table/column and optional pg.table/column
+  -> concrete host adapter calls resolvePostgresRecords with records + overrides
+  -> resolver composes one effective Record catalog
+  -> resolver checks contributor compatibility
+  -> resolver chooses active PostgreSQL metadata
+  -> resolver resolves names, types, generated behavior, assets, and conflicts
+  -> freeze PostgreSQL resolution assets + .records references
+  -> concrete adapter maps the plan into its ORM or driver values
 ```
 
 No database I/O occurs in this flow.
@@ -791,13 +1129,16 @@ A strict TypeScript prototype also proved:
 - resolved Record reference composition; and
 - `execute` in a transaction view without nested `transaction`.
 
-**Verdict**: The SQL Store tier is implementation-ready. Database-specific metadata and concrete adapter interfaces remain behind later database-tier and Drizzle-tier gates.
+**Verdict**: The portable SQL Store tier and Drizzle-independent PostgreSQL Record specialization are implementation-ready. Concrete adapter interfaces and runtime bindings remain behind the later Drizzle-tier gates.
 
 ## Files for Implementation
 
 ### Add
 
 - `packages/store/src/sql-record.ts` — definitions, portable column types, literals, reflection, issues, and references.
+- `packages/store/src/postgres-record.ts` — `pg` metadata and column type constructors.
+- `packages/store/src/postgres-adapter.ts` — PostgreSQL Record resolver and readonly adapter assets.
+- PostgreSQL runtime and compile-time tests beside their owning modules.
 - `packages/store/src/sql-statement.ts` — opaque Statement values and `sql` helpers.
 - `packages/store/src/sql-store.ts` — `SqlStore`, results, and SQL errors.
 - `packages/store/src/sql-adapter.ts` — Statement compiler.
@@ -807,14 +1148,14 @@ A strict TypeScript prototype also proved:
 
 ### Change
 
-- `packages/store/package.json` — export `./sql-adapter` and `./transaction-adapter`.
-- `packages/store/src/index.ts` — export caller-facing SQL values and types.
+- `packages/store/package.json` — export `./sql-adapter`, `./postgres-adapter`, and `./transaction-adapter`.
+- `packages/store/src/index.ts` — export caller-facing SQL and PostgreSQL metadata values and types.
 - `packages/store/src/conformance.ts` — export the three shared SQL groups.
 - `packages/store/src/record.ts` — store effective Select outputs after create and update normalization.
 - `packages/store/src/store.ts` — keep transaction capability typing and use the strengthened callback contract.
-- `packages/store/src/store-errors.ts` — add SQL and transaction-view errors and violations.
-- `packages/core` Record definitions — publish explicit portable SQL metadata without importing an ORM.
-- Every concrete SQL adapter — run the applicable shared conformance groups.
+- `packages/store/src/store-errors.ts` — add SQL and transaction-view errors plus `invalid-column-encoding`.
+- `packages/core` Record definitions — publish explicit portable and approved PostgreSQL metadata without importing an ORM.
+- Every concrete SQL adapter — run the applicable shared conformance groups and use the matching database Record resolver.
 
 No implementation keeps the old create/update storage path, host-record merge alias, or weaker transaction callback behavior.
 
@@ -822,12 +1163,14 @@ No implementation keeps the old create/update storage path, host-record merge al
 
 1. Cut create and update storage over to effective Select outputs.
 2. Add Store-neutral contributions, overrides, and definition helpers.
-3. Add SQL Record types, portable storage values, reflection, errors, and references.
+3. Add SQL Record types, `sql.table()` / `sql.column()`, portable storage values, reflection, errors, and references.
 4. Add the Statement algebra and compile-time inference tests.
 5. Add the Statement compiler and SQL errors.
 6. Add the transaction callback runner and transaction-view errors.
 7. Add SQL Store and combined transaction conformance suites.
-8. Add explicit Core SQL metadata after the database-specific metadata tickets settle their active option shapes.
+8. Add `pg` metadata, direct and custom column types, enum assets, and option validation.
+9. Add the PostgreSQL adapter resolver, resolution assets, failure aggregation, and compile-time tests.
+10. Add explicit Core SQL and PostgreSQL metadata.
 
 Each step must keep the package root plain JavaScript and native Promise based. Effect can remain an internal implementation tool.
 
@@ -843,8 +1186,6 @@ Do not define these capabilities in this tier:
 - Batch Store;
 - ordered multiple results;
 - database-generated value recovery;
-- PostgreSQL schema qualification;
-- database-specific identifier limits;
 - indexes and relations; and
 - migration execution or schema diffing.
 

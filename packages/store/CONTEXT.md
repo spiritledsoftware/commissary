@@ -34,6 +34,22 @@ _Avoid_: Original contributed definition, mutable merge result, adapter-specific
 A Record Definition that also states portable and optional database-specific table and column storage intent. It remains a valid base Record Definition, and a Store without SQL capability ignores the wider intent. Database-specific Record refinements remain definition seams even though database identity does not create a runtime Store tier.
 _Avoid_: SQL companion schema, ORM table, database row, separate migration model
 
+**SQL Metadata Helper**:
+An optional immutable constructor, such as `sql.table()` or `sql.column()`, that gives integration authors typed portable database metadata without a second Record Definition.
+_Avoid_: Required wrapper, second definition factory, ORM table builder
+
+**PostgreSQL Record Refinement**:
+The `pg.table()` and `pg.column()` metadata inside one SQL Record Definition. An integration owns this metadata, and the host gives the Record to its concrete PostgreSQL adapter.
+_Avoid_: `PostgresRecord`, `PostgresSql` definition factory, Drizzle type, host-authored schema copy
+
+**PostgreSQL Column Type**:
+A direct, enum, array, or custom PostgreSQL storage type with a JSON-safe selected value contract and synchronous scalar conversion rules.
+_Avoid_: Driver value leak, ORM column type, implicit lossy number conversion
+
+**PostgreSQL Record Resolution**:
+The synchronous adapter-facing step that applies effective definitions, validates PostgreSQL metadata, and produces table, column, reference, and enum assets without database I/O or DDL.
+_Avoid_: Migration execution, database introspection, host-facing Store tier, ORM schema
+
 **Collection Catalog**:
 The complete effective Core and Custom Record definitions available through the host Store's `collections` map.
 _Avoid_: Collection Map, adapter-private table, subset of Core state, all physical storage
