@@ -862,7 +862,7 @@ Signed direct integer ranges are:
 
 Unsigned forms start at zero and end at 255, 65,535, 16,777,215, 4,294,967,295, and 18,446,744,073,709,551,615, respectively. `bigint` and `serial` use canonical base-10 text with no leading plus, redundant leading zero, whitespace, exponent, or negative zero. `serial` rejects zero on both write and read.
 
-`decimal` accepts fixed-point text only. It does not accept an exponent or whitespace. Selected decimal text has no redundant integer zeros and contains exactly the effective scale digits. `float`, `double`, and `real` accept only finite numbers. Stored negative zero decodes as zero. MySQL can apply its documented decimal scale and approximate-number precision conversion. The adapter decodes the stored result rather than echoing the input.
+`decimal` accepts fixed-point text only. It does not accept an exponent or whitespace. Selected decimal text has no redundant integer zeros and contains exactly the effective scale digits. `float`, `double`, and `real` accept only finite numbers. Stored negative zero decodes as zero. `unsigned` decimal, float, and double values reject negative numbers without extending the corresponding signed upper range. MySQL can apply its documented decimal scale and approximate-number precision conversion. The adapter decodes the stored result rather than echoing the input.
 
 Direct boolean writes encode `false` as zero and `true` as one. Reads accept a driver-independent boolean or numeric zero or one. Another stored value is an invalid selected Record, not implicit truthiness.
 
@@ -946,7 +946,7 @@ Prohibited writes and invalid direct values use `StoreValidationError` with Coll
 
 #### Names, precedence, and collisions
 
-MySQL database, table, and column names are separate values. Never split a dotted string. Adapters quote every part and preserve exact text. Names must be nonempty, NUL-free, and no longer than 64 Unicode code points. Reject rather than rely on host filesystem or `lower_case_table_names` behavior.
+MySQL database, table, and column names are separate values. Never split a dotted string. Adapters quote every part and preserve exact text. Names must be nonempty, NUL-free, contain only Basic Multilingual Plane code points, not end with U+0020 SPACE, and contain no more than 64 Unicode code points. Reject rather than rely on host filesystem or `lower_case_table_names` behavior.
 
 Collision checks use locale-independent Unicode default case folding without Unicode normalization. Within one effective catalog, an explicit database spelling must be stable: two spellings that differ but fold equally conflict. Columns conflict only inside their table. Equal unqualified table names conflict. Equal table names in one explicit database conflict. An unqualified table and an explicitly qualified table do not conflict because definition has no active database. Inline enum values and custom type Statements are not identifier assets.
 
@@ -956,12 +956,12 @@ Active MySQL metadata can override portable `name`, `type`, `default`, and `notN
 
 The adapter resolution exposes tables by Record key and columns by field key. Each column includes its exact name and reference, resolved nullability, a direct, enum, or custom type discriminant, physical option snapshots, its default or generation data, automatic increment and update data, and synchronous encode and decode functions. Adapter authors switch exhaustively on direct helper names and do not parse generated SQL type text. Custom columns retain their type Statement.
 
-Metadata and type helper constructors preserve literal inference, snapshot options, and return immutable values. They throw `TypeError` immediately for malformed constructor arguments, invalid atomic option types or limits, invalid local names or enum values, parameterized custom type structure, and incompatible opaque formats. They never inspect Record field values. They do not check inherited metadata, precedence, cross-property conflicts, Schema compatibility, catalog collisions, or MySQL namespaces.
+Metadata and type helper constructors preserve literal inference, snapshot options, and return immutable values. They throw `TypeError` immediately only when malformed values are supplied as `mysql.*` helper invocation arguments, including invalid atomic option types or limits, invalid local names or enum values, parameterized custom type structure, and incompatible opaque formats. They never inspect Record field values. Plain structural metadata does not pass through constructor validation. The resolver checks its effective values together with inherited metadata, precedence, cross-property conflicts, Schema compatibility, catalog collisions, and MySQL namespaces.
 
 Each runtime or definition failure has one owner:
 
-- helper authoring failures use immediate `TypeError`;
-- effective metadata and catalog failures use aggregated `SqlDefinitionError`;
+- invalid `mysql.*` helper invocations use immediate `TypeError`;
+- malformed plain structural metadata and all other effective metadata or catalog failures use aggregated `SqlDefinitionError`;
 - write-side operation and Select Schema failures are owned by the Record parser symbols and use `StoreValidationError`;
 - direct MySQL encoding syntax, JSON-safety, length, or range failures for caller-supplied values use `StoreValidationError`;
 - custom encoder throws and invalid encoded values use `StoreAdapterContractViolation` with `"invalid-column-encoding"`; and
@@ -972,12 +972,19 @@ Each runtime or definition failure has one owner:
 - names use `invalid-name`;
 - catalog collisions use `duplicate-name`;
 - missing storage evidence uses `column-type-required`;
-- invalid helper options, enum values, custom structure, or converters use `invalid-column-type`;
+- invalid effective type options, enum values, custom structure, or converters use `invalid-column-type`;
 - defaults use `invalid-column-default`;
 - automatic increment, generation, automatic update, nullability, and other MySQL option conflicts use `invalid-database-options`; and
 - composition uses the existing contribution and override codes.
 
-Issues point to the winning `records` or `overrides` source. A conflict points to the later or higher-precedence setting and names the other source in its message. A duplicate issue belongs to the later name. Order follows Record declaration, table metadata, field declaration, and a fixed rule order. Checks that depend on one invalid prerequisite are skipped; every independent check continues.
+Issues point to the winning `records` or `overrides` source. A conflict points to the later or higher-precedence setting and names the other source in its message. A duplicate issue belongs to the later name. Composition and override issues precede effective-catalog checks. Effective checks then follow Record declaration and this fixed order:
+
+1. table database, table name, and table-format validity;
+2. for each field in declaration order: column name, opaque type identity, storage evidence, Select compatibility, physical type options or enum or custom structure, default, nullability, automatic increment, generation, automatic update, and cross-property compatibility;
+3. table-wide automatic-increment count and column-name collisions; and
+4. database-spelling and table-name collisions across Records.
+
+When two owned names or references enter the same step, first use controls order and the issue belongs to the later one. Checks that depend on one invalid prerequisite are skipped; every independent check continues.
 
 Preserve the original converter failure as `cause` and include Collection, operation, and field. Converter failures are contract defects, not caller validation or database I/O errors.
 
