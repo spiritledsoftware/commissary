@@ -1,0 +1,2074 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SQLite Record specialization contract prototype</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --canvas: #eef1f5;
+        --surface: #ffffff;
+        --surface-muted: #f7f8fa;
+        --ink: #172033;
+        --muted: #576176;
+        --line: #ccd3df;
+        --line-strong: #9ca8ba;
+        --accent: #2453a6;
+        --accent-soft: #e8effc;
+        --good: #17643a;
+        --good-soft: #e6f4eb;
+        --warn: #8a4316;
+        --warn-soft: #fff0e5;
+        --bad: #a02f3c;
+        --bad-soft: #fbe9eb;
+        --code: #1d2940;
+        --focus: #f1b832;
+        --shadow: 0 18px 44px rgb(31 43 65 / 10%);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        background: var(--canvas);
+        scrollbar-color: var(--line-strong) var(--canvas);
+      }
+
+      body {
+        min-width: 320px;
+        margin: 0;
+        background: var(--canvas);
+        color: var(--ink);
+        font-family:
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+        line-height: 1.5;
+      }
+
+      ::selection {
+        background: var(--accent);
+        color: #ffffff;
+      }
+
+      button {
+        font: inherit;
+      }
+
+      button:focus-visible,
+      [role="tab"]:focus-visible {
+        outline: 3px solid var(--focus);
+        outline-offset: 2px;
+      }
+
+      code,
+      .mono {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .shell {
+        width: min(1240px, calc(100% - 32px));
+        margin: 0 auto;
+        padding: 42px 0 72px;
+      }
+
+      .masthead {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 28px;
+        align-items: start;
+        padding-bottom: 30px;
+        border-bottom: 1px solid var(--line-strong);
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin-top: 0;
+      }
+
+      h1 {
+        max-width: 900px;
+        margin-bottom: 15px;
+        font-size: clamp(2.15rem, 5.5vw, 4.75rem);
+        font-weight: 730;
+        letter-spacing: -0.035em;
+        line-height: 0.98;
+        text-wrap: balance;
+      }
+
+      .question {
+        max-width: 74ch;
+        margin-bottom: 0;
+        color: var(--muted);
+        font-size: 1.04rem;
+      }
+
+      .prototype-label {
+        padding: 8px 12px;
+        border: 1px solid var(--bad);
+        border-radius: 999px;
+        color: var(--bad);
+        font-size: 0.72rem;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+
+      .section {
+        margin-top: 36px;
+      }
+
+      .section-heading {
+        display: flex;
+        justify-content: space-between;
+        gap: 22px;
+        align-items: end;
+        margin-bottom: 14px;
+      }
+
+      .section-heading h2 {
+        margin-bottom: 0;
+        font-size: 1.16rem;
+        letter-spacing: -0.01em;
+      }
+
+      .section-heading p {
+        max-width: 62ch;
+        margin-bottom: 0;
+        color: var(--muted);
+        font-size: 0.88rem;
+        text-align: right;
+      }
+
+      .controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 9px;
+      }
+
+      .action,
+      .tab,
+      .start-button,
+      .step-button {
+        min-height: 44px;
+        border: 1px solid var(--line-strong);
+        border-radius: 9px;
+        background: var(--surface);
+        color: var(--ink);
+        cursor: pointer;
+        font-weight: 720;
+      }
+
+      .action {
+        padding: 9px 14px;
+      }
+
+      .action:hover,
+      .start-button:hover,
+      .step-button:hover:not(:disabled) {
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+
+      .action.primary,
+      .start-button,
+      .step-button.current {
+        border-color: var(--accent);
+        background: var(--accent);
+        color: #ffffff;
+      }
+
+      .action.danger {
+        border-color: #c98d94;
+        color: var(--bad);
+      }
+
+      .workspace {
+        display: grid;
+        gap: 18px;
+        align-items: start;
+      }
+
+      .panel {
+        min-width: 0;
+        padding: 22px;
+        border-radius: 14px;
+        background: var(--surface);
+        box-shadow: var(--shadow);
+      }
+
+      .panel h2 {
+        margin-bottom: 5px;
+        font-size: 1.02rem;
+      }
+
+      .panel-note {
+        margin-bottom: 18px;
+        color: var(--muted);
+        font-size: 0.84rem;
+      }
+
+      .side-stack {
+        display: grid;
+        grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.1fr) minmax(0, 1fr);
+        gap: 18px;
+        align-items: start;
+      }
+
+      .status-strip {
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        align-items: center;
+        margin-bottom: 18px;
+        padding: 13px 14px;
+        border-radius: 10px;
+        background: var(--accent-soft);
+      }
+
+      .status-strip.good {
+        background: var(--good-soft);
+      }
+
+      .status-strip.bad {
+        background: var(--bad-soft);
+      }
+
+      .status-copy {
+        min-width: 0;
+      }
+
+      .status-copy strong,
+      .status-copy span {
+        display: block;
+      }
+
+      .status-copy span {
+        margin-top: 2px;
+        color: var(--muted);
+        font-size: 0.8rem;
+      }
+
+      .status-token {
+        flex: 0 0 auto;
+        padding: 5px 8px;
+        border-radius: 999px;
+        background: rgb(255 255 255 / 75%);
+        font-size: 0.72rem;
+        font-weight: 800;
+      }
+
+      .fact-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 9px;
+        margin-bottom: 20px;
+      }
+
+      .fact {
+        min-width: 0;
+        padding: 11px;
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        background: var(--surface-muted);
+      }
+
+      .fact-label {
+        display: block;
+        margin-bottom: 3px;
+        color: var(--muted);
+        font-size: 0.68rem;
+        font-weight: 800;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+
+      .fact-value {
+        display: block;
+        font-size: 0.84rem;
+        font-weight: 720;
+        overflow-wrap: anywhere;
+      }
+
+      .table-wrap {
+        overflow-x: auto;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.83rem;
+      }
+
+      th,
+      td {
+        padding: 10px 11px;
+        border-bottom: 1px solid var(--line);
+        text-align: left;
+        vertical-align: top;
+      }
+
+      th {
+        background: var(--surface-muted);
+        color: var(--muted);
+        font-size: 0.68rem;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+
+      tr:last-child td {
+        border-bottom: 0;
+      }
+
+      .field-flags,
+      .helper-contracts {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px;
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        min-height: 23px;
+        padding: 3px 7px;
+        border-radius: 999px;
+        background: #e7eaf0;
+        color: #465167;
+        font-size: 0.68rem;
+        font-weight: 800;
+      }
+
+      .badge.accent {
+        background: var(--accent-soft);
+        color: var(--accent);
+      }
+
+      .badge.good {
+        background: var(--good-soft);
+        color: var(--good);
+      }
+
+      .list {
+        display: grid;
+        gap: 9px;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .issue,
+      .plan-item,
+      .event {
+        padding: 11px 12px;
+        border: 1px solid var(--line);
+        border-radius: 9px;
+      }
+
+      .issue {
+        border-color: #e4bac0;
+        background: var(--bad-soft);
+      }
+
+      .issue-code,
+      .plan-source {
+        display: block;
+        margin-bottom: 3px;
+        color: var(--bad);
+        font-size: 0.68rem;
+        font-weight: 800;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+      }
+
+      .plan-source {
+        color: var(--accent);
+      }
+
+      .issue-path,
+      .event-meta {
+        display: block;
+        margin-top: 5px;
+        color: var(--muted);
+        font-size: 0.73rem;
+      }
+
+      .empty-state {
+        margin: 0;
+        padding: 15px;
+        border: 1px dashed var(--line-strong);
+        border-radius: 9px;
+        color: var(--muted);
+        font-size: 0.84rem;
+      }
+
+      .subheading {
+        margin: 22px 0 9px;
+        font-size: 0.8rem;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+
+      .tabs {
+        display: flex;
+        gap: 4px;
+        overflow-x: auto;
+        padding: 4px;
+        border-radius: 11px;
+        background: #dfe4ec;
+      }
+
+      .tab {
+        flex: 0 0 auto;
+        padding: 8px 13px;
+        border-color: transparent;
+        background: transparent;
+      }
+
+      .tab[aria-selected="true"] {
+        background: var(--surface);
+        color: var(--accent);
+        box-shadow: 0 2px 8px rgb(31 43 65 / 12%);
+      }
+
+      .walkthrough {
+        margin-top: 12px;
+        padding: 22px;
+        border-radius: 14px;
+        background: var(--surface);
+        box-shadow: var(--shadow);
+      }
+
+      .walkthrough-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 24px;
+        align-items: start;
+      }
+
+      .walkthrough-head h3 {
+        margin-bottom: 6px;
+        font-size: 1.08rem;
+      }
+
+      .walkthrough-head p {
+        max-width: 72ch;
+        margin-bottom: 0;
+        color: var(--muted);
+        font-size: 0.87rem;
+      }
+
+      .start-button {
+        flex: 0 0 auto;
+        padding: 9px 14px;
+      }
+
+      .steps {
+        display: grid;
+        gap: 9px;
+        margin: 18px 0 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .step {
+        display: grid;
+        grid-template-columns: minmax(170px, 0.45fr) minmax(0, 1fr);
+        gap: 12px;
+        align-items: center;
+        padding: 10px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+      }
+
+      .step-button {
+        width: 100%;
+        padding: 8px 11px;
+      }
+
+      .step-button:disabled {
+        cursor: not-allowed;
+        opacity: 0.48;
+      }
+
+      .step-note {
+        color: var(--muted);
+        font-size: 0.82rem;
+      }
+
+      .contract-panel {
+        padding: 22px;
+        border-radius: 14px;
+        background: var(--code);
+        color: #f3f6fb;
+      }
+
+      .contract-panel h2 {
+        margin-bottom: 6px;
+      }
+
+      .contract-panel > p {
+        max-width: 72ch;
+        color: #c7d0df;
+      }
+
+      .helper-contracts {
+        margin-top: 17px;
+      }
+
+      .helper {
+        min-width: min(100%, 220px);
+        flex: 1 1 220px;
+        padding: 12px;
+        border: 1px solid #475570;
+        border-radius: 9px;
+        background: #243149;
+      }
+
+      .helper code,
+      .helper span {
+        display: block;
+      }
+
+      .helper code {
+        color: #ffffff;
+        font-weight: 800;
+      }
+
+      .helper span {
+        margin-top: 4px;
+        color: #bec9db;
+        font-size: 0.76rem;
+      }
+
+      @media (max-width: 900px) {
+        .side-stack {
+          grid-template-columns: 1fr;
+        }
+
+        .fact-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+
+      @media (max-width: 660px) {
+        .shell {
+          width: min(100% - 22px, 1240px);
+          padding-top: 24px;
+        }
+
+        .masthead,
+        .section-heading,
+        .walkthrough-head {
+          display: block;
+        }
+
+        .prototype-label {
+          display: inline-block;
+          margin-top: 20px;
+        }
+
+        .section-heading p {
+          margin-top: 6px;
+          text-align: left;
+        }
+
+        .controls {
+          display: grid;
+          grid-template-columns: 1fr;
+        }
+
+        .action {
+          width: 100%;
+        }
+
+        .panel,
+        .walkthrough,
+        .contract-panel {
+          padding: 16px;
+        }
+
+        .start-button {
+          width: 100%;
+          margin-top: 16px;
+        }
+
+        .step {
+          grid-template-columns: 1fr;
+        }
+
+        .table-wrap {
+          overflow: visible;
+        }
+
+        table,
+        tbody,
+        tr,
+        td {
+          display: block;
+          width: 100%;
+        }
+
+        thead {
+          position: absolute;
+          width: 1px;
+          height: 1px;
+          overflow: hidden;
+          clip-path: inset(50%);
+          white-space: nowrap;
+        }
+
+        tr {
+          padding: 9px 0;
+          border-bottom: 1px solid var(--line);
+        }
+
+        tr:last-child {
+          border-bottom: 0;
+        }
+
+        td {
+          display: grid;
+          grid-template-columns: minmax(92px, 0.38fr) minmax(0, 1fr);
+          gap: 10px;
+          padding: 5px 10px;
+          border-bottom: 0;
+          overflow-wrap: anywhere;
+        }
+
+        td::before {
+          content: attr(data-label);
+          color: var(--muted);
+          font-size: 0.66rem;
+          font-weight: 800;
+          letter-spacing: 0.05em;
+          text-transform: uppercase;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <!--
+      THROWAWAY PROTOTYPE
+      Question: Does the approved SQLite Record specialization produce one deterministic,
+      Drizzle-independent adapter contract for type refinement, ROWID generation,
+      generated columns, naming, failures, writes, and live-driver compatibility?
+    -->
+    <main class="shell">
+      <header class="masthead">
+        <div>
+          <h1>Resolve one SQLite contract, not a second Store.</h1>
+          <p class="question">
+            This prototype checks whether portable SQL Records and SQLite refinements can resolve
+            into one immutable adapter plan. Use the controls to test ROWID generation, generated
+            writes, names, codecs, error order, and driver safety.
+          </p>
+        </div>
+        <span class="prototype-label">Throwaway prototype</span>
+      </header>
+
+      <section class="section" aria-labelledby="free-play-title">
+        <div class="section-heading">
+          <h2 id="free-play-title">Free play</h2>
+          <p>
+            Actions can run in any order. Each action resolves the complete effective definition
+            again.
+          </p>
+        </div>
+        <div class="controls" id="free-play-controls">
+          <button class="action primary" type="button" data-action="RESET">
+            Reset portable Record
+          </button>
+          <button class="action" type="button" data-action="APPLY_REFINEMENTS">
+            Apply SQLite refinements
+          </button>
+          <button class="action" type="button" data-action="ROWID_ALLOWED">
+            Allow ROWID reuse
+          </button>
+          <button class="action" type="button" data-action="ROWID_FORBIDDEN">
+            Forbid ROWID reuse
+          </button>
+          <button class="action" type="button" data-action="ADD_GENERATED">
+            Add stored generation
+          </button>
+          <button class="action" type="button" data-action="VALID_CREATE">
+            Plan omitted-value create
+          </button>
+          <button class="action" type="button" data-action="EXPLICIT_ROWID_CREATE">
+            Plan explicit ROWID create
+          </button>
+          <button class="action danger" type="button" data-action="GENERATED_WRITE">
+            Supply a generated field
+          </button>
+          <button class="action danger" type="button" data-action="NAME_COLLISION">
+            Create ASCII name collision
+          </button>
+          <button class="action danger" type="button" data-action="STACK_FAILURES">
+            Stack definition failures
+          </button>
+          <button class="action" type="button" data-action="NUMERIC_NUMBER">
+            Use numericNumber()
+          </button>
+          <button class="action danger" type="button" data-action="UNSAFE_DRIVER">
+            Bind unsafe number driver
+          </button>
+          <button class="action" type="button" data-action="SAFE_DRIVER">
+            Restore safe driver
+          </button>
+        </div>
+      </section>
+
+      <section class="section" aria-labelledby="state-title">
+        <div class="section-heading">
+          <h2 id="state-title">Current state</h2>
+          <p id="last-change">The portable Record is ready for resolution.</p>
+        </div>
+
+        <div class="workspace">
+          <article class="panel" aria-labelledby="resolution-title">
+            <div id="resolution-status" class="status-strip" role="status" aria-live="polite"></div>
+            <h2 id="resolution-title">Effective adapter asset</h2>
+            <p class="panel-note">
+              The resolver rebuilds these facts after every contribution or override.
+            </p>
+            <div class="fact-grid" id="resolution-facts"></div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th scope="col">Record field</th>
+                    <th scope="col">SQL column</th>
+                    <th scope="col">Helper</th>
+                    <th scope="col">Storage</th>
+                    <th scope="col">Effective policy</th>
+                  </tr>
+                </thead>
+                <tbody id="resolved-fields"></tbody>
+              </table>
+            </div>
+          </article>
+
+          <div class="side-stack">
+            <article class="panel" aria-labelledby="issues-title">
+              <h2 id="issues-title">Definition and binding failures</h2>
+              <p class="panel-note">
+                Issues stay in contribution, table, field, table-wide, then catalog order.
+              </p>
+              <ol class="list" id="issue-list"></ol>
+            </article>
+
+            <article class="panel" aria-labelledby="write-title">
+              <h2 id="write-title">Write and read-back plan</h2>
+              <p class="panel-note">
+                Omitted values, explicit values, and generated values have different owners.
+              </p>
+              <ul class="list" id="write-plan"></ul>
+            </article>
+
+            <article class="panel" aria-labelledby="events-title">
+              <h2 id="events-title">Recent actions</h2>
+              <p class="panel-note">The state is in memory and resets without persistence.</p>
+              <ol class="list" id="event-list"></ol>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" aria-labelledby="walkthrough-title">
+        <div class="section-heading">
+          <h2 id="walkthrough-title">Guided walkthroughs</h2>
+          <p>Start a walkthrough to reset its state. Press the enabled steps in order.</p>
+        </div>
+        <div
+          class="tabs"
+          id="scenario-tabs"
+          role="tablist"
+          aria-label="SQLite contract walkthroughs"
+        ></div>
+        <div id="scenario-panel"></div>
+      </section>
+
+      <section class="section contract-panel" aria-labelledby="helpers-title">
+        <h2 id="helpers-title">Named helper contracts</h2>
+        <p>
+          Each helper has one application value and one storage contract. There are no
+          <code>{ mode }</code> options, aliases, Drizzle values, or inferred driver behavior.
+        </p>
+        <div class="helper-contracts" id="helper-contracts"></div>
+      </section>
+    </main>
+
+    <script type="module">
+      const SqlitePrototypeModel = (() => {
+        const TYPE_FACTS = Object.freeze({
+          integer: Object.freeze({
+            helper: "sqlite.integer()",
+            storage: "INTEGER",
+            application: "safe integer number",
+          }),
+          boolean: Object.freeze({
+            helper: "sqlite.boolean()",
+            storage: "INTEGER",
+            application: "boolean as 0 or 1",
+          }),
+          timestampSeconds: Object.freeze({
+            helper: "sqlite.timestampSeconds()",
+            storage: "INTEGER",
+            application: "UTC whole-second string",
+          }),
+          timestampMilliseconds: Object.freeze({
+            helper: "sqlite.timestampMilliseconds()",
+            storage: "INTEGER",
+            application: "UTC whole-millisecond string",
+          }),
+          real: Object.freeze({
+            helper: "sqlite.real()",
+            storage: "REAL",
+            application: "finite number",
+          }),
+          text: Object.freeze({
+            helper: "sqlite.text()",
+            storage: "TEXT",
+            application: "NUL-free string",
+          }),
+          json: Object.freeze({
+            helper: "sqlite.json()",
+            storage: "TEXT",
+            application: "JsonValue",
+          }),
+          blob: Object.freeze({
+            helper: "sqlite.blob()",
+            storage: "BLOB",
+            application: "padded base64 string",
+          }),
+          jsonBlob: Object.freeze({
+            helper: "sqlite.jsonBlob()",
+            storage: "BLOB",
+            application: "JsonValue",
+          }),
+          bigintBlob: Object.freeze({
+            helper: "sqlite.bigintBlob()",
+            storage: "BLOB",
+            application: "canonical decimal string",
+          }),
+          numeric: Object.freeze({
+            helper: "sqlite.numeric()",
+            storage: "NUMERIC",
+            application: "canonical numeric string",
+          }),
+          numericNumber: Object.freeze({
+            helper: "sqlite.numericNumber()",
+            storage: "NUMERIC",
+            application: "finite number",
+          }),
+          custom: Object.freeze({
+            helper: "sqlite.custom(options)",
+            storage: "declared SQL type",
+            application: "declared JsonValue",
+          }),
+        });
+
+        const PORTABLE_TYPES = Object.freeze({
+          text: "text",
+          number: "real",
+          integer: "integer",
+          boolean: "boolean",
+          json: "json",
+        });
+
+        const clone = (value) => structuredClone(value);
+
+        const makeInitialState = () => ({
+          sequence: 1,
+          phase: "Portable definition",
+          table: {
+            record: "LedgerEntry",
+            portableName: "ledger_entries",
+            sqliteName: null,
+          },
+          fields: [
+            {
+              field: "id",
+              portableName: "id",
+              sqliteName: null,
+              portableType: "integer",
+              sqliteType: null,
+              selectKind: "number",
+              notNull: true,
+              default: null,
+              rowid: null,
+              generated: null,
+            },
+            {
+              field: "amount",
+              portableName: "amount",
+              sqliteName: null,
+              portableType: "number",
+              sqliteType: null,
+              selectKind: "number",
+              notNull: true,
+              default: null,
+              rowid: null,
+              generated: null,
+            },
+            {
+              field: "details",
+              portableName: "details",
+              sqliteName: null,
+              portableType: "json",
+              sqliteType: null,
+              selectKind: "json",
+              notNull: true,
+              default: null,
+              rowid: null,
+              generated: null,
+            },
+            {
+              field: "note",
+              portableName: "note",
+              sqliteName: null,
+              portableType: "text",
+              sqliteType: null,
+              selectKind: "string",
+              notNull: false,
+              default: null,
+              rowid: null,
+              generated: null,
+            },
+            {
+              field: "createdAt",
+              portableName: "created_at",
+              sqliteName: null,
+              portableType: "text",
+              sqliteType: null,
+              selectKind: "string",
+              notNull: true,
+              default: "CURRENT_TIMESTAMP",
+              rowid: null,
+              generated: null,
+            },
+          ],
+          duplicateTable: false,
+          operation: null,
+          binding: {
+            sqliteVersion: "3.45.3",
+            preservesNumericNumber: true,
+          },
+          events: [
+            {
+              sequence: 1,
+              label: "Loaded the portable LedgerEntry Record",
+              detail: "No SQLite override is active.",
+            },
+          ],
+        });
+
+        const fieldByName = (state, name) => state.fields.find((field) => field.field === name);
+
+        const recordEvent = (state, label, detail) => {
+          state.sequence += 1;
+          state.events = [{ sequence: state.sequence, label, detail }, ...state.events].slice(0, 5);
+        };
+
+        const reduce = (current, action) => {
+          if (action.type === "RESET") {
+            return makeInitialState();
+          }
+
+          const state = clone(current);
+
+          switch (action.type) {
+            case "APPLY_REFINEMENTS": {
+              state.phase = "SQLite refinement active";
+              state.table.sqliteName = "ledger_entry";
+              fieldByName(state, "details").sqliteType = "jsonBlob";
+              fieldByName(state, "createdAt").sqliteType = "timestampMilliseconds";
+              recordEvent(
+                state,
+                "Applied SQLite refinements",
+                "The table name, JSON storage, and timestamp contract now use SQLite metadata.",
+              );
+              break;
+            }
+            case "ROWID_ALLOWED": {
+              const id = fieldByName(state, "id");
+              id.sqliteType = "integer";
+              id.rowid = { reuse: "allowed" };
+              id.default = null;
+              id.generated = null;
+              recordEvent(
+                state,
+                "Enabled ROWID generation",
+                "Omitted identifiers are generated and committed identifiers can be reused later.",
+              );
+              break;
+            }
+            case "ROWID_FORBIDDEN": {
+              const id = fieldByName(state, "id");
+              id.sqliteType = "integer";
+              id.rowid = { reuse: "forbidden" };
+              id.default = null;
+              id.generated = null;
+              recordEvent(
+                state,
+                "Enabled AUTOINCREMENT policy",
+                "Committed ROWIDs are not reused. Gaps are still possible.",
+              );
+              break;
+            }
+            case "ADD_GENERATED": {
+              if (!fieldByName(state, "normalizedNote")) {
+                state.fields.push({
+                  field: "normalizedNote",
+                  portableName: "normalized_note",
+                  sqliteName: null,
+                  portableType: null,
+                  sqliteType: "text",
+                  selectKind: "string",
+                  notNull: false,
+                  default: null,
+                  rowid: null,
+                  generated: {
+                    expression: "lower(trim(note))",
+                    mode: "stored",
+                  },
+                });
+              }
+              recordEvent(
+                state,
+                "Added a stored generated column",
+                "The adapter accepts omission but rejects an explicit create or update value.",
+              );
+              break;
+            }
+            case "VALID_CREATE": {
+              const id = fieldByName(state, "id");
+              state.operation = {
+                kind: "create",
+                values: {
+                  ...(id.rowid ? {} : { id: 11 }),
+                  amount: 12.5,
+                  details: { source: "prototype", paid: true },
+                  note: " Paid ",
+                  createdAt: "2026-08-06T15:04:05.123Z",
+                },
+              };
+              recordEvent(
+                state,
+                "Planned a create with omitted owned values",
+                "Database-owned ROWID, defaults, and generated columns are omitted; required host values are supplied.",
+              );
+              break;
+            }
+            case "EXPLICIT_ROWID_CREATE": {
+              state.operation = {
+                kind: "create",
+                values: {
+                  id: -7,
+                  amount: 12.5,
+                  details: { source: "prototype", paid: true },
+                  note: " Paid ",
+                  createdAt: "2026-08-06T15:04:05.123Z",
+                },
+              };
+              recordEvent(
+                state,
+                "Planned a create with explicit ROWID",
+                "A safe integer is accepted, including a negative value.",
+              );
+              break;
+            }
+            case "GENERATED_WRITE": {
+              if (!fieldByName(state, "normalizedNote")) {
+                state.fields.push({
+                  field: "normalizedNote",
+                  portableName: "normalized_note",
+                  sqliteName: null,
+                  portableType: null,
+                  sqliteType: "text",
+                  selectKind: "string",
+                  notNull: false,
+                  default: null,
+                  rowid: null,
+                  generated: {
+                    expression: "lower(trim(note))",
+                    mode: "stored",
+                  },
+                });
+              }
+              const id = fieldByName(state, "id");
+              state.operation = {
+                kind: "create",
+                values: {
+                  ...(id.rowid ? {} : { id: 11 }),
+                  amount: 12.5,
+                  details: { source: "prototype" },
+                  note: " Paid ",
+                  createdAt: "2026-08-06T15:04:05.123Z",
+                  normalizedNote: "paid",
+                },
+              };
+              recordEvent(
+                state,
+                "Supplied a generated field",
+                "The write planner must return StoreValidationError before database work.",
+              );
+              break;
+            }
+            case "NAME_COLLISION": {
+              if (!fieldByName(state, "noteAlias")) {
+                state.fields.push({
+                  field: "noteAlias",
+                  portableName: "NOTE",
+                  sqliteName: null,
+                  portableType: "text",
+                  sqliteType: null,
+                  selectKind: "string",
+                  notNull: false,
+                  default: null,
+                  rowid: null,
+                  generated: null,
+                });
+              }
+              recordEvent(
+                state,
+                "Created an ASCII name collision",
+                "SQLite compares note and NOTE as the same identifier.",
+              );
+              break;
+            }
+            case "STACK_FAILURES": {
+              const failed = makeInitialState();
+              failed.phase = "Invalid effective definition";
+              failed.table.sqliteName = "SQLITE_history";
+              const id = fieldByName(failed, "id");
+              id.sqliteType = "text";
+              id.default = 1;
+              id.rowid = { reuse: "allowed" };
+              id.generated = { expression: "42", mode: "virtual" };
+              failed.fields.push({
+                field: "sequence",
+                portableName: "sequence",
+                sqliteName: null,
+                portableType: "integer",
+                sqliteType: "integer",
+                selectKind: "number",
+                notNull: true,
+                default: null,
+                rowid: { reuse: "forbidden" },
+                generated: null,
+              });
+              failed.fields.push({
+                field: "noteAlias",
+                portableName: "NOTE",
+                sqliteName: null,
+                portableType: "text",
+                sqliteType: null,
+                selectKind: "string",
+                notNull: false,
+                default: null,
+                rowid: null,
+                generated: null,
+              });
+              failed.sequence = current.sequence;
+              failed.events = clone(current.events);
+              recordEvent(
+                failed,
+                "Stacked independent definition failures",
+                "The resolver reports every independent problem in stable order.",
+              );
+              return failed;
+            }
+            case "NUMERIC_NUMBER": {
+              fieldByName(state, "amount").sqliteType = "numericNumber";
+              recordEvent(
+                state,
+                "Selected sqlite.numericNumber()",
+                "The resolved asset now requires a driver path that preserves the declared number contract.",
+              );
+              break;
+            }
+            case "UNSAFE_DRIVER": {
+              state.binding.preservesNumericNumber = false;
+              recordEvent(
+                state,
+                "Bound an unsafe number driver",
+                "Definition resolution remains valid, but live adapter binding can fail.",
+              );
+              break;
+            }
+            case "SAFE_DRIVER": {
+              state.binding.preservesNumericNumber = true;
+              recordEvent(
+                state,
+                "Restored the safe driver path",
+                "The driver can preserve every active direct helper contract.",
+              );
+              break;
+            }
+            default:
+              throw new TypeError(`Unknown prototype action: ${action.type}`);
+          }
+
+          return state;
+        };
+
+        const asciiFold = (value) =>
+          value.replace(/[A-Z]/g, (character) => character.toLowerCase());
+        const validName = (value) =>
+          typeof value === "string" && value.length > 0 && !value.includes("\0");
+        const makeIssue = (code, path, message, source = "SqlDefinitionError") => ({
+          code,
+          path,
+          message,
+          source,
+        });
+
+        const selectedKindForType = (type) => {
+          if (["integer", "real", "numericNumber"].includes(type)) return "number";
+          if (["boolean"].includes(type)) return "boolean";
+          if (["json", "jsonBlob"].includes(type)) return "json";
+          return "string";
+        };
+
+        const resolve = (state) => {
+          const issues = [];
+          const tableName = state.table.sqliteName ?? state.table.portableName;
+
+          if (!validName(tableName)) {
+            issues.push(
+              makeIssue(
+                "invalid-name",
+                `${state.table.record}.table.name`,
+                "The effective table name must be nonempty and NUL-free.",
+              ),
+            );
+          } else if (asciiFold(tableName).startsWith("sqlite_")) {
+            issues.push(
+              makeIssue(
+                "invalid-name",
+                `${state.table.record}.table.name`,
+                "Table names beginning with sqlite_ are reserved by SQLite.",
+              ),
+            );
+          }
+
+          const columns = state.fields.map((field) => {
+            const name = field.sqliteName ?? field.portableName;
+            const type = field.sqliteType ?? PORTABLE_TYPES[field.portableType] ?? null;
+            const typeFacts = TYPE_FACTS[type] ?? null;
+            const effectiveNotNull = field.rowid ? true : field.notNull;
+
+            if (!validName(name)) {
+              issues.push(
+                makeIssue(
+                  "invalid-name",
+                  `${state.table.record}.fields.${field.field}.column.name`,
+                  "The effective column name must be nonempty and NUL-free.",
+                ),
+              );
+            }
+
+            if (!type) {
+              issues.push(
+                makeIssue(
+                  "column-type-required",
+                  `${state.table.record}.fields.${field.field}.column.type`,
+                  "No SQLite type, portable SQL type, or reflected Select type supplies storage evidence.",
+                ),
+              );
+            } else if (!typeFacts) {
+              issues.push(
+                makeIssue(
+                  "invalid-column-type",
+                  `${state.table.record}.fields.${field.field}.column.type`,
+                  "The active value is not a compatible package-owned SQLite column type.",
+                ),
+              );
+            } else if (selectedKindForType(type) !== field.selectKind) {
+              issues.push(
+                makeIssue(
+                  "invalid-column-type",
+                  `${state.table.record}.fields.${field.field}.select`,
+                  `The Select Schema output does not match ${typeFacts.helper}.`,
+                ),
+              );
+            }
+
+            if (field.rowid && type !== "integer") {
+              issues.push(
+                makeIssue(
+                  "invalid-database-options",
+                  `${state.table.record}.fields.${field.field}.column.rowid`,
+                  "ROWID generation requires sqlite.integer().",
+                ),
+              );
+            }
+            if (field.rowid && field.default !== null) {
+              issues.push(
+                makeIssue(
+                  "invalid-database-options",
+                  `${state.table.record}.fields.${field.field}.column.rowid`,
+                  "ROWID generation conflicts with a column default.",
+                ),
+              );
+            }
+            if (field.rowid && field.generated !== null) {
+              issues.push(
+                makeIssue(
+                  "invalid-database-options",
+                  `${state.table.record}.fields.${field.field}.column.rowid`,
+                  "ROWID generation conflicts with generated-column metadata.",
+                ),
+              );
+            }
+            if (field.generated && field.default !== null) {
+              issues.push(
+                makeIssue(
+                  "invalid-database-options",
+                  `${state.table.record}.fields.${field.field}.column.generated`,
+                  "A generated column cannot also have a default.",
+                ),
+              );
+            }
+
+            return {
+              field: field.field,
+              name,
+              type,
+              typeFacts,
+              notNull: effectiveNotNull,
+              default: field.default,
+              rowid: field.rowid,
+              generated: field.generated,
+            };
+          });
+
+          const rowidColumns = columns.filter((column) => column.rowid);
+          if (rowidColumns.length > 1) {
+            issues.push(
+              makeIssue(
+                "invalid-database-options",
+                `${state.table.record}.table`,
+                "A SQLite table can have only one ROWID alias.",
+              ),
+            );
+          }
+
+          if (columns.length > 0 && columns.every((column) => column.generated)) {
+            issues.push(
+              makeIssue(
+                "invalid-database-options",
+                `${state.table.record}.table`,
+                "A SQLite table requires at least one non-generated column.",
+              ),
+            );
+          }
+
+          const columnsByFoldedName = new Map();
+          for (const column of columns) {
+            if (!validName(column.name)) continue;
+            const folded = asciiFold(column.name);
+            const prior = columnsByFoldedName.get(folded);
+            if (prior) {
+              issues.push(
+                makeIssue(
+                  "duplicate-name",
+                  `${state.table.record}.fields.${column.field}.column.name`,
+                  `Column ${column.name} collides with ${prior.name} under SQLite ASCII case folding.`,
+                ),
+              );
+            } else {
+              columnsByFoldedName.set(folded, column);
+            }
+          }
+
+          if (state.duplicateTable && validName(tableName)) {
+            issues.push(
+              makeIssue(
+                "duplicate-name",
+                "Catalog.ArchiveEntry.table.name",
+                `Table ${tableName.toUpperCase()} collides with ${tableName}.`,
+              ),
+            );
+          }
+
+          const bindingIssues = [];
+          const [major, minor] = state.binding.sqliteVersion.split(".").map(Number);
+          if (major < 3 || (major === 3 && minor < 45)) {
+            bindingIssues.push(
+              makeIssue(
+                "unsupported-engine",
+                "adapter.binding.sqliteVersion",
+                "The concrete adapter requires SQLite 3.45 or later.",
+                "Adapter binding",
+              ),
+            );
+          }
+          if (
+            columns.some((column) => column.type === "numericNumber") &&
+            !state.binding.preservesNumericNumber
+          ) {
+            bindingIssues.push(
+              makeIssue(
+                "unsupported-driver-contract",
+                "adapter.binding.numericNumber",
+                "The live driver cannot preserve the required numericNumber() contract.",
+                "Adapter binding",
+              ),
+            );
+          }
+
+          const definitionReady = issues.length === 0;
+          const bindingReady = bindingIssues.length === 0;
+          const write = planWrite(columns, state.operation, definitionReady);
+
+          return {
+            table: {
+              record: state.table.record,
+              name: tableName,
+              quotedName: `"${String(tableName).replaceAll('"', '""')}"`,
+            },
+            columns,
+            issues,
+            bindingIssues,
+            write,
+            status: !definitionReady
+              ? "Definition rejected"
+              : !bindingReady
+                ? "Adapter binding rejected"
+                : write.error
+                  ? write.error.source
+                  : "Ready",
+            definitionReady,
+            bindingReady,
+          };
+        };
+
+        const isJsonValue = (value) => {
+          if (value === null || typeof value === "string" || typeof value === "boolean")
+            return true;
+          if (typeof value === "number") return Number.isFinite(value);
+          if (Array.isArray(value)) return value.every(isJsonValue);
+          if (typeof value === "object") {
+            return (
+              Object.getPrototypeOf(value) === Object.prototype &&
+              Object.values(value).every(isJsonValue)
+            );
+          }
+          return false;
+        };
+
+        const encode = (type, value) => {
+          if (value === null) return { ok: true, encoded: "SQL NULL" };
+
+          switch (type) {
+            case "integer":
+              return Number.isSafeInteger(value)
+                ? { ok: true, encoded: String(value) }
+                : { ok: false, message: "Expected a safe integer number." };
+            case "boolean":
+              return typeof value === "boolean"
+                ? { ok: true, encoded: value ? "1" : "0" }
+                : { ok: false, message: "Expected a boolean." };
+            case "timestampSeconds": {
+              if (
+                typeof value !== "string" ||
+                !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(value)
+              ) {
+                return { ok: false, message: "Expected a UTC whole-second timestamp." };
+              }
+              const epoch = Date.parse(value) / 1000;
+              return Number.isSafeInteger(epoch)
+                ? { ok: true, encoded: String(epoch) }
+                : { ok: false, message: "Timestamp is outside the supported range." };
+            }
+            case "timestampMilliseconds": {
+              if (
+                typeof value !== "string" ||
+                !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)
+              ) {
+                return { ok: false, message: "Expected a UTC whole-millisecond timestamp." };
+              }
+              const epoch = Date.parse(value);
+              return Number.isSafeInteger(epoch)
+                ? { ok: true, encoded: String(epoch) }
+                : { ok: false, message: "Timestamp is outside the supported range." };
+            }
+            case "real":
+            case "numericNumber":
+              return typeof value === "number" && Number.isFinite(value)
+                ? { ok: true, encoded: String(Object.is(value, -0) ? 0 : value) }
+                : { ok: false, message: "Expected a finite number." };
+            case "text":
+              return typeof value === "string" && !value.includes("\0")
+                ? { ok: true, encoded: JSON.stringify(value) }
+                : { ok: false, message: "Expected a NUL-free string." };
+            case "json":
+              return isJsonValue(value)
+                ? { ok: true, encoded: JSON.stringify(value) }
+                : { ok: false, message: "Expected a JSON-safe value." };
+            case "jsonBlob": {
+              if (!isJsonValue(value)) return { ok: false, message: "Expected a JSON-safe value." };
+              const bytes = new TextEncoder().encode(JSON.stringify(value));
+              return { ok: true, encoded: `UTF-8 JSON, ${bytes.length} bytes` };
+            }
+            case "blob": {
+              if (
+                typeof value !== "string" ||
+                !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)
+              ) {
+                return { ok: false, message: "Expected padded RFC 4648 base64." };
+              }
+              try {
+                const decoded = atob(value);
+                if (btoa(decoded) !== value)
+                  return { ok: false, message: "Expected canonical padded base64." };
+                return { ok: true, encoded: `BLOB, ${decoded.length} bytes` };
+              } catch {
+                return { ok: false, message: "Expected valid base64." };
+              }
+            }
+            case "bigintBlob": {
+              if (typeof value !== "string" || !/^(?:0|-?[1-9]\d*)$/.test(value)) {
+                return { ok: false, message: "Expected a canonical signed decimal string." };
+              }
+              return {
+                ok: true,
+                encoded: `UTF-8 decimal, ${new TextEncoder().encode(value).length} bytes`,
+              };
+            }
+            case "numeric": {
+              if (
+                typeof value !== "string" ||
+                !/^(?:0|-?[1-9]\d*)(?:\.\d+)?(?:e-?[1-9]\d*)?$/.test(value) ||
+                !Number.isFinite(Number(value))
+              ) {
+                return { ok: false, message: "Expected canonical finite numeric text." };
+              }
+              return { ok: true, encoded: value };
+            }
+            case "custom":
+              return isJsonValue(value)
+                ? { ok: true, encoded: "custom synchronous encoder result" }
+                : { ok: false, message: "Expected the declared JSON-safe custom value." };
+            default:
+              return { ok: false, message: "No direct codec is available." };
+          }
+        };
+
+        function planWrite(columns, operation, definitionReady) {
+          if (!definitionReady) {
+            return {
+              items: [],
+              error: null,
+              note: "Resolve the definition before planning a write.",
+            };
+          }
+          if (!operation) {
+            return {
+              items: [],
+              error: null,
+              note: "Choose a write action to inspect ownership and encoding.",
+            };
+          }
+
+          const items = [];
+          const values = operation.values;
+
+          for (const column of columns) {
+            const supplied = Object.hasOwn(values, column.field);
+
+            if (column.generated) {
+              if (supplied) {
+                return {
+                  items,
+                  note: "No database work occurs.",
+                  error: makeIssue(
+                    "invalid-created-record",
+                    `${operation.kind}.${column.field}`,
+                    `Generated field ${column.field} must be omitted.`,
+                    "StoreValidationError",
+                  ),
+                };
+              }
+              items.push({
+                field: column.field,
+                source: `${column.generated.mode} generation`,
+                value: column.generated.expression,
+              });
+              continue;
+            }
+
+            if (column.rowid) {
+              if (!supplied) {
+                items.push({
+                  field: column.field,
+                  source:
+                    column.rowid.reuse === "forbidden" ? "SQLite AUTOINCREMENT" : "SQLite ROWID",
+                  value: "generated on write",
+                });
+                continue;
+              }
+              const encoded = encode("integer", values[column.field]);
+              if (!encoded.ok) {
+                return {
+                  items,
+                  note: "No database work occurs.",
+                  error: makeIssue(
+                    "invalid-created-record",
+                    `${operation.kind}.${column.field}`,
+                    encoded.message,
+                    "StoreValidationError",
+                  ),
+                };
+              }
+              items.push({ field: column.field, source: "explicit ROWID", value: encoded.encoded });
+              continue;
+            }
+
+            if (!supplied) {
+              if (column.default !== null) {
+                items.push({
+                  field: column.field,
+                  source: "column default",
+                  value: String(column.default),
+                });
+              } else if (operation.kind === "update") {
+                items.push({ field: column.field, source: "update omission", value: "unchanged" });
+              } else if (!column.notNull) {
+                items.push({ field: column.field, source: "optional field", value: "omitted" });
+              } else {
+                return {
+                  items,
+                  note: "No database work occurs.",
+                  error: makeIssue(
+                    "invalid-created-record",
+                    `${operation.kind}.${column.field}`,
+                    `Required field ${column.field} is missing.`,
+                    "StoreValidationError",
+                  ),
+                };
+              }
+              continue;
+            }
+
+            const encoded = encode(column.type, values[column.field]);
+            if (!encoded.ok) {
+              return {
+                items,
+                note: "No database work occurs.",
+                error: makeIssue(
+                  "invalid-created-record",
+                  `${operation.kind}.${column.field}`,
+                  encoded.message,
+                  "StoreValidationError",
+                ),
+              };
+            }
+            items.push({
+              field: column.field,
+              source: column.typeFacts.helper,
+              value: encoded.encoded,
+            });
+          }
+
+          return {
+            items,
+            error: null,
+            note: "After the write, the adapter reads and decodes the stored result.",
+          };
+        }
+
+        return Object.freeze({
+          TYPE_FACTS,
+          makeInitialState,
+          reduce,
+          resolve,
+        });
+      })();
+
+      const scenarios = [
+        {
+          id: "refinement",
+          name: "Portable to SQLite",
+          title: "Refine without replacing the Record",
+          description:
+            "Start with portable SQL evidence, then activate SQLite metadata. Watch the same Record reference produce a different physical adapter asset.",
+          steps: [
+            {
+              label: "Inspect portable mapping",
+              action: "RESET",
+              note: "Portable integer, number, JSON, and text types map to named SQLite helpers.",
+            },
+            {
+              label: "Apply SQLite metadata",
+              action: "APPLY_REFINEMENTS",
+              note: "The table name changes and JSON plus timestamp fields use explicit SQLite contracts.",
+            },
+            {
+              label: "Plan a create",
+              action: "VALID_CREATE",
+              note: "The write plan uses the active helper codecs and reads the stored result back.",
+            },
+          ],
+        },
+        {
+          id: "rowid",
+          name: "ROWID policy",
+          title: "Separate generation from reuse policy",
+          description:
+            "Compare ordinary ROWID generation with AUTOINCREMENT. Both accept an explicit safe integer and both generate an omitted identifier.",
+          steps: [
+            {
+              label: "Allow reuse",
+              action: "ROWID_ALLOWED",
+              note: "The integer becomes the one table ROWID alias and implies NOT NULL.",
+            },
+            {
+              label: "Create without an ID",
+              action: "VALID_CREATE",
+              note: "SQLite owns the omitted identifier.",
+            },
+            {
+              label: "Forbid committed reuse",
+              action: "ROWID_FORBIDDEN",
+              note: "The adapter requests AUTOINCREMENT. This does not promise gap-free values.",
+            },
+            {
+              label: "Create with ID -7",
+              action: "EXPLICIT_ROWID_CREATE",
+              note: "Explicit safe integers remain legal, including zero and negative values.",
+            },
+          ],
+        },
+        {
+          id: "generated",
+          name: "Generated writes",
+          title: "Keep generated values database-owned",
+          description:
+            "A generated column is selected after a write but cannot be supplied during create or update operations.",
+          steps: [
+            {
+              label: "Add stored generation",
+              action: "ADD_GENERATED",
+              note: "The definition stores a parameter-free expression and an explicit stored mode.",
+            },
+            {
+              label: "Omit the generated field",
+              action: "VALID_CREATE",
+              note: "The planner lets SQLite calculate the value and schedules read-back.",
+            },
+            {
+              label: "Supply the generated field",
+              action: "GENERATED_WRITE",
+              note: "The planner returns StoreValidationError before any database work.",
+            },
+          ],
+        },
+        {
+          id: "failures",
+          name: "Stable failures",
+          title: "Report independent definition failures together",
+          description:
+            "Reserved names, field conflicts, table-wide ROWID conflicts, and ASCII name collisions must appear in stable dependency order.",
+          steps: [
+            {
+              label: "Build invalid definition",
+              action: "STACK_FAILURES",
+              note: "The table name is reserved; one field combines incompatible ROWID, default, and generation metadata.",
+            },
+            {
+              label: "Resolve again",
+              action: "APPLY_REFINEMENTS",
+              note: "Independent issues remain visible even when a later refinement changes other facts.",
+            },
+          ],
+        },
+        {
+          id: "driver",
+          name: "Driver contract",
+          title: "Keep definition resolution separate from live binding",
+          description:
+            "The resolver is synchronous and database-free. A concrete adapter can later reject a driver path that cannot preserve an active direct type.",
+          steps: [
+            {
+              label: "Use numericNumber()",
+              action: "NUMERIC_NUMBER",
+              note: "The definition remains valid and records a precise driver requirement.",
+            },
+            {
+              label: "Bind unsafe driver",
+              action: "UNSAFE_DRIVER",
+              note: "Only live adapter binding is rejected; the Record definition does not change.",
+            },
+            {
+              label: "Restore safe driver",
+              action: "SAFE_DRIVER",
+              note: "The same resolved asset can now bind successfully.",
+            },
+          ],
+        },
+      ];
+
+      const escapeHtml = (value) =>
+        String(value)
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#039;");
+
+      const renderBadges = (column) => {
+        const badges = [];
+        if (column.notNull) badges.push('<span class="badge">not null</span>');
+        if (column.default !== null) badges.push('<span class="badge">default</span>');
+        if (column.rowid)
+          badges.push(`<span class="badge accent">ROWID: ${escapeHtml(column.rowid.reuse)}</span>`);
+        if (column.generated)
+          badges.push(
+            `<span class="badge good">${escapeHtml(column.generated.mode)} generated</span>`,
+          );
+        return badges.length > 0 ? badges.join("") : '<span class="badge">ordinary</span>';
+      };
+
+      let state = SqlitePrototypeModel.makeInitialState();
+      let activeScenario = scenarios[0].id;
+      let walkthroughStep = -1;
+
+      const render = () => {
+        const resolution = SqlitePrototypeModel.resolve(state);
+        const allIssues = [...resolution.issues, ...resolution.bindingIssues];
+        const writeError = resolution.write.error;
+        const statusBad =
+          !resolution.definitionReady || !resolution.bindingReady || Boolean(writeError);
+        const statusGood = resolution.definitionReady && resolution.bindingReady && !writeError;
+
+        document.querySelector("#last-change").textContent = state.events[0].detail;
+
+        const status = document.querySelector("#resolution-status");
+        status.className = `status-strip ${statusBad ? "bad" : statusGood ? "good" : ""}`;
+        status.innerHTML = `
+          <div class="status-copy">
+            <strong>${escapeHtml(writeError ? writeError.source : resolution.status)}</strong>
+            <span>${escapeHtml(writeError ? writeError.message : resolution.write.note)}</span>
+          </div>
+          <span class="status-token">${resolution.issues.length} definition / ${resolution.bindingIssues.length} binding</span>
+        `;
+
+        document.querySelector("#resolution-facts").innerHTML = [
+          ["Record", resolution.table.record],
+          ["Quoted table", resolution.table.quotedName],
+          ["Definition", resolution.definitionReady ? "resolved" : "rejected"],
+          [
+            "Live binding",
+            resolution.bindingReady ? `SQLite ${state.binding.sqliteVersion}` : "rejected",
+          ],
+        ]
+          .map(
+            ([label, value]) => `
+          <div class="fact">
+            <span class="fact-label">${escapeHtml(label)}</span>
+            <span class="fact-value mono">${escapeHtml(value)}</span>
+          </div>
+        `,
+          )
+          .join("");
+
+        document.querySelector("#resolved-fields").innerHTML = resolution.columns
+          .map(
+            (column) => `
+          <tr>
+            <td data-label="Record field"><strong>${escapeHtml(column.field)}</strong></td>
+            <td data-label="SQL column"><code>${escapeHtml(column.name)}</code></td>
+            <td data-label="Helper"><code>${escapeHtml(column.typeFacts?.helper ?? "unresolved")}</code></td>
+            <td data-label="Storage">${escapeHtml(column.typeFacts?.storage ?? "none")}</td>
+            <td data-label="Effective policy"><div class="field-flags">${renderBadges(column)}</div></td>
+          </tr>
+        `,
+          )
+          .join("");
+
+        const issueList = document.querySelector("#issue-list");
+        if (allIssues.length === 0 && !writeError) {
+          issueList.innerHTML = '<li class="empty-state">No definition or binding failures.</li>';
+        } else {
+          issueList.innerHTML = [...allIssues, ...(writeError ? [writeError] : [])]
+            .map(
+              (issue, index) => `
+            <li class="issue">
+              <span class="issue-code">${index + 1}. ${escapeHtml(issue.source)} / ${escapeHtml(issue.code)}</span>
+              <strong>${escapeHtml(issue.message)}</strong>
+              <span class="issue-path mono">${escapeHtml(issue.path)}</span>
+            </li>
+          `,
+            )
+            .join("");
+        }
+
+        const writePlan = document.querySelector("#write-plan");
+        if (resolution.write.items.length === 0) {
+          writePlan.innerHTML = `<li class="empty-state">${escapeHtml(resolution.write.note)}</li>`;
+        } else {
+          writePlan.innerHTML =
+            resolution.write.items
+              .map(
+                (item) => `
+            <li class="plan-item">
+              <span class="plan-source">${escapeHtml(item.source)}</span>
+              <strong><code>${escapeHtml(item.field)}</code></strong>
+              <span class="issue-path mono">${escapeHtml(item.value)}</span>
+            </li>
+          `,
+              )
+              .join("") + `<li class="empty-state">${escapeHtml(resolution.write.note)}</li>`;
+        }
+
+        document.querySelector("#event-list").innerHTML = state.events
+          .map(
+            (event) => `
+          <li class="event">
+            <strong>${escapeHtml(event.label)}</strong>
+            <span class="event-meta">Action ${event.sequence}: ${escapeHtml(event.detail)}</span>
+          </li>
+        `,
+          )
+          .join("");
+
+        renderWalkthrough();
+      };
+
+      const renderWalkthrough = () => {
+        const selected = scenarios.find((scenario) => scenario.id === activeScenario);
+        document.querySelector("#scenario-tabs").innerHTML = scenarios
+          .map(
+            (scenario) => `
+          <button
+            class="tab"
+            type="button"
+            role="tab"
+            id="tab-${escapeHtml(scenario.id)}"
+            aria-controls="panel-${escapeHtml(scenario.id)}"
+            aria-selected="${scenario.id === activeScenario}"
+            tabindex="${scenario.id === activeScenario ? "0" : "-1"}"
+            data-scenario="${escapeHtml(scenario.id)}"
+          >${escapeHtml(scenario.name)}</button>
+        `,
+          )
+          .join("");
+
+        document.querySelector("#scenario-panel").innerHTML = `
+          <article
+            class="walkthrough"
+            role="tabpanel"
+            id="panel-${escapeHtml(selected.id)}"
+            aria-labelledby="tab-${escapeHtml(selected.id)}"
+          >
+            <div class="walkthrough-head">
+              <div>
+                <h3>${escapeHtml(selected.title)}</h3>
+                <p>${escapeHtml(selected.description)}</p>
+              </div>
+              <button class="start-button" type="button" data-start-walkthrough>Start walkthrough</button>
+            </div>
+            <ol class="steps">
+              ${selected.steps
+                .map((step, index) => {
+                  const isCurrent = walkthroughStep === index;
+                  const isComplete = walkthroughStep > index;
+                  return `
+                  <li class="step">
+                    <button
+                      class="step-button ${isCurrent ? "current" : ""}"
+                      type="button"
+                      data-step-index="${index}"
+                      ${isCurrent ? "" : "disabled"}
+                    >${isComplete ? "Completed: " : ""}${escapeHtml(step.label)}</button>
+                    <span class="step-note">${escapeHtml(step.note)}</span>
+                  </li>
+                `;
+                })
+                .join("")}
+            </ol>
+          </article>
+        `;
+      };
+
+      document.querySelector("#helper-contracts").innerHTML = Object.values(
+        SqlitePrototypeModel.TYPE_FACTS,
+      )
+        .map(
+          (facts) => `
+        <div class="helper">
+          <code>${escapeHtml(facts.helper)}</code>
+          <span>${escapeHtml(facts.application)} to ${escapeHtml(facts.storage)}</span>
+        </div>
+      `,
+        )
+        .join("");
+
+      document.querySelector("#free-play-controls").addEventListener("click", (event) => {
+        const button = event.target.closest("[data-action]");
+        if (!button) return;
+        state = SqlitePrototypeModel.reduce(state, { type: button.dataset.action });
+        walkthroughStep = -1;
+        render();
+      });
+
+      document.querySelector("#scenario-tabs").addEventListener("click", (event) => {
+        const tab = event.target.closest("[data-scenario]");
+        if (!tab) return;
+        activeScenario = tab.dataset.scenario;
+        walkthroughStep = -1;
+        renderWalkthrough();
+      });
+
+      document.querySelector("#scenario-tabs").addEventListener("keydown", (event) => {
+        if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+        event.preventDefault();
+        const currentIndex = scenarios.findIndex((scenario) => scenario.id === activeScenario);
+        const nextIndex =
+          event.key === "Home"
+            ? 0
+            : event.key === "End"
+              ? scenarios.length - 1
+              : (currentIndex + (event.key === "ArrowRight" ? 1 : -1) + scenarios.length) %
+                scenarios.length;
+        activeScenario = scenarios[nextIndex].id;
+        walkthroughStep = -1;
+        renderWalkthrough();
+        document.querySelector(`#tab-${activeScenario}`).focus();
+      });
+
+      document.querySelector("#scenario-panel").addEventListener("click", (event) => {
+        const selected = scenarios.find((scenario) => scenario.id === activeScenario);
+        if (event.target.closest("[data-start-walkthrough]")) {
+          state = SqlitePrototypeModel.makeInitialState();
+          walkthroughStep = 0;
+          render();
+          return;
+        }
+
+        const stepButton = event.target.closest("[data-step-index]");
+        if (!stepButton || Number(stepButton.dataset.stepIndex) !== walkthroughStep) return;
+        const step = selected.steps[walkthroughStep];
+        state = SqlitePrototypeModel.reduce(state, { type: step.action });
+        walkthroughStep += 1;
+        render();
+      });
+
+      render();
+    </script>
+  </body>
+</html>
