@@ -1,14 +1,14 @@
 # SQL Store Tier Technical Specification
 
-> **Status**: Design complete for implementation. The portable SQL tier and PostgreSQL Record specialization decisions are binding.
+> **Status**: Design complete for implementation. The portable SQL tier and the PostgreSQL, MySQL, and SQLite Record specialization decisions are binding.
 >
-> **Last updated**: 2026-08-06 during the PostgreSQL Record specialization decision.
+> **Last updated**: 2026-08-06 during the database Record specialization approval gate.
 
 ## Summary
 
-Add a portable SQL Store specialization and Drizzle-independent PostgreSQL Record metadata to `@commissary/store`. The package gains one immutable SQL Record definition form, symmetric SQL and PostgreSQL metadata helpers, one opaque SQL Statement algebra, shared adapter helpers, SQL errors, and shared conformance tests.
+Add a portable SQL Store specialization and Drizzle-independent PostgreSQL, MySQL, and SQLite Record metadata to `@commissary/store`. The package gains one immutable SQL Record definition form, symmetric portable and database metadata helpers, one opaque SQL Statement algebra, shared adapter helpers, SQL errors, and shared conformance tests.
 
-The `SqlStore` interface remains portable. SQL text can use one database dialect. Generic execution returns one unchecked row set. Integrations can add PostgreSQL refinements without an ORM dependency, while hosts call only their selected concrete adapter. Concrete adapters and focused adapter interfaces can accept more parameter types and return more facts without weakening the generic contract.
+The `SqlStore` interface remains portable. SQL text can use one database dialect. Generic execution returns one unchecked row set. Integrations can add PostgreSQL, MySQL, or SQLite refinements without an ORM dependency, while hosts call only their selected concrete adapter. Concrete adapters and focused adapter interfaces can accept more parameter types and return more facts without weakening the generic contract.
 
 This specification extends the [Store Architecture Technical Specification](store.md). That specification remains authoritative for Records, Collections, operators, Store errors, and transactions except where this document gives a later rule.
 
@@ -68,7 +68,7 @@ This specification extends the [Store Architecture Technical Specification](stor
 - SQL Record definition and reference types;
 - portable SQL Column Types and SQL Literals;
 - SQL Statement construction;
-- Drizzle-independent database Record metadata helpers, beginning with PostgreSQL;
+- Drizzle-independent PostgreSQL, MySQL, and SQLite Record metadata helpers;
 - the adapter-facing database Record resolvers;
 - `SqlStore` and SQL errors;
 - the `@commissary/store/sql-adapter` Statement compiler;
@@ -119,6 +119,7 @@ The public type shape is:
 
 ```ts
 export type SqlLiteralValue = string | number | boolean;
+export type SqlCustomEncodedValue = string | number | boolean | Uint8Array;
 
 export interface SqlColumnType<in Value extends JsonValue> {
   // Opaque package-owned value family and conversion contract.
@@ -188,6 +189,8 @@ export declare const sql: {
 };
 ```
 
+`SqlCustomEncodedValue` is the one driver-independent storage-edge output for custom column encoders. Numbers must be finite at runtime. SQL `NULL` bypasses custom encoders and is not part of this union.
+
 The named database metadata properties accept an object at the portable stage and preserve its inferred type. The matching database helper gives integration authors a typed, locally validated object. The matching adapter resolver activates it after contributions and overrides. This rule avoids global type augmentation and keeps ORM and driver types out of `@commissary/store`.
 
 `sql.table()` and `sql.column()` are the recommended metadata authoring helpers. They snapshot and freeze their package-owned options. Plain structural metadata remains valid, and typed deep overrides can use helpers or plain patches.
@@ -217,6 +220,20 @@ Their contracts are:
 - `literal()` accepts a string, finite number, safe integer, or boolean. It rejects NUL strings, non-finite numbers, and unsafe integer values.
 
 Portable defaults do not include `null`, JSON, current time, UUID generation, identity, sequences, or SQL expressions. Those values need database-specific metadata.
+
+#### Portable physical mappings
+
+Each database resolver maps an active portable type, including a type inferred from Select evidence, to one final physical direct type:
+
+| Portable contract | Application value     | PostgreSQL         | MySQL           | SQLite                                |
+| ----------------- | --------------------- | ------------------ | --------------- | ------------------------------------- |
+| `sql.text()`      | `string`              | `TEXT`             | `TEXT`          | `TEXT`                                |
+| `sql.number()`    | finite `number`       | `DOUBLE PRECISION` | `DOUBLE`        | `REAL`                                |
+| `sql.integer()`   | safe integer `number` | `BIGINT`           | signed `BIGINT` | `INTEGER`                             |
+| `sql.boolean()`   | `boolean`             | `BOOLEAN`          | `BOOLEAN`       | `INTEGER` with zero-or-one conversion |
+| `sql.json()`      | `JsonValue`           | `JSON`             | `JSON`          | `TEXT` with JSON conversion           |
+
+The safe-number codec on portable `sql.integer()` remains distinct from the exact-string codec on explicit `pg.bigint()` and `mysql.bigint()`, even though the physical PostgreSQL and MySQL type is `BIGINT`. An active database-specific type still wins over this mapping.
 
 #### Select Schema reflection
 
@@ -340,6 +357,35 @@ A Record reference is the final table identifier. Its field references are final
 
 The same immutable definition can be registered under several catalog keys. Each registration gets its own resolved reference. References can be composed across definitions and used on any suitable SQL connection. The database remains the authority for existence and permissions.
 
+#### Cross-database resolution contract
+
+The Drizzle compatibility authority for all three specializations is commit `b7862528fd8fc39bc2653a6c18dad7c1f4e68d10`. Use the commit, not its manifest version, because that version was not published to npm. Only capabilities that a planned concrete adapter can preserve are public.
+
+Every database resolution contains final physical facts. It does not retain whether a type came from portable metadata, database metadata, or Select reflection. A resolved direct type names the final database type and physical options; its synchronous `encode` and `decode` functions preserve the selected application contract. Concrete adapters map this plan into ORM or driver values without parsing type text.
+
+Resolved generated-column data uses one adapter-facing shape:
+
+```ts
+export interface SqlResolvedGeneratedColumn {
+  readonly expression: SqlStatement<never>;
+  readonly mode: "virtual" | "stored";
+}
+```
+
+PostgreSQL always resolves generated columns with `mode: "stored"`. MySQL and SQLite preserve their explicit virtual or stored mode.
+
+All database resolvers use this issue-order skeleton:
+
+1. contribution and override issues;
+2. each table's qualifier, name, and format;
+3. each field's name, opaque identity, storage evidence, Select compatibility, type contract, default, nullability, generation or identity metadata, and cross-property checks;
+4. table-wide rules and column collisions; and
+5. catalog namespace or table collisions.
+
+Database-specific checks stay in their related slot. Record and field declaration order control traversal. First use controls ties between owned assets, and the issue belongs to the later asset. A check with an invalid prerequisite is skipped; every independent check continues.
+
+Resolution performs no database I/O and cannot prove a live engine, driver path, session setting, host index, or host constraint. The concrete adapter binding stage must reject a live configuration that cannot preserve the complete resolved plan before it returns a Store.
+
 ### PostgreSQL Record specialization
 
 The PostgreSQL specialization targets PostgreSQL 15 and later. It defines Drizzle-independent metadata and resolution assets. It does not create a PostgreSQL-named runtime Store interface.
@@ -399,8 +445,6 @@ The resolver applies contributions and overrides, activates `postgres` metadata,
 The rough public types are:
 
 ```ts
-export type PostgresEncodedScalar = string | number | boolean;
-
 export interface PostgresColumnType<in Value extends JsonValue> extends SqlColumnType<Value> {
   // Opaque package-owned PostgreSQL storage and conversion contract.
 }
@@ -483,7 +527,7 @@ export interface PostgresCustomTypeOptions<Value extends JsonValue> {
   readonly type: PostgresQualifiedName & {
     readonly modifier?: SqlStatement<never>;
   };
-  readonly encode: (value: Value) => PostgresEncodedScalar;
+  readonly encode: (value: Value) => SqlCustomEncodedValue;
   readonly decode: (value: unknown) => Value;
 }
 
@@ -594,7 +638,7 @@ write: operation Schema -> Select Schema -> encode -> database
 read:  database -> decode -> Select Schema -> Selected Record
 ```
 
-SQL `NULL` bypasses conversion. The resolver snapshots function references but never invokes them. An encoder must return a string, finite number, or boolean. Objects, arrays, Statements, Promises, `undefined`, and driver objects are invalid encoded values. Array conversion applies the scalar converter to each element.
+SQL `NULL` bypasses conversion. The resolver snapshots function references but never invokes them. An encoder must return a `SqlCustomEncodedValue`; numbers must be finite. Other objects, arrays, Statements, Promises, `undefined`, and driver objects are invalid encoded values. Array conversion applies the scalar converter to each element.
 
 #### Defaults, identity, and stored generation
 
@@ -607,7 +651,7 @@ Definition rejects:
 - generated plus default;
 - generated plus identity;
 - identity plus an explicit default;
-- identity on anything except `smallint`, `integer`, or `bigint`; and
+- identity when the final physical direct type is not `smallint`, `integer`, or `bigint`; portable `sql.integer()` maps to `bigint` and qualifies; and
 - identity plus `notNull: false`.
 
 Identity implies `NOT NULL`; explicit `notNull: true` is valid but redundant. A stored generated column can use a custom type and either nullability setting. An ordinary default can use a custom type.
@@ -633,7 +677,7 @@ Columns conflict only inside their table. Definition-owned tables, explicit iden
 
 #### Resolution assets and failures
 
-The adapter resolution exposes tables by Record key, columns by field key, and enums in first-use order. Each column includes its exact name and reference, resolved nullability, a discriminated direct, array, enum, or custom type, its default or generated expression, identity metadata, and encode/decode functions. Adapter authors switch exhaustively on the discriminant and do not parse SQL type text.
+The adapter resolution exposes tables by Record key, columns by field key, and enums in first-use order. Each column includes its exact name and reference, resolved nullability, a final physical direct, array, enum, or custom type, its default or normalized `SqlResolvedGeneratedColumn`, identity metadata, and encode/decode functions. The plan carries no portable authoring-origin marker. Adapter authors switch exhaustively on the physical discriminant and do not parse SQL type text.
 
 Metadata and type helper constructors preserve literal inference, snapshot options, and return immutable values. They throw `TypeError` immediately for malformed constructor arguments, invalid atomic option types or limits, invalid local names, and incompatible opaque formats. They never inspect Record field values. They do not check inherited metadata, precedence, cross-property conflicts, Schema compatibility, catalog collisions, or PostgreSQL namespaces.
 
@@ -656,7 +700,7 @@ Each runtime or definition failure has one owner:
 - identity, generation, nullability, and other PostgreSQL option conflicts use `invalid-database-options`; and
 - composition uses the existing contribution and override codes.
 
-Issues point to the winning `records` or `overrides` source. A conflict points to the later or higher-precedence setting and names the other source in its message. A duplicate issue belongs to the later asset. Order follows Record declaration, table metadata, field declaration, a fixed rule order, and asset first use. Checks that depend on one invalid prerequisite are skipped; every independent check continues.
+PostgreSQL uses the shared issue-order skeleton. Its table slot checks schema, name, and table format. Its field slot checks the direct, array, enum, or custom type contract before default, nullability, identity, generation, and cross-property compatibility. Its table-wide slot checks column collisions. Its final namespace slot checks tables and their row types, explicit identity sequences, and enums in first-use order.
 
 Preserve the original converter failure as `cause` and include Collection, operation, and field. Converter failures are contract defects, not caller validation or database I/O errors.
 
@@ -718,8 +762,6 @@ The resolver applies contributions and overrides, activates `mysql` metadata, re
 The rough public types are:
 
 ```ts
-export type MysqlEncodedValue = string | number | boolean | Uint8Array;
-
 export interface MysqlColumnType<in Value extends JsonValue> extends SqlColumnType<Value> {
   // Opaque package-owned MySQL storage and conversion contract.
 }
@@ -785,7 +827,7 @@ export interface MysqlEnum<Values extends readonly [string, ...string[]]> extend
 
 export interface MysqlCustomTypeOptions<Value extends JsonValue> {
   readonly type: SqlStatement<never>;
-  readonly encode: (value: Value) => MysqlEncodedValue;
+  readonly encode: (value: Value) => SqlCustomEncodedValue;
   readonly decode: (value: unknown) => Value;
 }
 
@@ -890,7 +932,7 @@ Supported physical options are:
 - required `varchar` and `varbinary` length 0 through 65,535; and
 - `datetime`, `time`, and `timestamp` fractional precision 0 through 6.
 
-MySQL 8.4 deprecates `unsigned` on fixed- and floating-point types and the nonstandard floating-point precision-and-scale forms. Keep them for parity with the pinned Drizzle ORM 0.45.3 MySQL helper set, but mark them deprecated in API documentation. Do not expose integer display width, `ZEROFILL`, driver output modes, TypeScript-only text enum narrowing, or aliases outside the listed helper set. `real` remains a distinct resolved type and emits exact `REAL`; active SQL mode owns whether MySQL treats it as `FLOAT` or `DOUBLE`.
+MySQL 8.4 deprecates `unsigned` on fixed- and floating-point types and the nonstandard floating-point precision-and-scale forms. Keep them for parity with the authoritative Drizzle commit's MySQL helper set, but mark them deprecated in API documentation. Do not expose integer display width, `ZEROFILL`, driver output modes, TypeScript-only text enum narrowing, or aliases outside the listed helper set. `real` remains a distinct resolved type and emits exact `REAL`; active SQL mode owns whether MySQL treats it as `FLOAT` or `DOUBLE`.
 
 The operation and Select Schema parsers validate field values first. A direct MySQL codec then validates storage syntax, JSON safety, declared length, and type range before database work. Invalid caller-supplied values use `StoreValidationError`. An invalid stored direct value uses `StoreAdapterContractViolation` with `"invalid-selected-record"`.
 
@@ -907,7 +949,7 @@ write: operation Schema -> Select Schema -> encode -> database
 read:  database -> decode -> Select Schema -> Selected Record
 ```
 
-SQL `NULL` bypasses conversion. The resolver snapshots function references but never invokes them. An encoder must return a string, finite number, boolean, or `Uint8Array`. Statements, Promises, other objects, arrays, `undefined`, and driver objects are invalid encoded values. Custom encoder throws and invalid outputs are adapter contract violations, not caller validation. A custom decoder accepts `unknown`; its output must be a `JsonValue` before the Select Schema checks it.
+SQL `NULL` bypasses conversion. The resolver snapshots function references but never invokes them. An encoder must return a `SqlCustomEncodedValue`; numbers must be finite. Statements, Promises, other objects, arrays, `undefined`, and driver objects are invalid encoded values. Custom encoder throws and invalid outputs are adapter contract violations, not caller validation. A custom decoder accepts `unknown`; its output must be a `JsonValue` before the Select Schema checks it.
 
 Resolved direct codecs expose the same synchronous `encode(value)` and `decode(unknown)` shape but contain no driver-specific `Buffer`, `Date`, or JavaScript `bigint` values. A concrete adapter converts driver-specific output before direct decoding.
 
@@ -915,7 +957,7 @@ Resolved direct codecs expose the same synchronous `encode(value)` and `decode(u
 
 MySQL defaults and generated expressions accept parameter-free Statements. Definition checks package origin, nonempty structure, and the actual absence of bound parameters. It does not parse SQL or validate functions, column references, result types, or generated-column restrictions. MySQL owns semantic expression validation, and `sql.raw()` remains trusted unchecked structure.
 
-`autoIncrement: true` is valid only on direct `tinyint`, `smallint`, `mediumint`, `int`, or `bigint` columns. `serial` supplies the same behavior intrinsically. Automatic increment:
+`autoIncrement: true` is valid only when the final physical direct type is `tinyint`, `smallint`, `mediumint`, `int`, or `bigint`; portable `sql.integer()` maps to signed `bigint` and qualifies. `serial` supplies the same behavior intrinsically. Automatic increment:
 
 - implies `NOT NULL`;
 - is permitted on at most one column per table;
@@ -954,7 +996,7 @@ Active MySQL metadata can override portable `name`, `type`, `default`, and `notN
 
 #### Resolution assets and failures
 
-The adapter resolution exposes tables by Record key and columns by field key. Each column includes its exact name and reference, resolved nullability, a direct, enum, or custom type discriminant, physical option snapshots, its default or generation data, automatic increment and update data, and synchronous encode and decode functions. Adapter authors switch exhaustively on direct helper names and do not parse generated SQL type text. Custom columns retain their type Statement.
+The adapter resolution exposes tables by Record key and columns by field key. Each column includes its exact name and reference, resolved nullability, a final physical direct, enum, or custom type discriminant, physical option snapshots, its default or normalized `SqlResolvedGeneratedColumn`, automatic increment and update data, and synchronous encode and decode functions. The plan carries no portable authoring-origin marker. Adapter authors switch exhaustively on physical direct names and do not parse generated SQL type text. Custom columns retain their type Statement.
 
 Metadata and type helper constructors preserve literal inference, snapshot options, and return immutable values. They throw `TypeError` immediately only when malformed values are supplied as `mysql.*` helper invocation arguments, including invalid atomic option types or limits, invalid local names or enum values, parameterized custom type structure, and incompatible opaque formats. They never inspect Record field values. Plain structural metadata does not pass through constructor validation. The resolver checks its effective values together with inherited metadata, precedence, cross-property conflicts, Schema compatibility, catalog collisions, and MySQL namespaces.
 
@@ -993,8 +1035,6 @@ MySQL metadata, column types, Statements, and resolutions use opaque format iden
 ### SQLite Record specialization
 
 The SQLite specialization targets SQLite 3.45 and later. It defines Drizzle-independent metadata and resolution assets. It does not create a SQLite-named runtime Store interface. Definition is synchronous and performs no database or version check. A concrete adapter rejects an unsupported live engine or driver path during binding.
-
-The Drizzle compatibility authority is commit `b7862528fd8fc39bc2653a6c18dad7c1f4e68d10`. Use the commit, not its manifest version, because that version was not published to npm. Only capabilities that the planned Drizzle adapter can preserve are public.
 
 Do not expose `STRICT`, `WITHOUT ROWID`, attached-database qualification, SQLite JSONB, general constraints, collations, conflict policies, indexes, relations, or migration data. Generated columns and the integer-primary-key ROWID behavior are in scope because the adapter can preserve them.
 
@@ -1050,8 +1090,6 @@ The resolver applies contributions and overrides, activates `sqlite` metadata, r
 The rough public types are:
 
 ```ts
-export type SqliteEncodedValue = string | number | boolean | Uint8Array;
-
 export interface SqliteColumnType<in Value extends JsonValue> extends SqlColumnType<Value> {
   // Opaque package-owned SQLite storage and conversion contract.
 }
@@ -1080,7 +1118,7 @@ export interface SqliteColumnDefinition<Value extends JsonValue> {
 
 export interface SqliteCustomTypeOptions<Value extends JsonValue> {
   readonly type: SqlStatement<never>;
-  readonly encode: (value: Value) => SqliteEncodedValue;
+  readonly encode: (value: Value) => SqlCustomEncodedValue;
   readonly decode: (value: unknown) => Value;
 }
 
@@ -1164,7 +1202,7 @@ write: operation Schema -> Select Schema -> encode -> database
 read:  database -> decode -> Select Schema -> Selected Record
 ```
 
-The resolver snapshots function references but never invokes them. An encoder must return a string, finite number, boolean, or `Uint8Array`. Statements, Promises, other objects, arrays, `undefined`, and driver objects are invalid encoded values. A custom decoder accepts `unknown`; its output must be a `JsonValue` before the Select Schema checks it.
+The resolver snapshots function references but never invokes them. An encoder must return a `SqlCustomEncodedValue`; numbers must be finite. Statements, Promises, other objects, arrays, `undefined`, and driver objects are invalid encoded values. A custom decoder accepts `unknown`; its output must be a `JsonValue` before the Select Schema checks it.
 
 Custom encoder throws and invalid outputs use `StoreAdapterContractViolation` with `"invalid-column-encoding"`. Custom decode failures, non-JSON decoded values, and read-side Select Schema failures use `StoreAdapterContractViolation` with `"invalid-selected-record"`. Preserve the original converter failure as `cause` and include Collection, operation, and field.
 
@@ -1174,7 +1212,7 @@ Resolved direct codecs expose the same synchronous `encode(value)` and `decode(u
 
 SQLite defaults and generated expressions accept parameter-free Statements. Definition checks package origin, nonempty structure, and the actual absence of bound parameters. It does not parse SQL or validate functions, column references, subqueries, determinism, or result types. SQLite owns semantic expression validation, and `sql.raw()` remains trusted unchecked structure.
 
-`rowid` is valid only when the effective direct type is `sqlite.integer()`. It describes SQLite's `INTEGER PRIMARY KEY` row identity and generation behavior:
+`rowid` is valid only when the final physical direct type is `INTEGER` with the safe-number contract; portable `sql.integer()` and direct `sqlite.integer()` both qualify. It describes SQLite's `INTEGER PRIMARY KEY` row identity and generation behavior:
 
 - at most one column per table can have `rowid`;
 - it implies `NOT NULL`, and explicit `notNull: false` conflicts;
@@ -1211,21 +1249,13 @@ Active SQLite metadata can override portable `name`, `type`, `default`, and `not
 2. portable explicit SQL type; and
 3. Select Schema reflection.
 
-Portable types map as follows:
-
-| Portable helper | SQLite helper      |
-| --------------- | ------------------ |
-| `sql.text()`    | `sqlite.text()`    |
-| `sql.number()`  | `sqlite.real()`    |
-| `sql.integer()` | `sqlite.integer()` |
-| `sql.boolean()` | `sqlite.boolean()` |
-| `sql.json()`    | `sqlite.json()`    |
+Portable types and Select reflection use the shared physical mappings above. SQLite database metadata does not retain or expose the lower-tier origin after it resolves the final physical type and codec.
 
 Absence inherits. `null` removes one inherited optional setting. After contributions and overrides, the resolver rebuilds all reflection, names, types, defaults, nullability, ROWID and generated-column facts, codecs, and collisions.
 
 #### Resolution assets and failures
 
-The adapter resolution exposes tables by Record key and columns by field key. Each table contains its exact name, reference, and columns. Each column contains its exact name and reference, resolved nullability, a discriminated direct or custom type, its default, ROWID and generation data, and synchronous encode and decode functions. Adapter authors switch exhaustively on named helper discriminants and do not parse generated SQL type text. Custom columns retain their type Statement.
+The adapter resolution exposes tables by Record key and columns by field key. Each table contains its exact name, reference, and columns. Each column contains its exact name and reference, resolved nullability, a final physical direct or custom type, its default, ROWID data, normalized `SqlResolvedGeneratedColumn`, and synchronous encode and decode functions. The plan carries no portable authoring-origin marker. Adapter authors switch exhaustively on named physical discriminants and do not parse generated SQL type text. Custom columns retain their type Statement.
 
 Metadata and type helper constructors preserve literal inference, snapshot options, and return immutable values. They throw `TypeError` immediately only for malformed values supplied directly to `sqlite.*` helper invocations, including invalid atomic option values, local names, parameterized custom type structure, missing converter functions, and incompatible opaque formats. They never inspect Record field values, Schemas, inherited metadata, overrides, collisions, or cross-property constraints. Plain structural metadata does not pass through constructor validation.
 
@@ -1615,6 +1645,25 @@ Package-level SQL Record tests cover:
 - final table and column conflicts; and
 - immutable resolved references for base and SQL definitions.
 
+PostgreSQL Record specialization tests cover:
+
+- portable physical mappings, active PostgreSQL refinement, deep overrides, and null removal;
+- every direct helper's value inference, physical discriminant, options, and canonical codec boundaries;
+- rectangular arrays, one-based bounds, null elements, reusable enums, and first-use enum assets;
+- custom qualified names, modifiers, shared encoded values, converter failures, and package compatibility;
+- defaults, both identity modes, sequence controls, stored generation, write rules, and every conflict;
+- exact names, 63-byte limits, PostgreSQL namespaces, stable issue order, and dependent-check skipping; and
+- immutable table, column, enum, reference, codec, generated, and issue assets.
+
+MySQL Record specialization tests cover:
+
+- portable physical mappings, active MySQL refinement, deep overrides, and null removal;
+- every direct helper's value inference, physical discriminant, options, and canonical codec boundaries;
+- inline enums, custom type Statements, shared encoded values, converter failures, and package compatibility;
+- `AUTO_INCREMENT`, `SERIAL`, host key requirements, generated modes, automatic updates, write rules, and every conflict;
+- exact names, Unicode limits, case-folded catalog collisions, stable issue order, and dependent-check skipping; and
+- immutable table, column, reference, codec, generated, and issue assets.
+
 SQLite Record specialization tests cover:
 
 - every named helper's value inference, storage discriminant, and direct codec boundaries;
@@ -1745,6 +1794,16 @@ The SQLite logic prototype also proved:
 - reserved-name, cross-property, table-wide, and ASCII-collision issue order; and
 - separation between synchronous definition resolution and live driver binding.
 
+The comparative database Record prototype also proved:
+
+- one lower-tier SQL Record resolves into complete PostgreSQL, MySQL, and SQLite plans;
+- portable integer, number, boolean, text, and JSON mappings preserve one application contract across different physical types;
+- custom encoders use one `SqlCustomEncodedValue` contract;
+- generated columns normalize to one expression-and-mode asset while retaining database modes;
+- final plans expose physical facts and codecs without authoring-history markers;
+- every resolver follows the same failure ownership and issue-order skeleton; and
+- live driver, engine, index, and constraint checks remain in concrete adapter binding.
+
 **Verdict**: The portable SQL Store tier and the Drizzle-independent PostgreSQL, MySQL, and SQLite Record specializations are implementation-ready. Concrete adapter interfaces and runtime bindings remain behind the later Drizzle-tier gates.
 
 ## Files for Implementation
@@ -1791,8 +1850,12 @@ No implementation keeps the old create/update storage path, host-record merge al
 6. Add the transaction callback runner and transaction-view errors.
 7. Add SQL Store and combined transaction conformance suites.
 8. Add `pg` metadata, direct and custom column types, enum assets, and option validation.
-9. Add the PostgreSQL adapter resolver, resolution assets, failure aggregation, and compile-time tests.
-10. Add explicit Core SQL and PostgreSQL metadata.
+9. Add the PostgreSQL adapter resolver, physical mappings, resolution assets, failure aggregation, and compile-time tests.
+10. Add `mysql` metadata, direct and custom column types, inline enums, and option validation.
+11. Add the MySQL adapter resolver, physical mappings, resolution assets, failure aggregation, and compile-time tests.
+12. Add `sqlite` metadata, named direct and custom column types, and option validation.
+13. Add the SQLite adapter resolver, physical mappings, resolution assets, failure aggregation, and compile-time tests.
+14. Add explicit Core portable and approved PostgreSQL, MySQL, and SQLite metadata.
 
 Each step must keep the package root plain JavaScript and native Promise based. Effect can remain an internal implementation tool.
 
