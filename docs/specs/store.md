@@ -178,6 +178,7 @@ The requested design is broader than adding fields to existing interfaces. It in
 - A Field Schema owns parsing inside its one field value, including nested unknown-key behavior and intentional transformations.
 - Every defined effective select, create, and update output must be assignable to the effective select input. `undefined` means omission and is excluded from this check. Static types check defined value shapes; runtime refinements run before a value becomes a selected or stored Record field.
 - The Select Field Schema produces the canonical public, operator-facing, and stored field value. Defined create, update, expression, generated, and decoded values run through it, and Store keeps its output rather than the earlier operation output.
+- A Select Field Schema output must be stable when it passes through that effective Select Field Schema again. This idempotence is a Record contract, not a second runtime validation pass. A non-idempotent Select transformation is not a valid Record definition.
 - Every field in a complete changed Record passes its effective Select Field Schema before an atomic update commits.
 - Query and update field references read effective selected field values. A native operator must preserve this boundary. If it cannot, the adapter must use a safe fallback or report `UnsupportedStoreOperationError`.
 - Adapter-specific generation can fill a field only when its parsed create output is `undefined`. A defined host value always wins. An adapter cannot overwrite it and must reject a create it cannot honor. Every generated value becomes an effective Select Field Schema output before storage.
@@ -1565,7 +1566,8 @@ Each slice is one Red-Green cycle. Do not write all tests first.
 - **Green**: Add only the required operations.
 - **Risk check**: Omitted update/delete `where` changes all matching Records.
 - **No cancellation**: Prove the base Collection methods accept no `AbortSignal` or other cancellation option.
-- **Storage normalization**: Prove create and update store effective Select outputs, including a Select transformation that changes the operation-schema output.
+- **Storage normalization**: Prove create, literal update, and expression update store effective Select outputs. Use an idempotent normalization that changes the operation-schema output and remains stable when a read applies Select again.
+- **Round-trip contract**: Apply Select twice to representative fixture outputs and prove equality. A prefixing Select transform is a negative contract example, not accepted Store behavior.
 
 ### Slice 8: Atomic mutation validation
 

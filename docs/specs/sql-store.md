@@ -398,7 +398,7 @@ The compiler:
 7. converts values for the driver; and
 8. returns one fresh driver-owned parameter array in source order.
 
-`isParameter()` returning false produces `unsupported-parameter`. A thrown encoder, support check, or conversion produces `invalid-parameter` with its position and cause. Invalid finite-number or string rules produce `invalid-parameter` without a cause. A failed quote or placeholder callback, or a non-string callback result, produces `StoreAdapterContractError` with `invalid-sql-compilation`.
+`isParameter()` returning false produces `unsupported-parameter`. A thrown encoder, support check, or conversion produces `invalid-parameter` with its position and cause. A non-finite number or a string that contains NUL produces `invalid-parameter` without a cause. A failed quote or placeholder callback, or a non-string callback result, produces `StoreAdapterContractError` with `invalid-sql-compilation`.
 
 ### Parameter rules
 
@@ -451,9 +451,27 @@ export type SqlExecutionErrorOptions =
       readonly reason: "multiple-results";
       readonly executionMayHaveOccurred: true;
     };
+
+export declare class SqlStatementError extends StoreError {
+  readonly name: "SqlStatementError";
+  readonly operation: "execute";
+  readonly reason: SqlStatementErrorOptions["reason"];
+  readonly parameterPosition?: number;
+  readonly cause?: unknown;
+  constructor(options: SqlStatementErrorOptions);
+}
+
+export declare class SqlExecutionError extends StoreError {
+  readonly name: "SqlExecutionError";
+  readonly operation: "execute";
+  readonly reason: SqlExecutionErrorOptions["reason"];
+  readonly executionMayHaveOccurred: boolean;
+  readonly cause?: unknown;
+  constructor(options: SqlExecutionErrorOptions);
+}
 ```
 
-`SqlStatementError` and `SqlExecutionError` extend `StoreError` and have fixed operation `execute`. Statement errors contain no SQL text or parameter value. `executionMayHaveOccurred` is false only before the driver statement call starts. It is true after the call starts or when the outcome is uncertain. `multiple-results` has no cause because returned data must not enter the error.
+`SqlStatementError` and `SqlExecutionError` extend `StoreError` and have fixed operation `execute`. An `invalid-statement` error has no parameter position or cause. An `unsupported-parameter` error has its zero-based parameter position and no cause. An `invalid-parameter` error has its zero-based parameter position and has a cause only when parameter processing threw. Statement errors contain no SQL text or parameter value. An `execution-failed` error has its cause and `executionMayHaveOccurred` flag. A `multiple-results` error has no cause, has `executionMayHaveOccurred` set to true, and contains no returned data. `executionMayHaveOccurred` is false only before the driver statement call starts. It is true after the call starts or when the outcome is uncertain.
 
 An invalid successful result rejects before fulfillment with:
 
@@ -606,7 +624,31 @@ export interface TransactionConformanceControls {
 }
 ```
 
-The test-only combined Store is an inline intersection of `SqlStore` and `TransactionStore`. Its `TransactionCapabilities` contains `execute`. The fresh fixture contains that Store, SQL controls, transaction controls, and the two adapter-specific Statement factories.
+export type SqlTransactionStoreConformanceStore =
+SqlStore<typeof sqlStoreConformanceRecordDefinitions> &
+TransactionStore<
+typeof sqlStoreConformanceRecordDefinitions,
+BaseStoreOperatorTypes,
+{
+readonly execute: SqlStore<
+typeof sqlStoreConformanceRecordDefinitions >["execute"];
+} >;
+
+export interface SqlTransactionStoreConformanceFixture<DriverParameter> {
+readonly store: SqlTransactionStoreConformanceStore;
+readonly sqlControls: SqlStoreConformanceControls<DriverParameter>;
+readonly transactionControls: TransactionConformanceControls;
+readonly statements: SqlTransactionStoreConformanceStatements;
+}
+
+export interface SqlTransactionStoreConformanceAdapter<DriverParameter> {
+readonly profile: SqlStoreConformanceProfile<DriverParameter>;
+readonly makeFixture: () =>
+| SqlTransactionStoreConformanceFixture<DriverParameter>
+| Promise<SqlTransactionStoreConformanceFixture<DriverParameter>>;
+}
+
+The Statement group is package-owned, runs once in `@commissary/store`, and has no adapter input interface. The SQL Store suite accepts `SqlStoreConformanceAdapter`. The combined SQL and transaction suite accepts `SqlTransactionStoreConformanceAdapter`. Every scenario gets a fresh fixture. The combined Store exposes `execute` at its root and through `TransactionCapabilities`; its Transaction View remains closed to nested transactions.
 
 ### Exact scenario areas
 
