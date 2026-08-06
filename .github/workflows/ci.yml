@@ -124,6 +124,8 @@ jobs:
       - name: Check formatting
         if: matrix.node-version == '24'
         run: pnpm run format:check
+      - name: Build packages
+        run: pnpm run build
 
       - name: Lint source
         if: matrix.node-version == '24'
@@ -132,9 +134,6 @@ jobs:
       - name: Test repository scripts
         if: matrix.node-version == '24'
         run: pnpm run test:scripts
-
-      - name: Build packages
-        run: pnpm run build
 
       - name: Type-check affected packages
         if: matrix.node-version == '24' && github.event_name == 'pull_request'
