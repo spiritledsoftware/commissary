@@ -37,6 +37,9 @@ _Avoid_: SQL companion schema, ORM table, database row, separate migration model
 **SQL Metadata Helper**:
 An optional immutable constructor, such as `sql.table()` or `sql.column()`, that gives integration authors typed portable database metadata without a second Record Definition.
 _Avoid_: Required wrapper, second definition factory, ORM table builder
+**Database Record Refinement**:
+The optional named PostgreSQL, MySQL, or SQLite metadata inside one lower-tier SQL Record Definition. It narrows physical storage intent for one database without creating a second Record Definition or a database-named runtime Store tier.
+_Avoid_: Database Record Definition, host schema copy, ORM model, database Store tier
 
 **PostgreSQL Record Refinement**:
 The `pg.table()` and `pg.column()` metadata inside one SQL Record Definition. An integration owns this metadata, and the host gives the Record to its concrete PostgreSQL adapter.
@@ -73,6 +76,9 @@ _Avoid_: Drizzle mode option, driver value leak, inferred affinity, implicit los
 **SQLite Record Resolution**:
 The synchronous adapter-facing step that applies effective definitions, validates SQLite metadata, and produces table, column, and reference assets without database I/O or DDL.
 _Avoid_: Migration execution, database introspection, host-facing Store tier, ORM schema
+**Database Record Binding**:
+The concrete adapter stage that maps one immutable database Record resolution into ORM or driver values and rejects a live engine, driver path, session setting, host index, or host constraint that cannot preserve it.
+_Avoid_: Database Record Resolution, definition-time database I/O, Store capability probe, client creation
 
 **SQLite ROWID Contract**:
 The resolved `INTEGER PRIMARY KEY` identity and generation policy for one SQLite column. It states whether committed ROWID reuse is allowed or prevented with `AUTOINCREMENT`; it is not a general primary-key or index definition.
@@ -265,6 +271,13 @@ _Avoid_: Standalone SQL client, concrete Adapter, ORM Store, runtime capability 
 **SQL Column Type**:
 An opaque storage-family and value-conversion contract for one Selected Field Value. A portable type has stable meaning across SQL adapters, while a database-specific type narrows that intent for one database.
 _Avoid_: Driver type, raw DDL, Field Schema, TypeScript primitive
+**SQL Custom Encoded Value**:
+The driver-independent storage-edge value that a custom database Column Type encoder can return: a string, finite number, boolean, or `Uint8Array`. SQL `NULL` bypasses this contract.
+_Avoid_: Selected Field Value, JSON-only value, driver object, Statement, Promise
+
+**Resolved Generated Column**:
+The immutable adapter-facing expression and virtual-or-stored mode for one generated column. PostgreSQL always resolves the stored mode; MySQL and SQLite retain their explicit mode.
+_Avoid_: Create Schema default, adapter-generated field value, raw expression text, authoring-history marker
 
 **SQL Literal**:
 An opaque portable database default created by `sql.literal()` from one supported scalar value. It is definition metadata, not Raw SQL Text, an SQL Statement, or a Create Schema default.
