@@ -61,7 +61,7 @@ The Drizzle source authority is commit `b7862528fd8fc39bc2653a6c18dad7c1f4e68d10
 10. **Relations are catalog-wide:** Relations sit beside `records` and `overrides`, run after all tables exist, and return ordinary Drizzle relation entities.
 11. **One flat schema:** Tables use Record keys. Relations use the keys returned by the host callback. All keys must be distinct.
 12. **Direct exports remain necessary:** Drizzle Kit sees runtime entities exported directly from a schema module. It does not recursively inspect the flat schema object.
-13. **Common driver path stays honest:** One binder uses public Drizzle APIs for every accepted database. A transaction request succeeds only after a read-only serializable transaction probe.
+13. **Common driver path stays honest:** One binder uses public Drizzle APIs for every accepted database. A transaction request succeeds only after the server reports read-only serializable settings from inside the probe transaction.
 
 ## Shared Definition Interface
 
@@ -415,7 +415,7 @@ Binding:
 - accepts an existing configured Drizzle database;
 - uses public Drizzle SQL and database APIs instead of native clients;
 - performs a PostgreSQL version probe for every binding;
-- performs a read-only serializable transaction probe only when `transaction: true`;
+- verifies effective read-only serializable settings inside a transaction probe only when `transaction: true`;
 - verifies that the concrete path can preserve every interface in its declared return type;
 - retains the definition's hooks and adjusted create inputs;
 - returns native-Promise Store methods; and
@@ -423,7 +423,7 @@ Binding:
 
 Binding does not create or close the database client, run DDL, inspect live table structure, compare migrations, or add relations to an existing database object.
 
-PostgreSQL has one public binder. Omitted or false `transaction` returns `SqlStore`. Literal true returns `SqlStore & TransactionStore` and rejects when the common Drizzle transaction probe cannot preserve the approved guarantee. There is no public driver matrix, runtime driver-class switch, or native-client bridge.
+PostgreSQL has one public binder. Omitted or false `transaction` returns `SqlStore`. Literal true returns `SqlStore & TransactionStore` and rejects when the common Drizzle transaction probe cannot prove the effective server settings. There is no public driver matrix, runtime driver-class switch, or native-client bridge.
 
 A binding failure rejects with a concrete adapter error before a Store value exists. Later Store operations use the approved Store and SQL Store error contracts. The [Drizzle PostgreSQL Store adapter specification](drizzle-postgres-store.md) defines the exact probes, behavior, and errors.
 

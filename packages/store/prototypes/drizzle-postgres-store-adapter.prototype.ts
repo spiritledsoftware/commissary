@@ -213,6 +213,9 @@ function rawStatement(text: string): PrototypeSqlStatement<never> {
   return { segments: [text], parameters: [] };
 }
 
+const transactionSettingsSql =
+  "SELECT current_setting('transaction_isolation') AS transaction_isolation, current_setting('transaction_read_only') AS transaction_read_only";
+
 function makeSqlStore(database: PrototypePgDatabase): PrototypeSqlStore {
   return {
     execute: async (statement) => {
@@ -232,6 +235,17 @@ function readServerVersion(result: PrototypeExecutionResult): number {
     throw new PrototypeBindingError("invalid-version-result");
   }
   return version;
+}
+
+function requireReadOnlySerializableTransaction(result: PrototypeExecutionResult): void {
+  if (result.rows.length !== 1 || !isObject(result.rows[0])) {
+    throw new PrototypeBindingError("transaction-unavailable");
+  }
+  const isolationLevel = readOptionalProperty(result.rows[0], "transaction_isolation");
+  const readOnly = readOptionalProperty(result.rows[0], "transaction_read_only");
+  if (isolationLevel !== "serializable" || readOnly !== "on") {
+    throw new PrototypeBindingError("transaction-unavailable");
+  }
 }
 
 interface PrototypeBindOptions {
@@ -269,7 +283,10 @@ async function bindPostgresStore(
   try {
     await runTransaction(
       async (transaction) => {
-        await makeSqlStore(transaction).execute(rawStatement("SELECT 1"));
+        const settings = await makeSqlStore(transaction).execute(
+          rawStatement(transactionSettingsSql),
+        );
+        requireReadOnlySerializableTransaction(settings);
       },
       { isolationLevel: "serializable", accessMode: "read only" },
     );
@@ -375,12 +392,14 @@ function assert(condition: unknown, message: string): asserts condition {
 function makePrototypeDatabase(options: {
   readonly transaction: boolean;
   readonly version?: number;
+  readonly applyTransactionOptions?: boolean;
 }): PrototypePgDatabase & {
   readonly calls: PrototypeDrizzleSql[];
   readonly transactionCalls: { readonly config: PrototypeTransactionConfig }[];
 } {
   const calls: PrototypeDrizzleSql[] = [];
   const transactionCalls: { readonly config: PrototypeTransactionConfig }[] = [];
+  let activeTransactionConfig: PrototypeTransactionConfig | undefined;
   const execute = async (statement: PrototypeDrizzleSql): Promise<unknown> => {
     calls.push(statement);
     const text = statement.chunks
@@ -392,6 +411,24 @@ function makePrototypeDatabase(options: {
       .join("");
     if (text === "SHOW server_version_num") {
       return { rows: [{ server_version_num: String(options.version ?? 150_000) }] };
+    }
+    if (text === transactionSettingsSql) {
+      return {
+        rows: [
+          {
+            transaction_isolation:
+              options.applyTransactionOptions === false
+                ? "read committed"
+                : (activeTransactionConfig?.isolationLevel ?? "read committed"),
+            transaction_read_only:
+              options.applyTransactionOptions === false
+                ? "off"
+                : activeTransactionConfig?.accessMode === "read only"
+                  ? "on"
+                  : "off",
+          },
+        ],
+      };
     }
     if (text === "SELECT 1") {
       return [{ value: 1 }];
@@ -408,7 +445,13 @@ function makePrototypeDatabase(options: {
     config: PrototypeTransactionConfig,
   ): Promise<Value> => {
     transactionCalls.push({ config });
-    return use(database);
+    const previousTransactionConfig = activeTransactionConfig;
+    activeTransactionConfig = config;
+    try {
+      return await use(database);
+    } finally {
+      activeTransactionConfig = previousTransactionConfig;
+    }
   };
   const database: PrototypePgDatabase & {
     readonly calls: PrototypeDrizzleSql[];
@@ -487,6 +530,32 @@ async function runPrototype(): Promise<void> {
   assert(
     transactionDatabase.transactionCalls[1]?.config.isolationLevel === "serializable",
     "Store transaction was not serializable",
+  );
+
+  const ignoredSettingsDatabase = makePrototypeDatabase({
+    transaction: true,
+    applyTransactionOptions: false,
+  });
+  let ignoredSettingsFailure: PrototypeBindingError | undefined;
+  try {
+    await bindPostgresStore({
+      database: ignoredSettingsDatabase,
+      transaction: true,
+    });
+  } catch (cause) {
+    if (cause instanceof PrototypeBindingError) {
+      ignoredSettingsFailure = cause;
+    } else {
+      throw cause;
+    }
+  }
+  assert(
+    ignoredSettingsFailure?.reason === "transaction-unavailable",
+    "binding accepted transaction options that the database did not apply",
+  );
+  assert(
+    ignoredSettingsDatabase.transactionCalls.length === 1,
+    "binding did not probe a transaction that accepted ignored options",
   );
 
   const primaryIdentity: PrototypeCandidateIdentity = {

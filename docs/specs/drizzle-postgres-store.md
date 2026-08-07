@@ -51,7 +51,7 @@ The Drizzle source authority is commit `b7862528fd8fc39bc2653a6c18dad7c1f4e68d10
 1. **One binder**: PostgreSQL exports one `bindPostgresStore` function.
 2. **Public Drizzle APIs only**: Binding and Store operations use Drizzle SQL, query-builder, and transaction APIs. They do not access `$client` or driver sessions.
 3. **Base first**: Omitted or false `transaction` returns a SQL Store without a `transaction` method.
-4. **Requested transaction**: Literal true returns a SQL and Transaction Store only after a read-only serializable probe succeeds.
+4. **Requested transaction**: Literal true returns a SQL and Transaction Store only after a probe verifies that the server applied read-only serializable settings to the transaction.
 5. **PostgreSQL 15**: Every binding proves `server_version_num >= 150000`.
 6. **Host lifetime**: Binding never creates or closes the supplied database or its resources.
 7. **Exact Statement structure**: SQL execution combines compiler `segments` with bound parameters. It never parses `$1` or other placeholder-like text.
@@ -166,21 +166,31 @@ The adapter accepts the common object-row and array-row result containers descri
 
 ### Transaction probe
 
-Only `transaction: true` performs a transaction probe:
+Only `transaction: true` performs a transaction probe equivalent to:
 
 ```ts
-await database.transaction(
-  async (transaction) => {
-    await transaction.execute(drizzleSql`SELECT 1`);
-  },
+const settings = await database.transaction(
+  async (transaction) =>
+    normalizePostgresExecutionResult(
+      await transaction.execute(drizzleSql`
+        SELECT
+          current_setting('transaction_isolation') AS transaction_isolation,
+          current_setting('transaction_read_only') AS transaction_read_only
+      `),
+    ),
   {
     isolationLevel: "serializable",
     accessMode: "read only",
   },
 );
+
+requireSingleTransactionSettingsRow(settings, {
+  transaction_isolation: "serializable",
+  transaction_read_only: "on",
+});
 ```
 
-The probe must start and finish one real read-only serializable transaction. An inherited method that reports unsupported transactions rejects binding. A probe failure never creates a weaker Store under the requested wider type.
+The probe must start and finish one real read-only serializable transaction. It queries the effective settings from inside that transaction and requires exactly one object row with the values shown above. Successful acceptance of the Drizzle transaction options is not sufficient. An inherited method that reports unsupported transactions, ignores the requested settings, returns a different setting, or returns an invalid result rejects binding. A probe failure never creates a weaker Store under the requested wider type.
 
 Binding does not run write probes, inspect live tables, compare migrations, or prove host permissions beyond the read-only calls it performs.
 
@@ -452,26 +462,27 @@ PostgreSQL-specific scenarios cover:
 
 1. PostgreSQL 15 acceptance and older-version rejection;
 2. base binding that never calls `database.transaction`;
-3. a successful read-only serializable transaction probe;
-4. rejection of an inherited but unsupported transaction method;
-5. Statement segments that contain raw `$1`, `?`, and `:name` text;
-6. public Drizzle SQL reconstruction with bound parameters in source order;
-7. array-row and object-row result normalization;
-8. optional `rowCount` and `command` preservation without derivation;
-9. supplied single and composite primary keys;
-10. generated-table primary-key emission;
-11. primary-key mismatch rejection;
-12. a table without a primary key;
-13. guarded update and delete through both identity forms;
-14. an `xmin` conflict before any write and after an earlier write;
-15. generated default, identity, and stored-column values returned and validated;
-16. no host-value overwrite;
-17. partial base mutation reporting;
-18. SQLSTATE `40001` and `40P01` conflict mapping;
-19. Collection and `execute` work sharing one physical transaction; and
-20. Core composition over plain and transactional backends.
+3. a successful probe that verifies the effective read-only serializable settings;
+4. rejection when a transaction method accepts but does not apply the requested settings;
+5. rejection of an inherited but unsupported transaction method;
+6. Statement segments that contain raw `$1`, `?`, and `:name` text;
+7. public Drizzle SQL reconstruction with bound parameters in source order;
+8. array-row and object-row result normalization;
+9. optional `rowCount` and `command` preservation without derivation;
+10. supplied single and composite primary keys;
+11. generated-table primary-key emission;
+12. primary-key mismatch rejection;
+13. a table without a primary key;
+14. guarded update and delete through both identity forms;
+15. an `xmin` conflict before any write and after an earlier write;
+16. generated default, identity, and stored-column values returned and validated;
+17. no host-value overwrite;
+18. partial base mutation reporting;
+19. SQLSTATE `40001` and `40P01` conflict mapping;
+20. Collection and `execute` work sharing one physical transaction; and
+21. Core composition over plain and transactional backends.
 
-The compile-tested prototype proves the binder return type, optional primary-key shape, Statement segment conversion, structural result normalization, guarded candidate identity, and Core guarantee selection without adding a production Drizzle dependency.
+The compile-tested prototype proves the binder return type, effective transaction-setting check, optional primary-key shape, Statement segment conversion, structural result normalization, guarded candidate identity, and Core guarantee selection without adding a production Drizzle dependency.
 
 ## Approval examples
 
