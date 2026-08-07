@@ -2,11 +2,11 @@
 
 > **Status**: Design complete for implementation. The portable SQL tier and the PostgreSQL, MySQL, and SQLite Record specialization decisions are binding.
 >
-> **Last updated**: 2026-08-06 during the database Record specialization approval gate.
+> **Last updated**: 2026-08-07 during Drizzle PostgreSQL Store adapter approval.
 
 ## Summary
 
-Add a portable SQL Store specialization and Drizzle-independent PostgreSQL, MySQL, and SQLite Record metadata to `@commissary/store`. The package gains one immutable SQL Record definition form, symmetric portable and database metadata helpers, one opaque SQL Statement algebra, shared adapter helpers, SQL errors, and shared conformance tests.
+Add a portable SQL Store specialization and Drizzle-independent PostgreSQL, MySQL, and SQLite Record metadata to `@commissary/store`. The package gains one immutable SQL Record definition form, optional portable primary-key metadata, symmetric portable and database metadata helpers, one opaque SQL Statement algebra, shared adapter helpers, SQL errors, and shared conformance tests.
 
 The `SqlStore` interface remains portable. SQL text can use one database dialect. Generic execution returns one unchecked row set. Integrations can add PostgreSQL, MySQL, or SQLite refinements without an ORM dependency, while hosts call only their selected concrete adapter. Concrete adapters and focused adapter interfaces can accept more parameter types and return more facts without weakening the generic contract.
 
@@ -20,7 +20,7 @@ This specification extends the [Store Architecture Technical Specification](stor
 - Preserve Standard Schema validation and Store inference.
 - Give hosts safe resolved table and column references.
 - Keep SQL and Collection work in one physical transaction when a Store supports both capabilities.
-- Give adapter authors one Statement compiler and one transaction callback runner.
+- Give adapter authors one Statement compiler with exact parameter segments and one transaction callback runner.
 - Define deterministic conformance controls without exposing driver state on production Stores.
 
 ## Non-Goals
@@ -29,7 +29,7 @@ This specification extends the [Store Architecture Technical Specification](stor
 - Parse or validate returned rows.
 - Add preparation, streaming, cancellation, session reservation, batches, or ordered multiple results.
 - Expose affected counts, generated identifiers, warnings, or notices on generic execution.
-- Add indexes, relations, migrations, schema diffing, introspection, or client creation.
+- Add indexes other than an optional primary key, relations, migrations, schema diffing, introspection, or client creation.
 - Make resolved Record references a database permission or security boundary.
 - Apply Collection Field Schemas, Hooks, expressions, generated values, or field conversion to direct SQL.
 - Add an Effect-specific SQL definition interface. `@commissary/store` keeps one plain JavaScript interface. A later `@commissary/effect` adapter must earn its own seam.
@@ -58,6 +58,8 @@ This specification extends the [Store Architecture Technical Specification](stor
 20. **Exact rollback failure**: Successful rollback preserves the selected callback boundary failure without wrapping it.
 21. **No manual control guarantee**: Transaction guarantees apply only when callers do not submit manual transaction SQL through `execute`.
 22. **Capability over database identity**: Database identity alone does not create a Store specialization. Concrete adapters compose primitive contracts, and a focused capability requires a proven caller workflow.
+23. **Optional primary key**: A SQL Record can name one nonempty primary-key field tuple. SQL tables without a primary key remain valid.
+24. **Exact parameter segments**: Compiled Statements retain the exact text segments around parameters, so an ORM adapter never parses generated placeholder text.
 
 ## Confirmed Decisions
 
@@ -131,6 +133,7 @@ export interface SqlLiteral<out Value extends SqlLiteralValue> {
 
 export interface SqlTableDefinition {
   readonly name?: string;
+  readonly primaryKey?: readonly [string, ...string[]];
   readonly postgres?: object;
   readonly mysql?: object;
   readonly sqlite?: object;
@@ -192,6 +195,8 @@ export declare const sql: {
 `SqlCustomEncodedValue` is the one driver-independent storage-edge output for custom column encoders. Numbers must be finite at runtime. SQL `NULL` bypasses custom encoders and is not part of this union.
 
 The named database metadata properties accept an object at the portable stage and preserve its inferred type. The matching database helper gives integration authors a typed, locally validated object. The matching adapter resolver activates it after contributions and overrides. This rule avoids global type augmentation and keeps ORM and driver types out of `@commissary/store`.
+
+`table.primaryKey` contains logical Record field names in primary-key order. `SqlRecord.define()` preserves its tuple and checks it against the same definition's `fields`. The tuple must be nonempty, contain no duplicate name, name only existing fields, and resolve only to non-null columns. A composite key is valid. An omitted key means that the SQL Record declares no portable primary key.
 
 `sql.table()` and `sql.column()` are the recommended metadata authoring helpers. They snapshot and freeze their package-owned options. Plain structural metadata remains valid, and typed deep overrides can use helpers or plain patches.
 
@@ -295,10 +300,10 @@ After the patch, the definition stage rebuilds all reflection and physical metad
 
 Definition has two synchronous, I/O-free stages:
 
-1. `StoreRecord.define()` or `SqlRecord.define()` checks local structure, snapshots package-owned containers, and returns an immutable unbound definition.
-2. A concrete database definition combines contributions and overrides, resolves storage intent and physical names, checks conflicts, and returns resolved references plus its database-specific assets.
+1. `StoreRecord.define()` or `SqlRecord.define()` checks local structure, including portable primary-key field names, snapshots package-owned containers, and returns an immutable unbound definition.
+2. A concrete database definition combines contributions and overrides, resolves storage intent, primary-key columns, and physical names, checks conflicts, and returns resolved references plus its database-specific assets.
 
-Do not clone or freeze third-party schema objects. Snapshot and freeze package-owned field wrappers, table and column metadata, override results, SQL opaque values, and references.
+Do not clone or freeze third-party schema objects. Snapshot and freeze package-owned field wrappers, table and column metadata, primary-key tuples, override results, SQL opaque values, and references.
 
 A failed SQL definition stage throws one `SqlDefinitionError` with all independent issues:
 
@@ -313,7 +318,8 @@ export type SqlDefinitionIssueCode =
   | "invalid-column-default"
   | "invalid-database-options"
   | "invalid-override"
-  | "incompatible-override";
+  | "incompatible-override"
+  | "invalid-primary-key";
 
 export interface SqlDefinitionIssue {
   readonly code: SqlDefinitionIssueCode;
@@ -328,6 +334,8 @@ export declare class SqlDefinitionError extends Error {
 ```
 
 A table or column name must be a nonempty NUL-free string. Omitted table and column names use their exact catalog and field keys. There is no automatic case conversion, pluralization, or snake-case conversion. Equal final physical names are definition errors. Database-specific qualification and identifier limits belong to the matching database tier.
+
+Primary-key entries use logical field names. Definition reports `invalid-primary-key` for an empty tuple, duplicate or unknown field, a field that can remain missing or null, or a conflict with database-specific table metadata. A primary key contributes a database constraint only when a concrete definition generates the physical table. Binding a supplied table verifies its declared primary key instead.
 
 Core publishes explicit `commissary_` table names and snake-case column names from the same definitions that own its Field Schemas. Core imports no ORM or driver type.
 
@@ -377,14 +385,14 @@ PostgreSQL always resolves generated columns with `mode: "stored"`. MySQL and SQ
 All database resolvers use this issue-order skeleton:
 
 1. contribution and override issues;
-2. each table's qualifier, name, and format;
+2. each table's qualifier, name, format, and portable primary-key structure;
 3. each field's name, opaque identity, storage evidence, Select compatibility, type contract, default, nullability, generation or identity metadata, and cross-property checks;
-4. table-wide rules and column collisions; and
+4. table-wide primary-key resolution, database rules, and column collisions; and
 5. catalog namespace or table collisions.
 
-Database-specific checks stay in their related slot. Record and field declaration order control traversal. First use controls ties between owned assets, and the issue belongs to the later asset. A check with an invalid prerequisite is skipped; every independent check continues.
+Database-specific checks stay in their related slot. Record and field declaration order control traversal. Primary-key field order controls its own checks. First use controls ties between owned assets, and the issue belongs to the later asset. A check with an invalid prerequisite is skipped; every independent check continues.
 
-Resolution performs no database I/O and cannot prove a live engine, driver path, session setting, host index, or host constraint. The concrete adapter binding stage must reject a live configuration that cannot preserve the complete resolved plan before it returns a Store.
+Resolution performs no database I/O and cannot prove a live engine, driver path, session setting, supplied-table primary key, host index, or host constraint. The concrete adapter binding stage must reject a live configuration that cannot preserve the complete resolved plan before it returns a Store.
 
 ### PostgreSQL Record specialization
 
@@ -677,7 +685,7 @@ Columns conflict only inside their table. Definition-owned tables, explicit iden
 
 #### Resolution assets and failures
 
-The adapter resolution exposes tables by Record key, columns by field key, and enums in first-use order. Each column includes its exact name and reference, resolved nullability, a final physical direct, array, enum, or custom type, its default or normalized `SqlResolvedGeneratedColumn`, identity metadata, and encode/decode functions. The plan carries no portable authoring-origin marker. Adapter authors switch exhaustively on the physical discriminant and do not parse SQL type text.
+The adapter resolution exposes tables by Record key, columns by field key, primary-key columns in declared order, and enums in first-use order. Each column includes its exact name and reference, resolved nullability, a final physical direct, array, enum, or custom type, its default or normalized `SqlResolvedGeneratedColumn`, identity metadata, and encode/decode functions. The plan carries no portable authoring-origin marker. Adapter authors switch exhaustively on the physical discriminant and do not parse SQL type text.
 
 Metadata and type helper constructors preserve literal inference, snapshot options, and return immutable values. They throw `TypeError` immediately for malformed constructor arguments, invalid atomic option types or limits, invalid local names, and incompatible opaque formats. They never inspect Record field values. They do not check inherited metadata, precedence, cross-property conflicts, Schema compatibility, catalog collisions, or PostgreSQL namespaces.
 
@@ -697,10 +705,10 @@ Each runtime or definition failure has one owner:
 - missing storage evidence uses `column-type-required`;
 - invalid helper options, enum values, custom names, or converters use `invalid-column-type`;
 - defaults use `invalid-column-default`;
-- identity, generation, nullability, and other PostgreSQL option conflicts use `invalid-database-options`; and
+- identity, generation, nullability, primary-key, and other PostgreSQL option conflicts use `invalid-database-options`; and
 - composition uses the existing contribution and override codes.
 
-PostgreSQL uses the shared issue-order skeleton. Its table slot checks schema, name, and table format. Its field slot checks the direct, array, enum, or custom type contract before default, nullability, identity, generation, and cross-property compatibility. Its table-wide slot checks column collisions. Its final namespace slot checks tables and their row types, explicit identity sequences, and enums in first-use order.
+PostgreSQL uses the shared issue-order skeleton. Its table slot checks schema, name, table format, and portable primary-key structure. Its field slot checks the direct, array, enum, or custom type contract before default, nullability, identity, generation, and cross-property compatibility. Its table-wide slot resolves primary-key columns and checks column collisions. Its final namespace slot checks tables and their row types, explicit identity sequences, and enums in first-use order.
 
 Preserve the original converter failure as `cause` and include Collection, operation, and field. Converter failures are contract defects, not caller validation or database I/O errors.
 
@@ -1010,7 +1018,7 @@ Active MySQL metadata can override portable `name`, `type`, `default`, and `notN
 
 #### Resolution assets and failures
 
-The adapter resolution exposes tables by Record key and columns by field key. Each column includes its exact name and reference, resolved nullability, a final physical direct, enum, or custom type discriminant, physical option snapshots, its default or normalized `SqlResolvedGeneratedColumn`, automatic increment and update data, and synchronous encode and decode functions. The plan carries no portable authoring-origin marker. Adapter authors switch exhaustively on physical direct names and do not parse generated SQL type text. Custom columns retain their type Statement.
+The adapter resolution exposes tables by Record key, columns by field key, and primary-key columns in declared order. Each column includes its exact name and reference, resolved nullability, a final physical direct, enum, or custom type discriminant, physical option snapshots, its default or normalized `SqlResolvedGeneratedColumn`, automatic increment and update data, and synchronous encode and decode functions. The plan carries no portable authoring-origin marker. Adapter authors switch exhaustively on physical direct names and do not parse generated SQL type text. Custom columns retain their type Statement.
 
 Metadata and type helper constructors preserve literal inference, snapshot options, and return immutable values. They throw `TypeError` immediately only when malformed values are supplied as `mysql.*` helper invocation arguments, including invalid atomic option types or limits, invalid local names or enum values, parameterized custom type structure, and incompatible opaque formats. They never inspect Record field values. Plain structural metadata does not pass through constructor validation. The resolver checks its effective values together with inherited metadata, precedence, cross-property conflicts, Schema compatibility, catalog collisions, and MySQL namespaces.
 
@@ -1030,14 +1038,14 @@ Each runtime or definition failure has one owner:
 - missing storage evidence uses `column-type-required`;
 - invalid effective type options, enum values, custom structure, or converters use `invalid-column-type`;
 - defaults use `invalid-column-default`;
-- automatic increment, generation, automatic update, nullability, and other MySQL option conflicts use `invalid-database-options`; and
+- automatic increment, generation, automatic update, nullability, primary-key, and other MySQL option conflicts use `invalid-database-options`; and
 - composition uses the existing contribution and override codes.
 
 Issues point to the winning `records` or `overrides` source. A conflict points to the later or higher-precedence setting and names the other source in its message. A duplicate issue belongs to the later name. Composition and override issues precede effective-catalog checks. Effective checks then follow Record declaration and this fixed order:
 
-1. table database, table name, and table-format validity;
+1. table database, table name, table-format validity, and portable primary-key structure;
 2. for each field in declaration order: column name, opaque type identity, storage evidence, Select compatibility, physical type options or enum or custom structure, default, nullability, automatic increment, generation, automatic update, and cross-property compatibility;
-3. table-wide automatic-increment count and column-name collisions; and
+3. table-wide primary-key resolution, automatic-increment count and position, and column-name collisions; and
 4. database-spelling and table-name collisions across Records.
 
 When two owned names or references enter the same step, first use controls order and the issue belongs to the later one. Checks that depend on one invalid prerequisite are skipped; every independent check continues.
@@ -1050,7 +1058,7 @@ MySQL metadata, column types, Statements, and resolutions use opaque format iden
 
 The SQLite specialization targets SQLite 3.45 and later. It defines Drizzle-independent metadata and resolution assets. It does not create a SQLite-named runtime Store interface. Definition is synchronous and performs no database or version check. A concrete adapter rejects an unsupported live engine or driver path during binding.
 
-Do not expose `STRICT`, `WITHOUT ROWID`, attached-database qualification, SQLite JSONB, general constraints, collations, conflict policies, indexes, relations, or migration data. Generated columns and the integer-primary-key ROWID behavior are in scope because the adapter can preserve them.
+Do not expose `STRICT`, `WITHOUT ROWID`, attached-database qualification, SQLite JSONB, constraints other than the portable primary key, collations, conflict policies, other indexes, relations, or migration data. Generated columns and the integer-primary-key ROWID behavior are in scope because the adapter can preserve them.
 
 #### Ownership and authoring
 
@@ -1237,7 +1245,7 @@ SQLite defaults and generated expressions accept parameter-free Statements. Defi
 
 Omitted `reuse` means `"allowed"`. `"allowed"` uses ordinary `INTEGER PRIMARY KEY` behavior. `"forbidden"` emits `AUTOINCREMENT`; it prevents reuse of committed ROWIDs but does not promise consecutive values or prevent gaps.
 
-ROWID metadata is the only constraint-like metadata owned here because it defines physical row identity and generation. General primary keys, unique constraints, checks, foreign keys, collations, conflict policies, indexes, and relations remain host-owned. A concrete adapter must reject a host constraint that conflicts with the resolved ROWID contract.
+Portable primary-key metadata is the general constraint owned by this tier. ROWID metadata adds SQLite physical identity and generation rules for one `INTEGER PRIMARY KEY` column. Unique constraints, checks, foreign keys, collations, conflict policies, other indexes, and relations remain host-owned. A concrete adapter rejects a supplied constraint that conflicts with the resolved primary-key or ROWID contract.
 
 A generated column has a parameter-free expression and explicit `"virtual"` or `"stored"` mode. Direct and custom types can be generated. Generation conflicts with a default and ROWID metadata. SQLite validates the expression. At least one effective column in each table must be non-generated. Generated columns can be nullable.
 
@@ -1269,7 +1277,7 @@ Absence inherits. `null` removes one inherited optional setting. After contribut
 
 #### Resolution assets and failures
 
-The adapter resolution exposes tables by Record key and columns by field key. Each table contains its exact name, reference, and columns. Each column contains its exact name and reference, resolved nullability, a final physical direct or custom type, its default, ROWID data, normalized `SqlResolvedGeneratedColumn`, and synchronous encode and decode functions. The plan carries no portable authoring-origin marker. Adapter authors switch exhaustively on named physical discriminants and do not parse generated SQL type text. Custom columns retain their type Statement.
+The adapter resolution exposes tables by Record key and columns by field key. Each table contains its exact name, reference, primary-key columns in declared order, and columns. Each column contains its exact name and reference, resolved nullability, a final physical direct or custom type, its default, ROWID data, normalized `SqlResolvedGeneratedColumn`, and synchronous encode and decode functions. The plan carries no portable authoring-origin marker. Adapter authors switch exhaustively on named physical discriminants and do not parse generated SQL type text. Custom columns retain their type Statement.
 
 Metadata and type helper constructors preserve literal inference, snapshot options, and return immutable values. They throw `TypeError` immediately only for malformed values supplied directly to `sqlite.*` helper invocations, including invalid atomic option values, local names, parameterized custom type structure, missing converter functions, and incompatible opaque formats. They never inspect Record field values, Schemas, inherited metadata, overrides, collisions, or cross-property constraints. Plain structural metadata does not pass through constructor validation.
 
@@ -1289,14 +1297,14 @@ The resolver checks effective values together with inherited metadata, precedenc
 - missing storage evidence uses `column-type-required`;
 - invalid effective direct contracts, custom structure, or converters use `invalid-column-type`;
 - defaults use `invalid-column-default`;
-- ROWID, generation, nullability, and other SQLite option conflicts use `invalid-database-options`; and
+- ROWID, generation, nullability, primary-key, and other SQLite option conflicts use `invalid-database-options`; and
 - composition uses the existing contribution and override codes.
 
 Issues point to the winning `records` or `overrides` source. A conflict points to the later or higher-precedence setting and names the other source in its message. A duplicate issue belongs to the later name. Composition and override issues precede effective-catalog checks. Effective checks then follow Record declaration and this fixed order:
 
-1. table name and table-format validity;
+1. table name, table-format validity, and portable primary-key structure;
 2. for each field in declaration order: column name, opaque type identity, storage evidence, Select compatibility, direct or custom type contract, default, nullability, ROWID, generation, and cross-property compatibility;
-3. table-wide ROWID count, the non-generated-column rule, and column-name collisions; and
+3. table-wide primary-key resolution, ROWID count and agreement, the non-generated-column rule, and column-name collisions; and
 4. table-name collisions across Records.
 
 When two owned names or references enter the same step, first use controls order and the issue belongs to the later one. Checks that depend on one invalid prerequisite are skipped; every independent check continues.
@@ -1375,6 +1383,7 @@ export interface SqlStatementCompilerOptions<Parameter, DriverParameter> {
 export interface CompiledSqlStatement<DriverParameter> {
   readonly text: string;
   readonly parameters: DriverParameter[];
+  readonly segments: readonly string[];
 }
 
 export declare function compileSqlStatement<Parameter, DriverParameter>(
@@ -1386,13 +1395,15 @@ export declare function compileSqlStatement<Parameter, DriverParameter>(
 The compiler:
 
 1. checks origin and format compatibility;
-2. composes text and identifiers;
+2. composes text segments and quoted identifiers;
 3. makes placeholders from zero-based parameter positions;
 4. runs explicit encoders;
 5. checks adapter support;
 6. applies portable validation and negative-zero normalization;
 7. converts values for the driver; and
-8. returns one fresh driver-owned parameter array in source order.
+8. returns final text, one fresh driver-owned parameter array in source order, and exact parameter segments.
+
+`segments.length` is always `parameters.length + 1`. Interleaving each segment with its following parameter reconstructs Statement structure without parsing placeholders. The first and last segment can be empty. An empty Statement returns `segments: [""]`. Raw text that looks like a placeholder remains inside its original segment.
 
 `isParameter()` returning false produces `unsupported-parameter`. A thrown encoder, support check, or conversion produces `invalid-parameter` with its position and cause. A non-finite number or a string that contains NUL produces `invalid-parameter` without a cause. A failed quote or placeholder callback, or a non-string callback result, produces `StoreAdapterContractError` with `invalid-sql-compilation`.
 
@@ -1548,6 +1559,7 @@ export interface SqlStoreConformanceProfile<DriverParameter> {
   readonly expectedCompilation: {
     readonly text: string;
     readonly parameters: readonly DriverParameter[];
+    readonly segments: readonly string[];
   };
 }
 
