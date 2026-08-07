@@ -1,12 +1,12 @@
 # Drizzle Store Technical Specification
 
-**Status:** Shared definition lifecycle and PostgreSQL binding shape approved. MySQL, SQLite, package exports, and final cross-adapter approval remain in later design gates.
+**Status:** Shared definition lifecycle and PostgreSQL and MySQL binding shapes approved. SQLite, package exports, and final cross-adapter approval remain in later design gates.
 
 ## Summary
 
 `@commissary/drizzle` accepts lower-tier Record definitions and ordinary Drizzle tables in one Store definition. It can generate missing field schemas from host-supplied Drizzle schema functions, merge static Record overrides, build or accept dialect tables, attach host relations, and return one flat runtime schema without a database connection.
 
-The same definition captures Store hooks. A later asynchronous binding stage accepts an existing host-owned Drizzle database, checks the concrete engine and requested transaction path, and returns the Store capabilities that path can preserve. Definition never creates a client, opens a connection, runs a migration, or inspects a live schema.
+The same definition captures Store hooks. A later asynchronous binding stage accepts an existing host-owned Drizzle database, checks the concrete engine and requested transaction path, and returns the Store capabilities that path can preserve. Definition never creates a client, opens a connection, runs a migration, or inspects a live schema. Concrete binding performs only the live checks that its adapter specification requires.
 
 ## Context
 
@@ -20,7 +20,7 @@ The approved Store and SQL Store tiers already define:
 - strict create, update, select, and transaction behavior; and
 - Drizzle-independent PostgreSQL, MySQL, and SQLite physical plans.
 
-This specification defines the shared concrete Drizzle definition lifecycle and the approved PostgreSQL binding shape. MySQL and SQLite driver behavior remain in their concrete design gates.
+This specification defines the shared concrete Drizzle definition lifecycle and the approved PostgreSQL and MySQL binding shapes. SQLite driver behavior remains in its concrete design gate.
 
 The Drizzle source authority is commit `b7862528fd8fc39bc2653a6c18dad7c1f4e68d10`.
 
@@ -40,9 +40,9 @@ The Drizzle source authority is commit `b7862528fd8fc39bc2653a6c18dad7c1f4e68d10
 ## Non-goals
 
 - Database client, pool, credential, or connection lifetime ownership.
-- Migration execution, schema diffing, introspection, or TypeScript source generation.
+- Migration execution, schema diffing, general live-table introspection, or TypeScript source generation.
 - A common runtime PostgreSQL, MySQL, or SQLite Store interface.
-- Driver-specific public binders or native-client escape hatches.
+- Native-client escape hatches or a public matrix of driver-specific binders.
 - Integration-owned indexes, relations, or constraints other than the optional portable primary key in lower-tier Record definitions.
 - Relation-aware Collection reads, eager loading, joins, cascades, or nested writes.
 - Automatic support for every Standard Schema library that a Drizzle extension can return.
@@ -50,7 +50,7 @@ The Drizzle source authority is commit `b7862528fd8fc39bc2653a6c18dad7c1f4e68d10
 ## Invariants
 
 1. **One effective Record:** Every Collection still has one effective Record definition. Drizzle input fills or implements that definition; it does not create a parallel model.
-2. **Concrete context is enough:** A Drizzle PostgreSQL definition accepts PostgreSQL Drizzle values directly. It does not nest them under `drizzle` or `postgres` again.
+2. **Concrete context is enough:** A concrete dialect definition accepts its Drizzle values directly. It does not nest them under `drizzle` or the database name again.
 3. **Synchronous definition:** Definition performs no I/O and needs no database instance.
 4. **Asynchronous binding:** Binding accepts an existing database and can perform read-only engine, driver, transaction, and session checks.
 5. **Static schemas win:** Existing effective Field Schemas keep their normal fallback rules. Host static schema overrides win over generated schemas.
@@ -61,7 +61,7 @@ The Drizzle source authority is commit `b7862528fd8fc39bc2653a6c18dad7c1f4e68d10
 10. **Relations are catalog-wide:** Relations sit beside `records` and `overrides`, run after all tables exist, and return ordinary Drizzle relation entities.
 11. **One flat schema:** Tables use Record keys. Relations use the keys returned by the host callback. All keys must be distinct.
 12. **Direct exports remain necessary:** Drizzle Kit sees runtime entities exported directly from a schema module. It does not recursively inspect the flat schema object.
-13. **Common driver path stays honest:** One binder uses public Drizzle APIs for every accepted database. A transaction request succeeds only after the server reports read-only serializable settings from inside the probe transaction.
+13. **Common driver path stays honest:** Each database has one binder that uses public Drizzle APIs for every accepted database. A transaction capability succeeds only after the adapter proves its required effective transaction settings.
 
 ## Shared Definition Interface
 
@@ -408,39 +408,47 @@ const transactionStore = await bindPostgresStore({
   database,
   transaction: true,
 });
+
+const mysqlStore = await bindMysqlStore({
+  definition: mysqlDefinition,
+  database: mysqlDatabase,
+});
 ```
 
 Binding:
 
 - accepts an existing configured Drizzle database;
 - uses public Drizzle SQL and database APIs instead of native clients;
-- performs a PostgreSQL version probe for every binding;
-- verifies effective read-only serializable settings inside a transaction probe only when `transaction: true`;
+- performs the concrete adapter's server and transaction probes;
 - verifies that the concrete path can preserve every interface in its declared return type;
 - retains the definition's hooks and adjusted create inputs;
 - returns native-Promise Store methods; and
 - can reuse one definition with several compatible database instances.
 
-Binding does not create or close the database client, run DDL, inspect live table structure, compare migrations, or add relations to an existing database object.
+Binding does not create or close the database client, run DDL, compare migrations, or add relations to an existing database object. PostgreSQL does not inspect live table structure. MySQL has one narrow exception: binding confirms that each defined physical table is the expected base table and uses InnoDB. It does not infer columns, keys, or indexes from the live schema.
 
-PostgreSQL has one public binder. Omitted or false `transaction` returns `SqlStore`. Literal true returns `SqlStore & TransactionStore` and rejects when the common Drizzle transaction probe cannot prove the effective server settings. There is no public driver matrix, runtime driver-class switch, or native-client bridge.
+PostgreSQL has one public binder. Omitted or false `transaction` returns `SqlStore`. Literal true returns `SqlStore & TransactionStore` and rejects when the common Drizzle transaction probe cannot prove the effective server settings.
 
-A binding failure rejects with a concrete adapter error before a Store value exists. Later Store operations use the approved Store and SQL Store error contracts. The [Drizzle PostgreSQL Store adapter specification](drizzle-postgres-store.md) defines the exact probes, behavior, and errors.
+MySQL also has one public binder. Omitted or false `transaction` returns `SqlStore`. Literal true returns `SqlStore & TransactionStore`. Every binding requires actual Oracle MySQL 8.4 or later, a working Drizzle transaction callback, effective serializable settings, and InnoDB for all defined tables. The host must configure every possible connection with a UTC session time zone.
+
+Neither adapter exposes a public driver matrix, runtime driver-class switch, or native-client bridge. A binding failure rejects with a concrete adapter error before a Store value exists. Later Store operations use the approved Store and SQL Store error contracts. The [Drizzle PostgreSQL Store adapter specification](drizzle-postgres-store.md) and [Drizzle MySQL Store adapter specification](drizzle-mysql-store.md) define the exact probes, behavior, and errors.
 
 ## Generic and Thread Definitions
 
 Generic and Thread definitions use separate constructors and the same internal lifecycle:
 
 ```ts
-const genericDefinition = DrizzlePostgresStore.define(options);
-const threadDefinition = DrizzlePostgresThreadStore.define(options);
+const postgresDefinition = DrizzlePostgresStore.define(options);
+const postgresThreadDefinition = DrizzlePostgresThreadStore.define(options);
+const mysqlDefinition = DrizzleMysqlStore.define(options);
+const mysqlThreadDefinition = DrizzleMysqlThreadStore.define(options);
 ```
 
-The generic definition uses the supplied Record catalog. The Thread definition adds every Core Record, applies host overrides, validates Core compatibility, calculates required hook patches, and then runs the same Drizzle normalization. There is no `includeCore` flag.
+Each generic definition uses the supplied Record catalog. Each Thread definition adds every Core Record, applies host overrides, validates Core compatibility, calculates required hook patches, and then runs the same Drizzle normalization. There is no `includeCore` flag.
 
-The same `bindPostgresStore` accepts either definition and returns its generic Store backend. Core composes a Thread definition's backend with `createThreadStore`. The PostgreSQL adapter does not export a separate Thread Store binder.
+The database's one binder accepts either matching definition and returns its generic Store backend. Core composes a Thread definition's backend with `createThreadStore`. An adapter does not export a separate Thread Store binder.
 
-The constructors are concrete factory values, not PostgreSQL-, MySQL-, or SQLite-named runtime Store interfaces.
+The constructors are concrete factory values, not database-named runtime Store interfaces.
 
 ## Approval Scenarios
 
@@ -479,12 +487,12 @@ The following remain in later tickets:
 
 - root and subpath exports;
 - package peer and optional dependencies;
-- supported PostgreSQL, MySQL, and SQLite driver groups;
-- concrete database and transaction types;
-- raw SQL result normalization;
-- CRUD translation and generated-value recovery;
-- transaction implementation and conformance;
-- concrete binding error classes and probe queries; and
+- supported SQLite driver groups;
+- concrete SQLite database and transaction types;
+- SQLite raw SQL result normalization;
+- SQLite CRUD translation and generated-value recovery;
+- SQLite transaction implementation and conformance;
+- concrete SQLite binding errors and probe queries; and
 - complete cross-dialect approval.
 
 ## References

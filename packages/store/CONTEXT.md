@@ -69,6 +69,18 @@ _Avoid_: Driver output mode, ORM column type, implicit lossy number conversion, 
 The synchronous adapter-facing step that applies effective definitions, validates MySQL metadata, and produces table, column, and reference assets without database I/O or DDL.
 _Avoid_: Migration execution, database introspection, host-facing Store tier, ORM schema
 
+**Drizzle MySQL Store Binding**:
+The asynchronous adapter stage that accepts one host-owned Drizzle MySQL database, proves Oracle MySQL 8.4 or later, verifies serializable transactions and InnoDB Store tables, and returns `SqlStore` with an optional requested `TransactionStore`.
+_Avoid_: Native-driver binder, client ownership, MariaDB-compatible promise, migration check, MySQL runtime Store tier
+
+**MySQL Candidate Key**:
+The private ordered non-null column tuple used for exact mutation readback. The adapter prefers a primary key, then the intrinsic `SERIAL` unique key, then a simple Drizzle-declared unique key. A keyless table remains valid until an operation needs exact identity.
+_Avoid_: Public Record identity, guessed full-row match, live-schema key inference, generated Store field
+
+**MySQL UTC Connection Contract**:
+The host requirement to keep `@@session.time_zone` in UTC on every connection that a Drizzle MySQL database can use with `TIMESTAMP` columns. One session probe does not prove this pool-wide fact, so the adapter does not claim to verify it.
+_Avoid_: Adapter-owned session configuration, one-connection pool proof, timestamp conversion wrapper, local-time contract
+
 **SQLite Record Refinement**:
 The `sqlite.table()` and `sqlite.column()` metadata inside one SQL Record Definition. An integration owns this metadata, and the host gives the Record to its concrete SQLite adapter.
 _Avoid_: `SqliteRecord`, SQLite definition factory, Drizzle type, host-authored schema copy
