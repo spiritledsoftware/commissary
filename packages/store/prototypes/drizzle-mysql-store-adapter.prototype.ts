@@ -213,8 +213,36 @@ const serverProbeSql =
   "SELECT VERSION() AS version, @@version_comment AS version_comment, DATABASE() AS current_database";
 const transactionProbeSql =
   "SELECT STATE AS state, ACCESS_MODE AS access_mode, ISOLATION_LEVEL AS isolation_level, AUTOCOMMIT AS autocommit FROM performance_schema.events_transactions_current WHERE THREAD_ID = PS_CURRENT_THREAD_ID() AND END_EVENT_ID IS NULL";
-const tableProbeSql =
+const tableProbeSelectSql =
   "SELECT TABLE_SCHEMA AS table_schema, TABLE_NAME AS table_name, TABLE_TYPE AS table_type, ENGINE AS engine FROM information_schema.TABLES";
+
+function resolveTableDatabase(table: PrototypeTablePlan, currentDatabase: string | null): string {
+  const database = table.database ?? currentDatabase;
+  if (database === null) {
+    throw new PrototypeBindingError("current-database-required");
+  }
+  return database;
+}
+
+function makeTableProbeStatement(
+  tables: readonly PrototypeTablePlan[],
+  currentDatabase: string | null,
+): PrototypeSqlStatement {
+  if (tables.length === 0) {
+    return rawStatement(`${tableProbeSelectSql} WHERE FALSE`);
+  }
+
+  const segments = [`${tableProbeSelectSql} WHERE `];
+  const parameters: string[] = [];
+  for (const [index, table] of tables.entries()) {
+    segments[segments.length - 1] += `${index === 0 ? "(" : " OR ("}TABLE_SCHEMA = `;
+    parameters.push(resolveTableDatabase(table, currentDatabase));
+    segments.push(" AND TABLE_NAME = ");
+    parameters.push(table.name);
+    segments.push(")");
+  }
+  return { segments, parameters };
+}
 
 function readSingleObjectRow(
   result: PrototypeExecutionResult,
@@ -280,13 +308,7 @@ function requireInnoDbTables(
   currentDatabase: string | null,
 ): void {
   const expected = new Set(
-    tables.map((table) => {
-      const database = table.database ?? currentDatabase;
-      if (database === null) {
-        throw new PrototypeBindingError("current-database-required");
-      }
-      return `${database}\0${table.name}`;
-    }),
+    tables.map((table) => `${resolveTableDatabase(table, currentDatabase)}\0${table.name}`),
   );
 
   for (const row of result.rows) {
@@ -392,11 +414,8 @@ async function bindMysqlStore(
     throw new PrototypeBindingError("transaction-unavailable");
   }
 
-  requireInnoDbTables(
-    await store.execute(rawStatement(tableProbeSql)),
-    options.tables,
-    currentDatabase,
-  );
+  const tableProbe = makeTableProbeStatement(options.tables, currentDatabase);
+  requireInnoDbTables(await store.execute(tableProbe), options.tables, currentDatabase);
 
   if (options.transaction !== true) {
     return store;
@@ -509,6 +528,7 @@ function assert(condition: unknown, message: string): asserts condition {
 
 interface PrototypeDatabaseCall {
   readonly text: string;
+  readonly parameters: readonly unknown[];
   readonly inTransaction: boolean;
 }
 
@@ -528,10 +548,17 @@ function makePrototypeDatabase(options?: {
   let activeTransactionConfig: PrototypeTransactionConfig | undefined;
 
   const execute = async (statement: PrototypeDrizzleSql): Promise<unknown> => {
-    const text = statement.chunks
-      .map((chunk) => (chunk.kind === "raw" ? chunk.text : "?"))
-      .join("");
-    calls.push({ text, inTransaction: activeTransactionConfig !== undefined });
+    let text = "";
+    const parameters: unknown[] = [];
+    for (const chunk of statement.chunks) {
+      if (chunk.kind === "raw") {
+        text += chunk.text;
+      } else {
+        text += "?";
+        parameters.push(chunk.value);
+      }
+    }
+    calls.push({ text, parameters, inTransaction: activeTransactionConfig !== undefined });
 
     if (text === serverProbeSql) {
       return [
@@ -567,21 +594,32 @@ function makePrototypeDatabase(options?: {
         ],
       };
     }
-    if (text === tableProbeSql) {
+    if (text.startsWith(`${tableProbeSelectSql} WHERE `)) {
+      const requested = new Set<string>();
+      for (let index = 0; index < parameters.length; index += 2) {
+        requested.add(`${String(parameters[index])}\0${String(parameters[index + 1])}`);
+      }
       const currentDatabase = options?.currentDatabase ?? "commissary";
       const engines = options?.engines ?? {
         [`${currentDatabase}.jobs`]: "InnoDB",
         "audit.events": "InnoDB",
       };
       return {
-        rows: Object.entries(engines).map(([qualifiedName, engine]) => {
+        rows: Object.entries(engines).flatMap(([qualifiedName, engine]) => {
           const separator = qualifiedName.indexOf(".");
-          return {
-            table_schema: qualifiedName.slice(0, separator),
-            table_name: qualifiedName.slice(separator + 1),
-            table_type: "BASE TABLE",
-            engine,
-          };
+          const database = qualifiedName.slice(0, separator);
+          const name = qualifiedName.slice(separator + 1);
+          if (!requested.has(`${database}\0${name}`)) {
+            return [];
+          }
+          return [
+            {
+              table_schema: database,
+              table_name: name,
+              table_type: "BASE TABLE",
+              engine,
+            },
+          ];
         }),
       };
     }
@@ -641,12 +679,29 @@ async function runPrototype(): Promise<void> {
     "bound value did not remain a parameter",
   );
 
-  const baseDatabase = makePrototypeDatabase();
+  const baseDatabase = makePrototypeDatabase({
+    engines: {
+      "commissary.jobs": "InnoDB",
+      "audit.events": "InnoDB",
+      "commissary.unrelated": "MyISAM",
+    },
+  });
   const baseStore = await bindMysqlStore({ database: baseDatabase, tables });
   assert(!isTransactionStore(baseStore), "base binder exposed a transaction method");
   assert(
     baseDatabase.transactionCalls[0]?.config.accessMode === "read only",
     "base binding did not run the transaction probe",
+  );
+  const tableProbeCall = baseDatabase.calls.find((call) =>
+    call.text.startsWith(`${tableProbeSelectSql} WHERE `),
+  );
+  assert(
+    tableProbeCall?.parameters.length === 4 &&
+      tableProbeCall.parameters[0] === "commissary" &&
+      tableProbeCall.parameters[1] === "jobs" &&
+      tableProbeCall.parameters[2] === "audit" &&
+      tableProbeCall.parameters[3] === "events",
+    "table probe did not bind only the resolved Store table pairs",
   );
 
   const transactionsBeforeMutation = baseDatabase.transactionCalls.length;
