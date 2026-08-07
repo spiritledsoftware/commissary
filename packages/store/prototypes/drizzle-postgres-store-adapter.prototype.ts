@@ -187,10 +187,18 @@ interface PrototypePgDatabase {
   ) => Promise<Value>;
 }
 
+interface PrototypeSqlCommandResult {
+  readonly affectedRows: number | undefined;
+  readonly driverResult: unknown;
+}
+
 interface PrototypeSqlStore {
+  readonly query: <Row = unknown>(
+    statement: PrototypeSqlStatement<null | boolean | number | string>,
+  ) => Promise<readonly Row[]>;
   readonly execute: (
     statement: PrototypeSqlStatement<null | boolean | number | string>,
-  ) => Promise<PrototypeExecutionResult>;
+  ) => Promise<PrototypeSqlCommandResult>;
 }
 
 interface PrototypeTransactionStore extends PrototypeSqlStore {
@@ -218,18 +226,30 @@ const transactionSettingsSql =
 
 function makeSqlStore(database: PrototypePgDatabase): PrototypeSqlStore {
   return {
+    query: async <Row = unknown>(
+      statement: PrototypeSqlStatement<null | boolean | number | string>,
+    ) => {
+      const compiled = compilePostgresStatement(statement);
+      const result = normalizeExecutionResult(await database.execute(toDrizzleSql(compiled)));
+      return result.rows as readonly Row[];
+    },
     execute: async (statement) => {
       const compiled = compilePostgresStatement(statement);
-      return normalizeExecutionResult(await database.execute(toDrizzleSql(compiled)));
+      const driverResult = await database.execute(toDrizzleSql(compiled));
+      const result = normalizeExecutionResult(driverResult);
+      return {
+        affectedRows: result.rowCount,
+        driverResult,
+      };
     },
   };
 }
 
-function readServerVersion(result: PrototypeExecutionResult): number {
-  if (result.rows.length !== 1 || !isObject(result.rows[0])) {
+function readServerVersion(rows: readonly unknown[]): number {
+  if (rows.length !== 1 || !isObject(rows[0])) {
     throw new PrototypeBindingError("invalid-version-result");
   }
-  const rawVersion = readOptionalProperty(result.rows[0], "server_version_num");
+  const rawVersion = readOptionalProperty(rows[0], "server_version_num");
   const version = typeof rawVersion === "string" ? Number(rawVersion) : rawVersion;
   if (typeof version !== "number" || !Number.isSafeInteger(version)) {
     throw new PrototypeBindingError("invalid-version-result");
@@ -237,12 +257,12 @@ function readServerVersion(result: PrototypeExecutionResult): number {
   return version;
 }
 
-function requireReadOnlySerializableTransaction(result: PrototypeExecutionResult): void {
-  if (result.rows.length !== 1 || !isObject(result.rows[0])) {
+function requireReadOnlySerializableTransaction(rows: readonly unknown[]): void {
+  if (rows.length !== 1 || !isObject(rows[0])) {
     throw new PrototypeBindingError("transaction-unavailable");
   }
-  const isolationLevel = readOptionalProperty(result.rows[0], "transaction_isolation");
-  const readOnly = readOptionalProperty(result.rows[0], "transaction_read_only");
+  const isolationLevel = readOptionalProperty(rows[0], "transaction_isolation");
+  const readOnly = readOptionalProperty(rows[0], "transaction_read_only");
   if (isolationLevel !== "serializable" || readOnly !== "on") {
     throw new PrototypeBindingError("transaction-unavailable");
   }
@@ -266,7 +286,7 @@ async function bindPostgresStore(
   options: PrototypeBindOptions | PrototypeTransactionBindOptions,
 ): Promise<PrototypeSqlStore | PrototypeTransactionStore> {
   const store = makeSqlStore(options.database);
-  const version = readServerVersion(await store.execute(rawStatement("SHOW server_version_num")));
+  const version = readServerVersion(await store.query(rawStatement("SHOW server_version_num")));
   if (version < 150_000) {
     throw new PrototypeBindingError("unsupported-version");
   }
@@ -283,7 +303,7 @@ async function bindPostgresStore(
   try {
     await runTransaction(
       async (transaction) => {
-        const settings = await makeSqlStore(transaction).execute(
+        const settings = await makeSqlStore(transaction).query(
           rawStatement(transactionSettingsSql),
         );
         requireReadOnlySerializableTransaction(settings);
@@ -506,12 +526,18 @@ async function runPrototype(): Promise<void> {
   const baseDatabase = makePrototypeDatabase({ transaction: false });
   const baseStore = await bindPostgresStore({ database: baseDatabase });
   assert(!isTransactionStore(baseStore), "base binder exposed a transaction method");
-  const execution = await baseStore.execute({
+  const rows = await baseStore.query<{ readonly ok: boolean }>({
     segments: ["SELECT ", " AS value"],
     parameters: [1],
   });
-  assert(execution.rowCount === 1, "rowCount metadata was lost");
-  assert(execution.command === "SELECT", "command metadata was lost");
+  assert(rows[0]?.ok === true, "query rows were lost");
+  const execution = await baseStore.execute(rawStatement("UPDATE jobs SET ready = true"));
+  assert(execution.affectedRows === 1, "affectedRows metadata was lost");
+  assert(
+    isObject(execution.driverResult) &&
+      readOptionalProperty(execution.driverResult, "command") === "SELECT",
+    "public driver result was lost",
+  );
   assert(baseDatabase.transactionCalls.length === 0, "base binding probed transactions");
 
   const transactionDatabase = makePrototypeDatabase({ transaction: true });
@@ -521,7 +547,7 @@ async function runPrototype(): Promise<void> {
   });
   assert(isTransactionStore(transactionStore), "transaction binding lost its capability");
   await transactionStore.transaction(async (transaction) => {
-    await transaction.execute(rawStatement("SELECT 1"));
+    await transaction.query(rawStatement("SELECT 1"));
   });
   assert(
     transactionDatabase.transactionCalls[0]?.config.accessMode === "read only",

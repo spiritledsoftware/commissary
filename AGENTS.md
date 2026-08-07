@@ -23,6 +23,7 @@ The `pnpm run bootstrap` command materializes these read-only references in `.re
 | [Effect](https://github.com/Effect-TS/effect)                | `.repos/effect`       | Effect v4 services, layers, scopes, streams, schemas, failures, and runtime patterns                              |
 | [OpenCode](https://github.com/anomalyco/opencode)            | `.repos/opencode`     | Coding-agent sessions, tool loops, permission boundaries, event delivery, and terminal workflows                  |
 | [Better Auth](https://github.com/better-auth/better-auth)    | `.repos/better-auth`  | Value-driven TypeScript inference, plugin composition, framework adapters, and secure extension boundaries        |
+| [Drizzle ORM](https://github.com/drizzle-team/drizzle-orm)   | `.repos/drizzle-orm`  | Typed SQL builders, dialects, sessions, transactions, prepared statements, and SQLite driver behavior             |
 | [pi-mono](https://github.com/badlogic/pi-mono)               | `.repos/pi-mono`      | Provider-neutral model APIs, agent loops, session state, tool streaming, and terminal UI integration              |
 | [Flue](https://github.com/withastro/flue)                    | `.repos/flue`         | Composable agent authoring, durable recovery, tools, skills, subagents, sandboxes, and runtime adapters           |
 | [Eve](https://github.com/vercel/eve)                         | `.repos/eve`          | Filesystem-first capability discovery, durable sessions, tools, skills, channels, schedules, and hooks            |

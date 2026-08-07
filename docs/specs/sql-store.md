@@ -2,13 +2,13 @@
 
 > **Status**: Design complete for implementation. The portable SQL tier and the PostgreSQL, MySQL, and SQLite Record specialization decisions are binding.
 >
-> **Last updated**: 2026-08-07 during Drizzle MySQL Store adapter approval.
+> **Last updated**: 2026-08-07 during Drizzle SQLite Store adapter approval.
 
 ## Summary
 
 Add a portable SQL Store specialization and Drizzle-independent PostgreSQL, MySQL, and SQLite Record metadata to `@commissary/store`. The package gains one immutable SQL Record definition form, optional portable primary-key metadata, symmetric portable and database metadata helpers, one opaque SQL Statement algebra, shared adapter helpers, SQL errors, and shared conformance tests.
 
-The `SqlStore` interface remains portable. SQL text can use one database dialect. Generic execution returns one unchecked row set. Integrations can add PostgreSQL, MySQL, or SQLite refinements without an ORM dependency, while hosts call only their selected concrete adapter. Concrete adapters and focused adapter interfaces can accept more parameter types and return more facts without weakening the generic contract.
+The `SqlStore` interface remains portable. SQL text can use one database dialect. `query()` returns one unchecked caller-typed row array. `execute()` returns one normalized command wrapper with an optional verified affected-row count and the exact driver result. Integrations can add PostgreSQL, MySQL, or SQLite refinements without an ORM dependency, while hosts call only their selected concrete adapter.
 
 This specification extends the [Store Architecture Technical Specification](store.md). That specification remains authoritative for Records, Collections, operators, Store errors, and transactions except where this document gives a later rule.
 
@@ -28,7 +28,7 @@ This specification extends the [Store Architecture Technical Specification](stor
 - Make SQL text portable between databases.
 - Parse or validate returned rows.
 - Add preparation, streaming, cancellation, session reservation, batches, or ordered multiple results.
-- Expose affected counts, generated identifiers, warnings, or notices on generic execution.
+- Invent affected counts, generated identifiers, warnings, or notices that a driver does not report.
 - Add indexes other than an optional primary key, relations, migrations, schema diffing, introspection, or client creation.
 - Make resolved Record references a database permission or security boundary.
 - Apply Collection Field Schemas, Hooks, expressions, generated values, or field conversion to direct SQL.
@@ -36,15 +36,15 @@ This specification extends the [Store Architecture Technical Specification](stor
 
 ## Invariants
 
-1. **One Store specialization**: `SqlStore` extends `Store` and adds only `execute`.
+1. **One Store specialization**: `SqlStore` extends `Store` and adds `query` and `execute`.
 2. **One Statement algebra**: Complete statements, fragments, raw text, identifiers, parameters, joins, and resolved Record references use `SqlStatement`.
 3. **Opaque values**: Only package helpers and resolved definitions create valid SQL Statements, SQL Column Types, SQL Literals, and SQL Record References.
 4. **Compatible copies**: Compatible installed copies accept the same opaque value format. Incompatible formats and plain lookalikes fail before driver work.
 5. **Immutable structure**: Package-owned Statement and definition structure is snapshotted and frozen. Bound wider values and third-party schema objects remain by reference.
-6. **Native Promise boundary**: `execute` and transaction helpers return a native Promise before validation, conversion, callbacks, or driver work. They never throw synchronously.
-7. **One driver statement call**: One `execute` call makes at most one driver statement call and performs no retry.
-8. **One row set**: Generic execution returns exactly one readonly `rows` array. Multiple ordered results reject.
-9. **Unchecked rows**: Row containers and members are driver values. Callers own parsing and cardinality checks.
+6. **Native Promise boundary**: `query`, `execute`, and transaction helpers return a native Promise before validation, conversion, callbacks, or driver work. They never throw synchronously.
+7. **One driver statement call**: One `query` or `execute` call makes at most one driver statement call and performs no retry.
+8. **Visible result mode**: `query` is for one row-producing result. `execute` is for a statement that produces no row set.
+9. **Unchecked rows**: `query` row containers and members are driver values under an unchecked caller-selected type. Callers own parsing and cardinality checks.
 10. **Portable values**: Every generic SQL Store accepts `null`, boolean, finite number, and NUL-free string.
 11. **No array expansion**: An array interpolation is one parameter. Only explicit Statements can add SQL structure.
 12. **Source order**: Parameter encoding, support checks, portable validation, and conversion run from left to right and stop at the first failure.
@@ -56,7 +56,7 @@ This specification extends the [Store Architecture Technical Specification](stor
 18. **No rollback race**: Active transaction work drains before rollback starts.
 19. **Caught failure still fails**: A rejected transaction-view operation marks the transaction for rollback even when callback code catches it.
 20. **Exact rollback failure**: Successful rollback preserves the selected callback boundary failure without wrapping it.
-21. **No manual control guarantee**: Transaction guarantees apply only when callers do not submit manual transaction SQL through `execute`.
+21. **No manual control guarantee**: Transaction guarantees apply only when callers do not submit manual transaction SQL through `query` or `execute`.
 22. **Capability over database identity**: Database identity alone does not create a Store specialization. Concrete adapters compose primitive contracts, and a focused capability requires a proven caller workflow.
 23. **Optional primary key**: A SQL Record can name one nonempty primary-key field tuple. SQL tables without a primary key remain valid.
 24. **Exact parameter segments**: Compiled Statements retain the exact text segments around parameters, so an ORM adapter never parses generated placeholder text.
@@ -93,7 +93,7 @@ There is no standalone `SqlExecutor`, exported `SqlTag`, or production alias for
 
 Do not export general `PostgresStore`, `MySqlStore`, or `SqliteStore` runtime interfaces or aliases. Database identity, dialect syntax, metadata, result shape, and thin query aliases do not by themselves earn a Store specialization.
 
-A concrete database or ORM adapter returns a structural composition of the primitive Store contracts that it implements, such as `SqlStore` and `TransactionStore`. It can accept more SQL parameter types and return more guaranteed result fields through `execute` while it remains assignable to `SqlStore`. A caller typed against `SqlStore` sees only the portable contract. This structural widening does not earn a database-named tier.
+A concrete database or ORM adapter returns a structural composition of the primitive Store contracts that it implements, such as `SqlStore` and `TransactionStore`. It can accept more SQL parameter types and preserve its public driver result through `SqlCommandResult.driverResult` while it remains assignable to generic `SqlStore`. A caller typed against generic `SqlStore` sees normalized `affectedRows` and an `unknown` driver result. This structural widening does not earn a database-named tier.
 
 A new focused Store capability requires:
 
@@ -1322,19 +1322,26 @@ export interface SqlStatement<out Parameter> {
   // Opaque package-owned data. Parameter has no default type argument.
 }
 
-export interface SqlExecutionResult {
-  readonly rows: readonly unknown[];
+export interface SqlCommandResult<out DriverResult = unknown> {
+  readonly affectedRows: number | undefined;
+  readonly driverResult: DriverResult;
 }
 
 export interface SqlStore<
   Definitions extends RecordDefinitions,
   Operators extends StoreOperatorTypes = BaseStoreOperatorTypes,
+  out DriverResult = unknown,
 > extends Store<Definitions, Operators> {
-  readonly execute: (statement: SqlStatement<SqlParameterValue>) => Promise<SqlExecutionResult>;
+  readonly query: <Row = unknown>(
+    statement: SqlStatement<SqlParameterValue>,
+  ) => Promise<readonly Row[]>;
+  readonly execute: (
+    statement: SqlStatement<SqlParameterValue>,
+  ) => Promise<SqlCommandResult<DriverResult>>;
 }
 ```
 
-`SqlStatement<never>` has no bound values. `SqlStatement<unknown>` has no known narrower requirement. The type is covariant. Primitive literals widen to `string`, `number`, and `boolean`. A wider Store can accept a wider parameter union and return a result with more guaranteed fields while it remains assignable to generic `SqlStore`.
+`SqlStatement<never>` has no bound values. `SqlStatement<unknown>` has no known narrower requirement. The type is covariant. Primitive literals widen to `string`, `number`, and `boolean`. The `Row` selected by `query<Row>()` is unchecked and defaults to `unknown`. `DriverResult` is covariant and defaults to `unknown`, so a concrete Store can retain an exact public driver result while it remains assignable to generic `SqlStore`.
 
 The complete helper set is:
 
@@ -1356,7 +1363,7 @@ All helpers return `SqlStatement` except the SQL Column Type and SQL Literal con
 - `sql.raw()` inserts exact unchecked structure and never inspects placeholder-like text.
 - `sql.identifier()` creates one quoted name part. It rejects a non-string, empty string, or NUL. It never splits on `.`.
 - `sql.param(value)` creates one explicit bound parameter.
-- `sql.param(value, { encode })` snapshots the function reference. The synchronous function runs once per occurrence on every execution after `execute` returns its Promise. Its output becomes the Statement requirement.
+- `sql.param(value, { encode })` snapshots the function reference. The synchronous function runs once per occurrence on every operation after `query` or `execute` returns its Promise. Its output becomes the Statement requirement.
 - An encoder output type cannot include `SqlStatement`. A runtime bypass rejects as `invalid-parameter` and never becomes SQL structure.
 - `sql.join()` accepts only Statements, snapshots the input list, preserves order, adds the optional Statement separator only between items, and adds no parentheses.
 - An empty join returns an empty `SqlStatement<never>`.
@@ -1417,26 +1424,31 @@ The compiler:
 - A wider Store can accept additional value types, but not `undefined`.
 - A wider mutable parameter stays by reference and is read when execution starts. The caller must not change it while that execution remains active.
 
-### `execute` behavior
+### `query` and `execute` behavior
 
-`execute`:
+Both methods:
 
-- returns a native Promise before Statement checks, parameter work, or driver work;
-- sends a genuine empty Statement to the driver;
-- makes at most one statement call;
-- performs no retry;
-- returns `{ rows: [] }` when the driver returns no rows;
-- returns only one unchecked row set; and
-- rejects multiple ordered result sets without choosing, joining, or dropping them.
+- return a native Promise before Statement checks, parameter work, or driver work;
+- send a genuine empty Statement to the driver;
+- make at most one statement call; and
+- perform no retry.
 
-An adapter can return driver row containers without copying or freezing them. It must not change them after fulfillment. A later mutation is an adapter defect, but an already fulfilled Promise cannot become rejected.
+`query<Row>()` is for any statement that produces one row set, including DML with `RETURNING`. It returns the driver's row array directly without copying or freezing it. The caller-selected `Row` type is unchecked. The adapter rejects a successful non-array result and rejects multiple ordered result sets without choosing, joining, or dropping them.
+
+`execute()` is for a statement that produces no row set. It returns one fresh `SqlCommandResult`. `driverResult` is the exact public driver result by reference. `affectedRows` is a nonnegative safe integer only when the adapter can verify the driver's documented direct-change count; otherwise it is `undefined`. The adapter does not issue another statement, derive a count from an inserted identifier, or invent unavailable metadata.
+
+The adapter must not change a returned row container or driver result after fulfillment. A later driver mutation is an adapter defect, but an already fulfilled Promise cannot become rejected.
 
 ### SQL errors
 
-Add `"execute"` to `StoreOperation`.
+Add `"query"` and `"execute"` to `StoreOperation`.
 
 ```ts
-export type SqlStatementErrorOptions =
+export type SqlOperation = "query" | "execute";
+
+export type SqlStatementErrorOptions = {
+  readonly operation: SqlOperation;
+} & (
   | { readonly reason: "invalid-statement" }
   | {
       readonly reason: "unsupported-parameter";
@@ -1446,9 +1458,12 @@ export type SqlStatementErrorOptions =
       readonly reason: "invalid-parameter";
       readonly parameterPosition: number;
       readonly cause?: unknown;
-    };
+    }
+);
 
-export type SqlExecutionErrorOptions =
+export type SqlExecutionErrorOptions = {
+  readonly operation: SqlOperation;
+} & (
   | {
       readonly reason: "execution-failed";
       readonly executionMayHaveOccurred: boolean;
@@ -1457,11 +1472,12 @@ export type SqlExecutionErrorOptions =
   | {
       readonly reason: "multiple-results";
       readonly executionMayHaveOccurred: true;
-    };
+    }
+);
 
 export declare class SqlStatementError extends StoreError {
   readonly name: "SqlStatementError";
-  readonly operation: "execute";
+  readonly operation: SqlOperation;
   readonly reason: SqlStatementErrorOptions["reason"];
   readonly parameterPosition?: number;
   readonly cause?: unknown;
@@ -1470,7 +1486,7 @@ export declare class SqlStatementError extends StoreError {
 
 export declare class SqlExecutionError extends StoreError {
   readonly name: "SqlExecutionError";
-  readonly operation: "execute";
+  readonly operation: SqlOperation;
   readonly reason: SqlExecutionErrorOptions["reason"];
   readonly executionMayHaveOccurred: boolean;
   readonly cause?: unknown;
@@ -1478,24 +1494,26 @@ export declare class SqlExecutionError extends StoreError {
 }
 ```
 
-`SqlStatementError` and `SqlExecutionError` extend `StoreError` and have fixed operation `execute`. An `invalid-statement` error has no parameter position or cause. An `unsupported-parameter` error has its zero-based parameter position and no cause. An `invalid-parameter` error has its zero-based parameter position and has a cause only when parameter processing threw. Statement errors contain no SQL text or parameter value. An `execution-failed` error has its cause and `executionMayHaveOccurred` flag. A `multiple-results` error has no cause, has `executionMayHaveOccurred` set to true, and contains no returned data. `executionMayHaveOccurred` is false only before the driver statement call starts. It is true after the call starts or when the outcome is uncertain.
+`SqlStatementError` and `SqlExecutionError` extend `StoreError` and retain the attempted `query` or `execute` operation. An `invalid-statement` error has no parameter position or cause. An `unsupported-parameter` error has its zero-based parameter position and no cause. An `invalid-parameter` error has its zero-based parameter position and has a cause only when parameter processing threw. Statement errors contain no SQL text or parameter value.
 
-An invalid successful result rejects before fulfillment with:
+An `execution-failed` error has its cause and `executionMayHaveOccurred` flag. A `multiple-results` error has no cause, has `executionMayHaveOccurred` set to true, and contains no returned data. `executionMayHaveOccurred` is false only before the driver statement call starts. It is true after the call starts or when the outcome is uncertain.
+
+An invalid successful query result rejects before fulfillment with:
 
 ```ts
 new StoreAdapterContractError({
-  operation: "execute",
+  operation: "query",
   violation: "invalid-sql-result",
 });
 ```
 
-A missing or non-array `rows` property is an invalid result. A failure thrown while checking the result can be its cause, but returned data cannot. Add `invalid-sql-compilation` and `invalid-sql-result` to `StoreAdapterContractViolation`.
+A non-array query result is invalid. A failure thrown while checking a result can be its cause, but returned data cannot. Add `invalid-sql-compilation` and `invalid-sql-result` to `StoreAdapterContractViolation`.
 
 ## Transactions
 
-A concrete Store with SQL and transactions exposes `execute` at its root and in its Transaction View. The View also exposes its Collections and each safe wider capability. It does not expose `transaction`.
+A concrete Store with SQL and transactions exposes `query` and `execute` at its root and in its Transaction View. The View also exposes its Collections and each safe wider capability. It does not expose `transaction`.
 
-Manual `BEGIN`, `COMMIT`, `ROLLBACK`, savepoints, and equivalent SQL through `execute` are unsupported. Adapters need not parse or detect them. Transaction guarantees apply only when callers do not submit them. Conformance tests never submit them.
+Manual `BEGIN`, `COMMIT`, `ROLLBACK`, savepoints, and equivalent SQL through `query` or `execute` are unsupported. Adapters need not parse or detect them. Transaction guarantees apply only when callers do not submit them. Conformance tests never submit them.
 
 ### Shared callback runner
 
@@ -1564,12 +1582,18 @@ export interface SqlStoreConformanceProfile<DriverParameter> {
 }
 
 export interface SqlStoreConformanceDriverCall<DriverParameter> {
+  readonly operation: SqlOperation;
   readonly text: string;
   readonly parameters: readonly DriverParameter[];
 }
 
-export type SqlStoreConformanceExecutionOutcome =
-  | { readonly kind: "rows"; readonly rows: readonly unknown[] }
+export type SqlStoreConformanceOutcome<DriverResult> =
+  | { readonly kind: "query"; readonly rows: readonly unknown[] }
+  | {
+      readonly kind: "command";
+      readonly affectedRows: number | undefined;
+      readonly driverResult: DriverResult;
+    }
   | {
       readonly kind: "failure";
       readonly stage: "before-statement-call" | "statement-call";
@@ -1577,30 +1601,30 @@ export type SqlStoreConformanceExecutionOutcome =
     }
   | { readonly kind: "multiple-results" }
   | {
-      readonly kind: "invalid-result";
-      readonly shape: "missing-rows" | "non-array-rows";
-    }
-  | {
-      readonly kind: "invalid-result";
-      readonly shape: "rows-access-failure";
-      readonly cause: unknown;
+      readonly kind: "invalid-query-result";
+      readonly shape: "non-array" | "result-check-failure";
+      readonly cause?: unknown;
     };
 
-export interface SqlStoreConformanceControls<DriverParameter> {
+export interface SqlStoreConformanceControls<DriverParameter, DriverResult> {
   readonly driverCalls: readonly SqlStoreConformanceDriverCall<DriverParameter>[];
-  readonly enqueueExecution: (outcome: SqlStoreConformanceExecutionOutcome) => void;
+  readonly enqueueOutcome: (outcome: SqlStoreConformanceOutcome<DriverResult>) => void;
 }
 
-export interface SqlStoreConformanceFixture<DriverParameter> {
-  readonly store: SqlStore<typeof sqlStoreConformanceRecordDefinitions>;
-  readonly controls: SqlStoreConformanceControls<DriverParameter>;
+export interface SqlStoreConformanceFixture<DriverParameter, DriverResult> {
+  readonly store: SqlStore<
+    typeof sqlStoreConformanceRecordDefinitions,
+    BaseStoreOperatorTypes,
+    DriverResult
+  >;
+  readonly controls: SqlStoreConformanceControls<DriverParameter, DriverResult>;
 }
 
-export interface SqlStoreConformanceAdapter<DriverParameter> {
+export interface SqlStoreConformanceAdapter<DriverParameter, DriverResult> {
   readonly profile: SqlStoreConformanceProfile<DriverParameter>;
   readonly makeFixture: () =>
-    | SqlStoreConformanceFixture<DriverParameter>
-    | Promise<SqlStoreConformanceFixture<DriverParameter>>;
+    | SqlStoreConformanceFixture<DriverParameter, DriverResult>
+    | Promise<SqlStoreConformanceFixture<DriverParameter, DriverResult>>;
 }
 ```
 
@@ -1632,31 +1656,41 @@ export interface TransactionConformanceControls {
 }
 ```
 
-export type SqlTransactionStoreConformanceStore =
-SqlStore<typeof sqlStoreConformanceRecordDefinitions> &
-TransactionStore<
+export type SqlTransactionStoreConformanceStore<DriverResult> =
+SqlStore<
 typeof sqlStoreConformanceRecordDefinitions,
 BaseStoreOperatorTypes,
-{
-readonly execute: SqlStore<
-typeof sqlStoreConformanceRecordDefinitions >["execute"];
-} >;
+DriverResult
 
-export interface SqlTransactionStoreConformanceFixture<DriverParameter> {
-readonly store: SqlTransactionStoreConformanceStore;
-readonly sqlControls: SqlStoreConformanceControls<DriverParameter>;
+> &
+> TransactionStore<
+> typeof sqlStoreConformanceRecordDefinitions,
+> BaseStoreOperatorTypes,
+> Pick<
+> SqlStore<
+> typeof sqlStoreConformanceRecordDefinitions,
+> BaseStoreOperatorTypes,
+> DriverResult >,
+> "query" | "execute" >
+> ;
+
+export interface SqlTransactionStoreConformanceFixture<DriverParameter, DriverResult> {
+readonly store: SqlTransactionStoreConformanceStore<DriverResult>;
+readonly sqlControls: SqlStoreConformanceControls<DriverParameter, DriverResult>;
 readonly transactionControls: TransactionConformanceControls;
 readonly statements: SqlTransactionStoreConformanceStatements;
 }
 
-export interface SqlTransactionStoreConformanceAdapter<DriverParameter> {
+export interface SqlTransactionStoreConformanceAdapter<DriverParameter, DriverResult> {
 readonly profile: SqlStoreConformanceProfile<DriverParameter>;
 readonly makeFixture: () =>
-| SqlTransactionStoreConformanceFixture<DriverParameter>
-| Promise<SqlTransactionStoreConformanceFixture<DriverParameter>>;
+| SqlTransactionStoreConformanceFixture<DriverParameter, DriverResult>
+| Promise<SqlTransactionStoreConformanceFixture<DriverParameter, DriverResult>>;
 }
 
-The Statement group is package-owned, runs once in `@commissary/store`, and has no adapter input interface. The SQL Store suite accepts `SqlStoreConformanceAdapter`. The combined SQL and transaction suite accepts `SqlTransactionStoreConformanceAdapter`. Every scenario gets a fresh fixture. The combined Store exposes `execute` at its root and through `TransactionCapabilities`; its Transaction View remains closed to nested transactions.
+````
+
+The Statement group is package-owned, runs once in `@commissary/store`, and has no adapter input interface. The SQL Store suite accepts `SqlStoreConformanceAdapter`. The combined SQL and transaction suite accepts `SqlTransactionStoreConformanceAdapter`. Every scenario gets a fresh fixture. The combined Store exposes `query` and `execute` at its root and through `TransactionCapabilities`; its Transaction View remains closed to nested transactions.
 
 ### Exact scenario areas
 
@@ -1720,12 +1754,14 @@ SQL Store tests cover:
 - the fixed compiled call against the adapter profile;
 - every portable and invalid portable value;
 - exact zero-based parameter positions and zero driver calls after compilation failure;
-- failures before and during the driver statement call;
-- one call and no retry;
-- empty SQL reaching the driver;
-- empty and nonempty unchecked rows;
+- failures before and during each driver statement call;
+- one call and no retry for `query` and `execute`;
+- empty SQL reaching both driver paths;
+- empty and nonempty unchecked query rows with caller-selected types;
+- normalized defined and unavailable affected-row counts;
+- exact driver-result identity;
 - direct SQL bypassing Collection parsing;
-- invalid result shapes and result-check failures;
+- invalid query result shapes and result-check failures;
 - multiple-result rejection; and
 - safe errors with no SQL text or parameter value.
 
@@ -1735,7 +1771,7 @@ Combined transaction tests cover:
 - the same mixed writes disappearing after rollback;
 - one callback call and one physical begin;
 - one commit or one rollback;
-- `execute` in the View and no nested `transaction`;
+- `query` and `execute` in the View and no nested `transaction`;
 - closed SQL and Collection methods;
 - active-work draining before rollback;
 - callback identity while work drains;
@@ -1761,21 +1797,22 @@ Integration-authored lower-tier Records
   -> resolver resolves names, types, generated behavior, assets, and conflicts
   -> freeze the database resolution assets + .records references
   -> concrete adapter maps the plan into its ORM or driver values
-```
+````
 
 No database I/O occurs in this flow.
 
-### Statement execution
+### Statement query and execution
 
 ```txt
-execute(Statement)
+query(Statement) or execute(Statement)
   -> return native Promise
   -> check Statement origin and format
   -> compile structure and identifiers
   -> encode, check, validate, and convert parameters in source order
   -> make at most one driver statement call
-  -> recognize exactly one row set
-  -> fulfill { rows } or reject with one SQL error
+  -> query: recognize and return exactly one unchecked row array
+  -> execute: return { affectedRows, driverResult }
+  -> reject with one SQL error on failure
 ```
 
 ### Combined transaction
@@ -1810,7 +1847,7 @@ A strict TypeScript prototype also proved:
 - wider Store substitution;
 - SQL Column Type and default compatibility;
 - resolved Record reference composition; and
-- `execute` in a transaction view without nested `transaction`.
+- `query` and `execute` in a transaction view without nested `transaction`.
 
 The SQLite logic prototype also proved:
 
@@ -1819,6 +1856,16 @@ The SQLite logic prototype also proved:
 - generated-column omission and explicit-write rejection;
 - reserved-name, cross-property, table-wide, and ASCII-collision issue order; and
 - separation between synchronous definition resolution and live driver binding.
+
+The Drizzle SQLite adapter prototype also proved:
+
+- the common synchronous and asynchronous database shape;
+- visible `query` and `execute` dispatch through `all` and `run`;
+- generic unchecked rows, normalized affected counts, and exact driver-result identity;
+- primary-key and unshadowed ROWID candidate identity;
+- observed-value guards and stored-value readback;
+- rejection of synchronous or early-closing asynchronous transaction paths; and
+- structured SQLite `BUSY` recognition without message parsing.
 
 The comparative database Record prototype also proved:
 The committed draft asset is `packages/store/prototypes/database-record-specializations.prototype.html` on branch `prototype/database-record-specializations` at commit `1b96bfb`. From that branch, run `agent-browser open "file://$PWD/packages/store/prototypes/database-record-specializations.prototype.html"` to reproduce the free-play and guided cross-database plan, encoder, generated-column, and adapter-binding results.
@@ -1831,7 +1878,7 @@ The committed draft asset is `packages/store/prototypes/database-record-speciali
 - every resolver follows the same failure ownership and issue-order skeleton; and
 - live driver, engine, index, and constraint checks remain in concrete adapter binding.
 
-**Verdict**: The portable SQL Store tier and the Drizzle-independent PostgreSQL, MySQL, and SQLite Record specializations are implementation-ready. The [shared Drizzle definition lifecycle](drizzle-store.md) now owns concrete schema composition; dialect adapter behavior and runtime binding remain behind later Drizzle-tier gates.
+**Verdict**: The portable SQL Store tier, the Drizzle-independent PostgreSQL, MySQL, and SQLite Record specializations, and the three concrete Drizzle binding designs are implementation-ready. Package exports and final cross-adapter integration remain in later gates.
 
 ## Files for Implementation
 
@@ -1908,18 +1955,20 @@ Each needs a real caller and its own cleanup, failure, and conformance rules.
 - Runtime Standard JSON Schema conversion can be absent or less precise than static schema types. Explicit column types remain required in unclear cases.
 - A runtime schema refinement can reject values that static contributor compatibility accepts. The host owns this risk.
 - Mutable wider parameter values can change during execution. The caller must keep them stable until settlement.
-- A driver can mutate returned row containers after fulfillment. This is an adapter defect that cannot retroactively reject a Promise.
+- A driver can mutate a returned row container or driver result after fulfillment. This is an adapter defect that cannot retroactively reject a Promise.
 - A transaction operation that never settles keeps the transaction pending. Portable Store cannot cancel it safely.
-- Manual transaction SQL can break transaction guarantees because adapters do not parse arbitrary SQL.
+- Manual transaction SQL can break transaction guarantees because adapters do not parse `query` or `execute` Statements.
 
 ## References
 
 - [ADR 0019: Build Thread Store on generic Store primitives](../adr/0019-build-thread-store-on-generic-store-primitives.md)
 - [Store Architecture Technical Specification](store.md)
 - [Drizzle Store Technical Specification](drizzle-store.md)
+- [Drizzle SQLite Store Adapter Technical Specification](drizzle-sqlite-store.md)
 - [SQL Record definition resolution](https://github.com/spiritledsoftware/commissary/issues/9#issuecomment-5194052181)
 - [SQL Store interface and transaction resolution](https://github.com/spiritledsoftware/commissary/issues/11#issuecomment-5198678963)
 - [SQL Store caller use cases](https://github.com/spiritledsoftware/commissary/issues/13#issuecomment-5179152149)
+- [Drizzle SQLite Store adapter decisions](https://github.com/spiritledsoftware/commissary/issues/18)
 - [Standard JSON Schema V1 interface](https://github.com/standard-schema/standard-schema#what-schema-specifications-does-standard-schema-implement)
 - [Drizzle SQL template](https://orm.drizzle.team/docs/sql)
 - [Effect SQL client](https://github.com/Effect-TS/effect/blob/main/packages/effect/src/unstable/sql/SqlClient.ts)
