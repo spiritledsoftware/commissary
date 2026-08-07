@@ -34,6 +34,10 @@ _Avoid_: Original contributed definition, mutable merge result, adapter-specific
 A Record Definition that also states portable and optional database-specific table and column storage intent. It remains a valid base Record Definition, and a Store without SQL capability ignores the wider intent. Database-specific Record refinements remain definition seams even though database identity does not create a runtime Store tier.
 _Avoid_: SQL companion schema, ORM table, database row, separate migration model
 
+**SQL Primary Key**:
+The optional nonempty tuple of logical Record field names under `SqlTableDefinition.primaryKey`. It resolves to non-null physical columns in declared order. Generated tables emit the matching constraint; a supplied ORM table must declare the same key. Its absence is valid.
+_Avoid_: Required SQL table identifier, injected `id`, generic Record key, unique index, PostgreSQL row token
+
 **SQL Metadata Helper**:
 An optional immutable constructor, such as `sql.table()` or `sql.column()`, that gives integration authors typed portable database metadata without a second Record Definition.
 _Avoid_: Required wrapper, second definition factory, ORM table builder
@@ -125,8 +129,8 @@ The fourteen Core Collections for `executionClaim`, `executionFence`, `pendingSt
 _Avoid_: Process-local control waiters, Tool Call graph indexes, hidden adapter state, optional Core subset
 
 **Thread Store Backend**:
-The Transaction Store over the same complete effective Collection Catalog exposed by the host-facing Thread Store. Core uses its `transaction` operation to implement Runtime transition rules. It can back a Thread Store only when the Core Runtime conformance suite passes with its actual operator semantics.
-_Avoid_: Different private catalog, waived Core outcome, Thread Store, separate atomic capability, security boundary
+The Store over the same complete effective Collection Catalog exposed by the host-facing Thread Store. Core serializes complete operations within one Thread Store instance. A plain Store gives one attempt with possible partial persistence and no cross-instance isolation. A Transaction Store adds rollback, conflicts, bounded Core retry, and serializable overlap.
+_Avoid_: Different private catalog, waived Core semantic outcome, Thread Store, required Transaction Store, security boundary
 
 **Record Field**:
 One named top-level value in a Record.
@@ -205,16 +209,16 @@ A host-added field on a Core-created Record whose effective Create Field Schema 
 _Avoid_: Optional field, defaulted create field, adapter-generated value, runtime-only hook check
 
 **Collection**:
-A typed set of Records with required find, create, update, delete, and count operations. An adapter that can never perform one safely does not implement Store.
-_Avoid_: Optional base CRUD method, always-unsupported CRUD method, Thread Store operation, database table, repository
+A typed set of Records with required find, create, update, delete, and count operations. Mutation methods identify and validate each candidate before its write but do not promise one operation-wide transaction.
+_Avoid_: Optional base CRUD method, operation-wide atomicity promise, Thread Store operation, database table, repository
 
 **Collection Adapter Boundary**:
 The public Collection API that each adapter implements directly. An adapter can use native storage operations, optional shared Fallback Helpers, or both. There is no required low-level driver below this boundary.
 _Avoid_: Universal `scan` driver, mandatory Record replacement API, adapter-specific public CRUD shape
 
 **Fallback Helper**:
-An optional reusable implementation of Store behavior. An adapter calls it only when the adapter can supply the storage operations and atomicity that make the behavior safe.
-_Avoid_: Required adapter primitive, automatic unsafe fallback, universal storage driver
+An optional reusable implementation of Store behavior. A mutation fallback identifies and validates each candidate before its write, starts no new writes after failure, drains active writes, and reports whether earlier writes can remain. A Transaction Store can add operation-wide rollback.
+_Avoid_: Required adapter primitive, automatic unsafe fallback, universal storage driver, assumed transaction
 
 **Store Async Boundary**:
 The public boundary where every asynchronous Store-family method creates and returns a native Promise before validation or host callback execution. It never throws synchronously. Effect values and custom thenables stay behind adapters. A Store builder callback throw rejects the Promise with the same value.
@@ -249,7 +253,7 @@ Test-only input that states one adapter's operator semantics, string order, equa
 _Avoid_: Runtime capability registry, production Store metadata, undocumented adapter behavior
 
 **SQL Store Conformance Profile**:
-Test-only input that gives the expected SQL text and ordered driver parameters for one fixed shared SQL Statement. It lets the shared suite check database-specific identifier quoting, placeholder syntax, and portable parameter conversion without guessing a dialect. It is not available on Store values.
+Test-only input that gives the expected SQL text, exact parameter segments, and ordered driver parameters for one fixed shared SQL Statement. It lets the shared suite check database-specific identifier quoting, placeholder syntax, structure preservation, and portable parameter conversion without guessing a dialect. It is not available on Store values.
 _Avoid_: Runtime dialect registry, production Store metadata, normalized test parameters, shared dialect guess
 
 **SQL Store Conformance Controls**:
@@ -273,8 +277,8 @@ A typed value returned by a Store Operator. It carries the Store Operator Set id
 _Avoid_: Raw native expression, expression from another Store Operator Set, escaped expression, reused expression
 
 **Store Capability Requirement**:
-The primitive Store interface that an integration requires in its input type. A required wider feature uses a wider Store type, such as Transaction Store, instead of a runtime capability check.
-_Avoid_: `supports` registry, capability matrix, accept-base-Store-then-probe
+The primitive Store interface that an integration requires in its input type. A required wider feature uses a wider Store type, such as Transaction Store, instead of a general runtime capability registry. Core deliberately accepts Store and uses the stronger path when its backend also implements Transaction Store.
+_Avoid_: `supports` registry, capability matrix, fake transaction method, silent guarantee claim
 
 **Primitive Store Contract**:
 A storage capability interface designed before its concrete adapters. Adapters implement it, and higher-level abstractions compose it.
@@ -332,8 +336,12 @@ An immutable, composable value that keeps SQL structure separate from bound valu
 _Avoid_: Portable SQL, driver query object, executed query, mutable text-and-values bag
 
 **SQL Statement Compiler**:
-The official adapter-facing `@commissary/store/sql-adapter` operation that checks and compiles an opaque SQL Statement with adapter-supplied identifier quoting, zero-based parameter placeholders, a parameter support check, and parameter conversion. It processes parameters from left to right, runs each explicit encoder before that parameter's support check, applies the shared finite-number, negative-zero, and NUL-string rules, then calls adapter conversion. It stops at the first failure without calling the driver. An unsupported value becomes `SqlStatementError` reason `unsupported-parameter`; a thrown encoder, support, or conversion failure becomes `invalid-parameter` with its zero-based position and cause. A failing identifier quote or placeholder callback, or its non-string output, becomes `StoreAdapterContractError` violation `invalid-sql-compilation`. The compiler returns SQL text and ordered driver values without exposing Statement internals.
-_Avoid_: integration API, public Statement data, driver query builder, adapter-specific Statement
+The official adapter-facing `@commissary/store/sql-adapter` operation that checks and compiles an opaque SQL Statement with adapter-supplied identifier quoting, zero-based parameter placeholders, a parameter support check, and parameter conversion. It returns final text, ordered parameters, and exact text segments around each parameter. An ORM adapter can reconstruct safe structure without parsing placeholder-like raw text.
+_Avoid_: integration API, public Statement data, driver query builder, adapter-specific Statement, placeholder parser
+
+**Compiled SQL Segments**:
+The readonly text array returned by the SQL Statement Compiler. Its length is one more than the parameter count. Interleaving each segment with its following parameter reconstructs Statement structure without interpreting generated placeholder text.
+_Avoid_: Parsed SQL, placeholder tokens, driver query, normalized Raw SQL Text
 
 **SQL Statement Parameter Requirement**:
 The union of bound-value kinds in an SQL Statement. Primitive literal values use their broader primitive types, such as `string`, `number`, and `boolean`, instead of exact value types. `never` means that the Statement has no bound values; `unknown` means that callers know no narrower requirement. The exported `SqlStatement<out Parameter>` type is covariant and has no default requirement, while normal Statement construction infers it.
@@ -372,8 +380,8 @@ An expected Store Error with fixed operation `execute` reported when an SQL Stor
 _Avoid_: SQL Statement Error, driver error exposed directly, database-specific failure taxonomy, safe-to-log cause
 
 **Store Error**:
-The base Error class for expected Store operational failures. Specific subclasses identify validation, Hook, unsupported-operation, adapter I/O, transaction-conflict, and rollback failures. Successful result types do not include these errors.
-_Avoid_: Adapter Contract Error, result union, one generic wrapper, Transaction Callback Failure
+The base Error class for expected Store operational failures. Every Store Error has `writesMayRemain`; false proves that no write from the failed operation can remain, while true conservatively reports possible persistence. Specific subclasses identify validation, Hook, unsupported-operation, adapter I/O, transaction-conflict, and rollback failures.
+_Avoid_: Successful result branch, omitted write state, automatic safe cause logging
 
 **Store Validation Error**:
 An expected Store Error for invalid query, create, or update input or result. Its safe fields identify the Collection, operation, phase, optional field, and normalized issue paths. Field Schema issue messages are diagnostic data, not safe default telemetry.
