@@ -149,7 +149,7 @@ type UpdateRecordFromTable<Table extends AnyPrototypeDrizzleTable> = Partial<{
 }>;
 
 interface PrototypeObjectSchema<in Input, out Output> extends PrototypeSchema<Input, Output> {
-  readonly fields: Readonly<Record<string, PrototypeSchema<never, unknown>>>;
+  readonly fields: Readonly<Record<string, AnyWriteSchema>>;
 }
 
 interface DrizzleSchemaGenerators {
@@ -164,20 +164,66 @@ interface DrizzleSchemaGenerators {
   ) => PrototypeObjectSchema<UpdateRecordFromTable<Table>, UpdateRecordFromTable<Table>>;
 }
 
-function prototypeObjectSchema<Input, Output>(): PrototypeObjectSchema<Input, Output> {
+type PrototypeSchemaOperation = "select" | "insert" | "update";
+
+function prototypeColumnSchema(
+  column: AnyPrototypeDrizzleColumn,
+  operation: PrototypeSchemaOperation,
+): AnyWriteSchema {
+  const acceptsUndefined =
+    operation === "update" || (operation === "insert" && column.defaultValue !== undefined);
+  return prototypeSchema((input: never) => {
+    const value: unknown = input;
+    if (value === undefined) {
+      if (acceptsUndefined) {
+        return undefined;
+      }
+      throw new TypeError(`${column.name} is required for ${operation}`);
+    }
+    if (typeof value !== typeof column.type.select) {
+      throw new TypeError(`${column.name} has an invalid ${operation} value`);
+    }
+    return value as JsonValue;
+  });
+}
+
+function prototypeObjectSchema<Input, Output>(
+  table: AnyPrototypeDrizzleTable,
+  operation: PrototypeSchemaOperation,
+): PrototypeObjectSchema<Input, Output> {
+  const fields = Object.fromEntries(
+    Object.entries(table.columns).map(([name, column]) => [
+      name,
+      prototypeColumnSchema(column, operation),
+    ]),
+  );
   return {
     "~standard": {
       vendor: "prototype",
       version: 1,
     },
-    fields: {},
+    fields,
     parse: (input) => input as unknown as Output,
   };
 }
 
-const createSelectSchema: DrizzleSchemaGenerators["select"] = () => prototypeObjectSchema();
-const createInsertSchema: DrizzleSchemaGenerators["insert"] = () => prototypeObjectSchema();
-const createUpdateSchema: DrizzleSchemaGenerators["update"] = () => prototypeObjectSchema();
+function createSelectSchema<Table extends AnyPrototypeDrizzleTable>(
+  table: Table,
+): PrototypeObjectSchema<unknown, SelectRecordFromTable<Table>> {
+  return prototypeObjectSchema(table, "select");
+}
+
+function createInsertSchema<Table extends AnyPrototypeDrizzleTable>(
+  table: Table,
+): PrototypeObjectSchema<InsertRecordFromTable<Table>, InsertRecordFromTable<Table>> {
+  return prototypeObjectSchema(table, "insert");
+}
+
+function createUpdateSchema<Table extends AnyPrototypeDrizzleTable>(
+  table: Table,
+): PrototypeObjectSchema<UpdateRecordFromTable<Table>, UpdateRecordFromTable<Table>> {
+  return prototypeObjectSchema(table, "update");
+}
 
 type RecordDefinitionFromTable<Table extends AnyPrototypeDrizzleTable> = RecordDefinition<{
   readonly [Name in keyof Table["columns"]]: FieldDefinition<
@@ -291,9 +337,34 @@ type TableInputNames<Inputs extends DrizzleRecordInputs> = {
   [Name in keyof Inputs]: Inputs[Name] extends AnyPrototypeDrizzleTable ? Name : never;
 }[keyof Inputs];
 
-type SchemaGeneratorConfig<Inputs extends DrizzleRecordInputs> = [TableInputNames<Inputs>] extends [
-  never,
-]
+type CompleteStaticFieldNames<Override> = Override extends {
+  readonly fields: infer Fields extends Readonly<Record<string, StaticFieldSchemaOverride>>;
+}
+  ? {
+      [Name in keyof Fields]: Fields[Name] extends AnyWriteSchema
+        ? Name
+        : Fields[Name] extends { readonly select: AnySelectSchema }
+          ? Name
+          : never;
+    }[keyof Fields]
+  : never;
+
+type MissingSchemaGeneratorRecordNames<
+  Inputs extends DrizzleRecordInputs,
+  Overrides extends DrizzleRecordOverrides<Inputs>,
+> = {
+  [Name in TableInputNames<Inputs>]: Exclude<
+    keyof Extract<Inputs[Name], AnyPrototypeDrizzleTable>["columns"],
+    CompleteStaticFieldNames<Name extends keyof Overrides ? Overrides[Name] : never>
+  > extends never
+    ? never
+    : Name;
+}[TableInputNames<Inputs>];
+
+type SchemaGeneratorConfig<
+  Inputs extends DrizzleRecordInputs,
+  Overrides extends DrizzleRecordOverrides<Inputs>,
+> = [MissingSchemaGeneratorRecordNames<Inputs, Overrides>] extends [never]
   ? { readonly schemas?: DrizzleSchemaGenerators }
   : { readonly schemas: DrizzleSchemaGenerators };
 
@@ -320,37 +391,177 @@ interface DrizzleStoreDefinition<
 
 type DrizzleStoreDefinitionOptions<
   Inputs extends DrizzleRecordInputs,
+  Overrides extends DrizzleRecordOverrides<Inputs>,
   Hooks extends BeforeCreateHooks<EffectiveRecordDefinitions<Inputs>>,
   Relations extends PrototypeDrizzleRelationMap,
-> = SchemaGeneratorConfig<Inputs> & {
+> = SchemaGeneratorConfig<Inputs, Overrides> & {
   readonly records: Inputs;
-  readonly overrides?: DrizzleRecordOverrides<Inputs>;
+  readonly overrides?: Overrides;
   readonly hooks?: Hooks;
   readonly relations?: (tables: TableMap<Inputs>) => Relations;
 };
 
+function isPrototypeDrizzleTable(
+  value: DrizzleRecordInput | DrizzleRecordOverride,
+): value is AnyPrototypeDrizzleTable {
+  return "kind" in value && value.kind === "table";
+}
+
+function isPrototypeSchema(value: unknown): value is PrototypeSchema<never, unknown> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "~standard" in value &&
+    "parse" in value &&
+    typeof value.parse === "function"
+  );
+}
+
+function parsePrototypeSchema(schema: PrototypeSchema<never, unknown>, input: unknown): unknown {
+  return (schema.parse as (value: unknown) => unknown)(input);
+}
+
+function generatedFieldDefinitions(
+  table: AnyPrototypeDrizzleTable,
+  schemas: DrizzleSchemaGenerators | undefined,
+): Readonly<Record<string, FieldDefinition<AnySelectSchema, AnyWriteSchema>>> {
+  if (schemas === undefined) {
+    return {};
+  }
+
+  const generatedSchemas = {
+    select: schemas.select(table),
+    create: schemas.insert(table),
+    update: schemas.update(table),
+  };
+  const tableFieldNames = Object.keys(table.columns);
+  for (const [operation, schema] of Object.entries(generatedSchemas)) {
+    const schemaFieldNames = Object.keys(schema.fields);
+    const invalidFieldName =
+      tableFieldNames.find((name) => !schemaFieldNames.includes(name)) ??
+      schemaFieldNames.find((name) => !(name in table.columns));
+    if (invalidFieldName !== undefined) {
+      throw new TypeError(
+        `${table.name} has an invalid generated ${operation} field: ${invalidFieldName}`,
+      );
+    }
+    for (const [name, fieldSchema] of Object.entries(schema.fields)) {
+      if (!isPrototypeSchema(fieldSchema)) {
+        throw new TypeError(`${table.name}.${name} has an invalid generated ${operation} schema`);
+      }
+    }
+  }
+
+  return Object.fromEntries(
+    tableFieldNames.map((name) => [
+      name,
+      {
+        select: generatedSchemas.select.fields[name] as AnySelectSchema,
+        create: generatedSchemas.create.fields[name],
+        update: generatedSchemas.update.fields[name],
+      },
+    ]),
+  );
+}
+
+function applyStaticFieldOverride(
+  baseline: FieldDefinition<AnySelectSchema, AnyWriteSchema> | undefined,
+  fieldOverride: StaticFieldSchemaOverride | undefined,
+): FieldDefinition<AnySelectSchema, AnyWriteSchema> | undefined {
+  if (fieldOverride === undefined) {
+    return baseline;
+  }
+  if (isPrototypeSchema(fieldOverride)) {
+    return {
+      select: fieldOverride as AnySelectSchema,
+      create: fieldOverride as AnyWriteSchema,
+      update: fieldOverride as AnyWriteSchema,
+    };
+  }
+
+  for (const [operation, schema] of Object.entries(fieldOverride)) {
+    if (!isPrototypeSchema(schema)) {
+      throw new TypeError(`Static ${operation} schema is invalid`);
+    }
+  }
+  const select = fieldOverride.select ?? baseline?.select;
+  const create = fieldOverride.create ?? baseline?.create ?? fieldOverride.select;
+  const update =
+    fieldOverride.update ?? baseline?.update ?? fieldOverride.create ?? fieldOverride.select;
+  if (select === undefined || create === undefined || update === undefined) {
+    throw new TypeError("Static field schema is incomplete");
+  }
+  return { select, create, update };
+}
+
+function normalizeRecordDefinition(
+  name: string,
+  input: DrizzleRecordInput,
+  table: AnyPrototypeDrizzleTable,
+  recordOverride: DrizzleRecordOverride | undefined,
+  schemas: DrizzleSchemaGenerators | undefined,
+): RecordDefinition {
+  const generatedFields = generatedFieldDefinitions(table, schemas);
+  const inputFields = isPrototypeDrizzleTable(input) ? {} : input.fields;
+  const staticFields =
+    recordOverride === undefined || isPrototypeDrizzleTable(recordOverride)
+      ? {}
+      : (recordOverride.fields ?? {});
+  const fieldNames = new Set([
+    ...Object.keys(table.columns),
+    ...Object.keys(inputFields),
+    ...Object.keys(staticFields),
+  ]);
+  const fields = Object.fromEntries(
+    [...fieldNames].map((fieldName) => {
+      const baseline = inputFields[fieldName] ?? generatedFields[fieldName];
+      const field = applyStaticFieldOverride(baseline, staticFields[fieldName]);
+      if (field === undefined) {
+        throw new TypeError(`${name}.${fieldName} has no complete schema`);
+      }
+      return [fieldName, field];
+    }),
+  );
+  return { fields };
+}
+
 function defineDrizzleStore<
   const Inputs extends DrizzleRecordInputs,
+  const Overrides extends DrizzleRecordOverrides<Inputs> = {},
   const Hooks extends BeforeCreateHooks<EffectiveRecordDefinitions<Inputs>> = {},
   const Relations extends PrototypeDrizzleRelationMap = {},
 >(
-  options: DrizzleStoreDefinitionOptions<Inputs, Hooks, Relations>,
+  options: DrizzleStoreDefinitionOptions<Inputs, Overrides, Hooks, Relations>,
 ): DrizzleStoreDefinition<
   EffectiveRecordDefinitions<Inputs>,
   Readonly<TableMap<Inputs> & Relations>,
   Hooks
 > {
+  const overrides = (options.overrides ?? {}) as Readonly<
+    Record<string, DrizzleRecordOverride | undefined>
+  >;
+  const normalizedEntries = Object.entries(options.records).map(([name, input]) => {
+    const recordOverride = overrides[name];
+    const overrideTable =
+      recordOverride === undefined
+        ? undefined
+        : isPrototypeDrizzleTable(recordOverride)
+          ? recordOverride
+          : recordOverride.table;
+    const table =
+      overrideTable ?? (isPrototypeDrizzleTable(input) ? input : prototypeDrizzleTable(name, {}));
+    return {
+      name,
+      table,
+      definition: normalizeRecordDefinition(name, input, table, recordOverride, options.schemas),
+    };
+  });
   const tables = Object.fromEntries(
-    Object.entries(options.records).map(([name, input]) => {
-      if ("kind" in input && input.kind === "table") {
-        options.schemas?.select(input);
-        options.schemas?.insert(input);
-        options.schemas?.update(input);
-        return [name, input];
-      }
-      return [name, prototypeDrizzleTable(name, {})];
-    }),
+    normalizedEntries.map(({ name, table }) => [name, table]),
   ) as TableMap<Inputs>;
+  const definitions = Object.fromEntries(
+    normalizedEntries.map(({ name, definition }) => [name, definition]),
+  ) as EffectiveRecordDefinitions<Inputs>;
 
   const relationValues = options.relations?.(tables) ?? ({} as Relations);
   const duplicateSchemaKey = Object.keys(relationValues).find((name) => name in tables);
@@ -376,7 +587,7 @@ function defineDrizzleStore<
     records: Object.freeze(records),
     schema: Object.freeze({ ...tables, ...relationValues }),
     [DrizzleStoreDefinitionState]: {
-      definitions: {} as EffectiveRecordDefinitions<Inputs>,
+      definitions,
       hooks: options.hooks ?? ({} as Hooks),
       tables,
     },
@@ -435,10 +646,25 @@ function bindDrizzleStore<
             ...input,
             ...patch,
           };
+          const recordDefinition = state.definitions[name];
+          for (const [fieldName, field] of Object.entries(recordDefinition.fields)) {
+            const value = parsePrototypeSchema(field.create, created[fieldName]);
+            if (value === undefined) {
+              delete created[fieldName];
+            } else {
+              created[fieldName] = value as JsonValue;
+            }
+          }
           for (const [fieldName, column] of Object.entries(table.columns)) {
             if (!(fieldName in created) && column.defaultValue !== undefined) {
               created[fieldName] = column.defaultValue;
             }
+          }
+          for (const [fieldName, field] of Object.entries(recordDefinition.fields)) {
+            created[fieldName] = parsePrototypeSchema(
+              field.select,
+              created[fieldName],
+            ) as JsonValue;
           }
           return created;
         },
@@ -453,6 +679,23 @@ const tenantIdSchema = prototypeSchema((input: unknown) => {
     throw new TypeError("tenantId must be a nonempty string");
   }
   return input;
+});
+
+const staticOnlyTable = prototypeDrizzleTable("static_only_records", {
+  tenantId: requiredTextColumn("tenant_id"),
+});
+
+const staticOnlyDefinition = defineDrizzleStore({
+  records: {
+    staticOnly: staticOnlyTable,
+  },
+  overrides: {
+    staticOnly: {
+      fields: {
+        tenantId: tenantIdSchema,
+      },
+    },
+  },
 });
 
 const someRecordTable = prototypeDrizzleTable("some_records", {
@@ -495,11 +738,9 @@ const created = await store.collections.someRecord.create({
 });
 
 // Direct, flat runtime values for application code and Drizzle Kit exports.
-export const directRuntimeEntities = {
-  record: definition.records.someRecord,
-  table: definition.schema.someRecord,
-  relations: definition.schema.someRecordRelations,
-};
+export const someRecord = definition.schema.someRecord;
+export const someRecordRelations = definition.schema.someRecordRelations;
+export const staticOnlyRecord = staticOnlyDefinition.schema.staticOnly;
 
 export async function compileTimeContractChecks(): Promise<void> {
   await store.collections.someRecord.create({
