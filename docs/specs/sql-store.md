@@ -2,7 +2,7 @@
 
 > **Status**: Design complete for implementation. The portable SQL tier and the PostgreSQL, MySQL, and SQLite Record specialization decisions are binding.
 >
-> **Last updated**: 2026-08-07 during Drizzle PostgreSQL Store adapter approval.
+> **Last updated**: 2026-08-07 during Drizzle MySQL Store adapter approval.
 
 ## Summary
 
@@ -942,7 +942,7 @@ Temporal values use:
 - `time`: `[-]HHH:MM:SS[.ffffff]`, from `-838:59:59` through `838:59:59`; and
 - `year`: an integer from 1901 through 2155.
 
-Reject invalid calendar dates, partial and zero dates, abbreviated times, the zero-year sentinel, and noncanonical temporal text. Writes can contain up to six fractional digits. MySQL applies the declared fractional precision. Selected values contain exactly that number of fractional digits; omitted precision means none. A concrete adapter must use a UTC-safe timestamp path or fail during its own live binding.
+Reject invalid calendar dates, partial and zero dates, abbreviated times, the zero-year sentinel, and noncanonical temporal text. Writes can contain up to six fractional digits. MySQL applies the declared fractional precision. Selected values contain exactly that number of fractional digits; omitted precision means none. A concrete adapter must document and enforce a UTC-safe timestamp contract. The Drizzle MySQL adapter requires the host to keep `@@session.time_zone` in UTC on every possible connection; it does not mutate or probe one session as proof for a pool.
 
 Supported physical options are:
 
