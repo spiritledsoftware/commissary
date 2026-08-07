@@ -187,12 +187,12 @@ The requested design is broader than adding fields to existing interfaces. It in
 - An override can refine existing fields or add complete fields, but it cannot remove contributor Record or field keys. Duplicate contributions fail until the host selects or renames one explicitly.
 - Built-in Core Field Schemas can use Effect Schema internally. Public types accept any Standard Schema library.
 - Custom Records are allowed beside Core Records.
-- A Thread Store can define one `beforeCreate` hook for each effective Collection. The hook applies to both Core and host calls to `create`.
-- Store passes the unvalidated create draft to the hook before any create Field Schema runs. The hook returns the complete create input, can replace built-in fields, and then passes through normal strict create validation.
+- A Store definition can define one `beforeCreate` hook for each effective Collection. The hook applies to every host or Core call to `create`.
+- Store passes the unvalidated create draft to the hook before any Create Field Schema runs. The hook returns a typed patch. Store shallow-merges that patch over the draft and then performs normal strict create validation.
+- Required create fields that are required properties of the inferred hook patch become optional in the matching public `Collection.create` input. All other required create fields remain required.
 - One logical Core operation can run a hook once in each of its three transaction attempts. External hook side effects and repeat safety are the host's responsibility.
-- Every Commissary command that directly creates a Core Record accepts a typed `fields` bag that contains only host-added fields for that Record. Required custom create fields are required in that bag. Optional and defaulted custom create fields remain optional.
-- A custom field whose effective create input excludes `undefined` makes `beforeCreate` required only for a Collection with an internal Core create path. A command-only create path does not require a hook.
-- If one Collection has both command and internal create paths, its command requires the custom field and its internal path requires the hook.
+- Every Commissary command that directly creates a Core Record accepts a typed `fields` bag that contains only host-added fields for that Record. Hook-supplied fields and optional or defaulted fields remain optional in that bag.
+- A required custom field on an internal Core create path must be supplied by the inferred patch of that Collection's `beforeCreate` hook. A command-only create path does not require a hook.
 - A Run Snapshot is a snapshot object with the complete effective selected Run Record under `run`.
 - Snapshot-owned properties such as `head`, `toolCalls`, and `suspensions` remain at the top level.
 - Every built-in and host-added Run Record field stays under `snapshot.run`. A matching built-in Core field uses its compatible narrowing there.
@@ -553,7 +553,67 @@ The `result` and `outcome` fields use the effective customized Core Record types
 
 ### Before-create hooks
 
-`CoreCreateDrafts` has one entry for every Core Record because Core creates every Core Record through a command or internal Runtime path. A command-created path means the public command exposes that Record's custom `fields` bag. A Record created only as a side effect of a command remains an internal create path.
+Every generic Store and Thread Store definition can contain one synchronous `beforeCreate` hook for each effective Collection. The hook runs for host `Collection.create` calls and for Core create paths. It receives the unvalidated draft and returns a patch. Store shallow-merges the patch over the draft before it rejects unknown keys or runs any Create Field Schema.
+
+Hook creation and Store definition perform no I/O. A hook can perform host work when a create operation invokes it, but it can run again for another create attempt. Core can make three storage-only transaction attempts after conflicts, so external hook effects must be repeat-safe.
+
+The public type model is:
+
+```ts
+type RequiredKeys<Value> = {
+  readonly [Key in keyof Value]-?: {} extends Pick<Value, Key> ? never : Key;
+}[keyof Value];
+
+type BeforeCreateHookConstraint<Definition extends RecordDefinition> = {
+  readonly beforeCreate: (input: {
+    readonly draft: Partial<CreateInput<Definition>>;
+  }) => Partial<CreateInput<Definition>>;
+};
+
+type StoreHooks<Definitions extends RecordDefinitions> = Partial<{
+  readonly [Name in keyof Definitions]: BeforeCreateHookConstraint<Definitions[Name]>;
+}>;
+
+type HookPatch<Hooks, Name extends PropertyKey> = Name extends keyof Hooks
+  ? Hooks[Name] extends {
+      readonly beforeCreate: (...arguments_: never[]) => infer Patch;
+    }
+    ? Patch
+    : {}
+  : {};
+
+type HookProvidedCreateKeys<
+  Hooks,
+  Name extends PropertyKey,
+  Definition extends RecordDefinition,
+> = Extract<RequiredKeys<HookPatch<Hooks, Name>>, keyof CreateInput<Definition>>;
+
+type HookAdjustedCreateInput<
+  Definition extends RecordDefinition,
+  HookProvidedKeys extends keyof CreateInput<Definition>,
+> = Omit<CreateInput<Definition>, HookProvidedKeys> &
+  Partial<Pick<CreateInput<Definition>, HookProvidedKeys>>;
+
+export type DefaultStoreCreateInputs<Definitions extends RecordDefinitions> = {
+  readonly [Name in keyof Definitions]: CreateInput<Definitions[Name]>;
+};
+
+type HookAdjustedStoreCreateInputs<
+  Definitions extends RecordDefinitions,
+  Hooks extends StoreHooks<Definitions>,
+> = {
+  readonly [Name in keyof Definitions]: HookAdjustedCreateInput<
+    Definitions[Name],
+    HookProvidedCreateKeys<Hooks, Name, Definitions[Name]>
+  >;
+};
+```
+
+The factory infers the exact hook return type before it checks `BeforeCreateHookConstraint`. A required property in that return type is a field the hook guarantees. An optional or conditional return property supplies no static guarantee and does not make the related create input optional. Store merges the returned patch into the draft; hooks need no separate list of supplied field names.
+
+A base Store hook receives the matching public create input as its draft. The returned Store uses `HookAdjustedStoreCreateInputs`, so hook-provided required fields are optional for direct `Collection.create` calls. Without a hook, the Collection keeps its normal `CreateInput`.
+
+Core drafts need additional rules. `CoreCreateDrafts` has one entry for every Core Record because Core creates each Record through a command or an internal Runtime path. The command-created Records are `thread`, `branch`, and `run`. Every other Core Record has an internal create path in version 1.
 
 The durable entity drafts contain these built-in values:
 
@@ -567,117 +627,16 @@ The durable entity drafts contain these built-in values:
 
 Each Runtime state draft contains all built-in fields listed in the Runtime state catalog table. Fields added later by update, such as Run `usage` or Tool Call `result`, are not create-draft fields.
 
-```ts
-type CoreCommandCreatedRecordName = "thread" | "branch" | "run";
+For a Thread Store hook, the contextual draft type contains the known Core draft and makes every other effective create field optional. A required custom create field on an internal path must be a required property of the inferred hook patch. Otherwise, the Thread Store definition is a compile-time error. Runtime validation remains required because a Standard Schema can declare an `unknown` input and still reject `undefined`.
 
-type CoreInternallyCreatedRecordName = Exclude<
-  keyof CoreRecordDefinitions,
-  CoreCommandCreatedRecordName
->;
-```
-
-Version 1 has no Record with both path classifications. A later command can add a command path to an internally created Record without removing its internal path or Hook requirement.
-
-```ts
-type CreateFieldInput<Field extends FieldDefinition> = FieldInput<CreateFieldSchema<Field>>;
-
-type RequiredCreateKeys<Definition extends RecordDefinition> = {
-  readonly [Key in keyof Definition["fields"]]-?: undefined extends CreateFieldInput<
-    Definition["fields"][Key]
-  >
-    ? never
-    : Key;
-}[keyof Definition["fields"]];
-
-type CoreRecordName = keyof CoreRecordDefinitions;
-type CoreCreatedRecordName = keyof CoreCreateDrafts & CoreRecordName;
-
-type CommandCreatedRecordName = Extract<CoreCommandCreatedRecordName, CoreCreatedRecordName>;
-
-type InternallyCreatedRecordName = Extract<CoreInternallyCreatedRecordName, CoreCreatedRecordName>;
-
-type CustomFieldKeys<Name extends CoreRecordName, Definition extends RecordDefinition> = Exclude<
-  keyof Definition["fields"],
-  keyof CoreRecordDefinitions[Name]["fields"]
->;
-
-type RequiredCustomCreateKeys<
-  Name extends CoreCreatedRecordName,
-  Definition extends RecordDefinition,
-> = Extract<RequiredCreateKeys<Definition>, CustomFieldKeys<Name, Definition>>;
-
-type BeforeCreateDraft<
-  Name extends keyof Definitions,
-  Definitions extends RecordDefinitions,
-> = Name extends keyof CoreCreateDrafts
-  ? CoreCreateDrafts[Name] & Partial<CreateInput<Definitions[Name]>>
-  : CreateInput<Definitions[Name]>;
-
-type BeforeCreateHook<Name extends keyof Definitions, Definitions extends RecordDefinitions> = {
-  readonly beforeCreate: (input: {
-    readonly draft: BeforeCreateDraft<Name, Definitions>;
-  }) => CreateInput<Definitions[Name]>;
-};
-
-type RequiredBeforeCreateHookNames<Definitions extends ThreadRecordDefinitions> = {
-  readonly [Name in InternallyCreatedRecordName & keyof Definitions]: RequiredCustomCreateKeys<
-    Name,
-    Definitions[Name]
-  > extends never
-    ? never
-    : Name;
-}[InternallyCreatedRecordName & keyof Definitions];
-
-type ThreadStoreHooks<Definitions extends ThreadRecordDefinitions> = {
-  readonly [Name in RequiredBeforeCreateHookNames<Definitions>]-?: BeforeCreateHook<
-    Name,
-    Definitions
-  >;
-} & {
-  readonly [
-    Name in Exclude<keyof Definitions, RequiredBeforeCreateHookNames<Definitions>>
-  ]?: BeforeCreateHook<Name, Definitions>;
-};
-
-type ThreadStoreHooksConfig<Definitions extends ThreadRecordDefinitions> = [
-  RequiredBeforeCreateHookNames<Definitions>,
-] extends [never]
-  ? { readonly hooks?: ThreadStoreHooks<Definitions> }
-  : { readonly hooks: ThreadStoreHooks<Definitions> };
-
-type CommandCustomCreateFields<
-  Name extends CommandCreatedRecordName,
-  Definitions extends ThreadRecordDefinitions,
-> = Pick<CreateInput<Definitions[Name]>, CustomFieldKeys<Name, Definitions[Name]>>;
-
-type CommandFieldsConfig<
-  Name extends CommandCreatedRecordName,
-  Definitions extends ThreadRecordDefinitions,
-> =
-  RequiredCustomCreateKeys<Name, Definitions[Name]> extends never
-    ? { readonly fields?: CommandCustomCreateFields<Name, Definitions> }
-    : { readonly fields: CommandCustomCreateFields<Name, Definitions> };
-
-type CreateThreadInput<Definitions extends ThreadRecordDefinitions> = {
-  readonly id?: string;
-} & CommandFieldsConfig<"thread", Definitions>;
-
-type ThreadStoreFactoryConfig<Provided extends RecordDefinitions> = {
-  readonly records: Provided;
-} & ThreadStoreHooksConfig<EffectiveRecordDefinitions<NoInfer<Provided>>>;
-```
-
-`CoreCommandCreatedRecordName` and `CoreInternallyCreatedRecordName` are Core-owned unions with the exact version 1 members shown above.
-
-The `records` property drives generic inference. `NoInfer` prevents a hook from weakening the inferred Record definitions. A required custom field makes both `hooks` and that Collection's `beforeCreate` entry required only when the Collection has an internal create path. A command create independently requires the field in its `fields` bag. If a Collection has both paths, both compile-time requirements apply. Every hook output must satisfy the complete effective `CreateInput`.
-
-This check depends on the Standard Schema input type. A schema whose declared input is `unknown` can still reject `undefined` at runtime, so strict runtime validation remains required.
+A command `fields` bag contains only host-added fields for its primary Core Record. A hook-provided field becomes optional in that bag. A required field that the hook does not guarantee remains required. A later Record can have both command and internal create paths; the same adjusted input rules apply to both.
 
 Hook execution order is:
 
 ```txt
-Core built-in draft plus command fields, when present, or host create input
-  -> beforeCreate hook
+host create input, or Core built-in draft plus command fields
+  -> beforeCreate hook returns a patch
+  -> shallow-merge the patch over the draft
   -> reject unknown top-level keys
   -> parse every field with its effective create Field Schema
   -> adapter fills only omitted generated values
@@ -685,7 +644,7 @@ Core built-in draft plus command fields, when present, or host create input
   -> select validation
 ```
 
-The hook can replace any built-in value. This power can break Runtime behavior and is intentional. A hook runs once per create attempt and can therefore run again when Core starts another transaction after a conflict.
+The hook can replace any draft value. This power can break Runtime behavior and is intentional. A hook runs once per create attempt. A thrown value is wrapped in `StoreHookError`; no adapter work starts.
 
 ### Query expressions
 
@@ -866,6 +825,7 @@ export type BaseStoreOperatorTypes = {
 export interface Collection<
   Definition extends RecordDefinition,
   Operators extends StoreOperatorTypes = BaseStoreOperatorTypes,
+  Create extends JsonObject = CreateInput<Definition>,
 > {
   readonly find: <
     const Select extends Selection<SelectedRecord<Definition>> | undefined = undefined,
@@ -873,7 +833,7 @@ export interface Collection<
     options?: FindOptions<SelectedRecord<Definition>, Select, Operators>,
   ) => Promise<readonly Project<SelectedRecord<Definition>, Select>[]>;
 
-  readonly create: (input: CreateInput<Definition>) => Promise<SelectedRecord<Definition>>;
+  readonly create: (input: Create) => Promise<SelectedRecord<Definition>>;
 
   readonly update: (input: UpdateOptions<Definition, Operators>) => Promise<number>;
 
@@ -943,18 +903,28 @@ An omitted `where` matches all Records.
 ```ts
 export type RecordDefinitions = Readonly<Record<string, RecordDefinition>>;
 
+export type StoreCreateInputMap<Definitions extends RecordDefinitions> = {
+  readonly [Name in keyof Definitions]: JsonObject;
+};
+
 export type StoreCollections<
   Definitions extends RecordDefinitions,
   Operators extends StoreOperatorTypes,
+  CreateInputs extends StoreCreateInputMap<Definitions>,
 > = {
-  readonly [Name in keyof Definitions]: Collection<Definitions[Name], Operators>;
+  readonly [Name in keyof Definitions]: Collection<
+    Definitions[Name],
+    Operators,
+    CreateInputs[Name]
+  >;
 };
 
 export interface Store<
   Definitions extends RecordDefinitions,
   Operators extends StoreOperatorTypes = BaseStoreOperatorTypes,
+  CreateInputs extends StoreCreateInputMap<Definitions> = DefaultStoreCreateInputs<Definitions>,
 > {
-  readonly collections: StoreCollections<Definitions, Operators>;
+  readonly collections: StoreCollections<Definitions, Operators, CreateInputs>;
 }
 ```
 
@@ -1072,16 +1042,20 @@ export interface TransactionStore<
       ? never
       : TransactionCapabilities[Key];
   } = {},
-> extends Store<Definitions, Operators> {
+  CreateInputs extends StoreCreateInputMap<Definitions> = DefaultStoreCreateInputs<Definitions>,
+> extends Store<Definitions, Operators, CreateInputs> {
   readonly transaction: <Value>(
-    use: (transaction: Store<Definitions, Operators> & TransactionCapabilities) => Promise<Value>,
+    use: (
+      transaction: Store<Definitions, Operators, CreateInputs> & TransactionCapabilities,
+    ) => Promise<Value>,
   ) => Promise<Value>;
 }
 
 type ThreadStoreBackend<
   Definitions extends ThreadRecordDefinitions,
   Operators extends StoreOperatorTypes,
-> = TransactionStore<Definitions, Operators>;
+  CreateInputs extends StoreCreateInputMap<Definitions>,
+> = TransactionStore<Definitions, Operators, {}, CreateInputs>;
 ```
 
 The callback argument intentionally has no `transaction` method. The default view is a plain Store. A wider adapter adds only capabilities that it can bind safely to the active transaction. Adapters do not implement nested transactions, savepoints, or adapter-specific nesting behavior in version 1.
@@ -1104,7 +1078,8 @@ A transaction callback can perform work outside Store. Rerunning it could repeat
 export interface ThreadStore<
   Definitions extends ThreadRecordDefinitions = CoreRecordDefinitions,
   Operators extends StoreOperatorTypes = BaseStoreOperatorTypes,
-> extends Store<Definitions, Operators> {
+  CreateInputs extends StoreCreateInputMap<Definitions> = DefaultStoreCreateInputs<Definitions>,
+> extends Store<Definitions, Operators, CreateInputs> {
   // Keep the current specialized operations and semantic result types.
   readonly submitRun: (
     input: SubmitRunStoreInput<Definitions>,
@@ -1643,6 +1618,7 @@ Each slice is one Red-Green cycle. Do not write all tests first.
 ## References
 
 - [SQL Store Tier Technical Specification](sql-store.md)
+- [Drizzle Store Technical Specification](drizzle-store.md)
 - [Better Auth database schema extensions](https://www.better-auth.com/docs/concepts/database#extending-core-schema)
 - [Drizzle query interface](https://orm.drizzle.team/docs/rqb)
 - [Drizzle Zod Select, Insert, and Update schemas](https://orm.drizzle.team/docs/zod)
