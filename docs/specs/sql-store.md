@@ -1819,7 +1819,7 @@ The committed draft asset is `packages/store/prototypes/database-record-speciali
 - every resolver follows the same failure ownership and issue-order skeleton; and
 - live driver, engine, index, and constraint checks remain in concrete adapter binding.
 
-**Verdict**: The portable SQL Store tier and the Drizzle-independent PostgreSQL, MySQL, and SQLite Record specializations are implementation-ready. Concrete adapter interfaces and runtime bindings remain behind the later Drizzle-tier gates.
+**Verdict**: The portable SQL Store tier and the Drizzle-independent PostgreSQL, MySQL, and SQLite Record specializations are implementation-ready. The [shared Drizzle definition lifecycle](drizzle-store.md) now owns concrete schema composition; dialect adapter behavior and runtime binding remain behind later Drizzle-tier gates.
 
 ## Files for Implementation
 
@@ -1904,6 +1904,7 @@ Each needs a real caller and its own cleanup, failure, and conformance rules.
 
 - [ADR 0019: Build Thread Store on generic Store primitives](../adr/0019-build-thread-store-on-generic-store-primitives.md)
 - [Store Architecture Technical Specification](store.md)
+- [Drizzle Store Technical Specification](drizzle-store.md)
 - [SQL Record definition resolution](https://github.com/spiritledsoftware/commissary/issues/9#issuecomment-5194052181)
 - [SQL Store interface and transaction resolution](https://github.com/spiritledsoftware/commissary/issues/11#issuecomment-5198678963)
 - [SQL Store caller use cases](https://github.com/spiritledsoftware/commissary/issues/13#issuecomment-5179152149)

@@ -80,6 +80,26 @@ _Avoid_: Migration execution, database introspection, host-facing Store tier, OR
 The concrete adapter stage that maps one immutable database Record resolution into ORM or driver values and rejects a live engine, driver path, session setting, host index, or host constraint that cannot preserve it.
 _Avoid_: Database Record Resolution, definition-time database I/O, Store capability probe, client creation
 
+**Drizzle Store Definition**:
+The connection-free concrete Store definition that combines lower-tier Records or direct Drizzle tables, host overrides, optional Schema Generators, relations, and Before Create Hooks into one effective Record catalog and one flat Drizzle Schema.
+_Avoid_: Database connection, migration plan, nested Drizzle metadata, separate binding map
+
+**Drizzle Schema Generators**:
+The optional select, insert, and update schema functions that derive missing Field Schemas from final Drizzle tables. Static Field Schemas remain authoritative.
+_Avoid_: Required validation library, whole-Record Store validation, storage inference without a table
+
+**Drizzle Record Input**:
+One lower-tier Record Definition or one dialect-correct Drizzle table registered under a Collection Catalog key. A table contributes every TypeScript column key as a Record Field.
+_Avoid_: Parallel ORM model, hidden table column, nested `drizzle` property, database row
+
+**Drizzle Schema**:
+The flat map of final Drizzle tables and host relations returned by a Drizzle Store Definition. Applications can configure Drizzle with the map; Drizzle Kit still needs its runtime entities exported directly.
+_Avoid_: Nested table map, generated TypeScript source, database instance, migration snapshot
+
+**Drizzle Relations Contribution**:
+The host callback beside Record inputs that receives every final table and returns directly named Drizzle relation entities. It does not create foreign-key migration constraints.
+_Avoid_: Record Override, integration-owned relation, eager-loading Store capability, migration foreign key
+
 **SQLite ROWID Contract**:
 The resolved `INTEGER PRIMARY KEY` identity and generation policy for one SQLite column. It states whether committed ROWID reuse is allowed or prevented with `AUTOINCREMENT`; it is not a general primary-key or index definition.
 _Avoid_: Gap-free sequence, Store-owned constraint model, automatic host index, generic identifier abstraction
@@ -161,7 +181,7 @@ The built-in create values that core supplies for one Core-created Record. Every
 _Avoid_: Validated create input, selected Record, adapter-generated value
 
 **Command Create Fields**:
-The typed `fields` bag on a Commissary command that directly creates a Core Record. It contains only host-added fields for that Record. Required custom create fields are required in this bag.
+The typed `fields` bag on a Commissary command that directly creates a Core Record. It contains only host-added fields for that Record. Required custom create fields remain required unless the matching Before Create Hook guarantees them.
 _Avoid_: Built-in command argument, complete Record input, internal create fallback
 
 **Command Create Path**:
@@ -169,15 +189,19 @@ A public Commissary command whose input exposes a custom `fields` bag for the pr
 _Avoid_: Raw Collection create, command side effect, internal Runtime create
 
 **Internal Create Path**:
-A path where core creates a Record without a host-provided command input for that Record. Version 1 uses it for every Core Record except Thread, Branch, and Run. A required custom create field on this path requires a Before Create Hook.
+A path where core creates a Record without a host-provided command input for that Record. Version 1 uses it for every Core Record except Thread, Branch, and Run. A required custom create field on this path requires a Before Create Hook that guarantees the field.
 _Avoid_: Command Create Path, raw Collection create, private Collection
 
 **Before Create Hook**:
-A host callback for one Collection. It receives an unvalidated Core or host create draft and returns the complete create input before strict Field Schema validation. It can replace built-in fields and runs once per create attempt. A command-only create path does not make the hook required.
-_Avoid_: After-create event, adapter default, validation bypass, once-per-logical-operation promise
+A host callback for one Collection on a base Store or Thread Store definition. It receives an unvalidated Core or host create draft and returns a patch. Store shallow-merges the patch over the draft before strict Field Schema validation. A required patch property makes that field optional for callers.
+_Avoid_: Complete create replacement, after-create event, adapter default, validation bypass, once-per-logical-operation promise
+
+**Hook-Provided Create Field**:
+A create field that is a required property of the inferred Before Create Hook patch. It is optional in public create and command inputs because the hook guarantees it before create validation.
+_Avoid_: Optional patch property, database default, adapter-generated value, separate supplied-field list
 
 **Required Custom Create Field**:
-A host-added field on a Core-created Record whose effective Create Field Schema input excludes `undefined`. A command create requires it in Command Create Fields. An Internal Create Path requires a Before Create Hook. If both paths exist, both requirements apply.
+A host-added field on a Core-created Record whose effective Create Field Schema input excludes `undefined`. A command or internal create path requires the field from its caller or from a Before Create Hook that guarantees it.
 _Avoid_: Optional field, defaulted create field, adapter-generated value, runtime-only hook check
 
 **Collection**:
