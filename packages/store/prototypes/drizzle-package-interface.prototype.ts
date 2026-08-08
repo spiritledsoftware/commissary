@@ -164,6 +164,13 @@ type PrototypeCoreTables<Dialect extends PrototypeDialect> = {
     { readonly id: string; readonly threadId: string }
   >;
 };
+type PrototypeThreadDefineOptions<
+  Dialect extends PrototypeDialect,
+  Tables extends PrototypeDialectTables<Dialect>,
+  Relations extends PrototypeRelations,
+> = Omit<PrototypeDefineOptions<Tables, Relations>, "relations"> & {
+  readonly relations?: (tables: PrototypeCoreTables<Dialect> & Tables) => Relations;
+};
 
 interface DrizzlePostgresStoreFactory {
   readonly define: <
@@ -182,7 +189,7 @@ interface DrizzlePostgresThreadStoreFactory {
     const Tables extends PrototypeDialectTables<"postgres">,
     const Relations extends PrototypeRelations = {},
   >(
-    options: PrototypeDefineOptions<Tables, Relations>,
+    options: PrototypeThreadDefineOptions<"postgres", Tables, Relations>,
   ) => DrizzlePostgresThreadStoreDefinition<
     PrototypeRecordReferences<PrototypeCoreTables<"postgres"> & Tables>,
     PrototypeDefinitionSchema<PrototypeCoreTables<"postgres"> & Tables, Relations>
@@ -206,7 +213,7 @@ interface DrizzleMysqlThreadStoreFactory {
     const Tables extends PrototypeDialectTables<"mysql">,
     const Relations extends PrototypeRelations = {},
   >(
-    options: PrototypeDefineOptions<Tables, Relations>,
+    options: PrototypeThreadDefineOptions<"mysql", Tables, Relations>,
   ) => DrizzleMysqlThreadStoreDefinition<
     PrototypeRecordReferences<PrototypeCoreTables<"mysql"> & Tables>,
     PrototypeDefinitionSchema<PrototypeCoreTables<"mysql"> & Tables, Relations>
@@ -230,7 +237,7 @@ interface DrizzleSqliteThreadStoreFactory {
     const Tables extends PrototypeDialectTables<"sqlite">,
     const Relations extends PrototypeRelations = {},
   >(
-    options: PrototypeDefineOptions<Tables, Relations>,
+    options: PrototypeThreadDefineOptions<"sqlite", Tables, Relations>,
   ) => DrizzleSqliteThreadStoreDefinition<
     PrototypeRecordReferences<PrototypeCoreTables<"sqlite"> & Tables>,
     PrototypeDefinitionSchema<PrototypeCoreTables<"sqlite"> & Tables, Relations>
@@ -492,7 +499,18 @@ declare const sqliteDatabase: BaseSQLiteDatabase<
   { readonly job: typeof sqliteJobTable }
 >;
 
-declare function expectType<Expected>(value: Expected): void;
+type PrototypeExact<Expected, Actual> =
+  (<Probe>() => Probe extends Expected ? 1 : 2) extends <Probe>() => Probe extends Actual ? 1 : 2
+    ? (<Probe>() => Probe extends Actual ? 1 : 2) extends <Probe>() => Probe extends Expected
+        ? 1
+        : 2
+      ? true
+      : false
+    : false;
+
+declare function expectExactType<Expected>(): <Actual>(
+  value: Actual & (PrototypeExact<Expected, Actual> extends true ? unknown : never),
+) => void;
 
 async function packageInterfaceContractChecks(runtimeBoolean: boolean): Promise<void> {
   const postgresDefinition = DrizzlePostgresStore.define({
@@ -504,16 +522,18 @@ async function packageInterfaceContractChecks(runtimeBoolean: boolean): Promise<
     }),
   });
 
-  expectType<typeof postgresJobTable>(postgresDefinition.schema.job);
-  expectType<typeof postgresJobRelations>(postgresDefinition.schema.jobRelations);
-  expectType<PrototypeRecordReference<typeof postgresJobTable>>(postgresDefinition.records.job);
+  expectExactType<typeof postgresJobTable>()(postgresDefinition.schema.job);
+  expectExactType<typeof postgresJobRelations>()(postgresDefinition.schema.jobRelations);
+  expectExactType<PrototypeRecordReference<typeof postgresJobTable>>()(
+    postgresDefinition.records.job,
+  );
 
   const postgresStore = await bindPostgresStore({
     definition: postgresDefinition,
     database: postgresDatabase,
   });
   const postgresResult = await postgresStore.execute({});
-  expectType<PrototypePostgresResult>(postgresResult.driverResult);
+  expectExactType<PrototypePostgresResult>()(postgresResult.driverResult);
 
   // @ts-expect-error Omitted transaction binding returns no transaction method.
   await postgresStore.transaction(async () => undefined);
@@ -524,7 +544,7 @@ async function packageInterfaceContractChecks(runtimeBoolean: boolean): Promise<
     transaction: true,
   });
   await postgresTransactionStore.transaction(async (transaction) => {
-    expectType<PrototypePostgresResult>((await transaction.execute({})).driverResult);
+    expectExactType<PrototypePostgresResult>()((await transaction.execute({})).driverResult);
   });
 
   const possiblePostgresTransactionStore = await bindPostgresStore({
@@ -547,7 +567,27 @@ async function packageInterfaceContractChecks(runtimeBoolean: boolean): Promise<
     definition: mysqlDefinition,
     database: mysqlDatabase,
   });
-  expectType<PrototypeMysqlResult>((await mysqlStore.execute({})).driverResult);
+  expectExactType<PrototypeMysqlResult>()((await mysqlStore.execute({})).driverResult);
+
+  const mysqlTransactionStore = await bindMysqlStore({
+    definition: mysqlDefinition,
+    database: mysqlDatabase,
+    transaction: true,
+  });
+  await mysqlTransactionStore.transaction(async (transaction) => {
+    expectExactType<PrototypeMysqlResult>()((await transaction.execute({})).driverResult);
+  });
+
+  const possibleMysqlTransactionStore = await bindMysqlStore({
+    definition: mysqlDefinition,
+    database: mysqlDatabase,
+    transaction: runtimeBoolean,
+  });
+  // @ts-expect-error A non-literal Boolean requires capability narrowing.
+  await possibleMysqlTransactionStore.transaction(async () => undefined);
+  if ("transaction" in possibleMysqlTransactionStore) {
+    await possibleMysqlTransactionStore.transaction(async () => undefined);
+  }
 
   const sqliteDefinition = DrizzleSqliteStore.define({
     records: {
@@ -558,23 +598,84 @@ async function packageInterfaceContractChecks(runtimeBoolean: boolean): Promise<
     definition: sqliteDefinition,
     database: sqliteDatabase,
   });
-  expectType<PrototypeSqliteRunResult>((await sqliteStore.execute({})).driverResult);
+  expectExactType<PrototypeSqliteRunResult>()((await sqliteStore.execute({})).driverResult);
+
+  const sqliteTransactionStore = await bindSqliteStore({
+    definition: sqliteDefinition,
+    database: sqliteDatabase,
+    transaction: true,
+  });
+  await sqliteTransactionStore.transaction(async (transaction) => {
+    expectExactType<PrototypeSqliteRunResult>()((await transaction.execute({})).driverResult);
+  });
+
+  const possibleSqliteTransactionStore = await bindSqliteStore({
+    definition: sqliteDefinition,
+    database: sqliteDatabase,
+    transaction: runtimeBoolean,
+  });
+  // @ts-expect-error A non-literal Boolean requires capability narrowing.
+  await possibleSqliteTransactionStore.transaction(async () => undefined);
+  if ("transaction" in possibleSqliteTransactionStore) {
+    await possibleSqliteTransactionStore.transaction(async () => undefined);
+  }
 
   const postgresThreadDefinition = DrizzlePostgresThreadStore.define({
     records: {
       job: postgresJobTable,
     },
+    relations: (tables) => ({
+      threadRelations: {
+        table: tables.thread,
+        relationNames: ["job"],
+      },
+    }),
   });
-  expectType<PrototypeTable<"postgres", "commissary_threads", { readonly id: string }>>(
+  expectExactType<PrototypeTable<"postgres", "commissary_threads", { readonly id: string }>>()(
     postgresThreadDefinition.schema.thread,
   );
-  const threadBackend = await bindPostgresStore({
+  expectExactType<PrototypeCoreTables<"postgres">["thread"]>()(
+    postgresThreadDefinition.schema.threadRelations.table,
+  );
+  const postgresThreadBackend = await bindPostgresStore({
     definition: postgresThreadDefinition,
     database: postgresDatabase,
     transaction: true,
   });
-  const threadStore = createThreadStore({ backend: threadBackend });
-  expectType<typeof postgresJobTable>(threadStore.schema.job);
+  const postgresThreadStore = createThreadStore({ backend: postgresThreadBackend });
+  expectExactType<typeof postgresJobTable>()(postgresThreadStore.schema.job);
+
+  const mysqlThreadDefinition = DrizzleMysqlThreadStore.define({
+    records: {
+      job: mysqlJobTable,
+    },
+  });
+  expectExactType<PrototypeTable<"mysql", "commissary_threads", { readonly id: string }>>()(
+    mysqlThreadDefinition.schema.thread,
+  );
+  const mysqlThreadBackend = await bindMysqlStore({
+    definition: mysqlThreadDefinition,
+    database: mysqlDatabase,
+    transaction: true,
+  });
+  const mysqlThreadStore = createThreadStore({ backend: mysqlThreadBackend });
+  expectExactType<typeof mysqlJobTable>()(mysqlThreadStore.schema.job);
+
+  const sqliteThreadDefinition = DrizzleSqliteThreadStore.define({
+    records: {
+      job: sqliteJobTable,
+    },
+  });
+  expectExactType<PrototypeTable<"sqlite", "commissary_threads", { readonly id: string }>>()(
+    sqliteThreadDefinition.schema.thread,
+  );
+  const sqliteThreadBackend = await bindSqliteStore({
+    definition: sqliteThreadDefinition,
+    database: sqliteDatabase,
+    transaction: true,
+  });
+  const sqliteThreadStore = createThreadStore({ backend: sqliteThreadBackend });
+  expectExactType<typeof sqliteJobTable>()(sqliteThreadStore.schema.job);
 
   // @ts-expect-error A PostgreSQL binder rejects a MySQL definition.
   await bindPostgresStore({ definition: mysqlDefinition, database: postgresDatabase });
@@ -584,9 +685,6 @@ async function packageInterfaceContractChecks(runtimeBoolean: boolean): Promise<
 
   // @ts-expect-error Generic definitions cannot compose as Thread Stores.
   createThreadStore({ backend: postgresStore });
-
-  void DrizzleMysqlThreadStore;
-  void DrizzleSqliteThreadStore;
 }
 
 void packageInterfaceContractChecks;

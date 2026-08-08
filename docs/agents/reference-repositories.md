@@ -17,4 +17,4 @@ The `pnpm run bootstrap` command materializes these read-only references in `.re
 | [Hono](https://github.com/honojs/hono)                       | `.repos/hono`         | Web-Standard HTTP APIs, typed middleware and contexts, runtime adapters, routing, and streaming transports        |
 | [Cloudflare Agents](https://github.com/cloudflare/agents)    | `.repos/agents`       | Durable Object agent state, typed RPC, scheduling, resumable streaming, MCP, Code Mode, and React client patterns |
 
-Before implementing related functionality, consult the relevant repository for established APIs, architecture, and implementation patterns. Treat these repositories as read-only references: do not modify them, add them to this workspace, or copy code without adapting it to this project's domain and conventions.
+Before implementing related functionality, consult the relevant repository for established APIs, architecture, and implementation patterns. Treat the repositories materialized in `.repos/` as read-only references: do not modify or commit their contents, and do not copy code without adapting it to this project's domain and conventions.

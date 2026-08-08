@@ -10,7 +10,7 @@
 
 The package accepts public Drizzle database base types. It does not enumerate drivers, own database clients, run migrations, or expose database-named runtime Store tiers. A binder preserves the exact definition, schema, create-input, operator, and public Drizzle result types. Literal transaction options preserve the exact returned Store capability. A non-literal Boolean returns a type-safe union.
 
-The source authority for Drizzle is the latest `main` branch. The first implementation targets `drizzle-orm` 0.45.3 and declares the peer range `^0.45.3`.
+The architectural source authority for Drizzle is the latest `main` branch. The compatibility source authority for the first implementation is the `drizzle-orm` v0.45.3 tag. The first implementation targets exactly 0.45.3, declares the peer range `^0.45.3`, and uses no `main`-branch API that is absent from that tag.
 
 ## Governing Decisions
 
@@ -438,6 +438,7 @@ Implementation must verify these package contracts:
 15. A Thread definition binds through the normal dialect binder and composes through `createThreadStore`.
 16. Drizzle Zod and Drizzle Valibot generators work when installed only by the host.
 17. Building and importing one dialect does not require a native driver package for another dialect.
+18. The implementation compiles against exactly `drizzle-orm` 0.45.3, and every used API inspected on `main` also exists in the v0.45.3 tag.
 
 The compile-tested prototype is `packages/store/prototypes/drizzle-package-interface.prototype.ts`.
 
@@ -499,3 +500,4 @@ Rejected because `definition.schema` already contains the exact flat runtime ent
 - [Drizzle SQLite database type](https://github.com/drizzle-team/drizzle-orm/blob/main/drizzle-orm/src/sqlite-core/db.ts)
 - [Drizzle Zod package](https://github.com/drizzle-team/drizzle-orm/tree/main/drizzle-zod)
 - [Drizzle Valibot package](https://github.com/drizzle-team/drizzle-orm/tree/main/drizzle-valibot)
+- [Drizzle ORM v0.45.3 source](https://github.com/drizzle-team/drizzle-orm/tree/v0.45.3)
