@@ -235,7 +235,7 @@ The functions return whole-table object schemas. Store still needs one Field Sch
 
 | Generator package | Supported version | Host schema-library range | Public field map |
 | ----------------- | ----------------- | ------------------------- | ---------------- |
-| `drizzle-zod`     | `0.8.3`           | Zod `^3.25.0              |                  | ^4.0.0` | `.shape` |
+| `drizzle-zod`     | `0.8.3`           | Zod `^3.25.0 \|\| ^4.0.0` | `.shape`         |
 | `drizzle-valibot` | `0.4.2`           | Valibot `^1.0.0`          | `.entries`       |
 
 The host owns and installs the generator and schema libraries. `@commissary/drizzle` imports neither family. Each returned whole-table schema and every extracted field schema must implement Standard Schema V1. Select, insert, and update results must use the same supported family and have exact table-key equality: no table key can be missing and no extra schema key is accepted. An unknown family reports `unsupported-schema-family`; malformed results from a recognized family report the applicable generated-schema issue. The runtime does not inspect installed package versions. Versions outside the approved matrix have no compatibility promise.

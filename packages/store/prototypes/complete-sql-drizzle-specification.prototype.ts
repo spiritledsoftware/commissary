@@ -97,48 +97,275 @@ function defineApprovalTable<
   return { kind: "table", ...options };
 }
 
+type ApprovalCoreUnboundedTextField<ColumnName extends string> = ApprovalField<
+  string,
+  ColumnName,
+  false
+> & {
+  readonly portable: "text";
+};
+type ApprovalCoreBoundedTextField<ColumnName extends string> =
+  ApprovalCoreUnboundedTextField<ColumnName> & {
+    readonly maxCodePoints: 95;
+  };
+type ApprovalCoreIntegerField<ColumnName extends string> = ApprovalField<
+  number,
+  ColumnName,
+  false
+> & {
+  readonly portable: "integer";
+  readonly minimum: 0;
+  readonly maximum: 9_007_199_254_740_991;
+};
+type ApprovalCoreBooleanField<ColumnName extends string> = ApprovalField<
+  boolean,
+  ColumnName,
+  false
+> & {
+  readonly portable: "boolean";
+};
+type ApprovalCoreJsonField<ColumnName extends string> = ApprovalField<
+  ApprovalJson,
+  ColumnName,
+  false
+> & {
+  readonly portable: "json";
+};
+type ApprovalCoreField =
+  | ApprovalCoreUnboundedTextField<string>
+  | ApprovalCoreBoundedTextField<string>
+  | ApprovalCoreIntegerField<string>
+  | ApprovalCoreBooleanField<string>
+  | ApprovalCoreJsonField<string>;
+
+function approvalCoreTextField<const ColumnName extends string>(
+  columnName: ColumnName,
+): ApprovalCoreUnboundedTextField<ColumnName>;
+function approvalCoreTextField<const ColumnName extends string>(
+  columnName: ColumnName,
+  maxCodePoints: 95,
+): ApprovalCoreBoundedTextField<ColumnName>;
+function approvalCoreTextField(
+  columnName: string,
+  maxCodePoints?: 95,
+): ApprovalCoreUnboundedTextField<string> | ApprovalCoreBoundedTextField<string> {
+  return maxCodePoints === undefined
+    ? { columnName, hasDefault: false, selected: "", portable: "text" }
+    : { columnName, hasDefault: false, selected: "", portable: "text", maxCodePoints };
+}
+
+function approvalCoreIntegerField<const ColumnName extends string>(
+  columnName: ColumnName,
+): ApprovalCoreIntegerField<ColumnName> {
+  return {
+    columnName,
+    hasDefault: false,
+    selected: 0,
+    portable: "integer",
+    minimum: 0,
+    maximum: 9_007_199_254_740_991,
+  };
+}
+
+function approvalCoreBooleanField<const ColumnName extends string>(
+  columnName: ColumnName,
+): ApprovalCoreBooleanField<ColumnName> {
+  return { columnName, hasDefault: false, selected: false, portable: "boolean" };
+}
+
+function approvalCoreJsonField<const ColumnName extends string>(
+  columnName: ColumnName,
+): ApprovalCoreJsonField<ColumnName> {
+  return { columnName, hasDefault: false, selected: null, portable: "json" };
+}
+
 const approvalCoreSqlCatalog = Object.freeze({
-  thread: { table: "commissary_threads", primaryKey: ["id"] },
-  branch: { table: "commissary_branches", primaryKey: ["id"] },
-  message: { table: "commissary_messages", primaryKey: ["id"] },
-  run: { table: "commissary_runs", primaryKey: ["id"] },
-  toolCall: { table: "commissary_tool_calls", primaryKey: ["runId", "toolCallId"] },
-  executionClaim: { table: "commissary_execution_claims", primaryKey: ["runId"] },
-  executionFence: { table: "commissary_execution_fences", primaryKey: ["runId"] },
+  thread: {
+    table: "commissary_threads",
+    fields: {
+      id: approvalCoreTextField("id", 95),
+    },
+    primaryKey: ["id"],
+  },
+  branch: {
+    table: "commissary_branches",
+    fields: {
+      id: approvalCoreTextField("id", 95),
+      threadId: approvalCoreTextField("thread_id"),
+      name: approvalCoreTextField("name"),
+      head: approvalCoreTextField("head"),
+    },
+    primaryKey: ["id"],
+  },
+  message: {
+    table: "commissary_messages",
+    fields: {
+      id: approvalCoreTextField("id", 95),
+      threadId: approvalCoreTextField("thread_id"),
+      parent: approvalCoreTextField("parent"),
+      message: approvalCoreJsonField("message"),
+    },
+    primaryKey: ["id"],
+  },
+  run: {
+    table: "commissary_runs",
+    fields: {
+      id: approvalCoreTextField("id", 95),
+      threadId: approvalCoreTextField("thread_id"),
+      branchId: approvalCoreTextField("branch_id"),
+      agent: approvalCoreJsonField("agent"),
+      admittedHead: approvalCoreTextField("admitted_head"),
+      status: approvalCoreTextField("status"),
+      abortRequested: approvalCoreBooleanField("abort_requested"),
+      settlementContinuations: approvalCoreIntegerField("settlement_continuations"),
+      usage: approvalCoreJsonField("usage"),
+      abortReason: approvalCoreJsonField("abort_reason"),
+      result: approvalCoreJsonField("result"),
+    },
+    primaryKey: ["id"],
+  },
+  toolCall: {
+    table: "commissary_tool_calls",
+    fields: {
+      toolCallId: approvalCoreTextField("tool_call_id", 95),
+      runId: approvalCoreTextField("run_id", 95),
+      sequence: approvalCoreIntegerField("sequence"),
+      toolName: approvalCoreTextField("tool_name"),
+      parentToolCallId: approvalCoreTextField("parent_tool_call_id"),
+      providerId: approvalCoreTextField("provider_id"),
+      delegationKey: approvalCoreTextField("delegation_key"),
+      requestedInput: approvalCoreJsonField("requested_input"),
+      effectiveInput: approvalCoreJsonField("effective_input"),
+      status: approvalCoreTextField("status"),
+      result: approvalCoreJsonField("result"),
+      suspension: approvalCoreJsonField("suspension"),
+      providerData: approvalCoreJsonField("provider_data"),
+      historyCommitted: approvalCoreBooleanField("history_committed"),
+    },
+    primaryKey: ["runId", "toolCallId"],
+  },
+  executionClaim: {
+    table: "commissary_execution_claims",
+    fields: {
+      runId: approvalCoreTextField("run_id", 95),
+      executionId: approvalCoreTextField("execution_id"),
+      token: approvalCoreTextField("token"),
+      fence: approvalCoreIntegerField("fence"),
+      expiresAt: approvalCoreIntegerField("expires_at"),
+    },
+    primaryKey: ["runId"],
+  },
+  executionFence: {
+    table: "commissary_execution_fences",
+    fields: {
+      runId: approvalCoreTextField("run_id", 95),
+      fence: approvalCoreIntegerField("fence"),
+    },
+    primaryKey: ["runId"],
+  },
   pendingSteering: {
     table: "commissary_pending_steerings",
+    fields: {
+      runId: approvalCoreTextField("run_id", 95),
+      sequence: approvalCoreIntegerField("sequence"),
+      message: approvalCoreJsonField("message"),
+    },
     primaryKey: ["runId", "sequence"],
   },
   pendingRedirect: {
     table: "commissary_pending_redirects",
+    fields: {
+      runId: approvalCoreTextField("run_id", 95),
+      sequence: approvalCoreIntegerField("sequence"),
+      message: approvalCoreJsonField("message"),
+    },
     primaryKey: ["runId", "sequence"],
   },
-  runCommandSequence: { table: "commissary_run_command_sequences", primaryKey: ["runId"] },
-  toolCallSequence: { table: "commissary_tool_call_sequences", primaryKey: ["runId"] },
-  runSubmission: { table: "commissary_run_submissions", primaryKey: ["runId"] },
+  runCommandSequence: {
+    table: "commissary_run_command_sequences",
+    fields: {
+      runId: approvalCoreTextField("run_id", 95),
+      sequence: approvalCoreIntegerField("sequence"),
+    },
+    primaryKey: ["runId"],
+  },
+  toolCallSequence: {
+    table: "commissary_tool_call_sequences",
+    fields: {
+      runId: approvalCoreTextField("run_id", 95),
+      sequence: approvalCoreIntegerField("sequence"),
+    },
+    primaryKey: ["runId"],
+  },
+  runSubmission: {
+    table: "commissary_run_submissions",
+    fields: {
+      runId: approvalCoreTextField("run_id", 95),
+      fingerprint: approvalCoreTextField("fingerprint"),
+      result: approvalCoreJsonField("result"),
+    },
+    primaryKey: ["runId"],
+  },
   toolResumeRequest: {
     table: "commissary_tool_resume_requests",
+    fields: {
+      runId: approvalCoreTextField("run_id", 95),
+      requestId: approvalCoreTextField("request_id", 95),
+      fingerprint: approvalCoreTextField("fingerprint"),
+      result: approvalCoreJsonField("result"),
+    },
     primaryKey: ["runId", "requestId"],
   },
   steeringRequest: {
     table: "commissary_steering_requests",
+    fields: {
+      runId: approvalCoreTextField("run_id", 95),
+      requestId: approvalCoreTextField("request_id", 95),
+      fingerprint: approvalCoreTextField("fingerprint"),
+      result: approvalCoreJsonField("result"),
+    },
     primaryKey: ["runId", "requestId"],
   },
   redirectRequest: {
     table: "commissary_redirect_requests",
+    fields: {
+      runId: approvalCoreTextField("run_id", 95),
+      requestId: approvalCoreTextField("request_id", 95),
+      fingerprint: approvalCoreTextField("fingerprint"),
+      result: approvalCoreJsonField("result"),
+    },
     primaryKey: ["runId", "requestId"],
   },
-  commit: { table: "commissary_commits", primaryKey: ["commitId"] },
+  commit: {
+    table: "commissary_commits",
+    fields: {
+      commitId: approvalCoreTextField("commit_id", 95),
+      fingerprint: approvalCoreTextField("fingerprint"),
+    },
+    primaryKey: ["commitId"],
+  },
   finalizationOutcome: {
     table: "commissary_finalization_outcomes",
+    fields: {
+      commitId: approvalCoreTextField("commit_id", 95),
+      outcome: approvalCoreJsonField("outcome"),
+    },
     primaryKey: ["commitId"],
   },
   modelCommitOutcome: {
     table: "commissary_model_commit_outcomes",
+    fields: {
+      commitId: approvalCoreTextField("commit_id", 95),
+      outcome: approvalCoreJsonField("outcome"),
+    },
     primaryKey: ["commitId"],
   },
   settlementOutcome: {
     table: "commissary_settlement_outcomes",
+    fields: {
+      commitId: approvalCoreTextField("commit_id", 95),
+      outcome: approvalCoreJsonField("outcome"),
+    },
     primaryKey: ["commitId"],
   },
 } as const);
@@ -148,30 +375,56 @@ type ApprovalCoreTables<Dialect extends ApprovalDialect> = {
   readonly [Name in keyof ApprovalCoreSqlCatalog]: ApprovalTable<
     Dialect,
     ApprovalCoreSqlCatalog[Name]["table"],
-    ApprovalFieldMap,
+    ApprovalCoreSqlCatalog[Name]["fields"],
     ApprovalCoreSqlCatalog[Name]["primaryKey"]
   >;
 };
 
+function makeApprovalCoreTable<
+  const Dialect extends ApprovalDialect,
+  const TableName extends string,
+  const Fields extends ApprovalFieldMap,
+  const PrimaryKey extends readonly [keyof Fields & string, ...(keyof Fields & string)[]],
+>(
+  dialect: Dialect,
+  catalog: {
+    readonly table: TableName;
+    readonly fields: Fields;
+    readonly primaryKey: PrimaryKey;
+  },
+): ApprovalTable<Dialect, TableName, Fields, PrimaryKey> {
+  return defineApprovalTable({
+    dialect,
+    name: catalog.table,
+    columns: catalog.fields,
+    primaryKey: catalog.primaryKey,
+  });
+}
+
 function makeApprovalCoreTables<Dialect extends ApprovalDialect>(
   dialect: Dialect,
 ): ApprovalCoreTables<Dialect> {
-  const tables = Object.fromEntries(
-    Object.entries(approvalCoreSqlCatalog).map(([key, catalog]) => [
-      key,
-      {
-        kind: "table",
-        dialect,
-        name: catalog.table,
-        columns: {},
-        primaryKey: catalog.primaryKey,
-      },
-    ]),
-  );
-
-  // SAFETY: This function visits the complete closed catalog and copies each exact key,
-  // table name, and primary-key tuple into the matching dialect table.
-  return tables as ApprovalCoreTables<Dialect>;
+  return {
+    thread: makeApprovalCoreTable(dialect, approvalCoreSqlCatalog.thread),
+    branch: makeApprovalCoreTable(dialect, approvalCoreSqlCatalog.branch),
+    message: makeApprovalCoreTable(dialect, approvalCoreSqlCatalog.message),
+    run: makeApprovalCoreTable(dialect, approvalCoreSqlCatalog.run),
+    toolCall: makeApprovalCoreTable(dialect, approvalCoreSqlCatalog.toolCall),
+    executionClaim: makeApprovalCoreTable(dialect, approvalCoreSqlCatalog.executionClaim),
+    executionFence: makeApprovalCoreTable(dialect, approvalCoreSqlCatalog.executionFence),
+    pendingSteering: makeApprovalCoreTable(dialect, approvalCoreSqlCatalog.pendingSteering),
+    pendingRedirect: makeApprovalCoreTable(dialect, approvalCoreSqlCatalog.pendingRedirect),
+    runCommandSequence: makeApprovalCoreTable(dialect, approvalCoreSqlCatalog.runCommandSequence),
+    toolCallSequence: makeApprovalCoreTable(dialect, approvalCoreSqlCatalog.toolCallSequence),
+    runSubmission: makeApprovalCoreTable(dialect, approvalCoreSqlCatalog.runSubmission),
+    toolResumeRequest: makeApprovalCoreTable(dialect, approvalCoreSqlCatalog.toolResumeRequest),
+    steeringRequest: makeApprovalCoreTable(dialect, approvalCoreSqlCatalog.steeringRequest),
+    redirectRequest: makeApprovalCoreTable(dialect, approvalCoreSqlCatalog.redirectRequest),
+    commit: makeApprovalCoreTable(dialect, approvalCoreSqlCatalog.commit),
+    finalizationOutcome: makeApprovalCoreTable(dialect, approvalCoreSqlCatalog.finalizationOutcome),
+    modelCommitOutcome: makeApprovalCoreTable(dialect, approvalCoreSqlCatalog.modelCommitOutcome),
+    settlementOutcome: makeApprovalCoreTable(dialect, approvalCoreSqlCatalog.settlementOutcome),
+  };
 }
 
 type ApprovalStandardSchema<Value> = {
@@ -614,6 +867,10 @@ declare function expectApprovalExactType<Expected>(): <Actual>(
   value: Actual & (ApprovalExact<Expected, Actual> extends true ? unknown : never),
 ) => void;
 
+declare function expectApprovalCoreTables<Dialect extends ApprovalDialect>(
+  tables: ApprovalCoreTables<Dialect>,
+): void;
+
 async function completeSpecificationContractChecks(): Promise<void> {
   expectApprovalExactType<"commissary_threads">()(approvalPostgresDefinition.schema.thread.name);
   expectApprovalExactType<readonly ["runId", "toolCallId"]>()(
@@ -624,6 +881,18 @@ async function completeSpecificationContractChecks(): Promise<void> {
   );
   expectApprovalExactType<typeof approvalPostgresDefinition.schema.auditLog>()(
     approvalPostgresAuditLog,
+  );
+  expectApprovalCoreTables(approvalPostgresDefinition.schema);
+  expectApprovalCoreTables(approvalMysqlDefinition.schema);
+  expectApprovalCoreTables(approvalSqliteDefinition.schema);
+  expectApprovalExactType<typeof approvalCoreSqlCatalog.toolCall.fields>()(
+    approvalPostgresDefinition.schema.toolCall.columns,
+  );
+  expectApprovalExactType<95>()(
+    approvalMysqlDefinition.schema.toolCall.columns.runId.maxCodePoints,
+  );
+  expectApprovalExactType<"integer">()(
+    approvalSqliteDefinition.schema.pendingSteering.columns.sequence.portable,
   );
 
   const postgresStore = await bindApprovalPostgresStore({
@@ -696,6 +965,122 @@ async function completeSpecificationContractChecks(): Promise<void> {
 
 void completeSpecificationContractChecks;
 
+const approvalExpectedCoreCatalogSignatures = [
+  "thread|commissary_threads|id|id=id:text:max95",
+  "branch|commissary_branches|id|id=id:text:max95,threadId=thread_id:text,name=name:text,head=head:text",
+  "message|commissary_messages|id|id=id:text:max95,threadId=thread_id:text,parent=parent:text,message=message:json",
+  "run|commissary_runs|id|id=id:text:max95,threadId=thread_id:text,branchId=branch_id:text,agent=agent:json,admittedHead=admitted_head:text,status=status:text,abortRequested=abort_requested:boolean,settlementContinuations=settlement_continuations:integer:safe-nonnegative,usage=usage:json,abortReason=abort_reason:json,result=result:json",
+  "toolCall|commissary_tool_calls|runId,toolCallId|toolCallId=tool_call_id:text:max95,runId=run_id:text:max95,sequence=sequence:integer:safe-nonnegative,toolName=tool_name:text,parentToolCallId=parent_tool_call_id:text,providerId=provider_id:text,delegationKey=delegation_key:text,requestedInput=requested_input:json,effectiveInput=effective_input:json,status=status:text,result=result:json,suspension=suspension:json,providerData=provider_data:json,historyCommitted=history_committed:boolean",
+  "executionClaim|commissary_execution_claims|runId|runId=run_id:text:max95,executionId=execution_id:text,token=token:text,fence=fence:integer:safe-nonnegative,expiresAt=expires_at:integer:safe-nonnegative",
+  "executionFence|commissary_execution_fences|runId|runId=run_id:text:max95,fence=fence:integer:safe-nonnegative",
+  "pendingSteering|commissary_pending_steerings|runId,sequence|runId=run_id:text:max95,sequence=sequence:integer:safe-nonnegative,message=message:json",
+  "pendingRedirect|commissary_pending_redirects|runId,sequence|runId=run_id:text:max95,sequence=sequence:integer:safe-nonnegative,message=message:json",
+  "runCommandSequence|commissary_run_command_sequences|runId|runId=run_id:text:max95,sequence=sequence:integer:safe-nonnegative",
+  "toolCallSequence|commissary_tool_call_sequences|runId|runId=run_id:text:max95,sequence=sequence:integer:safe-nonnegative",
+  "runSubmission|commissary_run_submissions|runId|runId=run_id:text:max95,fingerprint=fingerprint:text,result=result:json",
+  "toolResumeRequest|commissary_tool_resume_requests|runId,requestId|runId=run_id:text:max95,requestId=request_id:text:max95,fingerprint=fingerprint:text,result=result:json",
+  "steeringRequest|commissary_steering_requests|runId,requestId|runId=run_id:text:max95,requestId=request_id:text:max95,fingerprint=fingerprint:text,result=result:json",
+  "redirectRequest|commissary_redirect_requests|runId,requestId|runId=run_id:text:max95,requestId=request_id:text:max95,fingerprint=fingerprint:text,result=result:json",
+  "commit|commissary_commits|commitId|commitId=commit_id:text:max95,fingerprint=fingerprint:text",
+  "finalizationOutcome|commissary_finalization_outcomes|commitId|commitId=commit_id:text:max95,outcome=outcome:json",
+  "modelCommitOutcome|commissary_model_commit_outcomes|commitId|commitId=commit_id:text:max95,outcome=outcome:json",
+  "settlementOutcome|commissary_settlement_outcomes|commitId|commitId=commit_id:text:max95,outcome=outcome:json",
+] as const;
+
+function approvalCoreFieldSignature(field: ApprovalCoreField): string {
+  if (field.portable === "integer") {
+    if (
+      field.minimum !== 0 ||
+      field.maximum !== Number.MAX_SAFE_INTEGER ||
+      !Number.isSafeInteger(field.maximum)
+    ) {
+      throw new Error("Core integer field does not use the nonnegative safe-integer contract");
+    }
+    return `${field.columnName}:integer:safe-nonnegative`;
+  }
+
+  if (field.portable === "text" && "maxCodePoints" in field) {
+    if (field.maxCodePoints !== 95) {
+      throw new Error("Core bounded text field does not use the 95-code-point limit");
+    }
+    return `${field.columnName}:text:max95`;
+  }
+
+  return `${field.columnName}:${field.portable}`;
+}
+
+function approvalCoreRecordSignature(
+  recordName: string,
+  catalog: {
+    readonly table: string;
+    readonly fields: Readonly<Record<string, ApprovalCoreField>>;
+    readonly primaryKey: readonly string[];
+  },
+): { readonly fieldCount: number; readonly signature: string } {
+  const fieldEntries = Object.entries(catalog.fields);
+  const physicalNames = new Set(fieldEntries.map(([, field]) => field.columnName));
+  if (physicalNames.size !== fieldEntries.length) {
+    throw new Error("Core Record has duplicate physical column names");
+  }
+
+  if (catalog.primaryKey.length === 0) {
+    throw new Error("Core Record has an empty primary key");
+  }
+  for (const key of catalog.primaryKey) {
+    if (!Object.hasOwn(catalog.fields, key)) {
+      throw new Error("Core primary key names an unknown field");
+    }
+    const field = catalog.fields[key];
+    if (field === undefined) {
+      throw new Error("Core primary-key field is missing");
+    }
+    if (field.portable === "text" && !("maxCodePoints" in field)) {
+      throw new Error("Core string primary-key field has no code-point limit");
+    }
+    if (field.portable !== "text" && field.portable !== "integer") {
+      throw new Error("Core primary-key field does not use a portable key type");
+    }
+  }
+
+  const fields = fieldEntries
+    .map(([fieldName, field]) => `${fieldName}=${approvalCoreFieldSignature(field)}`)
+    .join(",");
+  return {
+    fieldCount: fieldEntries.length,
+    signature: `${recordName}|${catalog.table}|${catalog.primaryKey.join(",")}|${fields}`,
+  };
+}
+
+function validateApprovalCoreSqlCatalog(): {
+  readonly fieldCount: number;
+  readonly portableMappings: readonly string[];
+  readonly recordCount: number;
+  readonly stringKeyMaxCodePoints: 95;
+} {
+  let fieldCount = 0;
+  const signatures = Object.entries(approvalCoreSqlCatalog).map(([recordName, catalog]) => {
+    const result = approvalCoreRecordSignature(recordName, catalog);
+    fieldCount += result.fieldCount;
+    return result.signature;
+  });
+
+  if (JSON.stringify(signatures) !== JSON.stringify(approvalExpectedCoreCatalogSignatures)) {
+    throw new Error("Core SQL catalog does not match the complete approved catalog");
+  }
+  if (fieldCount !== 74) {
+    throw new Error("Core SQL catalog does not contain all 74 fields");
+  }
+
+  return {
+    fieldCount,
+    portableMappings: ["text", "integer", "boolean", "json"],
+    recordCount: signatures.length,
+    stringKeyMaxCodePoints: 95,
+  };
+}
+
+const approvalCoreCatalogCheck = validateApprovalCoreSqlCatalog();
+
 function generatedSchemaKeys(
   table: ApprovalTable<ApprovalDialect, string, ApprovalFieldMap, readonly string[]>,
   schema: ApprovalGeneratedObjectSchema<ApprovalFieldMap>,
@@ -726,7 +1111,10 @@ const generatorChecks = [
 
 console.log(
   JSON.stringify({
-    coreTables: Object.keys(approvalCoreSqlCatalog).length,
+    coreTables: approvalCoreCatalogCheck.recordCount,
+    coreFields: approvalCoreCatalogCheck.fieldCount,
+    coreStringKeyMaxCodePoints: approvalCoreCatalogCheck.stringKeyMaxCodePoints,
+    corePortableMappings: approvalCoreCatalogCheck.portableMappings,
     dialects: [
       approvalPostgresDefinition.dialect,
       approvalMysqlDefinition.dialect,
