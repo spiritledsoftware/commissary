@@ -123,39 +123,30 @@ A wrong engine, unsupported Drizzle transaction implementation, disabled transac
 
 ## Public binding API
 
-The rough public shape is:
+The [package interface specification](drizzle-package-interface.md) owns the exact overloads. Applied to MySQL:
 
 ```ts
-type DrizzleMysqlDriverResult<Database extends MySqlDatabase> = Awaited<
-  ReturnType<Database["execute"]>
->;
+const baseStore = await bindMysqlStore({
+  definition,
+  database,
+}); // SqlStore
 
-export declare function bindMysqlStore<
-  const Definition extends DrizzleMysqlStoreDefinition,
-  const Database extends MySqlDatabase,
-  const Transaction extends boolean = false,
->(options: {
-  readonly definition: Definition;
-  readonly database: Database;
-  readonly transaction?: Transaction;
-}): Promise<
-  BoundDrizzleMysqlSqlStore<Definition, Database> &
-    (Transaction extends true
-      ? TransactionStore<
-          DefinitionsOf<Definition>,
-          OperatorsOf<Definition>,
-          Pick<BoundDrizzleMysqlSqlStore<Definition, Database>, "query" | "execute">,
-          CreateInputsOf<Definition>
-        >
-      : {})
->;
+const transactionStore = await bindMysqlStore({
+  definition,
+  database,
+  transaction: true,
+}); // SqlStore & TransactionStore
+
+const possibleTransactionStore = await bindMysqlStore({
+  definition,
+  database,
+  transaction: runtimeBoolean,
+}); // SqlStore | (SqlStore & TransactionStore)
 ```
 
-`BoundDrizzleMysqlSqlStore` is an explanatory type, not a MySQL-named primitive Store tier. The concrete function can expose its structural return type directly.
+The binder accepts Drizzle's public `MySqlDatabase` type directly. It accepts a matching generic or Thread Store definition. Every binding runs the required private transaction probe because root mutations use that path. Omitted or literal-false `transaction` exposes no public transaction method. Literal true exposes the proved path. A non-literal Boolean returns a union and requires capability narrowing.
 
-Omitted or false `transaction` still runs the binding transaction probe because private root mutations require that path. It returns no public `transaction` method. Literal true exposes the already-proved physical transaction path and keeps `query` and `execute` on the callback view.
-
-The return type preserves the supplied definition, operator, create-input, database, and public Drizzle command-result types. Binding returns a native Promise before probe work starts.
+The structural result preserves the supplied definition, operator, create-input, database, and `Awaited<ReturnType<Database["execute"]>>` command-result types. It has no exported database-named bound Store alias. Binding returns a native Promise before probe work starts.
 
 ## Binding probes
 

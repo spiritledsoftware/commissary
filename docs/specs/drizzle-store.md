@@ -1,6 +1,6 @@
 # Drizzle Store Technical Specification
 
-**Status:** Shared definition lifecycle and PostgreSQL, MySQL, and SQLite binding shapes approved. Package exports and final cross-adapter approval remain in later design gates.
+**Status:** Shared definition lifecycle, package interface, and PostgreSQL, MySQL, and SQLite binding shapes approved. Final cross-adapter approval remains in issue #19.
 
 ## Summary
 
@@ -490,19 +490,16 @@ Expected runtime output:
 }
 ```
 
-## Deferred Decisions
+## Deferred Decision
 
-The following remain in later tickets:
-
-- root and subpath exports;
-- package peer and optional dependencies; and
-- final cross-adapter approval.
+Final cross-adapter approval remains in issue #19.
 
 ## References
 
 - [ADR 0019: Build Thread Store on generic Store primitives](../adr/0019-build-thread-store-on-generic-store-primitives.md)
 - [Store Architecture Technical Specification](store.md)
 - [SQL Store Tier Technical Specification](sql-store.md)
+- [Drizzle Package Interface Technical Specification](drizzle-package-interface.md)
 - [Drizzle API research](https://github.com/spiritledsoftware/commissary/issues/26#issuecomment-5166874940)
 - [Drizzle SQLite Store adapter specification](drizzle-sqlite-store.md)
 - [Shared lifecycle issue](https://github.com/spiritledsoftware/commissary/issues/14)

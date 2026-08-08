@@ -117,39 +117,30 @@ A mock, wrong dialect, failed connection, permission failure, malformed result, 
 
 ## Public binding API
 
-The rough public shape is:
+The [package interface specification](drizzle-package-interface.md) owns the exact overloads. Applied to PostgreSQL:
 
 ```ts
-type DrizzlePostgresDriverResult<Database extends PgDatabase> = Awaited<
-  ReturnType<Database["execute"]>
->;
+const baseStore = await bindPostgresStore({
+  definition,
+  database,
+}); // SqlStore
 
-export declare function bindPostgresStore<
-  const Definition extends DrizzlePostgresStoreDefinition,
-  const Database extends PgDatabase,
-  const Transaction extends boolean = false,
->(options: {
-  readonly definition: Definition;
-  readonly database: Database;
-  readonly transaction?: Transaction;
-}): Promise<
-  BoundDrizzlePostgresSqlStore<Definition, Database> &
-    (Transaction extends true
-      ? TransactionStore<
-          DefinitionsOf<Definition>,
-          OperatorsOf<Definition>,
-          Pick<BoundDrizzlePostgresSqlStore<Definition, Database>, "query" | "execute">,
-          CreateInputsOf<Definition>
-        >
-      : {})
->;
+const transactionStore = await bindPostgresStore({
+  definition,
+  database,
+  transaction: true,
+}); // SqlStore & TransactionStore
+
+const possibleTransactionStore = await bindPostgresStore({
+  definition,
+  database,
+  transaction: runtimeBoolean,
+}); // SqlStore | (SqlStore & TransactionStore)
 ```
 
-`BoundDrizzlePostgresSqlStore` is an explanatory type in this specification, not a new database-named primitive Store tier. The concrete function can expose its structural return type directly.
+The binder accepts Drizzle's public `PgDatabase` type directly. It accepts a matching generic or Thread Store definition. Omitted or literal-false `transaction` never calls `database.transaction` during binding and exposes no transaction method. Literal true runs the transaction probe. A non-literal Boolean returns a union and requires capability narrowing.
 
-Omitted or false `transaction` never calls `database.transaction` during binding and returns no transaction method. Literal true runs the transaction probe and keeps `query` and `execute` on the transaction callback view.
-
-The return type preserves the supplied definition, operator, create-input, database, and public Drizzle command-result types. Binding returns a native Promise before any probe work starts.
+The structural result preserves the supplied definition, operator, create-input, database, and `Awaited<ReturnType<Database["execute"]>>` command-result types. It has no exported database-named bound Store alias. Binding returns a native Promise before probe work starts.
 
 ## Binding probes
 
