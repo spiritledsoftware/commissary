@@ -10,12 +10,14 @@ mkdir -p "$reference_root"
 sync_repo() {
   name=$1
   url=$2
-  branch=$3
+  reference=$3
   path="$reference_root/$name"
 
   if [ ! -e "$path" ]; then
     printf 'Cloning %s reference repository...\n' "$name"
-    git clone --quiet --depth 1 --branch "$branch" "$url" "$path"
+    git clone --quiet --depth 1 --no-checkout "$url" "$path"
+    git -C "$path" fetch --quiet --depth 1 origin "$reference"
+    git -C "$path" checkout --quiet --detach FETCH_HEAD
     return
   fi
 
@@ -35,14 +37,14 @@ sync_repo() {
   fi
 
   printf 'Updating %s reference repository...\n' "$name"
-  git -C "$path" fetch --quiet --prune origin "$branch"
-  git -C "$path" merge --quiet --ff-only FETCH_HEAD
+  git -C "$path" fetch --quiet --prune origin "$reference"
+  git -C "$path" checkout --quiet --detach FETCH_HEAD
 }
 
 sync_repo effect https://github.com/Effect-TS/effect.git main
 sync_repo opencode https://github.com/anomalyco/opencode.git dev
 sync_repo better-auth https://github.com/better-auth/better-auth.git main
-sync_repo drizzle-orm https://github.com/drizzle-team/drizzle-orm.git main
+sync_repo drizzle-orm https://github.com/drizzle-team/drizzle-orm.git b7862528fd8fc39bc2653a6c18dad7c1f4e68d10
 sync_repo pi-mono https://github.com/badlogic/pi-mono.git main
 sync_repo vercel-ai https://github.com/vercel/ai.git main
 sync_repo tanstack-ai https://github.com/TanStack/ai.git main

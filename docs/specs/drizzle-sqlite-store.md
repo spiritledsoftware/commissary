@@ -167,7 +167,7 @@ Every binding performs one public Drizzle `all()` call equivalent to:
 SELECT sqlite_version() AS sqlite_version
 ```
 
-The result must be one array with exactly one object row and one string `sqlite_version` field. The adapter parses three nonnegative decimal integer components and requires version 3.45.0 or later. It does not use lexical version comparison or accept suffix text as an additional component.
+The result must be one array with exactly one object row and one string `sqlite_version` field. The adapter parses three nonnegative decimal safe-integer components and requires version 3.45.0 or later. It does not use lexical version comparison or accept suffix text as an additional component.
 
 ### Transaction probe
 
@@ -186,7 +186,7 @@ The probe requires:
 
 - `defer_foreign_keys` to remain `1` after the asynchronous continuation;
 - `read_uncommitted` to be `0`; and
-- `journal_mode` to be a recognized mode other than `off`.
+- `journal_mode`, normalized to lowercase, to be `delete`, `truncate`, `persist`, `memory`, or `wal`.
 
 SQLite resets `defer_foreign_keys` at commit or rollback. A synchronous Drizzle transaction that commits when the callback returns therefore reads `0` after the Promise continuation and fails the probe. An asynchronous implementation that does not await its callback also fails.
 
@@ -212,6 +212,8 @@ export declare class DrizzleSqliteBindingError extends Error {
 ```
 
 `unsupported-sqlite-version` can expose the normalized version tuple. Messages and causes are not safe default telemetry. Binding errors contain no SQL parameters, result rows, credentials, or connection details.
+
+`invalid-database` reports a value without the required public database methods. `probe-failed` reports a rejected or thrown version call. `invalid-version-result` reports a fulfilled call with a malformed row container, row, field, or version component. A valid older version preserves `unsupported-sqlite-version`.
 
 ## SQL Statement translation
 
@@ -399,26 +401,28 @@ The SQLite adapter runs the shared Store, SQL Store, and optional SQL Transactio
 
 1. the common `BaseSQLiteDatabase` input type without a driver-class union;
 2. synchronous and asynchronous base Store paths;
-3. SQLite 3.45 acceptance, older-version rejection, and malformed version rows;
-4. `query()` using one `all()` call and `execute()` using one `run()` call;
-5. exact Statement segments, `?` placeholders, identifier quoting, and boolean conversion;
-6. generic unchecked row inference;
-7. affected-row normalization from `changes`, `rowsAffected`, and `meta.changes`;
-8. unavailable and malformed affected-row metadata;
-9. exact `driverResult` identity;
-10. declared single and composite primary keys;
-11. each available ROWID alias and all-alias shadowing rejection;
-12. guarded update and delete with observed raw values;
-13. a candidate conflict before any write and after an earlier write;
-14. create and update readback after defaults, generation, conversion, and non-identity trigger changes;
-15. identity-changing trigger failure reporting;
-16. sequential candidate work and exact complete-success counts;
-17. omitted and false transaction options making no transaction probe;
-18. a valid asynchronous transaction probe;
-19. synchronous, early-commit, `read_uncommitted`, and `journal_mode=off` rejection;
-20. root and View SQL methods using the correct database;
-21. structured `BUSY` mapping without message parsing; and
-22. one callback invocation with no retry.
+3. SQLite 3.45 acceptance, older-version rejection, malformed rows, and unsafe version components;
+4. invalid database values and failed version probes;
+5. `query()` using one `all()` call and `execute()` using one `run()` call;
+6. exact Statement segments, `?` placeholders, identifier quoting, and boolean conversion;
+7. generic unchecked row inference;
+8. affected-row normalization from exactly one unambiguous `changes`, `rowsAffected`, or `meta.changes` path;
+9. unavailable, malformed, and ambiguous affected-row metadata;
+10. exact `driverResult` identity;
+11. declared single and composite primary keys;
+12. each available ROWID alias and all-alias shadowing rejection;
+13. guarded update and delete with observed raw values;
+14. a candidate conflict before any write and after an earlier write;
+15. create and update readback after defaults, generation, conversion, and non-identity trigger changes;
+16. identity-changing trigger failure reporting;
+17. sequential candidate work and exact complete-success counts;
+18. omitted and false transaction options making no transaction probe;
+19. a valid asynchronous transaction probe;
+20. synchronous, early-commit, `read_uncommitted`, `journal_mode=off`, and unknown journal-mode rejection;
+21. root and View SQL methods using the correct database;
+22. closed Views and active-work draining through the shared transaction callback runner;
+23. structured current and future extended `BUSY` mapping without message parsing; and
+24. one callback invocation with no retry.
 
 The compile-tested prototype is `packages/store/prototypes/drizzle-sqlite-store-adapter.prototype.ts`. It proves the public generic result type, common sync/async database shape, SQL method dispatch, metadata normalization, identity selection and guarding, stored-value readback, transaction liveness probe, and structured conflict mapping without adding a production Drizzle dependency.
 

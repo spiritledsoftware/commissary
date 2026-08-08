@@ -110,10 +110,11 @@ function normalizeMysqlExecutionResult(result: unknown): PrototypeExecutionResul
 
   if (Array.isArray(result) && result.length === 2 && Array.isArray(result[1])) {
     const data = result[0];
+    const fields = result[1];
+    if (fields.some((fieldSet) => Array.isArray(fieldSet))) {
+      throw new PrototypeMultipleResultsError();
+    }
     if (Array.isArray(data)) {
-      if (data.some((item) => Array.isArray(item) || isResultHeader(item))) {
-        throw new PrototypeMultipleResultsError();
-      }
       rows = data;
     } else if (isResultHeader(data)) {
       rows = [];
@@ -125,9 +126,6 @@ function normalizeMysqlExecutionResult(result: unknown): PrototypeExecutionResul
     const resultRows = readProperty(result, "rows");
     if (!Array.isArray(resultRows)) {
       throw new TypeError("Invalid MySQL execution result");
-    }
-    if (resultRows.some((item) => Array.isArray(item) || isResultHeader(item))) {
-      throw new PrototypeMultipleResultsError();
     }
     rows = resultRows;
     metadata = result;
@@ -147,30 +145,34 @@ interface PrototypeTransactionConfig {
   readonly accessMode?: "read only";
 }
 
-interface PrototypeMysqlDatabase {
-  readonly execute: (statement: PrototypeDrizzleSql) => Promise<unknown>;
+interface PrototypeMysqlDatabase<DriverResult> {
+  readonly execute: (statement: PrototypeDrizzleSql) => Promise<DriverResult>;
   readonly transaction?: <Value>(
-    use: (transaction: PrototypeMysqlDatabase) => Promise<Value>,
+    use: (transaction: PrototypeMysqlDatabase<DriverResult>) => Promise<Value>,
     config: PrototypeTransactionConfig,
   ) => Promise<Value>;
 }
 
-interface PrototypeSqlCommandResult {
+interface PrototypeSqlCommandResult<out DriverResult = unknown> {
   readonly affectedRows: number | undefined;
-  readonly driverResult: unknown;
+  readonly driverResult: DriverResult;
 }
 
-interface PrototypeSqlStore {
+interface PrototypeSqlStore<out DriverResult = unknown> {
   readonly query: <Row = unknown>(statement: PrototypeSqlStatement) => Promise<readonly Row[]>;
-  readonly execute: (statement: PrototypeSqlStatement) => Promise<PrototypeSqlCommandResult>;
+  readonly execute: (
+    statement: PrototypeSqlStatement,
+  ) => Promise<PrototypeSqlCommandResult<DriverResult>>;
   readonly runRootMutationPrototype: <Value>(
-    use: (view: PrototypeSqlStore) => Promise<Value>,
+    use: (view: PrototypeSqlStore<DriverResult>) => Promise<Value>,
   ) => Promise<Value>;
 }
 
-interface PrototypeTransactionStore extends PrototypeSqlStore {
+interface PrototypeTransactionStore<
+  out DriverResult = unknown,
+> extends PrototypeSqlStore<DriverResult> {
   readonly transaction: <Value>(
-    use: (transaction: PrototypeSqlStore) => Promise<Value>,
+    use: (transaction: PrototypeSqlStore<DriverResult>) => Promise<Value>,
   ) => Promise<Value>;
 }
 
@@ -333,16 +335,16 @@ function requireInnoDbTables(
   }
 }
 
-type PrototypeRunTransaction = <Value>(
-  use: (transaction: PrototypeMysqlDatabase) => Promise<Value>,
+type PrototypeRunTransaction<DriverResult> = <Value>(
+  use: (transaction: PrototypeMysqlDatabase<DriverResult>) => Promise<Value>,
   config: PrototypeTransactionConfig,
 ) => Promise<Value>;
 
-function makeSqlStore(
-  database: PrototypeMysqlDatabase,
-  runRootTransaction?: PrototypeRunTransaction,
-): PrototypeSqlStore {
-  const store: PrototypeSqlStore = {
+function makeSqlStore<DriverResult>(
+  database: PrototypeMysqlDatabase<DriverResult>,
+  runRootTransaction?: PrototypeRunTransaction<DriverResult>,
+): PrototypeSqlStore<DriverResult> {
+  const store: PrototypeSqlStore<DriverResult> = {
     query: async <Row = unknown>(statement: PrototypeSqlStatement) => {
       const compiled = compileMysqlStatement(statement);
       const result = normalizeMysqlExecutionResult(await database.execute(toDrizzleSql(compiled)));
@@ -369,32 +371,31 @@ function makeSqlStore(
   return store;
 }
 
-interface PrototypeBindOptions {
-  readonly database: PrototypeMysqlDatabase;
+interface PrototypeBindOptions<DriverResult> {
+  readonly database: PrototypeMysqlDatabase<DriverResult>;
   readonly tables: readonly PrototypeTablePlan[];
   readonly transaction?: false;
 }
 
-interface PrototypeTransactionBindOptions {
-  readonly database: PrototypeMysqlDatabase;
+interface PrototypeTransactionBindOptions<DriverResult> {
+  readonly database: PrototypeMysqlDatabase<DriverResult>;
   readonly tables: readonly PrototypeTablePlan[];
   readonly transaction: true;
 }
 
-function bindMysqlStore(
-  options: PrototypeTransactionBindOptions,
-): Promise<PrototypeTransactionStore>;
-function bindMysqlStore(options: PrototypeBindOptions): Promise<PrototypeSqlStore>;
-async function bindMysqlStore(
-  options: PrototypeBindOptions | PrototypeTransactionBindOptions,
-): Promise<PrototypeSqlStore | PrototypeTransactionStore> {
-  if (options.database.transaction === undefined) {
+function bindMysqlStore<DriverResult>(
+  options: PrototypeTransactionBindOptions<DriverResult>,
+): Promise<PrototypeTransactionStore<DriverResult>>;
+function bindMysqlStore<DriverResult>(
+  options: PrototypeBindOptions<DriverResult>,
+): Promise<PrototypeSqlStore<DriverResult>>;
+async function bindMysqlStore<DriverResult>(
+  options: PrototypeBindOptions<DriverResult> | PrototypeTransactionBindOptions<DriverResult>,
+): Promise<PrototypeSqlStore<DriverResult> | PrototypeTransactionStore<DriverResult>> {
+  const runTransaction = options.database.transaction;
+  if (runTransaction === undefined) {
     throw new PrototypeBindingError("transaction-unavailable");
   }
-  const runTransaction: PrototypeRunTransaction = <Value>(
-    use: (transaction: PrototypeMysqlDatabase) => Promise<Value>,
-    config: PrototypeTransactionConfig,
-  ): Promise<Value> => options.database.transaction!(use, config);
   const store = makeSqlStore(options.database, runTransaction);
 
   const currentDatabase = readServerProbe(await store.query(rawStatement(serverProbeSql)));
@@ -515,7 +516,9 @@ function isMysqlTransactionConflict(cause: unknown): boolean {
   return false;
 }
 
-function isTransactionStore(store: PrototypeSqlStore): store is PrototypeTransactionStore {
+function isTransactionStore<DriverResult>(
+  store: PrototypeSqlStore<DriverResult>,
+): store is PrototypeTransactionStore<DriverResult> {
   return "transaction" in store && typeof Reflect.get(store, "transaction") === "function";
 }
 
@@ -531,6 +534,10 @@ interface PrototypeDatabaseCall {
   readonly inTransaction: boolean;
 }
 
+type PrototypeMysqlDriverResult =
+  | readonly [readonly unknown[] | Readonly<Record<string, unknown>>, readonly unknown[]]
+  | { readonly rows: readonly unknown[] };
+
 function makePrototypeDatabase(options?: {
   readonly version?: string;
   readonly versionComment?: string;
@@ -538,7 +545,7 @@ function makePrototypeDatabase(options?: {
   readonly transaction?: boolean;
   readonly applyTransactionOptions?: boolean;
   readonly engines?: Readonly<Record<string, string>>;
-}): PrototypeMysqlDatabase & {
+}): PrototypeMysqlDatabase<PrototypeMysqlDriverResult> & {
   readonly calls: PrototypeDatabaseCall[];
   readonly transactionCalls: { readonly config: PrototypeTransactionConfig }[];
 } {
@@ -546,7 +553,7 @@ function makePrototypeDatabase(options?: {
   const transactionCalls: { readonly config: PrototypeTransactionConfig }[] = [];
   let activeTransactionConfig: PrototypeTransactionConfig | undefined;
 
-  const execute = async (statement: PrototypeDrizzleSql): Promise<unknown> => {
+  const execute = async (statement: PrototypeDrizzleSql): Promise<PrototypeMysqlDriverResult> => {
     let text = "";
     const parameters: unknown[] = [];
     for (const chunk of statement.chunks) {
@@ -632,12 +639,14 @@ function makePrototypeDatabase(options?: {
     return { execute, calls, transactionCalls };
   }
 
-  let database: PrototypeMysqlDatabase & {
+  let database: PrototypeMysqlDatabase<PrototypeMysqlDriverResult> & {
     readonly calls: PrototypeDatabaseCall[];
     readonly transactionCalls: { readonly config: PrototypeTransactionConfig }[];
   };
   const transaction = async <Value>(
-    use: (transactionDatabase: PrototypeMysqlDatabase) => Promise<Value>,
+    use: (
+      transactionDatabase: PrototypeMysqlDatabase<PrototypeMysqlDriverResult>,
+    ) => Promise<Value>,
     config: PrototypeTransactionConfig,
   ): Promise<Value> => {
     transactionCalls.push({ config });
@@ -676,6 +685,18 @@ async function runPrototype(): Promise<void> {
   assert(
     drizzleStatement.chunks[1]?.kind === "parameter" && drizzleStatement.chunks[1].value === 1,
     "bound value did not remain a parameter",
+  );
+
+  const metadataNamedTupleRows = normalizeMysqlExecutionResult([
+    [{ affectedRows: "row-value", insertId: "job-1" }],
+    [],
+  ]);
+  const metadataNamedWrappedRows = normalizeMysqlExecutionResult({
+    rows: [{ rowsAffected: "row-value", insertId: "job-2" }],
+  });
+  assert(
+    metadataNamedTupleRows.rows.length === 1 && metadataNamedWrappedRows.rows.length === 1,
+    "metadata-like query columns were classified as result headers",
   );
 
   const baseDatabase = makePrototypeDatabase({
@@ -721,6 +742,8 @@ async function runPrototype(): Promise<void> {
       readProperty(writeResult.driverResult[0], "insertId") === "9007199254740993",
     "exact public driver result was lost",
   );
+  const preservedMysqlDriverResult: PrototypeMysqlDriverResult = writeResult.driverResult;
+  void preservedMysqlDriverResult;
 
   const transactionDatabase = makePrototypeDatabase();
   const transactionStore = await bindMysqlStore({

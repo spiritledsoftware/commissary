@@ -1656,39 +1656,35 @@ export interface TransactionConformanceControls {
 }
 ```
 
-export type SqlTransactionStoreConformanceStore<DriverResult> =
-SqlStore<
-typeof sqlStoreConformanceRecordDefinitions,
-BaseStoreOperatorTypes,
-DriverResult
-
+```ts
+export type SqlTransactionStoreConformanceStore<DriverResult> = SqlStore<
+  typeof sqlStoreConformanceRecordDefinitions,
+  BaseStoreOperatorTypes,
+  DriverResult
 > &
-> TransactionStore<
-> typeof sqlStoreConformanceRecordDefinitions,
-> BaseStoreOperatorTypes,
-> Pick<
-> SqlStore<
-> typeof sqlStoreConformanceRecordDefinitions,
-> BaseStoreOperatorTypes,
-> DriverResult >,
-> "query" | "execute" >
-> ;
+  TransactionStore<
+    typeof sqlStoreConformanceRecordDefinitions,
+    BaseStoreOperatorTypes,
+    Pick<
+      SqlStore<typeof sqlStoreConformanceRecordDefinitions, BaseStoreOperatorTypes, DriverResult>,
+      "query" | "execute"
+    >
+  >;
 
 export interface SqlTransactionStoreConformanceFixture<DriverParameter, DriverResult> {
-readonly store: SqlTransactionStoreConformanceStore<DriverResult>;
-readonly sqlControls: SqlStoreConformanceControls<DriverParameter, DriverResult>;
-readonly transactionControls: TransactionConformanceControls;
-readonly statements: SqlTransactionStoreConformanceStatements;
+  readonly store: SqlTransactionStoreConformanceStore<DriverResult>;
+  readonly sqlControls: SqlStoreConformanceControls<DriverParameter, DriverResult>;
+  readonly transactionControls: TransactionConformanceControls;
+  readonly statements: SqlTransactionStoreConformanceStatements;
 }
 
 export interface SqlTransactionStoreConformanceAdapter<DriverParameter, DriverResult> {
-readonly profile: SqlStoreConformanceProfile<DriverParameter>;
-readonly makeFixture: () =>
-| SqlTransactionStoreConformanceFixture<DriverParameter, DriverResult>
-| Promise<SqlTransactionStoreConformanceFixture<DriverParameter, DriverResult>>;
+  readonly profile: SqlStoreConformanceProfile<DriverParameter>;
+  readonly makeFixture: () =>
+    | SqlTransactionStoreConformanceFixture<DriverParameter, DriverResult>
+    | Promise<SqlTransactionStoreConformanceFixture<DriverParameter, DriverResult>>;
 }
-
-````
+```
 
 The Statement group is package-owned, runs once in `@commissary/store`, and has no adapter input interface. The SQL Store suite accepts `SqlStoreConformanceAdapter`. The combined SQL and transaction suite accepts `SqlTransactionStoreConformanceAdapter`. Every scenario gets a fresh fixture. The combined Store exposes `query` and `execute` at its root and through `TransactionCapabilities`; its Transaction View remains closed to nested transactions.
 
@@ -1797,7 +1793,7 @@ Integration-authored lower-tier Records
   -> resolver resolves names, types, generated behavior, assets, and conflicts
   -> freeze the database resolution assets + .records references
   -> concrete adapter maps the plan into its ORM or driver values
-````
+```
 
 No database I/O occurs in this flow.
 

@@ -179,31 +179,33 @@ interface PrototypeTransactionConfig {
   readonly accessMode?: "read only";
 }
 
-interface PrototypePgDatabase {
-  readonly execute: (statement: PrototypeDrizzleSql) => Promise<unknown>;
+interface PrototypePgDatabase<DriverResult> {
+  readonly execute: (statement: PrototypeDrizzleSql) => Promise<DriverResult>;
   readonly transaction?: <Value>(
-    use: (transaction: PrototypePgDatabase) => Promise<Value>,
+    use: (transaction: PrototypePgDatabase<DriverResult>) => Promise<Value>,
     config: PrototypeTransactionConfig,
   ) => Promise<Value>;
 }
 
-interface PrototypeSqlCommandResult {
+interface PrototypeSqlCommandResult<out DriverResult = unknown> {
   readonly affectedRows: number | undefined;
-  readonly driverResult: unknown;
+  readonly driverResult: DriverResult;
 }
 
-interface PrototypeSqlStore {
+interface PrototypeSqlStore<out DriverResult = unknown> {
   readonly query: <Row = unknown>(
     statement: PrototypeSqlStatement<null | boolean | number | string>,
   ) => Promise<readonly Row[]>;
   readonly execute: (
     statement: PrototypeSqlStatement<null | boolean | number | string>,
-  ) => Promise<PrototypeSqlCommandResult>;
+  ) => Promise<PrototypeSqlCommandResult<DriverResult>>;
 }
 
-interface PrototypeTransactionStore extends PrototypeSqlStore {
+interface PrototypeTransactionStore<
+  out DriverResult = unknown,
+> extends PrototypeSqlStore<DriverResult> {
   readonly transaction: <Value>(
-    use: (transaction: PrototypeSqlStore) => Promise<Value>,
+    use: (transaction: PrototypeSqlStore<DriverResult>) => Promise<Value>,
   ) => Promise<Value>;
 }
 
@@ -224,7 +226,9 @@ function rawStatement(text: string): PrototypeSqlStatement<never> {
 const transactionSettingsSql =
   "SELECT current_setting('transaction_isolation') AS transaction_isolation, current_setting('transaction_read_only') AS transaction_read_only";
 
-function makeSqlStore(database: PrototypePgDatabase): PrototypeSqlStore {
+function makeSqlStore<DriverResult>(
+  database: PrototypePgDatabase<DriverResult>,
+): PrototypeSqlStore<DriverResult> {
   return {
     query: async <Row = unknown>(
       statement: PrototypeSqlStatement<null | boolean | number | string>,
@@ -268,23 +272,25 @@ function requireReadOnlySerializableTransaction(rows: readonly unknown[]): void 
   }
 }
 
-interface PrototypeBindOptions {
-  readonly database: PrototypePgDatabase;
+interface PrototypeBindOptions<DriverResult> {
+  readonly database: PrototypePgDatabase<DriverResult>;
   readonly transaction?: false;
 }
 
-interface PrototypeTransactionBindOptions {
-  readonly database: PrototypePgDatabase;
+interface PrototypeTransactionBindOptions<DriverResult> {
+  readonly database: PrototypePgDatabase<DriverResult>;
   readonly transaction: true;
 }
 
-function bindPostgresStore(
-  options: PrototypeTransactionBindOptions,
-): Promise<PrototypeTransactionStore>;
-function bindPostgresStore(options: PrototypeBindOptions): Promise<PrototypeSqlStore>;
-async function bindPostgresStore(
-  options: PrototypeBindOptions | PrototypeTransactionBindOptions,
-): Promise<PrototypeSqlStore | PrototypeTransactionStore> {
+function bindPostgresStore<DriverResult>(
+  options: PrototypeTransactionBindOptions<DriverResult>,
+): Promise<PrototypeTransactionStore<DriverResult>>;
+function bindPostgresStore<DriverResult>(
+  options: PrototypeBindOptions<DriverResult>,
+): Promise<PrototypeSqlStore<DriverResult>>;
+async function bindPostgresStore<DriverResult>(
+  options: PrototypeBindOptions<DriverResult> | PrototypeTransactionBindOptions<DriverResult>,
+): Promise<PrototypeSqlStore<DriverResult> | PrototypeTransactionStore<DriverResult>> {
   const store = makeSqlStore(options.database);
   const version = readServerVersion(await store.query(rawStatement("SHOW server_version_num")));
   if (version < 150_000) {
@@ -377,7 +383,9 @@ async function updateCandidates<RecordValue>(options: {
   return completedWrites;
 }
 
-function isTransactionStore(store: PrototypeSqlStore): store is PrototypeTransactionStore {
+function isTransactionStore<DriverResult>(
+  store: PrototypeSqlStore<DriverResult>,
+): store is PrototypeTransactionStore<DriverResult> {
   return typeof Reflect.get(store, "transaction") === "function";
 }
 
@@ -409,18 +417,26 @@ function assert(condition: unknown, message: string): asserts condition {
   }
 }
 
+type PrototypePgDriverResult =
+  | readonly unknown[]
+  | {
+      readonly rows: readonly unknown[];
+      readonly rowCount?: number;
+      readonly command?: string;
+    };
+
 function makePrototypeDatabase(options: {
   readonly transaction: boolean;
   readonly version?: number;
   readonly applyTransactionOptions?: boolean;
-}): PrototypePgDatabase & {
+}): PrototypePgDatabase<PrototypePgDriverResult> & {
   readonly calls: PrototypeDrizzleSql[];
   readonly transactionCalls: { readonly config: PrototypeTransactionConfig }[];
 } {
   const calls: PrototypeDrizzleSql[] = [];
   const transactionCalls: { readonly config: PrototypeTransactionConfig }[] = [];
   let activeTransactionConfig: PrototypeTransactionConfig | undefined;
-  const execute = async (statement: PrototypeDrizzleSql): Promise<unknown> => {
+  const execute = async (statement: PrototypeDrizzleSql): Promise<PrototypePgDriverResult> => {
     calls.push(statement);
     const text = statement.chunks
       .filter(
@@ -461,7 +477,7 @@ function makePrototypeDatabase(options: {
   }
 
   const transaction = async <Value>(
-    use: (transaction: PrototypePgDatabase) => Promise<Value>,
+    use: (transaction: PrototypePgDatabase<PrototypePgDriverResult>) => Promise<Value>,
     config: PrototypeTransactionConfig,
   ): Promise<Value> => {
     transactionCalls.push({ config });
@@ -473,7 +489,7 @@ function makePrototypeDatabase(options: {
       activeTransactionConfig = previousTransactionConfig;
     }
   };
-  const database: PrototypePgDatabase & {
+  const database: PrototypePgDatabase<PrototypePgDriverResult> & {
     readonly calls: PrototypeDrizzleSql[];
     readonly transactionCalls: { readonly config: PrototypeTransactionConfig }[];
   } = { execute, calls, transactionCalls, transaction };
@@ -538,6 +554,8 @@ async function runPrototype(): Promise<void> {
       readOptionalProperty(execution.driverResult, "command") === "SELECT",
     "public driver result was lost",
   );
+  const preservedPgDriverResult: PrototypePgDriverResult = execution.driverResult;
+  void preservedPgDriverResult;
   assert(baseDatabase.transactionCalls.length === 0, "base binding probed transactions");
 
   const transactionDatabase = makePrototypeDatabase({ transaction: true });
