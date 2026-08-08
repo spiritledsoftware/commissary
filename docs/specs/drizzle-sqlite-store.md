@@ -126,36 +126,30 @@ A mock, wrong dialect, failed connection, unsupported engine version, malformed 
 
 ## Public binding API
 
-The rough public shape is:
+The [package interface specification](drizzle-package-interface.md) owns the exact overloads. Applied to SQLite:
 
 ```ts
-export declare function bindSqliteStore<
-  const Definition extends DrizzleSqliteStoreDefinition,
-  ResultKind extends "sync" | "async",
-  RunResult,
-  FullSchema extends Record<string, unknown>,
-  RelationalSchema extends TablesRelationalConfig,
-  const Transaction extends boolean = false,
->(options: {
-  readonly definition: Definition;
-  readonly database: BaseSQLiteDatabase<ResultKind, RunResult, FullSchema, RelationalSchema>;
-  readonly transaction?: Transaction;
-}): Promise<
-  BoundDrizzleSqliteStore<Definition, RunResult> &
-    (Transaction extends true
-      ? TransactionStore<
-          DefinitionsOf<Definition>,
-          OperatorsOf<Definition>,
-          Pick<BoundDrizzleSqliteStore<Definition, RunResult>, "query" | "execute">,
-          CreateInputsOf<Definition>
-        >
-      : {})
->;
+const baseStore = await bindSqliteStore({
+  definition,
+  database,
+}); // SqlStore
+
+const transactionStore = await bindSqliteStore({
+  definition,
+  database,
+  transaction: true,
+}); // SqlStore & TransactionStore
+
+const possibleTransactionStore = await bindSqliteStore({
+  definition,
+  database,
+  transaction: runtimeBoolean,
+}); // SqlStore | (SqlStore & TransactionStore)
 ```
 
-`BoundDrizzleSqliteStore` is explanatory in this specification. It is not a database-named runtime Store tier.
+The binder accepts Drizzle's public `BaseSQLiteDatabase` type directly. It accepts a matching generic or Thread Store definition and preserves `ResultKind`, `RunResult`, full-schema, and relational-schema inference. Omitted or literal-false `transaction` makes no transaction probe and exposes no transaction method. Literal true runs the transaction probe. A non-literal Boolean returns a union and requires capability narrowing.
 
-Binding returns a native Promise before definition checks or database work. Omitted or false `transaction` returns no `transaction` method and does not call `database.transaction` during binding. Literal true runs the transaction probe and rejects instead of returning a weaker Store when the probe fails.
+The structural result preserves `RunResult` as the exact `SqlCommandResult.driverResult` type. It has no exported database-named bound Store alias. Binding returns a native Promise before definition checks or database work.
 
 ## Binding probes
 
