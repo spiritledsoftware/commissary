@@ -92,6 +92,14 @@ _Avoid_: Drizzle mode option, driver value leak, inferred affinity, implicit los
 **SQLite Record Resolution**:
 The synchronous adapter-facing step that applies effective definitions, validates SQLite metadata, and produces table, column, and reference assets without database I/O or DDL.
 _Avoid_: Migration execution, database introspection, host-facing Store tier, ORM schema
+
+**Drizzle SQLite Store Binding**:
+The asynchronous adapter stage that accepts one host-owned common Drizzle SQLite database, proves SQLite 3.45 or later, and returns `SqlStore` with an optional requested `TransactionStore` only after a live asynchronous transaction probe.
+_Avoid_: Driver-class union, native-client binder, client ownership, synchronous Transaction Store promise, SQLite runtime Store tier
+
+**SQLite Candidate Identity**:
+The private identity used for exact mutation guards and stored-value readback. The adapter prefers the declared primary key and otherwise selects the first unshadowed `rowid`, `_rowid_`, or `oid` alias.
+_Avoid_: Public Record identity, required `id` field, guessed full-row identity, live-schema key inference
 **Database Record Binding**:
 The concrete adapter stage that maps one immutable database Record resolution into ORM or driver values and rejects a live engine, driver path, session setting, host index, or host constraint that cannot preserve it.
 _Avoid_: Database Record Resolution, definition-time database I/O, Store capability probe, client creation
@@ -269,7 +277,7 @@ Test-only input that gives the expected SQL text, exact parameter segments, and 
 _Avoid_: Runtime dialect registry, production Store metadata, normalized test parameters, shared dialect guess
 
 **SQL Store Conformance Controls**:
-Test-only adapter controls that record driver call count, SQL text, and ordered driver parameters, and script the next driver outcome as rows, failure, multiple results, or an invalid result. A scripted failure states whether it occurs before the statement call starts or during that call so conformance can check `executionMayHaveOccurred`. Each adapter fixture maps the shared outcome to its real driver result shape. The controls are not available on production Store values.
+Test-only adapter controls that record whether `query` or `execute` made each driver call, plus its SQL text and ordered parameters. They script query rows, command results, failures, multiple results, and invalid query results so conformance can check result dispatch, normalized metadata, and `executionMayHaveOccurred`. The controls are not available on production Store values.
 _Avoid_: Runtime capability, production driver access, hidden call log, optional SQL check
 
 **SQL Store Conformance Fixture**:
@@ -305,8 +313,8 @@ A primitive Store contract for one proven caller workflow that a lower-tier Stor
 _Avoid_: `PostgresStore`, `MySqlStore`, `SqliteStore`, speculative engine feature, optional method, runtime capability registry
 
 **SQL Store**:
-A Store specialization that lets an integration execute ORM-independent, parameter-safe SQL Statements. It retains Collections, promises only one unchecked Row set, and makes at most one driver statement call for each `execute`; transactions, preparation, streaming, cancellation, session scope, batches, and multiple results require separate Store interfaces.
-_Avoid_: Standalone SQL client, concrete Adapter, ORM Store, runtime capability probe
+A Store specialization that lets an integration submit ORM-independent, parameter-safe SQL Statements through two visible result modes. `query` returns one unchecked caller-typed row array. `execute` returns normalized command metadata and the exact public driver result. Each method makes at most one driver statement call. Transactions, preparation, streaming, cancellation, session scope, batches, and multiple results require separate Store interfaces.
+_Avoid_: Standalone SQL client, concrete Adapter, hidden result-mode option, ORM Store, runtime capability probe
 
 **SQL Column Type**:
 An opaque storage-family and value-conversion contract for one Selected Field Value. A portable type has stable meaning across SQL adapters, while a database-specific type narrows that intent for one database.
@@ -344,7 +352,7 @@ The resolved SQL Record References that a host passes to an integration factory.
 _Avoid_: enforced table allowlist, database permission, SQL sandbox, every host database identifier
 
 **SQL Statement**:
-An immutable, composable value that keeps SQL structure separate from bound values until a SQL Store Adapter executes it. Package SQL helpers validate their structural arguments immediately, throw `TypeError` for invalid arguments, and return only valid, immutable SQL Statements. Resolved SQL Record References also create valid SQL Statements. Compatible installed package copies accept each other's Statements; `execute` rejects incompatible or counterfeit values. SQL text can use one database dialect, and the database decides whether genuine empty SQL is valid.
+An immutable, composable value that keeps SQL structure separate from bound values until a SQL Store Adapter submits it through `query` or `execute`. Package SQL helpers validate their structural arguments immediately, throw `TypeError` for invalid arguments, and return only valid, immutable SQL Statements. Resolved SQL Record References also create valid SQL Statements. Compatible installed package copies accept each other's Statements; each SQL method rejects incompatible or counterfeit values. SQL text can use one database dialect, and the database decides whether genuine empty SQL is valid.
 _Avoid_: Portable SQL, driver query object, executed query, mutable text-and-values bag
 
 **SQL Statement Compiler**:
@@ -364,31 +372,35 @@ An immutable SQL Statement created by `sql.join(statements, separator?)`. It tak
 _Avoid_: string join, automatic array expansion, mutation, automatic parentheses
 
 **SQL Parameter Value**:
-A value kept separate from SQL structure inside an SQL Statement. Every SQL Store Adapter accepts `null`, boolean, finite number, and string values. It converts `null` to SQL `NULL`, converts booleans to the database's normal boolean representation, normalizes negative zero to zero, and rejects non-finite numbers and strings containing NUL. An interpolated array remains one bound value and is never expanded into SQL structure. A host or integration converts richer direct-SQL values before interpolation unless it requires a wider SQL Store. A mutable wider value is read when `execute` starts and must not change while that execution remains active.
+A value kept separate from SQL structure inside an SQL Statement. Every SQL Store Adapter accepts `null`, boolean, finite number, and string values. It converts `null` to SQL `NULL`, converts booleans to the database's normal boolean representation, normalizes negative zero to zero, and rejects non-finite numbers and strings containing NUL. An interpolated array remains one bound value and is never expanded into SQL structure. A host or integration converts richer direct-SQL values before interpolation unless it requires a wider SQL Store. A mutable wider value is read when `query` or `execute` starts and must not change while that operation remains active.
 _Avoid_: SQL fragment, Raw SQL Text, identifier, direct driver pass-through, non-finite number
 
 **Explicit SQL Parameter**:
-An SQL Parameter Value wrapped by `sql.param(value, options?)` for direct SQL. Without options, the input is the bound value and its type is the SQL Statement parameter requirement. With `{ encode }`, construction captures the function reference so later options-object changes have no effect. The synchronous function runs once for each occurrence on each execution after `execute()` returns its Promise and before the driver call; its output type becomes the requirement. Reusing one explicit parameter in two places runs the encoder twice and creates two ordered driver parameters. The SQL Store Adapter validates and converts each bound value for its database. Encoder output cannot contain an SQL Statement: TypeScript rejects it, and execution rejects a bypass as an invalid parameter instead of inserting SQL structure.
+An SQL Parameter Value wrapped by `sql.param(value, options?)` for direct SQL. Without options, the input is the bound value and its type is the SQL Statement parameter requirement. With `{ encode }`, construction captures the function reference so later options-object changes have no effect. The synchronous function runs once for each occurrence after `query()` or `execute()` returns its Promise and before the driver call; its output type becomes the requirement. Reusing one explicit parameter in two places runs the encoder twice and creates two ordered driver parameters. The SQL Store Adapter validates and converts each bound value for its database. Encoder output cannot contain an SQL Statement.
 _Avoid_: SQL Identifier, Raw SQL Text, implicit field conversion, driver parameter
 
-**SQL Execution Result**:
-The generic result of one SQL Statement, containing exactly one readonly `rows` array of unchecked driver values. The adapter can return driver row containers without copying or freezing them, but it must not change them after fulfillment. A later change is an adapter defect and cannot retroactively reject the fulfilled Promise. Generic `execute` rejects multiple result sets; a future Batch Store feature can handle them when a Store supports that feature and a real caller needs it. A Store specialization adds only result facts that it guarantees.
-_Avoid_: Selected Records, normalized row values, guessed mutation facts, multiple result sets
+**SQL Query Row Array**:
+The direct readonly array returned by `query<Row>()` for one row-producing SQL Statement. `Row` is an unchecked caller-selected type that defaults to `unknown`. The adapter does not copy or freeze a valid driver row container.
+_Avoid_: Selected Records, parsed row values, `{ rows }` wrapper, query metadata object, multiple result sets
+
+**SQL Command Result**:
+The stable result of `execute()`, with `affectedRows` as a verified nonnegative safe integer or `undefined` and `driverResult` as the exact public driver result. Generic integrations can use the normalized field and see `driverResult` as `unknown`; concrete integrations retain its exact type.
+_Avoid_: Query Row Array, guessed affected count, normalized insert identifier, copied driver result, hidden result mode
 
 **Raw SQL Text**:
 SQL structure inserted by `sql.raw()` without parameter handling. It can be a fragment or a complete statement, and its caller owns its safety.
 _Avoid_: Unchecked SQL Row, bound parameter, driver result
 
 **Manual SQL Transaction Control**:
-`BEGIN`, `COMMIT`, `ROLLBACK`, savepoint, or equivalent SQL submitted through `execute`. It is unsupported because `TransactionStore.transaction()` owns transaction boundaries. An adapter need not detect it. Transaction Store guarantees apply only when callers do not submit it, and conformance tests never submit it.
+`BEGIN`, `COMMIT`, `ROLLBACK`, savepoint, or equivalent SQL submitted through `query` or `execute`. It is unsupported because `TransactionStore.transaction()` owns transaction boundaries. An adapter need not detect it. Transaction Store guarantees apply only when callers do not submit it, and conformance tests never submit it.
 _Avoid_: Transaction Store operation, supported Raw SQL Text, nested transaction, portable session control
 
 **SQL Statement Error**:
-An expected Store Error with fixed operation `execute`. Reason `invalid-statement` reports an incompatible or counterfeit SQL Statement. Reasons `unsupported-parameter` and `invalid-parameter` include the zero-based parameter position. An explicit parameter encoder failure or SQL Statement output uses `invalid-parameter`; a thrown encoder or conversion failure is preserved as its optional cause. Safe metadata contains no SQL text or parameter value.
+An expected Store Error whose operation is `query` or `execute`. Reason `invalid-statement` reports an incompatible or counterfeit SQL Statement. Reasons `unsupported-parameter` and `invalid-parameter` include the zero-based parameter position. An explicit parameter encoder failure or SQL Statement output uses `invalid-parameter`; a thrown encoder or conversion failure is preserved as its optional cause. Safe metadata contains no SQL text or parameter value.
 _Avoid_: SQL Execution Error, database failure, unsafe parameter logging, Adapter Contract Error
 
 **SQL Execution Error**:
-An expected Store Error with fixed operation `execute` reported when an SQL Store Adapter cannot execute a valid SQL Statement. Reason `execution-failed` requires the original failure as `cause` and a boolean `executionMayHaveOccurred`. Reason `multiple-results` has no cause, and `executionMayHaveOccurred` is always `true`, because execution succeeded and returned data must not enter the error. Safe metadata contains no SQL text or parameter values.
+An expected Store Error whose operation is `query` or `execute`, reported when an SQL Store Adapter cannot submit a valid SQL Statement. Reason `execution-failed` requires the original failure as `cause` and a boolean `executionMayHaveOccurred`. Reason `multiple-results` has no cause, and `executionMayHaveOccurred` is always `true`, because execution succeeded and returned data must not enter the error. Safe metadata contains no SQL text or parameter values.
 _Avoid_: SQL Statement Error, driver error exposed directly, database-specific failure taxonomy, safe-to-log cause
 
 **Store Error**:

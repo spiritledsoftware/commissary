@@ -2,7 +2,7 @@
 
 > **Status**: Design approved for implementation.
 >
-> **Last updated**: 2026-08-07 during issue #20 approval.
+> **Last updated**: 2026-08-07 during Drizzle SQLite Store adapter approval.
 
 ## Summary
 
@@ -22,7 +22,7 @@ Those specifications remain authoritative except where this document gives a lat
 
 ## Source authority
 
-The Drizzle source authority is commit `b7862528fd8fc39bc2653a6c18dad7c1f4e68d10`. The approved PostgreSQL target is PostgreSQL 15 and later.
+The Drizzle source authority is the latest `main` branch. The approved PostgreSQL target is PostgreSQL 15 and later.
 
 ## Goals
 
@@ -32,14 +32,14 @@ The Drizzle source authority is commit `b7862528fd8fc39bc2653a6c18dad7c1f4e68d10
 - Translate opaque Commissary SQL Statements into public Drizzle SQL values without parsing placeholder text.
 - Support supplied and generated Drizzle tables, including tables without primary keys.
 - Return generated database values through PostgreSQL `RETURNING`.
-- Report portable rows plus optional portable PostgreSQL execution metadata.
+- Return unchecked query rows and normalize only a verified command affected-row count while preserving the public Drizzle result.
 - Give Core either a plain or transactional Store backend without a PostgreSQL-specific Thread Store binder.
 
 ## Non-goals
 
 - Create, configure, close, or replace a database client or pool.
 - Execute DDL, migrations, schema diffing, or live table introspection.
-- Export driver-specific binders or expose native clients and native result objects.
+- Export driver-specific binders or access a native client result outside the public Drizzle return value.
 - Promise transactions when a common Drizzle database exposes a method that throws at runtime.
 - Add a PostgreSQL-named runtime Store tier.
 - Add a PostgreSQL-specific Thread Store binder.
@@ -55,8 +55,8 @@ The Drizzle source authority is commit `b7862528fd8fc39bc2653a6c18dad7c1f4e68d10
 5. **PostgreSQL 15**: Every binding proves `server_version_num >= 150000`.
 6. **Host lifetime**: Binding never creates or closes the supplied database or its resources.
 7. **Exact Statement structure**: SQL execution combines compiler `segments` with bound parameters. It never parses `$1` or other placeholder-like text.
-8. **One execution call**: One `execute` call makes at most one `database.execute` call and performs no retry.
-9. **Portable result**: Execution always returns one `rows` array and can add only verified `rowCount` and `command` facts.
+8. **One execution call**: One `query` or `execute` call makes at most one `database.execute` call and performs no retry.
+9. **Portable result split**: `query` returns one row array. `execute` returns normalized `affectedRows` plus the exact public Drizzle result.
 10. **Candidate-safe fallback**: Each mutation candidate is identified and validated before its write.
 11. **No silent overwrite**: A fallback write uses an observed PostgreSQL row version. A concurrent change causes failure instead of overwriting the changed row.
 12. **Optional primary key**: Declared primary keys are preferred. Tables without primary keys use private PostgreSQL row identity.
@@ -120,10 +120,9 @@ A mock, wrong dialect, failed connection, permission failure, malformed result, 
 The rough public shape is:
 
 ```ts
-export interface DrizzlePostgresExecutionResult extends SqlExecutionResult {
-  readonly rowCount?: number;
-  readonly command?: string;
-}
+type DrizzlePostgresDriverResult<Database extends PgDatabase> = Awaited<
+  ReturnType<Database["execute"]>
+>;
 
 export declare function bindPostgresStore<
   const Definition extends DrizzlePostgresStoreDefinition,
@@ -139,7 +138,7 @@ export declare function bindPostgresStore<
       ? TransactionStore<
           DefinitionsOf<Definition>,
           OperatorsOf<Definition>,
-          Pick<BoundDrizzlePostgresSqlStore<Definition, Database>, "execute">,
+          Pick<BoundDrizzlePostgresSqlStore<Definition, Database>, "query" | "execute">,
           CreateInputsOf<Definition>
         >
       : {})
@@ -148,9 +147,9 @@ export declare function bindPostgresStore<
 
 `BoundDrizzlePostgresSqlStore` is an explanatory type in this specification, not a new database-named primitive Store tier. The concrete function can expose its structural return type directly.
 
-Omitted or false `transaction` never calls `database.transaction` during binding and returns no transaction method. Literal true runs the transaction probe and keeps `execute` on the transaction callback view.
+Omitted or false `transaction` never calls `database.transaction` during binding and returns no transaction method. Literal true runs the transaction probe and keeps `query` and `execute` on the transaction callback view.
 
-The return type preserves the supplied definition, operator, create-input, database, and execution-result types. Binding returns a native Promise before any probe work starts.
+The return type preserves the supplied definition, operator, create-input, database, and public Drizzle command-result types. Binding returns a native Promise before any probe work starts.
 
 ## Binding probes
 
@@ -245,32 +244,31 @@ function toDrizzleSql<Parameter>(compiled: CompiledSqlStatement<Parameter>): Dri
 
 The adapter never splits `compiled.text`. Caller-authored raw text such as `$1`, `?`, or `:name` remains exact unchecked structure inside its original segment. Parameters remain parameters.
 
-`execute` passes the Drizzle SQL value to the active database. At the root it uses the supplied database. In a transaction callback it uses the Drizzle transaction database.
+`query` and `execute` pass the Drizzle SQL value to the active database's public `execute` method. At the root they use the supplied database. In a transaction callback they use the Drizzle transaction database. Each Store method makes one database call.
 
 ## SQL result normalization
 
-The adapter recognizes two portable result families:
+`query<Row>()` recognizes two row result families:
 
-1. an array-like row container, where the container is `rows`; or
+1. an array-like row container, where the container is the rows; or
 2. an object with an array-valued `rows` property.
 
-The adapter does not copy or freeze a valid driver row container. It reports an invalid result as `StoreAdapterContractError` with violation `invalid-sql-result`.
+The adapter returns the row container without copying or freezing it. A successful result without one recognized row array is `StoreAdapterContractError` with violation `invalid-sql-result`.
 
-Optional metadata is conservative:
+`execute()` returns `SqlCommandResult<DrizzlePostgresDriverResult<Database>>`:
 
-- `rowCount` is exposed only from a known result property that is a nonnegative safe integer;
-- `command` is exposed only from a known result property that is a string; and
-- unavailable values are omitted.
+- `driverResult` is the exact public Drizzle result by reference; and
+- `affectedRows` is the result's `rowCount` only when it is a nonnegative safe integer, otherwise `undefined`.
 
-The adapter does not derive `rowCount` from `rows.length`, copy field metadata, or return a native result under another property.
-
-The structural widening remains assignable to generic `SqlStore`:
+The adapter does not derive `affectedRows` from query row length or another property. PostgreSQL `command`, field metadata, notices, and other facts remain available only through the typed `driverResult`.
 
 ```ts
-const result = await store.execute(statement);
-result.rows;
-result.rowCount;
-result.command;
+const rows = await store.query<{ readonly id: string }>(statement);
+rows[0]?.id;
+
+const command = await store.execute(statement);
+command.affectedRows;
+command.driverResult;
 ```
 
 ## Operator semantics
@@ -393,7 +391,7 @@ The bound transaction method delegates once to the public Drizzle transaction AP
 The callback view contains:
 
 - the same Collections and operator semantics;
-- `execute` bound to the same Drizzle transaction database; and
+- `query` and `execute` bound to the same Drizzle transaction database; and
 - no `transaction` method.
 
 Collection and SQL calls therefore share one physical PostgreSQL transaction.
@@ -406,7 +404,7 @@ The adapter examines PostgreSQL SQLSTATE values without matching localized messa
 
 The adapter never reruns the callback. After successful rollback, no write remains and the selected failure identity is preserved. A rollback failure becomes `TransactionRollbackError` with `writesMayRemain: true`.
 
-Manual transaction-control SQL submitted through `execute` remains outside the guarantee.
+Manual transaction-control SQL submitted through `query` or `execute` remains outside the guarantee.
 
 ## Core composition
 
@@ -467,8 +465,8 @@ PostgreSQL-specific scenarios cover:
 5. rejection of an inherited but unsupported transaction method;
 6. Statement segments that contain raw `$1`, `?`, and `:name` text;
 7. public Drizzle SQL reconstruction with bound parameters in source order;
-8. array-row and object-row result normalization;
-9. optional `rowCount` and `command` preservation without derivation;
+8. array-row and object-row query result normalization;
+9. verified `affectedRows` plus exact driver-result preservation;
 10. supplied single and composite primary keys;
 11. generated-table primary-key emission;
 12. primary-key mismatch rejection;
@@ -479,7 +477,7 @@ PostgreSQL-specific scenarios cover:
 17. no host-value overwrite;
 18. partial base mutation reporting;
 19. SQLSTATE `40001` and `40P01` conflict mapping;
-20. Collection and `execute` work sharing one physical transaction; and
+20. Collection, `query`, and `execute` work sharing one physical transaction; and
 21. Core composition over plain and transactional backends.
 
 The compile-tested prototype proves the binder return type, effective transaction-setting check, optional primary-key shape, Statement segment conversion, structural result normalization, guarded candidate identity, and Core guarantee selection without adding a production Drizzle dependency.
@@ -526,6 +524,6 @@ Both calls commit or roll back together.
 
 - [Issue #20](https://github.com/spiritledsoftware/commissary/issues/20)
 - [Drizzle research note](https://github.com/spiritledsoftware/commissary/issues/26)
-- [Drizzle SQL source](https://github.com/drizzle-team/drizzle-orm/blob/b7862528fd8fc39bc2653a6c18dad7c1f4e68d10/drizzle-orm/src/sql/sql.ts)
+- [Drizzle SQL source](https://github.com/drizzle-team/drizzle-orm/blob/main/drizzle-orm/src/sql/sql.ts)
 - [PostgreSQL 15 constraints](https://www.postgresql.org/docs/15/ddl-constraints.html)
 - [PostgreSQL 15 error codes](https://www.postgresql.org/docs/15/errcodes-appendix.html)

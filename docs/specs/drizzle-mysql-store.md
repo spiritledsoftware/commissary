@@ -2,7 +2,7 @@
 
 > **Status**: Design approved for implementation.
 >
-> **Last updated**: 2026-08-07 during issue #24 approval.
+> **Last updated**: 2026-08-07 during Drizzle SQLite Store adapter approval.
 
 ## Summary
 
@@ -20,7 +20,7 @@ Those specifications remain authoritative except where this document gives a lat
 
 ## Source authority
 
-The Drizzle source authority is commit `b7862528fd8fc39bc2653a6c18dad7c1f4e68d10`. The approved database target is Oracle MySQL 8.4 and later. MariaDB, TiDB, Vitess, PlanetScale, and other MySQL-compatible engines are not part of this adapter contract.
+The Drizzle source authority is the latest `main` branch. The approved database target is Oracle MySQL 8.4 and later. MariaDB, TiDB, Vitess, PlanetScale, and other MySQL-compatible engines are not part of this adapter contract.
 
 ## Goals
 
@@ -31,7 +31,7 @@ The Drizzle source authority is commit `b7862528fd8fc39bc2653a6c18dad7c1f4e68d10
 - Verify that every Store table uses InnoDB before a Store exists.
 - Recover and validate MySQL-generated values without best-effort row selection.
 - Support supplied and generated Drizzle tables, including read-capable tables without a safe candidate key.
-- Keep `execute` available inside a requested Transaction View.
+- Keep `query` and `execute` available inside a requested Transaction View.
 - Give Core either a plain or transactional Store backend without a MySQL-specific Thread Store binder.
 
 ## Non-goals
@@ -39,7 +39,7 @@ The Drizzle source authority is commit `b7862528fd8fc39bc2653a6c18dad7c1f4e68d10
 - Create, configure, close, or replace a database client or pool.
 - Execute DDL, migrations, schema diffing, or general live table introspection.
 - Support MariaDB, TiDB, Vitess, PlanetScale, or another MySQL-compatible engine under an Oracle MySQL guarantee.
-- Export driver-specific binders or expose native clients and native result objects.
+- Export driver-specific binders or access a native client result outside the public Drizzle return value.
 - Add a MySQL-named runtime Store tier or MySQL-specific Thread Store binder.
 - Add preparation, streaming, batching, cancellation, local infile, session locks, or ordered multiple results.
 - Generate host indexes other than the approved portable primary key.
@@ -54,12 +54,12 @@ The Drizzle source authority is commit `b7862528fd8fc39bc2653a6c18dad7c1f4e68d10
 4. **Transactional tables**: Every effective Store table must exist as an InnoDB base table before binding succeeds.
 5. **Verified transaction path**: Every binding proves that Drizzle starts one read-only serializable transaction with the requested effective settings.
 6. **Base capability honesty**: Omitted or false `transaction` returns no public `transaction` method, even though root mutations use private transactions.
-7. **Requested transaction**: Literal true adds `TransactionStore` and keeps `execute` in its callback view.
+7. **Requested transaction**: Literal true adds `TransactionStore` and keeps `query` and `execute` in its callback view.
 8. **Host lifetime**: Binding never creates, configures, or closes the supplied database or its resources.
 9. **Host UTC policy**: The host keeps every possible connection in UTC when it uses `TIMESTAMP` columns.
 10. **Exact Statement structure**: SQL execution combines compiler `segments` with bound parameters. It never parses `?` or other placeholder-like text.
-11. **One execution call**: One `execute` call makes at most one `database.execute` call and performs no retry.
-12. **Portable result**: Execution always returns one `rows` array and can add only verified `rowCount` and `insertId` facts.
+11. **One execution call**: One `query` or `execute` call makes at most one `database.execute` call and performs no retry.
+12. **Portable result split**: `query` returns one row array. `execute` returns normalized `affectedRows` plus the exact public Drizzle result.
 13. **One root mutation transaction**: One root `create`, `update`, or `delete` uses one private serializable transaction.
 14. **Exact readback**: A write that needs a returned Record commits only after exact key-based readback and selected-record validation.
 15. **No guessed identity**: Full-field matching and table-difference scans never stand in for a missing candidate key.
@@ -126,10 +126,9 @@ A wrong engine, unsupported Drizzle transaction implementation, disabled transac
 The rough public shape is:
 
 ```ts
-export interface DrizzleMysqlExecutionResult extends SqlExecutionResult {
-  readonly rowCount?: number;
-  readonly insertId?: string;
-}
+type DrizzleMysqlDriverResult<Database extends MySqlDatabase> = Awaited<
+  ReturnType<Database["execute"]>
+>;
 
 export declare function bindMysqlStore<
   const Definition extends DrizzleMysqlStoreDefinition,
@@ -145,7 +144,7 @@ export declare function bindMysqlStore<
       ? TransactionStore<
           DefinitionsOf<Definition>,
           OperatorsOf<Definition>,
-          Pick<BoundDrizzleMysqlSqlStore<Definition, Database>, "execute">,
+          Pick<BoundDrizzleMysqlSqlStore<Definition, Database>, "query" | "execute">,
           CreateInputsOf<Definition>
         >
       : {})
@@ -154,9 +153,9 @@ export declare function bindMysqlStore<
 
 `BoundDrizzleMysqlSqlStore` is an explanatory type, not a MySQL-named primitive Store tier. The concrete function can expose its structural return type directly.
 
-Omitted or false `transaction` still runs the binding transaction probe because private root mutations require that path. It returns no public `transaction` method. Literal true exposes the already-proved physical transaction path and keeps `execute` on the callback view.
+Omitted or false `transaction` still runs the binding transaction probe because private root mutations require that path. It returns no public `transaction` method. Literal true exposes the already-proved physical transaction path and keeps `query` and `execute` on the callback view.
 
-The return type preserves the supplied definition, operator, create-input, database, and execution-result types. Binding returns a native Promise before probe work starts.
+The return type preserves the supplied definition, operator, create-input, database, and public Drizzle command-result types. Binding returns a native Promise before probe work starts.
 
 ## Binding probes
 
@@ -277,26 +276,25 @@ function toDrizzleSql<Parameter>(compiled: CompiledSqlStatement<Parameter>): Dri
 
 The adapter never splits `compiled.text`. Caller-authored raw `?`, `$1`, or `:name` text stays inside its original segment. Parameters remain parameters.
 
-`execute` uses the root database outside a public transaction and the transaction callback database inside one.
+`query` and `execute` use the root database outside a public transaction and the transaction callback database inside one. Each Store method makes one public `database.execute` call.
 
 ## SQL result normalization
 
-The adapter recognizes:
+`query<Row>()` recognizes:
 
-1. a mysql2-style tuple whose first item is one row array or one result header and whose second item is field metadata; and
+1. a mysql2-style tuple whose first item is one row array and whose second item is field metadata; and
 2. a result object with an array-valued `rows` property.
 
-One select row set becomes `rows`. One mutation header becomes `rows: []`. A nested set of row arrays or headers is a multiple-result response and rejects with the approved `multiple-results` error. Another shape is an invalid SQL result contract defect.
+The adapter returns the recognized row array without copying or freezing it. A nested set of row arrays is a multiple-result response and rejects with the approved `multiple-results` error. Another successful shape is an invalid SQL result contract defect.
 
-Optional metadata is conservative:
+`execute()` recognizes one mutation header in the public result. It returns `SqlCommandResult<DrizzleMysqlDriverResult<Database>>`:
 
-- `rowCount` comes only from a recognized `affectedRows` or `rowsAffected` property that is a nonnegative safe integer;
-- `insertId` comes only from a recognized exact positive unsigned integer and is returned as canonical decimal text;
-- a safe positive JavaScript integer can normalize to decimal text;
-- a missing, zero, negative, malformed, nonintegral, or unsafe numeric insertion ID is omitted; and
-- metadata is never derived from `rows.length`.
+- `driverResult` is the exact public Drizzle result by reference; and
+- `affectedRows` comes only from a recognized `affectedRows` or `rowsAffected` property that is a nonnegative safe integer.
 
-The adapter does not return field packets, warnings, changed-row counts, native results, or an arbitrary metadata object.
+A missing or invalid count becomes `undefined`. The adapter never derives it from row length, insertion ID, warning count, or changed-row count. Insertion IDs, field packets, warnings, and other public facts remain available only through the typed `driverResult`.
+
+A nested set of result headers is a multiple-result response and rejects. The adapter does not select or combine one result.
 
 ## Operator semantics
 
@@ -366,7 +364,7 @@ The public transaction method delegates once to Drizzle with serializable isolat
 The callback view contains:
 
 - the same Collections and operator semantics;
-- `execute` bound to the same Drizzle transaction database; and
+- `query` and `execute` bound to the same Drizzle transaction database; and
 - no `transaction` method.
 
 Collection and SQL calls therefore share one physical transaction.
@@ -456,9 +454,9 @@ MySQL-specific scenarios cover:
 11. host-owned automatic-increment index proof;
 12. Statement segments containing raw `?`, `$1`, and `:name` text;
 13. public Drizzle SQL reconstruction with bound parameters in source order;
-14. mysql2 tuple and object result normalization;
+14. mysql2 tuple and object query result normalization;
 15. multiple-result rejection;
-16. exact optional `rowCount` and decimal `insertId` preservation;
+16. exact driver-result preservation and verified `affectedRows`;
 17. explicit, client-generated, and automatic-increment create-key readback;
 18. pre-insert rejection of an unrecoverable generated key;
 19. default, generated, rounded, padded, and automatic-update readback;
@@ -466,7 +464,7 @@ MySQL-specific scenarios cover:
 21. one private serializable transaction per root mutation;
 22. complete root-operation rollback;
 23. safe keyless native delete and unsupported identity-dependent paths;
-24. `execute` and Collections sharing one public transaction;
+24. `query`, `execute`, and Collections sharing one public transaction;
 25. closed views, drained work, and caught operation failure;
 26. MySQL `1213`, SQLSTATE `40001`, and error `1205` conflict mapping;
 27. rollback failure and commit uncertainty; and
@@ -516,10 +514,10 @@ Both calls share the same physical MySQL transaction when the direct SQL stays i
 
 - [Issue #24](https://github.com/spiritledsoftware/commissary/issues/24)
 - [Drizzle research decision](https://github.com/spiritledsoftware/commissary/issues/26#issuecomment-5166874940)
-- [Drizzle MySQL database API](https://github.com/drizzle-team/drizzle-orm/blob/b7862528fd8fc39bc2653a6c18dad7c1f4e68d10/drizzle-orm/src/mysql-core/db.ts)
-- [Drizzle MySQL transaction API](https://github.com/drizzle-team/drizzle-orm/blob/b7862528fd8fc39bc2653a6c18dad7c1f4e68d10/drizzle-orm/src/mysql-core/session.ts)
-- [Drizzle mysql2 transaction implementation](https://github.com/drizzle-team/drizzle-orm/blob/b7862528fd8fc39bc2653a6c18dad7c1f4e68d10/drizzle-orm/src/mysql2/session.ts)
-- [Drizzle MySQL table metadata](https://github.com/drizzle-team/drizzle-orm/blob/b7862528fd8fc39bc2653a6c18dad7c1f4e68d10/drizzle-orm/src/mysql-core/utils.ts)
+- [Drizzle MySQL database API](https://github.com/drizzle-team/drizzle-orm/blob/main/drizzle-orm/src/mysql-core/db.ts)
+- [Drizzle MySQL transaction API](https://github.com/drizzle-team/drizzle-orm/blob/main/drizzle-orm/src/mysql-core/session.ts)
+- [Drizzle mysql2 transaction implementation](https://github.com/drizzle-team/drizzle-orm/blob/main/drizzle-orm/src/mysql2/session.ts)
+- [Drizzle MySQL table metadata](https://github.com/drizzle-team/drizzle-orm/blob/main/drizzle-orm/src/mysql-core/utils.ts)
 - [MySQL 8.4 transaction characteristics](https://dev.mysql.com/doc/refman/8.4/en/set-transaction.html)
 - [MySQL 8.4 current transaction metadata](https://dev.mysql.com/doc/refman/8.4/en/performance-schema-events-transactions-current-table.html)
 - [MySQL 8.4 table metadata](https://dev.mysql.com/doc/refman/8.4/en/information-schema-tables-table.html)

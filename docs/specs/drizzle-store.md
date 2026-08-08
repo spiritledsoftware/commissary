@@ -1,6 +1,6 @@
 # Drizzle Store Technical Specification
 
-**Status:** Shared definition lifecycle and PostgreSQL and MySQL binding shapes approved. SQLite, package exports, and final cross-adapter approval remain in later design gates.
+**Status:** Shared definition lifecycle and PostgreSQL, MySQL, and SQLite binding shapes approved. Package exports and final cross-adapter approval remain in later design gates.
 
 ## Summary
 
@@ -20,9 +20,9 @@ The approved Store and SQL Store tiers already define:
 - strict create, update, select, and transaction behavior; and
 - Drizzle-independent PostgreSQL, MySQL, and SQLite physical plans.
 
-This specification defines the shared concrete Drizzle definition lifecycle and the approved PostgreSQL and MySQL binding shapes. SQLite driver behavior remains in its concrete design gate.
+This specification defines the shared concrete Drizzle definition lifecycle and the approved PostgreSQL, MySQL, and SQLite binding shapes.
 
-The Drizzle source authority is commit `b7862528fd8fc39bc2653a6c18dad7c1f4e68d10`.
+The Drizzle source authority is the latest `main` branch.
 
 ## Goals
 
@@ -413,6 +413,11 @@ const mysqlStore = await bindMysqlStore({
   definition: mysqlDefinition,
   database: mysqlDatabase,
 });
+
+const sqliteStore = await bindSqliteStore({
+  definition: sqliteDefinition,
+  database: sqliteDatabase,
+});
 ```
 
 Binding:
@@ -425,13 +430,15 @@ Binding:
 - returns native-Promise Store methods; and
 - can reuse one definition with several compatible database instances.
 
-Binding does not create or close the database client, run DDL, compare migrations, or add relations to an existing database object. PostgreSQL does not inspect live table structure. MySQL has one narrow exception: binding confirms that each defined physical table is the expected base table and uses InnoDB. It does not infer columns, keys, or indexes from the live schema.
+Binding does not create or close the database client, run DDL, compare migrations, or add relations to an existing database object. PostgreSQL and SQLite do not inspect live table structure. MySQL has one narrow exception: binding confirms that each defined physical table is the expected base table and uses InnoDB. It does not infer columns, keys, or indexes from the live schema.
 
 PostgreSQL has one public binder. Omitted or false `transaction` returns `SqlStore`. Literal true returns `SqlStore & TransactionStore` and rejects when the common Drizzle transaction probe cannot prove the effective server settings.
 
 MySQL also has one public binder. Omitted or false `transaction` returns `SqlStore`. Literal true returns `SqlStore & TransactionStore`. Every binding requires actual Oracle MySQL 8.4 or later, a working Drizzle transaction callback, effective serializable settings, and InnoDB for all defined tables. The host must configure every possible connection with a UTC session time zone.
 
-Neither adapter exposes a public driver matrix, runtime driver-class switch, or native-client bridge. A binding failure rejects with a concrete adapter error before a Store value exists. Later Store operations use the approved Store and SQL Store error contracts. The [Drizzle PostgreSQL Store adapter specification](drizzle-postgres-store.md) and [Drizzle MySQL Store adapter specification](drizzle-mysql-store.md) define the exact probes, behavior, and errors.
+SQLite has one public binder over the common `BaseSQLiteDatabase` contract. Synchronous and asynchronous drivers can provide the base `SqlStore`. Literal `transaction: true` adds `TransactionStore` only after a live probe proves that the transaction remains open across asynchronous work, `read_uncommitted` is disabled, and the journal mode supports rollback.
+
+No adapter exposes a public driver matrix, runtime driver-class switch, or native-client bridge. A binding failure rejects with a concrete adapter error before a Store value exists. Later Store operations use the approved Store and SQL Store error contracts. The [Drizzle PostgreSQL Store adapter specification](drizzle-postgres-store.md), [Drizzle MySQL Store adapter specification](drizzle-mysql-store.md), and [Drizzle SQLite Store adapter specification](drizzle-sqlite-store.md) define the exact probes, behavior, and errors.
 
 ## Generic and Thread Definitions
 
@@ -442,6 +449,8 @@ const postgresDefinition = DrizzlePostgresStore.define(options);
 const postgresThreadDefinition = DrizzlePostgresThreadStore.define(options);
 const mysqlDefinition = DrizzleMysqlStore.define(options);
 const mysqlThreadDefinition = DrizzleMysqlThreadStore.define(options);
+const sqliteDefinition = DrizzleSqliteStore.define(options);
+const sqliteThreadDefinition = DrizzleSqliteThreadStore.define(options);
 ```
 
 Each generic definition uses the supplied Record catalog. Each Thread definition adds every Core Record, applies host overrides, validates Core compatibility, calculates required hook patches, and then runs the same Drizzle normalization. There is no `includeCore` flag.
@@ -486,14 +495,8 @@ Expected runtime output:
 The following remain in later tickets:
 
 - root and subpath exports;
-- package peer and optional dependencies;
-- supported SQLite driver groups;
-- concrete SQLite database and transaction types;
-- SQLite raw SQL result normalization;
-- SQLite CRUD translation and generated-value recovery;
-- SQLite transaction implementation and conformance;
-- concrete SQLite binding errors and probe queries; and
-- complete cross-dialect approval.
+- package peer and optional dependencies; and
+- final cross-adapter approval.
 
 ## References
 
@@ -501,4 +504,5 @@ The following remain in later tickets:
 - [Store Architecture Technical Specification](store.md)
 - [SQL Store Tier Technical Specification](sql-store.md)
 - [Drizzle API research](https://github.com/spiritledsoftware/commissary/issues/26#issuecomment-5166874940)
+- [Drizzle SQLite Store adapter specification](drizzle-sqlite-store.md)
 - [Shared lifecycle issue](https://github.com/spiritledsoftware/commissary/issues/14)
