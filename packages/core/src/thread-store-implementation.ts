@@ -520,9 +520,8 @@ class CoreThreadStore<
     }
   }
 
-  async loadState(): Promise<void> {
-    // SAFETY: coreRecordKeyFields contains every and only Core Collection name, and each selected Record is converted below to the matching Core runtime shape.
-    const names = Object.keys(coreRecordKeyFields) as CoreRecordName[];
+  async loadState(names: readonly CoreRecordName[]): Promise<void> {
+    // SAFETY: Each selected Record is converted below to the matching Core runtime shape.
     const loaded = new Map(
       await Promise.all(
         names.map(async (name) => {
@@ -678,9 +677,11 @@ class CoreThreadStore<
     }
   }
 
-  async persistState(): Promise<void> {
-    // SAFETY: coreRecordKeyFields contains every and only Core Collection name.
-    for (const name of Object.keys(coreRecordKeyFields) as CoreRecordName[]) {
+  async persistState(names: readonly CoreRecordName[]): Promise<void> {
+    for (const name of names) {
+      if (!this.#baselineRecords.has(name)) {
+        throw new Error(`Thread Store persisted Collection '${name}' without loading it`);
+      }
       await this.#persistCollection(name, this.#currentRecords(name));
     }
   }
@@ -2153,7 +2154,7 @@ async function executeWaitForExecutionControl<
           controlWaiters,
           ...(options.clock === undefined ? {} : { clock: options.clock }),
         });
-        await loadedState.loadState();
+        await loadedState.loadState(coreThreadStoreOperationPlans.waitForExecutionControl.load);
         return loadedState;
       });
     } catch (cause) {
@@ -2171,18 +2172,215 @@ async function executeWaitForExecutionControl<
   throw new Error("Unreachable Thread Store control wait retry state");
 }
 
-const directCoreThreadStoreOperations = new Set(["recordDelegatedToolCall"]);
+const directCoreThreadStoreOperationNames = ["recordDelegatedToolCall"] as const;
 
-const readOnlyThreadStoreOperations = new Set([
-  "readThread",
-  "readBranch",
-  "readBranchHistory",
-  "readRunSnapshot",
-  "readRunResult",
-  "readToolResumeContext",
-  "loadExecution",
-  "loadToolCall",
-]);
+type PlannedCoreThreadStoreOperationName = Exclude<
+  keyof ThreadStore<CoreRecordDefinitions>,
+  "collections" | (typeof directCoreThreadStoreOperationNames)[number]
+>;
+
+interface CoreThreadStoreOperationPlan {
+  readonly load: readonly CoreRecordName[];
+  readonly persist: readonly CoreRecordName[];
+}
+
+const coreThreadStoreOperationPlans = {
+  createThread: {
+    load: ["thread"],
+    persist: [],
+  },
+  readThread: {
+    load: ["thread"],
+    persist: [],
+  },
+  createBranch: {
+    load: ["thread", "branch", "message"],
+    persist: [],
+  },
+  readBranch: {
+    load: ["branch"],
+    persist: [],
+  },
+  renameBranch: {
+    load: ["branch"],
+    persist: ["branch"],
+  },
+  readBranchHistory: {
+    load: ["branch", "message"],
+    persist: [],
+  },
+  appendMessages: {
+    load: ["commit", "branch", "message"],
+    persist: ["commit", "branch", "message"],
+  },
+  submitRun: {
+    load: ["commit", "runSubmission", "run", "branch", "message"],
+    persist: ["commit", "runSubmission", "branch", "message"],
+  },
+  submitToolResumes: {
+    load: ["run", "toolResumeRequest", "branch", "toolCall"],
+    persist: ["run", "toolResumeRequest", "toolCall"],
+  },
+  acceptSteering: {
+    load: ["run", "steeringRequest", "pendingSteering", "runCommandSequence"],
+    persist: ["steeringRequest", "pendingSteering", "runCommandSequence"],
+  },
+  acceptRedirect: {
+    load: ["run", "redirectRequest", "pendingRedirect", "runCommandSequence"],
+    persist: ["redirectRequest", "pendingRedirect", "runCommandSequence"],
+  },
+  requestAbort: {
+    load: ["run"],
+    persist: ["run"],
+  },
+  readRunSnapshot: {
+    load: ["run", "branch", "toolCall"],
+    persist: [],
+  },
+  readRunResult: {
+    load: ["run"],
+    persist: [],
+  },
+  readToolResumeContext: {
+    load: ["run", "branch", "message", "toolCall"],
+    persist: [],
+  },
+  acquireExecutionClaim: {
+    load: ["run", "executionClaim", "executionFence", "toolCall"],
+    persist: ["executionClaim", "executionFence"],
+  },
+  renewExecutionClaim: {
+    load: ["executionClaim", "run"],
+    persist: ["executionClaim"],
+  },
+  waitForExecutionControl: {
+    load: ["executionClaim", "run"],
+    persist: [],
+  },
+  releaseExecutionClaim: {
+    load: ["executionClaim"],
+    persist: ["executionClaim"],
+  },
+  loadExecution: {
+    load: [
+      "executionClaim",
+      "run",
+      "branch",
+      "message",
+      "pendingSteering",
+      "pendingRedirect",
+      "toolCall",
+    ],
+    persist: [],
+  },
+  loadToolCall: {
+    load: ["executionClaim", "run", "toolCall"],
+    persist: [],
+  },
+  commitStep: {
+    load: [
+      "commit",
+      "executionClaim",
+      "run",
+      "branch",
+      "message",
+      "pendingSteering",
+      "pendingRedirect",
+    ],
+    persist: ["commit", "branch", "message", "pendingSteering", "pendingRedirect"],
+  },
+  commitModelInvocation: {
+    load: [
+      "commit",
+      "modelCommitOutcome",
+      "executionClaim",
+      "run",
+      "branch",
+      "message",
+      "pendingRedirect",
+      "toolCall",
+      "toolCallSequence",
+    ],
+    persist: ["commit", "modelCommitOutcome", "branch", "message", "toolCall", "toolCallSequence"],
+  },
+  recordModelCall: {
+    load: ["commit", "executionClaim", "run"],
+    persist: ["commit", "run"],
+  },
+  recordToolInput: {
+    load: ["executionClaim", "run", "toolCall"],
+    persist: ["toolCall"],
+  },
+  completeToolCall: {
+    load: ["executionClaim", "run", "toolCall"],
+    persist: ["toolCall"],
+  },
+  suspendToolCall: {
+    load: ["executionClaim", "run", "toolCall"],
+    persist: ["toolCall"],
+  },
+  commitToolResults: {
+    load: ["commit", "executionClaim", "run", "branch", "message", "toolCall"],
+    persist: ["commit", "branch", "message", "toolCall"],
+  },
+  continueSettlement: {
+    load: [
+      "commit",
+      "settlementOutcome",
+      "executionClaim",
+      "run",
+      "branch",
+      "message",
+      "pendingRedirect",
+      "pendingSteering",
+    ],
+    persist: ["commit", "settlementOutcome", "run", "branch", "message"],
+  },
+  suspendRun: {
+    load: ["executionClaim", "run", "branch", "toolCall"],
+    persist: ["run"],
+  },
+  finalizeRun: {
+    load: [
+      "commit",
+      "finalizationOutcome",
+      "executionClaim",
+      "run",
+      "branch",
+      "message",
+      "pendingRedirect",
+      "pendingSteering",
+      "toolCall",
+    ],
+    persist: [
+      "commit",
+      "finalizationOutcome",
+      "executionClaim",
+      "run",
+      "branch",
+      "message",
+      "toolCall",
+    ],
+  },
+  recordInterruption: {
+    load: ["executionClaim", "run"],
+    persist: ["executionClaim"],
+  },
+} as const satisfies Readonly<
+  Record<PlannedCoreThreadStoreOperationName, CoreThreadStoreOperationPlan>
+>;
+
+const directCoreThreadStoreOperations: ReadonlySet<string> = new Set(
+  directCoreThreadStoreOperationNames,
+);
+
+function coreThreadStoreOperationPlan(methodName: string): CoreThreadStoreOperationPlan {
+  if (!Object.hasOwn(coreThreadStoreOperationPlans, methodName)) {
+    throw new TypeError(`Unknown Thread Store operation '${methodName}'`);
+  }
+  // SAFETY: The own-property check proves methodName is one of the exact operation-plan keys.
+  return coreThreadStoreOperationPlans[methodName as keyof typeof coreThreadStoreOperationPlans];
+}
 
 async function executeCoreThreadStoreOperation<
   Definitions extends ThreadRecordDefinitions,
@@ -2213,6 +2411,7 @@ async function executeCoreThreadStoreOperation<
           return recordDelegatedToolCallInStore(store, options.clock?.now ?? Date.now, input);
         });
       }
+      const operationPlan = coreThreadStoreOperationPlan(methodName);
 
       const value = await options.backend.transaction(async (transaction) => {
         const store = addThreadStoreCreateHooks(transaction, options.hooks);
@@ -2222,15 +2421,13 @@ async function executeCoreThreadStoreOperation<
           ...(options.clock === undefined ? {} : { clock: options.clock }),
         });
         committedState = state;
-        await state.loadState();
+        await state.loadState(operationPlan.load);
         const method = Reflect.get(state, methodName);
         if (typeof method !== "function") {
           throw new TypeError(`Unknown Thread Store operation '${methodName}'`);
         }
         const result = await Reflect.apply(method, state, args);
-        if (!readOnlyThreadStoreOperations.has(methodName)) {
-          await state.persistState();
-        }
+        await state.persistState(operationPlan.persist);
         return result;
       });
       committedState?.publishControlNotifications();
