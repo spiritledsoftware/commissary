@@ -1,8 +1,8 @@
 # SQL Store Tier Technical Specification
 
-> **Status**: Design complete for implementation. The portable SQL tier and the PostgreSQL, MySQL, and SQLite Record specialization decisions are binding.
+> **Status**: Complete SQL and Drizzle Store specification approved for implementation in issue #19.
 >
-> **Last updated**: 2026-08-07 during Drizzle SQLite Store adapter approval.
+> **Last updated**: 2026-08-08 during final cross-adapter approval.
 
 ## Summary
 
@@ -337,7 +337,154 @@ A table or column name must be a nonempty NUL-free string. Omitted table and col
 
 Primary-key entries use logical field names. Definition reports `invalid-primary-key` for an empty tuple, duplicate or unknown field, a field that can remain missing or null, or a conflict with database-specific table metadata. A primary key contributes a database constraint only when a concrete definition generates the physical table. Binding a supplied table verifies its declared primary key instead.
 
-Core publishes explicit `commissary_` table names and snake-case column names from the same definitions that own its Field Schemas. Core imports no ORM or driver type.
+#### Core SQL catalog
+
+Core publishes the following exact physical catalog from the same definitions that own its Field Schemas. All table names use the `commissary_` prefix. All physical column names are explicit snake-case names. Core and adapters perform no automatic case conversion, pluralization, or snake-case conversion.
+
+| Core Record key       | Physical table                     | Primary-key field tuple   |
+| --------------------- | ---------------------------------- | ------------------------- |
+| `thread`              | `commissary_threads`               | `["id"]`                  |
+| `branch`              | `commissary_branches`              | `["id"]`                  |
+| `message`             | `commissary_messages`              | `["id"]`                  |
+| `run`                 | `commissary_runs`                  | `["id"]`                  |
+| `toolCall`            | `commissary_tool_calls`            | `["runId", "toolCallId"]` |
+| `executionClaim`      | `commissary_execution_claims`      | `["runId"]`               |
+| `executionFence`      | `commissary_execution_fences`      | `["runId"]`               |
+| `pendingSteering`     | `commissary_pending_steerings`     | `["runId", "sequence"]`   |
+| `pendingRedirect`     | `commissary_pending_redirects`     | `["runId", "sequence"]`   |
+| `runCommandSequence`  | `commissary_run_command_sequences` | `["runId"]`               |
+| `toolCallSequence`    | `commissary_tool_call_sequences`   | `["runId"]`               |
+| `runSubmission`       | `commissary_run_submissions`       | `["runId"]`               |
+| `toolResumeRequest`   | `commissary_tool_resume_requests`  | `["runId", "requestId"]`  |
+| `steeringRequest`     | `commissary_steering_requests`     | `["runId", "requestId"]`  |
+| `redirectRequest`     | `commissary_redirect_requests`     | `["runId", "requestId"]`  |
+| `commit`              | `commissary_commits`               | `["commitId"]`            |
+| `finalizationOutcome` | `commissary_finalization_outcomes` | `["commitId"]`            |
+| `modelCommitOutcome`  | `commissary_model_commit_outcomes` | `["commitId"]`            |
+| `settlementOutcome`   | `commissary_settlement_outcomes`   | `["commitId"]`            |
+
+Every Core Field declares the following exact physical name:
+
+```ts
+const coreSqlColumnNames = {
+  thread: {
+    id: "id",
+  },
+  branch: {
+    id: "id",
+    threadId: "thread_id",
+    name: "name",
+    head: "head",
+  },
+  message: {
+    id: "id",
+    threadId: "thread_id",
+    parent: "parent",
+    message: "message",
+  },
+  run: {
+    id: "id",
+    threadId: "thread_id",
+    branchId: "branch_id",
+    agent: "agent",
+    admittedHead: "admitted_head",
+    status: "status",
+    abortRequested: "abort_requested",
+    settlementContinuations: "settlement_continuations",
+    usage: "usage",
+    abortReason: "abort_reason",
+    result: "result",
+  },
+  toolCall: {
+    toolCallId: "tool_call_id",
+    runId: "run_id",
+    sequence: "sequence",
+    toolName: "tool_name",
+    parentToolCallId: "parent_tool_call_id",
+    providerId: "provider_id",
+    delegationKey: "delegation_key",
+    requestedInput: "requested_input",
+    effectiveInput: "effective_input",
+    status: "status",
+    result: "result",
+    suspension: "suspension",
+    providerData: "provider_data",
+    historyCommitted: "history_committed",
+  },
+  executionClaim: {
+    runId: "run_id",
+    executionId: "execution_id",
+    token: "token",
+    fence: "fence",
+    expiresAt: "expires_at",
+  },
+  executionFence: {
+    runId: "run_id",
+    fence: "fence",
+  },
+  pendingSteering: {
+    runId: "run_id",
+    sequence: "sequence",
+    message: "message",
+  },
+  pendingRedirect: {
+    runId: "run_id",
+    sequence: "sequence",
+    message: "message",
+  },
+  runCommandSequence: {
+    runId: "run_id",
+    sequence: "sequence",
+  },
+  toolCallSequence: {
+    runId: "run_id",
+    sequence: "sequence",
+  },
+  runSubmission: {
+    runId: "run_id",
+    fingerprint: "fingerprint",
+    result: "result",
+  },
+  toolResumeRequest: {
+    runId: "run_id",
+    requestId: "request_id",
+    fingerprint: "fingerprint",
+    result: "result",
+  },
+  steeringRequest: {
+    runId: "run_id",
+    requestId: "request_id",
+    fingerprint: "fingerprint",
+    result: "result",
+  },
+  redirectRequest: {
+    runId: "run_id",
+    requestId: "request_id",
+    fingerprint: "fingerprint",
+    result: "result",
+  },
+  commit: {
+    commitId: "commit_id",
+    fingerprint: "fingerprint",
+  },
+  finalizationOutcome: {
+    commitId: "commit_id",
+    outcome: "outcome",
+  },
+  modelCommitOutcome: {
+    commitId: "commit_id",
+    outcome: "outcome",
+  },
+  settlementOutcome: {
+    commitId: "commit_id",
+    outcome: "outcome",
+  },
+} as const;
+```
+
+These existing logical key tuples are the portable primary keys. Core string primary-key components accept at most 95 Unicode code points. Generated MySQL tables use `VARCHAR(95)` for them; generated PostgreSQL and SQLite tables use their portable text mapping. This bound keeps the largest two-string `utf8mb4` Core key within the 768-byte InnoDB key limit for a 4 KiB page.
+
+Core sequences, fences, counters, and expiry times are nonnegative safe integers in their Field Schemas and use `sql.integer()`. Core booleans use `sql.boolean()`, JSON values use `sql.json()`, and other strings use `sql.text()`. Core imports no ORM or driver type.
 
 #### Resolved SQL Record references
 
@@ -1331,7 +1478,8 @@ export interface SqlStore<
   Definitions extends RecordDefinitions,
   Operators extends StoreOperatorTypes = BaseStoreOperatorTypes,
   out DriverResult = unknown,
-> extends Store<Definitions, Operators> {
+  CreateInputs extends StoreCreateInputMap<Definitions> = DefaultStoreCreateInputs<Definitions>,
+> extends Store<Definitions, Operators, CreateInputs> {
   readonly query: <Row = unknown>(
     statement: SqlStatement<SqlParameterValue>,
   ) => Promise<readonly Row[]>;
@@ -1342,6 +1490,25 @@ export interface SqlStore<
 ```
 
 `SqlStatement<never>` has no bound values. `SqlStatement<unknown>` has no known narrower requirement. The type is covariant. Primitive literals widen to `string`, `number`, and `boolean`. The `Row` selected by `query<Row>()` is unchecked and defaults to `unknown`. `DriverResult` is covariant and defaults to `unknown`, so a concrete Store can retain an exact public driver result while it remains assignable to generic `SqlStore`.
+
+`CreateInputs` preserves the effective create-input map after hooks adjust it. A wider SQL transaction composition must pass the same `CreateInputs` to both primitive contracts and to the transaction view:
+
+```ts
+type SqlTransactionStore<
+  Definitions extends RecordDefinitions,
+  Operators extends StoreOperatorTypes,
+  DriverResult,
+  CreateInputs extends StoreCreateInputMap<Definitions>,
+> = SqlStore<Definitions, Operators, DriverResult, CreateInputs> &
+  TransactionStore<
+    Definitions,
+    Operators,
+    Pick<SqlStore<Definitions, Operators, DriverResult, CreateInputs>, "query" | "execute">,
+    CreateInputs
+  >;
+```
+
+Definition and binder compile-time tests must prove that a hook-guaranteed field is optional through both the base binding and its transaction view, while an unrelated required field stays required.
 
 The complete helper set is:
 

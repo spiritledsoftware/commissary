@@ -1,6 +1,6 @@
 # Drizzle Store Technical Specification
 
-**Status:** Shared definition lifecycle, package interface, and PostgreSQL, MySQL, and SQLite binding shapes approved. Final cross-adapter approval remains in issue #19.
+**Status:** Complete shared and cross-adapter specification approved for implementation in issue #19.
 
 ## Summary
 
@@ -22,7 +22,7 @@ The approved Store and SQL Store tiers already define:
 
 This specification defines the shared concrete Drizzle definition lifecycle and the approved PostgreSQL, MySQL, and SQLite binding shapes.
 
-The Drizzle source authority is the latest `main` branch.
+The architectural source authority for Drizzle is the latest `main` branch. The first implementation must also work against the published `drizzle-orm` 0.45.2 package artifact, as required by the package-interface specification.
 
 ## Goals
 
@@ -55,8 +55,8 @@ The Drizzle source authority is the latest `main` branch.
 4. **Asynchronous binding:** Binding accepts an existing database and can perform read-only engine, driver, transaction, and session checks.
 5. **Static schemas win:** Existing effective Field Schemas keep their normal fallback rules. Host static schema overrides win over generated schemas.
 6. **Generated schemas fill gaps:** Schema generators supply Field Schemas only where the effective Record has no static schema contract.
-7. **Every table column is a field:** A table supplied as a Record or override contributes each TypeScript column key as an effective Record Field. Physical database names stay unchanged.
-8. **No hidden required column:** A required table column must be represented by an effective Record Field, a default, or generation. A Store hook can guarantee a represented field.
+7. **One field per column:** Every effective Record Field maps to exactly one final table column, and every final table column maps to exactly one effective Record Field. Physical database names stay unchanged.
+8. **No hidden or omitted field:** A required table column must be represented by an effective Record Field, a default, or generation. A Store hook can guarantee a represented field. A lower-tier Record Field cannot disappear because a supplied table omits its column.
 9. **Hooks are definition values:** Base Store and Thread Store definitions capture hooks. Binding does not accept a second hook map.
 10. **Relations are catalog-wide:** Relations sit beside `records` and `overrides`, run after all tables exist, and return ordinary Drizzle relation entities.
 11. **One flat schema:** Tables use Record keys. Relations use the keys returned by the host callback. All keys must be distinct.
@@ -231,7 +231,16 @@ schemas: {
 }
 ```
 
-The functions return whole-table object schemas. Store still needs one Field Schema for each operation. Standard Schema V1 exposes no portable object-field reflection, so `@commissary/drizzle` recognizes the public object shape of each supported generator family. The first required families are Drizzle Zod and Drizzle Valibot. An unsupported family reports a definition issue instead of guessing.
+The functions return whole-table object schemas. Store still needs one Field Schema for each operation. Standard Schema V1 exposes no portable object-field reflection, so `@commissary/drizzle` recognizes the public object shape of each supported generator family. Initial support is exact:
+
+| Generator package | Supported version | Host schema-library range | Public field map |
+| ----------------- | ----------------- | ------------------------- | ---------------- |
+| `drizzle-zod`     | `0.8.3`           | Zod `^3.25.0              |                  | ^4.0.0` | `.shape` |
+| `drizzle-valibot` | `0.4.2`           | Valibot `^1.0.0`          | `.entries`       |
+
+The host owns and installs the generator and schema libraries. `@commissary/drizzle` imports neither family. Each returned whole-table schema and every extracted field schema must implement Standard Schema V1. Select, insert, and update results must use the same supported family and have exact table-key equality: no table key can be missing and no extra schema key is accepted. An unknown family reports `unsupported-schema-family`; malformed results from a recognized family report the applicable generated-schema issue. The runtime does not inspect installed package versions. Versions outside the approved matrix have no compatibility promise.
+
+Support expands only after compile-time and runtime conformance proves the new generator version, its schema-library peer range, exact field-map reflection, Standard Schema behavior, and all three dialect paths.
 
 Generation order is:
 
@@ -243,6 +252,8 @@ Generation order is:
 6. apply the normal Store Field Schema round-trip and JSON-value checks.
 
 A lower-tier Field Definition keeps its established fallback: missing create uses select, and missing update uses create. Generators do not reinterpret that contract. For a field that comes only from a Drizzle table or column, the three generated schemas form its initial Field Definition. A static shorthand replaces all three operations; an operation object replaces only its named generated operations.
+
+For a lower-tier Record or complete table override, the final table is compatible only when field and column membership is bidirectional. Each effective field must have one column with the same TypeScript key, and each column must have one effective field. A missing column for a lower-tier field reports `incompatible-drizzle-table`; the definition never keeps an unpersisted field.
 
 Generated schemas can still be invalid Store schemas. Definition rejects selected `Date`, `Uint8Array`, class instances, non-JSON values, unstable transforms, incompatible create or update outputs, unsupported omission, or any other violation of the Store Record contract. A host can supply a static schema that converts a Drizzle value into the approved JSON-compatible selected value.
 
@@ -490,9 +501,40 @@ Expected runtime output:
 }
 ```
 
-## Deferred Decision
+## Final Cross-Adapter Approval
 
-Final cross-adapter approval remains in issue #19.
+Issue #19 approves the complete staged specification against these implementation paths:
+
+1. **Core Thread Store:** Each dialect generates or accepts the exact 19-table Core SQL catalog, binds it through the generic dialect binder, and composes the plain or transactional backend through `createThreadStore`.
+2. **Scheduled Jobs:** A lower-tier Scheduled Job Record composes with custom Records, SQL references, CRUD, direct SQL, and a `beforeCreate` hook. The hook-adjusted create input survives base and transaction binding.
+3. **Lower-tier Record composition:** Generated dialect tables retain every effective field, exact physical name, portable primary key, schema contract, and dialect refinement.
+4. **User-authored Drizzle tables:** Direct dialect tables work with the exact supported Drizzle Zod or Drizzle Valibot generator family and keep bidirectional field-column membership.
+5. **Drizzle Kit exports:** Every dialect exposes the flat runtime schema, and host schema modules export its table and relation values directly.
+
+The final compile-tested integration prototype is `packages/store/prototypes/complete-sql-drizzle-specification.prototype.ts`. It tests all five paths, all three dialect definitions, exact driver-result inference, plain and literal-transaction bindings, hook-adjusted create inputs, and direct schema exports.
+
+Run it with:
+
+```sh
+pnpm exec tsc --ignoreConfig --noEmit --strict --target ES2022 --module NodeNext --moduleResolution NodeNext packages/store/prototypes/complete-sql-drizzle-specification.prototype.ts
+pnpm exec bun packages/store/prototypes/complete-sql-drizzle-specification.prototype.ts
+```
+
+The runtime report must contain 19 Core tables, all three dialects, lower-tier and direct-table inputs, both supported generator families, direct exports, plain and transaction bindings, and the five approved scenario names.
+
+### Required conformance matrix
+
+Every dialect implementation runs:
+
+- base Store conformance;
+- SQL Statement and SQL Store conformance;
+- its focused PostgreSQL, MySQL, or SQLite adapter suite;
+- Transaction Store and combined SQL/Collection transaction conformance when literal `transaction: true` is accepted;
+- Core Runtime conformance for its Thread definition over both the plain backend and accepted transactional backend;
+- the cross-adapter Scheduled Job custom-Record fixture; and
+- a direct-export Drizzle Kit schema-module smoke test.
+
+SQLite runs its plain Store tests on synchronous and asynchronous database paths. Only an asynchronous path that passes the approved live transaction probe can enter the transactional matrix.
 
 ## References
 
@@ -503,3 +545,4 @@ Final cross-adapter approval remains in issue #19.
 - [Drizzle API research](https://github.com/spiritledsoftware/commissary/issues/26#issuecomment-5166874940)
 - [Drizzle SQLite Store adapter specification](drizzle-sqlite-store.md)
 - [Shared lifecycle issue](https://github.com/spiritledsoftware/commissary/issues/14)
+- [Final approval issue #19](https://github.com/spiritledsoftware/commissary/issues/19)
