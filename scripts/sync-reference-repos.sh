@@ -44,7 +44,7 @@ sync_repo() {
 sync_repo effect https://github.com/Effect-TS/effect.git main
 sync_repo opencode https://github.com/anomalyco/opencode.git dev
 sync_repo better-auth https://github.com/better-auth/better-auth.git main
-sync_repo drizzle-orm https://github.com/drizzle-team/drizzle-orm.git b7862528fd8fc39bc2653a6c18dad7c1f4e68d10
+sync_repo drizzle-orm https://github.com/drizzle-team/drizzle-orm.git main
 sync_repo pi-mono https://github.com/badlogic/pi-mono.git main
 sync_repo vercel-ai https://github.com/vercel/ai.git main
 sync_repo tanstack-ai https://github.com/TanStack/ai.git main

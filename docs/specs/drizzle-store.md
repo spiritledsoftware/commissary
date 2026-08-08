@@ -22,7 +22,7 @@ The approved Store and SQL Store tiers already define:
 
 This specification defines the shared concrete Drizzle definition lifecycle and the approved PostgreSQL, MySQL, and SQLite binding shapes.
 
-The Drizzle source authority is commit `b7862528fd8fc39bc2653a6c18dad7c1f4e68d10`.
+The Drizzle source authority is the latest `main` branch.
 
 ## Goals
 

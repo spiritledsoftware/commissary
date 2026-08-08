@@ -367,7 +367,7 @@ The same immutable definition can be registered under several catalog keys. Each
 
 #### Cross-database resolution contract
 
-The Drizzle compatibility authority for all three specializations is commit `b7862528fd8fc39bc2653a6c18dad7c1f4e68d10`. Use the commit, not its manifest version, because that version was not published to npm. Only capabilities that a planned concrete adapter can preserve are public.
+The Drizzle compatibility authority for all three specializations is the latest state of the `main` branch. Only capabilities that a planned concrete adapter can preserve are public.
 
 Every database resolution contains final physical facts. It does not retain whether a type came from portable metadata, database metadata, or Select reflection. A resolved direct type names the final database type and physical options; its synchronous `encode` and `decode` functions preserve the selected application contract. Concrete adapters map this plan into ORM or driver values without parsing type text.
 
@@ -954,7 +954,7 @@ Supported physical options are:
 - required `varchar` and `varbinary` length 0 through 65,535; and
 - `datetime`, `time`, and `timestamp` fractional precision 0 through 6.
 
-MySQL 8.4 deprecates `unsigned` on fixed- and floating-point types and the nonstandard floating-point precision-and-scale forms. Keep them for parity with the authoritative Drizzle commit's MySQL helper set, but mark them deprecated in API documentation. Do not expose integer display width, `ZEROFILL`, driver output modes, TypeScript-only text enum narrowing, or aliases outside the listed helper set. `real` remains a distinct resolved type and emits exact `REAL`; active SQL mode owns whether MySQL treats it as `FLOAT` or `DOUBLE`.
+MySQL 8.4 deprecates `unsigned` on fixed- and floating-point types and the nonstandard floating-point precision-and-scale forms. Keep them for parity with the MySQL helper set on the authoritative Drizzle `main` branch, but mark them deprecated in API documentation. Do not expose integer display width, `ZEROFILL`, driver output modes, TypeScript-only text enum narrowing, or aliases outside the listed helper set. `real` remains a distinct resolved type and emits exact `REAL`; active SQL mode owns whether MySQL treats it as `FLOAT` or `DOUBLE`.
 
 The operation and Select Schema parsers validate field values first. A direct MySQL codec then validates storage syntax, JSON safety, declared length, and type range before database work. Invalid caller-supplied values use `StoreValidationError`. An invalid stored direct value uses `StoreAdapterContractViolation` with `"invalid-selected-record"`.
 

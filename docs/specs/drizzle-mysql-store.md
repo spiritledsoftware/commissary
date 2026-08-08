@@ -20,7 +20,7 @@ Those specifications remain authoritative except where this document gives a lat
 
 ## Source authority
 
-The Drizzle source authority is commit `b7862528fd8fc39bc2653a6c18dad7c1f4e68d10`. The approved database target is Oracle MySQL 8.4 and later. MariaDB, TiDB, Vitess, PlanetScale, and other MySQL-compatible engines are not part of this adapter contract.
+The Drizzle source authority is the latest `main` branch. The approved database target is Oracle MySQL 8.4 and later. MariaDB, TiDB, Vitess, PlanetScale, and other MySQL-compatible engines are not part of this adapter contract.
 
 ## Goals
 
@@ -514,10 +514,10 @@ Both calls share the same physical MySQL transaction when the direct SQL stays i
 
 - [Issue #24](https://github.com/spiritledsoftware/commissary/issues/24)
 - [Drizzle research decision](https://github.com/spiritledsoftware/commissary/issues/26#issuecomment-5166874940)
-- [Drizzle MySQL database API](https://github.com/drizzle-team/drizzle-orm/blob/b7862528fd8fc39bc2653a6c18dad7c1f4e68d10/drizzle-orm/src/mysql-core/db.ts)
-- [Drizzle MySQL transaction API](https://github.com/drizzle-team/drizzle-orm/blob/b7862528fd8fc39bc2653a6c18dad7c1f4e68d10/drizzle-orm/src/mysql-core/session.ts)
-- [Drizzle mysql2 transaction implementation](https://github.com/drizzle-team/drizzle-orm/blob/b7862528fd8fc39bc2653a6c18dad7c1f4e68d10/drizzle-orm/src/mysql2/session.ts)
-- [Drizzle MySQL table metadata](https://github.com/drizzle-team/drizzle-orm/blob/b7862528fd8fc39bc2653a6c18dad7c1f4e68d10/drizzle-orm/src/mysql-core/utils.ts)
+- [Drizzle MySQL database API](https://github.com/drizzle-team/drizzle-orm/blob/main/drizzle-orm/src/mysql-core/db.ts)
+- [Drizzle MySQL transaction API](https://github.com/drizzle-team/drizzle-orm/blob/main/drizzle-orm/src/mysql-core/session.ts)
+- [Drizzle mysql2 transaction implementation](https://github.com/drizzle-team/drizzle-orm/blob/main/drizzle-orm/src/mysql2/session.ts)
+- [Drizzle MySQL table metadata](https://github.com/drizzle-team/drizzle-orm/blob/main/drizzle-orm/src/mysql-core/utils.ts)
 - [MySQL 8.4 transaction characteristics](https://dev.mysql.com/doc/refman/8.4/en/set-transaction.html)
 - [MySQL 8.4 current transaction metadata](https://dev.mysql.com/doc/refman/8.4/en/performance-schema-events-transactions-current-table.html)
 - [MySQL 8.4 table metadata](https://dev.mysql.com/doc/refman/8.4/en/information-schema-tables-table.html)

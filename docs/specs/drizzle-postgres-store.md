@@ -22,7 +22,7 @@ Those specifications remain authoritative except where this document gives a lat
 
 ## Source authority
 
-The Drizzle source authority is commit `b7862528fd8fc39bc2653a6c18dad7c1f4e68d10`. The approved PostgreSQL target is PostgreSQL 15 and later.
+The Drizzle source authority is the latest `main` branch. The approved PostgreSQL target is PostgreSQL 15 and later.
 
 ## Goals
 
@@ -524,6 +524,6 @@ Both calls commit or roll back together.
 
 - [Issue #20](https://github.com/spiritledsoftware/commissary/issues/20)
 - [Drizzle research note](https://github.com/spiritledsoftware/commissary/issues/26)
-- [Drizzle SQL source](https://github.com/drizzle-team/drizzle-orm/blob/b7862528fd8fc39bc2653a6c18dad7c1f4e68d10/drizzle-orm/src/sql/sql.ts)
+- [Drizzle SQL source](https://github.com/drizzle-team/drizzle-orm/blob/main/drizzle-orm/src/sql/sql.ts)
 - [PostgreSQL 15 constraints](https://www.postgresql.org/docs/15/ddl-constraints.html)
 - [PostgreSQL 15 error codes](https://www.postgresql.org/docs/15/errcodes-appendix.html)
