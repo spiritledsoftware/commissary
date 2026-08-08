@@ -8,11 +8,19 @@ import {
   RunId,
   ThreadId,
   ToolCallId,
+  createThreadStore,
+  mergeCoreRecordDefinitions,
 } from "@commissary/core";
+import type {
+  RecordDefinitions,
+  Store,
+  StoreOperatorTypes,
+  TransactionStore,
+} from "@commissary/store";
 import { type FieldSchema, type JsonValue } from "@commissary/store";
 import { expect, expectTypeOf, it } from "vitest";
 
-import { MemoryThreadStore } from "../src/index.js";
+import { MemoryStore, MemoryThreadStore } from "../src/index.js";
 
 type SchemaResult<Output> =
   | { readonly value: Output }
@@ -45,6 +53,270 @@ const toolStatusField = fieldSchema<"pending" | "aborted", "pending" | "aborted"
     ? { value }
     : { issues: [{ message: "Expected a pending or aborted Tool Call" }] },
 );
+
+type StoreCollectionOperation = "find" | "create" | "update" | "delete" | "count";
+
+interface StoreCollectionAccess {
+  readonly collection: string;
+  readonly operation: StoreCollectionOperation;
+}
+
+const recordedCollectionOperations: ReadonlySet<string> = new Set([
+  "find",
+  "create",
+  "update",
+  "delete",
+  "count",
+]);
+
+function recordStoreCollectionAccess<
+  Definitions extends RecordDefinitions,
+  Operators extends StoreOperatorTypes,
+>(
+  store: Store<Definitions, Operators>,
+  accesses: StoreCollectionAccess[],
+): Store<Definitions, Operators> {
+  const cache = new Map<PropertyKey, object>();
+  const collections = new Proxy(
+    { ...store.collections },
+    {
+      get(target, property, receiver) {
+        const collection: unknown = Reflect.get(target, property, receiver);
+        if (typeof property !== "string" || typeof collection !== "object" || collection === null) {
+          return collection;
+        }
+        const cached = cache.get(property);
+        if (cached !== undefined) {
+          return cached;
+        }
+        const recorded = new Proxy(
+          {},
+          {
+            get(_target, operation) {
+              const method: unknown = Reflect.get(collection, operation, collection);
+              if (
+                typeof operation !== "string" ||
+                !recordedCollectionOperations.has(operation) ||
+                typeof method !== "function"
+              ) {
+                return method;
+              }
+              return (...args: readonly unknown[]): unknown => {
+                accesses.push({
+                  collection: property,
+                  // SAFETY: recordedCollectionOperations contains every and only Store Collection method name.
+                  operation: operation as StoreCollectionOperation,
+                });
+                return Reflect.apply(method, collection, args);
+              };
+            },
+          },
+        );
+        cache.set(property, recorded);
+        return recorded;
+      },
+    },
+  );
+  return { collections };
+}
+
+function recordTransactionStoreAccess<
+  Definitions extends RecordDefinitions,
+  Operators extends StoreOperatorTypes,
+>(
+  backend: TransactionStore<Definitions, Operators>,
+  accesses: StoreCollectionAccess[],
+): TransactionStore<Definitions, Operators> {
+  const recorded = recordStoreCollectionAccess(backend, accesses);
+  return {
+    collections: recorded.collections,
+    transaction: (use) =>
+      backend.transaction((transaction) => use(recordStoreCollectionAccess(transaction, accesses))),
+  };
+}
+
+function expectAccessedCollections(
+  accesses: readonly StoreCollectionAccess[],
+  expected: readonly string[],
+): void {
+  expect([...new Set(accesses.map((access) => access.collection))].sort()).toEqual(
+    [...expected].sort(),
+  );
+}
+
+it("scopes Core operations to relevant Collections and changed Records", async () => {
+  const definitions = mergeCoreRecordDefinitions({
+    branch: {
+      fields: {
+        tenantId: stringField,
+      },
+    },
+  });
+  const backend = MemoryStore.make({ records: definitions });
+  const accesses: StoreCollectionAccess[] = [];
+  const store = createThreadStore({
+    backend: recordTransactionStoreAccess(backend, accesses),
+  });
+  const threadId = ThreadId.decode("scoped-thread");
+  const branchId = BranchId.decode("scoped-branch");
+  const untouchedBranchId = BranchId.decode("scoped-untouched-branch");
+  const runId = RunId.decode("scoped-run");
+  const toolCallId = ToolCallId.decode("scoped-tool-call");
+  const agent = {
+    id: "scoped-agent",
+    revision: AgentRevision.decode("scoped-revision"),
+  };
+
+  await store.createThread({ id: threadId });
+  expectAccessedCollections(accesses, ["thread"]);
+
+  accesses.length = 0;
+  await store.createBranch({
+    branch: { id: branchId, threadId, name: "main", tenantId: "tenant-1" },
+  });
+  await store.createBranch({
+    branch: {
+      id: untouchedBranchId,
+      threadId,
+      name: "untouched",
+      tenantId: "tenant-2",
+    },
+  });
+
+  accesses.length = 0;
+  await store.renameBranch({ threadId, branchId, name: "renamed" });
+  expect(accesses).toEqual([
+    { collection: "branch", operation: "find" },
+    { collection: "branch", operation: "update" },
+  ]);
+  await expect(backend.collections.branch.find()).resolves.toEqual([
+    expect.objectContaining({
+      id: branchId,
+      name: "renamed",
+      tenantId: "tenant-1",
+    }),
+    expect.objectContaining({
+      id: untouchedBranchId,
+      name: "untouched",
+      tenantId: "tenant-2",
+    }),
+  ]);
+
+  accesses.length = 0;
+  const submission = await store.submitRun({
+    runId,
+    entryId: MessageEntryId.decode("scoped-entry"),
+    commitId: CommitId.decode("scoped-submit"),
+    agent,
+    threadId,
+    branchId,
+    message: { role: "user", content: [Content.text("start")] },
+  });
+  if (submission.type !== "accepted") {
+    throw new Error(`Unexpected Run submission '${submission.type}'`);
+  }
+  expectAccessedCollections(accesses, ["branch", "commit", "message", "run", "runSubmission"]);
+
+  accesses.length = 0;
+  const acquired = await store.acquireExecutionClaim({
+    runId,
+    agent,
+    executionId: ExecutionId.decode("scoped-execution"),
+    leaseDurationMs: 60_000,
+  });
+  if (acquired.type !== "acquired") {
+    throw new Error(`Unexpected claim result '${acquired.type}'`);
+  }
+  expectAccessedCollections(accesses, ["executionClaim", "executionFence", "run", "toolCall"]);
+
+  accesses.length = 0;
+  const modelCommit = await store.commitModelInvocation({
+    claim: acquired.claim,
+    expectedHead: submission.head,
+    commitId: CommitId.decode("scoped-model"),
+    entry: {
+      id: MessageEntryId.decode("scoped-model-entry"),
+      message: {
+        role: "assistant",
+        content: [Content.toolCall(toolCallId, "scoped-tool", {})],
+      },
+    },
+    toolCalls: [
+      {
+        toolCallId,
+        toolName: "scoped-tool",
+        input: {},
+      },
+    ],
+  });
+  if (modelCommit.type !== "committed") {
+    throw new Error(`Unexpected Model commit '${modelCommit.type}'`);
+  }
+  const modelHead = modelCommit.value.head;
+  if (modelHead === undefined) {
+    throw new Error("Expected the Model commit to advance the Branch head");
+  }
+  expectAccessedCollections(accesses, [
+    "branch",
+    "commit",
+    "executionClaim",
+    "message",
+    "modelCommitOutcome",
+    "pendingRedirect",
+    "run",
+    "toolCall",
+    "toolCallSequence",
+  ]);
+
+  accesses.length = 0;
+  await store.recordToolInput({
+    claim: acquired.claim,
+    toolCallId,
+    input: { prompt: "recorded" },
+  });
+  expectAccessedCollections(accesses, ["executionClaim", "run", "toolCall"]);
+
+  accesses.length = 0;
+  await store.acceptSteering({
+    agent,
+    runId,
+    message: { role: "user", content: [Content.text("continue")] },
+  });
+  expectAccessedCollections(accesses, [
+    "pendingSteering",
+    "run",
+    "runCommandSequence",
+    "steeringRequest",
+  ]);
+
+  accesses.length = 0;
+  await store.finalizeRun({
+    claim: acquired.claim,
+    expectedHead: modelHead,
+    commitId: CommitId.decode("scoped-finalize"),
+    entries: [],
+    abortUnresolvedTools: true,
+    result: {
+      type: "aborted",
+      runId,
+      threadId,
+      branchId,
+      head: modelHead,
+      agent,
+    },
+  });
+  expectAccessedCollections(accesses, [
+    "branch",
+    "commit",
+    "executionClaim",
+    "finalizationOutcome",
+    "message",
+    "pendingRedirect",
+    "pendingSteering",
+    "run",
+    "toolCall",
+  ]);
+});
 
 it("uses raw Collection state in specialized Thread Store operations", async () => {
   const store = MemoryThreadStore.make();
