@@ -18,12 +18,12 @@ export interface CoreRuntimeConformanceAdapter {
   readonly adapter: string;
   /** Make a new, empty Thread Store for one isolated conformance scenario. */
   readonly makeThreadStore: () => ThreadStore | Promise<ThreadStore>;
-  /** Make a Thread Store with the host Record catalog used by conformance. */
+  /** Make a Thread Store with the host Record overrides used by conformance. */
   readonly makeConfiguredThreadStore: (
-    configuration: ThreadStoreFactoryConfig<typeof conformanceHostRecordDefinitions>,
+    configuration: ThreadStoreFactoryConfig<{}, typeof conformanceHostRecordOverrides>,
   ) =>
-    | ThreadStore<EffectiveRecordDefinitions<typeof conformanceHostRecordDefinitions>>
-    | Promise<ThreadStore<EffectiveRecordDefinitions<typeof conformanceHostRecordDefinitions>>>;
+    | ThreadStore<EffectiveRecordDefinitions<{}, typeof conformanceHostRecordOverrides>>
+    | Promise<ThreadStore<EffectiveRecordDefinitions<{}, typeof conformanceHostRecordOverrides>>>;
 }
 
 /** One independently executable Core Runtime conformance scenario. */
@@ -83,7 +83,7 @@ const conformanceThreadIdSchema: FieldSchema<ThreadId, ConformanceThreadId> = {
   },
 };
 
-const conformanceHostRecordDefinitions = {
+const conformanceHostRecordOverrides = {
   thread: {
     fields: {
       id: conformanceThreadIdSchema,
@@ -344,7 +344,8 @@ export function createCoreRuntimeConformanceSuite(
       async run() {
         let messageHookCalls = 0;
         const threadStore = await adapter.makeConfiguredThreadStore({
-          records: conformanceHostRecordDefinitions,
+          records: {},
+          overrides: conformanceHostRecordOverrides,
           hooks: {
             message: {
               beforeCreate: ({ draft }) => {

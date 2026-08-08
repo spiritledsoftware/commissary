@@ -2,6 +2,7 @@ import {
   StoreAdapterContractError,
   StoreAdapterError,
   StoreError,
+  StoreValidationError,
   TransactionConflictError,
   TransactionRollbackError,
   UnsupportedStoreOperationError,
@@ -130,7 +131,7 @@ it("classifies Store failures without copying sensitive causes into messages", (
   expect(defect.message).not.toContain("do-not-log");
 });
 
-it("classifies invalid adapter-selected Records as contract defects", async () => {
+it("rejects invalid create outputs before adapter storage", async () => {
   const invalid = MemoryStore.make({
     records: {
       invalid: {
@@ -147,11 +148,12 @@ it("classifies invalid adapter-selected Records as contract defects", async () =
   }).collections.invalid;
 
   const create = invalid.create({ id: "one", value: 1 });
-  await expect(create).rejects.toBeInstanceOf(StoreAdapterContractError);
+  await expect(create).rejects.toBeInstanceOf(StoreValidationError);
   await expect(create).rejects.toMatchObject({
     collection: "invalid",
     operation: "create",
-    violation: "invalid-selected-record",
+    phase: "create",
+    field: "value",
   });
 });
 

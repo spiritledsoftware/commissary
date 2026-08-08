@@ -169,7 +169,7 @@ export {
   addThreadStoreCreateHooks,
   coreRecordDefinitions,
   durableEntityRecordDefinitions,
-  mergeCoreRecordDefinitions,
+  composeThreadStoreRecordDefinitions,
   runtimeStateRecordDefinitions,
 } from "./store.js";
 export { createThreadStore } from "./thread-store-implementation.js";
@@ -191,7 +191,8 @@ export type {
   CompleteToolCallInput,
   ContinueSettlementInput,
   ContinueSettlementStoreResult,
-  CompatibleThreadRecordDefinitions,
+  CompatibleThreadRecordOverrides,
+  ContributedThreadRecordDefinitions,
   CoreDurableRecordCompatibility,
   CoreRecordDefinitions,
   CoreQueryOperators,

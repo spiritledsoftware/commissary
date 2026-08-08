@@ -81,19 +81,32 @@ it("rejects Field Definitions whose outputs cannot re-enter Select", () => {
 });
 
 type JobStatus = "pending" | "running" | "done";
+type StoredJobStatus = JobStatus | Uppercase<JobStatus>;
 
-const jobStatusField = fieldSchema<JobStatus, JobStatus>((value) =>
-  value === "pending" || value === "running" || value === "done"
-    ? { value }
-    : { issues: [{ message: "Expected a job status" }] },
-);
+const jobStatusField = fieldSchema<StoredJobStatus, JobStatus>((value) => {
+  if (typeof value !== "string") {
+    return { issues: [{ message: "Expected a job status" }] };
+  }
+  const normalized = value.toLowerCase();
+  return normalized === "pending" || normalized === "running" || normalized === "done"
+    ? { value: normalized }
+    : { issues: [{ message: "Expected a job status" }] };
+});
 
-const createJobStatusField = fieldSchema<"queued" | JobStatus, JobStatus>((value) =>
+const createJobStatusField = fieldSchema<"queued" | JobStatus, StoredJobStatus>((value) =>
   value === "queued"
-    ? { value: "pending" }
+    ? { value: "PENDING" }
     : value === "pending" || value === "running" || value === "done"
       ? { value }
       : { issues: [{ message: "Expected a create job status" }] },
+);
+
+const updateJobStatusField = fieldSchema<"finished" | JobStatus, StoredJobStatus>((value) =>
+  value === "finished"
+    ? { value: "DONE" }
+    : value === "pending" || value === "running" || value === "done"
+      ? { value }
+      : { issues: [{ message: "Expected an update job status" }] },
 );
 
 it("creates and finds a Custom Record through its Collection", async () => {
@@ -105,6 +118,7 @@ it("creates and finds a Custom Record through its Collection", async () => {
           status: {
             select: jobStatusField,
             create: createJobStatusField,
+            update: updateJobStatusField,
           },
           note: optionalStringField,
         },
@@ -133,6 +147,16 @@ it("creates and finds a Custom Record through its Collection", async () => {
     }[]
   >();
   expect(found).toEqual([{ id: "job-1", status: "pending" }]);
+
+  await expect(
+    store.collections.scheduledJobs.update({
+      where: (fields, operators) => operators.eq(fields.id, "job-1"),
+      set: { status: "finished" },
+    }),
+  ).resolves.toBe(1);
+  await expect(store.collections.scheduledJobs.find()).resolves.toEqual([
+    { id: "job-1", status: "done" },
+  ]);
 });
 
 it("rejects invalid and unknown create fields before storage", async () => {

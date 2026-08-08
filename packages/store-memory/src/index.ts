@@ -1,7 +1,8 @@
-import { createThreadStore, mergeCoreRecordDefinitions } from "@commissary/core";
+import { composeThreadStoreRecordDefinitions, createThreadStore } from "@commissary/core";
 import type {
   Clock,
   CoreRecordDefinitions,
+  ContributedThreadRecordDefinitions,
   EffectiveRecordDefinitions,
   ThreadStore,
   ThreadStoreFactoryConfig,
@@ -12,6 +13,7 @@ import {
   compileStoreOrder,
   compileStoreUpdate,
   compileStoreWhere,
+  parseStoreCreatedRecord,
   parseStoreCreateInput,
   parseStoreSelectedFields,
   StoreAdapterContractError,
@@ -28,6 +30,7 @@ import {
   type JsonValue,
   type RecordDefinition,
   type Project,
+  type RecordOverrides,
   type RecordDefinitions,
   type RoundTripRecordDefinitions,
   type Selection,
@@ -37,8 +40,8 @@ import {
   type StoreCollections,
   type TransactionStore,
   type StoreWhereEvaluator,
+  parseStoreUpdatedRecord,
   validateStoreFindPagination,
-  validateStoreUpdatedRecord,
   type UpdateOptions,
   type WhereOptions,
 } from "@commissary/store";
@@ -126,6 +129,13 @@ function cloneMemoryJsonObject(value: JsonObject): JsonObject {
   return cloneMemoryJsonValue(value) as JsonObject;
 }
 
+function cloneMemorySelectedRecord<Definition extends RecordDefinition>(
+  value: JsonObject | SelectedRecord<Definition>,
+): JsonObject & SelectedRecord<Definition> {
+  // SAFETY: Every selected Field output is JSON-compatible. Cloning preserves the selected Record shape.
+  return cloneMemoryJsonObject(value as JsonObject) as JsonObject & SelectedRecord<Definition>;
+}
+
 class MemoryCollection<Definition extends RecordDefinition> implements Collection<Definition> {
   readonly #definition: Definition;
   readonly #name: string;
@@ -192,7 +202,7 @@ class MemoryCollection<Definition extends RecordDefinition> implements Collectio
         fields,
       );
       // SAFETY: Callers expose only the requested fields. Full-result callers request every definition field.
-      return cloneMemoryJsonObject(parsed) as unknown as SelectedRecord<Definition>;
+      return cloneMemorySelectedRecord<Definition>(parsed);
     } catch (cause) {
       throw new StoreAdapterContractError({
         collection: this.#name,
@@ -234,15 +244,15 @@ class MemoryCollection<Definition extends RecordDefinition> implements Collectio
   }
 
   readonly create = async (input: CreateInput<Definition>): Promise<SelectedRecord<Definition>> => {
-    const stored = cloneMemoryJsonObject(
-      await parseStoreCreateInput(this.#definition, this.#name, input),
-    );
+    const created = await parseStoreCreateInput(this.#definition, this.#name, input);
+    const selected = await parseStoreCreatedRecord(this.#definition, this.#name, created);
+    const stored = cloneMemorySelectedRecord<Definition>(selected);
     this.#records.push(stored);
     const index = this.#records.length - 1;
     this.#recordUndo(() => {
       this.#records.splice(index, 1);
     });
-    return this.#parseSelectedFields(stored, Object.keys(this.#definition.fields), "create");
+    return cloneMemorySelectedRecord<Definition>(selected);
   };
 
   readonly find = async <
@@ -339,12 +349,13 @@ class MemoryCollection<Definition extends RecordDefinition> implements Collectio
       }
       candidates.push({ index, record: candidate });
     }
-    await Promise.all(
-      candidates.map(({ record }) =>
-        validateStoreUpdatedRecord(this.#definition, this.#name, record),
-      ),
+    const selectedCandidates = await Promise.all(
+      candidates.map(async ({ index, record }) => ({
+        index,
+        record: await parseStoreUpdatedRecord(this.#definition, this.#name, record),
+      })),
     );
-    const previous = candidates.map(({ index }) => ({
+    const previous = selectedCandidates.map(({ index }) => ({
       index,
       record: requireMemoryValue(this.#records[index], `update-record-${index}`),
     }));
@@ -353,8 +364,8 @@ class MemoryCollection<Definition extends RecordDefinition> implements Collectio
         this.#records[item.index] = item.record;
       }
     });
-    for (const candidate of candidates) {
-      this.#records[candidate.index] = cloneMemoryJsonObject(candidate.record);
+    for (const candidate of selectedCandidates) {
+      this.#records[candidate.index] = cloneMemorySelectedRecord<Definition>(candidate.record);
     }
     return matching.length;
   };
@@ -469,20 +480,24 @@ export interface MemoryThreadStoreOptions {
 export class MemoryThreadStore {
   /** Make a Thread Store with the built-in Core Record catalog. */
   static make(options?: MemoryThreadStoreOptions): ThreadStore<CoreRecordDefinitions>;
-  /** Make a Thread Store with host Records merged into the Core Record catalog. */
-  static make<const Provided extends RecordDefinitions>(
-    options: MemoryThreadStoreOptions & ThreadStoreFactoryConfig<Provided>,
-  ): ThreadStore<EffectiveRecordDefinitions<Provided>>;
+  /** Make a Thread Store with host Record contributions and explicit Core Record overrides. */
+  static make<
+    const Records extends RecordDefinitions,
+    const Overrides extends RecordOverrides<ContributedThreadRecordDefinitions<Records>> = {},
+  >(
+    options: MemoryThreadStoreOptions & ThreadStoreFactoryConfig<Records, Overrides>,
+  ): ThreadStore<EffectiveRecordDefinitions<Records, Overrides>>;
   static make(
     options: MemoryThreadStoreOptions & {
       readonly records?: RecordDefinitions;
+      readonly overrides?: object;
       readonly hooks?: object;
     } = {},
   ): unknown {
-    // SAFETY: mergeCoreRecordDefinitions returns the complete effective Core-compatible catalog.
-    const definitions = mergeCoreRecordDefinitions(
-      options.records ?? {},
-    ) as ThreadRecordDefinitions;
+    const definitions = composeThreadStoreRecordDefinitions({
+      records: options.records ?? {},
+      ...(options.overrides === undefined ? {} : { overrides: options.overrides }),
+    }) as ThreadRecordDefinitions;
     const backend = MemoryStore.make({ records: definitions });
     return createThreadStore({
       backend,
