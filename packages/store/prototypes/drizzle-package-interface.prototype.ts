@@ -700,7 +700,7 @@ const approvedPackageInterface = Object.freeze({
   subpaths: ["postgres", "mysql", "sqlite"],
   transactionModes: ["base", "transaction", "runtime-union"],
   generatedValues: ["records", "schema"],
-  drizzlePeer: "^0.45.3",
+  drizzlePeer: "^0.45.2",
 });
 
 console.log(JSON.stringify(approvedPackageInterface));

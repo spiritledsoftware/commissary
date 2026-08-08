@@ -1,8 +1,8 @@
 # Drizzle Package Interface Technical Specification
 
-> **Status**: Package interface approved in live review for implementation. Final cross-adapter approval remains in issue #19.
+> **Status**: Complete package and cross-adapter interface approved for implementation in issue #19.
 >
-> **Last updated**: 2026-08-08 during issue #15.
+> **Last updated**: 2026-08-08 during issue #19.
 
 ## Summary
 
@@ -10,7 +10,7 @@
 
 The package accepts public Drizzle database base types. It does not enumerate drivers, own database clients, run migrations, or expose database-named runtime Store tiers. A binder preserves the exact definition, schema, create-input, operator, and public Drizzle result types. Literal transaction options preserve the exact returned Store capability. A non-literal Boolean returns a type-safe union.
 
-The architectural source authority for Drizzle is the latest `main` branch. The compatibility source authority for the first implementation is the `drizzle-orm` v0.45.3 tag. The first implementation targets exactly 0.45.3, declares the peer range `^0.45.3`, and uses no `main`-branch API that is absent from that tag.
+The architectural source authority for Drizzle is the latest `main` branch. The compatibility source authority for the first implementation is the published `drizzle-orm` 0.45.2 npm package artifact. The first implementation targets exactly 0.45.2, declares the peer range `^0.45.2`, and uses no `main`-branch API that is absent from that published artifact.
 
 ## Governing Decisions
 
@@ -371,10 +371,10 @@ The package manifest declares:
     "@standard-schema/spec": "^1.1.0"
   },
   "peerDependencies": {
-    "drizzle-orm": "^0.45.3"
+    "drizzle-orm": "^0.45.2"
   },
   "devDependencies": {
-    "drizzle-orm": "0.45.3"
+    "drizzle-orm": "0.45.2"
   }
 }
 ```
@@ -383,7 +383,7 @@ The release manifest replaces workspace ranges through the normal workspace publ
 
 `drizzle-orm` is a required peer because every useful dialect entry point imports Drizzle runtime values. Keeping it as a peer prevents a second ORM copy and keeps the host's tables, columns, SQL values, and database instances on one compatible Drizzle identity.
 
-The package has no `optionalDependencies` and no `peerDependenciesMeta` entries. Drizzle Zod and Drizzle Valibot remain host dependencies. The package receives their public generator functions and returned schemas as values; it never imports either package. Their own Zod or Valibot peers also remain host-owned.
+The package has no `optionalDependencies` and no `peerDependenciesMeta` entries. The exact initial host-owned generator matrix is `drizzle-zod` 0.8.3 with Zod `^3.25.0 || ^4.0.0`, and `drizzle-valibot` 0.4.2 with Valibot `^1.0.0`. The package imports none of these four packages. It receives public generator functions and returned schemas as values. Support expands only after compile-time and runtime conformance.
 
 ## Tree-Shaking and Runtime Loading
 
@@ -436,11 +436,18 @@ Implementation must verify these package contracts:
 13. PostgreSQL and MySQL retain the exact public `execute` result type.
 14. SQLite retains the exact `RunResult` type.
 15. A Thread definition binds through the normal dialect binder and composes through `createThreadStore`.
-16. Drizzle Zod and Drizzle Valibot generators work when installed only by the host.
-17. Building and importing one dialect does not require a native driver package for another dialect.
-18. The implementation compiles against exactly `drizzle-orm` 0.45.3, and every used API inspected on `main` also exists in the v0.45.3 tag.
+16. Hook-adjusted create inputs are identical through base and transaction binding. A hook-guaranteed field is optional and an unrelated required field stays required.
+17. The exact 19-key Core catalog retains every approved physical table name, column name, and primary-key tuple.
+18. Direct table and relation exports load as top-level schema-module values for Drizzle Kit in all three dialects.
+19. Drizzle Zod 0.8.3 with its approved Zod range and Drizzle Valibot 0.4.2 with Valibot 1 work when installed only by the host.
+20. Unsupported generator families fail with `unsupported-schema-family`. Versions outside the approved matrix have no compatibility promise.
+21. Building and importing one dialect does not require a native driver package for another dialect.
+22. The implementation compiles against exactly published `drizzle-orm` 0.45.2, and every used API inspected on `main` also exists in that npm package artifact.
+23. Each dialect passes the complete conformance matrix in the shared Drizzle Store specification.
 
 The compile-tested prototype is `packages/store/prototypes/drizzle-package-interface.prototype.ts`.
+
+The final cross-adapter prototype is `packages/store/prototypes/complete-sql-drizzle-specification.prototype.ts`.
 
 Run it with:
 
@@ -490,6 +497,7 @@ Rejected because `definition.schema` already contains the exact flat runtime ent
 ## References
 
 - [Issue #15](https://github.com/spiritledsoftware/commissary/issues/15)
+- [Final approval issue #19](https://github.com/spiritledsoftware/commissary/issues/19)
 - [Wayfinder map #7](https://github.com/spiritledsoftware/commissary/issues/7)
 - [Drizzle Store Technical Specification](drizzle-store.md)
 - [Drizzle PostgreSQL Store Adapter Technical Specification](drizzle-postgres-store.md)
@@ -500,4 +508,4 @@ Rejected because `definition.schema` already contains the exact flat runtime ent
 - [Drizzle SQLite database type](https://github.com/drizzle-team/drizzle-orm/blob/main/drizzle-orm/src/sqlite-core/db.ts)
 - [Drizzle Zod package](https://github.com/drizzle-team/drizzle-orm/tree/main/drizzle-zod)
 - [Drizzle Valibot package](https://github.com/drizzle-team/drizzle-orm/tree/main/drizzle-valibot)
-- [Drizzle ORM v0.45.3 source](https://github.com/drizzle-team/drizzle-orm/tree/v0.45.3)
+- [Published Drizzle ORM 0.45.2 package](https://www.npmjs.com/package/drizzle-orm/v/0.45.2)

@@ -233,7 +233,7 @@ function toDrizzleSql<Parameter>(compiled: CompiledSqlStatement<Parameter>): Dri
     }
   }
 
-  return drizzleSql.fromList(chunks);
+  return drizzleSql.join(chunks);
 }
 ```
 
