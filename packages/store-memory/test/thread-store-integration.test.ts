@@ -54,20 +54,16 @@ const toolStatusField = fieldSchema<"pending" | "aborted", "pending" | "aborted"
     : { issues: [{ message: "Expected a pending or aborted Tool Call" }] },
 );
 
-type StoreCollectionOperation = "find" | "create" | "update" | "delete" | "count";
+const recordedCollectionOperationNames = ["find", "create", "update", "delete", "count"] as const;
+
+type StoreCollectionOperation = (typeof recordedCollectionOperationNames)[number];
 
 interface StoreCollectionAccess {
   readonly collection: string;
   readonly operation: StoreCollectionOperation;
 }
 
-const recordedCollectionOperations: ReadonlySet<string> = new Set([
-  "find",
-  "create",
-  "update",
-  "delete",
-  "count",
-]);
+const recordedCollectionOperations: ReadonlySet<string> = new Set(recordedCollectionOperationNames);
 
 function recordStoreCollectionAccess<
   Definitions extends RecordDefinitions,
@@ -104,7 +100,7 @@ function recordStoreCollectionAccess<
               return (...args: readonly unknown[]): unknown => {
                 accesses.push({
                   collection: property,
-                  // SAFETY: recordedCollectionOperations contains every and only Store Collection method name.
+                  // SAFETY: StoreCollectionOperation is derived from recordedCollectionOperationNames.
                   operation: operation as StoreCollectionOperation,
                 });
                 return Reflect.apply(method, collection, args);
@@ -142,6 +138,20 @@ function expectAccessedCollections(
   expect([...new Set(accesses.map((access) => access.collection))].sort()).toEqual(
     [...expected].sort(),
   );
+}
+
+function expectCollectionMutations(
+  accesses: readonly StoreCollectionAccess[],
+  expected: readonly StoreCollectionAccess[],
+): void {
+  expect(
+    accesses.filter(
+      (access) =>
+        access.operation === "create" ||
+        access.operation === "update" ||
+        access.operation === "delete",
+    ),
+  ).toEqual(expected);
 }
 
 it("scopes Core operations to relevant Collections and changed Records", async () => {
@@ -182,6 +192,7 @@ it("scopes Core operations to relevant Collections and changed Records", async (
       tenantId: "tenant-2",
     },
   });
+  expectAccessedCollections(accesses, ["branch", "message", "thread"]);
 
   accesses.length = 0;
   await store.renameBranch({ threadId, branchId, name: "renamed" });
@@ -230,8 +241,35 @@ it("scopes Core operations to relevant Collections and changed Records", async (
   expectAccessedCollections(accesses, ["executionClaim", "executionFence", "run", "toolCall"]);
 
   accesses.length = 0;
+  await expect(store.loadToolCall(acquired.claim, toolCallId)).resolves.toBeUndefined();
+  expect(accesses).toEqual([
+    { collection: "executionClaim", operation: "find" },
+    { collection: "run", operation: "find" },
+    { collection: "toolCall", operation: "find" },
+  ]);
+
+  accesses.length = 0;
+  await expect(store.releaseExecutionClaim(acquired.claim)).resolves.toBe(true);
+  expect(accesses).toEqual([
+    { collection: "executionClaim", operation: "find" },
+    { collection: "executionClaim", operation: "delete" },
+  ]);
+
+  accesses.length = 0;
+  const reacquired = await store.acquireExecutionClaim({
+    runId,
+    agent,
+    executionId: ExecutionId.decode("scoped-execution-2"),
+    leaseDurationMs: 60_000,
+  });
+  if (reacquired.type !== "acquired") {
+    throw new Error(`Unexpected reacquisition result '${reacquired.type}'`);
+  }
+  const claim = reacquired.claim;
+
+  accesses.length = 0;
   const modelCommit = await store.commitModelInvocation({
-    claim: acquired.claim,
+    claim,
     expectedHead: submission.head,
     commitId: CommitId.decode("scoped-model"),
     entry: {
@@ -267,10 +305,37 @@ it("scopes Core operations to relevant Collections and changed Records", async (
     "toolCall",
     "toolCallSequence",
   ]);
+  expectCollectionMutations(accesses, [
+    { collection: "commit", operation: "create" },
+    { collection: "modelCommitOutcome", operation: "create" },
+    { collection: "branch", operation: "update" },
+    { collection: "message", operation: "create" },
+    { collection: "toolCall", operation: "create" },
+    { collection: "toolCallSequence", operation: "create" },
+  ]);
+
+  accesses.length = 0;
+  await expect(
+    store.suspendRun({
+      claim,
+      expectedHead: modelHead,
+      result: {
+        type: "suspended",
+        runId,
+        threadId,
+        branchId,
+        head: modelHead,
+        agent,
+        suspensions: [],
+      },
+    }),
+  ).resolves.toMatchObject({ type: "committed" });
+  expectAccessedCollections(accesses, ["branch", "executionClaim", "run", "toolCall"]);
+  expectCollectionMutations(accesses, [{ collection: "run", operation: "update" }]);
 
   accesses.length = 0;
   await store.recordToolInput({
-    claim: acquired.claim,
+    claim,
     toolCallId,
     input: { prompt: "recorded" },
   });
@@ -291,7 +356,7 @@ it("scopes Core operations to relevant Collections and changed Records", async (
 
   accesses.length = 0;
   await store.finalizeRun({
-    claim: acquired.claim,
+    claim,
     expectedHead: modelHead,
     commitId: CommitId.decode("scoped-finalize"),
     entries: [],
@@ -315,6 +380,13 @@ it("scopes Core operations to relevant Collections and changed Records", async (
     "pendingSteering",
     "run",
     "toolCall",
+  ]);
+  expectCollectionMutations(accesses, [
+    { collection: "commit", operation: "create" },
+    { collection: "finalizationOutcome", operation: "create" },
+    { collection: "executionClaim", operation: "delete" },
+    { collection: "run", operation: "update" },
+    { collection: "toolCall", operation: "update" },
   ]);
 });
 

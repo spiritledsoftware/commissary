@@ -679,6 +679,9 @@ class CoreThreadStore<
 
   async persistState(names: readonly CoreRecordName[]): Promise<void> {
     for (const name of names) {
+      if (!this.#baselineRecords.has(name)) {
+        throw new Error(`Thread Store persisted Collection '${name}' without loading it`);
+      }
       await this.#persistCollection(name, this.#currentRecords(name));
     }
   }
@@ -2169,9 +2172,11 @@ async function executeWaitForExecutionControl<
   throw new Error("Unreachable Thread Store control wait retry state");
 }
 
+const directCoreThreadStoreOperationNames = ["recordDelegatedToolCall"] as const;
+
 type PlannedCoreThreadStoreOperationName = Exclude<
   keyof ThreadStore<CoreRecordDefinitions>,
-  "collections" | "recordDelegatedToolCall"
+  "collections" | (typeof directCoreThreadStoreOperationNames)[number]
 >;
 
 interface CoreThreadStoreOperationPlan {
@@ -2269,7 +2274,7 @@ const coreThreadStoreOperationPlans = {
     persist: [],
   },
   loadToolCall: {
-    load: ["executionClaim", "toolCall"],
+    load: ["executionClaim", "run", "toolCall"],
     persist: [],
   },
   commitStep: {
@@ -2365,7 +2370,9 @@ const coreThreadStoreOperationPlans = {
   Record<PlannedCoreThreadStoreOperationName, CoreThreadStoreOperationPlan>
 >;
 
-const directCoreThreadStoreOperations = new Set(["recordDelegatedToolCall"]);
+const directCoreThreadStoreOperations: ReadonlySet<string> = new Set(
+  directCoreThreadStoreOperationNames,
+);
 
 function coreThreadStoreOperationPlan(methodName: string): CoreThreadStoreOperationPlan {
   if (!Object.hasOwn(coreThreadStoreOperationPlans, methodName)) {
