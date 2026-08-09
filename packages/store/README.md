@@ -29,6 +29,33 @@ declare const store: Store<typeof records>;
 const users = await store.collections.users.find();
 ```
 
+## Define portable SQL Records
+
+Use `SqlRecord.define()` to add driver-independent SQL names, storage types, defaults, and primary-key metadata to one Record definition:
+
+```ts
+import { SqlRecord, sql } from "@commissary/store";
+
+const scheduledJob = SqlRecord.define({
+  table: sql.table({
+    name: "scheduled_jobs",
+    primaryKey: ["id"],
+  }),
+  fields: {
+    id: {
+      select: idSchema,
+      column: sql.column({
+        name: "job_id",
+        type: sql.text(),
+        notNull: true,
+      }),
+    },
+  },
+});
+```
+
+Field Schemas still control selected, create, and update types. The SQL metadata does not create a database client or add an ORM dependency.
+
 The package exports generic Store and Transaction Store contracts, typed filtering and update expressions, record validation helpers, structured Store errors, and JavaScript fallback operator compilers.
 
 Adapter packages can use `@commissary/store/conformance` to verify observable Store behavior.

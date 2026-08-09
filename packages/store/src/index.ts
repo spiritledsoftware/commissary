@@ -76,6 +76,25 @@ export {
   type UpdateInput,
 } from "./record.js";
 export {
+  SqlDefinitionError,
+  SqlRecord,
+  sql,
+  type SqlColumnDefinition,
+  type SqlColumnType,
+  type SqlCustomEncodedValue,
+  type SqlDefinitionIssue,
+  type SqlDefinitionIssueCode,
+  type SqlFieldDefinition,
+  type SqlFieldReference,
+  type SqlLiteral,
+  type SqlLiteralValue,
+  type SqlRecordDefinition,
+  type SqlRecordReference,
+  type SqlRecordReferences,
+  type SqlStatement,
+  type SqlTableDefinition,
+} from "./sql-record.js";
+export {
   StoreAdapterContractError,
   StoreAdapterError,
   StoreError,
