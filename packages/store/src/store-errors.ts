@@ -9,8 +9,8 @@ export interface StoreValidationIssue {
 /** A Collection operation that can reject with a Store error. */
 export type StoreCollectionOperation = "find" | "create" | "update" | "delete" | "count";
 
-/** A Store operation, including transaction boundaries. */
-export type StoreOperation = StoreCollectionOperation | "transaction";
+/** A Store operation, including direct SQL and transaction boundaries. */
+export type StoreOperation = StoreCollectionOperation | "query" | "execute" | "transaction";
 
 /** The validation stage that rejected Store input or output. */
 export type StoreValidationPhase = "query" | "create" | "update";
@@ -199,6 +199,7 @@ export type StoreAdapterContractViolation =
   | "invalid-selected-record"
   | "generated-value-overwrite"
   | "invalid-expression-result"
+  | "invalid-sql-compilation"
   | "transaction-contract";
 
 /** Configuration for one adapter contract defect. */

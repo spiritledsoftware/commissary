@@ -1,4 +1,5 @@
 import type { StandardJSONSchemaV1 } from "@standard-schema/spec";
+import type { SqlStatement } from "./sql-statement.js";
 
 import { isJsonValue, type JsonValue } from "./json.js";
 import {
@@ -141,11 +142,6 @@ export class SqlDefinitionError extends Error {
       ),
     );
   }
-}
-
-/** Opaque SQL structure whose generic parameter is the accepted parameter family. */
-export interface SqlStatement<out Parameter> {
-  readonly "~commissary/sql-statement-parameter"?: () => Parameter;
 }
 
 /** Opaque resolved SQL column identifier. */
@@ -347,7 +343,8 @@ function defineSqlTable<const Table extends SqlTableDefinition>(table: Table): R
   return snapshotSqlContainerValue(table) as Readonly<Table>;
 }
 
-interface SqlColumnHelperOptions {
+/** Internal shape accepted by the portable SQL column helper. */
+export interface SqlColumnHelperOptions {
   readonly name?: string;
   readonly type?: SqlColumnType<never>;
   readonly default?: SqlLiteral<SqlLiteralValue>;
@@ -357,13 +354,15 @@ interface SqlColumnHelperOptions {
   readonly sqlite?: object;
 }
 
-type SqlColumnHelperValue<Column extends SqlColumnHelperOptions> = Column extends {
+/** Infer the selected value family from one portable SQL column helper input. */
+export type SqlColumnHelperValue<Column extends SqlColumnHelperOptions> = Column extends {
   readonly type: SqlColumnType<infer Value extends JsonValue>;
 }
   ? Value
   : JsonValue;
 
-type CompatibleSqlColumnHelper<Column extends SqlColumnHelperOptions> = Column extends {
+/** Reject a portable SQL literal default that conflicts with its explicit column type. */
+export type CompatibleSqlColumnHelper<Column extends SqlColumnHelperOptions> = Column extends {
   readonly default: SqlLiteral<infer Default>;
 }
   ? Default extends Extract<SqlColumnHelperValue<Column>, SqlLiteralValue>
@@ -435,8 +434,8 @@ function defineSqlLiteral<const Value extends SqlLiteralValue>(value: Value): Sq
   });
 }
 
-/** Portable SQL metadata, type, and literal constructors. */
-export const sql = Object.freeze({
+/** Portable SQL metadata, type, and literal constructors used by the public SQL helper. */
+export const sqlRecordHelpers = Object.freeze({
   /** Snapshot portable table metadata. */
   table: defineSqlTable,
   /** Snapshot portable column metadata. */
