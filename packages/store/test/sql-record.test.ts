@@ -323,7 +323,7 @@ it("resolves base and SQL definitions into immutable portable adapter facts", ()
     name: "job_id",
     portableType: "text",
     notNull: true,
-    selectedPresence: "unknown",
+    selectedPresence: "required",
   });
   expect(resolution.records.jobs.fields.attempts).toMatchObject({
     name: "attempts",
@@ -427,6 +427,10 @@ it("reports reflection, nullability, default, and physical-name failures in stab
               select: nullableStringField,
               column: { notNull: true },
             },
+            explicitNullable: {
+              select: nullableStringField,
+              column: { type: sql.text(), notNull: true },
+            },
             invalidDefault: invalidDefaultField,
             one: {
               select: stringField,
@@ -436,6 +440,11 @@ it("reports reflection, nullability, default, and physical-name failures in stab
               select: stringField,
               column: { name: "duplicate", type: sql.text(), notNull: true },
             },
+            aliasesPlainField: {
+              select: stringField,
+              column: { name: "plainField", type: sql.text(), notNull: true },
+            },
+            plainField: stringField,
           },
         },
         second: {
@@ -449,13 +458,17 @@ it("reports reflection, nullability, default, and physical-name failures in stab
   }
 
   expect(failure).toBeInstanceOf(SqlDefinitionError);
-  expect((failure as SqlDefinitionError).issues.map(({ code }) => code)).toEqual([
+  const issues = (failure as SqlDefinitionError).issues;
+  expect(issues.map(({ code }) => code)).toEqual([
+    "duplicate-name",
     "duplicate-name",
     "column-type-required",
+    "invalid-database-options",
     "invalid-database-options",
     "invalid-column-default",
     "duplicate-name",
   ]);
+  expect(issues[1]?.path).toEqual(["records", "first", "fields", "plainField", "column", "name"]);
 });
 
 type InputJobStatus = "queued" | "pending";

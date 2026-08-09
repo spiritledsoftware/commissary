@@ -539,6 +539,14 @@ function validateSqlRecordMetadata(
         const earlier = columnNames.get(fieldName);
         if (earlier === undefined) {
           columnNames.set(fieldName, fieldName);
+        } else {
+          issues.push(
+            makeSqlDefinitionIssue(
+              "duplicate-name",
+              [...columnPath, "name"],
+              `SQL Record column name '${fieldName}' conflicts with field '${earlier}'`,
+            ),
+          );
         }
       }
       continue;
@@ -694,13 +702,7 @@ function validateSqlRecordMetadata(
         if (explicitType !== undefined && portableTypeName(explicitType) === undefined) {
           continue;
         }
-        const evidence =
-          explicitType === undefined
-            ? reflectSqlSelectStorage(isFieldSchemaValue(field) ? field : field.select)
-            : undefined;
-        if (explicitType === undefined && evidence === undefined) {
-          continue;
-        }
+        const evidence = reflectSqlSelectStorage(isFieldSchemaValue(field) ? field : field.select);
         const type = explicitType === undefined ? evidence?.type : portableTypeName(explicitType);
         const notNull =
           evidence !== undefined &&
@@ -1208,7 +1210,7 @@ function resolvePortableSqlRecordsRuntime(
           ? Reflect.get(column, "type")
           : undefined;
       let type: SqlPortableTypeName | undefined;
-      let evidence: SqlSelectStorageEvidence | undefined;
+      const evidence = reflectSqlSelectStorage(isFieldSchemaValue(field) ? field : field.select);
       if (explicitType !== undefined) {
         const format = readSqlColumnTypeFormat(explicitType);
         if (format !== undefined) {
@@ -1224,7 +1226,6 @@ function resolvePortableSqlRecordsRuntime(
           }
         }
       } else {
-        evidence = reflectSqlSelectStorage(isFieldSchemaValue(field) ? field : field.select);
         type = evidence?.type;
         if (type === undefined) {
           issues.push(
