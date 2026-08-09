@@ -54,13 +54,15 @@ it("runs Core and Custom hooks before strict create validation", async () => {
   let jobDraftStatus: string | undefined;
   const store = MemoryThreadStore.make({
     records: {
-      thread: { fields: { ownerId: hookedStringField } },
       scheduledJobs: {
         fields: {
           id: hookedStringField,
           status: hookedStringField,
         },
       },
+    },
+    overrides: {
+      thread: { fields: { ownerId: hookedStringField } },
     },
     hooks: {
       thread: {
@@ -164,7 +166,8 @@ it("wraps a thrown hook value and permits optional custom create fields", async 
   });
 
   const optionalStore = MemoryThreadStore.make({
-    records: {
+    records: {},
+    overrides: {
       thread: { fields: { label: optionalStringField } },
     },
   });

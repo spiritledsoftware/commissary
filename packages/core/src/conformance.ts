@@ -18,12 +18,27 @@ export interface CoreRuntimeConformanceAdapter {
   readonly adapter: string;
   /** Make a new, empty Thread Store for one isolated conformance scenario. */
   readonly makeThreadStore: () => ThreadStore | Promise<ThreadStore>;
-  /** Make a Thread Store with the host Record catalog used by conformance. */
+  /** Make a Thread Store with the host Record contributions and overrides used by conformance. */
   readonly makeConfiguredThreadStore: (
-    configuration: ThreadStoreFactoryConfig<typeof conformanceHostRecordDefinitions>,
+    configuration: ThreadStoreFactoryConfig<
+      typeof conformanceHostRecordDefinitions,
+      typeof conformanceHostRecordOverrides
+    >,
   ) =>
-    | ThreadStore<EffectiveRecordDefinitions<typeof conformanceHostRecordDefinitions>>
-    | Promise<ThreadStore<EffectiveRecordDefinitions<typeof conformanceHostRecordDefinitions>>>;
+    | ThreadStore<
+        EffectiveRecordDefinitions<
+          typeof conformanceHostRecordDefinitions,
+          typeof conformanceHostRecordOverrides
+        >
+      >
+    | Promise<
+        ThreadStore<
+          EffectiveRecordDefinitions<
+            typeof conformanceHostRecordDefinitions,
+            typeof conformanceHostRecordOverrides
+          >
+        >
+      >;
 }
 
 /** One independently executable Core Runtime conformance scenario. */
@@ -68,6 +83,15 @@ const conformanceStringSchema: ModelSchema<string, string> = {
     },
   },
 };
+
+const conformanceHostRecordDefinitions = {
+  scheduledJobs: {
+    fields: {
+      id: conformanceStringSchema,
+      status: conformanceStringSchema,
+    },
+  },
+} as const;
 declare const conformanceThreadIdType: unique symbol;
 type ConformanceThreadId = ThreadId & { readonly [conformanceThreadIdType]: true };
 
@@ -83,7 +107,7 @@ const conformanceThreadIdSchema: FieldSchema<ThreadId, ConformanceThreadId> = {
   },
 };
 
-const conformanceHostRecordDefinitions = {
+const conformanceHostRecordOverrides = {
   thread: {
     fields: {
       id: conformanceThreadIdSchema,
@@ -345,6 +369,7 @@ export function createCoreRuntimeConformanceSuite(
         let messageHookCalls = 0;
         const threadStore = await adapter.makeConfiguredThreadStore({
           records: conformanceHostRecordDefinitions,
+          overrides: conformanceHostRecordOverrides,
           hooks: {
             message: {
               beforeCreate: ({ draft }) => {
@@ -354,6 +379,19 @@ export function createCoreRuntimeConformanceSuite(
             },
           },
         });
+        const createdJob = await threadStore.collections.scheduledJobs.create({
+          id: "conformance-job",
+          status: "pending",
+        });
+        const foundJobs = await threadStore.collections.scheduledJobs.find();
+        assertCoreConformance(
+          createdJob.status === "pending" &&
+            foundJobs.length === 1 &&
+            foundJobs[0]?.id === "conformance-job" &&
+            foundJobs[0]?.status === "pending",
+          adapter.adapter,
+          "host-contributed Record was not preserved",
+        );
         const app = commissary({ threadStore });
         const thread = await app.createThread({
           fields: { owner: "conformance-owner" },

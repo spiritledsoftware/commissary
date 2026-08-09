@@ -2,6 +2,7 @@ import {
   StoreAdapterContractError,
   StoreAdapterError,
   StoreError,
+  StoreValidationError,
   TransactionConflictError,
   TransactionRollbackError,
   UnsupportedStoreOperationError,
@@ -130,7 +131,7 @@ it("classifies Store failures without copying sensitive causes into messages", (
   expect(defect.message).not.toContain("do-not-log");
 });
 
-it("classifies invalid adapter-selected Records as contract defects", async () => {
+it("rejects invalid create outputs before adapter storage", async () => {
   const invalid = MemoryStore.make({
     records: {
       invalid: {
@@ -147,11 +148,41 @@ it("classifies invalid adapter-selected Records as contract defects", async () =
   }).collections.invalid;
 
   const create = invalid.create({ id: "one", value: 1 });
-  await expect(create).rejects.toBeInstanceOf(StoreAdapterContractError);
+  await expect(create).rejects.toBeInstanceOf(StoreValidationError);
   await expect(create).rejects.toMatchObject({
     collection: "invalid",
     operation: "create",
+    phase: "create",
+    field: "value",
+  });
+});
+
+it("classifies invalid stored Records as adapter contract defects during find", async () => {
+  let selectedValidationCount = 0;
+  const invalidAfterCreateField = fieldSchema<string, string>((value) => {
+    selectedValidationCount += 1;
+    return selectedValidationCount <= 2 && typeof value === "string"
+      ? { value }
+      : { issues: [{ message: "Rejected stored value" }] };
+  });
+  const invalid = MemoryStore.make({
+    records: {
+      invalid: {
+        fields: {
+          id: stringField,
+          value: invalidAfterCreateField,
+        },
+      },
+    },
+  }).collections.invalid;
+  await invalid.create({ id: "one", value: "valid-on-create" });
+
+  await expect(invalid.find()).rejects.toMatchObject({
+    collection: "invalid",
+    operation: "find",
     violation: "invalid-selected-record",
+    field: "value",
+    cause: expect.any(StoreValidationError),
   });
 });
 

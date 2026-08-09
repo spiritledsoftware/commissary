@@ -1,5 +1,5 @@
 import { MemoryThreadStore } from "@commissary/store-memory";
-import type { TransactionStore } from "@commissary/store";
+import type { FieldSchema, TransactionStore } from "@commissary/store";
 import { expect, expectTypeOf, it } from "vitest";
 
 import {
@@ -9,12 +9,14 @@ import {
   Model,
   ThreadId,
   coreRecordDefinitions,
+  composeThreadStoreRecordDefinitions,
   createThreadStore,
   commissary,
   type ExecutionClaimToken,
   type CoreCommandCreatedRecordName,
   type CoreInternallyCreatedRecordName,
   type CoreRecordDefinitions,
+  type ContributedThreadRecordDefinitions,
   type ExecutionId,
 } from "@commissary/core";
 import { numberSchema, stringSchema, testSchema } from "./support.js";
@@ -22,6 +24,24 @@ import { numberSchema, stringSchema, testSchema } from "./support.js";
 const activeRunStatusSchema = testSchema((value): value is "active" => value === "active", {
   const: "active",
 });
+
+type RunStatus = "active" | "suspended" | "completed" | "failed" | "aborted";
+
+const activeRunCreateSchema: FieldSchema<RunStatus, "active"> = {
+  "~standard": {
+    version: 1,
+    vendor: "commissary-store-inference-test",
+    validate(value) {
+      return value === "active" ||
+        value === "suspended" ||
+        value === "completed" ||
+        value === "failed" ||
+        value === "aborted"
+        ? { value: "active" as const }
+        : { issues: [{ message: "Expected a Run status" }] };
+    },
+  },
+};
 
 const inferenceModel = Model.define({
   id: "store-inference-model",
@@ -63,7 +83,8 @@ it("adds the complete Core catalog and merges host fields", async () => {
   );
 
   const store = MemoryThreadStore.make({
-    records: {
+    records: {},
+    overrides: {
       branch: {
         fields: {
           tenantId: stringSchema,
@@ -81,7 +102,10 @@ it("adds the complete Core catalog and merges host fields", async () => {
       },
       run: {
         fields: {
-          status: activeRunStatusSchema,
+          status: {
+            select: activeRunStatusSchema,
+            create: activeRunCreateSchema,
+          },
         },
       },
     },
@@ -148,10 +172,11 @@ it("adds the complete Core catalog and merges host fields", async () => {
 
 it("rejects an incompatible Core field replacement", () => {
   MemoryThreadStore.make({
-    records: {
+    records: {},
+    overrides: {
+      // @ts-expect-error Core Run status cannot be replaced with a number output
       run: {
         fields: {
-          // @ts-expect-error Core Run status cannot be replaced with a number output
           status: numberSchema,
         },
       },
@@ -166,7 +191,8 @@ expectTypeOf<CoreInternallyCreatedRecordName>().toEqualTypeOf<
 
 it("requires command fields and internal before-create hooks", async () => {
   const store = MemoryThreadStore.make({
-    records: {
+    records: {},
+    overrides: {
       thread: {
         fields: {
           ownerId: stringSchema,
@@ -202,7 +228,8 @@ it("requires command fields and internal before-create hooks", async () => {
   void createThreadWithoutOwner;
 
   MemoryThreadStore.make({
-    records: {
+    records: {},
+    overrides: {
       executionClaim: {
         fields: {
           traceId: stringSchema,
@@ -214,7 +241,8 @@ it("requires command fields and internal before-create hooks", async () => {
   });
 
   MemoryThreadStore.make({
-    records: {
+    records: {},
+    overrides: {
       executionClaim: {
         fields: {
           traceId: stringSchema,
@@ -248,4 +276,29 @@ it("rejects Thread Store backends without Core query operators", () => {
 
   expect(inspect).toBeTypeOf("function");
   expect(coreRecordDefinitions).toHaveProperty("executionClaim");
+});
+
+it("rejects host Record contributions that conflict with Core", () => {
+  type DuplicateCoreContribution = ContributedThreadRecordDefinitions<{
+    readonly thread: (typeof coreRecordDefinitions)["thread"];
+  }>;
+  expectTypeOf<DuplicateCoreContribution["thread"]>().toBeNever();
+
+  const inspect = (): void => {
+    composeThreadStoreRecordDefinitions({
+      records: {
+        // @ts-expect-error Core Record names cannot be contributed by a host.
+        thread: coreRecordDefinitions.thread,
+      },
+    });
+  };
+  expect(inspect).toBeTypeOf("function");
+
+  expect(() =>
+    composeThreadStoreRecordDefinitions({
+      records: {
+        thread: coreRecordDefinitions.thread,
+      },
+    } as never),
+  ).toThrow("Duplicate Record contribution 'thread'");
 });

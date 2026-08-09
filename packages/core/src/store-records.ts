@@ -1,17 +1,22 @@
 import {
+  applyRecordOverrides,
   isJsonValue,
+  type ApplyOverrides,
+  type CompatibleRecordOverrides,
   type CreateFieldSchema,
   type CreateInput,
-  type FieldDefinitions,
-  type FieldOutput,
   type FieldInput,
+  type FieldOutput,
   type FieldSchema,
   type JsonValue as StoreJsonValue,
   type RecordDefinition,
   type RecordDefinitions,
+  type RecordOverrides,
+  type RoundTripFieldDefinitions,
   type RoundTripRecordDefinitions,
   type SelectFieldSchema,
   type SelectedRecord,
+  type UpdateFieldSchema,
 } from "@commissary/store";
 
 import type { AgentReference } from "./identity.js";
@@ -324,37 +329,33 @@ export type ThreadRecordDefinitions = RecordDefinitions & {
   readonly [Name in keyof CoreRecordDefinitions]: RecordDefinition;
 };
 
-type MergeFields<Core extends FieldDefinitions, Provided extends FieldDefinitions> = {
-  readonly [Key in keyof Core | keyof Provided]: Key extends keyof Provided
-    ? Provided[Key]
-    : Key extends keyof Core
-      ? Core[Key]
+/** Built-in Core Records combined with separate host Record contributions. */
+export type ContributedThreadRecordDefinitions<Records extends RecordDefinitions> = {
+  readonly [Name in
+    | keyof CoreRecordDefinitions
+    | keyof Records]: Name extends keyof CoreRecordDefinitions
+    ? Name extends keyof Records
+      ? never
+      : CoreRecordDefinitions[Name]
+    : Name extends keyof Records
+      ? Records[Name]
       : never;
 };
 
-type EffectiveRecordDefinition<
-  Name,
-  Provided extends RecordDefinitions,
-> = Name extends keyof Provided
-  ? Name extends keyof CoreRecordDefinitions
-    ? {
-        readonly fields: MergeFields<
-          CoreRecordDefinitions[Name]["fields"],
-          Provided[Name]["fields"]
-        >;
-      }
-    : Provided[Name]
-  : Name extends keyof CoreRecordDefinitions
-    ? CoreRecordDefinitions[Name]
-    : never;
-
-type EnsureRecordDefinition<Value> = Value extends RecordDefinition ? Value : never;
-
-type MergedRecordDefinitions<Provided extends RecordDefinitions> = {
-  readonly [Name in keyof CoreRecordDefinitions | keyof Provided]: EnsureRecordDefinition<
-    EffectiveRecordDefinition<Name, Provided>
-  >;
+/** Constraint that keeps host contributions separate from built-in Core Records. */
+export type ThreadRecordContributions<Records extends RecordDefinitions> = {
+  readonly [Name in keyof Records]: Name extends keyof CoreRecordDefinitions
+    ? never
+    : Records[Name];
 };
+
+type ComposedRecordDefinitions<
+  Records extends RecordDefinitions,
+  Overrides extends RecordOverrides<ContributedThreadRecordDefinitions<Records>>,
+> = ApplyOverrides<ContributedThreadRecordDefinitions<Records>, Overrides>;
+
+type EnsureThreadRecordDefinitions<Definitions extends RecordDefinitions> =
+  Definitions extends ThreadRecordDefinitions ? Definitions : never;
 
 type OutcomeRecordDefinition<Definition extends RecordDefinition, Outcome> = {
   readonly fields: Omit<Definition["fields"], "outcome"> & {
@@ -372,31 +373,58 @@ type EffectiveOutcomeRecordDefinitions<Definitions extends ThreadRecordDefinitio
         : Definitions[Name];
 };
 
-/** Core and Custom Record catalog after host fields merge by Record and field name. */
-export type EffectiveRecordDefinitions<Provided extends RecordDefinitions> =
-  EffectiveOutcomeRecordDefinitions<MergedRecordDefinitions<Provided>>;
+/** Effective Core, host contribution, and explicit override Record catalog. */
+export type EffectiveRecordDefinitions<
+  Records extends RecordDefinitions,
+  Overrides extends RecordOverrides<ContributedThreadRecordDefinitions<Records>> = {},
+> = EffectiveOutcomeRecordDefinitions<
+  EnsureThreadRecordDefinitions<ComposedRecordDefinitions<Records, Overrides>>
+>;
 
-type CompatibleProvidedFields<
-  Name extends keyof CoreRecordDefinitions,
-  Provided extends RecordDefinition,
+type IncompatibleContributorFieldName<
+  Contributor extends RecordDefinition,
+  Effective extends RecordDefinition,
 > = {
-  readonly [Key in keyof Provided["fields"]]: Key extends keyof CoreRecordDefinitions[Name]["fields"]
+  readonly [Field in keyof Contributor["fields"]]: Field extends keyof Effective["fields"]
     ? Exclude<
-        FieldOutput<SelectFieldSchema<Provided["fields"][Key]>>,
+        FieldOutput<SelectFieldSchema<Effective["fields"][Field]>>,
         undefined
-      > extends SelectedRecord<CoreRecordDefinitions[Name]>[Key]
-      ? Provided["fields"][Key]
-      : never
-    : Provided["fields"][Key];
-};
+      > extends SelectedRecord<Contributor>[Field]
+      ? FieldInput<CreateFieldSchema<Contributor["fields"][Field]>> extends FieldInput<
+          CreateFieldSchema<Effective["fields"][Field]>
+        >
+        ? FieldInput<UpdateFieldSchema<Contributor["fields"][Field]>> extends FieldInput<
+            UpdateFieldSchema<Effective["fields"][Field]>
+          >
+          ? never
+          : Field
+        : Field
+      : Field
+    : Field;
+}[keyof Contributor["fields"]];
 
-/** Constraint that rejects incompatible host replacements for built-in Core fields. */
-export type CompatibleThreadRecordDefinitions<Provided extends RecordDefinitions> = {
-  readonly [Name in keyof Provided]: Name extends keyof CoreRecordDefinitions
-    ? {
-        readonly fields: CompatibleProvidedFields<Name, Provided[Name]>;
-      }
-    : Provided[Name];
+type CompatibleThreadRecordOverride<
+  Contributor extends RecordDefinition,
+  Effective extends RecordDefinition,
+> =
+  Effective["fields"] extends RoundTripFieldDefinitions<Effective["fields"]>
+    ? IncompatibleContributorFieldName<Contributor, Effective> extends never
+      ? true
+      : false
+    : false;
+
+/** Constraint that preserves contributed fields while allowing complete host fields. */
+export type CompatibleThreadRecordOverrides<
+  Records extends RecordDefinitions,
+  Overrides extends RecordOverrides<ContributedThreadRecordDefinitions<Records>>,
+  Contributors extends RecordDefinitions = ContributedThreadRecordDefinitions<Records>,
+  Effective extends RecordDefinitions = ComposedRecordDefinitions<Records, Overrides>,
+> = {
+  readonly [Name in keyof Overrides]: Name extends keyof Contributors & keyof Effective
+    ? CompatibleThreadRecordOverride<Contributors[Name], Effective[Name]> extends true
+      ? Overrides[Name]
+      : never
+    : never;
 };
 
 /** Built-in create drafts that Core supplies before host hooks and validation. */
@@ -558,27 +586,43 @@ export type CreateBranchInput<Definitions extends ThreadRecordDefinitions> = {
   readonly from?: MessageEntryId;
 } & CommandFieldsConfig<"branch", Definitions>;
 
-/** Factory configuration inferred from host Records before hook checking. */
-export type ThreadStoreFactoryConfig<Provided extends RecordDefinitions> = {
-  readonly records: Provided &
-    RoundTripRecordDefinitions<Provided> &
-    CompatibleThreadRecordDefinitions<Provided>;
-} & ThreadStoreHooksConfig<EffectiveRecordDefinitions<NoInfer<Provided>>>;
+/** Factory configuration with separate new Record contributions and explicit overrides. */
+export type ThreadStoreFactoryConfig<
+  Records extends RecordDefinitions,
+  Overrides extends RecordOverrides<ContributedThreadRecordDefinitions<Records>> = {},
+> = {
+  readonly records: Records &
+    RoundTripRecordDefinitions<Records> &
+    ThreadRecordContributions<Records>;
+  readonly overrides?: Overrides & CompatibleThreadRecordOverrides<Records, Overrides>;
+} & ThreadStoreHooksConfig<EffectiveRecordDefinitions<NoInfer<Records>, NoInfer<Overrides>>>;
 
-/** Merge host definitions with every built-in Core Record definition at runtime. */
-export function mergeCoreRecordDefinitions<const Provided extends RecordDefinitions>(
-  provided: Provided,
-): EffectiveRecordDefinitions<Provided> {
-  const merged: Record<string, RecordDefinition> = { ...coreRecordDefinitions };
-  for (const [name, definition] of Object.entries(provided)) {
-    const core = Reflect.get(coreRecordDefinitions, name);
-    merged[name] =
-      typeof core === "object" && core !== null && "fields" in core
-        ? { fields: { ...core.fields, ...definition.fields } }
-        : definition;
+/** Compose Core and host Record contributions with explicit compatible overrides. */
+export function composeThreadStoreRecordDefinitions<
+  const Records extends RecordDefinitions,
+  const Overrides extends RecordOverrides<ContributedThreadRecordDefinitions<Records>> = {},
+>(
+  configuration: Pick<ThreadStoreFactoryConfig<Records, Overrides>, "records" | "overrides">,
+): EffectiveRecordDefinitions<Records, Overrides> {
+  for (const name of Reflect.ownKeys(configuration.records)) {
+    if (Object.hasOwn(coreRecordDefinitions, name)) {
+      throw new TypeError(`Duplicate Record contribution '${String(name)}'`);
+    }
   }
-  // SAFETY: Every Core key is present, every Custom key is retained, and matching Core field maps are merged with provided fields taking precedence.
-  return merged as EffectiveRecordDefinitions<Provided>;
+  // SAFETY: The duplicate check proves that the spread adds only new Record names to the complete Core catalog.
+  const contributions = {
+    ...coreRecordDefinitions,
+    ...configuration.records,
+  } as ContributedThreadRecordDefinitions<Records> &
+    RoundTripRecordDefinitions<ContributedThreadRecordDefinitions<Records>>;
+  // SAFETY: ThreadStoreFactoryConfig checks the same selected, create, update, and round-trip compatibility per overridden field.
+  const overrides = (configuration.overrides ?? {}) as Overrides &
+    CompatibleRecordOverrides<ContributedThreadRecordDefinitions<Records>, Overrides>;
+  // SAFETY: The public configuration checks override compatibility. Runtime composition preserves every contribution key.
+  return applyRecordOverrides<ContributedThreadRecordDefinitions<Records>, Overrides>(
+    contributions,
+    overrides,
+  ) as EffectiveRecordDefinitions<Records, Overrides>;
 }
 
 /** Existing durable entity output contracts remain assignable from built-in selected Records. */

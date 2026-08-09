@@ -457,41 +457,62 @@ The base Store has no `create: false` or `update: false` flags. An adapter defau
 
 `FieldSchema`, `JsonValue`, and these inference helpers live in `@commissary/store`. The package does not import them from core. A complete Record is never passed to one Field Schema.
 
-### Core Record compatibility
+### Record definition lifecycle and overrides
 
-Type-level rule:
+`StoreRecord.define()` creates one immutable, unbound Record Definition. Plain structural definitions remain valid. Record field keys are strings. The constructor recursively snapshots and freezes every package-owned container, keeps each third-party Field Schema by identity, and does not freeze schema objects.
 
-```ts
-type CompatibleCoreField<CoreValue, Candidate extends FieldDefinition> =
-  Exclude<StandardSchemaV1.InferOutput<SelectFieldSchema<Candidate>>, undefined> extends CoreValue
-    ? Candidate
-    : never;
-```
-
-This catches a wrongly typed override while allowing added fields:
+`applyRecordOverrides()` applies Store-neutral typed deep patches to a complete contribution map. An override changes an existing contribution; it does not add another Record:
 
 ```ts
-MemoryThreadStore.make({
-  records: {
-    thread: {
-      fields: {
-        ownerId: z.string().uuid(),
-      },
-    },
-
-    run: {
-      fields: {
-        // Compile-time error: Core Run status is a string union.
-        status: z.number(),
-      },
+const Job = StoreRecord.define({
+  fields: {
+    id: z.string().uuid(),
+    status: {
+      select: z.enum(["pending", "done"]),
+      create: z
+        .enum(["queued", "pending", "done"])
+        .transform((value) => (value === "queued" ? "pending" : value)),
     },
   },
 });
+
+const effective = applyRecordOverrides(
+  { job: Job },
+  {
+    job: {
+      fields: {
+        status: {
+          create: null,
+        },
+      },
+    },
+  },
+);
 ```
 
-The exact compatibility type must keep useful field input inference and clear compiler errors. TypeScript cannot prove that a runtime refinement accepts every value core can produce.
+Override rules are:
 
-### Effective Record catalog
+- `null` removes exactly one inherited optional setting. It cannot remove a Record or Field key.
+- An omitted setting remains unchanged.
+- Existing fields accept partial patches. New fields require a complete Field Definition.
+- Every returned package-owned container is a new frozen snapshot.
+- Effective operation fallbacks are recalculated after the patch. Removed `create` falls back to final `select`; removed `update` falls back to final `create` and then final `select`.
+- An override without a matching contribution is a runtime error.
+
+Static contributor compatibility checks every field name present in both the contribution and its effective override:
+
+```ts
+FieldOutput<SelectFieldSchema<EffectiveField>> extends
+  FieldOutput<SelectFieldSchema<ContributorField>>;
+FieldInput<CreateFieldSchema<ContributorField>> extends
+  FieldInput<CreateFieldSchema<EffectiveField>>;
+FieldInput<UpdateFieldSchema<ContributorField>> extends
+  FieldInput<UpdateFieldSchema<EffectiveField>>;
+```
+
+New fields have no contributor contract to preserve and can be required. This permits a string-to-UUID selected refinement and rejects a string-to-number replacement. It also prevents an existing field override from accepting fewer create or update inputs than its contributor. TypeScript cannot prove that a runtime refinement accepts every declared input, so the host owns that risk.
+
+### Core effective Record catalog
 
 ```ts
 type DurableEntityRecordDefinitions = {
@@ -504,7 +525,12 @@ type DurableEntityRecordDefinitions = {
 
 type CoreRecordDefinitions = DurableEntityRecordDefinitions & RuntimeStateRecordDefinitions;
 
-type EffectiveRecordDefinitions<Provided> = MergeRecordFields<CoreRecordDefinitions, Provided>;
+type ContributedThreadRecordDefinitions<Records> = CoreRecordDefinitions & Records;
+
+type EffectiveRecordDefinitions<Records, Overrides> = ApplyOverrides<
+  ContributedThreadRecordDefinitions<Records>,
+  Overrides
+>;
 ```
 
 `RuntimeStateRecordDefinitions` is the complete Core-owned map for claims, pending commands, idempotency Records, finalization outcomes, and other durable Runtime state.
@@ -551,7 +577,7 @@ The durable `toolCall` Collection replaces `ToolCallGraph.calls`. Tool Call orde
 
 The `result` and `outcome` fields use the effective customized Core Record types when they contain a Thread, Branch, Message, Run, or Tool Call value. Core does not narrow them back to the built-in Record types.
 
-`MergeRecordFields` adds every omitted Core Record, keeps Custom Records, and merges the `fields` map for every supplied Core Record. A host field with the same name replaces the built-in Field Definition only after a compile-time compatibility check. No `extendRecord()` helper is required. Every resulting Collection is available through the host-facing Thread Store.
+`records` contains only new complete Record contributions. `overrides` contains only patches for built-in Core Records or those new contributions. A duplicate Core contribution fails before overrides, so order cannot select a winner. The composition keeps every omitted Core Record, every Custom Record, and every compatible effective field. Every resulting Collection is available through the host-facing Thread Store.
 
 ### Before-create hooks
 

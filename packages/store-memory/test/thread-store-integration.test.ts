@@ -9,7 +9,7 @@ import {
   ThreadId,
   ToolCallId,
   createThreadStore,
-  mergeCoreRecordDefinitions,
+  composeThreadStoreRecordDefinitions,
 } from "@commissary/core";
 import type {
   RecordDefinitions,
@@ -42,13 +42,19 @@ const stringField = fieldSchema<string, string>((value) =>
   typeof value === "string" ? { value } : { issues: [{ message: "Expected a string" }] },
 );
 
-const runStatusField = fieldSchema<"active" | "aborted", "active" | "aborted">((value) =>
+const runStatusField = fieldSchema<
+  "active" | "suspended" | "completed" | "failed" | "aborted",
+  "active" | "aborted"
+>((value) =>
   value === "active" || value === "aborted"
     ? { value }
     : { issues: [{ message: "Expected an active or aborted Run" }] },
 );
 
-const toolStatusField = fieldSchema<"pending" | "aborted", "pending" | "aborted">((value) =>
+const toolStatusField = fieldSchema<
+  "pending" | "running" | "suspended" | "succeeded" | "failed" | "aborted",
+  "pending" | "aborted"
+>((value) =>
   value === "pending" || value === "aborted"
     ? { value }
     : { issues: [{ message: "Expected a pending or aborted Tool Call" }] },
@@ -155,10 +161,13 @@ function expectCollectionMutations(
 }
 
 it("scopes Core operations to relevant Collections and changed Records", async () => {
-  const definitions = mergeCoreRecordDefinitions({
-    branch: {
-      fields: {
-        tenantId: stringField,
+  const definitions = composeThreadStoreRecordDefinitions({
+    records: {},
+    overrides: {
+      branch: {
+        fields: {
+          tenantId: stringField,
+        },
       },
     },
   });
@@ -422,7 +431,8 @@ it("uses raw Collection state in specialized Thread Store operations", async () 
 
 it("preserves effective Records at the Run Snapshot boundary", async () => {
   const store = MemoryThreadStore.make({
-    records: {
+    records: {},
+    overrides: {
       branch: {
         fields: {
           tenantId: stringField,
