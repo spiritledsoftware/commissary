@@ -30,6 +30,18 @@ function captureFailure(run: () => unknown): unknown {
   throw new Error("Expected operation to fail");
 }
 
+function throwValue(value: unknown): never {
+  throw value;
+}
+
+function expectOwnUndefinedCause(failure: unknown): void {
+  if (!(failure instanceof Error)) {
+    throw new TypeError("Expected an Error failure");
+  }
+  expect(Object.hasOwn(failure, "cause")).toBe(true);
+  expect(failure.cause).toBeUndefined();
+}
+
 it("rejects malformed SQL helper structure immediately", () => {
   expect(() => sql.raw(1 as never)).toThrow(TypeError);
   expect(() => sql.identifier(1 as never)).toThrow(TypeError);
@@ -101,6 +113,34 @@ it("keeps an array interpolation as one parameter", () => {
   const compiled = compileSqlStatement(statement, compiler);
   expect(compiled.parameters).toEqual([values]);
   expect(compiled.parameters[0]).toBe(values);
+  expect(compiled.segments).toEqual(["SELECT ", ""]);
+});
+
+it("defers failed opaque probes to wider adapter parameter support", () => {
+  const formatKey = Symbol.for("@commissary/store/sql-opaque-format");
+  let opaqueProbeCount = 0;
+  const parameter = new Proxy(
+    { id: 1 },
+    {
+      get: (target, property, receiver) => {
+        if (property === formatKey) {
+          opaqueProbeCount += 1;
+          return throwValue(undefined);
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    },
+  );
+
+  const statement = sql`SELECT ${parameter}`;
+  expect(opaqueProbeCount).toBe(1);
+
+  const compiled = compileSqlStatement(statement, {
+    ...portableCompiler,
+    isParameter: (value): value is typeof parameter => value === parameter,
+    convertParameter: (value) => value,
+  });
+  expect(compiled.parameters[0]).toBe(parameter);
   expect(compiled.segments).toEqual(["SELECT ", ""]);
 });
 
@@ -338,6 +378,62 @@ it("turns quote and placeholder callback defects into adapter contract errors", 
     violation: "invalid-sql-compilation",
   });
   expect(invalidPlaceholder).not.toHaveProperty("cause");
+});
+
+it("preserves an own cause when a compiler callback throws undefined", () => {
+  const encoderFailure = captureFailure(() =>
+    compileSqlStatement(
+      sql`${sql.param("encoded", { encode: () => throwValue(undefined) })}`,
+      portableCompiler,
+    ),
+  );
+  expect(encoderFailure).toMatchObject({
+    reason: "invalid-parameter",
+    parameterPosition: 0,
+  });
+  expectOwnUndefinedCause(encoderFailure);
+
+  const supportFailure = captureFailure(() =>
+    compileSqlStatement(sql`${1}`, {
+      ...portableCompiler,
+      isParameter: (_value): _value is SqlParameterValue => throwValue(undefined),
+    }),
+  );
+  expect(supportFailure).toMatchObject({
+    reason: "invalid-parameter",
+    parameterPosition: 0,
+  });
+  expectOwnUndefinedCause(supportFailure);
+
+  const conversionFailure = captureFailure(() =>
+    compileSqlStatement(sql`${1}`, {
+      ...portableCompiler,
+      convertParameter: () => throwValue(undefined),
+    }),
+  );
+  expect(conversionFailure).toMatchObject({
+    reason: "invalid-parameter",
+    parameterPosition: 0,
+  });
+  expectOwnUndefinedCause(conversionFailure);
+
+  const quoteFailure = captureFailure(() =>
+    compileSqlStatement(sql`${sql.identifier("users")}`, {
+      ...portableCompiler,
+      quoteIdentifier: () => throwValue(undefined),
+    }),
+  );
+  expect(quoteFailure).toMatchObject({ violation: "invalid-sql-compilation" });
+  expectOwnUndefinedCause(quoteFailure);
+
+  const placeholderFailure = captureFailure(() =>
+    compileSqlStatement(sql`${1}`, {
+      ...portableCompiler,
+      makePlaceholder: () => throwValue(undefined),
+    }),
+  );
+  expect(placeholderFailure).toMatchObject({ violation: "invalid-sql-compilation" });
+  expectOwnUndefinedCause(placeholderFailure);
 });
 
 it("accepts compatible package copies and rejects incompatible or counterfeit Statements", () => {

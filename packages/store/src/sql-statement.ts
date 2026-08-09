@@ -38,18 +38,17 @@ export class SqlStatementError extends StoreError {
 
   /** Create one Statement failure without retaining SQL text or parameter values. */
   constructor(options: SqlStatementErrorOptions) {
+    const hasCause = options.reason === "invalid-parameter" && Object.hasOwn(options, "cause");
     super(
       `SQL Statement failed during ${options.operation}: ${options.reason}`,
-      ...(options.reason === "invalid-parameter" && options.cause !== undefined
-        ? [{ cause: options.cause }]
-        : []),
+      ...(hasCause ? [{ cause: options.cause }] : []),
     );
     this.operation = options.operation;
     this.reason = options.reason;
     if (options.reason !== "invalid-statement") {
       this.parameterPosition = options.parameterPosition;
     }
-    if (options.reason === "invalid-parameter" && options.cause !== undefined) {
+    if (hasCause) {
       this.cause = options.cause;
     }
   }
@@ -119,28 +118,32 @@ function isSqlStatementFragment(value: unknown): value is SqlStatementFragment {
 }
 
 function readSqlStatementFormat(value: unknown): SqlStatementFormat | undefined {
-  if (!isRecordContainer(value) || !Object.isFrozen(value)) {
+  try {
+    if (!isRecordContainer(value) || !Object.isFrozen(value)) {
+      return undefined;
+    }
+    const format = Reflect.get(value, sqlOpaqueFormatSymbol);
+    if (
+      !isRecordContainer(format) ||
+      !Object.isFrozen(format) ||
+      Reflect.get(format, "format") !== sqlOpaqueFormat ||
+      Reflect.get(format, "kind") !== "statement"
+    ) {
+      return undefined;
+    }
+    const fragments = Reflect.get(format, "fragments");
+    if (
+      !Array.isArray(fragments) ||
+      !Object.isFrozen(fragments) ||
+      !fragments.every(isSqlStatementFragment)
+    ) {
+      return undefined;
+    }
+    // SAFETY: Every public field and nested fragment was checked above.
+    return format as unknown as SqlStatementFormat;
+  } catch {
     return undefined;
   }
-  const format = Reflect.get(value, sqlOpaqueFormatSymbol);
-  if (
-    !isRecordContainer(format) ||
-    !Object.isFrozen(format) ||
-    Reflect.get(format, "format") !== sqlOpaqueFormat ||
-    Reflect.get(format, "kind") !== "statement"
-  ) {
-    return undefined;
-  }
-  const fragments = Reflect.get(format, "fragments");
-  if (
-    !Array.isArray(fragments) ||
-    !Object.isFrozen(fragments) ||
-    !fragments.every(isSqlStatementFragment)
-  ) {
-    return undefined;
-  }
-  // SAFETY: Every public field and nested fragment was checked above.
-  return format as unknown as SqlStatementFormat;
 }
 
 /** Read validated package-compatible Statement fragments without exposing them at the root API. */
@@ -152,11 +155,15 @@ export function readSqlStatementFragments(
 
 /** Test whether a value claims any package SQL Statement opaque format version. */
 export function isSqlStatementOpaqueValue(value: unknown): boolean {
-  if (!isRecordContainer(value)) {
+  try {
+    if (!isRecordContainer(value)) {
+      return false;
+    }
+    const format = Reflect.get(value, sqlOpaqueFormatSymbol);
+    return isRecordContainer(format) && Reflect.get(format, "kind") === "statement";
+  } catch {
     return false;
   }
-  const format = Reflect.get(value, sqlOpaqueFormatSymbol);
-  return isRecordContainer(format) && Reflect.get(format, "kind") === "statement";
 }
 
 function createSqlStatement<Parameter>(

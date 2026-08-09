@@ -29,11 +29,11 @@ export interface CompiledSqlStatement<DriverParameter> {
   readonly segments: readonly string[];
 }
 
-function invalidSqlCompilation(cause?: unknown): StoreAdapterContractError {
+function invalidSqlCompilation(options?: { readonly cause: unknown }): StoreAdapterContractError {
   return new StoreAdapterContractError({
     operation: "execute",
     violation: "invalid-sql-compilation",
-    ...(cause === undefined ? {} : { cause }),
+    ...(options === undefined ? {} : { cause: options.cause }),
   });
 }
 
@@ -42,7 +42,7 @@ function callSqlStructureCallback(callback: () => unknown): string {
   try {
     result = callback();
   } catch (cause) {
-    throw invalidSqlCompilation(cause);
+    throw invalidSqlCompilation({ cause });
   }
   if (typeof result !== "string") {
     throw invalidSqlCompilation();

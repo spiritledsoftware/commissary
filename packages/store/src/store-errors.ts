@@ -233,9 +233,10 @@ export class StoreAdapterContractError extends Error {
 
   /** Create one adapter contract defect. */
   constructor(options: StoreAdapterContractErrorOptions) {
+    const hasCause = Object.hasOwn(options, "cause");
     super(
       `Store adapter violated '${options.violation}' during ${options.operation}`,
-      ...(options.cause === undefined ? [] : [{ cause: options.cause }]),
+      ...(hasCause ? [{ cause: options.cause }] : []),
     );
     this.operation = options.operation;
     this.violation = options.violation;
@@ -245,7 +246,7 @@ export class StoreAdapterContractError extends Error {
     if (options.field !== undefined) {
       this.field = options.field;
     }
-    if (options.cause !== undefined) {
+    if (hasCause) {
       this.cause = options.cause;
     }
   }
