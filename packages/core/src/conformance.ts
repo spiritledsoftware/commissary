@@ -387,7 +387,8 @@ export function createCoreRuntimeConformanceSuite(
         assertCoreConformance(
           createdJob.status === "pending" &&
             foundJobs.length === 1 &&
-            foundJobs[0]?.id === "conformance-job",
+            foundJobs[0]?.id === "conformance-job" &&
+            foundJobs[0]?.status === "pending",
           adapter.adapter,
           "host-contributed Record was not preserved",
         );
