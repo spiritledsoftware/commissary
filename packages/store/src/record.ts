@@ -208,24 +208,36 @@ function isFieldSchemaValue(value: unknown): value is FieldSchema {
 function snapshotRecordContainer(
   value: Readonly<Record<PropertyKey, unknown>>,
 ): Readonly<Record<PropertyKey, unknown>> {
-  return Object.freeze(Object.fromEntries(Reflect.ownKeys(value).map((key) => [key, value[key]])));
+  return Object.freeze(
+    Object.fromEntries(
+      Reflect.ownKeys(value).map((key) => [key, snapshotOverrideValue(Reflect.get(value, key))]),
+    ),
+  );
 }
 
-function snapshotFieldDefinition(value: unknown, field: PropertyKey): FieldDefinition {
+function assertFieldDefinition(
+  value: unknown,
+  field: PropertyKey,
+): asserts value is FieldDefinition {
+  if (typeof field !== "string") {
+    throw new TypeError("Record Field keys must be strings");
+  }
   if (isFieldSchemaValue(value)) {
-    return value;
+    return;
   }
   if (!isRecordContainer(value) || !isFieldSchemaValue(Reflect.get(value, "select"))) {
-    throw new TypeError(`Record Field '${String(field)}' must define a Select Field Schema`);
+    throw new TypeError(`Record Field '${field}' must define a Select Field Schema`);
   }
   for (const operation of ["create", "update"] as const) {
     if (Object.hasOwn(value, operation) && !isFieldSchemaValue(Reflect.get(value, operation))) {
-      throw new TypeError(
-        `Record Field '${String(field)}' ${operation} value must be a Field Schema`,
-      );
+      throw new TypeError(`Record Field '${field}' ${operation} value must be a Field Schema`);
     }
   }
-  return snapshotRecordContainer(value) as FieldDefinition;
+}
+
+function snapshotFieldDefinition(value: unknown, field: PropertyKey): FieldDefinition {
+  assertFieldDefinition(value, field);
+  return isFieldSchemaValue(value) ? value : (snapshotRecordContainer(value) as FieldDefinition);
 }
 
 function defineStoreRecord<Definition extends RecordDefinition>(
@@ -234,18 +246,10 @@ function defineStoreRecord<Definition extends RecordDefinition>(
   if (!isRecordContainer(definition) || !isRecordContainer(definition.fields)) {
     throw new TypeError("Record Definition must contain a fields object");
   }
-  const fields = Object.freeze(
-    Object.fromEntries(
-      Reflect.ownKeys(definition.fields).map((field) => [
-        field,
-        snapshotFieldDefinition(Reflect.get(definition.fields, field), field),
-      ]),
-    ),
-  );
-  return Object.freeze({
-    ...definition,
-    fields,
-  }) as Definition;
+  for (const field of Reflect.ownKeys(definition.fields)) {
+    assertFieldDefinition(Reflect.get(definition.fields, field), field);
+  }
+  return snapshotRecordContainer(definition) as Definition;
 }
 
 /** Constructor for immutable, unbound Store Record Definitions. */
@@ -267,11 +271,7 @@ function snapshotOverrideValue(value: unknown): unknown {
     }
     return value;
   }
-  const entries = Reflect.ownKeys(value).map((key) => [
-    key,
-    snapshotOverrideValue(Reflect.get(value, key)),
-  ]);
-  return Object.freeze(Object.fromEntries(entries));
+  return snapshotRecordContainer(value);
 }
 
 function applyDeepRecordOverride(base: unknown, override: unknown): unknown {
@@ -279,7 +279,7 @@ function applyDeepRecordOverride(base: unknown, override: unknown): unknown {
     return snapshotOverrideValue(override);
   }
   const entries = new Map<PropertyKey, unknown>(
-    Reflect.ownKeys(base).map((key) => [key, Reflect.get(base, key)]),
+    Reflect.ownKeys(base).map((key) => [key, snapshotOverrideValue(Reflect.get(base, key))]),
   );
   for (const key of Reflect.ownKeys(override)) {
     const value = Reflect.get(override, key);
@@ -697,7 +697,6 @@ export async function parseStoreCreatedRecord<Definition extends RecordDefinitio
   input: unknown,
 ): Promise<SelectedRecord<Definition>> {
   const parsed = await parseRecordFields(definition, collection, "create", input, {
-    fieldNames: Object.keys(definition.fields),
     fieldOperation: "select",
   });
   // SAFETY: Every effective Select Field Schema parsed the complete candidate.
@@ -711,7 +710,6 @@ export async function parseStoreUpdatedRecord<Definition extends RecordDefinitio
   input: unknown,
 ): Promise<SelectedRecord<Definition>> {
   const parsed = await parseRecordFields(definition, collection, "update", input, {
-    fieldNames: Object.keys(definition.fields),
     fieldOperation: "select",
   });
   // SAFETY: Every effective Select Field Schema parsed the complete candidate.

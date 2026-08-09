@@ -16,6 +16,7 @@ import {
   type CoreCommandCreatedRecordName,
   type CoreInternallyCreatedRecordName,
   type CoreRecordDefinitions,
+  type ContributedThreadRecordDefinitions,
   type ExecutionId,
 } from "@commissary/core";
 import { numberSchema, stringSchema, testSchema } from "./support.js";
@@ -278,6 +279,21 @@ it("rejects Thread Store backends without Core query operators", () => {
 });
 
 it("rejects host Record contributions that conflict with Core", () => {
+  type DuplicateCoreContribution = ContributedThreadRecordDefinitions<{
+    readonly thread: (typeof coreRecordDefinitions)["thread"];
+  }>;
+  expectTypeOf<DuplicateCoreContribution["thread"]>().toBeNever();
+
+  const inspect = (): void => {
+    composeThreadStoreRecordDefinitions({
+      records: {
+        // @ts-expect-error Core Record names cannot be contributed by a host.
+        thread: coreRecordDefinitions.thread,
+      },
+    });
+  };
+  expect(inspect).toBeTypeOf("function");
+
   expect(() =>
     composeThreadStoreRecordDefinitions({
       records: {

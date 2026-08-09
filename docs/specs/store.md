@@ -459,7 +459,7 @@ The base Store has no `create: false` or `update: false` flags. An adapter defau
 
 ### Record definition lifecycle and overrides
 
-`StoreRecord.define()` creates one immutable, unbound Record Definition. Plain structural definitions remain valid. The constructor snapshots and freezes the top-level definition, its `fields` map, and operation-specific Field Definition wrappers. It keeps each third-party Field Schema by identity and does not freeze it.
+`StoreRecord.define()` creates one immutable, unbound Record Definition. Plain structural definitions remain valid. Record field keys are strings. The constructor recursively snapshots and freezes every package-owned container, keeps each third-party Field Schema by identity, and does not freeze schema objects.
 
 `applyRecordOverrides()` applies Store-neutral typed deep patches to a complete contribution map. An override changes an existing contribution; it does not add another Record:
 

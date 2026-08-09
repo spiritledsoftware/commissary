@@ -331,10 +331,14 @@ export type ThreadRecordDefinitions = RecordDefinitions & {
 
 /** Built-in Core Records combined with separate host Record contributions. */
 export type ContributedThreadRecordDefinitions<Records extends RecordDefinitions> = {
-  readonly [Name in keyof CoreRecordDefinitions | keyof Records]: Name extends keyof Records
-    ? Records[Name]
-    : Name extends keyof CoreRecordDefinitions
-      ? CoreRecordDefinitions[Name]
+  readonly [Name in
+    | keyof CoreRecordDefinitions
+    | keyof Records]: Name extends keyof CoreRecordDefinitions
+    ? Name extends keyof Records
+      ? never
+      : CoreRecordDefinitions[Name]
+    : Name extends keyof Records
+      ? Records[Name]
       : never;
 };
 

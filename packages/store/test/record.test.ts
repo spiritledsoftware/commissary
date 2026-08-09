@@ -2,6 +2,7 @@ import {
   StoreRecord,
   applyRecordOverrides,
   parseStoreCreateInput,
+  parseStoreUpdateInput,
   parseStoreSelectedFields,
   type CreateInput,
   type FieldSchema,
@@ -100,12 +101,18 @@ it("snapshots package-owned Record containers without freezing Field Schemas", (
     create: lifecycleStringField,
   };
   const fields = { id: field };
+  const topLevelMetadata = { table: "jobs" };
+  const metadataKey = Symbol("metadata");
   const source = { fields };
+  Object.defineProperty(source, metadataKey, { value: topLevelMetadata });
   const definition = StoreRecord.define(source);
 
   expect(definition).not.toBe(source);
   expect(definition.fields).not.toBe(fields);
   expect(definition.fields.id).not.toBe(field);
+  expect(Reflect.get(definition, metadataKey)).toEqual({ table: "jobs" });
+  expect(Reflect.get(definition, metadataKey)).not.toBe(topLevelMetadata);
+  expect(Object.isFrozen(Reflect.get(definition, metadataKey))).toBe(true);
   expect(Object.isFrozen(definition)).toBe(true);
   expect(Object.isFrozen(definition.fields)).toBe(true);
   expect(Object.isFrozen(definition.fields.id)).toBe(true);
@@ -116,6 +123,12 @@ it("snapshots package-owned Record containers without freezing Field Schemas", (
   Reflect.set(field, "update", lifecycleStringField);
   expect(definition.fields).not.toHaveProperty("later");
   expect(definition.fields.id).not.toHaveProperty("update");
+
+  expect(() =>
+    StoreRecord.define({
+      fields: { [Symbol("invalid-field")]: lifecycleStringField },
+    } as never),
+  ).toThrow("Record Field keys must be strings");
 });
 
 type NormalizedName = string & { readonly NormalizedName: unique symbol };
@@ -132,11 +145,15 @@ const prefixedNameField = recordFieldSchema<string, string>((value) =>
     : { issues: [{ message: "Expected a name" }] },
 );
 
+const untouchedTableOptions = { engine: "heap" };
+const untouchedColumnOptions = { collation: "C" };
+
 const lifecycleDefinitions = {
   jobs: StoreRecord.define({
     table: {
       name: "jobs",
       schema: "public",
+      options: untouchedTableOptions,
     },
     fields: {
       name: {
@@ -146,6 +163,7 @@ const lifecycleDefinitions = {
         column: {
           name: "job_name",
           notNull: true,
+          options: untouchedColumnOptions,
         },
       },
     },
@@ -161,6 +179,7 @@ const lifecycleOverrides = {
       name: {
         select: normalizedNameField,
         create: null,
+        update: null,
         column: {
           name: "normalized_name",
           notNull: null,
@@ -173,13 +192,23 @@ const lifecycleOverrides = {
 it("applies deep overrides, exact null removal, and effective Schema fallbacks", async () => {
   const effective = applyRecordOverrides(lifecycleDefinitions, lifecycleOverrides);
 
-  expect(effective.jobs.table).toEqual({ name: "jobs" });
+  expect(effective.jobs.table).toEqual({
+    name: "jobs",
+    options: { engine: "heap" },
+  });
+  expect(effective.jobs.table.options).not.toBe(untouchedTableOptions);
+  expect(Object.isFrozen(effective.jobs.table.options)).toBe(true);
   expect(effective.jobs.fields.name).toMatchObject({
     select: normalizedNameField,
-    update: lifecycleStringField,
-    column: { name: "normalized_name" },
+    column: {
+      name: "normalized_name",
+      options: { collation: "C" },
+    },
   });
+  expect(effective.jobs.fields.name.column.options).not.toBe(untouchedColumnOptions);
+  expect(Object.isFrozen(effective.jobs.fields.name.column.options)).toBe(true);
   expect(effective.jobs.fields.name).not.toHaveProperty("create");
+  expect(effective.jobs.fields.name).not.toHaveProperty("update");
   expect(effective.jobs.fields.name.column).not.toHaveProperty("notNull");
   expect(Object.isFrozen(effective)).toBe(true);
   expect(Object.isFrozen(effective.jobs)).toBe(true);
@@ -190,6 +219,12 @@ it("applies deep overrides, exact null removal, and effective Schema fallbacks",
   await expect(parseStoreCreateInput(effective.jobs, "jobs", { name: "  new  " })).resolves.toEqual(
     { name: "NEW" },
   );
+  await expect(
+    parseStoreUpdateInput(effective.jobs, "jobs", { name: "  changed  " }),
+  ).resolves.toEqual({
+    fields: ["name"],
+    values: { name: "CHANGED" },
+  });
 
   expectTypeOf<SelectedRecord<typeof effective.jobs>>().toEqualTypeOf<{
     readonly name: NormalizedName;

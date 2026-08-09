@@ -83,7 +83,10 @@ it("rejects Field Definitions whose outputs cannot re-enter Select", () => {
 type JobStatus = "pending" | "running" | "done";
 type StoredJobStatus = JobStatus | Uppercase<JobStatus>;
 
+const jobStatusValidationInputs: unknown[] = [];
+
 const jobStatusField = fieldSchema<StoredJobStatus, JobStatus>((value) => {
+  jobStatusValidationInputs.push(value);
   if (typeof value !== "string") {
     return { issues: [{ message: "Expected a job status" }] };
   }
@@ -154,9 +157,10 @@ it("creates and finds a Custom Record through its Collection", async () => {
       set: { status: "finished" },
     }),
   ).resolves.toBe(1);
-  await expect(store.collections.scheduledJobs.find()).resolves.toEqual([
-    { id: "job-1", status: "done" },
-  ]);
+  jobStatusValidationInputs.length = 0;
+  const updated = await store.collections.scheduledJobs.find();
+  expect(updated).toEqual([{ id: "job-1", status: "done" }]);
+  expect(jobStatusValidationInputs).toEqual(["done"]);
 });
 
 it("rejects invalid and unknown create fields before storage", async () => {

@@ -157,6 +157,35 @@ it("rejects invalid create outputs before adapter storage", async () => {
   });
 });
 
+it("classifies invalid stored Records as adapter contract defects during find", async () => {
+  let selectedValidationCount = 0;
+  const invalidAfterCreateField = fieldSchema<string, string>((value) => {
+    selectedValidationCount += 1;
+    return selectedValidationCount <= 2 && typeof value === "string"
+      ? { value }
+      : { issues: [{ message: "Rejected stored value" }] };
+  });
+  const invalid = MemoryStore.make({
+    records: {
+      invalid: {
+        fields: {
+          id: stringField,
+          value: invalidAfterCreateField,
+        },
+      },
+    },
+  }).collections.invalid;
+  await invalid.create({ id: "one", value: "valid-on-create" });
+
+  await expect(invalid.find()).rejects.toMatchObject({
+    collection: "invalid",
+    operation: "find",
+    violation: "invalid-selected-record",
+    field: "value",
+    cause: expect.any(StoreValidationError),
+  });
+});
+
 it("returns native Promises before builders run and preserves thrown values", async () => {
   const jobs = MemoryStore.make({ records }).collections.jobs;
   const callbackFailure = { type: "callback-failure" };
