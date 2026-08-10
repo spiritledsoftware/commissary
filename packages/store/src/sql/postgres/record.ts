@@ -9,6 +9,17 @@ import {
   type SqlLiteralValue,
 } from "../record.js";
 import { readSqlStatementFragments, type SqlStatement } from "../statement.js";
+import {
+  isPostgresCharacterLengthOption,
+  isPostgresIntervalFieldOption,
+  isPostgresIntervalPrecisionCompatible,
+  isPostgresNumericPrecisionOption,
+  isPostgresNumericScaleCompatible,
+  isPostgresNumericScaleOption,
+  isPostgresTemporalPrecisionOption,
+  isPostgresTimeZoneOption,
+  type PostgresIntervalField,
+} from "./postgres-type-options.js";
 
 /** An opaque package-owned PostgreSQL storage and conversion contract. */
 export interface PostgresColumnType<in Value extends JsonValue> extends SqlColumnType<Value> {
@@ -75,20 +86,7 @@ export interface PostgresTemporalOptions {
 }
 
 /** Supported PostgreSQL INTERVAL field range. */
-export type PostgresIntervalFields =
-  | "year"
-  | "month"
-  | "day"
-  | "hour"
-  | "minute"
-  | "second"
-  | "year to month"
-  | "day to hour"
-  | "day to minute"
-  | "day to second"
-  | "hour to minute"
-  | "hour to second"
-  | "minute to second";
+export type PostgresIntervalFields = PostgresIntervalField;
 
 /** Field range and fractional-second precision for PostgreSQL INTERVAL. */
 export interface PostgresIntervalOptions {
@@ -187,18 +185,26 @@ function assertQualifiedName(
   }
 }
 
-function snapshotValue(value: unknown): unknown {
+function snapshotValue(value: unknown, snapshots = new Map<object, object>()): unknown {
   if (Array.isArray(value)) {
-    return Object.freeze(value.map(snapshotValue));
+    const existing = snapshots.get(value);
+    if (existing !== undefined) return existing;
+    const snapshot: unknown[] = [];
+    snapshots.set(value, snapshot);
+    snapshot.push(...value.map((item) => snapshotValue(item, snapshots)));
+    return Object.freeze(snapshot);
   }
-  if (!isRecordContainer(value) || Object.isFrozen(value)) {
+  if (!isRecordContainer(value)) {
     return value;
   }
-  return Object.freeze(
-    Object.fromEntries(
-      Reflect.ownKeys(value).map((key) => [key, snapshotValue(Reflect.get(value, key))]),
-    ),
-  );
+  const existing = snapshots.get(value);
+  if (existing !== undefined) return existing;
+  const snapshot: Record<PropertyKey, unknown> = {};
+  snapshots.set(value, snapshot);
+  for (const key of Reflect.ownKeys(value)) {
+    Reflect.set(snapshot, key, snapshotValue(Reflect.get(value, key), snapshots));
+  }
+  return Object.freeze(snapshot);
 }
 
 function createMetadataValue<Options extends object>(
@@ -364,23 +370,6 @@ function definePostgresColumn<const Options extends PostgresColumnHelperOptions>
   return createMetadataValue("postgres-column", options);
 }
 
-function assertOptionalIntegerRange(
-  owner: string,
-  key: string,
-  value: unknown,
-  minimum: number,
-  maximum: number,
-): void {
-  if (
-    value !== undefined &&
-    (!Number.isInteger(value) || (value as number) < minimum || (value as number) > maximum)
-  ) {
-    throw new TypeError(
-      `PostgreSQL ${owner} option '${key}' must be ${minimum} through ${maximum}`,
-    );
-  }
-}
-
 function directType<Value extends JsonValue>(
   type: string,
   options?: Readonly<Record<string, unknown>>,
@@ -423,9 +412,13 @@ function defineNumeric(options?: PostgresNumericOptions): PostgresColumnType<str
   assertOwnKeys("numeric", options, new Set(["precision", "scale"]));
   const precision = Reflect.get(options, "precision");
   const scale = Reflect.get(options, "scale");
-  assertOptionalIntegerRange("numeric", "precision", precision, 1, 1000);
-  assertOptionalIntegerRange("numeric", "scale", scale, -1000, 1000);
-  if (scale !== undefined && precision === undefined) {
+  if (!isPostgresNumericPrecisionOption(precision)) {
+    throw new TypeError("PostgreSQL numeric option 'precision' must be 1 through 1000");
+  }
+  if (!isPostgresNumericScaleOption(scale)) {
+    throw new TypeError("PostgreSQL numeric option 'scale' must be -1000 through 1000");
+  }
+  if (!isPostgresNumericScaleCompatible(precision, scale)) {
     throw new TypeError("PostgreSQL numeric option 'scale' requires 'precision'");
   }
   return directType<string>("numeric", options);
@@ -442,7 +435,9 @@ function defineCharacter(
     throw new TypeError(`PostgreSQL ${type} helper options must be an object`);
   }
   assertOwnKeys(type, options, new Set(["length"]));
-  assertOptionalIntegerRange(type, "length", Reflect.get(options, "length"), 1, 10_485_760);
+  if (!isPostgresCharacterLengthOption(Reflect.get(options, "length"))) {
+    throw new TypeError(`PostgreSQL ${type} option 'length' must be 1 through 10485760`);
+  }
   return directType<string>(type, options);
 }
 
@@ -457,31 +452,14 @@ function defineTemporal(
     throw new TypeError(`PostgreSQL ${type} helper options must be an object`);
   }
   assertOwnKeys(type, options, new Set(["precision", "withTimezone"]));
-  assertOptionalIntegerRange(type, "precision", Reflect.get(options, "precision"), 0, 6);
-  if (
-    Object.hasOwn(options, "withTimezone") &&
-    typeof Reflect.get(options, "withTimezone") !== "boolean"
-  ) {
+  if (!isPostgresTemporalPrecisionOption(Reflect.get(options, "precision"))) {
+    throw new TypeError(`PostgreSQL ${type} option 'precision' must be 0 through 6`);
+  }
+  if (!isPostgresTimeZoneOption(Reflect.get(options, "withTimezone"))) {
     throw new TypeError(`PostgreSQL ${type} option 'withTimezone' must be a boolean`);
   }
   return directType<string>(type, options);
 }
-
-const intervalFields = new Set<PostgresIntervalFields>([
-  "year",
-  "month",
-  "day",
-  "hour",
-  "minute",
-  "second",
-  "year to month",
-  "day to hour",
-  "day to minute",
-  "day to second",
-  "hour to minute",
-  "hour to second",
-  "minute to second",
-]);
 
 function defineInterval(options?: PostgresIntervalOptions): PostgresColumnType<string> {
   if (options === undefined) {
@@ -493,11 +471,13 @@ function defineInterval(options?: PostgresIntervalOptions): PostgresColumnType<s
   assertOwnKeys("interval", options, new Set(["fields", "precision"]));
   const fields = Reflect.get(options, "fields");
   const precision = Reflect.get(options, "precision");
-  if (fields !== undefined && !intervalFields.has(fields as PostgresIntervalFields)) {
+  if (!isPostgresIntervalFieldOption(fields)) {
     throw new TypeError("PostgreSQL interval option 'fields' is invalid");
   }
-  assertOptionalIntegerRange("interval", "precision", precision, 0, 6);
-  if (precision !== undefined && typeof fields === "string" && !fields.includes("second")) {
+  if (!isPostgresTemporalPrecisionOption(precision)) {
+    throw new TypeError("PostgreSQL interval option 'precision' must be 0 through 6");
+  }
+  if (!isPostgresIntervalPrecisionCompatible(fields, precision)) {
     throw new TypeError("PostgreSQL interval precision requires a field range containing seconds");
   }
   return directType<string>("interval", options);
@@ -518,8 +498,10 @@ function defineEnum<const Values extends readonly [string, ...string[]]>(options
   }
   const values = new Set<string>();
   for (const value of options.values) {
-    if (typeof value !== "string" || value.includes("\0") || values.has(value)) {
-      throw new TypeError("PostgreSQL enum values must be unique NUL-free strings");
+    if (!isValidLocalName(value) || values.has(value)) {
+      throw new TypeError(
+        "PostgreSQL enum values must be unique NUL-free strings of at most 63 UTF-8 bytes",
+      );
     }
     values.add(value);
   }

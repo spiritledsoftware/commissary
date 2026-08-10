@@ -40,6 +40,16 @@ import {
   type PostgresQualifiedName,
   type PostgresTemporalOptions,
 } from "./record.js";
+import {
+  isPostgresCharacterLengthOption,
+  isPostgresIntervalFieldOption,
+  isPostgresIntervalPrecisionCompatible,
+  isPostgresNumericPrecisionOption,
+  isPostgresNumericScaleCompatible,
+  isPostgresNumericScaleOption,
+  isPostgresTemporalPrecisionOption,
+  isPostgresTimeZoneOption,
+} from "./postgres-type-options.js";
 
 /** One driver-independent value produced by a resolved PostgreSQL column encoder. */
 export type PostgresEncodedValue =
@@ -159,7 +169,7 @@ export interface PostgresResolvedColumn<Field extends FieldDefinition = FieldDef
   readonly identity?: PostgresResolvedIdentity;
   readonly generated?: SqlResolvedGeneratedColumn;
   readonly encode: (
-    value: Exclude<FieldOutput<SelectFieldSchema<Field>>, undefined>,
+    value: Exclude<FieldOutput<SelectFieldSchema<Field>>, null | undefined>,
   ) => PostgresEncodedValue;
   readonly decode: (value: unknown) => Exclude<FieldOutput<SelectFieldSchema<Field>>, undefined>;
 }
@@ -355,20 +365,19 @@ function validStatement(
   path: readonly (string | number)[],
   issues: SqlDefinitionIssue[],
   owner: string,
+  code: SqlDefinitionIssue["code"] = "invalid-column-default",
 ): SqlStatement<never> | undefined {
   const fragments = readSqlStatementFragments(value);
   if (fragments === undefined) {
-    issues.push(
-      issue("invalid-column-default", path, `${owner} requires a compatible SQL Statement`),
-    );
+    issues.push(issue(code, path, `${owner} requires a compatible SQL Statement`));
     return undefined;
   }
   if (fragments.length === 0 || !hasStatementStructure(fragments)) {
-    issues.push(issue("invalid-column-default", path, `${owner} requires nonempty SQL structure`));
+    issues.push(issue(code, path, `${owner} requires nonempty SQL structure`));
     return undefined;
   }
   if (fragments.some((fragment) => fragment.kind === "parameter")) {
-    issues.push(issue("invalid-column-default", path, `${owner} must not contain SQL parameters`));
+    issues.push(issue(code, path, `${owner} must not contain SQL parameters`));
     return undefined;
   }
   return value as SqlStatement<never>;
@@ -380,15 +389,7 @@ function validDatabaseStatement(
   issues: SqlDefinitionIssue[],
   owner: string,
 ): SqlStatement<never> | undefined {
-  const before = issues.length;
-  const statement = validStatement(value, path, issues, owner);
-  if (issues.length > before) {
-    const last = issues.pop();
-    if (last !== undefined) {
-      issues.push(issue("invalid-database-options", last.path, last.message));
-    }
-  }
-  return statement;
+  return validStatement(value, path, issues, owner, "invalid-database-options");
 }
 
 function hasStatementStructure(fragments: readonly SqlStatementFragment[]): boolean {
@@ -496,12 +497,12 @@ function boundedInteger(value: unknown, type: string, minimum: number, maximum: 
     : invalidValue(type);
 }
 
-function exactIntegerText(value: unknown, type: string, minimum: bigint, maximum: bigint): string {
-  if (typeof value !== "string" || !/^-?(?:0|[1-9]\d*)$/.test(value) || value === "-0") {
-    return invalidValue(type);
+function isExactIntegerText(value: string, minimum: bigint, maximum: bigint): boolean {
+  if (!/^-?(?:0|[1-9]\d*)$/.test(value) || value === "-0") {
+    return false;
   }
   const parsed = BigInt(value);
-  return parsed >= minimum && parsed <= maximum ? value : invalidValue(type);
+  return parsed >= minimum && parsed <= maximum;
 }
 
 function safeIntegerCodec(): Pick<RuntimePhysicalType, "application" | "encode" | "decode"> {
@@ -527,8 +528,11 @@ function stringCodec(
   return {
     application: "string",
     encode: (value) => (typeof value === "string" && validate(value) ? value : invalidValue(type)),
-    decode: (value) =>
-      typeof value === "string" && validate(decode(value)) ? decode(value) : invalidValue(type),
+    decode: (value) => {
+      if (typeof value !== "string") return invalidValue(type);
+      const decoded = decode(value);
+      return validate(decoded) ? decoded : invalidValue(type);
+    },
   };
 }
 
@@ -576,34 +580,181 @@ function leapYear(year: bigint): boolean {
   return year % 4n === 0n && (year % 100n !== 0n || year % 400n === 0n);
 }
 
+interface PostgresDateParts {
+  readonly year: bigint;
+  readonly yearWidth: number;
+  readonly forceSign: boolean;
+  readonly month: number;
+  readonly day: number;
+}
+
+interface PostgresTimeParts {
+  readonly hour: number;
+  readonly minute: number;
+  readonly second: string;
+  readonly fraction: string;
+  readonly offsetMinutes?: number;
+}
+
+function postgresDaysInMonth(year: bigint, month: number): number {
+  return [31, leapYear(year) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1] ?? 0;
+}
+
+function parsePostgresDate(value: string): PostgresDateParts | undefined {
+  const match = /^([+-]?)(\d{4,})-(\d{2})-(\d{2})$/.exec(value);
+  if (match === null) return undefined;
+  const sign = match[1] ?? "";
+  const yearDigits = match[2] ?? "0";
+  const year = BigInt(`${sign}${yearDigits}`);
+  const month = Number(match[3]);
+  const day = Number(match[4]);
+  if (month < 1 || month > 12 || day < 1 || day > postgresDaysInMonth(year, month)) {
+    return undefined;
+  }
+  return {
+    year,
+    yearWidth: yearDigits.length,
+    forceSign: sign.length > 0,
+    month,
+    day,
+  };
+}
+
 function validDate(value: string): boolean {
-  const match = /^([+-]?\d{4,})-(\d{2})-(\d{2})$/.exec(value);
-  if (match === null) return false;
-  const year = BigInt(match[1] ?? "0");
-  const month = Number(match[2]);
-  const day = Number(match[3]);
-  const days = [31, leapYear(year) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-  return month >= 1 && month <= 12 && day >= 1 && day <= (days[month - 1] ?? 0);
+  return parsePostgresDate(value) !== undefined;
+}
+
+function parsePostgresTimeZone(value: string): number | undefined {
+  if (value === "Z") return 0;
+  const match = /^([+-])(\d{2})(?::?(\d{2}))?$/.exec(value);
+  if (match === null) return undefined;
+  const hours = Number(match[2]);
+  const minutes = Number(match[3] ?? "0");
+  if (hours > 15 || minutes > 59) return undefined;
+  const offset = hours * 60 + minutes;
+  return match[1] === "-" ? -offset : offset;
+}
+
+function parsePostgresTime(
+  value: string,
+  withTimezone: boolean,
+  allowOffset: boolean,
+): PostgresTimeParts | undefined {
+  const match = /^(\d{2}):(\d{2}):(\d{2})(\.\d{1,6})?(Z|[+-]\d{2}(?::?\d{2})?)?$/.exec(value);
+  if (match === null) return undefined;
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  const second = Number(match[3]);
+  const zone = match[5];
+  if (hour > 23 || minute > 59 || second > 59) return undefined;
+  if (!withTimezone && zone !== undefined) return undefined;
+  if (withTimezone && (zone === undefined || (!allowOffset && zone !== "Z"))) return undefined;
+  const offsetMinutes = zone === undefined ? undefined : parsePostgresTimeZone(zone);
+  if (zone !== undefined && offsetMinutes === undefined) return undefined;
+  return {
+    hour,
+    minute,
+    second: match[3] ?? "00",
+    fraction: match[4] ?? "",
+    ...(offsetMinutes === undefined ? {} : { offsetMinutes }),
+  };
 }
 
 function validTime(value: string, withTimezone: boolean): boolean {
-  const match = /^(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?(Z)?$/.exec(value);
-  return (
-    match !== null &&
-    Number(match[1]) <= 23 &&
-    Number(match[2]) <= 59 &&
-    Number(match[3]) <= 59 &&
-    (withTimezone ? match[5] === "Z" : match[5] === undefined)
-  );
+  return parsePostgresTime(value, withTimezone, false) !== undefined;
+}
+
+function normalizePostgresClock(parts: PostgresTimeParts): {
+  readonly time: string;
+  readonly dayOffset: number;
+} {
+  const shiftedMinutes = parts.hour * 60 + parts.minute - (parts.offsetMinutes ?? 0);
+  const dayOffset = Math.floor(shiftedMinutes / (24 * 60));
+  const normalizedMinutes = ((shiftedMinutes % (24 * 60)) + 24 * 60) % (24 * 60);
+  const hour = Math.floor(normalizedMinutes / 60);
+  const minute = normalizedMinutes % 60;
+  return {
+    time: `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}:${parts.second}${parts.fraction}`,
+    dayOffset,
+  };
+}
+
+function formatPostgresDate(parts: PostgresDateParts): string {
+  const absoluteYear = parts.year < 0n ? -parts.year : parts.year;
+  const digits = absoluteYear.toString().padStart(parts.yearWidth, "0");
+  const sign = parts.year < 0n ? "-" : parts.forceSign ? "+" : "";
+  return `${sign}${digits}-${String(parts.month).padStart(2, "0")}-${String(parts.day).padStart(2, "0")}`;
+}
+
+function shiftPostgresDate(parts: PostgresDateParts, dayOffset: number): PostgresDateParts {
+  let { year, month, day } = parts;
+  if (dayOffset < 0) {
+    day -= 1;
+    if (day === 0) {
+      month -= 1;
+      if (month === 0) {
+        year -= 1n;
+        month = 12;
+      }
+      day = postgresDaysInMonth(year, month);
+    }
+  } else if (dayOffset > 0) {
+    day += 1;
+    if (day > postgresDaysInMonth(year, month)) {
+      day = 1;
+      month += 1;
+      if (month === 13) {
+        year += 1n;
+        month = 1;
+      }
+    }
+  }
+  return { ...parts, year, month, day };
+}
+
+function normalizePostgresTime(value: string, withTimezone: boolean): string | undefined {
+  const parts = parsePostgresTime(value, withTimezone, true);
+  if (parts === undefined) return undefined;
+  if (!withTimezone) return value;
+  return `${normalizePostgresClock(parts).time}Z`;
 }
 
 function validTimestamp(value: string, withTimezone: boolean): boolean {
   const separator = value.indexOf("T");
   return (
     separator > 0 &&
-    validDate(value.slice(0, separator)) &&
-    validTime(value.slice(separator + 1), withTimezone)
+    parsePostgresDate(value.slice(0, separator)) !== undefined &&
+    parsePostgresTime(value.slice(separator + 1), withTimezone, false) !== undefined
   );
+}
+
+function normalizePostgresTimestamp(value: string, withTimezone: boolean): string | undefined {
+  const match = /^(.+?)[T ](.+)$/.exec(value);
+  if (match === null) return undefined;
+  const dateText = match[1] ?? "";
+  const timeText = match[2] ?? "";
+  const date = parsePostgresDate(dateText);
+  const time = parsePostgresTime(timeText, withTimezone, true);
+  if (date === undefined || time === undefined) return undefined;
+  if (!withTimezone) return `${dateText}T${timeText}`;
+  const normalized = normalizePostgresClock(time);
+  return `${formatPostgresDate(shiftPostgresDate(date, normalized.dayOffset))}T${normalized.time}Z`;
+}
+
+function temporalCodec(
+  type: "date" | "time" | "timestamp",
+  validateInput: (value: string) => boolean,
+  normalizeOutput: (value: string) => string | undefined,
+): Pick<RuntimePhysicalType, "application" | "encode" | "decode"> {
+  return {
+    application: "string",
+    encode: (value) =>
+      typeof value === "string" && validateInput(value) ? value : invalidValue(type),
+    decode: (value) => {
+      if (value instanceof Date || typeof value !== "string") return invalidValue(type);
+      return normalizeOutput(value) ?? invalidValue(type);
+    },
+  };
 }
 
 function validInterval(value: string): boolean {
@@ -680,14 +831,9 @@ function directCodec(
         decode: (value) => boundedInteger(value, type, -2_147_483_648, 2_147_483_647),
       };
     case "bigint":
-      return stringCodec(type, (value) => {
-        try {
-          exactIntegerText(value, type, -9_223_372_036_854_775_808n, 9_223_372_036_854_775_807n);
-          return true;
-        } catch {
-          return false;
-        }
-      });
+      return stringCodec(type, (value) =>
+        isExactIntegerText(value, -9_223_372_036_854_775_808n, 9_223_372_036_854_775_807n),
+      );
     case "numeric":
       return numericCodec(options);
     case "real":
@@ -727,14 +873,22 @@ function directCodec(
         decode: (value) => (value instanceof Uint8Array ? encodeBase64(value) : invalidValue(type)),
       };
     case "date":
-      return stringCodec(type, validDate);
+      return temporalCodec(type, validDate, (value) => (validDate(value) ? value : undefined));
     case "time": {
       const withTimezone = options?.withTimezone === true;
-      return stringCodec(type, (value) => validTime(value, withTimezone));
+      return temporalCodec(
+        type,
+        (value) => validTime(value, withTimezone),
+        (value) => normalizePostgresTime(value, withTimezone),
+      );
     }
     case "timestamp": {
       const withTimezone = options?.withTimezone === true;
-      return stringCodec(type, (value) => validTimestamp(value, withTimezone));
+      return temporalCodec(
+        type,
+        (value) => validTimestamp(value, withTimezone),
+        (value) => normalizePostgresTimestamp(value, withTimezone),
+      );
     }
     case "interval":
       return stringCodec(type, validInterval);
@@ -751,14 +905,15 @@ function directCodec(
   }
 }
 
-function dimensions(value: readonly unknown[]): readonly number[] | undefined {
+function dimensions(value: readonly unknown[], depth = 0): readonly number[] | undefined {
+  if (depth >= 6) return undefined;
   const childArrays = value.filter(Array.isArray);
   if (childArrays.length === 0) return Object.freeze([value.length]);
   if (childArrays.length !== value.length) return undefined;
-  const first = dimensions(childArrays[0] ?? []);
+  const first = dimensions(childArrays[0] ?? [], depth + 1);
   if (first === undefined) return undefined;
   for (const child of childArrays.slice(1)) {
-    const shape = dimensions(child);
+    const shape = dimensions(child, depth + 1);
     if (
       shape === undefined ||
       shape.length !== first.length ||
@@ -778,13 +933,13 @@ function arrayCodec(
       checkBounds && isRecordContainer(value) && Array.isArray(Reflect.get(value, "values"))
         ? Reflect.get(value, "values")
         : value;
-    if (!Array.isArray(input) || dimensions(input) === undefined) return invalidValue("array");
+    if (!Array.isArray(input)) return invalidValue("array");
+    const shape = dimensions(input);
+    if (shape === undefined || shape.length > 6) return invalidValue("array");
     if (checkBounds && isRecordContainer(value) && Object.hasOwn(value, "lowerBounds")) {
       const lowerBounds = Reflect.get(value, "lowerBounds");
-      const shape = dimensions(input);
       if (
         !Array.isArray(lowerBounds) ||
-        shape === undefined ||
         lowerBounds.length !== shape.length ||
         lowerBounds.some((bound) => bound !== 1)
       ) {
@@ -810,29 +965,6 @@ function readTypeOptions(
   return format.options;
 }
 
-const postgresIntervalFields = new Set([
-  "year",
-  "month",
-  "day",
-  "hour",
-  "minute",
-  "second",
-  "year to month",
-  "day to hour",
-  "day to minute",
-  "day to second",
-  "hour to minute",
-  "hour to second",
-  "minute to second",
-]);
-
-function integerOption(value: unknown, minimum: number, maximum: number): boolean {
-  return (
-    value === undefined ||
-    (typeof value === "number" && Number.isInteger(value) && value >= minimum && value <= maximum)
-  );
-}
-
 function validateDirectOptions(
   type: PostgresDirectTypeName,
   options: Readonly<Record<string, unknown>> | undefined,
@@ -846,31 +978,31 @@ function validateDirectOptions(
       const precision = options.precision;
       const scale = options.scale;
       return (
-        integerOption(precision, 1, 1000) &&
-        integerOption(scale, -1000, 1000) &&
-        (scale === undefined || precision !== undefined)
+        isPostgresNumericPrecisionOption(precision) &&
+        isPostgresNumericScaleOption(scale) &&
+        isPostgresNumericScaleCompatible(precision, scale)
       );
     }
     case "char":
     case "varchar":
-      return keys.every((key) => key === "length") && integerOption(options.length, 1, 10_485_760);
+      return (
+        keys.every((key) => key === "length") && isPostgresCharacterLengthOption(options.length)
+      );
     case "time":
     case "timestamp":
       return (
         keys.every((key) => key === "precision" || key === "withTimezone") &&
-        integerOption(options.precision, 0, 6) &&
-        (options.withTimezone === undefined || typeof options.withTimezone === "boolean")
+        isPostgresTemporalPrecisionOption(options.precision) &&
+        isPostgresTimeZoneOption(options.withTimezone)
       );
     case "interval": {
       if (!keys.every((key) => key === "fields" || key === "precision")) return false;
       const fields = options.fields;
       const precision = options.precision;
       return (
-        (fields === undefined || postgresIntervalFields.has(fields as string)) &&
-        integerOption(precision, 0, 6) &&
-        (precision === undefined ||
-          fields === undefined ||
-          (typeof fields === "string" && fields.includes("second")))
+        isPostgresIntervalFieldOption(fields) &&
+        isPostgresTemporalPrecisionOption(precision) &&
+        isPostgresIntervalPrecisionCompatible(fields, precision)
       );
     }
     default:
@@ -921,6 +1053,7 @@ function resolvePostgresType(
   format: SqlColumnTypeFormat,
   path: readonly (string | number)[],
   state: ResolutionState,
+  arrayDepth = 0,
 ): RuntimePhysicalType | undefined {
   if (format.dialect !== "postgres") {
     state.issues.push(
@@ -956,7 +1089,7 @@ function resolvePostgresType(
       !isValidPostgresName(name) ||
       !Array.isArray(values) ||
       values.length === 0 ||
-      values.some((value) => typeof value !== "string" || value.includes("\0")) ||
+      values.some((value) => !isValidPostgresName(value)) ||
       new Set(values).size !== values.length ||
       typeof identity !== "symbol"
     ) {
@@ -986,6 +1119,16 @@ function resolvePostgresType(
     });
   }
   if (format.type === "array") {
+    if (arrayDepth >= 6) {
+      state.issues.push(
+        issue(
+          "invalid-column-type",
+          path,
+          "PostgreSQL array type exceeds the six-dimensional limit",
+        ),
+      );
+      return undefined;
+    }
     const element = options?.element;
     const elementFormat = readSqlColumnTypeFormat(element);
     if (elementFormat === undefined || elementFormat.dialect !== "postgres") {
@@ -994,7 +1137,12 @@ function resolvePostgresType(
       );
       return undefined;
     }
-    const elementResolution = resolvePostgresType(elementFormat, [...path, "element"], state);
+    const elementResolution = resolvePostgresType(
+      elementFormat,
+      [...path, "element"],
+      state,
+      arrayDepth + 1,
+    );
     if (elementResolution === undefined) return undefined;
     const codec = arrayCodec(elementResolution);
     return Object.freeze({
@@ -1429,18 +1577,6 @@ function resolveRuntime(
       );
     }
     const primaryKeyValue = table?.primaryKey;
-    if (
-      primaryKeyValue !== undefined &&
-      (!Array.isArray(primaryKeyValue) || primaryKeyValue.length === 0)
-    ) {
-      state.issues.push(
-        issue(
-          "invalid-primary-key",
-          [...recordPath, "table", "primaryKey"],
-          "SQL Record primary key must be a nonempty field tuple",
-        ),
-      );
-    }
 
     const columns = new Map<string, RuntimeColumn>();
     const fieldStatements = new Map<string, SqlStatement<never>>();
@@ -1486,8 +1622,8 @@ function resolveRuntime(
         [...fieldPath, "column", "postgres"],
         state.issues,
       );
-      const nameValue = ownNullableOverride(postgresColumn, column, "name") ?? fieldName;
-      if (!isValidPostgresName(nameValue)) {
+      const columnName = ownNullableOverride(postgresColumn, column, "name") ?? fieldName;
+      if (!isValidPostgresName(columnName)) {
         state.issues.push(
           issue(
             "invalid-name",
@@ -1538,15 +1674,6 @@ function resolveRuntime(
           ),
         );
       }
-      if (notNull && selectedNull && physical.application !== "json") {
-        state.issues.push(
-          issue(
-            "invalid-database-options",
-            [...fieldPath, "column", "notNull"],
-            `PostgreSQL column '${fieldName}' Select Schema permits SQL NULL`,
-          ),
-        );
-      }
       const identityValue =
         postgresColumn === undefined
           ? undefined
@@ -1558,6 +1685,15 @@ function resolveRuntime(
         state.issues,
       );
       if (identity !== undefined) notNull = true;
+      if (notNull && selectedNull && physical.application !== "json") {
+        state.issues.push(
+          issue(
+            "invalid-database-options",
+            [...fieldPath, "column", "notNull"],
+            `PostgreSQL column '${fieldName}' Select Schema permits SQL NULL`,
+          ),
+        );
+      }
       const generatedValue =
         postgresColumn === undefined
           ? undefined
@@ -1603,9 +1739,9 @@ function resolveRuntime(
           ),
         );
       }
-      const reference = fieldReference(nameValue);
+      const reference = fieldReference(columnName);
       const resolvedColumn = Object.freeze({
-        name: nameValue,
+        name: columnName,
         reference,
         schema: selectedSchema(field),
         type: physical.resolved,
@@ -1618,14 +1754,14 @@ function resolveRuntime(
       }) as RuntimeColumn;
       columns.set(fieldName, resolvedColumn);
       fieldStatements.set(fieldName, reference);
-      const earlier = columnNames.get(nameValue);
-      if (earlier === undefined) columnNames.set(nameValue, fieldName);
+      const earlier = columnNames.get(columnName);
+      if (earlier === undefined) columnNames.set(columnName, fieldName);
       else
         state.issues.push(
           issue(
             "duplicate-name",
             [...fieldPath, "column", "name"],
-            `PostgreSQL column '${nameValue}' conflicts with field '${earlier}'`,
+            `PostgreSQL column '${columnName}' conflicts with field '${earlier}'`,
           ),
         );
     }
@@ -1747,9 +1883,16 @@ export function resolvePostgresRecords<
     definitions = applyRecordOverrides<Definitions, Overrides>(options.records, overrides);
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : "unknown override structure";
-    throw new SqlDefinitionError([
-      issue("invalid-override", ["overrides"], `PostgreSQL Record override is invalid: ${message}`),
-    ]);
+    throw new SqlDefinitionError(
+      [
+        issue(
+          "invalid-override",
+          ["overrides"],
+          `PostgreSQL Record override is invalid: ${message}`,
+        ),
+      ],
+      { cause },
+    );
   }
   // SAFETY: applyRecordOverrides and the resolver preserve all generic Record and Field keys.
   return resolveRuntime(definitions) as PostgresRecordResolution<

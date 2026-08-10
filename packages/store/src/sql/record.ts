@@ -128,9 +128,10 @@ export class SqlDefinitionError extends Error {
   readonly issues: readonly SqlDefinitionIssue[];
 
   /** Create one immutable aggregate SQL definition failure. */
-  constructor(issues: readonly SqlDefinitionIssue[]) {
+  constructor(issues: readonly SqlDefinitionIssue[], options?: ErrorOptions) {
     super(
       `SQL Record definition failed with ${issues.length} issue${issues.length === 1 ? "" : "s"}`,
+      options,
     );
     this.issues = Object.freeze(
       issues.map((issue) =>
@@ -206,24 +207,29 @@ function isFieldSchemaValue(value: unknown): value is FieldSchema {
   );
 }
 
-function snapshotSqlContainerValue(value: unknown): unknown {
+function snapshotSqlContainerValue(value: unknown, snapshots = new Map<object, object>()): unknown {
   if (isFieldSchemaValue(value)) {
     return value;
   }
   if (Array.isArray(value)) {
-    return Object.freeze(value.map(snapshotSqlContainerValue));
+    const existing = snapshots.get(value);
+    if (existing !== undefined) return existing;
+    const snapshot: unknown[] = [];
+    snapshots.set(value, snapshot);
+    snapshot.push(...value.map((item) => snapshotSqlContainerValue(item, snapshots)));
+    return Object.freeze(snapshot);
   }
   if (!isRecordContainer(value)) {
     return value;
   }
-  return Object.freeze(
-    Object.fromEntries(
-      Reflect.ownKeys(value).map((key) => [
-        key,
-        snapshotSqlContainerValue(Reflect.get(value, key)),
-      ]),
-    ),
-  );
+  const existing = snapshots.get(value);
+  if (existing !== undefined) return existing;
+  const snapshot: Record<PropertyKey, unknown> = {};
+  snapshots.set(value, snapshot);
+  for (const key of Reflect.ownKeys(value)) {
+    Reflect.set(snapshot, key, snapshotSqlContainerValue(Reflect.get(value, key), snapshots));
+  }
+  return Object.freeze(snapshot);
 }
 
 function createSqlOpaqueValue(format: SqlColumnTypeFormat | SqlLiteralFormat): object {

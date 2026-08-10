@@ -207,12 +207,18 @@ function isFieldSchemaValue(value: unknown): value is FieldSchema {
 
 function snapshotRecordContainer(
   value: Readonly<Record<PropertyKey, unknown>>,
+  snapshots = new Map<object, object>(),
 ): Readonly<Record<PropertyKey, unknown>> {
-  return Object.freeze(
-    Object.fromEntries(
-      Reflect.ownKeys(value).map((key) => [key, snapshotOverrideValue(Reflect.get(value, key))]),
-    ),
-  );
+  const existing = snapshots.get(value);
+  if (existing !== undefined) {
+    return existing as Readonly<Record<PropertyKey, unknown>>;
+  }
+  const snapshot: Record<PropertyKey, unknown> = {};
+  snapshots.set(value, snapshot);
+  for (const key of Reflect.ownKeys(value)) {
+    Reflect.set(snapshot, key, snapshotOverrideValue(Reflect.get(value, key), snapshots));
+  }
+  return Object.freeze(snapshot);
 }
 
 function assertFieldDefinition(
@@ -264,14 +270,19 @@ export const StoreRecord = {
   },
 };
 
-function snapshotOverrideValue(value: unknown): unknown {
+function snapshotOverrideValue(value: unknown, snapshots = new Map<object, object>()): unknown {
   if (isFieldSchemaValue(value) || !isRecordContainer(value)) {
     if (Array.isArray(value)) {
-      return Object.freeze(value.map(snapshotOverrideValue));
+      const existing = snapshots.get(value);
+      if (existing !== undefined) return existing;
+      const snapshot: unknown[] = [];
+      snapshots.set(value, snapshot);
+      snapshot.push(...value.map((item) => snapshotOverrideValue(item, snapshots)));
+      return Object.freeze(snapshot);
     }
     return value;
   }
-  return snapshotRecordContainer(value);
+  return snapshotRecordContainer(value, snapshots);
 }
 
 function applyDeepRecordOverride(base: unknown, override: unknown): unknown {

@@ -5,6 +5,7 @@ import {
   type JsonValue,
   type SelectedRecord,
 } from "@commissary/store";
+import { compileSqlStatement } from "../../../src/sql/adapter.js";
 import { SqlDefinitionError, SqlRecord, sql } from "../../../src/sql/index.js";
 import { pg, type PostgresColumnType, type PostgresEnum } from "../../../src/sql/postgres/index.js";
 import {
@@ -12,6 +13,13 @@ import {
   type PostgresResolvedColumnType,
 } from "../../../src/sql/postgres/adapter.js";
 import { describe, expect, expectTypeOf, it } from "vitest";
+
+const postgresStatementCompiler = {
+  quoteIdentifier: (name: string) => `"${name.replaceAll('"', '""')}"`,
+  makePlaceholder: (position: number) => `$${position + 1}`,
+  isParameter: (_value: unknown): _value is JsonValue => false,
+  convertParameter: (value: JsonValue) => value,
+};
 
 type SchemaResult<Output> =
   | { readonly value: Output }
@@ -61,6 +69,13 @@ const integerField = testSchema<number, number>(
       ? { value }
       : { issues: [{ message: "Expected integer" }] },
   { type: "integer" },
+);
+const nullableIntegerField = testSchema<number | null, number | null>(
+  (value) =>
+    value === null || (typeof value === "number" && Number.isSafeInteger(value))
+      ? { value }
+      : { issues: [{ message: "Expected nullable integer" }] },
+  { type: ["integer", "null"] },
 );
 const booleanField = testSchema<boolean, boolean>(
   (value) =>
@@ -137,30 +152,15 @@ describe("PostgreSQL metadata helpers", () => {
       mode: "by-default" as const,
       sequence: { name: { schema: "jobs", name: "scheduled_jobs_id_seq" }, startWith: 2n },
     };
-    expect(() => pg.table({ unexpected: true } as never)).toThrow(TypeError);
     const columnOptions = { type: pg.uuid(), notNull: true, identity };
     const table = pg.table(tableOptions);
     const column = pg.column(columnOptions);
-    expect(() => pg.column({ unexpected: true } as never)).toThrow(TypeError);
     tableOptions.name = "changed";
     identity.sequence.startWith = 3n;
 
-    expect(() => pg.numeric({ precision: 2, unexpected: true } as never)).toThrow(TypeError);
     expect(table).toMatchObject({ schema: "jobs", name: "scheduled_jobs" });
     expect(column.identity?.sequence?.startWith).toBe(2n);
     expect(Object.isFrozen(table)).toBe(true);
-    expect(() =>
-      pg.column({
-        type: pg.integer(),
-        identity: { mode: "always", sequence: { incrementBy: 0 } },
-      }),
-    ).toThrow(TypeError);
-    expect(() =>
-      pg.column({
-        type: pg.integer(),
-        identity: { mode: "always", sequence: { cache: 0n } },
-      }),
-    ).toThrow(TypeError);
     expect(Object.isFrozen(column)).toBe(true);
     expect(Object.isFrozen(column.identity)).toBe(true);
 
@@ -176,7 +176,24 @@ describe("PostgreSQL metadata helpers", () => {
     expectTypeOf<SelectedRecord<typeof definition>>().toEqualTypeOf<{ readonly id: string }>();
   });
 
+  it("snapshots nested values inside frozen metadata options", () => {
+    const sequence = { startWith: 2n };
+    const column = pg.column(
+      Object.freeze({
+        type: pg.integer(),
+        identity: { mode: "always" as const, sequence },
+      }),
+    );
+
+    sequence.startWith = 3n;
+
+    expect(column.identity?.sequence?.startWith).toBe(2n);
+    expect(Object.isFrozen(column.identity?.sequence)).toBe(true);
+  });
+
   it("rejects malformed helper arguments immediately", () => {
+    expect(() => pg.table({ unexpected: true } as never)).toThrow(TypeError);
+    expect(() => pg.column({ unexpected: true } as never)).toThrow(TypeError);
     expect(() => pg.table(null as never)).toThrow(TypeError);
     expect(() => pg.table({ name: "" })).toThrow(TypeError);
     expect(() => pg.table({ name: "x".repeat(64) })).toThrow(TypeError);
@@ -184,10 +201,24 @@ describe("PostgreSQL metadata helpers", () => {
     expect(() => pg.column({ type: sql.text() as never })).toThrow(TypeError);
     expect(() => pg.numeric({ scale: 2 })).toThrow(TypeError);
     expect(() => pg.numeric({ precision: 0 })).toThrow(TypeError);
+    expect(() => pg.numeric({ precision: 2, unexpected: true } as never)).toThrow(TypeError);
     expect(() => pg.varchar({ length: 10_485_761 })).toThrow(TypeError);
     expect(() => pg.timestamp({ precision: 7 as never })).toThrow(TypeError);
     expect(() => pg.interval({ fields: "year", precision: 2 })).toThrow(TypeError);
     expect(() => pg.enum({ name: "state", values: ["ready", "ready"] })).toThrow(TypeError);
+    expect(() => pg.enum({ name: "state", values: ["x".repeat(64)] })).toThrow(TypeError);
+    expect(() =>
+      pg.column({
+        type: pg.integer(),
+        identity: { mode: "always", sequence: { incrementBy: 0 } },
+      }),
+    ).toThrow(TypeError);
+    expect(() =>
+      pg.column({
+        type: pg.integer(),
+        identity: { mode: "always", sequence: { cache: 0n } },
+      }),
+    ).toThrow(TypeError);
     expect(() => pg.array(sql.text() as never)).toThrow(TypeError);
     expect(() =>
       pg.custom({
@@ -245,6 +276,32 @@ describe("PostgreSQL metadata helpers", () => {
 });
 
 describe("PostgreSQL Record resolution", () => {
+  it("rejects parameterized custom type modifiers during resolution", () => {
+    const custom = pg.custom<{ readonly x: number }>({
+      type: { name: "vector", modifier: sql`${1}` as never },
+      encode: (value) => String(value.x),
+      decode: (value) => ({ x: Number(value) }),
+    });
+
+    const failure = failureOf(() =>
+      resolvePostgresRecords({
+        records: { custom: explicitRecord(vectorField, custom) },
+      }),
+    );
+
+    expect(failure.issues).toMatchObject([{ code: "invalid-database-options" }]);
+    expect(failure.issues[0]?.path).toEqual([
+      "records",
+      "custom",
+      "fields",
+      "value",
+      "column",
+      "type",
+      "type",
+      "modifier",
+    ]);
+  });
+
   it("maps portable storage and applies active PostgreSQL overrides", () => {
     const records = {
       portable: SqlRecord.define({
@@ -350,12 +407,33 @@ describe("PostgreSQL Record resolution", () => {
     ).toBe("123e4567-e89b-42d3-a456-426614174000");
     expect(() => resolution.tables.uuid.columns.value.encode("not-a-uuid")).toThrow(TypeError);
     expect(resolution.tables.bytea.columns.value.decode(new Uint8Array([0, 1, 2]))).toBe("AAEC");
+    expect(resolution.tables.bytea.columns.value.encode("AAEC")).toEqual(new Uint8Array([0, 1, 2]));
+    expect(resolution.tables.bytea.columns.value.encode("QQ==")).toEqual(new Uint8Array([0x41]));
+    expect(resolution.tables.bytea.columns.value.encode("QUI=")).toEqual(
+      new Uint8Array([0x41, 0x42]),
+    );
+    expect(() => resolution.tables.bytea.columns.value.encode("QQ=")).toThrow(TypeError);
     expect(resolution.tables.date.columns.value.encode("2024-02-29")).toBe("2024-02-29");
     expect(() => resolution.tables.date.columns.value.encode("2023-02-29")).toThrow(TypeError);
+    expect(() =>
+      resolution.tables.date.columns.value.decode(Object.create(Date.prototype) as Date),
+    ).toThrow(TypeError);
     expect(resolution.tables.timestampTz.columns.value.encode("2026-08-10T12:34:56.123456Z")).toBe(
       "2026-08-10T12:34:56.123456Z",
     );
+    expect(resolution.tables.timestamp.columns.value.decode("2026-08-10 12:34:56.123456")).toBe(
+      "2026-08-10T12:34:56.123456",
+    );
+    expect(
+      resolution.tables.timestampTz.columns.value.decode("2026-08-10 00:30:00.123456+02"),
+    ).toBe("2026-08-09T22:30:00.123456Z");
+    expect(resolution.tables.timeTz.columns.value.decode("00:30:00+02:00")).toBe("22:30:00Z");
     expect(() => resolution.tables.timestamp.columns.value.encode("2026-08-10T12:34:56Z")).toThrow(
+      TypeError,
+    );
+    expect(resolution.tables.interval.columns.value.encode("P1DT2H3M4.5S")).toBe("P1DT2H3M4.5S");
+    expect(resolution.tables.interval.columns.value.decode("P1DT2H3M4.5S")).toBe("P1DT2H3M4.5S");
+    expect(() => resolution.tables.interval.columns.value.decode("1 day 02:03:04")).toThrow(
       TypeError,
     );
     expect(resolution.tables.macaddr.columns.value.encode("08:00:2b:01:02:03")).toBe(
@@ -380,10 +458,22 @@ describe("PostgreSQL Record resolution", () => {
       },
       decode: (value) => ({ x: Number(value) }),
     });
+    const badDecoder = pg.custom<{ readonly x: number }>({
+      type: { name: "bad_decoder" },
+      encode: (value) => String(value.x),
+      decode: () => undefined as never,
+    });
+    const badEncoder = pg.custom<{ readonly x: number }>({
+      type: { name: "bad_encoder" },
+      encode: () => ({ invalid: true }) as never,
+      decode: (value) => ({ x: Number(value) }),
+    });
     const records = {
       first: explicitRecord(nestedStatesField, pg.array(pg.array(state))),
       second: explicitRecord(statesField, state),
       custom: explicitRecord(vectorField, custom),
+      badDecoder: explicitRecord(vectorField, badDecoder),
+      badEncoder: explicitRecord(vectorField, badEncoder),
     };
     const resolution = resolvePostgresRecords({ records });
     const array = resolution.tables.first.columns.value;
@@ -405,6 +495,8 @@ describe("PostgreSQL Record resolution", () => {
     expect(() => resolution.tables.custom.columns.value.decode(Symbol("invalid"))).toThrow(
       TypeError,
     );
+    expect(() => resolution.tables.badDecoder.columns.value.decode("1")).toThrow(TypeError);
+    expect(() => resolution.tables.badEncoder.columns.value.encode({ x: 1 })).toThrow(TypeError);
   });
 
   it("resolves defaults, identity, generation, references, and null removal", () => {
@@ -474,11 +566,25 @@ describe("PostgreSQL Record resolution", () => {
       },
     });
     expect(table.columns.id.identity?.mode).toBe("always");
-    expect(table.columns.state.default).toBeDefined();
+    const stateDefault = table.columns.state.default;
+    expect(typeof stateDefault).toBe("object");
+    if (typeof stateDefault !== "object" || stateDefault === null) {
+      throw new TypeError("Expected PostgreSQL Statement default");
+    }
+    expect(compileSqlStatement(stateDefault, postgresStatementCompiler)).toEqual({
+      text: "'ready'",
+      segments: ["'ready'"],
+      parameters: [],
+    });
     expect(table.columns.derived.generated).toMatchObject({ mode: "stored" });
-    expect(
-      sql`${resolution.records.jobs.fields.state} FROM ${resolution.records.jobs}`,
-    ).toBeDefined();
+    const referenceStatement = sql`${resolution.records.jobs.fields.state} FROM ${resolution.records.jobs}`;
+    expect(compileSqlStatement(referenceStatement, postgresStatementCompiler)).toEqual({
+      text: '"state" FROM "jobs"."scheduled_jobs"',
+      segments: ['"state" FROM "jobs"."scheduled_jobs"'],
+      parameters: [],
+    });
+    expect(Object.isFrozen(resolution.records.jobs)).toBe(true);
+    expect(Object.isFrozen(resolution.records.jobs.fields)).toBe(true);
     const byDefault = resolvePostgresRecords({
       records: {
         generated: SqlRecord.define({
@@ -572,6 +678,145 @@ describe("PostgreSQL Record resolution", () => {
     ]);
   });
 
+  it("applies identity nullability and excludes top-level SQL NULL from column codecs", () => {
+    const nullable = SqlRecord.define({
+      fields: {
+        value: {
+          select: nullableIntegerField,
+          column: sql.column({
+            postgres: pg.column({ type: pg.integer() as never }),
+          }),
+        },
+      },
+    });
+    const resolution = resolvePostgresRecords({ records: { nullable } });
+    expectTypeOf(resolution.tables.nullable.columns.value.encode)
+      .parameter(0)
+      .toEqualTypeOf<number>();
+
+    const identity = SqlRecord.define({
+      fields: {
+        value: {
+          select: nullableIntegerField,
+          column: sql.column({
+            postgres: pg.column({
+              type: pg.integer() as never,
+              identity: { mode: "always" },
+            }),
+          }),
+        },
+      },
+    });
+    const failure = failureOf(() => resolvePostgresRecords({ records: { identity } }));
+    expect(failure.issues).toMatchObject([
+      {
+        code: "invalid-database-options",
+        path: ["records", "identity", "fields", "value", "column", "notNull"],
+      },
+    ]);
+  });
+
+  it("reports malformed primary keys once", () => {
+    const recordWithPrimaryKey = (primaryKey: unknown) =>
+      SqlRecord.define({
+        table: Object.freeze({ ...sql.table({}), primaryKey }) as never,
+        fields: {
+          id: {
+            select: stringField,
+            column: sql.column({
+              postgres: pg.column({ type: pg.text(), notNull: true }),
+            }),
+          },
+        },
+      });
+
+    for (const primaryKey of [[], "id"]) {
+      const failure = failureOf(() => recordWithPrimaryKey(primaryKey));
+      expect(failure.issues).toEqual([
+        {
+          code: "invalid-primary-key",
+          path: ["table", "primaryKey"],
+          message: "SQL Record primary key must be a nonempty field-name tuple",
+        },
+      ]);
+    }
+  });
+
+  it("enforces the six-dimensional PostgreSQL array limit without recursive crashes", () => {
+    const arrayField = typedJsonField<readonly JsonValue[]>({ type: "array" });
+    const sixDimensions = pg.array(pg.array(pg.array(pg.array(pg.array(pg.array(pg.text()))))));
+    expect(() =>
+      resolvePostgresRecords({
+        records: {
+          accepted: explicitRecord(arrayField, sixDimensions as never),
+        },
+      }),
+    ).not.toThrow();
+
+    const sevenDimensions = pg.array(sixDimensions);
+    const depthFailure = failureOf(() =>
+      resolvePostgresRecords({
+        records: {
+          rejected: explicitRecord(arrayField, sevenDimensions as never),
+        },
+      }),
+    );
+    expect(depthFailure.issues).toMatchObject([
+      {
+        code: "invalid-column-type",
+        message: "PostgreSQL array type exceeds the six-dimensional limit",
+      },
+    ]);
+
+    const formatKey = Symbol.for("@commissary/store/sql-opaque-format");
+    const cyclicType: Record<PropertyKey, unknown> = {};
+    const cyclicOptions: Record<PropertyKey, unknown> = {};
+    const cyclicFormat: Record<PropertyKey, unknown> = {
+      format: "commissary-sql-opaque@1",
+      kind: "column-type",
+      dialect: "postgres",
+      type: "array",
+      options: cyclicOptions,
+    };
+    cyclicType[formatKey] = cyclicFormat;
+    cyclicOptions.element = cyclicType;
+    Object.freeze(cyclicOptions);
+    Object.freeze(cyclicFormat);
+    Object.freeze(cyclicType);
+    const cycleFailure = failureOf(() =>
+      resolvePostgresRecords({
+        records: {
+          cycle: explicitRecord(
+            arrayField,
+            cyclicType as unknown as PostgresColumnType<readonly JsonValue[]>,
+          ),
+        },
+      }),
+    );
+    expect(cycleFailure.issues).toMatchObject([{ code: "invalid-column-type" }]);
+  });
+
+  it("preserves override failures as the SQL definition cause", () => {
+    const overrideCause = new Error("override getter failed");
+    const overrides = Object.defineProperty({}, "valid", {
+      enumerable: true,
+      get: () => {
+        throw overrideCause;
+      },
+    });
+    const failure = failureOf(() =>
+      resolvePostgresRecords({
+        records: { valid: explicitRecord(stringField, pg.text()) },
+        overrides: overrides as never,
+      }),
+    );
+
+    expect(failure).toMatchObject({
+      cause: overrideCause,
+      issues: [{ code: "invalid-override", path: ["overrides"] }],
+    });
+  });
+
   it("aggregates conflicts in stable declaration order and skips dependent checks", () => {
     const sharedNameOne = pg.enum({ name: "shared", values: ["one"] });
     const sharedNameTwo = pg.enum({ name: "shared", values: ["two"] });
@@ -631,9 +876,48 @@ describe("PostgreSQL Record resolution", () => {
     expect(() =>
       resolvePostgresRecords({ records: { copy: explicitRecord(stringField, compatibleCopy) } }),
     ).not.toThrow();
+    const mutableCopy = { ...real } as PostgresColumnType<string>;
+    expect(() => pg.column({ type: mutableCopy })).toThrow(TypeError);
 
     const symbol = Reflect.ownKeys(real).find((key) => typeof key === "symbol");
     expect(symbol).toBeTypeOf("symbol");
+    const numeric = pg.numeric({ precision: 8, scale: 2 });
+    const numericFormat = Reflect.get(numeric, symbol as symbol) as Readonly<
+      Record<PropertyKey, unknown>
+    >;
+    const mutableOptionsType = Object.freeze({
+      [symbol as symbol]: Object.freeze({
+        ...numericFormat,
+        options: { precision: 8, scale: 2 },
+      }),
+    }) as PostgresColumnType<string>;
+    expect(() => pg.column({ type: mutableOptionsType })).toThrow(TypeError);
+
+    const realEnum = pg.enum({ name: "valid_enum", values: ["valid"] });
+    const enumFormat = Reflect.get(realEnum, symbol as symbol) as Readonly<
+      Record<PropertyKey, unknown>
+    >;
+    const enumOptions = Reflect.get(enumFormat, "options") as Readonly<
+      Record<PropertyKey, unknown>
+    >;
+    const oversizedEnum = Object.freeze({
+      [symbol as symbol]: Object.freeze({
+        ...enumFormat,
+        options: Object.freeze({
+          ...enumOptions,
+          values: Object.freeze(["x".repeat(64)]),
+        }),
+      }),
+    }) as PostgresColumnType<string>;
+    const oversizedEnumFailure = failureOf(() =>
+      resolvePostgresRecords({
+        records: { oversized: explicitRecord(stringField, oversizedEnum) },
+      }),
+    );
+    expect(oversizedEnumFailure.issues).toMatchObject([{ code: "invalid-column-type" }]);
+
+    const unfrozenLiteral = { ...sql.literal("fallback") };
+    expect(() => sql.column({ default: unfrozenLiteral as never })).toThrow(TypeError);
     const counterfeit = Object.freeze({
       [symbol as symbol]: Object.freeze({
         format: "commissary-sql-opaque@2",
