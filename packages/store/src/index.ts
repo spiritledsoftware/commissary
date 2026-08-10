@@ -76,38 +76,15 @@ export {
   type UpdateInput,
 } from "./record.js";
 export {
-  SqlDefinitionError,
-  SqlRecord,
-  type SqlColumnDefinition,
-  type SqlColumnType,
-  type SqlCustomEncodedValue,
-  type SqlDefinitionIssue,
-  type SqlDefinitionIssueCode,
-  type SqlFieldDefinition,
-  type SqlFieldReference,
-  type SqlLiteral,
-  type SqlLiteralValue,
-  type SqlRecordDefinition,
-  type SqlRecordReference,
-  type SqlRecordReferences,
-  type SqlTableDefinition,
-} from "./sql-record.js";
-export {
-  SqlStatementError,
-  sql,
-  type SqlOperation,
-  type SqlParameterValue,
-  type SqlStatement,
-  type SqlStatementErrorOptions,
-} from "./sql-statement.js";
-export {
   StoreAdapterContractError,
   StoreAdapterError,
   StoreError,
   StoreHookError,
   StoreValidationError,
   TransactionConflictError,
+  TransactionClosedError,
   TransactionRollbackError,
+  TransactionUnsettledOperationError,
   UnsupportedStoreOperationError,
   type StoreAdapterContractErrorOptions,
   type StoreAdapterContractViolation,
@@ -123,6 +100,7 @@ export {
 export {
   type CountOptions,
   type DeleteOptions,
+  type DefaultStoreCreateInputs,
   type Collection,
   type FindOptions,
   type Project,
@@ -131,5 +109,6 @@ export {
   type Selection,
   type Store,
   type TransactionStore,
+  type StoreCreateInputMap,
   type StoreCollections,
 } from "./store.js";

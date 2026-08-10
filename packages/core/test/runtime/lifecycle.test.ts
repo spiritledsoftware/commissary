@@ -400,6 +400,7 @@ describe("Runtime lifecycle", () => {
     const storeFailure = new StoreAdapterError({
       collection: "executionClaim",
       operation: "delete",
+      writesMayRemain: true,
       cause: new Error("release failed"),
     });
     const store = new Proxy(MemoryThreadStore.make(), {

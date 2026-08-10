@@ -1,11 +1,11 @@
-import { StoreAdapterContractError } from "./store-errors.js";
+import { StoreAdapterContractError } from "../store-errors.js";
+import { SqlStatementError } from "./errors.js";
 import {
   isSqlStatementOpaqueValue,
   readSqlStatementFragments,
-  SqlStatementError,
   type SqlStatement,
   type SqlStatementFragment,
-} from "./sql-statement.js";
+} from "./statement.js";
 
 /** Adapter callbacks that compile and convert one parameter-safe SQL Statement. */
 export interface SqlStatementCompilerOptions<Parameter, DriverParameter> {
@@ -33,6 +33,7 @@ function invalidSqlCompilation(options?: { readonly cause: unknown }): StoreAdap
   return new StoreAdapterContractError({
     operation: "execute",
     violation: "invalid-sql-compilation",
+    writesMayRemain: false,
     ...(options === undefined ? {} : { cause: options.cause }),
   });
 }

@@ -24,6 +24,7 @@ describe("Store errors", () => {
       operation: "find",
       violation: "invalid-selected-record",
       field: "status",
+      writesMayRemain: false,
     });
 
     expect(validation).toBeInstanceOf(StoreError);
@@ -38,6 +39,7 @@ describe("Store errors", () => {
       collection: "jobs",
       operation: "find",
       violation: "invalid-selected-record",
+      writesMayRemain: false,
       field: "status",
     });
   });
@@ -47,10 +49,12 @@ describe("Store errors", () => {
     const collectionFailure = new StoreAdapterError({
       collection: "jobs",
       operation: "find",
+      writesMayRemain: false,
       cause,
     });
     const transactionFailure = new StoreAdapterError({
       operation: "transaction",
+      writesMayRemain: true,
       cause,
     });
 
@@ -58,11 +62,13 @@ describe("Store errors", () => {
       message: "Store adapter failed for Collection 'jobs' during find",
       collection: "jobs",
       operation: "find",
+      writesMayRemain: false,
       cause,
     });
     expect(transactionFailure).toMatchObject({
       message: "Store adapter failed during transaction",
       operation: "transaction",
+      writesMayRemain: true,
       cause,
     });
     expect(transactionFailure).not.toHaveProperty("collection");
@@ -106,7 +112,7 @@ describe("Store errors", () => {
     expect(conflict).toMatchObject({
       cause: conflictCause,
     });
-    expect(conflict).not.toHaveProperty("writesMayRemain");
+    expect(conflict.writesMayRemain).toBe(false);
     expect(new TransactionRollbackError({ callbackFailure, rollbackFailure })).toMatchObject({
       callbackFailure,
       rollbackFailure,

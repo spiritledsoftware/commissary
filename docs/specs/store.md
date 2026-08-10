@@ -853,7 +853,7 @@ export type BaseStoreOperatorTypes = {
 export interface Collection<
   Definition extends RecordDefinition,
   Operators extends StoreOperatorTypes = BaseStoreOperatorTypes,
-  Create extends JsonObject = CreateInput<Definition>,
+  Create extends object = CreateInput<Definition>,
 > {
   readonly find: <
     const Select extends Selection<SelectedRecord<Definition>> | undefined = undefined,
@@ -932,7 +932,7 @@ An omitted `where` matches all Records.
 export type RecordDefinitions = Readonly<Record<string, RecordDefinition>>;
 
 export type StoreCreateInputMap<Definitions extends RecordDefinitions> = {
-  readonly [Name in keyof Definitions]: JsonObject;
+  readonly [Name in keyof Definitions]: object;
 };
 
 export type StoreCollections<
@@ -956,6 +956,8 @@ export interface Store<
 }
 ```
 
+The map constrains each complete create input to an object. It does not constrain values to JSON before Create Field Schemas decode them. The default map remains the inferred `CreateInput` for each Record.
+
 Known and dynamic names use the same map:
 
 ```ts
@@ -971,7 +973,7 @@ Store methods reject their native Promise with specific exported Error classes. 
 
 ```ts
 export type StoreCollectionOperation = "find" | "create" | "update" | "delete" | "count";
-export type StoreOperation = StoreCollectionOperation | "transaction" | "execute";
+export type StoreOperation = StoreCollectionOperation | "query" | "execute" | "transaction";
 export type StoreValidationPhase = "query" | "create" | "update";
 
 export interface StoreValidationIssue {

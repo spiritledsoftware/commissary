@@ -1,6 +1,9 @@
 import {
+  StoreValidationError,
   TransactionConflictError,
+  TransactionClosedError,
   TransactionRollbackError,
+  TransactionUnsettledOperationError,
   type BaseStoreOperatorTypes,
   type FieldSchema,
   type JsonValue,
@@ -63,6 +66,74 @@ const records = {
     },
   },
 } as const;
+
+it("rolls back when a successful callback leaves unawaited work", async () => {
+  const store = MemoryStore.make({ records });
+
+  await expect(
+    store.transaction(async (transaction) => {
+      void transaction.collections.accounts.create({ id: "one", balance: 1 });
+      return "unsafe success";
+    }),
+  ).rejects.toBeInstanceOf(TransactionUnsettledOperationError);
+  await expect(store.collections.accounts.find()).resolves.toEqual([]);
+});
+
+it("rolls back with a caught transaction operation failure", async () => {
+  const store = MemoryStore.make({ records });
+  let operationFailure: unknown;
+
+  const transaction = store.transaction(async (view) => {
+    try {
+      await view.collections.accounts.create({ id: "invalid", balance: Number.NaN });
+    } catch (cause) {
+      operationFailure = cause;
+    }
+  });
+
+  const transactionFailure = await transaction.catch((cause: unknown) => cause);
+  expect(transactionFailure).toBe(operationFailure);
+  expect(transactionFailure).toBeInstanceOf(StoreValidationError);
+  await expect(store.collections.accounts.find()).resolves.toEqual([]);
+});
+
+it("reports transaction operation failures in call order", async () => {
+  const store = MemoryStore.make({ records });
+  let firstFailure: unknown;
+
+  const transaction = store.transaction(async (view) => {
+    const first = view.collections.accounts
+      .create({ id: "first", balance: Number.NaN })
+      .catch((cause: unknown) => {
+        firstFailure = cause;
+      });
+    const second = view.collections.accounts
+      .create({ id: "second", balance: Number.NaN })
+      .catch(() => undefined);
+    await Promise.all([first, second]);
+  });
+
+  const transactionFailure = await transaction.catch((cause: unknown) => cause);
+  expect(transactionFailure).toBe(firstFailure);
+  expect(transactionFailure).toBeInstanceOf(StoreValidationError);
+});
+
+it("closes transaction Collection methods after settlement", async () => {
+  const store = MemoryStore.make({ records });
+  let closedOperation:
+    | (() => Promise<readonly { readonly id: string; readonly balance: number }[]>)
+    | undefined;
+  await store.transaction(async (view) => {
+    closedOperation = () => view.collections.accounts.find();
+  });
+
+  expect(closedOperation).toBeDefined();
+  let result: Promise<readonly { readonly id: string; readonly balance: number }[]> | undefined;
+  expect(() => {
+    result = closedOperation?.();
+  }).not.toThrow();
+  await expect(result).rejects.toBeInstanceOf(TransactionClosedError);
+});
 
 it("serializes overlapping transactions without a lost update", async () => {
   const store = MemoryStore.make({ records });

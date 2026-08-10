@@ -1,58 +1,7 @@
-import { sqlRecordHelpers } from "./sql-record.js";
-import { StoreError } from "./store-errors.js";
+import { sqlRecordHelpers } from "./record.js";
 
 /** A portable scalar SQL parameter accepted by every SQL Store Adapter. */
 export type SqlParameterValue = null | boolean | number | string;
-
-/** The direct SQL operation that owns one Statement or execution failure. */
-export type SqlOperation = "query" | "execute";
-
-/** Configuration for one caller-facing SQL Statement failure. */
-export type SqlStatementErrorOptions = {
-  readonly operation: SqlOperation;
-} & (
-  | { readonly reason: "invalid-statement" }
-  | {
-      readonly reason: "unsupported-parameter";
-      readonly parameterPosition: number;
-    }
-  | {
-      readonly reason: "invalid-parameter";
-      readonly parameterPosition: number;
-      readonly cause?: unknown;
-    }
-);
-
-/** Expected failure while checking or compiling one SQL Statement. */
-export class SqlStatementError extends StoreError {
-  /** Stable error class name. */
-  override readonly name = "SqlStatementError";
-  /** Direct SQL operation that rejected the Statement. */
-  readonly operation: SqlOperation;
-  /** Stable Statement failure classification. */
-  readonly reason: SqlStatementErrorOptions["reason"];
-  /** Zero-based parameter position, when one parameter caused the failure. */
-  declare readonly parameterPosition?: number;
-  /** Original parameter-processing failure, when one callback threw. */
-  declare readonly cause?: unknown;
-
-  /** Create one Statement failure without retaining SQL text or parameter values. */
-  constructor(options: SqlStatementErrorOptions) {
-    const hasCause = options.reason === "invalid-parameter" && Object.hasOwn(options, "cause");
-    super(
-      `SQL Statement failed during ${options.operation}: ${options.reason}`,
-      ...(hasCause ? [{ cause: options.cause }] : []),
-    );
-    this.operation = options.operation;
-    this.reason = options.reason;
-    if (options.reason !== "invalid-statement") {
-      this.parameterPosition = options.parameterPosition;
-    }
-    if (hasCause) {
-      this.cause = options.cause;
-    }
-  }
-}
 
 declare const sqlStatementParameter: unique symbol;
 

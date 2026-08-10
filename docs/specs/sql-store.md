@@ -73,9 +73,13 @@ This specification extends the [Store Architecture Technical Specification](stor
 - Drizzle-independent PostgreSQL, MySQL, and SQLite Record metadata helpers;
 - the adapter-facing database Record resolvers;
 - `SqlStore` and SQL errors;
-- the `@commissary/store/sql-adapter` Statement compiler;
+- the `@commissary/store/sql/adapter` Statement compiler;
 - the `@commissary/store/transaction-adapter` callback runner; and
-- SQL Store conformance types and suites.
+- the `@commissary/store/sql/conformance` types and suites.
+
+Caller-facing SQL contracts and helpers use `@commissary/store/sql`. Generic Store contracts remain at the root, and generic conformance remains at `@commissary/store/conformance`.
+
+Database-specific metadata helpers use `@commissary/store/sql/postgres`, `@commissary/store/sql/mysql`, and `@commissary/store/sql/sqlite`. Each database Record resolver uses the matching `/adapter` subpath.
 
 Concrete adapters own:
 
@@ -575,7 +579,7 @@ const ScheduledJob = SqlRecord.define({
 
 `pg.table()` and `pg.column()` create only PostgreSQL refinements. They do not resolve a catalog or create adapter assets. Do not add `PostgresSql.define()`, `PostgresSqlStore.define()`, or another host-facing PostgreSQL definition factory. A host calls only its selected concrete adapter, such as the later `DrizzlePostgresStore.define()`.
 
-`@commissary/store/postgres-adapter` exposes the synchronous, I/O-free resolver used by concrete adapters:
+`@commissary/store/sql/postgres/adapter` exposes the synchronous, I/O-free resolver used by concrete adapters:
 
 ```ts
 export declare function resolvePostgresRecords<
@@ -893,7 +897,7 @@ const Session = SqlRecord.define({
 
 `mysql.table()` and `mysql.column()` create only MySQL refinements. They do not resolve a catalog or create adapter assets. Do not add `MysqlSql.define()`, `MysqlSqlStore.define()`, `MySqlRecord`, or another host-facing MySQL definition factory. A host calls only its selected concrete adapter.
 
-`@commissary/store/mysql-adapter` exposes the synchronous, I/O-free resolver used by concrete adapters:
+`@commissary/store/sql/mysql/adapter` exposes the synchronous, I/O-free resolver used by concrete adapters:
 
 ```ts
 export declare function resolveMysqlRecords<
@@ -1235,7 +1239,7 @@ const LedgerEntry = SqlRecord.define({
 
 `sqlite.table()` and `sqlite.column()` create only SQLite refinements. They do not resolve a catalog or create adapter assets. Do not add `SqliteSql.define()`, `SqliteStore.define()`, `SqliteRecord`, or another host-facing SQLite definition factory. A host calls only its selected concrete adapter.
 
-`@commissary/store/sqlite-adapter` exposes the synchronous, I/O-free resolver used by concrete adapters:
+`@commissary/store/sql/sqlite/adapter` exposes the synchronous, I/O-free resolver used by concrete adapters:
 
 ```ts
 export declare function resolveSqliteRecords<
@@ -1460,7 +1464,7 @@ SQLite metadata, column types, Statements, and resolutions use opaque format ide
 
 ### SQL Statements
 
-The root public types are:
+The `@commissary/store/sql` public types are:
 
 ```ts
 export type SqlParameterValue = null | boolean | number | string;
@@ -1544,7 +1548,7 @@ sql`${sql.identifier("public")}.${sql.identifier("users")}`;
 
 ### Adapter-facing Statement compiler
 
-The official adapter interface is `@commissary/store/sql-adapter`:
+The official adapter interface is `@commissary/store/sql/adapter`:
 
 ```ts
 export interface SqlStatementCompilerOptions<Parameter, DriverParameter> {
@@ -2047,28 +2051,34 @@ The committed draft asset is `packages/store/prototypes/database-record-speciali
 
 ### Add
 
-- `packages/store/src/sql-record.ts` — definitions, portable column types, literals, reflection, issues, and references.
-- `packages/store/src/postgres-record.ts` — `pg` metadata and column type constructors.
-- `packages/store/src/postgres-adapter.ts` — PostgreSQL Record resolver and readonly adapter assets.
-- PostgreSQL runtime and compile-time tests beside their owning modules.
-- `packages/store/src/mysql-record.ts` — `mysql` metadata and column type constructors.
-- `packages/store/src/mysql-adapter.ts` — MySQL Record resolver and readonly adapter assets.
-- MySQL runtime and compile-time tests beside their owning modules.
-- `packages/store/src/sqlite-record.ts` — `sqlite` metadata and named column type constructors.
-- `packages/store/src/sqlite-adapter.ts` — SQLite Record resolver and readonly adapter assets.
-- SQLite runtime and compile-time tests beside their owning modules.
-- `packages/store/src/sql-statement.ts` — opaque Statement values and `sql` helpers.
-- `packages/store/src/sql-store.ts` — `SqlStore`, results, and SQL errors.
-- `packages/store/src/sql-adapter.ts` — Statement compiler.
+- `packages/store/src/sql/index.ts` — caller-facing SQL public entrypoint.
+- `packages/store/src/sql/record.ts` — definitions, portable column types, literals, reflection, issues, and references.
+- `packages/store/src/sql/postgres/index.ts` — caller-facing PostgreSQL metadata public entrypoint.
+- `packages/store/src/sql/postgres/record.ts` — `pg` metadata and column type constructors.
+- `packages/store/src/sql/postgres/adapter.ts` — PostgreSQL Record resolver and readonly adapter assets.
+- PostgreSQL runtime and compile-time tests under `packages/store/test/sql/postgres`.
+- `packages/store/src/sql/mysql/index.ts` — caller-facing MySQL metadata public entrypoint.
+- `packages/store/src/sql/mysql/record.ts` — `mysql` metadata and column type constructors.
+- `packages/store/src/sql/mysql/adapter.ts` — MySQL Record resolver and readonly adapter assets.
+- MySQL runtime and compile-time tests under `packages/store/test/sql/mysql`.
+- `packages/store/src/sql/sqlite/index.ts` — caller-facing SQLite metadata public entrypoint.
+- `packages/store/src/sql/sqlite/record.ts` — `sqlite` metadata and named column type constructors.
+- `packages/store/src/sql/sqlite/adapter.ts` — SQLite Record resolver and readonly adapter assets.
+- SQLite runtime and compile-time tests under `packages/store/test/sql/sqlite`.
+- `packages/store/src/sql/statement.ts` — opaque Statement values and `sql` helpers.
+- `packages/store/src/sql/errors.ts` — shared SQL failure definitions re-exported by the SQL Store module.
+- `packages/store/src/sql/store.ts` — `SqlStore`, adapter runtime, and result contracts.
+- `packages/store/src/sql/adapter.ts` — Statement compiler.
 - `packages/store/src/transaction-adapter.ts` — callback runner.
-- `packages/store/src/sql-conformance.ts` — SQL Store conformance contracts and suites.
-- SQL runtime and compile-time tests beside their owning modules.
+- `packages/store/src/sql/conformance.ts` — SQL Store conformance contracts and suites.
+- SQL runtime and compile-time tests under `packages/store/test/sql`.
 
 ### Change
 
-- `packages/store/package.json` — export `./sql-adapter`, `./postgres-adapter`, `./mysql-adapter`, `./sqlite-adapter`, and `./transaction-adapter`.
-- `packages/store/src/index.ts` — export caller-facing SQL, PostgreSQL, MySQL, and SQLite metadata values and types.
-- `packages/store/src/conformance.ts` — export the three shared SQL groups.
+- `packages/store/package.json` — export `./sql`, `./sql/adapter`, `./sql/conformance`, the planned `./sql/postgres`, `./sql/postgres/adapter`, `./sql/mysql`, `./sql/mysql/adapter`, `./sql/sqlite`, and `./sql/sqlite/adapter`, plus `./transaction-adapter`.
+- `packages/store/src/sql/index.ts` — export caller-facing portable SQL values and types.
+- `packages/store/src/sql/postgres/index.ts`, `packages/store/src/sql/mysql/index.ts`, and `packages/store/src/sql/sqlite/index.ts` — export each database's metadata values and types.
+- `packages/store/src/sql/conformance.ts` — export the three shared SQL groups.
 - `packages/store/src/record.ts` — store effective Select outputs after create and update normalization.
 - `packages/store/src/store.ts` — keep transaction capability typing and use the strengthened callback contract.
 - `packages/store/src/store-errors.ts` — add SQL and transaction-view errors plus `invalid-column-encoding`.
