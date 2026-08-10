@@ -44,6 +44,14 @@
       "types": "./dist/sql/postgres/adapter.d.ts",
       "import": "./dist/sql/postgres/adapter.js"
     },
+    "./sql/mysql": {
+      "types": "./dist/sql/mysql/index.d.ts",
+      "import": "./dist/sql/mysql/index.js"
+    },
+    "./sql/mysql/adapter": {
+      "types": "./dist/sql/mysql/adapter.d.ts",
+      "import": "./dist/sql/mysql/adapter.js"
+    },
     "./sql/conformance": {
       "types": "./dist/sql/conformance.d.ts",
       "import": "./dist/sql/conformance.js"

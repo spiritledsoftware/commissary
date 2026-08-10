@@ -88,6 +88,38 @@ Record overrides, validates names and physical options, and returns frozen
 table, column, reference, codec, identity, generated-column, and enum assets.
 It performs no database or driver work.
 
+## Refine Records for MySQL
+
+Use `mysql.table()`, `mysql.column()`, and the MySQL column type helpers to add
+MySQL intent without an ORM dependency:
+
+```ts
+import { SqlRecord, sql } from "@commissary/store/sql";
+import { mysql } from "@commissary/store/sql/mysql";
+
+const scheduledJob = SqlRecord.define({
+  table: sql.table({
+    name: "scheduled_jobs",
+    mysql: mysql.table({ database: "jobs" }),
+  }),
+  fields: {
+    id: {
+      select: idSchema,
+      column: sql.column({
+        type: sql.text(),
+        mysql: mysql.column({ type: mysql.bigint(), autoIncrement: true }),
+      }),
+    },
+  },
+});
+```
+
+Concrete MySQL adapters use `resolveMysqlRecords()` from
+`@commissary/store/sql/mysql/adapter`. The synchronous resolver applies Record
+overrides, validates names and physical options, and returns frozen table,
+column, reference, codec, automatic-increment, generated-column, and inline-enum
+assets. It performs no database or driver work.
+
 ## Compose SQL Statements
 
 Use the callable `sql` helper to keep SQL structure separate from bound values. Nested Statements add structure. Plain interpolations add one parameter, including array values:
