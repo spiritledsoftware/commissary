@@ -5,6 +5,12 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   resolve: {
     alias: {
+      "@commissary/store/sql/postgres/adapter": fileURLToPath(
+        new URL("./src/sql/postgres/adapter.ts", import.meta.url),
+      ),
+      "@commissary/store/sql/postgres": fileURLToPath(
+        new URL("./src/sql/postgres/index.ts", import.meta.url),
+      ),
       "@commissary/store/sql/conformance": fileURLToPath(
         new URL("./src/sql/conformance.ts", import.meta.url),
       ),

@@ -128,9 +128,10 @@ export class SqlDefinitionError extends Error {
   readonly issues: readonly SqlDefinitionIssue[];
 
   /** Create one immutable aggregate SQL definition failure. */
-  constructor(issues: readonly SqlDefinitionIssue[]) {
+  constructor(issues: readonly SqlDefinitionIssue[], options?: ErrorOptions) {
     super(
       `SQL Record definition failed with ${issues.length} issue${issues.length === 1 ? "" : "s"}`,
+      options,
     );
     this.issues = Object.freeze(
       issues.map((issue) =>
@@ -162,6 +163,11 @@ export type SqlRecordReferences<Definitions extends RecordDefinitions> = {
   readonly [Name in keyof Definitions]: SqlRecordReference<Definitions[Name]>;
 };
 
+/** Final adapter-facing expression and storage mode for one generated SQL column. */
+export interface SqlResolvedGeneratedColumn {
+  readonly expression: SqlStatement<never>;
+  readonly mode: "virtual" | "stored";
+}
 const sqlOpaqueFormatSymbol = Symbol.for("@commissary/store/sql-opaque-format");
 const sqlOpaqueFormat = "commissary-sql-opaque@1";
 
@@ -178,7 +184,8 @@ export interface SqlColumnTypeFormat {
   readonly options?: Readonly<Record<string, unknown>>;
 }
 
-interface SqlLiteralFormat {
+/** Compatible cross-copy runtime format for one opaque SQL literal. */
+export interface SqlLiteralFormat {
   readonly format: typeof sqlOpaqueFormat;
   readonly kind: "literal";
   readonly value: SqlLiteralValue;
@@ -200,24 +207,29 @@ function isFieldSchemaValue(value: unknown): value is FieldSchema {
   );
 }
 
-function snapshotSqlContainerValue(value: unknown): unknown {
+function snapshotSqlContainerValue(value: unknown, snapshots = new Map<object, object>()): unknown {
   if (isFieldSchemaValue(value)) {
     return value;
   }
   if (Array.isArray(value)) {
-    return Object.freeze(value.map(snapshotSqlContainerValue));
+    const existing = snapshots.get(value);
+    if (existing !== undefined) return existing;
+    const snapshot: unknown[] = [];
+    snapshots.set(value, snapshot);
+    snapshot.push(...value.map((item) => snapshotSqlContainerValue(item, snapshots)));
+    return Object.freeze(snapshot);
   }
   if (!isRecordContainer(value)) {
     return value;
   }
-  return Object.freeze(
-    Object.fromEntries(
-      Reflect.ownKeys(value).map((key) => [
-        key,
-        snapshotSqlContainerValue(Reflect.get(value, key)),
-      ]),
-    ),
-  );
+  const existing = snapshots.get(value);
+  if (existing !== undefined) return existing;
+  const snapshot: Record<PropertyKey, unknown> = {};
+  snapshots.set(value, snapshot);
+  for (const key of Reflect.ownKeys(value)) {
+    Reflect.set(snapshot, key, snapshotSqlContainerValue(Reflect.get(value, key), snapshots));
+  }
+  return Object.freeze(snapshot);
 }
 
 function createSqlOpaqueValue(format: SqlColumnTypeFormat | SqlLiteralFormat): object {
@@ -239,12 +251,13 @@ export function createSqlColumnType<Value extends JsonValue>(
 
 /** Read and validate the compatible cross-copy format of one SQL column type. */
 export function readSqlColumnTypeFormat(value: unknown): SqlColumnTypeFormat | undefined {
-  if (!isRecordContainer(value)) {
+  if (!isRecordContainer(value) || !Object.isFrozen(value)) {
     return undefined;
   }
   const format = Reflect.get(value, sqlOpaqueFormatSymbol);
   if (
     !isRecordContainer(format) ||
+    !Object.isFrozen(format) ||
     Reflect.get(format, "format") !== sqlOpaqueFormat ||
     Reflect.get(format, "kind") !== "column-type"
   ) {
@@ -266,20 +279,22 @@ export function readSqlColumnTypeFormat(value: unknown): SqlColumnTypeFormat | u
   const options = Reflect.get(format, "options");
   if (
     (identity !== undefined && typeof identity !== "symbol") ||
-    (options !== undefined && !isRecordContainer(options))
+    (options !== undefined && (!isRecordContainer(options) || !Object.isFrozen(options)))
   ) {
     return undefined;
   }
   return format as unknown as SqlColumnTypeFormat;
 }
 
-function readSqlLiteralFormat(value: unknown): SqlLiteralFormat | undefined {
-  if (!isRecordContainer(value)) {
+/** Read and validate the compatible cross-copy format of one SQL literal. */
+export function readSqlLiteralFormat(value: unknown): SqlLiteralFormat | undefined {
+  if (!isRecordContainer(value) || !Object.isFrozen(value)) {
     return undefined;
   }
   const format = Reflect.get(value, sqlOpaqueFormatSymbol);
   if (
     !isRecordContainer(format) ||
+    !Object.isFrozen(format) ||
     Reflect.get(format, "format") !== sqlOpaqueFormat ||
     Reflect.get(format, "kind") !== "literal"
   ) {

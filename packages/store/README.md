@@ -56,6 +56,38 @@ const scheduledJob = SqlRecord.define({
 
 Field Schemas still control selected, create, and update types. The SQL metadata does not create a database client or add an ORM dependency.
 
+## Refine Records for PostgreSQL
+
+Use `pg.table()`, `pg.column()`, and the PostgreSQL column type helpers to add
+PostgreSQL intent without an ORM dependency:
+
+```ts
+import { SqlRecord, sql } from "@commissary/store/sql";
+import { pg } from "@commissary/store/sql/postgres";
+
+const scheduledJob = SqlRecord.define({
+  table: sql.table({
+    name: "scheduled_jobs",
+    postgres: pg.table({ schema: "jobs" }),
+  }),
+  fields: {
+    id: {
+      select: idSchema,
+      column: sql.column({
+        type: sql.text(),
+        postgres: pg.column({ type: pg.uuid(), notNull: true }),
+      }),
+    },
+  },
+});
+```
+
+Concrete PostgreSQL adapters use `resolvePostgresRecords()` from
+`@commissary/store/sql/postgres/adapter`. The synchronous resolver applies
+Record overrides, validates names and physical options, and returns frozen
+table, column, reference, codec, identity, generated-column, and enum assets.
+It performs no database or driver work.
+
 ## Compose SQL Statements
 
 Use the callable `sql` helper to keep SQL structure separate from bound values. Nested Statements add structure. Plain interpolations add one parameter, including array values:
