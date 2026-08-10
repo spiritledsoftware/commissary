@@ -78,7 +78,6 @@ export {
 export {
   SqlDefinitionError,
   SqlRecord,
-  sql,
   type SqlColumnDefinition,
   type SqlColumnType,
   type SqlCustomEncodedValue,
@@ -91,9 +90,16 @@ export {
   type SqlRecordDefinition,
   type SqlRecordReference,
   type SqlRecordReferences,
-  type SqlStatement,
   type SqlTableDefinition,
 } from "./sql-record.js";
+export {
+  SqlStatementError,
+  sql,
+  type SqlOperation,
+  type SqlParameterValue,
+  type SqlStatement,
+  type SqlStatementErrorOptions,
+} from "./sql-statement.js";
 export {
   StoreAdapterContractError,
   StoreAdapterError,

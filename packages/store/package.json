@@ -27,6 +27,10 @@
     "./conformance": {
       "types": "./dist/conformance.d.ts",
       "import": "./dist/conformance.js"
+    },
+    "./sql-adapter": {
+      "types": "./dist/sql-adapter.d.ts",
+      "import": "./dist/sql-adapter.js"
     }
   },
   "publishConfig": {

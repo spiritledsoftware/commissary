@@ -9,8 +9,8 @@ export interface StoreValidationIssue {
 /** A Collection operation that can reject with a Store error. */
 export type StoreCollectionOperation = "find" | "create" | "update" | "delete" | "count";
 
-/** A Store operation, including transaction boundaries. */
-export type StoreOperation = StoreCollectionOperation | "transaction";
+/** A Store operation, including direct SQL and transaction boundaries. */
+export type StoreOperation = StoreCollectionOperation | "query" | "execute" | "transaction";
 
 /** The validation stage that rejected Store input or output. */
 export type StoreValidationPhase = "query" | "create" | "update";
@@ -199,6 +199,7 @@ export type StoreAdapterContractViolation =
   | "invalid-selected-record"
   | "generated-value-overwrite"
   | "invalid-expression-result"
+  | "invalid-sql-compilation"
   | "transaction-contract";
 
 /** Configuration for one adapter contract defect. */
@@ -232,9 +233,10 @@ export class StoreAdapterContractError extends Error {
 
   /** Create one adapter contract defect. */
   constructor(options: StoreAdapterContractErrorOptions) {
+    const hasCause = Object.hasOwn(options, "cause");
     super(
       `Store adapter violated '${options.violation}' during ${options.operation}`,
-      ...(options.cause === undefined ? [] : [{ cause: options.cause }]),
+      ...(hasCause ? [{ cause: options.cause }] : []),
     );
     this.operation = options.operation;
     this.violation = options.violation;
@@ -244,7 +246,7 @@ export class StoreAdapterContractError extends Error {
     if (options.field !== undefined) {
       this.field = options.field;
     }
-    if (options.cause !== undefined) {
+    if (hasCause) {
       this.cause = options.cause;
     }
   }

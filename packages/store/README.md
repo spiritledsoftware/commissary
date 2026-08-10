@@ -56,6 +56,30 @@ const scheduledJob = SqlRecord.define({
 
 Field Schemas still control selected, create, and update types. The SQL metadata does not create a database client or add an ORM dependency.
 
+## Compose SQL Statements
+
+Use the callable `sql` helper to keep SQL structure separate from bound values. Nested Statements add structure. Plain interpolations add one parameter, including array values:
+
+```ts
+import { sql } from "@commissary/store";
+
+const statement = sql`
+  SELECT *
+  FROM ${sql.identifier("scheduled_jobs")}
+  WHERE status = ${"pending"}
+`;
+```
+
+Use `sql.raw()` only for trusted SQL structure, `sql.identifier()` for one complete name part, `sql.param()` for an explicit parameter or encoder, and `sql.join()` for immutable Statement composition.
+
+Store adapter packages compile Statements through the separate adapter API:
+
+```ts
+import { compileSqlStatement } from "@commissary/store/sql-adapter";
+```
+
+The compiler quotes identifiers and creates placeholders through adapter callbacks. It returns final text, a fresh ordered parameter array, and frozen exact text segments. It does not parse SQL or call a database driver.
+
 The package exports generic Store and Transaction Store contracts, typed filtering and update expressions, record validation helpers, structured Store errors, and JavaScript fallback operator compilers.
 
 Adapter packages can use `@commissary/store/conformance` to verify observable Store behavior.
