@@ -6,16 +6,18 @@ import {
   type SqlStoreConformanceOutcome,
   type SqlTransactionStoreConformanceStore,
   type TransactionConformanceControls,
-} from "@commissary/store/conformance";
+} from "@commissary/store/sql/conformance";
 import {
   TransactionRollbackError,
-  createSqlStore,
-  sql,
   type Collection,
-  type SqlParameterValue,
-  type SqlStatement,
   type StoreCollections,
 } from "@commissary/store";
+import {
+  createSqlStore,
+  sql,
+  type SqlParameterValue,
+  type SqlStatement,
+} from "@commissary/store/sql";
 import {
   runTransactionCallback,
   type TrackTransactionOperation,

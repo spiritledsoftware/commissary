@@ -1,22 +1,17 @@
-import { compileSqlStatement } from "./sql-adapter.js";
-import { SqlRecord } from "./sql-record.js";
-import {
-  SqlExecutionError,
-  SqlStatementError,
-  type SqlOperation,
-  type SqlStore,
-} from "./sql-store.js";
-import { sql, type SqlParameterValue, type SqlStatement } from "./sql-statement.js";
+import { compileSqlStatement } from "./adapter.js";
+import { SqlRecord } from "./record.js";
+import { SqlExecutionError, SqlStatementError, type SqlOperation, type SqlStore } from "./store.js";
+import { sql, type SqlParameterValue, type SqlStatement } from "./statement.js";
 import {
   StoreAdapterContractError,
   TransactionClosedError,
   TransactionRollbackError,
   TransactionUnsettledOperationError,
-} from "./store-errors.js";
-import type { BaseStoreOperatorTypes } from "./store-expressions.js";
-import type { TransactionStore } from "./store.js";
-import type { FieldSchema } from "./record.js";
-import type { JsonValue } from "./json.js";
+} from "../store-errors.js";
+import type { BaseStoreOperatorTypes } from "../store-expressions.js";
+import type { TransactionStore } from "../store.js";
+import type { FieldSchema } from "../record.js";
+import type { JsonValue } from "../json.js";
 
 type SchemaResult<Output> =
   | { readonly value: Output }

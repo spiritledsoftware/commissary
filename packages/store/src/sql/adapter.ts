@@ -1,11 +1,11 @@
-import { StoreAdapterContractError } from "./store-errors.js";
-import { SqlStatementError } from "./sql-errors.js";
+import { StoreAdapterContractError } from "../store-errors.js";
+import { SqlStatementError } from "./errors.js";
 import {
   isSqlStatementOpaqueValue,
   readSqlStatementFragments,
   type SqlStatement,
   type SqlStatementFragment,
-} from "./sql-statement.js";
+} from "./statement.js";
 
 /** Adapter callbacks that compile and convert one parameter-safe SQL Statement. */
 export interface SqlStatementCompilerOptions<Parameter, DriverParameter> {

@@ -4,18 +4,16 @@ import {
   sqlStoreConformanceRecordDefinitions,
   type SqlStoreConformanceDriverCall,
   type SqlStoreConformanceOutcome,
-} from "@commissary/store/conformance";
+} from "@commissary/store/sql/conformance";
 import {
-  createSqlStore,
-  sql,
   StoreAdapterContractError,
-  type Collection,
   type BaseStoreOperatorTypes,
+  type Collection,
   type CreateInput,
-  type SqlParameterValue,
   type StoreCollections,
   type TransactionStore,
 } from "@commissary/store";
+import { createSqlStore, sql, type SqlParameterValue } from "@commissary/store/sql";
 import { describe, expect, expectTypeOf, it } from "vitest";
 
 type DriverResult = unknown;

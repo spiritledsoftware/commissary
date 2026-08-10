@@ -1,21 +1,23 @@
 import type { StandardJSONSchemaV1 } from "@standard-schema/spec";
 import {
-  SqlDefinitionError,
-  SqlRecord,
   StoreRecord,
   isJsonValue,
-  sql,
   type CreateInput,
   type FieldSchema,
   type JsonValue,
   type SelectedRecord,
-  type SqlColumnType,
-  type SqlLiteral,
   type UpdateInput,
 } from "@commissary/store";
+import {
+  SqlDefinitionError,
+  SqlRecord,
+  sql,
+  type SqlColumnType,
+  type SqlLiteral,
+} from "@commissary/store/sql";
 import { expect, expectTypeOf, it } from "vitest";
 
-import { reflectSqlSelectStorage, resolvePortableSqlRecords } from "../src/sql-record.js";
+import { reflectSqlSelectStorage, resolvePortableSqlRecords } from "../../src/sql/record.js";
 
 type SqlSchemaResult<Output> =
   | { readonly value: Output }

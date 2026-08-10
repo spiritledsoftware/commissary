@@ -1,4 +1,4 @@
-import { StoreError } from "./store-errors.js";
+import { StoreError } from "../store-errors.js";
 
 /** The direct SQL operation that owns one Statement or execution failure. */
 export type SqlOperation = "query" | "execute";

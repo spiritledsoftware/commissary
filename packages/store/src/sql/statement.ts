@@ -1,4 +1,4 @@
-import { sqlRecordHelpers } from "./sql-record.js";
+import { sqlRecordHelpers } from "./record.js";
 
 /** A portable scalar SQL parameter accepted by every SQL Store Adapter. */
 export type SqlParameterValue = null | boolean | number | string;

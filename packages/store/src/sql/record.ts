@@ -1,7 +1,7 @@
 import type { StandardJSONSchemaV1 } from "@standard-schema/spec";
-import type { SqlStatement } from "./sql-statement.js";
+import type { SqlStatement } from "./statement.js";
 
-import { isJsonValue, type JsonValue } from "./json.js";
+import { isJsonValue, type JsonValue } from "../json.js";
 import {
   applyRecordOverrides,
   StoreRecord,
@@ -16,7 +16,7 @@ import {
   type RoundTripFieldDefinitions,
   type RoundTripRecordDefinitions,
   type SelectFieldSchema,
-} from "./record.js";
+} from "../record.js";
 
 /** A scalar value that can be used as a portable SQL literal default. */
 export type SqlLiteralValue = string | number | boolean;

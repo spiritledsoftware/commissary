@@ -2,25 +2,25 @@ import {
   compileSqlStatement,
   type CompiledSqlStatement,
   type SqlStatementCompilerOptions,
-} from "./sql-adapter.js";
-import { SqlExecutionError, SqlStatementError, type SqlOperation } from "./sql-errors.js";
-import type { BaseStoreOperatorTypes, StoreOperatorTypes } from "./store-expressions.js";
-import type { RecordDefinitions } from "./record.js";
-import type { SqlParameterValue, SqlStatement } from "./sql-statement.js";
-import { StoreAdapterContractError } from "./store-errors.js";
+} from "./adapter.js";
+import { SqlExecutionError, SqlStatementError, type SqlOperation } from "./errors.js";
+import type { BaseStoreOperatorTypes, StoreOperatorTypes } from "../store-expressions.js";
+import type { RecordDefinitions } from "../record.js";
+import type { SqlParameterValue, SqlStatement } from "./statement.js";
+import { StoreAdapterContractError } from "../store-errors.js";
 import type {
   DefaultStoreCreateInputs,
   Store,
   StoreCollections,
   StoreCreateInputMap,
-} from "./store.js";
+} from "../store.js";
 export {
   SqlExecutionError,
   SqlStatementError,
   type SqlExecutionErrorOptions,
   type SqlOperation,
   type SqlStatementErrorOptions,
-} from "./sql-errors.js";
+} from "./errors.js";
 
 /** Stable command metadata plus the exact public driver result. */
 export interface SqlCommandResult<out DriverResult = unknown> {

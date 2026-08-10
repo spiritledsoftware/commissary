@@ -3,11 +3,11 @@ import {
   sql,
   type SqlParameterValue,
   type SqlStatement,
-} from "@commissary/store";
+} from "@commissary/store/sql";
 import {
   compileSqlStatement,
   type SqlStatementCompilerOptions,
-} from "@commissary/store/sql-adapter";
+} from "@commissary/store/sql/adapter";
 import { expect, expectTypeOf, it } from "vitest";
 
 const portableCompiler = {

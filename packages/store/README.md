@@ -34,7 +34,7 @@ const users = await store.collections.users.find();
 Use `SqlRecord.define()` to add driver-independent SQL names, storage types, defaults, and primary-key metadata to one Record definition:
 
 ```ts
-import { SqlRecord, sql } from "@commissary/store";
+import { SqlRecord, sql } from "@commissary/store/sql";
 
 const scheduledJob = SqlRecord.define({
   table: sql.table({
@@ -61,7 +61,7 @@ Field Schemas still control selected, create, and update types. The SQL metadata
 Use the callable `sql` helper to keep SQL structure separate from bound values. Nested Statements add structure. Plain interpolations add one parameter, including array values:
 
 ```ts
-import { sql } from "@commissary/store";
+import { sql } from "@commissary/store/sql";
 
 const statement = sql`
   SELECT *
@@ -75,7 +75,7 @@ Use `sql.raw()` only for trusted SQL structure, `sql.identifier()` for one compl
 Store adapter packages compile Statements through the separate adapter API:
 
 ```ts
-import { compileSqlStatement } from "@commissary/store/sql-adapter";
+import { compileSqlStatement } from "@commissary/store/sql/adapter";
 ```
 
 The compiler quotes identifiers and creates placeholders through adapter callbacks. It returns final text, a fresh ordered parameter array, and frozen exact text segments. It does not parse SQL or call a database driver.
@@ -85,15 +85,15 @@ The compiler quotes identifiers and creates placeholders through adapter callbac
 Use `createSqlStore()` to combine a Collection Map with Statement compiler callbacks and one prepared driver call for each result mode:
 
 ```ts
-import { createSqlStore } from "@commissary/store";
+import { createSqlStore } from "@commissary/store/sql";
 ```
 
 The shared runtime returns a native Promise before compilation or adapter work starts. It validates Statement parameters, preserves unchecked query row arrays and exact command driver results, verifies affected-row counts, and reports whether an execution can have occurred. Adapter code supplies driver-result classification but does not expose those callbacks on the Store.
 
 Transaction adapters use `runTransactionCallback()` from `@commissary/store/transaction-adapter` inside their physical transaction operation. The helper closes the Transaction View, drains active operations, records caught operation failures, and selects the rollback cause. The adapter still owns begin, commit, rollback, and resource release.
 
-The package exports generic Store and Transaction Store contracts, typed filtering and update expressions, record validation helpers, structured Store errors, and JavaScript fallback operator compilers.
+The root package exports generic Store and Transaction Store contracts, typed filtering and update expressions, record validation helpers, structured Store errors, and JavaScript fallback operator compilers. SQL-specific contracts and helpers are under `@commissary/store/sql`.
 
-Adapter packages can use `@commissary/store/conformance` to run the package-owned Statement scenarios, SQL Store scenarios, and combined SQL and Collection transaction scenarios.
+Adapter packages use `@commissary/store/conformance` for generic Store scenarios and `@commissary/store/sql/conformance` for Statement, SQL Store, and combined SQL and Collection transaction scenarios.
 
 This package is ESM-only. It supports Node.js 22.14 or later, the current stable Bun and Deno releases, modern browsers, and Cloudflare Workers.

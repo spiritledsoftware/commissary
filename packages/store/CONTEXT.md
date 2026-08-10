@@ -356,7 +356,7 @@ An immutable, composable value that keeps SQL structure separate from bound valu
 _Avoid_: Portable SQL, driver query object, executed query, mutable text-and-values bag
 
 **SQL Statement Compiler**:
-The official adapter-facing `@commissary/store/sql-adapter` operation that checks and compiles an opaque SQL Statement with adapter-supplied identifier quoting, zero-based parameter placeholders, a parameter support check, and parameter conversion. It returns final text, ordered parameters, and exact text segments around each parameter. An ORM adapter can reconstruct safe structure without parsing placeholder-like raw text.
+The official adapter-facing `@commissary/store/sql/adapter` operation that checks and compiles an opaque SQL Statement with adapter-supplied identifier quoting, zero-based parameter placeholders, a parameter support check, and parameter conversion. It returns final text, ordered parameters, and exact text segments around each parameter. An ORM adapter can reconstruct safe structure without parsing placeholder-like raw text.
 _Avoid_: integration API, public Statement data, driver query builder, adapter-specific Statement, placeholder parser
 
 **Compiled SQL Segments**:
