@@ -1,8 +1,16 @@
 {
   "servers": {
+    "oxfmt": {
+      "command": "pnpm",
+      "args": ["exec", "oxfmt", "--lsp"]
+    },
+    "oxlint": {
+      "command": "pnpm",
+      "args": ["exec", "oxlint", "--lsp"]
+    },
     "typescript-language-server": {
-      "command": "tsc",
-      "args": ["--lsp", "--stdio"]
+      "command": "pnpm",
+      "args": ["exec", "tsc", "--lsp", "--stdio"]
     }
   }
 }
