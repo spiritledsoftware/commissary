@@ -350,6 +350,9 @@ describe("SQLite Record resolution", () => {
     expect(() => column("real").encode(Number.POSITIVE_INFINITY)).toThrow(TypeError);
     expect(column("text").decode("exact text")).toBe("exact text");
     expect(() => column("text").encode("bad\0text")).toThrow(TypeError);
+    expect(column("text").encode("supplementary \u{1f600}")).toBe("supplementary \u{1f600}");
+    expect(() => column("text").encode("\ud800")).toThrow(TypeError);
+    expect(() => column("text").decode("\udc00")).toThrow(TypeError);
     expect(column("json").encode({ state: "ready" })).toBe('{"state":"ready"}');
     expect(column("json").decode('[1,"two",null]')).toEqual([1, "two", null]);
     expect(() => column("json").decode("undefined")).toThrow(TypeError);
@@ -361,6 +364,8 @@ describe("SQLite Record resolution", () => {
     );
     expect(column("jsonBlob").decode(new TextEncoder().encode("[1,2]"))).toEqual([1, 2]);
     expect(() => column("jsonBlob").decode(new Uint8Array([0xff]))).toThrow(TypeError);
+    const unpairedJson = column("jsonBlob").encode("\ud800");
+    expect(column("jsonBlob").decode(unpairedJson)).toBe("\ud800");
     expect(column("bigintBlob").encode("-9223372036854775808")).toEqual(
       new TextEncoder().encode("-9223372036854775808"),
     );
@@ -571,6 +576,16 @@ describe("SQLite Record resolution", () => {
           },
         },
       }),
+      nullableNotNull: SqlRecord.define({
+        fields: {
+          value: {
+            select: nullableStringField,
+            column: sql.column({
+              sqlite: sqlite.column({ type: sqlite.text(), notNull: true }),
+            }),
+          },
+        },
+      }),
       mismatchedRowid: SqlRecord.define({
         table: sql.table({ primaryKey: ["other"] }),
         fields: {
@@ -621,6 +636,7 @@ describe("SQLite Record resolution", () => {
       "invalid-database-options",
       "invalid-database-options",
       "invalid-database-options",
+      "invalid-database-options",
     ]);
     expect(failure.issues.map(({ path }) => path)).toEqual([
       ["records", "invalid", "fields", "rowid", "column", "sqlite", "rowid"],
@@ -630,6 +646,7 @@ describe("SQLite Record resolution", () => {
       ["records", "invalid", "fields", "wrongType", "column", "sqlite", "rowid"],
       ["records", "invalid", "fields", "other", "column", "sqlite", "rowid"],
       ["records", "nullableRowid", "fields", "id", "column", "sqlite", "rowid"],
+      ["records", "nullableNotNull", "fields", "value", "column", "sqlite", "notNull"],
       ["records", "mismatchedRowid", "fields", "id", "column", "sqlite", "rowid"],
       ["records", "generatedOnly", "fields", "second", "column", "sqlite", "generated"],
     ]);
