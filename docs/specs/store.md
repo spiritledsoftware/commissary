@@ -853,7 +853,7 @@ export type BaseStoreOperatorTypes = {
 export interface Collection<
   Definition extends RecordDefinition,
   Operators extends StoreOperatorTypes = BaseStoreOperatorTypes,
-  Create extends JsonObject = CreateInput<Definition>,
+  Create extends object = CreateInput<Definition>,
 > {
   readonly find: <
     const Select extends Selection<SelectedRecord<Definition>> | undefined = undefined,

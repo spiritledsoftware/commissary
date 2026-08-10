@@ -601,20 +601,16 @@ export function createSqlTransactionStoreConformanceSuite<DriverParameter, Drive
         });
         await held.started;
         await Promise.resolve();
-        assertSqlConformance(
-          transactionControls.rollbackCount === 0,
-          "rollback began before drain",
-        );
+        const rollbackCountBeforeDrain = transactionControls.rollbackCount;
+        assertSqlConformance(rollbackCountBeforeDrain === 0, "rollback began before drain");
         held.release();
         const failure = await captureSqlConformanceFailure(() => transaction);
         assertSqlConformance(
           failure instanceof TransactionUnsettledOperationError,
           "unsettled operation error",
         );
-        assertSqlConformance(
-          Number(transactionControls.rollbackCount) === 1,
-          "rollback after drain",
-        );
+        const rollbackCountAfterDrain = transactionControls.rollbackCount;
+        assertSqlConformance(rollbackCountAfterDrain === 1, "rollback after drain");
       },
     ),
     scenario(

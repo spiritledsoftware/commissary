@@ -11,6 +11,7 @@ import {
   StoreAdapterContractError,
   type Collection,
   type BaseStoreOperatorTypes,
+  type CreateInput,
   type SqlParameterValue,
   type StoreCollections,
   type TransactionStore,
@@ -255,5 +256,19 @@ describe("SQL Store conformance", () => {
     expectTypeOf<
       Parameters<CustomTransactionView["collections"]["jobs"]["create"]>[0]
     >().toEqualTypeOf<CustomCreateInputs["jobs"]>();
+
+    type DefaultTransactionStore = TransactionStore<typeof sqlStoreConformanceRecordDefinitions>;
+    type DefaultTransactionView = Parameters<
+      Parameters<DefaultTransactionStore["transaction"]>[0]
+    >[0];
+    type DefaultJobsCreateInput = CreateInput<
+      (typeof sqlStoreConformanceRecordDefinitions)["jobs"]
+    >;
+    expectTypeOf<
+      Parameters<DefaultTransactionStore["collections"]["jobs"]["create"]>[0]
+    >().toEqualTypeOf<DefaultJobsCreateInput>();
+    expectTypeOf<
+      Parameters<DefaultTransactionView["collections"]["jobs"]["create"]>[0]
+    >().toEqualTypeOf<DefaultJobsCreateInput>();
   });
 });

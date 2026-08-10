@@ -135,7 +135,7 @@ function compileSqlStoreStatement<DriverParameter>(
         operation,
         cause.violation,
         false,
-        ...(Object.hasOwn(cause, "cause") ? [{ cause: cause.cause }] : []),
+        Object.hasOwn(cause, "cause") ? { cause: cause.cause } : undefined,
       );
     }
     throw sqlContractError(operation, "invalid-sql-compilation", false, { cause });
