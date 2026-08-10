@@ -782,6 +782,8 @@ Do not add aliases such as `int`, `decimal`, or `timestamptz`. Do not expose dri
 
 PostgreSQL can apply its documented declared-type coercion, including `real` precision, `numeric(p,s)` rounding, `char(n)` padding, and temporal precision. The operation and Select Schema parsers validate field values first. The direct PostgreSQL column codec then validates only storage syntax, JSON safety, and type range before database work. It reports an invalid caller-supplied write value as `StoreValidationError`. The `pg.*` metadata constructors never inspect field values. Adapters decode the stored result instead of echoing an input that PostgreSQL can change. An invalid stored direct value uses `StoreAdapterContractViolation` with `"invalid-selected-record"`. `char` decoding removes storage padding, and application strings with trailing spaces fail during direct encoding.
 
+A concrete PostgreSQL adapter must keep `date`, `time`, and `timestamp` values as strings at the resolved codec boundary. If its driver parses those OIDs into `Date` or other objects, the adapter must register text parsers or perform an equivalent lossless string conversion before calling the direct codec.
+
 #### Arrays, enums, and custom types
 
 `pg.array(element)` creates one application dimension. Nest it for more dimensions. Values must be rectangular. Selected PostgreSQL arrays must use one-based lower bounds because a plain JavaScript array cannot preserve another bound. SQL `NULL` elements are preserved and then checked by the Select Schema.

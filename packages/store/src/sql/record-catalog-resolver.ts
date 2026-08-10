@@ -169,6 +169,7 @@ export function sqlEvidenceMatchesApplication(
 }
 
 function hasNestedOwnValue(value: unknown, path: readonly string[]): boolean {
+  if (path.length === 0) return value !== undefined;
   let current = value;
   for (const key of path) {
     if (!isSqlRecordContainer(current) || !Object.hasOwn(current, key)) return false;

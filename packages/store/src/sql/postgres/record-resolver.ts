@@ -65,6 +65,15 @@ function integerRange(type: PostgresResolvedColumnType): readonly [bigint, bigin
       return undefined;
   }
 }
+const postgresIdentitySequenceOptionKeys = new Set([
+  "name",
+  "startWith",
+  "incrementBy",
+  "minValue",
+  "maxValue",
+  "cache",
+  "cycle",
+]);
 
 function resolveIdentity(
   value: unknown,
@@ -107,6 +116,17 @@ function resolveIdentity(
     );
     return undefined;
   }
+  for (const key of Reflect.ownKeys(sequence)) {
+    if (typeof key !== "string" || !postgresIdentitySequenceOptionKeys.has(key)) {
+      issues.push(
+        issue(
+          "invalid-database-options",
+          [...path, "sequence", String(key)],
+          `PostgreSQL identity sequence option '${String(key)}' is not supported`,
+        ),
+      );
+    }
+  }
   let name: Readonly<PostgresQualifiedName> | undefined;
   if (Object.hasOwn(sequence, "name")) {
     const candidate = Reflect.get(sequence, "name");
@@ -135,7 +155,15 @@ function resolveIdentity(
   for (const key of ["startWith", "incrementBy", "minValue", "maxValue", "cache"] as const) {
     if (!Object.hasOwn(sequence, key)) continue;
     const integer = normalizeExactInteger(Reflect.get(sequence, key));
-    if (integer === undefined || integer < range[0] || integer > range[1]) {
+    if (integer === undefined) {
+      issues.push(
+        issue(
+          "invalid-database-options",
+          [...path, "sequence", key],
+          `PostgreSQL identity sequence '${key}' must be an exact integer`,
+        ),
+      );
+    } else if (integer < range[0] || integer > range[1]) {
       issues.push(
         issue(
           "invalid-database-options",
@@ -273,22 +301,6 @@ function resolveRuntime(
     const { recordName, definition, table } = record;
     const recordPath = ["records", recordName] as const;
     const postgresValue = table === undefined ? undefined : Reflect.get(table, "postgres");
-    if (isRecordContainer(postgresValue)) {
-      for (const key of ["schema", "name"] as const) {
-        if (Object.hasOwn(postgresValue, key)) {
-          const candidate = Reflect.get(postgresValue, key);
-          if (candidate !== null && !isValidPostgresName(candidate)) {
-            state.issues.push(
-              issue(
-                "invalid-name",
-                [...recordPath, "table", "postgres", key],
-                `PostgreSQL table ${key} is invalid`,
-              ),
-            );
-          }
-        }
-      }
-    }
     const postgresTable = readPostgresMetadata(
       "table",
       postgresValue,
@@ -323,18 +335,6 @@ function resolveRuntime(
       const fieldPath = [...recordPath, "fields", fieldName] as const;
       const postgresColumnValue =
         column === undefined ? undefined : Reflect.get(column, "postgres");
-      if (isRecordContainer(postgresColumnValue) && Object.hasOwn(postgresColumnValue, "name")) {
-        const candidate = Reflect.get(postgresColumnValue, "name");
-        if (candidate !== null && !isValidPostgresName(candidate)) {
-          state.issues.push(
-            issue(
-              "invalid-name",
-              [...fieldPath, "column", "postgres", "name"],
-              `PostgreSQL column '${fieldName}' name is invalid`,
-            ),
-          );
-        }
-      }
       const postgresColumn = readPostgresMetadata(
         "column",
         postgresColumnValue,
@@ -384,7 +384,11 @@ function resolveRuntime(
         typeof explicitNotNull === "boolean"
           ? explicitNotNull
           : selectedPresence === "required" && (physical.application === "json" || !selectedNull);
-      if (explicitNotNull !== undefined && typeof explicitNotNull !== "boolean") {
+      if (
+        explicitNotNull !== undefined &&
+        explicitNotNull !== null &&
+        typeof explicitNotNull !== "boolean"
+      ) {
         state.issues.push(
           issue(
             "invalid-database-options",

@@ -305,8 +305,8 @@ describe("MySQL Record resolution", () => {
     expect(() => table.columns.integer.decode("42")).toThrow(TypeError);
     expect(table.columns.integer.encode(Number.MAX_SAFE_INTEGER)).toBe(Number.MAX_SAFE_INTEGER);
     expect(table.columns.integer.decode(Number.MAX_SAFE_INTEGER)).toBe(Number.MAX_SAFE_INTEGER);
-    expect(() => table.columns.integer.encode(Number.MAX_SAFE_INTEGER + 2)).toThrow(TypeError);
-    expect(() => table.columns.integer.decode(Number.MAX_SAFE_INTEGER + 2)).toThrow(TypeError);
+    expect(() => table.columns.integer.encode(Number.MAX_SAFE_INTEGER + 1)).toThrow(TypeError);
+    expect(() => table.columns.integer.decode(Number.MAX_SAFE_INTEGER + 1)).toThrow(TypeError);
     expect(Object.isFrozen(resolution)).toBe(true);
     expect(Object.isFrozen(table.columns)).toBe(true);
   });
@@ -630,6 +630,9 @@ describe("MySQL Record resolution", () => {
       ["records", "invalid", "fields", "nullableSerial", "column", "notNull"],
       ["records", "invalid", "fields", "nullableSerial", "column", "mysql", "type"],
     ]);
+    expect(
+      failure.issues.find(({ path }) => path.includes("generatedParameter"))?.message,
+    ).toContain("must not contain SQL parameters");
     const autoDefaultMessages = failure.issues
       .filter(({ path }) => path[3] === "autoDefault")
       .map(({ message }) => message);
@@ -713,6 +716,31 @@ describe("MySQL Record resolution", () => {
       {
         code: "duplicate-name",
         path: ["records", "tableExpanded", "table", "mysql", "name"],
+      },
+    ]);
+  });
+
+  it("uses full Unicode case folding for column collisions", () => {
+    const records = {
+      columns: SqlRecord.define({
+        fields: {
+          sharpS: {
+            select: stringField,
+            column: sql.column({ type: sql.text(), mysql: mysql.column({ name: "Straße" }) }),
+          },
+          expanded: {
+            select: stringField,
+            column: sql.column({ type: sql.text(), mysql: mysql.column({ name: "STRASSE" }) }),
+          },
+        },
+      }),
+    };
+    const failure = failureOf(() => resolveMysqlRecords({ records }));
+
+    expect(failure.issues).toMatchObject([
+      {
+        code: "duplicate-name",
+        path: ["records", "columns", "fields", "expanded", "column", "mysql", "name"],
       },
     ]);
   });

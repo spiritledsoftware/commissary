@@ -1,6 +1,7 @@
 import { isJsonValue, type JsonValue } from "../../json.js";
 import { isSqlRecordContainer as isRecordContainer } from "../record-catalog-resolver.js";
 import type {
+  PostgresArrayDriverValue,
   PostgresDirectTypeName,
   PostgresEncodedValue,
   RuntimePhysicalType,
@@ -121,6 +122,10 @@ interface PostgresTimeParts {
   readonly fraction: string;
   readonly offsetMinutes?: number;
 }
+// ISO 8601 year 0000 represents 1 BC, so PostgreSQL's 4713 BC lower bound is -4712.
+const postgresMinimumIsoYear = -4_712n;
+const postgresMaximumDateIsoYear = 5_874_897n;
+const postgresMaximumTimestampIsoYear = 294_276n;
 
 function postgresDaysInMonth(year: bigint, month: number): number {
   return [31, leapYear(year) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1] ?? 0;
@@ -145,9 +150,13 @@ function parsePostgresDate(value: string): PostgresDateParts | undefined {
     day,
   };
 }
+function postgresDateInRange(parts: PostgresDateParts, maximumYear: bigint): boolean {
+  return parts.year >= postgresMinimumIsoYear && parts.year <= maximumYear;
+}
 
 function validDate(value: string): boolean {
-  return parsePostgresDate(value) !== undefined;
+  const parts = parsePostgresDate(value);
+  return parts !== undefined && postgresDateInRange(parts, postgresMaximumDateIsoYear);
 }
 
 function parsePostgresTimeZone(value: string): number | undefined {
@@ -247,9 +256,11 @@ function normalizePostgresTime(value: string, withTimezone: boolean): string | u
 
 function validTimestamp(value: string, withTimezone: boolean): boolean {
   const separator = value.indexOf("T");
+  if (separator <= 0) return false;
+  const date = parsePostgresDate(value.slice(0, separator));
   return (
-    separator > 0 &&
-    parsePostgresDate(value.slice(0, separator)) !== undefined &&
+    date !== undefined &&
+    postgresDateInRange(date, postgresMaximumTimestampIsoYear) &&
     parsePostgresTime(value.slice(separator + 1), withTimezone, false) !== undefined
   );
 }
@@ -261,10 +272,19 @@ function normalizePostgresTimestamp(value: string, withTimezone: boolean): strin
   const timeText = match[2] ?? "";
   const date = parsePostgresDate(dateText);
   const time = parsePostgresTime(timeText, withTimezone, true);
-  if (date === undefined || time === undefined) return undefined;
+  if (
+    date === undefined ||
+    !postgresDateInRange(date, postgresMaximumTimestampIsoYear) ||
+    time === undefined
+  ) {
+    return undefined;
+  }
   if (!withTimezone) return `${dateText}T${timeText}`;
   const normalized = normalizePostgresClock(time);
-  return `${formatPostgresDate(shiftPostgresDate(date, normalized.dayOffset))}T${normalized.time}Z`;
+  const normalizedDate = shiftPostgresDate(date, normalized.dayOffset);
+  return postgresDateInRange(normalizedDate, postgresMaximumTimestampIsoYear)
+    ? `${formatPostgresDate(normalizedDate)}T${normalized.time}Z`
+    : undefined;
 }
 
 function temporalCodec(
@@ -290,7 +310,7 @@ function validInterval(value: string): boolean {
 }
 
 function validUuid(value: string): boolean {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value);
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value);
 }
 
 function validMac(value: string, octets: number): boolean {
@@ -451,26 +471,32 @@ function dimensions(value: readonly unknown[], depth = 0): readonly number[] | u
   return Object.freeze([value.length, ...first]);
 }
 
+function isPostgresArrayDriverValue(value: unknown): value is PostgresArrayDriverValue {
+  if (!isRecordContainer(value)) return false;
+  const values = Reflect.get(value, "values");
+  const lowerBounds = Reflect.get(value, "lowerBounds");
+  return (
+    Array.isArray(values) &&
+    Array.isArray(lowerBounds) &&
+    lowerBounds.every((bound) => typeof bound === "number")
+  );
+}
+
 export function arrayCodec(
   element: RuntimePhysicalType,
 ): Pick<RuntimePhysicalType, "application" | "encode" | "decode"> {
   const readInput = (value: unknown, checkBounds: boolean): readonly unknown[] => {
-    const input =
-      checkBounds && isRecordContainer(value) && Array.isArray(Reflect.get(value, "values"))
-        ? Reflect.get(value, "values")
-        : value;
+    const driverValue = checkBounds && isPostgresArrayDriverValue(value) ? value : undefined;
+    const input = driverValue === undefined ? value : driverValue.values;
     if (!Array.isArray(input)) return invalidValue("array");
     const shape = dimensions(input);
     if (shape === undefined || shape.length > 6) return invalidValue("array");
-    if (checkBounds && isRecordContainer(value) && Object.hasOwn(value, "lowerBounds")) {
-      const lowerBounds = Reflect.get(value, "lowerBounds");
-      if (
-        !Array.isArray(lowerBounds) ||
-        lowerBounds.length !== shape.length ||
-        lowerBounds.some((bound) => bound !== 1)
-      ) {
-        return invalidValue("array lower bound");
-      }
+    if (
+      driverValue !== undefined &&
+      (driverValue.lowerBounds.length !== shape.length ||
+        driverValue.lowerBounds.some((bound) => bound !== 1))
+    ) {
+      return invalidValue("array lower bound");
     }
     return input;
   };

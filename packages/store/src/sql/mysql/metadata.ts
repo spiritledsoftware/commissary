@@ -73,12 +73,12 @@ export function validStatement(
     issues.push(issue(code, path, `${owner} requires a compatible SQL Statement`));
     return undefined;
   }
-  if (fragments.length === 0 || !hasMysqlStatementStructure(fragments)) {
-    issues.push(issue(code, path, `${owner} requires nonempty SQL structure`));
-    return undefined;
-  }
   if (fragments.some((fragment) => fragment.kind === "parameter")) {
     issues.push(issue(code, path, `${owner} must not contain SQL parameters`));
+    return undefined;
+  }
+  if (fragments.length === 0 || !hasMysqlStatementStructure(fragments)) {
+    issues.push(issue(code, path, `${owner} requires nonempty SQL structure`));
     return undefined;
   }
   // SAFETY: Compatible opaque structure was checked and contains no parameter fragment.

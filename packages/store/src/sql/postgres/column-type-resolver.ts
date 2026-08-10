@@ -11,13 +11,7 @@ import {
   type SqlPortableTypeName,
 } from "../record.js";
 import type { SqlStatement } from "../statement.js";
-import {
-  arrayCodec,
-  directCodec,
-  invalidValue,
-  safeIntegerCodec,
-  stringCodec,
-} from "./column-codecs.js";
+import { arrayCodec, directCodec, safeIntegerCodec, stringCodec } from "./column-codecs.js";
 import { isValidPostgresName, qualifiedReference, validDatabaseStatement } from "./metadata.js";
 import {
   isPostgresCharacterLengthOption,
@@ -300,11 +294,17 @@ function resolvePostgresType(
     });
     const encodeValue = (value: unknown): PostgresEncodedValue => {
       const converted = (encode as (input: unknown) => unknown)(value);
-      return isCustomEncodedValue(converted) ? converted : invalidValue("custom encoder output");
+      if (!isCustomEncodedValue(converted)) {
+        throw new TypeError("PostgreSQL custom encoder returned an invalid value");
+      }
+      return converted;
     };
     const decodeValue = (value: unknown): JsonValue => {
       const converted = (decode as (input: unknown) => unknown)(value);
-      return isJsonValue(converted) ? converted : invalidValue("custom decoder output");
+      if (!isJsonValue(converted)) {
+        throw new TypeError("PostgreSQL custom decoder returned an invalid value");
+      }
+      return converted;
     };
     return Object.freeze({
       resolved,

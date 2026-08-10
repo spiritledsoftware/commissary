@@ -466,9 +466,10 @@ function resolveRuntime(
 
     const seenColumnNames = new Map<string, string>();
     for (const asset of columnNameAssets) {
-      const earlier = seenColumnNames.get(asset.name);
+      const foldedName = foldMysqlName(asset.name);
+      const earlier = seenColumnNames.get(foldedName);
       if (earlier === undefined) {
-        seenColumnNames.set(asset.name, asset.fieldName);
+        seenColumnNames.set(foldedName, asset.fieldName);
       } else {
         state.issues.push(
           issue(

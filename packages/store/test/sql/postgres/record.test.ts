@@ -406,6 +406,12 @@ describe("PostgreSQL Record resolution", () => {
       resolution.tables.uuid.columns.value.encode("123e4567-e89b-42d3-a456-426614174000"),
     ).toBe("123e4567-e89b-42d3-a456-426614174000");
     expect(() => resolution.tables.uuid.columns.value.encode("not-a-uuid")).toThrow(TypeError);
+    expect(
+      resolution.tables.uuid.columns.value.encode("00000000-0000-0000-0000-000000000000"),
+    ).toBe("00000000-0000-0000-0000-000000000000");
+    expect(
+      resolution.tables.uuid.columns.value.decode("ffffffff-ffff-ffff-ffff-ffffffffffff"),
+    ).toBe("ffffffff-ffff-ffff-ffff-ffffffffffff");
     expect(resolution.tables.bytea.columns.value.decode(new Uint8Array([0, 1, 2]))).toBe("AAEC");
     expect(resolution.tables.bytea.columns.value.encode("AAEC")).toEqual(new Uint8Array([0, 1, 2]));
     expect(resolution.tables.bytea.columns.value.encode("QQ==")).toEqual(new Uint8Array([0x41]));
@@ -415,6 +421,17 @@ describe("PostgreSQL Record resolution", () => {
     expect(() => resolution.tables.bytea.columns.value.encode("QQ=")).toThrow(TypeError);
     expect(resolution.tables.date.columns.value.encode("2024-02-29")).toBe("2024-02-29");
     expect(() => resolution.tables.date.columns.value.encode("2023-02-29")).toThrow(TypeError);
+    expect(resolution.tables.date.columns.value.encode("0000-01-01")).toBe("0000-01-01");
+    expect(resolution.tables.date.columns.value.encode("-4712-01-01")).toBe("-4712-01-01");
+    expect(resolution.tables.date.columns.value.encode("5874897-12-31")).toBe("5874897-12-31");
+    expect(() => resolution.tables.date.columns.value.encode("-4713-12-31")).toThrow(TypeError);
+    expect(() => resolution.tables.date.columns.value.encode("5874898-01-01")).toThrow(TypeError);
+    expect(resolution.tables.timestamp.columns.value.encode("294276-12-31T23:59:59.999999")).toBe(
+      "294276-12-31T23:59:59.999999",
+    );
+    expect(() => resolution.tables.timestamp.columns.value.encode("294277-01-01T00:00:00")).toThrow(
+      TypeError,
+    );
     expect(() =>
       resolution.tables.date.columns.value.decode(Object.create(Date.prototype) as Date),
     ).toThrow(TypeError);
@@ -488,6 +505,7 @@ describe("PostgreSQL Record resolution", () => {
     expect(() => array.encode([["pending"], ["ready", "pending"]])).toThrow(TypeError);
     expect(() => array.decode({ values: [["pending"]], lowerBounds: [0, 1] })).toThrow(TypeError);
     expect(array.decode({ values: [["pending"]], lowerBounds: [1, 1] })).toEqual([["pending"]]);
+    expect(() => array.decode({ values: [["pending"]] })).toThrow(TypeError);
     expect(resolution.tables.custom.columns.value.encode({ x: 2 })).toBe("2");
     expect(resolution.tables.custom.columns.value.decode("3")).toEqual({ x: 3 });
     expect(() => resolution.tables.custom.columns.value.encode({ x: -1 })).toThrow(encoderFailure);
@@ -495,8 +513,12 @@ describe("PostgreSQL Record resolution", () => {
     expect(() => resolution.tables.custom.columns.value.decode(Symbol("invalid"))).toThrow(
       TypeError,
     );
-    expect(() => resolution.tables.badDecoder.columns.value.decode("1")).toThrow(TypeError);
-    expect(() => resolution.tables.badEncoder.columns.value.encode({ x: 1 })).toThrow(TypeError);
+    expect(() => resolution.tables.badDecoder.columns.value.decode("1")).toThrow(
+      "PostgreSQL custom decoder returned an invalid value",
+    );
+    expect(() => resolution.tables.badEncoder.columns.value.encode({ x: 1 })).toThrow(
+      "PostgreSQL custom encoder returned an invalid value",
+    );
   });
 
   it("resolves defaults, identity, generation, references, and null removal", () => {
@@ -676,6 +698,9 @@ describe("PostgreSQL Record resolution", () => {
       ["records", "invalid", "fields", "generatedDefault", "column", "postgres", "generated"],
       ["records", "invalid", "fields", "generatedParameter", "column", "postgres", "generated"],
     ]);
+    expect(
+      failure.issues.find(({ path }) => path.includes("generatedParameter"))?.message,
+    ).toContain("must not contain SQL parameters");
   });
 
   it("applies identity nullability and excludes top-level SQL NULL from column codecs", () => {
@@ -712,6 +737,119 @@ describe("PostgreSQL Record resolution", () => {
       {
         code: "invalid-database-options",
         path: ["records", "identity", "fields", "value", "column", "notNull"],
+      },
+    ]);
+  });
+
+  it("clears inherited PostgreSQL nullability with a null override", () => {
+    const records = {
+      nullable: SqlRecord.define({
+        fields: {
+          value: {
+            select: nullableStringField,
+            column: sql.column({
+              postgres: pg.column({ type: pg.text(), notNull: true }),
+            }),
+          },
+        },
+      }),
+    };
+    const resolution = resolvePostgresRecords({
+      records,
+      overrides: {
+        nullable: {
+          fields: {
+            value: { column: { postgres: pg.column({ notNull: null }) } },
+          },
+        },
+      },
+    });
+
+    expect(resolution.tables.nullable.columns.value.notNull).toBe(false);
+  });
+
+  it("rejects unsupported and invalid PostgreSQL identity sequence options", () => {
+    const validMetadata = pg.column({
+      type: pg.smallint(),
+      identity: { mode: "always", sequence: { cache: 1 } },
+    });
+    const recordForSequence = (sequence: Readonly<Record<string, unknown>>) =>
+      SqlRecord.define({
+        fields: {
+          id: {
+            select: integerField,
+            column: sql.column({
+              postgres: Object.freeze({
+                ...validMetadata,
+                identity: Object.freeze({
+                  mode: "always" as const,
+                  sequence: Object.freeze(sequence),
+                }),
+              }),
+            }),
+          },
+        },
+      });
+
+    const unsupported = failureOf(() =>
+      resolvePostgresRecords({
+        records: { unsupported: recordForSequence({ cache: 1, unexpected: true }) },
+      }),
+    );
+    expect(unsupported.issues).toMatchObject([
+      {
+        code: "invalid-database-options",
+        path: [
+          "records",
+          "unsupported",
+          "fields",
+          "id",
+          "column",
+          "postgres",
+          "identity",
+          "sequence",
+          "unexpected",
+        ],
+      },
+    ]);
+
+    const invalidInteger = failureOf(() =>
+      resolvePostgresRecords({
+        records: { invalidInteger: recordForSequence({ cache: "1" }) },
+      }),
+    );
+    expect(invalidInteger.issues[0]?.message).toContain("must be an exact integer");
+
+    const outOfRange = failureOf(() =>
+      resolvePostgresRecords({
+        records: { outOfRange: recordForSequence({ cache: 40_000 }) },
+      }),
+    );
+    expect(outOfRange.issues[0]?.message).toContain("outside the column range");
+  });
+
+  it("reports each invalid effective PostgreSQL name once", () => {
+    const validTable = pg.table({ name: "valid_table" });
+    const validColumn = pg.column({ name: "valid_column", type: pg.text() });
+    const malformed = SqlRecord.define({
+      table: sql.table({ postgres: Object.freeze({ ...validTable, name: "" }) }),
+      fields: {
+        value: {
+          select: stringField,
+          column: sql.column({ postgres: Object.freeze({ ...validColumn, name: "" }) }),
+        },
+      },
+    });
+    const failure = failureOf(() => resolvePostgresRecords({ records: { malformed } }));
+
+    expect(failure.issues).toMatchObject([
+      {
+        code: "invalid-name",
+        path: ["records", "malformed", "table", "name"],
+      },
+      {
+        code: "invalid-name",
+        path: ["records", "malformed", "fields", "value", "column", "name"],
       },
     ]);
   });
