@@ -87,6 +87,7 @@ it("classifies Store failures without copying sensitive causes into messages", (
   const adapterFailure = new StoreAdapterError({
     collection: "jobs",
     operation: "update",
+    writesMayRemain: true,
     cause,
   });
   const conflict = new TransactionConflictError(cause);
@@ -98,6 +99,7 @@ it("classifies Store failures without copying sensitive causes into messages", (
     collection: "jobs",
     operation: "create",
     violation: "invalid-selected-record",
+    writesMayRemain: true,
     field: "id",
     cause,
   });
@@ -113,6 +115,7 @@ it("classifies Store failures without copying sensitive causes into messages", (
     feature: "find.limit",
   });
   expect(adapterFailure.cause).toBe(cause);
+  expect(adapterFailure.writesMayRemain).toBe(true);
   expect(conflict.cause).toBe(cause);
   expect(rollback).toMatchObject({
     callbackFailure: cause,
@@ -125,6 +128,7 @@ it("classifies Store failures without copying sensitive causes into messages", (
     collection: "jobs",
     operation: "create",
     violation: "invalid-selected-record",
+    writesMayRemain: true,
     field: "id",
     cause,
   });

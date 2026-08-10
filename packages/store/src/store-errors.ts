@@ -16,7 +16,10 @@ export type StoreOperation = StoreCollectionOperation | "query" | "execute" | "t
 export type StoreValidationPhase = "query" | "create" | "update";
 
 /** Base class for expected Store operational failures. */
-export abstract class StoreError extends Error {}
+export abstract class StoreError extends Error {
+  /** Whether one or more writes from the failed operation can remain. */
+  abstract readonly writesMayRemain: boolean;
+}
 
 /** Configuration for one caller-facing Store validation failure. */
 export interface StoreValidationErrorOptions {
@@ -36,6 +39,8 @@ export interface StoreValidationErrorOptions {
 export class StoreValidationError extends StoreError {
   /** Stable error class name. */
   override readonly name = "StoreValidationError";
+  /** Validation fails before the Store performs a write. */
+  readonly writesMayRemain = false;
   /** Collection that rejected the value. */
   readonly collection: string;
   /** Collection operation that rejected the value. */
@@ -66,6 +71,8 @@ export class StoreValidationError extends StoreError {
 export class StoreHookError extends StoreError {
   /** Stable error class name. */
   override readonly name = "StoreHookError";
+  /** Hook failure occurs before create validation or persistence. */
+  readonly writesMayRemain = false;
   /** Hook point that failed. */
   readonly hook = "beforeCreate";
   /** Collection whose hook failed. */
@@ -95,6 +102,8 @@ export interface UnsupportedStoreOperationErrorOptions {
 export class UnsupportedStoreOperationError extends StoreError {
   /** Stable error class name. */
   override readonly name = "UnsupportedStoreOperationError";
+  /** Unsupported operations perform no Store work. */
+  readonly writesMayRemain = false;
   /** Collection that cannot support the feature. */
   readonly collection: string;
   /** Collection operation that cannot support the feature. */
@@ -121,6 +130,8 @@ export interface StoreAdapterErrorOptions {
   readonly operation: StoreOperation;
   /** Original adapter or backend failure. */
   readonly cause: unknown;
+  /** Whether one or more writes from the failed adapter operation can remain. */
+  readonly writesMayRemain: boolean;
 }
 
 /** Expected Store failure caused by an adapter or backend operation. */
@@ -129,6 +140,8 @@ export class StoreAdapterError extends StoreError {
   override readonly name = "StoreAdapterError";
   /** Original adapter or backend failure. */
   override readonly cause: unknown;
+  /** Whether one or more writes from the failed adapter operation can remain. */
+  readonly writesMayRemain: boolean;
   /** Collection that failed, when present. */
   declare readonly collection?: string;
   /** Store operation that failed. */
@@ -143,6 +156,7 @@ export class StoreAdapterError extends StoreError {
       { cause: options.cause },
     );
     this.cause = options.cause;
+    this.writesMayRemain = options.writesMayRemain;
     this.operation = options.operation;
     if (options.collection !== undefined) {
       this.collection = options.collection;
@@ -154,6 +168,8 @@ export class StoreAdapterError extends StoreError {
 export class TransactionConflictError extends StoreError {
   /** Stable error class name. */
   override readonly name = "TransactionConflictError";
+  /** A reported conflict commits no transaction writes. */
+  readonly writesMayRemain = false;
   /** Optional adapter conflict detail. */
   declare readonly cause?: unknown;
 
@@ -163,6 +179,32 @@ export class TransactionConflictError extends StoreError {
     if (cause !== undefined) {
       this.cause = cause;
     }
+  }
+}
+
+/** Expected failure when a method uses a closed Transaction View. */
+export class TransactionClosedError extends StoreError {
+  /** Stable error class name. */
+  override readonly name = "TransactionClosedError";
+  /** A closed View starts no Store work. */
+  readonly writesMayRemain = false;
+
+  /** Create one use-after-transaction-scope failure. */
+  constructor() {
+    super("Store transaction View is closed");
+  }
+}
+
+/** Expected failure when a successful callback leaves active Store work. */
+export class TransactionUnsettledOperationError extends StoreError {
+  /** Stable error class name. */
+  override readonly name = "TransactionUnsettledOperationError";
+  /** The physical transaction must roll back all View work. */
+  readonly writesMayRemain = false;
+
+  /** Create one unsettled-operation failure without operation data. */
+  constructor() {
+    super("Store transaction callback left active work");
   }
 }
 
@@ -200,6 +242,7 @@ export type StoreAdapterContractViolation =
   | "generated-value-overwrite"
   | "invalid-expression-result"
   | "invalid-sql-compilation"
+  | "invalid-sql-result"
   | "transaction-contract";
 
 /** Configuration for one adapter contract defect. */
@@ -214,6 +257,8 @@ export interface StoreAdapterContractErrorOptions {
   readonly field?: string;
   /** Original defect detail. */
   readonly cause?: unknown;
+  /** Whether one or more writes can remain after the contract defect. */
+  readonly writesMayRemain: boolean;
 }
 
 /** Adapter contract defect. This intentionally does not extend StoreError. */
@@ -228,6 +273,8 @@ export class StoreAdapterContractError extends Error {
   readonly operation: StoreOperation;
   /** Stable contract violation code. */
   readonly violation: StoreAdapterContractViolation;
+  /** Whether one or more writes can remain after the contract defect. */
+  readonly writesMayRemain: boolean;
   /** Top-level Field involved in the violation, when present. */
   declare readonly field?: string;
 
@@ -240,6 +287,7 @@ export class StoreAdapterContractError extends Error {
     );
     this.operation = options.operation;
     this.violation = options.violation;
+    this.writesMayRemain = options.writesMayRemain;
     if (options.collection !== undefined) {
       this.collection = options.collection;
     }

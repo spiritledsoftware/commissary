@@ -28,8 +28,10 @@ The Memory Thread Store is not durable. Data is lost when the process stops. Pro
 
 `MemoryStore.transaction` serializes each full callback and each base CRUD call
 with one process-local lock. It uses an undo journal for rollback and invokes a
-transaction callback at most once. The transaction view has no nested
-transaction method, savepoints, or cancellation option.
+transaction callback at most once. The transaction view closes when the callback
+settles. It drains active work before rollback, rejects successful callbacks
+that leave active operations, and rolls back after caught operation failures.
+The view has no nested transaction method, savepoints, or cancellation option.
 
 `MemoryThreadStore.make` composes this transaction backend with the Core-owned
 Thread Store transitions. The Memory adapter does not own claim, fence, commit,

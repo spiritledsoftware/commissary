@@ -95,6 +95,7 @@ export type CountOptions<
 export interface Collection<
   Definition extends RecordDefinition,
   Operators extends StoreOperatorTypes = BaseStoreOperatorTypes,
+  Create extends object = CreateInput<Definition>,
 > {
   /** Find stored Records with typed filtering, ordering, paging, and projection. */
   readonly find: <
@@ -104,7 +105,7 @@ export interface Collection<
   ) => Promise<readonly Project<SelectedRecord<Definition>, Select>[]>;
 
   /** Validate and create one Record. */
-  readonly create: (input: CreateInput<Definition>) => Promise<SelectedRecord<Definition>>;
+  readonly create: (input: Create) => Promise<SelectedRecord<Definition>>;
 
   /** Validate and change every matching Record. */
   readonly update: (input: UpdateOptions<Definition, Operators>) => Promise<number>;
@@ -118,21 +119,36 @@ export interface Collection<
   readonly count: (input?: CountOptions<SelectedRecord<Definition>, Operators>) => Promise<number>;
 }
 
+/** Default create inputs inferred from every Record Definition in a catalog. */
+export type DefaultStoreCreateInputs<Definitions extends RecordDefinitions> = {
+  readonly [Name in keyof Definitions]: CreateInput<Definitions[Name]>;
+};
+
+export type StoreCreateInputMap<Definitions extends RecordDefinitions> = {
+  readonly [Name in keyof Definitions]: object;
+};
+
 /** The readonly Collection Map for one complete Record catalog. */
 export type StoreCollections<
   Definitions extends RecordDefinitions,
   Operators extends StoreOperatorTypes = BaseStoreOperatorTypes,
+  CreateInputs extends StoreCreateInputMap<Definitions> = DefaultStoreCreateInputs<Definitions>,
 > = {
-  readonly [Name in keyof Definitions]: Collection<Definitions[Name], Operators>;
+  readonly [Name in keyof Definitions]: Collection<
+    Definitions[Name],
+    Operators,
+    CreateInputs[Name]
+  >;
 };
 
 /** Base persistence interface for one complete typed Collection Catalog. */
 export interface Store<
   Definitions extends RecordDefinitions,
   Operators extends StoreOperatorTypes = BaseStoreOperatorTypes,
+  CreateInputs extends StoreCreateInputMap<Definitions> = DefaultStoreCreateInputs<Definitions>,
 > {
   /** Every Core and Custom Collection available to the Store owner. */
-  readonly collections: StoreCollections<Definitions, Operators>;
+  readonly collections: StoreCollections<Definitions, Operators, CreateInputs>;
 }
 
 /** Store with one adapter-owned serializable transaction boundary. */
@@ -144,9 +160,12 @@ export interface TransactionStore<
       ? never
       : TransactionCapabilities[Key];
   } = {},
-> extends Store<Definitions, Operators> {
+  CreateInputs extends StoreCreateInputMap<Definitions> = DefaultStoreCreateInputs<Definitions>,
+> extends Store<Definitions, Operators, CreateInputs> {
   /** Run one callback at most once against a transaction-bound Store view. */
   readonly transaction: <Value>(
-    use: (transaction: Store<Definitions, Operators> & TransactionCapabilities) => Promise<Value>,
+    use: (
+      transaction: Store<Definitions, Operators, CreateInputs> & TransactionCapabilities,
+    ) => Promise<Value>,
   ) => Promise<Value>;
 }

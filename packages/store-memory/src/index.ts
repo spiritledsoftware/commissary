@@ -35,7 +35,6 @@ import {
   type RoundTripRecordDefinitions,
   type Selection,
   type SelectedRecord,
-  type Store,
   type StoreCollectionOperation,
   type StoreCollections,
   type TransactionStore,
@@ -45,6 +44,10 @@ import {
   type UpdateOptions,
   type WhereOptions,
 } from "@commissary/store";
+import {
+  runTransactionCallback,
+  type TrackTransactionOperation,
+} from "@commissary/store/transaction-adapter";
 
 /** Configuration for one generic process-local Store. */
 export interface MemoryStoreOptions<Definitions extends RecordDefinitions> {
@@ -104,6 +107,7 @@ function requireMemoryValue<Value>(value: Value | undefined, description: string
     throw new StoreAdapterContractError({
       operation: "transaction",
       violation: "transaction-contract",
+      writesMayRemain: false,
       cause: new Error(`Memory Store state is missing ${description}`),
     });
   }
@@ -183,6 +187,7 @@ class MemoryCollection<Definition extends RecordDefinition> implements Collectio
           collection: this.#name,
           operation,
           violation: "unknown-record-key",
+          writesMayRemain: false,
           field,
         });
       }
@@ -208,6 +213,7 @@ class MemoryCollection<Definition extends RecordDefinition> implements Collectio
         collection: this.#name,
         operation,
         violation: "invalid-selected-record",
+        writesMayRemain: false,
         ...(cause instanceof StoreValidationError && cause.field !== undefined
           ? { field: cause.field }
           : {}),
@@ -395,19 +401,25 @@ class MemoryCollection<Definition extends RecordDefinition> implements Collectio
   ): Promise<number> => (await this.#matchingIndexes(input, "count")).length;
 }
 
+function runMemoryStoreOperation<Value>(start: () => Promise<Value>): Promise<Value> {
+  return Promise.resolve().then(start);
+}
+
 function lockMemoryCollection<Definition extends RecordDefinition>(
   collection: Collection<Definition>,
   lock: MemoryTransactionLock,
+  track: TrackTransactionOperation = runMemoryStoreOperation,
 ): Collection<Definition> {
   const find: Collection<Definition>["find"] = (options) =>
-    lock.run(() => collection.find(options));
+    track(() => lock.run(() => collection.find(options)));
   const create: Collection<Definition>["create"] = (input) =>
-    lock.run(() => collection.create(input));
+    track(() => lock.run(() => collection.create(input)));
   const update: Collection<Definition>["update"] = (input) =>
-    lock.run(() => collection.update(input));
+    track(() => lock.run(() => collection.update(input)));
   const deleteRecords: Collection<Definition>["delete"] = (input) =>
-    lock.run(() => collection.delete(input));
-  const count: Collection<Definition>["count"] = (input) => lock.run(() => collection.count(input));
+    track(() => lock.run(() => collection.delete(input)));
+  const count: Collection<Definition>["count"] = (input) =>
+    track(() => lock.run(() => collection.count(input)));
   return Object.freeze({
     find,
     create,
@@ -436,24 +448,26 @@ export class MemoryStore {
     }
     // SAFETY: The loop creates exactly one Collection with its matching Definition for every key in options.records.
     const typedCollections = collections as StoreCollections<Definitions>;
-    const transaction: TransactionStore<Definitions>["transaction"] = async (use) =>
+    const transaction: TransactionStore<Definitions>["transaction"] = (use) =>
       lock.run(async () => {
         const journal = new MemoryTransactionJournal();
         const transactionLock = new MemoryTransactionLock();
-        const transactionCollections: Record<string, Collection<RecordDefinition>> = {};
-        for (const [name, definition] of definitions) {
-          // SAFETY: definitions and storage contain the same keys created by the loop above.
-          transactionCollections[name] = lockMemoryCollection(
-            new MemoryCollection(name, definition, storage[name] as JsonObject[], journal),
-            transactionLock,
-          );
-        }
-        // SAFETY: The loop creates one transaction-bound Collection over the same storage and matching Definition for every key.
-        const transactionView: Store<Definitions> = Object.freeze({
-          collections: transactionCollections as StoreCollections<Definitions>,
-        });
         try {
-          return await use(transactionView);
+          return await runTransactionCallback((track) => {
+            const transactionCollections: Record<string, Collection<RecordDefinition>> = {};
+            for (const [name, definition] of definitions) {
+              // SAFETY: definitions and storage contain the same keys created by the loop above.
+              transactionCollections[name] = lockMemoryCollection(
+                new MemoryCollection(name, definition, storage[name] as JsonObject[], journal),
+                transactionLock,
+                track,
+              );
+            }
+            // SAFETY: The loop creates one transaction-bound Collection over the same storage and matching Definition for every key.
+            return Object.freeze({
+              collections: transactionCollections as StoreCollections<Definitions>,
+            });
+          }, use);
         } catch (callbackFailure) {
           try {
             journal.rollback();

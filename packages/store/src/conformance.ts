@@ -2,6 +2,7 @@ import type { FieldSchema } from "./record.js";
 import { isJsonValue, type JsonValue } from "./json.js";
 import { structuralJsonEqual } from "./store-expressions.js";
 import type { TransactionStore } from "./store.js";
+export * from "./sql-conformance.js";
 
 /** Operator semantics that an adapter's own conformance suite must exercise. */
 export type StoreOperatorSemantics = "javascript-fallback" | "adapter-defined";

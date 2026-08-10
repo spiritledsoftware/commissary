@@ -2058,7 +2058,8 @@ The committed draft asset is `packages/store/prototypes/database-record-speciali
 - `packages/store/src/sqlite-adapter.ts` — SQLite Record resolver and readonly adapter assets.
 - SQLite runtime and compile-time tests beside their owning modules.
 - `packages/store/src/sql-statement.ts` — opaque Statement values and `sql` helpers.
-- `packages/store/src/sql-store.ts` — `SqlStore`, results, and SQL errors.
+- `packages/store/src/sql-errors.ts` — shared SQL failure definitions re-exported by the SQL Store module.
+- `packages/store/src/sql-store.ts` — `SqlStore`, adapter runtime, and result contracts.
 - `packages/store/src/sql-adapter.ts` — Statement compiler.
 - `packages/store/src/transaction-adapter.ts` — callback runner.
 - `packages/store/src/sql-conformance.ts` — SQL Store conformance contracts and suites.

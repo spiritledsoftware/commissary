@@ -1,8 +1,8 @@
 import { StoreAdapterContractError } from "./store-errors.js";
+import { SqlStatementError } from "./sql-errors.js";
 import {
   isSqlStatementOpaqueValue,
   readSqlStatementFragments,
-  SqlStatementError,
   type SqlStatement,
   type SqlStatementFragment,
 } from "./sql-statement.js";
@@ -33,6 +33,7 @@ function invalidSqlCompilation(options?: { readonly cause: unknown }): StoreAdap
   return new StoreAdapterContractError({
     operation: "execute",
     violation: "invalid-sql-compilation",
+    writesMayRemain: false,
     ...(options === undefined ? {} : { cause: options.cause }),
   });
 }
