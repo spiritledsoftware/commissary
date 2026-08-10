@@ -162,6 +162,11 @@ export type SqlRecordReferences<Definitions extends RecordDefinitions> = {
   readonly [Name in keyof Definitions]: SqlRecordReference<Definitions[Name]>;
 };
 
+/** Final adapter-facing expression and storage mode for one generated SQL column. */
+export interface SqlResolvedGeneratedColumn {
+  readonly expression: SqlStatement<never>;
+  readonly mode: "virtual" | "stored";
+}
 const sqlOpaqueFormatSymbol = Symbol.for("@commissary/store/sql-opaque-format");
 const sqlOpaqueFormat = "commissary-sql-opaque@1";
 
@@ -178,7 +183,8 @@ export interface SqlColumnTypeFormat {
   readonly options?: Readonly<Record<string, unknown>>;
 }
 
-interface SqlLiteralFormat {
+/** Compatible cross-copy runtime format for one opaque SQL literal. */
+export interface SqlLiteralFormat {
   readonly format: typeof sqlOpaqueFormat;
   readonly kind: "literal";
   readonly value: SqlLiteralValue;
@@ -239,12 +245,13 @@ export function createSqlColumnType<Value extends JsonValue>(
 
 /** Read and validate the compatible cross-copy format of one SQL column type. */
 export function readSqlColumnTypeFormat(value: unknown): SqlColumnTypeFormat | undefined {
-  if (!isRecordContainer(value)) {
+  if (!isRecordContainer(value) || !Object.isFrozen(value)) {
     return undefined;
   }
   const format = Reflect.get(value, sqlOpaqueFormatSymbol);
   if (
     !isRecordContainer(format) ||
+    !Object.isFrozen(format) ||
     Reflect.get(format, "format") !== sqlOpaqueFormat ||
     Reflect.get(format, "kind") !== "column-type"
   ) {
@@ -266,20 +273,22 @@ export function readSqlColumnTypeFormat(value: unknown): SqlColumnTypeFormat | u
   const options = Reflect.get(format, "options");
   if (
     (identity !== undefined && typeof identity !== "symbol") ||
-    (options !== undefined && !isRecordContainer(options))
+    (options !== undefined && (!isRecordContainer(options) || !Object.isFrozen(options)))
   ) {
     return undefined;
   }
   return format as unknown as SqlColumnTypeFormat;
 }
 
-function readSqlLiteralFormat(value: unknown): SqlLiteralFormat | undefined {
-  if (!isRecordContainer(value)) {
+/** Read and validate the compatible cross-copy format of one SQL literal. */
+export function readSqlLiteralFormat(value: unknown): SqlLiteralFormat | undefined {
+  if (!isRecordContainer(value) || !Object.isFrozen(value)) {
     return undefined;
   }
   const format = Reflect.get(value, sqlOpaqueFormatSymbol);
   if (
     !isRecordContainer(format) ||
+    !Object.isFrozen(format) ||
     Reflect.get(format, "format") !== sqlOpaqueFormat ||
     Reflect.get(format, "kind") !== "literal"
   ) {

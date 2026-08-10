@@ -241,6 +241,7 @@ export type StoreAdapterContractViolation =
   | "invalid-selected-record"
   | "generated-value-overwrite"
   | "invalid-expression-result"
+  | "invalid-column-encoding"
   | "invalid-sql-compilation"
   | "invalid-sql-result"
   | "transaction-contract";

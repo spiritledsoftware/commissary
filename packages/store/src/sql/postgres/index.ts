@@ -1,0 +1,17 @@
+export {
+  pg,
+  type PostgresCharacterOptions,
+  type PostgresColumnDefinition,
+  type PostgresColumnType,
+  type PostgresCustomTypeOptions,
+  type PostgresEnum,
+  type PostgresIdentity,
+  type PostgresIdentitySequence,
+  type PostgresIntervalFields,
+  type PostgresIntervalOptions,
+  type PostgresNumericOptions,
+  type PostgresQualifiedName,
+  type PostgresTableDefinition,
+  type PostgresTemporalOptions,
+  type PostgresTemporalPrecision,
+} from "./record.js";

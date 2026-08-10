@@ -13,6 +13,7 @@ export {
   type SqlRecordDefinition,
   type SqlRecordReference,
   type SqlRecordReferences,
+  type SqlResolvedGeneratedColumn,
   type SqlTableDefinition,
 } from "./record.js";
 export { sql, type SqlParameterValue, type SqlStatement } from "./statement.js";
