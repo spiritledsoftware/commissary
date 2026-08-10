@@ -10,6 +10,14 @@ import {
 } from "../record.js";
 import { readSqlStatementFragments, type SqlStatement } from "../statement.js";
 import {
+  hasMysqlStatementStructure,
+  isRecordContainer,
+  isValidMysqlEnumValue,
+  mysqlColumnOptionKeys,
+  mysqlTableOptionKeys,
+  sqlOpaqueFormatSymbol,
+} from "./mysql-contract.js";
+import {
   isMysqlDecimalPrecisionOption,
   isMysqlDecimalScaleCompatible,
   isMysqlDecimalScaleOption,
@@ -146,16 +154,11 @@ type CompatibleMysqlColumnHelper<Options extends MysqlColumnHelperOptions> = Opt
     : never
   : unknown;
 
-const sqlOpaqueFormatSymbol = Symbol.for("@commissary/store/sql-opaque-format");
 const mysqlMetadataFormat = "commissary-mysql-metadata@1";
 
 interface MysqlMetadataFormat {
   readonly format: typeof mysqlMetadataFormat;
   readonly kind: "mysql-table" | "mysql-column";
-}
-
-function isRecordContainer(value: unknown): value is Readonly<Record<PropertyKey, unknown>> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function assertOwnKeys(
@@ -255,23 +258,12 @@ export function readMysqlMetadataKind(value: unknown): MysqlMetadataFormat["kind
   }
 }
 
-function statementHasStructure(value: unknown): boolean {
-  const fragments = readSqlStatementFragments(value);
-  return (
-    fragments !== undefined &&
-    fragments.some(
-      (fragment) =>
-        fragment.kind === "identifier" || (fragment.kind === "raw" && fragment.text.length > 0),
-    )
-  );
-}
-
 function assertParameterFreeStatement(owner: string, key: string, value: unknown): void {
   const fragments = readSqlStatementFragments(value);
   if (
     fragments === undefined ||
     fragments.some((fragment) => fragment.kind === "parameter") ||
-    !statementHasStructure(value)
+    !hasMysqlStatementStructure(fragments)
   ) {
     throw new TypeError(
       `MySQL ${owner} helper option '${key}' requires a nonempty parameter-free SQL Statement`,
@@ -298,7 +290,7 @@ function defineMysqlTable<const Options extends MysqlTableDefinition>(
   if (!isRecordContainer(options)) {
     throw new TypeError("MySQL table helper requires an options object");
   }
-  assertOwnKeys("table", options, new Set(["database", "name"]));
+  assertOwnKeys("table", options, mysqlTableOptionKeys);
   assertOptionalLocalName("table", "database", Reflect.get(options, "database"));
   assertOptionalLocalName("table", "name", Reflect.get(options, "name"));
   return createMetadataValue("mysql-table", options);
@@ -310,11 +302,7 @@ function defineMysqlColumn<const Options extends MysqlColumnHelperOptions>(
   if (!isRecordContainer(options)) {
     throw new TypeError("MySQL column helper requires an options object");
   }
-  assertOwnKeys(
-    "column",
-    options,
-    new Set(["name", "type", "default", "notNull", "autoIncrement", "generated", "onUpdate"]),
-  );
+  assertOwnKeys("column", options, mysqlColumnOptionKeys);
   assertOptionalLocalName("column", "name", Reflect.get(options, "name"));
   if (Object.hasOwn(options, "type")) {
     const type = Reflect.get(options, "type");
@@ -521,13 +509,7 @@ function defineEnum<const Values extends readonly [string, ...string[]]>(options
   }
   const values = new Set<string>();
   for (const value of options.values) {
-    if (
-      typeof value !== "string" ||
-      value.length === 0 ||
-      value.endsWith(" ") ||
-      Array.from(value).length > 255 ||
-      values.has(value)
-    ) {
+    if (!isValidMysqlEnumValue(value) || values.has(value)) {
       throw new TypeError(
         "MySQL enum values must be unique nonempty strings of at most 255 Unicode code points without trailing spaces",
       );

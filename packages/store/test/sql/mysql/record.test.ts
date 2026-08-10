@@ -244,9 +244,9 @@ describe("MySQL metadata helpers", () => {
     expectTypeOf(mysql.year()).toEqualTypeOf<MysqlColumnType<number>>();
     expectTypeOf(mysql.serial()).toEqualTypeOf<MysqlColumnType<string>>();
     const state = mysql.enum({ values: ["pending", "ready"] as const });
-    expectTypeOf(state).toMatchTypeOf<MysqlEnum<readonly ["pending", "ready"]>>();
+    expectTypeOf(state).toExtend<MysqlEnum<readonly ["pending", "ready"]>>();
     type JobId = string & { readonly JobId: unique symbol };
-    expectTypeOf(mysql.bigint()).toMatchTypeOf<MysqlColumnType<JobId>>();
+    expectTypeOf(mysql.bigint()).toExtend<MysqlColumnType<JobId>>();
 
     // @ts-expect-error A string default cannot be used with an explicit numeric type.
     mysql.column({ type: mysql.int(), default: sql.literal("invalid") });
@@ -303,6 +303,10 @@ describe("MySQL Record resolution", () => {
     expect(table.columns.integer.encode(42)).toBe(42);
     expect(table.columns.integer.decode(42)).toBe(42);
     expect(() => table.columns.integer.decode("42")).toThrow(TypeError);
+    expect(table.columns.integer.encode(Number.MAX_SAFE_INTEGER)).toBe(Number.MAX_SAFE_INTEGER);
+    expect(table.columns.integer.decode(Number.MAX_SAFE_INTEGER)).toBe(Number.MAX_SAFE_INTEGER);
+    expect(() => table.columns.integer.encode(Number.MAX_SAFE_INTEGER + 2)).toThrow(TypeError);
+    expect(() => table.columns.integer.decode(Number.MAX_SAFE_INTEGER + 2)).toThrow(TypeError);
     expect(Object.isFrozen(resolution)).toBe(true);
     expect(Object.isFrozen(table.columns)).toBe(true);
   });
@@ -347,6 +351,10 @@ describe("MySQL Record resolution", () => {
     expect(() => resolution.tables.tinyint.columns.value.encode(128)).toThrow(TypeError);
     expect(resolution.tables.unsignedTinyint.columns.value.encode(255)).toBe(255);
     expect(() => resolution.tables.unsignedTinyint.columns.value.encode(-1)).toThrow(TypeError);
+    expect(resolution.tables.smallint.columns.value.encode(32_767)).toBe(32_767);
+    expect(() => resolution.tables.smallint.columns.value.encode(32_768)).toThrow(TypeError);
+    expect(resolution.tables.mediumint.columns.value.encode(8_388_607)).toBe(8_388_607);
+    expect(() => resolution.tables.mediumint.columns.value.encode(8_388_608)).toThrow(TypeError);
     expect(resolution.tables.bigint.columns.value.encode("9223372036854775807")).toBe(
       "9223372036854775807",
     );
@@ -445,7 +453,8 @@ describe("MySQL Record resolution", () => {
     expect(resolution.tables.custom.columns.value.type).toMatchObject({ kind: "custom" });
     expect(resolution.tables.custom.columns.value.encode({ x: 2 })).toBe("2");
     expect(resolution.tables.custom.columns.value.decode("3")).toEqual({ x: 3 });
-    expect(calls).toBe(2);
+    expect(() => resolution.tables.custom.columns.value.encode({ x: -1 })).toThrow("encode failed");
+    expect(calls).toBe(3);
     expect(() => resolution.tables.badDecoder.columns.value.decode("1")).toThrow(TypeError);
     expect(() => resolution.tables.badEncoder.columns.value.encode({ x: 1 })).toThrow(TypeError);
   });
@@ -621,6 +630,13 @@ describe("MySQL Record resolution", () => {
       ["records", "invalid", "fields", "nullableSerial", "column", "notNull"],
       ["records", "invalid", "fields", "nullableSerial", "column", "mysql", "type"],
     ]);
+    const autoDefaultMessages = failure.issues
+      .filter(({ path }) => path[3] === "autoDefault")
+      .map(({ message }) => message);
+    expect(autoDefaultMessages).toEqual([
+      expect.stringContaining("notNull false"),
+      expect.stringContaining("automatic increment conflicts with"),
+    ]);
   });
 
   it("reports winning override paths and stable table-wide collisions", () => {
@@ -667,7 +683,7 @@ describe("MySQL Record resolution", () => {
     ]);
   });
 
-  it("uses full Unicode case folding without normalization for database collisions", () => {
+  it("uses full Unicode case folding without normalization for database and table collisions", () => {
     const record = (database: string, name: string) =>
       SqlRecord.define({
         table: sql.table({ mysql: mysql.table({ database, name }) }),
@@ -684,6 +700,8 @@ describe("MySQL Record resolution", () => {
           dotted: record("i", "dotted"),
           decomposed: record("e\u0301", "decomposed"),
           composed: record("\u00e9", "composed"),
+          tableSharpS: record("table_case", "Straße"),
+          tableExpanded: record("table_case", "STRASSE"),
         },
       }),
     );
@@ -691,6 +709,10 @@ describe("MySQL Record resolution", () => {
       {
         code: "duplicate-name",
         path: ["records", "expanded", "table", "mysql", "database"],
+      },
+      {
+        code: "duplicate-name",
+        path: ["records", "tableExpanded", "table", "mysql", "name"],
       },
     ]);
   });

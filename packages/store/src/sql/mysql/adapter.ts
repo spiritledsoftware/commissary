@@ -26,12 +26,7 @@ import {
   type SqlRecordReferences,
   type SqlResolvedGeneratedColumn,
 } from "../record.js";
-import {
-  readSqlStatementFragments,
-  sql,
-  type SqlStatement,
-  type SqlStatementFragment,
-} from "../statement.js";
+import { readSqlStatementFragments, sql, type SqlStatement } from "../statement.js";
 import {
   isMysqlDecimalPrecisionOption,
   isMysqlDecimalScaleCompatible,
@@ -45,6 +40,15 @@ import {
   isMysqlUnsignedOption,
 } from "./mysql-type-options.js";
 import {
+  hasMysqlStatementStructure,
+  isRecordContainer,
+  isValidMysqlEnumValue,
+  mysqlColumnOptionKeys,
+  mysqlTableOptionKeys,
+  sqlColumnTypeFormatKeys,
+  sqlOpaqueFormatSymbol,
+} from "./mysql-contract.js";
+import {
   isValidMysqlName,
   readMysqlMetadataKind,
   type MysqlDecimalOptions,
@@ -55,31 +59,6 @@ import {
   type MysqlRealOptions,
   type MysqlTemporalOptions,
 } from "./record.js";
-
-const sqlOpaqueFormatSymbol = Symbol.for("@commissary/store/sql-opaque-format");
-const mysqlTableMetadataKeys: ReadonlySet<PropertyKey> = new Set([
-  "database",
-  "name",
-  sqlOpaqueFormatSymbol,
-]);
-const mysqlColumnMetadataKeys: ReadonlySet<PropertyKey> = new Set([
-  "name",
-  "type",
-  "default",
-  "notNull",
-  "autoIncrement",
-  "generated",
-  "onUpdate",
-  sqlOpaqueFormatSymbol,
-]);
-const sqlColumnTypeFormatKeys: ReadonlySet<PropertyKey> = new Set([
-  "format",
-  "kind",
-  "dialect",
-  "type",
-  "identity",
-  "options",
-]);
 
 // Unicode 17.0.0 full, default (non-Turkic) CaseFolding.txt entries that differ from
 // JavaScript lowercase. MySQL names exclude non-BMP code points, so this table does too.
@@ -100,7 +79,7 @@ const unicodeCaseFoldExceptions = new Map<number, string>(
     }),
 );
 
-function foldMysqlDatabaseName(value: string): string {
+function foldMysqlName(value: string): string {
   let folded = "";
   for (const character of value) {
     folded +=
@@ -275,10 +254,6 @@ const directTypes = new Set<MysqlDirectTypeName>([
   "serial",
 ]);
 
-function isRecordContainer(value: unknown): value is Readonly<Record<PropertyKey, unknown>> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function isFieldSchema(value: unknown): value is FieldSchema {
   if (!isRecordContainer(value) || !Object.hasOwn(value, "~standard")) return false;
   const standard = Reflect.get(value, "~standard");
@@ -335,10 +310,12 @@ function readMysqlMetadata(
     return undefined;
   }
   const expected = owner === "table" ? "mysql-table" : "mysql-column";
-  const allowedKeys = owner === "table" ? mysqlTableMetadataKeys : mysqlColumnMetadataKeys;
+  const allowedKeys = owner === "table" ? mysqlTableOptionKeys : mysqlColumnOptionKeys;
   if (
     readMysqlMetadataKind(value) !== expected ||
-    Reflect.ownKeys(value).some((key) => !allowedKeys.has(key))
+    Reflect.ownKeys(value).some(
+      (key) => key !== sqlOpaqueFormatSymbol && (typeof key !== "string" || !allowedKeys.has(key)),
+    )
   ) {
     issues.push(
       issue(
@@ -366,13 +343,6 @@ function ownNullableOverride(
     : undefined;
 }
 
-function hasStatementStructure(fragments: readonly SqlStatementFragment[]): boolean {
-  return fragments.some(
-    (fragment) =>
-      fragment.kind === "identifier" || (fragment.kind === "raw" && fragment.text.length > 0),
-  );
-}
-
 function validStatement(
   value: unknown,
   path: readonly (string | number)[],
@@ -385,7 +355,7 @@ function validStatement(
     issues.push(issue(code, path, `${owner} requires a compatible SQL Statement`));
     return undefined;
   }
-  if (fragments.length === 0 || !hasStatementStructure(fragments)) {
+  if (fragments.length === 0 || !hasMysqlStatementStructure(fragments)) {
     issues.push(issue(code, path, `${owner} requires nonempty SQL structure`));
     return undefined;
   }
@@ -1080,15 +1050,6 @@ function portableType(format: SqlColumnTypeFormat): SqlPortableTypeName | undefi
   }
 }
 
-function isValidEnumValue(value: unknown): value is string {
-  return (
-    typeof value === "string" &&
-    value.length > 0 &&
-    !value.endsWith(" ") &&
-    Array.from(value).length <= 255
-  );
-}
-
 function resolveEnum(
   options: Readonly<Record<PropertyKey, unknown>> | undefined,
   path: readonly (string | number)[],
@@ -1102,7 +1063,7 @@ function resolveEnum(
     !Object.isFrozen(values) ||
     values.length === 0 ||
     values.length > 65_535 ||
-    !values.every(isValidEnumValue) ||
+    !values.every(isValidMysqlEnumValue) ||
     new Set(values).size !== values.length
   ) {
     state.issues.push(issue("invalid-column-type", path, "MySQL enum type contract is invalid"));
@@ -2050,7 +2011,7 @@ function resolveRuntime(
     records.set(recordName, reference);
 
     if (database !== undefined) {
-      const foldedDatabase = foldMysqlDatabaseName(database);
+      const foldedDatabase = foldMysqlName(database);
       const earlier = databaseSpellings.get(foldedDatabase);
       if (earlier === undefined) {
         databaseSpellings.set(foldedDatabase, {
@@ -2070,8 +2031,8 @@ function resolveRuntime(
     }
 
     const databaseKey =
-      database === undefined ? "unqualified" : `database\u0000${foldMysqlDatabaseName(database)}`;
-    const tableKey = `${databaseKey}\u0000${tableName}`;
+      database === undefined ? "unqualified" : `database\u0000${foldMysqlName(database)}`;
+    const tableKey = `${databaseKey}\u0000${foldMysqlName(tableName)}`;
     const earlierTable = tableNames.get(tableKey);
     if (earlierTable === undefined) {
       tableNames.set(tableKey, { path: tableNamePath, owner: recordName });
