@@ -30,8 +30,8 @@ importers:
         specifier: workspace:*
         version: link:packages/stream
       '@effect/tsgo':
-        specifier: 0.31.0
-        version: 0.31.0
+        specifier: 0.35.0
+        version: 0.35.0
       '@types/node':
         specifier: ^26.1.2
         version: 26.1.2
@@ -39,8 +39,8 @@ importers:
         specifier: ^1.3.14
         version: 1.3.14
       deno:
-        specifier: ^2.9.4
-        version: 2.9.4
+        specifier: ^2.9.5
+        version: 2.9.5
       esbuild:
         specifier: 0.28.1
         version: 0.28.1
@@ -66,8 +66,8 @@ importers:
         specifier: 1.62.1
         version: 1.62.1
       skills:
-        specifier: ^1.5.21
-        version: 1.5.21
+        specifier: ^1.5.22
+        version: 1.5.22
       turbo:
         specifier: ^2.10.8
         version: 2.10.8
@@ -230,75 +230,75 @@ packages:
     resolution: {integrity: sha512-IchNf6dN4tHoMFIn/7OE8LWZ19Y6q/67Bmf6vnGREv8RSbBVb9LPJxEcnwrcwX6ixSvaiGoomAUvu4YSxXrVgw==}
     engines: {node: '>=12'}
 
-  '@deno/darwin-arm64@2.9.4':
-    resolution: {integrity: sha512-Pjq1OdRauzaWtFB8W4FJuXp0U/if2tEzlQEgbmVflNIUJhUVJh0jUjxAgVP84P5vYSaKJTzXAHaftNH5PbQcFA==}
+  '@deno/darwin-arm64@2.9.5':
+    resolution: {integrity: sha512-SX98qSdBT1lw9x6NwGwx2xIayl1kRimdRnFohYlJ6nt3mLKzTKHHKQwQs5D2pEY7mbUGGbYe9brM2kfN75pPkg==}
     cpu: [arm64]
     os: [darwin]
 
-  '@deno/darwin-x64@2.9.4':
-    resolution: {integrity: sha512-gsKNBOeU0iOgl/kYLItvdtcrAQhK3W0z4EdPVyF8NVZfzB+iqkZbTwbq0tgIcZbo3fpKFaJ6gT53XvaFIwVK5Q==}
+  '@deno/darwin-x64@2.9.5':
+    resolution: {integrity: sha512-gbdlxWZuAZFiJiZtTT00Mv/aC7f/31+pyqJGQKlZr5X33WeTo5B0GG+efcX3P1UZceRKHuPEAQ1B/M2oRt8r9Q==}
     cpu: [x64]
     os: [darwin]
 
-  '@deno/linux-arm64-glibc@2.9.4':
-    resolution: {integrity: sha512-SHHmaFnfOtFe0RWEAqo0lGlKFww21O6utyNzcFNYpIFRyQSKXKrfegwYMYP7hN1GEhZ49bDPKIpjJHjPbGFqyw==}
+  '@deno/linux-arm64-glibc@2.9.5':
+    resolution: {integrity: sha512-IuYjsz9PGl7CJcNXMuN27KNDB8Q40brK3SG3l+TXMDVW61ZKwcn0fQHBHnXFiiygEwI8by/fKnASEluhZB1atw==}
     cpu: [arm64]
     os: [linux]
     libc: [glibc]
 
-  '@deno/linux-x64-glibc@2.9.4':
-    resolution: {integrity: sha512-Or3ItpBDUC4GKtE723T4LpWs1nKOAQ4Zt8E+tufFeEnX9k+OhYOQTnu8kXqz+8FM42JKeuegfss8pr7k0PVQTQ==}
+  '@deno/linux-x64-glibc@2.9.5':
+    resolution: {integrity: sha512-TDqcnoLe3jlgqYEQm7H7MK6q0JOth+o8iSZzknRODnVkJfPiNnjVn1M1Zc6vnp+ipkyb6Av1/CUlHgHtlq59Gw==}
     cpu: [x64]
     os: [linux]
     libc: [glibc]
 
-  '@deno/win32-arm64@2.9.4':
-    resolution: {integrity: sha512-Xcvs+3W7vAoSQAzyhXr954s6hDC6N95oCHQelWiZt3fbUWPJjUzxtUP4EC4AygC+EC0zYBgIlDGv6tmJ8dwSAQ==}
+  '@deno/win32-arm64@2.9.5':
+    resolution: {integrity: sha512-tTPrE/4SX7uaC8nJW47iNnibtjzk1y4zoiYjBBHE34vdkbb6LHopqH68BxyT61HZdfqXzOTEYjDVHhtmVZFy+w==}
     cpu: [arm64]
     os: [win32]
 
-  '@deno/win32-x64@2.9.4':
-    resolution: {integrity: sha512-u69MJjnr/4ttQ1a/lMVch57LJJgzplEIDiHepZX+yHOw9Q4FdWinr9Gj0oZ/hpEnTvVtih/CZc3IvYagBqQBag==}
+  '@deno/win32-x64@2.9.5':
+    resolution: {integrity: sha512-LkcERsH0olOgevg9L9eootSr1U8ydyfnX1bS3mFqU+lGBeTYtlec5b/QF473WUOGVgPlWECrkxi4As5kEaFOzg==}
     cpu: [x64]
     os: [win32]
 
-  '@effect/tsgo-darwin-arm64@0.31.0':
-    resolution: {integrity: sha512-83StWyiq0vB9unpsObZoCIiix73til4yW1zCpHEDuBirxoNLymmOBv22kW132FD74tBzWBSffsmTHQEMUg+j7Q==}
+  '@effect/tsgo-darwin-arm64@0.35.0':
+    resolution: {integrity: sha512-zp1nnKYPyl8Us+1igPePPEkbIElCu5yrr5NyQf/nxqxZkniohMtm4hJXA5BDwz0Tv7IvWPCsHuJ8ISg6i8LkxA==}
     cpu: [arm64]
     os: [darwin]
 
-  '@effect/tsgo-darwin-x64@0.31.0':
-    resolution: {integrity: sha512-1jk7VItW+/oFEbGT0txq74Ejn81144DQ8GspcnBi09KH9rBareNBSTcFmi71caDfPBiJyMun8rVi04jbmaxFmg==}
+  '@effect/tsgo-darwin-x64@0.35.0':
+    resolution: {integrity: sha512-6lNk1j0o/ReXihhiqQdhzvJll/ClrkEJwUtPpMBcUtlmH+8svSH50+S84GOzJMwp2ghw/hyJld6Lc8wzzry0Jw==}
     cpu: [x64]
     os: [darwin]
 
-  '@effect/tsgo-linux-arm64@0.31.0':
-    resolution: {integrity: sha512-ClSiB/tpf6uABf7JT2p+ukdQpEesTfNqzMSRqrR1yIeb/l20VY4Qklm4HKeqFdYz5cbg65Y2P+IDeGHGxnq4aA==}
+  '@effect/tsgo-linux-arm64@0.35.0':
+    resolution: {integrity: sha512-DsSBnE5LGWvxKUZrhvtQL0H9nDQcOyef0ct7c5Rws46tgBM9nssEj/Q45GAD+JTVwBKcEvvzPEgDSLY+fFYtvw==}
     cpu: [arm64]
     os: [linux]
 
-  '@effect/tsgo-linux-arm@0.31.0':
-    resolution: {integrity: sha512-XUcOl5OhUD685CnhRhdMtbXjmVjxMwNVlgM5bU+h0kkBzrLlLUHFBSzkMhQcVL8L+gnXXLua2N0aY6I+PGbvaQ==}
+  '@effect/tsgo-linux-arm@0.35.0':
+    resolution: {integrity: sha512-BmDz9FGnGLy8HIzWx2VPdRCKbFXpbCCJFzSnkMMYYHHkNP+6CRqETW7x4HFbxuIFxxiGRXfxiE5ui2lomCBWZA==}
     cpu: [arm]
     os: [linux]
 
-  '@effect/tsgo-linux-x64@0.31.0':
-    resolution: {integrity: sha512-T1WSK5T4smwfrXPJEynNfoNPA2a/IXBAEPrtLhddv/whUY5MeazCt2vY80XupigqI1cPAEt8QVjHj7m7YQzNOA==}
+  '@effect/tsgo-linux-x64@0.35.0':
+    resolution: {integrity: sha512-mq++Fyn4T/0FSviRrGcOAE1FKnXHFeQLtfOEJgfAEZw4/yiE7JLV0akJgFw3wjaEQx8bmbRb20UBcAI84zQ5AA==}
     cpu: [x64]
     os: [linux]
 
-  '@effect/tsgo-win32-arm64@0.31.0':
-    resolution: {integrity: sha512-5oNVxv7EV3vuYlv6v3RXdVYu3a2xrmUMJzH3So9h1neZynZ3P9122wVJae3Q+aiRIkyIBo7TZii3UiFtEHTiqw==}
+  '@effect/tsgo-win32-arm64@0.35.0':
+    resolution: {integrity: sha512-o76O+JMa1KAJnd3QVDLmeBGTt23VE5IBbuzUhYWHG6UQ0YQynSMo0vZXOmrrPH0KARD7uJAgEMaJu/SReYDObA==}
     cpu: [arm64]
     os: [win32]
 
-  '@effect/tsgo-win32-x64@0.31.0':
-    resolution: {integrity: sha512-7UXqXF+3sMXWcjy9paP5rnvbVzGYAYLkO9UPYzAfE9B0Hda+Npkt8Ofa3uggRNMyOTzP8o3o9Se518k527hyzQ==}
+  '@effect/tsgo-win32-x64@0.35.0':
+    resolution: {integrity: sha512-IC4nRkMZBCwCdGsqjQQnw7vE6aQFP0jkhkD/rQwb40m6AQN8mqrgq6jXm2WHVxsslrqWu4DXPC3ZHZQjJO50lg==}
     cpu: [x64]
     os: [win32]
 
-  '@effect/tsgo@0.31.0':
-    resolution: {integrity: sha512-mv/p4nPg5IhJWnZXIctSa2QG9Y79yQzRMMdZI+BD5QUrGXL6giqWMJZ3S+IaooQc6pjny3q9IeOvSf0CBTPfQw==}
+  '@effect/tsgo@0.35.0':
+    resolution: {integrity: sha512-10UWtAhbl/AlMSXKwo2xp9HkNtrzXpxgeWTH8vWKo7Ir6DAsOIYAJjTjDxud3sCb2vJtxi2zHg6Qq3/i/MKxzQ==}
     hasBin: true
 
   '@emnapi/runtime@1.11.3':
@@ -1417,8 +1417,8 @@ packages:
   dataloader@1.4.0:
     resolution: {integrity: sha512-68s5jYdlvasItOJnCuI2Q9s4q98g0pCyL3HrcKJu8KNugUl8ahgmZYg38ysLTgQjjXX3H8CJLkAvWrclWfcalw==}
 
-  deno@2.9.4:
-    resolution: {integrity: sha512-fK8l+v1DGlsLN8Xich0tP6zCKU9wD22lmtZObebSXTqX8ZzVqasDguUz+V0OwOwCuzUtq9jweHfOrvvocQftYQ==}
+  deno@2.9.5:
+    resolution: {integrity: sha512-Jt/AcJiErtUW9krGwlwUDsm1coNtmfthiQ4JtSCF+JNkqohbeiJoRVkCr4FA4WQstyHuSJaON6PHCin0UCtlLg==}
     hasBin: true
 
   detect-indent@6.1.0:
@@ -1899,8 +1899,8 @@ packages:
     resolution: {integrity: sha512-bzyZ1e88w9O1iNJbKnOlvYTrWPDl46O1bG0D3XInv+9tkPrxrN8jUUTiFlDkkmKWgn1M6CfIA13SuGqOa9Korw==}
     engines: {node: '>=14'}
 
-  skills@1.5.21:
-    resolution: {integrity: sha512-CJ4wx692UkQAW+DLpjJg/ww6dJBojq5E8sQBOqP639GutO72v4EFiV/fq1etW2r9NhM/mwaIq8YoqKFJ9XV7ng==}
+  skills@1.5.22:
+    resolution: {integrity: sha512-cHiLjwZEawWFvudIqeeMZlvZayTLbRouydMbblyrdiyH7ZLbqUrSrEEr+Tg+X265iztRlVMsyOYRwpD5JxBsvg==}
     engines: {node: '>=22.20.0'}
     hasBin: true
 
@@ -2318,54 +2318,54 @@ snapshots:
     dependencies:
       '@jridgewell/trace-mapping': 0.3.9
 
-  '@deno/darwin-arm64@2.9.4':
+  '@deno/darwin-arm64@2.9.5':
     optional: true
 
-  '@deno/darwin-x64@2.9.4':
+  '@deno/darwin-x64@2.9.5':
     optional: true
 
-  '@deno/linux-arm64-glibc@2.9.4':
+  '@deno/linux-arm64-glibc@2.9.5':
     optional: true
 
-  '@deno/linux-x64-glibc@2.9.4':
+  '@deno/linux-x64-glibc@2.9.5':
     optional: true
 
-  '@deno/win32-arm64@2.9.4':
+  '@deno/win32-arm64@2.9.5':
     optional: true
 
-  '@deno/win32-x64@2.9.4':
+  '@deno/win32-x64@2.9.5':
     optional: true
 
-  '@effect/tsgo-darwin-arm64@0.31.0':
+  '@effect/tsgo-darwin-arm64@0.35.0':
     optional: true
 
-  '@effect/tsgo-darwin-x64@0.31.0':
+  '@effect/tsgo-darwin-x64@0.35.0':
     optional: true
 
-  '@effect/tsgo-linux-arm64@0.31.0':
+  '@effect/tsgo-linux-arm64@0.35.0':
     optional: true
 
-  '@effect/tsgo-linux-arm@0.31.0':
+  '@effect/tsgo-linux-arm@0.35.0':
     optional: true
 
-  '@effect/tsgo-linux-x64@0.31.0':
+  '@effect/tsgo-linux-x64@0.35.0':
     optional: true
 
-  '@effect/tsgo-win32-arm64@0.31.0':
+  '@effect/tsgo-win32-arm64@0.35.0':
     optional: true
 
-  '@effect/tsgo-win32-x64@0.31.0':
+  '@effect/tsgo-win32-x64@0.35.0':
     optional: true
 
-  '@effect/tsgo@0.31.0':
+  '@effect/tsgo@0.35.0':
     optionalDependencies:
-      '@effect/tsgo-darwin-arm64': 0.31.0
-      '@effect/tsgo-darwin-x64': 0.31.0
-      '@effect/tsgo-linux-arm': 0.31.0
-      '@effect/tsgo-linux-arm64': 0.31.0
-      '@effect/tsgo-linux-x64': 0.31.0
-      '@effect/tsgo-win32-arm64': 0.31.0
-      '@effect/tsgo-win32-x64': 0.31.0
+      '@effect/tsgo-darwin-arm64': 0.35.0
+      '@effect/tsgo-darwin-x64': 0.35.0
+      '@effect/tsgo-linux-arm': 0.35.0
+      '@effect/tsgo-linux-arm64': 0.35.0
+      '@effect/tsgo-linux-x64': 0.35.0
+      '@effect/tsgo-win32-arm64': 0.35.0
+      '@effect/tsgo-win32-x64': 0.35.0
 
   '@emnapi/runtime@1.11.3':
     dependencies:
@@ -3059,14 +3059,14 @@ snapshots:
 
   dataloader@1.4.0: {}
 
-  deno@2.9.4:
+  deno@2.9.5:
     optionalDependencies:
-      '@deno/darwin-arm64': 2.9.4
-      '@deno/darwin-x64': 2.9.4
-      '@deno/linux-arm64-glibc': 2.9.4
-      '@deno/linux-x64-glibc': 2.9.4
-      '@deno/win32-arm64': 2.9.4
-      '@deno/win32-x64': 2.9.4
+      '@deno/darwin-arm64': 2.9.5
+      '@deno/darwin-x64': 2.9.5
+      '@deno/linux-arm64-glibc': 2.9.5
+      '@deno/linux-x64-glibc': 2.9.5
+      '@deno/win32-arm64': 2.9.5
+      '@deno/win32-x64': 2.9.5
 
   detect-indent@6.1.0: {}
 
@@ -3570,7 +3570,7 @@ snapshots:
 
   signal-exit@4.1.0: {}
 
-  skills@1.5.21:
+  skills@1.5.22:
     dependencies:
       tar: 7.5.22
       yaml: 2.9.0
