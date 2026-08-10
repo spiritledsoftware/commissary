@@ -1,0 +1,5 @@
+---
+"@commissary/store": minor
+---
+
+Add MySQL Record metadata helpers and the synchronous adapter-facing Record resolver with immutable physical assets and codecs.
