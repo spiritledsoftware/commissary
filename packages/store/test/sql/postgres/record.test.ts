@@ -402,6 +402,9 @@ describe("PostgreSQL Record resolution", () => {
     );
     expect(() => resolution.tables.char.columns.value.encode("trailing ")).toThrow(TypeError);
     expect(resolution.tables.char.columns.value.decode("padded   ")).toBe("padded");
+    expect(resolution.tables.char.columns.value.encode("😀".repeat(8))).toBe("😀".repeat(8));
+    expect(() => resolution.tables.char.columns.value.encode("123456789")).toThrow(TypeError);
+    expect(() => resolution.tables.varchar.columns.value.encode("x".repeat(21))).toThrow(TypeError);
     expect(
       resolution.tables.uuid.columns.value.encode("123e4567-e89b-42d3-a456-426614174000"),
     ).toBe("123e4567-e89b-42d3-a456-426614174000");

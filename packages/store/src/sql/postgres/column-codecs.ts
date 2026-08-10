@@ -63,6 +63,16 @@ export function stringCodec(
   };
 }
 
+function fitsCharacterLength(value: string, maximum: unknown): boolean {
+  if (typeof maximum !== "number") return true;
+  let length = 0;
+  for (const _codePoint of value) {
+    length += 1;
+    if (length > maximum) return false;
+  }
+  return true;
+}
+
 const base64Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 function decodeBase64(value: string): Uint8Array {
@@ -398,13 +408,18 @@ export function directCodec(
         encode: (value) => (typeof value === "boolean" ? value : invalidValue(type)),
         decode: (value) => (typeof value === "boolean" ? value : invalidValue(type)),
       };
-    case "char":
+    case "char": {
+      const maximum = options?.length;
       return stringCodec(
         type,
-        (value) => !value.endsWith(" "),
+        (value) => !value.endsWith(" ") && fitsCharacterLength(value, maximum),
         (value) => value.replace(/ +$/, ""),
       );
-    case "varchar":
+    }
+    case "varchar": {
+      const maximum = options?.length;
+      return stringCodec(type, (value) => fitsCharacterLength(value, maximum));
+    }
     case "text":
       return stringCodec(type);
     case "uuid":

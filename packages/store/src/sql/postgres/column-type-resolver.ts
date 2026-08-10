@@ -241,7 +241,7 @@ function resolvePostgresType(
     const elementFormat = readSqlColumnTypeFormat(element);
     if (elementFormat === undefined || elementFormat.dialect !== "postgres") {
       state.issues.push(
-        issue("invalid-column-type", path, "PostgreSQL array element type is invalid"),
+        issue("invalid-column-type", path, "PostgreSQL array requires a PostgreSQL element type"),
       );
       return undefined;
     }
