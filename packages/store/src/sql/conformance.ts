@@ -430,9 +430,11 @@ export function createSqlStoreConformanceSuite<DriverParameter, DriverResult>(
         controls.enqueueOutcome({ kind: "query", rows: [] });
         const empty = await store.query<typeof row>(sql.raw("SELECT empty"));
         assertSqlConformance(empty.length === 0, "empty query rows");
-        controls.enqueueOutcome({ kind: "query", rows: [row] });
+        const driverRows = Object.freeze([row]);
+        controls.enqueueOutcome({ kind: "query", rows: driverRows });
         const rows = await store.query<typeof row>(sql.raw("SELECT row"));
-        assertSqlConformance(rows.length === 1 && rows[0] === row, "unchecked row identity");
+        assertSqlConformance(rows === driverRows, "query row container identity");
+        assertSqlConformance(rows[0] === row, "unchecked row identity");
       },
     ),
     scenario(
@@ -569,6 +571,11 @@ export function createSqlTransactionStoreConformanceSuite<DriverParameter, Drive
         assertSqlConformance(transactionControls.rollbackCount === 1, "rollback count");
       },
     ),
+    scenario("omits nested transactions from the View", async ({ store }) => {
+      await store.transaction(async (transaction) => {
+        assertSqlConformance(!("transaction" in transaction), "nested transaction method");
+      });
+    }),
     scenario("closes SQL and Collection View methods", async ({ store }) => {
       let closedSqlOperation: (() => Promise<unknown>) | undefined;
       let closedCollectionOperation: (() => Promise<unknown>) | undefined;
