@@ -52,6 +52,14 @@
       "types": "./dist/sql/mysql/adapter.d.ts",
       "import": "./dist/sql/mysql/adapter.js"
     },
+    "./sql/sqlite": {
+      "types": "./dist/sql/sqlite/index.d.ts",
+      "import": "./dist/sql/sqlite/index.js"
+    },
+    "./sql/sqlite/adapter": {
+      "types": "./dist/sql/sqlite/adapter.d.ts",
+      "import": "./dist/sql/sqlite/adapter.js"
+    },
     "./sql/conformance": {
       "types": "./dist/sql/conformance.d.ts",
       "import": "./dist/sql/conformance.js"

@@ -120,6 +120,38 @@ overrides, validates names and physical options, and returns frozen table,
 column, reference, codec, automatic-increment, generated-column, and inline-enum
 assets. It performs no database or driver work.
 
+## Refine Records for SQLite
+
+Use `sqlite.table()`, `sqlite.column()`, and the SQLite column type helpers to add
+SQLite intent without an ORM dependency:
+
+```ts
+import { SqlRecord, sql } from "@commissary/store/sql";
+import { sqlite } from "@commissary/store/sql/sqlite";
+
+const scheduledJob = SqlRecord.define({
+  table: sql.table({
+    name: "scheduled_jobs",
+    sqlite: sqlite.table(),
+  }),
+  fields: {
+    id: {
+      select: idSchema,
+      column: sql.column({
+        type: sql.text(),
+        sqlite: sqlite.column({ type: sqlite.text(), notNull: true }),
+      }),
+    },
+  },
+});
+```
+
+Concrete SQLite adapters use `resolveSqliteRecords()` from
+`@commissary/store/sql/sqlite/adapter`. The synchronous resolver applies Record
+overrides, validates names and physical options, and returns frozen table,
+column, reference, codec, ROWID, and generated-column assets. It performs no
+database or driver work.
+
 ## Compose SQL Statements
 
 Use the callable `sql` helper to keep SQL structure separate from bound values. Nested Statements add structure. Plain interpolations add one parameter, including array values:
