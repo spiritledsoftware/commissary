@@ -167,6 +167,8 @@ it("enforces Core SQL key and integer storage bounds in the owning Field Schemas
     mysql.tables;
   const maximumKey = "😀".repeat(95);
   const oversizedKey = `${maximumKey}😀`;
+  let boundedKeyFieldCount = 0;
+  let integerFieldCount = 0;
 
   for (const signature of expectedCoreCatalogSignatures) {
     const [recordName, , , fieldsSignature] = signature.split("|");
@@ -181,10 +183,12 @@ it("enforces Core SQL key and integer storage bounds in the owning Field Schemas
         throw new Error("Core SQL catalog test field signature is malformed");
       }
       if (storage.endsWith(":text:max95")) {
+        boundedKeyFieldCount += 1;
         await expectSchemaSuccess(column.schema, maximumKey);
         await expectSchemaFailure(column.schema, oversizedKey);
       }
       if (storage.endsWith(":integer")) {
+        integerFieldCount += 1;
         await expectSchemaSuccess(column.schema, 0);
         await expectSchemaSuccess(column.schema, Number.MAX_SAFE_INTEGER);
         await expectSchemaFailure(column.schema, -1);
@@ -193,6 +197,9 @@ it("enforces Core SQL key and integer storage bounds in the owning Field Schemas
       }
     }
   }
+
+  expect(boundedKeyFieldCount).toBeGreaterThan(0);
+  expect(integerFieldCount).toBeGreaterThan(0);
 });
 
 it("preserves selected, create, and update Core public types", () => {

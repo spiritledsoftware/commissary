@@ -185,10 +185,8 @@ function coreTextField<const Name extends string, Schema extends FieldSchema>(
   };
 }
 
-function coreStringKeyField<const Name extends string, Schema extends FieldSchema>(
-  name: Name,
-  select: Schema,
-) {
+function coreStringKeyField<const Name extends string, Value extends string>(name: Name) {
+  const select = requiredStringField<Value>(coreStringKeyMaxCodePoints);
   return {
     select,
     column: sql.column({
@@ -226,25 +224,25 @@ function coreJsonField<const Name extends string, Schema extends FieldSchema>(
 }
 
 const threadFields = {
-  id: coreStringKeyField("id", requiredStringField<ThreadId>(coreStringKeyMaxCodePoints)),
+  id: coreStringKeyField<"id", ThreadId>("id"),
 };
 
 const branchFields = {
-  id: coreStringKeyField("id", requiredStringField<BranchId>(coreStringKeyMaxCodePoints)),
+  id: coreStringKeyField<"id", BranchId>("id"),
   threadId: coreTextField("thread_id", requiredStringField<ThreadId>(), true),
   name: coreTextField("name", requiredStringField<string>(), true),
   head: coreTextField("head", optionalStringField<MessageEntryId>(), false),
 };
 
 const messageFields = {
-  id: coreStringKeyField("id", requiredStringField<MessageEntryId>(coreStringKeyMaxCodePoints)),
+  id: coreStringKeyField<"id", MessageEntryId>("id"),
   threadId: coreTextField("thread_id", requiredStringField<ThreadId>(), true),
   parent: coreTextField("parent", optionalStringField<MessageEntryId>(), false),
   message: coreJsonField("message", requiredJsonField<ModelMessage>(), true),
 };
 
 const runFields = {
-  id: coreStringKeyField("id", requiredStringField<RunId>(coreStringKeyMaxCodePoints)),
+  id: coreStringKeyField<"id", RunId>("id"),
   threadId: coreTextField("thread_id", requiredStringField<ThreadId>(), true),
   branchId: coreTextField("branch_id", requiredStringField<BranchId>(), true),
   agent: coreJsonField("agent", requiredJsonField<AgentReference>(), true),
@@ -266,11 +264,8 @@ const runFields = {
 };
 
 const toolCallFields = {
-  toolCallId: coreStringKeyField(
-    "tool_call_id",
-    requiredStringField<ToolCallId>(coreStringKeyMaxCodePoints),
-  ),
-  runId: coreStringKeyField("run_id", requiredStringField<RunId>(coreStringKeyMaxCodePoints)),
+  toolCallId: coreStringKeyField<"tool_call_id", ToolCallId>("tool_call_id"),
+  runId: coreStringKeyField<"run_id", RunId>("run_id"),
   sequence: coreIntegerField("sequence"),
   toolName: coreTextField("tool_name", requiredStringField<string>(), true),
   parentToolCallId: coreTextField("parent_tool_call_id", optionalStringField<ToolCallId>(), false),
@@ -329,7 +324,7 @@ export const runtimeStateRecordDefinitions = {
   executionClaim: SqlRecord.define({
     table: sql.table({ name: "commissary_execution_claims", primaryKey: ["runId"] }),
     fields: {
-      runId: coreStringKeyField("run_id", requiredStringField<RunId>(coreStringKeyMaxCodePoints)),
+      runId: coreStringKeyField<"run_id", RunId>("run_id"),
       executionId: coreTextField("execution_id", requiredStringField<ExecutionId>(), true),
       token: coreTextField("token", requiredStringField<ExecutionClaimToken>(), true),
       fence: coreIntegerField("fence"),
@@ -339,7 +334,7 @@ export const runtimeStateRecordDefinitions = {
   executionFence: SqlRecord.define({
     table: sql.table({ name: "commissary_execution_fences", primaryKey: ["runId"] }),
     fields: {
-      runId: coreStringKeyField("run_id", requiredStringField<RunId>(coreStringKeyMaxCodePoints)),
+      runId: coreStringKeyField<"run_id", RunId>("run_id"),
       fence: coreIntegerField("fence"),
     },
   }),
@@ -349,7 +344,7 @@ export const runtimeStateRecordDefinitions = {
       primaryKey: ["runId", "sequence"],
     }),
     fields: {
-      runId: coreStringKeyField("run_id", requiredStringField<RunId>(coreStringKeyMaxCodePoints)),
+      runId: coreStringKeyField<"run_id", RunId>("run_id"),
       sequence: coreIntegerField("sequence"),
       message: coreJsonField("message", requiredJsonField<ModelMessage>(), true),
     },
@@ -360,7 +355,7 @@ export const runtimeStateRecordDefinitions = {
       primaryKey: ["runId", "sequence"],
     }),
     fields: {
-      runId: coreStringKeyField("run_id", requiredStringField<RunId>(coreStringKeyMaxCodePoints)),
+      runId: coreStringKeyField<"run_id", RunId>("run_id"),
       sequence: coreIntegerField("sequence"),
       message: coreJsonField("message", requiredJsonField<ModelMessage>(), true),
     },
@@ -368,21 +363,21 @@ export const runtimeStateRecordDefinitions = {
   runCommandSequence: SqlRecord.define({
     table: sql.table({ name: "commissary_run_command_sequences", primaryKey: ["runId"] }),
     fields: {
-      runId: coreStringKeyField("run_id", requiredStringField<RunId>(coreStringKeyMaxCodePoints)),
+      runId: coreStringKeyField<"run_id", RunId>("run_id"),
       sequence: coreIntegerField("sequence"),
     },
   }),
   toolCallSequence: SqlRecord.define({
     table: sql.table({ name: "commissary_tool_call_sequences", primaryKey: ["runId"] }),
     fields: {
-      runId: coreStringKeyField("run_id", requiredStringField<RunId>(coreStringKeyMaxCodePoints)),
+      runId: coreStringKeyField<"run_id", RunId>("run_id"),
       sequence: coreIntegerField("sequence"),
     },
   }),
   runSubmission: SqlRecord.define({
     table: sql.table({ name: "commissary_run_submissions", primaryKey: ["runId"] }),
     fields: {
-      runId: coreStringKeyField("run_id", requiredStringField<RunId>(coreStringKeyMaxCodePoints)),
+      runId: coreStringKeyField<"run_id", RunId>("run_id"),
       fingerprint: coreTextField("fingerprint", requiredStringField<string>(), true),
       result: coreJsonField(
         "result",
@@ -397,11 +392,8 @@ export const runtimeStateRecordDefinitions = {
       primaryKey: ["runId", "requestId"],
     }),
     fields: {
-      runId: coreStringKeyField("run_id", requiredStringField<RunId>(coreStringKeyMaxCodePoints)),
-      requestId: coreStringKeyField(
-        "request_id",
-        requiredStringField<ToolResumeRequestId>(coreStringKeyMaxCodePoints),
-      ),
+      runId: coreStringKeyField<"run_id", RunId>("run_id"),
+      requestId: coreStringKeyField<"request_id", ToolResumeRequestId>("request_id"),
       fingerprint: coreTextField("fingerprint", requiredStringField<string>(), true),
       result: coreJsonField(
         "result",
@@ -416,11 +408,8 @@ export const runtimeStateRecordDefinitions = {
       primaryKey: ["runId", "requestId"],
     }),
     fields: {
-      runId: coreStringKeyField("run_id", requiredStringField<RunId>(coreStringKeyMaxCodePoints)),
-      requestId: coreStringKeyField(
-        "request_id",
-        requiredStringField<SteeringRequestId>(coreStringKeyMaxCodePoints),
-      ),
+      runId: coreStringKeyField<"run_id", RunId>("run_id"),
+      requestId: coreStringKeyField<"request_id", SteeringRequestId>("request_id"),
       fingerprint: coreTextField("fingerprint", requiredStringField<string>(), true),
       result: coreJsonField("result", requiredJsonField<SteeringResult>(), true),
     },
@@ -431,11 +420,8 @@ export const runtimeStateRecordDefinitions = {
       primaryKey: ["runId", "requestId"],
     }),
     fields: {
-      runId: coreStringKeyField("run_id", requiredStringField<RunId>(coreStringKeyMaxCodePoints)),
-      requestId: coreStringKeyField(
-        "request_id",
-        requiredStringField<RedirectRequestId>(coreStringKeyMaxCodePoints),
-      ),
+      runId: coreStringKeyField<"run_id", RunId>("run_id"),
+      requestId: coreStringKeyField<"request_id", RedirectRequestId>("request_id"),
       fingerprint: coreTextField("fingerprint", requiredStringField<string>(), true),
       result: coreJsonField("result", requiredJsonField<RedirectResult>(), true),
     },
@@ -443,20 +429,14 @@ export const runtimeStateRecordDefinitions = {
   commit: SqlRecord.define({
     table: sql.table({ name: "commissary_commits", primaryKey: ["commitId"] }),
     fields: {
-      commitId: coreStringKeyField(
-        "commit_id",
-        requiredStringField<CommitId>(coreStringKeyMaxCodePoints),
-      ),
+      commitId: coreStringKeyField<"commit_id", CommitId>("commit_id"),
       fingerprint: coreTextField("fingerprint", requiredStringField<string>(), true),
     },
   }),
   finalizationOutcome: SqlRecord.define({
     table: sql.table({ name: "commissary_finalization_outcomes", primaryKey: ["commitId"] }),
     fields: {
-      commitId: coreStringKeyField(
-        "commit_id",
-        requiredStringField<CommitId>(coreStringKeyMaxCodePoints),
-      ),
+      commitId: coreStringKeyField<"commit_id", CommitId>("commit_id"),
       outcome: coreJsonField(
         "outcome",
         requiredJsonField<FinalizeRunStoreResult<typeof durableEntityRecordDefinitions>>(),
@@ -467,10 +447,7 @@ export const runtimeStateRecordDefinitions = {
   modelCommitOutcome: SqlRecord.define({
     table: sql.table({ name: "commissary_model_commit_outcomes", primaryKey: ["commitId"] }),
     fields: {
-      commitId: coreStringKeyField(
-        "commit_id",
-        requiredStringField<CommitId>(coreStringKeyMaxCodePoints),
-      ),
+      commitId: coreStringKeyField<"commit_id", CommitId>("commit_id"),
       outcome: coreJsonField(
         "outcome",
         requiredJsonField<
@@ -483,10 +460,7 @@ export const runtimeStateRecordDefinitions = {
   settlementOutcome: SqlRecord.define({
     table: sql.table({ name: "commissary_settlement_outcomes", primaryKey: ["commitId"] }),
     fields: {
-      commitId: coreStringKeyField(
-        "commit_id",
-        requiredStringField<CommitId>(coreStringKeyMaxCodePoints),
-      ),
+      commitId: coreStringKeyField<"commit_id", CommitId>("commit_id"),
       outcome: coreJsonField(
         "outcome",
         requiredJsonField<ContinueSettlementStoreResult<typeof durableEntityRecordDefinitions>>(),
