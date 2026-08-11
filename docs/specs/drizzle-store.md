@@ -1,6 +1,6 @@
 # Drizzle Store Technical Specification
 
-**Status:** Complete shared and cross-adapter specification approved for implementation in issue #19.
+**Status:** Complete shared and cross-adapter specification approved in issue #19 and refined for published Drizzle 0.45.2 compatibility in issue #83.
 
 ## Summary
 
@@ -122,7 +122,18 @@ export interface DrizzleStoreDefinition<
 }
 ```
 
-There is no public `bindings`, `tables`, or nested `relations` output map. The definition module hides normalization and keeps the public result small.
+There is no public `bindings`, `tables`, `enums`, or nested `relations` output map. The definition module hides normalization and keeps the public result small.
+
+The PostgreSQL factory's inline parameter additionally accepts `enums`. It is an exact readonly map used only to retain schema keys for host-supplied Drizzle enums referenced by supplied tables or direct column builders:
+
+```ts
+enums: {
+  job_status: jobStatusEnum,
+  "jobs.audit_status": auditStatusEnum,
+}
+```
+
+Each key must equal the value's physical unqualified `name` or qualified `schema.name`. Drizzle 0.45.2 widens those properties to `string`, so the explicit map is required when a supplied table or direct column builder references a PostgreSQL enum. Lower-tier Commissary enums need no entry because their types retain literal physical names. The result still exposes every enum only through the flat `definition.schema`.
 
 ## Record Inputs
 
@@ -163,9 +174,27 @@ const definition = DrizzlePostgresStore.define({
 });
 ```
 
-The effective Record has the TypeScript keys `id`, `tenantId`, and `archived`. The physical column remains `tenant_id`. All three generated object schemas must describe the same table and use one supported schema family.
+The effective Record has the TypeScript keys `id`, `tenantId`, and `archived`. The physical column remains `tenant_id`. All three generated object schemas must describe the same table and use one supported schema family. Select covers every table key. Insert and update cover every writable table key.
 
 Without `schemas`, every effective field needs a complete static schema contract. A direct table with a field that has no static schema produces a definition issue.
+
+A PostgreSQL table that uses a Drizzle enum also supplies the enum map so the result key remains exact:
+
+```ts
+const jobStatusEnum = pgEnum("job_status", ["pending", "done"]);
+const jobTable = pgTable("jobs", {
+  id: text("id").notNull(),
+  status: jobStatusEnum("status").notNull(),
+});
+
+const definition = DrizzlePostgresStore.define({
+  schemas,
+  records: { job: jobTable },
+  enums: { job_status: jobStatusEnum },
+});
+```
+
+The map does not add unrelated enums. Every value must be the enum entity of at least one final column, whether that column came from a supplied table or a direct column builder. Every host-supplied Drizzle enum referenced by a final column must appear exactly once under its physical key. Reuse across columns or tables still needs one entry.
 
 ### Direct column builder
 
@@ -238,7 +267,18 @@ The functions return whole-table object schemas. Store still needs one Field Sch
 | `drizzle-zod`     | `0.8.3`           | Zod `^3.25.0 \|\| ^4.0.0` | `.shape`         |
 | `drizzle-valibot` | `0.4.2`           | Valibot `^1.0.0`          | `.entries`       |
 
-The host owns and installs the generator and schema libraries. `@commissary/drizzle` imports neither family. Each returned whole-table schema and every extracted field schema must implement Standard Schema V1. Select, insert, and update results must use the same supported family and have exact table-key equality: no table key can be missing and no extra schema key is accepted. An unknown family reports `unsupported-schema-family`; malformed results from a recognized family report the applicable generated-schema issue. The runtime does not inspect installed package versions. Versions outside the approved matrix have no compatibility promise.
+The host owns and installs the generator and schema libraries. `@commissary/drizzle` imports neither family. Each returned whole-table schema and every extracted field schema must implement Standard Schema V1. Select, insert, and update results must use the same supported family.
+
+Generated schema membership follows the published generator behavior:
+
+- select has exact equality with every logical table column key;
+- insert and update have exact equality with the writable column keys;
+- an always-generated column or `ALWAYS` identity column is not writable and is absent from insert and update; and
+- a `BY DEFAULT` identity column remains writable and is present.
+
+No operation can contain an extra key. No required key for that operation can be missing. Drizzle Zod 0.8.3 and the runtime output of Drizzle Valibot 0.4.2 follow this rule. Drizzle Valibot 0.4.2's declaration incorrectly omits always-generated columns from its select entry type even though the runtime select schema includes them. The concrete factory derives that selected field from the final table type after validating the runtime entry; callers do not lose the field.
+
+An unknown family reports `unsupported-schema-family`; malformed results from a recognized family report the applicable generated-schema issue. The runtime does not inspect installed package versions. Versions outside the approved matrix have no compatibility promise.
 
 Support expands only after compile-time and runtime conformance proves the new generator version, its schema-library peer range, exact field-map reflection, Standard Schema behavior, and all three dialect paths.
 
@@ -246,14 +286,24 @@ Generation order is:
 
 1. build or accept the final Drizzle table;
 2. call the three schema functions;
-3. verify that each result is a supported object schema for the same table keys;
+3. verify that each result is a supported object schema with the exact keys for its operation;
 4. extract generated select, insert, and update field schemas;
-5. apply static field schemas over generated schemas; and
-6. apply the normal Store Field Schema round-trip and JSON-value checks.
+5. give an always-generated or `ALWAYS` identity field a package-owned omission schema for each absent write operation;
+6. apply static field schemas over generated and omission schemas; and
+7. apply the normal Store Field Schema round-trip and JSON-value checks.
 
-A lower-tier Field Definition keeps its established fallback: missing create uses select, and missing update uses create. Generators do not reinterpret that contract. For a field that comes only from a Drizzle table or column, the three generated schemas form its initial Field Definition. A static shorthand replaces all three operations; an operation object replaces only its named generated operations.
+The package-owned omission schema implements Standard Schema V1, accepts only `undefined`, and returns `undefined`. It is not a generated whole-table schema and therefore does not claim a Zod or Valibot family. It lets a direct table produce a complete Store Field Definition while keeping the generator's non-writable field inference.
+
+A lower-tier Field Definition keeps its established fallback: missing create uses select, and missing update uses create. Generators do not reinterpret that contract. For a field that comes only from a Drizzle table or column, generated schemas plus any required omission schemas form its initial Field Definition. A static shorthand replaces all three operations; an operation object replaces only its named generated or omission operations. A static write schema can therefore expose an input that a generator omits. Dialect write rules still reject any physical write that the database metadata prohibits.
 
 For a lower-tier Record or complete table override, the final table is compatible only when field and column membership is bidirectional. Each effective field must have one column with the same TypeScript key, and each column must have one effective field. A missing column for a lower-tier field reports `incompatible-drizzle-table`; the definition never keeps an unpersisted field.
+
+Published Drizzle 0.45.2 cannot represent two otherwise valid lower-tier column plans:
+
+- an explicitly named PostgreSQL identity sequence whose schema qualification differs from its table's qualification; and
+- MySQL `DATETIME ON UPDATE CURRENT_TIMESTAMP`.
+
+The first case is representable only when an explicit identity sequence name and its table are both unqualified or both use the same explicit schema. An omitted sequence name remains representable. MySQL `TIMESTAMP ON UPDATE CURRENT_TIMESTAMP` remains representable. Each unsupported plan reports `incompatible-drizzle-column` at the winning column metadata path. Definition never changes qualification, changes `DATETIME` to `TIMESTAMP`, drops automatic-update metadata, mutates protected Drizzle configuration, or uses a private API.
 
 Generated schemas can still be invalid Store schemas. Definition rejects selected `Date`, `Uint8Array`, class instances, non-JSON values, unstable transforms, incompatible create or update outputs, unsupported omission, or any other violation of the Store Record contract. A host can supply a static schema that converts a Drizzle value into the approved JSON-compatible selected value.
 
@@ -316,8 +366,18 @@ The result contains final SQL Record references and one flat Drizzle schema:
 ```ts
 definition.records.someRecord;
 definition.schema.someRecord;
+definition.schema.job_status;
 definition.schema.someRecordRelations;
 ```
+
+PostgreSQL adds every enum entity referenced by a final table. Lower-tier enum assets are materialized automatically. Enums supplied through tables or direct column builders retain the exact keys of the validated `enums` input map. An unqualified enum uses its physical enum name as the schema key. A qualified enum uses `schema.name`:
+
+```ts
+definition.schema.job_status;
+definition.schema["jobs.job_status"];
+```
+
+The same qualified enum reused by several columns appears once. Lower-tier PostgreSQL enum metadata retains literal `name` and `schema` types without caller annotations. Supplied Drizzle enums retain their literal map keys. The flat key is output naming only: definition retains the separate physical schema and name and never parses the key. Distinct physical enums whose names produce the same flat string report `duplicate-schema-key`. Tables enter the flat map in Record order, PostgreSQL enums in first-use order, and relations in callback return order. MySQL and SQLite add no enum entities.
 
 Applications pass the flat schema to Drizzle:
 
@@ -330,10 +390,17 @@ const database = drizzle(client, {
 Drizzle Kit executes configured schema modules and inspects direct exports. It does not recurse into `definition.schema`. The schema module must therefore export each entity directly:
 
 ```ts
-export const { someRecord, someRecordRelations, scheduledJob } = definition.schema;
+export const {
+  someRecord,
+  job_status: jobStatusEnum,
+  someRecordRelations,
+  scheduledJob,
+} = definition.schema;
+
+export const { ["jobs.job_status"]: qualifiedJobStatusEnum } = definition.schema;
 ```
 
-The destructured values are direct module exports. Their export names do not change physical table or column names.
+The destructured values are direct module exports. Their export names do not change physical table, column, or enum names.
 
 The package snapshots and freezes its own Record maps, override results, references, schema map, and hidden definition state. It does not clone or freeze Drizzle tables, columns, relation entities, or third-party schema objects. The host must not mutate those values after definition.
 
@@ -342,17 +409,18 @@ The package snapshots and freezes its own Record maps, override results, referen
 Definition uses this stable order:
 
 1. Record contribution and override conflicts;
-2. schema-generator presence and family checks;
+2. schema-generator presence, family checks, and PostgreSQL enum-map atomic checks;
 3. each Record's source, table identity, qualifier, physical name, and portable or supplied primary key;
 4. each field's static schema, generated schema, selected value, column identity, physical type, default, nullability, generation, and cross-property checks;
 5. hook patch compatibility and required Core create guarantees;
 6. table-wide column, primary-key, index, constraint, and identity checks;
-7. relations in callback return order; and
-8. flat schema key collisions.
+7. PostgreSQL enum membership and materialization in first-use order;
+8. relations in callback return order; and
+9. flat schema key collisions.
 
 Static and generated schema facts do not silently beat explicit physical metadata. A direct Drizzle column or table can supply physical evidence when lower-tier SQL or database metadata is absent. If explicit lower-tier metadata exists, the Drizzle value must agree with it. A mismatch is a definition issue.
 
-A table-valued `records` entry and a table-valued override for the same key conflict unless the override is the selected host replacement. A complete table conflicts with separate column-builder replacements and second table extra configuration for that same Record. Relation keys must not collide with Record or relation keys.
+A table-valued `records` entry and a table-valued override for the same key conflict unless the override is the selected host replacement. A complete table conflicts with separate column-builder replacements and second table extra configuration for that same Record. PostgreSQL enum keys must not collide with Record, enum, or relation keys. Relation keys must not collide with any earlier flat schema key or another relation key.
 
 ## Definition Failures
 
@@ -370,6 +438,7 @@ export type DrizzleDefinitionIssueCode =
   | "incompatible-drizzle-table"
   | "invalid-drizzle-column"
   | "incompatible-drizzle-column"
+  | "invalid-drizzle-enum"
   | "invalid-drizzle-override"
   | "invalid-before-create-hook"
   | "invalid-drizzle-relations"
@@ -388,7 +457,18 @@ export declare class DrizzleDefinitionError extends Error {
 }
 ```
 
-The concrete definition absorbs lower-tier SQL definition issues into this one ordered issue list. A failed table or field suppresses only checks that depend on that value. Independent Records, fields, hooks, and relation return entries continue when they can be checked safely.
+The concrete definition absorbs lower-tier SQL definition issues into this one ordered issue list. A failed table or field suppresses only checks that depend on that value. Independent Records, fields, hooks, enum assets, and relation return entries continue when they can be checked safely.
+
+`invalid-drizzle-enum` reports a malformed or wrong-dialect map value, a map key that differs from its enum's physical name, a host-supplied enum missing from the map, or a map entry not referenced by a final column. Its path starts with `enums` and the host key when one exists; a missing entry points to the supplied Record or override field that references it. Enum-map declaration order owns independent map-value issues. Final table and field order owns missing-membership issues.
+
+The two published-API representation failures use these exact messages:
+
+```txt
+Drizzle cannot represent an explicit PostgreSQL identity sequence whose schema qualification differs from its table
+Drizzle cannot represent MySQL DATETIME with ON UPDATE CURRENT_TIMESTAMP
+```
+
+Their `incompatible-drizzle-column` path is the winning Record or override field path followed by the incompatible database metadata path. They retain no cause because no host callback or Drizzle API threw.
 
 Messages and causes can contain application data and are not safe for default logs or telemetry.
 
@@ -501,6 +581,15 @@ Expected runtime output:
 }
 ```
 
+The published-artifact compatibility prototype is `packages/store/prototypes/drizzle-0452-definition-compatibility.prototype.ts`. It imports exact Drizzle ORM 0.45.2, Drizzle Zod 0.8.3, and Drizzle Valibot 0.4.2 development dependencies. It additionally proves that select generators include always-generated fields while insert and update generators omit them; PostgreSQL enum entities use unqualified or qualified physical schema keys; and the identity-sequence qualification and MySQL `DATETIME` automatic-update limits are real public-API constraints.
+
+Run it with:
+
+```sh
+pnpm exec tsc --ignoreConfig --noEmit --strict --skipLibCheck --target ES2022 --module NodeNext --moduleResolution NodeNext packages/store/prototypes/drizzle-0452-definition-compatibility.prototype.ts
+pnpm exec bun packages/store/prototypes/drizzle-0452-definition-compatibility.prototype.ts
+```
+
 ## Final Cross-Adapter Approval
 
 Issue #19 approves the complete staged specification against these implementation paths:
@@ -509,7 +598,7 @@ Issue #19 approves the complete staged specification against these implementatio
 2. **Scheduled Jobs:** A lower-tier Scheduled Job Record composes with custom Records, SQL references, CRUD, direct SQL, and a `beforeCreate` hook. The hook-adjusted create input survives base and transaction binding.
 3. **Lower-tier Record composition:** Generated dialect tables retain every effective field, exact physical name, portable primary key, schema contract, and dialect refinement.
 4. **User-authored Drizzle tables:** Direct dialect tables work with the exact supported Drizzle Zod or Drizzle Valibot generator family and keep bidirectional field-column membership.
-5. **Drizzle Kit exports:** Every dialect exposes the flat runtime schema, and host schema modules export its table and relation values directly.
+5. **Drizzle Kit exports:** Every dialect exposes the flat runtime schema, and host schema modules export its table, PostgreSQL enum, and relation values directly.
 
 The final compile-tested integration prototype is `packages/store/prototypes/complete-sql-drizzle-specification.prototype.ts`. It tests all five paths, all three dialect definitions, exact driver-result inference, plain and literal-transaction bindings, hook-adjusted create inputs, and direct schema exports.
 
@@ -546,3 +635,4 @@ SQLite runs its plain Store tests on synchronous and asynchronous database paths
 - [Drizzle SQLite Store adapter specification](drizzle-sqlite-store.md)
 - [Shared lifecycle issue](https://github.com/spiritledsoftware/commissary/issues/14)
 - [Final approval issue #19](https://github.com/spiritledsoftware/commissary/issues/19)
+- [Drizzle 0.45.2 compatibility decision #83](https://github.com/spiritledsoftware/commissary/issues/83)

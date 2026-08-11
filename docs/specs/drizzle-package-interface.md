@@ -2,7 +2,7 @@
 
 > **Status**: Complete package and cross-adapter interface approved for implementation in issue #19.
 >
-> **Last updated**: 2026-08-08 during issue #19.
+> **Last updated**: 2026-08-11 during issue #83.
 
 ## Summary
 
@@ -30,7 +30,7 @@ Those documents remain authoritative for definition behavior, Store behavior, SQ
 
 - Keep shared definition contracts independent of one Drizzle dialect module.
 - Give each dialect one complete, statically imported adapter entry point.
-- Preserve exact table, relation, Record reference, create-input, and driver-result inference.
+- Preserve exact table, PostgreSQL enum, relation, Record reference, create-input, and driver-result inference.
 - Support generic and Thread Store definitions without a database-specific Thread Store binder.
 - Accept common public Drizzle database types instead of driver unions.
 - Make literal and non-literal transaction options type-safe.
@@ -59,8 +59,8 @@ Those documents remain authoritative for definition behavior, Store behavior, SQ
 7. **Exact result inference**: A concrete database keeps its public command result type under `SqlCommandResult.driverResult`.
 8. **Literal capability inference**: Omitted or literal-false `transaction` returns only the base SQL Store. Literal true also returns Transaction Store.
 9. **Boolean honesty**: A non-literal Boolean returns the union of those two results and requires normal narrowing before transaction use.
-10. **Direct generated values**: Definitions expose `records` and one flat `schema`. They expose no `tables`, `bindings`, nested `relations`, or export helper.
-11. **Host schema exports**: Drizzle Kit users export the values in `definition.schema` directly from their schema module.
+10. **Direct generated values**: Definitions expose `records` and one flat `schema`. The PostgreSQL schema also contains referenced enum entities. Definitions expose no `tables`, `enums`, `bindings`, nested `relations`, or export helper.
+11. **Host schema exports**: Drizzle Kit users export every table, PostgreSQL enum, and relation value in `definition.schema` directly from their schema module.
 12. **Host-owned generators**: The package imports neither Drizzle Zod nor Drizzle Valibot. It accepts their generator functions as host values.
 13. **Required Drizzle peer**: `drizzle-orm` is a required peer, not an optional peer or bundled direct dependency.
 14. **Inert imports**: No public entry point creates a database, starts I/O, or runs a binding probe during module evaluation.
@@ -203,6 +203,7 @@ const genericDefinition = DrizzlePostgresStore.define({
   schemas,
   records,
   overrides,
+  enums,
   relations,
   hooks,
 });
@@ -211,12 +212,13 @@ const threadDefinition = DrizzlePostgresThreadStore.define({
   schemas,
   records,
   overrides,
+  enums,
   relations,
   hooks,
 });
 ```
 
-MySQL and SQLite use the same shape under their matching names.
+`enums` is the exact map required only for PostgreSQL enums referenced by supplied Drizzle tables or direct column builders. Lower-tier PostgreSQL enums are discovered with exact keys from Commissary metadata. MySQL and SQLite omit `enums` and otherwise use the same shape under their matching names.
 
 The factory parameter remains inline. The package does not export `DefineDrizzlePostgresStoreOptions` or another option alias. The concrete call is the inference seam.
 
@@ -228,6 +230,7 @@ Public constructors use const generics and readonly maps. Ordinary calls preserv
 - every Drizzle table and column type;
 - every generated or static Field Schema input and output;
 - every relation key and entity type;
+- every PostgreSQL enum's physical schema key and entity type;
 - every resolved SQL Record reference;
 - every required hook patch and adjusted create input; and
 - whether the definition contains the complete Thread Store catalog.
@@ -243,7 +246,9 @@ definition.records;
 definition.schema;
 ```
 
-`records` is the exact map of resolved SQL Record references. `schema` is the exact flat map of final Drizzle tables and host relation entities. Record keys become table keys. Relation callback keys remain exact and must not collide.
+`records` is the exact map of resolved SQL Record references. `schema` is the exact flat map of final Drizzle tables, referenced PostgreSQL enum entities, and host relation entities. Record keys become table keys. PostgreSQL enum keys are their physical `name` when unqualified and `schema.name` when qualified. Relation callback keys remain exact. No flat schema keys can collide.
+
+Lower-tier PostgreSQL enum helper types retain literal physical names and schemas so enum schema keys remain inferable. Drizzle 0.45.2 widens the physical name and schema on its own `PgEnum` type, so an enum supplied through a table or direct column builder must also appear in the factory's exact `enums` input map under its physical key. Reusing one qualified enum in several columns produces one flat schema entry. The PostgreSQL concrete definition type adds these entries; the shared root contract remains dialect-neutral.
 
 Applications pass the flat value to Drizzle:
 
@@ -256,7 +261,9 @@ const database = drizzle(client, {
 Drizzle Kit loads direct runtime exports. The host schema module exports the generated values directly:
 
 ```ts
-export const { job, jobRelations, thread } = definition.schema;
+export const { job, job_status: jobStatusEnum, jobRelations, thread } = definition.schema;
+
+export const { ["jobs.job_status"]: qualifiedJobStatusEnum } = definition.schema;
 ```
 
 The package exports no `exportDrizzleSchema`, `tables`, `relations`, or generated source-file helper. Callers use `typeof definition.schema` when they need its type.
@@ -427,7 +434,7 @@ Implementation must verify these package contracts:
 4. The package archive contains `dist` and `src`, and no tests or prototypes.
 5. The package declares no CommonJS output and no arbitrary source export.
 6. Root and subpath declarations contain no public `any`, global augmentation, runtime `$Infer`, or required explicit generic.
-7. A direct Drizzle table preserves every schema key and relation key.
+7. A direct Drizzle table preserves every table, explicitly mapped PostgreSQL enum, and relation schema key.
 8. Each concrete common Drizzle database type is accepted without a package-owned alias.
 9. A wrong-dialect database or definition fails at compile time.
 10. Omitted and false transaction options expose no transaction method.
@@ -438,16 +445,21 @@ Implementation must verify these package contracts:
 15. A Thread definition binds through the normal dialect binder and composes through `createThreadStore`.
 16. Hook-adjusted create inputs are identical through base and transaction binding. A hook-guaranteed field is optional and an unrelated required field stays required.
 17. The exact 19-key Core catalog retains every approved physical table name, column name, and primary-key tuple.
-18. Direct table and relation exports load as top-level schema-module values for Drizzle Kit in all three dialects.
+18. Direct table, PostgreSQL enum, and relation exports load as top-level schema-module values for Drizzle Kit.
 19. Drizzle Zod 0.8.3 with its approved Zod range and Drizzle Valibot 0.4.2 with Valibot 1 work when installed only by the host.
-20. Unsupported generator families fail with `unsupported-schema-family`. Versions outside the approved matrix have no compatibility promise.
-21. Building and importing one dialect does not require a native driver package for another dialect.
-22. The implementation compiles against exactly published `drizzle-orm` 0.45.2, and every used API inspected on `main` also exists in that npm package artifact.
-23. Each dialect passes the complete conformance matrix in the shared Drizzle Store specification.
+20. Select generator keys equal every table key; insert and update keys equal every writable table key.
+21. A supplied PostgreSQL enum map retains exact keys and rejects missing, extra, mismatched, malformed, or wrong-dialect entries.
+22. Unsupported generator families fail with `unsupported-schema-family`. Versions outside the approved matrix have no compatibility promise.
+23. Building and importing one dialect does not require a native driver package for another dialect.
+24. The implementation compiles against exactly published `drizzle-orm` 0.45.2, and every used API inspected on `main` also exists in that npm package artifact.
+25. Unsupported identity-sequence qualification and MySQL `DATETIME` automatic update report `incompatible-drizzle-column` without metadata loss.
+26. Each dialect passes the complete conformance matrix in the shared Drizzle Store specification.
 
 The compile-tested prototype is `packages/store/prototypes/drizzle-package-interface.prototype.ts`.
 
 The final cross-adapter prototype is `packages/store/prototypes/complete-sql-drizzle-specification.prototype.ts`.
+
+The exact published-artifact checks are in `packages/store/prototypes/drizzle-0452-definition-compatibility.prototype.ts`.
 
 Run it with:
 
@@ -490,6 +502,10 @@ Rejected because they would look like database-named runtime Store tiers. The co
 
 Rejected because Core owns Thread Store Runtime transitions and the host owns the database. Definition, binding, and Core composition remain three visible stages.
 
+### Separate PostgreSQL enum output map
+
+Rejected because Drizzle Kit schema modules should export every generated entity from one flat value. The PostgreSQL factory can accept an enum input map to preserve supplied Drizzle keys, but the result still places those enums directly in `definition.schema` under their physical unqualified or qualified names.
+
 ### Schema export helper
 
 Rejected because `definition.schema` already contains the exact flat runtime entities. Direct destructuring is the form Drizzle Kit needs.
@@ -498,6 +514,7 @@ Rejected because `definition.schema` already contains the exact flat runtime ent
 
 - [Issue #15](https://github.com/spiritledsoftware/commissary/issues/15)
 - [Final approval issue #19](https://github.com/spiritledsoftware/commissary/issues/19)
+- [Drizzle 0.45.2 compatibility decision #83](https://github.com/spiritledsoftware/commissary/issues/83)
 - [Wayfinder map #7](https://github.com/spiritledsoftware/commissary/issues/7)
 - [Drizzle Store Technical Specification](drizzle-store.md)
 - [Drizzle PostgreSQL Store Adapter Technical Specification](drizzle-postgres-store.md)

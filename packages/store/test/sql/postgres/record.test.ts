@@ -259,7 +259,17 @@ describe("PostgreSQL metadata helpers", () => {
       PostgresColumnType<{ readonly a: number; readonly b: number; readonly c: number }>
     >();
     const state = pg.enum({ name: "job_state", values: ["pending", "running"] as const });
-    expectTypeOf(state).toMatchTypeOf<PostgresEnum<readonly ["pending", "running"]>>();
+    expectTypeOf(state).toEqualTypeOf<
+      PostgresEnum<readonly ["pending", "running"], "job_state", undefined>
+    >();
+    const qualifiedState = pg.enum({
+      schema: "jobs",
+      name: "job_state",
+      values: ["pending", "running"],
+    });
+    expectTypeOf(qualifiedState).toEqualTypeOf<
+      PostgresEnum<readonly ["pending", "running"], "job_state", "jobs">
+    >();
     expectTypeOf(pg.array(state)).toEqualTypeOf<
       PostgresColumnType<readonly ("pending" | "running")[]>
     >();

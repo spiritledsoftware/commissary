@@ -680,6 +680,8 @@ export interface PostgresIntervalOptions {
 
 export interface PostgresEnum<
   Values extends readonly [string, ...string[]],
+  Name extends string = string,
+  Schema extends string | undefined = string | undefined,
 > extends PostgresColumnType<Values[number]> {}
 
 export interface PostgresCustomTypeOptions<Value extends JsonValue> {
@@ -733,11 +735,15 @@ export declare const pg: {
     readonly c: number;
   }>;
 
-  readonly enum: <const Values extends readonly [string, ...string[]]>(options: {
-    readonly schema?: string;
-    readonly name: string;
+  readonly enum: <
+    const Values extends readonly [string, ...string[]],
+    const Name extends string,
+    const Schema extends string | undefined = undefined,
+  >(options: {
+    readonly schema?: Schema;
+    readonly name: Name;
     readonly values: Values;
-  }) => PostgresEnum<Values>;
+  }) => PostgresEnum<Values, Name, Schema>;
   readonly array: <Value extends JsonValue>(
     element: PostgresColumnType<Value>,
   ) => PostgresColumnType<readonly Value[]>;
@@ -788,7 +794,7 @@ A concrete PostgreSQL adapter must keep `date`, `time`, and `timestamp` values a
 
 `pg.array(element)` creates one application dimension. Nest it for more dimensions. Values must be rectangular. Selected PostgreSQL arrays must use one-based lower bounds because a plain JavaScript array cannot preserve another bound. SQL `NULL` elements are preserved and then checked by the Select Schema.
 
-`pg.enum({ schema, name, values })` creates one reusable `PostgresEnum` column type and definition-owned asset. Value order is significant. Reuse the same opaque enum object across fields. Different enum objects with one qualified name conflict even when their values match. A custom type is only an external type reference and never becomes a definition-owned asset.
+`pg.enum({ schema, name, values })` creates one reusable `PostgresEnum` column type and definition-owned asset. Its public type retains the literal `schema`, `name`, and value tuple so higher-tier integrations can preserve exact asset keys without caller annotations. Value order is significant. Reuse the same opaque enum object across fields. Different enum objects with one qualified name conflict even when their values match. A custom type is only an external type reference and never becomes a definition-owned asset.
 
 A custom type uses a separately quoted schema and name. Its optional modifier is a nonempty `SqlStatement<never>` placed inside parentheses, which supports specifications such as `vector(3)` and `geometry(Point, 4326)`. Definition checks that the modifier has no runtime parameters but does not parse it. PostGIS and pgvector types use this custom path.
 

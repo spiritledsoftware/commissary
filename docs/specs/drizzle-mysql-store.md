@@ -2,7 +2,7 @@
 
 > **Status**: Design approved for implementation.
 >
-> **Last updated**: 2026-08-07 during Drizzle SQLite Store adapter approval.
+> **Last updated**: 2026-08-11 during issue #83.
 
 ## Summary
 
@@ -85,6 +85,8 @@ const definition = DrizzleMysqlStore.define({
 A generated table uses the resolved MySQL database qualifier, table name, columns, defaults, generation, automatic increment, automatic update, nullability, and portable primary key. An unqualified table uses `mysqlTable`. A qualified table uses the matching public MySQL schema factory. A supplied table must agree with explicit lower-tier MySQL metadata.
 
 Resolved direct and custom column codecs map through public MySQL column builders or `customType`. A parameter-free type, default, or generated Statement converts through the same Statement-segment path as runtime SQL. Definition never parses trusted raw SQL structure.
+
+Drizzle 0.45.2 exposes `onUpdateNow()` for `TIMESTAMP` builders but not `DATETIME` builders, and `customType` cannot add equivalent Drizzle Kit metadata. A lower-tier `TIMESTAMP ON UPDATE CURRENT_TIMESTAMP` remains supported. A lower-tier `DATETIME ON UPDATE CURRENT_TIMESTAMP` reports `incompatible-drizzle-column` with the shared specification's exact message. Definition does not change the physical type or silently drop automatic update.
 
 ### Primary and unique keys
 
