@@ -2,7 +2,7 @@
 
 > **Status**: Design approved for implementation.
 >
-> **Last updated**: 2026-08-07 during Drizzle SQLite Store adapter approval.
+> **Last updated**: 2026-08-11 during issue #83.
 
 ## Summary
 
@@ -75,6 +75,7 @@ const definition = DrizzlePostgresStore.define({
   schemas,
   records,
   overrides,
+  enums,
   relations,
   hooks,
 });
@@ -101,6 +102,12 @@ The tuple contains logical Record field names. It is nonempty, ordered, duplicat
 A direct Drizzle table contributes its declared column-level or table-level primary key. When a lower-tier primary key and supplied table are both present, their logical field order must match. A mismatch is a definition error. An omitted primary key is valid.
 
 Primary-key data stays in hidden definition state used by binding. It does not add a Store field or a public identity object.
+
+A generated identity uses Drizzle's public identity builder. Drizzle 0.45.2 assigns an explicitly named identity sequence to the table's schema and accepts no independent sequence schema. Definition therefore accepts an explicit sequence name only when its qualification matches the table: both are unqualified or both use the same explicit schema. A different qualification reports `incompatible-drizzle-column` with the shared specification's exact message. Definition does not discard or rewrite the qualification.
+
+Every PostgreSQL enum referenced by a final generated or supplied table enters `definition.schema`. An unqualified enum uses its physical name as the flat key; a qualified enum uses `schema.name`. Reuse produces one entity under that qualified physical key. The enum value remains the ordinary public Drizzle `PgEnum` entity and can be exported directly for Drizzle Kit.
+
+Lower-tier enum metadata preserves those keys without another input. Drizzle 0.45.2 widens `PgEnum.enumName` and `PgEnum.schema` to `string` and `string | undefined`, so enums referenced by supplied tables or direct column builders must also appear in the definition's exact `enums` map. The map key must equal the value's physical key, every map value must be referenced by a final column, and every host-supplied enum used by a final column must be present exactly once. Invalid map values or membership report `invalid-drizzle-enum`.
 
 ## Accepted database type
 

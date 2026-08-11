@@ -99,11 +99,17 @@ export interface PostgresIntervalOptions {
   readonly precision?: PostgresTemporalPrecision;
 }
 
-/** A reusable definition-owned PostgreSQL enum type. */
+/** A reusable definition-owned PostgreSQL enum type with literal physical identity. */
 export interface PostgresEnum<
   Values extends readonly [string, ...string[]],
+  Name extends string = string,
+  Schema extends string | undefined = string | undefined,
 > extends PostgresColumnType<Values[number]> {
-  readonly "~commissary/postgres-enum"?: () => Values;
+  readonly "~commissary/postgres-enum"?: () => {
+    readonly values: Values;
+    readonly name: Name;
+    readonly schema: Schema;
+  };
 }
 
 /** One external PostgreSQL type and its synchronous scalar converters. */
@@ -432,11 +438,15 @@ function defineInterval(options?: PostgresIntervalOptions): PostgresColumnType<s
   return directType<string>("interval", options);
 }
 
-function defineEnum<const Values extends readonly [string, ...string[]]>(options: {
-  readonly schema?: string;
-  readonly name: string;
+function defineEnum<
+  const Values extends readonly [string, ...string[]],
+  const Name extends string,
+  const Schema extends string | undefined = undefined,
+>(options: {
+  readonly schema?: Schema;
+  readonly name: Name;
   readonly values: Values;
-}): PostgresEnum<Values> {
+}): PostgresEnum<Values, Name, Schema> {
   if (!isRecordContainer(options)) {
     throw new TypeError("PostgreSQL enum helper requires an options object");
   }
@@ -460,7 +470,7 @@ function defineEnum<const Values extends readonly [string, ...string[]]>(options
     name: options.name,
     values: Object.freeze([...options.values]),
     identity,
-  }) as PostgresEnum<Values>;
+  }) as PostgresEnum<Values, Name, Schema>;
 }
 
 function defineArray<Value extends JsonValue>(
