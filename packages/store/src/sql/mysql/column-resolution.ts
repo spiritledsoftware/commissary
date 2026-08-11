@@ -1,5 +1,6 @@
+import { hasOnlySqlContractKeys, isSqlContractObject } from "../contract-object.js";
+import { validateSqlDefinitionStatement } from "../definition-statement.js";
 import {
-  isSqlRecordContainer as isRecordContainer,
   sqlDefinitionIssue as issue,
   sqlLiteralMatchesApplication as literalMatchesApplication,
 } from "../record-catalog-resolver.js";
@@ -11,8 +12,6 @@ import {
 } from "../record.js";
 import type { SqlStatement } from "../statement.js";
 import { invalidValue } from "./column-codecs.js";
-import { hasOnlyOwnStringKeys } from "./column-type-resolver.js";
-import { validStatement } from "./metadata.js";
 import type {
   MysqlEncodedValue,
   MysqlResolvedAutoIncrement,
@@ -63,7 +62,7 @@ export function resolveDefault(
     }
     return literal.value;
   }
-  return validStatement(value, path, issues, "MySQL column default");
+  return validateSqlDefinitionStatement(value, path, issues, "MySQL column default");
 }
 
 export function resolveGenerated(
@@ -74,7 +73,7 @@ export function resolveGenerated(
   issues: SqlDefinitionIssue[],
 ): SqlResolvedGeneratedColumn | undefined {
   if (value === undefined) return undefined;
-  if (!isRecordContainer(value)) {
+  if (!isSqlContractObject(value)) {
     issues.push(
       issue("invalid-database-options", path, "MySQL generated metadata must be an object"),
     );
@@ -83,14 +82,18 @@ export function resolveGenerated(
   let valid = true;
   const hasExpression = Object.hasOwn(value, "expression");
   const hasMode = Object.hasOwn(value, "mode");
-  if (!hasOnlyOwnStringKeys(value, new Set(["expression", "mode"])) || !hasExpression || !hasMode) {
+  if (
+    !hasOnlySqlContractKeys(value, new Set(["expression", "mode"])) ||
+    !hasExpression ||
+    !hasMode
+  ) {
     issues.push(
       issue("invalid-database-options", path, "MySQL generated metadata has an invalid structure"),
     );
     valid = false;
   }
   const expression = hasExpression
-    ? validStatement(
+    ? validateSqlDefinitionStatement(
         Reflect.get(value, "expression"),
         expressionPath,
         issues,

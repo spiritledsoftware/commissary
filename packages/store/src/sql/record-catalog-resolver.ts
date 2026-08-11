@@ -1,3 +1,4 @@
+import { isSqlContractObject as isSqlRecordContainer } from "./contract-object.js";
 import type {
   FieldDefinition,
   FieldSchema,
@@ -29,13 +30,6 @@ export interface SqlFieldCatalogEntry extends SqlRecordCatalogEntry {
   readonly field: FieldDefinition;
   readonly columnValue: unknown;
   readonly column: Readonly<Record<PropertyKey, unknown>> | undefined;
-}
-
-/** Test whether a value can own SQL Record metadata. */
-export function isSqlRecordContainer(
-  value: unknown,
-): value is Readonly<Record<PropertyKey, unknown>> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /** Test whether a Field is directly represented by its Select Schema. */

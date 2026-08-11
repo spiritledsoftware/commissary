@@ -1,5 +1,10 @@
 import type { StandardJSONSchemaV1 } from "@standard-schema/spec";
 import type { SqlStatement } from "./statement.js";
+import {
+  isSqlContractObject as isRecordContainer,
+  snapshotSqlContractValue,
+} from "./contract-object.js";
+import { sqlOpaqueFormatSymbol, sqlOpaqueValueFormat as sqlOpaqueFormat } from "./opaque-format.js";
 
 import { isJsonValue, type JsonValue } from "../json.js";
 import {
@@ -23,6 +28,16 @@ export type SqlLiteralValue = string | number | boolean;
 
 /** A driver-independent scalar that a custom SQL column encoder can produce. */
 export type SqlCustomEncodedValue = string | number | boolean | Uint8Array;
+
+/** Test whether a driver-independent custom encoder result is valid. */
+export function isSqlCustomEncodedValue(value: unknown): value is SqlCustomEncodedValue {
+  return (
+    typeof value === "string" ||
+    typeof value === "boolean" ||
+    (typeof value === "number" && Number.isFinite(value)) ||
+    value instanceof Uint8Array
+  );
+}
 
 /** An opaque package-owned SQL column storage and conversion contract. */
 export interface SqlColumnType<in Value extends JsonValue> {
@@ -168,8 +183,6 @@ export interface SqlResolvedGeneratedColumn {
   readonly expression: SqlStatement<never>;
   readonly mode: "virtual" | "stored";
 }
-const sqlOpaqueFormatSymbol = Symbol.for("@commissary/store/sql-opaque-format");
-const sqlOpaqueFormat = "commissary-sql-opaque@1";
 
 /** Portable SQL storage families inferred from Select Schema output. */
 export type SqlPortableTypeName = "text" | "number" | "integer" | "boolean" | "json";
@@ -184,15 +197,21 @@ export interface SqlColumnTypeFormat {
   readonly options?: Readonly<Record<string, unknown>>;
 }
 
+/** Valid own keys for one compatible opaque SQL column-type format. */
+export const sqlColumnTypeFormatKeys: ReadonlySet<string> = new Set([
+  "format",
+  "kind",
+  "dialect",
+  "type",
+  "identity",
+  "options",
+]);
+
 /** Compatible cross-copy runtime format for one opaque SQL literal. */
 export interface SqlLiteralFormat {
   readonly format: typeof sqlOpaqueFormat;
   readonly kind: "literal";
   readonly value: SqlLiteralValue;
-}
-
-function isRecordContainer(value: unknown): value is Readonly<Record<PropertyKey, unknown>> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isFieldSchemaValue(value: unknown): value is FieldSchema {
@@ -207,29 +226,8 @@ function isFieldSchemaValue(value: unknown): value is FieldSchema {
   );
 }
 
-function snapshotSqlContainerValue(value: unknown, snapshots = new Map<object, object>()): unknown {
-  if (isFieldSchemaValue(value)) {
-    return value;
-  }
-  if (Array.isArray(value)) {
-    const existing = snapshots.get(value);
-    if (existing !== undefined) return existing;
-    const snapshot: unknown[] = [];
-    snapshots.set(value, snapshot);
-    snapshot.push(...value.map((item) => snapshotSqlContainerValue(item, snapshots)));
-    return Object.freeze(snapshot);
-  }
-  if (!isRecordContainer(value)) {
-    return value;
-  }
-  const existing = snapshots.get(value);
-  if (existing !== undefined) return existing;
-  const snapshot: Record<PropertyKey, unknown> = {};
-  snapshots.set(value, snapshot);
-  for (const key of Reflect.ownKeys(value)) {
-    Reflect.set(snapshot, key, snapshotSqlContainerValue(Reflect.get(value, key), snapshots));
-  }
-  return Object.freeze(snapshot);
+function snapshotSqlContainerValue(value: unknown): unknown {
+  return snapshotSqlContractValue(value, isFieldSchemaValue);
 }
 
 function createSqlOpaqueValue(format: SqlColumnTypeFormat | SqlLiteralFormat): object {
@@ -284,6 +282,23 @@ export function readSqlColumnTypeFormat(value: unknown): SqlColumnTypeFormat | u
     return undefined;
   }
   return format as unknown as SqlColumnTypeFormat;
+}
+
+/** Read a portable storage family from one validated SQL column-type format. */
+export function readSqlPortableTypeName(
+  format: SqlColumnTypeFormat,
+): SqlPortableTypeName | undefined {
+  if (format.dialect !== "portable") return undefined;
+  switch (format.type) {
+    case "text":
+    case "number":
+    case "integer":
+    case "boolean":
+    case "json":
+      return format.type;
+    default:
+      return undefined;
+  }
 }
 
 /** Read and validate the compatible cross-copy format of one SQL literal. */
@@ -1074,19 +1089,7 @@ export function reflectSqlSelectStorage(schema: FieldSchema): SqlSelectStorageEv
 
 function portableTypeName(value: unknown): SqlPortableTypeName | undefined {
   const format = readSqlColumnTypeFormat(value);
-  if (format === undefined || format.dialect !== "portable") {
-    return undefined;
-  }
-  switch (format.type) {
-    case "text":
-    case "number":
-    case "integer":
-    case "boolean":
-    case "json":
-      return format.type;
-    default:
-      return undefined;
-  }
+  return format === undefined ? undefined : readSqlPortableTypeName(format);
 }
 
 type AnyPortableSqlColumnType =

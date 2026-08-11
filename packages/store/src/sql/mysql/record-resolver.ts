@@ -7,10 +7,11 @@ import {
   type RecordOverrides,
   type RoundTripRecordDefinitions,
 } from "../../record.js";
+import { isSqlContractObject } from "../contract-object.js";
+import { validateSqlDefinitionStatement } from "../definition-statement.js";
 import {
   createSqlFieldReference as fieldReference,
   freezeSqlRecordMap,
-  isSqlRecordContainer as isRecordContainer,
   iterateSqlRecordCatalog,
   iterateSqlRecordFields,
   readSqlOverrideValue as ownNullableOverride,
@@ -39,7 +40,7 @@ import {
   winningTableTail,
 } from "./column-resolution.js";
 import { resolvePhysicalType } from "./column-type-resolver.js";
-import { readMysqlMetadata, recordReference, validStatement } from "./metadata.js";
+import { readMysqlMetadata, recordReference } from "./metadata.js";
 import { foldMysqlName } from "./name-folding.js";
 import { isValidMysqlName } from "./record.js";
 import {
@@ -73,7 +74,7 @@ function resolveRuntime(
     const { recordName, definition, table } = record;
 
     const mysqlTableValue = table === undefined ? undefined : Reflect.get(table, "mysql");
-    if (isRecordContainer(mysqlTableValue)) {
+    if (isSqlContractObject(mysqlTableValue)) {
       for (const key of ["database", "name"] as const) {
         if (!Object.hasOwn(mysqlTableValue, key)) continue;
         const candidate = Reflect.get(mysqlTableValue, key);
@@ -112,7 +113,7 @@ function resolveRuntime(
     const tableNameValid = isValidMysqlName(nameValue);
     if (
       !databaseValid &&
-      (!isRecordContainer(mysqlTableValue) ||
+      (!isSqlContractObject(mysqlTableValue) ||
         !Object.hasOwn(mysqlTableValue, "database") ||
         Reflect.get(mysqlTableValue, "database") !== databaseValue)
     ) {
@@ -120,7 +121,7 @@ function resolveRuntime(
     }
     if (
       !tableNameValid &&
-      (!isRecordContainer(mysqlTableValue) ||
+      (!isSqlContractObject(mysqlTableValue) ||
         !Object.hasOwn(mysqlTableValue, "name") ||
         Reflect.get(mysqlTableValue, "name") !== nameValue)
     ) {
@@ -153,7 +154,7 @@ function resolveRuntime(
       const { fieldName, field, column } = fieldEntry;
 
       const mysqlColumnValue = column === undefined ? undefined : Reflect.get(column, "mysql");
-      if (isRecordContainer(mysqlColumnValue) && Object.hasOwn(mysqlColumnValue, "name")) {
+      if (isSqlContractObject(mysqlColumnValue) && Object.hasOwn(mysqlColumnValue, "name")) {
         const candidate = Reflect.get(mysqlColumnValue, "name");
         if (candidate !== null && !isValidMysqlName(candidate)) {
           state.issues.push(
@@ -179,7 +180,7 @@ function resolveRuntime(
       const columnNameValid = isValidMysqlName(columnName);
       if (
         !columnNameValid &&
-        (!isRecordContainer(mysqlColumnValue) ||
+        (!isSqlContractObject(mysqlColumnValue) ||
           !Object.hasOwn(mysqlColumnValue, "name") ||
           Reflect.get(mysqlColumnValue, "name") !== columnName)
       ) {
@@ -199,7 +200,12 @@ function resolveRuntime(
       if (physical !== undefined) {
         resolvedDefault = resolveDefault(defaultValue, physical, defaultPath, state.issues);
       } else if (defaultValue !== undefined && readSqlLiteralFormat(defaultValue) === undefined) {
-        validStatement(defaultValue, defaultPath, state.issues, "MySQL column default");
+        validateSqlDefinitionStatement(
+          defaultValue,
+          defaultPath,
+          state.issues,
+          "MySQL column default",
+        );
       }
 
       const selectedNull = evidence?.selectedNull ?? false;

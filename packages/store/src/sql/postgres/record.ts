@@ -1,5 +1,10 @@
 import type { JsonValue } from "../../json.js";
 import {
+  hasOnlySqlContractKeys,
+  isSqlContractObject as isRecordContainer,
+} from "../contract-object.js";
+import { defineSqlMetadataFormat } from "../opaque-format.js";
+import {
   createSqlColumnType,
   readSqlColumnTypeFormat,
   readSqlLiteralFormat,
@@ -133,25 +138,23 @@ type CompatiblePostgresColumnHelper<Options extends PostgresColumnHelperOptions>
     : never
   : unknown;
 
-const sqlOpaqueFormatSymbol = Symbol.for("@commissary/store/sql-opaque-format");
 const postgresMetadataFormat = "commissary-postgres-metadata@1";
 const postgresNameEncoder = new TextEncoder();
 
-interface PostgresMetadataFormat {
-  readonly format: typeof postgresMetadataFormat;
-  readonly kind: "postgres-table" | "postgres-column";
-}
+type PostgresMetadataKind = "postgres-table" | "postgres-column";
 
-function isRecordContainer(value: unknown): value is Readonly<Record<PropertyKey, unknown>> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
+const postgresMetadata = defineSqlMetadataFormat({
+  format: postgresMetadataFormat,
+  kinds: new Set<PostgresMetadataKind>(["postgres-table", "postgres-column"]),
+  owner: "PostgreSQL",
+});
 
 function assertOwnKeys(
   owner: string,
   value: Readonly<Record<PropertyKey, unknown>>,
   allowed: ReadonlySet<string>,
 ): void {
-  if (Reflect.ownKeys(value).some((key) => typeof key !== "string" || !allowed.has(key))) {
+  if (!hasOnlySqlContractKeys(value, allowed)) {
     throw new TypeError(`PostgreSQL ${owner} helper received an unknown option`);
   }
 }
@@ -185,63 +188,9 @@ function assertQualifiedName(
   }
 }
 
-function snapshotValue(value: unknown, snapshots = new Map<object, object>()): unknown {
-  if (Array.isArray(value)) {
-    const existing = snapshots.get(value);
-    if (existing !== undefined) return existing;
-    const snapshot: unknown[] = [];
-    snapshots.set(value, snapshot);
-    snapshot.push(...value.map((item) => snapshotValue(item, snapshots)));
-    return Object.freeze(snapshot);
-  }
-  if (!isRecordContainer(value)) {
-    return value;
-  }
-  const existing = snapshots.get(value);
-  if (existing !== undefined) return existing;
-  const snapshot: Record<PropertyKey, unknown> = {};
-  snapshots.set(value, snapshot);
-  for (const key of Reflect.ownKeys(value)) {
-    Reflect.set(snapshot, key, snapshotValue(Reflect.get(value, key), snapshots));
-  }
-  return Object.freeze(snapshot);
-}
-
-function createMetadataValue<Options extends object>(
-  kind: PostgresMetadataFormat["kind"],
-  options: Options,
-): Readonly<Options> {
-  const snapshot = snapshotValue(options);
-  if (!isRecordContainer(snapshot)) {
-    throw new TypeError(`PostgreSQL ${kind} helper requires an options object`);
-  }
-  return Object.freeze({
-    ...snapshot,
-    [sqlOpaqueFormatSymbol]: Object.freeze({ format: postgresMetadataFormat, kind }),
-  }) as Readonly<Options>;
-}
-
 /** Read one compatible package-owned PostgreSQL metadata marker. */
-export function readPostgresMetadataKind(
-  value: unknown,
-): PostgresMetadataFormat["kind"] | undefined {
-  try {
-    if (!isRecordContainer(value) || !Object.isFrozen(value)) {
-      return undefined;
-    }
-    const format = Reflect.get(value, sqlOpaqueFormatSymbol);
-    if (
-      !isRecordContainer(format) ||
-      !Object.isFrozen(format) ||
-      Reflect.get(format, "format") !== postgresMetadataFormat
-    ) {
-      return undefined;
-    }
-    const kind = Reflect.get(format, "kind");
-    return kind === "postgres-table" || kind === "postgres-column" ? kind : undefined;
-  } catch {
-    return undefined;
-  }
+export function readPostgresMetadataKind(value: unknown): PostgresMetadataKind | undefined {
+  return postgresMetadata.read(value);
 }
 
 function assertOptionalStatement(owner: string, key: string, value: unknown): void {
@@ -322,7 +271,7 @@ function definePostgresTable<const Options extends PostgresTableDefinition>(
   assertOwnKeys("table", options, new Set(["schema", "name"]));
   assertOptionalLocalName("table", "schema", Reflect.get(options, "schema"));
   assertOptionalLocalName("table", "name", Reflect.get(options, "name"));
-  return createMetadataValue("postgres-table", options);
+  return postgresMetadata.create("postgres-table", options);
 }
 
 function definePostgresColumn<const Options extends PostgresColumnHelperOptions>(
@@ -367,7 +316,7 @@ function definePostgresColumn<const Options extends PostgresColumnHelperOptions>
   }
   assertIdentity(Reflect.get(options, "identity"));
   assertOptionalStatement("column", "generated", Reflect.get(options, "generated"));
-  return createMetadataValue("postgres-column", options);
+  return postgresMetadata.create("postgres-column", options);
 }
 
 function directType<Value extends JsonValue>(

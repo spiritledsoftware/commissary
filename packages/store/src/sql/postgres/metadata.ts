@@ -1,16 +1,11 @@
+import type { RecordDefinition } from "../../record.js";
+import { isSqlContractObject as isRecordContainer } from "../contract-object.js";
 import {
   createSqlRecordReference,
-  isSqlRecordContainer as isRecordContainer,
   sqlDefinitionIssue as issue,
 } from "../record-catalog-resolver.js";
-import type { RecordDefinition } from "../../record.js";
 import type { SqlDefinitionIssue, SqlRecordReference } from "../record.js";
-import {
-  readSqlStatementFragments,
-  sql,
-  type SqlStatement,
-  type SqlStatementFragment,
-} from "../statement.js";
+import { sql, type SqlStatement } from "../statement.js";
 import { readPostgresMetadataKind, type PostgresQualifiedName } from "./record.js";
 
 const postgresNameEncoder = new TextEncoder();
@@ -63,45 +58,6 @@ export function readPostgresMetadata(
     return undefined;
   }
   return value;
-}
-
-export function validStatement(
-  value: unknown,
-  path: readonly (string | number)[],
-  issues: SqlDefinitionIssue[],
-  owner: string,
-  code: SqlDefinitionIssue["code"] = "invalid-column-default",
-): SqlStatement<never> | undefined {
-  const fragments = readSqlStatementFragments(value);
-  if (fragments === undefined) {
-    issues.push(issue(code, path, `${owner} requires a compatible SQL Statement`));
-    return undefined;
-  }
-  if (fragments.some((fragment) => fragment.kind === "parameter")) {
-    issues.push(issue(code, path, `${owner} must not contain SQL parameters`));
-    return undefined;
-  }
-  if (fragments.length === 0 || !hasStatementStructure(fragments)) {
-    issues.push(issue(code, path, `${owner} requires nonempty SQL structure`));
-    return undefined;
-  }
-  return value as SqlStatement<never>;
-}
-
-export function validDatabaseStatement(
-  value: unknown,
-  path: readonly (string | number)[],
-  issues: SqlDefinitionIssue[],
-  owner: string,
-): SqlStatement<never> | undefined {
-  return validStatement(value, path, issues, owner, "invalid-database-options");
-}
-
-export function hasStatementStructure(fragments: readonly SqlStatementFragment[]): boolean {
-  return fragments.some(
-    (fragment) =>
-      fragment.kind === "identifier" || (fragment.kind === "raw" && fragment.text.length > 0),
-  );
 }
 
 export function normalizeExactInteger(value: unknown): bigint | undefined {

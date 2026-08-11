@@ -1,30 +1,25 @@
 import type { RecordDefinition } from "../../record.js";
 import { isSqlContractObject } from "../contract-object.js";
+import { sqlOpaqueFormatSymbol } from "../opaque-format.js";
 import {
   createSqlRecordReference,
   sqlDefinitionIssue as issue,
 } from "../record-catalog-resolver.js";
 import type { SqlDefinitionIssue, SqlRecordReference } from "../record.js";
-import { sqlOpaqueFormatSymbol } from "../opaque-format.js";
 import { sql, type SqlStatement } from "../statement.js";
-import { mysqlColumnOptionKeys, mysqlTableOptionKeys } from "./mysql-contract.js";
-import { readMysqlMetadataKind } from "./record.js";
+import { sqliteColumnOptionKeys, sqliteTableOptionKeys } from "./sqlite-contract.js";
+import { readSqliteMetadataKind } from "./record.js";
 
-function qualifiedReference(database: string | undefined, name: string): SqlStatement<never> {
-  return database === undefined
-    ? sql.identifier(name)
-    : sql`${sql.identifier(database)}.${sql.identifier(name)}`;
-}
-
+/** Create one resolved SQLite table and Field reference. */
 export function recordReference<Definition extends RecordDefinition>(
-  database: string | undefined,
   name: string,
   fields: Readonly<Record<string, SqlStatement<never>>>,
 ): SqlRecordReference<Definition> {
-  return createSqlRecordReference<Definition>(qualifiedReference(database, name), fields);
+  return createSqlRecordReference<Definition>(sql.identifier(name), fields);
 }
 
-export function readMysqlMetadata(
+/** Read and validate one package-copy-compatible SQLite metadata value. */
+export function readSqliteMetadata(
   owner: "table" | "column",
   value: unknown,
   path: readonly (string | number)[],
@@ -33,14 +28,14 @@ export function readMysqlMetadata(
   if (value === undefined) return undefined;
   if (!isSqlContractObject(value)) {
     issues.push(
-      issue("invalid-database-options", path, `MySQL ${owner} refinement must be an object`),
+      issue("invalid-database-options", path, `SQLite ${owner} refinement must be an object`),
     );
     return undefined;
   }
-  const expected = owner === "table" ? "mysql-table" : "mysql-column";
-  const allowedKeys = owner === "table" ? mysqlTableOptionKeys : mysqlColumnOptionKeys;
+  const expected = owner === "table" ? "sqlite-table" : "sqlite-column";
+  const allowedKeys = owner === "table" ? sqliteTableOptionKeys : sqliteColumnOptionKeys;
   if (
-    readMysqlMetadataKind(value) !== expected ||
+    readSqliteMetadataKind(value) !== expected ||
     Reflect.ownKeys(value).some(
       (key) => key !== sqlOpaqueFormatSymbol && (typeof key !== "string" || !allowedKeys.has(key)),
     )
@@ -49,7 +44,7 @@ export function readMysqlMetadata(
       issue(
         "invalid-database-options",
         path,
-        `MySQL ${owner} refinement has an incompatible opaque format`,
+        `SQLite ${owner} refinement has an incompatible opaque format`,
       ),
     );
     return undefined;

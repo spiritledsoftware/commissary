@@ -1,3 +1,5 @@
+import { isSqlContractObject as isRecordContainer } from "./contract-object.js";
+import { sqlOpaqueFormatSymbol, sqlOpaqueValueFormat as sqlOpaqueFormat } from "./opaque-format.js";
 import { sqlRecordHelpers } from "./record.js";
 
 /** A portable scalar SQL parameter accepted by every SQL Store Adapter. */
@@ -9,9 +11,6 @@ declare const sqlStatementParameter: unique symbol;
 export interface SqlStatement<out Parameter> {
   readonly [sqlStatementParameter]: () => Parameter;
 }
-
-const sqlOpaqueFormatSymbol = Symbol.for("@commissary/store/sql-opaque-format");
-const sqlOpaqueFormat = "commissary-sql-opaque@1";
 
 interface SqlRawFragment {
   readonly kind: "raw";
@@ -34,14 +33,18 @@ interface SqlParameterFragment {
 /** One validated internal Statement fragment used by the adapter-facing compiler. */
 export type SqlStatementFragment = SqlRawFragment | SqlIdentifierFragment | SqlParameterFragment;
 
+/** Test whether validated Statement fragments contain nonempty SQL structure. */
+export function hasSqlStatementStructure(fragments: readonly SqlStatementFragment[]): boolean {
+  return fragments.some(
+    (fragment) =>
+      fragment.kind === "identifier" || (fragment.kind === "raw" && fragment.text.length > 0),
+  );
+}
+
 interface SqlStatementFormat {
   readonly format: typeof sqlOpaqueFormat;
   readonly kind: "statement";
   readonly fragments: readonly SqlStatementFragment[];
-}
-
-function isRecordContainer(value: unknown): value is Readonly<Record<PropertyKey, unknown>> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isSqlParameterEncoder(value: unknown): value is SqlParameterEncoder {

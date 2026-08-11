@@ -1338,7 +1338,7 @@ Direct helpers use these driver-independent contracts:
 | `timestampSeconds`      | `INTEGER`      | UTC whole-second `string`         |
 | `timestampMilliseconds` | `INTEGER`      | UTC whole-millisecond `string`    |
 | `real`                  | `REAL`         | finite `number`                   |
-| `text`                  | `TEXT`         | NUL-free `string`                 |
+| `text`                  | `TEXT`         | NUL-free Unicode scalar `string`  |
 | `json`                  | `TEXT`         | `JsonValue`                       |
 | `blob`                  | `BLOB`         | padded RFC 4648 base64 `string`   |
 | `jsonBlob`              | `BLOB`         | `JsonValue`                       |
@@ -1354,7 +1354,7 @@ Direct helpers use these driver-independent contracts:
 
 `real` and `numericNumber` accept only finite numbers and normalize negative zero to zero. `numericNumber` keeps SQLite `NUMERIC` affinity instead of emitting `REAL`.
 
-`text` preserves exact NUL-free Unicode text. It defines no length, collation, or Unicode-normalization policy.
+`text` preserves exact NUL-free Unicode scalar text. It rejects unpaired UTF-16 surrogates before driver encoding can replace them. It defines no length, collation, or Unicode-normalization policy.
 
 `blob` decodes padded RFC 4648 base64 to exact bytes. `json` stores UTF-8 JSON text. `jsonBlob` stores the same UTF-8 JSON representation as bytes; it is not SQLite JSONB and makes no JSON1 processing guarantee. `bigintBlob` stores the UTF-8 bytes of canonical signed decimal text with no leading plus, whitespace, exponent, redundant leading zero, or negative zero.
 
