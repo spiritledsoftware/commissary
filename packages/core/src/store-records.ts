@@ -18,6 +18,8 @@ import {
   type SelectedRecord,
   type UpdateFieldSchema,
 } from "@commissary/store";
+import { SqlRecord, sql } from "@commissary/store/sql";
+import { mysql } from "@commissary/store/sql/mysql";
 
 import type { AgentReference } from "./identity.js";
 import type { EncodedProviderData, ModelMessage, RunUsage } from "./protocol.js";
@@ -78,12 +80,29 @@ function coreFieldSchema<Input, Output extends StoreJsonValue | undefined>(
   };
 }
 
-function requiredStringField<Value extends string>(): FieldSchema<Value, Value> {
+const coreStringKeyMaxCodePoints = 95;
+
+function hasAtMostCodePoints(value: string, maximum: number): boolean {
+  let count = 0;
+  for (const _character of value) {
+    count += 1;
+    if (count > maximum) return false;
+  }
+  return true;
+}
+
+function requiredStringField<Value extends string>(
+  maximumCodePoints?: number,
+): FieldSchema<Value, Value> {
   return coreFieldSchema((value) => {
-    if (typeof value !== "string" || value.length === 0) {
+    if (
+      typeof value !== "string" ||
+      value.length === 0 ||
+      (maximumCodePoints !== undefined && !hasAtMostCodePoints(value, maximumCodePoints))
+    ) {
       return invalidCoreField;
     }
-    // SAFETY: Core opaque string IDs add only a compile-time brand; their runtime parser accepts every nonempty string.
+    // SAFETY: Core opaque string IDs add only a compile-time brand; the checks above establish their runtime string constraints.
     return value as Value;
   });
 }
@@ -104,9 +123,11 @@ function optionalStringField<Value extends string>(): FieldSchema<
   });
 }
 
-function requiredNumberField(): FieldSchema<number, number> {
+function requiredNonnegativeSafeIntegerField(): FieldSchema<number, number> {
   return coreFieldSchema((value) =>
-    typeof value === "number" && Number.isFinite(value) ? value : invalidCoreField,
+    typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+      ? value
+      : invalidCoreField,
   );
 }
 
@@ -153,169 +174,303 @@ function optionalJsonField<Value>(): FieldSchema<
   });
 }
 
+function coreTextField<const Name extends string, Schema extends FieldSchema>(
+  name: Name,
+  select: Schema,
+  notNull: boolean,
+) {
+  return {
+    select,
+    column: sql.column({ name, type: sql.text(), notNull }),
+  };
+}
+
+function coreStringKeyField<const Name extends string, Value extends string>(name: Name) {
+  const select = requiredStringField<Value>(coreStringKeyMaxCodePoints);
+  return {
+    select,
+    column: sql.column({
+      name,
+      type: sql.text(),
+      notNull: true,
+      mysql: mysql.column({ type: mysql.varchar({ length: coreStringKeyMaxCodePoints }) }),
+    }),
+  };
+}
+
+function coreIntegerField<const Name extends string>(name: Name) {
+  return {
+    select: requiredNonnegativeSafeIntegerField(),
+    column: sql.column({ name, type: sql.integer(), notNull: true }),
+  };
+}
+
+function coreBooleanField<const Name extends string>(name: Name) {
+  return {
+    select: requiredBooleanField(),
+    column: sql.column({ name, type: sql.boolean(), notNull: true }),
+  };
+}
+
+function coreJsonField<const Name extends string, Schema extends FieldSchema>(
+  name: Name,
+  select: Schema,
+  notNull: boolean,
+) {
+  return {
+    select,
+    column: sql.column({ name, type: sql.json(), notNull }),
+  };
+}
+
 const threadFields = {
-  id: requiredStringField<ThreadId>(),
+  id: coreStringKeyField<"id", ThreadId>("id"),
 };
 
 const branchFields = {
-  id: requiredStringField<BranchId>(),
-  threadId: requiredStringField<ThreadId>(),
-  name: requiredStringField<string>(),
-  head: optionalStringField<MessageEntryId>(),
+  id: coreStringKeyField<"id", BranchId>("id"),
+  threadId: coreTextField("thread_id", requiredStringField<ThreadId>(), true),
+  name: coreTextField("name", requiredStringField<string>(), true),
+  head: coreTextField("head", optionalStringField<MessageEntryId>(), false),
 };
 
 const messageFields = {
-  id: requiredStringField<MessageEntryId>(),
-  threadId: requiredStringField<ThreadId>(),
-  parent: optionalStringField<MessageEntryId>(),
-  message: requiredJsonField<ModelMessage>(),
+  id: coreStringKeyField<"id", MessageEntryId>("id"),
+  threadId: coreTextField("thread_id", requiredStringField<ThreadId>(), true),
+  parent: coreTextField("parent", optionalStringField<MessageEntryId>(), false),
+  message: coreJsonField("message", requiredJsonField<ModelMessage>(), true),
 };
 
 const runFields = {
-  id: requiredStringField<RunId>(),
-  threadId: requiredStringField<ThreadId>(),
-  branchId: requiredStringField<BranchId>(),
-  agent: requiredJsonField<AgentReference>(),
-  admittedHead: requiredStringField<MessageEntryId>(),
-  status: literalStringField("active", "suspended", "completed", "failed", "aborted"),
-  abortRequested: requiredBooleanField(),
-  settlementContinuations: requiredNumberField(),
-  usage: optionalJsonField<RunUsage>(),
-  abortReason: optionalJsonField<JsonValue>(),
-  result: optionalJsonField<Exclude<RunResult, SuspendedRunResult>>(),
+  id: coreStringKeyField<"id", RunId>("id"),
+  threadId: coreTextField("thread_id", requiredStringField<ThreadId>(), true),
+  branchId: coreTextField("branch_id", requiredStringField<BranchId>(), true),
+  agent: coreJsonField("agent", requiredJsonField<AgentReference>(), true),
+  admittedHead: coreTextField("admitted_head", requiredStringField<MessageEntryId>(), true),
+  status: coreTextField(
+    "status",
+    literalStringField("active", "suspended", "completed", "failed", "aborted"),
+    true,
+  ),
+  abortRequested: coreBooleanField("abort_requested"),
+  settlementContinuations: coreIntegerField("settlement_continuations"),
+  usage: coreJsonField("usage", optionalJsonField<RunUsage>(), false),
+  abortReason: coreJsonField("abort_reason", optionalJsonField<JsonValue>(), false),
+  result: coreJsonField(
+    "result",
+    optionalJsonField<Exclude<RunResult, SuspendedRunResult>>(),
+    false,
+  ),
 };
 
 const toolCallFields = {
-  toolCallId: requiredStringField<ToolCallId>(),
-  runId: requiredStringField<RunId>(),
-  sequence: requiredNumberField(),
-  toolName: requiredStringField<string>(),
-  parentToolCallId: optionalStringField<ToolCallId>(),
-  providerId: optionalStringField<string>(),
-  delegationKey: optionalStringField<string>(),
-  requestedInput: requiredJsonField<JsonValue>(),
-  effectiveInput: optionalJsonField<JsonValue>(),
-  status: literalStringField("pending", "running", "suspended", "succeeded", "failed", "aborted"),
-  result: optionalJsonField<ToolCallResult<JsonValue, StoredToolFailure>>(),
-  suspension: optionalJsonField<StoredToolSuspension>(),
-  providerData: optionalJsonField<readonly EncodedProviderData[]>(),
-  historyCommitted: requiredBooleanField(),
+  toolCallId: coreStringKeyField<"tool_call_id", ToolCallId>("tool_call_id"),
+  runId: coreStringKeyField<"run_id", RunId>("run_id"),
+  sequence: coreIntegerField("sequence"),
+  toolName: coreTextField("tool_name", requiredStringField<string>(), true),
+  parentToolCallId: coreTextField("parent_tool_call_id", optionalStringField<ToolCallId>(), false),
+  providerId: coreTextField("provider_id", optionalStringField<string>(), false),
+  delegationKey: coreTextField("delegation_key", optionalStringField<string>(), false),
+  requestedInput: coreJsonField("requested_input", requiredJsonField<JsonValue>(), true),
+  effectiveInput: coreJsonField("effective_input", optionalJsonField<JsonValue>(), false),
+  status: coreTextField(
+    "status",
+    literalStringField("pending", "running", "suspended", "succeeded", "failed", "aborted"),
+    true,
+  ),
+  result: coreJsonField(
+    "result",
+    optionalJsonField<ToolCallResult<JsonValue, StoredToolFailure>>(),
+    false,
+  ),
+  suspension: coreJsonField("suspension", optionalJsonField<StoredToolSuspension>(), false),
+  providerData: coreJsonField(
+    "provider_data",
+    optionalJsonField<readonly EncodedProviderData[]>(),
+    false,
+  ),
+  historyCommitted: coreBooleanField("history_committed"),
 };
 
-/** Built-in definitions for the five durable entity Collections. */
+/** Built-in definitions for the five durable entity Collections, including portable SQL intent. */
 export const durableEntityRecordDefinitions = {
-  thread: { fields: threadFields },
-  branch: { fields: branchFields },
-  message: { fields: messageFields },
-  run: { fields: runFields },
-  toolCall: { fields: toolCallFields },
+  thread: SqlRecord.define({
+    table: sql.table({ name: "commissary_threads", primaryKey: ["id"] }),
+    fields: threadFields,
+  }),
+  branch: SqlRecord.define({
+    table: sql.table({ name: "commissary_branches", primaryKey: ["id"] }),
+    fields: branchFields,
+  }),
+  message: SqlRecord.define({
+    table: sql.table({ name: "commissary_messages", primaryKey: ["id"] }),
+    fields: messageFields,
+  }),
+  run: SqlRecord.define({
+    table: sql.table({ name: "commissary_runs", primaryKey: ["id"] }),
+    fields: runFields,
+  }),
+  toolCall: SqlRecord.define({
+    table: sql.table({
+      name: "commissary_tool_calls",
+      primaryKey: ["runId", "toolCallId"],
+    }),
+    fields: toolCallFields,
+  }),
 };
 
-/** Built-in definitions for the fourteen Runtime state Collections. */
+/** Built-in definitions for the fourteen Runtime state Collections, including portable SQL intent. */
 export const runtimeStateRecordDefinitions = {
-  executionClaim: {
+  executionClaim: SqlRecord.define({
+    table: sql.table({ name: "commissary_execution_claims", primaryKey: ["runId"] }),
     fields: {
-      runId: requiredStringField<RunId>(),
-      executionId: requiredStringField<ExecutionId>(),
-      token: requiredStringField<ExecutionClaimToken>(),
-      fence: requiredNumberField(),
-      expiresAt: requiredNumberField(),
+      runId: coreStringKeyField<"run_id", RunId>("run_id"),
+      executionId: coreTextField("execution_id", requiredStringField<ExecutionId>(), true),
+      token: coreTextField("token", requiredStringField<ExecutionClaimToken>(), true),
+      fence: coreIntegerField("fence"),
+      expiresAt: coreIntegerField("expires_at"),
     },
-  },
-  executionFence: {
+  }),
+  executionFence: SqlRecord.define({
+    table: sql.table({ name: "commissary_execution_fences", primaryKey: ["runId"] }),
     fields: {
-      runId: requiredStringField<RunId>(),
-      fence: requiredNumberField(),
+      runId: coreStringKeyField<"run_id", RunId>("run_id"),
+      fence: coreIntegerField("fence"),
     },
-  },
-  pendingSteering: {
+  }),
+  pendingSteering: SqlRecord.define({
+    table: sql.table({
+      name: "commissary_pending_steerings",
+      primaryKey: ["runId", "sequence"],
+    }),
     fields: {
-      runId: requiredStringField<RunId>(),
-      sequence: requiredNumberField(),
-      message: requiredJsonField<ModelMessage>(),
+      runId: coreStringKeyField<"run_id", RunId>("run_id"),
+      sequence: coreIntegerField("sequence"),
+      message: coreJsonField("message", requiredJsonField<ModelMessage>(), true),
     },
-  },
-  pendingRedirect: {
+  }),
+  pendingRedirect: SqlRecord.define({
+    table: sql.table({
+      name: "commissary_pending_redirects",
+      primaryKey: ["runId", "sequence"],
+    }),
     fields: {
-      runId: requiredStringField<RunId>(),
-      sequence: requiredNumberField(),
-      message: requiredJsonField<ModelMessage>(),
+      runId: coreStringKeyField<"run_id", RunId>("run_id"),
+      sequence: coreIntegerField("sequence"),
+      message: coreJsonField("message", requiredJsonField<ModelMessage>(), true),
     },
-  },
-  runCommandSequence: {
+  }),
+  runCommandSequence: SqlRecord.define({
+    table: sql.table({ name: "commissary_run_command_sequences", primaryKey: ["runId"] }),
     fields: {
-      runId: requiredStringField<RunId>(),
-      sequence: requiredNumberField(),
+      runId: coreStringKeyField<"run_id", RunId>("run_id"),
+      sequence: coreIntegerField("sequence"),
     },
-  },
-  toolCallSequence: {
+  }),
+  toolCallSequence: SqlRecord.define({
+    table: sql.table({ name: "commissary_tool_call_sequences", primaryKey: ["runId"] }),
     fields: {
-      runId: requiredStringField<RunId>(),
-      sequence: requiredNumberField(),
+      runId: coreStringKeyField<"run_id", RunId>("run_id"),
+      sequence: coreIntegerField("sequence"),
     },
-  },
-  runSubmission: {
+  }),
+  runSubmission: SqlRecord.define({
+    table: sql.table({ name: "commissary_run_submissions", primaryKey: ["runId"] }),
     fields: {
-      runId: requiredStringField<RunId>(),
-      fingerprint: requiredStringField<string>(),
-      result: requiredJsonField<AcceptedRun | BranchConflict | RunConflict>(),
+      runId: coreStringKeyField<"run_id", RunId>("run_id"),
+      fingerprint: coreTextField("fingerprint", requiredStringField<string>(), true),
+      result: coreJsonField(
+        "result",
+        requiredJsonField<AcceptedRun | BranchConflict | RunConflict>(),
+        true,
+      ),
     },
-  },
-  toolResumeRequest: {
+  }),
+  toolResumeRequest: SqlRecord.define({
+    table: sql.table({
+      name: "commissary_tool_resume_requests",
+      primaryKey: ["runId", "requestId"],
+    }),
     fields: {
-      runId: requiredStringField<RunId>(),
-      requestId: requiredStringField<ToolResumeRequestId>(),
-      fingerprint: requiredStringField<string>(),
-      result: requiredJsonField<AcceptedRun | ToolResumeConflict | ToolResumeRequestConflict>(),
+      runId: coreStringKeyField<"run_id", RunId>("run_id"),
+      requestId: coreStringKeyField<"request_id", ToolResumeRequestId>("request_id"),
+      fingerprint: coreTextField("fingerprint", requiredStringField<string>(), true),
+      result: coreJsonField(
+        "result",
+        requiredJsonField<AcceptedRun | ToolResumeConflict | ToolResumeRequestConflict>(),
+        true,
+      ),
     },
-  },
-  steeringRequest: {
+  }),
+  steeringRequest: SqlRecord.define({
+    table: sql.table({
+      name: "commissary_steering_requests",
+      primaryKey: ["runId", "requestId"],
+    }),
     fields: {
-      runId: requiredStringField<RunId>(),
-      requestId: requiredStringField<SteeringRequestId>(),
-      fingerprint: requiredStringField<string>(),
-      result: requiredJsonField<SteeringResult>(),
+      runId: coreStringKeyField<"run_id", RunId>("run_id"),
+      requestId: coreStringKeyField<"request_id", SteeringRequestId>("request_id"),
+      fingerprint: coreTextField("fingerprint", requiredStringField<string>(), true),
+      result: coreJsonField("result", requiredJsonField<SteeringResult>(), true),
     },
-  },
-  redirectRequest: {
+  }),
+  redirectRequest: SqlRecord.define({
+    table: sql.table({
+      name: "commissary_redirect_requests",
+      primaryKey: ["runId", "requestId"],
+    }),
     fields: {
-      runId: requiredStringField<RunId>(),
-      requestId: requiredStringField<RedirectRequestId>(),
-      fingerprint: requiredStringField<string>(),
-      result: requiredJsonField<RedirectResult>(),
+      runId: coreStringKeyField<"run_id", RunId>("run_id"),
+      requestId: coreStringKeyField<"request_id", RedirectRequestId>("request_id"),
+      fingerprint: coreTextField("fingerprint", requiredStringField<string>(), true),
+      result: coreJsonField("result", requiredJsonField<RedirectResult>(), true),
     },
-  },
-  commit: {
+  }),
+  commit: SqlRecord.define({
+    table: sql.table({ name: "commissary_commits", primaryKey: ["commitId"] }),
     fields: {
-      commitId: requiredStringField<CommitId>(),
-      fingerprint: requiredStringField<string>(),
+      commitId: coreStringKeyField<"commit_id", CommitId>("commit_id"),
+      fingerprint: coreTextField("fingerprint", requiredStringField<string>(), true),
     },
-  },
-  finalizationOutcome: {
+  }),
+  finalizationOutcome: SqlRecord.define({
+    table: sql.table({ name: "commissary_finalization_outcomes", primaryKey: ["commitId"] }),
     fields: {
-      commitId: requiredStringField<CommitId>(),
-      outcome: requiredJsonField<FinalizeRunStoreResult<typeof durableEntityRecordDefinitions>>(),
+      commitId: coreStringKeyField<"commit_id", CommitId>("commit_id"),
+      outcome: coreJsonField(
+        "outcome",
+        requiredJsonField<FinalizeRunStoreResult<typeof durableEntityRecordDefinitions>>(),
+        true,
+      ),
     },
-  },
-  modelCommitOutcome: {
+  }),
+  modelCommitOutcome: SqlRecord.define({
+    table: sql.table({ name: "commissary_model_commit_outcomes", primaryKey: ["commitId"] }),
     fields: {
-      commitId: requiredStringField<CommitId>(),
-      outcome:
+      commitId: coreStringKeyField<"commit_id", CommitId>("commit_id"),
+      outcome: coreJsonField(
+        "outcome",
         requiredJsonField<
           CommitModelInvocationStoreResult<typeof durableEntityRecordDefinitions>
         >(),
+        true,
+      ),
     },
-  },
-  settlementOutcome: {
+  }),
+  settlementOutcome: SqlRecord.define({
+    table: sql.table({ name: "commissary_settlement_outcomes", primaryKey: ["commitId"] }),
     fields: {
-      commitId: requiredStringField<CommitId>(),
-      outcome:
+      commitId: coreStringKeyField<"commit_id", CommitId>("commit_id"),
+      outcome: coreJsonField(
+        "outcome",
         requiredJsonField<ContinueSettlementStoreResult<typeof durableEntityRecordDefinitions>>(),
+        true,
+      ),
     },
-  },
+  }),
 };
 
-/** Complete built-in Core Record catalog used when a host supplies no definitions. */
+/** Complete built-in Core Record catalog with portable and database-specific SQL intent. */
 export const coreRecordDefinitions = {
   ...durableEntityRecordDefinitions,
   ...runtimeStateRecordDefinitions,
