@@ -1,13 +1,17 @@
+import { hasOnlySqlContractKeys } from "../contract-object.js";
+import { validateSqlDefinitionStatement } from "../definition-statement.js";
 import { isJsonValue, type JsonValue } from "../../json.js";
 import {
   sqlDefinitionIssue as issue,
   sqlEvidenceMatchesApplication as evidenceCompatible,
 } from "../record-catalog-resolver.js";
 import {
+  isSqlCustomEncodedValue,
   readSqlColumnTypeFormat,
+  readSqlPortableTypeName,
   reflectSqlSelectStorage,
+  sqlColumnTypeFormatKeys,
   type SqlColumnTypeFormat,
-  type SqlCustomEncodedValue,
   type SqlPortableTypeName,
 } from "../record.js";
 import {
@@ -18,7 +22,6 @@ import {
   jsonCodec,
   stringCodec,
 } from "./column-codecs.js";
-import { validStatement } from "./metadata.js";
 import {
   isMysqlDecimalPrecisionOption,
   isMysqlDecimalScaleCompatible,
@@ -31,7 +34,7 @@ import {
   isMysqlRequiredLengthOption,
   isMysqlUnsignedOption,
 } from "./mysql-type-options.js";
-import { isValidMysqlEnumValue, sqlColumnTypeFormatKeys } from "./mysql-contract.js";
+import { isValidMysqlEnumValue } from "./mysql-contract.js";
 import type { MysqlDecimalOptions, MysqlIntegerOptions, MysqlTemporalOptions } from "./record.js";
 import type {
   MysqlDirectTypeName,
@@ -79,19 +82,13 @@ function directResolved(
     ...(options === undefined ? {} : { options: Object.freeze({ ...options }) }),
   });
 }
-export function hasOnlyOwnStringKeys(
-  value: Readonly<Record<PropertyKey, unknown>>,
-  allowed: ReadonlySet<string>,
-): boolean {
-  return Reflect.ownKeys(value).every((key) => typeof key === "string" && allowed.has(key));
-}
 
 function validUnsignedOptions(
   options: Readonly<Record<PropertyKey, unknown>> | undefined,
 ): options is Readonly<MysqlIntegerOptions> {
   return (
     options === undefined ||
-    (hasOnlyOwnStringKeys(options, new Set(["unsigned"])) &&
+    (hasOnlySqlContractKeys(options, new Set(["unsigned"])) &&
       isMysqlUnsignedOption(Reflect.get(options, "unsigned")))
   );
 }
@@ -100,7 +97,7 @@ function validDecimalOptions(
   options: Readonly<Record<PropertyKey, unknown>> | undefined,
 ): options is Readonly<MysqlDecimalOptions> {
   if (options === undefined) return true;
-  if (!hasOnlyOwnStringKeys(options, new Set(["precision", "scale", "unsigned"]))) return false;
+  if (!hasOnlySqlContractKeys(options, new Set(["precision", "scale", "unsigned"]))) return false;
   const precision = Reflect.get(options, "precision");
   const scale = Reflect.get(options, "scale");
   return (
@@ -118,7 +115,7 @@ function validFloatingOptions(
   if (options === undefined) return true;
   const allowed =
     type === "real" ? new Set(["precision", "scale"]) : new Set(["precision", "scale", "unsigned"]);
-  if (!hasOnlyOwnStringKeys(options, allowed)) return false;
+  if (!hasOnlySqlContractKeys(options, allowed)) return false;
   const precision = Reflect.get(options, "precision");
   const scale = Reflect.get(options, "scale");
   return (
@@ -135,7 +132,7 @@ function validLengthOptions(
 ): boolean {
   if (options === undefined) return type === "char" || type === "binary";
   return (
-    hasOnlyOwnStringKeys(options, new Set(["length"])) &&
+    hasOnlySqlContractKeys(options, new Set(["length"])) &&
     (type === "char" || type === "binary"
       ? isMysqlOptionalLengthOption(Reflect.get(options, "length"))
       : Object.hasOwn(options, "length") &&
@@ -148,7 +145,7 @@ function validTemporalOptions(
 ): options is Readonly<MysqlTemporalOptions> {
   return (
     options === undefined ||
-    (hasOnlyOwnStringKeys(options, new Set(["fsp"])) &&
+    (hasOnlySqlContractKeys(options, new Set(["fsp"])) &&
       isMysqlFractionalSecondsOption(Reflect.get(options, "fsp")))
   );
 }
@@ -236,20 +233,6 @@ function resolvePortableType(type: SqlPortableTypeName): RuntimePhysicalType {
   }
 }
 
-function portableType(format: SqlColumnTypeFormat): SqlPortableTypeName | undefined {
-  if (format.dialect !== "portable") return undefined;
-  switch (format.type) {
-    case "text":
-    case "number":
-    case "integer":
-    case "boolean":
-    case "json":
-      return format.type;
-    default:
-      return undefined;
-  }
-}
-
 function resolveEnum(
   options: Readonly<Record<PropertyKey, unknown>> | undefined,
   path: readonly (string | number)[],
@@ -258,7 +241,7 @@ function resolveEnum(
   const values = options === undefined ? undefined : Reflect.get(options, "values");
   if (
     options === undefined ||
-    !hasOnlyOwnStringKeys(options, new Set(["values"])) ||
+    !hasOnlySqlContractKeys(options, new Set(["values"])) ||
     !Array.isArray(values) ||
     !Object.isFrozen(values) ||
     values.length === 0 ||
@@ -279,15 +262,6 @@ function resolveEnum(
   });
 }
 
-function isCustomEncodedValue(value: unknown): value is SqlCustomEncodedValue {
-  return (
-    typeof value === "string" ||
-    typeof value === "boolean" ||
-    (typeof value === "number" && Number.isFinite(value)) ||
-    value instanceof Uint8Array
-  );
-}
-
 function resolveCustom(
   options: Readonly<Record<PropertyKey, unknown>> | undefined,
   path: readonly (string | number)[],
@@ -295,14 +269,14 @@ function resolveCustom(
 ): RuntimePhysicalType | undefined {
   if (
     options === undefined ||
-    !hasOnlyOwnStringKeys(options, new Set(["type", "encode", "decode"])) ||
+    !hasOnlySqlContractKeys(options, new Set(["type", "encode", "decode"])) ||
     typeof Reflect.get(options, "encode") !== "function" ||
     typeof Reflect.get(options, "decode") !== "function"
   ) {
     state.issues.push(issue("invalid-column-type", path, "MySQL custom type contract is invalid"));
     return undefined;
   }
-  const type = validStatement(
+  const type = validateSqlDefinitionStatement(
     Reflect.get(options, "type"),
     [...path, "type"],
     state.issues,
@@ -315,7 +289,7 @@ function resolveCustom(
   const encodeValue = (value: unknown): MysqlEncodedValue => {
     // SAFETY: The contract check above proved this captured reference is callable.
     const converted = (encode as (input: unknown) => unknown)(value);
-    return isCustomEncodedValue(converted) ? converted : invalidValue("custom encoder output");
+    return isSqlCustomEncodedValue(converted) ? converted : invalidValue("custom encoder output");
   };
   const decodeValue = (value: unknown): JsonValue => {
     // SAFETY: The contract check above proved this captured reference is callable.
@@ -364,7 +338,7 @@ function resolveMysqlType(
 function applicationForFormat(
   format: SqlColumnTypeFormat,
 ): RuntimePhysicalType["application"] | undefined {
-  const portable = portableType(format);
+  const portable = readSqlPortableTypeName(format);
   if (portable !== undefined) return resolvePortableType(portable).application;
   if (format.dialect !== "mysql") return undefined;
   switch (format.type) {
@@ -407,7 +381,7 @@ function applicationForFormat(
 }
 
 function isCompatibleMysqlColumnTypeFormat(format: SqlColumnTypeFormat): boolean {
-  if (Reflect.ownKeys(format).some((key) => !sqlColumnTypeFormatKeys.has(key))) return false;
+  if (!hasOnlySqlContractKeys(format, sqlColumnTypeFormatKeys)) return false;
   if (format.dialect === "portable") {
     return !Object.hasOwn(format, "identity") && !Object.hasOwn(format, "options");
   }
@@ -442,7 +416,7 @@ export function resolvePhysicalType(
       issue("invalid-column-type", path, "MySQL column type conflicts with Select Schema output"),
     );
   }
-  const portable = portableType(format);
+  const portable = readSqlPortableTypeName(format);
   return portable === undefined
     ? resolveMysqlType(format, path, state)
     : resolvePortableType(portable);

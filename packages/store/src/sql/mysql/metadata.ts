@@ -1,17 +1,13 @@
+import type { RecordDefinition } from "../../record.js";
+import { isSqlContractObject } from "../contract-object.js";
 import {
   createSqlRecordReference,
-  isSqlRecordContainer as isRecordContainer,
   sqlDefinitionIssue as issue,
 } from "../record-catalog-resolver.js";
-import type { RecordDefinition } from "../../record.js";
 import type { SqlDefinitionIssue, SqlRecordReference } from "../record.js";
-import { readSqlStatementFragments, sql, type SqlStatement } from "../statement.js";
-import {
-  hasMysqlStatementStructure,
-  mysqlColumnOptionKeys,
-  mysqlTableOptionKeys,
-  sqlOpaqueFormatSymbol,
-} from "./mysql-contract.js";
+import { sqlOpaqueFormatSymbol } from "../opaque-format.js";
+import { sql, type SqlStatement } from "../statement.js";
+import { mysqlColumnOptionKeys, mysqlTableOptionKeys } from "./mysql-contract.js";
 import { readMysqlMetadataKind } from "./record.js";
 
 function qualifiedReference(database: string | undefined, name: string): SqlStatement<never> {
@@ -35,7 +31,7 @@ export function readMysqlMetadata(
   issues: SqlDefinitionIssue[],
 ): Readonly<Record<PropertyKey, unknown>> | undefined {
   if (value === undefined) return undefined;
-  if (!isRecordContainer(value)) {
+  if (!isSqlContractObject(value)) {
     issues.push(
       issue("invalid-database-options", path, `MySQL ${owner} refinement must be an object`),
     );
@@ -59,28 +55,4 @@ export function readMysqlMetadata(
     return undefined;
   }
   return value;
-}
-
-export function validStatement(
-  value: unknown,
-  path: readonly (string | number)[],
-  issues: SqlDefinitionIssue[],
-  owner: string,
-  code: SqlDefinitionIssue["code"] = "invalid-column-default",
-): SqlStatement<never> | undefined {
-  const fragments = readSqlStatementFragments(value);
-  if (fragments === undefined) {
-    issues.push(issue(code, path, `${owner} requires a compatible SQL Statement`));
-    return undefined;
-  }
-  if (fragments.some((fragment) => fragment.kind === "parameter")) {
-    issues.push(issue(code, path, `${owner} must not contain SQL parameters`));
-    return undefined;
-  }
-  if (fragments.length === 0 || !hasMysqlStatementStructure(fragments)) {
-    issues.push(issue(code, path, `${owner} requires nonempty SQL structure`));
-    return undefined;
-  }
-  // SAFETY: Compatible opaque structure was checked and contains no parameter fragment.
-  return value as SqlStatement<never>;
 }

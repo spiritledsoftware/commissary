@@ -1,8 +1,3 @@
-import type { SqlStatementFragment } from "../statement.js";
-
-/** Package-copy-compatible identity for opaque SQL values used by SQLite contracts. */
-export const sqlOpaqueFormatSymbol = Symbol.for("@commissary/store/sql-opaque-format");
-
 /** Valid caller-owned keys for `sqlite.table()` options. */
 export const sqliteTableOptionKeys: ReadonlySet<string> = new Set(["name"]);
 
@@ -16,20 +11,15 @@ export const sqliteColumnOptionKeys: ReadonlySet<string> = new Set([
   "generated",
 ]);
 
-/** Valid internal keys for a compatible opaque SQL column-type format. */
-export const sqlColumnTypeFormatKeys: ReadonlySet<PropertyKey> = new Set([
-  "format",
-  "kind",
-  "dialect",
-  "type",
-  "identity",
-  "options",
-]);
+/** Valid caller-owned keys for SQLite ROWID options. */
+export const sqliteRowidOptionKeys: ReadonlySet<string> = new Set(["reuse"]);
 
-/** Test whether validated Statement fragments contain nonempty SQL structure. */
-export function hasSqliteStatementStructure(fragments: readonly SqlStatementFragment[]): boolean {
-  return fragments.some(
-    (fragment) =>
-      fragment.kind === "identifier" || (fragment.kind === "raw" && fragment.text.length > 0),
-  );
-}
+/** Valid caller-owned keys for SQLite generated-column options. */
+export const sqliteGeneratedOptionKeys: ReadonlySet<string> = new Set(["expression", "mode"]);
+
+/** Valid caller-owned keys for SQLite custom-type options. */
+export const sqliteCustomTypeOptionKeys: ReadonlySet<string> = new Set([
+  "type",
+  "encode",
+  "decode",
+]);

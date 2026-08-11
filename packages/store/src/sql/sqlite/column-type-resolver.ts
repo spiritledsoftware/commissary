@@ -1,18 +1,21 @@
 import { isJsonValue, type JsonValue } from "../../json.js";
+import { hasOnlySqlContractKeys } from "../contract-object.js";
+import { validateSqlDefinitionStatement } from "../definition-statement.js";
 import {
   sqlDefinitionIssue as issue,
   sqlEvidenceMatchesApplication as evidenceCompatible,
 } from "../record-catalog-resolver.js";
 import {
+  isSqlCustomEncodedValue,
   readSqlColumnTypeFormat,
+  readSqlPortableTypeName,
   reflectSqlSelectStorage,
+  sqlColumnTypeFormatKeys,
   type SqlColumnTypeFormat,
-  type SqlCustomEncodedValue,
   type SqlPortableTypeName,
 } from "../record.js";
 import { directCodec, invalidValue } from "./column-codecs.js";
-import { validStatement } from "./metadata.js";
-import { sqlColumnTypeFormatKeys } from "./sqlite-contract.js";
+import { sqliteCustomTypeOptionKeys } from "./sqlite-contract.js";
 import type {
   ResolutionState,
   RuntimePhysicalType,
@@ -40,30 +43,8 @@ function directResolved(type: SqliteDirectTypeName): SqliteResolvedDirectType {
   return Object.freeze({ kind: "direct", type });
 }
 
-/** Test whether a contract object has only the allowed string keys. */
-export function hasOnlyOwnStringKeys(
-  value: Readonly<Record<PropertyKey, unknown>>,
-  allowed: ReadonlySet<string>,
-): boolean {
-  return Reflect.ownKeys(value).every((key) => typeof key === "string" && allowed.has(key));
-}
-
 function isDirectTypeName(value: string): value is SqliteDirectTypeName {
   return directTypes.has(value as SqliteDirectTypeName);
-}
-
-function portableType(format: SqlColumnTypeFormat): SqlPortableTypeName | undefined {
-  if (format.dialect !== "portable") return undefined;
-  switch (format.type) {
-    case "text":
-    case "number":
-    case "integer":
-    case "boolean":
-    case "json":
-      return format.type;
-    default:
-      return undefined;
-  }
 }
 
 function resolvePortableType(type: SqlPortableTypeName): RuntimePhysicalType {
@@ -84,15 +65,6 @@ function resolvePortableType(type: SqlPortableTypeName): RuntimePhysicalType {
   return Object.freeze({ resolved: directResolved(direct), ...directCodec(direct) });
 }
 
-function isCustomEncodedValue(value: unknown): value is SqlCustomEncodedValue {
-  return (
-    typeof value === "string" ||
-    typeof value === "boolean" ||
-    (typeof value === "number" && Number.isFinite(value)) ||
-    value instanceof Uint8Array
-  );
-}
-
 function resolveCustom(
   options: Readonly<Record<PropertyKey, unknown>> | undefined,
   path: readonly (string | number)[],
@@ -100,14 +72,14 @@ function resolveCustom(
 ): RuntimePhysicalType | undefined {
   if (
     options === undefined ||
-    !hasOnlyOwnStringKeys(options, new Set(["type", "encode", "decode"])) ||
+    !hasOnlySqlContractKeys(options, sqliteCustomTypeOptionKeys) ||
     typeof Reflect.get(options, "encode") !== "function" ||
     typeof Reflect.get(options, "decode") !== "function"
   ) {
     state.issues.push(issue("invalid-column-type", path, "SQLite custom type contract is invalid"));
     return undefined;
   }
-  const type = validStatement(
+  const type = validateSqlDefinitionStatement(
     Reflect.get(options, "type"),
     [...path, "type"],
     state.issues,
@@ -120,7 +92,7 @@ function resolveCustom(
   const encodeValue = (value: unknown): SqliteEncodedValue => {
     // SAFETY: The contract check above proved this captured reference is callable.
     const converted = (encode as (input: unknown) => unknown)(value);
-    return isCustomEncodedValue(converted) ? converted : invalidValue("custom encoder output");
+    return isSqlCustomEncodedValue(converted) ? converted : invalidValue("custom encoder output");
   };
   const decodeValue = (value: unknown): JsonValue => {
     // SAFETY: The contract check above proved this captured reference is callable.
@@ -161,7 +133,7 @@ function resolveSqliteType(
 function applicationForFormat(
   format: SqlColumnTypeFormat,
 ): RuntimePhysicalType["application"] | undefined {
-  const portable = portableType(format);
+  const portable = readSqlPortableTypeName(format);
   if (portable !== undefined) return resolvePortableType(portable).application;
   if (format.dialect !== "sqlite") return undefined;
   switch (format.type) {
@@ -190,7 +162,7 @@ function applicationForFormat(
 }
 
 function isCompatibleSqliteColumnTypeFormat(format: SqlColumnTypeFormat): boolean {
-  if (Reflect.ownKeys(format).some((key) => !sqlColumnTypeFormatKeys.has(key))) return false;
+  if (!hasOnlySqlContractKeys(format, sqlColumnTypeFormatKeys)) return false;
   if (format.dialect === "portable") {
     return !Object.hasOwn(format, "identity") && !Object.hasOwn(format, "options");
   }
@@ -230,7 +202,7 @@ export function resolvePhysicalType(
       issue("invalid-column-type", path, "SQLite column type conflicts with Select Schema output"),
     );
   }
-  const portable = portableType(format);
+  const portable = readSqlPortableTypeName(format);
   return portable === undefined
     ? resolveSqliteType(format, path, state)
     : resolvePortableType(portable);

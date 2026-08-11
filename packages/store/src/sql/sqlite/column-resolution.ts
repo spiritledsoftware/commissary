@@ -1,5 +1,6 @@
+import { hasOnlySqlContractKeys, isSqlContractObject } from "../contract-object.js";
+import { validateSqlDefinitionStatement } from "../definition-statement.js";
 import {
-  isSqlRecordContainer as isRecordContainer,
   sqlDefinitionIssue as issue,
   sqlLiteralMatchesApplication as literalMatchesApplication,
 } from "../record-catalog-resolver.js";
@@ -10,8 +11,7 @@ import {
   type SqlResolvedGeneratedColumn,
 } from "../record.js";
 import type { SqlStatement } from "../statement.js";
-import { hasOnlyOwnStringKeys } from "./column-type-resolver.js";
-import { validStatement } from "./metadata.js";
+import { sqliteGeneratedOptionKeys, sqliteRowidOptionKeys } from "./sqlite-contract.js";
 import type { RuntimePhysicalType, SqliteResolvedRowid } from "./resolution-types.js";
 
 /** Locate the effective portable or SQLite column property. */
@@ -64,7 +64,7 @@ export function resolveDefault(
     }
     return literal.value;
   }
-  return validStatement(value, path, issues, "SQLite column default");
+  return validateSqlDefinitionStatement(value, path, issues, "SQLite column default");
 }
 
 /** Resolve one normalized SQLite ROWID contract. */
@@ -78,11 +78,11 @@ export function resolveRowid(
   if (value === undefined) return undefined;
   let valid = true;
   let reuse: "allowed" | "forbidden" = "allowed";
-  if (!isRecordContainer(value)) {
+  if (!isSqlContractObject(value)) {
     issues.push(issue("invalid-database-options", path, "SQLite ROWID metadata must be an object"));
     valid = false;
   } else {
-    if (!hasOnlyOwnStringKeys(value, new Set(["reuse"]))) {
+    if (!hasOnlySqlContractKeys(value, sqliteRowidOptionKeys)) {
       issues.push(
         issue("invalid-database-options", path, "SQLite ROWID metadata has an invalid structure"),
       );
@@ -121,7 +121,7 @@ export function resolveGenerated(
   issues: SqlDefinitionIssue[],
 ): SqlResolvedGeneratedColumn | undefined {
   if (value === undefined) return undefined;
-  if (!isRecordContainer(value)) {
+  if (!isSqlContractObject(value)) {
     issues.push(
       issue("invalid-database-options", path, "SQLite generated metadata must be an object"),
     );
@@ -130,14 +130,14 @@ export function resolveGenerated(
   let valid = true;
   const hasExpression = Object.hasOwn(value, "expression");
   const hasMode = Object.hasOwn(value, "mode");
-  if (!hasOnlyOwnStringKeys(value, new Set(["expression", "mode"])) || !hasExpression || !hasMode) {
+  if (!hasOnlySqlContractKeys(value, sqliteGeneratedOptionKeys) || !hasExpression || !hasMode) {
     issues.push(
       issue("invalid-database-options", path, "SQLite generated metadata has an invalid structure"),
     );
     valid = false;
   }
   const expression = hasExpression
-    ? validStatement(
+    ? validateSqlDefinitionStatement(
         Reflect.get(value, "expression"),
         expressionPath,
         issues,

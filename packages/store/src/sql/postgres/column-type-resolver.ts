@@ -1,18 +1,21 @@
 import { isJsonValue, type JsonValue } from "../../json.js";
 import {
-  isSqlRecordContainer as isRecordContainer,
-  sqlDefinitionIssue as issue,
-} from "../record-catalog-resolver.js";
+  hasOnlySqlContractKeys,
+  isSqlContractObject as isRecordContainer,
+} from "../contract-object.js";
+import { validateSqlDefinitionStatement } from "../definition-statement.js";
+import { sqlDefinitionIssue as issue } from "../record-catalog-resolver.js";
 import {
+  isSqlCustomEncodedValue,
   readSqlColumnTypeFormat,
+  readSqlPortableTypeName,
   reflectSqlSelectStorage,
   type SqlColumnTypeFormat,
-  type SqlCustomEncodedValue,
   type SqlPortableTypeName,
 } from "../record.js";
 import type { SqlStatement } from "../statement.js";
 import { arrayCodec, directCodec, safeIntegerCodec, stringCodec } from "./column-codecs.js";
-import { isValidPostgresName, qualifiedReference, validDatabaseStatement } from "./metadata.js";
+import { isValidPostgresName, qualifiedReference } from "./metadata.js";
 import {
   isPostgresCharacterLengthOption,
   isPostgresIntervalFieldOption,
@@ -57,6 +60,12 @@ const directTypes = new Set<PostgresDirectTypeName>([
   "point",
   "line",
 ]);
+const numericOptionKeys = new Set(["precision", "scale"]);
+const characterOptionKeys = new Set(["length"]);
+const temporalOptionKeys = new Set(["precision", "withTimezone"]);
+const intervalOptionKeys = new Set(["fields", "precision"]);
+const noDirectTypeOptionKeys = new Set<string>();
+
 function directResolved(
   type: PostgresDirectTypeName,
   options?: Readonly<Record<string, unknown>>,
@@ -78,11 +87,9 @@ function validateDirectOptions(
   options: Readonly<Record<string, unknown>> | undefined,
 ): boolean {
   if (options === undefined) return true;
-  const keys = Reflect.ownKeys(options);
-  if (keys.some((key) => typeof key !== "string")) return false;
   switch (type) {
     case "numeric": {
-      if (!keys.every((key) => key === "precision" || key === "scale")) return false;
+      if (!hasOnlySqlContractKeys(options, numericOptionKeys)) return false;
       const precision = options.precision;
       const scale = options.scale;
       return (
@@ -94,17 +101,18 @@ function validateDirectOptions(
     case "char":
     case "varchar":
       return (
-        keys.every((key) => key === "length") && isPostgresCharacterLengthOption(options.length)
+        hasOnlySqlContractKeys(options, characterOptionKeys) &&
+        isPostgresCharacterLengthOption(options.length)
       );
     case "time":
     case "timestamp":
       return (
-        keys.every((key) => key === "precision" || key === "withTimezone") &&
+        hasOnlySqlContractKeys(options, temporalOptionKeys) &&
         isPostgresTemporalPrecisionOption(options.precision) &&
         isPostgresTimeZoneOption(options.withTimezone)
       );
     case "interval": {
-      if (!keys.every((key) => key === "fields" || key === "precision")) return false;
+      if (!hasOnlySqlContractKeys(options, intervalOptionKeys)) return false;
       const fields = options.fields;
       const precision = options.precision;
       return (
@@ -114,7 +122,7 @@ function validateDirectOptions(
       );
     }
     default:
-      return keys.length === 0;
+      return hasOnlySqlContractKeys(options, noDirectTypeOptionKeys);
   }
 }
 
@@ -140,20 +148,6 @@ function resolvePortableType(type: SqlPortableTypeName): RuntimePhysicalType {
       const codec = directCodec("json");
       return Object.freeze({ resolved: directResolved("json"), ...codec });
     }
-  }
-}
-
-function portableType(format: SqlColumnTypeFormat): SqlPortableTypeName | undefined {
-  if (format.dialect !== "portable") return undefined;
-  switch (format.type) {
-    case "text":
-    case "number":
-    case "integer":
-    case "boolean":
-    case "json":
-      return format.type;
-    default:
-      return undefined;
   }
 }
 
@@ -276,11 +270,12 @@ function resolvePostgresType(
     }
     let modifier: SqlStatement<never> | undefined;
     if (Object.hasOwn(type, "modifier")) {
-      modifier = validDatabaseStatement(
+      modifier = validateSqlDefinitionStatement(
         Reflect.get(type, "modifier"),
         [...path, "type", "modifier"],
         state.issues,
         "PostgreSQL custom type modifier",
+        "invalid-database-options",
       );
     }
     const qualified = Object.freeze({
@@ -294,7 +289,7 @@ function resolvePostgresType(
     });
     const encodeValue = (value: unknown): PostgresEncodedValue => {
       const converted = (encode as (input: unknown) => unknown)(value);
-      if (!isCustomEncodedValue(converted)) {
+      if (!isSqlCustomEncodedValue(converted)) {
         throw new TypeError("PostgreSQL custom encoder returned an invalid value");
       }
       return converted;
@@ -315,15 +310,6 @@ function resolvePostgresType(
   }
   state.issues.push(issue("invalid-column-type", path, `Unknown PostgreSQL type '${format.type}'`));
   return undefined;
-}
-
-function isCustomEncodedValue(value: unknown): value is SqlCustomEncodedValue {
-  return (
-    typeof value === "string" ||
-    typeof value === "boolean" ||
-    (typeof value === "number" && Number.isFinite(value)) ||
-    value instanceof Uint8Array
-  );
 }
 
 export function resolvePhysicalType(
@@ -356,7 +342,7 @@ export function resolvePhysicalType(
     );
     return undefined;
   }
-  const portable = portableType(format);
+  const portable = readSqlPortableTypeName(format);
   return portable === undefined
     ? resolvePostgresType(format, path, state)
     : resolvePortableType(portable);

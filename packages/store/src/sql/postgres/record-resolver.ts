@@ -7,10 +7,11 @@ import {
   type RecordOverrides,
   type RoundTripRecordDefinitions,
 } from "../../record.js";
+import { isSqlContractObject as isRecordContainer } from "../contract-object.js";
+import { validateSqlDefinitionStatement } from "../definition-statement.js";
 import {
   createSqlFieldReference as fieldReference,
   freezeSqlRecordMap,
-  isSqlRecordContainer as isRecordContainer,
   iterateSqlRecordCatalog,
   iterateSqlRecordFields,
   readSqlOverrideValue as ownNullableOverride,
@@ -38,8 +39,6 @@ import {
   qualifiedReference,
   readPostgresMetadata,
   recordReference,
-  validDatabaseStatement,
-  validStatement,
 } from "./metadata.js";
 import type { PostgresQualifiedName } from "./record.js";
 import {
@@ -258,7 +257,7 @@ function resolveDefault(
     }
     return literal.value;
   }
-  return validStatement(value, path, issues, "PostgreSQL column default");
+  return validateSqlDefinitionStatement(value, path, issues, "PostgreSQL column default");
 }
 
 function resolveGenerated(
@@ -267,7 +266,13 @@ function resolveGenerated(
   issues: SqlDefinitionIssue[],
 ): SqlResolvedGeneratedColumn | undefined {
   if (value === undefined) return undefined;
-  const expression = validDatabaseStatement(value, path, issues, "PostgreSQL generated expression");
+  const expression = validateSqlDefinitionStatement(
+    value,
+    path,
+    issues,
+    "PostgreSQL generated expression",
+    "invalid-database-options",
+  );
   return expression === undefined ? undefined : Object.freeze({ expression, mode: "stored" });
 }
 

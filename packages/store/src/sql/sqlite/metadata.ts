@@ -1,17 +1,13 @@
 import type { RecordDefinition } from "../../record.js";
+import { isSqlContractObject } from "../contract-object.js";
+import { sqlOpaqueFormatSymbol } from "../opaque-format.js";
 import {
   createSqlRecordReference,
-  isSqlRecordContainer as isRecordContainer,
   sqlDefinitionIssue as issue,
 } from "../record-catalog-resolver.js";
 import type { SqlDefinitionIssue, SqlRecordReference } from "../record.js";
-import { readSqlStatementFragments, sql, type SqlStatement } from "../statement.js";
-import {
-  hasSqliteStatementStructure,
-  sqlOpaqueFormatSymbol,
-  sqliteColumnOptionKeys,
-  sqliteTableOptionKeys,
-} from "./sqlite-contract.js";
+import { sql, type SqlStatement } from "../statement.js";
+import { sqliteColumnOptionKeys, sqliteTableOptionKeys } from "./sqlite-contract.js";
 import { readSqliteMetadataKind } from "./record.js";
 
 /** Create one resolved SQLite table and Field reference. */
@@ -30,7 +26,7 @@ export function readSqliteMetadata(
   issues: SqlDefinitionIssue[],
 ): Readonly<Record<PropertyKey, unknown>> | undefined {
   if (value === undefined) return undefined;
-  if (!isRecordContainer(value)) {
+  if (!isSqlContractObject(value)) {
     issues.push(
       issue("invalid-database-options", path, `SQLite ${owner} refinement must be an object`),
     );
@@ -54,29 +50,4 @@ export function readSqliteMetadata(
     return undefined;
   }
   return value;
-}
-
-/** Validate one nonempty parameter-free SQLite Statement. */
-export function validStatement(
-  value: unknown,
-  path: readonly (string | number)[],
-  issues: SqlDefinitionIssue[],
-  owner: string,
-  code: SqlDefinitionIssue["code"] = "invalid-column-default",
-): SqlStatement<never> | undefined {
-  const fragments = readSqlStatementFragments(value);
-  if (fragments === undefined) {
-    issues.push(issue(code, path, `${owner} requires a compatible SQL Statement`));
-    return undefined;
-  }
-  if (fragments.some((fragment) => fragment.kind === "parameter")) {
-    issues.push(issue(code, path, `${owner} must not contain SQL parameters`));
-    return undefined;
-  }
-  if (fragments.length === 0 || !hasSqliteStatementStructure(fragments)) {
-    issues.push(issue(code, path, `${owner} requires nonempty SQL structure`));
-    return undefined;
-  }
-  // SAFETY: Compatible opaque structure was checked and contains no parameter fragment.
-  return value as SqlStatement<never>;
 }

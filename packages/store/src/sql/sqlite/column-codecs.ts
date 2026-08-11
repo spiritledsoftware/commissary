@@ -1,7 +1,7 @@
 import { isJsonValue, type JsonValue } from "../../json.js";
+import { decodeCanonicalBase64, encodeCanonicalBase64 } from "../base64.js";
 import type { RuntimePhysicalType, SqliteDirectTypeName } from "./resolution-types.js";
 
-const base64Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 const utf8Encoder = new TextEncoder();
 const utf8Decoder = new TextDecoder("utf-8", { fatal: true });
 
@@ -40,43 +40,8 @@ function isValidSqliteText(value: string): boolean {
   return true;
 }
 
-function decodeBase64(value: string): Uint8Array {
-  if (
-    value.length % 4 !== 0 ||
-    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)
-  ) {
-    return invalidValue("blob");
-  }
-  const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
-  const output = new Uint8Array((value.length / 4) * 3 - padding);
-  let outputIndex = 0;
-  for (let index = 0; index < value.length; index += 4) {
-    const a = base64Alphabet.indexOf(value[index] ?? "");
-    const b = base64Alphabet.indexOf(value[index + 1] ?? "");
-    const c = value[index + 2] === "=" ? 0 : base64Alphabet.indexOf(value[index + 2] ?? "");
-    const d = value[index + 3] === "=" ? 0 : base64Alphabet.indexOf(value[index + 3] ?? "");
-    const bits = (a << 18) | (b << 12) | (c << 6) | d;
-    if (outputIndex < output.length) output[outputIndex++] = (bits >> 16) & 0xff;
-    if (outputIndex < output.length) output[outputIndex++] = (bits >> 8) & 0xff;
-    if (outputIndex < output.length) output[outputIndex++] = bits & 0xff;
-  }
-  if (encodeBase64(output) !== value) return invalidValue("blob");
-  return output;
-}
-
-function encodeBase64(value: Uint8Array): string {
-  let output = "";
-  for (let index = 0; index < value.length; index += 3) {
-    const a = value[index] ?? 0;
-    const b = value[index + 1] ?? 0;
-    const c = value[index + 2] ?? 0;
-    const bits = (a << 16) | (b << 8) | c;
-    output += base64Alphabet[(bits >> 18) & 63];
-    output += base64Alphabet[(bits >> 12) & 63];
-    output += index + 1 < value.length ? base64Alphabet[(bits >> 6) & 63] : "=";
-    output += index + 2 < value.length ? base64Alphabet[bits & 63] : "=";
-  }
-  return output;
+function decodeSqliteBlobBase64(value: string): Uint8Array {
+  return decodeCanonicalBase64(value) ?? invalidValue("blob");
 }
 
 function decodeUtf8(value: unknown, type: string): string {
@@ -235,8 +200,9 @@ export function directCodec(
     case "blob":
       return {
         application: "string",
-        encode: (value) => decodeBase64(stringValue(value, type)),
-        decode: (value) => (value instanceof Uint8Array ? encodeBase64(value) : invalidValue(type)),
+        encode: (value) => decodeSqliteBlobBase64(stringValue(value, type)),
+        decode: (value) =>
+          value instanceof Uint8Array ? encodeCanonicalBase64(value) : invalidValue(type),
       };
     case "json-blob":
       return {

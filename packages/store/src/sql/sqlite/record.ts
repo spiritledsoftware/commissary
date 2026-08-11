@@ -1,4 +1,6 @@
 import type { JsonValue } from "../../json.js";
+import { hasOnlySqlContractKeys, isSqlContractObject } from "../contract-object.js";
+import { defineSqlMetadataFormat } from "../opaque-format.js";
 import {
   createSqlColumnType,
   readSqlColumnTypeFormat,
@@ -8,11 +10,16 @@ import {
   type SqlLiteral,
   type SqlLiteralValue,
 } from "../record.js";
-import { readSqlStatementFragments, type SqlStatement } from "../statement.js";
 import {
-  hasSqliteStatementStructure,
-  sqlOpaqueFormatSymbol,
+  hasSqlStatementStructure,
+  readSqlStatementFragments,
+  type SqlStatement,
+} from "../statement.js";
+import {
   sqliteColumnOptionKeys,
+  sqliteCustomTypeOptionKeys,
+  sqliteGeneratedOptionKeys,
+  sqliteRowidOptionKeys,
   sqliteTableOptionKeys,
 } from "./sqlite-contract.js";
 
@@ -77,26 +84,13 @@ type CompatibleSqliteColumnHelper<Options extends SqliteColumnHelperOptions> = O
     : never
   : unknown;
 
-const sqliteMetadataFormat = "commissary-sqlite-metadata@1";
+type SqliteMetadataKind = "sqlite-table" | "sqlite-column";
 
-interface SqliteMetadataFormat {
-  readonly format: typeof sqliteMetadataFormat;
-  readonly kind: "sqlite-table" | "sqlite-column";
-}
-
-function isRecordContainer(value: unknown): value is Readonly<Record<PropertyKey, unknown>> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function assertOwnKeys(
-  owner: string,
-  value: Readonly<Record<PropertyKey, unknown>>,
-  allowed: ReadonlySet<string>,
-): void {
-  if (Reflect.ownKeys(value).some((key) => typeof key !== "string" || !allowed.has(key))) {
-    throw new TypeError(`SQLite ${owner} helper received an unknown option`);
-  }
-}
+const sqliteMetadata = defineSqlMetadataFormat<SqliteMetadataKind>({
+  format: "commissary-sqlite-metadata@1",
+  kinds: new Set<SqliteMetadataKind>(["sqlite-table", "sqlite-column"]),
+  owner: "SQLite",
+});
 
 /** Test one exact SQLite table or column name. */
 export function isValidSqliteName(value: unknown): value is string {
@@ -114,57 +108,9 @@ function assertOptionalLocalName(owner: string, value: unknown): void {
   }
 }
 
-function snapshotValue(value: unknown, snapshots = new Map<object, object>()): unknown {
-  if (Array.isArray(value)) {
-    const existing = snapshots.get(value);
-    if (existing !== undefined) return existing;
-    const snapshot: unknown[] = [];
-    snapshots.set(value, snapshot);
-    snapshot.push(...value.map((item) => snapshotValue(item, snapshots)));
-    return Object.freeze(snapshot);
-  }
-  if (!isRecordContainer(value)) return value;
-  const existing = snapshots.get(value);
-  if (existing !== undefined) return existing;
-  const snapshot: Record<PropertyKey, unknown> = {};
-  snapshots.set(value, snapshot);
-  for (const key of Reflect.ownKeys(value)) {
-    Reflect.set(snapshot, key, snapshotValue(Reflect.get(value, key), snapshots));
-  }
-  return Object.freeze(snapshot);
-}
-
-function createMetadataValue<Options extends object>(
-  kind: SqliteMetadataFormat["kind"],
-  options: Options,
-): Readonly<Options> {
-  const snapshot = snapshotValue(options);
-  if (!isRecordContainer(snapshot)) {
-    throw new TypeError(`SQLite ${kind} helper requires an options object`);
-  }
-  return Object.freeze({
-    ...snapshot,
-    [sqlOpaqueFormatSymbol]: Object.freeze({ format: sqliteMetadataFormat, kind }),
-  }) as Readonly<Options>;
-}
-
 /** Read one compatible package-owned SQLite metadata marker. */
-export function readSqliteMetadataKind(value: unknown): SqliteMetadataFormat["kind"] | undefined {
-  try {
-    if (!isRecordContainer(value) || !Object.isFrozen(value)) return undefined;
-    const format = Reflect.get(value, sqlOpaqueFormatSymbol);
-    if (
-      !isRecordContainer(format) ||
-      !Object.isFrozen(format) ||
-      Reflect.get(format, "format") !== sqliteMetadataFormat
-    ) {
-      return undefined;
-    }
-    const kind = Reflect.get(format, "kind");
-    return kind === "sqlite-table" || kind === "sqlite-column" ? kind : undefined;
-  } catch {
-    return undefined;
-  }
+export function readSqliteMetadataKind(value: unknown): SqliteMetadataKind | undefined {
+  return sqliteMetadata.read(value);
 }
 
 function assertParameterFreeStatement(owner: string, key: string, value: unknown): void {
@@ -172,7 +118,7 @@ function assertParameterFreeStatement(owner: string, key: string, value: unknown
   if (
     fragments === undefined ||
     fragments.some((fragment) => fragment.kind === "parameter") ||
-    !hasSqliteStatementStructure(fragments)
+    !hasSqlStatementStructure(fragments)
   ) {
     throw new TypeError(
       `SQLite ${owner} helper option '${key}' requires a nonempty parameter-free SQL Statement`,
@@ -182,10 +128,12 @@ function assertParameterFreeStatement(owner: string, key: string, value: unknown
 
 function assertRowid(value: unknown): void {
   if (value === undefined || value === null) return;
-  if (!isRecordContainer(value)) {
+  if (!isSqlContractObject(value)) {
     throw new TypeError("SQLite column helper option 'rowid' must be an object");
   }
-  assertOwnKeys("rowid", value, new Set(["reuse"]));
+  if (!hasOnlySqlContractKeys(value, sqliteRowidOptionKeys)) {
+    throw new TypeError("SQLite rowid helper received an unknown option");
+  }
   if (
     Object.hasOwn(value, "reuse") &&
     Reflect.get(value, "reuse") !== "allowed" &&
@@ -197,10 +145,12 @@ function assertRowid(value: unknown): void {
 
 function assertGenerated(value: unknown): void {
   if (value === undefined || value === null) return;
-  if (!isRecordContainer(value)) {
+  if (!isSqlContractObject(value)) {
     throw new TypeError("SQLite column helper option 'generated' must be an object");
   }
-  assertOwnKeys("generated", value, new Set(["expression", "mode"]));
+  if (!hasOnlySqlContractKeys(value, sqliteGeneratedOptionKeys)) {
+    throw new TypeError("SQLite generated helper received an unknown option");
+  }
   assertParameterFreeStatement("generated", "expression", Reflect.get(value, "expression"));
   const mode = Reflect.get(value, "mode");
   if (mode !== "virtual" && mode !== "stored") {
@@ -211,21 +161,25 @@ function assertGenerated(value: unknown): void {
 function defineSqliteTable<const Options extends SqliteTableDefinition>(
   options: Options,
 ): Readonly<Options> {
-  if (!isRecordContainer(options)) {
+  if (!isSqlContractObject(options)) {
     throw new TypeError("SQLite table helper requires an options object");
   }
-  assertOwnKeys("table", options, sqliteTableOptionKeys);
+  if (!hasOnlySqlContractKeys(options, sqliteTableOptionKeys)) {
+    throw new TypeError("SQLite table helper received an unknown option");
+  }
   assertOptionalLocalName("table", Reflect.get(options, "name"));
-  return createMetadataValue("sqlite-table", options);
+  return sqliteMetadata.create("sqlite-table", options);
 }
 
 function defineSqliteColumn<const Options extends SqliteColumnHelperOptions>(
   options: Options & CompatibleSqliteColumnHelper<NoInfer<Options>>,
 ): Readonly<Options> {
-  if (!isRecordContainer(options)) {
+  if (!isSqlContractObject(options)) {
     throw new TypeError("SQLite column helper requires an options object");
   }
-  assertOwnKeys("column", options, sqliteColumnOptionKeys);
+  if (!hasOnlySqlContractKeys(options, sqliteColumnOptionKeys)) {
+    throw new TypeError("SQLite column helper received an unknown option");
+  }
   assertOptionalLocalName("column", Reflect.get(options, "name"));
   if (Object.hasOwn(options, "type")) {
     const type = Reflect.get(options, "type");
@@ -251,7 +205,7 @@ function defineSqliteColumn<const Options extends SqliteColumnHelperOptions>(
   }
   assertRowid(Reflect.get(options, "rowid"));
   assertGenerated(Reflect.get(options, "generated"));
-  return createMetadataValue("sqlite-column", options);
+  return sqliteMetadata.create("sqlite-column", options);
 }
 
 function directType<Value extends JsonValue>(type: string): SqliteColumnType<Value> {
@@ -276,10 +230,12 @@ const directTypes = Object.freeze({
 function defineCustom<Value extends JsonValue>(
   options: SqliteCustomTypeOptions<Value>,
 ): SqliteColumnType<Value> {
-  if (!isRecordContainer(options)) {
+  if (!isSqlContractObject(options)) {
     throw new TypeError("SQLite custom helper requires an options object");
   }
-  assertOwnKeys("custom", options, new Set(["type", "encode", "decode"]));
+  if (!hasOnlySqlContractKeys(options, sqliteCustomTypeOptionKeys)) {
+    throw new TypeError("SQLite custom helper received an unknown option");
+  }
   assertParameterFreeStatement("custom", "type", Reflect.get(options, "type"));
   if (typeof options.encode !== "function" || typeof options.decode !== "function") {
     throw new TypeError("SQLite custom helper requires encode and decode functions");

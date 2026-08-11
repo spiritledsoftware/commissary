@@ -1,5 +1,6 @@
-import { isSqlRecordContainer as isRecordContainer } from "../record-catalog-resolver.js";
 import { isJsonValue } from "../../json.js";
+import { decodeCanonicalBase64, encodeCanonicalBase64 } from "../base64.js";
+import { isSqlContractObject } from "../contract-object.js";
 import type {
   MysqlDirectTypeName,
   MysqlResolvedDirectTypeOptions,
@@ -66,49 +67,6 @@ export function jsonCodec(
     encode: (value) => (isJsonValue(value) ? value : invalidValue(type)),
     decode: (value) => (isJsonValue(value) ? value : invalidValue(type)),
   };
-}
-
-const base64Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-function decodeBase64(value: string): Uint8Array {
-  if (
-    value.length % 4 !== 0 ||
-    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)
-  ) {
-    return invalidValue("binary");
-  }
-  const output = new Uint8Array(
-    (value.length / 4) * 3 - (value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0),
-  );
-  let outputIndex = 0;
-  for (let index = 0; index < value.length; index += 4) {
-    const a = base64Alphabet.indexOf(value[index] ?? "");
-    const b = base64Alphabet.indexOf(value[index + 1] ?? "");
-    const c = value[index + 2] === "=" ? 0 : base64Alphabet.indexOf(value[index + 2] ?? "");
-    const d = value[index + 3] === "=" ? 0 : base64Alphabet.indexOf(value[index + 3] ?? "");
-    if (a < 0 || b < 0 || c < 0 || d < 0) return invalidValue("binary");
-    const bits = (a << 18) | (b << 12) | (c << 6) | d;
-    if (outputIndex < output.length) output[outputIndex++] = (bits >> 16) & 255;
-    if (outputIndex < output.length) output[outputIndex++] = (bits >> 8) & 255;
-    if (outputIndex < output.length) output[outputIndex++] = bits & 255;
-  }
-  if (encodeBase64(output) !== value) return invalidValue("binary");
-  return output;
-}
-
-function encodeBase64(value: Uint8Array): string {
-  let output = "";
-  for (let index = 0; index < value.length; index += 3) {
-    const a = value[index] ?? 0;
-    const b = value[index + 1] ?? 0;
-    const c = value[index + 2] ?? 0;
-    const bits = (a << 16) | (b << 8) | c;
-    output += base64Alphabet[(bits >> 18) & 63];
-    output += base64Alphabet[(bits >> 12) & 63];
-    output += index + 1 < value.length ? base64Alphabet[(bits >> 6) & 63] : "=";
-    output += index + 2 < value.length ? base64Alphabet[bits & 63] : "=";
-  }
-  return output;
 }
 
 function isLeapYear(year: number): boolean {
@@ -234,7 +192,7 @@ function optionNumber(
   options: Readonly<MysqlResolvedDirectTypeOptions> | undefined,
   key: string,
 ): number | undefined {
-  const value = isRecordContainer(options) ? Reflect.get(options, key) : undefined;
+  const value = isSqlContractObject(options) ? Reflect.get(options, key) : undefined;
   return typeof value === "number" ? value : undefined;
 }
 
@@ -272,12 +230,13 @@ function binaryCodec(
     application: "string",
     encode: (value) => {
       if (typeof value !== "string") return invalidValue(type);
-      const decoded = decodeBase64(value);
+      const decoded = decodeCanonicalBase64(value);
+      if (decoded === undefined) return invalidValue("binary");
       return decoded.length <= length ? decoded : invalidValue(type);
     },
     decode: (value) => {
       if (!(value instanceof Uint8Array) || value.length > length) return invalidValue(type);
-      return encodeBase64(value);
+      return encodeCanonicalBase64(value);
     },
   };
 }
@@ -330,7 +289,7 @@ function decimalCodec(
 ): Pick<RuntimePhysicalType, "application" | "encode" | "decode"> {
   const precision = optionNumber(options, "precision") ?? 10;
   const scale = optionNumber(options, "scale") ?? 0;
-  const unsigned = isRecordContainer(options) && Reflect.get(options, "unsigned") === true;
+  const unsigned = isSqlContractObject(options) && Reflect.get(options, "unsigned") === true;
   return {
     application: "string",
     encode: (value) =>
@@ -391,7 +350,7 @@ export function directCodec(
   type: MysqlDirectTypeName,
   options?: Readonly<MysqlResolvedDirectTypeOptions>,
 ): Pick<RuntimePhysicalType, "application" | "encode" | "decode"> {
-  const unsigned = isRecordContainer(options) && Reflect.get(options, "unsigned") === true;
+  const unsigned = isSqlContractObject(options) && Reflect.get(options, "unsigned") === true;
   switch (type) {
     case "tinyint":
     case "smallint":

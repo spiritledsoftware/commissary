@@ -1,4 +1,6 @@
 import type { JsonValue } from "../../json.js";
+import { hasOnlySqlContractKeys, isSqlContractObject } from "../contract-object.js";
+import { defineSqlMetadataFormat } from "../opaque-format.js";
 import {
   createSqlColumnType,
   readSqlColumnTypeFormat,
@@ -8,14 +10,15 @@ import {
   type SqlLiteral,
   type SqlLiteralValue,
 } from "../record.js";
-import { readSqlStatementFragments, type SqlStatement } from "../statement.js";
 import {
-  hasMysqlStatementStructure,
-  isRecordContainer,
+  hasSqlStatementStructure,
+  readSqlStatementFragments,
+  type SqlStatement,
+} from "../statement.js";
+import {
   isValidMysqlEnumValue,
   mysqlColumnOptionKeys,
   mysqlTableOptionKeys,
-  sqlOpaqueFormatSymbol,
 } from "./mysql-contract.js";
 import {
   isMysqlDecimalPrecisionOption,
@@ -154,22 +157,13 @@ type CompatibleMysqlColumnHelper<Options extends MysqlColumnHelperOptions> = Opt
     : never
   : unknown;
 
-const mysqlMetadataFormat = "commissary-mysql-metadata@1";
+type MysqlMetadataKind = "mysql-table" | "mysql-column";
 
-interface MysqlMetadataFormat {
-  readonly format: typeof mysqlMetadataFormat;
-  readonly kind: "mysql-table" | "mysql-column";
-}
-
-function assertOwnKeys(
-  owner: string,
-  value: Readonly<Record<PropertyKey, unknown>>,
-  allowed: ReadonlySet<string>,
-): void {
-  if (Reflect.ownKeys(value).some((key) => typeof key !== "string" || !allowed.has(key))) {
-    throw new TypeError(`MySQL ${owner} helper received an unknown option`);
-  }
-}
+const mysqlMetadata = defineSqlMetadataFormat({
+  format: "commissary-mysql-metadata@1",
+  kinds: new Set<MysqlMetadataKind>(["mysql-table", "mysql-column"]),
+  owner: "MySQL",
+});
 
 /** Test one MySQL database, table, or column identifier without normalizing it. */
 export function isValidMysqlName(value: unknown): value is string {
@@ -205,57 +199,9 @@ function assertOptionalLocalName(owner: string, key: string, value: unknown): vo
   }
 }
 
-function snapshotValue(value: unknown, snapshots = new Map<object, object>()): unknown {
-  if (Array.isArray(value)) {
-    const existing = snapshots.get(value);
-    if (existing !== undefined) return existing;
-    const snapshot: unknown[] = [];
-    snapshots.set(value, snapshot);
-    snapshot.push(...value.map((item) => snapshotValue(item, snapshots)));
-    return Object.freeze(snapshot);
-  }
-  if (!isRecordContainer(value)) return value;
-  const existing = snapshots.get(value);
-  if (existing !== undefined) return existing;
-  const snapshot: Record<PropertyKey, unknown> = {};
-  snapshots.set(value, snapshot);
-  for (const key of Reflect.ownKeys(value)) {
-    Reflect.set(snapshot, key, snapshotValue(Reflect.get(value, key), snapshots));
-  }
-  return Object.freeze(snapshot);
-}
-
-function createMetadataValue<Options extends object>(
-  kind: MysqlMetadataFormat["kind"],
-  options: Options,
-): Readonly<Options> {
-  const snapshot = snapshotValue(options);
-  if (!isRecordContainer(snapshot)) {
-    throw new TypeError(`MySQL ${kind} helper requires an options object`);
-  }
-  return Object.freeze({
-    ...snapshot,
-    [sqlOpaqueFormatSymbol]: Object.freeze({ format: mysqlMetadataFormat, kind }),
-  }) as Readonly<Options>;
-}
-
 /** Read one compatible package-owned MySQL metadata marker. */
-export function readMysqlMetadataKind(value: unknown): MysqlMetadataFormat["kind"] | undefined {
-  try {
-    if (!isRecordContainer(value) || !Object.isFrozen(value)) return undefined;
-    const format = Reflect.get(value, sqlOpaqueFormatSymbol);
-    if (
-      !isRecordContainer(format) ||
-      !Object.isFrozen(format) ||
-      Reflect.get(format, "format") !== mysqlMetadataFormat
-    ) {
-      return undefined;
-    }
-    const kind = Reflect.get(format, "kind");
-    return kind === "mysql-table" || kind === "mysql-column" ? kind : undefined;
-  } catch {
-    return undefined;
-  }
+export function readMysqlMetadataKind(value: unknown): MysqlMetadataKind | undefined {
+  return mysqlMetadata.read(value);
 }
 
 function assertParameterFreeStatement(owner: string, key: string, value: unknown): void {
@@ -263,7 +209,7 @@ function assertParameterFreeStatement(owner: string, key: string, value: unknown
   if (
     fragments === undefined ||
     fragments.some((fragment) => fragment.kind === "parameter") ||
-    !hasMysqlStatementStructure(fragments)
+    !hasSqlStatementStructure(fragments)
   ) {
     throw new TypeError(
       `MySQL ${owner} helper option '${key}' requires a nonempty parameter-free SQL Statement`,
@@ -273,10 +219,12 @@ function assertParameterFreeStatement(owner: string, key: string, value: unknown
 
 function assertGenerated(value: unknown): void {
   if (value === undefined || value === null) return;
-  if (!isRecordContainer(value)) {
+  if (!isSqlContractObject(value)) {
     throw new TypeError("MySQL column helper option 'generated' must be an object");
   }
-  assertOwnKeys("generated", value, new Set(["expression", "mode"]));
+  if (!hasOnlySqlContractKeys(value, new Set(["expression", "mode"]))) {
+    throw new TypeError("MySQL generated helper received an unknown option");
+  }
   assertParameterFreeStatement("generated", "expression", Reflect.get(value, "expression"));
   const mode = Reflect.get(value, "mode");
   if (mode !== "virtual" && mode !== "stored") {
@@ -287,22 +235,26 @@ function assertGenerated(value: unknown): void {
 function defineMysqlTable<const Options extends MysqlTableDefinition>(
   options: Options,
 ): Readonly<Options> {
-  if (!isRecordContainer(options)) {
+  if (!isSqlContractObject(options)) {
     throw new TypeError("MySQL table helper requires an options object");
   }
-  assertOwnKeys("table", options, mysqlTableOptionKeys);
+  if (!hasOnlySqlContractKeys(options, mysqlTableOptionKeys)) {
+    throw new TypeError("MySQL table helper received an unknown option");
+  }
   assertOptionalLocalName("table", "database", Reflect.get(options, "database"));
   assertOptionalLocalName("table", "name", Reflect.get(options, "name"));
-  return createMetadataValue("mysql-table", options);
+  return mysqlMetadata.create("mysql-table", options);
 }
 
 function defineMysqlColumn<const Options extends MysqlColumnHelperOptions>(
   options: Options & CompatibleMysqlColumnHelper<NoInfer<Options>>,
 ): Readonly<Options> {
-  if (!isRecordContainer(options)) {
+  if (!isSqlContractObject(options)) {
     throw new TypeError("MySQL column helper requires an options object");
   }
-  assertOwnKeys("column", options, mysqlColumnOptionKeys);
+  if (!hasOnlySqlContractKeys(options, mysqlColumnOptionKeys)) {
+    throw new TypeError("MySQL column helper received an unknown option");
+  }
   assertOptionalLocalName("column", "name", Reflect.get(options, "name"));
   if (Object.hasOwn(options, "type")) {
     const type = Reflect.get(options, "type");
@@ -338,7 +290,7 @@ function defineMysqlColumn<const Options extends MysqlColumnHelperOptions>(
       "MySQL column helper option 'onUpdate' must be 'current-timestamp' or null",
     );
   }
-  return createMetadataValue("mysql-column", options);
+  return mysqlMetadata.create("mysql-column", options);
 }
 
 function directType<Value extends JsonValue>(
@@ -387,10 +339,12 @@ function defineInteger<const Type extends MysqlIntegerTypeName>(
   options?: MysqlIntegerOptions,
 ): MysqlColumnType<MysqlIntegerValue<Type>> {
   if (options !== undefined) {
-    if (!isRecordContainer(options)) {
+    if (!isSqlContractObject(options)) {
       throw new TypeError(`MySQL ${type} helper options must be an object`);
     }
-    assertOwnKeys(type, options, new Set(["unsigned"]));
+    if (!hasOnlySqlContractKeys(options, new Set(["unsigned"]))) {
+      throw new TypeError(`MySQL ${type} helper received an unknown option`);
+    }
     if (!isMysqlUnsignedOption(Reflect.get(options, "unsigned"))) {
       throw new TypeError(`MySQL ${type} option 'unsigned' must be a boolean`);
     }
@@ -400,10 +354,12 @@ function defineInteger<const Type extends MysqlIntegerTypeName>(
 
 function defineDecimal(options?: MysqlDecimalOptions): MysqlColumnType<string> {
   if (options === undefined) return directTypes.decimal;
-  if (!isRecordContainer(options)) {
+  if (!isSqlContractObject(options)) {
     throw new TypeError("MySQL decimal helper options must be an object");
   }
-  assertOwnKeys("decimal", options, new Set(["precision", "scale", "unsigned"]));
+  if (!hasOnlySqlContractKeys(options, new Set(["precision", "scale", "unsigned"]))) {
+    throw new TypeError("MySQL decimal helper received an unknown option");
+  }
   const precision = Reflect.get(options, "precision");
   const scale = Reflect.get(options, "scale");
   if (!isMysqlDecimalPrecisionOption(precision)) {
@@ -426,12 +382,14 @@ function defineFloating(
   options?: MysqlFloatOptions | MysqlDoubleOptions | MysqlRealOptions,
 ): MysqlColumnType<number> {
   if (options === undefined) return directTypes[type];
-  if (!isRecordContainer(options)) {
+  if (!isSqlContractObject(options)) {
     throw new TypeError(`MySQL ${type} helper options must be an object`);
   }
   const allowed =
     type === "real" ? new Set(["precision", "scale"]) : new Set(["precision", "scale", "unsigned"]);
-  assertOwnKeys(type, options, allowed);
+  if (!hasOnlySqlContractKeys(options, allowed)) {
+    throw new TypeError(`MySQL ${type} helper received an unknown option`);
+  }
   const precision = Reflect.get(options, "precision");
   const scale = Reflect.get(options, "scale");
   if (!isMysqlFloatPrecisionOption(type, precision, scale)) {
@@ -454,10 +412,12 @@ function defineOptionalLength(
   options?: MysqlOptionalLengthOptions,
 ): MysqlColumnType<string> {
   if (options === undefined) return directTypes[type];
-  if (!isRecordContainer(options)) {
+  if (!isSqlContractObject(options)) {
     throw new TypeError(`MySQL ${type} helper options must be an object`);
   }
-  assertOwnKeys(type, options, new Set(["length"]));
+  if (!hasOnlySqlContractKeys(options, new Set(["length"]))) {
+    throw new TypeError(`MySQL ${type} helper received an unknown option`);
+  }
   if (!isMysqlOptionalLengthOption(Reflect.get(options, "length"))) {
     throw new TypeError(`MySQL ${type} option 'length' must be 0 through 255`);
   }
@@ -468,10 +428,12 @@ function defineRequiredLength(
   type: "varchar" | "varbinary",
   options: MysqlLengthOptions,
 ): MysqlColumnType<string> {
-  if (!isRecordContainer(options)) {
+  if (!isSqlContractObject(options)) {
     throw new TypeError(`MySQL ${type} helper options must be an object`);
   }
-  assertOwnKeys(type, options, new Set(["length"]));
+  if (!hasOnlySqlContractKeys(options, new Set(["length"]))) {
+    throw new TypeError(`MySQL ${type} helper received an unknown option`);
+  }
   if (!isMysqlRequiredLengthOption(Reflect.get(options, "length"))) {
     throw new TypeError(`MySQL ${type} option 'length' must be 0 through 65535`);
   }
@@ -483,10 +445,12 @@ function defineTemporal(
   options?: MysqlTemporalOptions,
 ): MysqlColumnType<string> {
   if (options === undefined) return directTypes[type];
-  if (!isRecordContainer(options)) {
+  if (!isSqlContractObject(options)) {
     throw new TypeError(`MySQL ${type} helper options must be an object`);
   }
-  assertOwnKeys(type, options, new Set(["fsp"]));
+  if (!hasOnlySqlContractKeys(options, new Set(["fsp"]))) {
+    throw new TypeError(`MySQL ${type} helper received an unknown option`);
+  }
   if (!isMysqlFractionalSecondsOption(Reflect.get(options, "fsp"))) {
     throw new TypeError(`MySQL ${type} option 'fsp' must be 0 through 6`);
   }
@@ -496,10 +460,12 @@ function defineTemporal(
 function defineEnum<const Values extends readonly [string, ...string[]]>(options: {
   readonly values: Values;
 }): MysqlEnum<Values> {
-  if (!isRecordContainer(options)) {
+  if (!isSqlContractObject(options)) {
     throw new TypeError("MySQL enum helper requires an options object");
   }
-  assertOwnKeys("enum", options, new Set(["values"]));
+  if (!hasOnlySqlContractKeys(options, new Set(["values"]))) {
+    throw new TypeError("MySQL enum helper received an unknown option");
+  }
   if (
     !Array.isArray(options.values) ||
     options.values.length === 0 ||
@@ -524,10 +490,12 @@ function defineEnum<const Values extends readonly [string, ...string[]]>(options
 function defineCustom<Value extends JsonValue>(
   options: MysqlCustomTypeOptions<Value>,
 ): MysqlColumnType<Value> {
-  if (!isRecordContainer(options)) {
+  if (!isSqlContractObject(options)) {
     throw new TypeError("MySQL custom helper requires an options object");
   }
-  assertOwnKeys("custom", options, new Set(["type", "encode", "decode"]));
+  if (!hasOnlySqlContractKeys(options, new Set(["type", "encode", "decode"]))) {
+    throw new TypeError("MySQL custom helper received an unknown option");
+  }
   assertParameterFreeStatement("custom", "type", Reflect.get(options, "type"));
   if (typeof options.encode !== "function" || typeof options.decode !== "function") {
     throw new TypeError("MySQL custom helper requires encode and decode functions");

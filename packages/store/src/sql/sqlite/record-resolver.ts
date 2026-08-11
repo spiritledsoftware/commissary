@@ -7,10 +7,11 @@ import {
   type RecordOverrides,
   type RoundTripRecordDefinitions,
 } from "../../record.js";
+import { isSqlContractObject } from "../contract-object.js";
+import { validateSqlDefinitionStatement } from "../definition-statement.js";
 import {
   createSqlFieldReference as fieldReference,
   freezeSqlRecordMap,
-  isSqlRecordContainer as isRecordContainer,
   iterateSqlRecordCatalog,
   iterateSqlRecordFields,
   readSqlOverrideValue as ownNullableOverride,
@@ -37,7 +38,7 @@ import {
   winningTableTail,
 } from "./column-resolution.js";
 import { resolvePhysicalType } from "./column-type-resolver.js";
-import { readSqliteMetadata, recordReference, validStatement } from "./metadata.js";
+import { readSqliteMetadata, recordReference } from "./metadata.js";
 import { isValidSqliteName } from "./record.js";
 import type {
   ResolutionState,
@@ -77,7 +78,7 @@ function resolveRuntime(
     const { recordName, definition, table } = record;
 
     const sqliteTableValue = table === undefined ? undefined : Reflect.get(table, "sqlite");
-    if (isRecordContainer(sqliteTableValue) && Object.hasOwn(sqliteTableValue, "name")) {
+    if (isSqlContractObject(sqliteTableValue) && Object.hasOwn(sqliteTableValue, "name")) {
       const candidate = Reflect.get(sqliteTableValue, "name");
       if (candidate !== null && !isValidSqliteName(candidate)) {
         state.issues.push(
@@ -105,7 +106,7 @@ function resolveRuntime(
     const tableNameValid = isValidSqliteName(nameValue);
     if (
       !tableNameValid &&
-      (!isRecordContainer(sqliteTableValue) ||
+      (!isSqlContractObject(sqliteTableValue) ||
         !Object.hasOwn(sqliteTableValue, "name") ||
         Reflect.get(sqliteTableValue, "name") !== nameValue)
     ) {
@@ -147,7 +148,7 @@ function resolveRuntime(
       const { fieldName, field, column } = fieldEntry;
 
       const sqliteColumnValue = column === undefined ? undefined : Reflect.get(column, "sqlite");
-      if (isRecordContainer(sqliteColumnValue) && Object.hasOwn(sqliteColumnValue, "name")) {
+      if (isSqlContractObject(sqliteColumnValue) && Object.hasOwn(sqliteColumnValue, "name")) {
         const candidate = Reflect.get(sqliteColumnValue, "name");
         if (candidate !== null && !isValidSqliteName(candidate)) {
           state.issues.push(
@@ -173,7 +174,7 @@ function resolveRuntime(
       const columnNameValid = isValidSqliteName(columnName);
       if (
         !columnNameValid &&
-        (!isRecordContainer(sqliteColumnValue) ||
+        (!isSqlContractObject(sqliteColumnValue) ||
           !Object.hasOwn(sqliteColumnValue, "name") ||
           Reflect.get(sqliteColumnValue, "name") !== columnName)
       ) {
@@ -193,7 +194,12 @@ function resolveRuntime(
       if (physical !== undefined) {
         resolvedDefault = resolveDefault(defaultValue, physical, defaultPath, state.issues);
       } else if (defaultValue !== undefined && readSqlLiteralFormat(defaultValue) === undefined) {
-        validStatement(defaultValue, defaultPath, state.issues, "SQLite column default");
+        validateSqlDefinitionStatement(
+          defaultValue,
+          defaultPath,
+          state.issues,
+          "SQLite column default",
+        );
       }
 
       const selectedNull = evidence?.selectedNull ?? false;
