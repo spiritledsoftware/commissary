@@ -73,3 +73,19 @@ it("recursively copies and freezes caller containers while retaining scalar and 
   expect(snapshot.nested).toEqual({ status: "queued" });
   expect(snapshot.items).toEqual([{ priority: 1 }]);
 });
+
+it("preserves an own __proto__ key without changing the snapshot prototype", () => {
+  const source = Object.defineProperty({}, "__proto__", {
+    value: { polluted: true },
+    enumerable: true,
+    configurable: true,
+    writable: true,
+  });
+
+  const snapshot = snapshotSqlContractValue(source) as Record<PropertyKey, unknown>;
+
+  expect(Object.getPrototypeOf(snapshot)).toBe(Object.prototype);
+  expect(Object.hasOwn(snapshot, "__proto__")).toBe(true);
+  expect(Reflect.get(snapshot, "__proto__")).toEqual({ polluted: true });
+  expect(Object.isFrozen(Reflect.get(snapshot, "__proto__"))).toBe(true);
+});

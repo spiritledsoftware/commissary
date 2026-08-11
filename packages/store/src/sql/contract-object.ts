@@ -31,11 +31,12 @@ function snapshotSqlContractValueInternal(
   const snapshot: Record<PropertyKey, unknown> = {};
   snapshots.set(value, snapshot);
   for (const key of Reflect.ownKeys(value)) {
-    Reflect.set(
-      snapshot,
-      key,
-      snapshotSqlContractValueInternal(Reflect.get(value, key), preserve, snapshots),
-    );
+    Object.defineProperty(snapshot, key, {
+      value: snapshotSqlContractValueInternal(Reflect.get(value, key), preserve, snapshots),
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
   }
   return Object.freeze(snapshot);
 }

@@ -62,6 +62,33 @@ function validPrimaryKeyShape(
   return Array.isArray(value) && value.length === resolvedFields.length;
 }
 
+function resolveSqlitePrimaryKey(
+  fields: readonly string[],
+  columns: Readonly<Record<string, RuntimeColumn>>,
+  path: readonly (string | number)[],
+  issues: ResolutionState["issues"],
+): readonly RuntimeColumn[] {
+  const primaryKey = resolveSqlPrimaryKey(fields, columns, path, issues);
+  let hasGeneratedColumn = false;
+  fields.forEach((fieldName, index) => {
+    const column = columns[fieldName];
+    if (column === undefined || !primaryKey.includes(column) || column.generated === undefined) {
+      return;
+    }
+    hasGeneratedColumn = true;
+    issues.push(
+      issue(
+        "invalid-primary-key",
+        [...path, index],
+        `SQLite primary-key field '${fieldName}' must not be generated`,
+      ),
+    );
+  });
+  return hasGeneratedColumn
+    ? Object.freeze(primaryKey.filter((column) => column.generated === undefined))
+    : primaryKey;
+}
+
 function resolveRuntime(
   definitions: RecordDefinitions,
   overrides: unknown,
@@ -336,7 +363,7 @@ function resolveRuntime(
     }
 
     const frozenColumns = freezeSqlRecordMap(columns);
-    let primaryKey = resolveSqlPrimaryKey(
+    let primaryKey = resolveSqlitePrimaryKey(
       primaryKeyFields,
       frozenColumns,
       primaryKeyPath,

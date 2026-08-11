@@ -654,6 +654,45 @@ describe("SQLite Record resolution", () => {
     expect(failure.issues.every((entry) => Object.isFrozen(entry.path))).toBe(true);
   });
 
+  it("rejects generated primary-key columns and preserves ordinary primary keys", () => {
+    const generatedField = {
+      select: stringField,
+      column: sql.column({
+        sqlite: sqlite.column({
+          type: sqlite.text(),
+          generated: { expression: sql.raw("'generated'"), mode: "virtual" },
+        }),
+      }),
+    };
+    const failure = failureOf(() =>
+      resolveSqliteRecords({
+        records: {
+          invalid: SqlRecord.define({
+            table: sql.table({ primaryKey: ["generated", "ordinary"] }),
+            fields: { generated: generatedField, ordinary: stringField },
+          }),
+        },
+      }),
+    );
+    expect(failure.issues).toMatchObject([
+      {
+        code: "invalid-primary-key",
+        path: ["records", "invalid", "table", "primaryKey", 0],
+        message: "SQLite primary-key field 'generated' must not be generated",
+      },
+    ]);
+
+    const resolution = resolveSqliteRecords({
+      records: {
+        valid: SqlRecord.define({
+          table: sql.table({ primaryKey: ["ordinary"] }),
+          fields: { generated: generatedField, ordinary: stringField },
+        }),
+      },
+    });
+    expect(resolution.tables.valid.primaryKey).toEqual([resolution.tables.valid.columns.ordinary]);
+  });
+
   it("uses exact names, ASCII folding, reserved prefixes, and no Unicode normalization", () => {
     const distinctUnicode = {
       composed: SqlRecord.define({
