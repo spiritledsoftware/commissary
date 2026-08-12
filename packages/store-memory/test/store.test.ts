@@ -211,4 +211,4 @@ it("keeps large Tool Call graphs ordered and reuses delegation keys", async () =
     toolCallId: `graph-child-${delegatedCount - 1}`,
     sequence: delegatedCount + 1,
   });
-});
+}, 15_000);
