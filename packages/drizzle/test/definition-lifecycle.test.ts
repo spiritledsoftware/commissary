@@ -376,18 +376,11 @@ it("reports unsupported generator families as definition issues", () => {
       "~standard": { version: 1 as const, vendor: "test", validate: () => ({ value: {} }) },
     }),
   };
-  expect(() =>
-    DrizzleSqliteStore.define({ schemaGenerators: unsupported, records: { item: table } }),
-  ).toThrow(DrizzleDefinitionError);
-  try {
-    DrizzleSqliteStore.define({ schemaGenerators: unsupported, records: { item: table } });
-  } catch (error) {
-    expect(error).toBeInstanceOf(DrizzleDefinitionError);
-    if (!(error instanceof DrizzleDefinitionError)) throw error;
-    expect(error.issues.map(({ code, path }) => ({ code, path }))).toEqual([
-      { code: "unsupported-schema-family", path: ["schemaGenerators"] },
-    ]);
-  }
+  expect(
+    captureDrizzleIssueLocations(() =>
+      DrizzleSqliteStore.define({ schemaGenerators: unsupported, records: { item: table } }),
+    ),
+  ).toEqual([{ code: "unsupported-schema-family", path: ["schemaGenerators"] }]);
 });
 
 it("suppresses missing-schema diagnostics after a generator callback fails", () => {
