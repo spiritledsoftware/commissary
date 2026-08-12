@@ -8,6 +8,7 @@ import {
   PgTable,
   boolean,
   getTableConfig as getPostgresTableConfig,
+  integer as pgInteger,
   pgEnum,
   pgTable,
   text as pgText,
@@ -812,6 +813,34 @@ it("rejects direct columns that cannot encode valid write-schema outputs", () =>
       path: ["records", "item", "fields", "id", "update"],
     },
   ]);
+});
+
+it("accepts omission schemas that validate only undefined", () => {
+  const table = pgTable("generated_items", {
+    id: pgInteger("id").generatedAlwaysAsIdentity(),
+  });
+  const omitted = {
+    "~standard": {
+      version: 1,
+      vendor: "commissary-test",
+      validate: (value: unknown) =>
+        value === undefined
+          ? { value: undefined }
+          : { issues: [{ message: "Expected undefined" }] },
+    },
+  } as const;
+  expect(() =>
+    DrizzlePostgresStore.define({
+      records: { item: table },
+      overrides: {
+        item: {
+          fields: {
+            id: { select: z.number(), create: omitted, update: omitted },
+          },
+        },
+      },
+    }),
+  ).not.toThrow();
 });
 
 it("rejects generated non-JSON selected values until a static schema converts them", () => {

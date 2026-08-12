@@ -923,6 +923,9 @@ function validateRepresentativeFieldValues(
     if (secondResult.kind === "failure") continue;
     const first = firstResult.value;
     const second = secondResult.value;
+    if (first === undefined && second === undefined) {
+      continue;
+    }
     if (!isJsonValue(first) || !isJsonValue(second)) {
       issues.push(
         drizzleDefinitionIssue(

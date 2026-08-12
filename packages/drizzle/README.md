@@ -1,6 +1,6 @@
 # `@commissary/drizzle`
 
-Connection-free PostgreSQL, MySQL, and SQLite Store definitions for Commissary.
+Drizzle Store definitions plus PostgreSQL live binding for Commissary.
 
 ## Install
 
@@ -17,7 +17,7 @@ pnpm add drizzle-zod zod
 
 Import shared definition failures and contracts from `@commissary/drizzle`. Import one isolated dialect factory from `@commissary/drizzle/postgres`, `@commissary/drizzle/mysql`, or `@commissary/drizzle/sqlite`. Importing the root loads no Drizzle dialect module.
 
-Definitions synchronously combine lower-tier Records or direct Drizzle tables, static overrides, optional host schema generators, Before Create Hooks, and relations. They perform no I/O and return exact SQL Record references plus one flat Drizzle schema. Database binding is supplied by the dialect adapter work that follows the definition lifecycle; this package does not create clients, run migrations, or own credentials or connections.
+Definitions synchronously combine lower-tier Records or direct Drizzle tables, static overrides, optional host schema generators, Before Create Hooks, and relations. They perform no I/O and return exact SQL Record references plus one flat Drizzle schema. PostgreSQL definitions can then bind to a host-owned common Drizzle PostgreSQL database. The package does not create clients, run migrations, or own credentials or connections. MySQL and SQLite live binders remain future work.
 
 Schema generation supports host-installed `drizzle-zod` 0.8.3 with Zod `^3.25.0 || ^4.0.0`, or `drizzle-valibot` 0.4.2 with Valibot `^1.0.0`. This package imports none of those libraries. Static Field Schemas override generated schemas.
 
@@ -45,6 +45,41 @@ const definition = DrizzleSqliteStore.define({
 
 export const { job } = definition.schema;
 ```
+
+## PostgreSQL binding
+
+`bindPostgresStore` accepts an existing Drizzle `PgDatabase`. Every binding verifies PostgreSQL 15 or later with a read-only version probe. It returns Collection and direct SQL capabilities while preserving the database's exact public `execute` result under `driverResult`:
+
+```ts
+import { sql } from "@commissary/store/sql";
+import { bindPostgresStore } from "@commissary/drizzle/postgres";
+
+const store = await bindPostgresStore({ definition, database });
+
+const jobs = await store.collections.job.find();
+const result = await store.execute(sql`UPDATE jobs SET queue = ${"priority"}`);
+result.affectedRows;
+result.driverResult;
+```
+
+Binding with omitted or literal-false `transaction` never probes or exposes transactions. Literal true first proves a real read-only serializable transaction path, then adds `TransactionStore`; a runtime Boolean returns a union that callers narrow with `"transaction" in store`:
+
+```ts
+const transactional = await bindPostgresStore({
+  definition,
+  database,
+  transaction: true,
+});
+
+await transactional.transaction(async (transaction) => {
+  await transaction.collections.job.create({ id: "job-1", queue: "default" });
+  await transaction.query(sql`SELECT ${"job-1"}::text AS id`);
+});
+```
+
+Binding rejects with `DrizzlePostgresBindingError` before returning a Store when the database, server version, or requested transaction path cannot preserve the contract. Later operations use the Store and SQL Store errors owned by `@commissary/store`. PostgreSQL Collection query and update operators currently use the shared JavaScript fallback: strings use JavaScript relational order, equal-value sorting is stable, and no adapter-specific `find` or `inArray` maximum is imposed.
+
+The binder uses only public Drizzle APIs, performs no DDL or migration checks, and never accesses `$client`. Export `definition.schema` entities directly for Drizzle Kit as described below.
 
 For a direct table without generators, provide a complete static Field Schema under `overrides.<record>.fields`. Static shorthand applies to select, create, and update; an operation object replaces only the named generated operation.
 

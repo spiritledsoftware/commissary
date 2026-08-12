@@ -158,15 +158,14 @@ function requiredJsonField<Value>(): FieldSchema<Value, Value & StoreJsonValue> 
   });
 }
 
-function optionalJsonField<Value>(): FieldSchema<
-  Value | undefined,
-  (Value & StoreJsonValue) | undefined
-> {
+function optionalJsonField<Value>(options?: {
+  readonly acceptNull?: boolean;
+}): FieldSchema<Value | undefined, (Value & StoreJsonValue) | undefined> {
   return coreFieldSchema((value) => {
     if (value === undefined) {
       return undefined;
     }
-    if (!isJsonValue(value)) {
+    if (!isJsonValue(value) || (value === null && options?.acceptNull !== true)) {
       return invalidCoreField;
     }
     // SAFETY: Core declares Value only for closed JSON contracts. isJsonValue proves the persistence representation, while each owning Core operation constructs the declared contract.
@@ -255,7 +254,11 @@ const runFields = {
   abortRequested: coreBooleanField("abort_requested"),
   settlementContinuations: coreIntegerField("settlement_continuations"),
   usage: coreJsonField("usage", optionalJsonField<RunUsage>(), false),
-  abortReason: coreJsonField("abort_reason", optionalJsonField<JsonValue>(), false),
+  abortReason: coreJsonField(
+    "abort_reason",
+    optionalJsonField<JsonValue>({ acceptNull: true }),
+    false,
+  ),
   result: coreJsonField(
     "result",
     optionalJsonField<Exclude<RunResult, SuspendedRunResult>>(),
@@ -272,7 +275,11 @@ const toolCallFields = {
   providerId: coreTextField("provider_id", optionalStringField<string>(), false),
   delegationKey: coreTextField("delegation_key", optionalStringField<string>(), false),
   requestedInput: coreJsonField("requested_input", requiredJsonField<JsonValue>(), true),
-  effectiveInput: coreJsonField("effective_input", optionalJsonField<JsonValue>(), false),
+  effectiveInput: coreJsonField(
+    "effective_input",
+    optionalJsonField<JsonValue>({ acceptNull: true }),
+    false,
+  ),
   status: coreTextField(
     "status",
     literalStringField("pending", "running", "suspended", "succeeded", "failed", "aborted"),
