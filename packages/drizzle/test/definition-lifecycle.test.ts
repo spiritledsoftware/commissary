@@ -35,10 +35,12 @@ import {
 } from "drizzle-valibot";
 import { createInsertSchema, createSelectSchema, createUpdateSchema } from "drizzle-zod";
 import { expect, it } from "vitest";
+import * as v from "valibot";
 import { z } from "zod";
 import { z as zod3 } from "zod3";
 
 import { DrizzleDefinitionError } from "../src/index.js";
+import type { DrizzleDefinitionIssue } from "../src/index.js";
 import { DrizzleMysqlStore, DrizzleMysqlThreadStore } from "../src/mysql.js";
 import { DrizzlePostgresStore, DrizzlePostgresThreadStore } from "../src/postgres.js";
 import { DrizzleSqliteStore, DrizzleSqliteThreadStore } from "../src/sqlite.js";
@@ -74,16 +76,40 @@ function logicalColumnKeys(
   });
 }
 
-function captureDrizzleIssueLocations(use: () => unknown) {
+function captureDrizzleIssues(use: () => unknown): readonly DrizzleDefinitionIssue[] {
   try {
     use();
   } catch (error) {
     if (error instanceof DrizzleDefinitionError) {
-      return error.issues.map(({ code, path }) => ({ code, path }));
+      return error.issues;
     }
     throw error;
   }
   throw new TypeError("Expected a Drizzle definition failure");
+}
+
+function captureDrizzleIssueLocations(use: () => unknown) {
+  return captureDrizzleIssues(use).map(({ code, path }) => ({ code, path }));
+}
+
+function withoutStandardJsonSchema<Schema extends object>(schema: Schema): Schema {
+  const standard: unknown = Reflect.get(schema, "~standard");
+  if (typeof standard !== "object" || standard === null) {
+    throw new TypeError("Test schema must implement Standard Schema validation");
+  }
+  const validate = Reflect.get(standard, "validate");
+  if (typeof validate !== "function") {
+    throw new TypeError("Test schema must implement Standard Schema validation");
+  }
+  const structuralStandard = Object.freeze({
+    version: 1 as const,
+    vendor: Reflect.get(standard, "vendor"),
+    validate: (value: unknown) => Reflect.apply(validate, standard, [value]),
+  });
+  return new Proxy(schema, {
+    get: (target, property, receiver) =>
+      property === "~standard" ? structuralStandard : Reflect.get(target, property, receiver),
+  });
 }
 
 it("defines direct tables and flat relations in every dialect", () => {
@@ -219,7 +245,12 @@ it("rejects conflicting lower-tier PostgreSQL enums with one physical key", () =
         },
       }),
     ),
-  ).toEqual([{ code: "duplicate-schema-key", path: ["schema", "conflicting_status"] }]);
+  ).toEqual([
+    {
+      code: "invalid-drizzle-enum",
+      path: ["records", "second", "fields", "status"],
+    },
+  ]);
 });
 
 it("infers lower-tier PostgreSQL enum keys contributed by overrides", () => {
@@ -269,6 +300,61 @@ it("accepts the supported Zod 3.25 Standard Schema object shape", () => {
       select: () => schema,
       insert: () => schema,
       update: () => schema,
+    },
+  });
+  expect(definition.schema.item).toBe(table);
+});
+
+it("accepts constrained writes through supported schema introspection structures", () => {
+  const zod4Literal = z.literal("write");
+  const valibotPipe = v.pipe(v.literal("write"), v.transform(String));
+  const writeSchemas = [
+    withoutStandardJsonSchema(zod4Literal),
+    zod3.literal("write"),
+    {
+      "~standard": valibotPipe["~standard"],
+      pipe: valibotPipe.pipe,
+    },
+  ];
+  for (const [index, writeSchema] of writeSchemas.entries()) {
+    const table = sqliteTable(`introspected_write_${index}`, {
+      id: sqliteText("id").notNull(),
+    });
+    const definition = DrizzleSqliteStore.define({
+      records: { item: table },
+      overrides: {
+        item: {
+          fields: {
+            id: {
+              select: z.string(),
+              create: writeSchema,
+              update: writeSchema,
+            },
+          },
+        },
+      },
+    });
+    expect(definition.schema.item).toBe(table);
+  }
+});
+
+it("accepts a required tuple as a constrained write-schema representative", () => {
+  const tuple = z.tuple([z.literal("x")]);
+  const table = sqliteTable("tuple_write", {
+    value: sqliteText("value", { mode: "json" }).notNull(),
+  });
+  const definition = DrizzleSqliteStore.define({
+    records: { item: table },
+    overrides: {
+      item: {
+        fields: {
+          value: {
+            select: z.union([z.object({}), tuple]),
+            create: tuple,
+            update: tuple,
+          },
+        },
+      },
     },
   });
   expect(definition.schema.item).toBe(table);
@@ -338,36 +424,59 @@ it("rejects recognized generated schemas that produce non-JSON values", () => {
     shape: { id: dateField },
   };
   const table = sqliteTable("non_json_generator", { id: sqliteText("id").notNull() });
-  expect(() =>
-    DrizzleSqliteStore.define({
-      records: { item: table },
-      schemas: {
-        select: () => objectSchema,
-        insert: () => objectSchema,
-        update: () => objectSchema,
-      },
-    }),
-  ).toThrow(DrizzleDefinitionError);
+  expect(
+    captureDrizzleIssueLocations(() =>
+      DrizzleSqliteStore.define({
+        records: { item: table },
+        schemas: {
+          select: () => objectSchema,
+          insert: () => objectSchema,
+          update: () => objectSchema,
+        },
+      }),
+    ),
+  ).toEqual([
+    {
+      code: "incompatible-generated-schema",
+      path: ["records", "item", "fields", "id", "select"],
+    },
+    {
+      code: "incompatible-generated-schema",
+      path: ["records", "item", "fields", "id", "insert"],
+    },
+    {
+      code: "incompatible-generated-schema",
+      path: ["records", "item", "fields", "id", "update"],
+    },
+  ]);
 });
 
 it("rejects write schemas whose output cannot re-enter select", () => {
   const table = sqliteTable("incompatible_write", { id: sqliteText("id").notNull() });
-  expect(() =>
-    DrizzleSqliteStore.define({
-      records: { item: table },
-      overrides: {
-        item: {
-          fields: {
-            id: {
-              select: z.string(),
-              create: z.string().transform(() => 1),
-              update: z.string(),
+  expect(
+    captureDrizzleIssueLocations(() =>
+      DrizzleSqliteStore.define({
+        records: { item: table },
+        overrides: {
+          item: {
+            fields: {
+              id: {
+                select: z.string(),
+                create: z.string().transform(() => 1),
+                update: z.string(),
+              },
             },
           },
         },
-      },
-    }),
-  ).toThrow(DrizzleDefinitionError);
+      }),
+    ),
+  ).toEqual([
+    { code: "invalid-generated-schema", path: ["schemas", "insert", "id"] },
+    {
+      code: "incompatible-generated-schema",
+      path: ["records", "item", "fields", "id", "insert"],
+    },
+  ]);
 });
 
 it("rejects async Field Schema validation that cannot be verified synchronously", () => {
@@ -387,16 +496,31 @@ it("rejects async Field Schema validation that cannot be verified synchronously"
     shape: { id: asyncField },
   };
   const table = sqliteTable("async_generator", { id: sqliteText("id").notNull() });
-  expect(() =>
-    DrizzleSqliteStore.define({
-      records: { item: table },
-      schemas: {
-        select: () => objectSchema,
-        insert: () => objectSchema,
-        update: () => objectSchema,
-      },
-    }),
-  ).toThrow(DrizzleDefinitionError);
+  expect(
+    captureDrizzleIssueLocations(() =>
+      DrizzleSqliteStore.define({
+        records: { item: table },
+        schemas: {
+          select: () => objectSchema,
+          insert: () => objectSchema,
+          update: () => objectSchema,
+        },
+      }),
+    ),
+  ).toEqual([
+    {
+      code: "invalid-generated-schema",
+      path: ["records", "item", "fields", "id", "select"],
+    },
+    {
+      code: "invalid-generated-schema",
+      path: ["records", "item", "fields", "id", "insert"],
+    },
+    {
+      code: "invalid-generated-schema",
+      path: ["records", "item", "fields", "id", "update"],
+    },
+  ]);
 });
 
 it("uses static Field Schemas without requiring generators", () => {
@@ -471,6 +595,28 @@ it("retains string codecs for generated bigint identity columns", () => {
   );
 });
 
+it("retains the resolved codec for generated MySQL automatic-update timestamps", () => {
+  const timestampValue = "2025-01-01T00:00:00.100Z";
+  const record = SqlRecord.define({
+    fields: {
+      updatedAt: {
+        select: z.literal(timestampValue),
+        column: sql.column({
+          mysql: storeMysql.column({
+            type: storeMysql.timestamp({ fsp: 3 }),
+            default: sql.raw("CURRENT_TIMESTAMP(3)"),
+            onUpdate: "current-timestamp",
+          }),
+        }),
+      },
+    },
+  });
+  const definition = DrizzleMysqlStore.define({ records: { item: record } });
+  const updatedAt = getTableColumns(definition.schema.item).updatedAt;
+  expect(updatedAt?.mapFromDriverValue("2025-01-01T00:00:00.1Z")).toBe(timestampValue);
+  expect(() => updatedAt?.mapToDriverValue("not-a-timestamp")).toThrow(TypeError);
+});
+
 it("rejects incompatible lower-tier direct columns and direct-table overrides", () => {
   const record = SqlRecord.define({
     fields: {
@@ -480,33 +626,48 @@ it("rejects incompatible lower-tier direct columns and direct-table overrides", 
       },
     },
   });
-  expect(() =>
-    DrizzleSqliteStore.define({
-      records: { item: record },
-      overrides: { item: { fields: { id: integer("record_id").notNull() } } },
-    }),
-  ).toThrow(DrizzleDefinitionError);
+  expect(
+    captureDrizzleIssueLocations(() =>
+      DrizzleSqliteStore.define({
+        records: { item: record },
+        overrides: { item: { fields: { id: integer("record_id").notNull() } } },
+      }),
+    ),
+  ).toEqual([
+    {
+      code: "incompatible-drizzle-column",
+      path: ["overrides", "item", "fields", "id", "column", "type"],
+    },
+    {
+      code: "incompatible-drizzle-column",
+      path: ["records", "item", "fields", "id", "column"],
+    },
+  ]);
 
   const direct = sqliteTable("items", { id: sqliteText("id").notNull() });
-  expect(() =>
-    DrizzleSqliteStore.define({
-      schemas,
-      records: { item: direct },
-      overrides: { item: { fields: { ghost: z.string() } } },
-    }),
-  ).toThrow(DrizzleDefinitionError);
-  expect(() =>
-    DrizzleSqliteStore.define({
-      schemas,
-      records: { item: direct },
-      overrides: {
-        item: {
-          // SAFETY: This test deliberately crosses the public dialect constraint to verify the runtime definition error.
-          table: pgTable("wrong", { id: pgText("id") }) as never,
+  expect(
+    captureDrizzleIssueLocations(() =>
+      DrizzleSqliteStore.define({
+        schemas,
+        records: { item: direct },
+        overrides: { item: { fields: { ghost: z.string() } } },
+      }),
+    ),
+  ).toEqual([{ code: "invalid-drizzle-override", path: ["overrides", "item", "fields", "ghost"] }]);
+  expect(
+    captureDrizzleIssueLocations(() =>
+      DrizzleSqliteStore.define({
+        schemas,
+        records: { item: direct },
+        overrides: {
+          item: {
+            // SAFETY: This test deliberately crosses the public dialect constraint to verify the runtime definition error.
+            table: pgTable("wrong", { id: pgText("id") }) as never,
+          },
         },
-      },
-    }),
-  ).toThrow(DrizzleDefinitionError);
+      }),
+    ),
+  ).toEqual([{ code: "invalid-drizzle-table", path: ["overrides", "item", "table"] }]);
 });
 
 it("rejects same-SQL column builders with incompatible runtime value mapping", () => {
@@ -521,12 +682,27 @@ it("rejects same-SQL column builders with incompatible runtime value mapping", (
       },
     },
   });
-  expect(() =>
-    DrizzleMysqlStore.define({
-      records: { item: record },
-      overrides: { item: { fields: { createdAt: datetime("created_at") } } },
-    }),
-  ).toThrow(DrizzleDefinitionError);
+  expect(
+    captureDrizzleIssueLocations(() =>
+      DrizzleMysqlStore.define({
+        records: { item: record },
+        overrides: { item: { fields: { createdAt: datetime("created_at") } } },
+      }),
+    ),
+  ).toEqual([
+    {
+      code: "incompatible-drizzle-column",
+      path: ["records", "item", "fields", "createdAt", "column"],
+    },
+    {
+      code: "incompatible-drizzle-column",
+      path: ["records", "item", "fields", "createdAt", "column", "insert"],
+    },
+    {
+      code: "incompatible-drizzle-column",
+      path: ["records", "item", "fields", "createdAt", "column", "update"],
+    },
+  ]);
 });
 
 it("rejects direct columns that cannot encode valid write-schema outputs", () => {
@@ -538,30 +714,25 @@ it("rejects direct columns that cannot encode valid write-schema outputs", () =>
     },
   });
   const table = sqliteTable("broken_writes", { id: brokenText("id").notNull() });
-  expect(() =>
-    DrizzleSqliteStore.define({
-      records: { item: table },
-      overrides: { item: { fields: { id: z.string() } } },
-    }),
-  ).toThrow(DrizzleDefinitionError);
-  expect(() =>
-    DrizzleSqliteStore.define({
-      records: { item: table },
-      overrides: {
-        item: {
-          fields: {
-            id: {
-              select: z.string(),
-              create: z.number().transform(String),
-              update: z.number().transform(String),
-            },
-          },
-        },
-      },
-    }),
-  ).toThrow(DrizzleDefinitionError);
-  for (const writeSchema of [z.literal("write"), z.string().regex(/^write$/)]) {
-    expect(() =>
+  expect(
+    captureDrizzleIssueLocations(() =>
+      DrizzleSqliteStore.define({
+        records: { item: table },
+        overrides: { item: { fields: { id: z.string() } } },
+      }),
+    ),
+  ).toEqual([
+    {
+      code: "incompatible-drizzle-column",
+      path: ["records", "item", "fields", "id", "column", "insert"],
+    },
+    {
+      code: "incompatible-drizzle-column",
+      path: ["records", "item", "fields", "id", "column", "update"],
+    },
+  ]);
+  expect(
+    captureDrizzleIssueLocations(() =>
       DrizzleSqliteStore.define({
         records: { item: table },
         overrides: {
@@ -569,15 +740,80 @@ it("rejects direct columns that cannot encode valid write-schema outputs", () =>
             fields: {
               id: {
                 select: z.string(),
-                create: writeSchema,
-                update: writeSchema,
+                create: z.number().transform(String),
+                update: z.number().transform(String),
               },
             },
           },
         },
       }),
-    ).toThrow(DrizzleDefinitionError);
-  }
+    ),
+  ).toEqual([
+    { code: "invalid-generated-schema", path: ["schemas", "insert", "id"] },
+    { code: "invalid-generated-schema", path: ["schemas", "update", "id"] },
+    {
+      code: "incompatible-drizzle-column",
+      path: ["records", "item", "fields", "id", "column", "insert"],
+    },
+    {
+      code: "incompatible-drizzle-column",
+      path: ["records", "item", "fields", "id", "column", "update"],
+    },
+  ]);
+  expect(
+    captureDrizzleIssueLocations(() =>
+      DrizzleSqliteStore.define({
+        records: { item: table },
+        overrides: {
+          item: {
+            fields: {
+              id: {
+                select: z.string(),
+                create: z.literal("write"),
+                update: z.literal("write"),
+              },
+            },
+          },
+        },
+      }),
+    ),
+  ).toEqual([
+    {
+      code: "incompatible-drizzle-column",
+      path: ["records", "item", "fields", "id", "column", "insert"],
+    },
+    {
+      code: "incompatible-drizzle-column",
+      path: ["records", "item", "fields", "id", "column", "update"],
+    },
+  ]);
+  expect(
+    captureDrizzleIssueLocations(() =>
+      DrizzleSqliteStore.define({
+        records: { item: table },
+        overrides: {
+          item: {
+            fields: {
+              id: {
+                select: z.string(),
+                create: z.string().regex(/^write$/),
+                update: z.string().regex(/^write$/),
+              },
+            },
+          },
+        },
+      }),
+    ),
+  ).toEqual([
+    {
+      code: "incompatible-generated-schema",
+      path: ["records", "item", "fields", "id", "insert"],
+    },
+    {
+      code: "incompatible-generated-schema",
+      path: ["records", "item", "fields", "id", "update"],
+    },
+  ]);
 });
 
 it("rejects generated non-JSON selected values until a static schema converts them", () => {
@@ -585,9 +821,16 @@ it("rejects generated non-JSON selected values until a static schema converts th
     id: mysqlText("id").notNull(),
     createdAt: datetime("created_at").notNull(),
   });
-  expect(() => DrizzleMysqlStore.define({ schemas, records: { item: table } })).toThrow(
-    DrizzleDefinitionError,
-  );
+  expect(
+    captureDrizzleIssueLocations(() =>
+      DrizzleMysqlStore.define({ schemas, records: { item: table } }),
+    ),
+  ).toEqual([
+    {
+      code: "incompatible-generated-schema",
+      path: ["records", "item", "fields", "createdAt"],
+    },
+  ]);
   const converted = z.preprocess(
     (value) => (value instanceof Date ? value.toISOString() : value),
     z.string(),
@@ -720,31 +963,62 @@ it("applies Core table fields and captures hooks in a Thread definition", () => 
 });
 
 it("rejects physical conflicts in Core column-builder overrides", () => {
-  expect(() =>
-    DrizzleSqliteThreadStore.define({
-      records: {},
-      overrides: { thread: { fields: { id: sqliteText("wrong_id").notNull() } } },
-    }),
-  ).toThrow(DrizzleDefinitionError);
+  expect(
+    captureDrizzleIssueLocations(() =>
+      DrizzleSqliteThreadStore.define({
+        records: {},
+        overrides: { thread: { fields: { id: sqliteText("wrong_id").notNull() } } },
+      }),
+    ),
+  ).toEqual([
+    {
+      code: "incompatible-drizzle-column",
+      path: ["overrides", "thread", "fields", "id", "column", "name"],
+    },
+  ]);
 });
 
 it("requires internal Core hooks for required custom create fields at runtime", () => {
-  expect(() =>
-    DrizzleSqliteThreadStore.define({
-      records: {},
-      overrides: {
-        message: {
-          fields: {
-            tenantId: {
-              select: z.string(),
-              column: sqliteText("tenant_id").notNull(),
+  expect(
+    captureDrizzleIssueLocations(() =>
+      DrizzleSqliteThreadStore.define({
+        records: {},
+        overrides: {
+          message: {
+            fields: {
+              tenantId: {
+                select: z.string(),
+                column: sqliteText("tenant_id").notNull(),
+              },
             },
           },
         },
-      },
-      // SAFETY: The test bypasses the compile-time hook requirement to verify the matching runtime diagnostic.
-    } as never),
-  ).toThrow(DrizzleDefinitionError);
+        // SAFETY: The test bypasses the compile-time hook requirement to verify the matching runtime diagnostic.
+      } as never),
+    ),
+  ).toEqual([{ code: "invalid-before-create-hook", path: ["hooks", "message"] }]);
+});
+
+it("orders host validation before Core composition failures", () => {
+  const duplicateCoreRecord = SqlRecord.define({
+    fields: {
+      custom: { select: z.string(), column: sql.column({ type: sql.text() }) },
+    },
+  });
+  expect(
+    captureDrizzleIssueLocations(() =>
+      DrizzleSqliteThreadStore.define({
+        records: {
+          invalidHost: {},
+          thread: duplicateCoreRecord,
+        },
+        // SAFETY: The test bypasses the Record input type to verify deterministic mixed-failure ordering.
+      } as never),
+    ),
+  ).toEqual([
+    { code: "invalid-drizzle-table", path: ["records", "invalidHost"] },
+    { code: "invalid-drizzle-override", path: ["records"] },
+  ]);
 });
 
 it("specializes Core outcome types after Core field overrides", () => {

@@ -19,6 +19,7 @@ import type {
   JsonValue,
   RecordDefinition,
   RecordDefinitions,
+  RecordOverrides,
   SelectFieldSchema,
   StoreCreateInputMap,
   UpdateFieldSchema,
@@ -613,9 +614,7 @@ export type DrizzleHooksConfig<
   CoreOverrides = {},
 > = Thread extends true
   ? [
-      | RequiredBeforeCreateHookNames<
-          Definitions & import("@commissary/core").ThreadRecordDefinitions
-        >
+      | RequiredBeforeCreateHookNames<Definitions & ThreadRecordDefinitions>
       | AdditionalRequiredNames,
     ] extends [never]
     ? { readonly hooks?: Hooks }
@@ -624,9 +623,7 @@ export type DrizzleHooksConfig<
           RequiredDrizzleBeforeCreateHooks<
             Definitions,
             Extract<
-              | RequiredBeforeCreateHookNames<
-                  Definitions & import("@commissary/core").ThreadRecordDefinitions
-                >
+              | RequiredBeforeCreateHookNames<Definitions & ThreadRecordDefinitions>
               | AdditionalRequiredNames,
               keyof Definitions
             >,
@@ -650,5 +647,5 @@ export type UpdatedFieldValue<Field extends FieldDefinition> = FieldInput<Update
 /** Apply ordinary Store overrides when a concrete adapter has extracted them. */
 export type ApplyStaticDrizzleOverrides<
   Definitions extends RecordDefinitions,
-  Overrides extends import("@commissary/store").RecordOverrides<Definitions>,
+  Overrides extends RecordOverrides<Definitions>,
 > = ApplyOverrides<Definitions, Overrides>;

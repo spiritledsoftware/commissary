@@ -180,13 +180,14 @@ function mysqlColumnBuilder(
   return builder as unknown as MySqlColumnBuilderBase;
 }
 
-function installMysqlAutoIncrementCodec(
+function installMysqlNativeBuilderCodecs(
   finalTable: AnyMySqlTable,
   resolvedTable: MysqlRecordResolution<RecordDefinitions>["tables"][string],
+  nativeBuilderFields: ReadonlySet<string>,
 ): void {
   const finalColumns = getTableColumns(finalTable);
   for (const [fieldName, column] of Object.entries(resolvedTable.columns)) {
-    if (column.autoIncrement === undefined) continue;
+    if (!nativeBuilderFields.has(fieldName)) continue;
     const finalColumn = Reflect.get(finalColumns, fieldName);
     if (finalColumn === undefined) continue;
     Object.defineProperties(finalColumn, {
@@ -237,9 +238,17 @@ function generateMysqlTable(
   if (table === undefined) throw new TypeError(`MySQL Record '${recordName}' did not resolve`);
   assertMysqlRepresentable(recordName, table);
   const builders: Record<string, MySqlColumnBuilderBase> = {};
+  const nativeBuilderFields = new Set<string>();
   for (const [fieldName, column] of Object.entries(table.columns)) {
     const override = Reflect.get(builderOverrides, fieldName);
-    builders[fieldName] = is(override, MySqlColumnBuilder) ? override : mysqlColumnBuilder(column);
+    if (is(override, MySqlColumnBuilder)) {
+      builders[fieldName] = override;
+    } else {
+      builders[fieldName] = mysqlColumnBuilder(column);
+      if (column.autoIncrement !== undefined || column.onUpdate === "current-timestamp") {
+        nativeBuilderFields.add(fieldName);
+      }
+    }
   }
   for (const [fieldName, override] of Object.entries(builderOverrides)) {
     if (!Object.hasOwn(builders, fieldName) && is(override, MySqlColumnBuilder)) {
@@ -260,7 +269,7 @@ function generateMysqlTable(
     table.database === undefined
       ? mysqlTable(table.name, builders, extraConfig as never)
       : mysqlDatabase(table.database).table(table.name, builders, extraConfig as never);
-  installMysqlAutoIncrementCodec(finalTable, table);
+  installMysqlNativeBuilderCodecs(finalTable, table, nativeBuilderFields);
   return { table: finalTable };
 }
 

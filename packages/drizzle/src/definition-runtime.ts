@@ -411,8 +411,25 @@ function jsonSchemaRepresentative(value: unknown): JsonSchemaRepresentative {
   const type = Reflect.get(value, "type");
   const selectedType = Array.isArray(type) ? type[0] : type;
   switch (selectedType) {
-    case "array":
+    case "array": {
+      const items = Reflect.get(value, "items");
+      const prefixItems = Reflect.get(value, "prefixItems");
+      const tupleItems = Array.isArray(prefixItems)
+        ? prefixItems
+        : Array.isArray(items)
+          ? items
+          : undefined;
+      if (tupleItems !== undefined) {
+        const tuple: unknown[] = [];
+        for (const item of tupleItems) {
+          const representative = jsonSchemaRepresentative(item);
+          if (!representative.found) return { found: false };
+          tuple.push(representative.value);
+        }
+        return { found: true, value: tuple };
+      }
       return { found: true, value: [] };
+    }
     case "boolean":
       return { found: true, value: true };
     case "integer":
@@ -459,6 +476,8 @@ function standardJsonSchemaInputRepresentative(schema: FieldSchema): JsonSchemaR
   }
 }
 
+// These fallbacks intentionally couple to Zod 4.4 `def`, Zod 3.25 `_def`, and Valibot 1.4
+// `literal`/`options`/`pipe` structures. Keep their version-specific lifecycle tests current.
 function structuralSchemaInputRepresentative(
   schema: unknown,
   active = new Set<object>(),
@@ -904,7 +923,17 @@ function validateRepresentativeFieldValues(
     if (secondResult.kind === "failure") continue;
     const first = firstResult.value;
     const second = secondResult.value;
-    if (!isJsonValue(first) || !isJsonValue(second) || !structuralJsonEqual(first, second)) {
+    if (!isJsonValue(first) || !isJsonValue(second)) {
+      issues.push(
+        drizzleDefinitionIssue(
+          "incompatible-generated-schema",
+          ["records", recordName, "fields", fieldName, operation],
+          `Drizzle ${operation} Field Schema '${recordName}.${fieldName}' must produce a JSON value`,
+        ),
+      );
+      continue;
+    }
+    if (!structuralJsonEqual(first, second)) {
       issues.push(
         drizzleDefinitionIssue(
           "incompatible-generated-schema",
@@ -1851,6 +1880,12 @@ export function createDrizzleRecordReference(
   tableParts: readonly string[],
   columns: RuntimeMap,
 ): SqlRecordReference<RecordDefinition> {
+  if (
+    (tableParts.length !== 1 && tableParts.length !== 2) ||
+    tableParts.some((part) => part.length === 0)
+  ) {
+    throw new TypeError("Drizzle Record reference requires one or two non-empty table parts");
+  }
   const tableStatement =
     tableParts.length === 1
       ? sql.identifier(tableParts[0] ?? "")

@@ -5,6 +5,7 @@ import type {
   PostgresRecordResolution,
   PostgresResolvedColumn,
   PostgresResolvedColumnType,
+  PostgresResolvedEnum,
   PostgresResolvedTable,
 } from "@commissary/store/sql/postgres/adapter";
 import { getTableColumns, is, type SQL } from "drizzle-orm";
@@ -262,7 +263,7 @@ function generatePostgresTable(
   const table = resolution.tables[recordName];
   if (table === undefined) throw new TypeError(`PostgreSQL Record '${recordName}' did not resolve`);
   assertPostgresIdentityQualification(recordName, table);
-  const enumValues = new Map<object, PgEnum<[string, ...string[]]>>();
+  const enumValues = new Map<PostgresResolvedEnum, PgEnum<[string, ...string[]]>>();
   const builders: Record<string, PgColumnBuilderBase> = {};
   for (const [fieldName, column] of Object.entries(table.columns)) {
     const override = Reflect.get(builderOverrides, fieldName);
@@ -290,9 +291,11 @@ function generatePostgresTable(
       : pgSchema(table.schema).table(table.name, builders, extraConfig as never);
   installPostgresIdentityCodec(finalTable, table);
   const assets = [...enumValues].map(([resolvedEnum, entity]) => {
-    const value = resolution.enums.find((candidate) => candidate === resolvedEnum);
-    const key = value?.schema === undefined ? value?.name : `${value.schema}.${value.name}`;
-    return [key ?? entity.enumName, entity] as const;
+    const key =
+      resolvedEnum.schema === undefined
+        ? resolvedEnum.name
+        : `${resolvedEnum.schema}.${resolvedEnum.name}`;
+    return [key, entity] as const;
   });
   return { table: finalTable, assets };
 }
@@ -375,7 +378,13 @@ function finishPostgresAssets(
           materialized.enumValues.length !== enumValue.enumValues.length ||
           materialized.enumValues.some((value, index) => enumValue.enumValues[index] !== value)
         ) {
-          result.push([key, enumValue]);
+          issues.push(
+            drizzleDefinitionIssue(
+              "invalid-drizzle-enum",
+              ["records", recordName, "fields", fieldName],
+              `PostgreSQL enum '${key}' conflicts with a different value tuple`,
+            ),
+          );
         }
       }
     }

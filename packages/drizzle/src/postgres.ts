@@ -1,5 +1,5 @@
 import type { CoreRecordDefinitions } from "@commissary/core";
-import type { RecordDefinitions, StoreCreateInputMap } from "@commissary/store";
+import type { RecordDefinition, RecordDefinitions, StoreCreateInputMap } from "@commissary/store";
 import type { SqlRecordReferences } from "@commissary/store/sql";
 import type { Relations } from "drizzle-orm";
 import type { AnyPgColumn, AnyPgTable, PgColumnBuilderBase, PgEnum } from "drizzle-orm/pg-core";
@@ -85,7 +85,7 @@ type PostgresGeneratedEnumEntriesFromFields<Fields> =
     : never;
 type PostgresGeneratedEnumEntries<Inputs extends PostgresInputs, Overrides> =
   | {
-      readonly [RecordName in keyof Inputs]: Inputs[RecordName] extends import("@commissary/store").RecordDefinition
+      readonly [RecordName in keyof Inputs]: Inputs[RecordName] extends RecordDefinition
         ? PostgresGeneratedEnumEntriesFromFields<Inputs[RecordName]["fields"]>
         : never;
     }[keyof Inputs]

@@ -17,7 +17,9 @@ export function drizzleDefinitionSqlText(
 ): string {
   const compiled = compileSqlStatement<never, never>(statement, {
     quoteIdentifier,
-    makePlaceholder: () => "?",
+    makePlaceholder: () => {
+      throw new TypeError("Drizzle definition SQL cannot contain parameters");
+    },
     isParameter: (_value): _value is never => false,
     convertParameter: (value) => value,
   });
