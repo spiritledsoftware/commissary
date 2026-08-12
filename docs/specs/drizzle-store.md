@@ -101,7 +101,7 @@ export interface DrizzleStoreDefinitionOptions<
   Hooks,
   SchemaGenerators,
 > {
-  readonly schemas?: SchemaGenerators;
+  readonly schemaGenerators?: SchemaGenerators;
   readonly records: Records;
   readonly overrides?: Overrides;
   readonly relations?: (tables: Tables) => Relations;
@@ -163,7 +163,7 @@ const someRecordTable = pgTable("some_records", {
 });
 
 const definition = DrizzlePostgresStore.define({
-  schemas: {
+  schemaGenerators: {
     select: createSelectSchema,
     insert: createInsertSchema,
     update: createUpdateSchema,
@@ -176,7 +176,7 @@ const definition = DrizzlePostgresStore.define({
 
 The effective Record has the TypeScript keys `id`, `tenantId`, and `archived`. The physical column remains `tenant_id`. All three generated object schemas must describe the same table and use one supported schema family. Select covers every table key. Insert and update cover every writable table key.
 
-Without `schemas`, every effective field needs a complete static schema contract. A direct table with a field that has no static schema produces a definition issue.
+Without `schemaGenerators`, every effective field needs a complete static schema contract. A direct table with a field that has no static schema produces a definition issue.
 
 A PostgreSQL table that uses a Drizzle enum also supplies the enum map so the result key remains exact:
 
@@ -188,7 +188,7 @@ const jobTable = pgTable("jobs", {
 });
 
 const definition = DrizzlePostgresStore.define({
-  schemas,
+  schemaGenerators,
   records: { job: jobTable },
   enums: { job_status: jobStatusEnum },
 });
@@ -202,7 +202,7 @@ A concrete Record or override can use a dialect column builder as an existing-fi
 
 ```ts
 const definition = DrizzlePostgresStore.define({
-  schemas,
+  schemaGenerators,
   records: {
     scheduledJob: ScheduledJob,
   },
@@ -224,7 +224,7 @@ A direct table can replace the generated table for an existing Record:
 
 ```ts
 const definition = DrizzlePostgresThreadStore.define({
-  schemas,
+  schemaGenerators,
   records,
   overrides: {
     thread: threadTable,
@@ -250,10 +250,10 @@ A complete table supplies all Drizzle columns and its own table extra configurat
 
 ## Schema Generation
 
-`schemas` is optional and accepts the three ordinary functions from one supported Drizzle validation package:
+`schemaGenerators` is optional and accepts the three ordinary functions from one supported Drizzle validation package. It names the input callbacks distinctly from `definition.schema`, the flat Drizzle Schema output:
 
 ```ts
-schemas: {
+schemaGenerators: {
   select: createSelectSchema,
   insert: createInsertSchema,
   update: createUpdateSchema,
@@ -313,7 +313,7 @@ Both generic and Thread definitions accept `hooks`:
 
 ```ts
 const definition = DrizzlePostgresStore.define({
-  schemas,
+  schemaGenerators,
   records: {
     someRecord: someRecordTable,
   },
@@ -337,7 +337,7 @@ Relations sit beside Record inputs because they connect the complete table catal
 
 ```ts
 const definition = DrizzlePostgresThreadStore.define({
-  schemas,
+  schemaGenerators,
   records: {
     someRecord: someRecordTable,
     scheduledJob: ScheduledJob,
@@ -478,7 +478,7 @@ Definition and live binding are separate:
 
 ```ts
 const definition = DrizzlePostgresStore.define({
-  schemas,
+  schemaGenerators,
   records,
   overrides,
   relations,

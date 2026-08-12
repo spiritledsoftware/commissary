@@ -1,0 +1,63 @@
+{
+  "name": "@commissary/drizzle",
+  "version": "0.1.0",
+  "description": "Connection-free Drizzle Store definitions for Commissary",
+  "homepage": "https://github.com/spiritledsoftware/commissary#readme",
+  "bugs": {
+    "url": "https://github.com/spiritledsoftware/commissary/issues"
+  },
+  "license": "MIT",
+  "author": "Spirit-Led Software LLC <social@spiritledsoftware.com>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/spiritledsoftware/commissary.git",
+    "directory": "packages/drizzle"
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./postgres": {
+      "types": "./dist/postgres.d.ts",
+      "import": "./dist/postgres.js"
+    },
+    "./mysql": {
+      "types": "./dist/mysql.d.ts",
+      "import": "./dist/mysql.js"
+    },
+    "./sqlite": {
+      "types": "./dist/sqlite.d.ts",
+      "import": "./dist/sqlite.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "pack:check": "node ../../scripts/check-package-archive.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@commissary/core": "workspace:^",
+    "@commissary/store": "workspace:^",
+    "@standard-schema/spec": "^1.1.0"
+  },
+  "devDependencies": {
+    "drizzle-orm": "0.45.2"
+  },
+  "peerDependencies": {
+    "drizzle-orm": "^0.45.2"
+  },
+  "engines": {
+    "node": ">=22.14.0"
+  }
+}

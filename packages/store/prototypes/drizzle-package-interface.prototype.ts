@@ -146,7 +146,7 @@ interface PrototypeDefineOptions<
   Tables extends PrototypeSchemaMap,
   Relations extends PrototypeRelations,
 > {
-  readonly schemas?: DrizzleSchemaGenerators<
+  readonly schemaGenerators?: DrizzleSchemaGenerators<
     Tables[keyof Tables],
     PrototypeStandardSchema<unknown, unknown>,
     PrototypeStandardSchema<unknown, unknown>,

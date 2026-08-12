@@ -365,8 +365,8 @@ type SchemaGeneratorConfig<
   Inputs extends DrizzleRecordInputs,
   Overrides extends DrizzleRecordOverrides<Inputs>,
 > = [MissingSchemaGeneratorRecordNames<Inputs, Overrides>] extends [never]
-  ? { readonly schemas?: DrizzleSchemaGenerators }
-  : { readonly schemas: DrizzleSchemaGenerators };
+  ? { readonly schemaGenerators?: DrizzleSchemaGenerators }
+  : { readonly schemaGenerators: DrizzleSchemaGenerators };
 
 const DrizzleStoreDefinitionState: unique symbol = Symbol("DrizzleStoreDefinitionState");
 
@@ -423,16 +423,16 @@ function parsePrototypeSchema(schema: PrototypeSchema<never, unknown>, input: un
 
 function generatedFieldDefinitions(
   table: AnyPrototypeDrizzleTable,
-  schemas: DrizzleSchemaGenerators | undefined,
+  schemaGenerators: DrizzleSchemaGenerators | undefined,
 ): Readonly<Record<string, FieldDefinition<AnySelectSchema, AnyWriteSchema>>> {
-  if (schemas === undefined) {
+  if (schemaGenerators === undefined) {
     return {};
   }
 
   const generatedSchemas = {
-    select: schemas.select(table),
-    create: schemas.insert(table),
-    update: schemas.update(table),
+    select: schemaGenerators.select(table),
+    create: schemaGenerators.insert(table),
+    update: schemaGenerators.update(table),
   };
   const tableFieldNames = Object.keys(table.columns);
   for (const [operation, schema] of Object.entries(generatedSchemas)) {
@@ -499,9 +499,9 @@ function normalizeRecordDefinition(
   input: DrizzleRecordInput,
   table: AnyPrototypeDrizzleTable,
   recordOverride: DrizzleRecordOverride | undefined,
-  schemas: DrizzleSchemaGenerators | undefined,
+  schemaGenerators: DrizzleSchemaGenerators | undefined,
 ): RecordDefinition {
-  const generatedFields = generatedFieldDefinitions(table, schemas);
+  const generatedFields = generatedFieldDefinitions(table, schemaGenerators);
   const inputFields = isPrototypeDrizzleTable(input) ? {} : input.fields;
   const staticFields =
     recordOverride === undefined || isPrototypeDrizzleTable(recordOverride)
@@ -553,7 +553,13 @@ function defineDrizzleStore<
     return {
       name,
       table,
-      definition: normalizeRecordDefinition(name, input, table, recordOverride, options.schemas),
+      definition: normalizeRecordDefinition(
+        name,
+        input,
+        table,
+        recordOverride,
+        options.schemaGenerators,
+      ),
     };
   });
   const tables = Object.fromEntries(
@@ -705,7 +711,7 @@ const someRecordTable = prototypeDrizzleTable("some_records", {
 });
 
 const definition = defineDrizzleStore({
-  schemas: {
+  schemaGenerators: {
     select: createSelectSchema,
     insert: createInsertSchema,
     update: createUpdateSchema,

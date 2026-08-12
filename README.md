@@ -9,7 +9,9 @@ Commissary is in `0.x`. Public APIs can change between minor releases.
 | Package                                             | Purpose                                                     |
 | --------------------------------------------------- | ----------------------------------------------------------- |
 | [`@commissary/core`](packages/core)                 | Provider-neutral Agent, Model, Tool, Hook, and Runtime APIs |
+| [`@commissary/store`](packages/store)               | Typed persistence, SQL Record, and SQL Store contracts      |
 | [`@commissary/store-memory`](packages/store-memory) | Process-local Thread Store for tests and local development  |
+| [`@commissary/drizzle`](packages/drizzle)           | Connection-free PostgreSQL, MySQL, and SQLite definitions   |
 | [`@commissary/effect`](packages/effect)             | Effect client adapters and the Effect AI bridge             |
 | [`@commissary/stream`](packages/stream)             | JavaScript and Effect execution stream adapters             |
 

@@ -72,7 +72,7 @@ The shared constructor remains connection-free:
 
 ```ts
 const definition = DrizzlePostgresStore.define({
-  schemas,
+  schemaGenerators,
   records,
   overrides,
   enums,

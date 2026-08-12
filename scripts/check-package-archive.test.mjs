@@ -44,3 +44,21 @@ void test("rejects test files and nested archives", () => {
     );
   }
 });
+
+void test("requires every declared export target", () => {
+  const exports = {
+    ".": { types: "./dist/index.d.ts", import: "./dist/index.js" },
+    "./feature": { types: "./dist/feature.d.ts", import: "./dist/feature.js" },
+  };
+  assert.throws(
+    () => validatePackageArchive("@commissary/example", validFiles, exports),
+    /missing export target 'dist\/feature\.d\.ts'/,
+  );
+  assert.doesNotThrow(() =>
+    validatePackageArchive(
+      "@commissary/example",
+      [...validFiles, { path: "dist/feature.d.ts" }, { path: "dist/feature.js" }],
+      exports,
+    ),
+  );
+});
