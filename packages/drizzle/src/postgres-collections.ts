@@ -632,6 +632,23 @@ function createPostgresCollection<
           });
         }
       }
+      let selectedCreated: JsonObject;
+      try {
+        selectedCreated = await parseStoreSelectedFields(
+          options.definition,
+          options.collection,
+          created,
+          Object.keys(created),
+        );
+      } catch (cause) {
+        throw postgresContractError({
+          collection: options.collection,
+          operation: "create",
+          violation: "invalid-selected-record",
+          writesMayRemain: false,
+          cause,
+        });
+      }
       let insert = options.database.insert(options.table);
       if (
         Object.keys(created).some(
@@ -641,7 +658,7 @@ function createPostgresCollection<
         insert = insert.overridingSystemValue();
       }
       const encodedCreated = Object.fromEntries(
-        Object.entries(created).map(([field, value]) => [
+        Object.entries(selectedCreated).map(([field, value]) => [
           field,
           encodePostgresWriteValue({
             collection: options.collection,
@@ -717,17 +734,21 @@ function createPostgresCollection<
             changed[field] = Reflect.get(changes, field) as JsonValue;
           } else delete changed[field];
         }
-        await parseStoreUpdatedRecord(options.definition, options.collection, changed);
+        const selectedChanged = await parseStoreUpdatedRecord(
+          options.definition,
+          options.collection,
+          changed,
+        );
         const encodedChanges: Record<string, unknown> = {};
         const columns = getTableColumns(options.table);
         for (const field of updateValue.changedFields) {
-          encodedChanges[field] = Object.hasOwn(changes, field)
+          encodedChanges[field] = Object.hasOwn(selectedChanged, field)
             ? encodePostgresWriteValue({
                 collection: options.collection,
                 operation: "update",
                 column: columns[field],
                 field,
-                value: Reflect.get(changes, field),
+                value: Reflect.get(selectedChanged, field),
                 writesMayRemain: completed > 0,
               })
             : null;
