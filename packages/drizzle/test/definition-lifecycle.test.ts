@@ -46,13 +46,13 @@ import { DrizzlePostgresStore, DrizzlePostgresThreadStore } from "../src/postgre
 import { DrizzleSqliteStore, DrizzleSqliteThreadStore } from "../src/sqlite.js";
 import type { ConcreteDrizzleDefinition } from "../src/definition-state.js";
 
-const schemas = {
+const schemaGenerators = {
   select: createSelectSchema,
   insert: createInsertSchema,
   update: createUpdateSchema,
 };
 
-const valibotSchemas = {
+const valibotSchemaGenerators = {
   select: createValibotSelectSchema,
   insert: createValibotInsertSchema,
   update: createValibotUpdateSchema,
@@ -127,14 +127,17 @@ it("defines direct tables and flat relations in every dialect", () => {
   });
 
   const postgres = DrizzlePostgresStore.define({
-    schemas,
+    schemaGenerators,
     records: { item: postgresTable },
     relations: (tables) => ({
       itemRelations: relations(tables.item, () => ({})),
     }),
   });
-  const mysql = DrizzleMysqlStore.define({ schemas, records: { item: mysqlValue } });
-  const sqlite = DrizzleSqliteStore.define({ schemas, records: { item: sqliteValue } });
+  const mysql = DrizzleMysqlStore.define({ schemaGenerators, records: { item: mysqlValue } });
+  const sqlite = DrizzleSqliteStore.define({
+    schemaGenerators,
+    records: { item: sqliteValue },
+  });
 
   expect(postgres.schema.item).toBe(postgresTable);
   expect(Object.keys(postgres.schema)).toEqual(["item", "itemRelations"]);
@@ -150,7 +153,7 @@ it("retains supplied PostgreSQL enum entities under exact flat keys", () => {
     status: status("status").notNull(),
   });
   const definition = DrizzlePostgresStore.define({
-    schemas,
+    schemaGenerators,
     records: { item: table },
     enums: { item_status: status },
   });
@@ -164,13 +167,13 @@ it("rejects missing, unrelated, mismatched, and malformed PostgreSQL enum maps",
   const table = pgTable("items", { status: status("status").notNull() });
   expect(
     captureDrizzleIssueLocations(() =>
-      DrizzlePostgresStore.define({ schemas, records: { item: table } }),
+      DrizzlePostgresStore.define({ schemaGenerators, records: { item: table } }),
     ),
   ).toEqual([{ code: "invalid-drizzle-enum", path: ["records", "item", "fields", "status"] }]);
   expect(
     captureDrizzleIssueLocations(() =>
       DrizzlePostgresStore.define({
-        schemas,
+        schemaGenerators,
         records: { item: table },
         enums: { item_status: status, unrelated_status: unrelated },
       }),
@@ -179,7 +182,7 @@ it("rejects missing, unrelated, mismatched, and malformed PostgreSQL enum maps",
   expect(
     captureDrizzleIssueLocations(() =>
       DrizzlePostgresStore.define({
-        schemas,
+        schemaGenerators,
         records: { item: table },
         enums: { wrong_status: status },
       }),
@@ -188,7 +191,7 @@ it("rejects missing, unrelated, mismatched, and malformed PostgreSQL enum maps",
   expect(
     captureDrizzleIssueLocations(() =>
       DrizzlePostgresStore.define({
-        schemas,
+        schemaGenerators,
         records: { item: table },
         // SAFETY: This test bypasses the public enum-map type to verify malformed runtime input handling.
         enums: { item_status: {} } as never,
@@ -285,7 +288,7 @@ it("accepts the host-supplied Drizzle Valibot generator family", () => {
     label: sqliteText("label").notNull(),
   });
   const definition = DrizzleSqliteStore.define({
-    schemas: valibotSchemas,
+    schemaGenerators: valibotSchemaGenerators,
     records: { item: table },
   });
   expect(definition.schema.item).toBe(table);
@@ -296,7 +299,7 @@ it("accepts the supported Zod 3.25 Standard Schema object shape", () => {
   const schema = zod3.object({ id: zod3.string() });
   const definition = DrizzleSqliteStore.define({
     records: { item: table },
-    schemas: {
+    schemaGenerators: {
       select: () => schema,
       insert: () => schema,
       update: () => schema,
@@ -374,14 +377,16 @@ it("reports unsupported generator families as definition issues", () => {
     }),
   };
   expect(() =>
-    DrizzleSqliteStore.define({ schemas: unsupported, records: { item: table } }),
+    DrizzleSqliteStore.define({ schemaGenerators: unsupported, records: { item: table } }),
   ).toThrow(DrizzleDefinitionError);
   try {
-    DrizzleSqliteStore.define({ schemas: unsupported, records: { item: table } });
+    DrizzleSqliteStore.define({ schemaGenerators: unsupported, records: { item: table } });
   } catch (error) {
     expect(error).toBeInstanceOf(DrizzleDefinitionError);
     if (!(error instanceof DrizzleDefinitionError)) throw error;
-    expect(error.issues.map(({ code }) => code)).toEqual(["unsupported-schema-family"]);
+    expect(error.issues.map(({ code, path }) => ({ code, path }))).toEqual([
+      { code: "unsupported-schema-family", path: ["schemaGenerators"] },
+    ]);
   }
 });
 
@@ -390,7 +395,7 @@ it("suppresses missing-schema diagnostics after a generator callback fails", () 
   try {
     DrizzleSqliteStore.define({
       records: { item: table },
-      schemas: {
+      schemaGenerators: {
         select: () => {
           throw new Error("select failed");
         },
@@ -428,7 +433,7 @@ it("rejects recognized generated schemas that produce non-JSON values", () => {
     captureDrizzleIssueLocations(() =>
       DrizzleSqliteStore.define({
         records: { item: table },
-        schemas: {
+        schemaGenerators: {
           select: () => objectSchema,
           insert: () => objectSchema,
           update: () => objectSchema,
@@ -471,7 +476,7 @@ it("rejects write schemas whose output cannot re-enter select", () => {
       }),
     ),
   ).toEqual([
-    { code: "invalid-generated-schema", path: ["schemas", "insert", "id"] },
+    { code: "invalid-generated-schema", path: ["schemaGenerators", "insert", "id"] },
     {
       code: "incompatible-generated-schema",
       path: ["records", "item", "fields", "id", "insert"],
@@ -500,7 +505,7 @@ it("rejects async Field Schema validation that cannot be verified synchronously"
     captureDrizzleIssueLocations(() =>
       DrizzleSqliteStore.define({
         records: { item: table },
-        schemas: {
+        schemaGenerators: {
           select: () => objectSchema,
           insert: () => objectSchema,
           update: () => objectSchema,
@@ -542,7 +547,7 @@ it("adds a direct column builder to a lower-tier Record", () => {
     },
   });
   const definition = DrizzleSqliteStore.define({
-    schemas,
+    schemaGenerators,
     records: { item: record },
     overrides: {
       item: {
@@ -648,7 +653,7 @@ it("rejects incompatible lower-tier direct columns and direct-table overrides", 
   expect(
     captureDrizzleIssueLocations(() =>
       DrizzleSqliteStore.define({
-        schemas,
+        schemaGenerators,
         records: { item: direct },
         overrides: { item: { fields: { ghost: z.string() } } },
       }),
@@ -657,7 +662,7 @@ it("rejects incompatible lower-tier direct columns and direct-table overrides", 
   expect(
     captureDrizzleIssueLocations(() =>
       DrizzleSqliteStore.define({
-        schemas,
+        schemaGenerators,
         records: { item: direct },
         overrides: {
           item: {
@@ -749,8 +754,8 @@ it("rejects direct columns that cannot encode valid write-schema outputs", () =>
       }),
     ),
   ).toEqual([
-    { code: "invalid-generated-schema", path: ["schemas", "insert", "id"] },
-    { code: "invalid-generated-schema", path: ["schemas", "update", "id"] },
+    { code: "invalid-generated-schema", path: ["schemaGenerators", "insert", "id"] },
+    { code: "invalid-generated-schema", path: ["schemaGenerators", "update", "id"] },
     {
       code: "incompatible-drizzle-column",
       path: ["records", "item", "fields", "id", "column", "insert"],
@@ -823,7 +828,7 @@ it("rejects generated non-JSON selected values until a static schema converts th
   });
   expect(
     captureDrizzleIssueLocations(() =>
-      DrizzleMysqlStore.define({ schemas, records: { item: table } }),
+      DrizzleMysqlStore.define({ schemaGenerators, records: { item: table } }),
     ),
   ).toEqual([
     {
@@ -842,7 +847,7 @@ it("rejects generated non-JSON selected values until a static schema converts th
       .generatedAlwaysAs(drizzleSql`current_timestamp`),
   });
   const definition = DrizzleMysqlStore.define({
-    schemas,
+    schemaGenerators,
     records: { item: convertedTable },
     overrides: { item: { fields: { createdAt: { select: converted } } } },
   });
@@ -1105,15 +1110,23 @@ const compileTimeDefinitionFailures = (): void => {
       id: { select: z.string(), column: sql.column({ type: sql.text() }) },
     },
   });
+  DrizzleSqliteStore.define({
+    records: { item: lowerRecord },
+    // @ts-expect-error The public option is named schemaGenerators.
+    schemas: schemaGenerators,
+  });
   // @ts-expect-error A new direct column needs generated schemas or a complete static schema.
   DrizzleSqliteStore.define({
     records: { item: lowerRecord },
     overrides: { item: { fields: { queue: sqliteText("queue") } } },
   });
-  // @ts-expect-error A PostgreSQL table is not a SQLite Record input.
-  DrizzleSqliteStore.define({ schemas, records: { item: pgTable("wrong", { id: pgText("id") }) } });
   DrizzleSqliteStore.define({
-    schemas,
+    schemaGenerators,
+    // @ts-expect-error A PostgreSQL table is not a SQLite Record input.
+    records: { item: pgTable("wrong", { id: pgText("id") }) },
+  });
+  DrizzleSqliteStore.define({
+    schemaGenerators,
     records: { item: sqliteTable("item", { id: sqliteText("id") }) },
     overrides: {
       item: {
@@ -1123,7 +1136,7 @@ const compileTimeDefinitionFailures = (): void => {
     },
   });
   DrizzleSqliteStore.define({
-    schemas,
+    schemaGenerators,
     records: { item: sqliteTable("item", { id: sqliteText("id") }) },
     overrides: {
       item: {
@@ -1152,7 +1165,7 @@ const compileTimeDefinitionFailures = (): void => {
   });
   // @ts-expect-error A required builder-only Core field also needs its internal create hook.
   DrizzleSqliteThreadStore.define({
-    schemas,
+    schemaGenerators,
     records: {},
     overrides: {
       message: {
@@ -1162,7 +1175,7 @@ const compileTimeDefinitionFailures = (): void => {
   });
   // @ts-expect-error A complete Core table override with a required extra column needs its hook.
   DrizzleSqliteThreadStore.define({
-    schemas,
+    schemaGenerators,
     records: {},
     overrides: {
       message: sqliteTable("overridden_messages", {

@@ -74,7 +74,7 @@ The shared constructor remains connection-free:
 
 ```ts
 const definition = DrizzleMysqlStore.define({
-  schemas,
+  schemaGenerators,
   records,
   overrides,
   relations,

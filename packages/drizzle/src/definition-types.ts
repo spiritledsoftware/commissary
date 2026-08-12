@@ -125,8 +125,8 @@ export type DrizzleSchemaGeneratorConfig<
   Overrides,
   Generators,
 > = [MissingGeneratorRecordNames<Inputs, Overrides>] extends [never]
-  ? { readonly schemas?: Generators }
-  : { readonly schemas: Generators };
+  ? { readonly schemaGenerators?: Generators }
+  : { readonly schemaGenerators: Generators };
 
 type GeneratorResult<
   Generators,

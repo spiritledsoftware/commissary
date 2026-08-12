@@ -540,7 +540,7 @@ function validateGeneratedFieldRoundTrip(
       issues.push(
         drizzleDefinitionIssue(
           "invalid-generated-schema",
-          ["schemas", operation, fieldName],
+          ["schemaGenerators", operation, fieldName],
           `Drizzle generated ${operation} field '${fieldName}' has no JSON-compatible output schema`,
         ),
       );
@@ -558,7 +558,7 @@ function validateGeneratedFieldRoundTrip(
       issues.push(
         drizzleDefinitionIssue(
           "incompatible-generated-schema",
-          ["schemas", operation, fieldName],
+          ["schemaGenerators", operation, fieldName],
           `Drizzle generated ${operation} field '${fieldName}' cannot round-trip through its select schema`,
         ),
       );
@@ -587,7 +587,7 @@ function generateFieldSchemas(
   issues: DrizzleDefinitionIssue[],
 ): Readonly<Record<string, GeneratedFieldSchemas>> {
   if (generators === undefined) return {};
-  const schemaPath = ["schemas"] as const;
+  const schemaPath = ["schemaGenerators"] as const;
   for (const operation of ["select", "insert", "update"] as const) {
     if (typeof generators[operation] !== "function") {
       issues.push(
@@ -1472,7 +1472,7 @@ export function defineDrizzleDialectStore(
       );
     }
   }
-  const generatorsValue = Reflect.get(options, "schemas");
+  const generatorsValue = Reflect.get(options, "schemaGenerators");
   const generators = isRecordContainer(generatorsValue)
     ? // SAFETY: generateFieldSchemas validates all three callback members before invocation.
       (generatorsValue as unknown as DrizzleSchemaGenerators<object>)
@@ -1481,8 +1481,8 @@ export function defineDrizzleDialectStore(
     issues.push(
       drizzleDefinitionIssue(
         "invalid-schema-generator",
-        ["schemas"],
-        "Drizzle schemas must be an object",
+        ["schemaGenerators"],
+        "Drizzle schema generators must be an object",
       ),
     );
   }

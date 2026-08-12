@@ -200,7 +200,7 @@ Each dialect exports two synchronous factory values:
 
 ```ts
 const genericDefinition = DrizzlePostgresStore.define({
-  schemas,
+  schemaGenerators,
   records,
   overrides,
   enums,
@@ -209,7 +209,7 @@ const genericDefinition = DrizzlePostgresStore.define({
 });
 
 const threadDefinition = DrizzlePostgresThreadStore.define({
-  schemas,
+  schemaGenerators,
   records,
   overrides,
   enums,

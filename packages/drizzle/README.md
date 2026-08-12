@@ -35,7 +35,7 @@ const jobs = sqliteTable("jobs", {
 });
 
 const definition = DrizzleSqliteStore.define({
-  schemas: {
+  schemaGenerators: {
     select: createSelectSchema,
     insert: createInsertSchema,
     update: createUpdateSchema,

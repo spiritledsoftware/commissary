@@ -649,7 +649,9 @@ function defineApprovalThreadStore<
   const Relations extends Readonly<Record<string, object>>,
 >(options: {
   readonly dialect: Dialect;
-  readonly schemas: ApprovalSchemaGenerators<ApprovalInputTable<Dialect, Inputs[keyof Inputs]>>;
+  readonly schemaGenerators: ApprovalSchemaGenerators<
+    ApprovalInputTable<Dialect, Inputs[keyof Inputs]>
+  >;
   readonly records: Inputs;
   readonly hooks: Hooks;
   readonly relations: (
@@ -699,12 +701,12 @@ function makeApprovalAuditTable<Dialect extends ApprovalDialect>(dialect: Dialec
 
 function makeApprovalDefinition<Dialect extends ApprovalDialect>(
   dialect: Dialect,
-  schemas: typeof approvalZodGenerators | typeof approvalValibotGenerators,
+  schemaGenerators: typeof approvalZodGenerators | typeof approvalValibotGenerators,
 ) {
   const auditLog = makeApprovalAuditTable(dialect);
   return defineApprovalThreadStore({
     dialect,
-    schemas,
+    schemaGenerators,
     records: { scheduledJob: ScheduledJob, auditLog },
     hooks: {
       scheduledJob: {
