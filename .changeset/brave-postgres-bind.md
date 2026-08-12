@@ -1,6 +1,7 @@
 ---
 "@commissary/core": minor
 "@commissary/drizzle": minor
+"@commissary/store": minor
 ---
 
 Bind PostgreSQL Drizzle definitions to host-owned databases with Collection, direct SQL, and verified serializable transaction capabilities.

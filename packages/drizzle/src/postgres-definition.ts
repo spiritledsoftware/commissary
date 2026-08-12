@@ -167,13 +167,7 @@ function postgresColumnBuilder(
       },
       fromDriver: (value) => {
         let driverValue = value;
-        if (isJsonType && typeof value === "string") {
-          try {
-            driverValue = JSON.parse(value);
-          } catch {
-            // PostgreSQL drivers can already return a decoded JSON string value.
-          }
-        } else if (
+        if (
           column.type.kind === "direct" &&
           column.type.type === "bigint" &&
           (typeof value === "bigint" || typeof value === "number")

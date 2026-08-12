@@ -903,7 +903,7 @@ export function createPostgresCollections<
       throw new StoreAdapterContractError({
         collection: name,
         operation: "find",
-        violation: "transaction-contract",
+        violation: "invalid-catalog-state",
         writesMayRemain: false,
       });
     }

@@ -62,6 +62,34 @@ test.each(["40001", "40P01"])(
   },
 );
 
+test("finds a PostgreSQL conflict behind a non-SQLSTATE wrapper code", async () => {
+  const conflict = Object.assign(new Error("serialization conflict"), { code: "40001" });
+  const wrapper = Object.assign(new Error("connection wrapper", { cause: conflict }), {
+    code: "ECONNRESET",
+  });
+  const controls = createTestPostgresDatabase({
+    script: (call) => {
+      if (call.transaction && call.sql === "SELECT wrapped_conflict") throw wrapper;
+      return { rows: [] };
+    },
+  });
+  const store = await bindPostgresStore({
+    definition,
+    database: controls.database,
+    transaction: true,
+  });
+
+  const failure = await store
+    .transaction((transaction) => transaction.query(sql.raw("SELECT wrapped_conflict")))
+    .catch((error: unknown) => error);
+
+  expect(failure).toBeInstanceOf(TransactionConflictError);
+  if (!(failure instanceof TransactionConflictError)) {
+    throw new TypeError("Expected a transaction conflict");
+  }
+  expect(failure.cause).toMatchObject({ cause: wrapper });
+});
+
 test("reports a distinct rollback failure after a callback failure", async () => {
   const callbackFailure = Object.freeze({ type: "callback-failure" });
   const rollbackFailure = new Error("rollback failure");

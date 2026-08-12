@@ -1040,6 +1040,7 @@ export declare class TransactionRollbackError extends StoreError {
 
 export type StoreAdapterContractViolation =
   | "unknown-record-key"
+  | "invalid-catalog-state"
   | "invalid-selected-record"
   | "generated-value-overwrite"
   | "invalid-expression-result"
@@ -1057,6 +1058,8 @@ export declare class StoreAdapterContractError extends Error {
   readonly cause?: unknown;
 }
 ```
+
+`invalid-catalog-state` reports that an adapter cannot construct one Collection declared by its retained Collection Catalog.
 
 `writesMayRemain: false` means no write from the failed operation can remain. `true` is conservative: one or more writes can remain, but the error does not report which ones. Validation, unsupported-operation, hook, and adapter failures calculate the value from complete operation progress. A plain-Store Core transition wraps a later failure when earlier Collection calls succeeded so the exposed error reports `true`. A Transaction Store failure reports `false` after successful rollback and `TransactionRollbackError` reports `true`.
 

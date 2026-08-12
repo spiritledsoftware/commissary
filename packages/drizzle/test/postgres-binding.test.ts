@@ -1,7 +1,15 @@
 import { SqlRecord, sql } from "@commissary/store/sql";
-import type { FieldSchema } from "@commissary/store";
+import {
+  StoreAdapterContractError,
+  type FieldSchema,
+  type RecordDefinitions,
+} from "@commissary/store";
 import { expect, test } from "vitest";
 
+import {
+  createPostgresCollections,
+  type PostgresCollectionDatabase,
+} from "../src/postgres-collections.js";
 import {
   DrizzlePostgresBindingError,
   DrizzlePostgresStore,
@@ -175,4 +183,29 @@ test("preserves literal and runtime transaction capability inference", async () 
   // @ts-expect-error Runtime Boolean requires capability narrowing.
   void possible.transaction;
   if ("transaction" in possible) await possible.transaction(async () => undefined);
+});
+
+test("reports a missing PostgreSQL table as invalid catalog state", () => {
+  const unreachable = (): never => {
+    throw new Error("Unexpected PostgreSQL database call");
+  };
+  const database: PostgresCollectionDatabase = {
+    select: unreachable,
+    insert: unreachable,
+    update: unreachable,
+    delete: unreachable,
+  };
+  const definitions = {
+    job: { fields: { id: requiredString } },
+  } satisfies RecordDefinitions;
+
+  expect(() => createPostgresCollections(database, { definitions, tables: {}, hooks: {} })).toThrow(
+    expect.objectContaining({
+      name: StoreAdapterContractError.name,
+      collection: "job",
+      operation: "find",
+      violation: "invalid-catalog-state",
+      writesMayRemain: false,
+    }),
+  );
 });

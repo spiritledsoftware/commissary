@@ -72,14 +72,14 @@ const optionalWriteString: FieldSchema<string | undefined, string | undefined> =
   },
 };
 
-const optionalNull: FieldSchema<null | undefined, null | undefined> = {
+const optionalJsonScalar: FieldSchema<string | null | undefined, string | null | undefined> = {
   "~standard": {
     version: 1,
     vendor: "commissary-test",
     validate: (value) =>
-      value === undefined || value === null
+      value === undefined || value === null || typeof value === "string"
         ? { value }
-        : { issues: [{ message: "Expected null or omission" }] },
+        : { issues: [{ message: "Expected a JSON string, null, or omission" }] },
   },
 };
 
@@ -181,6 +181,7 @@ function beforePostgresUpdate(database: object, beforeCall: (call: number) => Pr
               Object.defineProperty(guarded, "returning", {
                 configurable: true,
                 value: (...arguments_: readonly unknown[]) => {
+                  // Drizzle returning() only configures the lazy query; awaiting its QueryPromise executes it.
                   const result = Reflect.apply(returning, guarded, arguments_);
                   calls += 1;
                   return Promise.resolve().then(async () => {
@@ -368,7 +369,7 @@ test(
 );
 
 test(
-  "distinguishes an omitted nullable JSON field from a stored JSON null",
+  "preserves omitted, null, and string-scalar PostgreSQL JSON values",
   async () => {
     const definition = DrizzlePostgresStore.define({
       records: {
@@ -380,7 +381,7 @@ test(
               column: sql.column({ type: sql.text(), notNull: true }),
             },
             value: {
-              select: optionalNull,
+              select: optionalJsonScalar,
               column: sql.column({ type: sql.json() }),
             },
           },
@@ -398,6 +399,10 @@ test(
       id: "null",
       value: null,
     });
+    expect(await store.collections.payload.create({ id: "string", value: "123" })).toEqual({
+      id: "string",
+      value: "123",
+    });
     expect(
       await store.collections.payload.update({
         where: (fields, op) => op.eq(fields.id, "missing"),
@@ -414,7 +419,7 @@ test(
       await store.collections.payload.find({
         orderBy: (fields, op) => [op.asc(fields.id)],
       }),
-    ).toEqual([{ id: "missing", value: null }, { id: "null" }]);
+    ).toEqual([{ id: "missing", value: null }, { id: "null" }, { id: "string", value: "123" }]);
   },
   livePostgresTestTimeout,
 );
@@ -453,7 +458,7 @@ test(
   "merges hooks and returns database-generated values without overwriting host values",
   async () => {
     const generatedJobs = pgTable("generated_jobs", {
-      id: integer("id").generatedAlwaysAsIdentity(),
+      id: integer("id").generatedAlwaysAsIdentity().primaryKey(),
       tenantId: text("tenant_id").notNull(),
       label: text("label").notNull().default("queued"),
       summary: text("summary").generatedAlwaysAs(drizzleSql`tenant_id || ':' || label`),
@@ -497,6 +502,24 @@ test(
       label: "queued",
       summary: "tenant-from-hook:queued",
     });
+    expect(
+      await store.collections.generatedJob.update({
+        where: (fields, op) => op.eq(fields.id, created.id),
+        set: { label: "updated" },
+      }),
+    ).toBe(1);
+    await expect(
+      store.collections.generatedJob.find({
+        where: (fields, op) => op.eq(fields.id, created.id),
+      }),
+    ).resolves.toEqual([
+      {
+        id: 1,
+        tenantId: "tenant-from-hook",
+        label: "updated",
+        summary: "tenant-from-hook:updated",
+      },
+    ]);
     expect(await store.collections.generatedJob.create({ label: "priority" })).toMatchObject({
       label: "priority",
       summary: "tenant-from-hook:priority",

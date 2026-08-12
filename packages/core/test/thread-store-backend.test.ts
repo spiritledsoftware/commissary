@@ -100,3 +100,21 @@ it("retains bounded conflict retries for a Transaction Store", async () => {
   await expect(store.readThread(ThreadId.decode("transaction-retry"))).resolves.toBeUndefined();
   expect(transactionCalls).toBe(3);
 });
+
+it("stops Transaction Store retries after three conflicts", async () => {
+  const memory = MemoryStore.make({ records: coreRecordDefinitions });
+  const conflict = new TransactionConflictError();
+  let transactionCalls = 0;
+  const transaction: TransactionStore<CoreRecordDefinitions>["transaction"] = async () => {
+    transactionCalls += 1;
+    throw conflict;
+  };
+  const backend: TransactionStore<CoreRecordDefinitions> = Object.freeze({
+    collections: memory.collections,
+    transaction,
+  });
+  const store = createThreadStore({ backend });
+
+  await expect(store.readThread(ThreadId.decode("transaction-exhausted"))).rejects.toBe(conflict);
+  expect(transactionCalls).toBe(3);
+});

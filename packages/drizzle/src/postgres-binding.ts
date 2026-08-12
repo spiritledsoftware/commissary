@@ -194,7 +194,7 @@ function postgresSqlState(error: unknown): string | undefined {
   while (typeof current === "object" && current !== null && !visited.has(current)) {
     visited.add(current);
     const code = Reflect.get(current, "code");
-    if (typeof code === "string") return code;
+    if (typeof code === "string" && /^[0-9A-Z]{5}$/.test(code)) return code;
     current = Reflect.get(current, "cause");
   }
   return undefined;

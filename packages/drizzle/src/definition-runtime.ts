@@ -787,6 +787,24 @@ function representativeDriverValue(
   }
 }
 
+function representativeStoredDriverValue(
+  column: RuntimeMap,
+  dialect: DrizzleDefinitionDialectAdapter["dialect"],
+  encoded: unknown,
+): unknown {
+  if (dialect !== "postgres" || typeof encoded !== "string") return encoded;
+  const getSqlType = Reflect.get(column, "getSQLType");
+  if (typeof getSqlType !== "function") return encoded;
+  const sqlType = Reflect.apply(getSqlType, column, []);
+  if (sqlType !== "json" && sqlType !== "jsonb") return encoded;
+  // PostgreSQL drivers decode JSON wire text before Drizzle invokes a column's read mapper.
+  try {
+    return JSON.parse(encoded);
+  } catch {
+    return encoded;
+  }
+}
+
 type SynchronousSchemaResult =
   | { readonly kind: "async" }
   | { readonly kind: "failure" }
@@ -978,7 +996,8 @@ function validateRepresentativeFieldValues(
       if (typeof mapToDriverValue !== "function") continue;
       try {
         const encoded = Reflect.apply(mapToDriverValue, column, [first]);
-        const decoded = Reflect.apply(mapFromDriverValue, column, [encoded]);
+        const storedDriverValue = representativeStoredDriverValue(column, dialect, encoded);
+        const decoded = Reflect.apply(mapFromDriverValue, column, [storedDriverValue]);
         const selectedRoundTrip = synchronousSchemaResult(select, decoded);
         if (
           selectedRoundTrip.kind !== "success" ||

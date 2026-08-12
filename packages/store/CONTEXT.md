@@ -420,7 +420,7 @@ An expected Store Error that identifies an adapter I/O failure and preserves the
 _Avoid_: Adapter Contract Error, raw adapter error contract, safe-to-log cause
 
 **Store Adapter Contract Error**:
-A defect Error outside the Store Error hierarchy. It reports that an adapter returned invalid data, overwrote a host value, produced an impossible expression result, failed SQL compilation, or broke its transaction contract. The standalone SQL Statement Compiler uses operation `execute` for an `invalid-sql-compilation` defect; SQL Store reclassifies it to the caller's `query` or `execute` operation. An invalid successful SQL result uses `invalid-sql-result` and the caller's operation. It never retains returned data as `cause`, but it can retain a separate failure thrown while checking that data. Its `writesMayRemain` flag is false before a driver call and conservative after one.
+A defect Error outside the Store Error hierarchy. It reports that an adapter retained invalid Collection Catalog state (`invalid-catalog-state`), returned invalid data, overwrote a host value, produced an impossible expression result, failed SQL compilation, or broke its transaction contract. The standalone SQL Statement Compiler uses operation `execute` for an `invalid-sql-compilation` defect; SQL Store reclassifies it to the caller's `query` or `execute` operation. An invalid successful SQL result uses `invalid-sql-result` and the caller's operation. It never retains returned data as `cause`, but it can retain a separate failure thrown while checking that data. Its `writesMayRemain` flag is false before a driver call and conservative after one.
 _Avoid_: Expected Store Error, caller validation failure, unsupported operation, recoverable result
 
 **Safe Store Error Metadata**:
