@@ -1,5 +1,28 @@
 # @commissary/core
 
+## 0.3.0
+
+### Minor Changes
+
+- [#82](https://github.com/spiritledsoftware/commissary/pull/82) [`6d2223c`](https://github.com/spiritledsoftware/commissary/commit/6d2223cc44bfe0fb57cf9047a1742729f0985386) Thanks [@ian-pascoe](https://github.com/ian-pascoe)! - Publish the complete Core SQL Record catalog with explicit table and column names, portable storage types, primary keys, and bounded SQL key fields.
+
+  Core Record validation is now stricter: sequence, fence, counter, and expiry fields reject negative or non-integer values, while string primary-key fields reject values longer than 95 Unicode code points. Writes using such values now fail schema validation.
+
+- [#87](https://github.com/spiritledsoftware/commissary/pull/87) [`4f26a21`](https://github.com/spiritledsoftware/commissary/commit/4f26a21365a654df5c25a3556be10376f9d8c9aa) Thanks [@ian-pascoe](https://github.com/ian-pascoe)! - Bind PostgreSQL Drizzle definitions to host-owned databases with Collection, direct SQL, and verified serializable transaction capabilities.
+
+  Allow Core Thread Stores to compose over either plain or transactional Store backends, preserving serialized one-attempt behavior for plain Stores and bounded conflict retries for Transaction Stores.
+
+- [#71](https://github.com/spiritledsoftware/commissary/pull/71) [`2d16d50`](https://github.com/spiritledsoftware/commissary/commit/2d16d50c770bb1016e33ae5534790b157ea33817) Thanks [@ian-pascoe](https://github.com/ian-pascoe)! - # Record composition and normalized Store values
+
+  Add immutable Record definitions, explicit contributions and overrides, and Select-normalized Memory Store writes.
+
+### Patch Changes
+
+- [#69](https://github.com/spiritledsoftware/commissary/pull/69) [`09aa5e1`](https://github.com/spiritledsoftware/commissary/commit/09aa5e1b3e0037b575887491179486f2fe01991f) Thanks [@ian-pascoe](https://github.com/ian-pascoe)! - Scope Core Thread Store loads and persistence to the Collections required by each operation.
+
+- Updated dependencies [[`4f26a21`](https://github.com/spiritledsoftware/commissary/commit/4f26a21365a654df5c25a3556be10376f9d8c9aa), [`2d16d50`](https://github.com/spiritledsoftware/commissary/commit/2d16d50c770bb1016e33ae5534790b157ea33817), [`3594a68`](https://github.com/spiritledsoftware/commissary/commit/3594a686cb9ba45b0a161fb3a2b0afa3e64486ae), [`8afad5a`](https://github.com/spiritledsoftware/commissary/commit/8afad5a4271a26f383b72569290e064285b583ca), [`bd249e1`](https://github.com/spiritledsoftware/commissary/commit/bd249e178e42ee0756539cc68ebf9400d070f370), [`89fa5c4`](https://github.com/spiritledsoftware/commissary/commit/89fa5c47ebf1658de2feb64496ef2c5ad24d66ae), [`4d3ce8c`](https://github.com/spiritledsoftware/commissary/commit/4d3ce8c0d8993ec5cb2a663b4e60344e053dcb3b), [`9484564`](https://github.com/spiritledsoftware/commissary/commit/948456423ea9dbff45aa4ed0911eb89742836450), [`764b292`](https://github.com/spiritledsoftware/commissary/commit/764b2927c3406ca2d581dcf6865fdc900de50ab8)]:
+  - @commissary/store@0.2.0
+
 ## 0.2.1
 
 ### Patch Changes

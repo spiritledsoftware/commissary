@@ -1,6 +1,6 @@
 {
   "name": "@commissary/effect",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Effect adapters and Effect AI integration for Commissary",
   "homepage": "https://github.com/spiritledsoftware/commissary#readme",
   "bugs": {

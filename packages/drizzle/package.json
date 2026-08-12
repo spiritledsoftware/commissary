@@ -1,6 +1,6 @@
 {
   "name": "@commissary/drizzle",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Connection-free Drizzle Store definitions for Commissary",
   "homepage": "https://github.com/spiritledsoftware/commissary#readme",
   "bugs": {
