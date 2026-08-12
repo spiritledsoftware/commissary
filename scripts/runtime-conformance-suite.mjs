@@ -1,5 +1,9 @@
 import * as Core from "@commissary/core";
 import * as CoreInternal from "@commissary/core/internal";
+import * as Drizzle from "@commissary/drizzle";
+import * as DrizzleMysql from "@commissary/drizzle/mysql";
+import * as DrizzlePostgres from "@commissary/drizzle/postgres";
+import * as DrizzleSqlite from "@commissary/drizzle/sqlite";
 import * as EffectCommissary from "@commissary/effect";
 import * as EffectAi from "@commissary/effect/ai";
 import * as StoreMemory from "@commissary/store-memory";
@@ -10,6 +14,10 @@ import * as StreamEffect from "@commissary/stream/effect";
 const publicModules = [
   ["@commissary/core", Core],
   ["@commissary/core/internal", CoreInternal],
+  ["@commissary/drizzle", Drizzle],
+  ["@commissary/drizzle/postgres", DrizzlePostgres],
+  ["@commissary/drizzle/mysql", DrizzleMysql],
+  ["@commissary/drizzle/sqlite", DrizzleSqlite],
   ["@commissary/effect", EffectCommissary],
   ["@commissary/effect/ai", EffectAi],
   ["@commissary/store-memory", StoreMemory],

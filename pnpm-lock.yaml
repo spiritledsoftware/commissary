@@ -17,6 +17,9 @@ importers:
       '@commissary/core':
         specifier: workspace:*
         version: link:packages/core
+      '@commissary/drizzle':
+        specifier: workspace:*
+        version: link:packages/drizzle
       '@commissary/effect':
         specifier: workspace:*
         version: link:packages/effect
@@ -92,6 +95,9 @@ importers:
       zod:
         specifier: 4.4.3
         version: 4.4.3
+      zod3:
+        specifier: npm:zod@3.25.76
+        version: zod@3.25.76
 
   packages/core:
     dependencies:
@@ -101,6 +107,22 @@ importers:
       '@standard-schema/spec':
         specifier: ^1.1.0
         version: 1.1.0
+
+  packages/drizzle:
+    dependencies:
+      '@commissary/core':
+        specifier: workspace:^
+        version: link:../core
+      '@commissary/store':
+        specifier: workspace:^
+        version: link:../store
+      '@standard-schema/spec':
+        specifier: ^1.1.0
+        version: 1.1.0
+    devDependencies:
+      drizzle-orm:
+        specifier: 0.45.2
+        version: 0.45.2
 
   packages/effect:
     dependencies:
@@ -2264,6 +2286,9 @@ packages:
   youch@4.1.0-beta.10:
     resolution: {integrity: sha512-rLfVLB4FgQneDr0dv1oddCVZmKjcJ6yX6mS4pU82Mq/Dt9a3cLZQ62pDBL4AUO+uVrCvtWz3ZFUL2HFAFJ/BXQ==}
 
+  zod@3.25.76:
+    resolution: {integrity: sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==}
+
   zod@4.4.3:
     resolution: {integrity: sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ==}
 
@@ -3902,5 +3927,7 @@ snapshots:
       '@speed-highlight/core': 1.2.23
       cookie: 1.1.1
       youch-core: 0.3.3
+
+  zod@3.25.76: {}
 
   zod@4.4.3: {}
