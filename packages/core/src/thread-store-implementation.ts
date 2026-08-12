@@ -204,12 +204,58 @@ export interface CoreThreadStoreOptions<
   Definitions extends ThreadRecordDefinitions,
   Operators extends CoreStoreOperatorTypes = BaseStoreOperatorTypes,
 > {
-  /** Transaction Store over the complete effective Core and Custom Record catalog. */
-  readonly backend: TransactionStore<Definitions, Operators>;
+  /** Store over the complete effective Core and Custom Record catalog. */
+  readonly backend: Store<Definitions, Operators>;
   /** Backend clock used for Claim expiry calculations. */
   readonly clock?: Pick<Clock, "now">;
   /** Host before-create hooks for effective Record inputs. */
   readonly hooks?: ThreadStoreHooks<Definitions>;
+}
+
+class PlainCoreThreadStoreOperationQueue {
+  #tail: Promise<void> = Promise.resolve();
+
+  run<Value>(use: () => Promise<Value>): Promise<Value> {
+    const operation = this.#tail.then(use, use);
+    this.#tail = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    return operation;
+  }
+}
+
+function isCoreTransactionStore<
+  Definitions extends ThreadRecordDefinitions,
+  Operators extends CoreStoreOperatorTypes,
+>(backend: Store<Definitions, Operators>): backend is TransactionStore<Definitions, Operators> {
+  return "transaction" in backend && typeof backend.transaction === "function";
+}
+
+async function executeCoreBackendOperation<
+  Definitions extends ThreadRecordDefinitions,
+  Operators extends CoreStoreOperatorTypes,
+  Value,
+>(
+  options: CoreThreadStoreOptions<Definitions, Operators>,
+  plainOperationQueue: PlainCoreThreadStoreOperationQueue,
+  use: (store: Store<Definitions, Operators>) => Promise<Value>,
+  shouldRetryConflict: () => boolean = () => true,
+): Promise<Value> {
+  if (!isCoreTransactionStore(options.backend)) {
+    return plainOperationQueue.run(() => use(options.backend));
+  }
+
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      return await options.backend.transaction(use);
+    } catch (cause) {
+      if (!(cause instanceof TransactionConflictError) || attempt === 3 || !shouldRetryConflict()) {
+        throw cause;
+      }
+    }
+  }
+  throw new Error("Unreachable Thread Store retry state");
 }
 
 type CoreRecordName = keyof CoreRecordDefinitions;
@@ -2135,6 +2181,7 @@ async function executeWaitForExecutionControl<
   Operators extends CoreStoreOperatorTypes,
 >(
   options: CoreThreadStoreOptions<Definitions, Operators>,
+  plainOperationQueue: PlainCoreThreadStoreOperationQueue,
   controlWaiters: Map<RunId, Set<ControlWaiter>>,
   input: WaitForExecutionControlInput,
 ): Promise<ExecutionControl> {
@@ -2144,11 +2191,13 @@ async function executeWaitForExecutionControl<
     return registered.promise;
   }
 
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
-    let state: CoreThreadStore<Definitions, Operators>;
-    try {
-      state = await options.backend.transaction(async (transaction) => {
-        const store = addThreadStoreCreateHooks(transaction, options.hooks);
+  let state: CoreThreadStore<Definitions, Operators>;
+  try {
+    state = await executeCoreBackendOperation(
+      options,
+      plainOperationQueue,
+      async (backend) => {
+        const store = addThreadStoreCreateHooks(backend, options.hooks);
         const loadedState = new CoreThreadStore({
           store,
           controlWaiters,
@@ -2156,20 +2205,17 @@ async function executeWaitForExecutionControl<
         });
         await loadedState.loadState(coreThreadStoreOperationPlans.waitForExecutionControl.load);
         return loadedState;
-      });
-    } catch (cause) {
-      if (!controlWaiters.get(input.claim.runId)?.has(registered.waiter)) {
-        return registered.promise;
-      }
-      if (cause instanceof TransactionConflictError && attempt < 3) {
-        continue;
-      }
-      rejectControlWaiter(controlWaiters, input.claim.runId, registered.waiter, cause);
+      },
+      () => controlWaiters.get(input.claim.runId)?.has(registered.waiter) === true,
+    );
+  } catch (cause) {
+    if (!controlWaiters.get(input.claim.runId)?.has(registered.waiter)) {
       return registered.promise;
     }
-    return state.waitForExecutionControl(input, registered);
+    rejectControlWaiter(controlWaiters, input.claim.runId, registered.waiter, cause);
+    return registered.promise;
   }
-  throw new Error("Unreachable Thread Store control wait retry state");
+  return state.waitForExecutionControl(input, registered);
 }
 
 const directCoreThreadStoreOperationNames = ["recordDelegatedToolCall"] as const;
@@ -2387,6 +2433,7 @@ async function executeCoreThreadStoreOperation<
   Operators extends CoreStoreOperatorTypes,
 >(
   options: CoreThreadStoreOptions<Definitions, Operators>,
+  plainOperationQueue: PlainCoreThreadStoreOperationQueue,
   controlWaiters: Map<RunId, Set<ControlWaiter>>,
   methodName: string,
   args: readonly unknown[],
@@ -2395,58 +2442,51 @@ async function executeCoreThreadStoreOperation<
     // SAFETY: createThreadStore exposes this branch only for waitForExecutionControl.
     return executeWaitForExecutionControl(
       options,
+      plainOperationQueue,
       controlWaiters,
       args[0] as WaitForExecutionControlInput,
     );
   }
 
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
-    let committedState: CoreThreadStore<Definitions, Operators> | undefined;
-    try {
-      if (methodName === "recordDelegatedToolCall") {
-        // SAFETY: createThreadStore exposes this branch only for the recordDelegatedToolCall method.
-        const input = args[0] as RecordDelegatedToolCallInput;
-        return await options.backend.transaction(async (transaction) => {
-          const store = addThreadStoreCreateHooks(transaction, options.hooks);
-          return recordDelegatedToolCallInStore(store, options.clock?.now ?? Date.now, input);
-        });
-      }
-      const operationPlan = coreThreadStoreOperationPlan(methodName);
-
-      const value = await options.backend.transaction(async (transaction) => {
-        const store = addThreadStoreCreateHooks(transaction, options.hooks);
-        const state = new CoreThreadStore({
-          store,
-          controlWaiters,
-          ...(options.clock === undefined ? {} : { clock: options.clock }),
-        });
-        committedState = state;
-        await state.loadState(operationPlan.load);
-        const method = Reflect.get(state, methodName);
-        if (typeof method !== "function") {
-          throw new TypeError(`Unknown Thread Store operation '${methodName}'`);
-        }
-        const result = await Reflect.apply(method, state, args);
-        await state.persistState(operationPlan.persist);
-        return result;
-      });
-      committedState?.publishControlNotifications();
-      return value;
-    } catch (cause) {
-      if (!(cause instanceof TransactionConflictError) || attempt === 3) {
-        throw cause;
-      }
-    }
+  let committedState: CoreThreadStore<Definitions, Operators> | undefined;
+  if (methodName === "recordDelegatedToolCall") {
+    // SAFETY: createThreadStore exposes this branch only for the recordDelegatedToolCall method.
+    const input = args[0] as RecordDelegatedToolCallInput;
+    return executeCoreBackendOperation(options, plainOperationQueue, async (backend) => {
+      const store = addThreadStoreCreateHooks(backend, options.hooks);
+      return recordDelegatedToolCallInStore(store, options.clock?.now ?? Date.now, input);
+    });
   }
-  throw new Error("Unreachable Thread Store retry state");
+  const operationPlan = coreThreadStoreOperationPlan(methodName);
+
+  const value = await executeCoreBackendOperation(options, plainOperationQueue, async (backend) => {
+    const store = addThreadStoreCreateHooks(backend, options.hooks);
+    const state = new CoreThreadStore({
+      store,
+      controlWaiters,
+      ...(options.clock === undefined ? {} : { clock: options.clock }),
+    });
+    committedState = state;
+    await state.loadState(operationPlan.load);
+    const method = Reflect.get(state, methodName);
+    if (typeof method !== "function") {
+      throw new TypeError(`Unknown Thread Store operation '${methodName}'`);
+    }
+    const result = await Reflect.apply(method, state, args);
+    await state.persistState(operationPlan.persist);
+    return result;
+  });
+  committedState?.publishControlNotifications();
+  return value;
 }
 
-/** Make a Core-owned Thread Store over one transactional backend. */
+/** Make a Core-owned Thread Store over one plain or transactional backend. */
 export function createThreadStore<
   Definitions extends ThreadRecordDefinitions = CoreRecordDefinitions,
   const Operators extends CoreStoreOperatorTypes = BaseStoreOperatorTypes,
 >(options: CoreThreadStoreOptions<Definitions, Operators>): ThreadStore<Definitions, Operators> {
   const store = addThreadStoreCreateHooks(options.backend, options.hooks);
+  const plainOperationQueue = new PlainCoreThreadStoreOperationQueue();
   const controlWaiters = new Map<RunId, Set<ControlWaiter>>();
   const methodCache = new Map<string, (...args: readonly unknown[]) => Promise<unknown>>();
   const hiddenMethods = new Set([
@@ -2474,7 +2514,13 @@ export function createThreadStore<
       let method = methodCache.get(property);
       if (method === undefined) {
         method = (...args) =>
-          executeCoreThreadStoreOperation(options, controlWaiters, property, args);
+          executeCoreThreadStoreOperation(
+            options,
+            plainOperationQueue,
+            controlWaiters,
+            property,
+            args,
+          );
         methodCache.set(property, method);
       }
       return method;

@@ -238,6 +238,7 @@ export class TransactionRollbackError extends StoreError {
 /** Adapter output or behavior that violates the public Store contract. */
 export type StoreAdapterContractViolation =
   | "unknown-record-key"
+  | "invalid-catalog-state"
   | "invalid-selected-record"
   | "generated-value-overwrite"
   | "invalid-expression-result"

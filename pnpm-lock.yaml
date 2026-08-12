@@ -46,13 +46,13 @@ importers:
         version: 2.9.4
       drizzle-orm:
         specifier: 0.45.2
-        version: 0.45.2
+        version: 0.45.2(@electric-sql/pglite@0.5.4)
       drizzle-valibot:
         specifier: 0.4.2
-        version: 0.4.2(drizzle-orm@0.45.2)(valibot@1.4.2(typescript@7.0.2))
+        version: 0.4.2(drizzle-orm@0.45.2(@electric-sql/pglite@0.5.4))(valibot@1.4.2(typescript@7.0.2))
       drizzle-zod:
         specifier: 0.8.3
-        version: 0.8.3(drizzle-orm@0.45.2)(zod@4.4.3)
+        version: 0.8.3(drizzle-orm@0.45.2(@electric-sql/pglite@0.5.4))(zod@4.4.3)
       esbuild:
         specifier: 0.28.1
         version: 0.28.1
@@ -120,9 +120,12 @@ importers:
         specifier: ^1.1.0
         version: 1.1.0
     devDependencies:
+      '@electric-sql/pglite':
+        specifier: 0.5.4
+        version: 0.5.4
       drizzle-orm:
         specifier: 0.45.2
-        version: 0.45.2
+        version: 0.45.2(@electric-sql/pglite@0.5.4)
 
   packages/effect:
     dependencies:
@@ -337,6 +340,9 @@ packages:
   '@effect/tsgo@0.31.0':
     resolution: {integrity: sha512-mv/p4nPg5IhJWnZXIctSa2QG9Y79yQzRMMdZI+BD5QUrGXL6giqWMJZ3S+IaooQc6pjny3q9IeOvSf0CBTPfQw==}
     hasBin: true
+
+  '@electric-sql/pglite@0.5.4':
+    resolution: {integrity: sha512-yYZUyyXrHU7tPlCjwZQJ6hIG9DscdCCn7Uk0mYKwC1FeHX286AbcmFveMiRBEak8e9iPupjsoVImN3yJZVed2g==}
 
   '@emnapi/runtime@1.11.3':
     resolution: {integrity: sha512-Xz4Tpyki7XyrpbUK1jR1AhdAdaXyhhY4lZ3neLodmhpuWfy2PAQN5B46sAiU4liOXGLkHypn/qU+jvfWSCYYLA==}
@@ -2522,6 +2528,8 @@ snapshots:
       '@effect/tsgo-win32-arm64': 0.31.0
       '@effect/tsgo-win32-x64': 0.31.0
 
+  '@electric-sql/pglite@0.5.4': {}
+
   '@emnapi/runtime@1.11.3':
     dependencies:
       tslib: 2.8.1
@@ -3233,16 +3241,18 @@ snapshots:
 
   dotenv@8.6.0: {}
 
-  drizzle-orm@0.45.2: {}
+  drizzle-orm@0.45.2(@electric-sql/pglite@0.5.4):
+    optionalDependencies:
+      '@electric-sql/pglite': 0.5.4
 
-  drizzle-valibot@0.4.2(drizzle-orm@0.45.2)(valibot@1.4.2(typescript@7.0.2)):
+  drizzle-valibot@0.4.2(drizzle-orm@0.45.2(@electric-sql/pglite@0.5.4))(valibot@1.4.2(typescript@7.0.2)):
     dependencies:
-      drizzle-orm: 0.45.2
+      drizzle-orm: 0.45.2(@electric-sql/pglite@0.5.4)
       valibot: 1.4.2(typescript@7.0.2)
 
-  drizzle-zod@0.8.3(drizzle-orm@0.45.2)(zod@4.4.3):
+  drizzle-zod@0.8.3(drizzle-orm@0.45.2(@electric-sql/pglite@0.5.4))(zod@4.4.3):
     dependencies:
-      drizzle-orm: 0.45.2
+      drizzle-orm: 0.45.2(@electric-sql/pglite@0.5.4)
       zod: 4.4.3
 
   effect@4.0.0-beta.101:

@@ -202,6 +202,13 @@ it("enforces Core SQL key and integer storage bounds in the owning Field Schemas
   expect(integerFieldCount).toBeGreaterThan(0);
 });
 
+it("distinguishes absent optional Core JSON fields from JSON null values", async () => {
+  await expectSchemaSuccess(coreRecordDefinitions.run.fields.usage.select, undefined);
+  await expectSchemaFailure(coreRecordDefinitions.run.fields.usage.select, null);
+  await expectSchemaSuccess(coreRecordDefinitions.run.fields.abortReason.select, undefined);
+  await expectSchemaSuccess(coreRecordDefinitions.run.fields.abortReason.select, null);
+});
+
 it("preserves selected, create, and update Core public types", () => {
   expectTypeOf<
     SelectedRecord<(typeof coreRecordDefinitions)["thread"]>

@@ -25,6 +25,12 @@ import type {
 } from "./definition-types.js";
 import { postgresDefinitionAdapter } from "./postgres-definition.js";
 
+export {
+  DrizzlePostgresBindingError,
+  type DrizzlePostgresBindingErrorReason,
+} from "./postgres-binding-error.js";
+export { bindPostgresStore } from "./postgres-binding.js";
+
 type PostgresRelations = Readonly<Record<string, Relations>>;
 type PostgresEnums = Readonly<
   Record<

@@ -155,11 +155,27 @@ function postgresColumnBuilder(
     builder = enumValue(column.name) as unknown as RuntimePostgresBuilder;
   } else {
     const dataType = resolvedPostgresTypeSql(column.type);
+    const isJsonType =
+      column.type.kind === "direct" &&
+      (column.type.type === "json" || column.type.type === "jsonb");
     const makeCustom = customType<{ data: unknown; driverData: unknown }>({
       dataType: () => dataType,
       // SAFETY: The resolver's erased Field generic still owns the runtime encoder for this exact column.
-      toDriver: (value) => column.encode(value as never),
-      fromDriver: (value) => column.decode(value),
+      toDriver: (value) => {
+        const encoded = column.encode(value as never);
+        return isJsonType ? JSON.stringify(encoded) : encoded;
+      },
+      fromDriver: (value) => {
+        let driverValue = value;
+        if (
+          column.type.kind === "direct" &&
+          column.type.type === "bigint" &&
+          (typeof value === "bigint" || typeof value === "number")
+        ) {
+          driverValue = String(value);
+        }
+        return column.decode(driverValue);
+      },
     });
     // SAFETY: Public PostgreSQL custom builders implement the common builder modifier methods.
     builder = makeCustom(column.name) as unknown as RuntimePostgresBuilder;
