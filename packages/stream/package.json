@@ -42,7 +42,7 @@
     "@commissary/core": "workspace:^",
     "@commissary/effect": "workspace:^",
     "@commissary/store": "workspace:^",
-    "effect": "4.0.0-beta.101"
+    "effect": "4.0.0-rc.112"
   },
   "engines": {
     "node": ">=22.14.0"
