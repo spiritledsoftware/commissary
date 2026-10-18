@@ -36,8 +36,8 @@ export const FAMILY_ORDER: ReadonlyArray<ProviderKeyFamily> = [
   "meta",
   "opencode-zen",
   "opencode-go",
-  // `subq` joins the panel in a later change; the server already lists its groups (skipped here).
   "typesafe",
+  "subq",
   "openai-compatibility",
 ];
 
@@ -79,6 +79,13 @@ const DEFAULT_BASE: Readonly<Record<ProviderKeyFamily, string | undefined>> = {
 
 export const defaultBaseUrl = (family: ProviderKeyFamily): string | undefined =>
   DEFAULT_BASE[family];
+
+/**
+ * Whether the group form offers "Discover models" (a key test that lists models). Not for Vertex, which has no
+ * listing, nor SubQ, whose key test is one small System One request.
+ */
+export const discoversModels = (family: ProviderKeyFamily): boolean =>
+  family !== "vertex" && family !== "subq";
 
 const NewKeySearch = Schema.Struct({ family: Schema.optionalKey(ProviderKeyFamily) });
 

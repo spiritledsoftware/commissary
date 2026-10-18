@@ -275,7 +275,8 @@ describe("System One on TypeSafe through the SDK", () => {
   });
 });
 
-describe("System One on SubQ (text only for now)", () => {
+// SubQ's images, refusals and errors: systemone-subq-e2e.test.ts.
+describe("System One on SubQ", () => {
   it("sends a text request as JSON without TypeSafe's opt-in headers", async () => {
     upstream = () => Response.json({ ...ANSWER, model: "subq-snap-preview" });
 
@@ -290,24 +291,6 @@ describe("System One on SubQ (text only for now)", () => {
     expect(call?.url).toBe("POST https://api.subq.ai/v1/systemone");
     expect(call?.headers.get("authorization")).toBe("Bearer subq-e2e-key");
     expect(call?.headers.get("typesafe-danger-zone-long-context")).toBeNull();
-  });
-
-  it("refuses an image request locally", async () => {
-    const response = await systemOne({
-      ...BILLING,
-      model: "subq-snap-preview",
-      state: "<image:a>",
-      assets: { "<image:a>": { format: "png", data_base64: "iVBORw0K" } },
-    });
-
-    expect(response.status).toBe(400);
-    expect(await response.json()).toEqual({
-      detail: {
-        error_type: "api_usage_error",
-        message: "SubQ image requests are not supported yet",
-      },
-    });
-    expect(upstreamCalls).toEqual([]);
   });
 });
 

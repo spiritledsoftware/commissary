@@ -4,15 +4,13 @@
  *
  * - TypeSafe (`typesafe`): the client's request as it is, multipart staying multipart with the file parts untouched;
  *   the `TypeSafe-Danger-Zone-Images` and `-Long-Context` opt-ins are forwarded; a missing key's 403 cools the key.
- * - SubQ (`subq`): always JSON, the Danger Zone headers dropped (SubQ has none); 402 (no credits) cools the key.
- *   Images are not converted yet: an image request is refused locally.
+ * - SubQ (`subq`): always JSON, images converted to SubQ's `images` within its limits (`subq.ts`), the Danger Zone
+ *   headers dropped (SubQ has none); 402 (no credits) cools the key.
  */
-import { Effect } from "effect";
-import { countImages } from "@commissary/translation/systemone";
-import { ExecutionError } from "../errors.ts";
 import { systemOneUpstreamError, typeSafeUpstreamError } from "./errors.ts";
 import { type SystemOneSpec, typeSafeBody } from "./executor.ts";
 import { SUBQ, SYSTEM_ONE_PROVIDER_SPECS, type SystemOneProvider, TYPESAFE } from "./providers.ts";
+import { subqBody } from "./subq.ts";
 
 /** TypeSafe's opt-in request headers (images and Box; longer context). */
 export const TYPESAFE_DANGER_ZONE_HEADERS = [
@@ -30,16 +28,7 @@ export const SYSTEM_ONE_SPECS: Readonly<Record<SystemOneProvider, SystemOneSpec>
   [SUBQ]: {
     ...SYSTEM_ONE_PROVIDER_SPECS[SUBQ],
     forwardHeaders: [],
-    buildBody: (body, parts) =>
-      countImages(body) > 0 || (parts?.size ?? 0) > 0
-        ? Effect.fail(
-            new ExecutionError({
-              status: 400,
-              message: "SubQ image requests are not supported yet",
-              requestScoped: true,
-            }),
-          )
-        : Effect.succeed({ json: body }),
+    buildBody: subqBody,
     classifyError: systemOneUpstreamError,
   },
 };

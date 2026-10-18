@@ -8,6 +8,7 @@ import {
   draftOf,
   EMPTY_DRAFT,
   hasPriceErrors,
+  KNOWN_PROVIDERS,
   overrideOf,
   parseRate,
   priceBody,
@@ -76,6 +77,26 @@ describe("price drafts", () => {
       input: 2,
       output: 12.5,
       cache_read: 0.2,
+    });
+  });
+
+  it("suggests the System One providers and prices their models like any other, output free", () => {
+    expect(KNOWN_PROVIDERS).toEqual(expect.arrayContaining(["typesafe", "subq"]));
+
+    const draft = {
+      ...EMPTY_DRAFT,
+      provider: "subq",
+      model: "subq-snap-preview",
+      input: "0.05",
+      output: "0",
+    };
+
+    expect(hasPriceErrors(validatePrice(draft, []))).toBe(false);
+    expect(priceBody(draft)).toEqual({
+      provider: "subq",
+      model: "subq-snap-preview",
+      input: 0.05,
+      output: 0,
     });
   });
 

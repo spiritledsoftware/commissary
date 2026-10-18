@@ -18,6 +18,8 @@ export const KNOWN_PROVIDERS: ReadonlyArray<string> = [
   "meta",
   "opencode-go",
   "opencode-zen",
+  "subq",
+  "typesafe",
   "vertex",
   "xai",
 ];

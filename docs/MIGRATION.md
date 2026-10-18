@@ -101,6 +101,24 @@ in the compat entry, so clients keep their model names; compat `prefix`/`alias` 
 OpenCode Go keys also appear on the panel's Accounts page with their 5-hour, weekly and monthly usage, and a key over one
 of those limits rests until the window resets while other keys take its requests.
 
+### TypeSafe and SubQ (System One)
+
+The Go server has no System One support (ADR 0032), so a Go config has nothing to move. Add TypeSafe and SubQ keys on
+the panel's Provider keys page, or in the imported document:
+
+```yaml
+api-keys:
+  typesafe:
+    - keys:
+        - api-key: ts-…
+  subq:
+    - keys:
+        - api-key: sk-…
+```
+
+Without `models`, a TypeSafe group registers `jev-1.13.0`, `jev-1.14.0`, `jev-latest` and `jev-preview`, and a SubQ group
+`subq-snap-preview`. Clients reach them on `POST /v1/systemone` with TypeSafe's SDKs; see ARCHITECTURE.md "System One".
+
 ## 2. Auth files (OAuth credentials)
 
 Upload every `*.json` file from the Go `auth-dir` (default `~/.cli-proxy-api`). The file name becomes the credential id:

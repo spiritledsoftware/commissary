@@ -125,7 +125,8 @@ curl https://llm.example.com/healthz \
 Open `https://llm.example.com/` and sign in through Access with an admin email. Then:
 
 - **Connect account** (top bar) logs in to Claude, Codex, Antigravity, xAI, Kimi, … or uploads existing auth files;
-- **Provider keys** adds (Claude, OpenAI-compatible upstreams, Gemini, Vertex, OpenCode Zen/Go, …);
+- **Provider keys** adds (Claude, OpenAI-compatible upstreams, Gemini, Vertex, OpenCode Zen/Go, TypeSafe and SubQ for
+  System One models, …);
 - **API keys** creates the key your clients send (shown once: copy it).
 
 Coming from the Go CLIProxyAPI server? [MIGRATION.md](docs/MIGRATION.md) imports your config and auth files.
@@ -235,7 +236,7 @@ More Access-specific answers: [ACCESS.md#troubleshooting](docs/ACCESS.md#trouble
 | Kimi / Kimi.ai (device login), Meta, Devin                           | OpenAI, Claude, Responses                                | Devin: authorization-code login                                                                            |
 | OpenCode Zen / OpenCode Go (provider key)                            | every client protocol                                    | Chat, Responses, Messages (and Zen Gemini) per model; Go keys show their usage quotas on the Accounts page |
 | OpenAI-compatible upstreams (provider key)                           | every client protocol                                    | Configured as `api-keys.openai-compatibility` groups                                                       |
-| TypeSafe, SubQ (provider key)                                        | System One (`POST /v1/systemone`, TypeSafe's API)        | System One models (Jev, SubQ Snap); SubQ text only for now                                                 |
+| TypeSafe, SubQ (provider key)                                        | System One (`POST /v1/systemone`, TypeSafe's API)        | System One models (Jev, SubQ Snap); SubQ takes at most 4 images and no Box questions                       |
 
 The matrix is indicative: which (client protocol, provider) pairs work follows the registered translators in
 `packages/translation/src/translator/builtin.ts`; an unsupported pair answers with a 4xx/501 error.
