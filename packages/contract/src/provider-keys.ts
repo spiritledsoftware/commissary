@@ -54,8 +54,11 @@ export const ThinkingSupport = Schema.Struct({
 
 export type ThinkingSupport = typeof ThinkingSupport.Type;
 
-/** Upstream protocols of the OpenCode gateways (`/chat/completions`, `/responses`, `/messages`, Gemini native). */
-export const OPENCODE_PROTOCOLS = ["chat", "responses", "messages", "gemini"] as const;
+/**
+ * Upstream protocols of the OpenCode gateways (`/chat/completions`, `/responses`, `/messages`, Gemini native, and
+ * `/systemone` for System One models, ADR 0032).
+ */
+export const OPENCODE_PROTOCOLS = ["chat", "responses", "messages", "gemini", "systemone"] as const;
 
 export const OpenCodeProtocol = Schema.Literals(OPENCODE_PROTOCOLS);
 

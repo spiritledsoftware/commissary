@@ -70,6 +70,10 @@ const CONFIG = `api-keys:
           models:
             - name: deepseek-v4-flash
               protocol: gemini
+        - api-key: g2
+          models:
+            - name: jev-1.13
+              protocol: systemone
 `;
 
 describe("protocol resolution", () => {
@@ -147,6 +151,34 @@ describe("protocol resolution", () => {
     expect(geminiOnGo).toMatchObject({ protocol: "chat", source: "fallback" });
     expect(geminiOnGo.warning).toContain("gemini");
   });
+
+  it("resolves Zen's System One models from the catalog additions, never falling back to chat; Go serves none", async () => {
+    const config = await loadConfig(CONFIG);
+
+    const resolve = (provider: "opencode-zen" | "opencode-go", model: string, attrs = {}) =>
+      resolveOpenCodeProtocol({
+        config,
+        credential: credential(provider, attrs),
+        provider,
+        model,
+        catalog,
+      });
+
+    for (const model of ["jev-1.13", "JEV-1.13-free"]) {
+      const resolved = resolve("opencode-zen", model);
+      expect(resolved).toMatchObject({ protocol: "systemone", source: "catalog" });
+      expect(resolved.warning).toBeUndefined();
+    }
+
+    expect(resolve("opencode-go", "jev-1.13", { api_key: "g1" })).toMatchObject({
+      protocol: "chat",
+      source: "fallback",
+    });
+
+    const configuredOnGo = resolve("opencode-go", "jev-1.13", { api_key: "g2", config_index: "1" });
+    expect(configuredOnGo).toMatchObject({ protocol: "chat", source: "fallback" });
+    expect(configuredOnGo.warning).toContain("systemone");
+  });
 });
 
 describe("gateway headers", () => {
@@ -158,6 +190,34 @@ describe("gateway headers", () => {
       "anthropic-version": "2023-06-01",
     });
     expect(openCodeAuthHeaders("gemini", "k")).toEqual({ "x-goog-api-key": "k" });
+    expect(openCodeAuthHeaders("systemone", "k")).toEqual({ authorization: "Bearer k" });
+  });
+
+  it("forwards the client headers a protocol names, before the custom headers", () => {
+    const headers = openCodeHeaders({
+      credential: credential("opencode-zen", {
+        "header:TypeSafe-Danger-Zone-Long-Context": "false",
+      }),
+      options: options({
+        "TypeSafe-Danger-Zone-Images": "true",
+        "TypeSafe-Danger-Zone-Long-Context": "true",
+        "x-other": "no",
+      }),
+      protocol: "systemone",
+      providerKey: "k",
+      stream: false,
+      forward: ["TypeSafe-Danger-Zone-Images", "TypeSafe-Danger-Zone-Long-Context", "X-Absent"],
+    });
+
+    expect(headers).toMatchObject({
+      authorization: "Bearer k",
+      accept: "application/json",
+      "typesafe-danger-zone-images": "true",
+      "TypeSafe-Danger-Zone-Long-Context": "false",
+    });
+    expect(headers["typesafe-danger-zone-long-context"]).toBeUndefined();
+    expect(headers["x-other"]).toBeUndefined();
+    expect(headers["x-absent"]).toBeUndefined();
   });
 
   it("derives the session from the client header, then the session identities, else a random UUID", () => {

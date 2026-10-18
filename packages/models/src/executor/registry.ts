@@ -64,10 +64,11 @@ const FIXED_EXECUTORS = new Map<string, () => ProviderExecutor>([
 ]);
 
 /**
- * Provider keys whose executor serves System One requests (ADR 0032). Every other executor refuses the `systemone`
- * source format (501) before doing anything, whatever the model guard let through.
+ * Provider keys whose executor serves System One requests (ADR 0032): TypeSafe, SubQ and OpenCode Zen (its `systemone`
+ * protocol). Every other executor refuses the `systemone` source format (501) before doing anything, whatever the
+ * model guard let through.
  */
-export const SYSTEM_ONE_EXECUTORS: ReadonlySet<string> = new Set([TYPESAFE, SUBQ]);
+export const SYSTEM_ONE_EXECUTORS: ReadonlySet<string> = new Set([TYPESAFE, SUBQ, OPENCODE_ZEN]);
 
 /** `executor` with `systemone` requests refused (501, request-scoped). */
 const withoutSystemOne = (executor: ProviderExecutor): ProviderExecutor => {

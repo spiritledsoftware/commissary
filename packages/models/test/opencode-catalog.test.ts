@@ -42,6 +42,35 @@ describe("default registered models", () => {
     ).toEqual(["go-free", "kimi-q"]);
   });
 
+  it("adds the gateway's catalog additions whatever their price, ahead of a models.dev entry with the same id", () => {
+    const parsed = modelsDevFromText(
+      documentText({
+        opencode: {
+          "jev-1.13-free": mdModel("jev-1.13-free", { cost: { input: 0, output: 0 } }),
+        },
+      }),
+    );
+
+    if (!parsed.ok) throw new Error(parsed.error);
+    expect(parsed.value.opencode.models["jev-1.13-free"]?.free).toBe(true);
+
+    const jev = {
+      id: "jev-1.13-free",
+      object: "model",
+      created: 0,
+      ownedBy: "opencode",
+      type: "systemone",
+    };
+
+    const models = defaultCatalogModels(parsed.value, "opencode-zen", [jev]);
+    expect(models.map((info) => info.id).toSorted()).toEqual([
+      "claude-z",
+      "gpt-9",
+      "jev-1.13-free",
+    ]);
+    expect(models.find((info) => info.id === "jev-1.13-free")?.type).toBe("systemone");
+  });
+
   it("the bundled snapshot has models for both gateways", () => {
     const bundled = embeddedModelsDev();
     expect(Object.keys(bundled.opencode.models).length).toBeGreaterThan(10);

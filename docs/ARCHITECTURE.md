@@ -1767,26 +1767,29 @@ the registry snapshot (`modelLookup`, ids `devin/<id>`) before the embedded cata
 No Go counterpart: CLIProxyAPI reaches OpenCode only through an `openai-compatibility` entry (chat only). The Workers port has two
 API-key providers, `opencode-zen` (`https://opencode.ai/zen/v1`) and `opencode-go` (`https://opencode.ai/zen/go/v1`), configured
 under `api-keys.opencode-zen` / `api-keys.opencode-go` (same group/key shape as the other provider key families; `models[].protocol`
-is `chat`, `responses`, `messages` or `gemini`). One executor (`executor.ts`) serves both keys. `models[].protocol` decodes as
+is `chat`, `responses`, `messages`, `gemini` or `systemone`). One executor (`executor.ts`) serves both keys. `models[].protocol` decodes as
 any string: the normaliser drops it in every other provider section (a stray value never breaks a document), and
 `decodeRawConfig` rejects an unknown value in the OpenCode sections, naming its path. The panel's OpenCode model rows offer it as a
 select ("Auto (catalog)" when unset).
 
 - **Protocol per model** (`protocol.ts`): the `protocol` of the credential's config model entry (key `models`, else group
-  `models`; the key is found by `config_index` and checked against its secret), else the model's AI SDK package in the OpenCode
-  catalog, mapped as OpenCode's own client does (`@ai-sdk/openai` -> `responses`, `@ai-sdk/anthropic` -> `messages`,
-  `@ai-sdk/google` -> `gemini`, `@ai-sdk/openai-compatible`/`@ai-sdk/mistral` -> `chat`), else `chat` with a logged warning (unknown
-  model or package). Gemini exists only on Zen; on Go a Gemini protocol falls back to chat.
+  `models`; the key is found by `config_index` and checked against its secret), else `systemone` for a System One model of
+  Zen's catalog additions (see _System One_, "OpenCode Zen"; models.dev lists none, and the additions win should it list one
+  later), else the model's AI SDK package in the OpenCode catalog, mapped as OpenCode's own client does (`@ai-sdk/openai` ->
+  `responses`, `@ai-sdk/anthropic` -> `messages`, `@ai-sdk/google` -> `gemini`, `@ai-sdk/openai-compatible`/`@ai-sdk/mistral` ->
+  `chat`), else `chat` with a logged warning (unknown model or package). Gemini and System One exist only on Zen; on Go either
+  protocol falls back to chat (and a configured `systemone` does not type the model `systemone`).
 - **Paths**: `chat` -> `{base}/chat/completions` (`chat.ts`: openai-compat shaping, max-token normalisation from the entry's
   `use-max-completion-tokens`, `stream_options.include_usage`, `OpenAICompatStreamReader`); `responses` -> `{base}/responses`, always
   streamed upstream and aggregated for non-stream callers (the Responses shaping and SSE handling shared with Meta:
   `helps/responses-request.ts`, `helps/responses-sse.ts`, incl. the apply_patch bridge); `messages` -> `{base}/messages`
   (`messages.ts`: translate to Claude, non-Claude non-stream clients read a streamed answer that is validated and translated in one
   piece, `ClaudeStreamReader`); `gemini` -> `{base}/models/{model}:generateContent|streamGenerateContent` (`gemini.ts`: the shared
-  Google engine as an API-key Gemini variant). Thinking and payload rules run as everywhere (payload rules last; protocol
-  `openai`, `openai-response`, `claude` or the Gemini engine's). Token counting is local for every protocol (Gemini bodies are counted
-  as chat). Images/video/speech entry formats and `/responses/compact` answer 501.
-- **Headers** (`headers.ts`): each protocol's native auth (`Authorization: Bearer` for chat/Responses, `x-api-key` +
+  Google engine as an API-key Gemini variant); `systemone` -> `{base}/systemone` (`systemone.ts`, System One requests only, see
+  _System One_). Thinking and payload rules run as everywhere (payload rules last; protocol
+  `openai`, `openai-response`, `claude`, the Gemini engine's or `systemone`). Token counting is local for every protocol but
+  `systemone`, which has none (Gemini bodies are counted as chat). Images/video/speech entry formats and `/responses/compact` answer 501.
+- **Headers** (`headers.ts`): each protocol's native auth (`Authorization: Bearer` for chat/Responses/System One, `x-api-key` +
   `anthropic-version: 2023-06-01` for Messages, `x-goog-api-key` for Gemini); `User-Agent: commissary`,
   `x-opencode-client: commissary`; `x-opencode-session` = the client's own `x-opencode-session` unchanged, else a UUIDv5
   (`providerSessionUuid("opencode", …)`) of the explicit session identity, the WebSocket execution session or the derived
@@ -1824,15 +1827,15 @@ select ("Auto (catalog)" when unset).
   (see _Model registry_, "Catalogs"); there is no separate OpenCode catalog task, file or script any more. The request path
   reads the KV copy (per isolate, re-read at most once a minute) and falls back to the bundled snapshot when KV is empty or
   invalid. Without config `models` a gateway registers every non-deprecated catalog model (Zen without its free models,
-  flagged `free` in the trimmed document, which the gateway rejects outside OpenCode); listed models get the catalog's
-  context/output limits, input modalities, reasoning levels and the protocol's registry type.
+  flagged `free` in the trimmed document, which the gateway rejects outside OpenCode), and Zen also its System One models
+  from the catalog additions, free or not; listed models get the catalog's context/output limits, input modalities,
+  reasoning levels and the protocol's registry type.
 
 Deviations (the whole provider is one): the session header is derived per conversation instead of OpenCode's per-chat id; the
 `openai-compatibility` executor is not reused (its settings come from the compat group of the credential and its User-Agent is
 fixed); no `prompt_cache_key` is derived; model-scoped gateway errors use the model-not-found cooldown instead of a plain client
 error; `X-Opencode-Session` from a client is also an explicit session identity for routing and usage (`handlers/session.ts`); the
-OpenCode Go keys are listed as Accounts (config-sourced) for their usage windows. Not ported/added: the `jev`/systemone
-endpoint.
+OpenCode Go keys are listed as Accounts (config-sourced) for their usage windows.
 
 ## System One (`models/handlers/systemone/`, `models/executor/systemone/`, `translation/systemone/`)
 
@@ -1912,8 +1915,21 @@ define them).
 
 ### OpenCode Zen
 
-Pending: Zen's System One models (`jev-1.13`, `jev-1.13-free`, text only) are catalog records in the `opencode-zen`
-section, not registered or served yet.
+Provider key `opencode-zen` (see _OpenCode Zen and OpenCode Go_), model protocol `systemone`
+(`executor/opencode/systemone.ts`). Models `jev-1.13` ($0.042 per million input tokens, output free) and `jev-1.13-free`
+($0), Zen's own ids, text only, no Box questions: the `opencode-zen` section of the catalog additions. A Zen key group
+without `models` registers both next to its models.dev models, although Zen otherwise skips free models (its other free
+models stay unregistered, #177); the additions decide for these ids whatever models.dev says. The protocol comes from
+the same records, so a Jev model never falls back to chat. OpenCode Go serves no System One model and registers none.
+The client's JSON goes to `POST {base}/systemone` (`https://opencode.ai/zen/v1/systemone` by default) with the gateway
+headers (Bearer key, `User-Agent` and `x-opencode-client`, `x-opencode-session`, custom headers last) and TypeSafe's two
+Danger Zone opt-ins forwarded. Zen drops `TypeSafe-Danger-Zone-Images` and rejects multipart, so an image request is
+refused locally from the catalog fact (`images: false`; one change there enables images later), and file parts are
+refused for any model. Errors are classified as on Zen's other protocols (`executor/opencode/errors.ts`): 401 and 402
+cool the key, "Model is unavailable" and the other model faults cool only the model, 429 and 5xx keep their
+`Retry-After`; the body (Zen's `{"type":"error","error":{…}}`, `{"error":{…}}` or TypeSafe's `detail` passed through)
+reaches the client in TypeSafe's shape. Usage and price are those of every System One provider. An org that wants
+TypeSafe's `jev-latest` served by Zen defines a model alias; Commissary does not map ids across providers.
 
 ## Zero data retention (`src/platform/org-deletion.ts`, `models/org-deletion.ts`, `src/management/org-routes.ts`, `models/management/export-view.ts`)
 

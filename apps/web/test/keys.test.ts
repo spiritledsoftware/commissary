@@ -1,12 +1,13 @@
 // The provider keys page's model (src/lib/keys.ts): sections, key standing, group facts, and the group form's
 // validation and the write it becomes (stored keys by auth_index, nothing the form does not show is lost).
 import { describe, expect, it } from "vitest";
-import type {
-  ProviderKeysList,
-  ProviderKeyView,
-  CompatGroupView,
-  GroupView,
-  KeyRuntime,
+import {
+  OPENCODE_PROTOCOLS,
+  type ProviderKeysList,
+  type ProviderKeyView,
+  type CompatGroupView,
+  type GroupView,
+  type KeyRuntime,
 } from "@commissary/contract/provider-keys";
 import {
   changesIdentity,
@@ -419,6 +420,7 @@ describe("the group form", () => {
     expect(choosesProtocol("opencode-zen")).toBe(true);
     expect(choosesProtocol("claude")).toBe(false);
     expect(PROTOCOL_CHOICES[0]).toEqual({ value: "", label: "Auto (catalog)" });
+    expect(PROTOCOL_CHOICES.map((choice) => choice.value)).toEqual(["", ...OPENCODE_PROTOCOLS]);
 
     const [haiku, gpt] = draft.models;
 
