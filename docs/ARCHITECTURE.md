@@ -116,7 +116,7 @@ cited as `translation/...` (relative to `packages/translation/src/`), core's as 
     src/thinking/             canonical thinking pipeline (port of internal/thinking)
     src/signature/            thinking-signature validation and cache (port of internal/signature, internal/cache)
     src/tokenizer/            BPE token counting (ranks in src/tokenizer/ranks/*.bin)
-    src/systemone/            System One request and error helpers (assets, Box questions, `detail` errors)
+    src/systemone/            System One requests and errors (assets, Box, `detail` errors), SubQ conversion
     src/sse.ts                SSE line splitting and frame builders
     test/                     Node.js tests + fixtures generated from the Go code; test/testing.ts is ./testing
   tools/fixturegen/           Go programs (own module, root go.work) that emit golden fixtures from the Go code
