@@ -36,6 +36,8 @@ export const FAMILY_ORDER: ReadonlyArray<ProviderKeyFamily> = [
   "meta",
   "opencode-zen",
   "opencode-go",
+  // `subq` joins the panel in a later change; the server already lists its groups (skipped here).
+  "typesafe",
   "openai-compatibility",
 ];
 
@@ -49,6 +51,8 @@ const FAMILY_NAMES: Readonly<Record<ProviderKeyFamily, string>> = {
   meta: "Meta",
   "opencode-zen": "OpenCode Zen",
   "opencode-go": "OpenCode Go",
+  typesafe: "TypeSafe",
+  subq: "SubQ",
   "openai-compatibility": "OpenAI-compatible",
 };
 
@@ -68,6 +72,8 @@ const DEFAULT_BASE: Readonly<Record<ProviderKeyFamily, string | undefined>> = {
   meta: "https://api.meta.ai/v1",
   "opencode-zen": "https://opencode.ai/zen/v1",
   "opencode-go": "https://opencode.ai/zen/go/v1",
+  typesafe: "https://api.typesafe.ai/v1",
+  subq: "https://api.subq.ai/v1",
   "openai-compatibility": undefined,
 };
 

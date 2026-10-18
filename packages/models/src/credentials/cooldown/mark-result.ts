@@ -431,6 +431,8 @@ const applyCredentialFailure = (
       case 524:
       case 525:
       case 526:
+      // Not in Go: TypeSafe answers 529 Overloaded where others answer 503 (ADR 0032).
+      case 529:
         state.statusMessage = "transient upstream error";
         state.nextRetryAfter = recoverableRetryAfter(
           now,
@@ -635,6 +637,7 @@ export const markResult = (input: MarkInput): CredentialState => {
             case 524:
             case 525:
             case 526:
+            case 529:
               model.nextRetryAfter = recoverableRetryAfter(
                 now,
                 retryAfterMs,

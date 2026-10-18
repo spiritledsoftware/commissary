@@ -21,6 +21,7 @@ import { GEMINI_ENDPOINT, VERTEX_DEFAULT_BASE_URL } from "../executor/gemini/tar
 import { META_DEFAULT_BASE_URL } from "../executor/meta/credentials.ts";
 import { XAI_DEFAULT_API_BASE_URL } from "../executor/xai/credentials.ts";
 import { OPENCODE_SPECS } from "../executor/opencode/providers.ts";
+import { SUBQ, SYSTEM_ONE_PROVIDER_SPECS, TYPESAFE } from "../executor/systemone/providers.ts";
 import type { JsonObject } from "@commissary/json";
 import type { AuthIndexer } from "./auth-index.ts";
 import { configKeyIds } from "../credentials/key-ids.ts";
@@ -40,6 +41,8 @@ export const DEFAULT_BASE_URLS: Readonly<
   meta: META_DEFAULT_BASE_URL,
   "opencode-zen": OPENCODE_SPECS["opencode-zen"].baseUrl,
   "opencode-go": OPENCODE_SPECS["opencode-go"].baseUrl,
+  typesafe: SYSTEM_ONE_PROVIDER_SPECS[TYPESAFE].baseUrl,
+  subq: SYSTEM_ONE_PROVIDER_SPECS[SUBQ].baseUrl,
 };
 
 /** Copy through JSON: drops `undefined` and detaches readonly config values from the plain wire shape. */
@@ -242,6 +245,8 @@ export const buildProviderKeysList = (
       meta: standard("meta"),
       "opencode-zen": standard("opencode-zen"),
       "opencode-go": standard("opencode-go"),
+      typesafe: standard("typesafe"),
+      subq: standard("subq"),
       "openai-compatibility": providerKeys["openai-compatibility"].map((group, index) =>
         compatGroupView(group, index, lookup),
       ),

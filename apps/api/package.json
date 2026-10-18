@@ -20,6 +20,7 @@
     "@commissary/state-worker": "workspace:*",
     "@effect/vitest": "catalog:",
     "@types/node": "catalog:",
+    "@typesafe-ai/sdk": "0.7.0",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

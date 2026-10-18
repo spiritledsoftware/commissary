@@ -51,7 +51,7 @@ const firstIdentifier = (
 /**
  * The type and code of an error: `code` is the one Commissary itself gave it (`auth_not_found`, ...), which wins over
  * the upstream's; `message` is the upstream body for an upstream HTTP error, read for its `error.type` and
- * `error.code` (OpenAI, Claude, Codex) or `error.status` (Gemini) and not kept.
+ * `error.code` (OpenAI, Claude, Codex), `error.status` (Gemini) or `detail.error_type` (System One) and not kept.
  */
 export const failureDetail = (error: {
   readonly message: string;
@@ -59,7 +59,17 @@ export const failureDetail = (error: {
 }): FailureDetail => {
   const body = tryParseJson(error.message);
   const parsed = isJsonObject(body) ? body : undefined;
-  const type = firstIdentifier(parsed, "error.type", "error.status", "type", "error");
+
+  const type = firstIdentifier(
+    parsed,
+    "error.type",
+    "error.status",
+    // TypeSafe's and SubQ's System One errors (ADR 0032).
+    "detail.error_type",
+    "type",
+    "error",
+  );
+
   const code = identifier(error.code) ?? firstIdentifier(parsed, "error.code", "code");
 
   return {

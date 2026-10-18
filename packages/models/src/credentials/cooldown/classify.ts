@@ -539,7 +539,9 @@ export const isCredentialRetryRoundStatus = (status: number): boolean =>
   status === 500 ||
   status === 502 ||
   status === 503 ||
-  status === 504;
+  status === 504 ||
+  // Not in Go: TypeSafe's 529 Overloaded is its 503 (ADR 0032).
+  status === 529;
 
 /** `isRequestRetryRoundError`: retry-round status or transient transport failure. */
 export const isRequestRetryRoundError = (error: ClassifiableError): boolean =>

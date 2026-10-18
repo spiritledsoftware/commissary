@@ -175,6 +175,8 @@ const providerKeys = section({
   meta: list(ProviderKeyGroup),
   "opencode-zen": list(ProviderKeyGroup),
   "opencode-go": list(ProviderKeyGroup),
+  typesafe: list(ProviderKeyGroup),
+  subq: list(ProviderKeyGroup),
   "openai-compatibility": list(OpenAICompatGroup),
 });
 

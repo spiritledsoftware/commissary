@@ -241,6 +241,10 @@ export const staticModelsByChannel = (
     case "meta":
     case "muse":
       return sectionModels(catalogs, "meta");
+    case "typesafe":
+      return sectionModels(catalogs, "typesafe");
+    case "subq":
+      return sectionModels(catalogs, "subq");
     default:
       return undefined;
   }
@@ -279,6 +283,9 @@ export const lookupStaticModelInfo = (
     models.xai,
     models.devin,
     models.meta,
+    models.typesafe,
+    models.subq,
+    models["opencode-zen"],
   ];
 
   for (const list of lists) {

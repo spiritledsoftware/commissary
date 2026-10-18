@@ -1,6 +1,6 @@
 /**
  * Model resolution for an inbound request: `(suffix)` parsing, `auto`, endpoint-specific model guards and provider
- * lookup.
+ * lookup, and the System One endpoint guard (ADR 0032).
  *
  * Go source: sdk/api/handlers/handlers_routing.go (getRequestDetailsWithOptions, validateImageOnlyModel,
  * validateSpeechOnlyModel, adjustExecutionProvidersForEntryProtocol), internal/util/provider.go (GetProviderName,
@@ -8,6 +8,7 @@
  */
 import { Effect } from "effect";
 import { ExecutionError } from "../executor/errors.ts";
+import { EntryOnlyFormats } from "@commissary/translation/formats";
 import { parseSuffix } from "@commissary/translation/thinking";
 import { unknownModelBody } from "../credentials/selection/failures.ts";
 import { ModelProviders } from "./model-providers.ts";
@@ -79,6 +80,43 @@ export const adjustProvidersForEntryProtocol = (
   return providers;
 };
 
+/**
+ * The System One endpoint guard (ADR 0032, no Go counterpart): `/v1/systemone` serves only models the registry types
+ * `systemone`, and every other endpoint refuses them. The type is read for the model as named (prefix, alias or
+ * suffixed custom name), without the suffix first. A provider lookup without types (test doubles) skips the guard.
+ */
+const systemOneEndpointError = Effect.fnUntraced(function* (
+  guardName: string,
+  candidates: ReadonlyArray<string>,
+  entryProtocol: string | undefined,
+) {
+  const models = yield* ModelProviders;
+
+  if (models.modelType === undefined) return undefined;
+  let type: string | undefined;
+
+  for (const candidate of new Set(candidates.flatMap((id) => [id, id.toLowerCase()]))) {
+    if (candidate === "") continue;
+    type = yield* models.modelType(candidate).pipe(Effect.orElseSucceed(() => undefined));
+
+    if (type !== undefined) break;
+  }
+
+  const systemOneModel = type === EntryOnlyFormats.SystemOne;
+  const systemOneEntry = entryProtocol === EntryOnlyFormats.SystemOne;
+
+  if (systemOneModel === systemOneEntry) return undefined;
+
+  return new ExecutionError({
+    status: 400,
+    code: "model_not_supported",
+    message: systemOneModel
+      ? `model ${guardName} is a System One model: it is only supported on /v1/systemone`
+      : `model ${guardName} is not a System One model: /v1/systemone only serves System One models`,
+    requestScoped: true,
+  });
+});
+
 export const resolveModel = Effect.fnUntraced(function* (
   modelName: string,
   options: ResolveOptions = {},
@@ -141,6 +179,14 @@ export const resolveModel = Effect.fnUntraced(function* (
       requestScoped: true,
     });
   }
+
+  const endpointError = yield* systemOneEndpointError(
+    guardName,
+    [baseModel, resolved],
+    options.entryProtocol,
+  );
+
+  if (endpointError !== undefined) return yield* endpointError;
 
   return {
     providers: adjustProvidersForEntryProtocol([...new Set(providers)], options.entryProtocol),

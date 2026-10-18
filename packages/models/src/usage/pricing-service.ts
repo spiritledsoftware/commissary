@@ -7,7 +7,8 @@
  *
  * Catalog prices come from the active catalog first, then from the models.dev snapshot compiled into the Worker: a
  * catalog stored in KV before models.dev costs were kept has no prices, and the bundled snapshot prices the models it
- * lists until the next refresh replaces the stored copy.
+ * lists until the next refresh replaces the stored copy. Models models.dev does not list are priced from the bundled
+ * catalog additions (never fetched).
  *
  * An attempt with no tokens (a request refused before the model ran) costs nothing whether or not its model has a
  * price, so it is not listed as unpriced traffic; every other attempt of a model without a price is.
@@ -15,7 +16,7 @@
 import { Context, Effect, Layer } from "effect";
 import { ConfigReader } from "../config/reader.ts";
 import { usesEmbeddedCatalog } from "../registry/catalog-source.ts";
-import { embeddedModelsDev } from "../registry/catalog.ts";
+import { catalogAdditions, embeddedModelsDev } from "../registry/catalog.ts";
 import { CatalogStore } from "../registry/catalog-store.ts";
 import { CurrentOrg } from "@commissary/core";
 import { ensureTokenBreakdown } from "./accounting.ts";
@@ -66,6 +67,7 @@ export class UsagePricing extends Context.Service<
           const sources: PriceSources = {
             docs: [catalogs.modelsDev, embeddedModelsDev()],
             overrides: snapshot?.priceOverrides ?? [],
+            additions: catalogAdditions(),
           };
 
           return sources;

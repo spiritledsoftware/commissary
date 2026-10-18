@@ -4002,6 +4002,222 @@
           ]
         }
       ]
+    },
+    "typesafe": {
+      "models": [
+        {
+          "id": "jev-1.13.0",
+          "object": "model",
+          "ownedBy": "typesafe",
+          "type": "systemone",
+          "displayName": "Jev 1.13",
+          "description": "TypeSafe's System One model: answers noul, choice and score questions about a state.",
+          "contextLength": 65536,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "cost": {
+            "input": 0.042,
+            "output": 0
+          },
+          "systemOne": {
+            "box": false,
+            "images": {
+              "maxBytes": 16777216,
+              "totalBytes": 33554432,
+              "mediaTypes": [
+                "image/png",
+                "image/jpeg"
+              ]
+            }
+          }
+        },
+        {
+          "id": "jev-1.14.0",
+          "object": "model",
+          "ownedBy": "typesafe",
+          "type": "systemone",
+          "created": 1791936000,
+          "displayName": "Jev 1.14",
+          "description": "TypeSafe's System One model with Box questions (where something is in an image).",
+          "contextLength": 65536,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "cost": {
+            "input": 0.042,
+            "output": 0
+          },
+          "systemOne": {
+            "box": true,
+            "images": {
+              "maxBytes": 16777216,
+              "totalBytes": 33554432,
+              "mediaTypes": [
+                "image/png",
+                "image/jpeg"
+              ]
+            }
+          }
+        },
+        {
+          "id": "jev-latest",
+          "object": "model",
+          "ownedBy": "typesafe",
+          "type": "systemone",
+          "displayName": "Jev (latest)",
+          "description": "Alias of jev-1.13.0.",
+          "contextLength": 65536,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "cost": {
+            "input": 0.042,
+            "output": 0
+          },
+          "systemOne": {
+            "box": false,
+            "images": {
+              "maxBytes": 16777216,
+              "totalBytes": 33554432,
+              "mediaTypes": [
+                "image/png",
+                "image/jpeg"
+              ]
+            }
+          }
+        },
+        {
+          "id": "jev-preview",
+          "object": "model",
+          "ownedBy": "typesafe",
+          "type": "systemone",
+          "displayName": "Jev (preview)",
+          "description": "Alias of jev-1.14.0.",
+          "contextLength": 65536,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "cost": {
+            "input": 0.042,
+            "output": 0
+          },
+          "systemOne": {
+            "box": true,
+            "images": {
+              "maxBytes": 16777216,
+              "totalBytes": 33554432,
+              "mediaTypes": [
+                "image/png",
+                "image/jpeg"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "subq": {
+      "models": [
+        {
+          "id": "subq-snap-preview",
+          "object": "model",
+          "ownedBy": "subquadratic",
+          "type": "systemone",
+          "displayName": "SubQ Snap (preview)",
+          "description": "Subquadratic's System One model: answers noul, choice and score questions about a state.",
+          "contextLength": 393216,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "cost": {
+            "input": 0.05,
+            "output": 0
+          },
+          "systemOne": {
+            "box": false,
+            "images": {
+              "max": 4,
+              "maxBytes": 4194304,
+              "totalBytes": 8388608,
+              "mediaTypes": [
+                "image/png",
+                "image/jpeg",
+                "image/webp"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "opencode-zen": {
+      "models": [
+        {
+          "id": "jev-1.13",
+          "object": "model",
+          "ownedBy": "opencode",
+          "type": "systemone",
+          "displayName": "Jev 1.13",
+          "description": "TypeSafe's Jev 1.13 through OpenCode Zen.",
+          "contextLength": 65536,
+          "supportedInputModalities": [
+            "text"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "cost": {
+            "input": 0.042,
+            "output": 0
+          },
+          "systemOne": {
+            "box": false,
+            "images": false
+          }
+        },
+        {
+          "id": "jev-1.13-free",
+          "object": "model",
+          "ownedBy": "opencode",
+          "type": "systemone",
+          "displayName": "Jev 1.13 Free",
+          "description": "TypeSafe's Jev 1.13 through OpenCode Zen, free for a limited time.",
+          "contextLength": 65536,
+          "supportedInputModalities": [
+            "text"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0
+          },
+          "systemOne": {
+            "box": false,
+            "images": false
+          }
+        }
+      ]
     }
   }
 }

@@ -209,6 +209,8 @@ export const PROVIDER_KEY_FAMILIES = [
   "meta",
   "opencode-zen",
   "opencode-go",
+  "typesafe",
+  "subq",
   "openai-compatibility",
 ] as const;
 
@@ -227,6 +229,8 @@ export const KeyGroupFamily = Schema.Literals([
   "meta",
   "opencode-zen",
   "opencode-go",
+  "typesafe",
+  "subq",
 ]);
 
 export type KeyGroupFamily = typeof KeyGroupFamily.Type;
@@ -351,6 +355,8 @@ const GroupFamilies = Schema.Struct({
   meta: Schema.Array(GroupView),
   "opencode-zen": Schema.Array(GroupView),
   "opencode-go": Schema.Array(GroupView),
+  typesafe: Schema.Array(GroupView),
+  subq: Schema.Array(GroupView),
   "openai-compatibility": Schema.Array(CompatGroupView),
 });
 

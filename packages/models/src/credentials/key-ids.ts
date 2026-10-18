@@ -25,6 +25,8 @@ const FAMILY_PROVIDERS: Readonly<
   meta: "meta",
   "opencode-zen": "opencode-zen",
   "opencode-go": "opencode-go",
+  typesafe: "typesafe",
+  subq: "subq",
 };
 
 /** Credential ids of one group: one per key (`undefined` when the key produced no credential). */
@@ -109,6 +111,8 @@ export const configKeyIds = (
     meta: grouped("meta"),
     "opencode-zen": grouped("opencode-zen"),
     "opencode-go": grouped("opencode-go"),
+    typesafe: grouped("typesafe"),
+    subq: grouped("subq"),
     "openai-compatibility": providerKeys["openai-compatibility"].map((group, index) => {
       const ids = compat.get(String(index)) ?? [];
 
@@ -216,6 +220,8 @@ export const assignEntryIds = (
       meta: withIds("meta", providerKeys.meta),
       "opencode-zen": withIds("opencode-zen", providerKeys["opencode-zen"]),
       "opencode-go": withIds("opencode-go", providerKeys["opencode-go"]),
+      typesafe: withIds("typesafe", providerKeys.typesafe),
+      subq: withIds("subq", providerKeys.subq),
       "openai-compatibility": withIds("openai-compatibility", providerKeys["openai-compatibility"]),
     },
   };
@@ -265,6 +271,8 @@ export const withStoredKeyIds = (config: Config, stored: Config): Config => {
       meta: withIds(providerKeys.meta, storedKeys.meta),
       "opencode-zen": withIds(providerKeys["opencode-zen"], storedKeys["opencode-zen"]),
       "opencode-go": withIds(providerKeys["opencode-go"], storedKeys["opencode-go"]),
+      typesafe: withIds(providerKeys.typesafe, storedKeys.typesafe),
+      subq: withIds(providerKeys.subq, storedKeys.subq),
       "openai-compatibility": withIds(
         providerKeys["openai-compatibility"],
         storedKeys["openai-compatibility"],

@@ -40,6 +40,13 @@ import {
   findCatalogModel,
   openCodeProtocolType,
 } from "./opencode-catalog.ts";
+import {
+  SUBQ,
+  SYSTEM_ONE_PROVIDER_SPECS,
+  type SystemOneProvider,
+  TYPESAFE,
+} from "../executor/systemone/providers.ts";
+import { EntryOnlyFormats } from "@commissary/translation/formats";
 import { cloneModelInfo, type ModelInfo, type ThinkingSupport } from "./model-info.ts";
 import { type GrantFilter, grantsReach } from "./grant-filter.ts";
 import type { ModelSource } from "./source.ts";
@@ -357,6 +364,59 @@ const buildOpenCodeConfigModels = (
     }
 
     if (isOpenCodeProtocol(entry.protocol)) out.type = openCodeProtocolType(entry.protocol);
+
+    return out;
+  });
+};
+
+/**
+ * TypeSafe/SubQ config models (no Go counterpart, ADR 0032): `buildConfigModels` typed `systemone`, with the catalog's
+ * display name, description and context length for names the catalog knows (an explicit `display-name` or
+ * `max-context-length` wins). Thinking does not apply to System One models.
+ */
+const buildSystemOneConfigModels = (
+  entries: ReadonlyArray<ModelEntry>,
+  provider: SystemOneProvider,
+  options: AssemblyOptions,
+): ModelInfo[] => {
+  const catalog = sectionModels(options.catalogs, provider);
+  const byAlias = new Map<string, ModelEntry>();
+
+  for (const entry of entries) {
+    const alias = ((entry.alias ?? "").trim() || entry.name.trim()).toLowerCase();
+
+    if (alias !== "" && !byAlias.has(alias)) byAlias.set(alias, entry);
+  }
+
+  return buildConfigModels(
+    entries,
+    SYSTEM_ONE_PROVIDER_SPECS[provider].displayName.toLowerCase(),
+    EntryOnlyFormats.SystemOne,
+    provider,
+    options,
+  ).map((model) => {
+    const out: Types.Mutable<ModelInfo> = { ...model };
+    delete out.thinking;
+    const entry = byAlias.get(model.id.toLowerCase());
+    const name = parseModelSuffix((entry?.name ?? "").trim()).modelName.trim();
+    const known = catalog.find((candidate) => candidate.id.toLowerCase() === name.toLowerCase());
+
+    if (entry === undefined || known === undefined) return out;
+    out.ownedBy = known.ownedBy;
+
+    if ((entry["display-name"] ?? "").trim() === "" && known.displayName !== undefined)
+      out.displayName = known.displayName;
+
+    if (known.description !== undefined) out.description = known.description;
+
+    if (out.contextLength === undefined && known.contextLength !== undefined)
+      out.contextLength = known.contextLength;
+
+    if (known.supportedInputModalities !== undefined)
+      out.supportedInputModalities = [...known.supportedInputModalities];
+
+    if (known.supportedOutputModalities !== undefined)
+      out.supportedOutputModalities = [...known.supportedOutputModalities];
 
     return out;
   });
@@ -680,6 +740,14 @@ const baseModels = (source: ModelSource, options: AssemblyOptions): ModelInfo[] 
         configured.length > 0
           ? buildConfigModels(configured, "meta", "meta", "meta", options)
           : sectionModels(catalogs, "meta"),
+        excluded,
+      );
+    case TYPESAFE:
+    case SUBQ:
+      return applyExcludedModels(
+        configured.length > 0
+          ? buildSystemOneConfigModels(configured, provider, options)
+          : sectionModels(catalogs, provider),
         excluded,
       );
     case OPENCODE_ZEN:

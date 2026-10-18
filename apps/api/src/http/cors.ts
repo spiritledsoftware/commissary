@@ -1,6 +1,8 @@
 // Port of corsMiddleware (internal/api/server_middleware.go:25-143).
 import { Effect, Predicate } from "effect";
 import { HttpRouter, HttpServerError, HttpServerRequest, HttpServerResponse } from "effect/http";
+import { refusalResponse } from "@commissary/auth";
+import { isSystemOnePath } from "@commissary/core";
 
 /** Mirrors `corsExposedResponseHeaders` in internal/api/server_middleware.go. */
 export const CORS_EXPOSED_RESPONSE_HEADERS = [
@@ -26,8 +28,14 @@ const corsHeaders = {
   "access-control-expose-headers": CORS_EXPOSED_RESPONSE_HEADERS.join(", "),
 } as const;
 
-/** Gin answers unknown routes with a plain-text 404. */
-const notFound = HttpServerResponse.text("404 page not found", { status: 404 });
+/**
+ * Gin answers unknown routes with a plain-text 404; on the System One path (a method other than `POST`) the 404 is
+ * TypeSafe-shaped like every other answer there (ADR 0032).
+ */
+const notFound = (requestUrl: string): HttpServerResponse.HttpServerResponse =>
+  isSystemOnePath(requestUrl)
+    ? refusalResponse(404, "Not Found", "systemone")
+    : HttpServerResponse.text("404 page not found", { status: 404 });
 
 /**
  * Global middleware of the client API: every response (including 404s) carries the CORS headers, and `OPTIONS`
@@ -45,7 +53,7 @@ export const CorsLayer = HttpRouter.middleware<{ handles: HttpServerError.HttpSe
           : yield* app.pipe(
               Effect.catchTag("HttpServerError", (error) =>
                 Predicate.isTagged(error.reason, "RouteNotFound")
-                  ? Effect.succeed(notFound)
+                  ? Effect.succeed(notFound(request.originalUrl))
                   : Effect.fail(error),
               ),
             );

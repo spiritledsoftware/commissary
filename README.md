@@ -235,6 +235,7 @@ More Access-specific answers: [ACCESS.md#troubleshooting](docs/ACCESS.md#trouble
 | Kimi / Kimi.ai (device login), Meta, Devin                           | OpenAI, Claude, Responses                                | Devin: authorization-code login                                                                            |
 | OpenCode Zen / OpenCode Go (provider key)                            | every client protocol                                    | Chat, Responses, Messages (and Zen Gemini) per model; Go keys show their usage quotas on the Accounts page |
 | OpenAI-compatible upstreams (provider key)                           | every client protocol                                    | Configured as `api-keys.openai-compatibility` groups                                                       |
+| TypeSafe, SubQ (provider key)                                        | System One (`POST /v1/systemone`, TypeSafe's API)        | System One models (Jev, SubQ Snap); SubQ text only for now                                                 |
 
 The matrix is indicative: which (client protocol, provider) pairs work follows the registered translators in
 `packages/translation/src/translator/builtin.ts`; an unsupported pair answers with a 4xx/501 error.

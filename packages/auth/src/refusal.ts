@@ -1,11 +1,12 @@
 /**
  * What a Worker's gate answers around `@commissary/auth`'s entry points (the app Worker's Access gate, the API Worker's
  * client gate): a failed authentication as a response with a flat `{"error": …}` body (mirrors AuthMiddleware in
- * internal/api/server_middleware.go), and the identity of a public route, which has no caller.
+ * internal/api/server_middleware.go), or TypeSafe's `{"detail": …}` on the System One endpoint (ADR 0032), and the
+ * identity of a public route, which has no caller.
  */
 import { Effect, Match } from "effect";
 import { HttpServerResponse } from "effect/http";
-import type { OrgId } from "@commissary/core";
+import { type OrgId, systemOneErrorBody } from "@commissary/core";
 import type { AccessError } from "./gate.ts";
 import type { AccessIdentity, Principal } from "./principal.ts";
 
@@ -44,16 +45,30 @@ export const PUBLIC_ROUTE_IDENTITY: AccessIdentity = {
   },
 };
 
-const errorResponse = (status: number, message: string) =>
-  HttpServerResponse.text(JSON.stringify({ error: message }), {
-    status,
-    contentType: JSON_CONTENT_TYPE,
-  });
+/** The body family of a refusal: the flat `{"error"}` everywhere but the System One endpoint (ADR 0032). */
+export type RefusalDialect = "flat" | "systemone";
+
+/** A refusal response in `dialect`. */
+export const refusalResponse = (
+  status: number,
+  message: string,
+  dialect: RefusalDialect = "flat",
+): HttpServerResponse.HttpServerResponse =>
+  HttpServerResponse.text(
+    dialect === "systemone"
+      ? systemOneErrorBody(status, message)
+      : JSON.stringify({ error: message }),
+    { status, contentType: JSON_CONTENT_TYPE },
+  );
 
 /** Maps an authentication failure to a response; server-side failures are logged without details a client could use. */
 export const accessErrorResponse = (
   error: AccessError,
+  dialect: RefusalDialect = "flat",
 ): Effect.Effect<HttpServerResponse.HttpServerResponse> => {
+  const errorResponse = (status: number, message: string) =>
+    refusalResponse(status, message, dialect);
+
   return Match.value(error).pipe(
     Match.tag("UnauthorizedError", (denied) => Effect.succeed(errorResponse(401, denied.message))),
     Match.tag("ForbiddenError", (denied) => Effect.succeed(errorResponse(403, denied.message))),

@@ -11,7 +11,8 @@
  * Models.dev provider -> our provider: `anthropic` -> Claude, `google` -> Gemini and AI Studio, `google-vertex` ->
  * Vertex (Gemini only), `xai` -> xAI, `meta` -> Meta, `kimi-code-plan-global` -> Kimi (`kimi-` prefixed ids, which
  * the Kimi executor normalizes), `openai` -> Codex (details only). Antigravity and Devin have private model ids and
- * are catalog additions entirely.
+ * are catalog additions entirely, like the System One models (ADR 0032) of TypeSafe, SubQ and OpenCode Zen (the
+ * `opencode-zen` section holds only those; Zen's other models come from models.dev, `opencode-catalog.ts`).
  */
 import type { Types } from "effect";
 import { matchWildcard } from "../credentials/selection/model-name.ts";
@@ -40,6 +41,10 @@ export const SECTIONS = [
   "xai",
   "devin",
   "meta",
+  "typesafe",
+  "subq",
+  // Zen's System One models only (ADR 0032); its chat models come from models.dev (`opencode-catalog.ts`).
+  "opencode-zen",
 ] as const;
 
 export type Section = (typeof SECTIONS)[number];
@@ -306,9 +311,17 @@ export const modelInfoFromModelsDev = (
   return info;
 };
 
-/** The record of a model models.dev does not list: the addition as it is. */
+/** The record of a model models.dev does not list: the addition as it is, without its price and System One facts. */
 export const modelInfoFromAddition = (record: AdditionModel): ModelInfo => {
-  const { id, object, ownedBy, type, ...facts } = structuredClone(record);
+  const {
+    id,
+    object,
+    ownedBy,
+    type,
+    cost: _cost,
+    systemOne: _systemOne,
+    ...facts
+  } = structuredClone(record);
 
   return {
     id,
@@ -427,5 +440,8 @@ export const buildModelsCatalog = (
     xai: sourceSection(SOURCES.xai, doc, providers.xai),
     devin: recordsSection(providers.devin),
     meta: sourceSection(SOURCES.meta, doc, providers.meta),
+    typesafe: recordsSection(providers.typesafe),
+    subq: recordsSection(providers.subq),
+    "opencode-zen": recordsSection(providers["opencode-zen"]),
   };
 };

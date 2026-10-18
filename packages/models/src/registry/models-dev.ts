@@ -64,7 +64,7 @@ const Rates = Schema.Struct(RateFields);
  * apply); `context_over_200k` is the older spelling of the 200k tier. The audio prices models.dev also lists are not
  * read.
  */
-const Cost = Schema.Struct({
+export const Cost = Schema.Struct({
   ...RateFields,
   reasoning: optional(Schema.Finite),
   tiers: optional(

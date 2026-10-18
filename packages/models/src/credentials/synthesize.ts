@@ -30,6 +30,7 @@ import {
   OPENCODE_SPECS,
   OPENCODE_ZEN,
 } from "../executor/opencode/providers.ts";
+import { SUBQ, TYPESAFE } from "../executor/systemone/providers.ts";
 
 /** Go `FormatSortedHeaders`: sorted `name\0value\0` pairs. */
 export const formatSortedHeaders = (
@@ -83,6 +84,8 @@ type Family =
   | "meta"
   | "opencode-zen"
   | "opencode-go"
+  | "typesafe"
+  | "subq"
   | "vertex";
 
 interface FamilySpec {
@@ -126,6 +129,13 @@ const SPECS: Readonly<Record<Family, FamilySpec>> = {
     sourceName: "opencode-go",
     label: "opencode-go-apikey",
   },
+  typesafe: {
+    provider: TYPESAFE,
+    idKind: "typesafe:apikey",
+    sourceName: "typesafe",
+    label: "typesafe-apikey",
+  },
+  subq: { provider: SUBQ, idKind: "subq:apikey", sourceName: "subq", label: "subq-apikey" },
   vertex: {
     provider: "vertex",
     idKind: "vertex:apikey",
@@ -154,6 +164,9 @@ const FAMILY_ORDER: ReadonlyArray<Family> = [
   // Not in Go (no OpenCode provider there); after every Go family so Go's duplicate suffixes stay unchanged.
   "opencode-zen",
   "opencode-go",
+  // Not in Go (no System One providers there); appended so Go's duplicate suffixes stay unchanged.
+  "typesafe",
+  "subq",
 ];
 
 /** Flattened key entry: the group's settings overlaid with the key's own. */

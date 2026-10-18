@@ -86,6 +86,8 @@ const list = (families: Partial<ProviderKeysList["families"]>): ProviderKeysList
     meta: [],
     "opencode-zen": [],
     "opencode-go": [],
+    typesafe: [],
+    subq: [],
     "openai-compatibility": [],
     ...families,
   },
@@ -108,6 +110,14 @@ describe("keySections", () => {
       ["groq", 1],
     ]);
     expect(sections[2]?.caption).toBe("OpenAI-compatible endpoint");
+  });
+
+  it("lists TypeSafe and skips a family the panel does not show yet", () => {
+    const sections = keySections(
+      list({ typesafe: [group({}, 0)], subq: [group({}, 0)], gemini: [group({}, 0)] }),
+    );
+
+    expect(sections.map((section) => section.title)).toEqual(["Gemini", "TypeSafe"]);
   });
 
   it("is empty without keys", () => {
