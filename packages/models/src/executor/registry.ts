@@ -26,7 +26,7 @@ import { SUBQ, TYPESAFE } from "./systemone/providers.ts";
 import { SYSTEM_ONE_SPECS } from "./systemone/specs.ts";
 import { makeXaiExecutor } from "./xai/executor.ts";
 import { EntryOnlyFormats } from "@commissary/translation/formats";
-import { notImplemented } from "./errors.ts";
+import { type ExecutionError, notImplemented } from "./errors.ts";
 import type { ExecutorOptions, ProviderExecutor } from "./types.ts";
 
 export class ExecutorRegistry extends Context.Service<
@@ -71,32 +71,22 @@ export const SYSTEM_ONE_EXECUTORS: ReadonlySet<string> = new Set([TYPESAFE, SUBQ
 
 /** `executor` with `systemone` requests refused (501, request-scoped). */
 const withoutSystemOne = (executor: ProviderExecutor): ProviderExecutor => {
-  const refused = (options: ExecutorOptions) =>
+  const guarded = <A, E, R>(
+    options: ExecutorOptions,
+    run: () => Effect.Effect<A, E, R>,
+  ): Effect.Effect<A, E | ExecutionError, R> =>
     options.sourceFormat === EntryOnlyFormats.SystemOne
-      ? notImplemented(`${executor.identifier} does not serve System One requests`)
-      : undefined;
+      ? Effect.fail(notImplemented(`${executor.identifier} does not serve System One requests`))
+      : run();
 
   return {
     identifier: executor.identifier,
-    execute: (context, request, options) => {
-      const error = refused(options);
-
-      return error === undefined ? executor.execute(context, request, options) : Effect.fail(error);
-    },
-    executeStream: (context, request, options) => {
-      const error = refused(options);
-
-      return error === undefined
-        ? executor.executeStream(context, request, options)
-        : Effect.fail(error);
-    },
-    countTokens: (context, request, options) => {
-      const error = refused(options);
-
-      return error === undefined
-        ? executor.countTokens(context, request, options)
-        : Effect.fail(error);
-    },
+    execute: (context, request, options) =>
+      guarded(options, () => executor.execute(context, request, options)),
+    executeStream: (context, request, options) =>
+      guarded(options, () => executor.executeStream(context, request, options)),
+    countTokens: (context, request, options) =>
+      guarded(options, () => executor.countTokens(context, request, options)),
   };
 };
 
@@ -112,8 +102,8 @@ export const makeExecutorRegistry = () => {
       const fixed = FIXED_EXECUTORS.get(key);
 
       if (fixed === undefined && !isOpenAICompatProvider(key)) return undefined;
-      const made = fixed === undefined ? makeOpenAICompatExecutor(key) : fixed();
-      const executor = SYSTEM_ONE_EXECUTORS.has(key) ? made : withoutSystemOne(made);
+      const base = fixed === undefined ? makeOpenAICompatExecutor(key) : fixed();
+      const executor = SYSTEM_ONE_EXECUTORS.has(key) ? base : withoutSystemOne(base);
       // `ForAPIKey` (oauth_scope_executor.go): provider-key credentials see the config without OAuth-only settings.
       const scoped = withProviderKeyScope(key, executor);
       cache.set(key, scoped);

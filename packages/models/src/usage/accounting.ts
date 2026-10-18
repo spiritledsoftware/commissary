@@ -6,6 +6,7 @@
  * leave the safe-integer range count as overflow.
  */
 import type { UsageDetail } from "./record.ts";
+import { isSystemOneProvider } from "../executor/systemone/providers.ts";
 
 export const TOKEN_ACCOUNTING_SCHEMA_VERSION = 2;
 
@@ -337,7 +338,7 @@ export const tokenAccountingSemanticsFor = (
   if (value.includes("claude") || value.includes("anthropic")) return "independent";
 
   // Not in Go (ADR 0032): System One providers report `input_tokens`/`output_tokens` only, never overlapping.
-  if (normalizedProvider === "typesafe" || normalizedProvider === "subq") return "independent";
+  if (isSystemOneProvider(normalizedProvider)) return "independent";
 
   for (const marker of ["gemini", "aistudio", "antigravity", "vertex", "interaction"]) {
     if (value.includes(marker)) return "separate-reasoning";

@@ -11,7 +11,7 @@
 import { countImages, hasBoxQuestion } from "@commissary/translation/systemone";
 import { parseSuffix } from "@commissary/translation/thinking";
 import type { Json } from "@commissary/json";
-import type { SystemOneCapabilities } from "../../registry/catalog-additions.ts";
+import { additionRecord, type SystemOneCapabilities } from "../../registry/catalog-additions.ts";
 import { catalogAdditions } from "../../registry/catalog.ts";
 import { ExecutionError } from "../errors.ts";
 
@@ -19,16 +19,8 @@ import { ExecutionError } from "../errors.ts";
 export const systemOneCapabilities = (
   provider: string,
   model: string,
-): SystemOneCapabilities | undefined => {
-  const key = provider.trim().toLowerCase();
-  const id = parseSuffix(model).modelName.trim().toLowerCase();
-
-  const entry = Object.entries(catalogAdditions().providers).find(
-    ([candidate]) => candidate === key,
-  )?.[1];
-
-  return entry?.models?.find((record) => record.id.toLowerCase() === id)?.systemOne;
-};
+): SystemOneCapabilities | undefined =>
+  additionRecord(catalogAdditions(), provider, parseSuffix(model).modelName)?.systemOne;
 
 /** A request-scoped 400: the provider cannot serve this request, so it is not sent. */
 const refused = (message: string): ExecutionError =>

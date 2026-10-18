@@ -22,6 +22,7 @@
 import { isJsonObject, type Json, type JsonObject } from "@commissary/json";
 import { DEDUPED_FAMILIES, type DedupedFamily } from "../config/normalize.ts";
 import { typedDuplicates, withoutKeys } from "./key-duplicates.ts";
+import { isSystemOneProvider } from "../executor/systemone/providers.ts";
 import type { AuthIndexer } from "./auth-index.ts";
 import type { ConfigKeyIds, GroupKeyIds } from "../credentials/key-ids.ts";
 import { type ProviderKeyFamily, REDACTED_PREFIX } from "@commissary/contract/provider-keys";
@@ -401,10 +402,7 @@ export const structuralDropReason = (
     return "vertex keys need an api-key";
 
   if (
-    (family === "opencode-zen" ||
-      family === "opencode-go" ||
-      family === "typesafe" ||
-      family === "subq") &&
+    (family === "opencode-zen" || family === "opencode-go" || isSystemOneProvider(family)) &&
     secrets.includes("")
   )
     return `${family} keys need an api-key`;

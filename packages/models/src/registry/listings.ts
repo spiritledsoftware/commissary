@@ -10,8 +10,6 @@ import { compareStrings } from "./compare.ts";
 import { EntryOnlyFormats } from "@commissary/translation/formats";
 import type { ModelInfo } from "./model-info.ts";
 
-const SYSTEM_ONE_TYPE = EntryOnlyFormats.SystemOne;
-
 export { compareStrings };
 
 export const DEFAULT_CLAUDE_MAX_INPUT_TOKENS = 200000;
@@ -34,7 +32,7 @@ export const openaiEntry = (model: ModelInfo): JsonObject => ({
   object: "model",
   ...(model.created > 0 ? { created: model.created } : {}),
   owned_by: model.ownedBy,
-  ...(model.type === SYSTEM_ONE_TYPE ? { type: SYSTEM_ONE_TYPE } : {}),
+  ...(model.type === EntryOnlyFormats.SystemOne ? { type: EntryOnlyFormats.SystemOne } : {}),
 });
 
 export const openaiList = (models: ReadonlyArray<ModelInfo>): JsonObject => ({

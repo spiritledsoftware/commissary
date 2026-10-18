@@ -61,6 +61,10 @@ type Parsed =
 
 const invalid = (message: string, status = 400): Parsed => ({ ok: false, status, message });
 
+/** The media type of a `Content-Type` value, without its parameters, lower-cased (`""` when there is none). */
+const mediaTypeOf = (contentType: string | undefined): string =>
+  (contentType ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
+
 /** The JSON request of a body or part: a JSON object (UTF-8). */
 const jsonObject = (bytes: Uint8Array): JsonObject | undefined => {
   try {
@@ -91,7 +95,7 @@ const parseMultipartRequest = (bytes: Uint8Array, contentType: string): Parsed =
 
     if (part.name === REQUEST_PART || byName.has(part.name))
       return invalid(`multipart part name "${part.name}" is used more than once`);
-    const type = (part.contentType ?? "").split(";")[0]?.trim() ?? "";
+    const type = mediaTypeOf(part.contentType);
 
     if (type !== "" && !IMAGE_PART_TYPES.has(type))
       return invalid(`multipart part "${part.name}" has unsupported content type "${type}"`, 415);
@@ -118,9 +122,7 @@ const parseMultipartRequest = (bytes: Uint8Array, contentType: string): Parsed =
   const parts = new Map(
     [...byName].map(([name, part]) => [
       name,
-      new File([part.body], part.filename ?? name, {
-        type: (part.contentType ?? "").split(";")[0]?.trim() ?? "",
-      }),
+      new File([part.body], part.filename ?? name, { type: mediaTypeOf(part.contentType) }),
     ]),
   );
 
@@ -138,24 +140,33 @@ const parseRequest = Effect.fnUntraced(function* (request: HttpServerRequest.Htt
   if (Result.isFailure(raw)) return invalid(raw.failure.message);
 
   if (raw.success.byteLength > SYSTEM_ONE_MAX_BODY_BYTES) return tooLarge;
-  let bytes: Uint8Array;
 
-  try {
-    bytes = decodeRequestBytes(
-      new Uint8Array(raw.success),
-      request.headers["content-encoding"],
-      Math.min(SYSTEM_ONE_MAX_BODY_BYTES, MAX_DECODED_BODY_BYTES),
-    );
-  } catch (error) {
-    if (error instanceof RequestBodyTooLargeError) return tooLarge;
-    const message = error instanceof Error ? error.message : String(error);
+  const decoded = yield* Effect.result(
+    Effect.try({
+      try: () =>
+        decodeRequestBytes(
+          new Uint8Array(raw.success),
+          request.headers["content-encoding"],
+          Math.min(SYSTEM_ONE_MAX_BODY_BYTES, MAX_DECODED_BODY_BYTES),
+        ),
+      catch: (error): Parsed => {
+        if (error instanceof RequestBodyTooLargeError) return tooLarge;
+        const message = error instanceof Error ? error.message : String(error);
 
-    // TypeSafe answers 415 for an encoding it does not support.
-    return invalid(message, message.startsWith("unsupported request content encoding") ? 415 : 400);
-  }
+        // TypeSafe answers 415 for an encoding it does not support.
+        return invalid(
+          message,
+          message.startsWith("unsupported request content encoding") ? 415 : 400,
+        );
+      },
+    }),
+  );
 
+  if (Result.isFailure(decoded)) return decoded.failure;
+
+  const bytes = decoded.success;
   const contentType = (request.headers["content-type"] ?? "").trim();
-  const mediaType = contentType.split(";")[0]?.trim().toLowerCase() ?? "";
+  const mediaType = mediaTypeOf(contentType);
 
   if (mediaType === "multipart/form-data") return parseMultipartRequest(bytes, contentType);
 

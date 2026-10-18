@@ -21,6 +21,7 @@ import {
 } from "effect/http";
 import { cloneJson, isJsonObject, type Json, type JsonObject } from "@commissary/json";
 import { EntryOnlyFormats } from "@commissary/translation/formats";
+import { parseUpstreamSystemOneError } from "@commissary/translation/systemone";
 import { parseSuffix } from "@commissary/translation/thinking";
 import { ExecutionError, notImplemented } from "../errors.ts";
 import { applyCustomHeaders } from "../helps/custom-headers.ts";
@@ -225,7 +226,12 @@ export const postSystemOne = Effect.fnUntraced(function* (
 
   if (response.status < 200 || response.status >= 300) {
     const text = yield* response.text.pipe(Effect.orElseSucceed(() => ""));
-    usage.fail(response.status, text);
+    // The usage record keeps only the error type: a provider's message can echo the request's state (ADR 0027).
+    const { error_type } = parseUpstreamSystemOneError(response.status, text);
+    usage.fail(
+      response.status,
+      error_type === undefined ? "" : JSON.stringify({ detail: { error_type } }),
+    );
 
     return yield* post.classifyError({
       status: response.status,

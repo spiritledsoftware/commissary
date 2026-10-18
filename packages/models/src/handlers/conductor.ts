@@ -224,7 +224,10 @@ export const lifecycleError = (): ExecutionError =>
 const authNotFound = (): ExecutionError =>
   new ExecutionError({ status: 503, code: "auth_not_found", message: "no auth available" });
 
-/** Adds `Retry-After` to a final 429/503/529 (TypeSafe's overload) when a credential recovery time is known (seconds, rounded up). */
+/**
+ * Adds `Retry-After` to a final 429/503/529 (TypeSafe's overload) when a credential recovery time is known (seconds,
+ * rounded up).
+ */
 const withRetryAfter = (
   error: ExecutionError,
   retryAfterMs: number | undefined,

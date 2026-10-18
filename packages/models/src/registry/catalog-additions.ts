@@ -146,6 +146,22 @@ export interface CatalogAdditions {
   readonly providers: { readonly [P in AdditionProvider]?: ProviderAdditions };
 }
 
+/**
+ * The full record of model `id` under provider key `provider` in `additions`, if it has one; both compare trimmed and
+ * case-insensitively.
+ */
+export const additionRecord = (
+  additions: CatalogAdditions,
+  provider: string,
+  id: string,
+): AdditionModel | undefined => {
+  const key = provider.trim().toLowerCase();
+  const wanted = id.trim().toLowerCase();
+  const entry = Object.entries(additions.providers).find(([candidate]) => candidate === key)?.[1];
+
+  return entry?.models?.find((record) => record.id.toLowerCase() === wanted);
+};
+
 const Document = Schema.Struct({
   version: Schema.Literal(1),
   providers: Schema.Struct(

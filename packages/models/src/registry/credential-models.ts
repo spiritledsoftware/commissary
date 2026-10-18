@@ -399,7 +399,7 @@ const buildSystemOneConfigModels = (
     delete out.thinking;
     const entry = byAlias.get(model.id.toLowerCase());
     const name = parseModelSuffix((entry?.name ?? "").trim()).modelName.trim();
-    const known = catalog.find((candidate) => candidate.id === name);
+    const known = catalog.find((candidate) => candidate.id.toLowerCase() === name.toLowerCase());
 
     if (entry === undefined || known === undefined) return out;
     out.ownedBy = known.ownedBy;

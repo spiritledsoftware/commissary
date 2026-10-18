@@ -157,4 +157,29 @@ describe("TypeSafe errors through /v1/systemone", () => {
     await served.text();
     expect(upstreamKeys).toEqual(["ts-aliased"]);
   });
+
+  it("answers another method on the System One path TypeSafe-shaped, and serves a trailing slash", async () => {
+    upstream = () => Response.json(ANSWER);
+
+    for (const method of ["GET", "PUT", "DELETE"]) {
+      const response = await exports.default.fetch(
+        new Request("http://localhost/v1/systemone", { method }),
+      );
+
+      expect(response.status).toBe(404);
+      expect(await response.text()).toBe(detail("not_found_error", "Not Found"));
+    }
+
+    const slashed = await exports.default.fetch(
+      new Request("http://localhost/v1/systemone/", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "aliased/my-jev", state: "s", questions: {} }),
+      }),
+    );
+
+    expect(slashed.status).toBe(200);
+    await slashed.text();
+    expect(upstreamKeys).toEqual(["ts-aliased"]);
+  });
 });

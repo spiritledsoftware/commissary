@@ -13,8 +13,6 @@ export const SUBQ = "subq";
 
 export type SystemOneProvider = typeof TYPESAFE | typeof SUBQ;
 
-export const SYSTEM_ONE_PROVIDER_KEYS: ReadonlyArray<SystemOneProvider> = [TYPESAFE, SUBQ];
-
 export interface SystemOneProviderSpec {
   /** Executor/registry key, also the `api-keys` family name and the catalog additions provider. */
   readonly provider: SystemOneProvider;
