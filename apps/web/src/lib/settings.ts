@@ -37,7 +37,7 @@ export type SectionId =
  * How a value is edited: `bool` a checkbox; `tristate` a checkbox over an unset Go pointer; `int` whole numbers ≥ 0;
  * `duration` a Go duration > 0; `bootstrap` a duration, whole seconds or 0 for unlimited; `text` trimmed text;
  * `model` a `gpt-` model or empty; `timezone` an IANA zone, `Local` or empty; `words` one entry
- * per line; `strategy` and `images` radio lists; `catalog` and `cooldown` a radio list with a text field.
+ * per line; `choice` (one of the copy's options) and `images` radio lists; `catalog` and `cooldown` a radio list with a text field.
  */
 export type FieldKind =
   | "bool"
@@ -49,7 +49,7 @@ export type FieldKind =
   | "model"
   | "timezone"
   | "words"
-  | "strategy"
+  | "choice"
   | "images"
   | "catalog"
   | "cooldown";
@@ -74,7 +74,7 @@ const field = (
 ): FieldSpec => ({ path, section, kind, label, ...(unset === undefined ? {} : { unset }) });
 
 export const FIELDS: ReadonlyArray<FieldSpec> = [
-  field("routing", "routing.strategy", "strategy", "Strategy"),
+  field("routing", "routing.strategy", "choice", "Strategy"),
   field("routing", "routing.session-affinity", "bool", "Session affinity"),
   field("routing", "routing.session-affinity-ttl", "duration", "Session binding"),
   field("routing", "routing.session-affinity-subagents", "bool", "Subagents"),
@@ -103,6 +103,7 @@ export const FIELDS: ReadonlyArray<FieldSpec> = [
   field("images", "multimedia.video-result-auth-cache-ttl", "duration", "Video ownership"),
 
   field("providers", "upstream.claude.disable-claude-cloak-mode", "bool", "Claude cloaking"),
+  field("providers", "upstream.claude.cloak-level", "choice", "Claude cloak level"),
   field("providers", "upstream.claude.disable-cloaking-model-list", "bool", "Claude model list"),
   field("providers", "upstream.claude.header-defaults.user-agent", "text", "Claude User-Agent"),
   field(
@@ -423,7 +424,7 @@ export const parseInput = (spec: FieldSpec, input: Input): Parsed => {
 
     case "words":
       return ok(lines(asText(input)));
-    case "strategy":
+    case "choice":
       return ok(asText(input));
     case "images": {
       const mode = IMAGE_MODES.get(asText(input));

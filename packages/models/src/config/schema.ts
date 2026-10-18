@@ -27,7 +27,11 @@ import {
   RequestScopedErrorRule,
   ThinkingSupport,
 } from "@commissary/contract/provider-keys";
-import { DisableImageGeneration, RoutingStrategy } from "@commissary/contract/settings";
+import {
+  ClaudeCloakLevel,
+  DisableImageGeneration,
+  RoutingStrategy,
+} from "@commissary/contract/settings";
 
 // --- field helpers -------------------------------------------------------------------------------------------------
 
@@ -91,9 +95,9 @@ export type OAuthModelSetting = typeof OAuthModelSetting.Type;
 
 // --- sections ------------------------------------------------------------------------------------------------------
 
-// `routing.strategy` and `multimedia.disable-image-generation` are shared with the Settings page
-// (@commissary/contract/settings).
-export { DisableImageGeneration, RoutingStrategy };
+// `routing.strategy`, `upstream.claude.cloak-level` and `multimedia.disable-image-generation` are shared with the
+// Settings page (@commissary/contract/settings).
+export { ClaudeCloakLevel, DisableImageGeneration, RoutingStrategy };
 
 const routing = section({
   strategy: RoutingStrategy.pipe(
@@ -157,6 +161,10 @@ const upstream = section({
   claude: section({
     "model-level-cooling": flag(false),
     "disable-claude-cloak-mode": flag(false),
+    /** How much of a cloaked request looks like Claude Code; a key's `cloak.level` or the `cloak_level` attribute override it. */
+    "cloak-level": ClaudeCloakLevel.pipe(
+      Schema.withDecodingDefaultKey(Effect.succeed("full" as const)),
+    ),
     "disable-cloaking-model-list": flag(false),
     "header-defaults": claudeHeaderDefaults,
   }),

@@ -265,6 +265,7 @@ const SignIn = ({
       return (
         <div className={styles["panelBody"]}>
           <p className={styles["lead"]}>{option.how}</p>
+          {option.notice === undefined ? null : <p className={styles["notice"]}>{option.notice}</p>}
           {codeAlternative === true ? (
             <label className={styles["check"]}>
               <input

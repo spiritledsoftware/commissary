@@ -6,6 +6,7 @@
  * claude_fingerprint_policy.go (resolveClaudeFingerprintPolicy), claude_executor_cloaking.go (getCloakConfigFromAuth,
  * resolveClaudeWirePolicy), claude_signing.go (resolveClaudeKeyConfig).
  */
+import type { ClaudeCloakLevel } from "@commissary/contract/settings";
 import type { ProviderKeyEntry, ProviderKeyGroup, Config } from "../../config/schema.ts";
 import type { CredentialSnapshot } from "../picker.ts";
 
@@ -131,12 +132,34 @@ export const resolveFingerprintPolicy = (
   };
 };
 
+/**
+ * How much of a cloaked request looks like Claude Code (GLOSSARY.md, "Cloak level"): `full` sends everything Claude Code sends,
+ * `minimal` only what a Claude subscription checks (the caller system prompt out of the top-level `system`, the
+ * Claude Code identity line, the OAuth beta). A Commissary addition: Go has only the cloak mode.
+ */
+export type CloakLevel = ClaudeCloakLevel;
+
+/** Trimmed, case-insensitive; anything but `minimal` (including empty) is `full`. */
+const parseCloakLevel = (value: string): CloakLevel | undefined => {
+  const level = value.trim().toLowerCase();
+
+  if (level === "") return undefined;
+
+  return level === "minimal" ? "minimal" : "full";
+};
+
 export interface WirePolicy {
   readonly oauth: boolean;
   readonly profileClaudeCodeCLI: boolean;
   readonly confirmedClaudeCode: boolean;
   readonly cloak: boolean;
+  /** Only meaningful when {@link cloak} is set. */
+  readonly level: CloakLevel;
 }
+
+/** The request is cloaked at the `minimal` level: nothing of Claude Code's beyond what the subscription checks. */
+export const isMinimalCloak = (policy: WirePolicy): boolean =>
+  policy.cloak && policy.level === "minimal";
 
 export interface CloakSettings {
   readonly strictMode: boolean;
@@ -162,11 +185,13 @@ export const resolveWirePolicy = (
   const wordsText = lookupAttr(credential, "cloak_sensitive_words");
   const attrWords = wordsText === "" ? [] : wordsText.split(",").map((word) => word.trim());
   const attrCache = lookupAttr(credential, "cloak_cache_user_id").toLowerCase() === "true";
+  const attrLevel = parseCloakLevel(lookupAttr(credential, "cloak_level"));
 
   let cloakMode = config.upstream.claude["disable-claude-cloak-mode"] ? "never" : "auto";
   let strictMode = attrStrict;
   let sensitiveWords: ReadonlyArray<string> = attrWords;
   let cacheUserID = attrCache;
+  let level: CloakLevel = attrLevel ?? config.upstream.claude["cloak-level"];
 
   if (attrMode !== "") cloakMode = attrMode;
 
@@ -181,12 +206,23 @@ export const resolveWirePolicy = (
       sensitiveWords = cloakCfg["sensitive-words"] ?? [];
 
     if (cloakCfg["cache-user-id"] !== undefined) cacheUserID = cloakCfg["cache-user-id"];
+
+    level = parseCloakLevel(cloakCfg.level ?? "") ?? level;
   }
 
   const fp = resolveFingerprintPolicy(config, credential, providerKey);
 
+  // The level says how much, never whether: a key's `cloak` object or attribute holding only a level does not count.
+  const cloakCfgOnlyLevel =
+    cloakCfg?.level !== undefined &&
+    Object.entries(cloakCfg).every(([key, value]) => key === "level" || value === undefined);
+
   const cloakConfigured =
-    cloakCfg !== undefined || attrMode !== "" || attrStrict || attrWords.length > 0 || attrCache;
+    (cloakCfg !== undefined && !cloakCfgOnlyLevel) ||
+    attrMode !== "" ||
+    attrStrict ||
+    attrWords.length > 0 ||
+    attrCache;
 
   let cloak = (fp.profileClaudeCodeCLI || cloakConfigured) && !confirmedClaudeCode;
 
@@ -203,6 +239,7 @@ export const resolveWirePolicy = (
       profileClaudeCodeCLI: fp.profileClaudeCodeCLI,
       confirmedClaudeCode,
       cloak,
+      level,
     },
     settings: { strictMode, sensitiveWords, cacheUserID },
   };

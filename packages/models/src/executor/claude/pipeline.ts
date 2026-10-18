@@ -53,6 +53,7 @@ import {
 } from "./classify.ts";
 import {
   applyCloaking,
+  assertTextOnlySystem,
   planContinuity,
   billingFingerprintMessageText,
   CloakError,
@@ -75,6 +76,7 @@ import {
   claudeCreds,
   DEFAULT_BASE_URL,
   isAnthropicUpstreamBase,
+  isMinimalCloak,
   resolveClaudeKeyConfig,
   resolveFingerprintPolicy,
   resolveWirePolicy,
@@ -355,12 +357,16 @@ export const prepareMessagesRequest = Effect.fnUntraced(function* (input: Prepar
 
   const from = options.sourceFormat;
   const to = Formats.Claude;
+  const wire = yield* attempt(() => resolveWirePolicy(config, credential, providerKey, confirmed));
+  // The `minimal` cloak level sends none of Claude Code's own parts: no billing block (so no CCH), no MCP aliases, no CLI
+  // identity metadata, no diagnostics.
+  const minimalCloak = isMinimalCloak(wire.policy);
 
-  const cchSigning = cchSigningEnabled(
-    providerKey,
-    fingerprint.profileClaudeCodeCLI,
-    parsedUrl.toString(),
-  );
+  const cchSigning =
+    !minimalCloak &&
+    cchSigningEnabled(providerKey, fingerprint.profileClaudeCodeCLI, parsedUrl.toString());
+
+  const mcpAlias = fingerprint.mcpAlias && !minimalCloak;
 
   const isCompat = modelIsCompat(config, credential, request);
 
@@ -455,14 +461,14 @@ export const prepareMessagesRequest = Effect.fnUntraced(function* (input: Prepar
   const threadBody = body;
 
   const savedAliases =
-    fingerprint.mcpAlias && threadContinuationNeedsAliasState(threadBody)
+    mcpAlias && threadContinuationNeedsAliasState(threadBody)
       ? yield* services.toolAliases.load(
           options.metadata.callerScope,
           threadAliasKeys(threadBody, ""),
         )
       : undefined;
 
-  const needsAliasState = fingerprint.mcpAlias && threadContinuationNeedsAliasState(threadBody);
+  const needsAliasState = mcpAlias && threadContinuationNeedsAliasState(threadBody);
   const stabilizeProfile = deviceProfileStabilizationEnabled(config);
 
   const stabilizedProfile =
@@ -471,7 +477,6 @@ export const prepareMessagesRequest = Effect.fnUntraced(function* (input: Prepar
       : undefined;
 
   // Session continuity is started (one store round trip) before the synchronous request shaping.
-  const wire = yield* attempt(() => resolveWirePolicy(config, credential, providerKey, confirmed));
   const now = services.now();
 
   const plan = yield* attempt(() =>
@@ -523,7 +528,12 @@ export const prepareMessagesRequest = Effect.fnUntraced(function* (input: Prepar
       const injected = injectContextManagement(body);
       Object.assign(contextManagement, { automaticallyInjected: injected });
 
-      if (fingerprint.injectDiagnostics && !probeOrHelper && cloak.continuityKey !== "") {
+      if (
+        fingerprint.injectDiagnostics &&
+        !minimalCloak &&
+        !probeOrHelper &&
+        cloak.continuityKey !== ""
+      ) {
         // `diagnostics.previous_message_id` is null unless an earlier turn of the session was committed.
         body.diagnostics = {
           previous_message_id: cloak.previousMessageId === "" ? null : cloak.previousMessageId,
@@ -567,7 +577,7 @@ export const prepareMessagesRequest = Effect.fnUntraced(function* (input: Prepar
     const translatedRequest = cloneJson(body);
     let reverseMap: ReadonlyMap<string, string> = new Map();
 
-    if (fingerprint.mcpAlias && cloaked) {
+    if (mcpAlias && cloaked) {
       if (needsAliasState) {
         if (savedAliases === undefined) throw threadNotFoundError();
         reverseMap = savedAliases;
@@ -578,10 +588,10 @@ export const prepareMessagesRequest = Effect.fnUntraced(function* (input: Prepar
 
     sanitizeForClaudeUpstream(body, baseModel, isCompat);
 
-    if (fingerprint.applyCLIIdentity)
+    if (fingerprint.applyCLIIdentity && !minimalCloak)
       applyCLIIdentity(body, credential, providerKey, sessionId, fingerprint.synthesizeIdentity);
 
-    if (cloaked && settings.sensitiveWords.length > 0)
+    if (cloaked && !minimalCloak && settings.sensitiveWords.length > 0)
       obfuscateSensitiveWords(body, settings.sensitiveWords);
 
     if (cchSigning) {
@@ -753,23 +763,16 @@ export const prepareCountTokensRequest = Effect.fnUntraced(function* (input: Pre
   return yield* attempt(() => {
     const { policy, settings } = resolveWirePolicy(config, credential, providerKey, confirmed);
     const cloaked = policy.cloak;
+    // As for Messages: `minimal` ignores strict mode and sensitive words and sends no MCP aliases.
+    const minimalCloak = isMinimalCloak(policy);
+    const strictMode = settings.strictMode && !minimalCloak;
     const explicitCacheMode = isExplicitPromptCacheMode(originalPayload, request.payload, body);
 
     if (cloaked) {
-      if (!settings.strictMode && isArr(body.system)) {
-        const index = body.system.findIndex((part) => str(get(part, "type")).trim() !== "text");
+      if (!strictMode && isArr(body.system)) assertTextOnlySystem(body.system);
+      relocateSystemForCountTokens(body, strictMode, explicitCacheMode);
 
-        if (index >= 0) {
-          throw requestScoped(
-            400,
-            `invalid_request_error: system.${index}.type: Input should be 'text'. System instructions support text only, but this block has type "${str(get(body.system[index], "type")).trim() || "unknown"}". Move non-text content into a user message.`,
-          );
-        }
-      }
-
-      relocateSystemForCountTokens(body, settings.strictMode, explicitCacheMode);
-
-      if (settings.sensitiveWords.length > 0)
+      if (!minimalCloak && settings.sensitiveWords.length > 0)
         obfuscateSensitiveWords(body, settings.sensitiveWords);
     }
 
@@ -779,7 +782,8 @@ export const prepareCountTokensRequest = Effect.fnUntraced(function* (input: Pre
     const extraBetas = extractAndRemoveBetas(body);
     extraBetas.push(BETA.tokenCounting);
 
-    if (fingerprint.mcpAlias && cloaked) remapToolNames(body, aliasSecret(options));
+    if (fingerprint.mcpAlias && cloaked && !minimalCloak)
+      remapToolNames(body, aliasSecret(options));
     sanitizeForClaudeUpstream(body, baseModel, isCompat);
     stripPromptCacheOptions(body);
 

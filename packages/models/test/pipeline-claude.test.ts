@@ -791,6 +791,218 @@ describe("OAuth credential (Claude Code cloaking)", () => {
   });
 });
 
+describe("OAuth credential, minimal cloak level", () => {
+  const MINIMAL = "upstream: { claude: { cloak-level: minimal } }";
+
+  const request = (model = "claude-opus-4-8", extra: JsonObject = {}) =>
+    postJson(
+      {
+        model,
+        max_tokens: 32,
+        system: [{ type: "text", text: "Caller system prompt" }],
+        messages: [{ role: "user", content: "Hello there, Claude" }],
+        tools: [
+          {
+            name: "get_weather",
+            description: "weather",
+            input_schema: { type: "object", properties: {} },
+          },
+        ],
+        ...extra,
+      },
+      { "user-agent": "pi-coding-agent/1.3.0" },
+    );
+
+  it("sends only the identity line, the relocated system prompt and the OAuth beta", async () => {
+    const h = oauthPipeline(() => jsonResponse(message()), await loadConfig(MINIMAL));
+    afterAll(h.pipeline.dispose);
+    expect((await h.pipeline.call("/v1/messages", request())).status).toBe(200);
+    const call = h.pipeline.calls[0]!;
+    expect(call.url).toBe("https://api.anthropic.com/v1/messages?beta=true");
+    expect(call.headers["authorization"]).toBe("Bearer sk-ant-oat01-secret");
+
+    const body = lastBody(h);
+    expect(body.system).toEqual([
+      {
+        type: "text",
+        text: "You are Claude Code, Anthropic's official CLI for Claude.",
+        cache_control: { type: "ephemeral", ttl: "1h" },
+      },
+    ]);
+    const messages = body.messages as JsonObject[];
+    expect(messages.map((m) => m.role)).toEqual(["user", "system"]);
+    expect(JSON.stringify(messages[0])).not.toContain("currentDate");
+    expect(messages[1]?.content).toEqual([
+      {
+        type: "text",
+        text: "Caller system prompt",
+        cache_control: { type: "ephemeral", ttl: "1h" },
+      },
+    ]);
+    expect(call.body).not.toContain("x-anthropic-billing-header");
+    expect(call.body).not.toContain("cch=");
+    expect((body.tools as JsonObject[])[0]?.name).toBe("get_weather");
+    expect(body.metadata).toBeUndefined();
+    expect(body.diagnostics).toBeUndefined();
+    expect(body.fallbacks).toBeUndefined();
+
+    const betas = call.headers["anthropic-beta"]!.split(",");
+    expect(betas).toContain("oauth-2025-04-20");
+    expect(betas).toContain("mid-conversation-system-2026-04-07");
+    expect(betas).not.toContain("claude-code-20250219");
+    expect(call.headers["user-agent"]).toBe("pi-coding-agent/1.3.0");
+    expect(call.headers["anthropic-version"]).toBe("2023-06-01");
+
+    for (const name of Object.keys(call.headers)) {
+      expect(name).not.toMatch(/^x-stainless-|^x-claude-code-/);
+      expect(name).not.toBe("x-app");
+      expect(name).not.toBe("x-client-request-id");
+      expect(name).not.toBe("anthropic-dangerous-direct-browser-access");
+    }
+  });
+
+  it("sends no CLI user agent when the caller has none", async () => {
+    const h = oauthPipeline(() => jsonResponse(message()), await loadConfig(MINIMAL));
+    afterAll(h.pipeline.dispose);
+    const body = JSON.parse(request().body as string) as JsonObject;
+    await h.pipeline.call("/v1/messages", postJson(body));
+    expect(h.pipeline.calls[0]!.headers["user-agent"] ?? "").not.toMatch(/^claude-cli\//);
+  });
+
+  it("injects no fallbacks or thinking display on Opus 5.5", async () => {
+    const h = oauthPipeline(() => jsonResponse(message()), await loadConfig(MINIMAL));
+    afterAll(h.pipeline.dispose);
+
+    await h.pipeline.call(
+      "/v1/messages",
+      request("claude-opus-5-5", { thinking: { type: "adaptive" } }),
+    );
+
+    const body = lastBody(h);
+    expect(body.fallbacks).toBeUndefined();
+    expect((body.thinking as JsonObject | undefined)?.display).toBeUndefined();
+  });
+
+  it("returns tool calls under the client's names without alias mapping", async () => {
+    const respond = () =>
+      jsonResponse(
+        message({
+          content: [{ type: "tool_use", id: "toolu_9", name: "get_weather", input: {} }],
+          stop_reason: "tool_use",
+        }),
+      );
+
+    const h = oauthPipeline(respond, await loadConfig(MINIMAL));
+    afterAll(h.pipeline.dispose);
+    const json = (await (await h.pipeline.call("/v1/messages", request())).json()) as JsonObject;
+    expect((json.content as JsonObject[])[0]?.name).toBe("get_weather");
+
+    const streamed = oauthPipeline(
+      () => sseResponse(sse(streamEvents("get_weather"))),
+      await loadConfig(MINIMAL),
+    );
+
+    afterAll(streamed.pipeline.dispose);
+    const body = JSON.parse(request().body as string) as JsonObject;
+
+    const text = await (
+      await streamed.pipeline.call("/v1/messages", postJson({ ...body, stream: true }))
+    ).text();
+
+    expect(text).toContain('"name":"get_weather"');
+  });
+
+  it("ignores strict mode and sensitive words, which refine parts minimal does not send", async () => {
+    const h = oauthPipeline(
+      () => jsonResponse(message()),
+      await loadConfig(MINIMAL),
+      oauthCredential({
+        attributes: { cloak_strict_mode: "true", cloak_sensitive_words: "Claude" },
+      }),
+    );
+
+    afterAll(h.pipeline.dispose);
+    await h.pipeline.call("/v1/messages", request());
+    const body = lastBody(h);
+    expect(h.pipeline.calls[0]!.body).not.toContain("\u200b");
+    expect(JSON.stringify(body.messages)).toContain("Caller system prompt");
+    expect(JSON.stringify(body.messages)).toContain("Hello there, Claude");
+  });
+
+  it("cloaks an API key at the minimal level only when its mode says so", async () => {
+    const keyConfig = (cloak: string) =>
+      loadConfig(`
+api-keys:
+  claude:
+    - keys:
+        - api-key: sk-ant-api03-test
+          cloak: ${cloak}
+      models:
+        - name: claude-opus-4-8
+`);
+
+    const levelOnly = makePipeline({
+      config: await keyConfig("{ level: minimal }"),
+      respond: () => jsonResponse(message()),
+    });
+
+    afterAll(levelOnly.dispose);
+    await levelOnly.call("/v1/messages", request());
+    const plain = JSON.parse(levelOnly.calls[0]!.body) as JsonObject;
+    expect(JSON.stringify(plain.system)).toContain("Caller system prompt");
+    expect(JSON.stringify(plain.system)).not.toContain("You are Claude Code");
+
+    const always = makePipeline({
+      config: await keyConfig("{ mode: always, level: minimal }"),
+      respond: () => jsonResponse(message()),
+    });
+
+    afterAll(always.dispose);
+    await always.call("/v1/messages", request());
+    const call = always.calls[0]!;
+    const body = JSON.parse(call.body) as JsonObject;
+    // Unlike `full`, a provider key's caller system prompt leaves the top level too.
+    expect((body.system as JsonObject[]).map((block) => block.text)).toEqual([
+      "You are Claude Code, Anthropic's official CLI for Claude.",
+    ]);
+    expect(JSON.stringify(body.messages)).toContain("Caller system prompt");
+    expect(call.body).not.toContain("x-anthropic-billing-header");
+    expect(body.metadata).toBeUndefined();
+    expect(call.headers["x-api-key"]).toBe("sk-ant-api03-test");
+    expect(call.headers["anthropic-beta"] ?? "").not.toContain("claude-code-20250219");
+    expect(call.headers["x-app"]).toBeUndefined();
+  });
+
+  it("sends nothing cloaked with disable-claude-cloak-mode at the minimal level", async () => {
+    const off = await loadConfig(
+      "upstream: { claude: { disable-claude-cloak-mode: true, cloak-level: minimal } }",
+    );
+
+    const h = oauthPipeline(() => jsonResponse(message()), off);
+    afterAll(h.pipeline.dispose);
+    await h.pipeline.call("/v1/messages", request());
+    const body = lastBody(h);
+    expect(JSON.stringify(body.system)).toContain("Caller system prompt");
+    expect(JSON.stringify(body.system)).not.toContain("You are Claude Code");
+  });
+
+  it("relocates the system prompt for count_tokens without the claude-code beta", async () => {
+    const h = oauthPipeline(() => jsonResponse({ input_tokens: 7 }), await loadConfig(MINIMAL));
+    afterAll(h.pipeline.dispose);
+    expect((await h.pipeline.call("/v1/messages/count_tokens", request())).status).toBe(200);
+    const call = h.pipeline.calls[0]!;
+    const body = JSON.parse(call.body) as JsonObject;
+    expect(body.system).toBeUndefined();
+    expect(JSON.stringify(body.messages)).toContain("Caller system prompt");
+    expect((body.tools as JsonObject[])[0]?.name).toBe("get_weather");
+    const betas = call.headers["anthropic-beta"]!.split(",");
+    expect(betas).toContain("oauth-2025-04-20");
+    expect(betas).toContain("token-counting-2024-11-01");
+    expect(betas).not.toContain("claude-code-20250219");
+    expect(call.headers["x-app"]).toBeUndefined();
+  });
+});
+
 describe("POST /v1/messages/count_tokens", () => {
   it("counts upstream for first-party hosts with the token-counting beta", async () => {
     const p = makePipeline({

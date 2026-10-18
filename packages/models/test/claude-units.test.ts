@@ -40,6 +40,11 @@ import {
 } from "../src/executor/claude/signing.ts";
 import { xxh64 } from "../src/executor/claude/xxhash64.ts";
 import { claudeCodeLocalDate } from "../src/executor/claude/cloaking.ts";
+import { Effect } from "effect";
+import { it as effectIt } from "@effect/vitest";
+import { parseConfigYaml } from "../src/config/codec.ts";
+import { resolveWirePolicy } from "../src/executor/claude/credentials.ts";
+import type { CredentialSnapshot } from "../src/executor/picker.ts";
 
 const bytes = (text: string) => new TextEncoder().encode(text);
 
@@ -157,6 +162,120 @@ describe("cloaking helpers", () => {
     expect(claudeCodeLocalDate(now, "Asia/Tokyo")).toBe("2026-03-02");
     expect(claudeCodeLocalDate(now, "Not/AZone")).toBe("2026-03-01");
   });
+});
+
+describe("cloak level", () => {
+  const API_KEY = "sk-ant-api03-level";
+  const OAUTH_TOKEN = "sk-ant-oat01-level";
+
+  const apiKeyCredential = (attributes: Record<string, string> = {}): CredentialSnapshot => ({
+    id: "claude-key-1",
+    provider: "claude",
+    kind: "apikey",
+    label: "key",
+    attributes: { api_key: API_KEY, ...attributes },
+    metadata: {},
+  });
+
+  const oauthCredential = (attributes: Record<string, string> = {}): CredentialSnapshot => ({
+    id: "claude-oauth-1",
+    provider: "claude",
+    kind: "oauth",
+    label: "dev@example.com",
+    attributes,
+    metadata: { access_token: OAUTH_TOKEN },
+  });
+
+  const keyYaml = (cloak: string) => `
+api-keys:
+  claude:
+    - keys:
+        - api-key: ${API_KEY}
+          cloak: ${cloak}
+`;
+
+  const resolve = (yaml: string, credential: CredentialSnapshot, confirmedClaudeCode = false) =>
+    parseConfigYaml(yaml).pipe(
+      Effect.map(
+        (config) =>
+          resolveWirePolicy(
+            config,
+            credential,
+            credential.attributes["api_key"] ?? OAUTH_TOKEN,
+            confirmedClaudeCode,
+          ).policy,
+      ),
+    );
+
+  effectIt.effect("defaults to full", () =>
+    Effect.gen(function* () {
+      expect(yield* resolve("", oauthCredential())).toMatchObject({ cloak: true, level: "full" });
+    }),
+  );
+
+  effectIt.effect(
+    "takes the global level, then the cloak_level attribute, then the key's cloak.level",
+    () =>
+      Effect.gen(function* () {
+        const global = "upstream: { claude: { cloak-level: minimal } }";
+        expect((yield* resolve(global, oauthCredential())).level).toBe("minimal");
+        expect((yield* resolve(global, oauthCredential({ cloak_level: "FULL " }))).level).toBe(
+          "full",
+        );
+        expect((yield* resolve("", oauthCredential({ cloak_level: " Minimal" }))).level).toBe(
+          "minimal",
+        );
+
+        const keyMinimal = `${global}\n${keyYaml("{ mode: always, level: minimal }")}`;
+        expect((yield* resolve(keyMinimal, apiKeyCredential({ cloak_level: "full" }))).level).toBe(
+          "minimal",
+        );
+
+        const keyFull = keyYaml("{ mode: always, level: full }");
+        expect((yield* resolve(keyFull, apiKeyCredential({ cloak_level: "minimal" }))).level).toBe(
+          "full",
+        );
+      }),
+  );
+
+  effectIt.effect("resolves an unknown value to full and an empty one to the next source", () =>
+    Effect.gen(function* () {
+      expect((yield* resolve("", oauthCredential({ cloak_level: "off" }))).level).toBe("full");
+      const global = "upstream: { claude: { cloak-level: minimal } }";
+      expect((yield* resolve(global, oauthCredential({ cloak_level: "  " }))).level).toBe(
+        "minimal",
+      );
+      const unknown = keyYaml("{ mode: always, level: stealth }");
+      expect((yield* resolve(unknown, apiKeyCredential({ cloak_level: "minimal" }))).level).toBe(
+        "full",
+      );
+    }),
+  );
+
+  effectIt.effect("never turns cloaking on by itself", () =>
+    Effect.gen(function* () {
+      expect((yield* resolve(keyYaml("{ level: minimal }"), apiKeyCredential())).cloak).toBe(false);
+      expect((yield* resolve("", apiKeyCredential({ cloak_level: "minimal" }))).cloak).toBe(false);
+      expect(
+        yield* resolve(keyYaml("{ mode: always, level: minimal }"), apiKeyCredential()),
+      ).toMatchObject({ cloak: true, level: "minimal" });
+      // Another cloak setting still counts, as before.
+      expect(
+        (yield* resolve(keyYaml("{ level: minimal, strict-mode: true }"), apiKeyCredential()))
+          .cloak,
+      ).toBe(true);
+    }),
+  );
+
+  effectIt.effect("leaves never and confirmed Claude Code uncloaked at either level", () =>
+    Effect.gen(function* () {
+      const off = "upstream: { claude: { disable-claude-cloak-mode: true, cloak-level: minimal } }";
+      expect((yield* resolve(off, oauthCredential())).cloak).toBe(false);
+      expect((yield* resolve("", oauthCredential({ cloak_level: "minimal" }), true)).cloak).toBe(
+        false,
+      );
+    }),
+  );
 });
 
 describe("betas", () => {

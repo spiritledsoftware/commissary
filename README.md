@@ -128,6 +128,15 @@ Open `https://llm.example.com/` and sign in through Access with an admin email. 
 - **Provider keys** adds (Claude, OpenAI-compatible upstreams, Gemini, Vertex, OpenCode Zen/Go, …);
 - **API keys** creates the key your clients send (shown once: copy it).
 
+A Claude subscription (Pro/Max) is for the person who owns it, sending their own requests: connect it as that
+member's private account, and don't share it or route other people's traffic through it. For anything shared, add a
+Claude provider key (Max and Team plans include monthly API credits). Anthropic's Usage Policy (effective 2026-11-12)
+prohibits services that route requests through consumer subscriptions or misrepresent the client. Commissary cloaks
+requests on a Claude account as Claude Code's own (fully by default, or minimally with Settings › Providers › Claude
+cloak level, `upstream.claude.cloak-level: minimal`); cloaking at either level misrepresents the client, so using it is
+at your own risk. Details:
+[ARCHITECTURE.md](docs/ARCHITECTURE.md#claude-provider-modelsexecutorclaude-translationtranslatorclaude).
+
 Coming from the Go CLIProxyAPI server? [MIGRATION.md](docs/MIGRATION.md) imports your config and auth files.
 
 ## Connect a client

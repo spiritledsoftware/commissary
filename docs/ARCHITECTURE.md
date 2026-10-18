@@ -980,6 +980,31 @@ Ported from `internal/runtime/executor/claude_executor*.go`, `internal/translato
   `claude/config-credentials.ts`); base URL defaults to `https://api.anthropic.com`. OAuth credentials get the Claude
   Code treatment (cloaking); API-key credentials to first-party hosts keep caller-owned mode (caller betas verbatim,
   body `betas` appended). Custom `base-url` gateways skip upstream `count_tokens` and estimate locally.
+- **Cloak mode and level** (`credentials.ts` `resolveWirePolicy`): the cloak mode says _when_ a request is cloaked
+  (`auto`: accounts, and provider keys with a `cloak` entry or the `claude-code-cli` fingerprint profile; `always`;
+  `never`), from `upstream.claude.disable-claude-cloak-mode`,
+  the `cloak_mode` attribute and `api-keys.claude[].cloak.mode`. Confirmed Claude Code clients are never cloaked. The
+  cloak level says _how much_: `full` (default) sends everything Claude Code sends; `minimal` only what a subscription
+  checks. It comes from `upstream.claude.cloak-level`, then the `cloak_level` attribute, then
+  `api-keys.claude[].cloak.level` (trimmed, case-insensitive, unknown = `full`), and never turns cloaking on: a key
+  whose only cloak setting is a level stays uncloaked under `auto`. At `minimal` the caller's system prompt still leaves
+  the top-level `system` (as under `full`) and `system` holds only the identity line `You are Claude Code, Anthropic's
+  official CLI for Claude.`; `anthropic-beta` keeps `oauth-2025-04-20` and the feature betas but not
+  `claude-code-20250219`. Not sent: the billing block (so no CCH), the date reminder and continuity tags, MCP tool
+  aliases, sensitive-word obfuscation, `metadata.user_id`, `diagnostics`, the Opus 5.5 / Fable `fallbacks`,
+  `thinking.display`, the probe/subagent cache-TTL stripping, the CLI user agent (the caller's goes through), the
+  Stainless / `x-app` / `x-claude-code-session-id` / `x-client-request-id` headers. `strict-mode`, `sensitive-words` and
+  `cache-user-id` are ignored. Translation, thinking, sanitising, cache control, context management and payload rules
+  are the same at both levels. Live tests against a Max subscription (issue #58) found this the smallest shape the
+  subscription accepts: a caller system prompt at the top level, or neither the identity line nor a billing block, is
+  refused.
+- **Who a subscription credential is for**: a Claude subscription (Pro/Max) credential is for the person who owns
+  the subscription, sending their own requests. Don't share it with other people or route their traffic through it;
+  connect it as that member's private credential (ADR 0023), and for anything shared use a Claude provider key (Max and
+  Team plans include monthly API credits). Anthropic's Usage Policy (effective 2026-11-12) prohibits services that route requests
+  through consumer subscriptions or misrepresent the client. Cloaking at either level misrepresents the client, so
+  using it is at the deployment's own risk. The panel says the same next to the cloak settings and when a Claude account
+  is connected.
 - **Request order** (matches the Go executor and the payload-rules barrier): translate -> thinking -> sanitise ->
   cloaking (system relocation, billing block, identity, date reminder, user_id, context management) ->
   MCP tool aliasing -> cache-control policy -> payload rules -> CCH signing (`cch=` is `xxh64` over the normalised
@@ -995,6 +1020,8 @@ Ported from `internal/runtime/executor/claude_executor*.go`, `internal/translato
 Deviations from Go (all deliberate, documented in code headers):
 
 - No uTLS/HTTP-2 fingerprinting (Workers limitation); `wire-policy` is dropped on import.
+- **Cloak level** (`upstream.claude.cloak-level`, `cloak_level`, `cloak.level`) is a Commissary addition (ADR 0019): Go
+  has only the cloak mode and always cloaks fully, which is the `full` level.
 - **Device-profile stabiliser** (`device-profile.ts`, `upstream.claude.header-defaults.stabilize-device-profile`; Go
   `helps/claude_device_profile.go` local mode): confirmed Claude Code clients contribute their user agent / Stainless
   versions (only when they equal the configured baseline tuple; the platform is always pinned to the baseline), stored per

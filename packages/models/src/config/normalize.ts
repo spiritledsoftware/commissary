@@ -124,6 +124,7 @@ const normalizeGroup = (group: ProviderKeyGroup): ProviderKeyGroup => {
             cloak: compact({
               ...key.cloak,
               mode: trimmedOrUndefined(key.cloak.mode),
+              level: trimmedOrUndefined(key.cloak.level),
               "sensitive-words": key.cloak["sensitive-words"]
                 ?.map((word) => word.trim())
                 .filter((word) => word !== ""),

@@ -74,6 +74,7 @@ describe("management settings", () => {
     expect(view.values).toEqual(view.defaults);
     expect(view.values.routing.strategy).toBe("round-robin");
     expect(view.values.routing["session-affinity-ttl"]).toBe("1h");
+    expect(view.values.upstream.claude["cloak-level"]).toBe("full");
     expect(view.values.oauth.providers.antigravity["signature-cache-enabled"]).toBeNull();
     expect(view.revisions).toEqual({});
     expect(view.payload).toEqual({
@@ -273,6 +274,7 @@ describe("management settings", () => {
       [{ routing: "fill-first" }, "routing"],
       [{ multimedia: { "gpt-image-2-base-model": "dall-e" } }, "multimedia.gpt-image-2-base-model"],
       [{ multimedia: { "disable-image-generation": "on" } }, "multimedia.disable-image-generation"],
+      [{ upstream: { claude: { "cloak-level": "off" } } }, "upstream.claude.cloak-level"],
       [
         { multimedia: { "video-result-auth-cache-ttl": "3" } },
         "multimedia.video-result-auth-cache-ttl",
@@ -317,6 +319,7 @@ describe("management settings", () => {
         multimedia: { "disable-image-generation": "chat", "gpt-image-2-base-model": "gpt-image-x" },
       },
       { routing: { cooldown: { "transient-error-cooldown-seconds": -1 } } },
+      { upstream: { claude: { "cloak-level": "minimal" } } },
     ] satisfies Json[]) {
       const saved = await save(patch);
 
@@ -328,6 +331,7 @@ describe("management settings", () => {
     expect(view.values.models.catalog).toBe("embed");
     expect(view.values.multimedia["disable-image-generation"]).toBe("chat");
     expect(view.values.routing.cooldown["transient-error-cooldown-seconds"]).toBe(-1);
+    expect(view.values.upstream.claude["cloak-level"]).toBe("minimal");
   });
 
   it("refuses bodies without revisions or patch object", async () => {

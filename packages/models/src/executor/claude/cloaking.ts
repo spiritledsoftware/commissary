@@ -28,7 +28,7 @@ import {
   usesLegacySystemReminder,
   usesProgressDisplay,
 } from "./classify.ts";
-import { type CloakSettings, type WirePolicy } from "./credentials.ts";
+import { type CloakSettings, isMinimalCloak, type WirePolicy } from "./credentials.ts";
 import { type ContinuityState, deterministicPromptId } from "./continuity.ts";
 import { defaultDeviceProfile, cachedSessionId } from "./headers.ts";
 
@@ -412,10 +412,29 @@ export const applySystemInstructions = (
     systemBlocks.push(textBlock(FABLE_REPORTING_OUTCOMES));
   body.system = systemBlocks;
 
-  if (options.strictMode) return injectCurrentDate(body, options.currentDate, explicit);
-  const forwarded = collectForwardedBlocks(system);
+  if (!options.strictMode)
+    placeCallerSystem(body, systemBlocks, collectForwardedBlocks(system), {
+      explicit,
+      keepCallerSystemTopLevel: options.keepCallerSystemTopLevel,
+    });
 
-  if (forwarded.length === 0) return injectCurrentDate(body, options.currentDate, explicit);
+  injectCurrentDate(body, options.currentDate, explicit);
+};
+
+/**
+ * Where the caller's system blocks go once the top-level `system` holds the Claude Code blocks: top level after an
+ * advisor turn, a system reminder in the first user turn for models without mid-conversation system turns, top level
+ * for a provider key when they would trail the conversation, otherwise mid-conversation `system` turns.
+ */
+const placeCallerSystem = (
+  body: JsonObject,
+  systemBlocks: JsonObject[],
+  forwarded: readonly ForwardedBlock[],
+  options: { readonly explicit: boolean; readonly keepCallerSystemTopLevel: boolean },
+): void => {
+  const { explicit } = options;
+
+  if (forwarded.length === 0) return;
 
   if (hasAdvisorHistory(body)) {
     for (const block of forwarded) systemBlocks.push(forwardedBlock(block, explicit));
@@ -426,8 +445,21 @@ export const applySystemInstructions = (
   } else {
     insertMidConversationSystemBlocks(body, forwarded, explicit);
   }
+};
 
-  injectCurrentDate(body, options.currentDate, explicit);
+/**
+ * The `minimal` cloak level's system shaping: the top-level `system` holds only the Claude Code identity line, and the
+ * caller's system blocks move as under `full` for OAuth. No billing block, Fable reporting block or date reminder.
+ */
+export const applyMinimalSystemInstructions = (
+  body: JsonObject,
+  options: { readonly explicitCacheMode: boolean },
+): void => {
+  const forwarded = collectForwardedBlocks(body.system);
+  const explicit = options.explicitCacheMode || isExplicitPromptCacheMode(body);
+  const systemBlocks = [textBlock(CLAUDE_CODE_IDENTITY, explicit ? undefined : ephemeral())];
+  body.system = systemBlocks;
+  placeCallerSystem(body, systemBlocks, forwarded, { explicit, keepCallerSystemTopLevel: false });
 };
 
 /** `relocateClaudeSystemPromptForCountTokens`: caller system moves into messages; no billing/identity blocks. */
@@ -638,6 +670,19 @@ export interface CloakResult {
   readonly previousMessageId: string;
 }
 
+/** Cloaking moves the caller's system blocks into messages, which take text blocks only. */
+export const assertTextOnlySystem = (system: readonly Json[]): void => {
+  system.forEach((part, index) => {
+    const type = str(get(part, "type")).trim();
+
+    if (type !== "text") {
+      throw new CloakError(
+        `invalid_request_error: system.${index}.type: Input should be 'text'. System instructions support text only, but this block has type "${type === "" ? "unknown" : type}". Move non-text content into a user message.`,
+      );
+    }
+  });
+};
+
 const credentialIdentity = (credential: CredentialSnapshot): string =>
   credential.id.trim() === "" ? "" : `id:${credential.id.trim()}`;
 
@@ -669,7 +714,7 @@ export const planContinuity = (
 ): ContinuityPlan | undefined => {
   const { body, policy, config, credential } = request;
 
-  if (!policy.cloak || isProbeOrHelperRequest(body)) return undefined;
+  if (!policy.cloak || isMinimalCloak(policy) || isProbeOrHelperRequest(body)) return undefined;
   const identity = credentialIdentity(credential);
 
   if (request.sessionId === "" || identity === "") return undefined;
@@ -696,21 +741,16 @@ export const applyCloaking = (request: CloakRequest): CloakResult => {
 
   if (!policy.cloak) return none;
   const explicit = request.explicitCacheMode;
+  const minimal = isMinimalCloak(policy);
 
-  if (!settings.strictMode && isArr(body.system)) {
-    let index = 0;
+  // `strict-mode` drops the caller system prompt; `minimal` ignores it and always relocates the prompt.
+  if ((minimal || !settings.strictMode) && isArr(body.system)) assertTextOnlySystem(body.system);
 
-    for (const part of body.system) {
-      const type = str(get(part, "type")).trim();
+  if (minimal) {
+    // The caller prompt always leaves the top level, as `full` does for OAuth (#6432): `system` is the identity alone.
+    applyMinimalSystemInstructions(body, { explicitCacheMode: explicit });
 
-      if (type !== "text") {
-        throw new CloakError(
-          `invalid_request_error: system.${index}.type: Input should be 'text'. System instructions support text only, but this block has type "${type === "" ? "unknown" : type}". Move non-text content into a user message.`,
-        );
-      }
-
-      index++;
-    }
+    return { ...none, cloaked: true };
   }
 
   const profile = defaultDeviceProfile(config);
