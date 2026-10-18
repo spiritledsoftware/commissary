@@ -1,8 +1,13 @@
 // System One (ADR 0032) upstream errors end to end on TypeSafe: the production Worker (`exports.default.fetch`) with the
 // real ControlPlane picker and `markResult`; only TypeSafe is mocked, through the global `fetch`. Each case has a key
 // group of its own (`force-model-prefix`), so one case's cooldowns cannot reach another.
+//
+// The static import of `@commissary/models/testing` also loads the Models module graph while the file is collected:
+// without it, the first ControlPlane call (in `beforeAll`) loads it, and on a cold CI runner that exceeds the hook
+// timeout.
 import { env, exports } from "cloudflare:workers";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { FULL_ACCESS } from "@commissary/models/testing";
 
 type Upstream = (request: Request) => Response | Promise<Response>;
 
@@ -57,6 +62,8 @@ const systemOne = (model: string) =>
     }),
   );
 
+const controlPlane = () => env.CONTROL_PLANE.getByName("global");
+
 beforeAll(async () => {
   globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = input instanceof Request ? input : new Request(input, init);
@@ -65,7 +72,7 @@ beforeAll(async () => {
     return await upstream(request);
   };
 
-  const stored = await env.CONTROL_PLANE.getByName("global").models().importConfig(YAML, "test");
+  const stored = await controlPlane().models().importConfig(YAML, "test");
   expect(stored.ok).toBe(true);
 });
 
@@ -131,6 +138,16 @@ describe("TypeSafe errors through /v1/systemone", () => {
     // The rejected key was tried once (its 401 failed over to the other key) and then cooled.
     expect(upstreamKeys.filter((key) => key === "ts-rejected")).toHaveLength(1);
     expect(upstreamKeys.filter((key) => key === "ts-accepted")).toHaveLength(3);
+
+    const group = (await controlPlane().models().listCredentials(FULL_ACCESS))
+      .filter((summary) => summary.prefix === "rejected")
+      .map(({ failed, success, unavailable }) => ({ failed, success, unavailable }))
+      .sort((a, b) => b.failed - a.failed);
+
+    expect(group).toEqual([
+      { failed: 1, success: 0, unavailable: true },
+      { failed: 0, success: 3, unavailable: false },
+    ]);
   });
 
   it("guards prefixed, aliased and suffixed System One names on other endpoints, and serves them here", async () => {
