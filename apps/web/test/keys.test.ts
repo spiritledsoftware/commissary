@@ -12,6 +12,9 @@ import {
 import {
   changesIdentity,
   choosesProtocol,
+  defaultBaseUrl,
+  discoversModels,
+  isFamily,
   draftOf,
   groupFacts,
   groupTitle,
@@ -113,12 +116,22 @@ describe("keySections", () => {
     expect(sections[2]?.caption).toBe("OpenAI-compatible endpoint");
   });
 
-  it("lists TypeSafe and skips a family the panel does not show yet", () => {
+  it("lists the System One providers, TypeSafe and SubQ, after OpenCode", () => {
     const sections = keySections(
-      list({ typesafe: [group({}, 0)], subq: [group({}, 0)], gemini: [group({}, 0)] }),
+      list({
+        subq: [group({}, 0)],
+        typesafe: [group({}, 0)],
+        "opencode-go": [group({}, 0)],
+        gemini: [group({}, 0)],
+      }),
     );
 
-    expect(sections.map((section) => section.title)).toEqual(["Gemini", "TypeSafe"]);
+    expect(sections.map((section) => section.title)).toEqual([
+      "Gemini",
+      "OpenCode Go",
+      "TypeSafe",
+      "SubQ",
+    ]);
   });
 
   it("is empty without keys", () => {
@@ -309,6 +322,32 @@ describe("the group form", () => {
         models: [{ name: "gemini-pro", alias: "", protocol: "", stored: undefined }],
       }).models,
     ).toBe("Vertex AI models need an alias.");
+  });
+
+  it.each(["typesafe", "subq"] as const)(
+    "creates a %s group from a key alone, on the provider's default endpoint",
+    (family) => {
+      const draft = { ...draftOf(undefined), keys: [{ ...newKeyDraft(), secret: "sk-1" }] };
+
+      expect(isFamily(family)).toBe(true);
+      expect(validateDraft(family, draft)).toEqual({ keyErrors: {} });
+      expect(putGroupRequest(family, undefined, draft)).toEqual({
+        family,
+        revision: 0,
+        group: { keys: [{ "api-key": "sk-1" }] },
+      });
+      expect(defaultBaseUrl(family)).toBe(
+        family === "typesafe" ? "https://api.typesafe.ai/v1" : "https://api.subq.ai/v1",
+      );
+    },
+  );
+
+  it("offers model discovery where the key test lists models", () => {
+    expect(discoversModels("typesafe")).toBe(true);
+    expect(discoversModels("claude")).toBe(true);
+    // SubQ's key test is one System One request; Vertex has no listing.
+    expect(discoversModels("subq")).toBe(false);
+    expect(discoversModels("vertex")).toBe(false);
   });
 
   it("writes stored keys by auth_index and keeps what the form does not show", () => {

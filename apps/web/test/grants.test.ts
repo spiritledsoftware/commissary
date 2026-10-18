@@ -8,6 +8,7 @@ import {
   filterMyModels,
   EMPTY_GRANT_DRAFT,
   givesEveryModel,
+  GRANT_PROVIDERS,
   grantBody,
   grantProblem,
   groupGrants,
@@ -19,6 +20,7 @@ import {
   subjectLabel,
   validateGrant,
 } from "../src/lib/grants.ts";
+import { providerName } from "../src/lib/providers.ts";
 
 const member = (id: string, teams: string[] = []): MemberView => ({
   id,
@@ -87,6 +89,24 @@ describe("the body of a draft", () => {
       subject: { kind: "everyone" },
       scope: { kind: "all" },
       models: ["*"],
+    });
+  });
+
+  it("scopes a grant to a System One provider, named in the panel", () => {
+    expect(GRANT_PROVIDERS).toEqual(expect.arrayContaining(["typesafe", "subq"]));
+    expect([providerName("typesafe"), providerName("subq")]).toEqual(["TypeSafe", "SubQ"]);
+    expect(
+      grantBody({
+        ...EMPTY_GRANT_DRAFT,
+        subjectKind: "everyone",
+        scopeKind: "provider",
+        scopeValue: "typesafe",
+        models: "jev-*",
+      }),
+    ).toEqual({
+      subject: { kind: "everyone" },
+      scope: { kind: "provider", provider: "typesafe" },
+      models: ["jev-*"],
     });
   });
 

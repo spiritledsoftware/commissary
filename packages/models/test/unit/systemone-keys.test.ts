@@ -1,6 +1,6 @@
 // The System One key families (`api-keys.typesafe` / `api-keys.subq`): normalisation, credential synthesis, the key
 // test and the write rule (`management/provider-keys-probe.ts`, `provider-keys-write.ts`).
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Predicate } from "effect";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import { describe, expect, it } from "vitest";
 import { parseConfigYaml } from "../../src/config/codec.ts";
@@ -55,6 +55,7 @@ interface Seen {
   readonly method: string;
   readonly url: string;
   readonly headers: Readonly<Record<string, string>>;
+  readonly body: string;
 }
 
 const upstream = (status: number, body: string, seen: Seen[]) =>
@@ -62,7 +63,14 @@ const upstream = (status: number, body: string, seen: Seen[]) =>
     HttpClient.HttpClient,
     HttpClient.make((request) =>
       Effect.sync(() => {
-        seen.push({ method: request.method, url: request.url, headers: request.headers });
+        seen.push({
+          method: request.method,
+          url: request.url,
+          headers: request.headers,
+          body: Predicate.isTagged(request.body, "Uint8Array")
+            ? new TextDecoder().decode(request.body.body)
+            : "",
+        });
 
         return HttpClientResponse.fromWeb(request, new Response(body, { status }));
       }),
@@ -113,17 +121,51 @@ describe("System One key test", () => {
     expect(seen[0]?.url).toBe("https://proxy.example/models");
   });
 
-  it("subq: no key test yet, and no request is made", async () => {
+  it("subq: POST {base}/systemone with Bearer and the smallest valid request; a 2xx is a working key", async () => {
     const seen: Seen[] = [];
 
     const result = await Effect.runPromise(
-      probeProviderKey(target("subq", "https://api.subq.ai/v1")).pipe(
-        Effect.provide(upstream(200, "{}", seen)),
+      probeProviderKey(target("subq", "https://api.subq.ai/v1/")).pipe(
+        Effect.provide(
+          upstream(
+            200,
+            '{"model":"subq-snap-preview","answers":{"key_check":{"type":"noul","noul":0.1}},"usage":{"input_tokens":40,"output_tokens":0}}',
+            seen,
+          ),
+        ),
       ),
     );
 
-    expect(result).toMatchObject({ ok: false, error: "key test not available for subq yet" });
-    expect(seen).toEqual([]);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.method).toBe("POST");
+    expect(seen[0]?.url).toBe("https://api.subq.ai/v1/systemone");
+    expect(seen[0]?.headers).toMatchObject({
+      authorization: "Bearer sk-probe",
+      "content-type": "application/json",
+    });
+    expect(JSON.parse(seen[0]?.body ?? "")).toEqual({
+      model: "subq-snap-preview",
+      state: "",
+      questions: { key_check: { type: "noul", instructions: "Is this a key check?" } },
+    });
+    expect(result).toMatchObject({ ok: true, status_code: 200 });
+    expect(result).not.toHaveProperty("models");
+  });
+
+  it.each([401, 402, 403, 422])("subq: a %i fails the test with its status", async (status) => {
+    const result = await Effect.runPromise(
+      probeProviderKey(target("subq", "https://api.subq.ai/v1")).pipe(
+        Effect.provide(
+          upstream(status, '{"detail":{"error_type":"x","message":"sk-probe is bad"}}', []),
+        ),
+      ),
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      status_code: status,
+      error: `upstream answered ${status}`,
+    });
   });
 
   it("builds a target from a System One credential with the default base URL", () => {

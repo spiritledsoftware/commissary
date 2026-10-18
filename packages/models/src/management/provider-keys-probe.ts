@@ -21,7 +21,12 @@
  *   the model after authenticating) counts as success. No models are listed.
  * - typesafe: `GET {base}/models` (Bearer), whether or not the base ends with `/v1`; the answer is
  *   `{models:[{name,description,release_date}]}`;
- * - subq: no key test yet (always fails with a fixed message; a later change adds it).
+ * - subq: `POST {base}/systemone` (Bearer) with the smallest valid request (one noul question about an empty state on
+ *   `subq-snap-preview`), so a working key pays for a few dozen input tokens ($0.05 per million). SubQ's
+ *   `GET /models` is public, and it validates a request's body and model before it checks the key (an invalid body
+ *   answers 422 even with a made-up key; checked live in October 2026, without a real key): only a valid request
+ *   proves the key. A 2xx is a working key; 401, 402 (no credits) and 403 fail with their status. No models are
+ *   listed.
  *
  * The call is not reported to the credential pool (no counters, no cooldown) and is bounded to 30 s in total. Failures
  * carry a fixed message and the upstream status only: response bodies are never copied (an upstream can echo a key).
@@ -306,6 +311,29 @@ const openCodeAuthCheck = Effect.fnUntraced(function* (
   return { ...exchange, models: [], accepted: ok(exchange) || exchange.status === 400 };
 });
 
+/** The model and the request of SubQ's key test: valid, and as small as SubQ allows. */
+export const SUBQ_PROBE_MODEL = "subq-snap-preview";
+
+const subqAuthCheck = Effect.fnUntraced(function* (
+  target: ProviderKeyProbeTarget,
+): Effect.fn.Return<Probed, Failure, HttpClient.HttpClient> {
+  const request = HttpClientRequest.post(`${trimSlash(target.baseUrl)}/systemone`).pipe(
+    HttpClientRequest.setHeaders(headersOf(target, bearer(target.providerKey))),
+    HttpClientRequest.bodyText(
+      JSON.stringify({
+        model: SUBQ_PROBE_MODEL,
+        state: "",
+        questions: { key_check: { type: "noul", instructions: "Is this a key check?" } },
+      }),
+      "application/json",
+    ),
+  );
+
+  const exchange = yield* send(request);
+
+  return { ...exchange, models: [] };
+});
+
 const validBase = (value: string): boolean => {
   try {
     const url = new URL(value);
@@ -336,9 +364,7 @@ const run = Effect.fnUntraced(function* (
   if (target.family === "opencode-zen" || target.family === "opencode-go")
     return yield* openCodeAuthCheck(target);
 
-  // Stub: a later change adds SubQ's key test.
-  if (target.family === "subq")
-    return yield* Effect.fail(failure("key test not available for subq yet"));
+  if (target.family === "subq") return yield* subqAuthCheck(target);
 
   return yield* listing(target);
 });

@@ -28,6 +28,7 @@ import {
   baseUrlPlaceholder,
   changesIdentity,
   choosesProtocol,
+  discoversModels,
   defaultBaseUrl,
   draftOf,
   FAMILY_ORDER,
@@ -69,8 +70,9 @@ const FAMILY_NOTES: Readonly<Record<ProviderKeyFamily, string>> = {
     "OpenCode Zen keys; models come from the OpenCode catalog unless listed. A listed model can pin its protocol.",
   "opencode-go":
     "OpenCode Go subscription keys; models come from the OpenCode catalog unless listed. A listed model can pin its protocol.",
-  typesafe: "TypeSafe keys for Jev, a System One model served on /v1/systemone.",
-  subq: "Subquadratic keys for SubQ Snap, a System One model served on /v1/systemone.",
+  typesafe:
+    "TypeSafe keys for Jev, a System One model served on /v1/systemone; models come from the catalog unless listed.",
+  subq: "Subquadratic keys for SubQ Snap, a System One model served on /v1/systemone; models come from the catalog unless listed.",
   "openai-compatibility":
     "Any endpoint that speaks the OpenAI chat API, under a provider name of your own.",
 };
@@ -606,7 +608,7 @@ const GroupForm = ({
             <Plus aria-hidden="true" size={16} strokeWidth={2.25} />
             Add a model
           </button>
-          {probeWith === undefined || family === "vertex" ? null : (
+          {probeWith === undefined || !discoversModels(family) ? null : (
             <Discover
               authIndex={probeWith}
               known={new Set(draft.models.map((model) => model.name.trim()))}
