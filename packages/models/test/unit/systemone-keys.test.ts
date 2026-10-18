@@ -152,6 +152,19 @@ describe("System One key test", () => {
     expect(result).not.toHaveProperty("models");
   });
 
+  it("subq: tests the group's first configured model", async () => {
+    const seen: Seen[] = [];
+
+    await Effect.runPromise(
+      probeProviderKey({
+        ...target("subq", "https://api.subq.ai/v1"),
+        models: ["subq-snap-next"],
+      }).pipe(Effect.provide(upstream(200, "{}", seen))),
+    );
+
+    expect(JSON.parse(seen[0]?.body ?? "")).toMatchObject({ model: "subq-snap-next" });
+  });
+
   it.each([401, 402, 403, 422])("subq: a %i fails the test with its status", async (status) => {
     const result = await Effect.runPromise(
       probeProviderKey(target("subq", "https://api.subq.ai/v1")).pipe(

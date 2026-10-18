@@ -25,18 +25,20 @@ import {
   toSubQRequest,
 } from "@commissary/translation/systemone";
 import { ExecutionError } from "../errors.ts";
-import { systemOneCapabilities } from "./capabilities.ts";
+import { refused, systemOneCapabilities } from "./capabilities.ts";
 import type { SystemOneBody } from "./executor.ts";
 import { SUBQ } from "./providers.ts";
 
 /** SubQ's catalog model, whose image limits (the same for the whole Decisions API) also apply to ids the catalog lacks. */
 export const SUBQ_SNAP = "subq-snap-preview";
 
-const refused = (message: string): ExecutionError =>
-  new ExecutionError({ status: 400, message, requestScoped: true });
-
+/** A part the Worker cannot read is no fault of the credential: request-scoped, nothing is cooled or retried. */
 const readFailed = () =>
-  new ExecutionError({ status: 500, message: "could not read a multipart image part" });
+  new ExecutionError({
+    status: 500,
+    message: "could not read a multipart image part",
+    requestScoped: true,
+  });
 
 /** One image as the client sent it: its size and, when known without reading it, its media type. */
 type Source =
@@ -98,7 +100,7 @@ const sourceOf = (
 };
 
 /** The media type of an image whose format and content type did not say: its first bytes. */
-const sniffed = (source: Source): Effect.Effect<string | undefined, ExecutionError> =>
+const sniffMediaType = (source: Source): Effect.Effect<string | undefined, ExecutionError> =>
   source.kind === "inline"
     ? Effect.succeed(sniffImageType(base64Head(source.data) ?? new Uint8Array()))
     : Effect.tryPromise({
@@ -106,15 +108,12 @@ const sniffed = (source: Source): Effect.Effect<string | undefined, ExecutionErr
         catch: readFailed,
       }).pipe(Effect.map((head) => sniffImageType(new Uint8Array(head))));
 
-const encoded = (source: Source): Effect.Effect<string, ExecutionError> =>
+const encodeImage = (source: Source): Effect.Effect<string, ExecutionError> =>
   source.kind === "inline"
     ? Effect.succeed(source.data)
     : Effect.tryPromise({ try: () => source.file.arrayBuffer(), catch: readFailed }).pipe(
         Effect.map((bytes) => bytesToBase64(new Uint8Array(bytes))),
       );
-
-const describeCount = (count: number, noun: string): string =>
-  `${count} ${noun}${count === 1 ? "" : "s"}`;
 
 /** SubQ's body from the client's TypeSafe request and its multipart file parts. */
 export const subqBody = Effect.fnUntraced(function* (
@@ -134,7 +133,7 @@ export const subqBody = Effect.fnUntraced(function* (
 
   if (max !== undefined && assets.length > max)
     return yield* refused(
-      `SubQ takes at most ${describeCount(max, "image")} per request; this request has ${assets.length}`,
+      `SubQ takes at most ${max} image${max === 1 ? "" : "s"} per request; this request has ${assets.length}`,
     );
   const sources: Source[] = [];
   let total = 0;
@@ -157,10 +156,10 @@ export const subqBody = Effect.fnUntraced(function* (
     return yield* refused(
       `the images are ${total} bytes in all; SubQ takes at most ${totalBytes} bytes per request`,
     );
-  const types: string[] = [];
+  const typed: Array<{ readonly source: Source; readonly mediaType: string }> = [];
 
   for (const [index, source] of sources.entries()) {
-    const mediaType = source.mediaType ?? (yield* sniffed(source));
+    const mediaType = source.mediaType ?? (yield* sniffMediaType(source));
 
     if (mediaType === undefined)
       return yield* refused(`image ${index + 1} is not a PNG, JPEG or WebP image`);
@@ -169,13 +168,14 @@ export const subqBody = Effect.fnUntraced(function* (
       return yield* refused(
         `image ${index + 1} is ${mediaType}; SubQ takes ${mediaTypes.join(", ")}`,
       );
-    types.push(mediaType);
+    typed.push({ source, mediaType });
   }
 
+  // Every check passed: only now are the parts read and encoded.
   const images: SubQImage[] = [];
 
-  for (const [index, source] of sources.entries())
-    images.push({ mediaType: types[index] ?? "", base64: yield* encoded(source) });
+  for (const { source, mediaType } of typed)
+    images.push({ mediaType, base64: yield* encodeImage(source) });
 
   return { json: toSubQRequest(body, images) };
 });

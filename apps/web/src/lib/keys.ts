@@ -81,8 +81,8 @@ export const defaultBaseUrl = (family: ProviderKeyFamily): string | undefined =>
   DEFAULT_BASE[family];
 
 /**
- * Whether a group's key test can list the provider's models (the form's "Discover models"). Vertex has no listing;
- * SubQ's key test is one small System One request, which lists nothing.
+ * Whether the group form offers "Discover models" (a key test that lists models). Not for Vertex, which has no
+ * listing, nor SubQ, whose key test is one small System One request.
  */
 export const discoversModels = (family: ProviderKeyFamily): boolean =>
   family !== "vertex" && family !== "subq";

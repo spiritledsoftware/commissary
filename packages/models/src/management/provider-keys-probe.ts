@@ -22,7 +22,7 @@
  * - typesafe: `GET {base}/models` (Bearer), whether or not the base ends with `/v1`; the answer is
  *   `{models:[{name,description,release_date}]}`;
  * - subq: `POST {base}/systemone` (Bearer) with the smallest valid request (one noul question about an empty state on
- *   `subq-snap-preview`), so a working key pays for a few dozen input tokens ($0.05 per million). SubQ's
+ *   the first configured model, else `subq-snap-preview`), so a working key pays for a few dozen input tokens ($0.05 per million). SubQ's
  *   `GET /models` is public, and it validates a request's body and model before it checks the key (an invalid body
  *   answers 422 even with a made-up key; checked live in October 2026, without a real key): only a valid request
  *   proves the key. A 2xx is a working key; 401, 402 (no credits) and 403 fail with their status. No models are
@@ -41,6 +41,7 @@ import {
   OPENCODE_SESSION_HEADER,
   OPENCODE_USER_AGENT,
 } from "../executor/opencode/headers.ts";
+import { SUBQ_SNAP } from "../executor/systemone/subq.ts";
 import { isJsonObject, type Json, tryParseJson } from "@commissary/json";
 import { DEFAULT_BASE_URLS } from "./provider-keys-view.ts";
 import type { ProviderKeyFamily, ProbeResult } from "@commissary/contract/provider-keys";
@@ -311,9 +312,7 @@ const openCodeAuthCheck = Effect.fnUntraced(function* (
   return { ...exchange, models: [], accepted: ok(exchange) || exchange.status === 400 };
 });
 
-/** The model and the request of SubQ's key test: valid, and as small as SubQ allows. */
-export const SUBQ_PROBE_MODEL = "subq-snap-preview";
-
+/** SubQ's key test: a valid request (only a valid one reaches the key check), as small as SubQ allows. */
 const subqAuthCheck = Effect.fnUntraced(function* (
   target: ProviderKeyProbeTarget,
 ): Effect.fn.Return<Probed, Failure, HttpClient.HttpClient> {
@@ -321,7 +320,7 @@ const subqAuthCheck = Effect.fnUntraced(function* (
     HttpClientRequest.setHeaders(headersOf(target, bearer(target.providerKey))),
     HttpClientRequest.bodyText(
       JSON.stringify({
-        model: SUBQ_PROBE_MODEL,
+        model: target.models[0] ?? SUBQ_SNAP,
         state: "",
         questions: { key_check: { type: "noul", instructions: "Is this a key check?" } },
       }),

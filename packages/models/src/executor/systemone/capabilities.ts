@@ -23,7 +23,7 @@ export const systemOneCapabilities = (
   additionRecord(catalogAdditions(), provider, parseSuffix(model).modelName)?.systemOne;
 
 /** A request-scoped 400: the provider cannot serve this request, so it is not sent. */
-const refused = (message: string): ExecutionError =>
+export const refused = (message: string): ExecutionError =>
   new ExecutionError({ status: 400, message, requestScoped: true });
 
 /**

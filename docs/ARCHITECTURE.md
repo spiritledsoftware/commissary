@@ -1882,9 +1882,9 @@ whichever provider serves the model, and converts per provider.
   and aliases are typed `systemone`.
 - **Local refusals** (`executor/systemone/capabilities.ts`): a Box question on a model without Box and an image on a
   model whose `images` is `false` are refused with a request-scoped 400 before anything is sent. A model id the catalog
-  does not know (TypeSafe accepts any versioned id) has no facts and is never refused locally. A refusal ends the
-  request: a model alias spanning a provider that refuses and one that would not does not fail over to the second (the
-  check is per executor, so it can become per candidate later).
+  does not know (TypeSafe accepts any versioned id) has no facts and is not refused here (SubQ's image limits, which are
+  its API's, still apply: see "SubQ"). A refusal ends the request: a model alias spanning a provider that refuses and
+  one that would not does not fail over to the second (the check is per executor, so it can become per candidate later).
 - **Executor** (`executor/systemone/executor.ts`, one per provider from `specs.ts`): refusals, then the provider body
   (`spec.buildBody` from the client's JSON with the upstream model and its file parts), then the payload rules on the
   JSON only (protocol `systemone`, the final mutation; file parts are never touched), then `POST {base}/systemone` with
@@ -1923,19 +1923,20 @@ TypeSafe's opt-in headers; 402 (no credits) is credential-scoped.
   of `img10`; but a reference that also occurs as ordinary text is replaced there too, as TypeSafe's own substitution
   does.
 - **What is lost on SubQ**: TypeSafe places an image where its reference appears, for the question that names it; SubQ
-  shows every image to every question, and the model sees only a label where the image was. Box questions are refused
-  (SubQ has none). TypeSafe's opt-ins have no SubQ counterpart: SubQ needs no header for images, and its context limit
-  (384K tokens) is fixed.
+  shows every image to every question, and the model sees only a label where the image was. Box questions are refused on
+  `subq-snap-preview` (SubQ has none). TypeSafe's opt-ins have no SubQ counterpart: SubQ needs no header for images, and
+  its context limit (384K tokens) is fixed.
 - **Limits** (the catalog's `systemOne.images`: at most 4 images, 4 MiB each and 8 MiB in all decoded, PNG, JPEG or
   WebP; a SubQ model id the catalog lacks gets `subq-snap-preview`'s): the count and sizes are checked from the assets,
   `File.size` and the length of the inline base64 before any image is read or encoded (a Worker has 128 MB of memory),
   then the media types. A request over them is refused locally with a request-scoped 400.
 - **Key test** (`provider-keys-probe.ts`): `POST {base}/systemone` with the smallest valid request (one noul question
-  about an empty state on `subq-snap-preview`); a 2xx is a working key, any other status fails the test with it (401
-  bad key, 402 no credits, 403 model not allowed). SubQ's `GET /models` is public, and SubQ validates a request's body
-  and model before its key (an invalid request answers 422 even with a made-up key), so only a valid request proves the
-  key, and a working key pays for a few dozen input tokens. That order was checked live with a made-up key (October
-  2026), never with a real one. The panel's key form offers no model discovery for SubQ (the test lists nothing).
+  about an empty state on the group's first configured model, else `subq-snap-preview`); a 2xx is a working key, any
+  other status fails the test with it (401 bad key, 402 no credits, 403 model not allowed). SubQ's `GET /models` is
+  public, and SubQ validates a request's body and model before its key (an invalid request answers 422 even with a
+  made-up key), so only a valid request proves the key, and a working key pays for a few dozen input tokens. That order
+  was checked live with a made-up key (October 2026), never with a real one. The panel's key form offers no model
+  discovery for SubQ (the test lists nothing).
 
 ### OpenCode Zen
 

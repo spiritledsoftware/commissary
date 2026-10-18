@@ -172,6 +172,7 @@ describe("System One on SubQ through the SDK", () => {
     expect(call?.headers.get("content-type")).toBe("application/json");
     expect(call?.headers.get("typesafe-danger-zone-images")).toBeNull();
 
+    // SAFETY: the SubQ executor always posts a JSON object; the expectations below check its fields.
     const sent = JSON.parse(call?.body ?? "") as {
       readonly state: Record<string, unknown>;
       readonly images: ReadonlyArray<{ readonly mediaType: string; readonly base64: string }>;
