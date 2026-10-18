@@ -36,6 +36,12 @@ api-keys:
     - prefix: unavailable
       keys:
         - api-key: zen-unavailable
+    - prefix: aliased
+      models:
+        - name: jev-1.13
+          alias: my-jev
+      keys:
+        - api-key: zen-aliased
   opencode-go:
     - keys:
         - api-key: go-key
@@ -295,7 +301,7 @@ describe("System One on OpenCode Zen", () => {
 
     upstreamCalls.length = 0;
     const again = await systemOne({ ...BILLING, model: "rejected/jev-1.13" });
-    expect(again.status).toBeGreaterThanOrEqual(400);
+    expect(again.status).toBe(503);
     expect(Object.keys(await again.json())).toEqual(["detail"]);
     expect(upstreamCalls).toEqual([]);
   });
@@ -332,6 +338,34 @@ describe("System One on OpenCode Zen", () => {
     expect(upstreamCalls).toHaveLength(1);
   });
 
+  it("serves an org model alias and a suffixed name, refusing images through them too", async () => {
+    const served = await systemOne({ ...BILLING, model: "aliased/my-jev" });
+    expect(served.status).toBe(200);
+    await served.text();
+    expect(upstreamCalls.map((call) => call.headers.get("authorization"))).toEqual([
+      "Bearer zen-aliased",
+    ]);
+    expect(JSON.parse(upstreamCalls[0]?.body ?? "")).toMatchObject({ model: "jev-1.13" });
+
+    upstreamCalls.length = 0;
+
+    const refused = await systemOne({
+      ...BILLING,
+      model: "aliased/my-jev(high)",
+      state: "<image:a>",
+      assets: { "<image:a>": { format: "png", data_base64: "iVBORw0K" } },
+    });
+
+    expect(refused.status).toBe(400);
+    expect(await refused.json()).toEqual({
+      detail: {
+        error_type: "api_usage_error",
+        message: "jev-1.13 on OpenCode Zen does not accept images",
+      },
+    });
+    expect(upstreamCalls).toEqual([]);
+  });
+
   it("registers jev-1.13 and jev-1.13-free for Zen only, typed systemone, and guards them on chat", async () => {
     const response = await exports.default.fetch(
       new Request("http://localhost/v1/models", { headers: { authorization: `Bearer ${apiKey}` } }),
@@ -344,6 +378,7 @@ describe("System One on OpenCode Zen", () => {
     expect(
       listed.data.filter((model) => model.type === "systemone").map((model) => model.id),
     ).toEqual([
+      "aliased/my-jev",
       "jev-1.13",
       "jev-1.13-free",
       "rejected/jev-1.13",

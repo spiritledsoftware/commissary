@@ -1920,16 +1920,17 @@ Provider key `opencode-zen` (see _OpenCode Zen and OpenCode Go_), model protocol
 ($0), Zen's own ids, text only, no Box questions: the `opencode-zen` section of the catalog additions. A Zen key group
 without `models` registers both next to its models.dev models, although Zen otherwise skips free models (its other free
 models stay unregistered, #177); the additions decide for these ids whatever models.dev says. The protocol comes from
-the same records, so a Jev model never falls back to chat. OpenCode Go serves no System One model and registers none.
-The client's JSON goes to `POST {base}/systemone` (`https://opencode.ai/zen/v1/systemone` by default) with the gateway
-headers (Bearer key, `User-Agent` and `x-opencode-client`, `x-opencode-session`, custom headers last) and TypeSafe's two
-Danger Zone opt-ins forwarded. Zen drops `TypeSafe-Danger-Zone-Images` and rejects multipart, so an image request is
-refused locally from the catalog fact (`images: false`; one change there enables images later), and file parts are
-refused for any model. Errors are classified as on Zen's other protocols (`executor/opencode/errors.ts`): 401 and 402
-cool the key, "Model is unavailable" and the other model faults cool only the model, 429 and 5xx keep their
-`Retry-After`; the body (Zen's `{"type":"error","error":{…}}`, `{"error":{…}}` or TypeSafe's `detail` passed through)
-reaches the client in TypeSafe's shape. Usage and price are those of every System One provider. An org that wants
-TypeSafe's `jev-latest` served by Zen defines a model alias; Commissary does not map ids across providers.
+the same records, so a Jev model never falls back to chat (a config `protocol` still overrides it, as for any OpenCode
+model). OpenCode Go serves no System One model and registers none. The client's JSON goes to `POST {base}/systemone`
+(`https://opencode.ai/zen/v1/systemone` by default) with the gateway headers (Bearer key, `User-Agent` and
+`x-opencode-client`, `x-opencode-session`, custom headers last) and TypeSafe's two Danger Zone opt-ins forwarded. Zen
+drops `TypeSafe-Danger-Zone-Images` and rejects multipart, so an image request is refused locally from the catalog fact
+(`images: false`; one change there enables images later), and file parts are refused for any model (a gateway fact, not
+a catalog one). Errors are classified as on Zen's other protocols (`executor/opencode/errors.ts`): 401 and 402 cool the
+key, "Model is unavailable" and the other model faults cool only the model, 429 and 5xx keep their `Retry-After`; the
+body (Zen's `{"type":"error","error":{…}}`, `{"error":{…}}` or TypeSafe's `detail` passed through) reaches the client in
+TypeSafe's shape. Usage and price are those of every System One provider. An org that wants TypeSafe's `jev-latest`
+served by Zen defines a model alias; Commissary does not map ids across providers.
 
 ## Zero data retention (`src/platform/org-deletion.ts`, `models/org-deletion.ts`, `src/management/org-routes.ts`, `models/management/export-view.ts`)
 

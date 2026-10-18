@@ -12,6 +12,7 @@ import { normalizeExplicitId } from "../../handlers/session.ts";
 import { applyCustomHeaders } from "../helps/custom-headers.ts";
 import { providerSessionUuid } from "../helps/uuid.ts";
 import type { CredentialSnapshot } from "../picker.ts";
+import { forwardedClientHeaders } from "../systemone/executor.ts";
 import type { ExecutorOptions } from "../types.ts";
 
 /** Stable client identity (OpenCode asks clients not to pose as a generic SDK). */
@@ -72,16 +73,6 @@ export const openCodeIdentityHeaders = (options: ExecutorOptions) => ({
   [OPENCODE_SESSION_HEADER]: openCodeSessionId(options),
 });
 
-/** The client request headers `names` lists that the client sent, unchanged (System One: TypeSafe's opt-ins). */
-const forwardedHeaders = (options: ExecutorOptions, names: ReadonlyArray<string>) =>
-  Object.fromEntries(
-    names.flatMap((name) => {
-      const value = options.headers.get(name);
-
-      return value === null ? [] : [[name.toLowerCase(), value]];
-    }),
-  );
-
 /**
  * Full request headers of a chat, Responses, Messages or System One attempt: the client headers `forward` names, when
  * sent, after the gateway's own; custom headers applied last.
@@ -101,7 +92,7 @@ export const openCodeHeaders = (input: {
     ...(input.stream
       ? { accept: "text/event-stream", "cache-control": "no-cache" }
       : { accept: "application/json" }),
-    ...forwardedHeaders(input.options, input.forward ?? []),
+    ...forwardedClientHeaders(input.options, input.forward ?? []),
   };
 
   return applyCustomHeaders(

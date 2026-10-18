@@ -34,6 +34,7 @@ import {
   OPENCODE_ZEN,
   type OpenCodeProvider,
 } from "../executor/opencode/providers.ts";
+import { supportsOpenCodeProtocol } from "../executor/opencode/protocol.ts";
 import {
   catalogModelInfo,
   defaultCatalogModels,
@@ -311,6 +312,13 @@ const buildCodexConfigModels = (
   return models;
 };
 
+/** A gateway's System One models (ADR 0032), its catalog additions: Zen's Jev, free or not; Go serves none. */
+const openCodeSystemOneModels = (
+  catalogs: ModelCatalogs,
+  provider: OpenCodeProvider,
+): ModelInfo[] =>
+  supportsOpenCodeProtocol(provider, "systemone") ? sectionModels(catalogs, OPENCODE_ZEN) : [];
+
 /**
  * OpenCode Zen/Go config models (no Go counterpart): `buildConfigModels`, then the catalog's limits, modalities and
  * reasoning support for names the catalog knows (an explicit `max-context-length`, `display-name` or `thinking` wins).
@@ -324,7 +332,7 @@ const buildOpenCodeConfigModels = (
   options: AssemblyOptions,
 ): ModelInfo[] => {
   const catalog = options.catalogs.modelsDev;
-  const additions = provider === OPENCODE_ZEN ? sectionModels(options.catalogs, OPENCODE_ZEN) : [];
+  const additions = openCodeSystemOneModels(options.catalogs, provider);
   const byAlias = new Map<string, ModelEntry>();
 
   for (const entry of entries) {
@@ -374,7 +382,11 @@ const buildOpenCodeConfigModels = (
 
     const { protocol } = entry;
 
-    if (isOpenCodeProtocol(protocol) && !(protocol === "systemone" && provider !== OPENCODE_ZEN)) {
+    // Go has no System One endpoint: a `systemone` there falls back to chat and keeps the model's type.
+    if (
+      isOpenCodeProtocol(protocol) &&
+      (protocol !== "systemone" || supportsOpenCodeProtocol(provider, protocol))
+    ) {
       out.type = openCodeProtocolType(protocol);
 
       if (protocol === "systemone") delete out.thinking;
@@ -391,25 +403,25 @@ const buildOpenCodeConfigModels = (
 const applySystemOneRecord = (
   out: Types.Mutable<ModelInfo>,
   entry: ModelEntry,
-  known: ModelInfo,
+  record: ModelInfo,
 ): void => {
   out.type = EntryOnlyFormats.SystemOne;
   delete out.thinking;
-  out.ownedBy = known.ownedBy;
+  out.ownedBy = record.ownedBy;
 
-  if ((entry["display-name"] ?? "").trim() === "" && known.displayName !== undefined)
-    out.displayName = known.displayName;
+  if ((entry["display-name"] ?? "").trim() === "" && record.displayName !== undefined)
+    out.displayName = record.displayName;
 
-  if (known.description !== undefined) out.description = known.description;
+  if (record.description !== undefined) out.description = record.description;
 
-  if (out.contextLength === undefined && known.contextLength !== undefined)
-    out.contextLength = known.contextLength;
+  if (out.contextLength === undefined && record.contextLength !== undefined)
+    out.contextLength = record.contextLength;
 
-  if (known.supportedInputModalities !== undefined)
-    out.supportedInputModalities = [...known.supportedInputModalities];
+  if (record.supportedInputModalities !== undefined)
+    out.supportedInputModalities = [...record.supportedInputModalities];
 
-  if (known.supportedOutputModalities !== undefined)
-    out.supportedOutputModalities = [...known.supportedOutputModalities];
+  if (record.supportedOutputModalities !== undefined)
+    out.supportedOutputModalities = [...record.supportedOutputModalities];
 };
 
 /**
@@ -787,8 +799,7 @@ const baseModels = (source: ModelSource, options: AssemblyOptions): ModelInfo[] 
           : defaultCatalogModels(
               catalogs.modelsDev,
               provider,
-              // Zen's System One models (ADR 0032), free or not; OpenCode Go serves none.
-              provider === OPENCODE_ZEN ? sectionModels(catalogs, OPENCODE_ZEN) : [],
+              openCodeSystemOneModels(catalogs, provider),
             ),
         excluded,
       );

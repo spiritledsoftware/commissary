@@ -95,8 +95,11 @@ export interface ResolvedProtocol {
   readonly catalogModel?: OpenCodeCatalogModel;
 }
 
-const supports = (provider: OpenCodeProvider, protocol: OpenCodeProtocol): boolean =>
-  (protocol !== "gemini" && protocol !== "systemone") || provider === OPENCODE_ZEN;
+/** Whether the gateway has the protocol's endpoint: Gemini and System One exist only on Zen. */
+export const supportsOpenCodeProtocol = (
+  provider: OpenCodeProvider,
+  protocol: OpenCodeProtocol,
+): boolean => (protocol !== "gemini" && protocol !== "systemone") || provider === OPENCODE_ZEN;
 
 /** Whether the gateway's catalog additions hold `model` as a System One model (Zen's Jev). */
 const isSystemOneAddition = (provider: OpenCodeProvider, model: string): boolean =>
@@ -125,7 +128,7 @@ export const resolveOpenCodeProtocol = (input: {
 
   // Validated at config load; anything else (only reachable with an unvalidated config) is ignored.
   if (isOpenCodeProtocol(entry?.protocol)) {
-    if (supports(provider, entry.protocol))
+    if (supportsOpenCodeProtocol(provider, entry.protocol))
       return { protocol: entry.protocol, source: "config", ...known };
 
     return {
@@ -136,7 +139,7 @@ export const resolveOpenCodeProtocol = (input: {
     };
   }
 
-  if (supports(provider, "systemone") && isSystemOneAddition(provider, base))
+  if (supportsOpenCodeProtocol(provider, "systemone") && isSystemOneAddition(provider, base))
     return { protocol: "systemone", source: "catalog", ...known };
 
   if (catalogModel === undefined) {
