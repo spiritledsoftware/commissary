@@ -232,6 +232,21 @@ uploaded auth file. Provider keys whose provider reports allowances, such as Ope
 but are still provider keys.
 _Avoid_: auth, auth file, login
 
+**Cloaking**:
+Making a request sent on a Claude account look like Claude Code's own traffic, which a Claude subscription requires
+before it counts a request against the plan. Requests from Claude Code itself are never cloaked.
+_Avoid_: disguise, impersonation, spoofing
+
+**Cloak mode**:
+When Commissary cloaks a request: on accounts and on provider keys configured for it (auto), on every credential
+(always) or never.
+_Avoid_: cloak setting, cloak level (that is how much)
+
+**Cloak level**:
+How much of a cloaked request is made to look like Claude Code: everything Claude Code sends (full), or only what the
+subscription checks (minimal).
+_Avoid_: cloak strength, cloak mode (that is when)
+
 **Provider key**:
 A credential that is a provider secret, entered by an org admin or a member as part of a key group.
 _Avoid_: API key (that is the member's), config key, config credential

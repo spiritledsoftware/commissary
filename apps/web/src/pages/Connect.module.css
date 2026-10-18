@@ -115,6 +115,12 @@
   max-width: 60ch;
 }
 
+.notice {
+  max-width: 60ch;
+  font-size: var(--text-sm);
+  color: var(--quiet);
+}
+
 .check {
   display: flex;
   gap: var(--space-2);

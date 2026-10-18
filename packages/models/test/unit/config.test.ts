@@ -488,6 +488,29 @@ api-keys:
       assert.deepStrictEqual(Schema.decodeUnknownSync(Config)(encodeConfig(config)), config);
     }),
   );
+
+  it.effect("keeps the Claude cloak level, global and per key, through the encoded document", () =>
+    Effect.gen(function* () {
+      assert.strictEqual((yield* parse("")).upstream.claude["cloak-level"], "full");
+
+      const config = yield* parse(`
+upstream: { claude: { cloak-level: minimal } }
+api-keys:
+  claude:
+    - keys: [{ api-key: sk-1, cloak: { mode: always, level: " minimal " } }]
+`);
+
+      assert.strictEqual(config.upstream.claude["cloak-level"], "minimal");
+      assert.deepStrictEqual(config["api-keys"].claude[0]?.keys[0]?.cloak, {
+        mode: "always",
+        level: "minimal",
+      });
+      assert.deepStrictEqual(Schema.decodeUnknownSync(Config)(encodeConfig(config)), config);
+
+      const unknown = yield* Effect.flip(parse("upstream: { claude: { cloak-level: off } }"));
+      assert.isDefined(unknown);
+    }),
+  );
 });
 
 describe("derived settings", () => {

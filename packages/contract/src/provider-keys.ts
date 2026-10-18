@@ -96,7 +96,10 @@ export const ModelEntry = Schema.Struct({
 export type ModelEntry = typeof ModelEntry.Type;
 
 export const CloakConfig = Schema.Struct({
+  /** When to cloak: `auto`, `always` or `never`. */
   mode: optional(Schema.String),
+  /** How much to cloak: `full` or `minimal`; anything else means `full`. Never turns cloaking on by itself. */
+  level: optional(Schema.String),
   "strict-mode": optional(Schema.Boolean),
   "sensitive-words": optional(Strings),
   "cache-user-id": optional(Schema.Boolean),

@@ -20,6 +20,8 @@ export interface ConnectOption {
   readonly name: string;
   /** One sentence: what the operator does. */
   readonly how: string;
+  /** What to know before connecting, shown with the steps. */
+  readonly notice?: string;
   readonly method: ConnectMethod;
 }
 
@@ -28,6 +30,8 @@ export const CONNECT_OPTIONS: ReadonlyArray<ConnectOption> = [
     id: "claude",
     name: "Claude",
     how: "Sign in at claude.ai, then paste the address your browser lands on.",
+    notice:
+      "A Claude Pro or Max subscription is for the person who owns it, sending their own requests: connect it as your private account, and don't share it or route other people's traffic through it. For anything shared, add a Claude provider key instead (Max and Team plans include monthly API credits). Anthropic's Usage Policy (from 12 November 2026) prohibits services that route requests through consumer subscriptions or misrepresent the client. Cloaking, which a subscription needs, misrepresents the client, so you use it at your own risk.",
     method: { kind: "sign-in", provider: "claude", flow: "paste" },
   },
   {

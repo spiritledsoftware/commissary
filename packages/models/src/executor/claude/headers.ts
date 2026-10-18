@@ -6,6 +6,7 @@
  * defaultClaudeDeviceProfile). Workers `fetch` cannot control header order or casing and the TLS fingerprint is
  * Cloudflare's (see README.md), so only names and values are reproduced. With `stabilize-device-profile` the
  * device headers come from the stabilised profile (`device-profile.ts`) instead of the legacy copy-or-baseline rules.
+ * At the `minimal` cloak level (a Commissary addition) none of the CLI identity headers are sent.
  */
 import { createHash } from "node:crypto";
 import type { Config } from "../../config/schema.ts";
@@ -31,6 +32,7 @@ import { payloadHas1hTTL } from "./cache-control.ts";
 import {
   isAnthropicUpstreamURL,
   claudeCredentialUsesOAuth,
+  isMinimalCloak,
   type FingerprintPolicy,
   type WirePolicy,
 } from "./credentials.ts";
@@ -160,6 +162,8 @@ export const buildClaudeHeaders = (input: HeaderInput) => {
   const applyCLIFingerprint = input.fingerprint.profileClaudeCodeCLI || input.wire.cloak;
   const preserveCallerFingerprint = !applyCLIFingerprint && !confirmedClaudeCode;
   const useOAuthBetas = input.fingerprint.useOAuthBetas;
+  // `minimal` cloak level: the betas the request needs (with the OAuth beta), but none of the CLI fingerprint.
+  const minimalCloak = isMinimalCloak(input.wire);
   const defaults = config.upstream.claude["header-defaults"];
 
   if (providerKey.trim() !== "") {
@@ -245,6 +249,8 @@ export const buildClaudeHeaders = (input: HeaderInput) => {
   }
 
   const applyBetaHeader = (): void => {
+    if (minimalCloak) baseBetas = withoutBeta(baseBetas, BETA.claudeCode);
+
     if (!requestSupportsEffort(body)) baseBetas = withoutBeta(baseBetas, BETA.effort);
     const probeOrHelper = isProbeOrHelperRequest(body);
 
@@ -274,6 +280,36 @@ export const buildClaudeHeaders = (input: HeaderInput) => {
   };
 
   applyBetaHeader();
+
+  const applyTransportNegotiation = (): void => {
+    if (stream && !isAnthropicBase) {
+      headers["accept"] = "text/event-stream";
+      headers["accept-encoding"] = "identity";
+
+      return;
+    }
+
+    headers["accept"] = "application/json";
+    headers["accept-encoding"] = "gzip, deflate, br, zstd";
+  };
+
+  if (minimalCloak) {
+    headers["anthropic-version"] = headerValue(incoming, "anthropic-version") || "2023-06-01";
+    const userAgent = headerValue(incoming, "user-agent");
+
+    if (userAgent !== "") headers["user-agent"] = userAgent;
+    applyTransportNegotiation();
+    applyCustomHeaders(headers, credential, incoming, input.cpaSessionId);
+
+    if (isAnthropicBase) {
+      applyBetaHeader();
+      applyTransportNegotiation();
+    } else if (stream) {
+      applyTransportNegotiation();
+    }
+
+    return headers;
+  }
 
   if (preserveCallerFingerprint) {
     let defaultAccept = "application/json";
@@ -384,19 +420,6 @@ export const buildClaudeHeaders = (input: HeaderInput) => {
 
   if (isAnthropicBase) identity("x-client-request-id", crypto.randomUUID());
   headers["connection"] = "keep-alive";
-
-  const applyTransportNegotiation = (): void => {
-    if (stream && !isAnthropicBase) {
-      headers["accept"] = "text/event-stream";
-      headers["accept-encoding"] = "identity";
-
-      return;
-    }
-
-    headers["accept"] = "application/json";
-    headers["accept-encoding"] = "gzip, deflate, br, zstd";
-  };
-
   applyTransportNegotiation();
 
   const profile = defaultDeviceProfile(config);

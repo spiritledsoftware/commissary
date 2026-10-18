@@ -39,6 +39,10 @@ export const CATALOG_OPTIONS: ReadonlyArray<Option> = [
   { value: "custom", name: "Custom address", hint: "Fetched from your own URL." },
 ];
 
+/** Above the Claude cloak settings: what cloaking is, and who a Claude subscription is for. */
+export const CLAUDE_CLOAKING_NOTE =
+  "Cloaking makes a request on a Claude account look like Claude Code's own traffic, which a subscription needs. A Pro or Max subscription is for the person who owns it, sending their own requests: connect it as their private account, and don't share it or route other people's traffic through it. For anything shared, add a Claude provider key (Max and Team plans include monthly API credits). Anthropic's Usage Policy (from 12 November 2026) prohibits services that route requests through consumer subscriptions or misrepresent the client. Cloaking at either level misrepresents the client, so it is at your own risk.";
+
 const COPY = {
   "routing.strategy": {
     label: "Strategy",
@@ -177,6 +181,22 @@ const COPY = {
     "Turn off cloaking for Claude accounts",
     "On by default for clients other than Claude Code. Keys and accounts with their own mode keep it.",
   ),
+  "upstream.claude.cloak-level": {
+    label: "How much a cloaked request looks like Claude Code",
+    hint: "Keys and accounts with their own level keep it. Neither level turns cloaking on.",
+    options: [
+      {
+        value: "full",
+        name: "Full",
+        hint: "Everything Claude Code sends: its headers, billing block, tool names and metadata.",
+      },
+      {
+        value: "minimal",
+        name: "Minimal",
+        hint: "Only what a Claude subscription checks: the Claude Code identity line, with the client's system prompt moved out of the system field.",
+      },
+    ],
+  },
   "upstream.claude.disable-cloaking-model-list": flag(
     "List Claude's own model ids instead of cloaked ones",
   ),

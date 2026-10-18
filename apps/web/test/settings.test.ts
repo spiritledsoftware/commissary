@@ -61,6 +61,7 @@ const DEFAULTS: SettingsValues = {
     claude: {
       "model-level-cooling": false,
       "disable-claude-cloak-mode": false,
+      "cloak-level": "full",
       "disable-cloaking-model-list": false,
       "header-defaults": {
         "user-agent": "",
@@ -287,6 +288,7 @@ describe("inputs and checks", () => {
   it("says a value in a few words", () => {
     expect(valueText(spec("routing.session-affinity"), true)).toBe("on");
     expect(valueText(spec("routing.strategy"), "fill-first")).toBe("fill-first");
+    expect(valueText(spec("upstream.claude.cloak-level"), "minimal")).toBe("minimal");
     expect(valueText(spec("oauth.providers.devin.sensitive-words"), [])).toBe("none");
     expect(valueText(spec("oauth.providers.devin.sensitive-words"), ["a", "b"])).toBe("a, b");
     expect(valueText(spec("routing.cooldown.transient-error-cooldown-seconds"), 0)).toBe("60 s");

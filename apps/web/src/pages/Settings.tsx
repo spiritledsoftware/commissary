@@ -15,7 +15,7 @@ import { failureMessage } from "../lib/failure.ts";
 import { formatAgo, formatCount } from "../lib/format.ts";
 import type { SectionId } from "../lib/settings.ts";
 import { usePageTitle } from "../lib/use-page-title.ts";
-import { CATALOG_OPTIONS } from "./SettingsCopy.ts";
+import { CATALOG_OPTIONS, CLAUDE_CLOAKING_NOTE } from "./SettingsCopy.ts";
 import { SettingsSection } from "./SettingsForm.tsx";
 import { DangerBody } from "./SettingsDanger.tsx";
 import { ErrorRules, PayloadRules, PlainSection } from "./SettingsFacts.tsx";
@@ -235,7 +235,9 @@ const Body = ({
           <>
             <div className={styles["sub"]}>
               <h3 className={styles["subTitle"]}>Claude</h3>
+              <p className={styles["hint"]}>{CLAUDE_CLOAKING_NOTE}</p>
               {field("upstream.claude.disable-claude-cloak-mode")}
+              {field("upstream.claude.cloak-level")}
               {field("upstream.claude.disable-cloaking-model-list")}
               {field("upstream.claude.header-defaults.stabilize-device-profile")}
               <p className={styles["hint"]}>Headers sent when the client sends none of its own:</p>

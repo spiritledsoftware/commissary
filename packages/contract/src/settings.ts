@@ -50,6 +50,14 @@ export const DisableImageGeneration = Schema.Union([
 
 export type DisableImageGeneration = typeof DisableImageGeneration.Type;
 
+/**
+ * `upstream.claude.cloak-level`: how much of a cloaked Claude request is made to look like Claude Code. `full` sends
+ * everything Claude Code sends; `minimal` only what a Claude subscription checks (GLOSSARY.md, "Cloak level").
+ */
+export const ClaudeCloakLevel = Schema.Literals(["full", "minimal"]);
+
+export type ClaudeCloakLevel = typeof ClaudeCloakLevel.Type;
+
 /** A Go duration (`30m`, `1h30m`); validated by the server. */
 const GoDuration = Schema.String;
 
@@ -109,6 +117,7 @@ export const SETTINGS_TREE = {
     claude: {
       "model-level-cooling": Schema.Boolean,
       "disable-claude-cloak-mode": Schema.Boolean,
+      "cloak-level": ClaudeCloakLevel,
       "disable-cloaking-model-list": Schema.Boolean,
       "header-defaults": {
         "user-agent": Schema.String,

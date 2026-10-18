@@ -38,6 +38,14 @@ describe("connect options", () => {
     expect(new Set(CONNECT_OPTIONS.map((option) => option.id)).size).toBe(CONNECT_OPTIONS.length);
   });
 
+  it("says who a Claude subscription is for before signing in", () => {
+    const notice = CONNECT_OPTIONS.find((option) => option.id === "claude")?.notice ?? "";
+    expect(notice).toContain("private account");
+    expect(notice).toContain("provider key");
+    expect(notice).toContain("Usage Policy");
+    expect(notice).toContain("own risk");
+  });
+
   it("names the host a link goes to", () => {
     expect(linkHost("https://claude.ai/oauth/authorize?x=1")).toBe("claude.ai");
     expect(linkHost("not a url")).toBe("not a url");
