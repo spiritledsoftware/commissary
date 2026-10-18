@@ -400,7 +400,13 @@ export const structuralDropReason = (
   if (family === "vertex" && secrets.some((secret) => secret === ""))
     return "vertex keys need an api-key";
 
-  if ((family === "opencode-zen" || family === "opencode-go") && secrets.includes(""))
+  if (
+    (family === "opencode-zen" ||
+      family === "opencode-go" ||
+      family === "typesafe" ||
+      family === "subq") &&
+    secrets.includes("")
+  )
     return `${family} keys need an api-key`;
 
   if ((family === "gemini" || family === "interactions") && baseUrl === "" && secrets.includes(""))

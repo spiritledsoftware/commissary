@@ -279,9 +279,14 @@ const normalizeFamily = (
       continue;
     }
 
-    if (family === "opencode-zen" || family === "opencode-go") {
-      // Deviation (no Go counterpart): an OpenCode key without a secret cannot authenticate; the base URL defaults
-      // per provider when the credential is synthesised.
+    if (
+      family === "opencode-zen" ||
+      family === "opencode-go" ||
+      family === "typesafe" ||
+      family === "subq"
+    ) {
+      // Deviation (no Go counterpart): an OpenCode or System One key without a secret cannot authenticate; the base
+      // URL defaults per provider when the credential is synthesised.
       const keys = group.keys.filter((key) => key["api-key"] !== "");
 
       if (keys.length === 0) continue;
@@ -513,6 +518,8 @@ export const normalizeConfig = (config: Config): Config => {
       meta: normalizeFamily("meta", providerKeys.meta),
       "opencode-zen": normalizeFamily("opencode-zen", providerKeys["opencode-zen"]),
       "opencode-go": normalizeFamily("opencode-go", providerKeys["opencode-go"]),
+      typesafe: normalizeFamily("typesafe", providerKeys.typesafe),
+      subq: normalizeFamily("subq", providerKeys.subq),
       "openai-compatibility": normalizeCompat(providerKeys["openai-compatibility"]),
     },
     oauth: {

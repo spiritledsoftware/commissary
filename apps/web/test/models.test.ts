@@ -676,6 +676,8 @@ describe("who serves a route", () => {
       meta: [],
       "opencode-zen": [],
       "opencode-go": [],
+      typesafe: [],
+      subq: [],
       "openai-compatibility": [
         {
           id: "grp-openrouter",

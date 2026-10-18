@@ -19,7 +19,7 @@ import type { CredentialSnapshot } from "../executor/picker.ts";
 import type { ExecutionMetadata, ExecutorOptions, WebsocketExecution } from "../executor/types.ts";
 import { filterUpstreamHeaders } from "../http/headers.ts";
 import { get, type Json } from "@commissary/json";
-import type { Format } from "@commissary/translation/formats";
+import { EntryOnlyFormats, type Format } from "@commissary/translation/formats";
 import { CurrentOrg } from "@commissary/core";
 import {
   type Attempt,
@@ -30,7 +30,7 @@ import {
 } from "./conductor.ts";
 import { rewriteResponseModel, rewriteStreamChunk } from "./model-rewrite.ts";
 import { resolveModel } from "./resolve.ts";
-import { prepareSessionRouting } from "../session-routing/routing.ts";
+import { prepareSessionRouting, type SessionRouting } from "../session-routing/routing.ts";
 import { extractSessionInfo } from "./session.ts";
 import type { ModelsEnv } from "../env.ts";
 
@@ -61,6 +61,8 @@ export interface ExecutionInput {
   readonly websocket?: WebsocketExecution;
   /** Called with each credential an attempt runs on (Go `WithSelectedAuthIDCallback`). */
   readonly onSelected?: (credential: CredentialSnapshot) => void;
+  /** File parts of a multipart System One request (`ExecutorOptions.systemOneParts`). */
+  readonly systemOneParts?: ReadonlyMap<string, File>;
 }
 
 export interface ExecutionOutput {
@@ -163,16 +165,20 @@ const prepare = Effect.fnUntraced(function* (input: ExecutionInput, stream: bool
   const url = new URL(input.request.url, "http://localhost");
   const headers = new Headers(input.request.headers);
   const originalRequest = input.originalRequest ?? input.body;
-  const sessionInfo = extractSessionInfo(headers, originalRequest);
+  // System One requests (ADR 0032) have no sessions, and nothing of their state may be derived into one (ADR 0027).
+  const systemOne = input.entryProtocol === EntryOnlyFormats.SystemOne;
+  const sessionInfo = systemOne ? undefined : extractSessionInfo(headers, originalRequest);
 
-  const routing = prepareSessionRouting({
-    headers,
-    body: originalRequest,
-    format: input.entryProtocol,
-    callerScope: identity.callerScope,
-    explicit: sessionInfo,
-    affinity: config.routing["session-affinity"],
-  });
+  const routing: SessionRouting = systemOne
+    ? {}
+    : prepareSessionRouting({
+        headers,
+        body: originalRequest,
+        format: input.entryProtocol,
+        callerScope: identity.callerScope,
+        explicit: sessionInfo,
+        affinity: config.routing["session-affinity"],
+      });
 
   const options: ExecutorOptions = {
     stream,
@@ -182,6 +188,7 @@ const prepare = Effect.fnUntraced(function* (input: ExecutionInput, stream: bool
     originalRequest,
     sourceFormat: input.entryProtocol,
     ...(input.responseFormat !== undefined ? { responseFormat: input.responseFormat } : {}),
+    ...(input.systemOneParts !== undefined ? { systemOneParts: input.systemOneParts } : {}),
     metadata: executionMetadata(
       input,
       identity.callerScope,

@@ -19,6 +19,9 @@
  *   `x-opencode-session`) with a body naming no real model, so a working key costs nothing. The gateways' `GET /models`
  *   is public and proves nothing about the key: a 401 means a bad key, and a 400 (the gateway rejected the body or
  *   the model after authenticating) counts as success. No models are listed.
+ * - typesafe: `GET {base}/models` (Bearer), whether or not the base ends with `/v1`; the answer is
+ *   `{models:[{name,description,release_date}]}`;
+ * - subq: no key test yet (always fails with a fixed message; a later change adds it).
  *
  * The call is not reported to the credential pool (no counters, no cooldown) and is bounded to 30 s in total. Failures
  * carry a fixed message and the upstream status only: response bodies are never copied (an upstream can echo a key).
@@ -64,6 +67,8 @@ const PROVIDER_FAMILIES = {
   meta: "meta",
   "opencode-zen": "opencode-zen",
   "opencode-go": "opencode-go",
+  typesafe: "typesafe",
+  subq: "subq",
 } as const satisfies Readonly<Record<string, ProviderKeyFamily>>;
 
 /** The probe target of a config credential; `undefined` for a credential of another provider. */
@@ -237,7 +242,7 @@ const listing = Effect.fnUntraced(function* (
   const url =
     family === "claude"
       ? `${base}/v1/models?limit=1000`
-      : family === "openai-compatibility" || base.endsWith("/v1")
+      : family === "openai-compatibility" || family === "typesafe" || base.endsWith("/v1")
         ? `${base}/models`
         : `${base}/v1/models`;
 
@@ -330,6 +335,10 @@ const run = Effect.fnUntraced(function* (
 
   if (target.family === "opencode-zen" || target.family === "opencode-go")
     return yield* openCodeAuthCheck(target);
+
+  // Stub: a later change adds SubQ's key test.
+  if (target.family === "subq")
+    return yield* Effect.fail(failure("key test not available for subq yet"));
 
   return yield* listing(target);
 });

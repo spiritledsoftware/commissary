@@ -50,6 +50,22 @@ const decodeEncodings = (raw: Uint8Array, encoding: string, limit: number): Uint
 };
 
 /**
+ * Decodes a request body according to its `Content-Encoding` header and returns the bytes (a multipart body is not
+ * text). Throws like {@link decodeRequestBody}, without its JSON fallback.
+ */
+export const decodeRequestBytes = (
+  raw: Uint8Array,
+  contentEncoding: string | undefined,
+  limit: number = MAX_DECODED_BODY_BYTES,
+): Uint8Array => {
+  const encoding = (contentEncoding ?? "").trim();
+
+  return encoding === "" || encoding.toLowerCase() === "identity"
+    ? raw
+    : decodeEncodings(raw, encoding, limit);
+};
+
+/**
  * Decodes a request body according to its `Content-Encoding` header and returns the text.
  * Throws {@link RequestBodyDecodeError} for unsupported encodings or corrupt data (unless the raw body is JSON) and
  * {@link RequestBodyTooLargeError} when the decoded body would exceed `limit` bytes.

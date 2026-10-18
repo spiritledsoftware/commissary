@@ -12,7 +12,10 @@
  *   a model models.dev lists, and only where models.dev has no value.
  * - `defaults`: facts of every models.dev model of the provider (lowest priority).
  * - `models`: Commissary's own full records: models models.dev does not list (or no longer lists), served as they are.
- *   When models.dev lists the id, the record fills its gaps like `facts` do.
+ *   When models.dev lists the id, the record fills its gaps like `facts` do. A record may carry a `cost` (models.dev's
+ *   price shape), the catalog price of a model models.dev does not list (`usage/pricing.ts`), and a System One model
+ *   (`type: "systemone"`, ADR 0032) its `systemOne` capabilities: whether it takes Box questions and which images
+ *   (`executor/systemone/capabilities.ts`). Neither reaches the registry's model records.
  * - `plans` (`codex` only): which model ids each plan offers (`free`, `team`, `plus`, `pro`), in listing order;
  *   models.dev only supplies their details.
  *
@@ -21,6 +24,7 @@
  */
 import { Result, Schema } from "effect";
 import type { Json } from "@commissary/json";
+import { Cost } from "./models-dev.ts";
 
 const optional = Schema.optionalKey;
 
@@ -62,6 +66,30 @@ export const ModelFacts = Schema.Struct(factFields);
 
 export type ModelFacts = typeof ModelFacts.Type;
 
+/**
+ * The images a System One model takes: `false` for none, else its limits (each optional: the provider documents no
+ * such limit). `max` images per request, `maxBytes` per decoded image, `totalBytes` for all images, `mediaTypes` the
+ * accepted types.
+ */
+const SystemOneImages = Schema.Union([
+  Schema.Literal(false),
+  Schema.Struct({
+    max: optional(Schema.Number),
+    maxBytes: optional(Schema.Number),
+    totalBytes: optional(Schema.Number),
+    mediaTypes: optional(Strings),
+  }),
+]);
+
+/** What a System One model can serve; Commissary refuses the rest locally (ADR 0032). */
+export const SystemOneCapabilities = Schema.Struct({
+  /** Box questions (where something is in an image). */
+  box: Schema.Boolean,
+  images: SystemOneImages,
+});
+
+export type SystemOneCapabilities = typeof SystemOneCapabilities.Type;
+
 /** A full record of a model models.dev does not list. */
 export const AdditionModel = Schema.Struct({
   id: Schema.String,
@@ -69,6 +97,9 @@ export const AdditionModel = Schema.Struct({
   ownedBy: optional(Schema.String),
   type: optional(Schema.String),
   ...factFields,
+  /** The catalog price (US dollars per million tokens), for a model models.dev does not price. */
+  cost: optional(Cost),
+  systemOne: optional(SystemOneCapabilities),
 });
 
 export type AdditionModel = typeof AdditionModel.Type;
@@ -101,6 +132,10 @@ export const ADDITION_PROVIDERS = [
   "xai",
   "devin",
   "meta",
+  // System One providers (ADR 0032): catalog additions entirely, models.dev lists none of their models.
+  "typesafe",
+  "subq",
+  "opencode-zen",
 ] as const;
 
 export type AdditionProvider = (typeof ADDITION_PROVIDERS)[number];
@@ -150,6 +185,11 @@ export const parseCatalogAdditions = (value: Json): AdditionsResult => {
 
       if (entry.facts?.[model.id] !== undefined)
         problems.push(`${provider}: ${model.id} has both a full record and facts`);
+
+      if (model.systemOne !== undefined && model.type !== "systemone")
+        problems.push(
+          `${provider}: ${model.id} has systemOne capabilities but is not a systemone model`,
+        );
     }
 
     if (provider !== "codex" && entry.plans !== undefined)

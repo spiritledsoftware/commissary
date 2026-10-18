@@ -69,6 +69,8 @@ const FAMILY_NOTES: Readonly<Record<ProviderKeyFamily, string>> = {
     "OpenCode Zen keys; models come from the OpenCode catalog unless listed. A listed model can pin its protocol.",
   "opencode-go":
     "OpenCode Go subscription keys; models come from the OpenCode catalog unless listed. A listed model can pin its protocol.",
+  typesafe: "TypeSafe keys for Jev, a System One model served on /v1/systemone.",
+  subq: "Subquadratic keys for SubQ Snap, a System One model served on /v1/systemone.",
   "openai-compatibility":
     "Any endpoint that speaks the OpenAI chat API, under a provider name of your own.",
 };

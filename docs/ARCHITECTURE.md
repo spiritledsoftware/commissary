@@ -116,6 +116,7 @@ cited as `translation/...` (relative to `packages/translation/src/`), core's as 
     src/thinking/             canonical thinking pipeline (port of internal/thinking)
     src/signature/            thinking-signature validation and cache (port of internal/signature, internal/cache)
     src/tokenizer/            BPE token counting (ranks in src/tokenizer/ranks/*.bin)
+    src/systemone/            System One request and error helpers (assets, Box questions, `detail` errors)
     src/sse.ts                SSE line splitting and frame builders
     test/                     Node.js tests + fixtures generated from the Go code; test/testing.ts is ./testing
   tools/fixturegen/           Go programs (own module, root go.work) that emit golden fixtures from the Go code
@@ -1832,6 +1833,80 @@ fixed); no `prompt_cache_key` is derived; model-scoped gateway errors use the mo
 error; `X-Opencode-Session` from a client is also an explicit session identity for routing and usage (`handlers/session.ts`); the
 OpenCode Go keys are listed as Accounts (config-sourced) for their usage windows. Not ported/added: the `jev`/systemone
 endpoint.
+
+## System One (`models/handlers/systemone/`, `models/executor/systemone/`, `translation/systemone/`)
+
+No Go counterpart (ADR 0032). System One models (TypeSafe's Jev, Subquadratic's SubQ Snap) answer typed questions about a
+state instead of generating text. Commissary serves them on one endpoint that speaks TypeSafe's System One API, whichever
+provider serves the model, and converts per provider.
+
+- **Endpoint** (`handlers/systemone/routes.ts`): `POST /v1/systemone`, client format and entry protocol `systemone`
+  (`EntryOnlyFormats.SystemOne`, also the registry type of System One models and the payload-rule protocol of their
+  requests). The body is JSON or `multipart/form-data` (the SDKs upload images that way): the first part, `request`, holds the
+  JSON and the other parts are the files the JSON's `assets.<ref>.part` name. TypeSafe's multipart rules are checked before
+  anything runs: unique non-empty part names, `request` reserved, every file part used by exactly one asset, image part types
+  `image/png`, `image/jpeg`, `image/jpg`, `application/octet-stream` or none (else 415). The multipart body is split by hand
+  (`executor/systemone/multipart.ts`), not with `Request.formData()`, which would decode a file part without a filename as
+  UTF-8 text. The body limit is TypeSafe's 32 MiB (413, checked against `Content-Length` before reading, then the bytes read
+  and the decoded size); `Content-Encoding: zstd` (what the SDK sends for bodies of 1 KiB and more) is decoded like on the
+  other endpoints. The request then takes the normal path (`execute.ts`): grants and reach, spend limits, credential
+  selection, failover and retry rounds, cooldowns, usage. The file parts travel next to the JSON
+  (`ExecutorOptions.systemOneParts`) and are re-read on every attempt. There is no streaming, no token count, and no
+  non-stream keep-alive: a committed 200 would hide the status TypeSafe's SDKs retry on. System One requests have no session:
+  nothing of their state is derived into a session identity or routing fingerprint (ADR 0027).
+- **Errors** (`handlers/respond.ts`, error protocol `systemone`, the third next to the OpenAI and Claude shapes): every error
+  reaches the client as TypeSafe's `{"detail":{"error_type","message"}}` with its status kept. Upstream bodies are read
+  with `parseUpstreamSystemOneError` (`translation/systemone/errors.ts`): TypeSafe's and SubQ's `detail` (also FastAPI's
+  validation lists), OpenCode Zen's `{"type":"error","error":{…}}` and `{"error":{…}}`, and Commissary's own OpenAI-shaped
+  or plain-text errors; only TypeSafe's own `error_type` is kept, otherwise it follows the status (`systemOneErrorType` in
+  `@commissary/core`: 429 `rate_limit_error`, 529 `overloaded_error`, …). An upstream `Retry-After` (and
+  `retry-after-ms`) of a 429, 503 or 529 is always passed through so the SDKs' retries work. The API Worker's gate and the
+  authentication refusals answer this path in the same shape (`refusalResponse(…, "systemone")`). 529 Overloaded (TypeSafe's 503) cools and retries like a 503 (`mark-result.ts`, `isCredentialRetryRoundStatus`, the conductor's `Retry-After`).
+- **Model separation** (`handlers/resolve.ts`): the registry type of the model as named (prefix, alias or suffixed name)
+  decides: `/v1/systemone` serves only `systemone` models and every other endpoint refuses them, each with a request-scoped 400. System One models are listed in `/v1/models` like any other model; the OpenAI listing adds `type: "systemone"` to
+  them only. Executors that cannot serve the format refuse it (501) before doing anything (`withoutSystemOne`,
+  `executor/registry.ts`; the ones that can are `SYSTEM_ONE_EXECUTORS`).
+- **Catalog** (`registry/catalog/additions.json`, ADR 0020): models.dev lists none of these models, so they are catalog
+  additions entirely, in sections `typesafe`, `subq` and `opencode-zen` (the last holds Zen's System One models only). A record
+  carries its price (`cost`, models.dev's shape; `usage/pricing.ts` prices a model models.dev does not list from it, after
+  models.dev, and an org's price override wins as everywhere) and its `systemOne` capabilities: `box` (Box questions) and
+  `images` (`false`, or the limits `max`, `maxBytes`, `totalBytes`, `mediaTypes`). Neither reaches the registry's model
+  records. Provider-key groups without `models` register their section; configured models and aliases are typed `systemone`.
+- **Local refusals** (`executor/systemone/capabilities.ts`): a Box question on a model without Box and an image on a model
+  whose `images` is `false` are refused with a request-scoped 400 before anything is sent. A model id the catalog does not
+  know (TypeSafe accepts any versioned id) has no facts and is never refused locally. A refusal ends the request: a model
+  alias spanning a provider that refuses and one that would not does not fail over to the second (the check is per executor,
+  so it can become per candidate later).
+- **Executor** (`executor/systemone/executor.ts`, one per provider from `specs.ts`): refusals, then the provider body
+  (`spec.buildBody` from the client's JSON with the upstream model and its file parts), then the payload rules on the JSON
+  only (protocol `systemone`, the final mutation; file parts are never touched), then `POST {base}/systemone` with
+  `Authorization: Bearer`, the client headers the spec forwards and the credential's custom headers, as JSON or, when the body
+  keeps file parts, as multipart with `request` first. Errors (`errors.ts`): 401 and 402 are credential-scoped, 429 and 5xx
+  (529 included) transient with their `Retry-After`. Usage (`usage.ts`) is the answer's `usage.input_tokens` and
+  `output_tokens`, independent counts without cache or reasoning tokens (accounting semantics `independent`), priced at the
+  catalog price. Usage records keep the status and `detail.error_type` of a failure, never a body (ADR 0027).
+
+### TypeSafe
+
+Provider key `typesafe` (`api-keys.typesafe`, default base `https://api.typesafe.ai/v1`). Models `jev-1.13.0`, `jev-1.14.0`
+and TypeSafe's aliases `jev-latest` (1.13) and `jev-preview` (1.14), registered under TypeSafe's own ids; $0.042 per million
+input tokens, output free; both take images, only 1.14 takes Box questions. A request goes on in the form the client used:
+multipart stays multipart with the file parts unchanged (names, filenames, types and bytes), JSON stays JSON. The
+`TypeSafe-Danger-Zone-Images` and `TypeSafe-Danger-Zone-Long-Context` opt-ins are forwarded. A missing key's 403 "Must supply
+an API key" is credential-scoped like a 401. The key test is an authenticated `GET {base}/models` (TypeSafe's
+`{models:[{name,…}]}`, not OpenAI-shaped).
+
+### SubQ
+
+Provider key `subq` (`api-keys.subq`, default base `https://api.subq.ai/v1`). Model `subq-snap-preview`, $0.05 per million
+input tokens, output free, no Box questions. Always sent as JSON, without TypeSafe's opt-in headers; 402 (no credits) is
+credential-scoped. For now text only: an image request is refused locally ("SubQ image requests are not supported yet") and
+the panel's key test is not available. The panel does not offer SubQ key groups yet (YAML config can define them).
+
+### OpenCode Zen
+
+Pending: Zen's System One models (`jev-1.13`, `jev-1.13-free`, text only) are catalog records in the `opencode-zen` section,
+not registered or served yet.
 
 ## Zero data retention (`src/platform/org-deletion.ts`, `models/org-deletion.ts`, `src/management/org-routes.ts`, `models/management/export-view.ts`)
 

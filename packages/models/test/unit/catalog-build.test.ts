@@ -343,9 +343,12 @@ describe("parseCatalogAdditions", () => {
 describe("coverage of what the Go server serves", () => {
   const served = goServed as Record<string, ReadonlyArray<{ readonly id: string }>>;
   const catalogs = embeddedCatalogs();
+  /** The sections the Go server never had: System One's providers (ADR 0032). */
+  const NOT_IN_GO: ReadonlySet<Section> = new Set(["typesafe", "subq", "opencode-zen"]);
+  const goSections = SECTIONS.filter((section) => !NOT_IN_GO.has(section));
 
   it("every section serves every model id Go served when the catalog moved to models.dev", () => {
-    for (const section of SECTIONS) {
+    for (const section of goSections) {
       const have = new Set(sectionModels(catalogs, section).map((model) => model.id));
 
       const missing = (served[section] ?? [])
@@ -385,7 +388,7 @@ describe("coverage of what the Go server serves", () => {
   it("every pinned runtime field is still served, unless models.dev has its own value for it", () => {
     const differences: string[] = [];
 
-    for (const section of SECTIONS) {
+    for (const section of goSections) {
       const have = new Map(sectionModels(catalogs, section).map((model) => [model.id, model]));
 
       for (const pinned of served[section] as ReadonlyArray<Pinned>) {

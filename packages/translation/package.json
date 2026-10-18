@@ -11,6 +11,7 @@
     "./tokenizer": "./src/tokenizer/index.ts",
     "./formats": "./src/translator/formats.ts",
     "./sse": "./src/sse.ts",
+    "./systemone": "./src/systemone/index.ts",
     "./testing": "./test/testing.ts"
   },
   "scripts": {

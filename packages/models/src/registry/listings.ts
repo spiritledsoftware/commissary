@@ -7,7 +7,10 @@
  */
 import type { JsonObject } from "@commissary/json";
 import { compareStrings } from "./compare.ts";
+import { EntryOnlyFormats } from "@commissary/translation/formats";
 import type { ModelInfo } from "./model-info.ts";
+
+const SYSTEM_ONE_TYPE = EntryOnlyFormats.SystemOne;
 
 export { compareStrings };
 
@@ -22,12 +25,16 @@ const positive = (value: number | undefined): value is number => value !== undef
 const nonEmpty = (value: string | undefined): value is string =>
   value !== undefined && value !== "";
 
-/** `OpenAIModels`: the four fields that survive the handler's filter. */
+/**
+ * `OpenAIModels`: the four fields that survive the handler's filter. Not in Go: a System One model (ADR 0032) also
+ * says `type: "systemone"`, so a client can tell it is served on `/v1/systemone` only.
+ */
 export const openaiEntry = (model: ModelInfo): JsonObject => ({
   id: model.id,
   object: "model",
   ...(model.created > 0 ? { created: model.created } : {}),
   owned_by: model.ownedBy,
+  ...(model.type === SYSTEM_ONE_TYPE ? { type: SYSTEM_ONE_TYPE } : {}),
 });
 
 export const openaiList = (models: ReadonlyArray<ModelInfo>): JsonObject => ({

@@ -17,24 +17,71 @@ import {
   mergeUpstreamHeaders,
 } from "../http/headers.ts";
 import { isValidJson } from "@commissary/json";
+import { systemOneErrorBody } from "@commissary/core";
+import { parseUpstreamSystemOneError } from "@commissary/translation/systemone";
 import { statusText } from "../http/status.ts";
 import type { StreamOutput } from "./execute.ts";
 import type { StreamFramer } from "./framing.ts";
 
-/** Error body family of an entry protocol. */
-export type ErrorProtocol = "openai" | "claude";
+/** Error body family of an entry protocol (`systemone`: TypeSafe's `detail` shape, ADR 0032). */
+export type ErrorProtocol = "openai" | "claude" | "systemone";
 
 export interface ErrorResponseOptions {
   /** `requests.passthrough-headers`: expose upstream error headers. */
   readonly passthroughHeaders: boolean;
 }
 
-/** `WriteErrorResponse` (OpenAI/Gemini/Interactions/Responses) and the Claude variant. */
+/** Upstream headers a System One client may always see: TypeSafe's SDKs retry on them (`retry-after(-ms)`). */
+const SYSTEM_ONE_RETRY_HEADERS = ["retry-after", "retry-after-ms"];
+
+/**
+ * A System One error (no Go counterpart, ADR 0032): every error, an upstream body in any provider's shape or
+ * Commissary's own text, becomes TypeSafe's `{"detail":{"error_type","message"}}` with the status kept. The upstream's
+ * `Retry-After` of a 429 or an overload (503/529) is passed through so the SDKs' retries work; other upstream headers
+ * only with `passthrough-headers`.
+ */
+const systemOneErrorResponse = (
+  error: ExecutionError,
+  options: ErrorResponseOptions,
+): HttpServerResponse.HttpServerResponse => {
+  const status = error.status > 0 ? error.status : 500;
+  const headers: Record<string, string> = {};
+  const upstream = new Headers(error.headers ?? {});
+
+  if (options.passthroughHeaders) {
+    filterUpstreamHeaders(upstream).forEach((value, name) => {
+      if (!isCPAReservedResponseHeader(name)) headers[name] = value;
+    });
+  }
+
+  if (status === 429 || status === 503 || status === 529) {
+    for (const name of SYSTEM_ONE_RETRY_HEADERS) {
+      const value = upstream.get(name);
+
+      if (value !== null) headers[name] = value;
+    }
+  }
+
+  const retryAfter = error.safeHeaders?.["retry-after"] ?? error.safeHeaders?.["Retry-After"];
+
+  if (retryAfter !== undefined) headers["retry-after"] ??= retryAfter;
+  const parsed = parseUpstreamSystemOneError(status, error.message);
+  const message = parsed.message !== "" ? parsed.message : statusText(status);
+  headers["content-type"] = "application/json";
+
+  return HttpServerResponse.text(systemOneErrorBody(status, message, parsed.error_type), {
+    status,
+    headers,
+  });
+};
+
+/** `WriteErrorResponse` (OpenAI/Gemini/Interactions/Responses), the Claude variant and the System One shape. */
 export const errorResponse = (
   protocol: ErrorProtocol,
   error: ExecutionError,
   options: ErrorResponseOptions,
 ): HttpServerResponse.HttpServerResponse => {
+  if (protocol === "systemone") return systemOneErrorResponse(error, options);
   const status = error.status > 0 ? error.status : 500;
   const headers: Record<string, string> = {};
 

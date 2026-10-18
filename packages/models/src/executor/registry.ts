@@ -5,7 +5,7 @@
  * `openai-compatibility` entry, keyed by `util.OpenAICompatibleProviderKey`). Provider slices register their
  * executors in {@link makeExecutorRegistry}.
  */
-import { Context, Layer } from "effect";
+import { Context, Effect, Layer } from "effect";
 import { makeAntigravityExecutor } from "./antigravity/executor.ts";
 import { makeClaudeExecutor } from "./claude/executor.ts";
 import { makeCodexExecutor } from "./codex/executor.ts";
@@ -21,8 +21,13 @@ import { makeMetaExecutor } from "./meta/executor.ts";
 import { makeOpenAICompatExecutor } from "./openai-compat/executor.ts";
 import { makeOpenCodeExecutor } from "./opencode/executor.ts";
 import { OPENCODE_GO, OPENCODE_ZEN } from "./opencode/providers.ts";
+import { makeSystemOneExecutor } from "./systemone/executor.ts";
+import { SUBQ, TYPESAFE } from "./systemone/providers.ts";
+import { SYSTEM_ONE_SPECS } from "./systemone/specs.ts";
 import { makeXaiExecutor } from "./xai/executor.ts";
-import type { ProviderExecutor } from "./types.ts";
+import { EntryOnlyFormats } from "@commissary/translation/formats";
+import { notImplemented } from "./errors.ts";
+import type { ExecutorOptions, ProviderExecutor } from "./types.ts";
 
 export class ExecutorRegistry extends Context.Service<
   ExecutorRegistry,
@@ -54,7 +59,46 @@ const FIXED_EXECUTORS = new Map<string, () => ProviderExecutor>([
   ["kimi-ai", makeKimiExecutor],
   [OPENCODE_ZEN, () => makeOpenCodeExecutor(OPENCODE_ZEN)],
   [OPENCODE_GO, () => makeOpenCodeExecutor(OPENCODE_GO)],
+  [TYPESAFE, () => makeSystemOneExecutor(SYSTEM_ONE_SPECS[TYPESAFE])],
+  [SUBQ, () => makeSystemOneExecutor(SYSTEM_ONE_SPECS[SUBQ])],
 ]);
+
+/**
+ * Provider keys whose executor serves System One requests (ADR 0032). Every other executor refuses the `systemone`
+ * source format (501) before doing anything, whatever the model guard let through.
+ */
+export const SYSTEM_ONE_EXECUTORS: ReadonlySet<string> = new Set([TYPESAFE, SUBQ]);
+
+/** `executor` with `systemone` requests refused (501, request-scoped). */
+const withoutSystemOne = (executor: ProviderExecutor): ProviderExecutor => {
+  const refused = (options: ExecutorOptions) =>
+    options.sourceFormat === EntryOnlyFormats.SystemOne
+      ? notImplemented(`${executor.identifier} does not serve System One requests`)
+      : undefined;
+
+  return {
+    identifier: executor.identifier,
+    execute: (context, request, options) => {
+      const error = refused(options);
+
+      return error === undefined ? executor.execute(context, request, options) : Effect.fail(error);
+    },
+    executeStream: (context, request, options) => {
+      const error = refused(options);
+
+      return error === undefined
+        ? executor.executeStream(context, request, options)
+        : Effect.fail(error);
+    },
+    countTokens: (context, request, options) => {
+      const error = refused(options);
+
+      return error === undefined
+        ? executor.countTokens(context, request, options)
+        : Effect.fail(error);
+    },
+  };
+};
 
 export const makeExecutorRegistry = () => {
   const cache = new Map<string, ProviderExecutor>();
@@ -68,7 +112,8 @@ export const makeExecutorRegistry = () => {
       const fixed = FIXED_EXECUTORS.get(key);
 
       if (fixed === undefined && !isOpenAICompatProvider(key)) return undefined;
-      const executor = fixed === undefined ? makeOpenAICompatExecutor(key) : fixed();
+      const made = fixed === undefined ? makeOpenAICompatExecutor(key) : fixed();
+      const executor = SYSTEM_ONE_EXECUTORS.has(key) ? made : withoutSystemOne(made);
       // `ForAPIKey` (oauth_scope_executor.go): provider-key credentials see the config without OAuth-only settings.
       const scoped = withProviderKeyScope(key, executor);
       cache.set(key, scoped);

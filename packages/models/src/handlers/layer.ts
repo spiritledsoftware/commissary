@@ -29,6 +29,7 @@ import { SpeechRoutes } from "./openai/speech.ts";
 import { VideoRoutes } from "./openai/videos.ts";
 import { OpenAIRoutes } from "./openai/routes.ts";
 import { ResponsesRoutes } from "./responses/routes.ts";
+import { SystemOneRoutes } from "./systemone/routes.ts";
 
 export interface ClientApiLayerOptions {
   readonly configReader?: Layer.Layer<ConfigReader>;
@@ -64,6 +65,7 @@ export const ClientApiRoutes = Layer.mergeAll(
   GeminiRoutes,
   VideoRoutes,
   SpeechRoutes,
+  SystemOneRoutes,
 );
 
 /**

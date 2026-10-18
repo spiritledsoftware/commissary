@@ -4,10 +4,11 @@
  * on Commissary Cloud an API key, under the org's rate limit), after the cross-site checks (`crossSiteRejection`). On
  * success the principal is available to handlers as `AccessPrincipal`, and `CurrentOrg` is the org the API key names.
  * `/healthz` (and nothing else, `http/hosts.ts` refuses every other path first) passes through. Registered after CORS
- * (`cors.ts`), so preflights are answered before authentication and refusals still carry CORS headers.
+ * (`cors.ts`), so preflights are answered before authentication and refusals still carry CORS headers. Refusals on
+ * the System One endpoint are in TypeSafe's format (ADR 0032), so TypeSafe's SDKs read them.
  */
 import { Effect, Layer, Result } from "effect";
-import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
+import { HttpRouter, HttpServerRequest } from "effect/http";
 import {
   accessErrorResponse,
   AccessJwks,
@@ -15,15 +16,10 @@ import {
   authenticateClient,
   crossSiteRejection,
   PUBLIC_ROUTE_IDENTITY,
+  refusalResponse,
 } from "@commissary/auth";
-import { CurrentOrg, isClientApiPath, normalizedPath } from "@commissary/core";
+import { CurrentOrg, isClientApiPath, isSystemOnePath, normalizedPath } from "@commissary/core";
 import { CorsLayer } from "./cors.ts";
-
-const errorResponse = (status: number, message: string) =>
-  HttpServerResponse.text(JSON.stringify({ error: message }), {
-    status,
-    contentType: "application/json; charset=utf-8",
-  });
 
 /** Whether a request URL is open to anyone: any path but the client API (a URL that cannot be parsed is not). */
 const isPublic = (requestUrl: string): boolean => {
@@ -45,6 +41,8 @@ export const ClientGate = HttpRouter.middleware<{ provides: AccessPrincipal }>()
         if (isPublic(request.originalUrl))
           return yield* Effect.provideService(app, AccessPrincipal, PUBLIC_ROUTE_IDENTITY);
 
+        const dialect = isSystemOnePath(request.originalUrl) ? "systemone" : "flat";
+
         const rejection = crossSiteRejection(
           request.method,
           request.headers,
@@ -52,7 +50,8 @@ export const ClientGate = HttpRouter.middleware<{ provides: AccessPrincipal }>()
           undefined,
         );
 
-        if (rejection !== undefined) return errorResponse(rejection.status, rejection.message);
+        if (rejection !== undefined)
+          return refusalResponse(rejection.status, rejection.message, dialect);
 
         const authenticated = yield* Effect.result(
           authenticateClient(request.headers, request.originalUrl).pipe(
@@ -61,7 +60,7 @@ export const ClientGate = HttpRouter.middleware<{ provides: AccessPrincipal }>()
         );
 
         if (Result.isFailure(authenticated))
-          return yield* accessErrorResponse(authenticated.failure);
+          return yield* accessErrorResponse(authenticated.failure, dialect);
 
         return yield* app.pipe(
           Effect.provideService(AccessPrincipal, authenticated.success),

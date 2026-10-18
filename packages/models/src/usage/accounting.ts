@@ -336,6 +336,9 @@ export const tokenAccountingSemanticsFor = (
 
   if (value.includes("claude") || value.includes("anthropic")) return "independent";
 
+  // Not in Go (ADR 0032): System One providers report `input_tokens`/`output_tokens` only, never overlapping.
+  if (normalizedProvider === "typesafe" || normalizedProvider === "subq") return "independent";
+
   for (const marker of ["gemini", "aistudio", "antigravity", "vertex", "interaction"]) {
     if (value.includes(marker)) return "separate-reasoning";
   }

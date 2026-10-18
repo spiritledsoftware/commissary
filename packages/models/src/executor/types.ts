@@ -102,6 +102,12 @@ export interface ExecutorOptions {
   /** Protocol of the response the client expects (defaults to `sourceFormat`). */
   readonly responseFormat?: Format;
   readonly metadata: ExecutionMetadata;
+  /**
+   * The file parts of a multipart System One request (`systemone` source format, ADR 0032), by part name; the JSON
+   * `request` part is the payload. Each attempt reads them afresh (a `File` can be read again), so retries and failover
+   * resend the same bytes.
+   */
+  readonly systemOneParts?: ReadonlyMap<string, File>;
 }
 
 /** Go `ResponseFormatOrSource`. */

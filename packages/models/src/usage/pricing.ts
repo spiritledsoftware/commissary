@@ -9,7 +9,9 @@
  *
  * Subscription accounts are costed like provider keys, at the API price of the provider they stand for: a provider key
  * names the models.dev providers whose prices apply (`PRICE_PROVIDERS`). A provider the table does not list (Devin,
- * an OpenAI-compatible gateway) has no catalog price: its models need a price override.
+ * an OpenAI-compatible gateway) has no catalog price: its models need a price override. Models models.dev does not
+ * list at all (the System One models of TypeSafe, SubQ and OpenCode Zen, ADR 0032) take the `cost` of their catalog
+ * addition record under the same provider key, after models.dev.
  *
  * Kinds of token and their rates: uncached input, cache reads, cache writes, output (reasoning tokens are output and
  * take the output rate unless the price names a reasoning rate). A price without a cache rate charges those tokens at
@@ -19,6 +21,7 @@
  *
  * Pure: nothing here reads a binding.
  */
+import type { CatalogAdditions } from "../registry/catalog-additions.ts";
 import type {
   ModelsDevCatalog,
   ModelsDevCost,
@@ -198,16 +201,34 @@ const indexOf = (doc: ModelsDevCatalog, provider: ModelsDevProviderId) => {
 /** `claude-sonnet-4-5-20250929` also reads as `claude-sonnet-4-5` when the dated id has no entry of its own. */
 const withoutDate = (model: string): string => model.replace(/-\d{8}$/, "");
 
-/** The catalog price of `model` under `provider` (a provider key); the first of the provider's documents that lists it. */
+/** The `cost` of the catalog addition record of `model` under the provider key, if it has one. */
+const additionCost = (
+  additions: CatalogAdditions | undefined,
+  provider: string,
+  id: string,
+): ModelsDevCost | undefined => {
+  if (additions === undefined) return undefined;
+  const entry = Object.entries(additions.providers).find(([key]) => key === provider)?.[1];
+
+  return entry?.models?.find((record) => normal(record.id) === id)?.cost;
+};
+
+/**
+ * The catalog price of `model` under `provider` (a provider key): the first of the provider's models.dev documents that
+ * lists it, else the `cost` of its catalog addition record.
+ */
 export const catalogPrice = (
   docs: ReadonlyArray<ModelsDevCatalog>,
   provider: string,
   model: string,
+  additions?: CatalogAdditions,
 ): Price | undefined => {
+  const id = normal(model);
+  const added = additionCost(additions, normal(provider), id);
+  const fromAddition = added === undefined ? undefined : priceOfCost(added);
   const providers = PRICE_PROVIDERS.get(normal(provider));
 
-  if (providers === undefined) return undefined;
-  const id = normal(model);
+  if (providers === undefined) return fromAddition;
 
   for (const doc of docs) {
     for (const candidate of providers) {
@@ -219,13 +240,15 @@ export const catalogPrice = (
     }
   }
 
-  return undefined;
+  return fromAddition;
 };
 
 export interface PriceSources {
   /** Documents to read catalog prices from, the preferred first (the active catalog, then the bundled one). */
   readonly docs: ReadonlyArray<ModelsDevCatalog>;
   readonly overrides: ReadonlyArray<PriceOverride>;
+  /** The bundled catalog additions: prices of models models.dev does not list. */
+  readonly additions?: CatalogAdditions;
 }
 
 /** The price of `model` under `provider`: the org's override, else the catalog's; `undefined` when neither has one. */
@@ -246,7 +269,7 @@ export const findPrice = (
     );
 
   return override === undefined
-    ? catalogPrice(sources.docs, provider, model)
+    ? catalogPrice(sources.docs, provider, model, sources.additions)
     : priceOfOverride(override);
 };
 
