@@ -179,7 +179,7 @@ _Avoid_: org key, encryption key (unqualified)
 
 **Provider**:
 An upstream LLM service the Models area can call: Claude, Codex, Gemini, Vertex, xAI, Antigravity, Kimi, Meta, Devin, OpenCode
-Zen, OpenCode Go, or any single OpenAI-compatible endpoint.
+Zen, OpenCode Go, TypeSafe, SubQ, or any single OpenAI-compatible endpoint.
 _Avoid_: upstream (as a noun), family, executor type, section
 
 **Channel**:
@@ -325,6 +325,11 @@ _Avoid_: overlay, patch, overrides
 One credential's way of serving one model id, together with whether it can serve it right now.
 _Avoid_: route (on its own)
 
+**System One model**:
+A model that answers typed questions about a state with values and probabilities instead of generating text,
+such as TypeSafe's Jev or Subquadratic's SubQ Snap.
+_Avoid_: decision model, classifier, Jev (that is one model)
+
 **Thinking**:
 How much a model reasons before it answers, expressed provider-neutrally as a budget or a level.
 _Avoid_: reasoning effort, effort, variant
@@ -336,8 +341,8 @@ _Avoid_: suffix (on its own)
 ### Requests
 
 **Client format**:
-The API a client speaks to the Models area: OpenAI Chat Completions, OpenAI Responses, Claude Messages, Gemini or
-Interactions.
+The API a client speaks to the Models area: OpenAI Chat Completions, OpenAI Responses, Claude Messages, Gemini,
+Interactions or System One (TypeSafe's API for System One models, whichever provider serves the model).
 _Avoid_: entry protocol, source format, handler type
 
 **Provider format**:
