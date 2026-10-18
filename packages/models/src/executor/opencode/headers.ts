@@ -4,14 +4,15 @@
  * Deliberate deviation from Go (no OpenCode provider there; see docs/ARCHITECTURE.md "OpenCode Zen and OpenCode
  * Go"). The gateways want a stable `x-opencode-session` per conversation (OpenCode Go answers 400 `MissingSessionID`
  * without one) and a client of its own (`User-Agent`, `x-opencode-client`). Each protocol authenticates with its SDK's
- * native header: `Authorization: Bearer` for chat and Responses, `x-api-key` (plus `anthropic-version`) for Messages,
- * `x-goog-api-key` for Gemini. Configured custom headers (`header:<Name>` attributes) are applied last and win.
+ * native header: `Authorization: Bearer` for chat, Responses and System One, `x-api-key` (plus `anthropic-version`) for
+ * Messages, `x-goog-api-key` for Gemini. Configured custom headers (`header:<Name>` attributes) are applied last and win.
  */
 import type { OpenCodeProtocol } from "../../config/schema.ts";
 import { normalizeExplicitId } from "../../handlers/session.ts";
 import { applyCustomHeaders } from "../helps/custom-headers.ts";
 import { providerSessionUuid } from "../helps/uuid.ts";
 import type { CredentialSnapshot } from "../picker.ts";
+import { forwardedClientHeaders } from "../systemone/executor.ts";
 import type { ExecutorOptions } from "../types.ts";
 
 /** Stable client identity (OpenCode asks clients not to pose as a generic SDK). */
@@ -72,13 +73,17 @@ export const openCodeIdentityHeaders = (options: ExecutorOptions) => ({
   [OPENCODE_SESSION_HEADER]: openCodeSessionId(options),
 });
 
-/** Full request headers of a chat, Responses or Messages attempt (custom headers applied last). */
+/**
+ * Full request headers of a chat, Responses, Messages or System One attempt: the client headers `forward` names, when
+ * sent, after the gateway's own; custom headers applied last.
+ */
 export const openCodeHeaders = (input: {
   readonly credential: CredentialSnapshot;
   readonly options: ExecutorOptions;
   readonly protocol: OpenCodeProtocol;
   readonly providerKey: string;
   readonly stream: boolean;
+  readonly forward?: ReadonlyArray<string>;
 }): Record<string, string> => {
   const headers = {
     "content-type": "application/json",
@@ -87,6 +92,7 @@ export const openCodeHeaders = (input: {
     ...(input.stream
       ? { accept: "text/event-stream", "cache-control": "no-cache" }
       : { accept: "application/json" }),
+    ...forwardedClientHeaders(input.options, input.forward ?? []),
   };
 
   return applyCustomHeaders(

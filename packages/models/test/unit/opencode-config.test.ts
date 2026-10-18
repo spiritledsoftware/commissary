@@ -64,7 +64,7 @@ describe("config sections", () => {
 `),
     ).rejects.toMatchObject({
       message:
-        'Expected one of "chat", "responses", "messages", "gemini" at api-keys.opencode-go[0].models[0].protocol',
+        'Expected one of "chat", "responses", "messages", "gemini", "systemone" at api-keys.opencode-go[0].models[0].protocol',
       path: "api-keys.opencode-go[0].models[0].protocol",
     });
 

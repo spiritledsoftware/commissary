@@ -34,6 +34,7 @@ import {
   OPENCODE_ZEN,
   type OpenCodeProvider,
 } from "../executor/opencode/providers.ts";
+import { supportsOpenCodeProtocol } from "../executor/opencode/protocol.ts";
 import {
   catalogModelInfo,
   defaultCatalogModels,
@@ -311,10 +312,19 @@ const buildCodexConfigModels = (
   return models;
 };
 
+/** A gateway's System One models (ADR 0032), its catalog additions: Zen's Jev, free or not; Go serves none. */
+const openCodeSystemOneModels = (
+  catalogs: ModelCatalogs,
+  provider: OpenCodeProvider,
+): ModelInfo[] =>
+  supportsOpenCodeProtocol(provider, "systemone") ? sectionModels(catalogs, OPENCODE_ZEN) : [];
+
 /**
  * OpenCode Zen/Go config models (no Go counterpart): `buildConfigModels`, then the catalog's limits, modalities and
  * reasoning support for names the catalog knows (an explicit `max-context-length`, `display-name` or `thinking` wins).
- * The registry `type` follows the model's protocol (`protocol` override, else the catalog).
+ * Zen's catalog additions (its System One models, ADR 0032) come before models.dev and type the model `systemone`.
+ * The registry `type` follows the model's protocol (`protocol` override, else the catalog); a `systemone` override on
+ * OpenCode Go, which serves no System One model, is ignored (the executor falls back to chat).
  */
 const buildOpenCodeConfigModels = (
   entries: ReadonlyArray<ModelEntry>,
@@ -322,6 +332,7 @@ const buildOpenCodeConfigModels = (
   options: AssemblyOptions,
 ): ModelInfo[] => {
   const catalog = options.catalogs.modelsDev;
+  const additions = openCodeSystemOneModels(options.catalogs, provider);
   const byAlias = new Map<string, ModelEntry>();
 
   for (const entry of entries) {
@@ -335,10 +346,16 @@ const buildOpenCodeConfigModels = (
 
     if (entry === undefined) return model;
     const name = parseModelSuffix(entry.name.trim()).modelName.trim();
-    const known = findCatalogModel(catalog, provider, name);
     const out: Types.Mutable<ModelInfo> = { ...model };
 
-    if (known !== undefined) {
+    const addition = additions.find(
+      (candidate) => candidate.id.toLowerCase() === name.toLowerCase(),
+    );
+
+    const known = addition === undefined ? findCatalogModel(catalog, provider, name) : undefined;
+
+    if (addition !== undefined) applySystemOneRecord(out, entry, addition);
+    else if (known !== undefined) {
       const fromCatalog = catalogModelInfo(catalog, provider, known);
       out.type = fromCatalog.type;
 
@@ -363,10 +380,48 @@ const buildOpenCodeConfigModels = (
       }
     }
 
-    if (isOpenCodeProtocol(entry.protocol)) out.type = openCodeProtocolType(entry.protocol);
+    const { protocol } = entry;
+
+    // Go has no System One endpoint: a `systemone` there falls back to chat and keeps the model's type.
+    if (
+      isOpenCodeProtocol(protocol) &&
+      (protocol !== "systemone" || supportsOpenCodeProtocol(provider, protocol))
+    ) {
+      out.type = openCodeProtocolType(protocol);
+
+      if (protocol === "systemone") delete out.thinking;
+    }
 
     return out;
   });
+};
+
+/**
+ * A configured System One model takes its catalog record's details (an explicit `display-name` or `max-context-length`
+ * wins): owner, display name, description, context length and modalities. Thinking does not apply to it.
+ */
+const applySystemOneRecord = (
+  out: Types.Mutable<ModelInfo>,
+  entry: ModelEntry,
+  record: ModelInfo,
+): void => {
+  out.type = EntryOnlyFormats.SystemOne;
+  delete out.thinking;
+  out.ownedBy = record.ownedBy;
+
+  if ((entry["display-name"] ?? "").trim() === "" && record.displayName !== undefined)
+    out.displayName = record.displayName;
+
+  if (record.description !== undefined) out.description = record.description;
+
+  if (out.contextLength === undefined && record.contextLength !== undefined)
+    out.contextLength = record.contextLength;
+
+  if (record.supportedInputModalities !== undefined)
+    out.supportedInputModalities = [...record.supportedInputModalities];
+
+  if (record.supportedOutputModalities !== undefined)
+    out.supportedOutputModalities = [...record.supportedOutputModalities];
 };
 
 /**
@@ -402,21 +457,7 @@ const buildSystemOneConfigModels = (
     const known = catalog.find((candidate) => candidate.id.toLowerCase() === name.toLowerCase());
 
     if (entry === undefined || known === undefined) return out;
-    out.ownedBy = known.ownedBy;
-
-    if ((entry["display-name"] ?? "").trim() === "" && known.displayName !== undefined)
-      out.displayName = known.displayName;
-
-    if (known.description !== undefined) out.description = known.description;
-
-    if (out.contextLength === undefined && known.contextLength !== undefined)
-      out.contextLength = known.contextLength;
-
-    if (known.supportedInputModalities !== undefined)
-      out.supportedInputModalities = [...known.supportedInputModalities];
-
-    if (known.supportedOutputModalities !== undefined)
-      out.supportedOutputModalities = [...known.supportedOutputModalities];
+    applySystemOneRecord(out, entry, known);
 
     return out;
   });
@@ -755,7 +796,11 @@ const baseModels = (source: ModelSource, options: AssemblyOptions): ModelInfo[] 
       return applyExcludedModels(
         configured.length > 0
           ? buildOpenCodeConfigModels(configured, provider, options)
-          : defaultCatalogModels(catalogs.modelsDev, provider),
+          : defaultCatalogModels(
+              catalogs.modelsDev,
+              provider,
+              openCodeSystemOneModels(catalogs, provider),
+            ),
         excluded,
       );
     default:

@@ -3,9 +3,11 @@
  *
  * Deliberate deviation from Go (no OpenCode provider there; see docs/ARCHITECTURE.md "OpenCode Zen and OpenCode
  * Go"). Per attempt the protocol is, in order: the `protocol` of the credential's config `models` entry for the model,
- * the model's AI SDK package in the OpenCode catalog (`opencode-catalog.ts`, as OpenCode's own client decides), else
- * `chat` (`/chat/completions`) with a warning for a model the catalog does not know or a package without a gateway
- * protocol. Gemini exists only on Zen; a Go model configured or catalogued as Gemini falls back to chat.
+ * `systemone` for a System One model of the gateway's catalog additions (Zen's Jev, ADR 0032: models.dev lists none, and
+ * the additions win should it list one later), the model's AI SDK package in the OpenCode catalog (`opencode-catalog.ts`,
+ * as OpenCode's own client decides), else `chat` (`/chat/completions`) with a warning for a model the catalog does not
+ * know or a package without a gateway protocol. Gemini and System One exist only on Zen; a Go model configured or
+ * catalogued as either falls back to chat.
  */
 import {
   type Config,
@@ -20,7 +22,10 @@ import {
   type OpenCodeCatalogModel,
   protocolForNpm,
 } from "../../registry/opencode-catalog.ts";
+import { additionRecord } from "../../registry/catalog-additions.ts";
+import { catalogAdditions } from "../../registry/catalog.ts";
 import type { CredentialSnapshot } from "../picker.ts";
+import { EntryOnlyFormats } from "@commissary/translation/formats";
 import { parseSuffix } from "@commissary/translation/thinking";
 import { OPENCODE_SPECS, OPENCODE_ZEN, type OpenCodeProvider } from "./providers.ts";
 
@@ -77,7 +82,10 @@ export const findModelEntry = (
 
 export interface ResolvedProtocol {
   readonly protocol: OpenCodeProtocol;
-  /** Where the protocol came from (`fallback` = chat for want of a better answer). */
+  /**
+   * Where the protocol came from (`catalog`: models.dev or the catalog additions; `fallback`: chat for want of a better
+   * answer).
+   */
   readonly source: "config" | "catalog" | "fallback";
   /** Why the request falls back to chat (logged by the executor). */
   readonly warning?: string;
@@ -87,8 +95,15 @@ export interface ResolvedProtocol {
   readonly catalogModel?: OpenCodeCatalogModel;
 }
 
-const supports = (provider: OpenCodeProvider, protocol: OpenCodeProtocol): boolean =>
-  protocol !== "gemini" || provider === OPENCODE_ZEN;
+/** Whether the gateway has the protocol's endpoint: Gemini and System One exist only on Zen. */
+export const supportsOpenCodeProtocol = (
+  provider: OpenCodeProvider,
+  protocol: OpenCodeProtocol,
+): boolean => (protocol !== "gemini" && protocol !== "systemone") || provider === OPENCODE_ZEN;
+
+/** Whether the gateway's catalog additions hold `model` as a System One model (Zen's Jev). */
+const isSystemOneAddition = (provider: OpenCodeProvider, model: string): boolean =>
+  additionRecord(catalogAdditions(), provider, model)?.type === EntryOnlyFormats.SystemOne;
 
 /** The protocol an attempt uses for `model` (suffix allowed) on `provider`. */
 export const resolveOpenCodeProtocol = (input: {
@@ -113,7 +128,7 @@ export const resolveOpenCodeProtocol = (input: {
 
   // Validated at config load; anything else (only reachable with an unvalidated config) is ignored.
   if (isOpenCodeProtocol(entry?.protocol)) {
-    if (supports(provider, entry.protocol))
+    if (supportsOpenCodeProtocol(provider, entry.protocol))
       return { protocol: entry.protocol, source: "config", ...known };
 
     return {
@@ -123,6 +138,9 @@ export const resolveOpenCodeProtocol = (input: {
       ...known,
     };
   }
+
+  if (supportsOpenCodeProtocol(provider, "systemone") && isSystemOneAddition(provider, base))
+    return { protocol: "systemone", source: "catalog", ...known };
 
   if (catalogModel === undefined) {
     return {

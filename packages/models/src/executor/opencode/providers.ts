@@ -25,7 +25,8 @@ export interface OpenCodeProviderSpec {
   readonly displayName: string;
   /**
    * Free catalog models (cost input and output both 0) answer 403 `FreeTierError` outside OpenCode's own client on Zen,
-   * so they are not registered unless listed in the config `models`.
+   * so they are not registered unless listed in the config `models`. Zen's System One models (catalog additions,
+   * ADR 0032), free or not, are registered all the same.
    */
   readonly skipFreeModels: boolean;
 }

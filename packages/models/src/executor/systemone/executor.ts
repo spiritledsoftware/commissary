@@ -148,6 +148,16 @@ export const prepareSystemOneBody = Effect.fnUntraced(function* (input: {
   return { ...built, json } satisfies SystemOneBody;
 });
 
+/** The client request headers `names` lists that the client sent, unchanged, keyed in lower case. */
+export const forwardedClientHeaders = (options: ExecutorOptions, names: ReadonlyArray<string>) =>
+  Object.fromEntries(
+    names.flatMap((name) => {
+      const value = options.headers.get(name);
+
+      return value === null ? [] : [[name.toLowerCase(), value] as const];
+    }),
+  );
+
 /**
  * Upstream headers: Bearer key, JSON accept, the client headers `forward` names (when sent), then the credential's
  * custom headers.
@@ -158,16 +168,11 @@ export const systemOneHeaders = (
   providerKey: string,
   forward: ReadonlyArray<string>,
 ): Record<string, string> => {
-  const headers: Record<string, string> = {};
-
-  headers.authorization = `Bearer ${providerKey}`;
-  headers.accept = "application/json";
-
-  for (const name of forward) {
-    const value = options.headers.get(name);
-
-    if (value !== null) headers[name.toLowerCase()] = value;
-  }
+  const headers = {
+    authorization: `Bearer ${providerKey}`,
+    accept: "application/json",
+    ...forwardedClientHeaders(options, forward),
+  };
 
   return applyCustomHeaders(headers, context.credential, options.headers, undefined);
 };

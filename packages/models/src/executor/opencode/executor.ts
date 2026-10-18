@@ -10,15 +10,18 @@
  *  - `responses` -> `{base}/responses`, always streamed upstream (the Responses shaping and SSE handling shared with
  *    Meta: `helps/responses-request.ts`, `helps/responses-sse.ts`),
  *  - `messages` -> `{base}/messages` (`messages.ts`, Claude stream reader),
- *  - `gemini` (Zen only) -> `{base}/models/{model}:generateContent` (`gemini.ts`, the shared Google engine).
+ *  - `gemini` (Zen only) -> `{base}/models/{model}:generateContent` (`gemini.ts`, the shared Google engine),
+ *  - `systemone` (Zen only, its System One models, ADR 0032) -> `{base}/systemone` (`systemone.ts`), for System One
+ *    requests only (`/v1/systemone`, no streaming, no token count).
  * Every request carries the gateway headers (`headers.ts`: per-protocol auth, `x-opencode-session`, client identity);
  * gateway errors that concern one model become model-level cooldowns (`errors.ts`). Token counting is local for every
- * protocol (the gateway has no count endpoint). Not supported: Images/Video/Speech entry formats and
+ * protocol but `systemone` (the gateway has no count endpoint). Not supported: Images/Video/Speech entry formats and
  * `/responses/compact` (501).
  */
 import { Effect } from "effect";
 import { asString, get } from "@commissary/json";
 import { getCodec } from "@commissary/translation/tokenizer";
+import { parseSuffix } from "@commissary/translation/thinking";
 import { openCodeCatalogFor } from "../../registry/opencode-catalog.ts";
 import { builtinTranslators, type TranslatorRegistry } from "@commissary/translation";
 import { EntryOnlyFormats, Formats } from "@commissary/translation/formats";
@@ -47,6 +50,7 @@ import {
 import { countChatTokens, executeChat, executeChatStream } from "./chat.ts";
 import { openCodeStreamEventError } from "./errors.ts";
 import { makeOpenCodeGeminiEngine } from "./gemini.ts";
+import { executeOpenCodeSystemOne } from "./systemone.ts";
 import { openCodeHeaders } from "./headers.ts";
 import { countMessagesTokens, executeMessages, executeMessagesStream } from "./messages.ts";
 import { resolveOpenCodeProtocol } from "./protocol.ts";
@@ -101,6 +105,20 @@ export const makeOpenCodeExecutor = (
     });
 
     if (resolved.warning !== undefined) yield* Effect.logWarning(resolved.warning);
+
+    // System One models serve System One requests only, and those nothing else. The model guard sees to it
+    // (`handlers/resolve.ts`); this covers a config `protocol` that disagrees with the registered type.
+    const systemOne = options.sourceFormat === EntryOnlyFormats.SystemOne;
+
+    if (systemOne !== (resolved.protocol === "systemone")) {
+      const model = parseSuffix(request.model).modelName;
+
+      return yield* notImplemented(
+        systemOne
+          ? `${name} model ${model} is not a System One model`
+          : `${name} model ${model} only serves System One requests (/v1/systemone)`,
+      );
+    }
 
     return makeShaping({ provider, registry, context, request, options, resolved });
   });
@@ -158,6 +176,8 @@ export const makeOpenCodeExecutor = (
     const shaping = yield* resolveAttempt(context, request, options);
 
     switch (shaping.resolved.protocol) {
+      case "systemone":
+        return yield* executeOpenCodeSystemOne(shaping);
       case "gemini":
         return yield* gemini.execute(context, request, options);
       case "responses":
@@ -177,6 +197,8 @@ export const makeOpenCodeExecutor = (
     const shaping = yield* resolveAttempt(context, request, options);
 
     switch (shaping.resolved.protocol) {
+      case "systemone":
+        return yield* notImplemented(`${name}: System One requests have no streaming`);
       case "gemini":
         return yield* gemini.executeStream(context, request, options);
       case "responses":
@@ -222,6 +244,8 @@ export const makeOpenCodeExecutor = (
 
       case "messages":
         return yield* countMessagesTokens(shaping);
+      case "systemone":
+        return yield* notImplemented(`${name}: System One requests have no token count`);
       case "gemini":
       case "chat":
         return yield* countChatTokens(shaping);

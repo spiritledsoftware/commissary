@@ -352,6 +352,7 @@ export const PROTOCOL_CHOICES: ReadonlyArray<{ readonly value: string; readonly 
   { value: "responses", label: "Responses" },
   { value: "messages", label: "Anthropic Messages" },
   { value: "gemini", label: "Gemini (Zen only)" },
+  { value: "systemone", label: "System One (Zen only)" },
 ];
 
 export interface KeyDraft {

@@ -9,6 +9,7 @@
  * and OpenCode Go".
  */
 import { Clock, Effect, Option, type Types } from "effect";
+import { EntryOnlyFormats } from "@commissary/translation/formats";
 import type { OpenCodeProtocol } from "../config/schema.ts";
 import { OPENCODE_SPECS, type OpenCodeProvider } from "../executor/opencode/providers.ts";
 import { embeddedModelsDev, modelsDevFromText } from "./catalog.ts";
@@ -162,6 +163,8 @@ export const openCodeProtocolType = (protocol: OpenCodeProtocol | undefined): st
       return "claude";
     case "gemini":
       return "gemini";
+    case "systemone":
+      return EntryOnlyFormats.SystemOne;
     default:
       return "openai";
   }
@@ -205,16 +208,26 @@ export const catalogModelInfo = (
 
 /**
  * The models a gateway registers when its config lists none: every catalog model that is not deprecated, minus the
- * free models where the gateway rejects them outside OpenCode's own client (Zen).
+ * free models where the gateway rejects them outside OpenCode's own client (Zen), plus `additions`: the gateway's
+ * catalog additions (Zen's System One models, ADR 0032), registered as they are whatever their price. An addition is
+ * authoritative for its id: a models.dev entry with the same id (free or not) is left out.
  */
 export const defaultCatalogModels = (
   catalog: OpenCodeCatalog,
   provider: OpenCodeProvider,
-): ModelInfo[] =>
-  Object.values(catalogProvider(catalog, provider).models)
-    .filter(
-      (model) =>
-        !isDeprecatedModel(model) &&
-        !(OPENCODE_SPECS[provider].skipFreeModels && isFreeModel(model)),
-    )
-    .map((model) => catalogModelInfo(catalog, provider, model));
+  additions: ReadonlyArray<ModelInfo> = [],
+): ModelInfo[] => {
+  const added = new Set(additions.map((model) => model.id.toLowerCase()));
+
+  return [
+    ...Object.values(catalogProvider(catalog, provider).models)
+      .filter(
+        (model) =>
+          !added.has(model.id.toLowerCase()) &&
+          !isDeprecatedModel(model) &&
+          !(OPENCODE_SPECS[provider].skipFreeModels && isFreeModel(model)),
+      )
+      .map((model) => catalogModelInfo(catalog, provider, model)),
+    ...additions,
+  ];
+};
