@@ -27,6 +27,7 @@ import { ownedOrgLimit } from "../hosted/owned-orgs.ts";
 import type { JsonObject } from "@commissary/json";
 import { deleteSignInAccount, endSessions } from "../hosted/sign-in.ts";
 import { apiOrigin } from "../http/hosts.ts";
+import { deploymentOf } from "./deployment.ts";
 import { GLOBAL_ORG, newOrgId, handled, jsonReply, replyError, type Reply } from "@commissary/core";
 import {
   controlPlane,
@@ -115,13 +116,13 @@ const ownedOrgs = (identity: AccessIdentity) =>
   Effect.gen(function* () {
     const { principal } = identity;
 
-    if (!isHosted(yield* AuthConfig)) return {};
+    if (!isHosted(yield* AuthConfig) || identity.platformAdmin || principal.kind !== "user")
+      return {};
 
-    if (identity.platformAdmin || principal.kind !== "user") return { hosted: true };
     const limit = ownedOrgLimit(yield* AppEnv);
     const person = yield* registry("person", (stub) => stub.person(principal.email, limit));
 
-    return { hosted: true, org_limit: person.orgLimit, owned_orgs: person.ownedOrgs };
+    return { org_limit: person.orgLimit, owned_orgs: person.ownedOrgs };
   });
 
 const me = Effect.gen(function* () {
@@ -138,6 +139,7 @@ const me = Effect.gen(function* () {
     platform_admin: identity.platformAdmin,
     role: identity.role ?? null,
     orgs: orgs.map((org) => ({ slug: org.slug, name: org.name })),
+    deployment: deploymentOf(yield* AuthConfig, yield* AppEnv),
     ...(settings === undefined ? {} : { private_credentials: settings.privateCredentials }),
     ...(yield* ownedOrgs(identity)),
     ...(api === undefined ? {} : { api_url: api }),

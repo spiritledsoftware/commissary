@@ -90,11 +90,6 @@ app and the API Worker send each such call once more (`retryOnCodeUpdate`). Beca
 Worker with the old app and API Workers for a moment, state RPC changes are expand-then-contract
 (`docs/DEVELOPMENT.md`, "State RPC: expand, then contract").
 
-**Workers Free.** The split changes nothing that Workers Free limits by request: Durable Object calls by script name
-cost what they cost when the classes lived in the app Worker (no extra request; they count toward the subrequest limits
-as before), and a client request is still one Worker request, on the API Worker. The three Workers count against the
-account's Worker limit and share the daily request quota.
-
 **Revocation and suspension** made on the app Worker reach the API Worker's isolates within the same windows as
 before (30 s for a verified API key, 30 s for a suspension's standing), since the API Worker is another isolate.
 
@@ -111,7 +106,7 @@ state Worker and the move happens on that deploy, with no setting or manual step
 
 - a new Worker, `commissary-state-<stage>-<suffix>` (Alchemy names it from the stack, the logical ID `State` and the
   stage), with no URL, and the API Worker `commissary-api-<stage>-<suffix>` (logical ID `Api`) with the zone routes or
-  the API host ([The Workers](#the-workers)): the account's Worker count grows by two (see "Workers Free" above);
+  the API host ([The Workers](#the-workers)): the account's Worker count grows by two;
 - the requests in flight during the deploy may fail once while the Durable Objects restart, as on any deploy that
   changed their code;
 - no change to URLs, API keys, management keys, sessions or stored data. The client API may answer `404` for a few
@@ -167,6 +162,28 @@ client API route, with no zone routes. A path on the wrong host answers `404` wi
   from the app host and the auth host; it need not be under the base domain.
 - Both hostnames must be in zones of the account; `pnpm ci:setup` writes the variable into the environment and extends
   the deploy token to the API host's zone.
+
+## Optional pieces
+
+A self-hosted Commissary needs Workers Paid (Workers Free isn't supported, ADR 0043) and then has every area. Two pieces
+depend on an extra binding the deployment chooses. `GET /v9/management/me` reports whether each is present in its
+`deployment` object (`browser`, `computer`); the panel decides what to show from it.
+
+| Piece                                                                                                | Deploy setting | Binding | What its absence removes | Cost |
+| ---------------------------------------------------------------------------------------------------- | -------------- | ------- | ------------------------ | ---- |
+| None are available yet. The browser toolkit (#212) and the sandbox's computer (#223) add their rows. |                |         |                          |      |
+
+## Commissary Cloud only
+
+What Commissary Cloud has that a self-hosted Commissary doesn't is the list below (ADR 0043). **Nothing else
+differs**: the areas, toolkits and settings are the same.
+
+- Sign-up and sign-in through Commissary itself (ADR 0026, ADR 0030). A self-hosted Commissary signs people in through
+  Cloudflare Access.
+- Plans, billing, ceilings and unbilled orgs (ADR 0042).
+- The per-org request rate limit.
+- Commissary-owned OAuth apps for catalog toolkits (ADR 0036). A self-hosted Commissary uses its own apps.
+- Suspending people, and owned-org limits.
 
 ## Commissary Cloud
 

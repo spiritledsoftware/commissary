@@ -55,7 +55,7 @@ export const SsoPage = () => {
   const owner = canChangeSso(role.caller);
 
   // Self-hosted proxies have no such routes: Cloudflare Access configures their identity providers.
-  if (AsyncResult.isSuccess(me) && me.value.hosted !== true)
+  if (AsyncResult.isSuccess(me) && !me.value.deployment.hosted)
     return (
       <div className={kit["page"]}>
         <header className={styles["head"]}>

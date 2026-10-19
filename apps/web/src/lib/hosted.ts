@@ -3,10 +3,10 @@
 import type { Me } from "@commissary/contract/orgs";
 import { asSentence } from "./failure.ts";
 
-type Hosting = Pick<Me, "platform_admin" | "hosted" | "org_limit" | "owned_orgs">;
+type Hosting = Pick<Me, "platform_admin" | "deployment" | "org_limit" | "owned_orgs">;
 
 /** Anyone signed in creates orgs on Commissary Cloud; on a self-hosted one only platform admins do. */
-export const canCreateOrg = (me: Hosting): boolean => me.platform_admin || me.hosted === true;
+export const canCreateOrg = (me: Hosting): boolean => me.platform_admin || me.deployment.hosted;
 
 /** A platform admin has no limit (the server sends neither number then). */
 export const atOrgLimit = (me: Hosting): boolean =>
@@ -26,8 +26,8 @@ export const orgLimitNote = (me: Hosting): string =>
   `You own ${orgCountText(me) ?? "as many orgs as you may"}. Ask a platform admin to raise your limit.`;
 
 /** Platform admins suspend and unsuspend orgs and people on Commissary Cloud only. */
-export const canSuspend = (me: Pick<Me, "platform_admin" | "hosted">): boolean =>
-  me.platform_admin && me.hosted === true;
+export const canSuspend = (me: Pick<Me, "platform_admin" | "deployment">): boolean =>
+  me.platform_admin && me.deployment.hosted;
 
 /** What a refused org write says, by the server's error code. */
 export const orgProblem = (error: string | undefined, message: string, detail?: string): string => {

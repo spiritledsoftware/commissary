@@ -8,7 +8,7 @@ same org, API key and control panel.
 
 Commissary comes in two forms: a **self-hosted Commissary**, which you deploy to your own Cloudflare account and whose
 people sign in through Cloudflare Access (this README), and **Commissary Cloud**, the paid service run for anyone, with
-sign-up and personal orgs ([DEPLOY.md](docs/DEPLOY.md#commissary-cloud)). A member's clients send an **API key**; the
+sign-up and personal orgs ([DEPLOY.md](docs/DEPLOY.md#commissary-cloud); [what only Cloud has](docs/DEPLOY.md#commissary-cloud-only)). A member's clients send an **API key**; the
 secrets Commissary holds for outside services are **credentials**, and a model provider's secret is a **provider key**.
 
 - **One endpoint, every client.** Claude Code, Codex CLI, the OpenAI/Anthropic/Gemini SDKs and anything else that
@@ -51,11 +51,14 @@ secrets Commissary holds for outside services are **credentials**, and a model p
 
 ### Prerequisites
 
-- A Cloudflare account on the **Workers Paid** plan (requests may use up to 300 s of CPU; see `COMMISSARY_CPU_MS`).
+- A Cloudflare account on the **Workers Paid** plan, which is required: Workers Free isn't supported (requests may use
+  up to 300 s of CPU; see `COMMISSARY_CPU_MS`).
 - A domain (zone) in that account. Commissary gets its own hostname on it, e.g. `llm.example.com`.
 - **Zero Trust** enabled on the account, with an identity provider (the built-in one-time PIN works). Note your team
   name: `<team>.cloudflareaccess.com`.
 - Node.js 22+ and pnpm 12 (the version pinned in `package.json` `devEngines`).
+- Optional, and possibly billed extra by Cloudflare: the browser toolkit and the sandbox's computer. Without them
+  everything else works; see [Optional pieces](docs/DEPLOY.md#optional-pieces).
 
 ### 1. Clone and install
 

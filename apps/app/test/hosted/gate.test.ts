@@ -5,6 +5,7 @@
 // (apps/api/test/hosted/gate.test.ts, suspension included): the app Worker refuses it with a 404.
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { resetStandingCaches } from "@commissary/auth";
+import type { Deployment } from "@commissary/contract/orgs";
 import { FAILING_SESSION_TOKEN, FAKE_SESSION_COOKIE } from "../worker.ts";
 import {
   call,
@@ -31,7 +32,7 @@ interface Me {
   readonly platform_admin: boolean;
   readonly role: string | null;
   readonly orgs: ReadonlyArray<{ readonly slug: string; readonly name: string }>;
-  readonly hosted?: boolean;
+  readonly deployment: Deployment;
   readonly org_limit?: number;
   readonly owned_orgs?: number;
 }
@@ -200,6 +201,17 @@ describe("authentication", () => {
     expect(await me(await signIn({ email: "ada@example.com" }))).toMatchObject({
       platform_admin: false,
     });
+  });
+});
+
+describe("the optional pieces of the deployment", () => {
+  it("are reported on /me, hosted for everyone signed in, a platform admin included", async () => {
+    for (const email of [ROOT, "ada@example.com"]) {
+      const body = await me(await signIn({ email }));
+
+      expect(body.deployment).toEqual({ hosted: true, browser: false, computer: false });
+      expect(body).not.toHaveProperty("hosted");
+    }
   });
 });
 
