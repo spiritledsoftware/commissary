@@ -54,8 +54,6 @@ export const ToolkitSecret = Schema.Union([
 
 export type ToolkitSecret = typeof ToolkitSecret.Type;
 
-export type ToolkitSecretKind = ToolkitSecret["kind"];
-
 /** A connected credential, without its secret. Times are ISO. */
 export const ToolkitCredentialView = Schema.Struct({
   kind: Schema.Literals(["none", "bearer", "header", "query", "basic"]),
@@ -63,7 +61,10 @@ export const ToolkitCredentialView = Schema.Struct({
   name: optional(Schema.String),
   connected_at: Schema.String,
   connected_by: Schema.String,
-  /** False for a private credential while the org has private credentials turned off. */
+  /**
+   * False while the toolkit does not accept its kind (it is kept, and not used) and, for a private credential, while
+   * the org has private credentials turned off.
+   */
   active: Schema.Boolean,
 });
 
@@ -90,7 +91,10 @@ export const ToolkitView = Schema.Struct({
   id: Schema.String,
   kind: ToolkitKind,
   name: Schema.String,
-  /** The MCP server's URL. */
+  /**
+   * The MCP server's URL. A member who only reads an org toolkit sees its query parameters' values masked (`***`), their
+   * names kept; managers and the org export get it whole. A key belongs in a `query` credential, not in the source.
+   */
   source: Schema.String,
   /** A private toolkit, the caller's own. */
   private: Schema.Boolean,
@@ -124,6 +128,8 @@ export const LimitedToolkitView = Schema.Struct({
   limited: Schema.Literal(true),
   owner: ToolkitOwner,
   created_at: Schema.String,
+  /** For the `If-Match` of an org admin's removal. */
+  revision: Schema.Int,
 });
 
 export type LimitedToolkitView = typeof LimitedToolkitView.Type;
@@ -206,7 +212,7 @@ export const ToolsList = Schema.Struct({
 
 export type ToolsList = typeof ToolsList.Type;
 
-/** The whole override of one tool (named by its upstream name); one with nothing set is deleted. */
+/** The whole override of one tool (named by its upstream name); one with nothing set clears it. */
 export const SetToolOverride = Schema.Struct({
   tool: Schema.String,
   hidden: optional(Schema.Boolean),
@@ -219,6 +225,15 @@ export type SetToolOverride = typeof SetToolOverride.Type;
 
 export const RemovedToolkit = Schema.Struct({ id: Schema.String });
 
+/** The answer to clearing the override of a tool its source no longer lists: the tool left the list. */
+export const RemovedToolOverride = Schema.Struct({
+  /** The tool's stable id. */
+  id: Schema.String,
+  removed: Schema.Literal(true),
+});
+
+export type RemovedToolOverride = typeof RemovedToolOverride.Type;
+
 /** The `If-Match` request header: the revision the edit was based on (a bare number or `"<number>"`). */
 const IfMatch = { headers: Schema.Struct({ "if-match": Schema.String }) };
 
@@ -229,9 +244,11 @@ const slotParams = { params: { id: Schema.String, slot: CredentialSlot } };
 export class ToolsGroup extends HttpApiGroup.make("tools").add(
   HttpApiEndpoint.get("list", "/toolkits", { success: ToolkitsList, error: managementErrors }),
   /**
-   * `422 invalid_toolkit` (source, name, accepts), `422 outbound_refused` (a source the outbound guard refuses),
-   * `409 name_taken`, `403 forbidden` (a plain member adding an org toolkit). A tool list that cannot be built does not
-   * fail the add: `tool_list.error` says why.
+   * `422 invalid` (name, accepts, credential; a source naming a user or password, with `path: "source"`),
+   * `422 not_accepted` (a credential the toolkit does not take), `422` with
+   * the outbound guard's message as `error` and `path: "source"` (a source the guard refuses), `409 name_taken`,
+   * `403 private_credentials_unavailable` (a private credential while the org has them off). A plain member's toolkit is
+   * always private. A tool list that cannot be built does not fail the add: `tool_list.error` says why.
    */
   HttpApiEndpoint.post("add", "/toolkits", {
     payload: AddToolkit,
@@ -276,12 +293,15 @@ export class ToolsGroup extends HttpApiGroup.make("tools").add(
     success: ToolsList,
     error: managementErrors,
   }),
-  /** `409 name_taken` (a rename to a full name in use), `409 conflict` (a stale revision). */
+  /**
+   * `409 name_taken` (a rename to a full name in use), `409 conflict` (a stale revision). Clearing the override of a
+   * tool its source no longer lists answers {@link RemovedToolOverride}.
+   */
   HttpApiEndpoint.put("override", "/toolkits/:id/overrides", {
     ...idParam,
     ...IfMatch,
     payload: SetToolOverride,
-    success: ToolView,
+    success: Schema.Union([ToolView, RemovedToolOverride]),
     error: managementErrors,
   }),
 ) {}

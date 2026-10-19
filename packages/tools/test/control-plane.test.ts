@@ -66,7 +66,7 @@ const toolsOf = async (stub: Stub, viewer: typeof ADMIN, id: string) => {
 
 /** The names a member is served, the flat list of the MCP endpoint (#197). */
 const served = async (stub: Stub, member: string | undefined) =>
-  (await stub.tools().servedTools(member)).map((tool) => tool.name);
+  (await stub.tools().servedTools({ member, admin: false })).map((tool) => tool.name);
 
 describe("an org toolkit from a remote MCP server", () => {
   it("lists its tools with full names, classes and stable ids, signed in with a shared bearer token", async () => {
@@ -198,7 +198,7 @@ describe("unique full names", () => {
       { name: "github_rest_create_issue", flags: { clash: true } },
     ]);
     expect(await served(stub, undefined)).toEqual(["github_rest_create_issue"]);
-    expect((await stub.tools().servedTools(undefined))[0]?.id).toBe(
+    expect((await stub.tools().servedTools({ admin: true }))[0]?.id).toBe(
       `${first.id}:rest_create_issue`,
     );
 
@@ -267,7 +267,7 @@ describe("unique full names", () => {
     const shared = await add(stub, ADMIN, orgToolkit(org.url, "docs"));
 
     expect(await served(stub, ALICE.member)).toEqual(["docs_search"]);
-    expect((await stub.tools().servedTools(ALICE.member)).map((tool) => tool.toolkit_id)).toEqual([
+    expect((await stub.tools().servedTools(ALICE)).map((tool) => tool.toolkit_id)).toEqual([
       personal.id,
     ]);
     expect(await served(stub, BOB.member)).toEqual(["docs_search", "docs_fetch"]);
@@ -333,6 +333,31 @@ describe("unique full names", () => {
       ["keep", false],
       ["gone", true],
     ]);
+  });
+
+  it("answers removed when the override of a tool gone upstream is cleared, and the tool leaves the list", async () => {
+    const server = fakeMcpServer(`${origin()}/mcp`, {
+      tools: [{ name: "keep" }, { name: "gone" }],
+    });
+
+    const stub = await plane();
+    const toolkit = await add(stub, ADMIN, orgToolkit(server.url, "kit"));
+
+    await stub.tools().setOverride(ADMIN, toolkit.id, 0, { tool: "gone", hidden: true }, "test");
+    server.tools = [{ name: "keep" }];
+    await stub.tools().refreshToolList(ADMIN, toolkit.id, POLICY);
+
+    expect(await stub.tools().setOverride(ADMIN, toolkit.id, 1, { tool: "gone" }, "test")).toEqual({
+      ok: true,
+      value: { id: `${toolkit.id}:gone`, removed: true },
+    });
+    expect((await toolsOf(stub, ADMIN, toolkit.id)).map((tool) => tool.upstream_name)).toEqual([
+      "keep",
+    ]);
+    // Nothing is left to override.
+    expect(
+      await stub.tools().setOverride(ADMIN, toolkit.id, 0, { tool: "gone", hidden: true }, "test"),
+    ).toMatchObject({ ok: false, error: "not_found" });
   });
 });
 
@@ -429,7 +454,7 @@ describe("overrides", () => {
       ok: false,
       error: "not_found",
     });
-    // An override that sets nothing is deleted.
+    // An override that sets nothing clears it.
     expect(
       await stub.tools().setOverride(ADMIN, shared.id, 1, { tool: "t" }, "test"),
     ).toMatchObject({
@@ -437,6 +462,15 @@ describe("overrides", () => {
       value: { flags: { hidden: false } },
     });
     expect((await toolsOf(stub, ADMIN, shared.id))[0]?.override).toBeUndefined();
+
+    // A new override starts from 0 again, but its revision goes on from the cleared one's, so a write based on the
+    // override before the clear (revision 1) cannot land on the new one.
+    expect(
+      await stub.tools().setOverride(ADMIN, shared.id, 0, { tool: "t", name: "u" }, "test"),
+    ).toMatchObject({ ok: true, value: { override: { revision: 3 } } });
+    expect(
+      await stub.tools().setOverride(ADMIN, shared.id, 1, { tool: "t", hidden: true }, "test"),
+    ).toMatchObject({ ok: false, error: "conflict" });
   });
 });
 
@@ -508,6 +542,62 @@ describe("credentials", () => {
     );
 
     expect([viaQuery.tool_list.tools, viaBasic.tool_list.tools]).toEqual([1, 1]);
+  });
+});
+
+describe("what an org toolkit accepts", () => {
+  it("keeps the credentials it no longer accepts, inactive and unused, until it accepts them again", async () => {
+    const server = fakeMcpServer(`${origin()}/mcp`, {
+      // Lists only for a caller without a sign-in: Alice's `none`, never the shared bearer token.
+      authorized: (request) => request.headers.get("authorization") === null,
+      tools: [{ name: "t" }],
+    });
+
+    const stub = await plane();
+
+    const toolkit = await add(
+      stub,
+      ADMIN,
+      orgToolkit(server.url, "kit", {
+        accepts: "both",
+        credential: { kind: "bearer", token: "shared" },
+      }),
+    );
+
+    expect(
+      (
+        await stub
+          .tools()
+          .connectCredential(ALICE, toolkit.id, "private", { kind: "none" }, "alice", POLICY)
+      ).ok,
+    ).toBe(true);
+
+    const narrowed = await stub
+      .tools()
+      .updateToolkit(ADMIN, toolkit.id, toolkit.revision, { accepts: "shared" }, "test");
+
+    expect(narrowed).toMatchObject({
+      ok: true,
+      value: { credentials: { shared: { active: true }, private_count: 1 } },
+    });
+
+    const aliceView = (await stub.tools().listToolkits(ALICE)).toolkits[0];
+
+    expect(aliceView?.credentials.mine).toMatchObject({ kind: "none", active: false });
+
+    const onlyPrivate = await stub
+      .tools()
+      .updateToolkit(ADMIN, toolkit.id, toolkit.revision + 1, { accepts: "private" }, "test");
+
+    expect(onlyPrivate).toMatchObject({
+      ok: true,
+      value: { credentials: { shared: { kind: "bearer", active: false } } },
+    });
+    // The kept shared credential is not used: Alice's own builds the list.
+    expect((await stub.tools().refreshToolList(ALICE, toolkit.id, POLICY)).ok).toBe(true);
+    expect((await stub.tools().listToolkits(ALICE)).toolkits[0]?.credentials.mine).toMatchObject({
+      active: true,
+    });
   });
 });
 

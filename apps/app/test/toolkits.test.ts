@@ -33,7 +33,7 @@ interface Org {
 }
 
 const send = async (
-  org: Org,
+  org: Pick<Org, "slug">,
   path: string,
   who: Person | string,
   method = "GET",
@@ -61,7 +61,7 @@ const newOrg = async (privateCredentials = true): Promise<Org> => {
 
   expect(created.status).toBe(201);
 
-  const org = { slug, platform } as Org;
+  const org = { slug };
 
   const person = async (name: string, role: string): Promise<Person> => {
     const email = `${name}-${slug}@example.com`;
@@ -184,6 +184,30 @@ describe("an org toolkit", () => {
       (await send(org, `/toolkits/${toolkit.id}`, org.alice, "DELETE", undefined, revised(1)))
         .status,
     ).toBe(403);
+  });
+
+  it("shows a plain member its source with the query's values masked, and an org admin the whole URL", async () => {
+    const server = fakeMcpServer(`${origin()}/mcp`, { tools: [{ name: "t" }] });
+    const org = await newOrg();
+    const source = `${server.url}?team=acme&key=s3cret`;
+
+    const added = toolkitOf(
+      await send(org, "/toolkits", org.admin, "POST", {
+        source,
+        name: "kit",
+        credential: { kind: "none" },
+      }),
+    );
+
+    expect(added.source).toBe(source);
+
+    const sourceFor = async (who: Person) =>
+      Schema.decodeUnknownSync(ToolkitsList)((await send(org, "/toolkits", who)).body).toolkits[0]
+        ?.source;
+
+    expect(await sourceFor(org.admin)).toBe(source);
+    expect(await sourceFor(org.alice)).toBe(`${server.url}?team=***&key=***`);
+    expect(JSON.stringify((await send(org, "/toolkits", org.alice)).body)).not.toContain("s3cret");
   });
 
   it("takes the slug of its source's host as its default name, and an override renames a tool by stable id", async () => {
@@ -319,6 +343,7 @@ describe("a private toolkit", () => {
         limited: true,
         owner: { member_id: org.alice.id, email: `alice-${org.slug}@example.com` },
         created_at: toolkit.created_at,
+        revision: 1,
       },
     ]);
     expect(JSON.stringify(seen)).not.toContain(server.url);
@@ -327,8 +352,33 @@ describe("a private toolkit", () => {
       (await send(org, `/toolkits/${toolkit.id}`, org.admin, "PATCH", { name: "x" }, revised(1)))
         .status,
     ).toBe(404);
+
+    // Alice renames it; the admin removes it at the revision the list shows them.
     expect(
-      (await send(org, `/toolkits/${toolkit.id}`, org.admin, "DELETE", undefined, revised(1)))
+      (
+        await send(
+          org,
+          `/toolkits/${toolkit.id}`,
+          org.alice,
+          "PATCH",
+          { name: "notes" },
+          revised(1),
+        )
+      ).status,
+    ).toBe(200);
+
+    const revision = Schema.decodeUnknownSync(ToolkitsList)(
+      (await send(org, "/toolkits", org.admin)).body,
+    ).others?.[0]?.revision;
+
+    expect(revision).toBe(2);
+    expect(
+      errorOf(
+        await send(org, `/toolkits/${toolkit.id}`, org.admin, "DELETE", undefined, revised(1)),
+      ),
+    ).toBe("conflict");
+    expect(
+      (await send(org, `/toolkits/${toolkit.id}`, org.admin, "DELETE", undefined, revised(2)))
         .status,
     ).toBe(200);
     expect((await send(org, "/toolkits", org.alice)).body).toEqual({ toolkits: [] });
@@ -384,7 +434,7 @@ describe("private credentials on toolkits", () => {
 
     expect(await send(org, path, org.alice, "PUT", credential)).toMatchObject({
       status: 403,
-      body: { error: "private_credentials_off" },
+      body: { error: "private_credentials_unavailable" },
     });
 
     expect(
@@ -414,6 +464,38 @@ describe("private credentials on toolkits", () => {
     expect(off?.credentials.mine).toMatchObject({ active: false });
     expect(errorOf(await send(org, `/toolkits/${toolkit.id}/refresh`, org.alice, "POST"))).toBe(
       "no_credential",
+    );
+  });
+});
+
+describe("a private credential on an org toolkit", () => {
+  it("is its owner's alone: another member neither sees nor removes it, an org admin only counts it", async () => {
+    const server = fakeMcpServer(`${origin()}/mcp`, { tools: [{ name: "t" }] });
+    const org = await newOrg();
+
+    const toolkit = toolkitOf(
+      await send(org, "/toolkits", org.admin, "POST", {
+        source: server.url,
+        name: "kit",
+        accepts: "both",
+      }),
+    );
+
+    const path = `/toolkits/${toolkit.id}/credentials/private`;
+
+    expect(
+      (await send(org, path, org.alice, "PUT", { kind: "bearer", token: "alice-key" })).status,
+    ).toBe(200);
+
+    const viewOf = async (who: Person) =>
+      Schema.decodeUnknownSync(ToolkitsList)((await send(org, "/toolkits", who)).body).toolkits[0];
+
+    expect((await viewOf(org.bob))?.credentials).toEqual({});
+    expect(errorOf(await send(org, path, org.bob, "DELETE"))).toBe("not_found");
+    expect((await viewOf(org.alice))?.credentials.mine).toMatchObject({ kind: "bearer" });
+    expect((await viewOf(org.admin))?.credentials).toEqual({ private_count: 1 });
+    expect(JSON.stringify((await send(org, "/toolkits", org.admin)).body)).not.toContain(
+      "alice-key",
     );
   });
 });

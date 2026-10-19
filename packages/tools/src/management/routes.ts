@@ -41,7 +41,7 @@ const STATUS: Readonly<Record<ToolsErrorCode, number>> = {
   conflict: 409,
   name_taken: 409,
   not_accepted: 422,
-  private_credentials_off: 403,
+  private_credentials_unavailable: 403,
   no_credential: 409,
   tool_list_failed: 502,
 };
@@ -84,6 +84,7 @@ const checkedSource = Effect.fnUntraced(function* (source: string) {
   if (checked.success.username !== "" || checked.success.password !== "")
     return yield* replyError(422, "invalid", {
       message: "a toolkit's source names no user or password: connect a credential instead",
+      path: "source",
     });
 
   return checked.success;

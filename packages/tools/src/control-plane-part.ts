@@ -1,10 +1,11 @@
 import { RpcTarget } from "cloudflare:workers";
-import { Effect, Result } from "effect";
+import { type Duration, Effect, Result } from "effect";
 import { type Access, accessTo, isFullAccess, type Scope, type Viewer } from "@commissary/auth";
 import type {
   CredentialSlot,
   CredentialsAccepted,
   LimitedToolkitView,
+  RemovedToolOverride,
   SetToolOverride,
   ToolkitCredentialView,
   ToolkitSecret,
@@ -19,9 +20,15 @@ import {
   type OutboundPolicy,
 } from "@commissary/core";
 import type { ControlPlanePart, OrgCore } from "@commissary/state";
-import { listUpstreamTools } from "./mcp/client.ts";
+import { LISTING_TIMEOUT, listUpstreamTools } from "./mcp/client.ts";
 import { isToolkitName, isToolName, fullToolName, MAX_FULL_NAME } from "./toolkits/names.ts";
-import { isServed, type Resolution, resolveTools, stableId } from "./toolkits/resolve.ts";
+import {
+  isServed,
+  type Resolution,
+  type ResolvedTool,
+  resolveTools,
+  stableId,
+} from "./toolkits/resolve.ts";
 import {
   freshToolkitId,
   type Toolkit,
@@ -39,7 +46,7 @@ export type ToolsErrorCode =
   | "conflict"
   | "name_taken"
   | "not_accepted"
-  | "private_credentials_off"
+  | "private_credentials_unavailable"
   | "no_credential"
   | "tool_list_failed";
 
@@ -54,6 +61,34 @@ const ok = <A>(value: A): ToolsResult<A> => ({ ok: true, value });
 const NOT_FOUND = refuse("not_found", "toolkit not found");
 
 const iso = (at: number): string => new Date(at).toISOString();
+
+/** Builds the cron task runs at once in one org. */
+const CRON_CONCURRENCY = 4;
+
+/** How long the cron task gives one build: less than an interactive refresh ({@link LISTING_TIMEOUT}). */
+const CRON_BUILD_TIMEOUT: Duration.Input = "20 seconds";
+
+/**
+ * A source as a member who only reads the toolkit sees it: the values of its query parameters masked, their names kept
+ * (a key belongs in a `query` credential, but a source may still carry one).
+ */
+const maskedSource = (source: string): string => {
+  let url: URL;
+
+  try {
+    url = new URL(source);
+  } catch {
+    return source;
+  }
+
+  if (url.search === "") return source;
+  const masked = new URLSearchParams();
+
+  for (const name of url.searchParams.keys()) masked.append(name, "***");
+  url.search = masked.toString();
+
+  return url.toString();
+};
 
 /** A new toolkit as the routes hand it over. */
 export interface AddToolkitInput {
@@ -243,7 +278,10 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     return this.#viewOf(id, viewer);
   }
 
-  /** Renames a toolkit, or changes which credentials an org toolkit accepts (dropping the ones it no longer does). */
+  /**
+   * Renames a toolkit, or changes which credentials an org toolkit accepts. A credential it no longer accepts is kept,
+   * shown inactive and not used, until it accepts that kind again or its holder removes it.
+   */
   updateToolkit(
     viewer: Viewer,
     id: string,
@@ -273,19 +311,12 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       if (refused !== undefined) return refused;
     }
 
-    const accepted = change.accepts ?? current.accepts;
-
-    this.#core.transaction(() => {
-      this.#store.updateToolkit(id, { name, accepts: accepted }, by, Date.now());
-
-      if (current.owner === undefined) {
-        if (accepted === "private") this.#store.deleteCredential(id, undefined);
-
-        if (accepted === "shared")
-          for (const credential of this.#store.credentials(id))
-            if (credential.owner !== undefined) this.#store.deleteCredential(id, credential.owner);
-      }
-    });
+    this.#store.updateToolkit(
+      id,
+      { name, accepts: change.accepts ?? current.accepts },
+      by,
+      Date.now(),
+    );
 
     return this.#viewOf(id, viewer);
   }
@@ -390,7 +421,10 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       return refuse("not_accepted", `the toolkit does not accept a ${slot} credential`);
 
     if (slot === "private" && !this.#core.privateCredentials())
-      return refuse("private_credentials_off", "the org has turned private credentials off");
+      return refuse(
+        "private_credentials_unavailable",
+        "the org does not let members hold private credentials",
+      );
 
     const invalid = secretRefusal(secret);
 
@@ -412,7 +446,12 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
     if (access === "none" || access === "limited") return NOT_FOUND;
 
-    if (access === "read" && this.#store.credential(id, undefined) !== undefined)
+    // A shared credential the toolkit no longer accepts is not used, so it does not make the build an admin's.
+    if (
+      access === "read" &&
+      accepts(toolkit, "shared") &&
+      this.#store.credential(id, undefined) !== undefined
+    )
       return refuse(
         "forbidden",
         "only an org admin can refresh a toolkit with a shared credential",
@@ -430,23 +469,30 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
    * its owner's. An org toolkit with private credentials only waits for a member to refresh it.
    */
   async refreshToolLists(policy: OutboundPolicy): Promise<RefreshSummary> {
-    let built = 0;
-    let failed = 0;
-    let skipped = 0;
+    const toolkits = this.#store.toolkits();
 
-    for (const toolkit of this.#store.toolkits()) {
-      if (this.#secretFor(toolkit, toolkit.owner) === undefined) {
-        skipped += 1;
-        continue;
-      }
+    const due = toolkits.filter((toolkit) => this.#secretFor(toolkit, toolkit.owner) !== undefined);
 
-      const outcome = await this.#buildFor(toolkit.id, toolkit.owner, policy);
+    // A few builds at once, each on a shorter budget than an interactive refresh, so one slow server does not hold the
+    // others or the cron invocation.
+    const outcomes = await Effect.runPromise(
+      Effect.forEach(
+        due,
+        (toolkit) =>
+          Effect.promise(() =>
+            this.#buildFor(toolkit.id, toolkit.owner, policy, CRON_BUILD_TIMEOUT),
+          ),
+        { concurrency: CRON_CONCURRENCY },
+      ),
+    );
 
-      if (outcome.ok) built += 1;
-      else failed += 1;
-    }
+    const built = outcomes.filter((outcome) => outcome.ok).length;
 
-    return { built, failed, skipped };
+    return {
+      built,
+      failed: outcomes.length - built,
+      skipped: toolkits.length - due.length,
+    };
   }
 
   /**
@@ -474,6 +520,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     id: string,
     member: string | undefined,
     policy: OutboundPolicy,
+    timeout: Duration.Input = LISTING_TIMEOUT,
   ): Promise<ToolsResult<true>> {
     const toolkit = this.#store.toolkit(id);
 
@@ -484,7 +531,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       return refuse("no_credential", "the toolkit has no credential to list its tools with");
 
     const listed = await Effect.runPromise(
-      listUpstreamTools(toolkit.source, secret).pipe(
+      listUpstreamTools(toolkit.source, secret, timeout).pipe(
         Effect.provide(OutboundHttpClientLive),
         Effect.provideService(CurrentOutboundPolicy, policy),
         Effect.result,
@@ -532,16 +579,17 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
    * The tools `member` may be served, one flat list of unique full names: the org's toolkits and their own private ones,
    * without hidden, clashing or missing tools (the MCP endpoint, #197, narrows it further).
    */
-  servedTools(member: string | undefined): ReadonlyArray<ToolView> {
-    return this.#resolve(member).tools.filter(isServed).map(toolView);
+  servedTools(viewer: Viewer): ReadonlyArray<ToolView> {
+    return this.#resolve(viewer.member).tools.filter(isServed).map(toolView);
   }
 
   // --- overrides --------------------------------------------------------------------------------------------------
 
   /**
    * Writes the whole override of one tool, named by its stable id (the toolkit and the upstream name), at `revision` (0
-   * for a new one). One that sets nothing is deleted. A rename to a full name another tool of the same set holds is
-   * refused.
+   * when the tool has none). One that sets nothing clears it; its revision is kept (a tombstone), so a write based on
+   * the override before the clear is refused. Clearing the override of a tool its source no longer lists answers
+   * `removed`, as the tool then leaves the list. A rename to a full name another tool of the same set holds is refused.
    */
   setOverride(
     viewer: Viewer,
@@ -549,13 +597,14 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     revision: number,
     input: SetToolOverride,
     by: string,
-  ): ToolsResult<ToolView> {
+  ): ToolsResult<ToolView | RemovedToolOverride> {
     const managed = this.#managed(id, viewer);
 
     if (!managed.ok) return managed;
     const toolkit = managed.value;
     const tool = input.tool;
-    const current = this.#store.override(id, tool);
+    const stored = this.#store.override(id, tool);
+    const current = stored === undefined || stored.cleared ? undefined : stored;
 
     if ((current?.revision ?? 0) !== revision)
       return refuse(
@@ -605,16 +654,19 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       value.description === undefined &&
       value.toolClass === undefined;
 
-    this.#store.putOverride(id, tool, empty ? undefined : value, revision + 1, by, Date.now());
+    // Past every revision the row reached, a tombstone's included.
+    const next = (stored?.revision ?? 0) + 1;
+
+    this.#store.putOverride(id, tool, empty ? undefined : value, next, by, Date.now());
 
     const resolved = this.#resolve(toolkit.owner).tools.find(
       (entry) => entry.toolkit.id === id && entry.upstreamName === tool,
     );
 
-    if (resolved === undefined)
-      return refuse("not_found", "the toolkit's tool list has no such tool");
-
-    return ok(toolView(resolved));
+    // Only a cleared override of a missing tool leaves nothing to show.
+    return resolved === undefined
+      ? ok({ id: stableId(id, tool), removed: true })
+      : ok(toolView(resolved));
   }
 
   // --- export -----------------------------------------------------------------------------------------------------
@@ -732,13 +784,19 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     };
   }
 
-  #credentialView(credential: ToolkitCredential): ToolkitCredentialView {
+  /**
+   * A credential without its secret. It is inactive (and not used) while the toolkit does not accept its kind, or, for
+   * a private one, while the org has private credentials off.
+   */
+  #credentialView(toolkit: Toolkit, credential: ToolkitCredential): ToolkitCredentialView {
+    const slot: CredentialSlot = credential.owner === undefined ? "shared" : "private";
+
     return {
       kind: credential.kind,
       ...(credential.param === undefined ? {} : { name: credential.param }),
       connected_at: iso(credential.connectedAt),
       connected_by: credential.connectedBy,
-      active: credential.owner === undefined || this.#core.privateCredentials(),
+      active: accepts(toolkit, slot) && (slot === "shared" || this.#core.privateCredentials()),
     };
   }
 
@@ -760,7 +818,8 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       id: toolkit.id,
       kind: toolkit.kind,
       name: toolkit.name,
-      source: toolkit.source,
+      // A member who only reads an org toolkit does not see what its source's query carries.
+      source: reach(toolkit, viewer) === "read" ? maskedSource(toolkit.source) : toolkit.source,
       private: toolkit.owner !== undefined,
       accepts: toolkit.accepts,
       revision: toolkit.revision,
@@ -768,8 +827,8 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       updated_at: iso(toolkit.updatedAt),
       updated_by: toolkit.updatedBy,
       credentials: {
-        ...(shared === undefined ? {} : { shared: this.#credentialView(shared) }),
-        ...(mine === undefined ? {} : { mine: this.#credentialView(mine) }),
+        ...(shared === undefined ? {} : { shared: this.#credentialView(toolkit, shared) }),
+        ...(mine === undefined ? {} : { mine: this.#credentialView(toolkit, mine) }),
         ...(admin && toolkit.owner === undefined ? { private_count: privateCount } : {}),
       },
       tool_list: this.#listStatus(toolkit),
@@ -788,12 +847,13 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       limited: true,
       owner: { member_id: owner, ...(email === undefined ? {} : { email }) },
       created_at: iso(toolkit.createdAt),
+      revision: toolkit.revision,
     };
   }
 }
 
 /** A resolved tool as the management API shows it. */
-const toolView = (tool: ReturnType<typeof resolveTools>["tools"][number]): ToolView => {
+const toolView = (tool: ResolvedTool): ToolView => {
   const override = tool.override;
 
   return {

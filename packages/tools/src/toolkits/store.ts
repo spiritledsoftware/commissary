@@ -5,7 +5,9 @@
  *
  * A toolkit's owner is a member id for a private toolkit and empty for an org toolkit; a credential's owner is empty
  * for the shared credential and the member's id for a private one. Tools and overrides are keyed by their stable id,
- * the toolkit's id and the tool's upstream name, so neither a rename nor a refresh moves them.
+ * the toolkit's id and the tool's upstream name, so neither a rename nor a refresh moves them. A cleared override stays
+ * as a row that sets nothing (a tombstone), so its revision never goes back and a write based on an earlier one is
+ * refused.
  */
 import type { CredentialsAccepted, ToolClass, ToolkitSecret } from "@commissary/contract/tools";
 import type { Sealer } from "@commissary/state";
@@ -96,6 +98,14 @@ export interface ToolOverride {
   readonly updatedAt: number;
   readonly updatedBy: string;
 }
+
+/** An override's row as stored: a cleared one (`cleared`) sets nothing and keeps the revision it reached. */
+export interface StoredOverride extends ToolOverride {
+  readonly cleared: boolean;
+}
+
+/** The SQL condition of an override that sets something (not a tombstone). */
+const LIVE_OVERRIDE = `(hidden = 1 OR name IS NOT NULL OR description IS NOT NULL OR class IS NOT NULL)`;
 
 interface ToolkitRow {
   [column: string]: SqlStorageValue;
@@ -194,7 +204,7 @@ const toolOf = (row: ToolRow): StoredTool => ({
   position: row.position,
 });
 
-const overrideOf = (row: OverrideRow): ToolOverride => ({
+const overrideOf = (row: OverrideRow): StoredOverride => ({
   toolkitId: row.toolkit_id,
   upstreamName: row.upstream_name,
   hidden: row.hidden === 1,
@@ -205,6 +215,7 @@ const overrideOf = (row: OverrideRow): ToolOverride => ({
   revision: row.revision,
   updatedAt: row.updated_at,
   updatedBy: row.updated_by,
+  cleared: row.hidden === 0 && row.name === null && row.description === null && row.class === null,
 });
 
 /** Where a credential's secret is sealed: a value opens only where it was written. */
@@ -445,19 +456,21 @@ export class ToolkitStore {
 
   // --- overrides --------------------------------------------------------------------------------------------------
 
+  /** The overrides that set something (no tombstones). */
   overrides(toolkitId?: string): ReadonlyArray<ToolOverride> {
     const rows =
       toolkitId === undefined
-        ? this.#sql.exec<OverrideRow>(`SELECT * FROM tool_overrides`)
+        ? this.#sql.exec<OverrideRow>(`SELECT * FROM tool_overrides WHERE ${LIVE_OVERRIDE}`)
         : this.#sql.exec<OverrideRow>(
-            `SELECT * FROM tool_overrides WHERE toolkit_id = ? ORDER BY upstream_name`,
+            `SELECT * FROM tool_overrides WHERE toolkit_id = ? AND ${LIVE_OVERRIDE} ORDER BY upstream_name`,
             toolkitId,
           );
 
     return rows.toArray().map(overrideOf);
   }
 
-  override(toolkitId: string, upstreamName: string): ToolOverride | undefined {
+  /** The override row of one tool, a tombstone included. */
+  override(toolkitId: string, upstreamName: string): StoredOverride | undefined {
     const row = this.#sql
       .exec<OverrideRow>(
         `SELECT * FROM tool_overrides WHERE toolkit_id = ? AND upstream_name = ?`,
@@ -469,7 +482,7 @@ export class ToolkitStore {
     return row === undefined ? undefined : overrideOf(row);
   }
 
-  /** Writes the whole override of a tool at `revision`, or deletes it (`value: undefined`). */
+  /** Writes the whole override of a tool at `revision`, or clears it (`value: undefined`), keeping the revision. */
   putOverride(
     toolkitId: string,
     upstreamName: string,
@@ -485,26 +498,16 @@ export class ToolkitStore {
     by: string,
     now: number,
   ): void {
-    if (value === undefined) {
-      this.#sql.exec(
-        `DELETE FROM tool_overrides WHERE toolkit_id = ? AND upstream_name = ?`,
-        toolkitId,
-        upstreamName,
-      );
-
-      return;
-    }
-
     this.#sql.exec(
       `INSERT OR REPLACE INTO tool_overrides
          (toolkit_id, upstream_name, hidden, name, description, class, revision, updated_at, updated_by)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       toolkitId,
       upstreamName,
-      value.hidden ? 1 : 0,
-      value.name ?? null,
-      value.description ?? null,
-      value.toolClass ?? null,
+      value?.hidden === true ? 1 : 0,
+      value?.name ?? null,
+      value?.description ?? null,
+      value?.toolClass ?? null,
       revision,
       now,
       by,

@@ -13,7 +13,7 @@ export const MAX_FULL_NAME = 46;
 const HASH_LENGTH = 4;
 
 /** The longest toolkit name, so a full name keeps room for the tool's own. */
-export const MAX_TOOLKIT_NAME = 32;
+const MAX_TOOLKIT_NAME = 32;
 
 /** A toolkit name: lowercase words of `[a-z0-9]` joined by single underscores. */
 const TOOLKIT_NAME = /^[a-z0-9]+(?:_[a-z0-9]+)*$/;

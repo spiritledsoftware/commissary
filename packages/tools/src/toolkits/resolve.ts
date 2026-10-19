@@ -55,7 +55,7 @@ export const stableId = (toolkitId: string, upstreamName: string): string =>
   `${toolkitId}:${upstreamName}`;
 
 /** A tool's class from its source: an MCP tool reads only with `readOnlyHint: true` (ADR 0038). */
-export const sourceClass = (tool: StoredTool | undefined): ToolClass =>
+const sourceClass = (tool: StoredTool | undefined): ToolClass =>
   tool?.annotations?.["readOnlyHint"] === true ? "read" : "write";
 
 const resolved = (
