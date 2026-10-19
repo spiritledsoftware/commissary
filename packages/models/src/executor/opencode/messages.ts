@@ -8,10 +8,13 @@
  *
  * Deliberate deviation from Go (no OpenCode provider there; see docs/ARCHITECTURE.md "OpenCode Zen and OpenCode
  * Go"): none of the Claude executor's Anthropic-account shaping applies (no cloaking, system prompt injection,
- * `anthropic-beta` negotiation, tool-name aliasing or thinking replay); the gateway is a plain provider-key Messages
- * endpoint. Client `anthropic-beta` headers are not forwarded (configure them as custom headers if a model needs one).
- * A client's `metadata.user_id` (Claude Code puts its device, account and session ids there) is replaced by a stable
- * UUIDv5 of it before the payload rules run, so no raw client identity reaches the gateway.
+ * tool-name aliasing or thinking replay); the gateway is a plain provider-key Messages endpoint. The `anthropic-beta`
+ * header is built by `betas.ts`: the client's betas are forwarded except the identity ones (`claude-code-*`, `oauth-*`,
+ * which describe the Claude Code / Anthropic-account client, not the request schema), plus the beta the final body needs
+ * (`mid-conversation-output-config-2026-07-01` for a system message with an `output_config`); a configured custom
+ * `anthropic-beta` header still wins. A client's `metadata.user_id` (Claude Code puts its device, account and session
+ * ids there) is replaced by a stable UUIDv5 of it before the payload rules run, so no raw client identity reaches the
+ * gateway.
  */
 import { Effect, Stream } from "effect";
 import { splitLines } from "@commissary/translation/sse";
@@ -36,6 +39,7 @@ import {
   transportError,
   translateForOpenCode,
 } from "./attempt.ts";
+import { messagesBetaHeader } from "./betas.ts";
 import { openCodeHeaders } from "./headers.ts";
 
 const PATH = "/messages";
@@ -69,6 +73,7 @@ const send = Effect.fnUntraced(function* (attempt: OpenCodeAttempt, stream: bool
   const body = yield* prepareMessagesBody(attempt, stream);
 
   const headers = openCodeHeaders({
+    anthropicBeta: messagesBetaHeader(attempt.options.headers.get("anthropic-beta"), body),
     credential: attempt.context.credential,
     options: attempt.options,
     protocol: "messages",

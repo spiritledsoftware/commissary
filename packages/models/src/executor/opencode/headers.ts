@@ -90,7 +90,8 @@ export const openCodeIdentityHeaders = (options: ExecutorOptions, cloaked = fals
 
 /**
  * Full request headers of a chat, Responses, Messages or System One attempt: the client headers `forward` names, when
- * sent, after the gateway's own; custom headers applied last.
+ * sent, after the gateway's own; `anthropicBeta` (the Messages protocol's, see `betas.ts`) when given; custom headers
+ * applied last.
  */
 export const openCodeHeaders = (input: {
   readonly credential: CredentialSnapshot;
@@ -101,6 +102,7 @@ export const openCodeHeaders = (input: {
   readonly forward?: ReadonlyArray<string>;
   /** Free-tier cloak (ADR 0033). */
   readonly cloaked?: boolean;
+  readonly anthropicBeta?: string | undefined;
 }): Record<string, string> => {
   const headers = {
     "content-type": "application/json",
@@ -110,6 +112,7 @@ export const openCodeHeaders = (input: {
       ? { accept: "text/event-stream", "cache-control": "no-cache" }
       : { accept: "application/json" }),
     ...forwardedClientHeaders(input.options, input.forward ?? []),
+    ...(input.anthropicBeta !== undefined ? { "anthropic-beta": input.anthropicBeta } : {}),
   };
 
   return applyCustomHeaders(
