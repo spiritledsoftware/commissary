@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@commissary/auth": "workspace:*",
+    "@commissary/billing": "workspace:*",
     "@commissary/contract": "workspace:*",
     "@commissary/core": "workspace:*",
     "@commissary/json": "workspace:*",

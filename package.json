@@ -25,6 +25,7 @@
     "typecheck:root": "tsc -p tsconfig.infra.json"
   },
   "devDependencies": {
+    "@commissary/billing": "workspace:*",
     "@commissary/models": "workspace:*",
     "@commitlint/cli": "21.2.3",
     "@commitlint/config-conventional": "21.2.3",

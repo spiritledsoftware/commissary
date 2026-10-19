@@ -11,6 +11,7 @@
     "typecheck": "tsc"
   },
   "dependencies": {
+    "@commissary/billing": "workspace:*",
     "@commissary/models": "workspace:*",
     "@commissary/state": "workspace:*"
   },

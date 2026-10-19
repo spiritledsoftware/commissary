@@ -2,8 +2,8 @@
  * Authentication on Commissary Cloud (ADR 0026), the counterpart of `access-gate.ts`: no Access application sits in
  * front of the Worker, so Access JWTs and Access service tokens are accepted nowhere. New in the Workers port.
  *
- * - The client API takes API keys only. A key of a suspended org or person is refused, and each org's requests are
- *   rate-limited (`rate-limit.ts`).
+ * - The client API takes API keys only. A key of a suspended org or person is refused. Each org's requests are
+ *   rate-limited by its plan, which is Billing's (`@commissary/billing`, called by the API Worker's gate after this one).
  * - The management API takes management keys (`management-key.ts`, refused for a suspended org or issuer), like a
  *   self-hosted Commissary.
  * - The management API and the panel take the session cookie of a person signed in with Better Auth, which the auth
@@ -28,7 +28,6 @@ import {
 } from "./gate.ts";
 import { managementKeyIdentity, presentedManagementKey } from "./management-key.ts";
 import type { AccessIdentity, Principal } from "./principal.ts";
-import { limitOrgRate } from "./rate-limit.ts";
 import { requireActivePerson, requireStanding } from "./standing.ts";
 
 /** The answer to a management request without a live session. */
@@ -75,7 +74,6 @@ export const hostedClientGate = (
       identity.org,
       identity.principal.kind === "key" ? identity.principal.email : undefined,
     );
-    yield* limitOrgRate(identity.org);
 
     return identity;
   });

@@ -27,8 +27,8 @@ source-only: they export TypeScript and whatever imports them compiles it). The 
 such as `src/...` and `test/...` in the rest of this document are relative to `apps/app/`; translation's modules are
 cited as `translation/...` (relative to `packages/translation/src/`), core's as `core/...` (relative to
 `packages/core/src/`), auth's as `auth/...` (relative to `packages/auth/src/`), state's as `state/...` (relative to
-`packages/state/src/`), Models' as `models/...` (relative to `packages/models/src/`) and the JSON path engine as
-`packages/json`.
+`packages/state/src/`), Models' as `models/...` (relative to `packages/models/src/`), Billing's as `billing/...` (relative
+to `packages/billing/src/`) and the JSON path engine as `packages/json`.
 
 ```
 .                             workspace root and deploy root (Alchemy, no Wrangler config); turbo.json
@@ -74,7 +74,8 @@ cited as `translation/...` (relative to `packages/translation/src/`), core's as 
   apps/state/                 @commissary/state-worker: the state Worker, no routes (ADR 0030)
     src/index.ts              exports ControlPlane, SessionState and Platform; answers every request 404
     src/dev.ts                its `alchemy dev` entry: index.ts plus the dev-only DevStateBridge entrypoint
-    src/control-plane.ts      the ControlPlane Durable Object: @commissary/state's base composed with the Models part
+    src/control-plane.ts      the ControlPlane Durable Object: @commissary/state's base composed with the Models and
+                              Billing parts
     src/env.d.ts              what the classes read: the state Worker's bindings
   apps/web/                   @commissary/web: control panel served at / (React, Effect Atom, TanStack Router; built
                               into apps/web/dist, the Worker's assets), its tests in Node.js
@@ -106,6 +107,19 @@ cited as `translation/...` (relative to `packages/translation/src/`), core's as 
     src/grants/, src/spend/   grants and Spend limits
     test/                     Node.js tests (test/unit/) and workerd tests against a test-only ControlPlane
                               (test/worker.ts), fixtures generated from the Go code; test/testing.ts is ./testing
+  packages/billing/           @commissary/billing: Commissary Cloud's billing area (plans, free usage, plan limits, the
+                              request-rate ceiling per plan; ADR 0042); no root export, the Workers import it only
+                              through ./api, ./management and ./state (lint rule boundaries/billing-imports); does
+                              nothing on a self-hosted Commissary
+    src/api.ts                for the API Worker and the areas that count: limitClientRate, countRequest,
+                              uncountRequest, PlanLimitReached, BillingEnv
+    src/management.ts         for the app Worker: the GET /billing route, its org-deletion step
+    src/state.ts              for the state Worker: BillingPart, its part of the ControlPlane
+    src/part.ts, store.ts     the Billing part (plan, free-usage counters in SQLite)
+    src/plan.ts, month.ts     the constants (plans, free usage, ceilings) and the calendar month in UTC
+    src/meter.ts              counting a request against free usage and the plan limit
+    src/rate-limit.ts         the per-plan request-rate ceiling
+    test/                     workerd tests against a test-only ControlPlane (test/worker.ts); test/testing.ts is ./testing
   packages/contract/          @commissary/contract: the management API's Effect HttpApi schemas and addressing (browser-safe)
   packages/core/              @commissary/core: the foundation without bindings (org model, shared errors, hashing,
                               log-safe helpers, management replies, route services, the execution context, the
@@ -181,7 +195,8 @@ cited as `translation/...` (relative to `packages/translation/src/`), core's as 
     (`apps/state/src/control-plane.ts`) is the org-wide base (`state/control-plane.ts`: members, teams, service tokens, the
     membership index and settings, API keys, management keys, SSO, `SessionState` instances, the org's data key)
     composed (`composeControlPlane`, `state/compose.ts`, which gives each part a method of its name) with the Models part (`models/control-plane-part.ts`: config, credentials, selection, refresh, grants,
-    Spend limits, quota, reset grants, OAuth logins). The part is an `RpcTarget` constructed once per object with the
+    Spend limits, quota, reset grants, OAuth logins) and the Billing part (`billing/part.ts`: the plan and the
+    free-usage counters, `stub.billing().admit(…)`; see "Billing"). A part is an `RpcTarget` constructed once per object with the
     base's in-object view (`OrgCore`: org id, member and team lookups, data key, the alarm), creates its own tables and
     is reached through a method, `stub.models().pick(…)`: one pipelined round trip. A getter (`stub.models.pick(…)`) was
     the first plan; vitest-pool-workers answers a getter of a Durable Object stub with a function, so the pipelined call
@@ -255,9 +270,10 @@ client -> (Cloudflare Access bypass on a single host) -> API Worker
 - TypeScript strict mode, ESM, `effect@4` (HTTP via `effect/http` `HttpRouter.toWebHandler`; per-request Cloudflare
   `env`/`ctx` are provided as services through the handler's per-request `Context`).
 - Each package reads its own view of `env` (#134): `AuthConfig` (`auth/config.ts`: Access, platform admins,
-  dev bypass, hosted mode, rate limiter), `StateEnv` (`state/env.ts`: the Durable Object namespaces, typed through
+  dev bypass, hosted mode), `StateEnv` (`state/env.ts`: the Durable Object namespaces, typed through
   their classes; the classes read `StateObjectEnv`, the bindings plus platform admins, mode and secrets keys), `ModelsEnv` (`models/env.ts`: `CACHE`, `USAGE`, `SESSION_STATE`, `AUTH_INDEX_KEY`,
-  `META_MINT_URL`, and `CONTROL_PLANE` typed as objects with `models()`, the Models part's methods Models calls); `core` reads none. Code that stays in the
+  `META_MINT_URL`, and `CONTROL_PLANE` typed as objects with `models()`, the Models part's methods Models calls); `BillingEnv` (`billing/env.ts`: `CONTROL_PLANE` typed with `billing()`, `PLATFORM`, `COMMISSARY_MODE`, the two rate-limit
+  bindings, `APP_DOMAIN`); `core` reads none. Code that stays in the
   Worker reads `AppEnv` (`src/worker-env.ts`). `requestContext` provides each from the invocation's `env`, plus auth's
   ports over it: `AuthDirectory` (`state/auth-directory.ts`, the Durable Object stubs) and `SignInSessions`
   (`src/hosted/sign-in.ts`, the auth Worker's RPC); the global
@@ -274,7 +290,7 @@ client -> (Cloudflare Access bypass on a single host) -> API Worker
   top of each ported module.
 - Payload rules remain the final semantic mutation before the upstream request in every executor path (see AGENTS.md).
 - No wall-clock sleeps in tests; use Effect `TestClock`.
-- Tests: `vitest` + `@effect/vitest`; Worker/Durable Object integration tests with `@cloudflare/vitest-plugin` (successor of `@cloudflare/vitest-pool-workers`). `@commissary/state` tests its Durable Object classes on real SQLite storage in a test Worker of its own (`packages/state/test/worker.ts`: the base composed with two dummy area parts, the Platform registry and SessionState). `@commissary/models` has two projects: Node.js (`packages/models/test/unit/`) and workerd, in a test Worker with a test-only ControlPlane (`packages/models/test/worker.ts`).
+- Tests: `vitest` + `@effect/vitest`; Worker/Durable Object integration tests with `@cloudflare/vitest-plugin` (successor of `@cloudflare/vitest-pool-workers`). `@commissary/state` tests its Durable Object classes on real SQLite storage in a test Worker of its own (`packages/state/test/worker.ts`: the base composed with two dummy area parts, the Platform registry and SessionState). `@commissary/models` has two projects: Node.js (`packages/models/test/unit/`) and workerd, in a test Worker with a test-only ControlPlane (`packages/models/test/worker.ts`); `@commissary/billing` tests in workerd against a test-only ControlPlane with its part (`packages/billing/test/worker.ts`).
   Translators and the thinking pipeline are verified against golden fixtures produced by `tools/fixturegen`
   from the Go implementation (`go run ./tools/fixturegen`), checked in under the package's `test/fixtures/`.
 - Never log tokens, provider keys or JWTs.
@@ -2033,7 +2049,7 @@ ADR 0027: deleting something deletes it at once, and Commissary keeps no content
 - **Org deletion** (`deleteOrg`, called by `DELETE /org` and by account deletion, app-only) runs, in this order: the
   org-deletion steps of the areas the Worker mounts, which it takes as input (`OrgDeletionStep` of `@commissary/core`;
   Models' `deleteOrgModels`: the org's usage rows in D1, `deleteOrgUsage`, batched, then its `org.<id>.…` keys in the
-  `CACHE` KV namespace), the `SessionState` instances it registered, its ControlPlane's whole storage (`ControlPlane.wipeOrg`: the Models part drops its tables, then the rest of the SQL
+  `CACHE` KV namespace; Billing's step has nothing outside the ControlPlane to delete yet), the `SessionState` instances it registered, its ControlPlane's whole storage (`ControlPlane.wipeOrg`: the Models and Billing parts drop their tables, then the rest of the SQL
   tables, the key-value store and the alarm go) and last its registry entry, which frees the slug. The registry entry goes last, so a deletion that stops half way
   (a Worker invocation has a subrequest limit: `DELETION_BUDGET`, 400 calls shared by every step; the step is named in the log) is repeated by
   sending the request again: the org is still listed and each earlier step finds less to do. `global` is refused. After the
@@ -2610,7 +2626,7 @@ is the Access one, unchanged, and there is no auth Worker. User docs: `docs/ACCE
   origin but the app host's and the auth host's own is refused (`crossSiteWrite`). The app Worker asks about the
   session cookie on every request, so a session ended by sign-out or suspension stops working at once.
 - **Gate** (`auth/hosted-gate.ts`, picked by the entry points when hosted): client API routes take API keys
-  only (rate-limited per org, `auth/rate-limit.ts`, `429` with `Retry-After`); the management zone takes a management key,
+  only (rate-limited per org and plan by the API Worker's gate after authentication, `billing/rate-limit.ts`, `429` with `Retry-After`; see "Billing"); the management zone takes a management key,
   else the Better Auth session cookie (looked up by the auth Worker over the RPC, behind auth's `SignInSessions` port), whose verified email becomes a `user` principal admitted like an Access email
   (platform admin when in `PLATFORM_ADMIN_EMAILS`). Access JWTs and service tokens are ignored. A panel page without a
   session redirects to `/sign-in?next=…`; the management API answers `401 Not signed in`. The cross-site checks
@@ -2646,12 +2662,63 @@ is the Access one, unchanged, and there is no auth Worker. User docs: `docs/ACCE
   service token exists to carry ADR 0006's rule.
 - **Infra**: `alchemy.run.ts` creates no Access application or bypass on Commissary Cloud; it creates the auth Worker and
   its `SignIn` database, mints `BETTER_AUTH_SECRET` as an Alchemy `Random`, and binds the sign-in settings to the auth
-  Worker, the auth Worker to the app Worker, and the `ORG_RATE_LIMIT` rate-limit binding to the API Worker
-  (`infra/settings.ts` validates them). Deploy order: state, auth, app, API (a preview: state, API, auth, app). CI deploys
+  Worker, the auth Worker to the app Worker, and the `FREE_RATE_LIMIT` and `PAYG_RATE_LIMIT` rate-limit bindings to the API
+  Worker (`infra/settings.ts` validates their namespaces). Deploy order: state, auth, app, API (a preview: state, API, auth, app). CI deploys
   a preview as Commissary Cloud while its pull request has the `cloud-preview` label and checks it with
   `tools/check-cloud-deploy.sh`; `COMMISSARY_MODE=cloud pnpm smoke` runs it under `alchemy dev`.
 
-## Provider OAuth logins (`models/oauth/`, `models/management/oauth-routes.ts`)
+## Billing (`billing/`, `models/handlers/metering.ts`, `apps/api/src/http/gate.ts`, `billing/routes.ts`)
+
+Workers addition, no Go counterpart; ADR 0042, #236. Commissary Cloud's plans: every org holds one, `free` or `payg`,
+and has a month's **free usage** counted in its ControlPlane. Polar, the billing cap, notices and the other units come
+later (#237, #238, #241). **A self-hosted Commissary has none of it**: the package checks `isHosted` before it counts,
+refuses or reads anything, and its management route answers 404.
+
+- **Seam** (`codebase-design`): Billing is an area package (`packages/billing`, entries `./api`, `./management`,
+  `./state`, `./testing`, lint rule `boundaries/billing-imports`) that imports no other area. What callers see is small:
+  `countRequest` / `uncountRequest` (Models), `limitClientRate` (the API Worker's gate), the `GET /billing` route (the app
+  Worker) and `BillingPart` (the state Worker). Models imports `@commissary/billing/api` (the lint rule lets another
+  package's sources import only `./api`); Billing imports `@commissary/auth` (`isHosted`), `@commissary/state` (stubs,
+  `ControlPlanePart`), `@commissary/core` and `@commissary/contract`.
+- **The part** (`billing/part.ts`, `store.ts`): tables `billing_plan` (one row; none means `free`, so an org that existed
+  before plans needs no backfill and nothing of past usage is counted) and `billing_usage` (`month_start`, `unit`,
+  `amount`; a row appears with the month's first use, so a new month starts at zero by itself, like the spend counters of
+  `models/spend/store.ts`, and nothing is derived from the D1 usage records). `admit(now)` is one synchronous step of the
+  object: a Free org with `requests` at the free usage is refused (and not counted), anything else is counted, on either
+  plan; `refund(monthStart)` takes a count back. `usage(now)` reads the plan and the month. Hours of the other two units
+  are stored as `REAL` and read 0 until #241 counts them. `setPlan` stores the plan (switching it is #237's; tests set
+  it directly). `wipe()` drops both tables.
+- **Constants** (`billing/plan.ts`, ADR 0042): free usage `25,000` requests and tool calls, 1 browser hour, 0 computer
+  hours; request-rate ceilings 60 a minute on Free and 600 on Pay as you go. The month is the calendar month in UTC
+  (`billing/month.ts`); the Worker side passes `Clock.currentTimeMillis` to the object, so tests drive it with `TestClock`.
+- **Counting and the plan limit** (`billing/meter.ts`, `models/handlers/metering.ts`): `executeNonStream`,
+  `executeStream`, `executeCountTokens` and the Codex alpha search wrap their work in `metered`: when Models starts
+  serving a client API request it calls `countRequest` once, before the first pick, so a request counts once whatever its
+  credential (shared or private), outcome or number of attempts (stream bootstrap retries and failover are inside the
+  one request). A Free org over its free usage is refused first with `429 plan_limit_reached`: `Retry-After` the seconds
+  until the first of the next month UTC, a JSON error (`code`, `message`, `limit`, `allowed`, `resets_at`,
+  `reset_seconds`, like `spend_limit_reached`'s) whose message names the limit and links to the panel's billing page
+  (`https://<app host>/orgs/<slug>/billing`, built in #239; the path alone without an app host). Work in flight finishes.
+  A request a spend limit refuses did no work: the spend check is inside the first pick (the ControlPlane's
+  `pick`), after the count, so the final `spend_limit_reached` takes the count back (`uncountRequest`). A request refused
+  before Models serves it (authentication, the rate ceiling) or by the plan limit is never counted. A request that cannot
+  be read, or names no model, still counts. A Billing part that cannot be reached lets the request through (logged):
+  serving needs the same object. Model listings and other reads are not requests in this sense.
+- **Request-rate ceiling** (`billing/rate-limit.ts`): two Workers rate-limiting bindings on the API Worker,
+  `FREE_RATE_LIMIT` (60 a minute) and `PAYG_RATE_LIMIT` (600), keyed by org id; the org's plan (a `plan()` call to its
+  Billing part) picks one. The API Worker's client gate calls `limitClientRate` after authentication and the standing
+  checks (it left `@commissary/auth`'s hosted gate, which no longer knows plans), so every client-facing surface behind
+  that gate is covered, and the MCP endpoint (#197) and webhook triggers (#231) join it by calling the same function. The
+  management API has none. Like before, a deployment without the bindings has no ceiling and a failing binding lets the
+  request through (logged); an org whose plan cannot be read gets Free's ceiling. The ceilings are constants; only the
+  namespaces are deployment settings (`ORG_RATE_LIMIT_NAMESPACE_ID`, `ORG_RATE_LIMIT_PAYG_NAMESPACE_ID`, `docs/DEPLOY.md`).
+- **Management API** (`billing/routes.ts`, `@commissary/contract/billing`): `GET /v9/management/billing` answers the plan,
+  the month's start and end and, for each unit, `used` and the `free` usage; any org admin may read it (the role table's
+  default; `docs/ACCESS.md`). Units not counted yet read 0.
+- **Org deletion**: Billing's `OrgDeletionStep` has nothing outside the ControlPlane to delete yet (#237 cancels the
+  Polar subscription there); the part's tables go with `wipeOrg`.
+
+## Provider OAuth logins (`models/oauth/, `models/management/oauth-routes.ts`)
 
 Port of the management OAuth handlers (`auth_files_provider_oauth.go`, `auth_files_devin_oauth.go`, `oauth_callback.go`,
 `oauth_sessions.go`) and `internal/auth/*`. The panel's OAuth page works unchanged: `GET /v9/management/oauth/auth-url?provider=`

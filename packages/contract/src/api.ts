@@ -9,6 +9,7 @@
  * Browser-safe: its modules import `effect` and each other only.
  */
 import { HttpApi } from "effect/http-api";
+import { BillingGroup } from "./billing.ts";
 import { ProviderKeysGroup } from "./provider-keys.ts";
 import { CatalogGroup } from "./catalog.ts";
 import { CredentialsGroup } from "./credentials.ts";
@@ -45,6 +46,7 @@ export class ManagementApi extends HttpApi.make("management")
   .add(PeopleGroup)
   .add(ManagementKeysGroup)
   .add(SsoGroup)
+  .add(BillingGroup)
   .prefix(MANAGEMENT_API_PREFIX) {}
 
 // Below the prefix `/orgs...` is platform-level and every other route exists per org; `/me` is not platform-level:

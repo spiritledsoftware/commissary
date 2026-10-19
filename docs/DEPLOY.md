@@ -210,8 +210,13 @@ Commissary has neither the auth Worker nor the `SignIn` database.
 | `SIGN_IN_GOOGLE_CLIENT_ID`, `SIGN_IN_GOOGLE_CLIENT_SECRET` | var, secret | a Google OAuth client (web application); offered when both are set      |
 | `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY`               | var, secret | a Cloudflare Turnstile widget for the app host (required)               |
 | `OWNED_ORG_LIMIT`                                          | variable    | orgs a person may own unless a platform admin raises it (default 3)     |
-| `ORG_RATE_LIMIT`                                           | variable    | requests per minute each org may send on the client API (default 600)   |
-| `ORG_RATE_LIMIT_NAMESPACE_ID`                              | variable    | the Workers rate-limit namespace, a positive integer (default 7201)     |
+| `ORG_RATE_LIMIT_NAMESPACE_ID`                              | variable    | the Free plan's Workers rate-limit namespace, a positive integer (7201) |
+| `ORG_RATE_LIMIT_PAYG_NAMESPACE_ID`                         | variable    | Pay as you go's, another one (default: the Free plan's plus one)        |
+
+The request-rate ceilings of the client API are per org and per plan: 60 a minute on Free and 600 on Pay as you go
+(ADR 0042). They are constants in the code (`packages/billing/src/plan.ts`), not settings, and each plan has a Workers
+rate-limiting binding of its own on the API Worker (`FREE_RATE_LIMIT`, `PAYG_RATE_LIMIT`), in the namespace its variable
+names. `ORG_RATE_LIMIT` is gone; an environment that still sets it is not affected (the variable is ignored).
 
 At least one provider and the Turnstile keys are required: the deploy refuses a Commissary Cloud stage without them.
 `BETTER_AUTH_SECRET` is minted like the `auth_index` key (an Alchemy `Random`, resource `BetterAuthSecret`); nothing to
@@ -252,9 +257,10 @@ and the app Worker's hostname is added to the Turnstile widget. Every Worker of 
 subdomain, which a preview's session cookie is scoped to; each preview names its cookie apart
 (`commissary-<stage>` prefix), so previews keep separate sessions. The prefix only names cookies apart: every
 Worker on that subdomain receives every preview's session cookie, so deploy nothing untrusted on the account's
-workers.dev subdomain (prod and `cloud` scope theirs to their base domain). Previews share the rate-limit namespace
-with each other, and with production when the environments set the same `ORG_RATE_LIMIT_NAMESPACE_ID`: the org
-`global` exists on every stage under the same id, so give `preview` its own namespace.
+workers.dev subdomain (prod and `cloud` scope theirs to their base domain). Previews share the rate-limit namespaces
+with each other, and with production when the environments set the same `ORG_RATE_LIMIT_NAMESPACE_ID` (or
+`ORG_RATE_LIMIT_PAYG_NAMESPACE_ID`, one above it unless set): the org `global` exists on every stage under the same id,
+so give `preview` its own namespaces.
 
 ### The Commissary Cloud stage
 
@@ -274,7 +280,8 @@ and the Commissary Cloud previews'. Set them up once:
    `https://<auth host>/api/auth/callback/github`; for Google, add `https://<auth host>/api/auth/callback/google` to
    the client's redirect URIs.
 3. **Turnstile.** Add the app host to a widget (or create one) and put its keys in `.env.cloud`.
-4. **Rate-limit namespace.** An `ORG_RATE_LIMIT_NAMESPACE_ID` that the previews' environment does not use.
+4. **Rate-limit namespaces.** An `ORG_RATE_LIMIT_NAMESPACE_ID` that the previews' environment does not use; Pay as you go's
+   (`ORG_RATE_LIMIT_PAYG_NAMESPACE_ID`) is the next integer unless you set it, so leave that one free as well.
 5. **CI.** `pnpm ci:setup` creates the GitHub environment `cloud` (deployments from `main` only) with the settings of
    `.env.cloud`, and extends the deploy token to the zones of its hostnames. Until then the `deploy cloud` job of a push
    to `main` only notes that it is not set up.

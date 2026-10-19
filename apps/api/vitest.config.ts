@@ -20,7 +20,7 @@ const SELF_HOSTED_BINDINGS = {
 };
 
 /**
- * Commissary Cloud (`COMMISSARY_MODE=cloud`, ADR 0026): API keys only, under a per-org rate limit low enough to reach.
+ * Commissary Cloud (`COMMISSARY_MODE=cloud`, ADR 0026): API keys only, under per-plan rate ceilings low enough to reach.
  * No dev bypass: requests go to `https://commissary.test`.
  */
 const HOSTED_BINDINGS = {
@@ -31,8 +31,13 @@ const HOSTED_BINDINGS = {
   PLATFORM_ADMIN_SERVICE_TOKENS: "admin-token.access",
 };
 
-/** Requests per minute an org may send on the client API of the Commissary Cloud test Worker (test/hosted/rate-limit.test.ts). */
-const HOSTED_TEST_RATE_LIMIT = 5;
+/**
+ * Requests per minute an org may send on the client API of the Commissary Cloud test Worker, by plan (the deployed
+ * ceilings are 60 and 600, `REQUEST_RATE_CEILING`; test/hosted/rate-limit.test.ts).
+ */
+const HOSTED_TEST_FREE_RATE_LIMIT = 5;
+
+const HOSTED_TEST_PAYG_RATE_LIMIT = 8;
 
 // The test Worker mirrors the deployed API Worker declared in alchemy.run.ts (compatibility settings and binding
 // names); there is no Wrangler configuration file. Its entry (test/worker.ts) is the API Worker's handler plus the state
@@ -56,9 +61,13 @@ const worker = (bindings: Record<string, string>, hosted: boolean) =>
       ...(hosted
         ? {
             ratelimits: {
-              ORG_RATE_LIMIT: {
+              FREE_RATE_LIMIT: {
                 namespace_id: "1001",
-                simple: { limit: HOSTED_TEST_RATE_LIMIT, period: 60 as const },
+                simple: { limit: HOSTED_TEST_FREE_RATE_LIMIT, period: 60 as const },
+              },
+              PAYG_RATE_LIMIT: {
+                namespace_id: "1002",
+                simple: { limit: HOSTED_TEST_PAYG_RATE_LIMIT, period: 60 as const },
               },
             },
           }

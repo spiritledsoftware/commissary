@@ -1,13 +1,15 @@
 /**
- * The workspace's import boundaries, as Oxlint rules (`pnpm lint`). `models-imports` keeps `@commissary/models`
- * (`packages/models/`) a package the Workers reach through its entry points only (#134 "The area package convention",
- * #151):
+ * The workspace's import boundaries, as Oxlint rules (`pnpm lint`). `models-imports` and `billing-imports` keep an area
+ * package (`@commissary/models`, `@commissary/billing`: `packages/<area>/`) one the Workers reach through its entry
+ * points only (#134 "The area package convention", #151):
  *
- * - its sources (`packages/models/src/`) import only their own files, the dependencies its manifest declares and the
+ * - its sources (`packages/<area>/src/`) import only their own files, the dependencies its manifest declares and the
  *   runtime modules {@link RUNTIME_MODULES} lists (nothing from `apps/`, no other package's files by a relative path);
- * - the apps (`apps/*`) import Models only as `@commissary/models/api`, `/management` and `/state` (and, in tests,
- *   `/testing`): not its other exports (`/auth-index-key` and `/models-dev` are for the deploy and the catalog sync
- *   script) and never a file of the package by a relative path.
+ * - the apps (`apps/*`) import the area only as `@commissary/<area>/api`, `/management` and `/state` (and, in tests,
+ *   `/testing`): not its other exports (Models' `/auth-index-key` and `/models-dev` are for the deploy and the catalog
+ *   sync script) and never a file of the package by a relative path;
+ * - another package's sources import it only through the entries `packageEntries` lists: none for Models, `/api` for
+ *   Billing, which Models calls to count requests.
  *
  * Every module specifier counts: imports and re-exports (types too), `import()` calls and `import("…")` types. An
  * `import()` of a computed specifier cannot be checked and is refused in both places.
@@ -22,18 +24,9 @@ const ROOT = fileURLToPath(new URL("../../..", import.meta.url));
 
 const APPS = path.join(ROOT, "apps");
 
-const MODELS = path.join(ROOT, "packages/models");
+const PACKAGES = path.join(ROOT, "packages");
 
-const MODELS_SRC = path.join(MODELS, "src");
-
-const MODELS_PACKAGE = "@commissary/models";
-
-/** The exports of `@commissary/models` an app may import (`./testing` in its tests only: `no-restricted-imports`). */
-const APP_ENTRIES: ReadonlySet<string> = new Set(
-  ["api", "management", "state", "testing"].map((name) => `${MODELS_PACKAGE}/${name}`),
-);
-
-/** Runtime modules Models' sources may import besides the dependencies of its manifest. */
+/** Runtime modules an area's sources may import besides the dependencies of its manifest. */
 const RUNTIME_MODULES: ReadonlySet<string> = new Set([
   "cloudflare:workers",
   "node:buffer",
@@ -41,16 +34,38 @@ const RUNTIME_MODULES: ReadonlySet<string> = new Set([
   "node:zlib",
 ]);
 
-const manifest = readFileSync(path.join(MODELS, "package.json"), "utf8");
+/** An area package whose boundary a rule keeps. */
+interface Area {
+  /** The rule's name, and the word the messages call the area by. */
+  readonly rule: string;
+  readonly title: string;
+  /** `packages/<dir>`. */
+  readonly dir: string;
+  readonly packageName: string;
+  /** The exports of the package an app may import (`./testing` in its tests only: `no-restricted-imports`). */
+  readonly appEntries: ReadonlyArray<string>;
+  /** The exports another package's sources may import: none for an area no package depends on. */
+  readonly packageEntries: ReadonlyArray<string>;
+}
 
-/** The dependencies `packages/models/package.json` declares. */
-const MODELS_DEPENDENCIES: ReadonlySet<string> = new Set(
-  Object.keys(
-    // SAFETY: a workspace package's manifest is a JSON object whose `dependencies`, when present, maps names to ranges.
-    (JSON.parse(manifest) as { readonly dependencies?: Readonly<Record<string, string>> })
-      .dependencies ?? {},
-  ),
-);
+const MODELS: Area = {
+  rule: "models-imports",
+  title: "Models",
+  dir: "models",
+  packageName: "@commissary/models",
+  appEntries: ["api", "management", "state", "testing"],
+  packageEntries: [],
+};
+
+/** Billing (`@commissary/billing`) is the one area whose `/api` another area's sources import (Models counts requests). */
+const BILLING: Area = {
+  rule: "billing-imports",
+  title: "Billing",
+  dir: "billing",
+  packageName: "@commissary/billing",
+  appEntries: ["api", "management", "state", "testing"],
+  packageEntries: ["api"],
+};
 
 const isInside = (dir: string, file: string): boolean => {
   const relative = path.relative(dir, file);
@@ -71,71 +86,107 @@ const resolved = (filename: string, specifier: string): string | undefined =>
     ? path.resolve(path.dirname(filename), specifier.split("?")[0] ?? specifier)
     : undefined;
 
-const modelsImportsRule = defineRule({
-  meta: {
-    type: "problem",
-    docs: {
-      description:
-        "Keep @commissary/models self-contained and reached by the apps only through its entry points (#151).",
-    },
-    messages: {
-      outsideModels:
-        'Models imports "{{specifier}}", which is neither its own file nor a dependency its package.json declares (tools/oxlint/boundaries).',
-      computedImport:
-        "An import() of a computed specifier cannot be checked against the Models boundary: import a string literal.",
-      notAnEntry:
-        '"{{specifier}}" is not an entry point of Models for the apps: import @commissary/models/api, /management or /state (tests also /testing).',
-      intoModels:
-        '"{{specifier}}" reaches into packages/models by a path: import its entry points (@commissary/models/api, /management, /state).',
-    },
-  },
-  create(context) {
-    const filename = context.filename;
-    const inModels = isInside(MODELS_SRC, filename);
+const entriesOf = (area: Area, names: ReadonlyArray<string>): ReadonlySet<string> =>
+  new Set(names.map((name) => `${area.packageName}/${name}`));
 
-    if (!inModels && !isInside(APPS, filename)) return {};
+const areaImportsRule = (area: Area) => {
+  const root = path.join(PACKAGES, area.dir);
+  const source = path.join(root, "src");
+  const appEntries = entriesOf(area, area.appEntries);
+  const packageEntries = entriesOf(area, area.packageEntries);
 
-    const check = (source: ESTree.Node, specifier: string) => {
-      const target = resolved(filename, specifier);
+  /** The dependencies the area's `package.json` declares. */
+  const dependencies: ReadonlySet<string> = new Set(
+    Object.keys(
+      // SAFETY: a workspace package's manifest is a JSON object whose `dependencies`, when present, maps names to ranges.
+      (
+        JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")) as {
+          readonly dependencies?: Readonly<Record<string, string>>;
+        }
+      ).dependencies ?? {},
+    ),
+  );
 
-      if (inModels) {
-        const allowed =
-          target === undefined
-            ? MODELS_DEPENDENCIES.has(packageOf(specifier)) || RUNTIME_MODULES.has(specifier)
-            : isInside(MODELS_SRC, target);
-
-        if (!allowed)
-          context.report({ node: source, messageId: "outsideModels", data: { specifier } });
-      } else if (target !== undefined) {
-        if (isInside(MODELS, target))
-          context.report({ node: source, messageId: "intoModels", data: { specifier } });
-      } else if (packageOf(specifier) === MODELS_PACKAGE && !APP_ENTRIES.has(specifier))
-        context.report({ node: source, messageId: "notAnEntry", data: { specifier } });
-    };
-
-    return {
-      ImportDeclaration: (node) => check(node.source, node.source.value),
-      ExportNamedDeclaration: (node) => {
-        if (node.source !== null) check(node.source, node.source.value);
+  return defineRule({
+    meta: {
+      type: "problem",
+      docs: {
+        description: `Keep ${area.packageName} self-contained and reached by the apps only through its entry points (#151).`,
       },
-      ExportAllDeclaration: (node) => check(node.source, node.source.value),
-      TSImportType: (node) => check(node.source, node.source.value),
-      TSExternalModuleReference: (node) => check(node.expression, node.expression.value),
-      ImportExpression: (node) => {
-        const source = node.source;
-
-        if (source.type === "Literal" && typeof source.value === "string")
-          check(source, source.value);
-        else if (source.type === "TemplateLiteral" && source.expressions.length === 0)
-          check(source, source.quasis[0]?.value.cooked ?? "");
-        else context.report({ node: source, messageId: "computedImport" });
+      messages: {
+        outsideArea: `${area.title} imports "{{specifier}}", which is neither its own file nor a dependency its package.json declares (tools/oxlint/boundaries).`,
+        computedImport: `An import() of a computed specifier cannot be checked against the ${area.title} boundary: import a string literal.`,
+        notAnEntry: `"{{specifier}}" is not an entry point of ${area.title} for the apps: import ${area.appEntries
+          .filter((name) => name !== "testing")
+          .map((name) => `${area.packageName}/${name}`)
+          .join(", ")} (tests also /testing).`,
+        notAPackageEntry: `"{{specifier}}" is not an entry point of ${area.title} for other packages: import ${area.packageEntries
+          .map((name) => `${area.packageName}/${name}`)
+          .join(", ")}.`,
+        intoArea: `"{{specifier}}" reaches into packages/${area.dir} by a path: import its entry points (${area.packageName}/api, /management, /state).`,
       },
-    };
-  },
-});
+    },
+    create(context) {
+      const filename = context.filename;
+      const inArea = isInside(source, filename);
+      const inApps = isInside(APPS, filename);
+
+      // The area's own tests reach its files by relative paths, as its sources do.
+      if ((isInside(root, filename) && !inArea) || (!inApps && !isInside(PACKAGES, filename)))
+        return {};
+
+      const check = (node: ESTree.Node, specifier: string) => {
+        const target = resolved(filename, specifier);
+
+        if (inArea) {
+          const allowed =
+            target === undefined
+              ? dependencies.has(packageOf(specifier)) || RUNTIME_MODULES.has(specifier)
+              : isInside(source, target);
+
+          if (!allowed) context.report({ node, messageId: "outsideArea", data: { specifier } });
+        } else if (target !== undefined) {
+          if (isInside(root, target))
+            context.report({ node, messageId: "intoArea", data: { specifier } });
+        } else if (packageOf(specifier) === area.packageName) {
+          if (inApps) {
+            if (!appEntries.has(specifier))
+              context.report({ node, messageId: "notAnEntry", data: { specifier } });
+          } else if (!packageEntries.has(specifier) && !isTestFile(filename))
+            context.report({ node, messageId: "notAPackageEntry", data: { specifier } });
+        }
+      };
+
+      return {
+        ImportDeclaration: (node) => check(node.source, node.source.value),
+        ExportNamedDeclaration: (node) => {
+          if (node.source !== null) check(node.source, node.source.value);
+        },
+        ExportAllDeclaration: (node) => check(node.source, node.source.value),
+        TSImportType: (node) => check(node.source, node.source.value),
+        TSExternalModuleReference: (node) => check(node.expression, node.expression.value),
+        ImportExpression: (node) => {
+          const specifier = node.source;
+
+          if (specifier.type === "Literal" && typeof specifier.value === "string")
+            check(specifier, specifier.value);
+          else if (specifier.type === "TemplateLiteral" && specifier.expressions.length === 0)
+            check(specifier, specifier.quasis[0]?.value.cooked ?? "");
+          else context.report({ node: specifier, messageId: "computedImport" });
+        },
+      };
+    },
+  });
+};
+
+/** A package's test file: it may reach what another package's `./testing` and entries export. */
+const isTestFile = (filename: string): boolean => /[\\/]test[\\/]/.test(filename);
 
 /** Import boundaries between the workspace's areas, apps and packages. */
 export default eslintCompatPlugin({
   meta: { name: "boundaries" },
-  rules: { "models-imports": modelsImportsRule },
+  rules: {
+    "models-imports": areaImportsRule(MODELS),
+    "billing-imports": areaImportsRule(BILLING),
+  },
 });

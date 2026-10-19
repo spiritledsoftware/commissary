@@ -18,6 +18,7 @@ import { type AccessWiring, provisionAccess, provisionClientApiBypass } from "./
 import { BUNDLE_ALIASES } from "./infra/bundle.ts";
 import { previewAppName, previewOrigin } from "./infra/preview-origin.ts";
 import { readSettings } from "./infra/settings.ts";
+import { RATE_LIMIT_PERIOD_SECONDS, REQUEST_RATE_CEILING } from "@commissary/billing/plan";
 import { DEV_AUTH_INDEX_KEY } from "@commissary/models/auth-index-key";
 import { DEV_SECRETS_KEY, secretsKeyResourceId } from "./packages/state/src/secrets/key.ts";
 import { CLIENT_API_PREFIXES } from "./packages/core/src/http/client-api.ts";
@@ -121,15 +122,21 @@ export default Alchemy.Stack(
             TURNSTILE_SECRET_KEY: hosted.turnstileSecretKey,
           };
 
-    // Commissary Cloud on the API Worker: API keys only, under the per-org rate limit of the client API.
+    // Commissary Cloud on the API Worker: API keys only, under the per-org request-rate ceiling of the client API, one
+    // binding per plan (60 a minute on Free, 600 on Pay as you go: the constants of `@commissary/billing`, ADR 0042),
+    // each in a namespace of its own.
     const hostedApiEnv =
       hosted === undefined
         ? {}
         : {
             COMMISSARY_MODE: "cloud",
-            ORG_RATE_LIMIT: Cloudflare.RateLimit("ORG_RATE_LIMIT", {
+            FREE_RATE_LIMIT: Cloudflare.RateLimit("FREE_RATE_LIMIT", {
               namespaceId: hosted.orgRateLimitNamespaceId,
-              simple: { limit: hosted.orgRateLimit, period: 60 },
+              simple: { limit: REQUEST_RATE_CEILING.free, period: RATE_LIMIT_PERIOD_SECONDS },
+            }),
+            PAYG_RATE_LIMIT: Cloudflare.RateLimit("PAYG_RATE_LIMIT", {
+              namespaceId: hosted.paygRateLimitNamespaceId,
+              simple: { limit: REQUEST_RATE_CEILING.payg, period: RATE_LIMIT_PERIOD_SECONDS },
             }),
           };
 

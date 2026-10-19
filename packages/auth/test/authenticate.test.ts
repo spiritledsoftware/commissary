@@ -16,7 +16,6 @@ import {
   authenticateManagement,
   ensureSignedUp,
   NOT_SIGNED_IN,
-  RATE_LIMITED,
   resetApiKeyCaches,
   resetManagementKeyCache,
   resetStandingCaches,
@@ -342,51 +341,33 @@ describe("authenticateManagement", () => {
 describe("Commissary Cloud", () => {
   const CLOUD: AuthBindings = { ...SELF_HOSTED, COMMISSARY_MODE: "cloud" };
 
-  it.effect(
-    "takes API keys only on the client API, refuses a suspended person's and limits each org",
-    () => {
-      const { directory, acme } = staffed();
-      const dan = directory.issueApiKey(acme, "dan@example.com");
-      const carol = directory.issueApiKey(acme, "carol@example.com");
-      let allowed = 1;
+  it.effect("takes API keys only on the client API and refuses a suspended person's", () => {
+    const { directory, acme } = staffed();
+    const dan = directory.issueApiKey(acme, "dan@example.com");
+    const carol = directory.issueApiKey(acme, "carol@example.com");
+    directory.suspendPerson("carol@example.com");
 
-      const limited: AuthBindings = {
-        ...CLOUD,
-        ORG_RATE_LIMIT: { limit: async () => ({ success: allowed-- > 0 }) },
-      };
+    return run(
+      directory,
+      Effect.gen(function* () {
+        const access = yield* signedIn(userClaims("admin@example.com"));
 
-      directory.suspendPerson("carol@example.com");
+        assert.strictEqual(
+          (yield* Effect.flip(authenticateClient(access, CLIENT_URL))).message,
+          "Missing API key",
+        );
 
-      return run(
-        directory,
-        Effect.gen(function* () {
-          const access = yield* signedIn(userClaims("admin@example.com"));
+        const suspended = yield* Effect.flip(
+          authenticateClient({ "x-api-key": carol }, CLIENT_URL),
+        );
 
-          assert.strictEqual(
-            (yield* Effect.flip(authenticateClient(access, CLIENT_URL))).message,
-            "Missing API key",
-          );
-
-          const suspended = yield* Effect.flip(
-            authenticateClient({ "x-api-key": carol }, CLIENT_URL),
-          );
-
-          assert.strictEqual(suspended._tag, "ForbiddenError");
-          assert.strictEqual(suspended.message, SUSPENDED);
-          assert.strictEqual(
-            (yield* authenticateClient({ "x-api-key": dan }, CLIENT_URL)).org,
-            acme,
-          );
-
-          const over = yield* Effect.flip(authenticateClient({ "x-api-key": dan }, CLIENT_URL));
-
-          assert.strictEqual(over._tag, "RateLimitedError");
-          assert.strictEqual(over.message, RATE_LIMITED);
-        }),
-        limited,
-      );
-    },
-  );
+        assert.strictEqual(suspended._tag, "ForbiddenError");
+        assert.strictEqual(suspended.message, SUSPENDED);
+        assert.strictEqual((yield* authenticateClient({ "x-api-key": dan }, CLIENT_URL)).org, acme);
+      }),
+      CLOUD,
+    );
+  });
 
   it.effect("signs a person in by their session, and leaves signing up to the auth Worker", () => {
     const { directory } = staffed();

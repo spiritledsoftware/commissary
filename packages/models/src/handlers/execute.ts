@@ -28,6 +28,7 @@ import {
   lifecycleError,
   type Prepared,
 } from "./conductor.ts";
+import { metered } from "./metering.ts";
 import { rewriteResponseModel, rewriteStreamChunk } from "./model-rewrite.ts";
 import { resolveModel } from "./resolve.ts";
 import { prepareSessionRouting, type SessionRouting } from "../session-routing/routing.ts";
@@ -268,7 +269,7 @@ export const executeNonStream = Effect.fnUntraced(function* (input: ExecutionInp
   if (!result.ok) return yield* finalError(prepared, result.error);
 
   return result.value;
-});
+}, metered);
 
 const NO_CHUNKS: ReadonlyArray<string> = [];
 
@@ -377,7 +378,7 @@ export const executeStream = Effect.fnUntraced(function* (input: ExecutionInput)
       return yield* finalError(prepared, result.error);
     }
   }
-});
+}, metered);
 
 /**
  * Token counting (Go `ExecuteCountWithAuthManager`): the same retry/failover conductor as non-stream execution, through
@@ -407,4 +408,4 @@ export const executeCountTokens = Effect.fnUntraced(function* (input: ExecutionI
   if (!result.ok) return yield* finalError(prepared, result.error);
 
   return result.value;
-});
+}, metered);

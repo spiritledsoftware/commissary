@@ -1,0 +1,32 @@
+{
+  "name": "@commissary/billing",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Commissary Cloud's billing area: plans, free usage per calendar month, plan limits and the per-plan request-rate ceiling, its management route and its ControlPlane part; does nothing on a self-hosted Commissary; tested in workerd",
+  "type": "module",
+  "exports": {
+    "./api": "./src/api.ts",
+    "./management": "./src/management.ts",
+    "./state": "./src/state.ts",
+    "./plan": "./src/plan.ts",
+    "./testing": "./test/testing.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc"
+  },
+  "dependencies": {
+    "@commissary/auth": "workspace:*",
+    "@commissary/contract": "workspace:*",
+    "@commissary/core": "workspace:*",
+    "@commissary/state": "workspace:*",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "1.4.2",
+    "@effect/vitest": "catalog:",
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

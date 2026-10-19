@@ -1,5 +1,5 @@
-// The per-org rate limit of Commissary Cloud (packages/auth/src/rate-limit.ts) is the client API's, which the API Worker
-// serves (apps/api/test/hosted/rate-limit.test.ts): the management API on the app Worker is not limited.
+// The per-plan request-rate ceiling of Commissary Cloud (packages/billing/src/rate-limit.ts) is the client API's, which the
+// API Worker serves (apps/api/test/hosted/rate-limit.test.ts): the management API on the app Worker is not limited.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { call, clearPeople, installFakes, panelHeaders, restoreFetch, signIn } from "./support.ts";
 
@@ -10,10 +10,10 @@ beforeAll(async () => {
 
 afterAll(restoreFetch);
 
-/** The limit of the API Worker's test binding (apps/api/vitest.config.ts). */
+/** The Free ceiling of the API Worker's test binding (apps/api/vitest.config.ts). */
 const LIMIT = 5;
 
-describe("the per-org rate limit", () => {
+describe("the per-org rate ceiling", () => {
   it("does not limit the management API", async () => {
     const cookie = await signIn({ email: "admin-heavy@example.com" });
 

@@ -16,10 +16,14 @@ export interface HostedSettings {
   readonly turnstileSecretKey: Redacted.Redacted<string>;
   /** How many orgs a person may own by default (`OWNED_ORG_LIMIT`, default 3). */
   readonly ownedOrgLimit: string;
-  /** Requests per minute an org may send on the client API (`ORG_RATE_LIMIT`, default 600). */
-  readonly orgRateLimit: number;
-  /** The rate-limit namespace (`ORG_RATE_LIMIT_NAMESPACE_ID`): a positive integer unique in the account. */
+  /**
+   * The rate-limit namespace of the Free plan's request-rate ceiling (`ORG_RATE_LIMIT_NAMESPACE_ID`, default 7201): a
+   * positive integer unique in the account. The ceilings themselves are constants (`@commissary/billing`'s
+   * `REQUEST_RATE_CEILING`, ADR 0042), not settings.
+   */
   readonly orgRateLimitNamespaceId: number;
+  /** Pay as you go's (`ORG_RATE_LIMIT_PAYG_NAMESPACE_ID`, default the Free plan's plus one): a namespace of its own. */
+  readonly paygRateLimitNamespaceId: number;
   /**
    * The auth host (`COMMISSARY_AUTH_DOMAIN`, ADR 0030, ADR 0031), the auth Worker's custom domain: a subdomain of the
    * base domain (`baseDomain`), by default `auth.<base domain>`, other than the app host and the API host. Empty on a
@@ -238,16 +242,26 @@ const hostedSettings = Effect.fnUntraced(function* (
   const scopedToBase = deployed && baseDomain !== appDomain;
   const problems: Array<string> = [];
   const limit = wholeNumber(yield* text("OWNED_ORG_LIMIT"), 3, 0);
-  const rate = wholeNumber(yield* text("ORG_RATE_LIMIT"), 600, 1);
   const namespace = wholeNumber(yield* text("ORG_RATE_LIMIT_NAMESPACE_ID"), 7201, 1);
+
+  // Unset, one above the Free plan's, so an environment that already set its own namespace needs nothing more.
+  const paygNamespace = wholeNumber(
+    yield* text("ORG_RATE_LIMIT_PAYG_NAMESPACE_ID"),
+    (namespace ?? 7201) + 1,
+    1,
+  );
 
   if (limit === undefined) problems.push("OWNED_ORG_LIMIT must be a whole number from 0");
 
-  if (rate === undefined)
-    problems.push("ORG_RATE_LIMIT must be a whole number from 1 (requests per minute)");
-
   if (namespace === undefined)
     problems.push("ORG_RATE_LIMIT_NAMESPACE_ID must be a positive integer");
+
+  if (paygNamespace === undefined)
+    problems.push("ORG_RATE_LIMIT_PAYG_NAMESPACE_ID must be a positive integer");
+
+  // Two bindings on one namespace would count Free's and Pay as you go's requests together.
+  if (namespace !== undefined && namespace === paygNamespace)
+    problems.push("ORG_RATE_LIMIT_PAYG_NAMESPACE_ID must differ from ORG_RATE_LIMIT_NAMESPACE_ID");
 
   const hosted: HostedSettings = {
     githubClientId: (yield* text("SIGN_IN_GITHUB_CLIENT_ID")).trim(),
@@ -257,8 +271,8 @@ const hostedSettings = Effect.fnUntraced(function* (
     turnstileSiteKey: (yield* text("TURNSTILE_SITE_KEY", dev ? DEV_TURNSTILE_SITE_KEY : "")).trim(),
     turnstileSecretKey: yield* secret("TURNSTILE_SECRET_KEY", dev ? DEV_TURNSTILE_SECRET_KEY : ""),
     ownedOrgLimit: String(limit ?? 3),
-    orgRateLimit: rate ?? 600,
     orgRateLimitNamespaceId: namespace ?? 7201,
+    paygRateLimitNamespaceId: paygNamespace ?? 7202,
     authDomain: deployed
       ? authHost((yield* text("COMMISSARY_AUTH_DOMAIN")).trim(), baseDomain)
       : "",

@@ -3,10 +3,11 @@
 // injected clock and a mocked upstream (conductor_retry_round_test.go, conductor_execution_quota_test.go,
 // conductor_request_scoped_errors_test.go, conductor_stream_*_test.go, conductor_force_mapping_test.go).
 import { assert, describe, it } from "@effect/vitest";
-import { Effect, Exit, Fiber, Layer, Scope, Stream } from "effect";
+import { Context, Effect, Exit, Fiber, Layer, Scope, Stream } from "effect";
 import type { HttpServerRequest } from "effect/http";
 import { TestClock } from "effect/testing";
 import { type AccessIdentity, AccessPrincipal } from "@commissary/auth";
+import { type BillingBindings, BillingEnv } from "@commissary/billing/api";
 import type { ConfigReader } from "../src/config/reader.ts";
 import { ExecutionError } from "../src/executor/errors.ts";
 import { CredentialRefresher } from "../src/executor/helps/credential-refresh.ts";
@@ -113,6 +114,8 @@ interface SetupOptions {
   readonly identity?: AccessIdentity;
   /** What the usage sink says an attempt cost, for the Spend limits (nothing by default). */
   readonly cost?: (record: UsageRecord) => UsageCost | undefined;
+  /** Billing's view of `env`: self-hosted (nothing counted) by default. */
+  readonly billing?: BillingBindings;
 }
 
 const setup = (
@@ -158,7 +161,11 @@ const setup = (
       effect.pipe(
         Effect.provide(layer),
         Effect.provideService(AccessPrincipal, options.identity ?? identity),
-        Effect.provideContext(envContext({} as Cloudflare.Env)),
+        Effect.provideContext(
+          options.billing === undefined
+            ? envContext({} as Cloudflare.Env)
+            : Context.add(envContext({} as Cloudflare.Env), BillingEnv, options.billing),
+        ),
         Effect.provideService(CurrentOrg, GLOBAL_ORG),
       ) as unknown as Effect.Effect<A, E>;
 
@@ -1408,6 +1415,154 @@ describe("Spend limits (issue #71)", () => {
       for (let i = 0; i < 3; i += 1) yield* run.exec(executeNonStream(chatInput()));
       assert.strictEqual(run.calls.length, 3);
       assert.strictEqual(spentToday(book, run, "member", "m1"), 0);
+    }),
+  );
+});
+
+describe("free usage metering (ADR 0042)", () => {
+  /** An org's Billing part as a counter: what `admit` counted and `refund` took back, a Free org's limit and the clock. */
+  const metering = (limit = Number.POSITIVE_INFINITY) => {
+    const state = { admits: 0, refunds: 0 };
+
+    const part = {
+      admit: async () =>
+        state.admits - state.refunds >= limit
+          ? {
+              ok: false,
+              limit: {
+                unit: "requests",
+                allowed: limit,
+                used: limit,
+                resetsAt: Date.UTC(2026, 3, 1),
+                retryAfterSeconds: 3600,
+              },
+            }
+          : { ok: true, monthStart: ((state.admits += 1), 0) },
+      refund: async () => {
+        state.refunds += 1;
+      },
+    };
+
+    const billing = {
+      COMMISSARY_MODE: "cloud",
+      CONTROL_PLANE: { getByName: () => ({ billing: () => part }) },
+      PLATFORM: {
+        getByName: () => ({
+          getOrgById: async () => ({ slug: "acme" }),
+        }),
+      },
+      APP_DOMAIN: "app.example.com",
+      // SAFETY: the fake answers only what Billing calls.
+    } as unknown as BillingBindings;
+
+    return { billing, counted: () => state.admits - state.refunds };
+  };
+
+  it.effect("counts a request once, however many credentials it tries", () =>
+    Effect.gen(function* () {
+      const meter = metering();
+
+      const run = yield* setup(
+        config(group("a") + group("b")),
+        (call) => (keyOf(call) === "a" ? upstreamError(500) : jsonResponse(CHAT_OK)),
+        { billing: meter.billing },
+      );
+
+      yield* run.exec(executeNonStream(chatInput()));
+      assert.deepStrictEqual(run.calls.map(keyOf), ["a", "b"]);
+      assert.strictEqual(meter.counted(), 1);
+
+      // A request that fails on every credential counts too: the outcome does not matter.
+      const failing = yield* setup(config(group("a")), () => upstreamError(500), {
+        billing: meter.billing,
+      });
+
+      yield* failure(failing.exec(executeNonStream(chatInput())));
+      assert.strictEqual(meter.counted(), 2);
+    }),
+  );
+
+  it.effect("counts a request served by a private credential", () =>
+    Effect.gen(function* () {
+      const meter = metering();
+
+      const run = yield* setup(config(group("a")), () => jsonResponse(CHAT_OK), {
+        billing: meter.billing,
+        privateConfigs: { m1: config(group("a").replace("key-a", "key-mine")) },
+        identity: { ...identity, memberId: "m1", role: "member" },
+      });
+
+      yield* run.exec(executeNonStream(chatInput()));
+      assert.strictEqual(meter.counted(), 1);
+    }),
+  );
+
+  it.effect("does not count a request a spend limit refuses", () =>
+    Effect.gen(function* () {
+      const meter = metering();
+      const book = new MemorySpendBook([limit("member", "m1", "day", 0)]);
+
+      const run = yield* setup(config(group("a")), () => jsonResponse(CHAT_OK), {
+        billing: meter.billing,
+        spend: new SpendLedger(book, () => []),
+        identity: { ...identity, memberId: "m1", role: "member" },
+      });
+
+      const error = yield* failure(run.exec(executeNonStream(chatInput())));
+
+      assert.strictEqual(error.code, "spend_limit_reached");
+      assert.strictEqual(meter.counted(), 0);
+    }),
+  );
+
+  it.effect(
+    "refuses a Free org's request at its limit with a 429 plan_limit_reached, before any work",
+    () =>
+      Effect.gen(function* () {
+        const meter = metering(1);
+
+        const run = yield* setup(config(group("a")), () => jsonResponse(CHAT_OK), {
+          billing: meter.billing,
+        });
+
+        yield* run.exec(executeNonStream(chatInput()));
+
+        const error = yield* failure(run.exec(executeNonStream(chatInput())));
+
+        assert.strictEqual(error.status, 429);
+        assert.strictEqual(error.code, "plan_limit_reached");
+        assert.strictEqual(error.safeHeaders?.["retry-after"], "3600");
+        assert.strictEqual(run.calls.length, 1);
+        assert.strictEqual(meter.counted(), 1);
+
+        const body = JSON.parse(error.message) as { error: Record<string, unknown> };
+
+        assert.strictEqual(body.error["code"], "plan_limit_reached");
+        assert.include(String(body.error["message"]), "https://app.example.com/orgs/acme/billing");
+
+        // Streaming and token counting are refused the same way.
+        const streamed = yield* failure(
+          run.exec(
+            Effect.scoped(
+              executeStream({ ...chatInput(), body: { ...chatInput().body, stream: true } }),
+            ),
+          ),
+        );
+
+        assert.strictEqual(streamed.code, "plan_limit_reached");
+      }),
+  );
+
+  it.effect("counts nothing on a self-hosted Commissary", () =>
+    Effect.gen(function* () {
+      const meter = metering(0);
+
+      const run = yield* setup(config(group("a")), () => jsonResponse(CHAT_OK), {
+        billing: { ...meter.billing, COMMISSARY_MODE: undefined },
+      });
+
+      yield* run.exec(executeNonStream(chatInput()));
+      assert.strictEqual(meter.counted(), 0);
     }),
   );
 });

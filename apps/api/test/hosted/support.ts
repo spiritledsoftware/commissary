@@ -21,11 +21,16 @@ export const models = (key: string): Promise<Response> =>
 
 /**
  * A new org owned by `email` and an API key of theirs in it, as signing up (a Personal org) or `POST /orgs` and
- * `POST /api-keys` make them: the org's id and slug, and the key.
+ * `POST /api-keys` make them: the org's id and slug, the owner's member id, and the key.
  */
 export const keyedOrg = async (
   email: string,
-): Promise<{ readonly org: OrgId; readonly slug: string; readonly key: string }> => {
+): Promise<{
+  readonly org: OrgId;
+  readonly slug: string;
+  readonly member: string;
+  readonly key: string;
+}> => {
   const slug = `org-${crypto.randomUUID().slice(0, 8)}`;
   const org = newOrgId();
   const created = await platformOf(env).createOrg({ slug, name: slug, id: org }, Date.now());
@@ -37,5 +42,5 @@ export const keyedOrg = async (
     syncOrgIndex(org).pipe(Effect.provideService(AuthDirectory, stateAuthDirectory(env))),
   );
 
-  return { org, slug, key: (await issueKey(org, owner)).key };
+  return { org, slug, member: owner.id, key: (await issueKey(org, owner)).key };
 };

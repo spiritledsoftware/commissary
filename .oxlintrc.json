@@ -53,6 +53,7 @@
     "anti-slop-effect/no-service-constructor-imports": "warn",
     "anti-slop-effect/prefer-effect-match": "error",
     "boundaries/models-imports": "error",
+    "boundaries/billing-imports": "error",
     "effecttsgo/unstable-api-usage": "warn",
     "no-restricted-imports": [
       "error",
@@ -134,7 +135,7 @@
                 "message": "Packages import nothing from apps/*: an app depends on packages, never the reverse."
               },
               {
-                "regex": "^@commissary/models(/|$)",
+                "regex": "^@commissary/(models|billing)(/|$)",
                 "message": "The org-wide state imports nothing from an area: an area reaches it through its ControlPlane part (#134, #148)."
               }
             ]

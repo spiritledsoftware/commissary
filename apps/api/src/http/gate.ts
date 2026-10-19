@@ -1,7 +1,7 @@
 /**
  * The API Worker's client gate (ADR 0022, ADR 0030): a client API request must carry a credential
  * `@commissary/auth`'s `authenticateClient` accepts (an API key, or an Access sign-in where the org still accepts them;
- * on Commissary Cloud an API key, under the org's rate limit), after the cross-site checks (`crossSiteRejection`). On
+ * on Commissary Cloud an API key, under the request-rate ceiling of the org's plan, `@commissary/billing`), after the cross-site checks (`crossSiteRejection`). On
  * success the principal is available to handlers as `AccessPrincipal`, and `CurrentOrg` is the org the API key names.
  * `/healthz` (and nothing else, `http/hosts.ts` refuses every other path first) passes through. Registered after CORS
  * (`cors.ts`), so preflights are answered before authentication and refusals still carry CORS headers. Refusals on
@@ -18,6 +18,7 @@ import {
   PUBLIC_ROUTE_IDENTITY,
   refusalResponse,
 } from "@commissary/auth";
+import { limitClientRate } from "@commissary/billing/api";
 import { CurrentOrg, isClientApiPath, isSystemOnePath, normalizedPath } from "@commissary/core";
 import { CorsLayer } from "./cors.ts";
 
@@ -56,6 +57,8 @@ export const ClientGate = HttpRouter.middleware<{ provides: AccessPrincipal }>()
         const authenticated = yield* Effect.result(
           authenticateClient(request.headers, request.originalUrl).pipe(
             Effect.provideService(AccessJwks, jwks),
+            // After authentication and standing: only an org's own requests count against its ceiling.
+            Effect.tap((identity) => limitClientRate(identity.org)),
           ),
         );
 

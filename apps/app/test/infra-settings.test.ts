@@ -138,8 +138,13 @@ describe("Commissary Cloud settings", () => {
       );
       assert.strictEqual(settings.hosted?.googleClientId, "");
       assert.strictEqual(settings.hosted?.ownedOrgLimit, "3");
-      assert.strictEqual(settings.hosted?.orgRateLimit, 600);
       assert.strictEqual(settings.hosted?.orgRateLimitNamespaceId, 7201);
+      assert.strictEqual(settings.hosted?.paygRateLimitNamespaceId, 7202);
+      assert.strictEqual(
+        (yield* read({ ...hosted, ORG_RATE_LIMIT_NAMESPACE_ID: "7300" }, { stage: "prod" }))
+          .settings.hosted?.paygRateLimitNamespaceId,
+        7301,
+      );
     }),
   );
 
@@ -309,10 +314,17 @@ describe("Commissary Cloud settings", () => {
           "Commissary Cloud needs TURNSTILE_SITE_KEY and TURNSTILE_SECRET_KEY",
         ],
         [{ OWNED_ORG_LIMIT: "-1" }, "OWNED_ORG_LIMIT must be a whole number from 0"],
-        [{ ORG_RATE_LIMIT: "0" }, "ORG_RATE_LIMIT must be a whole number from 1"],
         [
           { ORG_RATE_LIMIT_NAMESPACE_ID: "x" },
           "ORG_RATE_LIMIT_NAMESPACE_ID must be a positive integer",
+        ],
+        [
+          { ORG_RATE_LIMIT_PAYG_NAMESPACE_ID: "0" },
+          "ORG_RATE_LIMIT_PAYG_NAMESPACE_ID must be a positive integer",
+        ],
+        [
+          { ORG_RATE_LIMIT_NAMESPACE_ID: "5", ORG_RATE_LIMIT_PAYG_NAMESPACE_ID: "5" },
+          "ORG_RATE_LIMIT_PAYG_NAMESPACE_ID must differ from ORG_RATE_LIMIT_NAMESPACE_ID",
         ],
         [{ COMMISSARY_DOMAIN: "" }, "COMMISSARY_DOMAIN is required"],
       ] as const)

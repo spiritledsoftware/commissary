@@ -227,8 +227,8 @@ jobs:
       TURNSTILE_SITE_KEY: ${{ vars.TURNSTILE_SITE_KEY }}
       TURNSTILE_SECRET_KEY: ${{ secrets.TURNSTILE_SECRET_KEY }}
       OWNED_ORG_LIMIT: ${{ vars.OWNED_ORG_LIMIT }}
-      ORG_RATE_LIMIT: ${{ vars.ORG_RATE_LIMIT }}
       ORG_RATE_LIMIT_NAMESPACE_ID: ${{ vars.ORG_RATE_LIMIT_NAMESPACE_ID }}
+      ORG_RATE_LIMIT_PAYG_NAMESPACE_ID: ${{ vars.ORG_RATE_LIMIT_PAYG_NAMESPACE_ID }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -316,8 +316,8 @@ jobs:
       TURNSTILE_SITE_KEY: ${{ vars.TURNSTILE_SITE_KEY }}
       TURNSTILE_SECRET_KEY: ${{ secrets.TURNSTILE_SECRET_KEY }}
       OWNED_ORG_LIMIT: ${{ vars.OWNED_ORG_LIMIT }}
-      ORG_RATE_LIMIT: ${{ vars.ORG_RATE_LIMIT }}
       ORG_RATE_LIMIT_NAMESPACE_ID: ${{ vars.ORG_RATE_LIMIT_NAMESPACE_ID }}
+      ORG_RATE_LIMIT_PAYG_NAMESPACE_ID: ${{ vars.ORG_RATE_LIMIT_PAYG_NAMESPACE_ID }}
     steps:
       - name: Not set up
         if: env.CONFIGURED != 'true'

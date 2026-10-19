@@ -1,6 +1,6 @@
 /**
  * The Worker's bindings as its code reads them (#134 "How packages get their bindings"): every package reads only
- * its own view ({@link AuthConfig}, {@link StateEnv}, {@link ModelsEnv}; `core` reads none), and the code that
+ * its own view ({@link AuthConfig}, {@link StateEnv}, {@link ModelsEnv}, {@link BillingEnv}; `core` reads none), and the code that
  * stays in the Worker reads {@link AppEnv}. The request context provides each of them from the invocation's `env`, which
  * satisfies every view (`WorkerBindings`), and the ports `@commissary/auth` reaches state and Better Auth's sessions
  * through (`AuthDirectory`, `SignInSessions`).
@@ -13,6 +13,7 @@ import {
   SignInSessions,
   type SignInService,
 } from "@commissary/auth";
+import { type BillingBindings, BillingEnv } from "@commissary/billing/api";
 import { signInSessions } from "./hosted/sign-in.ts";
 import { type ModelsBindings, ModelsEnv } from "@commissary/models/api";
 import { WorkerExecutionContext, CurrentOrg, GLOBAL_ORG } from "@commissary/core";
@@ -48,13 +49,18 @@ export interface AppBindings {
 export class AppEnv extends Context.Service<AppEnv, AppBindings>()("commissary/worker/AppEnv") {}
 
 /** Every view of the Worker's `env`; the global `Env` satisfies it. */
-export type WorkerBindings = AuthBindings & StateBindings & ModelsBindings & AppBindings;
+export type WorkerBindings = AuthBindings &
+  StateBindings &
+  ModelsBindings &
+  BillingBindings &
+  AppBindings;
 
 /** The services {@link envContext} provides. */
 export type EnvServices =
   | AuthConfig
   | StateEnv
   | ModelsEnv
+  | BillingEnv
   | AppEnv
   | AuthDirectory
   | SignInSessions;
@@ -70,6 +76,7 @@ export const envContext = (env: WorkerBindings): Context.Context<EnvServices> =>
   return Context.make(AuthConfig, env).pipe(
     Context.add(StateEnv, env),
     Context.add(ModelsEnv, env),
+    Context.add(BillingEnv, env),
     Context.add(AppEnv, env),
     Context.add(AuthDirectory, directory),
     Context.add(SignInSessions, signInSessions(env)),

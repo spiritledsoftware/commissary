@@ -2,7 +2,7 @@
 // `alchemy.run.ts`; keep both in sync. Tests bind the same names in `vitest.config.ts`. The Durable Object namespaces
 // are the state Worker's (apps/state), bound by script name; under `alchemy dev` they come over the app Worker's
 // dev-only bridge instead (src/dev.ts). `Env` is read only by the entries (`index.ts`, `dev.ts`, `scheduled.ts`) and
-// tests; other code reads its package's view (`AuthConfig`, `StateEnv`, `ModelsEnv`, `ApiBindings`: `worker-env.ts`),
+// tests; other code reads its package's view (`AuthConfig`, `StateEnv`, `ModelsEnv`, `BillingEnv`, `ApiBindings`: `worker-env.ts`),
 // which `Env` must satisfy.
 interface __ApiWorkerEnv {
   /** Model catalogs, signature cache, Antigravity state (Workers KV). */
@@ -30,10 +30,12 @@ interface __ApiWorkerEnv {
    * (alchemy.run.ts); tests and `alchemy dev` use their own. Empty fails closed.
    */
   AUTH_INDEX_KEY: string;
-  /** `cloud`: Commissary Cloud (ADR 0026): API keys only, under the per-org rate limit; unset: self-hosted. */
+  /** `cloud`: Commissary Cloud (ADR 0026): API keys only, under the per-org, per-plan rate ceiling; unset: self-hosted. */
   COMMISSARY_MODE?: string;
-  /** Hosted: the per-org request rate limit of the client API (Workers rate limiting, keyed by org id). */
-  ORG_RATE_LIMIT?: RateLimit;
+  /** Hosted: the Free plan's per-org request-rate ceiling of the client API, 60 a minute (Workers rate limiting, keyed by org id). */
+  FREE_RATE_LIMIT?: RateLimit;
+  /** Hosted: Pay as you go's, 600 a minute. */
+  PAYG_RATE_LIMIT?: RateLimit;
   CONTROL_PLANE: DurableObjectNamespace<import("@commissary/state-worker").ControlPlane>;
   SESSION_STATE: DurableObjectNamespace<import("@commissary/state-worker").SessionState>;
   /** The Platform registry: one object per deployment (`platformOf`, `@commissary/state`). */
