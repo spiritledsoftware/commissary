@@ -1,7 +1,7 @@
 /**
  * Who asks, as the area's ownership rules need it (ADR 0023): the member of the request and whether they are an org
  * admin, derived from the principal. Every management route that touches credentials hands the viewer to the
- * ControlPlane, which decides what the caller reaches (the Models area's `credentials/ownership.ts`).
+ * ControlPlane, which decides what the caller reaches (`ownership.ts`).
  */
 import { Effect } from "effect";
 import { type AccessIdentity, AccessPrincipal } from "./principal.ts";

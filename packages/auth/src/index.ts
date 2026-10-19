@@ -37,6 +37,8 @@ export * from "./management-key.ts";
 
 export * from "./mode.ts";
 
+export * from "./ownership.ts";
+
 export * from "./principal.ts";
 
 export * from "./refusal.ts";
