@@ -4,6 +4,8 @@
 #   self-hosted Commissary;
 # - main: the `prod` stage (COMMISSARY_MODE from the production environment, self-hosted when unset) and, once the
 #   `cloud` environment is set up (`.env.cloud`, `pnpm ci:setup`), the `cloud` stage: Commissary Cloud on its own domain.
+# A change to documentation only (Markdown files anywhere, everything under docs/) skips the checks and deploys
+# (tools/ci-changes.sh): the required checks still report, as skipped or with their steps skipped.
 # Deploy setup (environments, secrets, variables): docs/DEPLOY.md.
 name: ci
 
@@ -22,9 +24,41 @@ env:
   STAGE: ${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || 'prod' }}
 
 jobs:
+  changes:
+    name: changes
+    if: >-
+      github.event.action != 'labeled' && github.event.action != 'unlabeled' ||
+      github.event.label.name == 'cloud-preview'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read # the changed files and the preview comment
+    outputs:
+      code: ${{ steps.changes.outputs.code }}
+      previewed: ${{ steps.changes.outputs.previewed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: tools/ci-changes.sh
+          sparse-checkout-cone-mode: false
+      - id: changes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          PR: ${{ github.event.pull_request.number }}
+          BEFORE: ${{ github.event.before }}
+          SHA: ${{ github.sha }}
+        run: tools/ci-changes.sh
+
+  # The jobs below run when `changes` says code changed, or when it could not tell (it failed: no output).
   static:
     name: typecheck, lint, workflows
+    needs: changes
     if: >-
+      !cancelled() && needs.changes.outputs.code != 'false' &&
       github.event.action != 'closed' &&
       (github.event.action != 'labeled' && github.event.action != 'unlabeled' ||
        github.event.label.name == 'cloud-preview')
@@ -49,9 +83,13 @@ jobs:
         with:
           advanced-security: false
 
+  # Skipped step by step rather than as a job: a skipped matrix job reports one check under its unexpanded name,
+  # and the required `test (n/3)` checks would never arrive.
   test:
     name: test (${{ matrix.shard }}/3)
+    needs: changes
     if: >-
+      !cancelled() &&
       github.event.action != 'closed' &&
       (github.event.action != 'labeled' && github.event.action != 'unlabeled' ||
        github.event.label.name == 'cloud-preview')
@@ -67,17 +105,25 @@ jobs:
       matrix:
         shard: [1, 2, 3]
     steps:
+      - name: Documentation only
+        if: needs.changes.outputs.code == 'false'
+        run: echo "::notice::documentation only; no tests to run"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.changes.outputs.code != 'false'
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
+        if: needs.changes.outputs.code != 'false'
       - run: pnpm test --shard="$SHARD/3"
+        if: needs.changes.outputs.code != 'false'
         env:
           SHARD: ${{ matrix.shard }}
 
   smoke:
     name: smoke (alchemy dev)
+    needs: changes
     if: >-
+      !cancelled() && needs.changes.outputs.code != 'false' &&
       github.event.action != 'closed' &&
       (github.event.action != 'labeled' && github.event.action != 'unlabeled' ||
        github.event.label.name == 'cloud-preview')
@@ -98,7 +144,9 @@ jobs:
   # The same under Commissary Cloud (ADR 0026, ADR 0030): the auth Worker beside the others, the sign-in on its port.
   smoke-cloud:
     name: smoke (alchemy dev, Commissary Cloud)
+    needs: changes
     if: >-
+      !cancelled() && needs.changes.outputs.code != 'false' &&
       github.event.action != 'closed' &&
       (github.event.action != 'labeled' && github.event.action != 'unlabeled' ||
        github.event.label.name == 'cloud-preview')
@@ -120,10 +168,11 @@ jobs:
 
   deploy:
     name: deploy ${{ github.event_name == 'pull_request' && 'preview' || 'production' }}
-    needs: [static, test, smoke, smoke-cloud]
+    needs: [changes, static, test, smoke, smoke-cloud]
     # Previews only for branches of this repository (fork and Dependabot runs get no deploy secrets).
     # Production only from main (a manual run on another branch must not deploy it).
     if: >-
+      needs.changes.outputs.code != 'false' &&
       github.event.action != 'closed' &&
       (github.event.action != 'labeled' && github.event.action != 'unlabeled' ||
        github.event.label.name == 'cloud-preview') &&
@@ -226,8 +275,10 @@ jobs:
   # (COMMISSARY_DOMAIN).
   deploy-cloud:
     name: deploy cloud
-    needs: [static, test, smoke, smoke-cloud]
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: [changes, static, test, smoke, smoke-cloud]
+    if: >-
+      needs.changes.outputs.code != 'false' &&
+      github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -295,9 +346,13 @@ jobs:
           AUTH_URL: ${{ steps.deploy.outputs.auth_url }}
         run: tools/check-cloud-deploy.sh "$URL" "$API_URL" "$AUTH_URL"
 
+  # Also after a docs-only pull request whose earlier commits deployed a preview.
   destroy-preview:
     name: destroy preview
+    needs: changes
     if: >-
+      !cancelled() &&
+      (needs.changes.outputs.code != 'false' || needs.changes.outputs.previewed == 'true') &&
       github.event_name == 'pull_request' && github.event.action == 'closed' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.actor != 'dependabot[bot]'
