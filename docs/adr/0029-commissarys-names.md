@@ -10,5 +10,7 @@ The one key a member's clients send, which reaches every area, is now an **API k
 
 ## Consequences
 
+- ADR 0039 makes the hosted browser a toolkit in Tools, so there are three areas: Models, Tools and Agents.
+
 - This decides terms, not identifiers. #103 decided the identifiers: everything is renamed and nothing is frozen except the Go config keys (done in #121 and #122).
 - Panel labels and docs swap "API key" and "provider key" at once; the two names must not drift apart mid-rename.

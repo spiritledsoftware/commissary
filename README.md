@@ -3,8 +3,8 @@
 **One service through which an org reaches models, tools, a browser and hosted agents.** Today its Models area is the
 most complete: it pools your Claude, ChatGPT/Codex, Gemini/Vertex, Antigravity, xAI, Kimi and other accounts and
 provider keys behind one endpoint that speaks the OpenAI, Anthropic and Gemini APIs, with clients on API keys and a
-built-in control panel behind Cloudflare Access. Tools, Browser and Agents share the same org, API key and control
-panel.
+built-in control panel behind Cloudflare Access. Tools (among them the hosted browser) and Agents share the same org,
+API key and control panel.
 
 Commissary comes in two forms: a **self-hosted Commissary**, which you deploy to your own Cloudflare account and whose
 people sign in through Cloudflare Access (this README), and **Commissary Cloud**, the paid service run for anyone, with
