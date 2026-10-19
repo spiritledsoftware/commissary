@@ -644,6 +644,31 @@ What a toolkit is built from: a remote MCP server, an OpenAPI document, a GraphQ
 document.
 _Avoid_: source type, protocol
 
+**Tool list**:
+The tools of one toolkit as its source last listed them, each with its upstream name, description, input schema
+and annotations. It is rebuilt on demand and on a schedule; a tool its source stops listing drops out (ADR 0037).
+_Avoid_: tool catalog, manifest
+
+**Full name**:
+The name a client calls a tool by, `<toolkit>_<tool>` in lowercase letters, digits and `_`, at most 46 characters (a
+longer one is shortened and ends in a hash). Full names are unique in what one member is served (ADR 0037).
+_Avoid_: tool id, qualified name
+
+**Stable id**:
+A tool's identity, its toolkit's id and its upstream name, which neither renaming the toolkit or the tool nor a
+refresh changes. Tool overrides, grants and tool scopes refer to tools by it (ADR 0037).
+_Avoid_: tool name (that is the full name), tool key
+
+**Tool override**:
+An org admin's (or, on a private toolkit, its member's) change to one tool by stable id: hidden, renamed, described
+anew or given another tool class.
+_Avoid_: alias, patch, customisation
+
+**Shadowed / rename suggested**:
+An org toolkit is shadowed for a member whose private toolkit has its name: that member is served the private one
+instead, and the private toolkit is marked rename suggested (ADR 0037).
+_Avoid_: hidden (that is an override), conflict
+
 **Tool scope**:
 The toolkits, their read tools, single tools and agents that an API key or a hosted agent may use, within what its
 member (or, for a shared agent, the org admin) may use. A key without one may use every tool its member may use.

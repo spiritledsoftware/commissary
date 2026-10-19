@@ -197,7 +197,10 @@ the Worker asks on every request: a removed member, or a member whose role was l
   an org toolkit, its shared credentials and its tool overrides are for org admins (`403 forbidden`). A private toolkit is
   its owner's: an org admin sees that it exists and may remove it, and reaches nothing else about it (`404`); a private
   credential on an org toolkit is its owner's alone, which an org admin cannot remove. With `private_credentials` off, no
-  one connects a private credential (`403 private_credentials_off`) and the ones connected are not used.
+  one connects a private credential (`403 private_credentials_unavailable`) and the ones connected are not used. A
+  plain member sees an org toolkit's source with the values of its query parameters masked (names kept); org admins and
+  the org export see the whole URL, so a key goes in a `query` credential (sealed), not in the source. An org toolkit
+  that stops accepting shared or private credentials keeps the ones connected, inactive, until it accepts them again.
 - **Service tokens** (`/service-tokens`) are registered to one org by their Client ID with a role (`409 service_token_taken`
   when another org has the token, also when two orgs register it at once: the one the registry indexes first keeps it). With
   auto-join on, an unregistered token is admitted as a plain member without being stored,
@@ -529,7 +532,7 @@ changes them. A self-hosted Commissary has none of this: Access is where its ide
 | 403 `platform_admin_required`          | Listing, creating or renaming orgs needs a platform admin                                                |
 | 404 on `/o/<slug>/...`                 | No org has that slug (a platform admin sees 404; others 403)                                             |
 | 403 `private_credential`               | Download of a member's private credential by anyone but its owner                                        |
-| 403 `private_credentials_unavailable`  | Adding a private provider key group where the org does not let members hold private credentials          |
+| 403 `private_credentials_unavailable`  | Adding a private provider key group, or a private toolkit credential, where the org does not allow them  |
 | 403 `download_requires_service_token`  | Credential download called by a person: use a service token that is an owner of the org                  |
 | 403 `Cross-site request rejected`      | Browser request from another origin (or a client API POST from a web app)                                |
 | 415 `Unsupported Content-Type`         | Management write without `content-type: application/json` (or YAML/multipart)                            |

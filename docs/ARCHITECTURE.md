@@ -2909,26 +2909,35 @@ global `fetch` behind the outbound guard.
   for every member, managing it for org admins; a private toolkit is its owner's, and an org admin sees only that it
   exists (`others`: owner and creation time, never its name or source) and may remove it, as with private credentials.
   The source passes the outbound guard when it is saved (`422` with the guard's message as `error` and `path: "source"`, as for a provider's `base_url`) and names no user
-  or password; every build passes it again, each request and redirect included. Edits name the toolkit's revision in
-  `If-Match`.
+  or password (`422 invalid`, `path: "source"`); every build passes it again, each request and redirect included. A
+  member who only reads an org toolkit sees its source with the values of its query parameters masked (`***`, names
+  kept); org admins and the org export get the whole URL. A key belongs in a `query` credential, which is sealed, not in
+  the source. Edits name the toolkit's revision in `If-Match`; an org admin's removal of a member's private toolkit
+  names the revision its existence-only view shows.
 - **Credentials**: a toolkit holds at most one shared credential and one private credential per member, connected and
   removed under `/toolkits/:id/credentials/{shared,private}`. Static secrets only: none, a bearer token, an API key in a
   named header or query parameter, basic auth (`tools/toolkits/secret.ts`; a header the MCP client sets itself is
   refused). The secret is sealed with the org's data key for its row (`toolkit_credentials/<toolkit>/<owner>`) and
   never answered; views show the kind and the header or parameter name. A source that needs no sign-in takes a shared
   credential of kind `none`, so it will follow grants like any shared credential (#198). Private credentials follow
-  `membership.private_credentials` as in Models: while it is off a private credential cannot be connected, shows
-  `active: false` and is not used. Changing what an org toolkit accepts deletes the credentials it no longer accepts.
+  `membership.private_credentials` as in Models: while it is off a private credential cannot be connected (`403
+  private_credentials_unavailable`), shows `active: false` and is not used. Changing what an org toolkit accepts keeps
+  the credentials it no longer accepts: they show `active: false` and are not used until it accepts them again, and
+  only their holders remove them (a member's private credential stays theirs alone).
 - **Tool lists** (`tools/mcp/client.ts`): one list per toolkit, from the server's `tools/list`, built with the shared
   credential or, if the toolkit has none, the private credential of the member who asks (a private toolkit's owner's).
   The client speaks the 2025 handshake (`initialize`, `notifications/initialized`, `tools/list` in the session of
   `Mcp-Session-Id` with the negotiated `MCP-Protocol-Version`, the session deleted afterwards) and, when the server
-  refuses `initialize` with a 4xx or a JSON-RPC error, the stateless 2026-07-28 revision (protocol version in `_meta` and
-  the `MCP-Protocol-Version`, `Mcp-Method` and `Mcp-Name` headers). It reads JSON or SSE answers up to 4 MiB, every page
-  (at most 50), within 60 seconds, and follows only same-origin 307/308 redirects, so a key in a named header or the
-  query never reaches another origin. Error messages never quote the URL or the server's body. A list is built when a
-  toolkit is added with a credential or its first credential is connected, on `POST /toolkits/:id/refresh`, and by the
-  cron task `tool-list-refresh` (every org; an org toolkit with private credentials only is skipped, as no member asks).
+  refuses `initialize` the way a server of the stateless 2026-07-28 revision does (`400`, `405` or a JSON-RPC error; a
+  4xx other than those, `401`/`403` included, is reported as it is), that revision (protocol version in `_meta` and the
+  `MCP-Protocol-Version`, `Mcp-Method` and `Mcp-Name` headers). Speaking 2026-07-28 goes beyond #196, which asks for
+  Streamable HTTP only: servers are moving to it, and a listing costs no more. It reads JSON or SSE answers up to 4 MiB,
+  every page (at most 50), within 60 seconds, cancels the bodies it does not read, and follows only same-origin 307/308
+  redirects, so a key in a named header or the query never reaches another origin. Error messages never quote the URL
+  or the server's body. A list is built when a toolkit is added with a credential or its first credential is connected,
+  on `POST /toolkits/:id/refresh`, and by the cron task `tool-list-refresh` (every org; an org toolkit with private
+  credentials only is skipped, as no member asks). The cron builds an org's toolkits four at a time, each within 20
+  seconds rather than an interactive refresh's 60, so one slow server holds neither the others nor the invocation.
   A failed build keeps the last list and records why (`tool_list.error`). A tool that disappears upstream drops out; one
   already known keeps the build that first listed it (`first_seen`, a counter across builds, not a time). Each tool
   keeps its upstream name, description, input schema and annotations.
@@ -2948,9 +2957,11 @@ global `fetch` behind the outbound guard.
   name a served tool of the set holds is refused (`409 name_taken`).
 - **Stable ids and overrides**: a tool's stable id is its toolkit's id and its upstream name (`<toolkit id>:<upstream
   name>`), not the name shown. An org admin may hide, rename, re-describe or reclassify a tool of an org toolkit, a
-  member one of their private toolkits (`PUT /toolkits/:id/overrides`, the whole override at its revision; one that
-  sets nothing is deleted). Overrides are keyed by stable id, so they survive renames of the toolkit and refreshes; an
-  override of a tool its source no longer lists is shown flagged `missing`.
+  member one of their private toolkits (`PUT /toolkits/:id/overrides`, the whole override at its revision, `0` when the
+  tool has none). One that sets nothing clears it but keeps its row and revision (a tombstone), so revisions never go
+  back and a write based on the override before the clear is refused. Overrides are keyed by stable id, so they survive
+  renames of the toolkit and refreshes; an override of a tool its source no longer lists is shown flagged `missing`,
+  and clearing it answers `{ id, removed: true }`, as the tool then leaves the list.
 - **Tool class** (ADR 0038): `read` when the tool's annotations say `readOnlyHint: true`, else `write`; an override's
   class wins.
 - **Members and orgs**: a member who leaves takes their private toolkits and their private credentials on org toolkits

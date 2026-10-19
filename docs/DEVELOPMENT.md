@@ -135,7 +135,8 @@ may have stored its writes before, so it may run twice. Only chains are retried:
   binds the state Worker's Durable Objects. `src/http` (router, the client gate, CORS, hosts: a 404 for every other
   path, `/healthz`), `src/scheduled.ts` (the cron runner), `src/dev.ts` (its `alchemy dev` entry over the bridge,
   "Infrastructure"); `test/` (workerd tests through the client API's router or `fetch`, two projects: self-hosted and
-  Cloud; `test/worker.ts` is the test Worker). It mounts Models through `@commissary/models/api` only.
+  Cloud; `test/worker.ts` is the test Worker). It mounts Models through `@commissary/models/api` only, and Tools (its
+  cron task) through `@commissary/tools/api`.
 - `apps/state` (`@commissary/state-worker`): the state Worker (ADR 0030). `src/index.ts` exports the ControlPlane
   (`src/control-plane.ts`: `@commissary/state`'s org-wide base composed with `@commissary/models/state`'s and
   `@commissary/tools/state`'s parts),
@@ -188,7 +189,8 @@ may have stored its writes before, so it may run twice. Only chains are retried:
   `./testing` the Access test helpers and an in-memory `AuthDirectory`. It reads `AuthConfig` and reaches state through
   its `AuthDirectory` service (the adapter: `@commissary/state`'s `auth-directory.ts`), never through bindings or the
   stores; the Worker passes in what its routes say (path zones, role table, org addressing: `src/management/zones.ts`,
-  `policy.ts`, `org-address.ts`). It may import `@commissary/core`, `@commissary/contract`, `effect` and `jose` only.
+  `policy.ts`, `org-address.ts`). It also holds the ownership rules the areas share (`ownership.ts`: `Scope`,
+  `FULL_ACCESS`, `accessTo`, beside `Viewer`), which Models and Tools both apply. It may import `@commissary/core`, `@commissary/contract`, `effect` and `jose` only.
 - `packages/contract` (`@commissary/contract`): the management API contract, shared by the Worker and the panel.
 - `packages/core` (`@commissary/core`): the foundation without bindings, for code that two or more packages or apps
   need (today auth, state, Models and the Worker import it). `src/org.ts` (the org model: `OrgId`, `newOrgId`, `OrgSlug`, `GLOBAL_ORG`,
@@ -241,9 +243,9 @@ are pinned once in the `catalog:` of `pnpm-workspace.yaml`.
 adds `typecheck:root` (the deploy code) and `lint:root` (one `oxlint`/`oxfmt` run over the repository). The packages
 depend on each other's sources, not on build output, so every package task depends on `transit`, a task with no script whose
 hash covers a package's files and those of its dependencies (Turborepo's transit-node pattern): a change in
-`packages/contract` re-runs the panel's, auth's, state's and the Worker's tasks, one in `packages/json` re-runs translation's and the
-Worker's (and Models'), one in `packages/core` or `packages/auth` re-runs state's, Models' and the Worker's (and core's
-auth's too), one in `packages/state` re-runs Models', the state Worker's, the app Worker's and the API Worker's, and one in
+`packages/contract` re-runs the panel's, auth's, state's, Tools' and the Worker's tasks, one in `packages/json` re-runs translation's and the
+Worker's (and Models'), one in `packages/core` or `packages/auth` re-runs state's, Models', Tools' and the Worker's (and core's
+auth's too), one in `packages/state` re-runs Models', Tools', the state Worker's, the app Worker's and the API Worker's, and one in
 `packages/models` re-runs the state Worker's, the app Worker's and the API Worker's (`apps/state` is a dependency of
 `apps/app` and `apps/api`), as does one in `packages/tools` (the root lists Models as a dev dependency for its deploy code; that re-runs no other package's tasks). The root `typecheck` and `test` tasks also hash `tools/vitest/` (the packages' Vitest configs import it), and
 `typecheck` hashes `tools/workers/` (the Workers runtime types); a
@@ -442,7 +444,7 @@ assertion that cannot be removed carries a `// SAFETY: <invariant>` comment on t
 
 - Per-request Cloudflare `env` / `ctx` are passed as the `Context` argument of the web handler
   (`handler(request, requestContext(env, ctx))`); code reads the view of its package (`yield* AuthConfig`,
-  `StateEnv`, `ModelsEnv`, or `AppEnv` for code that stays in the app Worker, `apps/app/src/worker-env.ts`; the API
+  `StateEnv`, `ModelsEnv`, `BillingEnv`, `ToolsEnv`, or `AppEnv` for code that stays in the app Worker, `apps/app/src/worker-env.ts`; the API
   Worker's own code reads `ApiBindings`, `apps/api/src/worker-env.ts`, and the auth Worker's `AuthWorkerEnv`,
   `apps/auth/src/worker-env.ts`), never the global `Env`. Never capture them in a layer.
 - Add routes as `HttpRouter.add(...)` layers and merge them into the Worker's router (`apps/app/src/http/app.ts` for the
