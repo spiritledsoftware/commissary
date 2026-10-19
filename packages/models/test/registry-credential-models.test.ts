@@ -436,3 +436,29 @@ describe("assembleCredentialModels: provider keys", () => {
     ).toBeUndefined();
   });
 });
+
+describe("assembleCredentialModels: OpenCode Zen free models (ADR 0033)", () => {
+  const zen = (cloakMode?: string) =>
+    source("z", "opencode-zen", {
+      authKind: "apikey",
+      source: "config",
+      ...(cloakMode === undefined ? {} : { cloakMode }),
+    });
+
+  const listed = (cloakMode?: string, yaml = "") =>
+    ids(assembleCredentialModels(zen(cloakMode), options(yaml))?.models);
+
+  it("registers the free models while the key cloaks them (auto by default, or always)", () => {
+    expect(listed()).toContain("big-pickle");
+    expect(listed("always")).toContain("big-pickle");
+    expect(listed()).toContain("deepseek-v4-flash");
+  });
+
+  it("leaves them out with cloak.mode never or upstream.opencode.disable-cloaking", () => {
+    expect(listed("never")).not.toContain("big-pickle");
+    expect(listed("never")).toContain("deepseek-v4-flash");
+    expect(listed(undefined, "upstream:\n  opencode:\n    disable-cloaking: true\n")).not.toContain(
+      "big-pickle",
+    );
+  });
+});

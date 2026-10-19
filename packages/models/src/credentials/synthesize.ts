@@ -25,6 +25,7 @@ import { type Credential, openAICompatibleProviderKey } from "./model.ts";
 import { normalizeExclusions } from "./selection/model-name.ts";
 import { DEFAULT_WEIGHT } from "./weight.ts";
 import {
+  CLOAK_MODE_ATTRIBUTE,
   isOpenCodeProvider,
   OPENCODE_GO,
   OPENCODE_SPECS,
@@ -322,6 +323,13 @@ const synthesizeKey = (
   }
 
   if (family === "vertex" && entry.interactions === true) attributes.interactions = "true";
+
+  // OpenCode Zen free-tier cloak (ADR 0033): registration reads the mode from the credential.
+  if (family === OPENCODE_ZEN) {
+    const cloakMode = (entry.cloak?.mode ?? "").trim().toLowerCase();
+
+    if (cloakMode !== "") attributes[CLOAK_MODE_ATTRIBUTE] = cloakMode;
+  }
 
   const excludedModels = normalizeExclusions(entry["excluded-models"]);
 

@@ -25,7 +25,8 @@ import { modelIsCompat, translateRequestForExecutor } from "../helps/translate.t
 import { parseSuffix } from "@commissary/translation/thinking";
 import { Thinking } from "../thinking.ts";
 import type { ExecutionContext, ExecutorOptions, ExecutorRequest } from "../types.ts";
-import { openCodeUpstreamError } from "./errors.ts";
+import { isCloakedRequest, resolveOpenCodeCloakMode } from "./cloak.ts";
+import { FREE_ENDPOINTS_HINT, openCodeModelFault, openCodeUpstreamError } from "./errors.ts";
 import type { ResolvedProtocol } from "./protocol.ts";
 import { OPENCODE_SPECS, type OpenCodeProvider } from "./providers.ts";
 
@@ -39,6 +40,8 @@ export interface OpenCodeShaping {
   readonly resolved: ResolvedProtocol;
   /** Model without the thinking suffix. */
   readonly baseModel: string;
+  /** Whether the attempt carries the OpenCode Zen free-tier cloak (`cloak.ts`, ADR 0033). */
+  readonly cloaked: boolean;
 }
 
 export interface OpenCodeAttempt extends OpenCodeShaping {
@@ -70,9 +73,16 @@ export const openCodeEndpoint = (
     : Effect.succeed({ baseUrl, providerKey });
 };
 
-export const makeShaping = (input: Omit<OpenCodeShaping, "baseModel">): OpenCodeShaping => ({
+export const makeShaping = (
+  input: Omit<OpenCodeShaping, "baseModel" | "cloaked">,
+): OpenCodeShaping => ({
   ...input,
   baseModel: parseSuffix(input.request.model).modelName,
+  cloaked: isCloakedRequest(
+    resolveOpenCodeCloakMode(input.context.config, input.context.credential, input.provider),
+    input.resolved.protocol,
+    input.resolved.catalogModel,
+  ),
 });
 
 /** The model the client asked for (payload rules). */
@@ -208,6 +218,9 @@ export const postJson = Effect.fnUntraced(function* (
   if (response.status >= 200 && response.status < 300) return response;
   const text = yield* response.text.pipe(Effect.orElseSucceed(() => ""));
   usage.fail(response.status, text);
+
+  if (openCodeModelFault(response.status, text) === "free-endpoints")
+    yield* Effect.logWarning(FREE_ENDPOINTS_HINT);
 
   return yield* openCodeUpstreamError({
     provider: attempt.provider,

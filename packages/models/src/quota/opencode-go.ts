@@ -1,5 +1,5 @@
 /**
- * OpenCode Go subscription usage (`GET {base}/usage`, default `https://opencode.ai/zen/go/v1/usage`, `Authorization:
+ * OpenCode Go subscription usage (`GET {base}/usage`, default `https://opencode.ai/inference/go/v1/usage`, `Authorization:
  * Bearer <key>`) as quota windows.
  *
  * Workers addition, no Go or panel counterpart (CLIProxyAPI has no OpenCode provider; see docs/ARCHITECTURE.md
@@ -16,7 +16,7 @@ import { DAY, FIVE_HOURS, num, quotaWindow, record, resetIso, str, WEEK } from "
 /** Appended to the credential's base URL. */
 export const OPENCODE_GO_USAGE_PATH = "/usage";
 
-/** The usage URL of a gateway base URL (`https://opencode.ai/zen/go/v1` → `…/v1/usage`). */
+/** The usage URL of a gateway base URL (`https://opencode.ai/inference/go/v1` → `…/v1/usage`). */
 export const openCodeGoUsageUrl = (baseUrl: string): string =>
   `${baseUrl.trim().replace(/\/+$/, "")}${OPENCODE_GO_USAGE_PATH}`;
 

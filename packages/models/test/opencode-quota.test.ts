@@ -108,8 +108,8 @@ describe("OpenCode Go usage payload", () => {
   });
 
   it("derives the usage URL from the base URL", () => {
-    expect(openCodeGoUsageUrl("https://opencode.ai/zen/go/v1")).toBe(
-      "https://opencode.ai/zen/go/v1/usage",
+    expect(openCodeGoUsageUrl("https://opencode.ai/inference/go/v1")).toBe(
+      "https://opencode.ai/inference/go/v1/usage",
     );
     expect(openCodeGoUsageUrl(" https://proxy.example/go/v1// ")).toBe(
       "https://proxy.example/go/v1/usage",
@@ -125,6 +125,9 @@ const CONFIG = `api-keys:
       keys:
         - api-key: sk-go-two
           excluded-models: ["*"]
+    - base-url: https://opencode.ai/zen/go/v1
+      keys:
+        - api-key: sk-go-three
   opencode-zen:
     - keys:
         - api-key: sk-zen-one
@@ -141,7 +144,7 @@ describe("OpenCode Go quota target and listing", () => {
   });
 
   it("builds the target from the config key and its base URL", async () => {
-    const [first, second] = (await credentials()).filter(
+    const [first, second, third] = (await credentials()).filter(
       (credential) => credential.provider === OPENCODE_GO,
     );
 
@@ -151,12 +154,17 @@ describe("OpenCode Go quota target and listing", () => {
         id: first!.id,
         provider: OPENCODE_GO,
         token: "sk-go-one",
-        usageUrl: "https://opencode.ai/zen/go/v1/usage",
+        usageUrl: "https://opencode.ai/inference/go/v1/usage",
       },
     });
     expect(buildQuotaTarget(second!, OPENCODE_GO)).toMatchObject({
       ok: true,
       target: { token: "sk-go-two", usageUrl: "https://proxy.example/go/v1/usage" },
+    });
+    // An explicit base URL on the old `/zen` path is kept as written (#178: only the default moved).
+    expect(buildQuotaTarget(third!, OPENCODE_GO)).toMatchObject({
+      ok: true,
+      target: { token: "sk-go-three", usageUrl: "https://opencode.ai/zen/go/v1/usage" },
     });
 
     const keyless = { ...first!, attributes: { ...first!.attributes, api_key: " " } };

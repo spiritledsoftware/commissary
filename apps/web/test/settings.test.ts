@@ -75,6 +75,7 @@ const DEFAULTS: SettingsValues = {
       },
     },
     xai: { "inject-x-search": false },
+    opencode: { "disable-cloaking": false },
   },
   client: { codex: { "enable-apply-patch": false, "optimize-multi-agent-v2": false } },
   oauth: {
@@ -148,6 +149,9 @@ describe("fields", () => {
     );
     expect(fieldOfPath("oauth.providers.devin.sensitive-words[2]")?.path).toBe(
       "oauth.providers.devin.sensitive-words",
+    );
+    expect(fieldOfPath("upstream.opencode.disable-cloaking")?.path).toBe(
+      "upstream.opencode.disable-cloaking",
     );
     expect(fieldOfPath("access.admin-emails")).toBeUndefined();
     expect(fieldOfPath("routing.retry")).toBeUndefined();

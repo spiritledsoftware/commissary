@@ -273,6 +273,10 @@ const Body = ({
               {field("upstream.xai.inject-x-search")}
             </div>
             <div className={styles["sub"]}>
+              <h3 className={styles["subTitle"]}>OpenCode Zen</h3>
+              {field("upstream.opencode.disable-cloaking")}
+            </div>
+            <div className={styles["sub"]}>
               <h3 className={styles["subTitle"]}>Antigravity</h3>
               {field("oauth.providers.antigravity.antigravity-credits")}
               {field("oauth.providers.antigravity.signature-cache-enabled")}

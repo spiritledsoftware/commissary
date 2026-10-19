@@ -46,9 +46,10 @@ describe("System One registration", () => {
     expect(assembled?.models[0]?.thinking).toBeUndefined();
   });
 
-  it("registers Zen's jev-1.13 and jev-1.13-free by default while its other free models stay off; Go gets neither", () => {
+  it("registers Zen's jev-1.13 and jev-1.13-free even when its other free models stay off (no cloak); Go gets neither", () => {
+    // Without the free-tier cloak (ADR 0033) Zen's models.dev free models stay off; the Jev ones register regardless.
     const zen = assembleCredentialModels(
-      source("z", "opencode-zen", { authKind: "apikey" }),
+      source("z", "opencode-zen", { authKind: "apikey", cloakMode: "never" }),
       options(),
     );
 

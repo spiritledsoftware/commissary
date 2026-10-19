@@ -4,6 +4,7 @@ import { Effect, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 import { decodeConfig, encodeConfig, parseConfigYaml } from "../../src/config/codec.ts";
 import { Config } from "../../src/config/schema.ts";
+import { synthesizeConfigCredentials } from "../../src/credentials/synthesize.ts";
 
 const YAML = `api-keys:
   opencode-zen:
@@ -105,5 +106,39 @@ describe("protocol on other providers", () => {
     expect(claude?.models).toEqual([{ name: "claude-y" }]);
     expect(claude?.keys[0]?.models).toEqual([{ name: "claude-x" }]);
     expect(config["api-keys"]["openai-compatibility"][0]?.models).toEqual([{ name: "gpt-z" }]);
+  });
+});
+
+describe("OpenCode Zen free-tier cloak settings (ADR 0033)", () => {
+  it("carries a Zen key's cloak.mode to its credential, and nothing for Go or keys without one", async () => {
+    const config = await parse(`api-keys:
+  opencode-zen:
+    - keys:
+        - api-key: zen-never
+          cloak: { mode: " Never " }
+        - api-key: zen-default
+  opencode-go:
+    - keys:
+        - api-key: go-key
+          cloak: { mode: always }
+`);
+
+    const modes = Object.fromEntries(
+      synthesizeConfigCredentials(config, 0).map((credential) => [
+        credential.attributes["api_key"],
+        credential.attributes["cloak_mode"],
+      ]),
+    );
+
+    expect(modes).toEqual({ "zen-never": "never", "zen-default": undefined, "go-key": undefined });
+  });
+
+  it("decodes upstream.opencode.disable-cloaking, off by default", async () => {
+    expect((await parse("")).upstream.opencode["disable-cloaking"]).toBe(false);
+    expect(
+      (await parse("upstream:\n  opencode:\n    disable-cloaking: true\n")).upstream.opencode[
+        "disable-cloaking"
+      ],
+    ).toBe(true);
   });
 });

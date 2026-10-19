@@ -32,6 +32,7 @@ import { applyAntigravityHints } from "./antigravity-hints.ts";
 import {
   OPENCODE_GO,
   OPENCODE_ZEN,
+  openCodeCloakMode,
   type OpenCodeProvider,
 } from "../executor/opencode/providers.ts";
 import { supportsOpenCodeProtocol } from "../executor/opencode/protocol.ts";
@@ -53,7 +54,7 @@ import { type GrantFilter, grantsReach } from "./grant-filter.ts";
 import type { ModelSource } from "./source.ts";
 
 export interface AssemblyOptions {
-  readonly config: Pick<Config, "oauth" | "routing">;
+  readonly config: Pick<Config, "oauth" | "routing" | "upstream">;
   readonly catalogs: ModelCatalogs;
   /** Unix seconds used as `created` of config-defined models (Go uses `time.Now().Unix()`). */
   readonly nowSeconds: number;
@@ -800,6 +801,11 @@ const baseModels = (source: ModelSource, options: AssemblyOptions): ModelInfo[] 
               catalogs.modelsDev,
               provider,
               openCodeSystemOneModels(catalogs, provider),
+              openCodeCloakMode({
+                provider,
+                disabled: options.config.upstream.opencode["disable-cloaking"],
+                mode: source.cloakMode,
+              }) !== "never",
             ),
         excluded,
       );

@@ -5,6 +5,7 @@
  * headers. Go counterpart: the `coreauth.Auth` fields read by `registerModelsForAuth`
  * (sdk/cliproxy/service_models.go) and `clientModelProjectionForAuth` (sdk/cliproxy/auth/conductor_models.go).
  */
+import { CLOAK_MODE_ATTRIBUTE } from "../executor/opencode/providers.ts";
 import type { ModelEntry, OAuthModelAlias } from "../config/schema.ts";
 import type { AntigravityModelHints } from "./antigravity-hints.ts";
 import { type Credential, type CredentialState, executorKey } from "../credentials/model.ts";
@@ -28,6 +29,8 @@ export interface ModelSource {
   readonly compat: boolean;
   readonly excludedModels: ReadonlyArray<string>;
   readonly modelAliases: ReadonlyArray<OAuthModelAlias>;
+  /** OpenCode Zen keys: the key's `cloak.mode` (`cloak_mode` attribute), which decides whether free models register. */
+  readonly cloakMode?: string;
   /** Config provider keys: the `models` list of the owning entry/group. */
   readonly models?: ReadonlyArray<ModelEntry>;
   /** Antigravity credentials: the entitlements of the last `fetchAvailableModels` probe (KV), when known. */
@@ -43,6 +46,7 @@ const isCompat = (credential: Pick<Credential, "provider" | "attributes">): bool
 export const toModelSource = (credential: Credential, state: CredentialState): ModelSource => {
   const { rejectedAccessToken: _omitted, ...safeState } = state;
   const planType = credential.attributes.plan_type?.trim() ?? "";
+  const cloakMode = credential.attributes[CLOAK_MODE_ATTRIBUTE]?.trim() ?? "";
 
   return {
     id: credential.id,
@@ -55,6 +59,7 @@ export const toModelSource = (credential: Credential, state: CredentialState): M
     disabled: credential.disabled,
     ...(credential.owner === undefined ? {} : { owner: credential.owner }),
     ...(planType === "" ? {} : { planType }),
+    ...(cloakMode === "" ? {} : { cloakMode }),
     compat: isCompat(credential),
     excludedModels: credential.excludedModels,
     modelAliases: credential.modelAliases,

@@ -517,3 +517,10 @@ describe("the group form", () => {
     expect(writeProblem(undefined, "Codex needs a base-url.")).toBe("Codex needs a base-url.");
   });
 });
+
+describe("OpenCode default base URLs (#178)", () => {
+  it("point at the /inference gateway", () => {
+    expect(defaultBaseUrl("opencode-zen")).toBe("https://opencode.ai/inference/v1");
+    expect(defaultBaseUrl("opencode-go")).toBe("https://opencode.ai/inference/go/v1");
+  });
+});

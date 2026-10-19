@@ -41,7 +41,9 @@ const target = (family: "opencode-zen" | "opencode-go"): ProviderKeyProbeTarget 
   id: `${family}:apikey:1`,
   family,
   baseUrl:
-    family === "opencode-zen" ? "https://opencode.ai/zen/v1" : "https://opencode.ai/zen/go/v1",
+    family === "opencode-zen"
+      ? "https://opencode.ai/inference/v1"
+      : "https://opencode.ai/inference/go/v1",
   providerKey: "sk-probe",
   headers: { "x-team": "a" },
   models: [],

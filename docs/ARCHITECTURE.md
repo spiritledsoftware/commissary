@@ -1542,16 +1542,16 @@ result is stored.
   credentials). `listCredentialEntries`/`refreshCredential` add it to the entry as `quota_report`.
 - **Providers and window ids**:
 
-| Executor key      | Endpoint                                                                                                            | Window ids                                                                                                                                                         |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `claude`          | `GET api.anthropic.com/api/oauth/usage` (plus `/profile` for the plan and the reset grant read, failures tolerated) | the payload keys (`five_hour`, `seven_day`, `seven_day_opus`, …, unknown keys title-cased); dollar pools skipped; `limits[]` `weekly_scoped` → `seven_day_<model>` |
-| `codex`           | `GET chatgpt.com/backend-api/wham/usage`                                                                            | `primary`, `secondary`, `code_review_*`, `<limit>_*`; labelled from `limit_window_seconds`; plan = `plan_type`                                                     |
-| `antigravity`     | `POST …/v1internal:retrieveUserQuotaSummary` (three hosts in order)                                                 | `bucketId`, labelled "Group · bucket", `used = 1 - remainingFraction`                                                                                              |
-| `kimi`, `kimi-ai` | `GET api.kimi.com` / `api.kimi.ai` `/coding/v1/usages` (only these two hosts)                                       | `limits[]` by length (`five_hour`, …, else `limit_<n>`), `weekly` (summary), `monthly`                                                                             |
-| `xai`             | `GET cli-chat-proxy.grok.com/v1/billing` (`?format=credits` for weekly)                                             | `weekly`, `monthly`                                                                                                                                                |
-| `meta`            | `POST api.meta.ai/muse-code/key` with the `dca_token`                                                               | `window`, `weekly`                                                                                                                                                 |
-| `devin`           | `GetUserStatus` (the `devin-user-status` call)                                                                      | `daily`, `weekly` (`used = 100 - remaining`)                                                                                                                       |
-| `opencode-go`     | `GET {base}/usage` (default `opencode.ai/zen/go/v1/usage`, `Authorization: Bearer <config key>`, no redirects)      | `rolling` → `five_hour` ("5-hour"), `weekly`, `monthly` (`percent` used; a status other than `ok` reads as used up)                                                |
+| Executor key      | Endpoint                                                                                                             | Window ids                                                                                                                                                         |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `claude`          | `GET api.anthropic.com/api/oauth/usage` (plus `/profile` for the plan and the reset grant read, failures tolerated)  | the payload keys (`five_hour`, `seven_day`, `seven_day_opus`, …, unknown keys title-cased); dollar pools skipped; `limits[]` `weekly_scoped` → `seven_day_<model>` |
+| `codex`           | `GET chatgpt.com/backend-api/wham/usage`                                                                             | `primary`, `secondary`, `code_review_*`, `<limit>_*`; labelled from `limit_window_seconds`; plan = `plan_type`                                                     |
+| `antigravity`     | `POST …/v1internal:retrieveUserQuotaSummary` (three hosts in order)                                                  | `bucketId`, labelled "Group · bucket", `used = 1 - remainingFraction`                                                                                              |
+| `kimi`, `kimi-ai` | `GET api.kimi.com` / `api.kimi.ai` `/coding/v1/usages` (only these two hosts)                                        | `limits[]` by length (`five_hour`, …, else `limit_<n>`), `weekly` (summary), `monthly`                                                                             |
+| `xai`             | `GET cli-chat-proxy.grok.com/v1/billing` (`?format=credits` for weekly)                                              | `weekly`, `monthly`                                                                                                                                                |
+| `meta`            | `POST api.meta.ai/muse-code/key` with the `dca_token`                                                                | `window`, `weekly`                                                                                                                                                 |
+| `devin`           | `GetUserStatus` (the `devin-user-status` call)                                                                       | `daily`, `weekly` (`used = 100 - remaining`)                                                                                                                       |
+| `opencode-go`     | `GET {base}/usage` (default `opencode.ai/inference/go/v1/usage`, `Authorization: Bearer <config key>`, no redirects) | `rolling` → `five_hour` ("5-hour"), `weekly`, `monthly` (`percent` used; a status other than `ok` reads as used up)                                                |
 
 - **Differences from the upstream panel**:
   - xAI never makes its paid-account fallback (`/v1/me` plus a real chat completion). Its billing calls send the
@@ -1792,12 +1792,18 @@ the registry snapshot (`modelLookup`, ids `devin/<id>`) before the embedded cata
 ## OpenCode Zen and OpenCode Go (`models/executor/opencode/`, `models/registry/opencode-*.ts`)
 
 No Go counterpart: CLIProxyAPI reaches OpenCode only through an `openai-compatibility` entry (chat only). The Workers port has two
-API-key providers, `opencode-zen` (`https://opencode.ai/zen/v1`) and `opencode-go` (`https://opencode.ai/zen/go/v1`), configured
+API-key providers, `opencode-zen` (`https://opencode.ai/inference/v1`) and `opencode-go` (`https://opencode.ai/inference/go/v1`), configured
 under `api-keys.opencode-zen` / `api-keys.opencode-go` (same group/key shape as the other provider key families; `models[].protocol`
 is `chat`, `responses`, `messages`, `gemini` or `systemone`). One executor (`executor.ts`) serves both keys. `models[].protocol` decodes as
 any string: the normaliser drops it in every other provider section (a stray value never breaks a document), and
 `decodeRawConfig` rejects an unknown value in the OpenCode sections, naming its path. The panel's OpenCode model rows offer it as a
 select ("Auto (catalog)" when unset).
+
+The defaults are OpenCode's `/inference` gateway (#178): under one base per gateway it routes every protocol path below plus
+`GET models` and Go's `GET usage`, so a key group keeps a single base URL (the per-SDK prefixes `/inference/openai/v1`,
+`/inference/anthropic/v1`, `/inference/google/v1beta` that models.dev now lists are not used, and the models.dev `api` field is
+not read). An explicit `base-url` on the older `https://opencode.ai/zen/v1` / `…/zen/go/v1` paths is kept as written: it still
+works, and is not migrated.
 
 - **Protocol per model** (`protocol.ts`): the `protocol` of the credential's config model entry (key `models`, else group
   `models`; the key is found by `config_index` and checked against its secret), else `systemone` for a System One model of
@@ -1822,11 +1828,30 @@ select ("Auto (catalog)" when unset).
   (`providerSessionUuid("opencode", …)`) of the explicit session identity, the WebSocket execution session or the derived
   conversation identity (stable across turns, distinct across conversations), else a random UUID (OpenCode Go answers 400
   `MissingSessionID` without the header). Another client's raw session id is never forwarded. Custom headers apply last and win.
-  Client `anthropic-beta` headers are not forwarded. On the Messages protocol a client's `metadata.user_id` (Claude Code's device,
+  Client `anthropic-beta` headers are not forwarded. A cloaked request (below) sends the free-tier markers instead. On the Messages protocol a client's `metadata.user_id` (Claude Code's device,
   account and session ids) is replaced by a stable UUIDv5 of it before the payload rules, so no raw client identity reaches the
   gateway.
+- **Free-tier cloak** (`cloak.ts`, `session-id.ts`, `chat-collect.ts`, ADR 0033): Zen serves its free models (`free` in the
+  catalog) only to requests that look like OpenCode's own client; anything else gets 403 `FreeTierError`, with or without a
+  key, because the check runs before authentication. Probed 2026-10-18, it needs all of: a User-Agent containing
+  `opencode/<channel>/<version>/<name>` with version >= 1.18.0 (older: 426 `UpgradeRequired`), an `x-opencode-session` in
+  OpenCode's id format (`ses_` + 12 hex digits of `~(timestampMs * 0x1000 + counter)` + 14 base62; any timestamp passes, a UUID
+  does not), `stream: true`, and a tool named exactly `read` (any description or schema). A cloaked request therefore sends
+  `User-Agent: commissary opencode/latest/<OPENCODE_CLOAK_VERSION>/commissary` (raise the pinned version when Zen answers 426;
+  `x-opencode-client` stays `commissary`), an OpenCode-format session derived from the same identities as the UUID above (a
+  client's own `ses_` id is kept, any other client value is replaced), always streams upstream (a non-stream client gets the
+  stream collected into one `chat.completion`), and appends a stub `read` tool described as unavailable when the client declares
+  no `read` (a client without tools also gets `tool_choice: "none"`); the model's calls to the stub are removed from the answer
+  (streamed and collected; the client's own calls are renumbered, a choice left without calls finishes `stop`). All of it happens
+  before the payload rules. Only `opencode-zen` chat-protocol attempts are cloaked: with the key's `cloak.mode` `auto` (default)
+  for free catalog models, `always` for every chat model, `never` for none; `upstream.opencode.disable-cloaking: true` forces
+  `never` on every key (Settings, "Providers"). The key's mode reaches registration as the credential attribute `cloak_mode`.
+  OpenCode Go, paid Zen models in `auto` and the Messages/Responses/Gemini protocols keep the plain `commissary` identity.
+  Injecting one of OpenCode's system prompts also passes the check but changes what the model answers, so it is not done. A Zen
+  key also needs its workspace's Privacy setting to allow free endpoints (below).
 - **Errors** (`errors.ts`): `ModelProtocolUnsupported`, "Model is unavailable", "Model access is disabled" (Zen workspace
-  setting) and `FreeTierError` (Zen free models outside OpenCode) concern one model: they become `code: model_not_found` with a
+  setting), `FreeTierError` (Zen free models outside OpenCode or the cloak) and the 400 "Free models may train on request data.
+  Allow free endpoints in your workspace's Privacy settings" (logged with a hint) concern one model: they become `code: model_not_found` with a
   cooldown hint (5 min for the protocol mismatch, 30 min otherwise), so the conductor cools only that model of the credential and
   tries the next credential. 401 (bad key) and 402 (no balance) are credential-scoped (the conductor skips the rest of an alias
   pool; the cooldown itself is the model-level hard cooldown of a 401/402); a Go 429 (subscription limit) is credential-scoped, a
@@ -1853,12 +1878,13 @@ select ("Auto (catalog)" when unset).
   `opencode-go`, ADR 0020), bundled in `catalog/models-dev.json` and refreshed into KV by the one `model-catalog-refresh` task
   (see _Model registry_, "Catalogs"); there is no separate OpenCode catalog task, file or script any more. The request path
   reads the KV copy (per isolate, re-read at most once a minute) and falls back to the bundled snapshot when KV is empty or
-  invalid. Without config `models` a gateway registers every non-deprecated catalog model (Zen without its free models,
-  flagged `free` in the trimmed document, which the gateway rejects outside OpenCode), and Zen also its System One models
-  from the catalog additions, free or not; listed models get the catalog's context/output limits, input modalities,
-  reasoning levels and the protocol's registry type.
+  invalid. Without config `models` a gateway registers every non-deprecated catalog model (Zen leaves out its free models,
+  flagged `free` in the trimmed document, only while the key's cloak mode is `never`: without the cloak the gateway rejects
+  them), and Zen also its System One models from the catalog additions, free or not; listed models get the catalog's
+  context/output limits, input modalities, reasoning levels and the protocol's registry type.
 
-Deviations (the whole provider is one): the session header is derived per conversation instead of OpenCode's per-chat id; the
+Deviations (the whole provider is one): the session header is derived per conversation instead of OpenCode's per-chat id;
+Zen's free models are reached by cloaking as OpenCode (ADR 0033), unlike the plain `commissary` identity everywhere else; the
 `openai-compatibility` executor is not reused (its settings come from the compat group of the credential and its User-Agent is
 fixed); no `prompt_cache_key` is derived; model-scoped gateway errors use the model-not-found cooldown instead of a plain client
 error; `X-Opencode-Session` from a client is also an explicit session identity for routing and usage (`handlers/session.ts`); the
@@ -1974,7 +2000,7 @@ without `models` registers both next to its models.dev models, although Zen othe
 models stay unregistered, #177); the additions decide for these ids whatever models.dev says. The protocol comes from
 the same records, so a Jev model never falls back to chat (a config `protocol` still overrides it, as for any OpenCode
 model). OpenCode Go serves no System One model and registers none. The client's JSON goes to `POST {base}/systemone`
-(`https://opencode.ai/zen/v1/systemone` by default) with the gateway headers (Bearer key, `User-Agent` and
+(`https://opencode.ai/inference/v1/systemone` by default) with the gateway headers (Bearer key, `User-Agent` and
 `x-opencode-client`, `x-opencode-session`, custom headers last) and TypeSafe's two Danger Zone opt-ins forwarded. Zen
 drops `TypeSafe-Danger-Zone-Images` and rejects multipart, so an image request is refused locally from the catalog fact
 (`images: false`; one change there enables images later), and file parts are refused for any model (a gateway fact, not
