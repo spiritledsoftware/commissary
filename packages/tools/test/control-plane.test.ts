@@ -1,10 +1,10 @@
 // The Tools part of the ControlPlane (#196) over RPC, against fake MCP servers served in workerd: toolkits, their tool
 // lists with full names, classes and stable ids, the rules that keep full names unique (ADR 0037), overrides keyed by
 // stable id, the cron refresh and what goes when a member leaves, an upstream session ages or the org is deleted.
-import { env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { env, runInDurableObject } from "cloudflare:test";
+import { describe, expect, it } from "vitest";
 import type { AddToolkitInput } from "../src/control-plane-part.ts";
-import { SESSION_LIFETIME_MS, TOOLS_TABLES } from "../src/toolkits/store.ts";
+import { SESSION_LIFETIME_MS, TOOLS_TABLES, ToolkitStore } from "../src/toolkits/store.ts";
 import { fakeMcpServer, serveFakeMcpServers } from "./support/mcp-server.ts";
 
 serveFakeMcpServers();
@@ -627,34 +627,109 @@ describe("the cron refresh", () => {
   });
 });
 
-describe("what goes", () => {
-  afterEach(() => {
-    vi.useRealTimers();
-  });
+/** A store over the ControlPlane's own tables, for its reads at an explicit `now`; sessions hold no secrets. */
+const storeOf = (sql: SqlStorage) => new ToolkitStore(sql, NO_SECRETS, (body) => body());
 
-  it("the upstream session a call opened, seven days after, when the alarm runs", async () => {
+const NO_SECRETS = {
+  seal: () => {
+    throw new Error("no secrets in this test");
+  },
+  open: () => {
+    throw new Error("no secrets in this test");
+  },
+};
+
+/** The upstream sessions the ControlPlane keeps, as rows. */
+const keptSessions = (stub: Stub) =>
+  runInDurableObject(stub, (_instance, state) =>
+    state.storage.sql
+      .exec<{ protocol_version: string; session_id: string; opened_at: number }>(
+        `SELECT protocol_version, session_id, opened_at FROM toolkit_sessions`,
+      )
+      .toArray(),
+  );
+
+describe("an upstream session", () => {
+  it("is opened again, once, when the server changed eras since the last call", async () => {
     const server = fakeMcpServer(`${origin()}/mcp`, { tools: [{ name: "t" }] });
     const stub = await plane();
     await add(stub, ALICE, privateToolkit(server.url, "mine"));
 
+    const call = async () =>
+      (await stub.tools().callTool(ALICE, { name: "mine_t" }, POLICY)).outcome;
+
+    expect(await call()).toBe("result");
+    expect((await keptSessions(stub)).map((row) => row.protocol_version)).toEqual(["2025-06-18"]);
+
+    // The 2025 session is refused (`400`): a stateless call follows, and its revision is kept.
+    server.stateless = true;
+    expect(await call()).toBe("result");
+    expect((await keptSessions(stub)).map((row) => row.protocol_version)).toEqual(["2026-07-28"]);
+
+    // And back: the stateless call is refused (`400`, no session), and a new handshake opens one.
+    server.stateless = false;
+    expect(await call()).toBe("result");
+
+    expect(await keptSessions(stub)).toEqual([
+      expect.objectContaining({ protocol_version: "2025-06-18", session_id: "fake-session-3" }),
+    ]);
+  });
+
+  it("is dropped when a call fails in it, so the next call opens a new one", async () => {
+    let failing = false;
+
+    const server = fakeMcpServer(`${origin()}/mcp`, {
+      tools: [{ name: "t" }],
+      call: () => (failing ? new Response("down", { status: 503 }) : { content: [] }),
+    });
+
+    const stub = await plane();
+    await add(stub, ALICE, privateToolkit(server.url, "mine"));
+
+    const call = async () =>
+      (await stub.tools().callTool(ALICE, { name: "mine_t" }, POLICY)).outcome;
+
+    expect(await call()).toBe("result");
+    expect(await keptSessions(stub)).toHaveLength(1);
+
+    failing = true;
+    expect(await call()).toBe("failed");
+    expect(await keptSessions(stub)).toEqual([]);
+
+    failing = false;
+    expect(await call()).toBe("result");
+
+    expect(await keptSessions(stub)).toEqual([
+      expect.objectContaining({ session_id: "fake-session-3" }),
+    ]);
+  });
+});
+
+describe("what goes", () => {
+  it("the upstream session a call opened, seven days after, when the alarm comes", async () => {
+    const server = fakeMcpServer(`${origin()}/mcp`, { tools: [{ name: "t" }] });
+    const stub = await plane();
+    const toolkit = await add(stub, ALICE, privateToolkit(server.url, "mine"));
+
     expect((await stub.tools().callTool(ALICE, { name: "mine_t" }, POLICY)).outcome).toBe("result");
+    const [kept] = await keptSessions(stub);
 
-    const sessions = () =>
-      runInDurableObject(
-        stub,
-        (_instance, state) =>
-          state.storage.sql
-            .exec<{ kept: number }>(`SELECT COUNT(*) AS kept FROM toolkit_sessions`)
-            .one().kept,
-      );
+    if (kept === undefined) throw new Error("no session kept");
+    const expiry = kept.opened_at + SESSION_LIFETIME_MS;
 
-    expect(await sessions()).toBe(1);
+    // The store at an explicit `now`: kept until seven days after it opened, and pruned then.
+    await runInDurableObject(stub, async (_instance, state) => {
+      const store = storeOf(state.storage.sql);
 
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(Date.now() + SESSION_LIFETIME_MS);
+      expect(store.session(toolkit.id, ALICE.member, expiry - 1)).toBeDefined();
+      expect(store.session(toolkit.id, ALICE.member, expiry)).toBeUndefined();
+      expect(store.pruneSessions(expiry - 1)).toBe(expiry);
+      expect(await state.storage.getAlarm()).toBe(expiry);
+    });
 
-    expect(await runDurableObjectAlarm(stub)).toBe(true);
-    expect(await sessions()).toBe(0);
+    // The part's alarm at seven days after: the session goes, and nothing is left to wake up for.
+    expect(await runInDurableObject(stub, (instance) => instance.tools().alarm(expiry))).toBeNull();
+    expect(await keptSessions(stub)).toEqual([]);
   });
 
   it("a member who leaves takes their private toolkits and private credentials", async () => {

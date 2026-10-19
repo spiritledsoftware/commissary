@@ -42,10 +42,10 @@ export interface ToolsBindings {
   /** The Platform registry, which names the org's slug in the MCP endpoint's connect links (#197). */
   readonly PLATFORM: StateBindings["PLATFORM"];
   /**
-   * The app host (ADR 0028), where the panel's connect page is; unset on a stage with one host, where the request's own
-   * host is the app host.
+   * The app host (ADR 0028), where the panel's connect page is (`panelPageUrl`); unset, a connect link names the page
+   * in words.
    */
-  readonly APP_DOMAIN?: string;
+  readonly APP_DOMAIN?: string | undefined;
 }
 
 /**

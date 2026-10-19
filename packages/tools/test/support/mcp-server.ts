@@ -28,6 +28,8 @@ export interface FakeMcpServer {
   /** What `tools/list` lists; change it between builds to add or drop tools. */
   tools: ReadonlyArray<FakeTool>;
   readonly requests: Array<RecordedMcpRequest>;
+  /** Whether it speaks only the stateless revision; change it between calls to switch eras. */
+  stateless: boolean;
   /** Forgets every session it opened: a request in one of them is answered `404`, as a 2025 server does. */
   forgetSessions(): void;
 }
@@ -36,7 +38,7 @@ export interface FakeMcpOptions {
   readonly tools?: ReadonlyArray<FakeTool>;
   /** Whether a request may list tools; every request by default. */
   readonly authorized?: (request: Request) => boolean;
-  /** Speaks only the stateless 2026-07-28 revision: `initialize` is refused. */
+  /** Speaks only the stateless 2026-07-28 revision: `initialize` is refused (`FakeMcpServer.stateless` switches). */
   readonly stateless?: boolean;
   /** Answers with SSE streams instead of JSON. */
   readonly sse?: boolean;
@@ -44,7 +46,7 @@ export interface FakeMcpOptions {
   readonly pageSize?: number;
   /**
    * What `tools/call` answers for the upstream tool `name`: a result, or a whole response; by default a text result that
-   * echoes the name and the arguments.
+   * echoes the name and the arguments. A handler that throws makes the request fail, as an unreachable server does.
    */
   readonly call?: (
     name: string,
@@ -95,6 +97,7 @@ export const fakeMcpServer = (url: string, options: FakeMcpOptions = {}): FakeMc
     url,
     tools: options.tools ?? [],
     requests: [],
+    stateless: options.stateless === true,
     forgetSessions: () => sessions.clear(),
   };
 
@@ -142,7 +145,7 @@ export const fakeMcpServer = (url: string, options: FakeMcpOptions = {}): FakeMc
     if (body === undefined) return new Response(null, { status: 405 });
 
     if (body.method === "initialize") {
-      if (options.stateless === true)
+      if (server.stateless)
         return rpcError(body.id, -32601, "initialize is not a method of this revision");
 
       opened += 1;
@@ -166,7 +169,7 @@ export const fakeMcpServer = (url: string, options: FakeMcpOptions = {}): FakeMc
     if (body.method !== "tools/list" && body.method !== "tools/call")
       return rpcError(body.id, -32601, "unknown method");
 
-    if (options.stateless === true) {
+    if (server.stateless) {
       if (request.headers.get("mcp-protocol-version") !== "2026-07-28")
         return new Response("unsupported protocol version", { status: 400 });
     } else {

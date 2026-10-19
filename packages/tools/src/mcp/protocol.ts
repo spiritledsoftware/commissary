@@ -9,13 +9,15 @@
  *   method `404`;
  * - **legacy** (2025-11-25 and the 2025 revisions before it): `initialize` answers the revision asked for when it is
  *   one of {@link LEGACY_VERSIONS}, else the latest; no session is minted (Streamable HTTP lets a server go without one),
- *   so the requests that follow are served alike, `MCP-Protocol-Version` or not.
+ *   so the requests that follow are served alike, with no `MCP-Protocol-Version` (a 2025-03-26 client's) or one of
+ *   {@link LEGACY_HEADER_VERSIONS}; another is `400 UnsupportedProtocolVersion`.
  *
  * Every answer is one JSON object, never an SSE stream; a notification (or a client's response) is `202`. Commissary
  * serves tools only: `tools/list` and `tools/call`, besides `initialize`, `server/discover` and `ping`.
  */
-import { Buffer } from "node:buffer";
 import { Option, Schema } from "effect";
+import { decodeHeaderValue } from "./header-value.ts";
+import { isJsonObject } from "./json.ts";
 
 /** The stateless revision. */
 export const MODERN_VERSION = "2026-07-28";
@@ -25,6 +27,18 @@ export const LEGACY_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"] as con
 
 /** Every revision the endpoint speaks, as `server/discover` and `UnsupportedProtocolVersion` list them. */
 export const SUPPORTED_VERSIONS: ReadonlyArray<string> = [MODERN_VERSION, ...LEGACY_VERSIONS];
+
+/**
+ * The `MCP-Protocol-Version` a legacy request may carry: a handshake revision, or 2024-11-05, whose clients the
+ * endpoint serves alike.
+ */
+export const LEGACY_HEADER_VERSIONS: ReadonlySet<string> = new Set([
+  ...LEGACY_VERSIONS,
+  "2024-11-05",
+]);
+
+/** The `_meta` keys MCP reserves for itself, which an upstream's result does not pass on. */
+const RESERVED_META = "io.modelcontextprotocol/";
 
 export const SERVER_INFO = { name: "commissary", version: "1.0.0" } as const;
 
@@ -75,8 +89,6 @@ const decodeMessage = Schema.decodeUnknownOption(RpcMessage);
 const decodeResponse = Schema.decodeUnknownOption(RpcResponse);
 
 const parseJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Json));
-
-const isJsonObject = Schema.is(Schema.JsonObject);
 
 /** One JSON-RPC request the endpoint answers. */
 export interface RpcRequest {
@@ -157,21 +169,19 @@ const metaOf = (params: Schema.JsonObject): Schema.JsonObject | undefined => {
   return isJsonObject(meta) ? meta : undefined;
 };
 
-const SENTINEL = /^=\?base64\?(.*)\?=$/;
-
-/** A header value as the spec's value encoding carries it: `=?base64?…?=` decoded, anything else as it is. */
-const decodedHeader = (value: string): string => {
-  const encoded = SENTINEL.exec(value)?.[1];
-
-  return encoded === undefined ? value : Buffer.from(encoded, "base64").toString("utf8");
-};
+/** A revision the endpoint does not speak: `400`, with the ones it does. */
+const unsupported = (id: RequestId, requested: string): Answer =>
+  errorAnswer(400, id, RpcCode.unsupportedProtocolVersion, "Unsupported protocol version", {
+    supported: [...SUPPORTED_VERSIONS],
+    requested,
+  });
 
 const mismatch = (id: RequestId, message: string): Answer =>
   errorAnswer(400, id, RpcCode.headerMismatch, `Header mismatch: ${message}`);
 
 /**
- * The era of `request` given its HTTP headers (lowercased names), or the refusal of a modern request whose headers do
- * not match its body or whose revision the endpoint does not speak. A request is modern when it names a revision in
+ * The era of `request` given its HTTP headers (lowercased names), or the refusal of a request whose revision the
+ * endpoint does not speak, or of a modern request whose headers do not match its body. A request is modern when it names a revision in
  * `_meta` or a modern revision in `MCP-Protocol-Version`; `initialize` is always the handshake's.
  */
 export const eraOf = (
@@ -183,8 +193,11 @@ export const eraOf = (
   const named = meta?.[META_VERSION];
   const header = headers["mcp-protocol-version"]?.trim();
 
-  if (named === undefined && (header === undefined || !header.startsWith("2026")))
-    return { era: LEGACY };
+  if (named === undefined && (header === undefined || !header.startsWith("2026"))) {
+    if (header === undefined || LEGACY_HEADER_VERSIONS.has(header)) return { era: LEGACY };
+
+    return { refused: unsupported(request.id, header) };
+  }
 
   if (header === undefined)
     return { refused: mismatch(request.id, "missing MCP-Protocol-Version") };
@@ -194,16 +207,7 @@ export const eraOf = (
       refused: mismatch(request.id, "MCP-Protocol-Version does not match the request's _meta"),
     };
 
-  if (header !== MODERN_VERSION)
-    return {
-      refused: errorAnswer(
-        400,
-        request.id,
-        RpcCode.unsupportedProtocolVersion,
-        "Unsupported protocol version",
-        { supported: [...SUPPORTED_VERSIONS], requested: header },
-      ),
-    };
+  if (header !== MODERN_VERSION) return { refused: unsupported(request.id, header) };
 
   if (headers["mcp-method"] !== request.method)
     return { refused: mismatch(request.id, "Mcp-Method does not match the request's method") };
@@ -211,7 +215,7 @@ export const eraOf = (
   if (request.method === "tools/call") {
     const name = headers["mcp-name"];
 
-    if (name === undefined || decodedHeader(name) !== request.params["name"])
+    if (name === undefined || decodeHeaderValue(name) !== request.params["name"])
       return { refused: mismatch(request.id, "Mcp-Name does not match the tool's name") };
   }
 
@@ -232,17 +236,24 @@ export const elicitsUrls = (era: Era): boolean => {
   return era.modern && isJsonObject(elicitation) && isJsonObject(elicitation["url"]);
 };
 
-/** A result as `era` frames it: a modern one names its kind and the server. */
+/** `meta` without the keys MCP reserves ({@link RESERVED_META}): an upstream's are its own revision's, not ours. */
+const unreserved = (meta: Schema.JsonObject): Schema.JsonObject =>
+  Object.fromEntries(Object.entries(meta).filter(([key]) => !key.startsWith(RESERVED_META)));
+
+/**
+ * A result as `era` frames it: any reserved `_meta` key the result came with (an upstream's) left out, and a modern
+ * one naming its kind and the server.
+ */
 export const framed = (era: Era, result: Schema.JsonObject): Schema.JsonObject => {
-  if (!era.modern) return result;
-  const meta = result["_meta"];
-  const fields: Readonly<Record<string, Schema.Json>> = result;
-  const metaFields: Readonly<Record<string, Schema.Json>> = isJsonObject(meta) ? meta : {};
+  const { _meta: meta, ...fields } = result;
+  const own: Readonly<Record<string, Schema.Json>> = isJsonObject(meta) ? unreserved(meta) : {};
+
+  if (!era.modern) return Object.keys(own).length === 0 ? fields : { ...fields, _meta: own };
 
   return {
     resultType: "complete",
     ...fields,
-    _meta: { ...metaFields, [META_SERVER_INFO]: SERVER_INFO },
+    _meta: { ...own, [META_SERVER_INFO]: SERVER_INFO },
   };
 };
 

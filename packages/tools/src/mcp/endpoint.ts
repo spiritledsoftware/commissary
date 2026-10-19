@@ -9,11 +9,11 @@
  * `GET` and `DELETE` answer `405`, as the 2026-07-28 revision's backward compatibility asks of a server that opens no
  * stream and keeps no session (and as the 2025 revisions allow).
  */
-import { Effect, Layer, Option, Schema } from "effect";
+import { Effect, Layer, type Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { type AccessPrincipal, currentViewer } from "@commissary/auth";
 import { boundedBodyText, CurrentOrg, CurrentOutboundPolicy, MCP_PATH } from "@commissary/core";
-import { platformOf } from "@commissary/state";
+import { panelPageUrl } from "@commissary/state";
 import type { ClientTool } from "../control-plane-part.ts";
 import { toolsControlPlane, ToolsEnv } from "../env.ts";
 import {
@@ -31,6 +31,7 @@ import {
   type RpcRequest,
   resultAnswer,
 } from "./protocol.ts";
+import { isJsonObject } from "./json.ts";
 
 /** The most one POST may carry: a tool call's arguments. */
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
@@ -71,15 +72,14 @@ const listed = (tool: ClientTool): Schema.JsonObject => ({
   ...(tool.toolClass === "read" ? { annotations: READ_ANNOTATIONS } : {}),
 });
 
-/** What one request needs beyond its message: its era, the toolkits it narrows to, and the origin it was sent to. */
-interface Context {
+/** What one request needs beyond its message: its era and the toolkits it narrows to. */
+interface Served {
   readonly era: Era;
   readonly toolkits: ReadonlySet<string> | undefined;
-  readonly origin: string;
 }
 
 /** `tools/list`: every tool in one page; the list is the member's, so only their caches may keep it. */
-const listTools = Effect.fnUntraced(function* (context: Context) {
+const listTools = Effect.fnUntraced(function* (context: Served) {
   const viewer = yield* currentViewer;
 
   const tools = yield* toolsControlPlane("clientTools", (stub) => stub.tools().clientTools(viewer));
@@ -92,25 +92,23 @@ const listTools = Effect.fnUntraced(function* (context: Context) {
   };
 });
 
-const isJsonObject = Schema.is(Schema.JsonObject);
+/** Where to connect a credential when the panel's URL is not known (`panelPageUrl`). */
+const CONNECT_PAGE = "the toolkit's page in the panel";
 
 /**
- * Where a member connects their private credential for a toolkit: the panel's page `/tools/<toolkit id>/connect` of
- * the org (#208 builds it), on the app host. The org is named by its slug when the Platform registry answers.
+ * Where a member connects their private credential for a toolkit: the panel's page `tools/<toolkit id>/connect` of the
+ * org (#208 builds it) on the app host, or {@link CONNECT_PAGE} when the app host or the org's slug is not known.
  */
-const connectLink = Effect.fnUntraced(function* (toolkitId: string, context: Context) {
+const connectLink = Effect.fnUntraced(function* (toolkitId: string) {
   const env = yield* ToolsEnv;
   const org = yield* CurrentOrg;
-  const appHost = (env.APP_DOMAIN ?? "").trim();
-  const origin = appHost === "" ? context.origin : `https://${appHost}`;
 
-  const slug = yield* Effect.tryPromise(
-    async () => (await platformOf(env).getOrgById(org))?.slug,
-  ).pipe(Effect.orElseSucceed(() => undefined));
-
-  const scope = slug === undefined ? "" : `/o/${encodeURIComponent(slug)}`;
-
-  return `${origin}${scope}/tools/${encodeURIComponent(toolkitId)}/connect`;
+  return yield* panelPageUrl(
+    env,
+    org,
+    `tools/${encodeURIComponent(toolkitId)}/connect`,
+    CONNECT_PAGE,
+  );
 });
 
 /** A tool result that reports a failure to the model. */
@@ -131,9 +129,10 @@ const declined = (params: Schema.JsonObject, key: string): boolean => {
  * `tools/call`: the tool's result, a short tool error, or, for a tool that needs the member's private credential, the
  * link to connect it. A stateless client that declares URL-mode elicitation is asked to open it (an
  * `InputRequiredResult`, MRTR) until it declines; any other client gets the link as a tool error, a 2025 client too, as
- * its elicitation would need the request's SSE stream (docs/ARCHITECTURE.md, "Tools").
+ * its elicitation would need the request's SSE stream (docs/ARCHITECTURE.md, "Tools"), and so does every client when
+ * there is no URL to open.
  */
-const callTool = Effect.fnUntraced(function* (request: RpcRequest, context: Context) {
+const callTool = Effect.fnUntraced(function* (request: RpcRequest, context: Served) {
   const name = request.params["name"];
   const args = request.params["arguments"];
 
@@ -162,10 +161,10 @@ const callTool = Effect.fnUntraced(function* (request: RpcRequest, context: Cont
 
   if (outcome.outcome === "failed") return result(toolError(outcome.message));
 
-  const link = yield* connectLink(outcome.toolkit.id, context);
+  const link = yield* connectLink(outcome.toolkit.id);
   const key = `connect_${outcome.toolkit.name}`;
 
-  if (elicitsUrls(context.era) && !declined(request.params, key))
+  if (link !== CONNECT_PAGE && elicitsUrls(context.era) && !declined(request.params, key))
     return result({
       resultType: "input_required",
       inputRequests: {
@@ -191,7 +190,7 @@ const callTool = Effect.fnUntraced(function* (request: RpcRequest, context: Cont
 /** The answer to one request. */
 const answer = (
   request: RpcRequest,
-  context: Context,
+  context: Served,
 ): Effect.Effect<Answer, never, AccessPrincipal | ToolsEnv | CurrentOrg> => {
   const result = (value: Schema.JsonObject) => resultAnswer(request.id, framed(context.era, value));
 
@@ -234,10 +233,6 @@ const serve = Effect.gen(function* () {
     yield* answer(message.request, {
       era: era.era,
       toolkits: narrowedTo(request.originalUrl),
-      origin: Option.match(HttpServerRequest.toURL(request), {
-        onNone: () => "",
-        onSome: (url) => url.origin,
-      }),
     }),
   );
 }).pipe(Effect.catchTag("Reply", (reply) => Effect.succeed(reply.response)));

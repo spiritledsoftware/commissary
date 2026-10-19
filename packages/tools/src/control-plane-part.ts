@@ -650,7 +650,8 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
    * Calls a tool `viewer` reaches ({@link clientTools}) by its full name, on the upstream tool of its upstream name. The
    * member's private credential wins over the shared one, which needs a grant (#198); without either the member is
    * asked to connect theirs. The upstream session the call opens is kept for the next call on that credential, at most
-   * seven days.
+   * seven days; a call that fails in a kept session drops it, so the next call opens a new one. A failure is logged
+   * with the toolkit and the reason only.
    */
   async callTool(viewer: Viewer, call: ToolCall, policy: OutboundPolicy): Promise<ToolCallOutcome> {
     const tool = this.#reachable(viewer).find(
@@ -676,20 +677,39 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
         arguments: call.arguments,
         inputSchema: tool.tool?.inputSchema,
       }).pipe(
+        Effect.tapError((error) =>
+          Effect.logWarning("upstream tool call failed").pipe(
+            Effect.annotateLogs({
+              toolkit: toolkit.id,
+              reason: error.reason,
+              ...(error.status === undefined ? {} : { status: error.status }),
+            }),
+          ),
+        ),
         Effect.provide(OutboundHttpClientLive),
         Effect.provideService(CurrentOutboundPolicy, policy),
         Effect.result,
       ),
     );
 
-    if (Result.isFailure(called)) return { outcome: "failed", message: called.failure.message };
+    // The sessions kept are the credential's that opened them; one that changed (or went) meanwhile dropped them.
+    const sameCredential = this.#store.credential(toolkit.id, owner)?.connectedAt === connectedAt;
+
+    if (Result.isFailure(called)) {
+      // The session the call failed in may be lost; the next call opens a new one, unless another call already did.
+      if (known !== undefined && sameCredential) {
+        const kept = this.#store.session(toolkit.id, owner, Date.now());
+
+        if (kept?.protocolVersion === known.protocolVersion && kept.sessionId === known.sessionId)
+          this.#store.deleteSession(toolkit.id, owner);
+      }
+
+      return { outcome: "failed", message: called.failure.message };
+    }
+
     const { result, session } = called.success;
 
-    // A new session is kept, unless the credential that opened it changed (or went) while the server answered.
-    if (
-      session !== known &&
-      this.#store.credential(toolkit.id, owner)?.connectedAt === connectedAt
-    ) {
+    if (session !== known && sameCredential) {
       this.#store.putSession(toolkit.id, owner, session, Date.now());
       await this.#core.wakeUpChanged(this.#store.pruneSessions(Date.now()));
     }

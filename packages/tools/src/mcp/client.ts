@@ -11,8 +11,8 @@
  *   it is.
  *
  * A call ({@link callUpstreamTool}) goes on in the session an earlier call opened, which the caller keeps: the 2025
- * session (opened again when the server answers `404` for it) or, for a stateless server, its revision, so a call
- * skips the handshake that would fail.
+ * session or, for a stateless server, its revision, so a call skips the handshake that would fail; both are opened
+ * again, once, when the server answers `400` or `404` in them.
  *
  * Every request goes through the `HttpClient` the caller provides, which is the outbound guard's (ADR 0044). The
  * client follows only same-origin 307/308 redirects itself, so a credential in a named header or the query never
@@ -31,6 +31,8 @@ import {
 } from "effect/http";
 import { OUTBOUND_REFUSED_MESSAGE, outboundRefusalOf } from "@commissary/core";
 import type { ToolkitSecret } from "@commissary/contract/tools";
+import { encodeHeaderValue } from "./header-value.ts";
+import { isJsonObject } from "./json.ts";
 
 /** The 2025 revision the handshake asks for; the server may answer an older one. */
 const LEGACY_PROTOCOL_VERSION = "2025-11-25";
@@ -575,21 +577,8 @@ const CallReply = replyOf(Schema.JsonObject);
 
 const decodeCall = Schema.decodeUnknownOption(CallReply);
 
-const isJsonObject = Schema.is(Schema.JsonObject);
-
-const SENTINEL = /^=\?base64\?.*\?=$/;
-
-/** Visible ASCII, with spaces and tabs inside only. */
-const PLAIN_HEADER = /^(?:[\x21-\x7e](?:[\x20-\x7e\t]*[\x21-\x7e])?)?$/;
-
 /** An HTTP token (RFC 9110), what an `x-mcp-header` name must be. */
 const TOKEN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
-
-/** A value as an `Mcp-Name` or `Mcp-Param-*` header carries it: plain, or `=?base64?…?=` when it cannot be. */
-const headerValue = (value: string): string =>
-  PLAIN_HEADER.test(value) && !SENTINEL.test(value)
-    ? value
-    : `=?base64?${Buffer.from(value, "utf8").toString("base64")}?=`;
 
 /**
  * The `Mcp-Param-*` headers of a stateless call: each property of the input schema marked `x-mcp-header`, reached
@@ -618,7 +607,7 @@ const paramHeaders = (
           typeof argument === "number" ||
           typeof argument === "boolean")
       )
-        headers.set(`mcp-param-${header.toLowerCase()}`, headerValue(String(argument)));
+        headers.set(`mcp-param-${header.toLowerCase()}`, encodeHeaderValue(String(argument)));
 
       visit(property, argument);
     }
@@ -654,7 +643,7 @@ const callIn = Effect.fnUntraced(function* (
     stateless
       ? {
           "mcp-method": "tools/call",
-          "mcp-name": headerValue(call.name),
+          "mcp-name": encodeHeaderValue(call.name),
           ...paramHeaders(call.inputSchema, call.arguments),
         }
       : {},
@@ -672,8 +661,9 @@ const callIn = Effect.fnUntraced(function* (
 /**
  * Calls the upstream tool `call.name` at `source` with `secret`, within `timeout` (default {@link TOOL_CALL_TIMEOUT}):
  * in `known`, the session kept from an earlier call, or else in a new one (the 2025 handshake, or the stateless
- * revision when the server refuses it), which the answer names for the part to keep. A 2025 server that no longer
- * knows a kept session (`404`) gets a new handshake and the call again. The result is the server's, an `isError` one
+ * revision when the server refuses it), which the answer names for the part to keep. A server that refuses the call in
+ * a kept session with `400` or `404` lost it (a 2025 session it ended, or a server that changed eras since): it gets a
+ * new handshake and the call once again. The result is the server's, an `isError` one
  * included; a failure is an {@link McpError}, whose message quotes neither the URL nor the server's body.
  */
 export const callUpstreamTool = (
@@ -690,7 +680,7 @@ export const callUpstreamTool = (
   Effect.gen(function* () {
     if (known !== undefined) {
       const lost = (error: McpError) =>
-        known.sessionId !== undefined && error.reason === "http" && error.status === 404;
+        error.reason === "http" && (error.status === 400 || error.status === 404);
 
       const reused = yield* callIn(source, secret, known, call).pipe(
         Effect.asSome,

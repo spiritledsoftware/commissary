@@ -3,11 +3,17 @@
 // (`@commissary/tools/testing`). Clients of both protocol eras: the stateless 2026-07-28 revision (`server/discover`,
 // per-request `_meta` and headers) and the 2025 handshake (`initialize`). Orgs, members, keys and toolkits are set up
 // straight through the state Worker's objects: the management routes are the app Worker's.
+import {
+  createExecutionContext,
+  runInDurableObject,
+  waitOnExecutionContext,
+} from "cloudflare:test";
 import { env, exports } from "cloudflare:workers";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { newOrgId, type OrgId } from "@commissary/core";
 import { controlPlaneOf, platformOf } from "@commissary/state";
 import { fakeMcpServer, type FakeMcpOptions, serveFakeMcpServers } from "@commissary/tools/testing";
+import worker from "../src/index.ts";
 import { addMember, issueKey, type TestMember } from "./support/client.ts";
 
 serveFakeMcpServers();
@@ -81,25 +87,43 @@ const staffedOrg = async (prefix: string) => {
   };
 };
 
-/** A client of the endpoint signed in with an API key of `member`. */
-const clientOf = async (org: OrgId, member: TestMember) => {
+/** The hosts of a stage with an app host, where connect links point (the test Worker binds none). */
+const APP_HOST = { APP_DOMAIN: "app.example.com", API_DOMAIN: "localhost" };
+
+/** `request` through the Worker's handler with `bindings` over the test Worker's. */
+const fetchWith = async (request: Request, bindings: Partial<Env>): Promise<Response> => {
+  const ctx = createExecutionContext();
+  // SAFETY: the default export reads no `cf` property of the request; workerd's own requests carry them.
+  const incoming = request as Request<unknown, IncomingRequestCfProperties>;
+  const response = await worker.fetch(incoming, { ...env, ...bindings }, ctx);
+
+  await waitOnExecutionContext(ctx);
+
+  return response;
+};
+
+/** A client of the endpoint signed in with an API key of `member`, on the Worker with `bindings` if given. */
+const clientOf = async (org: OrgId, member: TestMember, bindings?: Partial<Env>) => {
   const { key } = await issueKey(org, member);
 
   return {
     /** One JSON-RPC message POSTed with the key, and its HTTP answer. */
     send: async (body: RpcMessage, headers: Record<string, string> = {}, path = "/mcp") => {
-      const response = await exports.default.fetch(
-        new Request(`${LOCAL}${path}`, {
-          method: "POST",
-          headers: {
-            authorization: `Bearer ${key}`,
-            "content-type": "application/json",
-            accept: "application/json, text/event-stream",
-            ...headers,
-          },
-          body: JSON.stringify(body),
-        }),
-      );
+      const request = new Request(`${LOCAL}${path}`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${key}`,
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+          ...headers,
+        },
+        body: JSON.stringify(body),
+      });
+
+      const response =
+        bindings === undefined
+          ? await exports.default.fetch(request)
+          : await fetchWith(request, bindings);
 
       const text = await response.text();
 
@@ -504,11 +528,22 @@ describe("a tool call", () => {
     const { org, alice } = await staffedOrg("mcp-fail");
 
     const server = upstream({
-      tools: [{ name: "refused" }, { name: "broken" }],
-      call: (name) =>
-        name === "refused"
-          ? { content: [{ type: "text", text: "no such issue" }], isError: true }
-          : new Response("internal error at https://secret.example.com/?key=k", { status: 500 }),
+      tools: [{ name: "refused" }, { name: "broken" }, { name: "gone" }],
+      call: (name) => {
+        if (name === "gone") throw new Error("connection refused by https://secret.example.com");
+
+        return name === "refused"
+          ? {
+              content: [{ type: "text", text: "no such issue" }],
+              isError: true,
+              // The upstream's own revision's keys are not passed on; its other keys are.
+              _meta: {
+                "io.modelcontextprotocol/serverInfo": { name: "upstream", version: "9" },
+                "example.com/trace": "t-1",
+              },
+            }
+          : new Response("internal error at https://secret.example.com/?key=k", { status: 500 });
+      },
     });
 
     await addToolkit(org, alice, false, {
@@ -522,9 +557,26 @@ describe("a tool call", () => {
     const client = await clientOf(org, alice);
     const refused = modern(1, "tools/call", { name: "flaky_refused", arguments: {} });
 
-    expect(resultOf(await client.send(refused.body, refused.headers))).toMatchObject({
+    expect(resultOf(await client.send(refused.body, refused.headers))).toEqual({
+      resultType: "complete",
       content: [{ type: "text", text: "no such issue" }],
       isError: true,
+      _meta: {
+        "example.com/trace": "t-1",
+        "io.modelcontextprotocol/serverInfo": { name: "commissary", version: expect.any(String) },
+      },
+    });
+
+    const legacy = (id: number, name: string) =>
+      client.send(
+        { jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: {} } },
+        { "mcp-protocol-version": "2025-11-25" },
+      );
+
+    expect(resultOf(await legacy(3, "flaky_refused"))).toEqual({
+      content: [{ type: "text", text: "no such issue" }],
+      isError: true,
+      _meta: { "example.com/trace": "t-1" },
     });
 
     const broken = modern(2, "tools/call", { name: "flaky_broken", arguments: {} });
@@ -538,10 +590,45 @@ describe("a tool call", () => {
       isError: true,
       _meta: expect.any(Object),
     });
+
+    // A client of the 2025 handshake is told the same, in its own framing.
+    const legacyFailed = await legacy(4, "flaky_broken");
+
+    expect(legacyFailed.status).toBe(200);
+
+    expect(resultOf(legacyFailed)).toEqual({
+      content: [{ type: "text", text: "the MCP server answered HTTP 500" }],
+      isError: true,
+    });
+
+    // An upstream that cannot be reached: a short tool error, never the URL or the error's text.
+    const gone = modern(5, "tools/call", { name: "flaky_gone", arguments: {} });
+    const unreachable = await client.send(gone.body, gone.headers);
+
+    expect(unreachable.status).toBe(200);
+
+    expect(resultOf(unreachable)).toMatchObject({
+      content: [{ type: "text", text: "the MCP server could not be reached" }],
+      isError: true,
+    });
+
+    expect(JSON.stringify(unreachable.body)).not.toContain("secret");
   });
 
   it("answers a tool outside the member's reach as it answers an unknown tool", async () => {
-    const { org, alice, bob, stripe } = await toolkitsOrg("mcp-reach");
+    const { org, admin, alice, bob, linear, linearId, stripe } = await toolkitsOrg("mcp-reach");
+
+    await connectPrivate(org, alice, linearId, "alice-linear-token");
+
+    const hidden = await toolsOf(org).setOverride(
+      viewer(admin, true),
+      linearId,
+      0,
+      { tool: "delete_issue", hidden: true },
+      "test",
+    );
+
+    if (!hidden.ok) throw new Error(hidden.message);
 
     const unknown = async (member: TestMember, name: string, path = "/mcp") => {
       const call = modern(1, "tools/call", { name, arguments: {} });
@@ -573,15 +660,18 @@ describe("a tool call", () => {
       error: { code: -32602, message: "Unknown tool: notes_add_note" },
     });
 
+    // A tool the org hid, though alice holds a credential for its toolkit.
+    expect(await unknown(alice, "linear_delete_issue")).toEqual({
+      ...nothing,
+      error: { code: -32602, message: "Unknown tool: linear_delete_issue" },
+    });
+
     expect(callsTo(stripe)).toEqual([]);
+    expect(callsTo(linear)).toEqual([]);
   });
 });
 
 describe("an upstream's session", () => {
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
   /** A private toolkit of alice on a 2025 server, and a call of its tool. */
   const sessionOrg = async (prefix: string) => {
     const { org, alice } = await staffedOrg(prefix);
@@ -599,6 +689,7 @@ describe("an upstream's session", () => {
     const call = modern(1, "tools/call", { name: "kept_ping", arguments: {} });
 
     return {
+      org,
       server,
       call: async () => {
         const answer = await client.send(call.body, call.headers);
@@ -625,22 +716,48 @@ describe("an upstream's session", () => {
   });
 
   it("is not kept for seven days", async () => {
-    const { call, handshakes } = await sessionOrg("mcp-session-expiry");
+    const { org, call, handshakes } = await sessionOrg("mcp-session-expiry");
 
     await call();
     expect(handshakes()).toBe(1);
 
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    // Seven days on: the kept session is aged rather than the clock moved (the store reads it at the real `now`).
+    await runInDurableObject(env.CONTROL_PLANE.getByName(org), (_instance, state) => {
+      state.storage.sql.exec(
+        `UPDATE toolkit_sessions SET opened_at = opened_at - ?`,
+        7 * 24 * 60 * 60 * 1000,
+      );
+    });
+
     await call();
     expect(handshakes()).toBe(2);
+  });
+
+  it("is opened again when the server changed eras since the last call", async () => {
+    const { server, call, handshakes } = await sessionOrg("mcp-session-era");
+
+    await call();
+    expect(handshakes()).toBe(1);
+
+    server.stateless = true;
+    await call();
+    await call();
+    // One more `initialize`, refused, then stateless calls in the kept revision.
+    expect(handshakes()).toBe(2);
+
+    server.stateless = false;
+    await call();
+    expect(handshakes()).toBe(3);
   });
 });
 
 describe("a call that needs a private credential the member has not connected", () => {
   it("elicits the connect link from a stateless client that declares URL mode", async () => {
-    const { org, slug, bob, linear, linearId } = await toolkitsOrg("mcp-connect");
-    const client = await clientOf(org, bob);
+    const { org, slug, alice, bob, linear, linearId } = await toolkitsOrg("mcp-connect");
+
+    // Another member's private credential is never bob's.
+    await connectPrivate(org, alice, linearId, "alice-linear-token");
+    const client = await clientOf(org, bob, APP_HOST);
 
     const call = modern(
       1,
@@ -650,7 +767,7 @@ describe("a call that needs a private credential the member has not connected", 
     );
 
     const answer = await client.send(call.body, call.headers);
-    const link = `${LOCAL}/o/${slug}/tools/${linearId}/connect`;
+    const link = `https://app.example.com/o/${slug}/tools/${linearId}/connect`;
 
     expect(answer.status).toBe(200);
 
@@ -687,8 +804,8 @@ describe("a call that needs a private credential the member has not connected", 
 
   it("answers the link as a tool result to a client without URL elicitation, of either era", async () => {
     const { org, slug, bob, linearId } = await toolkitsOrg("mcp-connect-result");
-    const client = await clientOf(org, bob);
-    const link = `${LOCAL}/o/${slug}/tools/${linearId}/connect`;
+    const client = await clientOf(org, bob, APP_HOST);
+    const link = `https://app.example.com/o/${slug}/tools/${linearId}/connect`;
     const formOnly = modern(1, "tools/call", { name: "linear_list_issues" }, { elicitation: {} });
     const modernAnswer = resultOf(await client.send(formOnly.body, formOnly.headers));
 
@@ -706,6 +823,23 @@ describe("a call that needs a private credential the member has not connected", 
 
     expect(legacyAnswer?.["isError"]).toBe(true);
     expect(JSON.stringify(legacyAnswer?.["content"])).toContain(link);
+  });
+
+  it("names the panel's page in words where there is no app host, and elicits nothing", async () => {
+    const { org, bob } = await toolkitsOrg("mcp-connect-no-host");
+
+    const call = modern(
+      1,
+      "tools/call",
+      { name: "linear_list_issues", arguments: {} },
+      { elicitation: { url: {} } },
+    );
+
+    const answer = resultOf(await (await clientOf(org, bob)).send(call.body, call.headers));
+
+    expect(answer).toMatchObject({ resultType: "complete", isError: true });
+    expect(JSON.stringify(answer?.["content"])).toContain("the toolkit's page in the panel");
+    expect(JSON.stringify(answer?.["content"])).not.toContain("http");
   });
 });
 
@@ -813,5 +947,25 @@ describe("a client of the 2025 handshake", () => {
 
     expect(initialized.status).toBe(202);
     expect(initialized.body).toBeUndefined();
+  });
+
+  it("is served under a 2025 or 2024-11-05 MCP-Protocol-Version, and refused under one it does not know", async () => {
+    const { org, alice } = await staffedOrg("mcp-legacy-version");
+    const client = await clientOf(org, alice);
+    const list = { jsonrpc: "2.0" as const, id: 1, method: "tools/list" };
+
+    for (const version of ["2025-06-18", "2025-03-26", "2024-11-05"])
+      expect((await client.send(list, { "mcp-protocol-version": version })).status, version).toBe(
+        200,
+      );
+
+    const unknown = await client.send(list, { "mcp-protocol-version": "2024-01-01" });
+
+    expect(unknown.status).toBe(400);
+
+    expect(unknown.body?.["error"]).toMatchObject({
+      code: -32022,
+      data: { requested: "2024-01-01" },
+    });
   });
 });
