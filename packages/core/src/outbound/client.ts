@@ -169,6 +169,13 @@ const redirected = (
 };
 
 /**
+ * Lets go of a hop's body without reading it: opening the stream in a scope and closing the scope cancels its reader,
+ * so a hop that never sends its body cannot hold the request.
+ */
+const releaseBody = (response: HttpClientResponse.HttpClientResponse) =>
+  Effect.scoped(Effect.asVoid(Stream.toPull(response.stream)));
+
+/**
  * `client` behind the outbound guard. A caller that asked for `redirect: "manual"` (or `"error"`) itself
  * (`FetchHttpClient.RequestInit`) keeps it: only the first hop is checked, and the redirect is the caller's to read.
  */
@@ -210,18 +217,21 @@ export const guardHttpClient = (client: HttpClient.HttpClient): HttpClient.HttpC
             if (!follows || !REDIRECTS.has(response.status) || location === undefined)
               return response;
 
-            if (hop >= MAX_OUTBOUND_REDIRECTS)
+            // A followed or refused hop's body is never read: cancel it so its connection is let go.
+            if (hop >= MAX_OUTBOUND_REDIRECTS) {
+              yield* releaseBody(response);
+
               return yield* refusedRequest(
                 request,
                 outboundRefused("too_many_redirects", new URL(response.request.url).hostname),
               );
+            }
 
             const next = redirected(request, response, location);
 
             if (next === undefined) return response;
 
-            // The hop's body is not read: cancel it (reading at most one chunk) so its connection is let go.
-            yield* Effect.ignore(Stream.runHead(response.stream));
+            yield* releaseBody(response);
             request = next;
           }
         }),

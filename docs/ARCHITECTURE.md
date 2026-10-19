@@ -1238,6 +1238,9 @@ egress point use the same guard when they land, from `@commissary/core`.
 - **SSO** (`apps/app/src/sso/idp.ts`): saving a provider checks the OIDC issuer or the SAML sign-in URL with
   `checkOutboundUrl`, and Better Auth's discovery trusts an endpoint the document names only when the guard lets it
   through (`isTrustedOrigin`); testing a provider checks the stored issuer and JWKS endpoint again before fetching them.
+  The guard replaces Better Auth's own `isPublicRoutableHost`, which also refuses metadata names such as
+  `metadata.google.internal`; dropping those name checks is fine on Workers, where names are not resolved and a
+  Worker's `fetch` never reaches a private address (ADR 0044).
 - **`global_fetch_strictly_public`** is set on every Worker (`COMPATIBILITY` in `alchemy.run.ts`, mirrored in each
   `vitest.config.ts`).
 

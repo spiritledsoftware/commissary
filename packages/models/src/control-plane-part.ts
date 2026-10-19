@@ -363,7 +363,10 @@ export class ModelsPart extends RpcTarget implements ControlPlanePart {
    * calls that need an index, not the Durable Object's constructor.
    */
   readonly #authIndex: AuthIndexer;
-  /** The outbound guard's policy (ADR 0044) for the user-supplied URLs the object reaches: no loopback; refuses the OWN_HOSTS hosts. */
+  /**
+   * The outbound guard's policy (ADR 0044) for the user-supplied URLs the object reaches: no loopback; refuses the
+   * OWN_HOSTS hosts.
+   */
   readonly #outbound: OutboundPolicy;
   #configView: ConfigView | undefined;
 

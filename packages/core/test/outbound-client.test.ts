@@ -169,6 +169,43 @@ describe("guardHttpClient", () => {
     }),
   );
 
+  it.effect("cancels every redirect hop's body without reading it, the refused last hop too", () =>
+    Effect.gen(function* () {
+      let pulls = 0;
+      let cancels = 0;
+
+      // A hop whose body never arrives: reading it would stall the request.
+      const stalledBody = () =>
+        new ReadableStream<Uint8Array>(
+          {
+            pull: () => {
+              pulls += 1;
+
+              return new Promise<void>(() => {});
+            },
+            cancel: () => {
+              cancels += 1;
+            },
+          },
+          { highWaterMark: 0 },
+        );
+
+      let hop = 0;
+
+      const { client } = upstream(() => {
+        hop += 1;
+
+        return new Response(stalledBody(), { status: 302, headers: { location: `/hop/${hop}` } });
+      });
+
+      const exit = yield* Effect.exit(client.get("https://api.example.com/start"));
+
+      expect(refusalOf(exit)?.reason).toBe("too_many_redirects");
+      expect(pulls).toBe(0);
+      expect(cancels).toBe(MAX_OUTBOUND_REDIRECTS + 1);
+    }),
+  );
+
   it.effect("turns a PUT answered 303 into a bodiless GET", () =>
     Effect.gen(function* () {
       const { sent, client } = redirectOnce(303);

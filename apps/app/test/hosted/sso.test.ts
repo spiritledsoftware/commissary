@@ -3,8 +3,10 @@
 // the sign-in itself is the auth Worker's, apps/auth/test/sso.test.ts); requiring single sign-on for a domain ends the
 // sessions of its people. The DNS resolver and the identity provider's discovery are fakes behind the global `fetch`.
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { env } from "cloudflare:workers";
 import { resetStandingCaches } from "@commissary/auth";
 import { OUTBOUND_REFUSED_MESSAGE } from "@commissary/core";
+import { controlPlaneOf, platformOf } from "@commissary/state";
 import { DOH_URL } from "../../src/sso/dns.ts";
 import {
   AUTH_ORIGIN,
@@ -334,6 +336,38 @@ describe("the outbound guard on an identity provider's URLs (ADR 0044)", () => {
 
     expect(refused.status).toBe(422);
     expect(await refused.json()).toMatchObject({ error: "discovery_failed" });
+  });
+
+  it("refuses to test a stored provider whose signing keys' URL the guard refuses", async () => {
+    const owner = await orgOwnedBy("stored-private-idp");
+    const org = await platformOf(env).getOrgBySlug("stored-private-idp");
+
+    if (org === undefined) throw new Error("the org was not created");
+
+    // Stored as before the guard existed: an issuer it lets through, signing keys at a private address.
+    const stored = await controlPlaneOf(env, org.id).setSsoProvider(
+      {
+        kind: "oidc",
+        issuer: OIDC_ISSUER,
+        clientId: OIDC_CLIENT_ID,
+        clientSecret: OIDC_CLIENT_SECRET,
+        authorizationEndpoint: `${OIDC_ISSUER}/authorize`,
+        tokenEndpoint: `${OIDC_ISSUER}/token`,
+        jwksEndpoint: "https://10.0.0.8/jwks",
+      },
+      "test",
+      Date.now(),
+    );
+
+    expect(stored.ok).toBe(true);
+
+    const test = await call(sso("stored-private-idp", "/provider/test"), json(owner, "POST"));
+
+    expect(test.status).toBe(422);
+    expect(await test.json()).toMatchObject({
+      error: "invalid_provider",
+      message: `the signing keys' URL: ${OUTBOUND_REFUSED_MESSAGE}`,
+    });
   });
 });
 
