@@ -1,8 +1,9 @@
 /**
  * What an isolate remembers of an org's billing for a short while, so the client API's hot path does not ask the org's
  * ControlPlane (or the Platform registry) on every request: the org's plan for the rate ceiling, and a refusal by the
- * plan limit. Like `@commissary/auth`'s standing: bounded, per isolate, trusted for {@link BILLING_TTL_MS}; a change
- * applies within that time everywhere and at once in the isolate that made it ({@link forgetBilling}).
+ * plan limit. Like `@commissary/auth`'s standing: bounded, per isolate, trusted for {@link BILLING_TTL_MS}, so a plan
+ * change reaches every isolate within that time. Code that switches a plan (Polar, #237) calls {@link forgetBilling} so
+ * the isolate that made the change sees it at once.
  */
 import type { OrgId } from "@commissary/core";
 import type { Plan } from "./plan.ts";

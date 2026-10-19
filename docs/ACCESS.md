@@ -459,8 +459,10 @@ management keys work as above. What changes:
   answer `429` with `Retry-After: 60`. The management API has none.
 - **Plans and free usage** (ADR 0042). Every org holds a plan, `free` (every org starts on it) or `payg`, and gets the same
   free usage each calendar month (UTC) on either: 25,000 requests and tool calls, 1 browser hour, no computer hours.
-  Each client API request counts once when Commissary starts serving it, whatever credential serves it and however it
-  ends (a request refused for authentication, a spend limit, a plan limit or the rate ceiling does not count). A Free org
+  Each request to a model counts once when Commissary makes its first upstream attempt for it, whatever credential
+  serves it and however it ends. Token counting, video status polls and requests refused before any work
+  (authentication, the rate ceiling, a spend limit, a plan limit, an unknown model, no credential) do not count. A plan
+  change reaches every isolate within 30 seconds (per-isolate caches, like suspension). A Free org
   over its free usage is refused with `429 plan_limit_reached` and `Retry-After` until the first of the next month UTC;
   work in flight finishes. `GET /billing` (org admins) answers the plan and the month's usage against free usage; on a
   self-hosted Commissary there are no plans and it answers 404. Switching plans, the billing cap and invoices come with
