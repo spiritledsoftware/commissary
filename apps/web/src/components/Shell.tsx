@@ -102,7 +102,7 @@ export const Shell = () => {
   const role = useRole();
   const me = useAtomValue(meAtom);
   // Commissary Cloud adds a page (Single sign-on) and the account menu's Sign out.
-  const hosted = AsyncResult.isSuccess(me) && me.value.hosted === true;
+  const hosted = AsyncResult.isSuccess(me) && me.value.deployment.hosted;
 
   const groups =
     role.kind === "ready"

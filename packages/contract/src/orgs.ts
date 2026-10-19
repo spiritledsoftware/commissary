@@ -119,6 +119,19 @@ export const MyOrg = Schema.Struct({ slug: Schema.String, name: Schema.String })
 export type MyOrg = typeof MyOrg.Type;
 
 /**
+ * Which optional pieces a deployment has (ADR 0043), on every deployment. `hosted`: Commissary Cloud (ADR 0026).
+ * `browser`: the deployment has a Browser Run binding (the browser toolkit exists). `computer`: it has the sandbox's
+ * container binding (the sandbox's computer exists). The panel decides what to show from it.
+ */
+export const Deployment = Schema.Struct({
+  hosted: Schema.Boolean,
+  browser: Schema.Boolean,
+  computer: Schema.Boolean,
+});
+
+export type Deployment = typeof Deployment.Type;
+
+/**
  * `GET /me`: who the caller is for the panel, which orgs they may open, and their role in the org the request
  * addresses (`/v9/management/orgs/<slug>/me`; `global` for the unscoped spelling).
  */
@@ -134,11 +147,12 @@ export const Me = Schema.Struct({
    * panel offers a plain member their own Accounts page only then. Absent when the caller belongs to no org there.
    */
   private_credentials: Schema.optionalKey(Schema.Boolean),
+  /** Which optional pieces this deployment has; `hosted` replaces the bare `hosted` field this reply had before. */
+  deployment: Deployment,
   /**
    * Present on Commissary Cloud only (ADR 0026): anyone signed in may create orgs, up to `org_limit` orgs of their own
    * (`owned_orgs` so far). A platform admin has no limit (both absent then).
    */
-  hosted: Schema.optionalKey(Schema.Boolean),
   org_limit: Schema.optionalKey(Schema.Number),
   owned_orgs: Schema.optionalKey(Schema.Number),
   /**

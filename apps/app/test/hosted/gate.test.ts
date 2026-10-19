@@ -31,7 +31,11 @@ interface Me {
   readonly platform_admin: boolean;
   readonly role: string | null;
   readonly orgs: ReadonlyArray<{ readonly slug: string; readonly name: string }>;
-  readonly hosted?: boolean;
+  readonly deployment: {
+    readonly hosted: boolean;
+    readonly browser: boolean;
+    readonly computer: boolean;
+  };
   readonly org_limit?: number;
   readonly owned_orgs?: number;
 }
@@ -197,9 +201,21 @@ describe("authentication", () => {
 
   it("makes platform admins of the people in PLATFORM_ADMIN_EMAILS only", async () => {
     expect(await me(await signIn({ email: ROOT }))).toMatchObject({ platform_admin: true });
+    expect(await me(await signIn({ email: ROOT }))).not.toHaveProperty("hosted");
     expect(await me(await signIn({ email: "ada@example.com" }))).toMatchObject({
       platform_admin: false,
     });
+  });
+});
+
+describe("the optional pieces of the deployment", () => {
+  it("are reported on /me, hosted for everyone signed in, a platform admin included", async () => {
+    for (const email of [ROOT, "ada@example.com"]) {
+      const body = await me(await signIn({ email }));
+
+      expect(body.deployment).toEqual({ hosted: true, browser: false, computer: false });
+      expect(body).not.toHaveProperty("hosted");
+    }
   });
 });
 

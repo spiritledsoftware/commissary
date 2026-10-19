@@ -2286,14 +2286,22 @@ management API and the panel (the client API endpoints still name it with the ca
 
 Platform-level routes (`org-routes.ts`, contract group `orgs`, `packages/contract/src/orgs.ts`):
 
-| Route                              | Who            | Does                                                                                                                                                                                                                                        |
-| ---------------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /v9/management/me`            | anyone         | `{platform_admin, role, orgs: [{slug, name}]}`: `role` in the addressed org (`null` without one); every org for a platform admin, the orgs the caller belongs to otherwise; on Commissary Cloud also `hosted`, `org_limit` and `owned_orgs` |
-| `GET /v9/management/orgs`          | platform admin | every org, `global` first (`suspended` on a suspended one)                                                                                                                                                                                  |
-| `POST /v9/management/orgs`         | platform admin | creates `{slug, name}`; `201`, `409 slug_taken`, `422 invalid_slug`/`invalid_name`; on Commissary Cloud anyone signed in, up to their owned-org limit (`409 org_limit_reached`), becoming its owner                                         |
-| `PATCH /v9/management/orgs/<slug>` | platform admin | changes `slug` and/or `name`; the id never changes, so stored data stays where it is; on Commissary Cloud also `suspended`                                                                                                                  |
+| Route                              | Who            | Does                                                                                                                                                                                                                                                                       |
+| ---------------------------------- | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /v9/management/me`            | anyone         | `{platform_admin, role, orgs: [{slug, name}], deployment: {hosted, browser, computer}}`: `role` in the addressed org (`null` without one); every org for a platform admin, the orgs the caller belongs to otherwise; on Commissary Cloud also `org_limit` and `owned_orgs` |
+| `GET /v9/management/orgs`          | platform admin | every org, `global` first (`suspended` on a suspended one)                                                                                                                                                                                                                 |
+| `POST /v9/management/orgs`         | platform admin | creates `{slug, name}`; `201`, `409 slug_taken`, `422 invalid_slug`/`invalid_name`; on Commissary Cloud anyone signed in, up to their owned-org limit (`409 org_limit_reached`), becoming its owner                                                                        |
+| `PATCH /v9/management/orgs/<slug>` | platform admin | changes `slug` and/or `name`; the id never changes, so stored data stays where it is; on Commissary Cloud also `suspended`                                                                                                                                                 |
 
 Anyone else gets `403 platform_admin_required` on the org routes it may not use. The panel reads `/me` for its org switcher.
+
+`deployment` (ADR 0043) is on every deployment and replaces the bare `hosted` field `/me` had on Commissary Cloud, removed
+outright in `/v9` with no alias: `hosted` is `isHosted`, `browser` is true exactly when the deployment has a Browser Run
+binding, `computer` exactly when it has the sandbox's container binding, each read from `env` at request time. **The two
+binding checks are `hasBrowserBinding` and `hasComputerBinding` in `apps/app/src/management/deployment.ts`**; neither
+binding exists yet, so both return `false`, and #212 and #223 wire theirs in by changing that one line (and adding the
+binding to `AppBindings`). The panel reads `me.deployment.hosted` where it used `me.hosted`; `browser` and `computer` are
+exposed for #216, #217 and #225 and unused so far.
 
 Routes of the addressed org (`/org`, `/export`) and the account route (`DELETE /me`), all in `org-routes.ts` (ADR 0027,
 "Zero data retention" below):

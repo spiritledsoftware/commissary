@@ -51,11 +51,14 @@ secrets Commissary holds for outside services are **credentials**, and a model p
 
 ### Prerequisites
 
-- A Cloudflare account on the **Workers Paid** plan (requests may use up to 300 s of CPU; see `COMMISSARY_CPU_MS`).
+- A Cloudflare account on the **Workers Paid** plan, which is required: Workers Free isn't supported (requests may use
+  up to 300 s of CPU; see `COMMISSARY_CPU_MS`).
 - A domain (zone) in that account. Commissary gets its own hostname on it, e.g. `llm.example.com`.
 - **Zero Trust** enabled on the account, with an identity provider (the built-in one-time PIN works). Note your team
   name: `<team>.cloudflareaccess.com`.
 - Node.js 22+ and pnpm 12 (the version pinned in `package.json` `devEngines`).
+- Optional, and possibly billed extra by Cloudflare: the browser toolkit and the sandbox's computer. Without them
+  everything else works; see [Optional pieces](docs/DEPLOY.md#optional-pieces).
 
 ### 1. Clone and install
 

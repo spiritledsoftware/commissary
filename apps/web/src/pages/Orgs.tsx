@@ -261,7 +261,7 @@ export const OrgsPage = () => {
                 </a>
               </p>
             ) : null}
-            {value.hosted === true ? <SignOut className={kit["secondary"]} /> : null}
+            {value.deployment.hosted ? <SignOut className={kit["secondary"]} /> : null}
           </>
         ),
       })}

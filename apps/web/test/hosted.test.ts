@@ -10,27 +10,31 @@ import {
 import { issuableRoles, issuerText } from "../src/lib/management-keys.ts";
 import { callerOf } from "../src/lib/role.ts";
 
+const SELF_HOSTED = { hosted: false, browser: false, computer: false };
+
+const HOSTED = { hosted: true, browser: false, computer: false };
+
 describe("creating orgs", () => {
   it("is for platform admins, and for everyone on Commissary Cloud", () => {
-    expect(canCreateOrg({ platform_admin: false })).toBe(false);
-    expect(canCreateOrg({ platform_admin: true })).toBe(true);
-    expect(canCreateOrg({ platform_admin: false, hosted: true })).toBe(true);
+    expect(canCreateOrg({ platform_admin: false, deployment: SELF_HOSTED })).toBe(false);
+    expect(canCreateOrg({ platform_admin: true, deployment: SELF_HOSTED })).toBe(true);
+    expect(canCreateOrg({ platform_admin: false, deployment: HOSTED })).toBe(true);
   });
 
   it("counts against the limit, except for platform admins", () => {
-    const me = { platform_admin: false, hosted: true, org_limit: 3, owned_orgs: 3 };
+    const me = { platform_admin: false, deployment: HOSTED, org_limit: 3, owned_orgs: 3 };
 
     expect(atOrgLimit(me)).toBe(true);
     expect(atOrgLimit({ ...me, owned_orgs: 2 })).toBe(false);
-    expect(atOrgLimit({ platform_admin: true, hosted: true })).toBe(false);
+    expect(atOrgLimit({ platform_admin: true, deployment: HOSTED })).toBe(false);
     expect(orgCountText(me)).toBe("3 of 3 orgs");
-    expect(orgCountText({ platform_admin: true, hosted: true })).toBeUndefined();
+    expect(orgCountText({ platform_admin: true, deployment: HOSTED })).toBeUndefined();
   });
 
   it("suspends only for platform admins of Commissary Cloud", () => {
-    expect(canSuspend({ platform_admin: true, hosted: true })).toBe(true);
-    expect(canSuspend({ platform_admin: true })).toBe(false);
-    expect(canSuspend({ platform_admin: false, hosted: true })).toBe(false);
+    expect(canSuspend({ platform_admin: true, deployment: HOSTED })).toBe(true);
+    expect(canSuspend({ platform_admin: true, deployment: SELF_HOSTED })).toBe(false);
+    expect(canSuspend({ platform_admin: false, deployment: HOSTED })).toBe(false);
   });
 });
 

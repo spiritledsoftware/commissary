@@ -382,6 +382,7 @@ describe("who may manage the list of orgs", () => {
       role: "member",
       orgs: [{ slug: "default", name: "Default" }],
       private_credentials: true,
+      deployment: SELF_HOSTED,
     });
     expect((await harness.json("/v9/management/orgs", { auth: false })).status).toBe(401);
   });
@@ -405,7 +406,17 @@ describe("who may manage the list of orgs", () => {
   });
 });
 
+/** A self-hosted Commissary without the browser or the computer bound (neither binding exists yet, #212, #223). */
+const SELF_HOSTED = { hosted: false, browser: false, computer: false };
+
 describe("GET /me", () => {
+  it("reports the deployment's optional pieces and has no top-level hosted field", async () => {
+    const body = (await harness.json("/v9/management/me")).body as Record<string, unknown>;
+
+    expect(body["deployment"]).toEqual(SELF_HOSTED);
+    expect(body).not.toHaveProperty("hosted");
+  });
+
   it("tells a platform admin it is one and lists every org", async () => {
     await create({ slug: "me-org", name: "Me Org" });
     const reply = await harness.json("/v9/management/me");
@@ -433,6 +444,7 @@ describe("GET /me", () => {
       role: "admin",
       orgs: [{ slug: "default", name: "Default" }],
       private_credentials: true,
+      deployment: SELF_HOSTED,
     });
 
     await patch("default", { slug: "renamed-home" });
@@ -443,6 +455,7 @@ describe("GET /me", () => {
         role: "admin",
         orgs: [{ slug: "renamed-home", name: "Default" }],
         private_credentials: true,
+        deployment: SELF_HOSTED,
       });
     } finally {
       await patch("renamed-home", { slug: "default" });
