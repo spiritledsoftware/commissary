@@ -225,7 +225,10 @@ export type SetToolOverride = typeof SetToolOverride.Type;
 
 export const RemovedToolkit = Schema.Struct({ id: Schema.String });
 
-/** The answer to clearing the override of a tool its source no longer lists: the tool left the list. */
+/**
+ * The answer to clearing the override of a tool its source no longer lists: the tool left the list. The override
+ * endpoint answers this or a {@link ToolView}; callers tell them apart with `"removed" in reply`.
+ */
 export const RemovedToolOverride = Schema.Struct({
   /** The tool's stable id. */
   id: Schema.String,

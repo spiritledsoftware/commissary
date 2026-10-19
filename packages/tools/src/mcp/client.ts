@@ -398,31 +398,32 @@ const allPages = Effect.fnUntraced(function* (
   return yield* tooLarge;
 });
 
-/** Deletes the server's session (`DELETE` with `Mcp-Session-Id`); failures are ignored. */
-const endSession = Effect.fnUntraced(
-  function* (source: string, secret: ToolkitSecret, session: Session) {
-    const client = yield* HttpClient.HttpClient;
+/** Deletes the server's session (`DELETE` with `Mcp-Session-Id`). */
+const endSession = Effect.fnUntraced(function* (
+  source: string,
+  secret: ToolkitSecret,
+  session: Session,
+) {
+  const client = yield* HttpClient.HttpClient;
 
-    const request = authorize(
-      HttpClientRequest.delete(source).pipe(
-        HttpClientRequest.setHeaders({
-          "mcp-session-id": session.sessionId ?? "",
-          ...(session.protocolVersion === undefined
-            ? {}
-            : { "mcp-protocol-version": session.protocolVersion }),
-        }),
-      ),
-      secret,
-    );
+  const request = authorize(
+    HttpClientRequest.delete(source).pipe(
+      HttpClientRequest.setHeaders({
+        "mcp-session-id": session.sessionId ?? "",
+        ...(session.protocolVersion === undefined
+          ? {}
+          : { "mcp-protocol-version": session.protocolVersion }),
+      }),
+    ),
+    secret,
+  );
 
-    const response = yield* client
-      .execute(request)
-      .pipe(Effect.provideService(FetchHttpClient.RequestInit, MANUAL_REDIRECTS));
+  const response = yield* client
+    .execute(request)
+    .pipe(Effect.provideService(FetchHttpClient.RequestInit, MANUAL_REDIRECTS));
 
-    yield* releaseBody(response);
-  },
-  (effect) => Effect.ignore(effect),
-);
+  yield* releaseBody(response);
+});
 
 /**
  * Whether the server refused `initialize` the way a server of the stateless revision does ({@link STATELESS_REFUSALS};
@@ -478,7 +479,8 @@ const legacyList = Effect.fnUntraced(function* (
   );
 
   // The session is the server's to keep otherwise; ending it is a courtesy, and its failure changes nothing.
-  if (session.sessionId !== undefined) yield* endSession(source, secret, session);
+  if (session.sessionId !== undefined)
+    yield* endSession(source, secret, session).pipe(Effect.ignore);
 
   return tools;
 });

@@ -104,7 +104,7 @@ export interface StoredOverride extends ToolOverride {
   readonly cleared: boolean;
 }
 
-/** The SQL condition of an override that sets something (not a tombstone). */
+/** The SQL condition of an override that sets something (not a tombstone); the negation of `cleared` in `overrideOf`. */
 const LIVE_OVERRIDE = `(hidden = 1 OR name IS NOT NULL OR description IS NOT NULL OR class IS NOT NULL)`;
 
 interface ToolkitRow {
@@ -215,6 +215,7 @@ const overrideOf = (row: OverrideRow): StoredOverride => ({
   revision: row.revision,
   updatedAt: row.updated_at,
   updatedBy: row.updated_by,
+  // The negation of LIVE_OVERRIDE, its SQL form: change both together.
   cleared: row.hidden === 0 && row.name === null && row.description === null && row.class === null,
 });
 

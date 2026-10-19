@@ -69,8 +69,9 @@ const CRON_CONCURRENCY = 4;
 const CRON_BUILD_TIMEOUT: Duration.Input = "20 seconds";
 
 /**
- * A source as a member who only reads the toolkit sees it: the values of its query parameters masked, their names kept
- * (a key belongs in a `query` credential, but a source may still carry one).
+ * A source as a member who only reads the toolkit sees it: the values of its query parameters masked, their names kept,
+ * and a parameter without a value (`?<key>`) masked whole, as its name may be the key. The host and the path are shown
+ * as they are: a key belongs in a credential (a `query` one for the query), but a source may still carry one.
  */
 const maskedSource = (source: string): string => {
   let url: URL;
@@ -82,10 +83,18 @@ const maskedSource = (source: string): string => {
   }
 
   if (url.search === "") return source;
-  const masked = new URLSearchParams();
 
-  for (const name of url.searchParams.keys()) masked.append(name, "***");
-  url.search = masked.toString();
+  url.search = url.search
+    .slice(1)
+    .split("&")
+    .map((parameter) => {
+      const equals = parameter.indexOf("=");
+
+      return equals <= 0 || equals === parameter.length - 1
+        ? "***"
+        : `${parameter.slice(0, equals)}=***`;
+    })
+    .join("&");
 
   return url.toString();
 };

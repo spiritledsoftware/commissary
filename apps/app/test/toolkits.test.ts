@@ -186,10 +186,10 @@ describe("an org toolkit", () => {
     ).toBe(403);
   });
 
-  it("shows a plain member its source with the query's values masked, and an org admin the whole URL", async () => {
+  it("shows a plain member its source with the query's values (and value-less names) masked, an org admin the whole URL", async () => {
     const server = fakeMcpServer(`${origin()}/mcp`, { tools: [{ name: "t" }] });
     const org = await newOrg();
-    const source = `${server.url}?team=acme&key=s3cret`;
+    const source = `${server.url}?team=acme&key=s3cret&t0ken`;
 
     const added = toolkitOf(
       await send(org, "/toolkits", org.admin, "POST", {
@@ -206,8 +206,11 @@ describe("an org toolkit", () => {
         ?.source;
 
     expect(await sourceFor(org.admin)).toBe(source);
-    expect(await sourceFor(org.alice)).toBe(`${server.url}?team=***&key=***`);
-    expect(JSON.stringify((await send(org, "/toolkits", org.alice)).body)).not.toContain("s3cret");
+    expect(await sourceFor(org.alice)).toBe(`${server.url}?team=***&key=***&***`);
+    const seen = JSON.stringify((await send(org, "/toolkits", org.alice)).body);
+
+    expect(seen).not.toContain("s3cret");
+    expect(seen).not.toContain("t0ken");
   });
 
   it("takes the slug of its source's host as its default name, and an override renames a tool by stable id", async () => {

@@ -198,8 +198,9 @@ the Worker asks on every request: a removed member, or a member whose role was l
   its owner's: an org admin sees that it exists and may remove it, and reaches nothing else about it (`404`); a private
   credential on an org toolkit is its owner's alone, which an org admin cannot remove. With `private_credentials` off, no
   one connects a private credential (`403 private_credentials_unavailable`) and the ones connected are not used. A
-  plain member sees an org toolkit's source with the values of its query parameters masked (names kept); org admins and
-  the org export see the whole URL, so a key goes in a `query` credential (sealed), not in the source. An org toolkit
+  plain member sees an org toolkit's source with the values of its query parameters masked (names kept, a parameter
+  without a value masked whole) and its host and path as they are; org admins and the org export see the whole URL, so
+  a key goes in a credential (sealed; a `query` one for the query), never in the source's path or query. An org toolkit
   that stops accepting shared or private credentials keeps the ones connected, inactive, until it accepts them again.
 - **Service tokens** (`/service-tokens`) are registered to one org by their Client ID with a role (`409 service_token_taken`
   when another org has the token, also when two orgs register it at once: the one the registry indexes first keeps it). With

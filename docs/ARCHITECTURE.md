@@ -2911,8 +2911,9 @@ global `fetch` behind the outbound guard.
   The source passes the outbound guard when it is saved (`422` with the guard's message as `error` and `path: "source"`, as for a provider's `base_url`) and names no user
   or password (`422 invalid`, `path: "source"`); every build passes it again, each request and redirect included. A
   member who only reads an org toolkit sees its source with the values of its query parameters masked (`***`, names
-  kept); org admins and the org export get the whole URL. A key belongs in a `query` credential, which is sealed, not in
-  the source. Edits name the toolkit's revision in `If-Match`; an org admin's removal of a member's private toolkit
+  kept; a parameter without a value is masked whole); org admins and the org export get the whole URL. The host and the
+  path are shown as they are, so a key in the path (a Zapier-style `/s/<key>/mcp`) is visible to every member: a key
+  belongs in a credential (a `query` one for the query), which is sealed, not in the source. Edits name the toolkit's revision in `If-Match`; an org admin's removal of a member's private toolkit
   names the revision its existence-only view shows.
 - **Credentials**: a toolkit holds at most one shared credential and one private credential per member, connected and
   removed under `/toolkits/:id/credentials/{shared,private}`. Static secrets only: none, a bearer token, an API key in a
