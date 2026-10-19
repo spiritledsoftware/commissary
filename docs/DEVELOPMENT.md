@@ -351,6 +351,8 @@ Skip them once with `git commit --no-verify` / `git push --no-verify`, or for a 
 
 `.github/workflows/ci.yml` runs typecheck, lint, actionlint and zizmor, the tests in three shards, and the smoke test;
 then deploys a preview per pull request and production from `main`. Setup and behaviour: [DEPLOY.md](DEPLOY.md).
+A documentation-only change (Markdown files anywhere, everything under `docs/`) skips all of it (`tools/ci-changes.sh`):
+the required checks still pass, so run `pnpm format` before committing Markdown (the pre-commit hook does).
 Actions are pinned by commit SHA (Dependabot updates them weekly, `.github/dependabot.yml`), jobs get only the
 permissions they need, and deploy jobs use no dependency cache.
 

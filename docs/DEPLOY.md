@@ -16,7 +16,9 @@ else in this file describes a self-hosted Commissary, the default.
 
 Deploys run only after typecheck, lint, workflow lint (actionlint, zizmor), the test shards and the smoke test pass.
 Fork and Dependabot pull requests get the checks but no preview (they receive no deploy secrets). A manual run
-(`workflow_dispatch`) on `main` redeploys production.
+(`workflow_dispatch`) on `main` redeploys production. A pull request or push that changes documentation only (Markdown
+files anywhere, everything under `docs/`) runs neither checks nor deploys (`tools/ci-changes.sh`); its preview, if
+earlier commits deployed one, is still destroyed on close.
 
 After each deploy, `tools/check-deploy.sh` checks where Access sits (ADR 0022): `/healthz` and `/v9/management/me`
 answer 200 through Access with the CI service token (the second proves that the Worker accepts the Access JWT: team
