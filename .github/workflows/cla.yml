@@ -1,0 +1,40 @@
+# Checks that the author of every pull request has signed the CLA (CLA.md, CONTRIBUTING.md). CLA Assistant Lite stores
+# signatures in this repository, on the `cla-signatures` branch, with the default GITHUB_TOKEN: no extra secret.
+name: cla
+
+on:
+  # zizmor: the action never checks out or runs the pull request's code; it reads the event and writes the signatures
+  # file, which is why it runs with the base repository's token on `pull_request_target`.
+  pull_request_target: # zizmor: ignore[dangerous-triggers]
+    types: [opened, closed, synchronize]
+  issue_comment: # zizmor: ignore[dangerous-triggers]
+    types: [created]
+
+permissions: {}
+
+jobs:
+  cla:
+    name: cla
+    # Only the sign and recheck comments of a pull request, and its own events.
+    if: >-
+      github.event_name == 'pull_request_target' ||
+      (github.event.issue.pull_request != null &&
+       (github.event.comment.body == 'recheck' ||
+        github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write # re-runs the check after a signature
+      contents: write # the signatures file on its own branch
+      pull-requests: write # the status comment
+      statuses: write
+    steps:
+      - uses: contributor-assistant/github-action@ca4a40a7d1004f18d9960b404b97e5f30a505a08 # v2.6.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          path-to-signatures: signatures/v1/cla.json
+          path-to-document: https://github.com/spiritledsoftware/commissary/blob/main/CLA.md
+          branch: cla-signatures
+          # The owner and bots.
+          allowlist: ian-pascoe,dependabot[bot],github-actions[bot],renovate[bot],bot*

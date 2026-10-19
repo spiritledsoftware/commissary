@@ -3,6 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "description": "The auth Worker (ADR 0030), Commissary Cloud only: Better Auth on the auth host, its SignIn database, and the sign-in RPC the app Worker asks; it binds the state Worker's Durable Objects",
+  "license": "FSL-1.1-ALv2",
   "type": "module",
   "exports": {
     ".": "./src/index.ts"

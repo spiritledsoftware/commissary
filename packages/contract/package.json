@@ -3,6 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "description": "The management API contract (Effect HttpApi) shared by the Worker and the control panel; browser-safe",
+  "license": "FSL-1.1-ALv2",
   "type": "module",
   "exports": {
     "./*": "./src/*.ts"

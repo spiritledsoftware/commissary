@@ -3,6 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "description": "Commissary Cloud's billing area: plans, free usage per calendar month, plan limits and the per-plan request-rate ceiling, its management route and its ControlPlane part; does nothing on a self-hosted Commissary; tested in workerd",
+  "license": "FSL-1.1-ALv2",
   "type": "module",
   "exports": {
     "./api": "./src/api.ts",

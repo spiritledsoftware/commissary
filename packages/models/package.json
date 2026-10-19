@@ -3,6 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "description": "The Models area: executors, handlers, the registry and catalog, credentials, config, payload rules, OAuth, quota, usage, grants, spend limits, its management routes and its ControlPlane part; tested in Node.js (test/unit) and workerd",
+  "license": "FSL-1.1-ALv2",
   "type": "module",
   "exports": {
     "./api": "./src/api.ts",

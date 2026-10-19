@@ -3,6 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "description": "Request/response translation between client and provider formats, the thinking pipeline, thinking signatures and token counting; pure, tested in Node.js",
+  "license": "FSL-1.1-ALv2",
   "type": "module",
   "exports": {
     ".": "./src/index.ts",

@@ -3,6 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "description": "The control panel served at / by the Worker (React, Effect Atom, TanStack Router)",
+  "license": "FSL-1.1-ALv2",
   "type": "module",
   "scripts": {
     "build": "vite build",

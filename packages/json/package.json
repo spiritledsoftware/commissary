@@ -3,6 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "description": "The gjson/sjson path engine over parsed JSON, the Json types and the JSON text helpers; pure, tested in Node.js",
+  "license": "FSL-1.1-ALv2",
   "type": "module",
   "exports": {
     ".": "./src/index.ts"

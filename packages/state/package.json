@@ -3,6 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "description": "The org-wide state on Durable Objects: the ControlPlane's org-wide base and its stores, the Platform registry, SessionState, the stub helpers and the AuthDirectory adapter; tested in workerd",
+  "license": "FSL-1.1-ALv2",
   "type": "module",
   "exports": {
     ".": "./src/index.ts",

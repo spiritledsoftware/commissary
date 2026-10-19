@@ -3,6 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "description": "The state Worker (ADR 0030): defines the Durable Objects ControlPlane, SessionState and Platform, which the other Workers bind by script name; no routes",
+  "license": "FSL-1.1-ALv2",
   "type": "module",
   "exports": {
     ".": "./src/index.ts"

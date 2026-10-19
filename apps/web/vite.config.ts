@@ -2,6 +2,7 @@
 // Worker serves at `/` (apps/app/src/management/web-panel.ts). `pnpm --filter @commissary/web dev` serves the panel
 // with hot reload and forwards `/v9` to a running `pnpm dev` Worker, and Commissary Cloud's sign-in calls (`/api`) to
 // its auth Worker (ADR 0030).
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
 import { build, defineConfig, type Plugin } from "vite";
@@ -88,10 +89,32 @@ const themeBoot = (): Plugin => {
   };
 };
 
+/** The font package's `LICENSE` (SIL OFL-1.1), read from the installed package; the OFL requires it to ship with the font. */
+const fontLicensePath = fileURLToPath(
+  new URL("node_modules/@fontsource-variable/atkinson-hyperlegible-next/LICENSE", import.meta.url),
+);
+
+/** Where the built panel carries the font's licence (`NOTICE` names it). */
+const FONT_LICENSE_FILE = "licenses/atkinson-hyperlegible-next.txt";
+
+/** Emits the Atkinson Hyperlegible Next licence next to the bundle that includes the font files. */
+const fontLicense = (): Plugin => ({
+  name: "commissary:font-license",
+  apply: "build",
+  buildStart() {
+    this.addWatchFile(fontLicensePath);
+    this.emitFile({
+      type: "asset",
+      fileName: FONT_LICENSE_FILE,
+      source: readFileSync(fontLicensePath, "utf8"),
+    });
+  },
+});
+
 export default defineConfig({
   root: fileURLToPath(new URL(".", import.meta.url)),
   publicDir: false,
-  plugins: [react(), themeBoot()],
+  plugins: [react(), themeBoot(), fontLicense()],
   build: {
     assetsDir: "assets",
     target: "es2023",

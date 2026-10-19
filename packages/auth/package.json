@@ -3,6 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "description": "Request-side authentication: principals, Access JWTs, API and management keys, roles, admission, Cloud standing and the gates, reaching state through its AuthDirectory service; tested in Node.js",
+  "license": "FSL-1.1-ALv2",
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
