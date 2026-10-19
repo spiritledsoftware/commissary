@@ -1,0 +1,134 @@
+# Notice
+
+Commissary is Copyright 2026 Spirit-Led Software LLC and is licensed under the Functional Source License, Version 1.1, ALv2 Future License (FSL-1.1-ALv2); see [`LICENSE`](LICENSE) and [ADR 0035](docs/adr/0035-commissary-ships-under-the-functional-source-license.md). Contributions by Ian Pascoe are made on behalf of Spirit-Led Software LLC.
+
+This file lists the third-party work that Commissary contains or builds on, and the notices their licences require.
+
+## CLIProxyAPI
+
+Portions of Commissary are derived from [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI), which is licensed under the MIT License. Commissary is a rewrite of that Go server in Effect TypeScript. Each derived module names the Go source it copies at the top of the file, and that citation marks the portion. The derived portions stay available under the MIT License below, for everyone.
+
+```text
+MIT License
+
+Copyright (c) 2025-2005.9 Luis Pater
+Copyright (c) 2025.9-present Router-For.ME
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+## models.dev
+
+`packages/models/src/registry/catalog/models-dev.json` is a snapshot of data from [models.dev](https://github.com/sst/models.dev), which is licensed under the MIT License.
+
+```text
+MIT License
+
+Copyright (c) 2025 models.dev
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+## tiktoken
+
+`packages/translation/src/tokenizer/ranks/*.bin` are tiktoken byte-pair-encoding ranks (`cl100k_base`, `o200k_base`). They come from [tiktoken](https://github.com/openai/tiktoken) (MIT License), obtained through [tiktoken-go/tokenizer](https://github.com/tiktoken-go/tokenizer) (MIT License).
+
+tiktoken:
+
+```text
+MIT License
+
+Copyright (c) 2022 OpenAI, Shantanu Jain
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+tiktoken-go/tokenizer:
+
+```text
+MIT License
+
+Copyright (c) 2023 tiktoken-go
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+## Atkinson Hyperlegible Next
+
+The control panel's font is Atkinson Hyperlegible Next, from the npm package [`@fontsource-variable/atkinson-hyperlegible-next`](https://github.com/fontsource/font-files). It is licensed under the SIL Open Font License, Version 1.1:
+
+> Copyright 2020-2024 The Atkinson Hyperlegible Next Project Authors (https://github.com/googlefonts/atkinson-hyperlegible-next)
+
+The full licence text ships with the panel build at `assets/licenses/atkinson-hyperlegible-next.txt`, which the app serves at `/assets/licenses/atkinson-hyperlegible-next.txt`.
+
+## Third-party files that keep their own licence
+
+These files are not relicensed. Each keeps its own licence notice in place; none of them ships in a deployed Worker or in the panel.
+
+- `tools/oxlint/anti-slop/`: MIT License, Copyright (c) 2026 Dillon Mulroy; see `tools/oxlint/anti-slop/LICENSE`. Development tooling.
+- `tools/oxlint/anti-slop/vendor/eslint-stylistic/`: MIT License, Copyright OpenJS Foundation and other contributors, and Copyright (c) 2023-PRESENT ESLint Stylistic contributors; see `tools/oxlint/anti-slop/vendor/eslint-stylistic/LICENSE`. Development tooling.
+- `tools/workers/worker-configuration.d.ts`: generated by `wrangler types`; it carries its own Apache License 2.0 headers from Cloudflare and Microsoft. Type declarations only.

@@ -3,6 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "description": "The app Worker (`Commissary`): the management API and the control panel's assets; it binds the state Worker's Durable Objects and, on Commissary Cloud, the auth Worker",
+  "license": "FSL-1.1-ALv2",
   "type": "module",
   "scripts": {
     "test": "vitest run",

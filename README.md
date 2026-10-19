@@ -323,4 +323,12 @@ translators, thinking, payload rules and provider behaviour. Thanks to its autho
 
 ## License
 
-[MIT](LICENSE), including the original CLIProxyAPI copyright notice.
+Commissary is licensed under [FSL-1.1-ALv2](LICENSE) (the Functional Source License with an Apache-2.0 future
+license), © Spirit-Led Software LLC. In plain words: you may use, change and self-host it for anything except a
+competing product or service, and each version becomes Apache-2.0 two years after it is released.
+
+Portions derived from CLIProxyAPI stay under its MIT license; [NOTICE](NOTICE) holds that notice and every other
+third-party one. Commits published before the switch remain available under MIT. The decision is recorded in
+[ADR 0035](docs/adr/0035-commissary-ships-under-the-functional-source-license.md).
+
+Contributions need a signed [CLA](CLA.md); see [CONTRIBUTING.md](CONTRIBUTING.md).
