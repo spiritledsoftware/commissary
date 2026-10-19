@@ -202,14 +202,15 @@ it exists (provider, owner, label), and can disable or remove it. Its traffic is
 _Avoid_: personal account, own key
 
 **Grant**:
-Permission for a member, a team or everyone in an org to use certain shared credentials for certain upstream models. A
-member's access is the union of the grants that name them; there is no deny. A new org starts with one grant that gives
-everyone every model on every shared credential.
+Permission for a member, a team or everyone in an org to use certain shared credentials for certain upstream models, or
+a toolkit's shared credential for certain of its tools (all of them, its read tools, or named ones). A member's access is
+the union of the grants that name them; there is no deny. A new org starts with one grant that gives everyone every
+model on every shared credential; a toolkit's shared credential goes to whoever the org admin picks when connecting it.
 _Avoid_: entitlement, ACL, access rule
 
 **Reach**:
-What a member's grants add up to: the upstream models they may use on each shared credential. Selection and the model
-lists are computed under it; a model outside it answers like an unknown one.
+What a member's grants add up to: the upstream models and the tools they may use on each shared credential. Selection,
+the model lists and the tool lists are computed under it; a model or tool outside it answers like an unknown one.
 _Avoid_: allowance (a provider's limit), permissions
 
 **Sign-in account**:
@@ -553,8 +554,8 @@ Commissary's own record of the traffic it served.
 _Avoid_: usage as a word for allowances
 
 **Usage record**:
-The stored account of one attempt: its org, principal, credential, tokens, cost, latency and outcome. A request that
-fails over leaves one record per attempt.
+The stored account of one attempt or tool call: its org, principal, credential, tokens or tool, cost, latency and
+outcome, never its content. A request that fails over leaves one record per attempt.
 _Avoid_: request, log entry
 
 **Token breakdown**:
@@ -569,7 +570,7 @@ _Avoid_: usage queue
 
 **Price**:
 What a model charges per token of one kind (uncached input, cache read, cache write, output), from the model catalog or
-a price override.
+a price override; or what a tool charges per call, which an org admin sets on its toolkit or on the tool.
 _Avoid_: cost (for a rate), pricing
 
 **Price override**:
@@ -578,7 +579,7 @@ _Avoid_: custom pricing, rate card
 
 **Cost**:
 The API-equivalent price of an attempt: its token breakdown at the model's prices. Attempts on subscription accounts
-are costed the same way as attempts on provider keys.
+are costed the same way as attempts on provider keys. A tool call costs its tool's price per call, or nothing.
 _Avoid_: charge, bill, spend (for one attempt)
 
 **Unpriced**:
@@ -608,8 +609,8 @@ document.
 _Avoid_: source type, protocol
 
 **Tool scope**:
-The toolkits and single tools an API key may use, within what its member may use. A key without one may use every tool
-its member may use.
+The toolkits, their read tools and single tools an API key may use, within what its member may use. A key without one
+may use every tool its member may use.
 _Avoid_: tool permissions, allow-list
 
 **Toolkit catalog**:
@@ -621,6 +622,23 @@ _Avoid_: registry (that is integrations.sh's), marketplace, directory
 A service, or a fact about one, that Commissary records itself for the toolkit catalog. Unlike a catalog addition for
 models, it may also correct a fact integrations.sh has; the correction is offered upstream too.
 _Avoid_: overlay, patch
+
+**Tool class**:
+Whether a tool reads or writes, taken from its source (an MCP read-only hint, an HTTP method, a GraphQL query or
+mutation) or set by an org admin. A tool with no sign of reading writes.
+_Avoid_: permission level, mode
+
+**Approval rule**:
+A setting on a toolkit that makes calls to some of its tools wait until their approver approves them.
+_Avoid_: policy, gate
+
+**Approver**:
+Who may approve a call under an approval rule: the member who made it, or any member of a set that leaves them out.
+_Avoid_: reviewer
+
+**Pending approval**:
+A tool call held for its approver, with its arguments, until it is approved, denied or expires.
+_Avoid_: approval request, ticket
 
 ### The reference
 
