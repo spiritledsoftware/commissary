@@ -141,13 +141,15 @@ state are attributed to it.
 _Avoid_: user, caller
 
 **Client API**:
-Everything clients call with an API key: the model endpoints, the MCP endpoint and the browser and agent endpoints.
+Everything clients call with an API key: the model endpoints, the MCP endpoint and the browser and agent endpoints. On a
+self-hosted Commissary an MCP client may also reach the MCP endpoint through Access instead.
 _Avoid_: proxy routes, public API, model routes (a model route is a credential's)
 
 **API key**:
 A secret Commissary issues to a member for their clients, which reaches every area through the client API. It names its
-org and member, and it can have a spend limit and a tool scope of its own. A member creates one in the control panel, or
-by signing in an MCP client, which gets one of its own.
+org and member, and it can have a spend limit and a tool scope of its own. A member creates one in the control panel, or,
+on Commissary Cloud, by signing in an MCP client, which gets one of its own (a self-hosted Commissary signs MCP clients in
+through Access instead).
 _Avoid_: proxy key, client key, access key, agent key, token
 
 **Service token**:

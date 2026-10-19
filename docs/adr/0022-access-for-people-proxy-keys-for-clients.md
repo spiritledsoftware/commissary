@@ -1,5 +1,5 @@
 ---
-status: accepted, amended by ADR-0026 for hosted proxies and below for Access sign-ins in `global`
+status: accepted, amended by ADR-0026 for hosted proxies and below for Access sign-ins in `global`, and by ADR-0045 for MCP clients on a self-hosted Commissary
 ---
 
 # Access authenticates people; the proxy authorizes them and issues proxy keys to clients
