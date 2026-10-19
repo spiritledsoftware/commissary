@@ -178,7 +178,9 @@ describe("periods in zones whose clocks change at midnight", () => {
                 `${zone} ${period} ${new Date(bounds.end).toISOString()} does not begin the next`,
               );
           }
-  });
+    // A brute-force sweep (every hour or six over several zones and windows): well under a second alone, but past
+    // vitest's 5 s default on a loaded CI runner.
+  }, 30_000);
 });
 
 describe("isTimeZone", () => {
