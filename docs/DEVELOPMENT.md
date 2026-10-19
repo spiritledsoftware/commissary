@@ -325,6 +325,15 @@ stays with that Worker.
 - **Runs.** `pnpm test` is `turbo run test`: transit nodes re-run a package's tests and its dependants' when its files
   change, and an unchanged package is answered from the cache. `pnpm test --shard=N/3` (CI's three jobs) shards
   every package's run; one package: `pnpm --filter @commissary/<name> exec vitest run [file]`.
+- **Cross-org suite** (ADR 0044). `apps/app/test/org-isolation.test.ts` writes the same names (credential, key, session
+  and model names) in three orgs (two made through the management API, and `global`) and checks that each store shows
+  every org only its own: KV (`OrgKv`, the signature store, video bindings, Antigravity state and entitlements),
+  SessionState, the per-isolate caches (signatures, Antigravity state, `ConfigReader` snapshots), D1 usage through
+  every query the management API exposes (records, summary, series, unpriced models, the export queue, private records,
+  the credential filter), and the ControlPlane addressed by org slug (also after a rename) and by API key prefix.
+  **Each new store (tool calls, approvals, runs, sandbox and browser sessions, profiles) adds one `storeCase(...)` line
+  to `STORES` in that file** (`write` and `read` of one name, `test/support/org-isolation.ts`), in the same PR that
+  adds the store.
 - **Counts.** Tests move with the code they cover, none are dropped: a PR that moves tests lists the counts per project
   before and after.
 
@@ -387,6 +396,13 @@ permissions they need, and deploy jobs use no dependency cache.
   `package.json` declares and the runtime modules the rule lists; the apps import it only as `@commissary/<area>/api`,
   `/management` and `/state` (their tests also `/testing`), never its other exports or one of its files by a relative
   path.
+
+- **boundaries/org-scoped-kv** (ADR 0044, #250): a source file of a package or an app (not `test/`) may not read the
+  `CACHE` KV binding, name the `KVNamespace` type or call the Cache API (`caches.open`, `caches.default`), except the
+  helpers (`packages/core/src/kv.ts`, `packages/models/src/kv.ts`) and the binding declarations (`env.ts`, `env.d.ts`).
+  Org data in KV goes through an `OrgKv` (`orgKvOf(env, org)`), deployment-wide names through a `DeploymentKv`
+  (`deploymentKvOf(env)`, names from `deploymentKey`); a new area that adds a binding of its own adds its helper file to
+  the rule's list.
 
 Rules downgraded to warnings on purpose (reported, not failing): `effecttsgo/unstable-api-usage` (the HTTP stack is
 `effect/unstable/http`), `anti-slop-effect/no-service-constructor-imports` (flags every `make*` function),

@@ -216,6 +216,15 @@ to `packages/billing/src/`) and the JSON path engine as `packages/json`.
   (`orgAuthIndexer`; `global` keeps the deployment key, so existing handles and panel links do not change). Worker-side
   caches of org data (the `ConfigReader` snapshots, the registry snapshots, the per-isolate signature cache and
   Antigravity state) are keyed by org.
+  Org isolation is enforced in code (ADR 0044, #250): code never holds a raw `KVNamespace`. Org data in KV goes
+  through an `OrgKv` (`@commissary/core`, `kv.ts`), bound to one org and scoping every name itself with `orgScopedName`,
+  so a name of org data cannot skip the scope; `global`'s unprefixed names are the one exception, inside that helper.
+  Deployment-wide entries (the models.dev catalog and its refresh status, the xAI and Antigravity client versions) go
+  through a `DeploymentKv` whose names are declared one by one with `deploymentKey(...)`; per-isolate maps of org data
+  are an `OrgCache` keyed by org and name. The `CACHE` binding is read in one module only (`packages/models/src/kv.ts`:
+  `orgKvOf`, `deploymentKvOf`), and the lint rule `boundaries/org-scoped-kv` fails any other source file that reads
+  `CACHE`, names the `KVNamespace` type (declarations in `env.ts` and `env.d.ts` aside) or calls the Cache API. The
+  cross-org suite (`apps/app/test/org-isolation.test.ts`) checks every store with the same names in three orgs.
 - **`Platform` Durable Object** (the Platform registry, `state/platform/{platform,registry,registry-store}.ts`; one object
   per deployment, `platformOf(env)` = `getByName("platform")`, SQLite storage, tables `CREATE IF NOT EXISTS` on
   construction so a deployment gains it without a migration): what spans orgs. The list of orgs (`orgs`: permanent `id`,

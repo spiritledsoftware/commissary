@@ -189,11 +189,80 @@ const isTestFile = (filename: string): boolean => {
   return isInside(PACKAGES, filename) && directory === "test";
 };
 
-/** Import boundaries between the workspace's areas, apps and packages. */
+/**
+ * Source files that may touch a Workers KV namespace or the Cache API directly: the helpers that wrap them
+ * (`packages/core/src/kv.ts`, `packages/models/src/kv.ts`) and the declarations of the bindings (`env.ts`, `env.d.ts`).
+ */
+const isKvBoundary = (relative: string): boolean =>
+  relative === "packages/core/src/kv.ts" ||
+  relative === "packages/models/src/kv.ts" ||
+  /(^|\/)env(\.d)?\.ts$/.test(relative);
+
+/** Whether `file` is a source file of a package or an app (`test/` folders and the infrastructure are not). */
+const isWorkspaceSource = (file: string): boolean => {
+  const relative = path.relative(ROOT, file).split(path.sep);
+
+  return (relative[0] === "packages" || relative[0] === "apps") && relative[2] === "src";
+};
+
+const orgScopedKvRule = defineRule({
+  meta: {
+    type: "problem",
+    docs: {
+      description:
+        "Keep org data out of raw KV and Cache API calls: access goes through OrgKv / DeploymentKv (ADR 0044, #250).",
+    },
+    messages: {
+      rawBinding:
+        "Do not read the `CACHE` KV binding here: org data goes through `orgKvOf(env, org)` and deployment-wide data through `deploymentKvOf(env)` (packages/models/src/kv.ts, `OrgKv` in @commissary/core). ADR 0044.",
+      rawType:
+        "Do not take a raw `KVNamespace` here: take an `OrgKv` (org data) or a `DeploymentKv` (deployment-wide names) from @commissary/core. ADR 0044.",
+      cacheApi:
+        "Do not use the Worker Cache API directly: add an org-scoped helper for it to @commissary/core first (a per-isolate cache of org data is an `OrgCache`, `makeOrgCache`). ADR 0044.",
+    },
+  },
+  create(context) {
+    const filename = context.filename;
+    const relative = path.relative(ROOT, filename).split(path.sep).join("/");
+
+    if (!isWorkspaceSource(filename) || isKvBoundary(relative)) return {};
+
+    const isCacheName = (node: ESTree.Node): boolean =>
+      (node.type === "Identifier" && node.name === "CACHE") ||
+      (node.type === "Literal" && node.value === "CACHE");
+
+    return {
+      MemberExpression: (node) => {
+        if (isCacheName(node.property) && (!node.computed || node.property.type === "Literal"))
+          context.report({ node, messageId: "rawBinding" });
+        else if (
+          node.object.type === "Identifier" &&
+          node.object.name === "caches" &&
+          !node.computed &&
+          node.property.type === "Identifier" &&
+          (node.property.name === "open" || node.property.name === "default")
+        )
+          context.report({ node, messageId: "cacheApi" });
+      },
+      Property: (node) => {
+        // A destructuring pattern: `const { CACHE } = env`.
+        if (!node.computed && node.parent.type === "ObjectPattern" && isCacheName(node.key))
+          context.report({ node, messageId: "rawBinding" });
+      },
+      TSTypeReference: (node) => {
+        if (node.typeName.type === "Identifier" && node.typeName.name === "KVNamespace")
+          context.report({ node, messageId: "rawType" });
+      },
+    };
+  },
+});
+
+/** Import boundaries between the workspace's areas, apps and packages, and the org-scoped KV rule. */
 export default eslintCompatPlugin({
   meta: { name: "boundaries" },
   rules: {
     "models-imports": areaImportsRule(MODELS),
     "billing-imports": areaImportsRule(BILLING),
+    "org-scoped-kv": orgScopedKvRule,
   },
 });

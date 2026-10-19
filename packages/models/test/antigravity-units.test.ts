@@ -35,7 +35,6 @@ import {
 } from "../src/executor/antigravity/content.ts";
 import {
   loadAntigravityHints,
-  modelsKey,
   nextFailure,
   parseModelHints,
   refreshAntigravityModels,
@@ -72,7 +71,7 @@ import {
 } from "@commissary/translation/signature";
 import { builtinTranslators, makeTranslationState } from "@commissary/translation";
 import { mockHttpClient, type UpstreamCall } from "./support/pipeline.ts";
-import { CurrentOrg, GLOBAL_ORG, OrgId } from "@commissary/core";
+import { CurrentOrg, GLOBAL_ORG, OrgId, orgKv } from "@commissary/core";
 import { envContext } from "./support/context.ts";
 
 const LONG_SIGNATURE = "S".repeat(80);
@@ -394,7 +393,7 @@ describe("state and credits", () => {
   });
 
   it("persists short cooldowns and credits in KV and degrades without state", async () => {
-    const state = makeKvAntigravityState(env.CACHE, GLOBAL_ORG);
+    const state = makeKvAntigravityState(orgKv(env.CACHE, GLOBAL_ORG));
     const id = `kv-${crypto.randomUUID()}`;
     await state.markShortCooldown(id, "claude-x", 30_000, 1_000);
     expect(await state.shortCooldownRemaining(id, "claude-x", 11_000)).toBe(20_000);
@@ -416,7 +415,7 @@ describe("state and credits", () => {
   it("keeps each org's cooldowns, credits and probe slot apart; global keeps its keys", async () => {
     const acme = OrgId.make("acme");
     const id = `org-${crypto.randomUUID()}`;
-    const global = makeKvAntigravityState(env.CACHE, GLOBAL_ORG);
+    const global = makeKvAntigravityState(orgKv(env.CACHE, GLOBAL_ORG));
     const scoped = antigravityStateFor(env, acme);
 
     await global.markShortCooldown(id, "claude-x", 30_000, 1_000);
@@ -438,8 +437,6 @@ describe("state and credits", () => {
     const memoryGlobal = makeMemoryAntigravityState(GLOBAL_ORG);
     await memoryGlobal.markCreditsExhausted(id, now);
     expect(await makeMemoryAntigravityState(acme).credits(id)).toBeUndefined();
-    expect(modelsKey(GLOBAL_ORG, "c")).toBe("ag:models:c");
-    expect(modelsKey(acme, "c")).toBe("org.acme.ag:models:c");
   });
 
   it("claims the credits probe slot atomically in the SessionState Durable Object", async () => {
@@ -591,11 +588,11 @@ describe("model catalog probes", () => {
     const id = `antigravity-${crypto.randomUUID()}.json`;
     const calls: UpstreamCall[] = [];
     await env.CACHE.put(
-      modelsKey(GLOBAL_ORG, "known"),
+      "ag:models:known",
       JSON.stringify({ hints: { modelIds: ["a"], webSearchModelIds: [] }, fetchedAt: 1 }),
     );
     expect([
-      ...(await loadAntigravityHints(env.CACHE, GLOBAL_ORG, ["known", "missing"])).keys(),
+      ...(await loadAntigravityHints(orgKv(env.CACHE, GLOBAL_ORG), ["known", "missing"])).keys(),
     ]).toEqual(["known"]);
 
     const plane = {
@@ -638,7 +635,7 @@ describe("model catalog probes", () => {
     );
     expect(calls[0]?.headers["authorization"]).toBe("Bearer tok");
     expect(JSON.parse(calls[0]?.body ?? "{}")).toEqual({ project: "proj" });
-    const stored = (await loadAntigravityHints(env.CACHE, GLOBAL_ORG, [id])).get(id);
+    const stored = (await loadAntigravityHints(orgKv(env.CACHE, GLOBAL_ORG), [id])).get(id);
     expect(stored).toEqual({
       modelIds: ["claude-sonnet-4-5", "gemini-3-pro-high"],
       webSearchModelIds: ["gemini-3-pro-high"],
@@ -654,7 +651,9 @@ describe("model catalog probes", () => {
     );
 
     expect(failed).toEqual([{ id, status: "transient" }]);
-    expect((await loadAntigravityHints(env.CACHE, GLOBAL_ORG, [id])).get(id)).toEqual(stored);
+    expect((await loadAntigravityHints(orgKv(env.CACHE, GLOBAL_ORG), [id])).get(id)).toEqual(
+      stored,
+    );
 
     // The failure window suppresses the next probe.
     const backoff = await Effect.runPromise(

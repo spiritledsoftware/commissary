@@ -28,6 +28,8 @@ export * from "./observability/logger.ts";
 
 export * from "./org.ts";
 
+export * from "./kv.ts";
+
 export * from "./outbound/check.ts";
 
 export * from "./outbound/client.ts";

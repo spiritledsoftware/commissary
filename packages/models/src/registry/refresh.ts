@@ -36,6 +36,7 @@ import {
 } from "./catalog-store.ts";
 import { type ModelsDevCatalog, trimModelsDev } from "./models-dev.ts";
 import { ModelsEnv } from "../env.ts";
+import { deploymentKvOf } from "../kv.ts";
 
 /** The three-hourly cron trigger (`CRONS` in alchemy.run.ts) runs this refresh. */
 export const MODELS_REFRESH_INTERVAL_HOURS = 3;
@@ -204,9 +205,9 @@ const refreshNow = (
     if (source.mode === "embed") {
       if (previous === null) return { status: "unchanged" };
 
-      const deleted = yield* Effect.tryPromise(() => env.CACHE.delete(CATALOG_KEYS.modelsDev)).pipe(
-        Effect.result,
-      );
+      const deleted = yield* Effect.tryPromise(() =>
+        deploymentKvOf(env).delete(CATALOG_KEYS.modelsDev),
+      ).pipe(Effect.result);
 
       if (Result.isFailure(deleted)) return failed("removing the stored catalog failed");
       yield* store.invalidate;
@@ -234,9 +235,9 @@ const refreshNow = (
     if (previous === next)
       return { status: "unchanged", source: source.url, models, ...skippedPart };
 
-    const stored = yield* Effect.tryPromise(() => env.CACHE.put(CATALOG_KEYS.modelsDev, next)).pipe(
-      Effect.result,
-    );
+    const stored = yield* Effect.tryPromise(() =>
+      deploymentKvOf(env).put(CATALOG_KEYS.modelsDev, next),
+    ).pipe(Effect.result);
 
     if (Result.isFailure(stored)) return failed("storing the catalog failed");
     yield* store.invalidate;
@@ -313,7 +314,7 @@ const record = (outcome: RefreshOutcome): Effect.Effect<void, never, ModelsEnv> 
 
     if (status === "skipped" || status === "running") return;
 
-    const previous = yield* Effect.tryPromise(() => readRefreshStatus(env.CACHE)).pipe(
+    const previous = yield* Effect.tryPromise(() => readRefreshStatus(deploymentKvOf(env))).pipe(
       Effect.orElseSucceed(() => undefined),
     );
 
@@ -324,7 +325,7 @@ const record = (outcome: RefreshOutcome): Effect.Effect<void, never, ModelsEnv> 
     const refreshedAt = reverted ? undefined : succeeded ? now : previous?.refreshedAt;
 
     yield* Effect.tryPromise(() =>
-      writeRefreshStatus(env.CACHE, {
+      writeRefreshStatus(deploymentKvOf(env), {
         attemptedAt: now,
         status,
         ...(outcome.message === undefined ? {} : { message: outcome.message }),

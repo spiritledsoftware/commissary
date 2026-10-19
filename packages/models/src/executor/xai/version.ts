@@ -9,7 +9,9 @@
 import { Clock, Effect, Option } from "effect";
 import { get, tryParseJson } from "@commissary/json";
 import { HttpClient, HttpClientRequest } from "effect/http";
+import { deploymentKey } from "@commissary/core";
 import { ModelsEnv } from "../../env.ts";
+import { deploymentKvOf } from "../../kv.ts";
 
 /** Stable Grok CLI version used when npm resolution fails (`DefaultXAIFallbackClientVersion`). */
 export const XAI_FALLBACK_CLIENT_VERSION = "1.0.46";
@@ -17,7 +19,7 @@ export const XAI_FALLBACK_CLIENT_VERSION = "1.0.46";
 /** Minimum version the chat proxy accepts; older clients are rejected with HTTP 426. */
 export const XAI_CLIENT_VERSION_FLOOR = "1.0.13";
 
-export const XAI_VERSION_KV_KEY = "xai/client-version";
+export const XAI_VERSION_KV_KEY = deploymentKey("xai/client-version");
 
 export const XAI_NPM_REGISTRY_URL = "https://registry.npmjs.org/@xai-official/grok/latest";
 
@@ -61,9 +63,9 @@ export const currentXaiClientVersion: Effect.Effect<string> = Effect.gen(functio
   let version = XAI_FALLBACK_CLIENT_VERSION;
 
   if (Option.isSome(env)) {
-    const stored = yield* Effect.tryPromise(() => env.value.CACHE.get(XAI_VERSION_KV_KEY)).pipe(
-      Effect.orElseSucceed(() => null),
-    );
+    const stored = yield* Effect.tryPromise(() =>
+      deploymentKvOf(env.value).get(XAI_VERSION_KV_KEY),
+    ).pipe(Effect.orElseSucceed(() => null));
 
     if (stored !== null && acceptableXaiClientVersion(stored.trim())) version = stored.trim();
   }
@@ -111,7 +113,7 @@ export const refreshXaiClientVersion = (
       return undefined;
     }
 
-    yield* Effect.tryPromise(() => env.CACHE.put(XAI_VERSION_KV_KEY, version)).pipe(
+    yield* Effect.tryPromise(() => deploymentKvOf(env).put(XAI_VERSION_KV_KEY, version)).pipe(
       Effect.tapError((error) =>
         Effect.logWarning(`failed to store the Grok CLI version: ${String(error)}`),
       ),

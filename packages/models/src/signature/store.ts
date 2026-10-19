@@ -10,15 +10,14 @@ import {
   type SignatureStore,
   signatureStoreKey,
 } from "@commissary/translation/signature";
-import { type OrgId, orgScopedName } from "@commissary/core";
+import type { OrgKv } from "@commissary/core";
 
 /** KV `expirationTtl` is in seconds (minimum 60). */
 const TTL_SECONDS = SIGNATURE_CACHE_TTL_MS / 1000;
 
-/** `CACHE` KV backed store of `org` (keys scoped with `orgScopedName`, unchanged for `global`). */
-export const makeKvSignatureStore = (kv: KVNamespace, org: OrgId): SignatureStore => {
-  const key = (modelName: string, text: string): string =>
-    orgScopedName(org, signatureStoreKey(modelName, text));
+/** `CACHE` KV backed store of the org `kv` belongs to. */
+export const makeKvSignatureStore = (kv: OrgKv): SignatureStore => {
+  const key = signatureStoreKey;
 
   return {
     get: async (modelName, text) => {

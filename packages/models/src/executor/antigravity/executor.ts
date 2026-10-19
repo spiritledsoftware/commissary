@@ -36,7 +36,12 @@ import {
 } from "@commissary/json";
 import { splitLines } from "@commissary/translation/sse";
 import { fetchProjectId } from "../../oauth/flows/antigravity.ts";
-import { WorkerExecutionContext, type OrgId } from "@commissary/core";
+import {
+  type DeploymentKv,
+  type OrgId,
+  type OrgKv,
+  WorkerExecutionContext,
+} from "@commissary/core";
 import { controlPlaneOf, optionalRequestOrg } from "@commissary/state";
 import {
   isolateSignatureCache,
@@ -119,6 +124,7 @@ import { type AntigravityState, antigravityStateFor } from "./state.ts";
 import { convertStreamToNonStream, JsonAssembler, UsageFilter } from "./stream.ts";
 import { antigravityRequestUserAgent, currentAntigravityVersion } from "./version.ts";
 import { ModelsEnv } from "../../env.ts";
+import { deploymentKvIfBound, orgKvIfBound } from "../../kv.ts";
 
 export const ANTIGRAVITY_IDENTIFIER = "antigravity";
 
@@ -171,7 +177,10 @@ interface Attempt {
   readonly request: ExecutorRequest;
   readonly options: ExecutorOptions;
   readonly state: AntigravityState;
-  readonly kv: KVNamespace | undefined;
+  /** The org's KV entries (signatures); `undefined` without a `CACHE` binding. */
+  readonly kv: OrgKv | undefined;
+  /** The deployment-wide KV entries (the client version). */
+  readonly deploymentKv: DeploymentKv | undefined;
   readonly signatures: MemorySignatureCache;
   /** The request's org: the state, signatures and credential belong to it. */
   readonly org: OrgId;
@@ -255,7 +264,8 @@ export const makeAntigravityExecutor = (
       project,
       org,
       state: antigravityStateFor(env, org),
-      kv: env?.CACHE,
+      kv: orgKvIfBound(env, org),
+      deploymentKv: deploymentKvIfBound(env),
       signatures: isolateSignatureCache(org),
       waitUntil:
         typeof ctx?.waitUntil === "function" ? (promise) => ctx.waitUntil(promise) : undefined,
@@ -276,8 +286,7 @@ export const makeAntigravityExecutor = (
     );
 
   const persistSignatures = (attempt: Attempt): Effect.Effect<void> => {
-    const store =
-      attempt.kv === undefined ? undefined : makeKvSignatureStore(attempt.kv, attempt.org);
+    const store = attempt.kv === undefined ? undefined : makeKvSignatureStore(attempt.kv);
 
     if (store === undefined) return Effect.void;
     const flush = flushSignatureWrites(attempt.signatures, store);
@@ -293,7 +302,11 @@ export const makeAntigravityExecutor = (
 
   const userAgent = (attempt: Attempt) =>
     Effect.gen(function* () {
-      const version = yield* currentAntigravityVersion(attempt.kv, yield* Clock.currentTimeMillis);
+      const version = yield* currentAntigravityVersion(
+        attempt.deploymentKv,
+        yield* Clock.currentTimeMillis,
+      );
+
       const credential = attempt.context.credential;
 
       return antigravityRequestUserAgent(
@@ -393,12 +406,7 @@ export const makeAntigravityExecutor = (
 
     if (texts.length > 0 && kv !== undefined) {
       yield* Effect.promise(() =>
-        prefetchSignatures(
-          attempt.signatures,
-          makeKvSignatureStore(kv, attempt.org),
-          baseModel,
-          texts,
-        ),
+        prefetchSignatures(attempt.signatures, makeKvSignatureStore(kv), baseModel, texts),
       );
     }
 
@@ -951,12 +959,7 @@ export const makeAntigravityExecutor = (
 
     if (texts.length > 0 && kv !== undefined) {
       yield* Effect.promise(() =>
-        prefetchSignatures(
-          attempt.signatures,
-          makeKvSignatureStore(kv, attempt.org),
-          baseModel,
-          texts,
-        ),
+        prefetchSignatures(attempt.signatures, makeKvSignatureStore(kv), baseModel, texts),
       );
     }
 

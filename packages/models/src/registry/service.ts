@@ -28,6 +28,7 @@ import { type ClientRegistration, ModelRegistryIndex } from "./registry.ts";
 import type { ModelSource } from "./source.ts";
 import { FULL_ACCESS } from "../credentials/ownership.ts";
 import { ModelsEnv, currentModelsControlPlane } from "../env.ts";
+import { orgKvOf } from "../kv.ts";
 
 /** The ControlPlane could not provide the credential model sources. */
 export class ModelRegistryError extends Schema.TaggedError<ModelRegistryError>()(
@@ -253,8 +254,11 @@ export class ModelRegistry extends Context.Service<
         );
 
         const now = yield* Clock.currentTimeMillis;
+
         // Antigravity credentials serve the entitlements of their last `fetchAvailableModels` probe (KV).
-        const enriched = yield* Effect.promise(() => withAntigravityHints(env.CACHE, org, sources));
+        const enriched = yield* Effect.promise(() =>
+          withAntigravityHints(orgKvOf(env, org), sources),
+        );
 
         return buildSnapshot({
           sources: enriched,
