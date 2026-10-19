@@ -197,6 +197,7 @@ const removeMember = Effect.gen(function* () {
 const settingsView = (settings: MembershipSettingsWire, org: OrgId): MembershipSettings => ({
   auto_join: settings.autoJoin,
   private_credentials: settings.privateCredentials,
+  private_toolkits: settings.privateToolkits,
   ...(org === GLOBAL_ORG ? { access_clients: settings.accessClients } : {}),
 });
 
@@ -214,6 +215,7 @@ const updateMembershipSettings = Effect.gen(function* () {
   if (
     input.auto_join === undefined &&
     input.private_credentials === undefined &&
+    input.private_toolkits === undefined &&
     input.access_clients === undefined
   )
     return yield* replyError(400, "invalid body");
@@ -238,6 +240,7 @@ const updateMembershipSettings = Effect.gen(function* () {
       ...(input.private_credentials === undefined
         ? {}
         : { privateCredentials: input.private_credentials }),
+      ...(input.private_toolkits === undefined ? {} : { privateToolkits: input.private_toolkits }),
       ...(input.access_clients === undefined ? {} : { accessClients: input.access_clients }),
     }),
   );

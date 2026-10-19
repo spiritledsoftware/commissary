@@ -2,7 +2,7 @@
 // everywhere (credential, key, session and model names), and every store of org data is written by one org and read by
 // the others: KV, the signature and Antigravity state, the per-isolate caches, SessionState, the D1 usage records
 // through every query the management API exposes, the ControlPlane addressed by key prefix and by slug, and Tools'
-// toolkits by name and by id and the upstream MCP sessions their calls keep.
+// toolkits by name and by id, their tool grants and the upstream MCP sessions their calls keep.
 // Each store is one `storeCase` in `STORES`: a new store (tool calls, approvals, runs, sandbox and browser sessions,
 // profiles) adds one line there (docs/DEVELOPMENT.md, "Tests").
 import { env } from "cloudflare:workers";
@@ -615,13 +615,54 @@ const STORES: ReadonlyArray<StoreCase> = [
     },
     value: (index) => `org${index}`,
   }),
+  // Tools' tool grants: each org grants a tool of its own toolkit of the same name, and lists its own grant only.
+  storeCase("controlplane: tool grants", {
+    write: async (org, name, value) => {
+      const added = await managed(org, "/toolkits", {
+        ...jsonInit("POST", { source: toolkitSource(value), name: toolkitName(`grant-${name}`) }),
+      });
+
+      expect(added.status).toBe(201);
+      const toolkit = (added.body as { id: string }).id;
+
+      const granted = await managed(org, "/grants/tools", {
+        ...jsonInit("POST", {
+          subject: { kind: "everyone" },
+          toolkit,
+          tools: { kind: "named", ids: [`${toolkit}:${value}`] },
+        }),
+      });
+
+      expect(granted.status).toBe(200);
+    },
+    read: async (org, name) => {
+      const toolkits = (
+        (await managed(org, "/toolkits")).body as {
+          toolkits: ReadonlyArray<{ id: string; name: string }>;
+        }
+      ).toolkits;
+
+      const toolkit = toolkits.find((found) => found.name === toolkitName(`grant-${name}`))?.id;
+
+      const grants = (
+        (await managed(org, "/grants/tools")).body as {
+          grants: ReadonlyArray<{ toolkit: string; tools: { ids?: ReadonlyArray<string> } }>;
+        }
+      ).grants;
+
+      const [id] = grants.find((grant) => grant.toolkit === toolkit)?.tools.ids ?? [];
+
+      return id?.slice(`${toolkit}:`.length);
+    },
+    value: (index) => `org${index}`,
+  }),
   // The upstream MCP sessions Tools' calls keep: each org's member calls the same server under the same toolkit name,
   // and a later call goes on in its own org's session.
   storeCase("controlplane: upstream MCP sessions", {
     write: async (org, name, value) => {
       const plane = env.CONTROL_PLANE.getByName(org.id);
 
-      await plane.setMembershipSettings({ privateCredentials: true });
+      await plane.setMembershipSettings({ privateCredentials: true, privateToolkits: true });
 
       const added = await plane.tools().addToolkit(
         isoViewer(org),
@@ -651,6 +692,7 @@ const STORES: ReadonlyArray<StoreCase> = [
       for (const org of shared)
         await env.CONTROL_PLANE.getByName(org.id).setMembershipSettings({
           privateCredentials: false,
+          privateToolkits: false,
         });
     },
   }),

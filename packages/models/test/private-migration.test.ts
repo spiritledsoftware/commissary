@@ -115,12 +115,13 @@ describe("OAuth logins stored before ownership", () => {
 
 describe("the org setting for private credentials", () => {
   const before = async (org: OrgId) => {
-    // The membership row as it was before the setting: no column.
+    // The membership row as it was before the setting: no column (nor the later private toolkits one).
     const stub = controlPlane(org);
 
     await runInDurableObject(stub, async (instance, state) => {
       await instance.started;
       state.storage.sql.exec("ALTER TABLE membership DROP COLUMN private_credentials");
+      state.storage.sql.exec("ALTER TABLE membership DROP COLUMN private_toolkits");
     });
 
     await restart(stub);
@@ -134,6 +135,7 @@ describe("the org setting for private credentials", () => {
     expect(await stub.membershipSettings()).toEqual({
       autoJoin: true,
       privateCredentials: true,
+      privateToolkits: true,
       accessClients: true,
     });
 
@@ -142,6 +144,7 @@ describe("the org setting for private credentials", () => {
     expect(await stub.membershipSettings()).toEqual({
       autoJoin: true,
       privateCredentials: true,
+      privateToolkits: true,
       accessClients: true,
     });
   });
@@ -152,6 +155,7 @@ describe("the org setting for private credentials", () => {
     expect(await stub.membershipSettings()).toEqual({
       autoJoin: false,
       privateCredentials: false,
+      privateToolkits: false,
       accessClients: false,
     });
 
@@ -160,8 +164,41 @@ describe("the org setting for private credentials", () => {
     expect(await stub.membershipSettings()).toEqual({
       autoJoin: false,
       privateCredentials: false,
+      privateToolkits: false,
       accessClients: false,
     });
+  });
+});
+
+describe("the org setting for private toolkits", () => {
+  it("starts as private credentials stood, so an org keeps serving the private toolkits it served", async () => {
+    for (const privateCredentials of [true, false]) {
+      const stub = controlPlane(freshOrg());
+
+      await stub.setMembershipSettings({ privateCredentials });
+
+      // The membership row as it was before the setting: no column.
+      await runInDurableObject(stub, async (instance, state) => {
+        await instance.started;
+        state.storage.sql.exec("ALTER TABLE membership DROP COLUMN private_toolkits");
+      });
+
+      await restart(stub);
+
+      expect(await stub.membershipSettings()).toMatchObject({
+        privateCredentials,
+        privateToolkits: privateCredentials,
+      });
+
+      // Once the column is there, the two settings are apart.
+      await stub.setMembershipSettings({ privateToolkits: !privateCredentials });
+      await restart(stub);
+
+      expect(await stub.membershipSettings()).toMatchObject({
+        privateCredentials,
+        privateToolkits: !privateCredentials,
+      });
+    }
   });
 });
 

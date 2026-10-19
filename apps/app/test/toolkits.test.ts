@@ -49,14 +49,22 @@ const send = async (
   });
 };
 
-/** An org with an org admin and two plain members; `privateCredentials` is the setting chosen at creation. */
+/**
+ * An org with an org admin and two plain members; `privateCredentials` is the setting chosen at creation, private
+ * toolkits are on.
+ */
 const newOrg = async (privateCredentials = true): Promise<Org> => {
   const slug = `tools-${crypto.randomUUID().slice(0, 8)}`;
   const platform = await token(ADMIN);
 
   const created = await harness.json(
     "/v9/management/orgs",
-    jsonInit("POST", { slug, name: slug, private_credentials: privateCredentials }),
+    jsonInit("POST", {
+      slug,
+      name: slug,
+      private_credentials: privateCredentials,
+      private_toolkits: true,
+    }),
   );
 
   expect(created.status).toBe(201);
@@ -88,6 +96,9 @@ const toolkitOf = (reply: { body: unknown }) => Schema.decodeUnknownSync(Toolkit
 const errorOf = (reply: { body: unknown }) => (reply.body as { error?: string }).error;
 
 const revised = (revision: number) => ({ "if-match": String(revision) });
+
+/** Who a shared credential is connected for (there is no default tool grant, #198). */
+const EVERYONE = { kind: "everyone" };
 
 describe("an org toolkit", () => {
   it("is added for a remote MCP server, signed in with a shared bearer token, and lists named, classed tools", async () => {
@@ -125,6 +136,7 @@ describe("an org toolkit", () => {
       {
         kind: "bearer",
         token: "gh-token",
+        subject: EVERYONE,
       },
     );
 
@@ -195,7 +207,7 @@ describe("an org toolkit", () => {
       await send(org, "/toolkits", org.admin, "POST", {
         source,
         name: "kit",
-        credential: { kind: "none" },
+        credential: { kind: "none", subject: EVERYONE },
       }),
     );
 
@@ -223,7 +235,7 @@ describe("an org toolkit", () => {
     const toolkit = toolkitOf(
       await send(org, "/toolkits", org.admin, "POST", {
         source: server.url,
-        credential: { kind: "none" },
+        credential: { kind: "none", subject: EVERYONE },
       }),
     );
 
@@ -512,7 +524,12 @@ describe("the org export", () => {
       await send(org, "/toolkits", org.admin, "POST", {
         source: server.url,
         name: "kit",
-        credential: { kind: "header", name: "X-Api-Key", value: "export-secret" },
+        credential: {
+          kind: "header",
+          name: "X-Api-Key",
+          value: "export-secret",
+          subject: EVERYONE,
+        },
       }),
     );
 

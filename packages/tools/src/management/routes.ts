@@ -7,15 +7,20 @@
  * viewer each route hands it: an org admin manages org toolkits, a member their private ones and their private
  * credentials. A toolkit's source passes the outbound guard when it is saved (ADR 0044), and the part builds tool lists
  * with the request's guard policy. Edits of a toolkit or an override name its revision in `If-Match`.
+ *
+ * `/v9/management/grants/tools` (`ToolGrantsGroup` in `@commissary/contract/grants`): the tool grants (#198, ADR 0038),
+ * beside Models' model grants at `/grants`, so the panel shows both on one Grants page. Org admins only (the role
+ * table's default); a write names the grant's revision in `If-Match` (`POST` creates at 0).
  */
 import { Effect, Result, Schema } from "effect";
 import { HttpRouter, type HttpServerResponse } from "effect/http";
 import { AccessPrincipal, currentViewer } from "@commissary/auth";
+import { ToolGrantBody } from "@commissary/contract/grants";
 import {
   AddToolkit,
+  ConnectCredential,
   CredentialSlot,
   SetToolOverride,
-  ToolkitSecret,
   UpdateToolkit,
 } from "@commissary/contract/tools";
 import {
@@ -42,6 +47,7 @@ const STATUS: Readonly<Record<ToolsErrorCode, number>> = {
   name_taken: 409,
   not_accepted: 422,
   private_credentials_unavailable: 403,
+  private_toolkits_unavailable: 403,
   no_credential: 409,
   tool_list_failed: 502,
 };
@@ -157,11 +163,11 @@ const connect = Effect.gen(function* () {
   const { principalId } = yield* AccessPrincipal;
   const id = yield* idParam;
   const slot = yield* slotParam;
-  const secret = yield* decode(ToolkitSecret);
+  const credential = yield* decode(ConnectCredential);
   const policy = yield* CurrentOutboundPolicy;
 
   const result = yield* toolsControlPlane("connectCredential", (stub) =>
-    stub.tools().connectCredential(viewer, id, slot, secret, principalId, policy),
+    stub.tools().connectCredential(viewer, id, slot, credential, principalId, policy),
   );
 
   return jsonReply(200, yield* orRefuse(result));
@@ -216,6 +222,45 @@ const override = Effect.gen(function* () {
   return jsonReply(200, yield* orRefuse(result));
 });
 
+// --- tool grants -------------------------------------------------------------------------------------------------------
+
+const listGrants = Effect.gen(function* () {
+  return jsonReply(
+    200,
+    yield* toolsControlPlane("listGrants", (stub) => stub.tools().listGrants()),
+  );
+});
+
+/** Writes one tool grant (`value` `null` deletes it) and answers its id and new revision. */
+const writeGrant = (id: string | undefined, revision: number, value: ToolGrantBody | null) =>
+  Effect.gen(function* () {
+    const { principalId } = yield* AccessPrincipal;
+
+    const result = yield* toolsControlPlane("writeGrant", (stub) =>
+      stub.tools().writeGrant({ id, revision, value }, principalId),
+    );
+
+    return jsonReply(200, { status: "ok", ...(yield* orRefuse(result)) });
+  });
+
+const createGrant = Effect.gen(function* () {
+  return yield* writeGrant(undefined, 0, yield* decode(ToolGrantBody));
+});
+
+const replaceGrant = Effect.gen(function* () {
+  const id = yield* idParam;
+  const revision = yield* ifMatch;
+
+  return yield* writeGrant(id, revision, yield* decode(ToolGrantBody));
+});
+
+const removeGrant = Effect.gen(function* () {
+  const id = yield* idParam;
+  const revision = yield* ifMatch;
+
+  return yield* writeGrant(id, revision, null);
+});
+
 const route = <R>(
   method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
   path: string,
@@ -233,4 +278,8 @@ export const ManagementRoutes = HttpRouter.addAll([
   route("POST", "/toolkits/:id/refresh", refresh),
   route("GET", "/toolkits/:id/tools", tools),
   route("PUT", "/toolkits/:id/overrides", override),
+  route("GET", "/grants/tools", listGrants),
+  route("POST", "/grants/tools", createGrant),
+  route("PUT", "/grants/tools/:id", replaceGrant),
+  route("DELETE", "/grants/tools/:id", removeGrant),
 ]);

@@ -73,7 +73,10 @@ const staffedOrg = async (prefix: string) => {
   const slug = `${prefix}-${crypto.randomUUID().slice(0, 8)}`;
   const org = newOrgId();
 
-  await controlPlaneOf(env, org).setMembershipSettings({ privateCredentials: true });
+  await controlPlaneOf(env, org).setMembershipSettings({
+    privateCredentials: true,
+    privateToolkits: true,
+  });
   const created = await platformOf(env).createOrg({ slug, name: slug, id: org }, Date.now());
 
   if (!created.ok) throw new Error(created.message);
@@ -223,8 +226,9 @@ const toolsIn = (answer: {
 
 /**
  * An org with a toolkit of every reach: `linear`, an org toolkit that takes shared and private credentials (with a
- * shared one), `stripe`, an org toolkit with a shared credential only, and alice's private `notes`. Each echoes the
- * calls it gets (`fakeMcpServer`).
+ * shared one), `stripe`, an org toolkit with a shared credential only, and alice's private `notes`. Both shared
+ * credentials are granted to the org admin alone (there is no default tool grant). Each echoes the calls it gets
+ * (`fakeMcpServer`).
  */
 const toolkitsOrg = async (prefix: string) => {
   const staff = await staffedOrg(prefix);
@@ -251,15 +255,19 @@ const toolkitsOrg = async (prefix: string) => {
     name: "linear",
     private: false,
     accepts: "both",
-    credential: { kind: "bearer", token: "linear-shared-token" },
+    credential: {
+      kind: "bearer",
+      token: "linear-shared-token",
+      subject: { kind: "member", id: staff.admin.id },
+    },
   });
 
-  await addToolkit(staff.org, staff.admin, true, {
+  const stripeId = await addToolkit(staff.org, staff.admin, true, {
     source: stripe.url,
     name: "stripe",
     private: false,
     accepts: "shared",
-    credential: { kind: "none" },
+    credential: { kind: "none", subject: { kind: "member", id: staff.admin.id } },
   });
 
   const notesId = await addToolkit(staff.org, staff.alice, false, {
@@ -270,7 +278,7 @@ const toolkitsOrg = async (prefix: string) => {
     credential: { kind: "bearer", token: "alice-notes-token" },
   });
 
-  return { ...staff, linear, stripe, notes, linearId, notesId };
+  return { ...staff, linear, stripe, notes, linearId, stripeId, notesId };
 };
 
 describe("the tool list", () => {
@@ -671,6 +679,99 @@ describe("a tool call", () => {
 
     expect(callsTo(stripe)).toEqual([]);
     expect(callsTo(linear)).toEqual([]);
+  });
+});
+
+describe("a tool grant", () => {
+  it("gives the shared credential's tools to the members it names, who are called on that credential", async () => {
+    const { org, alice, bob, stripe, stripeId } = await toolkitsOrg("mcp-grant");
+
+    const outcome = async (member: TestMember, name: string) => {
+      const call = modern(1, "tools/call", { name, arguments: { amount: 5 } });
+      const answer = await (await clientOf(org, member)).send(call.body, call.headers);
+
+      return { status: answer.status, error: answer.body?.["error"], result: resultOf(answer) };
+    };
+
+    const names = async (member: TestMember) => {
+      const list = modern(1, "tools/list");
+
+      return toolsIn(await (await clientOf(org, member)).send(list.body, list.headers)).map(
+        (tool) => tool.name,
+      );
+    };
+
+    // Without a grant: not listed, and called it answers exactly as a tool that does not exist.
+    expect(await names(bob)).not.toContain("stripe_refund");
+    expect(await outcome(bob, "stripe_refund")).toEqual({
+      status: 200,
+      error: { code: -32602, message: "Unknown tool: stripe_refund" },
+      result: undefined,
+    });
+    expect(await outcome(bob, "stripe_nothing")).toEqual({
+      status: 200,
+      error: { code: -32602, message: "Unknown tool: stripe_nothing" },
+      result: undefined,
+    });
+
+    const granted = await toolsOf(org).writeGrant(
+      {
+        revision: 0,
+        value: {
+          subject: { kind: "member", id: bob.id },
+          toolkit: stripeId,
+          tools: { kind: "all" },
+        },
+      },
+      "test",
+    );
+
+    if (!granted.ok) throw new Error(granted.message);
+
+    expect(await names(bob)).toContain("stripe_refund");
+    expect((await outcome(bob, "stripe_refund")).result).toMatchObject({
+      content: [
+        { type: "text", text: JSON.stringify({ name: "refund", arguments: { amount: 5 } }) },
+      ],
+    });
+    expect(callsTo(stripe)).toEqual([
+      { name: "refund", arguments: { amount: 5 }, authorization: null },
+    ]);
+
+    // Alice, whom it does not name, still does not reach it.
+    expect(await names(alice)).not.toContain("stripe_refund");
+    expect((await outcome(alice, "stripe_refund")).error).toEqual({
+      code: -32602,
+      message: "Unknown tool: stripe_refund",
+    });
+  });
+});
+
+describe("a private toolkit while the org has private toolkits off", () => {
+  it("drops out of the list and its calls answer as unknown, until the setting is on again", async () => {
+    const { org, alice, notes } = await toolkitsOrg("mcp-private-off");
+    const client = await clientOf(org, alice);
+    const list = modern(1, "tools/list");
+    const call = modern(2, "tools/call", { name: "notes_add_note", arguments: {} });
+
+    const names = async () =>
+      toolsIn(await client.send(list.body, list.headers)).map((tool) => tool.name);
+
+    expect(await names()).toContain("notes_add_note");
+
+    await controlPlaneOf(env, org).setMembershipSettings({ privateToolkits: false });
+
+    expect(await names()).not.toContain("notes_add_note");
+    expect((await client.send(call.body, call.headers)).body?.["error"]).toEqual({
+      code: -32602,
+      message: "Unknown tool: notes_add_note",
+    });
+    expect(callsTo(notes)).toEqual([]);
+
+    await controlPlaneOf(env, org).setMembershipSettings({ privateToolkits: true });
+
+    expect(await names()).toContain("notes_add_note");
+    expect(resultOf(await client.send(call.body, call.headers))?.["isError"]).toBeUndefined();
   });
 });
 

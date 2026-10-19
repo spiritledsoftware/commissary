@@ -15,13 +15,18 @@ import type { Sealer } from "@commissary/state";
 import type { Schema } from "effect";
 import type { UpstreamSession, UpstreamTool } from "../mcp/client.ts";
 
-/** Every table the store creates, which the part's `wipe` drops (test/control-plane.test.ts checks the list). */
+/**
+ * Every table of the Tools part (this store's and the tool grants', `grants/store.ts`), which the part's `wipe` drops
+ * (test/control-plane.test.ts checks the list). Each but `toolkits` is keyed by `toolkit_id`, so {@link
+ * ToolkitStore.deleteToolkit} deletes a toolkit's rows from all of them.
+ */
 export const TOOLS_TABLES = [
   "toolkits",
   "toolkit_credentials",
   "toolkit_tools",
   "tool_overrides",
   "toolkit_sessions",
+  "tool_grants",
 ] as const;
 
 /** How long an upstream session is kept from when it was opened (ADR 0038: at most seven days, like replay state). */
@@ -321,7 +326,7 @@ export class ToolkitStore {
     else this.#sql.exec(`UPDATE toolkits SET list_error = ? WHERE id = ?`, outcome.error, id);
   }
 
-  /** Deletes a toolkit with its credentials, tool list, overrides and sessions. */
+  /** Deletes a toolkit with its credentials, tool list, overrides, sessions and tool grants. */
   deleteToolkit(id: string): void {
     this.#transaction(() => {
       for (const table of TOOLS_TABLES)

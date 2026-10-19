@@ -17,11 +17,14 @@ const ALICE = { member: "m-alice", admin: false };
 
 const BOB = { member: "m-bob", admin: false };
 
-/** A new org's ControlPlane, with private credentials on (a new org has them off). */
+/** Who a shared credential is connected for (there is no default tool grant, #198). */
+const EVERYONE = { kind: "everyone" as const };
+
+/** A new org's ControlPlane, with private credentials and private toolkits on (a new org has them off). */
 const plane = async () => {
   const stub = env.CONTROL_PLANE.getByName(crypto.randomUUID());
 
-  await stub.setMembershipSettings({ privateCredentials: true });
+  await stub.setMembershipSettings({ privateCredentials: true, privateToolkits: true });
 
   return stub;
 };
@@ -34,7 +37,7 @@ const orgToolkit = (source: string, name: string, extra: Partial<AddToolkitInput
   name,
   private: false,
   accepts: "shared" as const,
-  credential: { kind: "none" as const },
+  credential: { kind: "none" as const, subject: EVERYONE },
   ...extra,
 });
 
@@ -84,7 +87,9 @@ describe("an org toolkit from a remote MCP server", () => {
     const toolkit = await add(
       stub,
       ADMIN,
-      orgToolkit(server.url, "github", { credential: { kind: "bearer", token: "secret-token" } }),
+      orgToolkit(server.url, "github", {
+        credential: { kind: "bearer", token: "secret-token", subject: EVERYONE },
+      }),
     );
 
     expect(toolkit.tool_list).toMatchObject({ tools: 3 });
@@ -512,7 +517,14 @@ describe("credentials", () => {
     expect(
       await stub
         .tools()
-        .connectCredential(ADMIN, toolkit.id, "shared", { kind: "none" }, "admin", POLICY),
+        .connectCredential(
+          ADMIN,
+          toolkit.id,
+          "shared",
+          { kind: "none", subject: EVERYONE },
+          "admin",
+          POLICY,
+        ),
     ).toMatchObject({ ok: false, error: "not_accepted" });
   });
 
@@ -532,13 +544,17 @@ describe("credentials", () => {
     const viaQuery = await add(
       stub,
       ADMIN,
-      orgToolkit(query.url, "q", { credential: { kind: "query", name: "key", value: "k1" } }),
+      orgToolkit(query.url, "q", {
+        credential: { kind: "query", name: "key", value: "k1", subject: EVERYONE },
+      }),
     );
 
     const viaBasic = await add(
       stub,
       ADMIN,
-      orgToolkit(basic.url, "b", { credential: { kind: "basic", username: "me", password: "pw" } }),
+      orgToolkit(basic.url, "b", {
+        credential: { kind: "basic", username: "me", password: "pw", subject: EVERYONE },
+      }),
     );
 
     expect([viaQuery.tool_list.tools, viaBasic.tool_list.tools]).toEqual([1, 1]);
@@ -560,7 +576,7 @@ describe("what an org toolkit accepts", () => {
       ADMIN,
       orgToolkit(server.url, "kit", {
         accepts: "both",
-        credential: { kind: "bearer", token: "shared" },
+        credential: { kind: "bearer", token: "shared", subject: EVERYONE },
       }),
     );
 
