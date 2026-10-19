@@ -365,11 +365,13 @@ the stack (`pnpm exec alchemy destroy --config stacks/github.ts --stage ci --pro
   panel and the management API without an org keep meaning `global`; the panel at `/` then redirects to `/o/default/`
   (see [ACCESS.md](ACCESS.md#platform-admins-and-orgs)).
 - **Outbound guard.** Every Worker runs with the `global_fetch_strictly_public` compatibility flag, and a provider's
-  `base_url` must be a public `https:` address (ADR 0044, [ARCHITECTURE.md](ARCHITECTURE.md#outbound-guard-coreoutbound)).
-  From the deploy that brings the guard, a key group or auth file whose `base_url` is `http:`, an IP literal in a
-  private, loopback, link-local or other non-public range, or one of the stage's own hosts stops working: its requests
-  answer `400` "Commissary only reaches public HTTPS addresses" and the other providers serve the request. There is no
-  setting to allow it; change the `base_url` (see [MIGRATION.md](MIGRATION.md#1-config)). The deploy sets `OWN_HOSTS`
+  `base_url`, a Vertex service account's `token_uri` and a custom `models.catalog` source must be public `https:`
+  addresses (ADR 0044, [ARCHITECTURE.md](ARCHITECTURE.md#outbound-guard-coreoutbound)). From the deploy that brings the
+  guard, a key group or auth file whose `base_url` is `http:`, an IP literal in a private, loopback, link-local or other
+  non-public range, or one of the stage's own hosts stops working: its requests answer `400` "Commissary only reaches
+  public HTTPS addresses" and the other providers serve the request. A Vertex credential with such a `token_uri` fails
+  its token refresh, and such a catalog source fails the catalog refresh (the stored catalog stays). There is no
+  setting to allow it; change the URL (see [MIGRATION.md](MIGRATION.md#1-config)). The deploy sets `OWN_HOSTS`
   (the base, app, API and auth hosts) on the app, API and state Workers from the existing settings: nothing to
   configure.
 - **State.** Deploys use the Alchemy state store in the account (`Cloudflare.state()`), shared by CI and local

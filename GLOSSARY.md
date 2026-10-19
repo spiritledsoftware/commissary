@@ -183,6 +183,11 @@ The key of one org that encrypts the secrets the org stores: its auth files and 
 read them with its own data key.
 _Avoid_: org key, encryption key (unqualified)
 
+**Outbound guard**:
+The one check every URL an org or member supplies passes before Commissary fetches it (ADR 0044): public HTTPS
+addresses only, none of the deployment's own hosts.
+_Avoid_: SSRF filter, egress filter, allowlist
+
 ### Providers and credentials
 
 **Provider**:

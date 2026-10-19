@@ -1186,9 +1186,15 @@ claude/gemini/openai-response -> openai, interactions <-> openai (Chat Completio
 ## Outbound guard (`core/outbound/`)
 
 Every URL an org or member supplies passes one **outbound guard** before Commissary fetches it (ADR 0044,
-`docs/THREAT-MODEL.md` "Outbound requests to places they shouldn't reach"). Today that is a provider's `base_url`
-(provider key groups, auth files); toolkit sources, OAuth sign-in to toolkits, the toolkit catalog's live checks, CIMD
-and DCR fetches and the sandbox's egress point use the same guard when they land, from `@commissary/core`.
+`docs/THREAT-MODEL.md` "Outbound requests to places they shouldn't reach"). Today these are guarded:
+
+- a provider's `base_url` (provider key groups, the config import, auth files: `base_url`, `base-url`, `api_base_url`);
+- a Vertex service account's `token_uri`, fetched on every token mint (the Vertex import, auth files);
+- the `models.catalog` source, fetched by the cron and the panel's catalog refresh;
+- Commissary Cloud's SSO: an org's OIDC issuer (its discovery document), the JWKS endpoint and the SAML sign-in URL.
+
+Toolkit sources, OAuth sign-in to toolkits, the toolkit catalog's live checks, CIMD and DCR fetches and the sandbox's
+egress point use the same guard when they land, from `@commissary/core`.
 
 - **The check** (`core/outbound/check.ts`, `checkOutboundUrl`): only `https:`, plus `http:` and `https:` to loopback
   (`localhost`, `*.localhost`, `127.0.0.0/8`, `::1`) in local development; no IP literal outside the public internet
@@ -1213,23 +1219,31 @@ and DCR fetches and the sandbox's egress point use the same guard when they land
   `API_DOMAIN`/`APP_DOMAIN`/`AUTH_ORIGIN`, and the request's host; a request to a workers.dev host (a preview) refuses
   every Worker of that account's workers.dev subdomain. Local development is decided like the Access dev bypass: the
   request came to a loopback host (`isLoopbackHost`), which only `alchemy dev` serves. Without a policy (cron jobs, the
-  ControlPlane) the strictest applies: no loopback, the bindings' own hosts only.
+  ControlPlane) the strictest applies: no loopback, the bindings' own hosts only. On a preview that leaves the
+  ControlPlane without the preview's workers.dev hosts: `infra/preview-origin.ts` learns the account subdomain only from
+  the API Worker's URL, after the state Worker is deployed, so `OWN_HOSTS` cannot carry it. The app and API Workers
+  cover the gap through the request's host.
 - **Where Models uses it**: the client API's executors (`handlers/layer.ts` wraps whatever `HttpClient` it is given, the
-  tests' mocks included), the management routes (`ManagementServicesLive`: the key probe, quota checks), the API
-  Worker's cron jobs (`apps/api/src/scheduled.ts`) and the ControlPlane's Devin status sweep. The Codex and xAI
-  WebSocket transports check the dial URL (`wss:` as `https:`, `executor/websocket/session.ts`) and do not follow a
-  redirected upgrade. On use, the conductor turns a refusal into a `400` (`code: outbound_refused`) with the guard's
-  message: no cooldown, and the request moves on to another provider as after an upstream 400. On write
-  (`management/base-url-guard.ts`), a provider key group (`PUT /provider-keys/groups`, `422`), a config import
-  (`422 invalid_config` with the `path`), an auth file upload and a field patch of an auth file (`base_url`, `base-url`,
-  `api_base_url`) are refused with the same message. An existing `http:` or private `base_url` stops working; there is no
+  tests' mocks included), the management routes (`ManagementServicesLive`: the key probe, quota checks, the catalog
+  refresh), the API Worker's cron jobs (`apps/api/src/scheduled.ts`: the catalog refresh among them) and the
+  ControlPlane (the Devin status sweep and the `RefreshManager`, whose Vertex token mint checks `token_uri`). The Codex
+  and xAI WebSocket transports check the dial URL (`wss:` as `https:`, `executor/websocket/session.ts`) and do not
+  follow a redirected upgrade. On use, the conductor turns a refusal into a `400` (`code: outbound_refused`) with the
+  guard's message: no cooldown, and the request moves on to another provider as after an upstream 400. On write
+  (`management/base-url-guard.ts`, `management/settings.ts`), a provider key group (`PUT /provider-keys/groups`, `422`),
+  a config import (`422 invalid_config` with the `path`), a settings save of `models.catalog` (`422 invalid_setting`),
+  an auth file upload (`422` with the `path` and the file's `name`), a Vertex import (`422` with the `path`) and a field
+  patch of an auth file are refused with the same message. An existing `http:` or private URL stops working; there is no
   override (`docs/MIGRATION.md`).
+- **SSO** (`apps/app/src/sso/idp.ts`): saving a provider checks the OIDC issuer or the SAML sign-in URL with
+  `checkOutboundUrl`, and Better Auth's discovery trusts an endpoint the document names only when the guard lets it
+  through (`isTrustedOrigin`); testing a provider checks the stored issuer and JWKS endpoint again before fetching them.
 - **`global_fetch_strictly_public`** is set on every Worker (`COMPATIBILITY` in `alchemy.run.ts`, mirrored in each
   `vitest.config.ts`).
 
 ### What a deployed Worker's `fetch` reaches
 
-What Cloudflare documents (read 2026-10-19; issue #249 asks for a test of a deployed stage, still to run, below):
+What Cloudflare documents (read 2026-10-19). Not yet verified on a deployed stage; see #255.
 
 - **The deployment's own zone.** Without the flag, a `fetch` to a hostname in the Worker's own zone "is routed to the
   zone's origin server, ignoring any Workers mapped to the URL and also bypassing Cloudflare security settings"
@@ -1248,22 +1262,6 @@ What Cloudflare documents (read 2026-10-19; issue #249 asks for a test of a depl
   ([error 1000](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-1xxx-errors/error-1000/)).
 - **A public name that resolves to a private address.** Not documented for `fetch`; this is the case the guard leaves to
   Cloudflare's network, since it does not resolve names.
-
-**To verify on a deployed stage** (a preview is enough; nothing in the app serves this, so deploy a throwaway Worker on
-the same account with the same `COMPATIBILITY`, once with and once without `global_fetch_strictly_public`, and delete it
-afterwards). Have it `fetch` each target with `redirect: "manual"` and a 5-second timeout and report the status, or the
-exception:
-
-1. `http://10.0.0.1/`, `http://172.16.0.1/`, `http://192.168.0.1/` (RFC 1918 literals);
-2. `http://127.0.0.1/` and `http://[::1]/`;
-3. `http://169.254.169.254/latest/meta-data/`;
-4. `http://[fd00::1]/` (an `fc00::/7` literal);
-5. a public hostname whose A record is `10.0.0.1` and one whose AAAA record is `fd00::1` (an unproxied record in a zone
-   of the account, or a wildcard DNS service such as `10.0.0.1.nip.io`);
-6. the app host and the API host of the stage (with the flag: Access's or the Worker's answer; without it: the origin's).
-
-Record the results here. If a name that resolves to a private address is reachable (5), the guard would have to
-resolve names (DNS over HTTPS) before fetching: a decision to bring back to ADR 0044, not a change to make quietly.
 
 ## Management API and control panel (`src/management/`)
 
