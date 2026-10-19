@@ -15,7 +15,7 @@
 import { Clock, Effect, Schema } from "effect";
 import { CurrentOrg, type OrgId } from "@commissary/core";
 import { isHosted } from "@commissary/auth";
-import { platformOf } from "@commissary/state";
+import { panelPageUrl } from "@commissary/state";
 import { BILLING_TTL_MS, type CachedRefusal, refusals } from "./cache.ts";
 import { type BillingBindings, BillingEnv, billingPartOf } from "./env.ts";
 
@@ -53,22 +53,11 @@ export interface CountedRequest {
 }
 
 /**
- * Where the panel's billing page of `org` is: the app host's URL when it is known, else the path. The client API knows
- * an org by its id, not its slug (which only the Platform registry holds), so this asks the registry: once per refusal
- * ({@link refusals} keeps the answer), never for a request that is served.
+ * Where the panel's billing page of `org` is (`panelPageUrl`): asked once per refusal ({@link refusals} keeps the
+ * answer), never for a request that is served.
  */
 const billingPage = (env: BillingBindings, org: OrgId): Effect.Effect<string> =>
-  Effect.tryPromise(async () => await platformOf(env).getOrgById(org)).pipe(
-    Effect.map((record) => {
-      if (record === undefined) return "the billing page of the panel";
-
-      const path = `/orgs/${record.slug}/billing`;
-      const host = (env.APP_DOMAIN ?? "").trim();
-
-      return host === "" ? path : `https://${host}${path}`;
-    }),
-    Effect.catch(() => Effect.succeed("the billing page of the panel")),
-  );
+  panelPageUrl(env, org, "billing", "the billing page of the panel");
 
 const groups = new Intl.NumberFormat("en-US");
 

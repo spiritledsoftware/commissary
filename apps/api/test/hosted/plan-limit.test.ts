@@ -170,7 +170,7 @@ describe("counting requests", () => {
 
 describe("the Free plan's limit", () => {
   it("refuses the 25,001st request of the month with 429 plan_limit_reached and a Retry-After to the next month", async () => {
-    const { org, slug, key } = await configuredOrg("limit@example.com");
+    const { org, key } = await configuredOrg("limit@example.com");
 
     await seedRequestsUsed(env, org, Date.now(), FREE_USAGE.requests - 1);
 
@@ -194,7 +194,7 @@ describe("the Free plan's limit", () => {
     expect(body.error.code).toBe("plan_limit_reached");
     expect(body.error.resets_at).toBe(new Date(nextMonth).toISOString());
     expect(body.error.message).toContain("25,000 requests and tool calls");
-    expect(body.error.message).toContain(`/orgs/${slug}/billing`);
+    expect(body.error.message).toContain("the billing page of the panel");
 
     // No work was done and nothing was counted.
     expect(upstream).toEqual([]);
@@ -202,7 +202,7 @@ describe("the Free plan's limit", () => {
   });
 
   it("refuses a Codex alpha search at the limit the same way, with its JSON body and Retry-After", async () => {
-    const { org, slug, key } = await configuredOrg("alpha-limit@example.com");
+    const { org, key } = await configuredOrg("alpha-limit@example.com");
 
     await seedRequestsUsed(env, org, Date.now(), FREE_USAGE.requests);
 
@@ -219,7 +219,7 @@ describe("the Free plan's limit", () => {
     const body = await refused.json<{ error: { code: string; message: string } }>();
 
     expect(body.error.code).toBe("plan_limit_reached");
-    expect(body.error.message).toContain(`/orgs/${slug}/billing`);
+    expect(body.error.message).toContain("the billing page of the panel");
     expect(await used(org)).toBe(FREE_USAGE.requests);
   });
 

@@ -14,6 +14,29 @@ export const PLATFORM_NAME = "platform";
 export const platformOf = (env: Pick<StateBindings, "PLATFORM">): PlatformStub =>
   env.PLATFORM.getByName(PLATFORM_NAME);
 
+/**
+ * The URL of the panel's page `page` (`billing`, `tools/<id>/connect`) of `org`: `https://<APP_DOMAIN>/o/<slug>/<page>`.
+ * A Worker knows an org by its id, and only the registry knows its slug, so this asks it; when it cannot say or the
+ * app host is not set, the answer is `fallback`, plain text naming the page, never a URL that leads nowhere.
+ */
+export const panelPageUrl = (
+  env: Pick<StateBindings, "PLATFORM"> & { readonly APP_DOMAIN?: string | undefined },
+  org: string,
+  page: string,
+  fallback: string,
+): Effect.Effect<string> => {
+  const host = (env.APP_DOMAIN ?? "").trim();
+
+  if (host === "") return Effect.succeed(fallback);
+
+  return Effect.tryPromise(async () => (await platformOf(env).getOrgById(org))?.slug).pipe(
+    Effect.map((slug) =>
+      slug === undefined ? fallback : `https://${host}/o/${encodeURIComponent(slug)}/${page}`,
+    ),
+    Effect.orElseSucceed(() => fallback),
+  );
+};
+
 /** The Platform registry could not be reached; the message names the call, the caller logs it. */
 export class PlatformUnavailable extends Data.TaggedError("PlatformUnavailable")<{
   readonly message: string;

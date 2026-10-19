@@ -1540,7 +1540,7 @@ describe("free usage metering (ADR 0042)", () => {
         const body = JSON.parse(error.message) as { error: Record<string, unknown> };
 
         assert.strictEqual(body.error["code"], "plan_limit_reached");
-        assert.include(String(body.error["message"]), "https://app.example.com/orgs/acme/billing");
+        assert.include(String(body.error["message"]), "https://app.example.com/o/acme/billing");
 
         // Streaming is refused the same way.
         const streamed = yield* failure(
