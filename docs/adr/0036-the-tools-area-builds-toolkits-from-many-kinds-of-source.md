@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted, amended by ADR-0045 (a self-hosted Commissary signs MCP clients in through Access)
 ---
 
 # The Tools area builds toolkits from MCP, OpenAPI, GraphQL and Discovery sources, with a catalog from integrations.sh
