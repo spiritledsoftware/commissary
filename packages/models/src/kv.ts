@@ -6,11 +6,10 @@
  * executors built without an `env`).
  */
 import { type DeploymentKv, deploymentKv, type OrgId, type OrgKv, orgKv } from "@commissary/core";
+import type { ModelsBindings } from "./env.ts";
 
 /** An `env` that holds the `CACHE` KV namespace. */
-export interface KvEnv {
-  readonly CACHE: KVNamespace;
-}
+export type KvEnv = Pick<ModelsBindings, "CACHE">;
 
 /** The KV entries of `org`. */
 export const orgKvOf = (env: KvEnv, org: OrgId): OrgKv => orgKv(env.CACHE, org);

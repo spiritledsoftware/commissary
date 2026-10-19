@@ -22,6 +22,13 @@ export interface StoreCase {
   readonly read: (org: IsolationOrg, name: string) => Promise<string | undefined>;
   /** The value the org at `index` writes (default: one that names the store and the index). */
   readonly value?: (index: number) => string;
+  /**
+   * `true` when `read` answers even for an org that has not written (a standing, say): the suite still reads, which
+   * warms the store's cache, but does not expect nothing before the write.
+   */
+  readonly alwaysAnswers?: boolean;
+  /** Undoes what `write` changed in the shared orgs, once the case ran. */
+  readonly after?: (orgs: ReadonlyArray<IsolationOrg>) => Promise<void>;
 }
 
 /** Declares a store's case; the one line a new store adds. */
@@ -42,13 +49,23 @@ export const expectIsolated = async (
   const name = `shared-${crypto.randomUUID().slice(0, 8)}`;
   const valueOf = store.value ?? ((index: number) => `${store.store}-value-${index}`);
 
-  for (const [index, org] of orgs.entries()) {
-    await store.write(org, name, valueOf(index + 1));
+  try {
+    for (const [index, org] of orgs.entries()) {
+      await store.write(org, name, valueOf(index + 1));
 
-    for (const later of orgs.slice(index + 1))
-      expect(await store.read(later, name), `${later.slug} before it wrote`).toBeUndefined();
+      for (const later of orgs.slice(index + 1)) {
+        const found = await store.read(later, name);
+
+        if (store.alwaysAnswers !== true)
+          expect(found, `${later.slug} before it wrote`).toBeUndefined();
+      }
+    }
+
+    for (const [index, org] of orgs.entries())
+      expect(await store.read(org, name), `${org.slug} reads its own value`).toBe(
+        valueOf(index + 1),
+      );
+  } finally {
+    await store.after?.(orgs);
   }
-
-  for (const [index, org] of orgs.entries())
-    expect(await store.read(org, name), `${org.slug} reads its own value`).toBe(valueOf(index + 1));
 };

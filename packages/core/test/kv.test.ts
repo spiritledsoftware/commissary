@@ -73,6 +73,21 @@ describe("orgKv", () => {
   });
 });
 
+describe("orgKv names of global", () => {
+  it("refuses a name that starts with org., which would reach another org's entry", async () => {
+    const { data, binding } = fakeKv();
+
+    await orgKv(binding, acme).put("x", "acme's");
+
+    const global = orgKv(binding, GLOBAL_ORG);
+
+    await expect(global.get("org.acme.x")).rejects.toThrow("org.");
+    await expect(global.put("org.acme.x", "global's")).rejects.toThrow("org.");
+    await expect(global.delete("org.acme.x")).rejects.toThrow("org.");
+    expect(data.get("org.acme.x")).toBe("acme's");
+  });
+});
+
 describe("deploymentKv", () => {
   it("reads and writes the names it is given as they are", async () => {
     const { data, binding } = fakeKv();
@@ -103,5 +118,31 @@ describe("makeOrgCache", () => {
 
     cache.clear();
     expect(cache.get(GLOBAL_ORG, "x")).toBeUndefined();
+  });
+
+  it("does not take global's name that looks like another org's scoped name for that org's entry", () => {
+    const cache = makeOrgCache<string>();
+
+    cache.set(GLOBAL_ORG, "org.acme.x", "global's");
+
+    expect(cache.get(acme, "x")).toBeUndefined();
+    expect(cache.get(GLOBAL_ORG, "org.acme.x")).toBe("global's");
+
+    cache.set(acme, "x", "acme's");
+    expect(cache.get(GLOBAL_ORG, "org.acme.x")).toBe("global's");
+    expect(cache.size).toBe(2);
+  });
+
+  it("drops the entries a predicate picks and the oldest one when it is full", () => {
+    const cache = makeOrgCache<number>(2);
+
+    cache.set(acme, "a", 1);
+    cache.set(beta, "a", 2);
+    cache.set(beta, "b", 3);
+    expect(cache.get(acme, "a")).toBeUndefined();
+    expect(cache.size).toBe(2);
+
+    cache.deleteWhere((org) => org === beta);
+    expect(cache.size).toBe(0);
   });
 });

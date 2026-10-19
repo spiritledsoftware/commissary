@@ -44,13 +44,12 @@ import {
 } from "@commissary/core";
 import { controlPlaneOf, optionalRequestOrg } from "@commissary/state";
 import {
-  isolateSignatureCache,
   type MemorySignatureCache,
   withSignatureContext,
   flushSignatureWrites,
   prefetchSignatures,
 } from "@commissary/translation/signature";
-import { makeKvSignatureStore } from "../../signature/store.ts";
+import { makeKvSignatureStore, orgSignatureCache } from "../../signature/store.ts";
 import {
   thinkingTextsNeedingCachedSignatures,
   builtinTranslators,
@@ -266,7 +265,7 @@ export const makeAntigravityExecutor = (
       state: antigravityStateFor(env, org),
       kv: orgKvIfBound(env, org),
       deploymentKv: deploymentKvIfBound(env),
-      signatures: isolateSignatureCache(org),
+      signatures: orgSignatureCache(org),
       waitUntil:
         typeof ctx?.waitUntil === "function" ? (promise) => ctx.waitUntil(promise) : undefined,
       accessToken,

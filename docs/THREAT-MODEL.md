@@ -35,7 +35,7 @@ From most to least sensitive:
 ### One org reaching another's data
 
 - Each org's state lives in its own ControlPlane Durable Object, the only writer of it (ADR 0021). A key names its org, and the Platform registry confirms the org before a Durable Object is addressed.
-- Shared stores are partitioned: D1 rows by `org_id`, KV and Worker caches by an org-scoped name, SessionState by org and caller. KV and cache access goes through an org-scoped helper, so an unscoped name is a type error, and a cross-org test suite covers every store. The `global` org's unprefixed KV names are the one documented exception.
+- Shared stores are partitioned: D1 rows by `org_id`, KV and Worker caches by an org-scoped name, SessionState by org and caller. KV and cache access goes through an org-scoped helper, so an unscoped name is a type or lint error (`boundaries/org-scoped-kv`), and a cross-org test suite covers every store. The `global` org's unprefixed KV names are the one documented exception.
 - In Tools and Agents nothing crosses an org or an owner: a sandbox session, its files and its computer belong to one member and key or one agent run; a browser session belongs to one member and key or one run, and another owner's id answers as unknown; a browser profile opens only in its own org, a private one only for its member.
 - Containers run in their own microVM; Dynamic Workers and Browser Run sessions are isolated by Cloudflare. Commissary relies on those boundaries and adds the ownership checks above.
 

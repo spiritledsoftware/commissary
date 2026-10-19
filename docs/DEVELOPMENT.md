@@ -328,7 +328,8 @@ stays with that Worker.
 - **Cross-org suite** (ADR 0044). `apps/app/test/org-isolation.test.ts` writes the same names (credential, key, session
   and model names) in three orgs (two made through the management API, and `global`) and checks that each store shows
   every org only its own: KV (`OrgKv`, the signature store, video bindings, Antigravity state and entitlements),
-  SessionState, the per-isolate caches (signatures, Antigravity state, `ConfigReader` snapshots), D1 usage through
+  SessionState, the per-isolate caches (signatures, Antigravity state, `ConfigReader` and registry snapshots, the
+  auth Worker's standings), D1 usage through
   every query the management API exposes (records, summary, series, unpriced models, the export queue, private records,
   the credential filter), and the ControlPlane addressed by org slug (also after a rename) and by API key prefix.
   **Each new store (tool calls, approvals, runs, sandbox and browser sessions, profiles) adds one `storeCase(...)` line
@@ -395,14 +396,12 @@ permissions they need, and deploy jobs use no dependency cache.
   Billing's `./api` only, none import Models). An area's sources import only their own files, the dependencies its
   `package.json` declares and the runtime modules the rule lists; the apps import it only as `@commissary/<area>/api`,
   `/management` and `/state` (their tests also `/testing`), never its other exports or one of its files by a relative
-  path.
-
-- **boundaries/org-scoped-kv** (ADR 0044, #250): a source file of a package or an app (not `test/`) may not read the
-  `CACHE` KV binding, name the `KVNamespace` type or call the Cache API (`caches.open`, `caches.default`), except the
-  helpers (`packages/core/src/kv.ts`, `packages/models/src/kv.ts`) and the binding declarations (`env.ts`, `env.d.ts`).
+  path. `boundaries/org-scoped-kv` (ADR 0044, #250) keeps org data out of raw KV: a source file of a package or an app
+  (not `test/`) may not read the `CACHE` binding, name the `KVNamespace` type or use the Cache API, except the helpers
+  (`packages/core/src/kv.ts`, `packages/models/src/kv.ts`; the `env.ts` and `env.d.ts` declarations may name the type).
   Org data in KV goes through an `OrgKv` (`orgKvOf(env, org)`), deployment-wide names through a `DeploymentKv`
-  (`deploymentKvOf(env)`, names from `deploymentKey`); a new area that adds a binding of its own adds its helper file to
-  the rule's list.
+  (`deploymentKvOf(env)`, names from `deploymentKey`); a new area that adds a binding of its own adds its helper file
+  to the rule's list. Per-isolate caches of org data are an `OrgCache` by convention, which lint does not check.
 
 Rules downgraded to warnings on purpose (reported, not failing): `effecttsgo/unstable-api-usage` (the HTTP stack is
 `effect/unstable/http`), `anti-slop-effect/no-service-constructor-imports` (flags every `make*` function),

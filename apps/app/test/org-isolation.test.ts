@@ -7,20 +7,31 @@
 import { env } from "cloudflare:workers";
 import { Effect, Layer, ManagedRuntime, Result } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { AuthDirectory, parseApiKey, resetApiKeyCaches, verifyApiKey } from "@commissary/auth";
+import {
+  AuthDirectory,
+  forgetStanding,
+  parseApiKey,
+  requireStanding,
+  resetApiKeyCaches,
+  verifyApiKey,
+} from "@commissary/auth";
 import { CurrentOrg, GLOBAL_ORG, OrgId, orgKv } from "@commissary/core";
 import { controlPlaneOf, resolveBackend, stateAuthDirectory } from "@commissary/state";
 import {
+  antigravityModelsName,
   antigravityStateFor,
   authIndexOf,
   ConfigReader,
   insertUsageRecord,
-  isolateSignatureCache,
   listUsageRecords,
   loadAntigravityHints,
   loadVideoBinding,
   makeKvSignatureStore,
   makeMemoryAntigravityState,
+  ModelRegistry,
+  ModelRegistryLive,
+  orgAuthIndexer,
+  orgSignatureCache,
   resetUsageDb,
   sampleRecord,
   saveVideoBinding,
@@ -66,15 +77,36 @@ const newOrg = async (prefix: string): Promise<IsolationOrg> => {
 
 let orgs: ReadonlyArray<IsolationOrg> = [];
 
+/** The same person, a plain member of each org: their member id there, by org slug. */
+const MEMBER_EMAIL = "iso-member@example.com";
+
+const memberIds = new Map<string, string>();
+
 beforeAll(async () => {
   await resetUsageDb();
   orgs = [await newOrg("iso-a"), await newOrg("iso-b"), GLOBAL];
+
+  for (const org of orgs) {
+    const added = await managed(
+      org,
+      "/members",
+      jsonInit("POST", { email: MEMBER_EMAIL, role: "member" }),
+    );
+
+    expect(added.status).toBe(201);
+    memberIds.set(org.slug, (added.body as { id: string }).id);
+  }
 });
 
 /** `effect` as a request of `org`: its bindings and its org. */
 const reader = ManagedRuntime.make(ConfigReader.layerControlPlane());
 
-afterAll(reader.dispose);
+const registries = ManagedRuntime.make(ModelRegistryLive);
+
+afterAll(async () => {
+  await reader.dispose();
+  await registries.dispose();
+});
 
 const inOrg = <A, E>(
   org: IsolationOrg,
@@ -83,6 +115,21 @@ const inOrg = <A, E>(
   reader.runPromise(
     effect.pipe(Effect.provideContext(envContext(env)), Effect.provideService(CurrentOrg, org.id)),
   );
+
+/** `effect` as a request of `org`, with the model registry's own services. */
+const inOrgWithRegistry = <A, E>(
+  org: IsolationOrg,
+  effect: Effect.Effect<A, E, EnvServices | CurrentOrg | ModelRegistry>,
+) =>
+  registries.runPromise(
+    effect.pipe(Effect.provideContext(envContext(env)), Effect.provideService(CurrentOrg, org.id)),
+  );
+
+/** The directory the gates read: the ControlPlanes and the isolated Platform registry. */
+const directory = stateAuthDirectory({
+  CONTROL_PLANE: env.CONTROL_PLANE,
+  PLATFORM: registry.bindings.PLATFORM,
+});
 
 /** `path` of `org` in the management API, as the platform admin the org's slug is addressed by. */
 const managed = async (org: IsolationOrg, path: string, init: RequestInit = {}) =>
@@ -99,7 +146,7 @@ const CREDITS = {
 
 // --- usage ------------------------------------------------------------------------------------------------------------
 
-/** The member id both orgs give their private records: the same name in each. */
+/** The member id both orgs give the private records the query-level cases write: the same name in each. */
 const SHARED_MEMBER = "member-shared";
 
 /**
@@ -107,7 +154,8 @@ const SHARED_MEMBER = "member-shared";
  * sees is the value it reads back. Request ids are unique (they are never names).
  */
 const writeUsage =
-  (isPrivate: boolean) => async (org: IsolationOrg, name: string, value: string) => {
+  (isPrivate: boolean, memberOf: (org: IsolationOrg) => string = () => SHARED_MEMBER) =>
+  async (org: IsolationOrg, name: string, value: string) => {
     for (let i = 0; i < Number(value); i += 1)
       await insertUsageRecord(
         env.USAGE,
@@ -117,7 +165,7 @@ const writeUsage =
           model: name,
           authId: name,
           requestedAt: Date.now() - 60_000 - i,
-          memberId: SHARED_MEMBER,
+          memberId: memberOf(org),
           private: isPrivate,
           cost: { micros: 0, unpriced: true },
         }),
@@ -165,7 +213,7 @@ const STORES: ReadonlyArray<StoreCase> = [
   storeCase("kv: Antigravity model entitlements", {
     write: async (org, name, value) =>
       await orgKv(env.CACHE, org.id).put(
-        `ag:models:${name}`,
+        antigravityModelsName(name),
         JSON.stringify({ hints: { modelIds: [value], webSearchModelIds: [] }, fetchedAt: 1 }),
       ),
     read: async (org, name) =>
@@ -201,12 +249,12 @@ const STORES: ReadonlyArray<StoreCase> = [
   // Worker caches: the per-isolate ones that hold org data.
   storeCase("worker cache: signatures", {
     write: async (org, name, value) => {
-      expect(isolateSignatureCache(org.id).set("claude-sonnet-4-5", name, value)).toBe(true);
+      expect(orgSignatureCache(org.id).set("claude-sonnet-4-5", name, value)).toBe(true);
     },
     // A signature is at least 50 characters.
     value: (index) => `${"signature".repeat(6)}-${index}`,
     read: async (org, name) => {
-      const found = isolateSignatureCache(org.id).get("claude-sonnet-4-5", name);
+      const found = orgSignatureCache(org.id).get("claude-sonnet-4-5", name);
 
       return found === "" ? undefined : found;
     },
@@ -245,6 +293,73 @@ const STORES: ReadonlyArray<StoreCase> = [
         ),
       ),
     value: (index) => `config-${index}`,
+  }),
+
+  // The model registry's per-org snapshots: the same model name served by a provider named for the org's value.
+  storeCase("worker cache: registry snapshots", {
+    write: async (org, name, value) => {
+      const imported = await controlPlaneOf(env, org.id)
+        .models()
+        .importConfig(
+          [
+            "openai-compatibility:",
+            `  - name: ${value}`,
+            "    base-url: https://upstream.example/v1",
+            `    models: [{ name: upstream-model, alias: ${name} }]`,
+            "    keys: [{ api-key: sk-test }]",
+            "",
+          ].join("\n"),
+          "test",
+        );
+
+      expect(imported.ok).toBe(true);
+      // An edit through the management API rebuilds the org's snapshot; another org's stays.
+      await inOrgWithRegistry(
+        org,
+        ModelRegistry.use((models) => models.fresh),
+      );
+    },
+    read: async (org, name) =>
+      await inOrgWithRegistry(
+        org,
+        ModelRegistry.use((models) => models.snapshot).pipe(
+          Effect.map((snapshot) =>
+            snapshot.providersForModel(name)[0]?.replace(/^openai-compatible-/, ""),
+          ),
+          Effect.orElseSucceed(() => undefined),
+        ),
+      ),
+    value: (index) => `registry-${index}`,
+  }),
+
+  // The auth Worker's per-isolate standing cache: the first org is suspended and the others are not.
+  storeCase("worker cache: standings", {
+    write: async (org, name, value) => {
+      if (value === "suspended") {
+        await registry.platform.setOrgSuspended(org.slug, true, Date.now());
+        forgetStanding({ org: org.id });
+      }
+
+      // The read warms the cache for each org before its turn (`alwaysAnswers`).
+      void name;
+    },
+    read: async (org, name) =>
+      await Effect.runPromise(
+        requireStanding(org.id, `${name}@example.com`).pipe(
+          Effect.map((standing) => standing.org),
+          Effect.catchTag("ForbiddenError", () => Effect.succeed("suspended")),
+          Effect.provide(Layer.succeed(AuthDirectory, directory)),
+          Effect.orDie,
+        ),
+      ),
+    value: (index) => (index === 1 ? "suspended" : "active"),
+    alwaysAnswers: true,
+    after: async (all) => {
+      for (const org of all) {
+        await registry.platform.setOrgSuspended(org.slug, false, Date.now());
+        forgetStanding({ org: org.id });
+      }
+    },
   }),
 
   // D1 usage: every query the management API exposes, a record count per org (the value is how many records it wrote).
@@ -342,6 +457,32 @@ const STORES: ReadonlyArray<StoreCase> = [
       ),
     value: usageValue,
   }),
+  storeCase("usage: credential filter through the management API", {
+    write: writeUsage(false),
+    read: async (org, name) => {
+      const index = orgAuthIndexer(env, org.id)(name);
+
+      return count(
+        ((await usage(org, `/records?auth_index=${index}&limit=1000`)) as { records: unknown[] })
+          .records.length,
+      );
+    },
+    value: usageValue,
+  }),
+  storeCase("usage: private records read by their member through the management API", {
+    write: writeUsage(true, (org) => memberIds.get(org.slug) ?? ""),
+    read: async (org, name) => {
+      const records = await harness.json(
+        `/v9/management/orgs/${org.slug}${USAGE}/records?model=${name}&limit=1000`,
+        { auth: await token(MEMBER_EMAIL) },
+      );
+
+      expect(records.status).toBe(200);
+
+      return count((records.body as { records: unknown[] }).records.length);
+    },
+    value: usageValue,
+  }),
 
   // The ControlPlane, addressed by org slug through the management API.
   storeCase("controlplane: credentials by slug", {
@@ -403,21 +544,16 @@ describe("the ControlPlane an API key or a slug reaches", () => {
       issued.push({ org, key: created.value.key });
     }
 
-    const directory = stateAuthDirectory({
-      CONTROL_PLANE: env.CONTROL_PLANE,
-      PLATFORM: registry.bindings.PLATFORM,
-    });
-
-    const verify = async (text: string) => {
-      resetApiKeyCaches();
-
-      return await Effect.runPromise(
+    const verify = async (text: string) =>
+      await Effect.runPromise(
         verifyApiKey(text).pipe(
           Effect.provide(Layer.succeed(AuthDirectory, directory)),
           Effect.result,
         ),
       );
-    };
+
+    // Real keys first, and they stay cached: the forged ones below are tried against a warm cache.
+    resetApiKeyCaches();
 
     for (const { org, key } of issued) {
       const verified = await verify(key);
@@ -436,6 +572,13 @@ describe("the ControlPlane an API key or a slug reaches", () => {
       const forged = `cms_${to?.org.id}_${parsed?.keyId}_${secret}`;
 
       expect(Result.isFailure(await verify(forged))).toBe(true);
+    }
+
+    // The real keys still verify, each as its own org.
+    for (const { org, key } of issued) {
+      const verified = await verify(key);
+
+      expect(Result.isSuccess(verified) ? verified.success.org : undefined).toBe(org.id);
     }
   });
 
@@ -460,8 +603,7 @@ describe("the ControlPlane an API key or a slug reaches", () => {
     expect(own.status).toBe(200);
 
     const other = await harness.json(`/v9/management/orgs/${b.slug}/credentials`, { auth: alice });
-    expect(other.status).not.toBe(200);
-    expect(JSON.stringify(other.body ?? "")).not.toContain("owned.json");
+    expect([other.status, other.body]).toEqual([403, { error: "Forbidden" }]);
   });
 
   it("a slug that is renamed and taken again reaches the new org, not the old one's data", async () => {

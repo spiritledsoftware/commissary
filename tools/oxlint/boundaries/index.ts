@@ -190,13 +190,14 @@ const isTestFile = (filename: string): boolean => {
 };
 
 /**
- * Source files that may touch a Workers KV namespace or the Cache API directly: the helpers that wrap them
- * (`packages/core/src/kv.ts`, `packages/models/src/kv.ts`) and the declarations of the bindings (`env.ts`, `env.d.ts`).
+ * The helpers that wrap Workers KV (`packages/core/src/kv.ts`, `packages/models/src/kv.ts`): the only source files that
+ * may read a `CACHE` binding or take a `KVNamespace`.
  */
-const isKvBoundary = (relative: string): boolean =>
-  relative === "packages/core/src/kv.ts" ||
-  relative === "packages/models/src/kv.ts" ||
-  /(^|\/)env(\.d)?\.ts$/.test(relative);
+const isKvHelper = (relative: string): boolean =>
+  relative === "packages/core/src/kv.ts" || relative === "packages/models/src/kv.ts";
+
+/** The declarations of the bindings (`env.ts`, `env.d.ts`): they may name the `KVNamespace` type, nothing more. */
+const isEnvDeclaration = (relative: string): boolean => /(^|\/)env(\.d)?\.ts$/.test(relative);
 
 /** Whether `file` is a source file of a package or an app (`test/` folders and the infrastructure are not). */
 const isWorkspaceSource = (file: string): boolean => {
@@ -225,22 +226,32 @@ const orgScopedKvRule = defineRule({
     const filename = context.filename;
     const relative = path.relative(ROOT, filename).split(path.sep).join("/");
 
-    if (!isWorkspaceSource(filename) || isKvBoundary(relative)) return {};
+    if (!isWorkspaceSource(filename) || isKvHelper(relative)) return {};
+
+    const mayNameKvType = isEnvDeclaration(relative);
 
     const isCacheName = (node: ESTree.Node): boolean =>
       (node.type === "Identifier" && node.name === "CACHE") ||
       (node.type === "Literal" && node.value === "CACHE");
+
+    const isGlobalScope = (node: ESTree.Node): boolean =>
+      node.type === "Identifier" && (node.name === "globalThis" || node.name === "self");
 
     return {
       MemberExpression: (node) => {
         if (isCacheName(node.property) && (!node.computed || node.property.type === "Literal"))
           context.report({ node, messageId: "rawBinding" });
         else if (
-          node.object.type === "Identifier" &&
-          node.object.name === "caches" &&
-          !node.computed &&
-          node.property.type === "Identifier" &&
-          (node.property.name === "open" || node.property.name === "default")
+          // `caches.open(…)`, `caches.default` and `globalThis.caches`.
+          (node.object.type === "Identifier" &&
+            node.object.name === "caches" &&
+            !node.computed &&
+            node.property.type === "Identifier" &&
+            (node.property.name === "open" || node.property.name === "default")) ||
+          (isGlobalScope(node.object) &&
+            !node.computed &&
+            node.property.type === "Identifier" &&
+            node.property.name === "caches")
         )
           context.report({ node, messageId: "cacheApi" });
       },
@@ -249,8 +260,23 @@ const orgScopedKvRule = defineRule({
         if (!node.computed && node.parent.type === "ObjectPattern" && isCacheName(node.key))
           context.report({ node, messageId: "rawBinding" });
       },
+      // `typeof env.CACHE`.
+      TSQualifiedName: (node) => {
+        if (isCacheName(node.right)) context.report({ node, messageId: "rawBinding" });
+      },
+      // `Env["CACHE"]`.
+      TSIndexedAccessType: (node) => {
+        const index = node.indexType;
+
+        if (index.type === "TSLiteralType" && isCacheName(index.literal))
+          context.report({ node, messageId: "rawBinding" });
+      },
       TSTypeReference: (node) => {
-        if (node.typeName.type === "Identifier" && node.typeName.name === "KVNamespace")
+        if (
+          !mayNameKvType &&
+          node.typeName.type === "Identifier" &&
+          node.typeName.name === "KVNamespace"
+        )
           context.report({ node, messageId: "rawType" });
       },
     };

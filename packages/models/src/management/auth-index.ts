@@ -32,7 +32,7 @@
 import { createHmac, createSecretKey, type KeyObject } from "node:crypto";
 import { Effect } from "effect";
 import { isDeployedStage } from "@commissary/auth";
-import { CurrentOrg, GLOBAL_ORG, type OrgId } from "@commissary/core";
+import { CurrentOrg, GLOBAL_ORG, makeOrgCache, type OrgId } from "@commissary/core";
 import {
   DEV_AUTH_INDEX_KEY,
   MIN_AUTH_INDEX_KEY_LENGTH,
@@ -143,7 +143,8 @@ const orgKey = (secret: string, org: OrgId): string =>
     .update(`auth-index-org:${org}`, "utf8")
     .digest("hex");
 
-const orgIndexers = new Map<string, AuthIndexer>();
+/** The indexers of the orgs this isolate serves, by deployment key; emptied when full. */
+const orgIndexers = makeOrgCache<AuthIndexer>();
 
 /**
  * The indexer of `org`: {@link deploymentAuthIndexer} for `global`, and for any other org an indexer under a key
@@ -155,14 +156,13 @@ export const orgAuthIndexer = (env: AuthIndexKeyEnv, org: OrgId): AuthIndexer =>
   if (org === GLOBAL_ORG) return deployment;
   // SAFETY: deploymentAuthIndexer only returns when AUTH_INDEX_KEY is a string of an accepted length.
   const secret = env.AUTH_INDEX_KEY as string;
-  const cacheKey = `${org}\u0000${secret}`;
-  const cached = orgIndexers.get(cacheKey);
+  const cached = orgIndexers.get(org, secret);
 
   if (cached !== undefined) return cached;
   const indexer = makeIndexer(orgKey(secret, org));
 
   if (orgIndexers.size >= MAX_MEMOISED) orgIndexers.clear();
-  orgIndexers.set(cacheKey, indexer);
+  orgIndexers.set(org, secret, indexer);
 
   return indexer;
 };

@@ -45,7 +45,7 @@ const MAX_BACKOFF_MS = 30 * 60_000;
 const FAILURE_RESET_MS = 2 * 3 * 60 * 60_000;
 
 /** KV name of a credential's entitlements within its org. */
-const modelsName = (credentialId: string): string => `ag:models:${credentialId}`;
+export const antigravityModelsName = (credentialId: string): string => `ag:models:${credentialId}`;
 
 export interface FailureState {
   readonly count: number;
@@ -164,7 +164,7 @@ export const nextFailure = (
 
 const readRecord = async (kv: OrgKv, credentialId: string): Promise<ModelsRecord | undefined> => {
   try {
-    const raw = await kv.get(modelsName(credentialId));
+    const raw = await kv.get(antigravityModelsName(credentialId));
 
     // SAFETY: the cron task only stores `ModelsRecord` values under this key (see `writeRecord`).
     return raw === null ? undefined : (JSON.parse(raw) as ModelsRecord);
@@ -276,9 +276,9 @@ export const refreshAntigravityModels = Effect.gen(function* () {
             failure: nextFailure(previous?.failure, now, Math.random()),
           };
 
-    yield* Effect.tryPromise(() => kv.put(modelsName(source.id), JSON.stringify(record))).pipe(
-      Effect.catch(() => Effect.logWarning("antigravity model catalog could not be stored")),
-    );
+    yield* Effect.tryPromise(() =>
+      kv.put(antigravityModelsName(source.id), JSON.stringify(record)),
+    ).pipe(Effect.catch(() => Effect.logWarning("antigravity model catalog could not be stored")));
     results.push({ id: source.id, status: outcome.status });
   }
 

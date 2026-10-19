@@ -1,14 +1,14 @@
 /**
  * Org-scoped access to Workers KV and to per-isolate caches (ADR 0044, "Org isolation is enforced in code").
  *
- * A raw KV namespace never reaches code that handles org data. Code takes an {@link OrgKv}, which is bound to one org
- * and scopes every name itself (`orgScopedName`: the `global` org's names stay unprefixed, the one documented
- * exception), so a name of org data that skips the scope has no way to be written. Deployment-wide names (the model
- * catalog, client versions) go through {@link DeploymentKv}, whose names are {@link DeploymentKey}s, made one at a
- * time by {@link deploymentKey}, so each is a visible decision. The one place a Worker's `CACHE` binding is read is
- * `@commissary/models`' `kv.ts` (lint rule `boundaries/org-scoped-kv`, `tools/oxlint/boundaries`).
+ * Code that handles org data takes an {@link OrgKv}, which is bound to one org and scopes every name itself
+ * (`orgScopedName`: the `global` org's names stay unprefixed, the one documented exception), so a name of org data
+ * cannot be written without its scope. Deployment-wide names (the model catalog, client versions) go through
+ * {@link DeploymentKv}, whose names are {@link DeploymentKey}s, each declared by {@link deploymentKey}. The only module
+ * that reads a Worker's `CACHE` binding is `models/kv.ts` (lint rule `boundaries/org-scoped-kv`).
  *
- * Per-isolate caches of org data go through {@link OrgCache}, which is keyed by the org and a name the same way.
+ * Per-isolate caches of org data are an {@link OrgCache}: a map keyed by the org and a name. That is a convention
+ * backed by this helper and by the cross-org suite, not by lint.
  *
  * Structural interfaces stand in for `KVNamespace`: this package has no Workers types.
  */
@@ -17,7 +17,7 @@ import { GLOBAL_ORG, type OrgId, orgScopedName } from "./org.ts";
 /** The part of a Workers `KVNamespace` the helpers use; a `KVNamespace` satisfies it. */
 export interface KvBinding {
   get(key: string): Promise<string | null>;
-  put(key: string, value: string, options?: { readonly expirationTtl?: number }): Promise<void>;
+  put(key: string, value: string, options?: KvPutOptions): Promise<void>;
   delete(key: string): Promise<void>;
   list(options: { readonly prefix?: string; readonly limit?: number }): Promise<{
     readonly keys: ReadonlyArray<{ readonly name: string }>;
@@ -44,25 +44,40 @@ export interface OrgKv {
   deletePage(limit: number): Promise<{ readonly deleted: number; readonly complete: boolean }>;
 }
 
-/** The KV entries of `org` in `kv`. */
-export const orgKv = (kv: KvBinding, org: OrgId): OrgKv => ({
-  org,
-  get: (name) => kv.get(orgScopedName(org, name)),
-  put: (name, value, options) =>
-    options === undefined
-      ? kv.put(orgScopedName(org, name), value)
-      : kv.put(orgScopedName(org, name), value, options),
-  delete: (name) => kv.delete(orgScopedName(org, name)),
-  deletePage: async (limit) => {
-    if (org === GLOBAL_ORG) return { deleted: 0, complete: true };
+/**
+ * The KV entries of `org` in `kv`. A name of `global` that starts with `org.` is refused (the call rejects): it would
+ * read or write another org's entry.
+ */
+export const orgKv = (kv: KvBinding, org: OrgId): OrgKv => {
+  const scoped = (name: string): string => {
+    if (org === GLOBAL_ORG && name.startsWith("org."))
+      throw new Error(
+        `KV name "${name}" of the global org starts with "org.", the prefix of other orgs' names`,
+      );
 
-    const page = await kv.list({ prefix: orgScopedName(org, ""), limit });
+    return orgScopedName(org, name);
+  };
 
-    await Promise.all(page.keys.map(async (key) => await kv.delete(key.name)));
+  return {
+    org,
+    get: async (name) => await kv.get(scoped(name)),
+    put: async (name, value, options) => {
+      await kv.put(scoped(name), value, options);
+    },
+    delete: async (name) => {
+      await kv.delete(scoped(name));
+    },
+    deletePage: async (limit) => {
+      if (org === GLOBAL_ORG) return { deleted: 0, complete: true };
 
-    return { deleted: page.keys.length, complete: page.list_complete };
-  },
-});
+      const page = await kv.list({ prefix: orgScopedName(org, ""), limit });
+
+      await Promise.all(page.keys.map(async (key) => await kv.delete(key.name)));
+
+      return { deleted: page.keys.length, complete: page.list_complete };
+    },
+  };
+};
 
 declare const deploymentKeyBrand: unique symbol;
 
@@ -87,33 +102,57 @@ export interface DeploymentKv {
 /** The deployment-wide entries of `kv`. */
 export const deploymentKv = (kv: KvBinding): DeploymentKv => ({
   get: (key) => kv.get(key),
-  put: (key, value, options) =>
-    options === undefined ? kv.put(key, value) : kv.put(key, value, options),
+  put: (key, value, options) => kv.put(key, value, options),
   delete: (key) => kv.delete(key),
 });
 
 /**
- * A per-isolate cache of org data: one value per org and name, so one org never reads another's entry. Unbounded;
- * callers keep their entry counts small (a few per credential) or evict themselves.
+ * A per-isolate cache of org data: one value per org and name, so one org never reads another's entry. The key is the
+ * org and the name apart (not `orgScopedName`, whose names can collide: `global`'s `org.acme.x` is not `acme`'s `x`).
  */
 export interface OrgCache<V> {
   get(org: OrgId, name: string): V | undefined;
+  /** Stores `value`; with a `max` the oldest entry is dropped first when the cache is full. */
   set(org: OrgId, name: string, value: V): void;
   delete(org: OrgId, name: string): void;
+  /** Drops every entry `drop` answers `true` for (an org's, or the entries of one name in every org). */
+  deleteWhere(drop: (org: OrgId, name: string, value: V) => boolean): void;
+  readonly size: number;
   clear(): void;
 }
 
-/** An empty {@link OrgCache}. */
-export const makeOrgCache = <V>(): OrgCache<V> => {
-  const entries = new Map<string, V>();
+/** An empty {@link OrgCache}, bounded to `max` entries when given. */
+export const makeOrgCache = <V>(max?: number): OrgCache<V> => {
+  const entries = new Map<
+    string,
+    { readonly org: OrgId; readonly name: string; readonly value: V }
+  >();
+
+  // The org id never contains U+0000, so the first one ends the org part, whatever the name holds.
+  const keyOf = (org: OrgId, name: string): string => `${org}\u0000${name}`;
 
   return {
-    get: (org, name) => entries.get(orgScopedName(org, name)),
+    get: (org, name) => entries.get(keyOf(org, name))?.value,
     set: (org, name, value) => {
-      entries.set(orgScopedName(org, name), value);
+      const key = keyOf(org, name);
+
+      if (max !== undefined && !entries.has(key) && entries.size >= max) {
+        const oldest = entries.keys().next();
+
+        if (oldest.done !== true) entries.delete(oldest.value);
+      }
+
+      entries.set(key, { org, name, value });
     },
     delete: (org, name) => {
-      entries.delete(orgScopedName(org, name));
+      entries.delete(keyOf(org, name));
+    },
+    deleteWhere: (drop) => {
+      for (const [key, entry] of entries)
+        if (drop(entry.org, entry.name, entry.value)) entries.delete(key);
+    },
+    get size() {
+      return entries.size;
     },
     clear: () => {
       entries.clear();
