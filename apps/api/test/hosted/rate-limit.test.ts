@@ -7,7 +7,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { RATE_LIMITED } from "@commissary/billing/api";
 import { setPlan } from "@commissary/billing/testing";
 import { resetUsageDb } from "@commissary/models/testing";
-import { keyedOrg, models } from "./support.ts";
+import { keyedOrg, models, roomInWindow } from "./support.ts";
 
 beforeAll(async () => {
   await resetUsageDb();
@@ -16,20 +16,6 @@ beforeAll(async () => {
 const FREE_LIMIT = 5;
 
 const PAYG_LIMIT = 8;
-
-/** The time a burst of requests is given to stay in one rate-limit window, with room to spare on a slow runner. */
-const BURST_MS = 10_000;
-
-/**
- * Waits, if need be, until the current rate-limit window has {@link BURST_MS} left. Miniflare's rate limiter counts in
- * windows aligned to the wall-clock minute, so a burst that crossed a minute boundary would start counting again
- * halfway and never reach its ceiling.
- */
-const roomInWindow = async () => {
-  const left = 60_000 - (Date.now() % 60_000);
-
-  if (left < BURST_MS) await new Promise((resolve) => setTimeout(resolve, left + 100));
-};
 
 describe("the per-org rate ceiling", () => {
   it("answers 429 with Retry-After over a Free org's ceiling and leaves other orgs alone", async () => {
