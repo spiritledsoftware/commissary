@@ -13,7 +13,8 @@
   "dependencies": {
     "@commissary/billing": "workspace:*",
     "@commissary/models": "workspace:*",
-    "@commissary/state": "workspace:*"
+    "@commissary/state": "workspace:*",
+    "@commissary/tools": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "catalog:",

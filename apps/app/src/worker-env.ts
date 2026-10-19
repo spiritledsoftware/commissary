@@ -16,6 +16,7 @@ import {
 import { type BillingBindings, BillingEnv } from "@commissary/billing/api";
 import { signInSessions } from "./hosted/sign-in.ts";
 import { type ModelsBindings, ModelsEnv } from "@commissary/models/api";
+import { type ToolsBindings, ToolsEnv } from "@commissary/tools/api";
 import {
   CurrentOrg,
   CurrentOutboundPolicy,
@@ -65,6 +66,7 @@ export type WorkerBindings = AuthBindings &
   StateBindings &
   ModelsBindings &
   BillingBindings &
+  ToolsBindings &
   AppBindings;
 
 /** The services {@link envContext} provides. */
@@ -73,6 +75,7 @@ export type EnvServices =
   | StateEnv
   | ModelsEnv
   | BillingEnv
+  | ToolsEnv
   | AppEnv
   | AuthDirectory
   | SignInSessions;
@@ -89,6 +92,7 @@ export const envContext = (env: WorkerBindings): Context.Context<EnvServices> =>
     Context.add(StateEnv, env),
     Context.add(ModelsEnv, env),
     Context.add(BillingEnv, env),
+    Context.add(ToolsEnv, env),
     Context.add(AppEnv, env),
     Context.add(AuthDirectory, directory),
     Context.add(SignInSessions, signInSessions(env)),

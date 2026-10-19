@@ -262,6 +262,9 @@ importers:
       '@commissary/state':
         specifier: workspace:*
         version: link:../../packages/state
+      '@commissary/tools':
+        specifier: workspace:*
+        version: link:../../packages/tools
       effect:
         specifier: 'catalog:'
         version: 4.0.4
@@ -320,6 +323,9 @@ importers:
       '@commissary/state-worker':
         specifier: workspace:*
         version: link:../state
+      '@commissary/tools':
+        specifier: workspace:*
+        version: link:../../packages/tools
       better-auth:
         specifier: 1.7.7
         version: 1.7.7(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(vitest@5.0.3(@types/node@26.6.5)(vite@8.3.4(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.6.1)(yaml@2.9.1)))
@@ -403,6 +409,9 @@ importers:
       '@commissary/state':
         specifier: workspace:*
         version: link:../../packages/state
+      '@commissary/tools':
+        specifier: workspace:*
+        version: link:../../packages/tools
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -639,6 +648,40 @@ importers:
       '@cloudflare/vitest-plugin':
         specifier: 1.4.2
         version: 1.4.2(@cloudflare/workers-types@5.20261014.1)(@types/node@26.6.5)(vitest@5.0.3(@types/node@26.6.5)(vite@8.3.4(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.6.1)(yaml@2.9.1)))
+      '@types/node':
+        specifier: 'catalog:'
+        version: 26.6.5
+      typescript:
+        specifier: 'catalog:'
+        version: 7.0.2
+      vitest:
+        specifier: 'catalog:'
+        version: 5.0.3(@types/node@26.6.5)(vite@8.3.4(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.6.1)(yaml@2.9.1))
+
+  packages/tools:
+    dependencies:
+      '@commissary/auth':
+        specifier: workspace:*
+        version: link:../auth
+      '@commissary/contract':
+        specifier: workspace:*
+        version: link:../contract
+      '@commissary/core':
+        specifier: workspace:*
+        version: link:../core
+      '@commissary/state':
+        specifier: workspace:*
+        version: link:../state
+      effect:
+        specifier: 'catalog:'
+        version: 4.0.4
+    devDependencies:
+      '@cloudflare/vitest-plugin':
+        specifier: 1.4.2
+        version: 1.4.2(@cloudflare/workers-types@5.20261014.1)(@types/node@26.6.5)(vitest@5.0.3(@types/node@26.6.5)(vite@8.3.4(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.6.1)(yaml@2.9.1)))
+      '@effect/vitest':
+        specifier: 'catalog:'
+        version: 4.0.4(effect@4.0.4)(vitest@5.0.3(@types/node@26.6.5)(vite@8.3.4(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.6.1)(yaml@2.9.1)))
       '@types/node':
         specifier: 'catalog:'
         version: 26.6.5

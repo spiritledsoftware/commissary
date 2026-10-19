@@ -26,7 +26,7 @@ import { CLIENT_API_PREFIXES } from "./packages/core/src/http/client-api.ts";
 /**
  * Runtime compatibility of the Workers; keep in sync with apps/app/vitest.config.ts, apps/api/vitest.config.ts,
  * apps/auth/vitest.config.ts, packages/state/vitest.config.ts, packages/models/vitest.config.ts,
- * packages/billing/vitest.config.ts and tools/workers/worker-configuration.d.ts. `global_fetch_strictly_public` sends
+ * packages/billing/vitest.config.ts, packages/tools/vitest.config.ts and tools/workers/worker-configuration.d.ts. `global_fetch_strictly_public` sends
  * a fetch to a hostname in the deployment's own zone through the internet, not straight to its origin (ADR 0044,
  * docs/ARCHITECTURE.md "Outbound guard").
  */

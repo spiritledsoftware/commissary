@@ -17,6 +17,7 @@
  */
 import { type AccessRule, type RouteAccess, ruleAccess } from "@commissary/auth";
 import { accessRules as modelsAccessRules } from "@commissary/models/management";
+import { accessRules as toolsAccessRules } from "@commissary/tools/management";
 import {
   type AccessZone,
   isPanelPagePath,
@@ -37,6 +38,7 @@ const API_KEYS = `${MANAGEMENT_PREFIX}/api-keys`;
 const RULES: ReadonlyArray<AccessRule> = [
   { path: API_KEYS, subpaths: true, role: "member" },
   ...modelsAccessRules,
+  ...toolsAccessRules,
 ];
 
 const ME = `${MANAGEMENT_PREFIX}/me`;

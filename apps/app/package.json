@@ -19,6 +19,7 @@
     "@commissary/models": "workspace:*",
     "@commissary/state": "workspace:*",
     "@commissary/state-worker": "workspace:*",
+    "@commissary/tools": "workspace:*",
     "better-auth": "1.7.7",
     "effect": "catalog:"
   },

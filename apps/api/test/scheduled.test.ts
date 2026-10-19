@@ -12,6 +12,7 @@ import { alarmOf } from "@commissary/state/testing";
 import { runScheduledTasks, type ScheduledServices, scheduledTasks } from "../src/scheduled.ts";
 import worker from "../src/index.ts";
 import { ModelsEnv, scheduledTasks as modelsTasks } from "@commissary/models/api";
+import { scheduledTasks as toolsTasks } from "@commissary/tools/api";
 import { FULL_ACCESS } from "@commissary/models/testing";
 
 const ctx = {} as unknown as ExecutionContext;
@@ -21,10 +22,11 @@ describe("scheduled dispatch", () => {
     expect(scheduledTasks.map((task) => task.name)).toContain("model-catalog-refresh");
   });
 
-  it("runs its own task, then the Models tasks in their order", () => {
+  it("runs its own task, then the Models tasks and the Tools tasks in their order", () => {
     expect(scheduledTasks.map((task) => task.name)).toEqual([
       "api-key-expiry",
       ...modelsTasks.map((task) => task.name),
+      ...toolsTasks.map((task) => task.name),
     ]);
     // The API key sweep (apps/app/test/api-keys.test.ts) covers every org, also one nobody opens.
     expect(scheduledTasks.find((task) => task.name === "api-key-expiry")?.scope).toBe("org");
