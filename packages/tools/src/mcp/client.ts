@@ -5,17 +5,19 @@
  * - the 2025 handshake: `initialize`, then `notifications/initialized` and `tools/list` in the session the server may
  *   open (`Mcp-Session-Id`), with the negotiated `MCP-Protocol-Version` on every request, and the session deleted
  *   afterwards;
- * - when the server refuses `initialize` (a 4xx or a JSON-RPC error), the stateless 2026-07-28 revision: one
- *   `tools/list` POST per page carrying its protocol version in `_meta` and the `MCP-Protocol-Version`, `Mcp-Method`
- *   and `Mcp-Name` headers.
+ * - when the server refuses `initialize` the way a server of that revision does (`400`, `405` or a JSON-RPC error),
+ *   the stateless 2026-07-28 revision: one `tools/list` POST per page carrying its protocol version in `_meta` and the
+ *   `MCP-Protocol-Version`, `Mcp-Method` and `Mcp-Name` headers. Any other refusal (a `404`, a `401`) is reported as
+ *   it is.
  *
  * Every request goes through the `HttpClient` the caller provides, which is the outbound guard's (ADR 0044). The
  * client follows only same-origin 307/308 redirects itself, so a credential in a named header or the query never
- * reaches another origin. Answers are JSON or a request-scoped SSE stream, read up to {@link MAX_BODY_BYTES}. Error
- * messages never quote the URL (a query parameter may carry the key) nor the server's body.
+ * reaches another origin. Answers are JSON or a request-scoped SSE stream, read up to {@link MAX_BODY_BYTES}; a body
+ * the client does not read (a redirect, a refusal, the session's end) is cancelled. Error messages never quote the URL
+ * (a query parameter may carry the key) nor the server's body.
  */
 import { Buffer } from "node:buffer";
-import { Effect, Option, Schema, Stream } from "effect";
+import { type Duration, Effect, Option, Schema, Stream } from "effect";
 import {
   FetchHttpClient,
   HttpClient,
@@ -27,21 +29,24 @@ import { OUTBOUND_REFUSED_MESSAGE, outboundRefusalOf } from "@commissary/core";
 import type { ToolkitSecret } from "@commissary/contract/tools";
 
 /** The 2025 revision the handshake asks for; the server may answer an older one. */
-export const LEGACY_PROTOCOL_VERSION = "2025-11-25";
+const LEGACY_PROTOCOL_VERSION = "2025-11-25";
 
 /** The stateless revision (no handshake, no session). */
-export const STATELESS_PROTOCOL_VERSION = "2026-07-28";
+const STATELESS_PROTOCOL_VERSION = "2026-07-28";
 
 /** The most one answer may hold. */
-export const MAX_BODY_BYTES = 4 * 1024 * 1024;
+const MAX_BODY_BYTES = 4 * 1024 * 1024;
 
 /** Pages of `tools/list` read at most. */
 const MAX_PAGES = 50;
 
 const MAX_REDIRECTS = 5;
 
-/** How long one listing (every request of it) may take. */
-const LISTING_TIMEOUT = "60 seconds";
+/** How long one listing (every request of it) may take unless the caller says otherwise: an interactive build's. */
+export const LISTING_TIMEOUT: Duration.Input = "60 seconds";
+
+/** The statuses a server of the stateless revision refuses `initialize` with (an unsupported version, no such method). */
+const STATELESS_REFUSALS: ReadonlySet<number> = new Set([400, 405]);
 
 const CLIENT_INFO = { name: "commissary", version: "1.0.0" };
 
@@ -119,7 +124,7 @@ const tooLarge = new McpError({
 });
 
 /** `request` signed in with `secret`. */
-export const authorize = (
+const authorize = (
   request: HttpClientRequest.HttpClientRequest,
   secret: ToolkitSecret,
 ): HttpClientRequest.HttpClientRequest => {
@@ -173,6 +178,13 @@ const boundedStream = (response: HttpClientResponse.HttpClientResponse) => {
   );
 };
 
+/**
+ * Lets go of a body the client does not read: opening the stream in a scope and closing the scope cancels its reader,
+ * so the connection is let go (as the outbound guard does for a hop it does not follow).
+ */
+const releaseBody = (response: HttpClientResponse.HttpClientResponse) =>
+  Effect.scoped(Effect.asVoid(Stream.toPull(response.stream))).pipe(Effect.ignore);
+
 /** Whether `message` is the reply to the request `id`. */
 const repliesTo = (message: Schema.Json, id: number): boolean =>
   Option.exists(decodeEnvelope(message), (envelope) => envelope.id === id);
@@ -194,35 +206,37 @@ const jsonReply = (response: HttpClientResponse.HttpClientResponse, id: number) 
  * The reply to the request `id` in an SSE answer: events are read until one carries it, so a server that keeps the
  * stream open afterwards does not hold the build.
  */
-const sseReply = (response: HttpClientResponse.HttpClientResponse, id: number) =>
-  Effect.gen(function* () {
-    let data: Array<string> = [];
-    let found: Schema.Json | undefined;
+const sseReply = Effect.fnUntraced(function* (
+  response: HttpClientResponse.HttpClientResponse,
+  id: number,
+): Effect.fn.Return<Schema.Json | undefined, McpError> {
+  let data: Array<string> = [];
+  let found: Schema.Json | undefined;
 
-    const dispatch = () => {
-      if (data.length === 0) return;
-      const message = Option.getOrUndefined(parseJson(data.join("\n")));
+  const dispatch = () => {
+    if (data.length === 0) return;
+    const message = Option.getOrUndefined(parseJson(data.join("\n")));
 
-      data = [];
+    data = [];
 
-      if (message !== undefined && repliesTo(message, id)) found = message;
-    };
+    if (message !== undefined && repliesTo(message, id)) found = message;
+  };
 
-    yield* boundedStream(response).pipe(
-      Stream.decodeText,
-      Stream.splitLines,
-      Stream.takeUntil((line) => {
-        if (line === "") dispatch();
-        else if (line.startsWith("data:")) data.push(line.slice(5).replace(/^ /, ""));
+  yield* boundedStream(response).pipe(
+    Stream.decodeText,
+    Stream.splitLines,
+    Stream.takeUntil((line) => {
+      if (line === "") dispatch();
+      else if (line.startsWith("data:")) data.push(line.slice(5).replace(/^ /, ""));
 
-        return found !== undefined;
-      }),
-      Stream.runDrain,
-    );
-    dispatch();
+      return found !== undefined;
+    }),
+    Stream.runDrain,
+  );
+  dispatch();
 
-    return found;
-  });
+  return found;
+});
 
 /** What one POST answered. */
 interface Answer {
@@ -291,9 +305,12 @@ const post = Effect.fnUntraced(function* (
         : undefined;
 
     if (next !== undefined) {
+      yield* releaseBody(response);
       url = next;
       continue;
     }
+
+    if (status < 200 || status >= 300) yield* releaseBody(response);
 
     if (status === 401 || status === 403)
       return yield* new McpError({
@@ -311,8 +328,11 @@ const post = Effect.fnUntraced(function* (
 
     const sessionId = response.headers["mcp-session-id"];
 
-    if (message.id === undefined || status === 202 || status === 204)
+    if (message.id === undefined || status === 202 || status === 204) {
+      yield* releaseBody(response);
+
       return { sessionId, reply: undefined };
+    }
 
     const reply = (response.headers["content-type"] ?? "").includes("text/event-stream")
       ? yield* sseReply(response, message.id)
@@ -379,8 +399,8 @@ const allPages = Effect.fnUntraced(function* (
 });
 
 /** Deletes the server's session (`DELETE` with `Mcp-Session-Id`); failures are ignored. */
-const endSession = (source: string, secret: ToolkitSecret, session: Session) =>
-  Effect.gen(function* () {
+const endSession = Effect.fnUntraced(
+  function* (source: string, secret: ToolkitSecret, session: Session) {
     const client = yield* HttpClient.HttpClient;
 
     const request = authorize(
@@ -395,14 +415,21 @@ const endSession = (source: string, secret: ToolkitSecret, session: Session) =>
       secret,
     );
 
-    yield* client
+    const response = yield* client
       .execute(request)
       .pipe(Effect.provideService(FetchHttpClient.RequestInit, MANUAL_REDIRECTS));
-  }).pipe(Effect.ignore);
 
-/** Whether the server refused `initialize` the way a server of another revision does: a 4xx or a JSON-RPC error. */
+    yield* releaseBody(response);
+  },
+  (effect) => Effect.ignore(effect),
+);
+
+/**
+ * Whether the server refused `initialize` the way a server of the stateless revision does ({@link STATELESS_REFUSALS};
+ * a JSON-RPC error is read from the reply).
+ */
 const isRefusedHandshake = (error: McpError): boolean =>
-  error.reason === "http" && error.status !== undefined && error.status < 500;
+  error.reason === "http" && error.status !== undefined && STATELESS_REFUSALS.has(error.status);
 
 /** The tool list over the 2025 handshake; `undefined` when the server refuses `initialize`. */
 const legacyList = Effect.fnUntraced(function* (
@@ -478,10 +505,14 @@ const statelessList = (source: string, secret: ToolkitSecret) =>
     ),
   );
 
-/** The tools the MCP server at `source` lists for `secret`, every page of them, within {@link LISTING_TIMEOUT}. */
+/**
+ * The tools the MCP server at `source` lists for `secret`, every page of them, within `timeout` (default
+ * {@link LISTING_TIMEOUT}).
+ */
 export const listUpstreamTools = (
   source: string,
   secret: ToolkitSecret,
+  timeout: Duration.Input = LISTING_TIMEOUT,
 ): Effect.Effect<ReadonlyArray<UpstreamTool>, McpError, HttpClient.HttpClient> =>
   Effect.gen(function* () {
     const legacy = yield* legacyList(source, secret);
@@ -489,7 +520,7 @@ export const listUpstreamTools = (
     return legacy ?? (yield* statelessList(source, secret));
   }).pipe(
     Effect.timeoutOrElse({
-      duration: LISTING_TIMEOUT,
+      duration: timeout,
       orElse: () =>
         Effect.fail(
           new McpError({ reason: "unreachable", message: "the MCP server did not answer in time" }),
