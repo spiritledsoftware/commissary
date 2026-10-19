@@ -598,7 +598,7 @@ _Avoid_: budget, quota, allowance (a provider's limit)
 
 **Toolkit**:
 A named set of tools that the Tools area builds from one source, such as GitHub's MCP server or Stripe's OpenAPI
-document, and that its tools are named after (`github.create_issue`). An org admin adds a toolkit for the org; a member
+document, and that its tools are named after (`github_create_issue`). An org admin adds a toolkit for the org; a member
 can add a private toolkit, which only they can use and of which org admins see only that it exists.
 _Avoid_: integration, connector, app, source, MCP server (for the toolkit itself)
 
