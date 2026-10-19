@@ -24,6 +24,7 @@ import {
   ManagementServicesLive as ModelsManagementServicesLive,
 } from "@commissary/models/management";
 import { BillingRoutes } from "@commissary/billing/management";
+import { ManagementRoutes as ToolsManagementRoutes } from "@commissary/tools/management";
 import { memberRoutes } from "./member-routes.ts";
 import { orgRoutes } from "./org-routes.ts";
 import { peopleRoutes } from "./people-routes.ts";
@@ -51,13 +52,14 @@ const OrgWideRoutes = HttpRouter.addAll([
 ]);
 
 /**
- * All management routes: the Worker's own and each area's (Models', Billing's). Models' need `ModelRegistry`, the
- * `CatalogStore` and an `HttpClient`.
+ * All management routes: the Worker's own and each area's (Models', Billing's, Tools'). Models' need `ModelRegistry`,
+ * the `CatalogStore` and an `HttpClient`; Billing's and Tools' nothing more.
  */
 export const ManagementRoutes = Layer.mergeAll(
   OrgWideRoutes,
   ModelsManagementRoutes,
   BillingRoutes,
+  ToolsManagementRoutes,
 );
 
 /** Production wiring: each area's services. Wrap with `withAccess(...)`. */

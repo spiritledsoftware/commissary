@@ -47,6 +47,10 @@ import {
   orgDeletionStep as modelsOrgDeletionStep,
 } from "@commissary/models/management";
 import { orgDeletionStep as billingOrgDeletionStep } from "@commissary/billing/management";
+import {
+  exportSection as toolsExportSection,
+  orgDeletionStep as toolsOrgDeletionStep,
+} from "@commissary/tools/management";
 
 const BASE = "/v9/management";
 
@@ -361,6 +365,7 @@ const exportOrg = Effect.gen(function* () {
 
   // Each area's section goes through its own view of the ControlPlane.
   const models = yield* modelsExportSection({ members: byId, teams: teamNames });
+  const tools = yield* toolsExportSection;
   const tokens = yield* controlPlane("listServiceTokens", (stub) => stub.listServiceTokens());
   const iso = (at: number) => new Date(at).toISOString();
 
@@ -368,6 +373,7 @@ const exportOrg = Effect.gen(function* () {
     exported_at: iso(now),
     org: view(org),
     ...models,
+    ...tools,
     members: members.map((member) => ({
       email: member.email,
       role: member.role,
@@ -418,7 +424,11 @@ const signInDeletionFailed = (error: DeletionThrew) =>
   );
 
 /** The org-deletion steps of the areas this Worker mounts, in order. */
-const areaDeletionSteps = Effect.all([modelsOrgDeletionStep, billingOrgDeletionStep]);
+const areaDeletionSteps = Effect.all([
+  modelsOrgDeletionStep,
+  billingOrgDeletionStep,
+  toolsOrgDeletionStep,
+]);
 
 const deleteOrgRoute = Effect.gen(function* () {
   const identity = yield* AccessPrincipal;

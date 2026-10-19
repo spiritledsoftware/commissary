@@ -1,0 +1,31 @@
+{
+  "name": "@commissary/tools",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The Tools area: toolkits built from remote MCP servers, their credentials and tool lists, its management routes, its cron task and its ControlPlane part; tested in Node.js (test/unit) and workerd",
+  "type": "module",
+  "exports": {
+    "./api": "./src/api.ts",
+    "./management": "./src/management.ts",
+    "./state": "./src/state.ts",
+    "./testing": "./test/testing.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc"
+  },
+  "dependencies": {
+    "@commissary/auth": "workspace:*",
+    "@commissary/contract": "workspace:*",
+    "@commissary/core": "workspace:*",
+    "@commissary/state": "workspace:*",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "1.4.2",
+    "@effect/vitest": "catalog:",
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

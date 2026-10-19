@@ -28,7 +28,8 @@ such as `src/...` and `test/...` in the rest of this document are relative to `a
 cited as `translation/...` (relative to `packages/translation/src/`), core's as `core/...` (relative to
 `packages/core/src/`), auth's as `auth/...` (relative to `packages/auth/src/`), state's as `state/...` (relative to
 `packages/state/src/`), Models' as `models/...` (relative to `packages/models/src/`), Billing's as `billing/...` (relative
-to `packages/billing/src/`) and the JSON path engine as `packages/json`.
+to `packages/billing/src/`), Tools' as `tools/...` (relative to `packages/tools/src/`) and the JSON path engine as
+`packages/json`.
 
 ```
 .                             workspace root and deploy root (Alchemy, no Wrangler config); turbo.json
@@ -75,13 +76,13 @@ to `packages/billing/src/`) and the JSON path engine as `packages/json`.
     src/index.ts              exports ControlPlane, SessionState and Platform; answers every request 404
     src/dev.ts                its `alchemy dev` entry: index.ts plus the dev-only DevStateBridge entrypoint
     src/control-plane.ts      the ControlPlane Durable Object: @commissary/state's base composed with the Models and
-                              Billing parts
+                              Billing and Tools parts
     src/env.d.ts              what the classes read: the state Worker's bindings
   apps/web/                   @commissary/web: control panel served at / (React, Effect Atom, TanStack Router; built
                               into apps/web/dist, the Worker's assets), its tests in Node.js
   packages/auth/              @commissary/auth: request-side authentication (principals, Access JWTs, API and
                               management keys, roles, admission, Cloud suspension checks, the gates), state
-                              through AuthDirectory
+                              through AuthDirectory; the viewer and the ownership rules the areas share
   packages/state/             @commissary/state: the org-wide state on Durable Objects (the ControlPlane's org-wide
                               base and its stores, composeControlPlane, Platform registry, leases, SessionState,
                               the stub helpers, the AuthDirectory adapter), tested in workerd
@@ -120,6 +121,18 @@ to `packages/billing/src/`) and the JSON path engine as `packages/json`.
     src/meter.ts              counting a request against free usage and the plan limit
     src/rate-limit.ts         the per-plan request-rate ceiling
     test/                     workerd tests against a test-only ControlPlane (test/worker.ts); test/testing.ts is ./testing
+  packages/tools/             @commissary/tools: the Tools area (#196); like Models, the Workers import it only
+                              through ./api, ./management and ./state (lint rule boundaries/tools-imports)
+    src/api.ts                for the API Worker: its cron task (tool-list-refresh), ToolsEnv
+    src/management.ts         for the app Worker: management routes, role-table entries, org-deletion step, its section
+                              of the org export
+    src/state.ts              for the state Worker: ToolsPart, its part of the ControlPlane
+    src/control-plane-part.ts the ControlPlane's Tools part (toolkits, their credentials, tool lists, overrides)
+    src/toolkits/             storage, names, the flat list of unique full names, static secrets
+    src/mcp/                  the MCP client that lists a remote MCP server's tools
+    src/management/           Tools' /v9/management routes (toolkits)
+    test/                     Node.js tests (test/unit/) and workerd tests against a test-only ControlPlane
+                              (test/worker.ts) and fake MCP servers; test/testing.ts is ./testing
   packages/contract/          @commissary/contract: the management API's Effect HttpApi schemas and addressing (browser-safe)
   packages/core/              @commissary/core: the foundation without bindings (org model, shared errors, hashing,
                               log-safe helpers, management replies, route services, the execution context, the
@@ -196,8 +209,9 @@ to `packages/billing/src/`) and the JSON path engine as `packages/json`.
     (`apps/state/src/control-plane.ts`) is the org-wide base (`state/control-plane.ts`: members, teams, service tokens, the
     membership index and settings, API keys, management keys, SSO, `SessionState` instances, the org's data key)
     composed (`composeControlPlane`, `state/compose.ts`, which gives each part a method of its name) with the Models part (`models/control-plane-part.ts`: config, credentials, selection, refresh, grants,
-    Spend limits, quota, reset grants, OAuth logins) and the Billing part (`billing/part.ts`: the plan and the
-    free-usage counters, `stub.billing().admit(…)`; see "Billing"). A part is an `RpcTarget` constructed once per object with the
+    Spend limits, quota, reset grants, OAuth logins), the Billing part (`billing/part.ts`: the plan and the
+    free-usage counters, `stub.billing().admit(…)`; see "Billing") and the Tools part (`tools/control-plane-part.ts`:
+    toolkits, their credentials, tool lists and overrides; see "Tools"). A part is an `RpcTarget` constructed once per object with the
     base's in-object view (`OrgCore`: org id, member and team lookups, data key, the alarm), creates its own tables and
     is reached through a method, `stub.models().pick(…)`: one pipelined round trip. A getter (`stub.models.pick(…)`) was
     the first plan; vitest-pool-workers answers a getter of a Durable Object stub with a function, so the pipelined call
@@ -261,7 +275,8 @@ to `packages/billing/src/`) and the JSON path engine as `packages/json`.
   provides the state's and each area's env view itself): its own job (expired API keys), then each area's tasks
   (`ScheduledTask` of `@commissary/core`; Models' from `models/api.ts`): the model catalog refresh (the one
   models.dev document: every provider's models, OpenCode's included), Antigravity version and model entitlements, xAI client version, usage retention, the Devin user status, a
-  safety sweep that re-arms credential refresh alarms, and the quota check of connected accounts. A job is
+  safety sweep that re-arms credential refresh alarms, and the quota check of connected accounts; then Tools' tool list
+  refresh (`tools/scheduled-tasks.ts`, org-scoped: see "Tools"). A job is
   deployment-wide (catalog, client versions, usage retention: once per run) or org-scoped (entitlements, Devin status,
   refresh sweep, quota check: once per org the Platform registry lists, `global` first, with `CurrentOrg` set, a failure in one org not
   stopping the next). When the registry cannot be read the org jobs run for `global` alone, so a registry outage does not
@@ -1206,10 +1221,11 @@ Every URL an org or member supplies passes one **outbound guard** before Commiss
 - a provider's `base_url` (provider key groups, the config import, auth files: `base_url`, `base-url`, `api_base_url`);
 - a Vertex service account's `token_uri`, fetched on every token mint (the Vertex import, auth files);
 - the `models.catalog` source, fetched by the cron and the panel's catalog refresh;
-- Commissary Cloud's SSO: an org's OIDC issuer (its discovery document), the JWKS endpoint and the SAML sign-in URL.
+- Commissary Cloud's SSO: an org's OIDC issuer (its discovery document), the JWKS endpoint and the SAML sign-in URL;
+- a toolkit's source, the MCP server's URL, on save and on every fetch (see "Tools").
 
-Toolkit sources, OAuth sign-in to toolkits, the toolkit catalog's live checks, CIMD and DCR fetches and the sandbox's
-egress point use the same guard when they land, from `@commissary/core`.
+OAuth sign-in to toolkits, the toolkit catalog's live checks, CIMD and DCR fetches and the sandbox's egress point use the
+same guard when they land, from `@commissary/core`.
 
 - **The check** (`core/outbound/check.ts`, `checkOutboundUrl`): only `https:`, plus `http:` and `https:` to loopback
   (`localhost`, `*.localhost`, `127.0.0.0/8`, `::1`) in local development; no IP literal outside the public internet
@@ -2142,12 +2158,15 @@ ADR 0027: deleting something deletes it at once, and Commissary keeps no content
 - **Retention** per org, `usage_retention_days` in the Platform registry (see "Usage accounting"). **Usage failures** keep
   status, type and code, not the body (same section).
 - **Member removal** deletes the member's private data in the ControlPlane (`#deleteMemberData`: their API keys in the
-  base, then the Models part's `memberLeft`), and their Spend limits and counters; **API keys** are deleted when revoked or expired ("API keys"), and `ApiKeyStore` reports every key it
+  base, then the Models and Tools parts' `memberLeft`: Tools deletes their private toolkits and their private credentials
+  on org toolkits), and their Spend limits and counters; **API keys** are deleted when revoked or expired ("API keys"), and `ApiKeyStore` reports every key it
   deletes so the key's Spend limits and counters go with it.
 - **Org deletion** (`deleteOrg`, called by `DELETE /org` and by account deletion, app-only) runs, in this order: the
   org-deletion steps of the areas the Worker mounts, which it takes as input (`OrgDeletionStep` of `@commissary/core`;
   Models' `deleteOrgModels`: the org's usage rows in D1, `deleteOrgUsage`, batched, then its `org.<id>.…` keys in the
-  `CACHE` KV namespace; Billing's step has nothing outside the ControlPlane to delete yet), the `SessionState` instances it registered, its ControlPlane's whole storage (`ControlPlane.wipeOrg`: the Models and Billing parts drop their tables, then the rest of the SQL
+  `CACHE` KV namespace; Billing's and Tools' steps have nothing outside the ControlPlane to delete yet), the
+  `SessionState` instances it registered, its ControlPlane's whole storage (`ControlPlane.wipeOrg`: the Models, Billing
+  and Tools parts drop their tables, then the rest of the SQL
   tables, the key-value store and the alarm go) and last its registry entry, which frees the slug. The registry entry goes last, so a deletion that stops half way
   (a Worker invocation has a subrequest limit: `DELETION_BUDGET`, 400 calls shared by every step; the step is named in the log) is repeated by
   sending the request again: the org is still listed and each earlier step finds less to do. `global` is refused. After the
@@ -2159,7 +2178,9 @@ ADR 0027: deleting something deletes it at once, and Commissary keeps no content
   (`state/session-state/instances.ts`, from the org-scoped store name; table `session_instances` with the expiry of the data, at
   most seven days) and org deletion wipes the registered ones. Instances written before this change are not registered: they
   hold replay state only, which expires on its own within seven days.
-- **Export** (`GET /export`, `org-routes.ts` with each area's section: Models' `exportSection` in `export-view.ts`): the panel offers it before an org is deleted. It assembles what the org has
+- **Export** (`GET /export`, `org-routes.ts` with each area's section: Models' `exportSection` in `export-view.ts`,
+  Tools' in `tools/management/export-view.ts`: the toolkits the caller reaches, the kind of each credential, never a
+  secret, and the overrides): the panel offers it before an org is deleted. It assembles what the org has
   from the same reads the pages use and masks every secret as a preview (`maskConfigSecrets`: secret-named keys, header
   values the header classifier calls secret or does not know, credentials in a `proxy-url`); it never carries tokens. Usage
   records are not included: the usage routes page and export them.
@@ -2863,3 +2884,75 @@ takes a multipart service-account `file` (+ `location`, default `us-central1`), 
 (`normalizePrivateKey`, parity with `NormalizeServiceAccountMap` in `packages/models/test/fixtures/session.json`; error texts of invalid keys
 differ) and stores `vertex-<project>.json` merged over an existing file. Not ported: plugin logins and the local callback forwarder (`is_webui`). Credential JSON files from the Go
 server can still be imported through management.
+
+## Tools (`tools/`, `tools/management/routes.ts`)
+
+The Tools area (ADR 0036, ADR 0037, ADR 0038) turns outside sources into **toolkits**. This version builds one kind,
+the remote MCP server (Streamable HTTP); OpenAPI, GraphQL and Discovery toolkits, OAuth sign-in, the toolkit catalog,
+grants, prices, approval rules and Commissary's own MCP endpoint come later (#197 to #209). The package
+(`@commissary/tools`) is shaped like Models: entry points `./api`, `./management`, `./state` and `./testing`, a lint
+boundary (`boundaries/tools-imports`) and a ControlPlane part, `ToolsPart`, reached as `stub.tools().x(…)`. It needs
+no binding of its own: its state is the ControlPlane's (`TOOLS_TABLES`: `toolkits`, `toolkit_credentials`,
+`toolkit_tools`, `tool_overrides`, dropped by `wipe()`), and it reaches MCP servers from the ControlPlane through the
+global `fetch` behind the outbound guard.
+
+- **What Tools shares with Models**: the ownership rules (`Scope`, `FULL_ACCESS`, `accessTo`: who reaches a shared or a
+  private thing), which lived in `models/credentials/ownership.ts`. They moved into `@commissary/auth`
+  (`auth/ownership.ts`, beside `Viewer`), and Models' module re-exports them with its own selection rule. A shared
+  package rather than an RPC to the Models part: the rules are a pure function of the viewer and an owner, with no state
+  behind them, so an RPC would add a round trip and a dependency between the areas' parts for nothing. Sealing is the
+  org-wide base's already (`core.secrets`). Tools imports nothing of Models (its manifest does not name it, so the lint
+  rule refuses it).
+- **Toolkits** (`tools/toolkits/store.ts`): a kind (`mcp`), a source (the MCP server's URL), a name and which
+  credentials it accepts (`shared`, `private` or `both`; a private toolkit takes its owner's only). An org admin adds
+  org toolkits; any member adds private toolkits (a plain member's toolkit is always private). Reading an org toolkit is
+  for every member, managing it for org admins; a private toolkit is its owner's, and an org admin sees only that it
+  exists (`others`: owner and creation time, never its name or source) and may remove it, as with private credentials.
+  The source passes the outbound guard when it is saved (`422` with the guard's message as `error` and `path: "source"`, as for a provider's `base_url`) and names no user
+  or password; every build passes it again, each request and redirect included. Edits name the toolkit's revision in
+  `If-Match`.
+- **Credentials**: a toolkit holds at most one shared credential and one private credential per member, connected and
+  removed under `/toolkits/:id/credentials/{shared,private}`. Static secrets only: none, a bearer token, an API key in a
+  named header or query parameter, basic auth (`tools/toolkits/secret.ts`; a header the MCP client sets itself is
+  refused). The secret is sealed with the org's data key for its row (`toolkit_credentials/<toolkit>/<owner>`) and
+  never answered; views show the kind and the header or parameter name. A source that needs no sign-in takes a shared
+  credential of kind `none`, so it will follow grants like any shared credential (#198). Private credentials follow
+  `membership.private_credentials` as in Models: while it is off a private credential cannot be connected, shows
+  `active: false` and is not used. Changing what an org toolkit accepts deletes the credentials it no longer accepts.
+- **Tool lists** (`tools/mcp/client.ts`): one list per toolkit, from the server's `tools/list`, built with the shared
+  credential or, if the toolkit has none, the private credential of the member who asks (a private toolkit's owner's).
+  The client speaks the 2025 handshake (`initialize`, `notifications/initialized`, `tools/list` in the session of
+  `Mcp-Session-Id` with the negotiated `MCP-Protocol-Version`, the session deleted afterwards) and, when the server
+  refuses `initialize` with a 4xx or a JSON-RPC error, the stateless 2026-07-28 revision (protocol version in `_meta` and
+  the `MCP-Protocol-Version`, `Mcp-Method` and `Mcp-Name` headers). It reads JSON or SSE answers up to 4 MiB, every page
+  (at most 50), within 60 seconds, and follows only same-origin 307/308 redirects, so a key in a named header or the
+  query never reaches another origin. Error messages never quote the URL or the server's body. A list is built when a
+  toolkit is added with a credential or its first credential is connected, on `POST /toolkits/:id/refresh`, and by the
+  cron task `tool-list-refresh` (every org; an org toolkit with private credentials only is skipped, as no member asks).
+  A failed build keeps the last list and records why (`tool_list.error`). A tool that disappears upstream drops out; one
+  already known keeps the build that first listed it (`first_seen`, a counter across builds, not a time). Each tool
+  keeps its upstream name, description, input schema and annotations.
+- **Names** (`tools/toolkits/names.ts`, ADR 0037): a full name is `<toolkit>_<tool>` in `[a-z0-9_]` (the upstream name
+  lowercased, every other character `_`); above 46 characters it is cut to 41 and ends in `_` and the first four hex
+  characters of the SHA-256 of the whole name, flagged `shortened`. A toolkit's name is lowercase words of `[a-z0-9]`
+  joined by single underscores, at most 32 characters (a decision of #196, so a full name keeps room for the tool's);
+  the default is the slug of the source's host (`mcp.linear.app` → `linear`) until the catalog's slug (#207). Org toolkit
+  names are unique in the org; a private toolkit's must not clash with an org toolkit or its owner's other private
+  toolkits, while an org toolkit may take a name a member uses privately.
+- **The flat list** (`tools/toolkits/resolve.ts`): who looks decides the set, the org's toolkits for the org's names, or
+  the org's and one member's private toolkits for that member (`servedTools`, what #197 serves). A member's private
+  toolkit wins over an org toolkit of its name for them alone (the org toolkit is `shadowed` for them, the private one
+  `rename_suggested`). Uniqueness is checked on the full name, so `github_rest` + `create_issue` and `github` +
+  `rest_create_issue` cannot both hold `github_rest_create_issue`: a renamed tool wins (an admin's rename stands against
+  a tool a refresh brings later), then the tool seen first; the others are hidden and flagged `clash`. A rename to a full
+  name a served tool of the set holds is refused (`409 name_taken`).
+- **Stable ids and overrides**: a tool's stable id is its toolkit's id and its upstream name (`<toolkit id>:<upstream
+  name>`), not the name shown. An org admin may hide, rename, re-describe or reclassify a tool of an org toolkit, a
+  member one of their private toolkits (`PUT /toolkits/:id/overrides`, the whole override at its revision; one that
+  sets nothing is deleted). Overrides are keyed by stable id, so they survive renames of the toolkit and refreshes; an
+  override of a tool its source no longer lists is shown flagged `missing`.
+- **Tool class** (ADR 0038): `read` when the tool's annotations say `readOnlyHint: true`, else `write`; an override's
+  class wins.
+- **Members and orgs**: a member who leaves takes their private toolkits and their private credentials on org toolkits
+  (`memberLeft`); org deletion drops the tables (`wipe()`), and Tools' org-deletion step has nothing else to delete. The
+  org export lists the toolkits the caller reaches with their credentials' kinds and their overrides, never a secret.

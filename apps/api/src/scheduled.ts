@@ -27,23 +27,27 @@ import {
   scheduledTasks as modelsTasks,
   ScheduledTaskLayer as ModelsTaskLayer,
 } from "@commissary/models/api";
+import { type ToolsBindings, ToolsEnv, scheduledTasks as toolsTasks } from "@commissary/tools/api";
 import { type ApiBindings, outboundPolicyOf } from "./worker-env.ts";
 
 /**
  * The bindings the runner and the areas it mounts read: the state's and each area's view of `env`, and the Worker's
  * own hosts for the outbound guard.
  */
-export type ScheduledBindings = StateBindings & ModelsBindings & ApiBindings;
+export type ScheduledBindings = StateBindings & ModelsBindings & ToolsBindings & ApiBindings;
 
 /** Each view of `env` the jobs read, as its service. */
-const bindingsContext = (env: ScheduledBindings): Context.Context<StateEnv | ModelsEnv> =>
-  Context.make(StateEnv, env).pipe(Context.add(ModelsEnv, env));
+const bindingsContext = (
+  env: ScheduledBindings,
+): Context.Context<StateEnv | ModelsEnv | ToolsEnv> =>
+  Context.make(StateEnv, env).pipe(Context.add(ModelsEnv, env), Context.add(ToolsEnv, env));
 
 /** Services available to scheduled jobs (provided by {@link ScheduledLayer} and the invocation's bindings). */
 export type ScheduledServices =
   | Layer.Success<typeof ScheduledLayer>
   | StateEnv
   | ModelsEnv
+  | ToolsEnv
   | WorkerExecutionContext;
 
 /**
@@ -65,6 +69,7 @@ const apiKeyExpiry: ScheduledTask<StateEnv> = {
 export const scheduledTasks: ReadonlyArray<ScheduledTask<ScheduledServices>> = [
   apiKeyExpiry,
   ...modelsTasks,
+  ...toolsTasks,
 ];
 
 /**

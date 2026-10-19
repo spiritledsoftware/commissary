@@ -21,6 +21,14 @@ import { Effect } from "effect";
 import { type ModelsBindings, ModelsEnv } from "@commissary/models/api";
 import { orgDeletionStep } from "@commissary/models/management";
 import { insertUsageRecord, resetUsageDb, sampleRecord } from "@commissary/models/testing";
+import { fakeMcpServer, serveFakeMcpServers } from "@commissary/tools/testing";
+
+// Toolkits' lists are built from a fake MCP server.
+serveFakeMcpServers();
+
+const MCP_SERVER = fakeMcpServer("https://mcp.deletion.example.com/mcp", {
+  tools: [{ name: "search" }],
+});
 
 /** Models' org-deletion step over `bindings`. */
 const modelsStep = (bindings: ModelsBindings) =>
@@ -101,6 +109,36 @@ const newOrg = async (): Promise<Org> => {
 
   expect(group.status).toBe(200);
 
+  // Toolkits: an org toolkit with its shared credential, tool list and an override, and Alice's private toolkit.
+  const toolkit = await send(slug, "/toolkits", platform, "POST", {
+    source: MCP_SERVER.url,
+    name: "search",
+    credential: { kind: "bearer", token: "mcp-token" },
+  });
+
+  expect(toolkit.status).toBe(201);
+  expect(
+    (
+      await harness.json(
+        `/v9/management/orgs/${slug}/toolkits/${(toolkit.body as { id: string }).id}/overrides`,
+        {
+          ...jsonInit("PUT", { tool: "search", hidden: true }),
+          headers: { "content-type": "application/json", "if-match": "0" },
+          auth: platform,
+        },
+      )
+    ).status,
+  ).toBe(200);
+  expect(
+    (
+      await send(slug, "/toolkits", org.alice.auth, "POST", {
+        source: MCP_SERVER.url,
+        name: "mine",
+        credential: { kind: "none" },
+      })
+    ).status,
+  ).toBe(201);
+
   await insertUsageRecord(env.USAGE, sampleRecord({ orgId: org.id, requestId: `u1-${slug}` }));
   await insertUsageRecord(env.USAGE, sampleRecord({ orgId: org.id, requestId: `u2-${slug}` }));
   await env.CACHE.put(orgScopedName(org.id, "video:abc"), "1");
@@ -169,6 +207,10 @@ describe("deleting an org", () => {
         "api_keys",
         "private_key_groups",
         "session_instances",
+        "toolkits",
+        "toolkit_credentials",
+        "toolkit_tools",
+        "tool_overrides",
       ]),
     );
 

@@ -1,0 +1,16 @@
+{
+  // Tools and its tests. The sources and the workerd tests use the Workers runtime types shared with the Worker
+  // (tools/workers/worker-configuration.d.ts), the Node.js types (nodejs_compat) and the Vitest config, and the plugin's
+  // `cloudflare:test` module; the Node.js tests (`test/unit/`) are checked with the same program. The test Worker's
+  // `env` is declared in test/env.d.ts; the sources read their own view (`ToolsEnv`), never the global `Env`.
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2023"],
+    "types": [
+      "node",
+      "../../tools/workers/worker-configuration.d.ts",
+      "@cloudflare/vitest-plugin/types"
+    ]
+  },
+  "include": ["src", "test", "vitest.config.ts"]
+}

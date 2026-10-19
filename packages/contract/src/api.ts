@@ -1,8 +1,8 @@
 /**
  * The management API contract (`@commissary/contract`) shared by the Worker, its tests and the control panel
  * (`apps/web`): endpoint paths, query schemas, response and error bodies of the `/v9/management` routes the panel uses.
- * The handlers themselves stay plain router handlers (`apps/app/src/management/routes.ts` and Models' in
- * `packages/models/src/management/routes.ts`);
+ * The handlers themselves stay plain router handlers (`apps/app/src/management/routes.ts`, Models' in
+ * `packages/models/src/management/routes.ts` and Tools' in `packages/tools/src/management/routes.ts`);
  * `apps/app/test/management-contract.test.ts` checks their real responses against these schemas through the generated
  * client.
  *
@@ -25,6 +25,7 @@ import { RoutingGroup } from "./routing.ts";
 import { SettingsGroup } from "./settings.ts";
 import { SpendGroup } from "./spend.ts";
 import { SsoGroup } from "./sso.ts";
+import { ToolsGroup } from "./tools.ts";
 import { UsageGroupApi } from "./usage.ts";
 
 export const MANAGEMENT_API_PREFIX = "/v9/management";
@@ -47,6 +48,7 @@ export class ManagementApi extends HttpApi.make("management")
   .add(ManagementKeysGroup)
   .add(SsoGroup)
   .add(BillingGroup)
+  .add(ToolsGroup)
   .prefix(MANAGEMENT_API_PREFIX) {}
 
 // Below the prefix `/orgs...` is platform-level and every other route exists per org; `/me` is not platform-level:

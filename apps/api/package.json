@@ -14,6 +14,7 @@
     "@commissary/core": "workspace:*",
     "@commissary/models": "workspace:*",
     "@commissary/state": "workspace:*",
+    "@commissary/tools": "workspace:*",
     "effect": "catalog:"
   },
   "devDependencies": {
