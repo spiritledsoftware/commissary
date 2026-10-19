@@ -16,7 +16,14 @@ import {
 import { type BillingBindings, BillingEnv } from "@commissary/billing/api";
 import { signInSessions } from "./hosted/sign-in.ts";
 import { type ModelsBindings, ModelsEnv } from "@commissary/models/api";
-import { WorkerExecutionContext, CurrentOrg, GLOBAL_ORG } from "@commissary/core";
+import {
+  CurrentOrg,
+  CurrentOutboundPolicy,
+  GLOBAL_ORG,
+  type OutboundPolicy,
+  outboundPolicy,
+  WorkerExecutionContext,
+} from "@commissary/core";
 import { stateAuthDirectory, type StateBindings, StateEnv } from "@commissary/state";
 
 /**
@@ -40,6 +47,11 @@ export interface AppBindings {
    * calls (`management/web-panel.ts`) and the orgs' identity providers send people back to (`management/sso-routes.ts`).
    */
   readonly AUTH_ORIGIN?: string;
+  /**
+   * The deployment's own hosts (base, app, API and auth host, comma separated; empty on a preview and under
+   * `alchemy dev`), which the outbound guard refuses ({@link outboundPolicyOf}).
+   */
+  readonly OWN_HOSTS: string;
 }
 
 /**
@@ -84,14 +96,24 @@ export const envContext = (env: WorkerBindings): Context.Context<EnvServices> =>
 };
 
 /**
+ * The outbound guard's policy (ADR 0044) of a request: the deployment's own hosts as the app Worker's bindings name
+ * them, plus the host of `requestUrl`, the request being served.
+ */
+export const outboundPolicyOf = (env: AppBindings, requestUrl?: string): OutboundPolicy =>
+  outboundPolicy({ hosts: [env.OWN_HOSTS, env.API_DOMAIN, env.AUTH_ORIGIN], requestUrl });
+
+/**
  * Builds the per-request context passed as the second argument of the web handler. Every request belongs to the org
- * `global` for now (ADR 0021); resolving the org from the request replaces this default later.
+ * `global` for now (ADR 0021); resolving the org from the request replaces this default later. `requestUrl`, the
+ * request's URL, completes the outbound guard's policy ({@link outboundPolicyOf}).
  */
 export const requestContext = (
   env: WorkerBindings,
   ctx: ExecutionContext,
+  requestUrl?: string,
 ): Context.Context<EnvServices | WorkerExecutionContext | CurrentOrg> =>
   envContext(env).pipe(
     Context.add(WorkerExecutionContext, ctx),
     Context.add(CurrentOrg, GLOBAL_ORG),
+    Context.add(CurrentOutboundPolicy, outboundPolicyOf(env, requestUrl)),
   );

@@ -22,6 +22,7 @@ import { keyIdentities } from "../config/normalize.ts";
 import type { WriteResult } from "../config/store.ts";
 import { configKeyIds } from "../credentials/key-ids.ts";
 import { isJsonObject, type JsonObject } from "@commissary/json";
+import { refusedGroupBaseUrl } from "./base-url-guard.ts";
 import { probeProviderKey } from "./provider-keys-probe.ts";
 import { currentAuthIndexer } from "./auth-index.ts";
 import {
@@ -178,6 +179,12 @@ const putGroup = Effect.gen(function* () {
 
   // The decoder accepted `raw`, so `group` is an object.
   if (!isJsonObject(group)) return yield* invalidBody();
+
+  // A `base-url` the outbound guard refuses is refused when saved, not only when used (ADR 0044).
+  const refusedBase = yield* refusedGroupBaseUrl(group);
+
+  if (refusedBase !== undefined)
+    return yield* replyError(422, refusedBase.refusal.message, { path: refusedBase.path });
   const viewer = yield* currentViewer;
   // A plain member only ever writes private groups; an org admin chooses.
   const asPrivate = value.private === true || !viewer.admin;

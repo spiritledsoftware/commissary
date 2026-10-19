@@ -6,7 +6,8 @@
  * Docs: credentials.md §2.2 (vertex). Go has no auth-level refresh: the Google library mints a token per request and
  * caches it. Here the token is minted with WebCrypto (RS256) and cached by `VertexTokenCache` until `exp - 60 s`.
  */
-import { Effect } from "effect";
+import { Effect, Result } from "effect";
+import { checkOutboundUrl, CurrentOutboundPolicy } from "@commissary/core";
 import { HttpClientRequest } from "effect/http";
 import { isJsonObject, type JsonObject } from "@commissary/json";
 import { refreshError, type RefreshError } from "./error.ts";
@@ -298,9 +299,12 @@ export const mintVertexToken = (
       );
     }
 
-    if (!account.tokenUri.startsWith("https://")) {
+    // The service account names its own `token_uri`: it passes the outbound guard (ADR 0044) like a `base_url`.
+    const tokenUri = checkOutboundUrl(account.tokenUri, yield* CurrentOutboundPolicy);
+
+    if (Result.isFailure(tokenUri)) {
       return yield* Effect.fail(
-        refreshError({ message: "vertex service account token_uri must use https" }),
+        refreshError({ message: `vertex service account token_uri: ${tokenUri.failure.message}` }),
       );
     }
 

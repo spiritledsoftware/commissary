@@ -3,7 +3,10 @@
 // the sign-in itself is the auth Worker's, apps/auth/test/sso.test.ts); requiring single sign-on for a domain ends the
 // sessions of its people. The DNS resolver and the identity provider's discovery are fakes behind the global `fetch`.
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { env } from "cloudflare:workers";
 import { resetStandingCaches } from "@commissary/auth";
+import { OUTBOUND_REFUSED_MESSAGE } from "@commissary/core";
+import { controlPlaneOf, platformOf } from "@commissary/state";
 import { DOH_URL } from "../../src/sso/dns.ts";
 import {
   AUTH_ORIGIN,
@@ -46,6 +49,25 @@ const oidcIssuer = (request: Request): Response | undefined => {
   return new Response("not found", { status: 404 });
 };
 
+/** An issuer whose discovery document names its signing keys at the cloud metadata address. */
+const METADATA_ISSUER = "https://login.metadata-idp.com";
+
+const metadataIssuer = (request: Request): Response | undefined => {
+  const url = new URL(request.url);
+
+  if (url.origin !== METADATA_ISSUER) return undefined;
+
+  return Response.json({
+    issuer: METADATA_ISSUER,
+    authorization_endpoint: `${METADATA_ISSUER}/authorize`,
+    token_endpoint: `${METADATA_ISSUER}/token`,
+    jwks_uri: "https://169.254.169.254/latest/meta-data/jwks",
+    response_types_supported: ["code"],
+    subject_types_supported: ["public"],
+    id_token_signing_alg_values_supported: ["RS256"],
+  });
+};
+
 /** TXT records the fake resolver answers, by name. */
 const txt = new Map<string, Array<string>>();
 
@@ -73,6 +95,7 @@ beforeAll(async () => {
     return (
       resolver(request) ??
       oidcIssuer(request) ??
+      metadataIssuer(request) ??
       new Response(`unexpected ${request.url}`, { status: 599 })
     );
   };
@@ -265,6 +288,86 @@ describe("setting up single sign-on", () => {
     expect(
       (await call(sso("second", "/domains/shared.com/verify"), json(second, "POST"))).status,
     ).toBe(200);
+  });
+});
+
+describe("the outbound guard on an identity provider's URLs (ADR 0044)", () => {
+  const setProvider = (owner: string, org: string, body: Readonly<Record<string, string>>) =>
+    call(sso(org, "/provider"), json(owner, "PUT", body));
+
+  it("refuses an issuer or a SAML sign-in URL at a private address", async () => {
+    const owner = await orgOwnedBy("private-idp");
+
+    const oidc = await setProvider(owner, "private-idp", {
+      kind: "oidc",
+      issuer: "https://10.0.0.8",
+      client_id: OIDC_CLIENT_ID,
+      client_secret: OIDC_CLIENT_SECRET,
+    });
+
+    expect(oidc.status).toBe(422);
+    expect(await oidc.json()).toMatchObject({
+      error: "invalid_provider",
+      message: `the issuer: ${OUTBOUND_REFUSED_MESSAGE}`,
+    });
+
+    const saml = await setProvider(owner, "private-idp", {
+      kind: "saml",
+      entry_point: "http://idp.example.com/sso",
+      idp_entity_id: "urn:idp",
+      certificate: "x",
+    });
+
+    expect(saml.status).toBe(422);
+    expect(await saml.json()).toMatchObject({
+      message: `the sign-in URL: ${OUTBOUND_REFUSED_MESSAGE}`,
+    });
+  });
+
+  it("refuses a discovery document that names an endpoint the guard refuses", async () => {
+    const owner = await orgOwnedBy("metadata-idp");
+
+    const refused = await setProvider(owner, "metadata-idp", {
+      kind: "oidc",
+      issuer: METADATA_ISSUER,
+      client_id: OIDC_CLIENT_ID,
+      client_secret: OIDC_CLIENT_SECRET,
+    });
+
+    expect(refused.status).toBe(422);
+    expect(await refused.json()).toMatchObject({ error: "discovery_failed" });
+  });
+
+  it("refuses to test a stored provider whose signing keys' URL the guard refuses", async () => {
+    const owner = await orgOwnedBy("stored-private-idp");
+    const org = await platformOf(env).getOrgBySlug("stored-private-idp");
+
+    if (org === undefined) throw new Error("the org was not created");
+
+    // Stored as before the guard existed: an issuer it lets through, signing keys at a private address.
+    const stored = await controlPlaneOf(env, org.id).setSsoProvider(
+      {
+        kind: "oidc",
+        issuer: OIDC_ISSUER,
+        clientId: OIDC_CLIENT_ID,
+        clientSecret: OIDC_CLIENT_SECRET,
+        authorizationEndpoint: `${OIDC_ISSUER}/authorize`,
+        tokenEndpoint: `${OIDC_ISSUER}/token`,
+        jwksEndpoint: "https://10.0.0.8/jwks",
+      },
+      "test",
+      Date.now(),
+    );
+
+    expect(stored.ok).toBe(true);
+
+    const test = await call(sso("stored-private-idp", "/provider/test"), json(owner, "POST"));
+
+    expect(test.status).toBe(422);
+    expect(await test.json()).toMatchObject({
+      error: "invalid_provider",
+      message: `the signing keys' URL: ${OUTBOUND_REFUSED_MESSAGE}`,
+    });
   });
 });
 

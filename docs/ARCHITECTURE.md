@@ -123,7 +123,7 @@ to `packages/billing/src/`) and the JSON path engine as `packages/json`.
   packages/contract/          @commissary/contract: the management API's Effect HttpApi schemas and addressing (browser-safe)
   packages/core/              @commissary/core: the foundation without bindings (org model, shared errors, hashing,
                               log-safe helpers, management replies, route services, the execution context, the
-                              area contracts ScheduledTask and OrgDeletionStep)
+                              area contracts ScheduledTask and OrgDeletionStep, the outbound guard)
   packages/json/              @commissary/json: gjson/sjson-compatible path engine, Json types, JSON text helpers
   packages/translation/       @commissary/translation: pure translation, tested in Node.js
     src/translator/           registry + one directory per (client -> provider) pair
@@ -1182,6 +1182,89 @@ claude/gemini/openai-response -> openai, interactions <-> openai (Chat Completio
   Go copies byte for byte (`gjson.Raw`) are re-serialised compactly.
 - **No equivalent needed**: the Go OpenAI-compatible executor has no refresh and no reasoning replay cache (§7 of the pipeline
   research lists none for it); 401s are ordinary upstream errors for the conductor's classification.
+
+## Outbound guard (`core/outbound/`)
+
+Every URL an org or member supplies passes one **outbound guard** before Commissary fetches it (ADR 0044,
+`docs/THREAT-MODEL.md` "Outbound requests to places they shouldn't reach"). Today these are guarded:
+
+- a provider's `base_url` (provider key groups, the config import, auth files: `base_url`, `base-url`, `api_base_url`);
+- a Vertex service account's `token_uri`, fetched on every token mint (the Vertex import, auth files);
+- the `models.catalog` source, fetched by the cron and the panel's catalog refresh;
+- Commissary Cloud's SSO: an org's OIDC issuer (its discovery document), the JWKS endpoint and the SAML sign-in URL.
+
+Toolkit sources, OAuth sign-in to toolkits, the toolkit catalog's live checks, CIMD and DCR fetches and the sandbox's
+egress point use the same guard when they land, from `@commissary/core`.
+
+- **The check** (`core/outbound/check.ts`, `checkOutboundUrl`): only `https:`, plus `http:` and `https:` to loopback
+  (`localhost`, `*.localhost`, `127.0.0.0/8`, `::1`) in local development; no IP literal outside the public internet
+  (IANA's special-purpose ranges: IPv4 this-network, private, CGNAT, loopback, link-local and the metadata address
+  `169.254.169.254`, IETF assignments, documentation, benchmarking, 6to4 relay, multicast, reserved and broadcast; IPv6
+  everything outside global unicast `2000::/3` (unspecified, loopback, unique local `fc00::/7`, link-local, site-local,
+  multicast, discard-only, ...) plus Teredo and the other IETF assignments, and documentation; an IPv4-mapped, NAT64 or
+  6to4 address is judged by the IPv4 address it carries); none of the deployment's own hosts. The WHATWG URL parser
+  turns IPv4's odd notations (decimal, octal, hex, short forms) into a dotted quad first, so they are refused like the
+  plain spelling. Names are **not resolved**: the guard relies on Cloudflare's network not routing a Worker's `fetch`
+  to a private address (below). A refusal is `OutboundRefused` (`reason`, the refused `host`, never a path or query),
+  whose message is "Commissary only reaches public HTTPS addresses".
+- **The transport** (`core/outbound/client.ts`, `guardHttpClient`, `OutboundHttpClientLive`): an `HttpClient` that
+  checks every request and follows redirects itself (`redirect: "manual"` to `fetch`), checking each hop, at most five
+  (`MAX_OUTBOUND_REDIRECTS`; one more is refused, `too_many_redirects`). A redirected POST becomes a GET as `fetch` does,
+  and `Authorization` and cookies are dropped on a change of origin. A caller that asked for `redirect: "manual"` itself
+  (the quota probes) keeps reading its redirects; only the first hop is checked for it. A refusal fails the request
+  with an `HttpClientError` (`InvalidUrlError`) whose cause is the `OutboundRefused`; `outboundRefusalOf` finds it.
+- **The policy** (`CurrentOutboundPolicy`, `outboundPolicy`): each Worker provides it per request in `requestContext`
+  from its bindings and the request's URL. Own hosts are `OWN_HOSTS` (the base, app, API and auth hosts, set by
+  `alchemy.run.ts` on the app, API and state Workers; empty on a preview and under `alchemy dev`), the Worker's own
+  `API_DOMAIN`/`APP_DOMAIN`/`AUTH_ORIGIN`, and the request's host; a request to a workers.dev host (a preview) refuses
+  every Worker of that account's workers.dev subdomain. Local development is decided like the Access dev bypass: the
+  request came to a loopback host (`isLoopbackHost`), which only `alchemy dev` serves. Without a policy (cron jobs, the
+  ControlPlane) the strictest applies: no loopback, the bindings' own hosts only. On a preview that leaves the
+  ControlPlane without the preview's workers.dev hosts: `infra/preview-origin.ts` learns the account subdomain only from
+  the API Worker's URL, after the state Worker is deployed, so `OWN_HOSTS` cannot carry it. The app and API Workers
+  cover the gap through the request's host.
+- **Where Models uses it**: the client API's executors (`handlers/layer.ts` wraps whatever `HttpClient` it is given, the
+  tests' mocks included), the management routes (`ManagementServicesLive`: the key probe, quota checks, the catalog
+  refresh), the API Worker's cron jobs (`apps/api/src/scheduled.ts`: the catalog refresh among them) and the
+  ControlPlane (the Devin status sweep and the `RefreshManager`, whose Vertex token mint checks `token_uri`). The Codex
+  and xAI WebSocket transports check the dial URL (`wss:` as `https:`, `executor/websocket/session.ts`) and do not
+  follow a redirected upgrade. On use, the conductor turns a refusal into a `400` (`code: outbound_refused`) with the
+  guard's message: no cooldown, and the request moves on to another provider as after an upstream 400. On write
+  (`management/base-url-guard.ts`, `management/settings.ts`), a provider key group (`PUT /provider-keys/groups`, `422`),
+  a config import (`422 invalid_config` with the `path`), a settings save of `models.catalog` (`422 invalid_setting`),
+  an auth file upload (`422` with the `path` and the file's `name`), a Vertex import (`422` with the `path`) and a field
+  patch of an auth file are refused with the same message. An existing `http:` or private URL stops working; there is no
+  override (`docs/MIGRATION.md`).
+- **SSO** (`apps/app/src/sso/idp.ts`): saving a provider checks the OIDC issuer or the SAML sign-in URL with
+  `checkOutboundUrl`, and Better Auth's discovery trusts an endpoint the document names only when the guard lets it
+  through (`isTrustedOrigin`); testing a provider checks the stored issuer and JWKS endpoint again before fetching them.
+  The guard replaces Better Auth's own `isPublicRoutableHost`, which also refuses metadata names such as
+  `metadata.google.internal`; dropping those name checks is fine on Workers, where names are not resolved and a
+  Worker's `fetch` never reaches a private address (ADR 0044).
+- **`global_fetch_strictly_public`** is set on every Worker (`COMPATIBILITY` in `alchemy.run.ts`, mirrored in each
+  `vitest.config.ts`).
+
+### What a deployed Worker's `fetch` reaches
+
+What Cloudflare documents (read 2026-10-19). Not yet verified on a deployed stage; see #255.
+
+- **The deployment's own zone.** Without the flag, a `fetch` to a hostname in the Worker's own zone "is routed to the
+  zone's origin server, ignoring any Workers mapped to the URL and also bypassing Cloudflare security settings"
+  (Access included); with `global_fetch_strictly_public` it goes to Cloudflare's front door like a request from the
+  internet ([compatibility flags, "Global fetch() strictly
+  public"](https://developers.cloudflare.com/workers/configuration/compatibility-flags/#global-fetch-strictly-public)).
+- **Private, loopback and link-local addresses.** The `fetch` documentation says nothing either way
+  ([Fetch](https://developers.cloudflare.com/workers/runtime-apis/fetch/)). For TCP sockets Cloudflare documents that
+  "Cloudflare IPs, `localhost`, and private network IPs" are disallowed
+  ([TCP sockets, troubleshooting](https://developers.cloudflare.com/workers/runtime-apis/tcp-sockets/#troubleshooting)),
+  and reaching a private network takes Workers VPC over a Cloudflare Tunnel, Mesh or WAN on-ramp
+  ([Workers VPC](https://developers.cloudflare.com/workers-vpc/)): a Worker has no route into a private network of its
+  own. A Cloudflare IP literal answers error 1003
+  ([error 1003](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-1xxx-errors/error-1003/)),
+  and a proxied record that points at a Cloudflare IP answers error 1000
+  ([error 1000](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-1xxx-errors/error-1000/)).
+- **A public name that resolves to a private address.** Not documented for `fetch`; this is the case the guard leaves to
+  Cloudflare's network, since it does not resolve names.
 
 ## Management API and control panel (`src/management/`)
 

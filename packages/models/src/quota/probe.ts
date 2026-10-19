@@ -13,6 +13,7 @@
  */
 import { Clock, Effect, Result } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
+import { outboundRefusalOf } from "@commissary/core";
 import { fetchDevinUserStatus } from "../credentials/devin-status.ts";
 import { currentXaiClientVersion } from "../executor/xai/version.ts";
 import { type Json, tryParseJson } from "@commissary/json";
@@ -77,7 +78,10 @@ const send = (
 
     return { status: response.status, body: tryParseJson(text) };
   }).pipe(
-    Effect.mapError(() => failure("usage request failed")),
+    // A usage URL may come from a provider's `base_url`: the outbound guard's refusal (ADR 0044) is shown as it is.
+    Effect.mapError((error) =>
+      failure(outboundRefusalOf(error)?.message ?? "usage request failed"),
+    ),
     Effect.timeoutOrElse({
       duration: TIMEOUT,
       orElse: () => Effect.fail(failure("usage request timed out")),

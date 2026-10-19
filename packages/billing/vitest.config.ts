@@ -14,7 +14,7 @@ export default defineConfig({
       main: "./test/worker.ts",
       miniflare: {
         compatibilityDate: "2026-08-01",
-        compatibilityFlags: ["nodejs_compat"],
+        compatibilityFlags: ["nodejs_compat", "global_fetch_strictly_public"],
         durableObjects: {
           CONTROL_PLANE: { className: "ControlPlane", useSQLite: true },
           SESSION_STATE: { className: "SessionState", useSQLite: true },

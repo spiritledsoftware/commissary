@@ -43,7 +43,7 @@ export default defineConfig({
       main: "./test/worker.ts",
       miniflare: {
         compatibilityDate: "2026-08-01",
-        compatibilityFlags: ["nodejs_compat"],
+        compatibilityFlags: ["nodejs_compat", "global_fetch_strictly_public"],
         // Same module types as the deployed bundles (alchemy.run.ts): the state Worker's tokenizer ranks.
         modulesRules: [{ type: "Data", include: ["**/*.bin"] }],
         durableObjects: {

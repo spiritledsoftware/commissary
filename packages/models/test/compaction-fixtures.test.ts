@@ -129,7 +129,7 @@ describe("compaction capsule helpers (Go parity)", () => {
 });
 
 const CLAUDE = credential("claude", "claude-compaction-key", {
-  attributes: { api_key: "key-compaction", base_url: "http://claude.test" },
+  attributes: { api_key: "key-compaction", base_url: "https://claude.test" },
 });
 
 const ANTIGRAVITY = credential("antigravity", "antigravity-compaction.json", {

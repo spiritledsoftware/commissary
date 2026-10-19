@@ -13,6 +13,7 @@ import { isJsonObject, type Json, type JsonObject } from "@commissary/json";
 import { handled, jsonReply, queryParams, replyError } from "@commissary/core";
 import { currentViewer } from "@commissary/auth";
 import { modelsControlPlane } from "../env.ts";
+import { refusedMetadataBaseUrl } from "./base-url-guard.ts";
 
 const BASE = "/v9/management/oauth";
 
@@ -134,6 +135,13 @@ const importVertex = Effect.gen(function* () {
     type: "vertex",
     label,
   };
+
+  // The service account's `token_uri` is fetched on every token mint: it passes the outbound guard when saved
+  // (ADR 0044).
+  const refusedUrl = yield* refusedMetadataBaseUrl(metadata);
+
+  if (refusedUrl !== undefined)
+    return yield* replyError(422, refusedUrl.refusal.message, { path: refusedUrl.path });
 
   const viewer = yield* currentViewer;
   const wantPrivate = (yield* queryParams).get("private") === "true";

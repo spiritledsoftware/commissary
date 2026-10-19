@@ -8,6 +8,7 @@
  * become plain fields.
  */
 import { Schema } from "effect";
+import type { OutboundRefused } from "@commissary/core";
 
 export class ExecutionError extends Schema.TaggedError<ExecutionError>()("ExecutionError", {
   /** HTTP status for the client (Go `StatusCode()`; 500 when unknown, 499 when the client went away). */
@@ -39,6 +40,19 @@ export class ExecutionError extends Schema.TaggedError<ExecutionError>()("Execut
 /** Convenience constructor for plain status errors (Go `statusErr{code, msg}`). */
 export const statusError = (status: number, message: string): ExecutionError =>
   new ExecutionError({ status, message });
+
+/**
+ * An attempt the outbound guard refused (ADR 0044: the credential's `base_url`, or a redirect from it, is not a public
+ * HTTPS address): `400` with the guard's message, so there is no cooldown and the request moves on to another provider
+ * as after an upstream 400; a misconfigured provider does not hide the others.
+ */
+export const outboundRefusedError = (refused: OutboundRefused): ExecutionError =>
+  new ExecutionError({
+    status: 400,
+    code: "outbound_refused",
+    message: refused.message,
+    cause: refused,
+  });
 
 /** A request-scoped 501 for an operation the provider does not support (no cooldown, no failover). */
 export const notImplemented = (message: string): ExecutionError =>

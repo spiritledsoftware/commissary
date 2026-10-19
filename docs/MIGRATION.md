@@ -51,6 +51,16 @@ curl "${H[@]}" -X POST "$M/settings/import" -H 'content-type: application/yaml' 
   409 `conflict`. Provider key groups and model rules have their own routes (see [ARCHITECTURE.md](ARCHITECTURE.md) "Management API").
 - Management writes need a `content-type` (`application/json`; `application/yaml` for the import; multipart for uploads):
   curl's default `application/x-www-form-urlencoded` answers 415 (cross-site request forgery protection, see ACCESS.md).
+- **A provider's `base-url` must be a public `https:` address** (the outbound guard, ADR 0044): an `http:` URL, an IP
+  literal in a private, loopback, link-local or other non-public range (`10.0.0.0/8`, `192.168.0.0/16`, `127.0.0.1`,
+  `169.254.169.254`, `fc00::/7`, …) or one of the deployment's own hosts answers 422 `invalid_config` with "Commissary
+  only reaches public HTTPS addresses" and the `path` of the group; nothing is stored. The same holds for a key group
+  saved in the panel and an auth file's `base_url`. A provider served only on a private network (a local model server,
+  a gateway inside your VPC) cannot be reached from Workers; give it a public HTTPS address. The same rule applies to a
+  custom `models.catalog` source (422 with `path: models.catalog`) and to a Vertex service account's `token_uri`
+  (refused when the service account is imported or uploaded). Under `alchemy dev`, loopback
+  (`http://localhost:11434/v1`) is allowed only for fetches a request drives (the client API, the panel); the cron jobs
+  and the ControlPlane (the catalog refresh, token refreshes) refuse it.
 - Dropped on import (no effect on Workers): `host`/`port`/`tls`, `remote-management.*` (Access replaces it), `auth-dir`, `pprof`,
   logging to files, `wire-policy`/TLS fingerprint, plugins, Home, Postgres/git/object store settings.
 

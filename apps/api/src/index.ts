@@ -15,7 +15,8 @@ const { handler } = makeWebHandler();
 export const api = {
   // Only the client API and `/healthz` are served here (src/http/hosts.ts); the rest is the app Worker's.
   fetch: (request, env, ctx) =>
-    misdirected(request.url, env) ?? handler(request, requestContext(retryOnCodeUpdate(env), ctx)),
+    misdirected(request.url, env) ??
+    handler(request, requestContext(retryOnCodeUpdate(env), ctx, request.url)),
   // Cron jobs (model catalog refresh, ...) are listed in `scheduledTasks` (src/scheduled.ts).
   scheduled: (controller, env, ctx) => dispatchScheduled(controller, retryOnCodeUpdate(env), ctx),
 } satisfies Required<Pick<ExportedHandler<Env>, "fetch" | "scheduled">>;

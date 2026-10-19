@@ -11,6 +11,7 @@
  * `config/entries.ts`); the route turns the leaf edits into entry writes.
  */
 import { Result, Schema } from "effect";
+import { checkOutboundUrl, OUTBOUND_REFUSED_MESSAGE, type OutboundPolicy } from "@commissary/core";
 import { parseGoDuration } from "../config/accessors.ts";
 import { encodeConfig } from "../config/codec.ts";
 import { Config } from "../config/schema.ts";
@@ -123,18 +124,8 @@ const isTimezone = (zone: string): boolean => {
   }
 };
 
-const isHttpUrl = (text: string): boolean => {
-  try {
-    const url = new URL(text);
-
-    return (url.protocol === "http:" || url.protocol === "https:") && url.hostname !== "";
-  } catch {
-    return false;
-  }
-};
-
-const isCatalogSource = (text: string): boolean =>
-  text === "" || text === "embed" || text === "disabled" || isHttpUrl(text);
+/** The values of `models.catalog` that name no URL: the official source, the bundled snapshot, no refresh. */
+export const CATALOG_KEYWORDS: ReadonlySet<string> = new Set(["", "embed", "disabled"]);
 
 const NON_NEGATIVE = new Set([
   "routing.retry.request-retry",
@@ -161,7 +152,7 @@ const quoted = (value: Json): string =>
  * A message when a typed value is not what Workers would apply as written (the semantic rules of each key). It names
  * the value and what it is not; the field's hint already says what is expected.
  */
-const valueRule = (key: string, value: Json): string | undefined => {
+const valueRule = (key: string, value: Json, policy: OutboundPolicy): string | undefined => {
   if (NON_NEGATIVE.has(key))
     return typeof value === "number" && value < 0 ? `${quoted(value)} is below 0` : undefined;
 
@@ -170,10 +161,11 @@ const valueRule = (key: string, value: Json): string | undefined => {
       ? undefined
       : `${quoted(value)} is not a duration greater than zero`;
 
+  // A catalog URL is fetched by the cron and the panel's refresh: it passes the outbound guard (ADR 0044).
   if (typeof value === "string" && CATALOGS.has(key))
-    return isCatalogSource(value)
+    return CATALOG_KEYWORDS.has(value) || Result.isSuccess(checkOutboundUrl(value, policy))
       ? undefined
-      : `${quoted(value)} is not embed, disabled or an http(s) URL`;
+      : OUTBOUND_REFUSED_MESSAGE;
 
   if (typeof value === "string" && key === "upstream.codex.stream-bootstrap-timeout") {
     const ok =
@@ -199,12 +191,13 @@ const checkLeaf = (
   schema: Schema.Top,
   path: ReadonlyArray<string>,
   value: Json,
+  policy: OutboundPolicy,
 ): SettingsProblem | undefined => {
   // SAFETY: the settings leaves are plain JSON schemas without decoding services.
   const decoded = Schema.decodeUnknownResult(schema as Schema.Decoder<unknown>)(value);
 
   if (Result.isFailure(decoded)) return invalid(path, decoded.failure.message);
-  const message = valueRule(dotted(path), value);
+  const message = valueRule(dotted(path), value, policy);
 
   return message === undefined ? undefined : invalid(path, message);
 };
@@ -214,6 +207,7 @@ const collect = (
   children: ReadonlyMap<string, PatchNode>,
   prefix: ReadonlyArray<string>,
   edits: SettingsEdit[],
+  policy: OutboundPolicy,
 ): SettingsProblem | undefined => {
   for (const [key, value] of Object.entries(node)) {
     const path = [...prefix, key];
@@ -224,14 +218,14 @@ const collect = (
 
     if (target.kind === "section") {
       if (!isJsonObject(value)) return invalid(path, "must be a mapping of settings");
-      const nested = collect(value, target.children, path, edits);
+      const nested = collect(value, target.children, path, edits, policy);
 
       if (nested !== undefined) return nested;
       continue;
     }
 
     if (value !== null) {
-      const refused = checkLeaf(target.schema, path, value);
+      const refused = checkLeaf(target.schema, path, value, policy);
 
       if (refused !== undefined) return refused;
     }
@@ -248,9 +242,10 @@ const collect = (
  */
 export const validateSettings = (
   patch: JsonObject,
+  policy: OutboundPolicy,
 ): Result.Result<ReadonlyArray<SettingsEdit>, SettingsProblem> => {
   const edits: SettingsEdit[] = [];
-  const refused = collect(patch, PATCH_ROOT, [], edits);
+  const refused = collect(patch, PATCH_ROOT, [], edits, policy);
 
   return refused === undefined ? Result.succeed(edits) : Result.fail(refused);
 };

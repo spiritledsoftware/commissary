@@ -30,6 +30,11 @@ interface __BaseEnv_Env {
   /** Overrides the Meta key-mint endpoint (empty: default). */
   META_MINT_URL: string;
   /**
+   * The deployment's own hosts (base, app, API and auth host, comma separated), which the outbound guard refuses
+   * (ADR 0044, src/worker-env.ts `outboundPolicyOf`). Empty on a preview and under `alchemy dev`.
+   */
+  OWN_HOSTS: string;
+  /**
    * Secret HMAC key of `auth_index` (packages/models/src/management/auth-index.ts). Deployed: an Alchemy `Random` (alchemy.run.ts);
    * tests and `alchemy dev` use their own. Empty fails closed.
    */

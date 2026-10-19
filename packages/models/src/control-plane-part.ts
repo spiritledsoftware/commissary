@@ -99,7 +99,13 @@ import {
   type QuotaOutcome,
 } from "./quota/report.ts";
 import type { Viewer } from "@commissary/auth";
-import type { OrgId } from "@commissary/core";
+import {
+  CurrentOutboundPolicy,
+  type OrgId,
+  OutboundHttpClientLive,
+  type OutboundPolicy,
+  outboundPolicy,
+} from "@commissary/core";
 import { QuotaReportStore } from "./quota/store.ts";
 import type { SpendSettings } from "./spend/model.ts";
 import {
@@ -308,6 +314,12 @@ export type SetDisabledResult =
 export interface ModelsPartEnv extends AuthIndexKeyEnv {
   /** Overrides the Meta key-mint endpoint (empty: default); refresh and OAuth logins. */
   readonly META_MINT_URL: string;
+  /**
+   * The deployment's own hosts (base, app, API and auth host, comma separated; empty on a preview and under
+   * `alchemy dev`), which the outbound guard refuses when the object reaches a user-supplied `base_url` (Devin's
+   * status).
+   */
+  readonly OWN_HOSTS: string;
 }
 
 /**
@@ -351,6 +363,11 @@ export class ModelsPart extends RpcTarget implements ControlPlanePart {
    * calls that need an index, not the Durable Object's constructor.
    */
   readonly #authIndex: AuthIndexer;
+  /**
+   * The outbound guard's policy (ADR 0044) for the user-supplied URLs the object reaches: no loopback; refuses the
+   * OWN_HOSTS hosts.
+   */
+  readonly #outbound: OutboundPolicy;
   #configView: ConfigView | undefined;
 
   constructor(ctx: DurableObjectState, env: ModelsPartEnv, core: OrgCore) {
@@ -359,6 +376,7 @@ export class ModelsPart extends RpcTarget implements ControlPlanePart {
     this.#core = core;
     this.#org = core.org;
     this.#authIndex = (credentialId) => orgAuthIndexer(env, this.#org)(credentialId);
+    this.#outbound = outboundPolicy({ hosts: [env.OWN_HOSTS] });
     const transaction = <T>(body: () => T): T => core.transaction(body);
 
     this.#credentials = new CredentialStore(ctx.storage.sql, core.secrets);
@@ -409,7 +427,9 @@ export class ModelsPart extends RpcTarget implements ControlPlanePart {
         set: (at) => this.#wakeUpAt(at),
         clear: () => this.#wakeUpAt(null),
       },
-      http: FetchHttpClient.layer,
+      // A Vertex service account names its own `token_uri`: refreshes go through the outbound guard (ADR 0044).
+      http: OutboundHttpClientLive,
+      outbound: this.#outbound,
       metaMintUrl: env.META_MINT_URL,
       workers: () => this.#currentConfig().config.oauth["auth-auto-refresh-workers"],
     });
@@ -931,7 +951,11 @@ export class ModelsPart extends RpcTarget implements ControlPlanePart {
   /** Cron task `devin-user-status`: `GetUserStatus` profile and quota signals of every stored Devin credential. */
   async refreshDevinStatus(): Promise<DevinStatusSummary> {
     const summary = await Effect.runPromise(
-      refreshDevinStatuses(this.#pool).pipe(Effect.provide(FetchHttpClient.layer)),
+      // A Devin credential's `base_url` is user-supplied: reached behind the outbound guard (ADR 0044).
+      refreshDevinStatuses(this.#pool).pipe(
+        Effect.provide(OutboundHttpClientLive),
+        Effect.provideService(CurrentOutboundPolicy, this.#outbound),
+      ),
     );
 
     if (summary.refreshed > 0) await this.#rearm();

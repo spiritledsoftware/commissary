@@ -253,8 +253,9 @@ export const Config = Schema.Struct({
   ),
   models: section({
     /**
-     * Source of the models.dev catalog: an http(s) URL; empty = the official source (`https://models.dev/api.json`).
-     * File paths are not usable on Workers.
+     * Source of the models.dev catalog: an https URL the outbound guard lets through (ADR 0044: no private address, no
+     * own host; loopback under `alchemy dev`); empty = the official source (`https://models.dev/api.json`), `embed` = the
+     * bundled snapshot, `disabled` = no refresh. File paths are not usable on Workers.
      */
     catalog: text(),
     /** No effect (accepted so existing documents import unchanged): the Codex client catalog is bundled. */

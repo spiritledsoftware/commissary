@@ -181,8 +181,10 @@ export function fetchConnector(): typeof UpstreamWebSocketConnector.Service {
         try: async () => {
           const url = request.url.replace(/^ws(s?):/i, "http$1:");
 
+          // Checked by the outbound guard before dialling (`session.ts`); a redirect is not followed to an unchecked hop.
           const response = await fetch(url, {
             headers: { ...request.headers, upgrade: "websocket" },
+            redirect: "manual",
           });
 
           const ws = response.webSocket;

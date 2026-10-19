@@ -27,3 +27,7 @@ export * from "./observability/cause.ts";
 export * from "./observability/logger.ts";
 
 export * from "./org.ts";
+
+export * from "./outbound/check.ts";
+
+export * from "./outbound/client.ts";

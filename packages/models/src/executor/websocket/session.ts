@@ -15,7 +15,8 @@
  * `(credential id, url)`.
  */
 import { Duration, Effect, Option, Queue, Result, Scope, Semaphore } from "effect";
-import { ExecutionError } from "../errors.ts";
+import { checkOutboundUrl, CurrentOutboundPolicy } from "@commissary/core";
+import { ExecutionError, outboundRefusedError } from "../errors.ts";
 import {
   HandshakeError,
   UpstreamMessage,
@@ -271,6 +272,15 @@ export const openTurn = (input: OpenTurnInput): Effect.Effect<Turn, ExecutionErr
       }
 
       if (session.socket !== undefined) return { socket: session.socket, headers: new Headers() };
+
+      // The outbound guard (ADR 0044) checks the address as the `fetch` that dials it sees it (`wss:` as `https:`); the
+      // upgrade is not redirected.
+      const checked = checkOutboundUrl(
+        input.url.replace(/^ws(s?):/i, "http$1:"),
+        yield* CurrentOutboundPolicy,
+      );
+
+      if (Result.isFailure(checked)) return yield* outboundRefusedError(checked.failure);
 
       const socket = yield* connector
         .connect({ url: input.url, headers: input.headers })

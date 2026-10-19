@@ -1,7 +1,7 @@
 // Configuration of Cloudflare Access verification, read from the Worker env (vars/secrets).
 // New in the Workers port (Go used `access.api-keys`); see docs/ARCHITECTURE.md "Authentication".
 import { Data, Effect } from "effect";
-import { ConfigurationError } from "@commissary/core";
+import { ConfigurationError, isLoopbackHost } from "@commissary/core";
 import type { Principal } from "../principal.ts";
 import type { AuthBindings } from "../config.ts";
 import { isHosted } from "../mode.ts";
@@ -101,8 +101,6 @@ export const isAdmin = (lists: AdminLists, principal: Principal): boolean => {
   }
 };
 
-const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
-
 type DevBypassEnv = Pick<AuthBindings, "ACCESS_DEV_BYPASS"> &
   Partial<Pick<AuthBindings, "ACCESS_TEAM_DOMAIN" | "ACCESS_AUD" | "COMMISSARY_MODE">>;
 
@@ -151,7 +149,7 @@ export const devBypass = (env: DevBypassEnv, requestUrl: string): DevBypass => {
     return undefined;
   }
 
-  if (!LOOPBACK_HOSTS.has(hostname)) return undefined;
+  if (!isLoopbackHost(hostname)) return undefined;
 
   return Active({ email: /^(1|true|yes)$/i.test(value) ? DEFAULT_DEV_EMAIL : value });
 };

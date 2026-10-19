@@ -17,10 +17,26 @@ const FREE_LIMIT = 5;
 
 const PAYG_LIMIT = 8;
 
+/** The time a burst of requests is given to stay in one rate-limit window, with room to spare on a slow runner. */
+const BURST_MS = 10_000;
+
+/**
+ * Waits, if need be, until the current rate-limit window has {@link BURST_MS} left. Miniflare's rate limiter counts in
+ * windows aligned to the wall-clock minute, so a burst that crossed a minute boundary would start counting again
+ * halfway and never reach its ceiling.
+ */
+const roomInWindow = async () => {
+  const left = 60_000 - (Date.now() % 60_000);
+
+  if (left < BURST_MS) await new Promise((resolve) => setTimeout(resolve, left + 100));
+};
+
 describe("the per-org rate ceiling", () => {
   it("answers 429 with Retry-After over a Free org's ceiling and leaves other orgs alone", async () => {
     const busy = (await keyedOrg("busy@example.com")).key;
     const quiet = (await keyedOrg("quiet@example.com")).key;
+
+    await roomInWindow();
 
     for (let sent = 0; sent < FREE_LIMIT; sent += 1) expect((await models(busy)).status).toBe(200);
 
@@ -37,6 +53,7 @@ describe("the per-org rate ceiling", () => {
     const { org, key } = await keyedOrg("paying@example.com");
 
     await setPlan(env, org, "payg");
+    await roomInWindow();
 
     for (let sent = 0; sent < PAYG_LIMIT; sent += 1) expect((await models(key)).status).toBe(200);
 
@@ -48,6 +65,8 @@ describe("the per-org rate ceiling", () => {
 
   it("follows the plan an org is on, from its next request", async () => {
     const { org, key } = await keyedOrg("switching@example.com");
+
+    await roomInWindow();
 
     for (let sent = 0; sent < FREE_LIMIT; sent += 1) expect((await models(key)).status).toBe(200);
     expect((await models(key)).status).toBe(429);

@@ -24,7 +24,7 @@ export default defineConfig({
             main: "./test/worker.ts",
             miniflare: {
               compatibilityDate: "2026-08-01",
-              compatibilityFlags: ["nodejs_compat"],
+              compatibilityFlags: ["nodejs_compat", "global_fetch_strictly_public"],
               // @commissary/translation's tokenizer ranks are `Data` modules (ArrayBuffer), as in the Worker's bundle.
               modulesRules: [{ type: "Data", include: ["**/*.bin"] }],
               durableObjects: {
@@ -42,6 +42,7 @@ export default defineConfig({
                 PLATFORM_ADMIN_SERVICE_TOKENS: "",
                 ACCESS_DEV_BYPASS: "true",
                 META_MINT_URL: "",
+                OWN_HOSTS: "",
                 // Fixed test keys (deployed: Alchemy `Random`s, alchemy.run.ts), 64 characters like the minted ones, so
                 // tests that configure Access (where shorter keys are refused) can use them too. The previous secrets
                 // key lets a test start a ControlPlane whose data key it still wraps.

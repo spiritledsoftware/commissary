@@ -22,7 +22,13 @@ import { decodeConfig, parseConfigYaml } from "../config/codec.ts";
 import { decodeStoredConfig } from "../config/store.ts";
 import { isJsonObject, type JsonObject } from "@commissary/json";
 import { Revisions } from "@commissary/contract/config";
-import { boundedBodyText, handled, jsonReply, replyError } from "@commissary/core";
+import {
+  boundedBodyText,
+  CurrentOutboundPolicy,
+  handled,
+  jsonReply,
+  replyError,
+} from "@commissary/core";
 import { bodyJson } from "@commissary/state";
 import { currentViewer } from "@commissary/auth";
 import {
@@ -33,6 +39,7 @@ import {
   validateSettings,
 } from "./settings.ts";
 import { modelsControlPlane } from "../env.ts";
+import { refusedConfigBaseUrl } from "./base-url-guard.ts";
 
 const PATH = "/v9/management/settings";
 
@@ -106,7 +113,7 @@ const save = Effect.gen(function* () {
     Effect.mapError(invalidBody),
   );
 
-  const edits = yield* orRefuse(validateSettings(raw.patch));
+  const edits = yield* orRefuse(validateSettings(raw.patch, yield* CurrentOutboundPolicy));
   const current = yield* storedConfig;
   const edited = yield* orRefuse(applySettingsPatch(current.document, edits));
 
@@ -156,6 +163,15 @@ const importDocument = Effect.gen(function* () {
       ...(error.column === undefined ? {} : { column: error.column }),
     });
   }
+
+  // A provider's `base-url` the outbound guard refuses is refused when saved, not only when used (ADR 0044).
+  const refusedBase = yield* refusedConfigBaseUrl(parsed.success);
+
+  if (refusedBase !== undefined)
+    return yield* replyError(422, "invalid_config", {
+      message: refusedBase.refusal.message,
+      path: refusedBase.path,
+    });
 
   const identity = yield* AccessPrincipal;
 

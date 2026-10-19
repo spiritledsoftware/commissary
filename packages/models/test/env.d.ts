@@ -10,6 +10,8 @@ interface __ModelsTestEnv extends Omit<
   CONTROL_PLANE: DurableObjectNamespace<import("./worker.ts").ControlPlane>;
   PLATFORM: DurableObjectNamespace<import("./worker.ts").Platform>;
   SESSION_STATE: DurableObjectNamespace<import("./worker.ts").SessionState>;
+  /** The Models part's own hosts for the outbound guard (`ModelsPartEnv`); none under test. */
+  OWN_HOSTS: string;
 }
 
 declare namespace Cloudflare {

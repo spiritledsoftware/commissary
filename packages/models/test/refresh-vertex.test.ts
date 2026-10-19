@@ -1,5 +1,6 @@
 // Vertex service-account JWT minting: PEM repair, PKCS#1 -> PKCS#8, RS256 signing, token cache.
 import { Effect } from "effect";
+import { OUTBOUND_REFUSED_MESSAGE } from "@commissary/core";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
   mintVertexToken,
@@ -112,6 +113,25 @@ describe("mintVertexToken", () => {
     ).result;
 
     expect(denied).toMatchObject({ ok: false, error: { status: 400 } });
+  });
+});
+
+describe("outbound guard on token_uri", () => {
+  it.each([
+    "http://oauth2.example.com/token",
+    "https://169.254.169.254/token",
+    "https://10.0.0.1/token",
+    "https://[fd00::1]/token",
+  ])("refuses the token_uri %s without sending the assertion", async (tokenUri) => {
+    const { http, result } = mint({
+      service_account: sa.account(sa.pem.pkcs8, { token_uri: tokenUri }),
+    });
+
+    const outcome = await result;
+
+    expect(outcome).toMatchObject({ ok: false });
+    expect(JSON.stringify(outcome)).toContain(OUTBOUND_REFUSED_MESSAGE);
+    expect(http.requests).toEqual([]);
   });
 });
 

@@ -10,9 +10,10 @@
  * are the ones the Platform registry lists ({@link registeredOrgs}).
  */
 import { Clock, Context, Effect, Layer } from "effect";
-import { FetchHttpClient } from "effect/http";
 import {
   causeSummary,
+  CurrentOutboundPolicy,
+  OutboundHttpClientLive,
   WorkerExecutionContext,
   CurrentOrg,
   GLOBAL_ORG,
@@ -26,9 +27,13 @@ import {
   scheduledTasks as modelsTasks,
   ScheduledTaskLayer as ModelsTaskLayer,
 } from "@commissary/models/api";
+import { type ApiBindings, outboundPolicyOf } from "./worker-env.ts";
 
-/** The bindings the runner and the areas it mounts read: the state's and each area's view of `env`. */
-export type ScheduledBindings = StateBindings & ModelsBindings;
+/**
+ * The bindings the runner and the areas it mounts read: the state's and each area's view of `env`, and the Worker's
+ * own hosts for the outbound guard.
+ */
+export type ScheduledBindings = StateBindings & ModelsBindings & ApiBindings;
 
 /** Each view of `env` the jobs read, as its service. */
 const bindingsContext = (env: ScheduledBindings): Context.Context<StateEnv | ModelsEnv> =>
@@ -62,8 +67,11 @@ export const scheduledTasks: ReadonlyArray<ScheduledTask<ScheduledServices>> = [
   ...modelsTasks,
 ];
 
-/** The services the areas' tasks read besides the bindings, built once per cron invocation. */
-export const ScheduledLayer = Layer.mergeAll(FetchHttpClient.layer, ModelsTaskLayer);
+/**
+ * The services the areas' tasks read besides the bindings, built once per cron invocation: the global `fetch` behind
+ * the outbound guard (a quota sweep reaches a provider's `base_url`, ADR 0044).
+ */
+export const ScheduledLayer = Layer.mergeAll(OutboundHttpClientLive, ModelsTaskLayer);
 
 /** Logs a failed job instead of failing the invocation; a summary only: full causes carry stacks and upstream URLs. */
 const isolated = <R>(
@@ -126,6 +134,7 @@ export const runScheduledTasks = (
     Effect.provide(ScheduledLayer),
     Effect.provideContext(bindingsContext(env)),
     Effect.provideService(WorkerExecutionContext, ctx),
+    Effect.provideService(CurrentOutboundPolicy, outboundPolicyOf(env)),
     Effect.runPromise,
   );
 

@@ -19,12 +19,13 @@
 import { Clock, Effect } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { AccessPrincipal, AuthConfig, holdsSensitivePowers, isHosted } from "@commissary/auth";
-import { isJsonObject, type Json, type JsonObject } from "@commissary/json";
+import { isJsonObject, type Json, type JsonObject, tryParseJson } from "@commissary/json";
 import { ModelRegistry } from "../registry/service.ts";
 import { currentViewer } from "@commissary/auth";
 import { bodyText, handled, jsonReply, queryParams, replyError } from "@commissary/core";
 import { bodyJson, bodyObject } from "@commissary/state";
 import { modelsControlPlane } from "../env.ts";
+import { refusedMetadataBaseUrl } from "./base-url-guard.ts";
 
 const text = (value: Json | undefined): string => (typeof value === "string" ? value.trim() : "");
 
@@ -173,6 +174,7 @@ const storeUpload = (upload: Upload, wantPrivate: boolean) =>
     if (!name.toLowerCase().endsWith(".json")) return "file must be .json";
 
     if (unsafeName(name)) return "invalid name";
+
     const viewer = yield* currentViewer;
 
     const result = yield* modelsControlPlane("importAuthFile", (stub) =>
@@ -186,6 +188,27 @@ const storeUpload = (upload: Upload, wantPrivate: boolean) =>
 
     return result.reason === "name_taken" ? result.message : `invalid auth file: ${result.message}`;
   });
+
+/**
+ * Refuses (`422`, with the field's `path` and the file's `name`) an upload whose `base_url` or `token_uri` the outbound
+ * guard refuses: refused when saved, not only when used (ADR 0044). Every file is checked before any is stored. A file
+ * that is no JSON is the ControlPlane's to refuse.
+ */
+const refuseOutboundUrls = (uploads: ReadonlyArray<Upload>) =>
+  Effect.forEach(
+    uploads,
+    (upload) =>
+      Effect.gen(function* () {
+        const refused = yield* refusedMetadataBaseUrl(tryParseJson(upload.content) ?? null);
+
+        if (refused !== undefined)
+          return yield* replyError(422, refused.refusal.message, {
+            path: refused.path,
+            name: upload.name,
+          });
+      }),
+    { discard: true },
+  );
 
 /** `?private=true`: the upload (or login) is for the caller's own private credential. */
 const wantsPrivate = (params: URLSearchParams): boolean => params.get("private") === "true";
@@ -230,6 +253,7 @@ const uploadCredentials = Effect.gen(function* () {
 
   if (uploads !== undefined) {
     if (uploads.length === 0) return yield* replyError(400, "no files uploaded");
+    yield* refuseOutboundUrls(uploads);
     const stored: string[] = [];
     const failed: JsonObject[] = [];
 
@@ -261,6 +285,7 @@ const uploadCredentials = Effect.gen(function* () {
   if (!name.toLowerCase().endsWith(".json"))
     return yield* replyError(400, "name must end with .json");
   const content = yield* bodyText;
+  yield* refuseOutboundUrls([{ name, content }]);
   const error = yield* storeUpload({ name, content }, wantPrivate);
 
   return error === undefined ? jsonReply(200, { status: "ok" }) : yield* replyError(400, error);
@@ -539,6 +564,12 @@ const patchFields = Effect.gen(function* () {
 
   if (name === "") return yield* replyError(400, "name is required");
   const { name: _name, ...fields } = body;
+
+  // A `base_url` the outbound guard refuses is refused when saved, not only when used (ADR 0044).
+  const refusedBase = yield* refusedMetadataBaseUrl(fields);
+
+  if (refusedBase !== undefined)
+    return yield* replyError(422, refusedBase.refusal.message, { path: refusedBase.path });
   const viewer = yield* currentViewer;
 
   const result = yield* modelsControlPlane("patchCredentialFields", (stub) =>

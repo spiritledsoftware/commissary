@@ -25,10 +25,15 @@ import { CLIENT_API_PREFIXES } from "./packages/core/src/http/client-api.ts";
 
 /**
  * Runtime compatibility of the Workers; keep in sync with apps/app/vitest.config.ts, apps/api/vitest.config.ts,
- * packages/state/vitest.config.ts, packages/models/vitest.config.ts, packages/billing/vitest.config.ts and
- * tools/workers/worker-configuration.d.ts.
+ * apps/auth/vitest.config.ts, packages/state/vitest.config.ts, packages/models/vitest.config.ts,
+ * packages/billing/vitest.config.ts and tools/workers/worker-configuration.d.ts. `global_fetch_strictly_public` sends
+ * a fetch to a hostname in the deployment's own zone through the internet, not straight to its origin (ADR 0044,
+ * docs/ARCHITECTURE.md "Outbound guard").
  */
-export const COMPATIBILITY = { date: "2026-08-01", flags: ["nodejs_compat"] };
+export const COMPATIBILITY = {
+  date: "2026-08-01",
+  flags: ["nodejs_compat", "global_fetch_strictly_public"],
+};
 
 /** Model catalog refresh, credential refresh sweep and usage retention (apps/api/src/scheduled.ts). */
 export const CRONS = ["0 */3 * * *"];
@@ -92,6 +97,16 @@ export default Alchemy.Stack(
     // makes every loopback request an admin. Deployed Workers never get it and require the Access JWT (or an API key on
     // the client API).
     const { hosted } = settings;
+
+    // The deployment's own hosts, which the outbound guard refuses (ADR 0044, `@commissary/core`'s `outboundPolicy`):
+    // the base, app, API and auth hosts. A preview's and `alchemy dev`'s Workers serve workers.dev URLs or loopback, which
+    // the guard learns from the request instead.
+    const ownHosts =
+      dev || settings.preview
+        ? ""
+        : [settings.baseDomain, settings.appDomain, settings.apiDomain, hosted?.authDomain ?? ""]
+            .filter((host) => host !== "")
+            .join(",");
 
     const access: AccessWiring =
       dev || hosted !== undefined
@@ -157,6 +172,8 @@ export default Alchemy.Stack(
       PLATFORM_ADMIN_EMAILS: settings.adminEmails.join(","),
       PLATFORM_ADMIN_SERVICE_TOKENS: access.adminServiceTokens,
       META_MINT_URL: settings.metaMintUrl,
+      // The hosts the outbound guard refuses, on every Worker that fetches a user-supplied URL (app, API, state).
+      OWN_HOSTS: ownHosts,
       // Redacted: bound as a secret (`secret_text`), never as a plain variable.
       AUTH_INDEX_KEY: authIndexKey,
     };

@@ -19,7 +19,7 @@
 import { Clock, Duration, Effect, Option, Random, Result, Scope } from "effect";
 import type { Config } from "../config/schema.ts";
 import type { RetryPlan } from "../credentials/selection/retry.ts";
-import { ExecutionError, withErrorFields } from "../executor/errors.ts";
+import { ExecutionError, outboundRefusedError, withErrorFields } from "../executor/errors.ts";
 import {
   failureReport,
   isCompactRequestFault,
@@ -55,7 +55,7 @@ import type {
   ProviderExecutor,
 } from "../executor/types.ts";
 import type { Json } from "@commissary/json";
-import { holdInvocation, CurrentOrg, type OrgId } from "@commissary/core";
+import { holdInvocation, CurrentOrg, type OrgId, outboundRefusalOf } from "@commissary/core";
 import { noteSelection, notePrincipal, RequestTrace } from "../observability/trace.ts";
 import type { SessionRouting } from "../session-routing/routing.ts";
 import { UsageReporter } from "../usage/reporter.ts";
@@ -101,6 +101,13 @@ export const jitteredWait = (waitMs: number, maxWaitMs: number, unit: number): n
   if (maxWaitMs > 0 && range > maxWaitMs - waitMs) range = maxWaitMs - waitMs;
 
   return range <= 0 ? waitMs : waitMs + unit * range;
+};
+
+/** An attempt's error, as the outbound guard's refusal when that is what failed it (`outboundRefusedError`). */
+const outboundRefusal = (error: ExecutionError): ExecutionError => {
+  const refused = outboundRefusalOf(error);
+
+  return refused === undefined ? error : outboundRefusedError(refused);
 };
 
 /** Usage fields of the session and upstream base URL of an attempt (`syncMetadataSessionToContext`, `BaseURL`). */
@@ -604,7 +611,7 @@ export const conduct = <T, R>(
             if (Result.isSuccess(result))
               return { ok: true, value: result.success } satisfies RoundOutcome<T>;
 
-            const error = result.failure;
+            const error = outboundRefusal(result.failure);
             bootstrap = attempt.bootstrapFailed;
             const action = yield* attempt.finish(error);
 
