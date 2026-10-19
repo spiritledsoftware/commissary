@@ -22,7 +22,13 @@ import { decodeConfig, parseConfigYaml } from "../config/codec.ts";
 import { decodeStoredConfig } from "../config/store.ts";
 import { isJsonObject, type JsonObject } from "@commissary/json";
 import { Revisions } from "@commissary/contract/config";
-import { boundedBodyText, handled, jsonReply, replyError } from "@commissary/core";
+import {
+  boundedBodyText,
+  CurrentOutboundPolicy,
+  handled,
+  jsonReply,
+  replyError,
+} from "@commissary/core";
 import { bodyJson } from "@commissary/state";
 import { currentViewer } from "@commissary/auth";
 import {
@@ -107,7 +113,7 @@ const save = Effect.gen(function* () {
     Effect.mapError(invalidBody),
   );
 
-  const edits = yield* orRefuse(validateSettings(raw.patch));
+  const edits = yield* orRefuse(validateSettings(raw.patch, yield* CurrentOutboundPolicy));
   const current = yield* storedConfig;
   const edited = yield* orRefuse(applySettingsPatch(current.document, edits));
 

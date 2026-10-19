@@ -62,7 +62,7 @@ export interface OutboundPolicy {
  * always arrives on a custom domain or a workers.dev URL. Shared with the Access dev bypass
  * (`@commissary/auth`'s `devBypass`).
  */
-export const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(["localhost", "127.0.0.1", "[::1]"]);
+const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
 /** Whether `hostname` (`URL.hostname`) is one of {@link LOOPBACK_HOSTS}. */
 export const isLoopbackHost = (hostname: string): boolean => LOOPBACK_HOSTS.has(hostname);

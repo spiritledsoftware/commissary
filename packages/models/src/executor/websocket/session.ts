@@ -16,7 +16,7 @@
  */
 import { Duration, Effect, Option, Queue, Result, Scope, Semaphore } from "effect";
 import { checkOutboundUrl, CurrentOutboundPolicy } from "@commissary/core";
-import { ExecutionError } from "../errors.ts";
+import { ExecutionError, outboundRefusedError } from "../errors.ts";
 import {
   HandshakeError,
   UpstreamMessage,
@@ -280,13 +280,7 @@ export const openTurn = (input: OpenTurnInput): Effect.Effect<Turn, ExecutionErr
         yield* CurrentOutboundPolicy,
       );
 
-      if (Result.isFailure(checked))
-        return yield* new ExecutionError({
-          status: 400,
-          code: "outbound_refused",
-          message: checked.failure.message,
-          cause: checked.failure,
-        });
+      if (Result.isFailure(checked)) return yield* outboundRefusedError(checked.failure);
 
       const socket = yield* connector
         .connect({ url: input.url, headers: input.headers })

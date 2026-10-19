@@ -51,7 +51,7 @@ export interface AppBindings {
    * The deployment's own hosts (base, app, API and auth host, comma separated; empty on a preview and under
    * `alchemy dev`), which the outbound guard refuses ({@link outboundPolicyOf}).
    */
-  readonly OWN_HOSTS?: string;
+  readonly OWN_HOSTS: string;
 }
 
 /**

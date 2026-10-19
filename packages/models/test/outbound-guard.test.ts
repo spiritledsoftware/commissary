@@ -1,8 +1,29 @@
 // The outbound guard on the client API (ADR 0044): a request through a provider key whose `base_url` the guard refuses
 // (stored before the guard existed) is answered with the guard's message, and never reaches the address.
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { OUTBOUND_REFUSED_MESSAGE } from "@commissary/core";
-import { jsonResponse, loadConfig, makePipeline, postJson } from "./support/pipeline.ts";
+import {
+  jsonResponse,
+  loadConfig,
+  makePipeline,
+  type PipelineHarness,
+  type PipelineOptions,
+  postJson,
+} from "./support/pipeline.ts";
+
+const open: Array<PipelineHarness> = [];
+
+/** A pipeline disposed after the test, whatever it asserted. */
+const pipelineOf = (options: PipelineOptions): PipelineHarness => {
+  const pipeline = makePipeline(options);
+  open.push(pipeline);
+
+  return pipeline;
+};
+
+afterEach(async () => {
+  await Promise.all(open.splice(0).map((pipeline) => pipeline.dispose()));
+});
 
 const configWith = (baseUrl: string) =>
   loadConfig(`
@@ -31,7 +52,7 @@ describe("outbound guard on the client API", () => {
   it.each(["http://api.example.com/v1", "https://10.0.0.5/v1", "https://[fd00::1]/v1"])(
     "refuses a request through a provider key with base_url %s",
     async (baseUrl) => {
-      const pipeline = makePipeline({
+      const pipeline = pipelineOf({
         config: await configWith(baseUrl),
         respond: () => jsonResponse(COMPLETION),
       });
@@ -42,12 +63,11 @@ describe("outbound guard on the client API", () => {
       expect(response.status).toBe(400);
       expect(body).toContain(OUTBOUND_REFUSED_MESSAGE);
       expect(pipeline.calls).toEqual([]);
-      await pipeline.dispose();
     },
   );
 
   it("refuses a redirect from a public base_url to a refused address", async () => {
-    const pipeline = makePipeline({
+    const pipeline = pipelineOf({
       config: await configWith("https://api.example.com/v1"),
       respond: () =>
         new Response(null, {
@@ -63,11 +83,10 @@ describe("outbound guard on the client API", () => {
     expect(pipeline.calls.map((call) => call.url)).toEqual([
       "https://api.example.com/v1/chat/completions",
     ]);
-    await pipeline.dispose();
   });
 
   it("serves a public https base_url as before", async () => {
-    const pipeline = makePipeline({
+    const pipeline = pipelineOf({
       config: await configWith("https://api.example.com/v1"),
       respond: () => jsonResponse(COMPLETION),
     });
@@ -75,6 +94,5 @@ describe("outbound guard on the client API", () => {
     const response = await pipeline.call("/v1/chat/completions", chat);
 
     expect(response.status).toBe(200);
-    await pipeline.dispose();
   });
 });

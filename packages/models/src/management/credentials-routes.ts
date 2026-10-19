@@ -175,12 +175,6 @@ const storeUpload = (upload: Upload, wantPrivate: boolean) =>
 
     if (unsafeName(name)) return "invalid name";
 
-    // A `base_url` the outbound guard refuses is refused when saved, not only when used (ADR 0044). A file that is no
-    // JSON is the ControlPlane's to refuse.
-    const refusedBase = yield* refusedMetadataBaseUrl(tryParseJson(upload.content) ?? null);
-
-    if (refusedBase !== undefined)
-      return `invalid auth file: ${refusedBase.path}: ${refusedBase.refusal.message}`;
     const viewer = yield* currentViewer;
 
     const result = yield* modelsControlPlane("importAuthFile", (stub) =>
@@ -194,6 +188,27 @@ const storeUpload = (upload: Upload, wantPrivate: boolean) =>
 
     return result.reason === "name_taken" ? result.message : `invalid auth file: ${result.message}`;
   });
+
+/**
+ * Refuses (`422`, with the field's `path` and the file's `name`) an upload whose `base_url` or `token_uri` the outbound
+ * guard refuses: refused when saved, not only when used (ADR 0044). Every file is checked before any is stored. A file
+ * that is no JSON is the ControlPlane's to refuse.
+ */
+const refuseOutboundUrls = (uploads: ReadonlyArray<Upload>) =>
+  Effect.forEach(
+    uploads,
+    (upload) =>
+      Effect.gen(function* () {
+        const refused = yield* refusedMetadataBaseUrl(tryParseJson(upload.content) ?? null);
+
+        if (refused !== undefined)
+          return yield* replyError(422, refused.refusal.message, {
+            path: refused.path,
+            name: upload.name,
+          });
+      }),
+    { discard: true },
+  );
 
 /** `?private=true`: the upload (or login) is for the caller's own private credential. */
 const wantsPrivate = (params: URLSearchParams): boolean => params.get("private") === "true";
@@ -238,6 +253,7 @@ const uploadCredentials = Effect.gen(function* () {
 
   if (uploads !== undefined) {
     if (uploads.length === 0) return yield* replyError(400, "no files uploaded");
+    yield* refuseOutboundUrls(uploads);
     const stored: string[] = [];
     const failed: JsonObject[] = [];
 
@@ -269,6 +285,7 @@ const uploadCredentials = Effect.gen(function* () {
   if (!name.toLowerCase().endsWith(".json"))
     return yield* replyError(400, "name must end with .json");
   const content = yield* bodyText;
+  yield* refuseOutboundUrls([{ name, content }]);
   const error = yield* storeUpload({ name, content }, wantPrivate);
 
   return error === undefined ? jsonReply(200, { status: "ok" }) : yield* replyError(400, error);

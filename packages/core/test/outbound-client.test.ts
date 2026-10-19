@@ -1,5 +1,6 @@
 // The outbound guard around an HttpClient: every hop of a redirect is checked, with a small hop limit.
-import { Context, Effect, Exit, Option } from "effect";
+import { describe, expect, it } from "@effect/vitest";
+import { Context, Effect, Exit, Match, Option, Stream } from "effect";
 import {
   FetchHttpClient,
   HttpClient,
@@ -7,7 +8,6 @@ import {
   HttpClientResponse,
   type HttpClientError,
 } from "effect/http";
-import { describe, expect, it } from "vitest";
 import {
   CurrentOutboundPolicy,
   guardHttpClient,
@@ -22,7 +22,15 @@ interface Sent {
   readonly url: string;
   readonly redirect: string | undefined;
   readonly authorization: string | undefined;
+  readonly body: string;
 }
+
+const bodyOf = (request: HttpClientRequest.HttpClientRequest): string =>
+  Match.value(request.body).pipe(
+    Match.tag("Uint8Array", (body) => new TextDecoder().decode(body.body)),
+    Match.tag("Stream", () => "<stream>"),
+    Match.orElse(() => ""),
+  );
 
 /** A fake upstream: `answer` maps each URL to a response; every request it receives is recorded. */
 const upstream = (answer: (url: URL) => Response) => {
@@ -34,6 +42,7 @@ const upstream = (answer: (url: URL) => Response) => {
       url: url.href,
       redirect: Context.getOrUndefined(fiber.context, FetchHttpClient.RequestInit)?.redirect,
       authorization: request.headers["authorization"],
+      body: bodyOf(request),
     });
 
     return Effect.succeed(HttpClientResponse.fromWeb(request, answer(url)));
@@ -45,151 +54,194 @@ const upstream = (answer: (url: URL) => Response) => {
 const redirect = (location: string, status = 302) =>
   new Response(null, { status, headers: { location } });
 
-const run = <A>(effect: Effect.Effect<A, HttpClientError.HttpClientError>) =>
-  Effect.runPromiseExit(effect);
+/** The guard's refusal a failed request carries, if any. */
+const refusalOf = <A>(exit: Exit.Exit<A, HttpClientError.HttpClientError>) =>
+  outboundRefusalOf(
+    Exit.isFailure(exit) ? Option.getOrUndefined(Exit.findErrorOption(exit)) : undefined,
+  );
 
-const failureOf = <A>(exit: Exit.Exit<A, HttpClientError.HttpClientError>) =>
-  Exit.isFailure(exit) ? Option.getOrUndefined(Exit.findErrorOption(exit)) : undefined;
+/** `path` answers a redirect to `/next` with `status`; `/next` answers 200. */
+const redirectOnce = (status: number) =>
+  upstream((url) => (url.pathname === "/next" ? new Response("done") : redirect("/next", status)));
+
+const sentLines = (sent: ReadonlyArray<Sent>) =>
+  sent.map((request) => `${request.method} ${new URL(request.url).pathname} ${request.body}`);
 
 describe("guardHttpClient", () => {
-  it("sends a public https: request with redirects handled by the guard", async () => {
-    const { sent, client } = upstream(() => new Response("ok"));
+  it.effect("sends a public https: request with redirects handled by the guard", () =>
+    Effect.gen(function* () {
+      const { sent, client } = upstream(() => new Response("ok"));
 
-    const exit = await run(client.get("https://api.example.com/v1/models"));
+      yield* client.get("https://api.example.com/v1/models");
 
-    expect(Exit.isSuccess(exit)).toBe(true);
-    expect(sent).toEqual([
-      {
-        method: "GET",
-        url: "https://api.example.com/v1/models",
-        redirect: "manual",
-        authorization: undefined,
-      },
-    ]);
-  });
+      expect(sent).toEqual([
+        {
+          method: "GET",
+          url: "https://api.example.com/v1/models",
+          redirect: "manual",
+          authorization: undefined,
+          body: "",
+        },
+      ]);
+    }),
+  );
 
-  it("refuses a refused first hop without sending anything", async () => {
-    const { sent, client } = upstream(() => new Response("ok"));
+  it.effect("refuses a refused first hop without sending anything", () =>
+    Effect.gen(function* () {
+      const { sent, client } = upstream(() => new Response("ok"));
 
-    const exit = await run(client.get("http://api.example.com/v1/models"));
+      const exit = yield* Effect.exit(client.get("http://api.example.com/v1/models"));
 
-    expect(sent).toEqual([]);
-    expect(outboundRefusalOf(failureOf(exit))?.reason).toBe("scheme");
-    expect(outboundRefusalOf(failureOf(exit))?.message).toBe(OUTBOUND_REFUSED_MESSAGE);
-  });
+      expect(sent).toEqual([]);
+      expect(refusalOf(exit)?.reason).toBe("scheme");
+      expect(refusalOf(exit)?.message).toBe(OUTBOUND_REFUSED_MESSAGE);
+    }),
+  );
 
-  it("follows a redirect to a public address, checking it", async () => {
-    const { sent, client } = upstream((url) =>
-      url.hostname === "old.example.com"
-        ? redirect("https://new.example.com/v1/models")
-        : new Response("moved here"),
-    );
+  it.effect("follows a redirect to a public address, checking it", () =>
+    Effect.gen(function* () {
+      const { sent, client } = upstream((url) =>
+        url.hostname === "old.example.com"
+          ? redirect("https://new.example.com/v1/models")
+          : new Response("moved here"),
+      );
 
-    const exit = await run(
-      client.get("https://old.example.com/v1/models").pipe(Effect.flatMap((r) => r.text)),
-    );
+      const text = yield* client
+        .get("https://old.example.com/v1/models")
+        .pipe(Effect.flatMap((response) => response.text));
 
-    expect(Exit.isSuccess(exit) && exit.value).toBe("moved here");
-    expect(sent.map((request) => request.url)).toEqual([
-      "https://old.example.com/v1/models",
-      "https://new.example.com/v1/models",
-    ]);
-  });
+      expect(text).toBe("moved here");
+      expect(sent.map((request) => request.url)).toEqual([
+        "https://old.example.com/v1/models",
+        "https://new.example.com/v1/models",
+      ]);
+    }),
+  );
 
-  it("refuses a redirect to a refused address and never sends it", async () => {
-    const { sent, client } = upstream(() => redirect("http://169.254.169.254/latest/meta-data/"));
+  it.effect("refuses a redirect to a refused address and never sends it", () =>
+    Effect.gen(function* () {
+      const { sent, client } = upstream(() =>
+        redirect("https://169.254.169.254/latest/meta-data/"),
+      );
 
-    const exit = await run(client.get("https://api.example.com/v1"));
+      const exit = yield* Effect.exit(client.get("https://api.example.com/v1"));
 
-    expect(sent.map((request) => request.url)).toEqual(["https://api.example.com/v1"]);
-    expect(outboundRefusalOf(failureOf(exit))?.reason).toBe("scheme");
-  });
+      expect(sent.map((request) => request.url)).toEqual(["https://api.example.com/v1"]);
+      expect(refusalOf(exit)?.reason).toBe("address");
+    }),
+  );
 
-  it("refuses a relative redirect onto an own host", async () => {
-    const { client } = upstream((url) =>
-      url.hostname === "api.example.com" ? redirect("https://app.example.com/") : new Response(),
-    );
+  it.effect("refuses a relative redirect onto an own host", () =>
+    Effect.gen(function* () {
+      const { client } = upstream((url) =>
+        url.hostname === "api.example.com" ? redirect("https://app.example.com/") : new Response(),
+      );
 
-    const exit = await run(
-      client
-        .get("https://api.example.com/v1")
-        .pipe(
-          Effect.provideService(
-            CurrentOutboundPolicy,
-            outboundPolicy({ hosts: ["app.example.com"] }),
+      const exit = yield* Effect.exit(
+        client
+          .get("https://api.example.com/v1")
+          .pipe(
+            Effect.provideService(
+              CurrentOutboundPolicy,
+              outboundPolicy({ hosts: ["app.example.com"] }),
+            ),
           ),
+      );
+
+      expect(refusalOf(exit)?.reason).toBe("own_host");
+    }),
+  );
+
+  it.effect("refuses more than the hop limit", () =>
+    Effect.gen(function* () {
+      let hop = 0;
+
+      const { sent, client } = upstream(() => {
+        hop += 1;
+
+        return redirect(`/hop/${hop}`);
+      });
+
+      const exit = yield* Effect.exit(client.get("https://api.example.com/start"));
+
+      expect(refusalOf(exit)?.reason).toBe("too_many_redirects");
+      expect(sent).toHaveLength(MAX_OUTBOUND_REDIRECTS + 1);
+    }),
+  );
+
+  it.effect("turns a PUT answered 303 into a bodiless GET", () =>
+    Effect.gen(function* () {
+      const { sent, client } = redirectOnce(303);
+
+      yield* client.execute(
+        HttpClientRequest.put("https://api.example.com/a").pipe(HttpClientRequest.bodyText("{}")),
+      );
+
+      expect(sentLines(sent)).toEqual(["PUT /a {}", "GET /next "]);
+    }),
+  );
+
+  it.effect("keeps a POST and its body on 307", () =>
+    Effect.gen(function* () {
+      const { sent, client } = redirectOnce(307);
+
+      yield* client.execute(
+        HttpClientRequest.post("https://api.example.com/a").pipe(
+          HttpClientRequest.bodyText('{"q":1}'),
         ),
-    );
+      );
 
-    expect(outboundRefusalOf(failureOf(exit))?.reason).toBe("own_host");
-  });
+      expect(sentLines(sent)).toEqual(['POST /a {"q":1}', 'POST /next {"q":1}']);
+    }),
+  );
 
-  it("refuses more than the hop limit", async () => {
-    let hop = 0;
+  it.effect("does not follow a 307 that would have to send a streamed body again", () =>
+    Effect.gen(function* () {
+      const { sent, client } = redirectOnce(307);
 
-    const { sent, client } = upstream(() => {
-      hop += 1;
+      const response = yield* client.execute(
+        HttpClientRequest.post("https://api.example.com/a").pipe(
+          HttpClientRequest.bodyStream(Stream.make(new TextEncoder().encode("{}"))),
+        ),
+      );
 
-      return redirect(`/hop/${hop}`);
-    });
+      expect(response.status).toBe(307);
+      expect(sentLines(sent)).toEqual(["POST /a <stream>"]);
+    }),
+  );
 
-    const exit = await run(client.get("https://api.example.com/start"));
+  it.effect("drops the Authorization header on a redirect to another origin", () =>
+    Effect.gen(function* () {
+      const { sent, client } = upstream((url) =>
+        url.hostname === "api.example.com"
+          ? redirect("https://cdn.example.net/file")
+          : new Response("file"),
+      );
 
-    expect(outboundRefusalOf(failureOf(exit))?.reason).toBe("too_many_redirects");
-    expect(sent).toHaveLength(MAX_OUTBOUND_REDIRECTS + 1);
-  });
-
-  it("turns a redirected POST into a GET (302, 303) and keeps it for 307", async () => {
-    const answers = new Map([
-      ["/a", redirect("/b", 302)],
-      ["/b", redirect("/c", 307)],
-    ]);
-
-    const { sent, client } = upstream((url) => answers.get(url.pathname) ?? new Response("done"));
-
-    await run(
-      client.execute(
-        HttpClientRequest.post("https://api.example.com/a").pipe(HttpClientRequest.bodyText("{}")),
-      ),
-    );
-
-    expect(sent.map((request) => `${request.method} ${new URL(request.url).pathname}`)).toEqual([
-      "POST /a",
-      "GET /b",
-      "GET /c",
-    ]);
-  });
-
-  it("drops the Authorization header on a redirect to another origin", async () => {
-    const { sent, client } = upstream((url) =>
-      url.hostname === "api.example.com"
-        ? redirect("https://cdn.example.net/file")
-        : new Response("file"),
-    );
-
-    await run(
-      client.execute(
+      yield* client.execute(
         HttpClientRequest.get("https://api.example.com/file").pipe(
           HttpClientRequest.bearerToken("secret"),
         ),
-      ),
-    );
+      );
 
-    expect(sent.map((request) => request.authorization)).toEqual(["Bearer secret", undefined]);
-  });
+      expect(sent.map((request) => request.authorization)).toEqual(["Bearer secret", undefined]);
+    }),
+  );
 
-  it("leaves a caller's own manual redirects to the caller, checking the first hop only", async () => {
-    const { sent, client } = upstream(() => redirect("http://10.0.0.1/"));
+  it.effect(
+    "leaves a caller's own manual redirects to the caller, checking the first hop only",
+    () =>
+      Effect.gen(function* () {
+        const { sent, client } = upstream(() => redirect("http://10.0.0.1/"));
 
-    const exit = await run(
-      client
-        .get("https://api.example.com/v1")
-        .pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" })),
-    );
+        const response = yield* client
+          .get("https://api.example.com/v1")
+          .pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
 
-    expect(Exit.isSuccess(exit) && exit.value.status).toBe(302);
-    expect(sent).toHaveLength(1);
-  });
+        expect(response.status).toBe(302);
+        expect(sent).toHaveLength(1);
+      }),
+  );
 });
 
 describe("outboundPolicy", () => {

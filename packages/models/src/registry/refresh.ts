@@ -18,7 +18,7 @@ import { Clock, Data, Effect, Result, Stream } from "effect";
 import type { HttpClientResponse } from "effect/http";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { ConfigReader } from "../config/reader.ts";
-import { holdInvocation, CurrentOrg, GLOBAL_ORG } from "@commissary/core";
+import { holdInvocation, CurrentOrg, GLOBAL_ORG, outboundRefusalOf } from "@commissary/core";
 import { type NamedLease, platformOf, type StateBindings, StateEnv } from "@commissary/state";
 import {
   catalogsFromModelsDev,
@@ -106,7 +106,13 @@ const fetchText = (
       HttpClientRequest.get(url).pipe(HttpClientRequest.setHeaders({ accept: "application/json" })),
     )
     .pipe(
-      Effect.mapError(() => new RefreshFailure({ message: "catalog fetch failed" })),
+      // The catalog source is user-supplied: the outbound guard's refusal (ADR 0044) is shown as it is.
+      Effect.mapError(
+        (error) =>
+          new RefreshFailure({
+            message: outboundRefusalOf(error)?.message ?? "catalog fetch failed",
+          }),
+      ),
       Effect.flatMap((response): Effect.Effect<string, RefreshFailure> => {
         if (response.status !== 200)
           return Effect.fail(

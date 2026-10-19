@@ -19,7 +19,7 @@
 import { Clock, Duration, Effect, Option, Random, Result, Scope } from "effect";
 import type { Config } from "../config/schema.ts";
 import type { RetryPlan } from "../credentials/selection/retry.ts";
-import { ExecutionError, withErrorFields } from "../executor/errors.ts";
+import { ExecutionError, outboundRefusedError, withErrorFields } from "../executor/errors.ts";
 import {
   failureReport,
   isCompactRequestFault,
@@ -103,22 +103,11 @@ export const jitteredWait = (waitMs: number, maxWaitMs: number, unit: number): n
   return range <= 0 ? waitMs : waitMs + unit * range;
 };
 
-/**
- * An attempt the outbound guard refused (ADR 0044: the credential's `base_url`, or a redirect from it, is not a public
- * HTTPS address) answers `400` with the guard's message: no cooldown, and the request moves on to another provider like
- * after an upstream 400, so a misconfigured provider does not hide the others.
- */
+/** An attempt's error, as the outbound guard's refusal when that is what failed it (`outboundRefusedError`). */
 const outboundRefusal = (error: ExecutionError): ExecutionError => {
   const refused = outboundRefusalOf(error);
 
-  return refused === undefined
-    ? error
-    : new ExecutionError({
-        status: 400,
-        code: "outbound_refused",
-        message: refused.message,
-        cause: refused,
-      });
+  return refused === undefined ? error : outboundRefusedError(refused);
 };
 
 /** Usage fields of the session and upstream base URL of an attempt (`syncMetadataSessionToContext`, `BaseURL`). */

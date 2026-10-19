@@ -9,7 +9,7 @@
  * bindings and the request's URL ({@link outboundPolicy}); without one, the strictest applies (no loopback, no own
  * hosts known).
  */
-import { Context, Effect, Layer, Option, Predicate, Result } from "effect";
+import { Context, Effect, Layer, Option, Predicate, Result, Stream } from "effect";
 import {
   FetchHttpClient,
   HttpBody,
@@ -191,10 +191,10 @@ export const guardHttpClient = (client: HttpClient.HttpClient): HttpClient.HttpC
 
           const follows = callerInit.redirect === undefined || callerInit.redirect === "follow";
 
-          const init: globalThis.RequestInit = {
-            ...callerInit,
-            redirect: follows ? "manual" : (callerInit.redirect ?? "manual"),
-          };
+          // The guard follows redirects itself; a caller's own `"manual"` or `"error"` stays as it asked.
+          const init: globalThis.RequestInit = follows
+            ? { ...callerInit, redirect: "manual" }
+            : callerInit;
 
           let request = first;
 
@@ -211,17 +211,17 @@ export const guardHttpClient = (client: HttpClient.HttpClient): HttpClient.HttpC
               return response;
 
             if (hop >= MAX_OUTBOUND_REDIRECTS)
-              return yield* Effect.fail(
-                refusedRequest(
-                  request,
-                  outboundRefused("too_many_redirects", new URL(response.request.url).hostname),
-                ),
+              return yield* refusedRequest(
+                request,
+                outboundRefused("too_many_redirects", new URL(response.request.url).hostname),
               );
 
             const next = redirected(request, response, location);
 
             if (next === undefined) return response;
 
+            // The hop's body is not read: cancel it (reading at most one chunk) so its connection is let go.
+            yield* Effect.ignore(Stream.runHead(response.stream));
             request = next;
           }
         }),
@@ -233,12 +233,9 @@ export const guardHttpClient = (client: HttpClient.HttpClient): HttpClient.HttpC
 export const guardedHttpClientLayer = (
   inner: Layer.Layer<HttpClient.HttpClient>,
 ): Layer.Layer<HttpClient.HttpClient> =>
-  Layer.effect(
-    HttpClient.HttpClient,
-    Effect.gen(function* () {
-      return guardHttpClient(yield* HttpClient.HttpClient);
-    }),
-  ).pipe(Layer.provide(inner));
+  Layer.effect(HttpClient.HttpClient, Effect.map(HttpClient.HttpClient, guardHttpClient)).pipe(
+    Layer.provide(inner),
+  );
 
 /** The global `fetch` behind the outbound guard: the transport for every user-supplied URL. */
 export const OutboundHttpClientLive: Layer.Layer<HttpClient.HttpClient> = guardedHttpClientLayer(

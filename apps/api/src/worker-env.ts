@@ -29,7 +29,7 @@ export interface ApiBindings {
    * The deployment's own hosts (base, app, API and auth host, comma separated; empty on a preview and under
    * `alchemy dev`), which the outbound guard refuses ({@link outboundPolicyOf}).
    */
-  readonly OWN_HOSTS?: string;
+  readonly OWN_HOSTS: string;
 }
 
 /** Every view of the API Worker's `env`; the global `Env` satisfies it. */

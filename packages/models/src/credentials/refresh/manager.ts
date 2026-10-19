@@ -13,6 +13,7 @@
  */
 import { Effect, type Layer } from "effect";
 import type { HttpClient } from "effect/http";
+import { CurrentOutboundPolicy, type OutboundPolicy } from "@commissary/core";
 import type { JsonObject } from "@commissary/json";
 import { accessTokenExpiry, accessTokenOf } from "../expiry.ts";
 import { credentialsChanged } from "../merge.ts";
@@ -55,8 +56,13 @@ export interface AlarmScheduler {
 export interface RefreshManagerOptions {
   readonly host: RefreshHost;
   readonly alarm: AlarmScheduler;
-  /** Transport of every upstream call (`FetchHttpClient.layer` in production). */
+  /**
+   * Transport of every upstream call: in production the global `fetch` behind the outbound guard
+   * (`OutboundHttpClientLive`), since a Vertex service account names its own `token_uri` (ADR 0044).
+   */
   readonly http: Layer.Layer<HttpClient.HttpClient>;
+  /** The outbound guard's policy for the refreshes (default: no loopback, no own hosts known). */
+  readonly outbound?: OutboundPolicy;
   readonly now?: () => number;
   /** Concurrent refreshes per alarm run (`oauth.auth-auto-refresh-workers`, default 16). */
   readonly workers?: () => number;
@@ -149,6 +155,7 @@ export class RefreshManager {
   readonly #host: RefreshHost;
   readonly #alarm: AlarmScheduler;
   readonly #http: Layer.Layer<HttpClient.HttpClient>;
+  readonly #outbound: OutboundPolicy | undefined;
   readonly #now: () => number;
   readonly #workers: () => number;
   readonly #retryDelayMs: (attempt: number) => number;
@@ -164,6 +171,7 @@ export class RefreshManager {
     this.#host = options.host;
     this.#alarm = options.alarm;
     this.#http = options.http;
+    this.#outbound = options.outbound;
     this.#now = options.now ?? Date.now;
     this.#workers = options.workers ?? (() => DEFAULT_WORKERS);
     this.#retryDelayMs = options.retryDelayMs ?? defaultRetryDelay;
@@ -378,8 +386,13 @@ export class RefreshManager {
       Effect.provide(this.#http),
     );
 
+    const guarded =
+      this.#outbound === undefined
+        ? bounded
+        : bounded.pipe(Effect.provideService(CurrentOutboundPolicy, this.#outbound));
+
     try {
-      return await Effect.runPromise(bounded);
+      return await Effect.runPromise(guarded);
     } catch {
       return { ok: false, error: refreshError({ message: "refresh failed unexpectedly" }) };
     }

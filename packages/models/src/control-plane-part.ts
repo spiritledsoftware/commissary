@@ -319,7 +319,7 @@ export interface ModelsPartEnv extends AuthIndexKeyEnv {
    * `alchemy dev`), which the outbound guard refuses when the object reaches a user-supplied `base_url` (Devin's
    * status).
    */
-  readonly OWN_HOSTS?: string | undefined;
+  readonly OWN_HOSTS: string;
 }
 
 /**
@@ -363,7 +363,7 @@ export class ModelsPart extends RpcTarget implements ControlPlanePart {
    * calls that need an index, not the Durable Object's constructor.
    */
   readonly #authIndex: AuthIndexer;
-  /** The outbound guard's policy (ADR 0044) for the user-supplied URLs the object reaches: no loopback, no own hosts. */
+  /** The outbound guard's policy (ADR 0044) for the user-supplied URLs the object reaches: no loopback; refuses the OWN_HOSTS hosts. */
   readonly #outbound: OutboundPolicy;
   #configView: ConfigView | undefined;
 
@@ -424,7 +424,9 @@ export class ModelsPart extends RpcTarget implements ControlPlanePart {
         set: (at) => this.#wakeUpAt(at),
         clear: () => this.#wakeUpAt(null),
       },
-      http: FetchHttpClient.layer,
+      // A Vertex service account names its own `token_uri`: refreshes go through the outbound guard (ADR 0044).
+      http: OutboundHttpClientLive,
+      outbound: this.#outbound,
       metaMintUrl: env.META_MINT_URL,
       workers: () => this.#currentConfig().config.oauth["auth-auto-refresh-workers"],
     });
