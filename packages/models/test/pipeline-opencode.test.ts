@@ -605,6 +605,140 @@ describe("x-opencode-session", () => {
   });
 });
 
+describe("OpenCode anthropic-beta", () => {
+  const CLIENT_BETAS =
+    "claude-code-20250219,oauth-2025-04-20,mid-conversation-output-config-2026-07-01,thinking-binding-controls-2026-08-01,inline-tools-2026-09-15";
+
+  const FORWARDED_BETAS =
+    "mid-conversation-output-config-2026-07-01,thinking-binding-controls-2026-08-01,inline-tools-2026-09-15";
+
+  const EFFORT_MESSAGE: Json = { role: "system", content: [], output_config: { effort: "low" } };
+
+  const perTurnEffort = (): Json =>
+    claudeRequest("minimax-m3", false, {
+      messages: [{ role: "user", content: "hello" }, EFFORT_MESSAGE],
+    });
+
+  const betaOf = (call: UpstreamCall | undefined) => call?.headers["anthropic-beta"];
+
+  it("forwards the client's schema betas without the identity betas; the effort message reaches the gateway unchanged", async () => {
+    const p = await harness("opencode-go");
+
+    const response = await p.call(
+      "/v1/messages",
+      postJson(perTurnEffort(), { "anthropic-beta": CLIENT_BETAS }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(p.calls[0]?.url).toBe("https://go.test/v1/messages");
+    expect(betaOf(p.calls[0])).toBe(FORWARDED_BETAS);
+    expect(bodyOf(p.calls[0])["messages"]).toEqual([
+      { role: "user", content: "hello" },
+      EFFORT_MESSAGE,
+    ]);
+  });
+
+  it("adds the mid-conversation output_config beta the body needs when the client sent no beta", async () => {
+    const p = await harness("opencode-go");
+
+    await p.call("/v1/messages", postJson(perTurnEffort()));
+
+    expect(betaOf(p.calls[0])).toBe("mid-conversation-output-config-2026-07-01");
+  });
+
+  it("sends no beta for a body without a mid-conversation output_config", async () => {
+    const p = await harness("opencode-go");
+
+    await p.call("/v1/messages", postJson(claudeRequest("minimax-m3")));
+
+    expect(p.calls[0]?.headers).not.toHaveProperty("anthropic-beta");
+  });
+
+  it("sends no beta when the client sent only identity betas", async () => {
+    const p = await harness("opencode-go");
+
+    await p.call(
+      "/v1/messages",
+      postJson(claudeRequest("minimax-m3"), {
+        "anthropic-beta": "claude-code-20250219,oauth-2025-04-20",
+      }),
+    );
+
+    expect(p.calls[0]?.headers).not.toHaveProperty("anthropic-beta");
+  });
+
+  it("forwards the betas on a streamed request too", async () => {
+    const p = await harness("opencode-go");
+
+    const response = await p.call(
+      "/v1/messages",
+      postJson(
+        claudeRequest("minimax-m3", true, {
+          messages: [{ role: "user", content: "hello" }, EFFORT_MESSAGE],
+        }),
+        { "anthropic-beta": CLIENT_BETAS },
+      ),
+    );
+
+    await response.text();
+    expect(betaOf(p.calls[0])).toBe(FORWARDED_BETAS);
+  });
+
+  it("a custom header:anthropic-beta attribute overrides the derived value", async () => {
+    const cred = credential("opencode-go");
+
+    const p = await harness("opencode-go", {
+      credentials: [
+        { ...cred, attributes: { ...cred.attributes, "header:anthropic-beta": "custom-beta-1" } },
+      ],
+    });
+
+    await p.call("/v1/messages", postJson(perTurnEffort(), { "anthropic-beta": CLIENT_BETAS }));
+
+    expect(betaOf(p.calls[0])).toBe("custom-beta-1");
+  });
+
+  it("the other protocols send no beta, even when the client sends one", async () => {
+    const p = await harness("opencode-go");
+
+    await p.call(
+      "/v1/messages",
+      postJson(claudeRequest("deepseek-v4-flash"), { "anthropic-beta": CLIENT_BETAS }),
+    );
+    await p.call(
+      "/v1/responses",
+      postJson({ model: "gpt-6-luna", input: "hello" }, { "anthropic-beta": CLIENT_BETAS }),
+    );
+
+    expect(p.calls.map((call) => call.url)).toEqual([
+      "https://go.test/v1/chat/completions",
+      "https://go.test/v1/responses",
+    ]);
+
+    for (const call of p.calls) expect(call.headers).not.toHaveProperty("anthropic-beta");
+  });
+
+  it("a Gemini request sends no beta, even when the client sends one", async () => {
+    const p = await harness("opencode-zen", {
+      respond: () =>
+        jsonResponse({
+          candidates: [
+            { content: { role: "model", parts: [{ text: "hi" }] }, finishReason: "STOP" },
+          ],
+          usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 },
+        }),
+    });
+
+    await p.call(
+      "/v1/chat/completions",
+      postJson(chatRequest("gemini-3-flash"), { "anthropic-beta": CLIENT_BETAS }),
+    );
+
+    expect(p.calls[0]?.url).toBe("https://zen.test/v1/models/gemini-3-flash:generateContent");
+    expect(p.calls[0]?.headers).not.toHaveProperty("anthropic-beta");
+  });
+});
+
 describe("gateway errors", () => {
   const modelFault = (status: number, type: string, message: string) => () =>
     jsonResponse(

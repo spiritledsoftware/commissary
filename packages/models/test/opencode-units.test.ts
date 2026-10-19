@@ -220,6 +220,44 @@ describe("gateway headers", () => {
     expect(headers["x-absent"]).toBeUndefined();
   });
 
+  it("sends an anthropic-beta only when given (never the client's own), a custom header winning", () => {
+    const base = {
+      options: options({ "anthropic-beta": "client-beta" }),
+      protocol: "messages",
+      providerKey: "k",
+      stream: false,
+    } as const;
+
+    const plain = openCodeHeaders({ ...base, credential: credential("opencode-go") });
+
+    const derived = openCodeHeaders({
+      ...base,
+      credential: credential("opencode-go"),
+      anthropicBeta: "derived-beta",
+    });
+
+    const custom = openCodeHeaders({
+      ...base,
+      credential: credential("opencode-go", { "header:Anthropic-Beta": "custom-beta" }),
+      anthropicBeta: "derived-beta",
+    });
+
+    expect(plain).not.toHaveProperty("anthropic-beta");
+    expect(derived["anthropic-beta"]).toBe("derived-beta");
+    expect(custom["Anthropic-Beta"]).toBe("custom-beta");
+    expect(custom["anthropic-beta"]).toBeUndefined();
+
+    for (const protocol of ["chat", "responses", "gemini", "systemone"] as const) {
+      const headers = openCodeHeaders({
+        ...base,
+        protocol,
+        credential: credential("opencode-zen"),
+      });
+
+      expect(headers).not.toHaveProperty("anthropic-beta");
+    }
+  });
+
   it("derives the session from the client header, then the session identities, else a random UUID", () => {
     expect(openCodeSessionId(options({ "x-opencode-session": " ses_1 " }))).toBe("ses_1");
 

@@ -1828,9 +1828,14 @@ works, and is not migrated.
   (`providerSessionUuid("opencode", …)`) of the explicit session identity, the WebSocket execution session or the derived
   conversation identity (stable across turns, distinct across conversations), else a random UUID (OpenCode Go answers 400
   `MissingSessionID` without the header). Another client's raw session id is never forwarded. Custom headers apply last and win.
-  Client `anthropic-beta` headers are not forwarded. A cloaked request (below) sends the free-tier markers instead. On the Messages protocol a client's `metadata.user_id` (Claude Code's device,
-  account and session ids) is replaced by a stable UUIDv5 of it before the payload rules, so no raw client identity reaches the
-  gateway.
+  A cloaked request (below) sends the free-tier markers instead of the plain identity.
+  Only the Messages protocol sends `anthropic-beta` (`betas.ts`): the client's betas, trimmed, deduplicated and in the
+  client's order, except the identity betas (`claude-code-*`, `oauth-*`, which describe the Claude Code / Anthropic-account
+  client rather than the request schema and never reach a provider-key gateway), plus `mid-conversation-output-config-2026-07-01`
+  when the final body has a `role: "system"` message with an `output_config` (as OpenCode's own client does), even if the client
+  did not send it; with none left no header is sent, and a custom `anthropic-beta` header still wins. The other protocols send
+  none. On the Messages protocol a client's `metadata.user_id` (Claude Code's device, account and session ids) is replaced by a
+  stable UUIDv5 of it before the payload rules, so no raw client identity reaches the gateway.
 - **Free-tier cloak** (`cloak.ts`, `session-id.ts`, `chat-collect.ts`, ADR 0033): Zen serves its free models (`free` in the
   catalog) only to requests that look like OpenCode's own client; anything else gets 403 `FreeTierError`, with or without a
   key, because the check runs before authentication. Probed 2026-10-18, it needs all of: a User-Agent containing
