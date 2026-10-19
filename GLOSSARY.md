@@ -141,7 +141,8 @@ _Avoid_: proxy routes, public API, model routes (a model route is a credential's
 
 **API key**:
 A secret Commissary issues to a member for their clients, which reaches every area through the client API. It names its
-org and member, and it can have a spend limit of its own.
+org and member, and it can have a spend limit and a tool scope of its own. A member creates one in the control panel, or
+by signing in an MCP client, which gets one of its own.
 _Avoid_: proxy key, client key, access key, agent key, token
 
 **Service token**:
@@ -187,7 +188,8 @@ A provider in its role as the scope of model rules that apply to all of its acco
 _Avoid_: channel as a general word for a provider
 
 **Credential**:
-Anything Commissary can authenticate to an outside service with, such as a provider: an account or a provider key.
+Anything Commissary can authenticate to an outside service with, such as a provider or a toolkit's service: an account,
+a provider key or a toolkit's secret.
 _Avoid_: auth
 
 **Shared credential**:
@@ -591,6 +593,34 @@ _Avoid_: usage (on its own), consumption
 **Spend limit**:
 A cap on spend over a calendar day, week or month, set on a member, a team, an org, a shared credential or an API key.
 _Avoid_: budget, quota, allowance (a provider's limit)
+
+### Tools
+
+**Toolkit**:
+A named set of tools that the Tools area builds from one source, such as GitHub's MCP server or Stripe's OpenAPI
+document, and that its tools are named after (`github.create_issue`). An org admin adds a toolkit for the org; a member
+can add a private toolkit, which only they can use and of which org admins see only that it exists.
+_Avoid_: integration, connector, app, source, MCP server (for the toolkit itself)
+
+**Toolkit kind**:
+What a toolkit is built from: a remote MCP server, an OpenAPI document, a GraphQL endpoint or a Google Discovery
+document.
+_Avoid_: source type, protocol
+
+**Tool scope**:
+The toolkits and single tools an API key may use, within what its member may use. A key without one may use every tool
+its member may use.
+_Avoid_: tool permissions, allow-list
+
+**Toolkit catalog**:
+The services an org admin or member can add a toolkit from, with each one's sources and how to sign in to them, built
+from integrations.sh and the toolkit catalog additions.
+_Avoid_: registry (that is integrations.sh's), marketplace, directory
+
+**Toolkit catalog addition**:
+A service, or a fact about one, that Commissary records itself for the toolkit catalog. Unlike a catalog addition for
+models, it may also correct a fact integrations.sh has; the correction is offered upstream too.
+_Avoid_: overlay, patch
 
 ### The reference
 
