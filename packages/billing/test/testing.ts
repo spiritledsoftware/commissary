@@ -3,15 +3,20 @@
 // set up and read an org's plan and counters through these helpers instead of Billing's modules.
 import { runInDurableObject } from "cloudflare:test";
 import type { OrgId } from "@commissary/core";
+import { forgetBilling } from "../src/cache.ts";
 import { type BillingBindings, billingPartOf } from "../src/env.ts";
 import { monthOf } from "../src/month.ts";
 import type { Plan } from "../src/plan.ts";
+
+export { resetBillingCaches } from "../src/cache.ts";
 
 export { FREE_USAGE, REQUEST_RATE_CEILING } from "../src/plan.ts";
 
 /** Puts `org` on `plan`, as switching plans will (#237). */
 export const setPlan = async (env: BillingBindings, org: OrgId, plan: Plan): Promise<void> => {
   await billingPartOf(env, org).setPlan(plan);
+  // The Worker under test runs in this isolate: it must see the change at once, not after the cache's time.
+  forgetBilling(org);
 };
 
 /** What `org` used of requests and tool calls in the month containing `now` (epoch ms). */

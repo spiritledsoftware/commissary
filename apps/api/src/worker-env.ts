@@ -1,9 +1,9 @@
 /**
  * The API Worker's bindings as its code reads them (#134 "How packages get their bindings"): every package reads only
- * its own view ({@link AuthConfig}, {@link StateEnv}, {@link ModelsEnv}, {@link BillingEnv}; `core` reads none), and the request context
- * provides each of them from the invocation's `env`, which satisfies every view (`ApiWorkerBindings`), plus the port
- * `@commissary/auth` reaches state through (`AuthDirectory`). The API Worker never sees sessions (ADR 0030): it
- * provides no `SignInSessions`.
+ * its own view ({@link AuthConfig}, {@link StateEnv}, {@link ModelsEnv}, {@link BillingEnv}; `core` reads none), and the
+ * request context provides each of them from the invocation's `env`, which satisfies every view (`ApiWorkerBindings`),
+ * plus the port `@commissary/auth` reaches state through (`AuthDirectory`). The API Worker never sees sessions (ADR
+ * 0030): it provides no `SignInSessions`.
  */
 import { Context } from "effect";
 import { type AuthBindings, AuthConfig, AuthDirectory } from "@commissary/auth";

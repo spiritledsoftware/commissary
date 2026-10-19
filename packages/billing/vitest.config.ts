@@ -2,7 +2,9 @@
 // test Worker (test/worker.ts) exports a ControlPlane (the org-wide base composed with the Billing part), the Platform
 // registry and SessionState. Compatibility settings as the deployed Worker's (alchemy.run.ts, apps/app/vitest.config.ts);
 // the bindings are the ones test/env.d.ts declares: Commissary Cloud, since Billing does nothing elsewhere (the tests
-// that need a self-hosted Commissary pass their own view of `env`).
+// that need a self-hosted Commissary pass their own view of `env`). The rate-limit bindings (FREE_RATE_LIMIT,
+// PAYG_RATE_LIMIT) are not bound here: test/rate-limit.test.ts injects its own per test, so a ceiling is under the test's
+// control.
 import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import { defineConfig } from "vitest/config";
 

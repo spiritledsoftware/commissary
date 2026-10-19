@@ -120,9 +120,12 @@ const areaImportsRule = (area: Area) => {
           .filter((name) => name !== "testing")
           .map((name) => `${area.packageName}/${name}`)
           .join(", ")} (tests also /testing).`,
-        notAPackageEntry: `"{{specifier}}" is not an entry point of ${area.title} for other packages: import ${area.packageEntries
-          .map((name) => `${area.packageName}/${name}`)
-          .join(", ")}.`,
+        notAPackageEntry:
+          area.packageEntries.length === 0
+            ? `"{{specifier}}": no other package imports ${area.title} (${area.packageName} is reached by the apps only; a package's tests may use its entry points).`
+            : `"{{specifier}}" is not an entry point of ${area.title} for other packages: import ${area.packageEntries
+                .map((name) => `${area.packageName}/${name}`)
+                .join(", ")}.`,
         intoArea: `"{{specifier}}" reaches into packages/${area.dir} by a path: import its entry points (${area.packageName}/api, /management, /state).`,
       },
     },
@@ -179,8 +182,12 @@ const areaImportsRule = (area: Area) => {
   });
 };
 
-/** A package's test file: it may reach what another package's `./testing` and entries export. */
-const isTestFile = (filename: string): boolean => /[\\/]test[\\/]/.test(filename);
+/** A package's test file (`packages/<package>/test/`): it may reach what another package's `./testing` and entries export. */
+const isTestFile = (filename: string): boolean => {
+  const [, directory] = path.relative(PACKAGES, filename).split(path.sep);
+
+  return isInside(PACKAGES, filename) && directory === "test";
+};
 
 /** Import boundaries between the workspace's areas, apps and packages. */
 export default eslintCompatPlugin({

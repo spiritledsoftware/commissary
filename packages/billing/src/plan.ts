@@ -16,7 +16,7 @@ export const DEFAULT_PLAN: Plan = "free";
  * hours. `requests` is counted since #236; the other units are counted when their areas exist (#241) and read 0 until
  * then.
  */
-export const UNITS = ["requests", "browserHours", "computerHours"] as const;
+const UNITS = ["requests", "browserHours", "computerHours"] as const;
 
 export type Unit = (typeof UNITS)[number];
 

@@ -14,7 +14,13 @@ import {
   PlanLimitReached,
   uncountRequest,
 } from "../src/api.ts";
-import { FREE_USAGE, requestsUsed, seedRequestsUsed, setPlan } from "./testing.ts";
+import {
+  FREE_USAGE,
+  requestsUsed,
+  resetBillingCaches,
+  seedRequestsUsed,
+  setPlan,
+} from "./testing.ts";
 
 const MID_MARCH = Date.UTC(2026, 2, 15, 12);
 
@@ -88,6 +94,31 @@ describe("countRequest", () => {
       }),
   );
 
+  it.effect(
+    "keeps refusing an org the plan refused, without asking its ControlPlane, for a short while",
+    () =>
+      Effect.gen(function* () {
+        const org = newOrgId();
+
+        yield* Effect.promise(() => seedRequestsUsed(env, org, MID_MARCH, FREE_USAGE.requests));
+        yield* TestClock.setTime(MID_MARCH);
+        yield* Effect.flip(asOrg(org, countRequest));
+
+        // Changed behind the cache's back (another isolate switched the plan): seen after the TTL, not before.
+        yield* Effect.promise(
+          async () => await env.CONTROL_PLANE.getByName(org).billing().setPlan("payg"),
+        );
+
+        const again = yield* Effect.flip(asOrg(org, countRequest));
+
+        assert.instanceOf(again, PlanLimitReached);
+        assert.strictEqual(again.retryAfterSeconds, (FIRST_OF_APRIL - MID_MARCH) / 1000);
+
+        yield* TestClock.adjust("31 seconds");
+        assert.isDefined(yield* asOrg(org, countRequest));
+      }),
+  );
+
   it.effect("links the refusal to the org's billing page on the app host", () =>
     Effect.gen(function* () {
       const org = newOrgId();
@@ -104,6 +135,8 @@ describe("countRequest", () => {
       const refused = yield* Effect.flip(asOrg(org, countRequest));
 
       assert.include(refused.message, `https://app.example.com/orgs/${slug}/billing`);
+
+      resetBillingCaches();
 
       const withoutHost = yield* Effect.flip(
         asOrg(org, countRequest, { ...env, APP_DOMAIN: undefined }),

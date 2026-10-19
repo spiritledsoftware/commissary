@@ -3,17 +3,20 @@
  * serving a client API request. On Commissary Cloud it counts the request in the org's Billing part and, for a Free org
  * whose requests and tool calls of the month are used up, refuses it with {@link PlanLimitReached} (`429
  * plan_limit_reached`, `Retry-After` until the first of the next month UTC); work in flight finishes. On a self-hosted
- * Commissary it does nothing. A request the plan refuses is not counted, and one that a spend limit refuses after all
- * is taken back ({@link uncountRequest}). New in the Workers port, no Go counterpart.
+ * Commissary it does nothing. A request the plan refuses is not counted, and one that did no work (no upstream attempt:
+ * a spend limit, an unknown model, no credential) is taken back ({@link uncountRequest}). New in the Workers port, no
+ * Go counterpart.
  *
  * The count is one atomic step of the org's ControlPlane (`BillingStore.admit`), so concurrent requests cannot pass the
- * limit together beyond what is in flight. A Billing part that cannot be reached lets the request through (logged):
- * serving needs the same object, so a refusal here would add nothing.
+ * limit together beyond what is in flight. An org the plan refused stays refused in the isolate for a short while
+ * (`cache.ts`), so a client that retries against the limit does not reach the ControlPlane. A Billing part that cannot
+ * be reached lets the request through (logged): serving needs the same object, so a refusal here would add nothing.
  */
 import { Clock, Effect, Schema } from "effect";
 import { CurrentOrg, type OrgId } from "@commissary/core";
 import { isHosted } from "@commissary/auth";
 import { platformOf } from "@commissary/state";
+import { BILLING_TTL_MS, type CachedRefusal, refusals } from "./cache.ts";
 import { type BillingBindings, BillingEnv, billingPartOf } from "./env.ts";
 
 export const PLAN_LIMIT_REACHED = "plan_limit_reached";
@@ -22,8 +25,9 @@ export const PLAN_LIMIT_REACHED = "plan_limit_reached";
 export class PlanLimitReached extends Schema.TaggedError<PlanLimitReached>()("PlanLimitReached", {
   /** Names the limit and links to the billing page; safe to show. */
   message: Schema.String,
-  /** The month's free usage of requests and tool calls, and the seconds until it starts over (at least 1). */
+  /** The month's free usage of requests and tool calls. */
   allowed: Schema.Number,
+  /** The seconds until free usage starts over (at least 1). */
   retryAfterSeconds: Schema.Number,
   /** ISO time of the first of the next month. */
   resetsAt: Schema.String,
@@ -48,7 +52,11 @@ export interface CountedRequest {
   readonly monthStart: number;
 }
 
-/** Where the panel's billing page of `org` is: the app host's URL when it is known, else the path. */
+/**
+ * Where the panel's billing page of `org` is: the app host's URL when it is known, else the path. The client API knows
+ * an org by its id, not its slug (which only the Platform registry holds), so this asks the registry: once per refusal
+ * ({@link refusals} keeps the answer), never for a request that is served.
+ */
 const billingPage = (env: BillingBindings, org: OrgId): Effect.Effect<string> =>
   Effect.tryPromise(async () => await platformOf(env).getOrgById(org)).pipe(
     Effect.map((record) => {
@@ -63,6 +71,18 @@ const billingPage = (env: BillingBindings, org: OrgId): Effect.Effect<string> =>
   );
 
 const groups = new Intl.NumberFormat("en-US");
+
+/** The refusal of a request at `now`: what the month allows, when it starts over and where to see usage. */
+const refused = (refusal: CachedRefusal, now: number): PlanLimitReached => {
+  const resetsAt = new Date(refusal.resetsAt).toISOString();
+
+  return new PlanLimitReached({
+    message: `The Free plan's ${groups.format(refusal.allowed)} requests and tool calls a month are used up; free usage starts over at ${resetsAt}. Plan and usage: ${refusal.page}`,
+    allowed: refusal.allowed,
+    retryAfterSeconds: Math.max(1, Math.ceil((refusal.resetsAt - now) / 1000)),
+    resetsAt,
+  });
+};
 
 /**
  * A request of the current org starts being served: counts it, or fails with {@link PlanLimitReached}. Succeeds with
@@ -79,6 +99,10 @@ export const countRequest: Effect.Effect<
   if (!isHosted(env)) return undefined;
   const org = yield* CurrentOrg;
   const now = yield* Clock.currentTimeMillis;
+  const known = refusals.get(org, now);
+
+  // An org the plan refused a moment ago is refused again without asking its ControlPlane.
+  if (known !== undefined) return yield* refused(known, now);
 
   const admission = yield* Effect.tryPromise(
     async () => await billingPartOf(env, org).admit(now),
@@ -93,18 +117,15 @@ export const countRequest: Effect.Effect<
   if (admission.ok) return { monthStart: admission.monthStart };
 
   const { limit } = admission;
-  const resetsAt = new Date(limit.resetsAt).toISOString();
   const page = yield* billingPage(env, org);
+  const refusal = { allowed: limit.allowed, resetsAt: limit.resetsAt, page };
 
-  return yield* new PlanLimitReached({
-    message: `The Free plan's ${groups.format(limit.allowed)} requests and tool calls a month are used up; free usage starts over at ${resetsAt}. Plan and usage: ${page}`,
-    allowed: limit.allowed,
-    retryAfterSeconds: limit.retryAfterSeconds,
-    resetsAt,
-  });
+  refusals.set(org, refusal, Math.min(limit.resetsAt, now + BILLING_TTL_MS));
+
+  return yield* refused(refusal, now);
 });
 
-/** Takes back a request {@link countRequest} counted (one a spend limit refused after all); never fails. */
+/** Takes back a request {@link countRequest} counted (one that did no work); never fails. */
 export const uncountRequest = (
   counted: CountedRequest | undefined,
 ): Effect.Effect<void, never, BillingEnv | CurrentOrg> =>

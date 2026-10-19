@@ -240,8 +240,11 @@ const upstreamHeaders = (config: Config, headers: Headers): Headers | undefined 
 const finalError = (prepared: Prepared, error: ExecutionError): ExecutionError =>
   enrichSelectionError(error, prepared.providers, prepared.routeModel);
 
-/** Non-streaming execution (Go `ExecuteWithAuthManager`). */
-export const executeNonStream = Effect.fnUntraced(function* (input: ExecutionInput) {
+/**
+ * Non-streaming execution (Go `ExecuteWithAuthManager`) without counting it against free usage: for what is not a
+ * Request (GLOSSARY), such as polling a video's status.
+ */
+export const executeNonStreamUnmetered = Effect.fnUntraced(function* (input: ExecutionInput) {
   const prepared = yield* prepare(input, false);
 
   const result = yield* conduct(prepared, (attempt) =>
@@ -269,7 +272,11 @@ export const executeNonStream = Effect.fnUntraced(function* (input: ExecutionInp
   if (!result.ok) return yield* finalError(prepared, result.error);
 
   return result.value;
-}, metered);
+});
+
+/** Non-streaming execution (Go `ExecuteWithAuthManager`) of a Request, counted against free usage (`metering.ts`). */
+export const executeNonStream = (input: ExecutionInput) =>
+  metered(executeNonStreamUnmetered(input));
 
 const NO_CHUNKS: ReadonlyArray<string> = [];
 
@@ -382,7 +389,8 @@ export const executeStream = Effect.fnUntraced(function* (input: ExecutionInput)
 
 /**
  * Token counting (Go `ExecuteCountWithAuthManager`): the same retry/failover conductor as non-stream execution, through
- * the provider's `countTokens`. Count requests carry no billable tokens and skip the passive quota snapshot.
+ * the provider's `countTokens`. Count requests carry no billable tokens and skip the passive quota snapshot; they are
+ * not Requests (GLOSSARY), so they are not counted against free usage either.
  */
 export const executeCountTokens = Effect.fnUntraced(function* (input: ExecutionInput) {
   const prepared: Prepared = { ...(yield* prepare(input, false)), countTokens: true };
@@ -408,4 +416,4 @@ export const executeCountTokens = Effect.fnUntraced(function* (input: ExecutionI
   if (!result.ok) return yield* finalError(prepared, result.error);
 
   return result.value;
-}, metered);
+});

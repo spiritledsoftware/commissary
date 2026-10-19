@@ -118,12 +118,15 @@ describe("counting requests", () => {
     expect(await used(org)).toBe(1);
   });
 
-  it("counts a request whatever its outcome", async () => {
+  it("does not count a request that made no upstream attempt", async () => {
     const { org, key } = await configuredOrg("outcome@example.com");
 
-    // No credential serves this model: the request still reached Models.
+    upstream.length = 0;
+
+    // No credential serves this model: nothing was tried, so the request did no work.
     expect((await chat(key, "no-such-model")).status).toBeGreaterThanOrEqual(400);
-    expect(await used(org)).toBe(1);
+    expect(upstream).toEqual([]);
+    expect(await used(org)).toBe(0);
   });
 
   it("does not count a request a spend limit refuses", async () => {
@@ -193,6 +196,28 @@ describe("the Free plan's limit", () => {
 
     // No work was done and nothing was counted.
     expect(upstream).toEqual([]);
+    expect(await used(org)).toBe(FREE_USAGE.requests);
+  });
+
+  it("refuses a Codex alpha search at the limit the same way, with its JSON body and Retry-After", async () => {
+    const { org, slug, key } = await configuredOrg("alpha-limit@example.com");
+
+    await seedRequestsUsed(env, org, Date.now(), FREE_USAGE.requests);
+
+    const refused = await call("/v1/alpha/search", {
+      method: "POST",
+      headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5.4-search", query: "q" }),
+    });
+
+    expect(refused.status).toBe(429);
+    expect(Number(refused.headers.get("retry-after"))).toBeGreaterThan(0);
+    expect(refused.headers.get("content-type")).toContain("application/json");
+
+    const body = await refused.json<{ error: { code: string; message: string } }>();
+
+    expect(body.error.code).toBe("plan_limit_reached");
+    expect(body.error.message).toContain(`/orgs/${slug}/billing`);
     expect(await used(org)).toBe(FREE_USAGE.requests);
   });
 

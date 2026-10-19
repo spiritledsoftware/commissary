@@ -4,7 +4,7 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { newOrgId } from "@commissary/core";
 import { tablesOf } from "@commissary/state/testing";
-import { FREE_USAGE, seedRequestsUsed, setPlan } from "../test/testing.ts";
+import { FREE_USAGE, seedRequestsUsed, setPlan } from "./testing.ts";
 
 /** 2026-03-15T12:00:00Z. */
 const MID_MARCH = Date.UTC(2026, 2, 15, 12);
@@ -75,9 +75,7 @@ describe("free usage", () => {
 
     if (refused.ok) throw new Error("expected a refusal");
     expect(refused.limit).toEqual({
-      unit: "requests",
       allowed: 25_000,
-      used: 25_000,
       resetsAt: FIRST_OF_APRIL,
       retryAfterSeconds: (FIRST_OF_APRIL - MID_MARCH) / 1000,
     });

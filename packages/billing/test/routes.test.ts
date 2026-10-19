@@ -1,8 +1,7 @@
 // `GET /v9/management/billing` (src/routes.ts) through a router of its own, with the current org the Worker's gate
 // would have set: the plan and the month's usage against free usage on Commissary Cloud, a 404 elsewhere.
 import { env } from "cloudflare:workers";
-import { Schema } from "effect";
-import { Context } from "effect";
+import { Context, Schema } from "effect";
 import { HttpRouter } from "effect/http";
 import { describe, expect, it } from "vitest";
 import { BillingView } from "@commissary/contract/billing";
@@ -26,10 +25,14 @@ describe("GET /billing", () => {
     expect(response.status).toBe(200);
 
     const view = Schema.decodeUnknownSync(BillingView)(await response.json());
-    const month = Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth());
+    const start = new Date(view.month_start);
+    const resets = new Date(view.resets_at);
 
     expect(view.plan).toBe("free");
-    expect(view.month_start).toBe(new Date(month).toISOString());
+    // A calendar month in UTC: it starts on the first at midnight and resets on the first of the next month.
+    expect(start.getUTCDate()).toBe(1);
+    expect(start.getUTCHours()).toBe(0);
+    expect(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1)).toBe(resets.getTime());
     expect(view.usage).toEqual({
       requests: { used: 0, free: 25_000 },
       browser_hours: { used: 0, free: 1 },

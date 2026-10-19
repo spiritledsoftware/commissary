@@ -32,10 +32,8 @@ const SCHEMA = [
 
 /** Free usage of requests and tool calls is used up: plain data, as it crosses the RPC boundary. */
 export interface PlanLimit {
-  readonly unit: Unit;
-  /** What the month allows free, and what the org used of it. */
+  /** What the month allows free. */
   readonly allowed: number;
-  readonly used: number;
   /** When the month ends and the counter starts over (epoch ms), and the seconds until then, at least 1. */
   readonly resetsAt: number;
   readonly retryAfterSeconds: number;
@@ -121,9 +119,7 @@ export class BillingStore {
       return {
         ok: false,
         limit: {
-          unit: "requests",
           allowed: FREE_USAGE.requests,
-          used,
           resetsAt: month.end,
           retryAfterSeconds: Math.max(1, Math.ceil((month.end - now) / 1000)),
         },
@@ -134,7 +130,7 @@ export class BillingStore {
     return { ok: true, monthStart: month.start };
   }
 
-  /** Takes back a request `admit` counted against `monthStart` (one that a spend limit refused after all). */
+  /** Takes back a request `admit` counted against `monthStart` (one that did no work). */
   refund(monthStart: number): void {
     this.#add(monthStart, "requests", -1);
   }

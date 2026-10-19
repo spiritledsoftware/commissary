@@ -1,8 +1,8 @@
 {
   // Code that runs in Node.js, not in workerd: alchemy.run.ts, infra/, stacks/ (Alchemy CLI), the catalog sync script
   // and the import-boundary lint rules (tools/oxlint/boundaries, loaded by oxlint). The workspace modules they import
-  // (`@commissary/models/models-dev`, `@commissary/models/auth-index-key`, packages/state/src/secrets/key.ts) are
-  // checked here too, with Node.js types.
+  // (`@commissary/models/models-dev`, `@commissary/models/auth-index-key`, `@commissary/billing/plan`,
+  // packages/state/src/secrets/key.ts) are checked here too, with Node.js types.
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
     "lib": ["ES2023"],

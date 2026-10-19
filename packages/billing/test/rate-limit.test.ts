@@ -2,6 +2,7 @@
 import { env } from "cloudflare:workers";
 import { assert, describe, it } from "@effect/vitest";
 import { Effect } from "effect";
+import { TestClock } from "effect/testing";
 import { newOrgId } from "@commissary/core";
 import {
   type BillingBindings,
@@ -67,6 +68,34 @@ describe("limitClientRate", () => {
 
       // The Pay as you go binding is not the Free one's: its third request is the one it refuses.
       assert.strictEqual((yield* Effect.flip(run(paying)))._tag, "RateLimitedError");
+    }),
+  );
+
+  it.effect("reads an org's plan once for a short while, then asks again", () =>
+    Effect.gen(function* () {
+      const org = newOrgId();
+      const onFree = limiter(10);
+      const onPayg = limiter(10);
+
+      const run = limitClientRate(org).pipe(
+        Effect.provideService(
+          BillingEnv,
+          bindings({ FREE_RATE_LIMIT: onFree.limit, PAYG_RATE_LIMIT: onPayg.limit }),
+        ),
+      );
+
+      yield* run;
+
+      // Changed behind the cache's back (a plan change in another isolate): not seen at once, seen after the TTL.
+      yield* Effect.promise(
+        async () => await env.CONTROL_PLANE.getByName(org).billing().setPlan("payg"),
+      );
+      yield* run;
+      assert.deepStrictEqual([onFree.keys.length, onPayg.keys.length], [2, 0]);
+
+      yield* TestClock.adjust("31 seconds");
+      yield* run;
+      assert.deepStrictEqual([onFree.keys.length, onPayg.keys.length], [2, 1]);
     }),
   );
 

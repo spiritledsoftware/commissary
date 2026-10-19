@@ -294,7 +294,10 @@ stays with that Worker.
   runs `test/unit/` in Node.js (the tests whose modules reach no binding and no `cloudflare:*` module), `models` the
   rest in workerd against `packages/models/test/worker.ts`, a test-only ControlPlane (state's base composed with the
   Models part by `composeControlPlane`, as a Worker composes it) with the Platform registry and SessionState, its
-  `CACHE` and `USAGE` and the bindings `test/env.d.ts` declares. Models' client API harnesses put the routes behind
+  `CACHE` and `USAGE` and the bindings `test/env.d.ts` declares. `@commissary/billing` has one workerd project
+  (`billing`): its test Worker, `packages/billing/test/worker.ts`, is a test-only ControlPlane (state's base composed
+  with the Billing part) with the Platform registry and SessionState, on real SQLite storage; the bindings are in
+  `test/env.d.ts`, and the rate-limit bindings are not bound in `vitest.config.ts` (tests inject their own). Models' client API harnesses put the routes behind
   `@commissary/auth`'s client gate (`test/support/client-gate.ts`), not the Worker's. The panel's and the other
   packages' tests run in Node.js. A test
   that restarts a ControlPlane (`evictDurableObject`) first disposes of every stub of a part it holds
@@ -312,9 +315,10 @@ stays with that Worker.
 - **Shared helpers.** A package whose fixtures or helpers its dependants' tests need exports them as `./testing`
   (`test/testing.ts`), e.g. `@commissary/translation/testing` (the thinking and token fixtures, the structural JSON
   comparison, the golden translator harness), `@commissary/state/testing` (a Durable Object's tables, rows and alarm,
-  the ControlPlane's org-wide tables, `withPart`) or `@commissary/models/testing` (the pipeline harness, the recording
+  the ControlPlane's org-wide tables, `withPart`), `@commissary/models/testing` (the pipeline harness, the recording
   `HttpClient`, the ControlPlane and usage helpers, and the constants and modules the Worker's tests seed Models
-  with). There is no test-utils package. Lint allows `@commissary/*/testing`
+  with) or `@commissary/billing/testing` (an org's plan and month's count set and read through the part, the free
+  usage and ceiling constants, `resetBillingCaches`). There is no test-utils package. Lint allows `@commissary/*/testing`
   imports only in `test/` folders.
 - **Fixtures** sit in the `test/fixtures/` of the package whose tests read them (below). A dependant reads them through
   `./testing`, never by a relative path into another package.

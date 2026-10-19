@@ -2691,25 +2691,31 @@ refuses or reads anything, and its management route answers 404.
 - **Constants** (`billing/plan.ts`, ADR 0042): free usage `25,000` requests and tool calls, 1 browser hour, 0 computer
   hours; request-rate ceilings 60 a minute on Free and 600 on Pay as you go. The month is the calendar month in UTC
   (`billing/month.ts`); the Worker side passes `Clock.currentTimeMillis` to the object, so tests drive it with `TestClock`.
-- **Counting and the plan limit** (`billing/meter.ts`, `models/handlers/metering.ts`): `executeNonStream`,
-  `executeStream`, `executeCountTokens` and the Codex alpha search wrap their work in `metered`: when Models starts
-  serving a client API request it calls `countRequest` once, before the first pick, so a request counts once whatever its
-  credential (shared or private), outcome or number of attempts (stream bootstrap retries and failover are inside the
-  one request). A Free org over its free usage is refused first with `429 plan_limit_reached`: `Retry-After` the seconds
+- **Counting and the plan limit** (`billing/meter.ts`, `models/handlers/metering.ts`): only a **Request** counts
+  (GLOSSARY: one model call a client makes). `executeNonStream`, `executeStream` and the Codex alpha search wrap their
+  work in `metered`: before any work it calls `countRequest` once, so a request counts once whatever its credential
+  (shared or private), outcome or number of attempts (stream bootstrap retries and failover are inside the one
+  request). A Free org over its free usage is refused first with `429 plan_limit_reached`: `Retry-After` the seconds
   until the first of the next month UTC, a JSON error (`code`, `message`, `limit`, `allowed`, `resets_at`,
-  `reset_seconds`, like `spend_limit_reached`'s) whose message names the limit and links to the panel's billing page
-  (`https://<app host>/orgs/<slug>/billing`, built in #239; the path alone without an app host). Work in flight finishes.
-  A request a spend limit refuses did no work: the spend check is inside the first pick (the ControlPlane's
-  `pick`), after the count, so the final `spend_limit_reached` takes the count back (`uncountRequest`). A request refused
-  before Models serves it (authentication, the rate ceiling) or by the plan limit is never counted. A request that cannot
-  be read, or names no model, still counts. A Billing part that cannot be reached lets the request through (logged):
-  serving needs the same object. Model listings and other reads are not requests in this sense.
+  `reset_seconds`, like `spend_limit_reached`'s; the alpha search answers the same body) whose message names the limit
+  and links to the panel's billing page (`https://<app host>/orgs/<slug>/billing`, built in #239; the path alone without
+  an app host). Work in flight finishes. A request counts if it **did work**: the conductor marks the request when it
+  makes its first upstream attempt (`markWorked`), and one that fails without it (a spend limit, an unknown model or
+  provider, no credential to pick, `auth_not_found`) gives the count back (`uncountRequest`), while a later round's
+  spend stop does not take back a request that already did work. Not counted: a request refused before Models serves
+  it (authentication, the rate ceiling) or by the plan limit; a body that does not parse (rejected before execution);
+  **token counting** (`executeCountTokens`) and **polling a video** (status and content retrieval, which run
+  `executeNonStreamUnmetered`), which are not Requests; model listings and other reads. A Billing part that cannot be
+  reached lets the request through (logged): serving needs the same object. An isolate remembers a refusal for 30
+  seconds (`billing/cache.ts`; the registry lookup of the org's slug for the link, which the client API's key (an org
+  id) does not carry, runs once per refusal), so a client that retries against the limit does not reach the ControlPlane.
 - **Request-rate ceiling** (`billing/rate-limit.ts`): two Workers rate-limiting bindings on the API Worker,
   `FREE_RATE_LIMIT` (60 a minute) and `PAYG_RATE_LIMIT` (600), keyed by org id; the org's plan (a `plan()` call to its
-  Billing part) picks one. The API Worker's client gate calls `limitClientRate` after authentication and the standing
-  checks (it left `@commissary/auth`'s hosted gate, which no longer knows plans), so every client-facing surface behind
-  that gate is covered, and the MCP endpoint (#197) and webhook triggers (#231) join it by calling the same function. The
-  management API has none. Like before, a deployment without the bindings has no ceiling and a failing binding lets the
+  Billing part, cached per isolate for 30 seconds like `@commissary/auth`'s standing) picks one. The API Worker's
+  client gate calls `limitClientRate` after authentication and the standing checks (it left `@commissary/auth`'s hosted
+  gate, which no longer knows plans), so every client-facing surface behind that gate is covered, and the MCP endpoint
+  (#197) and webhook triggers (#231) join it by sitting behind the gate or calling the same function. The management
+  API has none. Like before, a deployment without the bindings has no ceiling and a failing binding lets the
   request through (logged); an org whose plan cannot be read gets Free's ceiling. The ceilings are constants; only the
   namespaces are deployment settings (`ORG_RATE_LIMIT_NAMESPACE_ID`, `ORG_RATE_LIMIT_PAYG_NAMESPACE_ID`, `docs/DEPLOY.md`).
 - **Management API** (`billing/routes.ts`, `@commissary/contract/billing`): `GET /v9/management/billing` answers the plan,
@@ -2718,7 +2724,7 @@ refuses or reads anything, and its management route answers 404.
 - **Org deletion**: Billing's `OrgDeletionStep` has nothing outside the ControlPlane to delete yet (#237 cancels the
   Polar subscription there); the part's tables go with `wipeOrg`.
 
-## Provider OAuth logins (`models/oauth/, `models/management/oauth-routes.ts`)
+## Provider OAuth logins (`models/oauth/`, `models/management/oauth-routes.ts`)
 
 Port of the management OAuth handlers (`auth_files_provider_oauth.go`, `auth_files_devin_oauth.go`, `oauth_callback.go`,
 `oauth_sessions.go`) and `internal/auth/*`. The panel's OAuth page works unchanged: `GET /v9/management/oauth/auth-url?provider=`

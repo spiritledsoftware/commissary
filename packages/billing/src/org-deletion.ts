@@ -8,8 +8,7 @@ import { Effect } from "effect";
 import type { OrgDeletionStep } from "@commissary/core";
 import type { BillingEnv } from "./env.ts";
 
-export const deleteOrgBilling: OrgDeletionStep = () =>
-  Promise.resolve({ complete: true, calls: 0 });
+const deleteOrgBilling: OrgDeletionStep = () => Promise.resolve({ complete: true, calls: 0 });
 
 /** Billing's step over the invocation's bindings. */
 export const orgDeletionStep: Effect.Effect<OrgDeletionStep, never, BillingEnv> =

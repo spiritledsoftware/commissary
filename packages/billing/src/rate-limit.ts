@@ -6,29 +6,41 @@
  * eventually consistent: a ceiling against abuse, not exact accounting. It covers every client-facing surface (the
  * client API now; the MCP endpoint and webhook triggers when they exist); the management API has none.
  *
+ * The org's plan is cached per isolate for a short while (`cache.ts`), so a request costs no ControlPlane call here.
  * A deployment without the binding has no ceiling; a failing binding lets the request through (logged), since refusing
  * every org would be worse; an org whose plan cannot be read gets Free's ceiling (logged).
  */
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 import { RateLimitedError, type OrgId } from "@commissary/core";
 import { isHosted } from "@commissary/auth";
+import { BILLING_TTL_MS, plans } from "./cache.ts";
 import { BillingEnv, billingPartOf } from "./env.ts";
 import { DEFAULT_PLAN, type Plan, RATE_LIMIT_PERIOD_SECONDS } from "./plan.ts";
 
 export const RATE_LIMITED = "Rate limit exceeded";
 
-/** The org's plan; Free's (logged) when it cannot be read. */
+/**
+ * The org's plan, cached per isolate for `BILLING_TTL_MS` (a plan change applies within that time); Free's (logged, not
+ * cached) when it cannot be read.
+ */
 const planOf = (org: OrgId): Effect.Effect<Plan, never, BillingEnv> =>
   Effect.gen(function* () {
     const env = yield* BillingEnv;
+    const now = yield* Clock.currentTimeMillis;
+    const cached = plans.get(org, now);
 
-    return yield* Effect.tryPromise(async () => await billingPartOf(env, org).plan()).pipe(
+    if (cached !== undefined) return cached;
+
+    const plan = yield* Effect.tryPromise(async () => await billingPartOf(env, org).plan()).pipe(
+      Effect.tap((read) => Effect.sync(() => plans.set(org, read, now + BILLING_TTL_MS))),
       Effect.catch((error) =>
         Effect.logWarning(`plan not read for the rate limit: ${error.message}`).pipe(
           Effect.as(DEFAULT_PLAN),
         ),
       ),
     );
+
+    return plan;
   });
 
 /**

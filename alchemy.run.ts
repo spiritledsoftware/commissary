@@ -25,7 +25,8 @@ import { CLIENT_API_PREFIXES } from "./packages/core/src/http/client-api.ts";
 
 /**
  * Runtime compatibility of the Workers; keep in sync with apps/app/vitest.config.ts, apps/api/vitest.config.ts,
- * packages/state/vitest.config.ts, packages/models/vitest.config.ts and tools/workers/worker-configuration.d.ts.
+ * packages/state/vitest.config.ts, packages/models/vitest.config.ts, packages/billing/vitest.config.ts and
+ * tools/workers/worker-configuration.d.ts.
  */
 export const COMPATIBILITY = { date: "2026-08-01", flags: ["nodejs_compat"] };
 

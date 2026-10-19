@@ -1,8 +1,10 @@
 /**
  * The API Worker's client gate (ADR 0022, ADR 0030): a client API request must carry a credential
  * `@commissary/auth`'s `authenticateClient` accepts (an API key, or an Access sign-in where the org still accepts them;
- * on Commissary Cloud an API key, under the request-rate ceiling of the org's plan, `@commissary/billing`), after the cross-site checks (`crossSiteRejection`). On
- * success the principal is available to handlers as `AccessPrincipal`, and `CurrentOrg` is the org the API key names.
+ * on Commissary Cloud an API key, under the request-rate ceiling of the org's plan, `@commissary/billing`), after the
+ * cross-site checks (`crossSiteRejection`). On success the principal is available to handlers as `AccessPrincipal`, and
+ * `CurrentOrg` is the org the API key names. Any new client-facing surface (the MCP endpoint, #197; webhook triggers,
+ * #231) must sit behind this gate or call `limitClientRate` itself: the plan's ceiling is applied here and nowhere else.
  * `/healthz` (and nothing else, `http/hosts.ts` refuses every other path first) passes through. Registered after CORS
  * (`cors.ts`), so preflights are answered before authentication and refusals still carry CORS headers. Refusals on
  * the System One endpoint are in TypeSafe's format (ADR 0032), so TypeSafe's SDKs read them.
@@ -74,7 +76,10 @@ export const ClientGate = HttpRouter.middleware<{ provides: AccessPrincipal }>()
   { global: true },
 );
 
-/** CORS plus the client gate, in that order (global middleware registered first is outermost); `jwks` is replaceable in tests. */
+/**
+ * CORS plus the client gate, in that order (global middleware registered first is outermost); `jwks` is replaceable in
+ * tests.
+ */
 export const makeGateLayer = (jwks: Layer.Layer<AccessJwks> = AccessJwks.layerLive) =>
   ClientGate.pipe(Layer.provide(Layer.mergeAll(CorsLayer, jwks)));
 

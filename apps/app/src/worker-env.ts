@@ -1,9 +1,9 @@
 /**
  * The Worker's bindings as its code reads them (#134 "How packages get their bindings"): every package reads only
- * its own view ({@link AuthConfig}, {@link StateEnv}, {@link ModelsEnv}, {@link BillingEnv}; `core` reads none), and the code that
- * stays in the Worker reads {@link AppEnv}. The request context provides each of them from the invocation's `env`, which
- * satisfies every view (`WorkerBindings`), and the ports `@commissary/auth` reaches state and Better Auth's sessions
- * through (`AuthDirectory`, `SignInSessions`).
+ * its own view ({@link AuthConfig}, {@link StateEnv}, {@link ModelsEnv}, {@link BillingEnv}; `core` reads none), and the
+ * code that stays in the Worker reads {@link AppEnv}. The request context provides each of them from the invocation's
+ * `env`, which satisfies every view (`WorkerBindings`), and the ports `@commissary/auth` reaches state and Better
+ * Auth's sessions through (`AuthDirectory`, `SignInSessions`).
  */
 import { Context } from "effect";
 import {

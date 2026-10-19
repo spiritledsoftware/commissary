@@ -19,7 +19,7 @@ const BASE = "/v9/management";
 
 const iso = (ms: number): string => new Date(ms).toISOString();
 
-export const billingView = (billing: BillingUsage): BillingView => ({
+const billingView = (billing: BillingUsage): BillingView => ({
   plan: billing.plan,
   month_start: iso(billing.monthStart),
   resets_at: iso(billing.monthEnd),
