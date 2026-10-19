@@ -1,5 +1,5 @@
 ---
-status: accepted, amended by ADR-0041 (Browser Run is the first browser provider)
+status: accepted, amended by ADR-0041 (Browser Run is the first browser provider) and below (no session caps)
 ---
 
 # The hosted browser is a built-in toolkit, not an area
@@ -44,7 +44,6 @@ The cost of Browser Run time lands on the deployment's Cloudflare account, and C
 
 - Each Quick Action and each session writes a usage record with its browser seconds and no URLs.
 - An org admin may set a price per browser hour, which counts toward the dollar spend limits like a price per call.
-- A deployment setting caps concurrent sessions per org and per member.
 - Nothing is recorded: no session recordings, and no page content or screenshots outside the tool results that carry them.
 - Browser profiles are kept until deleted.
 
@@ -60,3 +59,7 @@ The cost of Browser Run time lands on the deployment's Cloudflare account, and C
 - ADR 0029's four areas become three. Panel sections, docs and plans speak of the browser toolkit, not a Browser area.
 - The kind `none` credential is still awaiting triage on the toolkit issue (#196). If it changes, this toolkit's gating changes with it.
 - How a hosted agent's sessions are watched, and who answers its handoffs, is decided with the hosted agent.
+
+## Amendment: no session caps
+
+The decision first capped concurrent sessions per org and per member with a deployment setting, because Cloudflare's concurrency cap is account-wide. The cap is dropped, along with the limits on agent runs and computers (ADR 0040, ADR 0041). Spend limits, Cloudflare's plans and Commissary Cloud's billing tiers limit use, and fairness between orgs on Commissary Cloud is left to its plans. Limits that org admins configure may come later.

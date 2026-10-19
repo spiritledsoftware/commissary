@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted, amended below (no default limits)
 ---
 
 # Hosted agents are definitions whose runs act as a member or as themselves
@@ -89,10 +89,7 @@ A chat in the panel uses the same run model. Steering, waiting, status and cance
 
 ## Limits
 
-- A deployment caps concurrent runs per org and per agent, as it caps browser sessions.
-- A step limit on the agent caps model calls per turn, 50 by default.
-- A wall-clock limit caps each turn.
-- Plan quotas for Commissary Cloud are decided with the plans.
+Commissary sets no limits of its own on runs: no cap on concurrent runs, no step limit per turn and no wall-clock limit. Spend limits and Cloudflare's own platform limits bound them, and Commissary Cloud's plans may add quotas. Limits that org admins configure may come later.
 
 ## Editing, retention and deletion
 
@@ -122,3 +119,7 @@ A chat in the panel uses the same run model. Steering, waiting, status and cance
 - Grant, reach, spend limit and tool scope widen to cover shared agents.
 - The map's "Hosted agents' runtime design" fog is resolved here and in ADR 0041. What remains is implementation.
 - How the usage export carries agent runs is still open, with the export's other non-Models areas.
+
+## Amendment: no default limits
+
+The decision first gave runs deployment caps on concurrent runs per org and per agent, a step limit of 50 model calls per turn, and a wall-clock limit per turn. They are dropped. Cloudflare's plans and Commissary Cloud's billing tiers are what limit use, and fixed caps chosen now would only guess at them. If org admins need limits, they come later as settings an admin configures.
