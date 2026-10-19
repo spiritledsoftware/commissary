@@ -123,13 +123,15 @@ to `packages/billing/src/`), Tools' as `tools/...` (relative to `packages/tools/
     test/                     workerd tests against a test-only ControlPlane (test/worker.ts); test/testing.ts is ./testing
   packages/tools/             @commissary/tools: the Tools area (#196); like Models, the Workers import it only
                               through ./api, ./management and ./state (lint rule boundaries/tools-imports)
-    src/api.ts                for the API Worker: its cron task (tool-list-refresh), ToolsEnv
+    src/api.ts                for the API Worker: the MCP endpoint (/mcp), its cron task (tool-list-refresh), ToolsEnv
     src/management.ts         for the app Worker: management routes, role-table entries, org-deletion step, its section
                               of the org export
     src/state.ts              for the state Worker: ToolsPart, its part of the ControlPlane
-    src/control-plane-part.ts the ControlPlane's Tools part (toolkits, their credentials, tool lists, overrides)
+    src/control-plane-part.ts the ControlPlane's Tools part (toolkits, their credentials, tool lists, overrides, the
+                              endpoint's list and calls, upstream sessions)
     src/toolkits/             storage, names, the flat list of unique full names, static secrets
-    src/mcp/                  the MCP client that lists a remote MCP server's tools
+    src/mcp/                  the MCP client that lists and calls a remote MCP server's tools, and Commissary's MCP
+                              endpoint (protocol.ts, endpoint.ts)
     src/management/           Tools' /v9/management routes (toolkits)
     test/                     Node.js tests (test/unit/) and workerd tests against a test-only ControlPlane
                               (test/worker.ts) and fake MCP servers; test/testing.ts is ./testing
@@ -2664,7 +2666,7 @@ prices each attempt, the ControlPlane counts and decides.
 - Implementation notes (`src/access/` of the app Worker, `apps/api/src/http/gate.ts`, `packages/auth`): each gate is a
   _global_ router middleware that matches path prefixes, normalising case, duplicate slashes and percent-encoding: the
   API Worker's default-denies the client API (`/v1*`, `/openai/v1*`, `/backend-api/codex*`, the unprefixed
-  `/chat/completions`, `/completions`, `/responses`), the app Worker's `/v9/management*` and the panel (and answers a
+  `/chat/completions`, `/completions`, `/responses`, and `/mcp`), the app Worker's `/v9/management*` and the panel (and answers a
   client API path 404 before authenticating anything); each provides `AccessPrincipal`; route layers that read it use `withAccess(...)` (the app Worker) or `behindGate(...)`
   (the API Worker) for typing.
   JWKS keys are cached per isolate and refreshed on unknown `kid` at most once per 30 s (no cross-request locks, which
@@ -2885,16 +2887,17 @@ takes a multipart service-account `file` (+ `location`, default `us-central1`), 
 differ) and stores `vertex-<project>.json` merged over an existing file. Not ported: plugin logins and the local callback forwarder (`is_webui`). Credential JSON files from the Go
 server can still be imported through management.
 
-## Tools (`tools/`, `tools/management/routes.ts`)
+## Tools (`tools/`, `tools/management/routes.ts`, `tools/mcp/endpoint.ts`)
 
-The Tools area (ADR 0036, ADR 0037, ADR 0038) turns outside sources into **toolkits**. This version builds one kind,
-the remote MCP server (Streamable HTTP); OpenAPI, GraphQL and Discovery toolkits, OAuth sign-in, the toolkit catalog,
-grants, prices, approval rules and Commissary's own MCP endpoint come later (#197 to #209). The package
-(`@commissary/tools`) is shaped like Models: entry points `./api`, `./management`, `./state` and `./testing`, a lint
-boundary (`boundaries/tools-imports`) and a ControlPlane part, `ToolsPart`, reached as `stub.tools().x(…)`. It needs
-no binding of its own: its state is the ControlPlane's (`TOOLS_TABLES`: `toolkits`, `toolkit_credentials`,
-`toolkit_tools`, `tool_overrides`, dropped by `wipe()`), and it reaches MCP servers from the ControlPlane through the
-global `fetch` behind the outbound guard.
+The Tools area (ADR 0036, ADR 0037, ADR 0038) turns outside sources into **toolkits** and serves them on Commissary's
+own MCP endpoint. This version builds one kind, the remote MCP server (Streamable HTTP); OpenAPI, GraphQL and Discovery
+toolkits, OAuth sign-in, the toolkit catalog, grants, prices and approval rules come later (#198 to #209). The package
+(`@commissary/tools`) is shaped like Models: entry points `./api` (the MCP endpoint's routes, the cron task),
+`./management`, `./state` and `./testing`, a lint boundary (`boundaries/tools-imports`) and a ControlPlane part,
+`ToolsPart`, reached as `stub.tools().x(…)`. It needs no binding of its own: its state is the ControlPlane's
+(`TOOLS_TABLES`: `toolkits`, `toolkit_credentials`, `toolkit_tools`, `tool_overrides`, `toolkit_sessions`, dropped by
+`wipe()`), its view of `env` (`ToolsBindings`) adds only the Platform registry and the app host for the endpoint's
+connect links, and it reaches MCP servers from the ControlPlane through the global `fetch` behind the outbound guard.
 
 - **What Tools shares with Models**: the ownership rules (`Scope`, `FULL_ACCESS`, `accessTo`: who reaches a shared or a
   private thing), which lived in `models/credentials/ownership.ts`. They moved into `@commissary/auth`
@@ -2950,12 +2953,12 @@ global `fetch` behind the outbound guard.
   names are unique in the org; a private toolkit's must not clash with an org toolkit or its owner's other private
   toolkits, while an org toolkit may take a name a member uses privately.
 - **The flat list** (`tools/toolkits/resolve.ts`): who looks decides the set, the org's toolkits for the org's names, or
-  the org's and one member's private toolkits for that member (`servedTools`, what #197 serves). A member's private
-  toolkit wins over an org toolkit of its name for them alone (the org toolkit is `shadowed` for them, the private one
-  `rename_suggested`). Uniqueness is checked on the full name, so `github_rest` + `create_issue` and `github` +
-  `rest_create_issue` cannot both hold `github_rest_create_issue`: a renamed tool wins (an admin's rename stands against
-  a tool a refresh brings later), then the tool seen first; the others are hidden and flagged `clash`. A rename to a full
-  name a served tool of the set holds is refused (`409 name_taken`).
+  the org's and one member's private toolkits for that member (`servedTools`; the MCP endpoint serves what of it the
+  member reaches). A member's private toolkit wins over an org toolkit of its name for them alone (the org toolkit is
+  `shadowed` for them, the private one `rename_suggested`). Uniqueness is checked on the full name, so `github_rest` +
+  `create_issue` and `github` + `rest_create_issue` cannot both hold `github_rest_create_issue`: a renamed tool wins (an
+  admin's rename stands against a tool a refresh brings later), then the tool seen first; the others are hidden and
+  flagged `clash`. A rename to a full name a served tool of the set holds is refused (`409 name_taken`).
 - **Stable ids and overrides**: a tool's stable id is its toolkit's id and its upstream name (`<toolkit id>:<upstream
   name>`), not the name shown. An org admin may hide, rename, re-describe or reclassify a tool of an org toolkit, a
   member one of their private toolkits (`PUT /toolkits/:id/overrides`, the whole override at its revision, `0` when the
@@ -2965,8 +2968,58 @@ global `fetch` behind the outbound guard.
   and clearing it answers `{ id, removed: true }`, as the tool then leaves the list.
 - **Tool class** (ADR 0038): `read` when the tool's annotations say `readOnlyHint: true`, else `write`; an override's
   class wins.
-- **Members and orgs**: a member who leaves takes their private toolkits and their private credentials on org toolkits
-  (`memberLeft`); org deletion drops the tables (`wipe()`), and Tools' org-deletion step has nothing else to delete.
-  Tools keeps nothing in KV or a per-isolate cache; the cross-org suite (`apps/app/test/org-isolation.test.ts`) checks
-  that one org's toolkits are neither listed nor reached by id from another. The
+- **The MCP endpoint** (`tools/mcp/endpoint.ts`, `tools/mcp/protocol.ts`, #197): `POST /mcp` on the API host (a
+  client API path, `CLIENT_API_PREFIXES`, so also the zone route `/mcp*` on a stage with one host), behind the API
+  Worker's client gate like the model routes: a member's API key in any form the gate reads, the cross-site checks
+  (a foreign `Origin` is `403`, the transport's DNS-rebinding rule) and, on Commissary Cloud, the org's request-rate
+  ceiling. A `401` there carries `WWW-Authenticate: Bearer`; `resource_metadata` comes with Commissary Cloud's OAuth
+  server (#200), and a self-hosted Commissary's Access-signed MCP clients use the app host's `/mcp` (#251, ADR 0045).
+  Commissary speaks the protocol itself rather than through the MCP TypeScript SDK or Cloudflare's `createMcpHandler`
+  (neither is a dependency): it serves five methods with one JSON answer each, and the area's client already speaks
+  both eras by hand. Each POST is one JSON-RPC message answered with one JSON object
+  (never an SSE stream); a notification is `202`; `GET` and `DELETE` are `405`, as the 2026-07-28 revision's backward
+  compatibility asks of a server without sessions. **Both eras per request**: one that names its revision in
+  `params._meta` (or `2026-…` in `MCP-Protocol-Version`) is served statelessly by 2026-07-28 (`server/discover`; the
+  `MCP-Protocol-Version`, `Mcp-Method` and `Mcp-Name` headers must match the body, `400 HeaderMismatch`, `-32020`; a
+  revision it does not speak is `400 UnsupportedProtocolVersion`, `-32022`, with the supported list; an unknown method
+  `404`; results carry `resultType` and the server's name in `_meta`); anything else is a 2025 client (`initialize`
+  answers 2025-11-25, 2025-06-18 or 2025-03-26 as asked, else the latest; no `Mcp-Session-Id` is minted, which
+  Streamable HTTP allows, so the requests after it need nothing of it). Methods: `initialize`, `server/discover`,
+  `ping`, `tools/list`, `tools/call`; no resources, prompts or `subscriptions/listen`.
+  - **The list** (`ToolsPart.clientTools`): one page, sorted by full name (deterministic whatever order a source lists
+    in), each tool with its full name, description (overrides applied) and upstream input schema (`{type: "object"}`
+    without one); read tools carry `readOnlyHint: true` and `destructiveHint: false`, write tools no annotations, and
+    upstream annotations never pass. A modern answer says `ttlMs: 0` and `cacheScope: "private"` (the list is the
+    member's, and an override shows at once). `?toolkits=a,b` narrows the list, and the calls, to those toolkits by the
+    names the member sees (case-insensitive); an unknown name narrows to nothing.
+  - **Reach**: a member uses every served tool of their own private toolkits and of every org toolkit that takes private
+    credentials, as themselves (ADR 0038), while the org lets members hold private credentials (otherwise none could be
+    connected). A shared credential's tools need a grant (#198), and with no default grant for tools nobody reaches them
+    yet. A tool outside reach is not listed, and calling it answers what an unknown tool does (`-32602 Unknown tool`).
+  - **Calls** (`ToolsPart.callTool`): the full name is resolved in the ControlPlane, where the secrets are, to its
+    toolkit and upstream name, and called on the member's private credential (which wins over the shared one; a call
+    never uses another member's). The upstream result passes through as it is, `isError` included; an upstream or
+    transport failure is a tool result with `isError` and the client's short message (`McpError`: no URL, no body). An
+    upstream call (`callUpstreamTool`, `mcp/client.ts`) speaks the era the upstream does, with the stateless revision's
+    `Mcp-Name` and the `Mcp-Param-*` headers its input schema's `x-mcp-header` asks for, within 240 seconds; an
+    upstream that asks for input (`InputRequiredResult`) is a failure, as Commissary relays none yet (#201).
+  - **Missing private credential** (ADR 0036): a tool that needs the member's private credential, without one, answers
+    a link to the panel's connect page, `https://<app host>/o/<org slug>/tools/<toolkit id>/connect` (#208 builds the
+    page; the request's own host on a stage with one host). A 2026-07-28 client that declares URL elicitation
+    (`clientCapabilities.elicitation.url`) gets an `InputRequiredResult` (MRTR) whose `connect_<toolkit>` input request
+    is a URL-mode `elicitation/create`, again on each retry until the credential is there; a declined or dismissed
+    elicitation, and every other client, get the link in a tool result with `isError`. **A 2025 client never gets an
+    elicitation**: it would need the request's SSE stream and a session to send the request on and wait for the answer,
+    which this endpoint keeps neither of, so it gets the tool result (#201 follows this choice).
+  - **Upstream sessions** (`toolkit_sessions`, ADR 0038): what a call learned of an upstream is kept per toolkit and
+    credential, for the next call on it: a 2025 server's revision and `Mcp-Session-Id`, or a stateless server's
+    revision (so its calls skip the handshake). A session is kept seven days from when it opened at most: past that
+    the next call opens a new one, and the part's alarm deletes it. A server that answers `404` for a session gets a
+    new handshake and the call again; connecting or removing the credential, removing the toolkit and the member's
+    leaving delete it.
+- **Members and orgs**: a member who leaves takes their private toolkits, their private credentials on org toolkits and
+  the upstream sessions of those (`memberLeft`); org deletion drops the tables (`wipe()`), and Tools' org-deletion step
+  has nothing else to delete. Tools keeps nothing in KV or a per-isolate cache; the cross-org suite
+  (`apps/app/test/org-isolation.test.ts`) checks that one org's toolkits are neither listed nor reached by id from
+  another, and that a call goes on in its own org's upstream session. The
   org export lists the toolkits the caller reaches with their credentials' kinds and their overrides, never a secret.

@@ -1,14 +1,15 @@
 /**
  * The API Worker's bindings as its code reads them (#134 "How packages get their bindings"): every package reads only
- * its own view ({@link AuthConfig}, {@link StateEnv}, {@link ModelsEnv}, {@link BillingEnv}; `core` reads none), and the
- * request context provides each of them from the invocation's `env`, which satisfies every view (`ApiWorkerBindings`),
- * plus the port `@commissary/auth` reaches state through (`AuthDirectory`). The API Worker never sees sessions (ADR
+ * its own view ({@link AuthConfig}, {@link StateEnv}, {@link ModelsEnv}, {@link BillingEnv}, {@link ToolsEnv}; `core`
+ * reads none), and the request context provides each of them from the invocation's `env`, which satisfies every view
+ * (`ApiWorkerBindings`), plus the port `@commissary/auth` reaches state through (`AuthDirectory`). The API Worker never sees sessions (ADR
  * 0030): it provides no `SignInSessions`.
  */
 import { Context } from "effect";
 import { type AuthBindings, AuthConfig, AuthDirectory } from "@commissary/auth";
 import { type BillingBindings, BillingEnv } from "@commissary/billing/api";
 import { type ModelsBindings, ModelsEnv } from "@commissary/models/api";
+import { type ToolsBindings, ToolsEnv } from "@commissary/tools/api";
 import {
   CurrentOrg,
   CurrentOutboundPolicy,
@@ -37,10 +38,11 @@ export type ApiWorkerBindings = AuthBindings &
   StateBindings &
   ModelsBindings &
   BillingBindings &
+  ToolsBindings &
   ApiBindings;
 
 /** The services {@link envContext} provides. */
-export type EnvServices = AuthConfig | StateEnv | ModelsEnv | BillingEnv | AuthDirectory;
+export type EnvServices = AuthConfig | StateEnv | ModelsEnv | BillingEnv | ToolsEnv | AuthDirectory;
 
 /** Each view of `env`, as its service, and the directory over the Durable Object stubs (`stateAuthDirectory`). */
 export const envContext = (env: ApiWorkerBindings): Context.Context<EnvServices> =>
@@ -48,6 +50,7 @@ export const envContext = (env: ApiWorkerBindings): Context.Context<EnvServices>
     Context.add(StateEnv, env),
     Context.add(ModelsEnv, env),
     Context.add(BillingEnv, env),
+    Context.add(ToolsEnv, env),
     Context.add(AuthDirectory, stateAuthDirectory(env)),
   );
 

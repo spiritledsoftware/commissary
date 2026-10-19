@@ -1,6 +1,6 @@
 /**
- * The Tools area's MCP client for a remote MCP server's tool list (ADR 0036): Streamable HTTP only, legacy SSE
- * upstreams are not reached. It speaks both eras of the protocol (docs/ARCHITECTURE.md "Tools"):
+ * The Tools area's MCP client for a remote MCP server's tool list and its tool calls (ADR 0036, #197): Streamable HTTP
+ * only, legacy SSE upstreams are not reached. It speaks both eras of the protocol (docs/ARCHITECTURE.md "Tools"):
  *
  * - the 2025 handshake: `initialize`, then `notifications/initialized` and `tools/list` in the session the server may
  *   open (`Mcp-Session-Id`), with the negotiated `MCP-Protocol-Version` on every request, and the session deleted
@@ -9,6 +9,10 @@
  *   the stateless 2026-07-28 revision: one `tools/list` POST per page carrying its protocol version in `_meta` and the
  *   `MCP-Protocol-Version`, `Mcp-Method` and `Mcp-Name` headers. Any other refusal (a `404`, a `401`) is reported as
  *   it is.
+ *
+ * A call ({@link callUpstreamTool}) goes on in the session an earlier call opened, which the caller keeps: the 2025
+ * session (opened again when the server answers `404` for it) or, for a stateless server, its revision, so a call
+ * skips the handshake that would fail.
  *
  * Every request goes through the `HttpClient` the caller provides, which is the outbound guard's (ADR 0044). The
  * client follows only same-origin 307/308 redirects itself, so a credential in a named header or the query never
@@ -432,11 +436,11 @@ const endSession = Effect.fnUntraced(function* (
 const isRefusedHandshake = (error: McpError): boolean =>
   error.reason === "http" && error.status !== undefined && STATELESS_REFUSALS.has(error.status);
 
-/** The tool list over the 2025 handshake; `undefined` when the server refuses `initialize`. */
-const legacyList = Effect.fnUntraced(function* (
+/** Opens the 2025 handshake (`initialize`, `notifications/initialized`); `undefined` when the server refuses it. */
+const openLegacy = Effect.fnUntraced(function* (
   source: string,
   secret: ToolkitSecret,
-): Effect.fn.Return<ReadonlyArray<UpstreamTool> | undefined, McpError, HttpClient.HttpClient> {
+): Effect.fn.Return<UpstreamSession | undefined, McpError, HttpClient.HttpClient> {
   const opened = yield* post(
     source,
     secret,
@@ -463,12 +467,24 @@ const legacyList = Effect.fnUntraced(function* (
 
   const initialized = yield* resultOf(decodeInitialize, answer.reply, "initialize");
 
-  const session: Session = {
+  const session: UpstreamSession = {
     protocolVersion: initialized.protocolVersion,
     ...(answer.sessionId === undefined ? {} : { sessionId: answer.sessionId }),
   };
 
   yield* post(source, secret, session, { method: "notifications/initialized" });
+
+  return session;
+});
+
+/** The tool list over the 2025 handshake; `undefined` when the server refuses `initialize`. */
+const legacyList = Effect.fnUntraced(function* (
+  source: string,
+  secret: ToolkitSecret,
+): Effect.fn.Return<ReadonlyArray<UpstreamTool> | undefined, McpError, HttpClient.HttpClient> {
+  const session = yield* openLegacy(source, secret);
+
+  if (session === undefined) return undefined;
 
   const tools = yield* allPages((cursor, id) =>
     post(source, secret, session, {
@@ -485,6 +501,12 @@ const legacyList = Effect.fnUntraced(function* (
   return tools;
 });
 
+/** The `_meta` every request of the stateless revision carries: its revision, and no client capabilities. */
+const STATELESS_META = {
+  "io.modelcontextprotocol/protocolVersion": STATELESS_PROTOCOL_VERSION,
+  "io.modelcontextprotocol/clientCapabilities": {},
+};
+
 /** The tool list over the stateless revision. */
 const statelessList = (source: string, secret: ToolkitSecret) =>
   allPages((cursor, id) =>
@@ -497,10 +519,7 @@ const statelessList = (source: string, secret: ToolkitSecret) =>
         id,
         params: {
           ...(cursor === undefined ? {} : { cursor }),
-          _meta: {
-            "io.modelcontextprotocol/protocolVersion": STATELESS_PROTOCOL_VERSION,
-            "io.modelcontextprotocol/clientCapabilities": {},
-          },
+          _meta: STATELESS_META,
         },
       },
       { "mcp-method": "tools/list", "mcp-name": "" },
@@ -520,6 +539,172 @@ export const listUpstreamTools = (
     const legacy = yield* legacyList(source, secret);
 
     return legacy ?? (yield* statelessList(source, secret));
+  }).pipe(
+    Effect.timeoutOrElse({
+      duration: timeout,
+      orElse: () =>
+        Effect.fail(
+          new McpError({ reason: "unreachable", message: "the MCP server did not answer in time" }),
+        ),
+    }),
+  );
+
+// --- tool calls ------------------------------------------------------------------------------------------------------
+
+/** How long one call of an upstream tool (every request of it) may take: as long as Claude's clients wait for a tool. */
+export const TOOL_CALL_TIMEOUT: Duration.Input = "240 seconds";
+
+/**
+ * What the part keeps of an upstream between calls (ADR 0038, at most seven days): the revision it speaks and, for a
+ * 2025 server that opened one, its session. A stateless server's is its revision only, so a call skips the handshake.
+ */
+export interface UpstreamSession {
+  readonly protocolVersion: string;
+  readonly sessionId?: string;
+}
+
+/** One call of an upstream tool, by its upstream name. */
+export interface UpstreamCall {
+  readonly name: string;
+  readonly arguments?: Schema.JsonObject | undefined;
+  /** The tool's input schema, whose `x-mcp-header` properties a stateless call mirrors into headers. */
+  readonly inputSchema?: Schema.JsonObject | undefined;
+}
+
+const CallReply = replyOf(Schema.JsonObject);
+
+const decodeCall = Schema.decodeUnknownOption(CallReply);
+
+const isJsonObject = Schema.is(Schema.JsonObject);
+
+const SENTINEL = /^=\?base64\?.*\?=$/;
+
+/** Visible ASCII, with spaces and tabs inside only. */
+const PLAIN_HEADER = /^(?:[\x21-\x7e](?:[\x20-\x7e\t]*[\x21-\x7e])?)?$/;
+
+/** An HTTP token (RFC 9110), what an `x-mcp-header` name must be. */
+const TOKEN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+
+/** A value as an `Mcp-Name` or `Mcp-Param-*` header carries it: plain, or `=?base64?…?=` when it cannot be. */
+const headerValue = (value: string): string =>
+  PLAIN_HEADER.test(value) && !SENTINEL.test(value)
+    ? value
+    : `=?base64?${Buffer.from(value, "utf8").toString("base64")}?=`;
+
+/**
+ * The `Mcp-Param-*` headers of a stateless call: each property of the input schema marked `x-mcp-header`, reached
+ * through `properties` only, whose argument is a string, a number or a boolean.
+ */
+const paramHeaders = (
+  schema: Schema.JsonObject | undefined,
+  args: Schema.JsonObject | undefined,
+) => {
+  const headers = new Map<string, string>();
+
+  const visit = (node: Schema.Json | undefined, value: Schema.Json | undefined) => {
+    const properties = isJsonObject(node) ? node["properties"] : undefined;
+
+    if (!isJsonObject(properties)) return;
+
+    for (const [key, property] of Object.entries(properties)) {
+      if (!isJsonObject(property)) continue;
+      const argument = isJsonObject(value) ? value[key] : undefined;
+      const header = property["x-mcp-header"];
+
+      if (
+        typeof header === "string" &&
+        TOKEN.test(header) &&
+        (typeof argument === "string" ||
+          typeof argument === "number" ||
+          typeof argument === "boolean")
+      )
+        headers.set(`mcp-param-${header.toLowerCase()}`, headerValue(String(argument)));
+
+      visit(property, argument);
+    }
+  };
+
+  visit(schema, args);
+
+  return Object.fromEntries(headers);
+};
+
+/** One `tools/call` in `session`: the result as the server answered it. */
+const callIn = Effect.fnUntraced(function* (
+  source: string,
+  secret: ToolkitSecret,
+  session: UpstreamSession,
+  call: UpstreamCall,
+): Effect.fn.Return<Schema.JsonObject, McpError, HttpClient.HttpClient> {
+  const stateless = session.protocolVersion === STATELESS_PROTOCOL_VERSION;
+
+  const answer = yield* post(
+    source,
+    secret,
+    session,
+    {
+      method: "tools/call",
+      id: 1,
+      params: {
+        name: call.name,
+        ...(call.arguments === undefined ? {} : { arguments: call.arguments }),
+        ...(stateless ? { _meta: STATELESS_META } : {}),
+      },
+    },
+    stateless
+      ? {
+          "mcp-method": "tools/call",
+          "mcp-name": headerValue(call.name),
+          ...paramHeaders(call.inputSchema, call.arguments),
+        }
+      : {},
+  );
+
+  const result = yield* resultOf(decodeCall, answer.reply, "tools/call");
+
+  // Commissary asked for no input capability; a server that asks anyway is not passed on (#201 relays approvals).
+  if (result["resultType"] === "input_required")
+    return yield* protocolError("the MCP server asked for input Commissary does not pass on");
+
+  return result;
+});
+
+/**
+ * Calls the upstream tool `call.name` at `source` with `secret`, within `timeout` (default {@link TOOL_CALL_TIMEOUT}):
+ * in `known`, the session kept from an earlier call, or else in a new one (the 2025 handshake, or the stateless
+ * revision when the server refuses it), which the answer names for the part to keep. A 2025 server that no longer
+ * knows a kept session (`404`) gets a new handshake and the call again. The result is the server's, an `isError` one
+ * included; a failure is an {@link McpError}, whose message quotes neither the URL nor the server's body.
+ */
+export const callUpstreamTool = (
+  source: string,
+  secret: ToolkitSecret,
+  known: UpstreamSession | undefined,
+  call: UpstreamCall,
+  timeout: Duration.Input = TOOL_CALL_TIMEOUT,
+): Effect.Effect<
+  { readonly result: Schema.JsonObject; readonly session: UpstreamSession },
+  McpError,
+  HttpClient.HttpClient
+> =>
+  Effect.gen(function* () {
+    if (known !== undefined) {
+      const lost = (error: McpError) =>
+        known.sessionId !== undefined && error.reason === "http" && error.status === 404;
+
+      const reused = yield* callIn(source, secret, known, call).pipe(
+        Effect.asSome,
+        Effect.catchIf(lost, () => Effect.succeedNone),
+      );
+
+      if (Option.isSome(reused)) return { result: reused.value, session: known };
+    }
+
+    const session: UpstreamSession = (yield* openLegacy(source, secret)) ?? {
+      protocolVersion: STATELESS_PROTOCOL_VERSION,
+    };
+
+    return { result: yield* callIn(source, secret, session, call), session };
   }).pipe(
     Effect.timeoutOrElse({
       duration: timeout,

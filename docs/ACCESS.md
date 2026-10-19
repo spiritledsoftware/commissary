@@ -3,7 +3,7 @@
 Cloudflare Access signs people in for the control panel and the management API (ADR 0022): it authenticates the caller
 (identity provider login or a service token), then forwards the request with a signed `Cf-Access-Jwt-Assertion` header
 that the Worker verifies. The Worker never sees their passwords. Clients of the client API (`/v1*`, `/openai/v1*`,
-`/backend-api/codex*` and the unprefixed aliases) are not behind Access: they send an **API key** Commissary issued to a
+`/backend-api/codex*`, the unprefixed aliases and the MCP endpoint `/mcp`) are not behind Access: they send an **API key** Commissary issued to a
 member, which the Worker checks itself (§4, "API keys" below, [CLIENTS.md](CLIENTS.md)). Scripts on the management API
 may send a **management key** instead of an Access service token ("Management keys" below).
 
@@ -42,7 +42,7 @@ client that signs in through Access sends the token of the app host's applicatio
 -app=https://<app host>`) in `cf-access-token` to the API host; the API Worker checks it against `ACCESS_AUD`
 itself. Without an API host, zone routes send the client API paths of the app host to the API Worker, and the
 bypass application (`infra/access.ts` `provisionClientApiBypass`) covers `/v1`, `/v1beta`, `/v1internal`, `/openai/v1`,
-`/backend-api/codex`, `/chat/completions`, `/completions` and `/responses` with their sub-paths. Access applies the most
+`/backend-api/codex`, `/chat/completions`, `/completions`, `/responses` and `/mcp` with their sub-paths. Access applies the most
 specific application to a request, so these paths reach the API Worker without a sign-in while every other path stays
 behind the main application. The API Worker is then the only gate of the client API: it answers `401` to a request
 without a valid API key (§4).
@@ -281,8 +281,8 @@ characters; a missing key is refused everywhere.
 
 ## 4. How the Worker validates requests
 
-1. The path is classified (`apps/app/src/management/zones.ts`): `/v1*` (incl. `/v1beta`, `/v1internal`), `/openai/v1*`, `/backend-api/codex*` and the unprefixed
-   aliases `/chat/completions`, `/completions`, `/responses` are the client API and need a
+1. The path is classified (`apps/app/src/management/zones.ts`): `/v1*` (incl. `/v1beta`, `/v1internal`), `/openai/v1*`, `/backend-api/codex*`, the unprefixed
+   aliases `/chat/completions`, `/completions`, `/responses` and the MCP endpoint `/mcp` are the client API and need a
    principal; `/v9/management*` (also `/v9/management/orgs/<slug>/...`), the control panel (`/`, `/accounts`, `/keys`, `/models`, `/usage`, `/members`, `/api-keys`, `/limits`, `/settings` with their
    sub-paths, the same pages under `/o/<slug>/`, `/assets/*`) and `/management.html` (the upstream panel's old address, a redirect to `/`) form the management zone;
    everything else (`/healthz`, the OAuth browser callbacks `/anthropic/callback`, `/codex/callback`,
@@ -317,7 +317,7 @@ Browsers attach the Access session cookie automatically, so without further chec
 admin's session. Before authentication the gate (`packages/auth/src/csrf.ts`) refuses, with 403 `Cross-site request rejected`:
 
 - state-changing requests (anything but `GET`/`HEAD`/`OPTIONS`) to `/v1*`, `/openai/v1*`, `/backend-api/codex*`, the
-  unprefixed `/chat/completions`, `/completions`, `/responses` and the
+  unprefixed `/chat/completions`, `/completions`, `/responses`, `/mcp` and the
   management zone when `Sec-Fetch-Site` is `cross-site`/`same-site` or `Origin` names another host;
 - any management request (`/v9/management*`, the panel paths) with a foreign `Origin` or a cross-site `Sec-Fetch-Site`,
   except a top-level document navigation (`GET`/`HEAD` with `Sec-Fetch-Mode: navigate` and `Sec-Fetch-Dest: document`)

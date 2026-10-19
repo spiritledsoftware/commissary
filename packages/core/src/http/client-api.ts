@@ -4,9 +4,13 @@
  * internal/api/server_routes.go that use AuthMiddleware, without the management API.
  */
 
+/** Commissary's MCP endpoint (Tools, #197): a client API path like the model routes. */
+export const MCP_PATH = "/mcp";
+
 /**
  * The client API's path prefixes. `/v1` also covers `/v1beta*` and `/v1internal`; `/chat/completions`, `/completions`
- * and `/responses` are the unprefixed aliases of the `/v1` routes (not in Go, see Models' handlers/openai/routes.ts).
+ * and `/responses` are the unprefixed aliases of the `/v1` routes (not in Go, see Models' handlers/openai/routes.ts);
+ * `/mcp` is the MCP endpoint ({@link MCP_PATH}).
  */
 export const CLIENT_API_PREFIXES = [
   "/v1",
@@ -15,6 +19,7 @@ export const CLIENT_API_PREFIXES = [
   "/chat/completions",
   "/completions",
   "/responses",
+  MCP_PATH,
 ] as const;
 
 /**
@@ -46,3 +51,10 @@ export const normalizedPath = (requestUrl: string): string | undefined => {
  */
 export const isClientApiPath = (path: string): boolean =>
   CLIENT_API_PREFIXES.some((prefix) => path.startsWith(prefix));
+
+/** Whether a request URL is for the MCP endpoint ({@link MCP_PATH}, with or without a trailing slash). */
+export const isMcpPath = (requestUrl: string): boolean => {
+  const path = normalizedPath(requestUrl);
+
+  return path === MCP_PATH || path === `${MCP_PATH}/`;
+};

@@ -1,10 +1,10 @@
 // The Tools part of the ControlPlane (#196) over RPC, against fake MCP servers served in workerd: toolkits, their tool
 // lists with full names, classes and stable ids, the rules that keep full names unique (ADR 0037), overrides keyed by
-// stable id, the cron refresh and what goes when a member leaves or the org is deleted.
-import { env, runInDurableObject } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+// stable id, the cron refresh and what goes when a member leaves, an upstream session ages or the org is deleted.
+import { env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AddToolkitInput } from "../src/control-plane-part.ts";
-import { TOOLS_TABLES } from "../src/toolkits/store.ts";
+import { SESSION_LIFETIME_MS, TOOLS_TABLES } from "../src/toolkits/store.ts";
 import { fakeMcpServer, serveFakeMcpServers } from "./support/mcp-server.ts";
 
 serveFakeMcpServers();
@@ -628,6 +628,35 @@ describe("the cron refresh", () => {
 });
 
 describe("what goes", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("the upstream session a call opened, seven days after, when the alarm runs", async () => {
+    const server = fakeMcpServer(`${origin()}/mcp`, { tools: [{ name: "t" }] });
+    const stub = await plane();
+    await add(stub, ALICE, privateToolkit(server.url, "mine"));
+
+    expect((await stub.tools().callTool(ALICE, { name: "mine_t" }, POLICY)).outcome).toBe("result");
+
+    const sessions = () =>
+      runInDurableObject(
+        stub,
+        (_instance, state) =>
+          state.storage.sql
+            .exec<{ kept: number }>(`SELECT COUNT(*) AS kept FROM toolkit_sessions`)
+            .one().kept,
+      );
+
+    expect(await sessions()).toBe(1);
+
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + SESSION_LIFETIME_MS);
+
+    expect(await runDurableObjectAlarm(stub)).toBe(true);
+    expect(await sessions()).toBe(0);
+  });
+
   it("a member who leaves takes their private toolkits and private credentials", async () => {
     const server = fakeMcpServer(`${origin()}/mcp`, { tools: [{ name: "t" }] });
     const stub = await plane();

@@ -1,10 +1,11 @@
 import { RpcTarget } from "cloudflare:workers";
-import { type Duration, Effect, Result } from "effect";
+import { type Duration, Effect, Result, type Schema } from "effect";
 import { type Access, accessTo, isFullAccess, type Scope, type Viewer } from "@commissary/auth";
 import type {
   CredentialSlot,
   CredentialsAccepted,
   LimitedToolkitView,
+  ToolClass,
   RemovedToolOverride,
   SetToolOverride,
   ToolkitCredentialView,
@@ -20,7 +21,7 @@ import {
   type OutboundPolicy,
 } from "@commissary/core";
 import type { ControlPlanePart, OrgCore } from "@commissary/state";
-import { LISTING_TIMEOUT, listUpstreamTools } from "./mcp/client.ts";
+import { callUpstreamTool, LISTING_TIMEOUT, listUpstreamTools } from "./mcp/client.ts";
 import { isToolkitName, isToolName, fullToolName, MAX_FULL_NAME } from "./toolkits/names.ts";
 import {
   isServed,
@@ -138,6 +139,40 @@ export interface ToolkitExport {
   }>;
 }
 
+/** A tool as Commissary's MCP endpoint lists it (#197): its full name, its toolkit's name, and what the client sees. */
+export interface ClientTool {
+  readonly name: string;
+  /** The toolkit's name, which `?toolkits=` narrows by. */
+  readonly toolkit: string;
+  readonly description?: string;
+  /** The upstream input schema. */
+  readonly inputSchema?: Schema.JsonObject;
+  readonly toolClass: ToolClass;
+}
+
+/** A call of Commissary's MCP endpoint (#197): the tool's full name, its arguments, and the toolkits it narrows to. */
+export interface ToolCall {
+  readonly name: string;
+  readonly arguments?: Schema.JsonObject | undefined;
+  /** The toolkits `?toolkits=` names; undefined: every toolkit. */
+  readonly toolkits?: ReadonlyArray<string> | undefined;
+}
+
+/**
+ * What a call came to: `unknown`, a tool the member does not reach (answered as a tool that does not exist);
+ * `connect`, a tool that needs a private credential the member has not connected; the upstream's `result`, an `isError`
+ * one included; or `failed`, an upstream or transport failure, with a short message that quotes neither the source nor
+ * the server's answer.
+ */
+export type ToolCallOutcome =
+  | { readonly outcome: "unknown" }
+  | {
+      readonly outcome: "connect";
+      readonly toolkit: { readonly id: string; readonly name: string };
+    }
+  | { readonly outcome: "result"; readonly result: Schema.JsonObject }
+  | { readonly outcome: "failed"; readonly message: string };
+
 /** Whether `viewer` reads a toolkit (an org toolkit: every member) or manages it (`full`), or only sees it (`limited`). */
 const reach = (toolkit: Toolkit, viewer: Scope): Access | "read" => {
   const access = accessTo(toolkit.owner, viewer);
@@ -181,9 +216,12 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     return 0;
   }
 
-  /** Tools sets no alarm: its tool lists are rebuilt by the cron task. */
-  async alarm(): Promise<number | null> {
-    return null;
+  /**
+   * Forgets the upstream sessions older than seven days (ADR 0038) and wakes up when the next one is. Tool lists are
+   * rebuilt by the cron task.
+   */
+  async alarm(now: number): Promise<number | null> {
+    return this.#store.pruneSessions(now);
   }
 
   /** Deletes the part's tables: the org was deleted (`wipeOrg`). */
@@ -590,6 +628,84 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
    */
   servedTools(viewer: Viewer): ReadonlyArray<ToolView> {
     return this.#resolve(viewer.member).tools.filter(isServed).map(toolView);
+  }
+
+  /**
+   * The tools Commissary's MCP endpoint lists for `viewer` (#197), sorted by full name: the served tools they may use.
+   * A member uses every tool of their own private toolkits and every tool of an org toolkit that takes private
+   * credentials, as themselves (ADR 0038), while the org lets members hold private credentials. A shared credential's
+   * tools need a grant (#198), and there is no default grant for tools, so nobody reaches them yet.
+   */
+  clientTools(viewer: Viewer): ReadonlyArray<ClientTool> {
+    return this.#reachable(viewer).map((tool) => ({
+      name: tool.name,
+      toolkit: tool.toolkit.name,
+      ...(tool.description === undefined ? {} : { description: tool.description }),
+      ...(tool.tool?.inputSchema === undefined ? {} : { inputSchema: tool.tool.inputSchema }),
+      toolClass: tool.toolClass,
+    }));
+  }
+
+  /**
+   * Calls a tool `viewer` reaches ({@link clientTools}) by its full name, on the upstream tool of its upstream name. The
+   * member's private credential wins over the shared one, which needs a grant (#198); without either the member is
+   * asked to connect theirs. The upstream session the call opens is kept for the next call on that credential, at most
+   * seven days.
+   */
+  async callTool(viewer: Viewer, call: ToolCall, policy: OutboundPolicy): Promise<ToolCallOutcome> {
+    const tool = this.#reachable(viewer).find(
+      (reachable) =>
+        reachable.name === call.name &&
+        (call.toolkits === undefined || call.toolkits.includes(reachable.toolkit.name)),
+    );
+
+    if (tool === undefined || viewer.member === undefined) return { outcome: "unknown" };
+    const toolkit = tool.toolkit;
+    const owner = viewer.member;
+    const secret = this.#store.secret(toolkit.id, owner);
+
+    if (secret === undefined)
+      return { outcome: "connect", toolkit: { id: toolkit.id, name: toolkit.name } };
+
+    const connectedAt = this.#store.credential(toolkit.id, owner)?.connectedAt;
+    const known = this.#store.session(toolkit.id, owner, Date.now());
+
+    const called = await Effect.runPromise(
+      callUpstreamTool(toolkit.source, secret, known, {
+        name: tool.upstreamName,
+        arguments: call.arguments,
+        inputSchema: tool.tool?.inputSchema,
+      }).pipe(
+        Effect.provide(OutboundHttpClientLive),
+        Effect.provideService(CurrentOutboundPolicy, policy),
+        Effect.result,
+      ),
+    );
+
+    if (Result.isFailure(called)) return { outcome: "failed", message: called.failure.message };
+    const { result, session } = called.success;
+
+    // A new session is kept, unless the credential that opened it changed (or went) while the server answered.
+    if (
+      session !== known &&
+      this.#store.credential(toolkit.id, owner)?.connectedAt === connectedAt
+    ) {
+      this.#store.putSession(toolkit.id, owner, session, Date.now());
+      await this.#core.wakeUpChanged(this.#store.pruneSessions(Date.now()));
+    }
+
+    return { outcome: "result", result };
+  }
+
+  /** The served tools `viewer` reaches ({@link clientTools}), sorted by full name. */
+  #reachable(viewer: Viewer): ReadonlyArray<ResolvedTool> {
+    const member = viewer.member;
+
+    if (member === undefined || !this.#core.privateCredentials()) return [];
+
+    return this.#resolve(member)
+      .tools.filter((tool) => isServed(tool) && accepts(tool.toolkit, "private"))
+      .toSorted((a, b) => (a.name < b.name ? -1 : 1));
   }
 
   // --- overrides --------------------------------------------------------------------------------------------------

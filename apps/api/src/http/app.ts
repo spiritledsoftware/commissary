@@ -1,18 +1,19 @@
 import { Layer } from "effect";
 import { HttpRouter } from "effect/http";
 import { WorkersLoggerLayer } from "@commissary/core";
-import { ClientApiLayer, TraceLayer } from "@commissary/models/api";
+import { ClientApiLayer as ModelsClientApi, TraceLayer } from "@commissary/models/api";
+import { ClientApiLayer as ToolsClientApi } from "@commissary/tools/api";
 import { behindGate, GateLayer } from "./gate.ts";
 import { RootRoutes } from "./routes.ts";
 
 /**
  * All routes and global middleware of the API Worker (ADR 0030): `/healthz` and the client API of each area it mounts,
- * listed here explicitly (Models' for now), behind CORS and the client gate (`gate.ts`).
+ * listed here explicitly (Models' model routes, Tools' MCP endpoint), behind CORS and the client gate (`gate.ts`).
  */
 export const ApiLayer = Layer.mergeAll(
   RootRoutes,
   GateLayer,
-  behindGate(ClientApiLayer),
+  behindGate(Layer.mergeAll(ModelsClientApi, ToolsClientApi)),
   // Request trace id header and structured request logs (packages/models/src/observability).
   TraceLayer,
   WorkersLoggerLayer,

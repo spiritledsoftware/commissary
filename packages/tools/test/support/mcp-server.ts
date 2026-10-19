@@ -1,7 +1,8 @@
 // A fake remote MCP server (Streamable HTTP) served in workerd: the test replaces the isolate's `fetch` with one that
-// routes each request to the fake of its origin. The ControlPlane runs in the test's isolate, so its builds reach the
-// fakes. A fake speaks the 2025 handshake (a session after `initialize`) or, `stateless`, the 2026-07-28 revision only;
-// it answers JSON or SSE, pages its tool list, and refuses requests its `authorized` check refuses.
+// routes each request to the fake of its origin. The ControlPlane runs in the test's isolate, so its builds and calls
+// reach the fakes. A fake speaks the 2025 handshake (a session after `initialize`, which it may forget) or,
+// `stateless`, the 2026-07-28 revision only; it answers JSON or SSE, pages its tool list, answers `tools/call` with
+// its `call` handler, and refuses requests its `authorized` check refuses.
 import { afterAll, beforeAll } from "vitest";
 
 export interface FakeTool {
@@ -17,6 +18,8 @@ export interface RecordedMcpRequest {
   readonly headers: Headers;
   /** The JSON-RPC method, for a POST. */
   readonly rpc?: string;
+  /** The JSON-RPC params, for a POST. */
+  readonly params?: Record<string, unknown>;
 }
 
 export interface FakeMcpServer {
@@ -25,6 +28,8 @@ export interface FakeMcpServer {
   /** What `tools/list` lists; change it between builds to add or drop tools. */
   tools: ReadonlyArray<FakeTool>;
   readonly requests: Array<RecordedMcpRequest>;
+  /** Forgets every session it opened: a request in one of them is answered `404`, as a 2025 server does. */
+  forgetSessions(): void;
 }
 
 export interface FakeMcpOptions {
@@ -37,9 +42,16 @@ export interface FakeMcpOptions {
   readonly sse?: boolean;
   /** Tools per page of `tools/list`; all on one page by default. */
   readonly pageSize?: number;
+  /**
+   * What `tools/call` answers for the upstream tool `name`: a result, or a whole response; by default a text result that
+   * echoes the name and the arguments.
+   */
+  readonly call?: (
+    name: string,
+    args: Record<string, unknown> | undefined,
+    request: Request,
+  ) => Record<string, unknown> | Response;
 }
-
-const SESSION = "fake-session-1";
 
 /** A JSON-RPC request id as the fake reads it. */
 type RequestId = string | number | null | undefined;
@@ -76,7 +88,15 @@ export const serveFakeMcpServers = (): void => {
 
 /** A fake MCP server at `url` (a unique origin per test keeps tests apart). */
 export const fakeMcpServer = (url: string, options: FakeMcpOptions = {}): FakeMcpServer => {
-  const server: FakeMcpServer = { url, tools: options.tools ?? [], requests: [] };
+  const sessions = new Set<string>();
+  let opened = 0;
+
+  const server: FakeMcpServer = {
+    url,
+    tools: options.tools ?? [],
+    requests: [],
+    forgetSessions: () => sessions.clear(),
+  };
 
   const reply = (id: RequestId, result: RpcResult, headers: Record<string, string> = {}) => {
     const message = JSON.stringify({ jsonrpc: "2.0", id, result });
@@ -94,7 +114,12 @@ export const fakeMcpServer = (url: string, options: FakeMcpOptions = {}): FakeMc
         ? await request.json<{
             id?: RequestId;
             method: string;
-            params?: { cursor?: string };
+            params?: {
+              cursor?: string;
+              name?: string;
+              arguments?: Record<string, unknown>;
+              [field: string]: unknown;
+            };
           }>()
         : undefined;
 
@@ -103,6 +128,7 @@ export const fakeMcpServer = (url: string, options: FakeMcpOptions = {}): FakeMc
       url: request.url,
       headers: request.headers,
       ...(body === undefined ? {} : { rpc: body.method }),
+      ...(body?.params === undefined ? {} : { params: body.params }),
     });
 
     if (new URL(request.url).pathname !== new URL(url).pathname)
@@ -115,28 +141,54 @@ export const fakeMcpServer = (url: string, options: FakeMcpOptions = {}): FakeMc
 
     if (body === undefined) return new Response(null, { status: 405 });
 
-    if (body.method === "initialize")
-      return options.stateless === true
-        ? rpcError(body.id, -32601, "initialize is not a method of this revision")
-        : reply(
-            body.id,
-            {
-              protocolVersion: "2025-06-18",
-              capabilities: { tools: {} },
-              serverInfo: { name: "fake", version: "1" },
-            },
-            { "mcp-session-id": SESSION },
-          );
+    if (body.method === "initialize") {
+      if (options.stateless === true)
+        return rpcError(body.id, -32601, "initialize is not a method of this revision");
+
+      opened += 1;
+      const session = `fake-session-${opened}`;
+
+      sessions.add(session);
+
+      return reply(
+        body.id,
+        {
+          protocolVersion: "2025-06-18",
+          capabilities: { tools: {} },
+          serverInfo: { name: "fake", version: "1" },
+        },
+        { "mcp-session-id": session },
+      );
+    }
 
     if (body.method.startsWith("notifications/")) return new Response(null, { status: 202 });
 
-    if (body.method !== "tools/list") return rpcError(body.id, -32601, "unknown method");
+    if (body.method !== "tools/list" && body.method !== "tools/call")
+      return rpcError(body.id, -32601, "unknown method");
 
     if (options.stateless === true) {
       if (request.headers.get("mcp-protocol-version") !== "2026-07-28")
         return new Response("unsupported protocol version", { status: 400 });
-    } else if (request.headers.get("mcp-session-id") !== SESSION)
-      return new Response("no session", { status: 400 });
+    } else {
+      const session = request.headers.get("mcp-session-id");
+
+      if (session === null) return new Response("no session", { status: 400 });
+
+      if (!sessions.has(session)) return new Response("session not found", { status: 404 });
+    }
+
+    if (body.method === "tools/call") {
+      const name = body.params?.name ?? "";
+      const args = body.params?.arguments;
+
+      const answered =
+        options.call?.(name, args, request) ??
+        ({
+          content: [{ type: "text", text: JSON.stringify({ name, arguments: args ?? null }) }],
+        } satisfies RpcResult);
+
+      return answered instanceof Response ? answered : reply(body.id, answered);
+    }
 
     const size = options.pageSize ?? server.tools.length;
     const start = Number(body.params?.cursor ?? 0);

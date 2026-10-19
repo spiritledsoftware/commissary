@@ -43,6 +43,7 @@ describe("host routing", () => {
         "/chat/completions",
         "/completions",
         "/responses",
+        "/mcp",
         "/healthz",
         "//V1/models",
         "/%76%31/models",

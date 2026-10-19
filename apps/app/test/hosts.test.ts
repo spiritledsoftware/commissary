@@ -15,6 +15,7 @@ const CLIENT_API_PATHS = [
   "/%76%31/models",
   "//V1/models",
   "/backend-api/codex/responses",
+  "/mcp",
 ];
 
 /** A request to the Worker with the host settings `hosts` bound. */
