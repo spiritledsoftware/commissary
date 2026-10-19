@@ -57,7 +57,7 @@ So every provider gives the same tools and session model, and a hosted agent can
 
 - ADR 0039 is amended: Browser Run becomes the first browser provider of the browser toolkit, rather than its only possible one.
 - `@cloudflare/computer` is a preview ("not suitable for production"), and its just-bash backend runs in a Dynamic Worker. Commissary pins exact versions behind its own adapter.
-- A self-hosted Commissary on Workers Free has no Agents area and no sandbox that runs commands. That joins the self-hosted parity question.
+- ~~A self-hosted Commissary on Workers Free has no Agents area and no sandbox that runs commands. That joins the self-hosted parity question.~~ Replaced by ADR 0043: a self-hosted Commissary needs Workers Paid, where every area is present.
 
 ## Amendment: no default limits, and a barebones computer
 

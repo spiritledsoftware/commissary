@@ -41,7 +41,9 @@ people, with every secret as a preview. It holds no usage records and cannot reb
 _Avoid_: backup (nothing can be restored from it)
 
 **Self-hosted Commissary**:
-A Commissary run by an org for its own people, who sign in through Cloudflare Access.
+A Commissary run by an org for its own people, who sign in through Cloudflare Access. It has every area that Commissary
+Cloud has. It lacks only what running a service for strangers needs, such as signing up, plans and billing. The browser
+toolkit and the sandbox's computer are present only if the deployment turns them on.
 _Avoid_: self-hosted proxy, on-prem
 
 **Commissary Cloud**:
