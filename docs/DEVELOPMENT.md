@@ -451,7 +451,9 @@ assertion that cannot be removed carries a `// SAFETY: <invariant>` comment on t
   panel and the management API, `apps/api/src/http/app.ts` for the client API, `apps/auth/src/http/app.ts` for the
   auth host); an area's routes reach it through the
   area's entry points (Models: the client API `ClientApiLayer` of `@commissary/models/api`, which the API Worker mounts,
-  the management routes of `@commissary/models/management`, which the app Worker's `management/routes.ts` mounts).
+  the management routes of `@commissary/models/management`, which the app Worker's `management/routes.ts` mounts;
+  Tools: the MCP endpoint's `ClientApiLayer` of `@commissary/tools/api`, mounted next to Models', and its management
+  routes of `@commissary/tools/management`).
 - Never log tokens, API keys, JWTs or bodies; use `redactHeaders` when headers must be logged.
 - No wall-clock sleeps in tests; use Effect `TestClock` or injected clocks.
 - The Workers' tests live in `apps/app/test/*.test.ts`, `apps/api/test/*.test.ts` and `apps/auth/test/*.test.ts` and run in workerd ("Tests"
