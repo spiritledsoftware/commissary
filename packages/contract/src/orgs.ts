@@ -147,7 +147,7 @@ export const Me = Schema.Struct({
    * panel offers a plain member their own Accounts page only then. Absent when the caller belongs to no org there.
    */
   private_credentials: Schema.optionalKey(Schema.Boolean),
-  /** Which optional pieces this deployment has; `hosted` replaces the bare `hosted` field this reply had before. */
+  /** Which optional pieces this deployment has, and whether it is Commissary Cloud. */
   deployment: Deployment,
   /**
    * Present on Commissary Cloud only (ADR 0026): anyone signed in may create orgs, up to `org_limit` orgs of their own

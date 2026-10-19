@@ -5,6 +5,7 @@
 // (apps/api/test/hosted/gate.test.ts, suspension included): the app Worker refuses it with a 404.
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { resetStandingCaches } from "@commissary/auth";
+import type { Deployment } from "@commissary/contract/orgs";
 import { FAILING_SESSION_TOKEN, FAKE_SESSION_COOKIE } from "../worker.ts";
 import {
   call,
@@ -31,11 +32,7 @@ interface Me {
   readonly platform_admin: boolean;
   readonly role: string | null;
   readonly orgs: ReadonlyArray<{ readonly slug: string; readonly name: string }>;
-  readonly deployment: {
-    readonly hosted: boolean;
-    readonly browser: boolean;
-    readonly computer: boolean;
-  };
+  readonly deployment: Deployment;
   readonly org_limit?: number;
   readonly owned_orgs?: number;
 }
@@ -201,7 +198,6 @@ describe("authentication", () => {
 
   it("makes platform admins of the people in PLATFORM_ADMIN_EMAILS only", async () => {
     expect(await me(await signIn({ email: ROOT }))).toMatchObject({ platform_admin: true });
-    expect(await me(await signIn({ email: ROOT }))).not.toHaveProperty("hosted");
     expect(await me(await signIn({ email: "ada@example.com" }))).toMatchObject({
       platform_admin: false,
     });

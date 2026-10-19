@@ -8,7 +8,7 @@ same org, API key and control panel.
 
 Commissary comes in two forms: a **self-hosted Commissary**, which you deploy to your own Cloudflare account and whose
 people sign in through Cloudflare Access (this README), and **Commissary Cloud**, the paid service run for anyone, with
-sign-up and personal orgs ([DEPLOY.md](docs/DEPLOY.md#commissary-cloud)). A member's clients send an **API key**; the
+sign-up and personal orgs ([DEPLOY.md](docs/DEPLOY.md#commissary-cloud); [what only Cloud has](docs/DEPLOY.md#commissary-cloud-only)). A member's clients send an **API key**; the
 secrets Commissary holds for outside services are **credentials**, and a model provider's secret is a **provider key**.
 
 - **One endpoint, every client.** Claude Code, Codex CLI, the OpenAI/Anthropic/Gemini SDKs and anything else that

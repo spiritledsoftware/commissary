@@ -26,6 +26,9 @@ afterAll(harness.dispose);
 
 const CAROL = "carol@example.com";
 
+/** A self-hosted Commissary without the browser or the computer bound (neither binding exists yet, #212, #223). */
+const SELF_HOSTED = { hosted: false, browser: false, computer: false };
+
 /** An admin of `global` through her membership there (`seedCarol`), and of no other org. */
 const asCarol = async () => ({ auth: await token(CAROL) });
 
@@ -405,9 +408,6 @@ describe("who may manage the list of orgs", () => {
     }
   });
 });
-
-/** A self-hosted Commissary without the browser or the computer bound (neither binding exists yet, #212, #223). */
-const SELF_HOSTED = { hosted: false, browser: false, computer: false };
 
 describe("GET /me", () => {
   it("reports the deployment's optional pieces and has no top-level hosted field", async () => {

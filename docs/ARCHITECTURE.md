@@ -1534,9 +1534,8 @@ result is stored.
     `recordQuotaReport`) and its upstream calls: three for Claude (usage, profile, reset grants), two when the sweep
     skips the grant read (stored status under 6 h old, or under 24 h old when not eligible; cron and "Check all
     quotas" alike), one or two for the other providers. Token refreshes run in the ControlPlane, not in the
-    invocation. On the Workers Free plan (50 external subrequests per invocation, 1,000 to Cloudflare services such
-    as Durable Objects; Workers limits page, October 2026) a run covers about 16 Claude accounts when every grant read
-    is due, 25 when none is; on Paid (10,000) the limit is out of reach. Redirects are never followed for Anthropic
+    invocation. On Workers Paid (10,000 external subrequests per invocation; Workers Free isn't supported, ADR 0043)
+    the limit is out of reach. Redirects are never followed for Anthropic
     calls, so a redirect chain cannot add subrequests.
 - **Report**:
   - `checked_at` is the last attempt and `refreshed_at` the last success.
@@ -2295,13 +2294,12 @@ Platform-level routes (`org-routes.ts`, contract group `orgs`, `packages/contrac
 
 Anyone else gets `403 platform_admin_required` on the org routes it may not use. The panel reads `/me` for its org switcher.
 
-`deployment` (ADR 0043) is on every deployment and replaces the bare `hosted` field `/me` had on Commissary Cloud, removed
-outright in `/v9` with no alias: `hosted` is `isHosted`, `browser` is true exactly when the deployment has a Browser Run
-binding, `computer` exactly when it has the sandbox's container binding, each read from `env` at request time. **The two
-binding checks are `hasBrowserBinding` and `hasComputerBinding` in `apps/app/src/management/deployment.ts`**; neither
-binding exists yet, so both return `false`, and #212 and #223 wire theirs in by changing that one line (and adding the
-binding to `AppBindings`). The panel reads `me.deployment.hosted` where it used `me.hosted`; `browser` and `computer` are
-exposed for #216, #217 and #225 and unused so far.
+`deployment` (ADR 0043) is on every deployment: `hosted` is `isHosted`, `browser` is true exactly when the deployment has a
+Browser Run binding, `computer` exactly when it has the sandbox's container binding, each read from `env` at request time.
+**The two binding checks are `hasBrowserBinding` and `hasComputerBinding` in `apps/app/src/management/deployment.ts`**;
+neither binding exists yet, so both return `false`, and #212 and #223 wire theirs in there (and add the binding to
+`AppBindings`). The panel reads `me.deployment.hosted` for the mode; `browser` and `computer` are exposed for #216, #217
+and #225 and unused so far.
 
 Routes of the addressed org (`/org`, `/export`) and the account route (`DELETE /me`), all in `org-routes.ts` (ADR 0027,
 "Zero data retention" below):

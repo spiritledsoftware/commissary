@@ -116,9 +116,9 @@ const ownedOrgs = (identity: AccessIdentity) =>
   Effect.gen(function* () {
     const { principal } = identity;
 
-    if (!isHosted(yield* AuthConfig)) return {};
+    if (!isHosted(yield* AuthConfig) || identity.platformAdmin || principal.kind !== "user")
+      return {};
 
-    if (identity.platformAdmin || principal.kind !== "user") return {};
     const limit = ownedOrgLimit(yield* AppEnv);
     const person = yield* registry("person", (stub) => stub.person(principal.email, limit));
 

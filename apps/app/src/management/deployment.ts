@@ -3,9 +3,8 @@
  * Workers addition, no Go counterpart.
  *
  * A piece is present exactly when its binding is, read from `env` at request time, never from a separate variable.
- * The two checks below are where a piece's binding is wired in: neither binding exists yet, so both are `false`.
- * The browser toolkit's issue (#212) replaces its body with `env.BROWSER !== undefined` (the Browser Run binding, added
- * to `AppBindings`), the sandbox's issue (#223) the computer's with its container binding's.
+ * The two checks below are where a piece's binding is wired in. Neither binding exists yet, so both are `false`; #212
+ * (the browser) and #223 (the computer) wire theirs in here.
  */
 import { isHosted } from "@commissary/auth";
 import type { Deployment } from "@commissary/contract/orgs";
