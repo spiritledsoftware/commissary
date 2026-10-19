@@ -394,6 +394,31 @@ the stack (`pnpm exec alchemy destroy --config stacks/github.ts --stage ci --pro
   every org fail (500) and the Worker logs `the ControlPlane cannot open the org's data key` with the reason, until a
   deploy binds the right key. **Losing the key loses every stored secret**: do not destroy the stage's state or its
   `SecretsKey` resource while the stage is in use.
+- **Back up `SECRETS_KEY`.** Losing it loses every secret of every org on the stage (provider keys and logins,
+  config entries, private key groups, the SSO secret, toolkit sign-ins, browser profiles, webhook secrets; every sealed
+  secret in [THREAT-MODEL.md](THREAT-MODEL.md)): an org's data key opens only through it, and no one, Cloudflare
+  and Commissary's maintainers included, can recover it. Alchemy keeps it in the stage's state store, as the
+  `SecretsKey` resource (`SecretsKey2`, … after a rotation), in the Cloudflare account (`Cloudflare.state()`), or in
+  `.alchemy/` with `ALCHEMY_STATE=local`; Cloudflare does not show a Worker's secrets again, so the Worker's binding is
+  not a copy. Keep a copy somewhere you control and apart from the account, such as a password manager: read it with
+  `pnpm exec alchemy state read commissary/<stage>/SecretsKey` from the repository root, with the stage's deploy
+  environment (add `--env-file .env.cloud` for Commissary Cloud, prefix `ALCHEMY_STATE=local` for local state;
+  `pnpm exec alchemy state list commissary/<stage>` shows the `SecretsKey…` paths). It prints the resource's record as
+  JSON: the key is the `attr.text.__redacted__` field (64 hex characters). Store the value of every generation still
+  in use. Take the copy after each rotation too, and treat it like the key itself:
+  whoever holds it and a copy of the stored data can unseal every org's secrets.
+- **A self-hosted Commissary has no rate limits or caps.** Nothing bounds a member's usage except what you set: within
+  their grants, a member can run up the Cloudflare bill of the account that runs Commissary (Workers, Durable Objects,
+  Containers, Browser Run) and the provider bills behind the credentials. Set **spend limits** on members, keys and
+  shared agents, and grant only what each member needs ([THREAT-MODEL.md](THREAT-MODEL.md#running-up-costs-and-exhausting-resources);
+  ADR 0041). Commissary Cloud's plan limits, billing cap and request-rate ceiling do not exist on a
+  self-hosted deployment.
+- **What the operator is trusted with.** Whoever runs a Commissary (you, on a self-hosted one) is fully trusted: they
+  hold `SECRETS_KEY`, which unwraps every org's data key, so they can unseal every org's secrets, and they can read
+  content (transcripts, sandbox files) that is not sealed. A self-hosted Commissary that serves several orgs
+  (ADR 0021) gives its orgs no protection from you, and Cloudflare account access is access to all of it. The threat
+  model lists this and the other accepted risks ([THREAT-MODEL.md](THREAT-MODEL.md#accepted-risks)); report a
+  vulnerability as [SECURITY.md](../SECURITY.md) says.
 - **First deploy with encryption.** Each org's ControlPlane encrypts what it stored in plain text on its first start
   after the deploy (a Durable Object SQLite migration, in one transaction; there is no D1 migration) and logs
   `created the org's data key and sealed its stored secrets`. **There is no rollback after that start**: an earlier

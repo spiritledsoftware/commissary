@@ -45,6 +45,7 @@ secrets Commissary holds for outside services are **credentials**, and a model p
 - [Known limitations](#known-limitations)
 - [Local development](#local-development)
 - [Documentation](#documentation)
+- [Security](#security)
 - [Acknowledgements](#acknowledgements)
 
 ## Deploy
@@ -303,7 +304,14 @@ conventions are in [DEVELOPMENT.md](docs/DEVELOPMENT.md).
 | [MIGRATION.md](docs/MIGRATION.md)       | Moving from the Go CLIProxyAPI server                                                                   |
 | [DEVELOPMENT.md](docs/DEVELOPMENT.md)   | Scripts, module layout, conventions                                                                     |
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Design decisions and per-subsystem behaviour                                                            |
+| [THREAT-MODEL.md](docs/THREAT-MODEL.md) | What Commissary defends, whom it trusts and the risks it accepts                                        |
+| [SECURITY.md](SECURITY.md)              | Reporting a vulnerability, supported versions                                                           |
 | [GLOSSARY.md](GLOSSARY.md)              | Domain terms                                                                                            |
+
+## Security
+
+To report a vulnerability, follow [SECURITY.md](SECURITY.md). What Commissary defends, whom it trusts and which risks it
+accepts: [THREAT-MODEL.md](docs/THREAT-MODEL.md).
 
 ## Acknowledgements
 
