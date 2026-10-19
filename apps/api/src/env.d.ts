@@ -19,7 +19,10 @@ interface __ApiWorkerEnv {
   PLATFORM_ADMIN_SERVICE_TOKENS: string;
   /** Local development only: treats loopback requests as this admin. Never set when deployed. */
   ACCESS_DEV_BYPASS: string;
-  /** The app host (`COMMISSARY_APP_DOMAIN`), named when another path is asked for (src/http/hosts.ts). */
+  /**
+   * The app host (`COMMISSARY_APP_DOMAIN`), bound on every deployed stage (not on a preview or under `alchemy dev`):
+   * named when another path is asked for (src/http/hosts.ts), and where the panel's links point.
+   */
   APP_DOMAIN?: string;
   /** The API host (`COMMISSARY_API_DOMAIN`). Unset: zone routes or a workers.dev URL (src/http/hosts.ts). */
   API_DOMAIN?: string;

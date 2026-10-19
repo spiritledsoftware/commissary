@@ -17,6 +17,7 @@ import { panelPageUrl } from "@commissary/state";
 import type { ClientTool } from "../control-plane-part.ts";
 import { toolsControlPlane, ToolsEnv } from "../env.ts";
 import {
+  acceptedUnder,
   type Answer,
   discoverResult,
   elicitsUrls,
@@ -225,6 +226,8 @@ const serve = Effect.gen(function* () {
   const message = incoming(yield* boundedBodyText(MAX_BODY_BYTES));
 
   if (message.kind === "answered") return respond(message.answer);
+
+  if (message.kind === "accepted") return respond(acceptedUnder(request.headers));
   const era = eraOf(message.request, request.headers);
 
   if ("refused" in era) return respond(era.refused);

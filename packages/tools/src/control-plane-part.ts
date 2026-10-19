@@ -647,11 +647,11 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   }
 
   /**
-   * Calls a tool `viewer` reaches ({@link clientTools}) by its full name, on the upstream tool of its upstream name. The
-   * member's private credential wins over the shared one, which needs a grant (#198); without either the member is
-   * asked to connect theirs. The upstream session the call opens is kept for the next call on that credential, at most
-   * seven days; a call that fails in a kept session drops it, so the next call opens a new one. A failure is logged
-   * with the toolkit and the reason only.
+   * Calls a tool `viewer` reaches ({@link clientTools}) by its full name, on the upstream tool of its upstream name.
+   * The member's private credential wins over the shared one, which needs a grant (#198); without either the member
+   * is asked to connect theirs. The upstream session the call opens is kept for the next call on that credential, at
+   * most seven days; a call that fails in a kept session drops it, so the next call opens a new one. A failure is
+   * logged with the toolkit and the reason only.
    */
   async callTool(viewer: Viewer, call: ToolCall, policy: OutboundPolicy): Promise<ToolCallOutcome> {
     const tool = this.#reachable(viewer).find(

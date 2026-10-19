@@ -2,8 +2,8 @@
  * The API Worker's bindings as its code reads them (#134 "How packages get their bindings"): every package reads only
  * its own view ({@link AuthConfig}, {@link StateEnv}, {@link ModelsEnv}, {@link BillingEnv}, {@link ToolsEnv}; `core`
  * reads none), and the request context provides each of them from the invocation's `env`, which satisfies every view
- * (`ApiWorkerBindings`), plus the port `@commissary/auth` reaches state through (`AuthDirectory`). The API Worker never sees sessions (ADR
- * 0030): it provides no `SignInSessions`.
+ * (`ApiWorkerBindings`), plus the port `@commissary/auth` reaches state through (`AuthDirectory`). The API Worker never
+ * sees sessions (ADR 0030): it provides no `SignInSessions`.
  */
 import { Context } from "effect";
 import { type AuthBindings, AuthConfig, AuthDirectory } from "@commissary/auth";
@@ -22,7 +22,10 @@ import { stateAuthDirectory, type StateBindings, StateEnv } from "@commissary/st
 
 /** What the API Worker's own code reads: where it answers, for its refusals (`http/hosts.ts`). */
 export interface ApiBindings {
-  /** The app host, named when another path is asked for (`http/hosts.ts`, ADR 0028). */
+  /**
+   * The app host (ADR 0028), bound on every deployed stage, one host or split: named when another path is asked for
+   * (`http/hosts.ts`), and where the panel's links point (Tools' connect pages, Billing's billing page).
+   */
   readonly APP_DOMAIN?: string;
   /** The API host (`http/hosts.ts`, ADR 0028). */
   readonly API_DOMAIN?: string;

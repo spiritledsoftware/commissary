@@ -553,7 +553,7 @@ export const listUpstreamTools = (
 
 // --- tool calls ------------------------------------------------------------------------------------------------------
 
-/** How long one call of an upstream tool (every request of it) may take: as long as Claude's clients wait for a tool. */
+/** How long one call of an upstream tool (every request of it) may take: as long as Claude's clients wait for one. */
 export const TOOL_CALL_TIMEOUT: Duration.Input = "240 seconds";
 
 /**
@@ -663,8 +663,8 @@ const callIn = Effect.fnUntraced(function* (
  * in `known`, the session kept from an earlier call, or else in a new one (the 2025 handshake, or the stateless
  * revision when the server refuses it), which the answer names for the part to keep. A server that refuses the call in
  * a kept session with `400` or `404` lost it (a 2025 session it ended, or a server that changed eras since): it gets a
- * new handshake and the call once again. The result is the server's, an `isError` one
- * included; a failure is an {@link McpError}, whose message quotes neither the URL nor the server's body.
+ * new handshake and the call once again. The result is the server's, an `isError` one included; a failure is an
+ * {@link McpError}, whose message quotes neither the URL nor the server's body.
  */
 export const callUpstreamTool = (
   source: string,
@@ -679,6 +679,9 @@ export const callUpstreamTool = (
 > =>
   Effect.gen(function* () {
     if (known !== undefined) {
+      // Only an HTTP-level `400` or `404` is retried: the transport refuses the request so before it dispatches the
+      // call (an unknown session, a revision it does not speak), so the tool never ran and a tool that is not
+      // idempotent cannot run twice. A JSON-RPC error, a tool's `isError` result or any other failure is not retried.
       const lost = (error: McpError) =>
         error.reason === "http" && (error.status === 400 || error.status === 404);
 

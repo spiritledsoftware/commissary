@@ -45,8 +45,9 @@ export interface FakeMcpOptions {
   /** Tools per page of `tools/list`; all on one page by default. */
   readonly pageSize?: number;
   /**
-   * What `tools/call` answers for the upstream tool `name`: a result, or a whole response; by default a text result that
-   * echoes the name and the arguments. A handler that throws makes the request fail, as an unreachable server does.
+   * What `tools/call` answers for the upstream tool `name`: a result, or a whole response; by default a text result
+   * that echoes the name and the arguments. A handler that throws makes the request fail, as an unreachable server
+   * does.
    */
   readonly call?: (
     name: string,

@@ -2666,12 +2666,12 @@ prices each attempt, the ControlPlane counts and decides.
 - Implementation notes (`src/access/` of the app Worker, `apps/api/src/http/gate.ts`, `packages/auth`): each gate is a
   _global_ router middleware that matches path prefixes, normalising case, duplicate slashes and percent-encoding: the
   API Worker's default-denies the client API (`/v1*`, `/openai/v1*`, `/backend-api/codex*`, the unprefixed
-  `/chat/completions`, `/completions`, `/responses`, and `/mcp`), the app Worker's `/v9/management*` and the panel (and answers a
-  client API path 404 before authenticating anything); each provides `AccessPrincipal`; route layers that read it use `withAccess(...)` (the app Worker) or `behindGate(...)`
-  (the API Worker) for typing.
-  JWKS keys are cached per isolate and refreshed on unknown `kid` at most once per 30 s (no cross-request locks, which
-  workerd forbids). `ACCESS_DEV_BYPASS` only applies when the request host is loopback (i.e. `alchemy dev`) and is refused (warning logged once
-  per isolate) whenever `ACCESS_TEAM_DOMAIN` or `ACCESS_AUD` is set.
+  `/chat/completions`, `/completions`, `/responses`, and `/mcp`), the app Worker's `/v9/management*` and the panel (and
+  answers a client API path 404 before authenticating anything); each provides `AccessPrincipal`; route layers that read
+  it use `withAccess(...)` (the app Worker) or `behindGate(...)` (the API Worker) for typing. JWKS keys are cached per
+  isolate and refreshed on unknown `kid` at most once per 30 s (no cross-request locks, which workerd forbids).
+  `ACCESS_DEV_BYPASS` only applies when the request host is loopback (i.e. `alchemy dev`) and is refused (warning logged
+  once per isolate) whenever `ACCESS_TEAM_DOMAIN` or `ACCESS_AUD` is set.
 - **`@commissary/auth`** (`packages/auth`, #132): request-side authentication with two entry points,
   `authenticateClient(headers, url)` (the client API) and `authenticateManagement(headers, url, {needs, slug})` (the
   management API and the panel), each picking the Access gate (`auth/access-gate.ts`) or Commissary Cloud's
@@ -2815,21 +2815,22 @@ refuses or reads anything, and its management route answers 404.
 - **Counting and the plan limit** (`billing/meter.ts`, `models/handlers/metering.ts`): only a **Request** counts
   (GLOSSARY: one model call a client makes). `executeNonStream`, `executeStream` and the Codex alpha search wrap their
   work in `metered`: before any work it calls `countRequest` once, so a request counts once whatever its credential
-  (shared or private), outcome or number of attempts (stream bootstrap retries and failover are inside the one
-  request). A Free org over its free usage is refused first with `429 plan_limit_reached`: `Retry-After` the seconds
-  until the first of the next month UTC, a JSON error (`code`, `message`, `limit`, `allowed`, `resets_at`,
-  `reset_seconds`, like `spend_limit_reached`'s; the alpha search answers the same body) whose message names the limit
-  and links to the panel's billing page (`https://<app host>/o/<slug>/billing`, built in #239, through `panelPageUrl`;
-  the words "the billing page of the panel" without an app host or when the registry cannot name the slug). Work in flight finishes. A request counts if it **did work**: the conductor marks the request when it
-  makes its first upstream attempt (`markWorked`), and one that fails without it (a spend limit, an unknown model or
-  provider, no credential to pick, `auth_not_found`) gives the count back (`uncountRequest`), while a later round's
-  spend stop does not take back a request that already did work. Not counted: a request refused before Models serves
-  it (authentication, the rate ceiling) or by the plan limit; a body that does not parse (rejected before execution);
-  **token counting** (`executeCountTokens`) and **polling a video** (status and content retrieval, which run
-  `executeNonStreamUnmetered`), which are not Requests; model listings and other reads. A Billing part that cannot be
-  reached lets the request through (logged): serving needs the same object. An isolate remembers a refusal for 30
-  seconds (`billing/cache.ts`; the registry lookup of the org's slug for the link, which the client API's key (an org
-  id) does not carry, runs once per refusal), so a client that retries against the limit does not reach the ControlPlane.
+  (shared or private), outcome or number of attempts (stream bootstrap retries and failover are inside the one request).
+  A Free org over its free usage is refused first with `429 plan_limit_reached`: `Retry-After` the seconds until the
+  first of the next month UTC, a JSON error (`code`, `message`, `limit`, `allowed`, `resets_at`, `reset_seconds`, like
+  `spend_limit_reached`'s; the alpha search answers the same body) whose message names the limit and links to the
+  panel's billing page (`https://<app host>/o/<slug>/billing`, built in #239, through `panelPageUrl`; the words "the
+  billing page of the panel" without an app host or when the registry cannot name the slug). Work in flight finishes. A
+  request counts if it **did work**: the conductor marks the request when it makes its first upstream attempt
+  (`markWorked`), and one that fails without it (a spend limit, an unknown model or provider, no credential to pick,
+  `auth_not_found`) gives the count back (`uncountRequest`), while a later round's spend stop does not take back a
+  request that already did work. Not counted: a request refused before Models serves it (authentication, the rate
+  ceiling) or by the plan limit; a body that does not parse (rejected before execution); **token counting**
+  (`executeCountTokens`) and **polling a video** (status and content retrieval, which run `executeNonStreamUnmetered`),
+  which are not Requests; model listings and other reads. A Billing part that cannot be reached lets the request through
+  (logged): serving needs the same object. An isolate remembers a refusal for 30 seconds (`billing/cache.ts`; the
+  registry lookup of the org's slug for the link, which the client API's key (an org id) does not carry, runs once per
+  refusal), so a client that retries against the limit does not reach the ControlPlane.
 - **Request-rate ceiling** (`billing/rate-limit.ts`): two Workers rate-limiting bindings on the API Worker,
   `FREE_RATE_LIMIT` (60 a minute) and `PAYG_RATE_LIMIT` (600), keyed by org id; the org's plan (a `plan()` call to its
   Billing part, cached per isolate for 30 seconds like `@commissary/auth`'s standing) picks one. The API Worker's
@@ -2968,32 +2969,32 @@ connect links, and it reaches MCP servers from the ControlPlane through the glob
   and clearing it answers `{ id, removed: true }`, as the tool then leaves the list.
 - **Tool class** (ADR 0038): `read` when the tool's annotations say `readOnlyHint: true`, else `write`; an override's
   class wins.
-- **The MCP endpoint** (`tools/mcp/endpoint.ts`, `tools/mcp/protocol.ts`, #197): `POST /mcp` on the API host (a
-  client API path, `CLIENT_API_PREFIXES`, so also the zone route `/mcp*` on a stage with one host), behind the API
-  Worker's client gate like the model routes: a member's API key in any form the gate reads, the cross-site checks
-  (a foreign `Origin` is `403`, the transport's DNS-rebinding rule) and, on Commissary Cloud, the org's request-rate
-  ceiling. A `401` there carries `WWW-Authenticate: Bearer`; `resource_metadata` comes with Commissary Cloud's OAuth
-  server (#200), and a self-hosted Commissary's Access-signed MCP clients use the app host's `/mcp` (#251, ADR 0045).
-  **On a stage with one host** the zone route `/mcp*` and the Access bypass application that lets the client API past
-  Access (docs/ACCESS.md) make the app host's `/mcp` this API-key endpoint, so #251 must take `/mcp` out of that
-  bypass there, or split the hosts, before it serves Access-signed clients on the same path.
-  Commissary speaks the protocol itself rather than through the MCP TypeScript SDK or Cloudflare's `createMcpHandler`
-  (neither is a dependency): it serves five methods with one JSON answer each, and the area's client already speaks
-  both eras by hand. Effect's own `McpServer` (`effect/ai`) does not fit either: its HTTP layer
-  (`layerHttpRequestScoped`) is sessionless only, so it has no 2025 era; it registers tools once on a server shared by
-  every request, where this list is each member's; and it is an unstable API. Each POST is one JSON-RPC message answered with one JSON object
-  (never an SSE stream); a notification is `202`; `GET` and `DELETE` are `405`, as the 2026-07-28 revision's backward
-  compatibility asks of a server without sessions. **Both eras per request**: one that names its revision in
-  `params._meta` (or `2026-…` in `MCP-Protocol-Version`) is served statelessly by 2026-07-28 (`server/discover`; the
-  `MCP-Protocol-Version`, `Mcp-Method` and `Mcp-Name` headers must match the body, `400 HeaderMismatch`, `-32020`; a
-  revision it does not speak is `400 UnsupportedProtocolVersion`, `-32022`, with the supported list; an unknown method
-  `404`; results carry `resultType` and the server's name in `_meta`); anything else is a 2025 client (`initialize`
-  answers 2025-11-25, 2025-06-18 or 2025-03-26 as asked, else the latest; no `Mcp-Session-Id` is minted, which
-  Streamable HTTP allows, so the requests after it need nothing of it; their `MCP-Protocol-Version`, when they send
-  one, must be one of those or 2024-11-05, else `400 UnsupportedProtocolVersion`). In either era an upstream result's
-  `io.modelcontextprotocol/*` `_meta` keys are left out (they speak of the upstream's revision and server); its other
-  keys pass. Methods: `initialize`, `server/discover`,
-  `ping`, `tools/list`, `tools/call`; no resources, prompts or `subscriptions/listen`.
+- **The MCP endpoint** (`tools/mcp/endpoint.ts`, `tools/mcp/protocol.ts`, #197): `POST /mcp` on the API host (a client
+  API path, `CLIENT_API_PREFIXES`, so also the zone route `/mcp*` on a stage with one host), behind the API Worker's
+  client gate like the model routes: a member's API key in any form the gate reads, the cross-site checks (a foreign
+  `Origin` is `403`, the transport's DNS-rebinding rule) and, on Commissary Cloud, the org's request-rate ceiling. A
+  `401` there carries `WWW-Authenticate: Bearer`; `resource_metadata` comes with Commissary Cloud's OAuth server (#200),
+  and a self-hosted Commissary's Access-signed MCP clients use the app host's `/mcp` (#251, ADR 0045). **On a stage with
+  one host** the zone route `/mcp*` and the Access bypass application that lets the client API past Access
+  (docs/ACCESS.md) make the app host's `/mcp` this API-key endpoint, so #251 must take `/mcp` out of that bypass there,
+  or split the hosts, before it serves Access-signed clients on the same path. Commissary speaks the protocol itself
+  rather than through the MCP TypeScript SDK or Cloudflare's `createMcpHandler` (neither is a dependency): it serves
+  five methods with one JSON answer each, and the area's client already speaks both eras by hand. Effect's own
+  `McpServer` (`effect/ai`) does not fit either: its HTTP layer (`layerHttpRequestScoped`) is sessionless only, so it
+  has no 2025 era; it registers tools once on a server shared by every request, where this list is each member's; and it
+  is an unstable API. Each POST is one JSON-RPC message answered with one JSON object (never an SSE stream); a
+  notification is `202` (`400 UnsupportedProtocolVersion` under a revision neither era speaks); `GET` and `DELETE` are
+  `405`, as the 2026-07-28 revision's backward compatibility asks of a server without sessions. **Both eras per
+  request**: one that names its revision in `params._meta` (or `2026-…` in `MCP-Protocol-Version`) is served statelessly
+  by 2026-07-28 (`server/discover`; the `MCP-Protocol-Version`, `Mcp-Method` and `Mcp-Name` headers must match the body,
+  `400 HeaderMismatch`, `-32020`; a revision it does not speak is `400 UnsupportedProtocolVersion`, `-32022`, with the
+  supported list; an unknown method `404`; results carry `resultType` and the server's name in `_meta`); anything else
+  is a 2025 client (`initialize` answers 2025-11-25, 2025-06-18 or 2025-03-26 as asked, else the latest; no
+  `Mcp-Session-Id` is minted, which Streamable HTTP allows, so the requests after it need nothing of it; their
+  `MCP-Protocol-Version`, when they send one, must be one of those or 2024-11-05, else
+  `400 UnsupportedProtocolVersion`). In either era an upstream result's `io.modelcontextprotocol/*` `_meta` keys are
+  left out (they speak of the upstream's revision and server); its other keys pass. Methods: `initialize`,
+  `server/discover`, `ping`, `tools/list`, `tools/call`; no resources, prompts or `subscriptions/listen`.
   - **The list** (`ToolsPart.clientTools`): one page, sorted by full name (deterministic whatever order a source lists
     in), each tool with its full name, description (overrides applied) and upstream input schema (`{type: "object"}`
     without one); read tools carry `readOnlyHint: true` and `destructiveHint: false`, write tools no annotations, and
@@ -3008,15 +3009,16 @@ connect links, and it reaches MCP servers from the ControlPlane through the glob
     toolkit and upstream name, and called on the member's private credential (which wins over the shared one; a call
     never uses another member's). The upstream result passes through as it is, `isError` included; an upstream or
     transport failure is a tool result with `isError` and the client's short message (`McpError`: no URL, no body),
-    logged as a warning with the toolkit's id and the error's reason and status only. An
-    upstream call (`callUpstreamTool`, `mcp/client.ts`) speaks the era the upstream does, with the stateless revision's
-    `Mcp-Name` and the `Mcp-Param-*` headers its input schema's `x-mcp-header` asks for, within 240 seconds; an
-    upstream that asks for input (`InputRequiredResult`) is a failure, as Commissary relays none yet (#201).
-  - **Missing private credential** (ADR 0036): a tool that needs the member's private credential, without one, answers
-    a link to the panel's connect page, `https://<app host>/o/<org slug>/tools/<toolkit id>/connect` (`panelPageUrl`,
-    `@commissary/state`, as Billing's link to the billing page; without `APP_DOMAIN`, or when the Platform registry
-    cannot name the org's slug, the words "the toolkit's page in the panel" instead, and no elicitation). #208 builds
-    the page: it must add `tools` to `PANEL_SECTIONS` (`apps/app/src/management/zones.ts`) and the panel route
+    logged as a warning with the toolkit's id and the error's reason and status only. An upstream call
+    (`callUpstreamTool`, `mcp/client.ts`) speaks the era the upstream does, with the stateless revision's `Mcp-Name` and
+    the `Mcp-Param-*` headers its input schema's `x-mcp-header` asks for, within 240 seconds; an upstream that asks for
+    input (`InputRequiredResult`) is a failure, as Commissary relays none yet (#201).
+  - **Missing private credential** (ADR 0036): a tool that needs the member's private credential, without one, answers a
+    link to the panel's connect page, `https://<app host>/o/<org slug>/tools/<toolkit id>/connect` (`panelPageUrl`,
+    `@commissary/state`, as Billing's link to the billing page). The API Worker gets `APP_DOMAIN` on every deployed
+    stage, one host or split; without it (a preview, `alchemy dev`), or when the Platform registry cannot name the org's
+    slug, the words "the toolkit's page in the panel" stand in, and nothing is elicited. #208 builds the page: it must
+    add `tools` to `PANEL_SECTIONS` (`apps/app/src/management/zones.ts`) and the panel route
     `/tools/$toolkitId/connect`. A 2026-07-28 client that declares URL elicitation
     (`clientCapabilities.elicitation.url`) gets an `InputRequiredResult` (MRTR) whose `connect_<toolkit>` input request
     is a URL-mode `elicitation/create`, again on each retry until the credential is there; a declined or dismissed
@@ -3024,13 +3026,13 @@ connect links, and it reaches MCP servers from the ControlPlane through the glob
     elicitation**: it would need the request's SSE stream and a session to send the request on and wait for the answer,
     which this endpoint keeps neither of, so it gets the tool result (#201 follows this choice).
   - **Upstream sessions** (`toolkit_sessions`, ADR 0038): what a call learned of an upstream is kept per toolkit and
-    credential, for the next call on it: a 2025 server's revision and `Mcp-Session-Id`, or a stateless server's
-    revision (so its calls skip the handshake). A session is kept seven days from when it opened at most: past that
-    the next call opens a new one, and the part's alarm deletes it. A server that answers `400` or `404` in a kept
-    session lost it (a 2025 session it ended, or an upstream that changed eras): it gets a new handshake and the call
-    once again. Any failed call deletes the session it was made in (unless the credential changed meanwhile, or
-    another call already replaced it), so the next call starts afresh; connecting or removing the credential, removing
-    the toolkit and the member's leaving delete it too.
+    credential, for the next call on it: a 2025 server's revision and `Mcp-Session-Id`, or a stateless server's revision
+    (so its calls skip the handshake). A session is kept seven days from when it opened at most: past that the next call
+    opens a new one, and the part's alarm deletes it. A server that answers `400` or `404` in a kept session lost it (a
+    2025 session it ended, or an upstream that changed eras): it gets a new handshake and the call once again. Any
+    failed call deletes the session it was made in (unless the credential changed meanwhile, or another call already
+    replaced it), so the next call starts afresh; connecting or removing the credential, removing the toolkit and the
+    member's leaving delete it too.
 - **Members and orgs**: a member who leaves takes their private toolkits, their private credentials on org toolkits and
   the upstream sessions of those (`memberLeft`); org deletion drops the tables (`wipe()`), and Tools' org-deletion step
   has nothing else to delete. Tools keeps nothing in KV or a per-isolate cache; the cross-org suite

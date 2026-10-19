@@ -341,14 +341,14 @@ export default Alchemy.Stack(
           ...stateBindings,
           ...stateSettings,
           ACCESS_DEV_BYPASS: dev && hosted === undefined ? settings.devBypass : "",
-          // Derived from the app Worker's output, so the API host is attached only once the app Worker no longer has it
-          // (it was the app's alias before the API Worker existed; Alchemy refuses a hostname another Worker holds).
-          ...(split && app !== undefined
-            ? {
-                APP_DOMAIN: Output.asOutput(app.url).pipe(Output.map(() => settings.appDomain)),
-                API_DOMAIN: settings.apiDomain,
-              }
+          // The app host on every deployed stage, split or not: the panel's links (MCP connect pages, the billing page)
+          // point there. Derived from the app Worker's output, so the API host is attached only once the app Worker no
+          // longer has it (it was the app's alias before the API Worker existed; Alchemy refuses a hostname another
+          // Worker holds). A preview and `alchemy dev` bind none, and the links name their pages in words.
+          ...(!dev && app !== undefined
+            ? { APP_DOMAIN: Output.asOutput(app.url).pipe(Output.map(() => settings.appDomain)) }
             : {}),
+          ...(split && app !== undefined ? { API_DOMAIN: settings.apiDomain } : {}),
           ...hostedApiEnv,
         },
       });

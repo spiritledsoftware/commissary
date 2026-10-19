@@ -3,9 +3,10 @@
 Cloudflare Access signs people in for the control panel and the management API (ADR 0022): it authenticates the caller
 (identity provider login or a service token), then forwards the request with a signed `Cf-Access-Jwt-Assertion` header
 that the Worker verifies. The Worker never sees their passwords. Clients of the client API (`/v1*`, `/openai/v1*`,
-`/backend-api/codex*`, the unprefixed aliases and the MCP endpoint `/mcp`) are not behind Access: they send an **API key** Commissary issued to a
-member, which the Worker checks itself (§4, "API keys" below, [CLIENTS.md](CLIENTS.md)). Scripts on the management API
-may send a **management key** instead of an Access service token ("Management keys" below).
+`/backend-api/codex*`, the unprefixed aliases and the MCP endpoint `/mcp`) are not behind Access: they send an **API
+key** Commissary issued to a member, which the Worker checks itself (§4, "API keys" below, [CLIENTS.md](CLIENTS.md)).
+Scripts on the management API may send a **management key** instead of an Access service token ("Management keys"
+below).
 
 This is a self-hosted Commissary, the default. **Commissary Cloud** (`COMMISSARY_MODE=cloud`, ADR 0026) has no Access application
 and signs people in itself: see [Commissary Cloud](#commissary-cloud) at the end.
@@ -34,18 +35,18 @@ subrequests (the first line of defence against cross-site request forgery on the
 Alchemy application resource does not manage these fields and its updates are PUT-style, so a follow-up step re-applies them
 after every change of the application: do not edit them in the dashboard.
 
-**The client API leaves Access.** The client API is the API Worker's (ADR 0030), which no Access application protects; the app
-Worker serves everything else (the panel, the management API, the OAuth callbacks), each with a `404` naming where the
-other's paths are (`apps/app/src/http/hosts.ts`, `apps/api/src/http/hosts.ts`). With an API host
+**The client API leaves Access.** The client API is the API Worker's (ADR 0030), which no Access application protects;
+the app Worker serves everything else (the panel, the management API, the OAuth callbacks), each with a `404` naming
+where the other's paths are (`apps/app/src/http/hosts.ts`, `apps/api/src/http/hosts.ts`). With an API host
 (`COMMISSARY_API_DOMAIN`, ADR 0028) the API Worker answers there, and no Access application covers that hostname. A
-client that signs in through Access sends the token of the app host's application (`cloudflared access token
--app=https://<app host>`) in `cf-access-token` to the API host; the API Worker checks it against `ACCESS_AUD`
-itself. Without an API host, zone routes send the client API paths of the app host to the API Worker, and the
-bypass application (`infra/access.ts` `provisionClientApiBypass`) covers `/v1`, `/v1beta`, `/v1internal`, `/openai/v1`,
-`/backend-api/codex`, `/chat/completions`, `/completions`, `/responses` and `/mcp` with their sub-paths. Access applies the most
-specific application to a request, so these paths reach the API Worker without a sign-in while every other path stays
-behind the main application. The API Worker is then the only gate of the client API: it answers `401` to a request
-without a valid API key (§4).
+client that signs in through Access sends the token of the app host's application
+(`cloudflared access token -app=https://<app host>`) in `cf-access-token` to the API host; the API Worker checks it
+against `ACCESS_AUD` itself. Without an API host, zone routes send the client API paths of the app host to the API
+Worker, and the bypass application (`infra/access.ts` `provisionClientApiBypass`) covers `/v1`, `/v1beta`,
+`/v1internal`, `/openai/v1`, `/backend-api/codex`, `/chat/completions`, `/completions`, `/responses` and `/mcp` with
+their sub-paths. Access applies the most specific application to a request, so these paths reach the API Worker without
+a sign-in while every other path stays behind the main application. The API Worker is then the only gate of the client
+API: it answers `401` to a request without a valid API key (§4).
 
 The production Workers have no `workers.dev` or preview URLs, so the custom domains are the only way in. Pull-request
 preview stages (`pr-<number>`, see [DEPLOY.md](DEPLOY.md)) instead serve their app Worker's `workers.dev` URL behind
@@ -281,13 +282,14 @@ characters; a missing key is refused everywhere.
 
 ## 4. How the Worker validates requests
 
-1. The path is classified (`apps/app/src/management/zones.ts`): `/v1*` (incl. `/v1beta`, `/v1internal`), `/openai/v1*`, `/backend-api/codex*`, the unprefixed
-   aliases `/chat/completions`, `/completions`, `/responses` and the MCP endpoint `/mcp` are the client API and need a
-   principal; `/v9/management*` (also `/v9/management/orgs/<slug>/...`), the control panel (`/`, `/accounts`, `/keys`, `/models`, `/usage`, `/members`, `/api-keys`, `/limits`, `/settings` with their
-   sub-paths, the same pages under `/o/<slug>/`, `/assets/*`) and `/management.html` (the upstream panel's old address, a redirect to `/`) form the management zone;
-   everything else (`/healthz`, the OAuth browser callbacks `/anthropic/callback`, `/codex/callback`,
-   `/antigravity/callback`, `/callback`, `/devin/callback`) is public to the Worker.
-   Matching is case-, slash- and percent-encoding-insensitive, so odd spellings cannot dodge the gate.
+1. The path is classified (`apps/app/src/management/zones.ts`): `/v1*` (incl. `/v1beta`, `/v1internal`), `/openai/v1*`,
+   `/backend-api/codex*`, the unprefixed aliases `/chat/completions`, `/completions`, `/responses` and the MCP endpoint
+   `/mcp` are the client API and need a principal; `/v9/management*` (also `/v9/management/orgs/<slug>/...`), the
+   control panel (`/`, `/accounts`, `/keys`, `/models`, `/usage`, `/members`, `/api-keys`, `/limits`, `/settings` with
+   their sub-paths, the same pages under `/o/<slug>/`, `/assets/*`) and `/management.html` (the upstream panel's old
+   address, a redirect to `/`) form the management zone; everything else (`/healthz`, the OAuth browser callbacks
+   `/anthropic/callback`, `/codex/callback`, `/antigravity/callback`, `/callback`, `/devin/callback`) is public to the
+   Worker. Matching is case-, slash- and percent-encoding-insensitive, so odd spellings cannot dodge the gate.
 2. On a client API route, an API key wins (`packages/auth/src/api-key.ts`): the first credential starting with `cms_` in
    `Authorization: Bearer`, `x-goog-api-key`, `x-api-key`, `?key=` or `?auth_token=` (the Go server's order) is checked
    against its org's ControlPlane ("API keys" above), and the request runs as its member in its org. A malformed, unknown,

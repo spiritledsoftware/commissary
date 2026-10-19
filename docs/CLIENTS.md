@@ -10,12 +10,12 @@ one member's keys share session state). Export it once; never commit it:
 export COMMISSARY_API_KEY='cms_…'
 ```
 
-Send the key wherever the client sends a provider key: `Authorization: Bearer <key>` (OpenAI, Codex, Claude Code's
-auth token, MCP clients), `x-api-key` (Anthropic), `x-goog-api-key` or `?key=` (Gemini). The client API (`/v1*`,
+Send the key wherever the client sends a provider key: `Authorization: Bearer <key>` (OpenAI, Codex, Claude Code's auth
+token, MCP clients), `x-api-key` (Anthropic), `x-goog-api-key` or `?key=` (Gemini). The client API (`/v1*`,
 `/openai/v1*`, `/backend-api/codex*`, the unprefixed `/chat/completions`, `/completions`, `/responses`, and the MCP
-endpoint `/mcp`) is not behind Cloudflare Access, so no Access headers are needed. A missing key answers `401 {"error":"Missing API key"}`; a wrong, revoked or
-expired key `401 {"error":"Invalid API key"}`. Revoking a key in the panel takes effect within 30 seconds. List the
-model ids you can use with `GET /v1/models`.
+endpoint `/mcp`) is not behind Cloudflare Access, so no Access headers are needed. A missing key answers
+`401 {"error":"Missing API key"}`; a wrong, revoked or expired key `401 {"error":"Invalid API key"}`. Revoking a key in
+the panel takes effect within 30 seconds. List the model ids you can use with `GET /v1/models`.
 
 Clients set up before API keys that sign in through Access (a `cloudflared access` token in the `cf-access-token`
 header) keep working in the first org (`global`) while its owner leaves **Access sign-ins for clients** on (the

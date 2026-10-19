@@ -68,7 +68,7 @@ const post = (body: RpcMessage, headers: Record<string, string> = {}) =>
     }),
   );
 
-/** An org of its own, registered with the Platform (its slug names it in connect links), with an admin and two members. */
+/** An org of its own, registered with the Platform (its slug names it in connect links): an admin and two members. */
 const staffedOrg = async (prefix: string) => {
   const slug = `${prefix}-${crypto.randomUUID().slice(0, 8)}`;
   const org = newOrgId();
@@ -87,8 +87,11 @@ const staffedOrg = async (prefix: string) => {
   };
 };
 
-/** The hosts of a stage with an app host, where connect links point (the test Worker binds none). */
+/** The hosts of a stage with an API host of its own, where connect links point to the app host. */
 const APP_HOST = { APP_DOMAIN: "app.example.com", API_DOMAIN: "localhost" };
+
+/** A stage with one host: the client API on the app host through zone routes, `APP_DOMAIN` bound and no API host. */
+const ONE_HOST = { APP_DOMAIN: "localhost" };
 
 /** `request` through the Worker's handler with `bindings` over the test Worker's. */
 const fetchWith = async (request: Request, bindings: Partial<Env>): Promise<Response> => {
@@ -825,6 +828,30 @@ describe("a call that needs a private credential the member has not connected", 
     expect(JSON.stringify(legacyAnswer?.["content"])).toContain(link);
   });
 
+  it("links to the app host on a stage with one host, where the client API shares it", async () => {
+    const { org, slug, bob, linearId } = await toolkitsOrg("mcp-connect-one-host");
+
+    const call = modern(
+      1,
+      "tools/call",
+      { name: "linear_list_issues", arguments: {} },
+      { elicitation: { url: {} } },
+    );
+
+    const answer = resultOf(
+      await (await clientOf(org, bob, ONE_HOST)).send(call.body, call.headers),
+    );
+
+    expect(answer).toMatchObject({
+      resultType: "input_required",
+      inputRequests: {
+        connect_linear: {
+          params: { mode: "url", url: `https://localhost/o/${slug}/tools/${linearId}/connect` },
+        },
+      },
+    });
+  });
+
   it("names the panel's page in words where there is no app host, and elicits nothing", async () => {
     const { org, bob } = await toolkitsOrg("mcp-connect-no-host");
 
@@ -967,5 +994,19 @@ describe("a client of the 2025 handshake", () => {
       code: -32022,
       data: { requested: "2024-01-01" },
     });
+
+    // A notification is held to the same versions.
+    const notification = { jsonrpc: "2.0" as const, method: "notifications/initialized" };
+
+    expect((await client.send(notification, { "mcp-protocol-version": "2025-11-25" })).status).toBe(
+      202,
+    );
+
+    const refusedNotification = await client.send(notification, {
+      "mcp-protocol-version": "2024-01-01",
+    });
+
+    expect(refusedNotification.status).toBe(400);
+    expect(refusedNotification.body?.["error"]).toMatchObject({ code: -32022 });
   });
 });

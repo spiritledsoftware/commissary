@@ -1,6 +1,6 @@
-// Commissary's MCP endpoint (#197) on Commissary Cloud: behind the same gate as the rest of the client API, so a request
-// without an API key is refused with a Bearer challenge (there is no dev bypass here) and requests count against the
-// org's request-rate ceiling (5 a minute on Free in the test Worker, vitest.config.ts).
+// Commissary's MCP endpoint (#197) on Commissary Cloud: behind the same gate as the rest of the client API, so a
+// request without an API key is refused with a Bearer challenge (there is no dev bypass here) and requests count
+// against the org's request-rate ceiling (5 a minute on Free in the test Worker, vitest.config.ts).
 import { beforeAll, describe, expect, it } from "vitest";
 import { RATE_LIMITED } from "@commissary/billing/api";
 import { resetUsageDb } from "@commissary/models/testing";

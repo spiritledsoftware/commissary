@@ -15,7 +15,8 @@ export const platformOf = (env: Pick<StateBindings, "PLATFORM">): PlatformStub =
   env.PLATFORM.getByName(PLATFORM_NAME);
 
 /**
- * The URL of the panel's page `page` (`billing`, `tools/<id>/connect`) of `org`: `https://<APP_DOMAIN>/o/<slug>/<page>`.
+ * The URL of the panel's page `page` (`billing`, `tools/<id>/connect`) of `org`:
+ * `https://<APP_DOMAIN>/o/<slug>/<page>`.
  * A Worker knows an org by its id, and only the registry knows its slug, so this asks it; when it cannot say or the
  * app host is not set, the answer is `fallback`, plain text naming the page, never a URL that leads nowhere.
  */

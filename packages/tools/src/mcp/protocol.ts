@@ -8,9 +8,9 @@
  *   must match the body (`400`, `HeaderMismatch`); an unknown revision is `400 UnsupportedProtocolVersion`, an unknown
  *   method `404`;
  * - **legacy** (2025-11-25 and the 2025 revisions before it): `initialize` answers the revision asked for when it is
- *   one of {@link LEGACY_VERSIONS}, else the latest; no session is minted (Streamable HTTP lets a server go without one),
- *   so the requests that follow are served alike, with no `MCP-Protocol-Version` (a 2025-03-26 client's) or one of
- *   {@link LEGACY_HEADER_VERSIONS}; another is `400 UnsupportedProtocolVersion`.
+ *   one of {@link LEGACY_VERSIONS}, else the latest; no session is minted (Streamable HTTP lets a server go without
+ *   one), so the requests that follow are served alike, with no `MCP-Protocol-Version` (a 2025-03-26 client's) or one
+ *   of {@link LEGACY_HEADER_VERSIONS}; another is `400 UnsupportedProtocolVersion`, a notification's too.
  *
  * Every answer is one JSON object, never an SSE stream; a notification (or a client's response) is `202`. Commissary
  * serves tools only: `tools/list` and `tools/call`, besides `initialize`, `server/discover` and `ping`.
@@ -97,9 +97,13 @@ export interface RpcRequest {
   readonly params: Schema.JsonObject;
 }
 
-/** What one POST carries: a request to answer, or something answered at once (a notification, a malformed body). */
+/**
+ * What one POST carries: a request to answer, a notification or a client's response (`202` unless its
+ * `MCP-Protocol-Version` is refused, {@link acceptedUnder}), or a malformed body answered at once.
+ */
 export type Incoming =
   | { readonly kind: "request"; readonly request: RpcRequest }
+  | { readonly kind: "accepted" }
   | { readonly kind: "answered"; readonly answer: Answer };
 
 export const errorAnswer = (
@@ -140,12 +144,12 @@ export const incoming = (text: string): Incoming => {
     const { id, method, params } = message.value;
 
     return id === undefined
-      ? { kind: "answered", answer: ACCEPTED }
+      ? { kind: "accepted" }
       : { kind: "request", request: { id, method, params: params ?? {} } };
   }
 
   if (Option.isSome(decodeResponse(json.value)) && !Array.isArray(json.value))
-    return { kind: "answered", answer: ACCEPTED };
+    return { kind: "accepted" };
 
   return {
     kind: "answered",
@@ -170,19 +174,31 @@ const metaOf = (params: Schema.JsonObject): Schema.JsonObject | undefined => {
 };
 
 /** A revision the endpoint does not speak: `400`, with the ones it does. */
-const unsupported = (id: RequestId, requested: string): Answer =>
+const unsupported = (id: RequestId | null, requested: string): Answer =>
   errorAnswer(400, id, RpcCode.unsupportedProtocolVersion, "Unsupported protocol version", {
     supported: [...SUPPORTED_VERSIONS],
     requested,
   });
+
+/**
+ * The answer to a notification or a client's response given its headers: `202`, or `400 UnsupportedProtocolVersion`
+ * when it names a revision the endpoint does not speak (neither era's).
+ */
+export const acceptedUnder = (headers: Readonly<Record<string, string | undefined>>): Answer => {
+  const header = headers["mcp-protocol-version"]?.trim();
+
+  return header === undefined || header === MODERN_VERSION || LEGACY_HEADER_VERSIONS.has(header)
+    ? ACCEPTED
+    : unsupported(null, header);
+};
 
 const mismatch = (id: RequestId, message: string): Answer =>
   errorAnswer(400, id, RpcCode.headerMismatch, `Header mismatch: ${message}`);
 
 /**
  * The era of `request` given its HTTP headers (lowercased names), or the refusal of a request whose revision the
- * endpoint does not speak, or of a modern request whose headers do not match its body. A request is modern when it names a revision in
- * `_meta` or a modern revision in `MCP-Protocol-Version`; `initialize` is always the handshake's.
+ * endpoint does not speak, or of a modern request whose headers do not match its body. A request is modern when it
+ * names a revision in `_meta` or a modern revision in `MCP-Protocol-Version`; `initialize` is always the handshake's.
  */
 export const eraOf = (
   request: RpcRequest,
