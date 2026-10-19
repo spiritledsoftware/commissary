@@ -33,6 +33,7 @@ import {
   draftOf,
   FAMILY_ORDER,
   familyName,
+  familyNotice,
   type GroupDraft,
   groupTitle,
   hasErrors,
@@ -246,6 +247,7 @@ const GroupForm = ({
   const compat = family === "openai-compatibility";
   const protocols = choosesProtocol(family);
   const kept = keptSettings(view);
+  const notice = familyNotice(family);
 
   const probeWith = draft.keys.find((key) => key.stored?.auth_index !== undefined)?.stored
     ?.auth_index;
@@ -291,6 +293,7 @@ const GroupForm = ({
 
   return (
     <form className={styles["form"]} onSubmit={submit} noValidate>
+      {notice === undefined ? null : <p className={styles["notice"]}>{notice}</p>}
       <Section title="Endpoint">
         <div className={styles["fields"]}>
           <Field

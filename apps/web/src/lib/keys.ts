@@ -58,6 +58,15 @@ const FAMILY_NAMES: Readonly<Record<ProviderKeyFamily, string>> = {
 
 export const familyName = (family: ProviderKeyFamily): string => FAMILY_NAMES[family];
 
+/**
+ * A warning shown where a key of this family is added (ADR 0034: never a block). Only OpenCode Go, whose terms bar use
+ * for a third party (docs/research/cloud-credentials.md); API keys and Vertex keys get none.
+ */
+export const familyNotice = (family: ProviderKeyFamily): string | undefined =>
+  family === "opencode-go"
+    ? 'OpenCode\'s terms say "You will only use the Services for your own internal use, and not on behalf of or for the benefit of any third party", and a Go workspace cannot invite members, so a Go key is for one person. You use it at your own risk.'
+    : undefined;
+
 export const isFamily = (value: string): value is ProviderKeyFamily =>
   FAMILY_ORDER.some((family) => family === value);
 
