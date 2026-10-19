@@ -672,7 +672,7 @@ const Panel = ({
 }: {
   readonly option: ConnectOption;
   readonly privately: boolean;
-  /** The caller is known and the account will be a shared credential. */
+  /** The account will be a shared credential. */
   readonly shared: boolean;
 }) => {
   switch (option.method.kind) {
@@ -748,11 +748,7 @@ export const ConnectPage = () => {
           ) : (
             <>
               <h2 className={styles["panelTitle"]}>{chosen.name}</h2>
-              <Panel
-                option={chosen}
-                privately={privately}
-                shared={caller !== undefined && !privately}
-              />
+              <Panel option={chosen} privately={privately} shared={!privately} />
             </>
           )}
         </section>

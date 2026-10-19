@@ -135,11 +135,12 @@ Open `https://llm.example.com/` and sign in through Access with an admin email. 
 
 Commissary refuses no credential: any provider key or account can be connected, as a shared or a private
 credential ([ADR 0034](docs/adr/0034-commissary-refuses-no-credential.md)). Providers' terms vary: most bar, or don't
-address, use through a gateway or hosted service, and every provider forbids sharing a subscription. The panel warns
-when you connect such an account and when it becomes a shared credential, and never blocks it. Use is at your org's own
-risk. Claude is the sharpest case: Anthropic's Usage Policy (effective 2026-11-12) bars services that route requests
-through consumer subscriptions or misrepresent the client, and Commissary's cloaking of requests on a Claude account as
-Claude Code's own (fully by default, or minimally with Settings › Providers › Claude cloak level,
+address, use through a gateway or hosted service, and they forbid sharing a subscription. The panel warns when you
+connect such an account and when it becomes a shared credential, and never blocks it. Use is at your org's own risk.
+Claude is the sharpest case: Anthropic's Usage Policy (effective 2026-11-12) bars "resell, proxy, or otherwise provide
+access to Claude through unauthorized means, including services that route requests through consumer subscriptions or
+misrepresent the product or client being used", and Commissary's cloaking of requests on a Claude account as Claude
+Code's own (fully by default, or minimally with Settings › Providers › Claude cloak level,
 `upstream.claude.cloak-level: minimal`) misrepresents the client. Details:
 [ARCHITECTURE.md](docs/ARCHITECTURE.md#claude-provider-modelsexecutorclaude-translationtranslatorclaude).
 

@@ -71,7 +71,7 @@ describe("connect options", () => {
     ["kimi", "Kimi Code subscriptions are for interactive use only"],
     ["kimi-ai", "Kimi Code subscriptions are for interactive use only"],
     ["file", "terms bar or don't address use through a gateway"],
-  ])("warns about %s's terms before connecting, at the user's own risk", (id, quote) => {
+  ])("warns about %s's terms before connecting, at the org's own risk", (id, quote) => {
     const notices = connectNotices(connectOption(id), false);
     expect(notices).toHaveLength(1);
     expect(notices[0]).toContain(quote);
@@ -95,7 +95,7 @@ describe("connect options", () => {
       }
 
       expect(shared, option.id).toHaveLength(privately.length + 1);
-      expect(shared.at(-1), option.id).toContain("Every provider forbids sharing a subscription");
+      expect(shared.at(-1), option.id).toContain("Providers' terms forbid sharing a subscription");
       expect(shared.at(-1), option.id).toContain("own risk");
       expect(privately.join(" "), option.id).not.toContain("forbids sharing");
     }

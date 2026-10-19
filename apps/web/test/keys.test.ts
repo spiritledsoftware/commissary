@@ -528,7 +528,7 @@ describe("OpenCode default base URLs (#178)", () => {
 });
 
 describe("provider key terms notices (ADR 0034)", () => {
-  it("warns that OpenCode Go's terms bar use for a third party, at the user's own risk", () => {
+  it("warns that OpenCode Go's terms bar use for a third party, at the org's own risk", () => {
     const notice = familyNotice("opencode-go") ?? "";
     expect(notice).toContain("not on behalf of or for the benefit of any third party");
     expect(notice).toContain("cannot invite members");

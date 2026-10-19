@@ -28,6 +28,10 @@ export interface ConnectOption {
   readonly method: ConnectMethod;
 }
 
+/** Both Kimi sign-ins connect a Kimi Code membership, under the same Community Guidelines. */
+const KIMI_NOTICE =
+  'Kimi Code\'s Community Guidelines say "Kimi Code subscriptions are for interactive use only" and "Don\'t resell Kimi Code\'s capabilities as a service", and call sharing an account through a reverse proxy a violation. They do not mention a hosted gateway, so you use it at your own risk.';
+
 export const CONNECT_OPTIONS: ReadonlyArray<ConnectOption> = [
   {
     id: "claude",
@@ -42,7 +46,7 @@ export const CONNECT_OPTIONS: ReadonlyArray<ConnectOption> = [
     name: "Codex",
     how: "Sign in with your ChatGPT account, then paste the address or enter a code.",
     notice:
-      'OpenAI offers ChatGPT plan use in other apps through its own program, and for a paid or remotely hosted app its guide says "join the waitlist to request access before offering it to users". Its terms do not address a gateway holding a ChatGPT login, so you use it at your own risk.',
+      'OpenAI offers ChatGPT plan use in other apps through its own program, and for a paid or remotely hosted app its guide says "join the waitlist to request access before offering it to users". OpenAI documents no way for a hosted service to relay a ChatGPT login, so you use it at your own risk.',
     method: { kind: "sign-in", provider: "codex", flow: "paste", codeAlternative: true },
   },
   {
@@ -50,7 +54,7 @@ export const CONNECT_OPTIONS: ReadonlyArray<ConnectOption> = [
     name: "xAI",
     how: "Enter a code on x.ai.",
     notice:
-      'xAI endorses SuperGrok sign-in in named open-source clients such as OpenCode, but its Acceptable Use Policy bars "Accessing the Services through unauthorized automated or non-human means, whether through a bot, script, or otherwise", and nothing addresses a hosted service. You use it at your own risk.',
+      'xAI endorses SuperGrok sign-in in OpenCode, an open-source client, but its Acceptable Use Policy bars "Accessing the Services through unauthorized automated or non-human means, whether through a bot, script, or otherwise", and nothing xAI publishes addresses a hosted service. You use it at your own risk.',
     method: { kind: "sign-in", provider: "xai", flow: "code" },
   },
   {
@@ -58,7 +62,7 @@ export const CONNECT_OPTIONS: ReadonlyArray<ConnectOption> = [
     name: "Antigravity",
     how: "Sign in with Google, then paste the address your browser lands on.",
     notice:
-      'Google\'s Antigravity terms say "Using third party software, tools, or services to access the Service" is a breach of the agreement and may be grounds for suspending or terminating your Antigravity and Gemini CLI accounts. You use it at your own risk.',
+      'Google\'s Antigravity terms say "Using third party software, tools, or services to access the Service" is a breach of the agreement and may be grounds for suspending or terminating your Antigravity or Gemini CLI accounts. You use it at your own risk.',
     method: { kind: "sign-in", provider: "antigravity", flow: "paste" },
   },
   {
@@ -74,23 +78,21 @@ export const CONNECT_OPTIONS: ReadonlyArray<ConnectOption> = [
     name: "Meta",
     how: "Enter a code on meta.com.",
     notice:
-      'Meta\'s Model API terms bar providing access to the Services "through any model aggregator, API gateway, proxy, or similar offering" without Meta\'s written authorization, and a Coding Harness Subscription credential "may not be used to access the Services outside the coding harness". You use it at your own risk.',
+      'Meta\'s Model API terms bar providing access to the Services to any third party "through any model aggregator, API gateway, proxy, or similar offering" without Meta\'s written authorization, and a Coding Harness Subscription credential "may not be used to access the Services outside the coding harness". You use it at your own risk.',
     method: { kind: "sign-in", provider: "meta", flow: "code" },
   },
   {
     id: "kimi",
     name: "Kimi (kimi.com)",
     how: "Enter a code on kimi.com.",
-    notice:
-      'Kimi Code\'s Community Guidelines say "Kimi Code subscriptions are for interactive use only" and "Don\'t resell Kimi Code\'s capabilities as a service", and call sharing an account through a reverse proxy a violation. They do not mention a hosted gateway, so you use it at your own risk.',
+    notice: KIMI_NOTICE,
     method: { kind: "sign-in", provider: "kimi", flow: "code" },
   },
   {
     id: "kimi-ai",
     name: "Kimi (kimi.ai)",
     how: "Enter a code on kimi.ai.",
-    notice:
-      'Kimi Code\'s Community Guidelines say "Kimi Code subscriptions are for interactive use only" and "Don\'t resell Kimi Code\'s capabilities as a service", and call sharing an account through a reverse proxy a violation. They do not mention a hosted gateway, so you use it at your own risk.',
+    notice: KIMI_NOTICE,
     method: { kind: "sign-in", provider: "kimi-ai", flow: "code" },
   },
   {
@@ -104,17 +106,18 @@ export const CONNECT_OPTIONS: ReadonlyArray<ConnectOption> = [
     name: "Auth file",
     how: "Upload credential files saved by CLIProxyAPI.",
     notice:
-      "An auth file carries one of the accounts above, and those providers' terms bar or don't address use through a gateway or hosted service. Check the terms of the file's provider: you use it at your own risk.",
+      "An auth file usually carries an account like those above; most of those providers' terms bar or don't address use through a gateway or hosted service. Check the terms of the file's provider: you use it at your own risk.",
     method: { kind: "file" },
   },
 ];
 
 /**
  * The sharing notice (ADR 0034): shown when an account is connected as a shared credential, owned by the org and used
- * through grants. Provider terms (docs/research/provider-terms.md): every one that addresses sharing forbids it.
+ * through grants. Provider terms (docs/research/provider-terms.md): every one that addresses sharing forbids it;
+ * ADR 0034 says most providers do.
  */
 export const SHARED_ACCOUNT_NOTICE =
-  "Every provider forbids sharing a subscription. A shared account belongs to the org and members use it through grants, so your org uses it at its own risk. Connect it as a private account to keep it to your own requests.";
+  "Providers' terms forbid sharing a subscription. A shared account belongs to the org and members use it through grants, so your org uses it at its own risk. Connect it as a private account to keep it to your own requests.";
 
 /**
  * What to show beside an option's steps: its provider's terms notice, then the sharing notice when the account is
