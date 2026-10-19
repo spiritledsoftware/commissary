@@ -254,6 +254,10 @@ const COPY = {
     "For every provider other than Codex, accounts and provider keys alike.",
   ),
   "upstream.xai.inject-x-search": flag("Add the x_search tool when a request has none"),
+  "upstream.opencode.disable-cloaking": flag(
+    "Turn off cloaking for OpenCode Zen's free models",
+    "Cloaking is what lets Zen serve its free models here. Turned off for every key, whatever its own mode: the free models are no longer listed, and Zen refuses them.",
+  ),
   "oauth.providers.antigravity.sensitive-words": {
     label: "Sensitive words",
     hint: "One per line. Obfuscated in requests to Antigravity.",

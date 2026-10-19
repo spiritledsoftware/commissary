@@ -25,8 +25,9 @@ export interface OpenCodeProviderSpec {
   readonly displayName: string;
   /**
    * Free catalog models (cost input and output both 0) answer 403 `FreeTierError` outside OpenCode's own client on Zen,
-   * so they are not registered unless listed in the config `models`. Zen's System One models (catalog additions,
-   * ADR 0032), free or not, are registered all the same.
+   * so they are not registered unless listed in the config `models`, or the key cloaks them (`cloak.mode` other than
+   * `never`, ADR 0033). Zen's System One models (catalog additions, ADR 0032), free or not, are registered all the
+   * same.
    */
   readonly skipFreeModels: boolean;
 }
@@ -34,14 +35,14 @@ export interface OpenCodeProviderSpec {
 export const OPENCODE_SPECS: Readonly<Record<OpenCodeProvider, OpenCodeProviderSpec>> = {
   [OPENCODE_ZEN]: {
     provider: OPENCODE_ZEN,
-    baseUrl: "https://opencode.ai/zen/v1",
+    baseUrl: "https://opencode.ai/inference/v1",
     catalogId: "opencode",
     displayName: "OpenCode Zen",
     skipFreeModels: true,
   },
   [OPENCODE_GO]: {
     provider: OPENCODE_GO,
-    baseUrl: "https://opencode.ai/zen/go/v1",
+    baseUrl: "https://opencode.ai/inference/go/v1",
     catalogId: "opencode-go",
     displayName: "OpenCode Go",
     skipFreeModels: false,
@@ -50,3 +51,24 @@ export const OPENCODE_SPECS: Readonly<Record<OpenCodeProvider, OpenCodeProviderS
 
 export const isOpenCodeProvider = (provider: string): provider is OpenCodeProvider =>
   provider === OPENCODE_ZEN || provider === OPENCODE_GO;
+
+/** `cloak.mode` of an OpenCode Zen key: `auto` cloaks free models, `always` every chat request, `never` none. */
+export type OpenCodeCloakMode = "auto" | "always" | "never";
+
+/** Credential attribute carrying the key's `cloak.mode` (set by the config credential synthesiser). */
+export const CLOAK_MODE_ATTRIBUTE = "cloak_mode";
+
+/** Reads a configured mode; anything but `always`/`never` (including unset) is `auto`. */
+export const parseOpenCodeCloakMode = (value: string | undefined): OpenCodeCloakMode => {
+  const mode = (value ?? "").trim().toLowerCase();
+
+  return mode === "always" || mode === "never" ? mode : "auto";
+};
+
+/** The effective mode of a credential: OpenCode Go and the global switch are `never`; else the key's `cloak.mode`. */
+export const openCodeCloakMode = (input: {
+  readonly provider: string;
+  readonly disabled: boolean;
+  readonly mode: string | undefined;
+}): OpenCodeCloakMode =>
+  input.provider !== OPENCODE_ZEN || input.disabled ? "never" : parseOpenCodeCloakMode(input.mode);

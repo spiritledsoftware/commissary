@@ -6,7 +6,9 @@
  *  - 400 `ModelProtocolUnsupported` (the model is served on another endpoint: a catalog or `protocol` mistake),
  *  - 400 "Model is unavailable." (the gateway does not serve the model),
  *  - 403 "Model access is disabled" (Zen: the model is switched off for the workspace),
- *  - 403 `FreeTierError` (Zen free models only work from OpenCode's own client).
+ *  - 403 `FreeTierError` (Zen free models only work from OpenCode's own client, or a client cloaked as it, ADR 0033),
+ *  - 400 "Free models may train on request data. Allow free endpoints in your workspace's Privacy settings" (Zen:
+ *    the key's workspace does not allow free models).
  * They become model-not-found errors (`code: model_not_found`) with a cooldown hint: the conductor cools only that
  * model of the credential (`isModelSupportError`) and tries the next credential instead of failing the request as a
  * client fault or cooling the whole key. On OpenCode Go a subscription usage limit reached (`GoUsageLimitError`, or a
@@ -22,13 +24,22 @@ import { openAICompatRetryAfterMs, parseRetryAfterMs } from "../helps/retry-afte
 import { OPENCODE_GO, type OpenCodeProvider } from "./providers.ts";
 import { openCodeUsageLimit } from "./usage-limit.ts";
 
-/** Cooldown of a model the gateway does not serve for this key (unavailable, disabled, free tier). */
+/** Cooldown of a model the gateway does not serve for this key (unavailable, disabled, free tier, free endpoints). */
 export const OPENCODE_MODEL_COOLDOWN_MS = 30 * 60_000;
 
 /** Cooldown after `ModelProtocolUnsupported`: short, a `protocol` fix in the config should take effect soon. */
 export const OPENCODE_PROTOCOL_COOLDOWN_MS = 5 * 60_000;
 
-export type OpenCodeModelFault = "protocol" | "unavailable" | "disabled" | "free-tier";
+export type OpenCodeModelFault =
+  | "protocol"
+  | "unavailable"
+  | "disabled"
+  | "free-tier"
+  | "free-endpoints";
+
+/** Logged when a Zen workspace refuses free models (`free-endpoints`). */
+export const FREE_ENDPOINTS_HINT =
+  "OpenCode Zen refused a free model: allow free endpoints in the key's workspace Privacy settings (free models may train on request data)";
 
 const lower = (value: Json | undefined): string => asString(value).trim().toLowerCase();
 
@@ -50,6 +61,8 @@ export const openCodeModelFault = (
     return "protocol";
 
   if (type === "freetiererror") return "free-tier";
+
+  if (message.includes("free models may train on request data")) return "free-endpoints";
 
   if (message.includes("model access is disabled")) return "disabled";
 

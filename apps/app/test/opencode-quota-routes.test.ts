@@ -36,7 +36,7 @@ const CODEX_KEY = "sk-codex-routes-0004";
 
 const GO_EDITED_KEY = "sk-go-routes-0005";
 
-const USAGE_URL = "https://opencode.ai/zen/go/v1/usage";
+const USAGE_URL = "https://opencode.ai/inference/go/v1/usage";
 
 const SECRETS = [GO_KEY, GO_OFF_KEY, ZEN_KEY, CODEX_KEY, GO_EDITED_KEY];
 

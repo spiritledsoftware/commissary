@@ -171,6 +171,10 @@ const upstream = section({
   xai: section({
     "inject-x-search": flag(false),
   }),
+  /** OpenCode Zen's free-tier cloak (ADR 0033): `true` forces `cloak.mode: never` on every key. */
+  opencode: section({
+    "disable-cloaking": flag(false),
+  }),
 });
 
 const providerKeys = section({

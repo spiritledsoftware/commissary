@@ -758,3 +758,360 @@ describe("token counting", () => {
     expect(p.calls).toHaveLength(0);
   });
 });
+
+describe("Zen free-tier cloak (ADR 0033)", () => {
+  const FREE = "big-pickle";
+  const CLOAKED_UA = /^commissary opencode\/latest\/\d+\.\d+\.\d+\/commissary$/;
+  const SES = /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/;
+  const sessionOf = (call: UpstreamCall | undefined) => call?.headers["x-opencode-session"];
+
+  const toolNames = (call: UpstreamCall | undefined) =>
+    // SAFETY: Chat Completions tools are `{type: "function", function: {name}}` objects.
+    ((bodyOf(call)["tools"] ?? []) as Array<{ function: { name: string } }>).map(
+      (tool) => tool.function.name,
+    );
+
+  const weatherTool: Json = {
+    type: "function",
+    function: {
+      name: "get_weather",
+      description: "Weather of a city",
+      parameters: { type: "object", properties: { city: { type: "string" } } },
+    },
+  };
+
+  const readTool: Json = {
+    type: "function",
+    function: {
+      name: "read",
+      description: "Read a file",
+      parameters: { type: "object", properties: { path: { type: "string" } } },
+    },
+  };
+
+  const chunk = (delta: Json, finish: string | null = null): string =>
+    `data: ${JSON.stringify({ id: "c1", object: "chat.completion.chunk", created: 1, model: FREE, choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`;
+
+  const callDelta = (index: number, id: string, name: string, args: string): Json => ({
+    tool_calls: [{ index, id, type: "function", function: { name, arguments: args } }],
+  });
+
+  /** The model calls the stub `read` (index 0) and, when `weather`, the client's tool (index 1). */
+  const stubCallStream = (weather: boolean): string[] => [
+    chunk({ role: "assistant", content: "" }),
+    chunk(callDelta(0, "call_read", "read", "")),
+    chunk({ tool_calls: [{ index: 0, function: { arguments: '{"path":"/etc/hosts"}' } }] }),
+    ...(weather ? [chunk(callDelta(1, "call_weather", "get_weather", '{"city":"Paris"}'))] : []),
+    chunk({}, "tool_calls"),
+    `data: ${JSON.stringify({ id: "c1", object: "chat.completion.chunk", created: 1, model: FREE, choices: [], usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 } })}\n\n`,
+    "data: [DONE]\n\n",
+  ];
+
+  it("cloaks a free model: OpenCode markers upstream, a plain non-stream answer back", async () => {
+    const p = await harness("opencode-zen");
+    const response = await p.call("/v1/chat/completions", postJson(chatRequest(FREE)));
+
+    expect(response.status).toBe(200);
+    // SAFETY: the shape of a successful client answer in this protocol.
+    const body = (await response.json()) as ChatAnswer & { object: string };
+    expect(body.object).toBe("chat.completion");
+    expect(body.choices[0]?.message.content).toBe("hi from chat");
+    const call = p.calls[0];
+    expect(call?.url).toBe("https://zen.test/v1/chat/completions");
+    expect(call?.headers["user-agent"]).toMatch(CLOAKED_UA);
+    expect(call?.headers["x-opencode-client"]).toBe("commissary");
+    expect(call?.headers["authorization"]).toBe("Bearer zen-key");
+    expect(sessionOf(call)).toMatch(SES);
+    expect(bodyOf(call)).toMatchObject({
+      model: FREE,
+      stream: true,
+      stream_options: { include_usage: true },
+      tool_choice: "none",
+    });
+    expect(toolNames(call)).toEqual(["read"]);
+    expect(p.records[0]).toMatchObject({
+      failed: false,
+      detail: { inputTokens: 3, outputTokens: 2 },
+    });
+  });
+
+  it("keeps the OpenCode-format session stable per conversation; a client ses_ id is kept, a UUID replaced", async () => {
+    const p = await harness("opencode-zen");
+
+    const conversation = (first: string, turns: number): Json => ({
+      model: FREE,
+      messages: [
+        { role: "user", content: first },
+        ...Array.from({ length: turns }, (_, i) => [
+          { role: "assistant", content: `answer ${i}` },
+          { role: "user", content: `follow-up ${i}` },
+        ]).flat(),
+      ],
+    });
+
+    await p.call("/v1/chat/completions", postJson(conversation("plan a trip", 0)));
+    await p.call("/v1/chat/completions", postJson(conversation("plan a trip", 1)));
+    await p.call("/v1/chat/completions", postJson(conversation("write a poem", 0)));
+
+    const own = "ses_eb1612f3bffeJ2oubftJlUX4Oy";
+    const uuid = "3f0c1e4e-8a51-4c5e-9d0e-6f1f4b7c2a10";
+    await p.call(
+      "/v1/chat/completions",
+      postJson(chatRequest(FREE), { "x-opencode-session": own }),
+    );
+    await p.call(
+      "/v1/chat/completions",
+      postJson(chatRequest(FREE), { "x-opencode-session": uuid }),
+    );
+
+    const [a1, a2, b1, kept, replaced] = p.calls.map(sessionOf);
+    expect(a1).toMatch(SES);
+    expect(a2).toBe(a1);
+    expect(b1).toMatch(SES);
+    expect(b1).not.toBe(a1);
+    expect(kept).toBe(own);
+    expect(replaced).toMatch(SES);
+  });
+
+  it("adds the stub read only when the client has no read, leaving a client tool_choice alone", async () => {
+    const p = await harness("opencode-zen");
+
+    await p.call(
+      "/v1/chat/completions",
+      postJson(chatRequest(FREE, false, { tools: [weatherTool], tool_choice: "auto" })),
+    );
+    await p.call(
+      "/v1/chat/completions",
+      postJson(chatRequest(FREE, false, { tools: [readTool, weatherTool] })),
+    );
+
+    const [withStub, withOwnRead] = p.calls;
+    expect(toolNames(withStub)).toEqual(["get_weather", "read"]);
+    expect(bodyOf(withStub)["tool_choice"]).toBe("auto");
+    expect(bodyOf(withOwnRead)["tools"]).toEqual([readTool, weatherTool]);
+    expect(bodyOf(withOwnRead)).not.toHaveProperty("tool_choice");
+  });
+
+  it("removes calls to the stub from a streamed answer, renumbering the client's calls", async () => {
+    const p = await harness("opencode-zen", { respond: () => sseResponse(stubCallStream(true)) });
+
+    const response = await p.call(
+      "/v1/chat/completions",
+      postJson(chatRequest(FREE, true, { tools: [weatherTool] })),
+    );
+
+    const text = await response.text();
+    expect(text).not.toContain('"read"');
+    expect(text).not.toContain("/etc/hosts");
+    expect(text).toContain('"get_weather"');
+    expect(text).toContain('"index":0,"id":"call_weather"');
+    expect(text).toContain('"finish_reason":"tool_calls"');
+  });
+
+  it("removes calls to the stub from a non-stream answer; with nothing left the answer just stops", async () => {
+    const both = await harness("opencode-zen", {
+      respond: () => sseResponse(stubCallStream(true)),
+    });
+
+    const answer = await both.call(
+      "/v1/chat/completions",
+      postJson(chatRequest(FREE, false, { tools: [weatherTool] })),
+    );
+
+    // SAFETY: the shape of a successful client answer with tool calls.
+    const body = (await answer.json()) as {
+      choices: Array<{
+        finish_reason: string;
+        message: { tool_calls?: Array<{ id: string; function: { name: string } }> };
+      }>;
+    };
+
+    expect(body.choices[0]?.message.tool_calls?.map((call) => call.function.name)).toEqual([
+      "get_weather",
+    ]);
+    expect(body.choices[0]?.finish_reason).toBe("tool_calls");
+
+    const only = await harness("opencode-zen", {
+      respond: () => sseResponse(stubCallStream(false)),
+    });
+
+    const stopped = await only.call(
+      "/v1/chat/completions",
+      postJson(chatRequest(FREE, false, { tools: [weatherTool] })),
+    );
+
+    // SAFETY: as above.
+    const plain = (await stopped.json()) as typeof body;
+    expect(plain.choices[0]?.message.tool_calls ?? []).toEqual([]);
+    expect(plain.choices[0]?.finish_reason).toBe("stop");
+  });
+
+  it("removes stub calls even when a payload rule rewrote the stub, or upstream answered plain JSON", async () => {
+    const config = await loadConfig(`api-keys:
+  opencode-zen:
+    - keys:
+        - api-key: zen-key
+requests:
+  payload:
+    override:
+      - models: [{ name: "${FREE}", protocol: openai }]
+        params: { "tools.0.function.description": "rewritten by a rule" }
+`);
+
+    const rewritten = await harness("opencode-zen", {
+      config,
+      respond: () => sseResponse(stubCallStream(false)),
+    });
+
+    const streamed = await rewritten.call(
+      "/v1/chat/completions",
+      postJson(chatRequest(FREE, true)),
+    );
+
+    expect(await streamed.text()).not.toContain("/etc/hosts");
+
+    const plain = await harness("opencode-zen", {
+      respond: () =>
+        jsonResponse({
+          id: "c1",
+          object: "chat.completion",
+          created: 1,
+          model: FREE,
+          choices: [
+            {
+              index: 0,
+              message: {
+                role: "assistant",
+                content: null,
+                tool_calls: [
+                  {
+                    id: "call_read",
+                    type: "function",
+                    function: { name: "read", arguments: '{"path":"/etc/hosts"}' },
+                  },
+                ],
+              },
+              finish_reason: "tool_calls",
+            },
+          ],
+        }),
+    });
+
+    const answer = await plain.call("/v1/chat/completions", postJson(chatRequest(FREE)));
+    const text = await answer.text();
+    expect(text).not.toContain("/etc/hosts");
+    expect(text).toContain('"finish_reason":"stop"');
+  });
+
+  it("passes a call to the client's own read through", async () => {
+    const p = await harness("opencode-zen", { respond: () => sseResponse(stubCallStream(false)) });
+
+    const response = await p.call(
+      "/v1/chat/completions",
+      postJson(chatRequest(FREE, true, { tools: [readTool] })),
+    );
+
+    const text = await response.text();
+    expect(text).toContain('"read"');
+    expect(text).toContain("/etc/hosts");
+  });
+
+  it("leaves paid models alone in auto mode", async () => {
+    const p = await harness("opencode-zen");
+    await p.call("/v1/chat/completions", postJson(chatRequest("deepseek-v4-flash")));
+
+    const call = p.calls[0];
+    expect(call?.headers["user-agent"]).toBe(OPENCODE_USER_AGENT);
+    expect(sessionOf(call)).toMatch(UUID);
+    expect(bodyOf(call)["stream"]).toBe(false);
+    expect(bodyOf(call)).not.toHaveProperty("tools");
+  });
+
+  it("cloak.mode never, or upstream.opencode.disable-cloaking, turns cloaking off; always cloaks paid models", async () => {
+    const keyConfig = (mode: string) =>
+      loadConfig(`api-keys:
+  opencode-zen:
+    - keys:
+        - api-key: zen-key
+          cloak:
+            mode: ${mode}
+`);
+
+    const never = await harness("opencode-zen", { config: await keyConfig("never") });
+    await never.call("/v1/chat/completions", postJson(chatRequest(FREE)));
+    expect(never.calls[0]?.headers["user-agent"]).toBe(OPENCODE_USER_AGENT);
+    expect(toolNames(never.calls[0])).toEqual([]);
+
+    const disabled = await harness("opencode-zen", {
+      config: await loadConfig(`upstream:
+  opencode:
+    disable-cloaking: true
+api-keys:
+  opencode-zen:
+    - keys:
+        - api-key: zen-key
+          cloak:
+            mode: always
+`),
+    });
+
+    await disabled.call("/v1/chat/completions", postJson(chatRequest(FREE)));
+    expect(disabled.calls[0]?.headers["user-agent"]).toBe(OPENCODE_USER_AGENT);
+
+    const always = await harness("opencode-zen", { config: await keyConfig("always") });
+    await always.call("/v1/chat/completions", postJson(chatRequest("deepseek-v4-flash")));
+    expect(always.calls[0]?.headers["user-agent"]).toMatch(CLOAKED_UA);
+    expect(toolNames(always.calls[0])).toEqual(["read"]);
+  });
+
+  it("runs before payload rules", async () => {
+    const config = await loadConfig(`api-keys:
+  opencode-zen:
+    - keys:
+        - api-key: zen-key
+requests:
+  payload:
+    override:
+      - models: [{ name: "${FREE}", protocol: openai }]
+        params: { "tool_choice": "auto" }
+`);
+
+    const p = await harness("opencode-zen", { config });
+    await p.call("/v1/chat/completions", postJson(chatRequest(FREE)));
+
+    expect(bodyOf(p.calls[0])["tool_choice"]).toBe("auto");
+    expect(toolNames(p.calls[0])).toEqual(["read"]);
+  });
+
+  it("a workspace that does not allow free endpoints cools only that model", async () => {
+    const log: PickerLog = { picks: [], reports: [] };
+    const logs: string[] = [];
+
+    const p = await harness("opencode-zen", {
+      log,
+      logs,
+      respond: () =>
+        jsonResponse(
+          {
+            error: {
+              type: "server_error",
+              message:
+                "Upstream request failed: Free models may train on request data. Allow free endpoints in your workspace's Privacy settings to use them.",
+            },
+          },
+          { status: 400 },
+        ),
+    });
+
+    await p.call("/v1/chat/completions", postJson(chatRequest(FREE)));
+
+    expect(log.reports[0]?.result).toMatchObject({
+      success: false,
+      httpStatus: 400,
+      retryAfterMs: 30 * 60_000,
+      error: { code: "model_not_found" },
+    });
+    expect(log.reports[0]?.result.credentialScoped).not.toBe(true);
+    expect(logs.some((line) => line.includes("Privacy settings"))).toBe(true);
+  });
+});

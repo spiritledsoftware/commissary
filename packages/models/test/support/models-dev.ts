@@ -62,7 +62,7 @@ export const documentObject = (models: Partial<Record<string, Record<string, unk
     {
       name: "OpenCode Zen",
       npm: "@ai-sdk/openai-compatible",
-      api: "https://opencode.ai/zen/v1",
+      api: "https://opencode.ai/inference/v1",
     },
   ),
   "opencode-go": provider(
@@ -72,7 +72,7 @@ export const documentObject = (models: Partial<Record<string, Record<string, unk
       "go-free": mdModel("go-free", { cost: { input: 0, output: 0 } }),
       ...models["opencode-go"],
     },
-    { npm: "@ai-sdk/openai-compatible", api: "https://opencode.ai/zen/go/v1" },
+    { npm: "@ai-sdk/openai-compatible", api: "https://opencode.ai/inference/go/v1" },
   ),
   // Providers Commissary does not read.
   mistral: provider("mistral", { "mistral-x": mdModel("mistral-x") }),

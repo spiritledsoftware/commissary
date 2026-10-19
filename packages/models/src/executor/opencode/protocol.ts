@@ -32,6 +32,8 @@ import { OPENCODE_SPECS, OPENCODE_ZEN, type OpenCodeProvider } from "./providers
 export interface OpenCodeKeyConfig {
   readonly providerKey: string;
   readonly models: ReadonlyArray<ModelEntry>;
+  /** The key's `cloak.mode` (OpenCode Zen free-tier cloak, ADR 0033), when set. */
+  readonly cloakMode?: string;
 }
 
 /** The keys of `api-keys.<provider>` in the flat order the credential synthesiser numbers them (`config_index`). */
@@ -40,6 +42,7 @@ const flatKeys = (config: Config, provider: OpenCodeProvider): OpenCodeKeyConfig
     group.keys.map((key) => ({
       providerKey: key["api-key"].trim(),
       models: key.models ?? group.models ?? [],
+      ...(key.cloak?.mode === undefined ? {} : { cloakMode: key.cloak.mode }),
     })),
   );
 

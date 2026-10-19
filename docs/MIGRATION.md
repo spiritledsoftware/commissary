@@ -82,6 +82,13 @@ sends every model to `/chat/completions`; models the gateway serves on another e
 `ModelProtocolUnsupported`. The Worker has dedicated providers: move the key to `api-keys.opencode-zen` (Zen) or
 `api-keys.opencode-go` (Go) and drop the compat entry.
 
+The dedicated providers default to OpenCode's `/inference` gateway (`https://opencode.ai/inference/v1` and
+`https://opencode.ai/inference/go/v1`). A key group with an explicit `base-url` on the older `…/zen/v1` or `…/zen/go/v1` paths
+keeps working until OpenCode retires them; remove the `base-url` (or set the `/inference` one) to follow the default. Zen's free
+models need no compat trick either: Commissary cloaks those requests as OpenCode's client (ADR 0033; `cloak.mode: never` on a
+key or `upstream.opencode.disable-cloaking: true` turns it off), and a key's workspace must allow free endpoints in its Privacy
+settings.
+
 ```yaml
 api-keys:
   opencode-go:

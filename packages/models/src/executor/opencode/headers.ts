@@ -14,9 +14,20 @@ import { providerSessionUuid } from "../helps/uuid.ts";
 import type { CredentialSnapshot } from "../picker.ts";
 import { forwardedClientHeaders } from "../systemone/executor.ts";
 import type { ExecutorOptions } from "../types.ts";
+import { isOpenCodeSessionId, openCodeSessionIdOf } from "./session-id.ts";
 
-/** Stable client identity (OpenCode asks clients not to pose as a generic SDK). */
+/**
+ * Stable client identity of uncloaked requests. Cloaked requests (OpenCode Zen's free tier, ADR 0033) pose as
+ * OpenCode's client on purpose: they keep `commissary` first and add an OpenCode client token after it
+ * (`OPENCODE_CLOAKED_USER_AGENT`).
+ */
 export const OPENCODE_USER_AGENT = "commissary";
+
+/** OpenCode release named in the cloaked User-Agent; raise it when Zen answers 426 `UpgradeRequired`. */
+export const OPENCODE_CLOAK_VERSION = "2.0.32";
+
+/** User-Agent of a cloaked request: Commissary first, then the OpenCode client token Zen looks for. */
+export const OPENCODE_CLOAKED_USER_AGENT = `commissary opencode/latest/${OPENCODE_CLOAK_VERSION}/commissary`;
 
 /** `x-opencode-client` value. */
 export const OPENCODE_CLIENT = "commissary";
@@ -33,11 +44,15 @@ const SESSION_NAMESPACE = "opencode";
  * The `x-opencode-session` value of a request: the client's own `x-opencode-session` unchanged; else a stable UUID of
  * the explicit session identity, the WebSocket execution session or the derived conversation identity; else a random
  * UUID. Another client's raw session id is never forwarded.
+ *
+ * A cloaked request (ADR 0033) needs OpenCode's `ses_` format: the client's own value is kept only when it has that
+ * format, and the derived and random ids are converted to it (`openCodeSessionIdOf`).
  */
-export const openCodeSessionId = (options: ExecutorOptions): string => {
+export const openCodeSessionId = (options: ExecutorOptions, cloaked = false): string => {
   const own = normalizeExplicitId(options.headers.get(OPENCODE_SESSION_HEADER) ?? undefined);
 
-  if (own !== "") return own;
+  if (own !== "" && (!cloaked || isOpenCodeSessionId(own))) return own;
+  const format = (uuid: string) => (cloaked ? openCodeSessionIdOf(uuid) : uuid);
 
   const candidates = [
     ["session", options.metadata.sessionId],
@@ -48,10 +63,10 @@ export const openCodeSessionId = (options: ExecutorOptions): string => {
   for (const [kind, identity] of candidates) {
     const uuid = providerSessionUuid(SESSION_NAMESPACE, kind, identity);
 
-    if (uuid !== "") return uuid;
+    if (uuid !== "") return format(uuid);
   }
 
-  return crypto.randomUUID();
+  return format(crypto.randomUUID());
 };
 
 /** Auth headers of a protocol. */
@@ -66,11 +81,11 @@ export const openCodeAuthHeaders = (protocol: OpenCodeProtocol, providerKey: str
   }
 };
 
-/** Client identity and session headers shared by every protocol. */
-export const openCodeIdentityHeaders = (options: ExecutorOptions) => ({
-  "user-agent": OPENCODE_USER_AGENT,
+/** Client identity and session headers shared by every protocol (`cloaked`: the free-tier markers, ADR 0033). */
+export const openCodeIdentityHeaders = (options: ExecutorOptions, cloaked = false) => ({
+  "user-agent": cloaked ? OPENCODE_CLOAKED_USER_AGENT : OPENCODE_USER_AGENT,
   "x-opencode-client": OPENCODE_CLIENT,
-  [OPENCODE_SESSION_HEADER]: openCodeSessionId(options),
+  [OPENCODE_SESSION_HEADER]: openCodeSessionId(options, cloaked),
 });
 
 /**
@@ -84,11 +99,13 @@ export const openCodeHeaders = (input: {
   readonly providerKey: string;
   readonly stream: boolean;
   readonly forward?: ReadonlyArray<string>;
+  /** Free-tier cloak (ADR 0033). */
+  readonly cloaked?: boolean;
 }): Record<string, string> => {
   const headers = {
     "content-type": "application/json",
     ...openCodeAuthHeaders(input.protocol, input.providerKey),
-    ...openCodeIdentityHeaders(input.options),
+    ...openCodeIdentityHeaders(input.options, input.cloaked === true),
     ...(input.stream
       ? { accept: "text/event-stream", "cache-control": "no-cache" }
       : { accept: "application/json" }),

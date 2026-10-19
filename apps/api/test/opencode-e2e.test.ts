@@ -122,13 +122,13 @@ describe("OpenCode model cooldown through the ControlPlane", () => {
     const first = await chat("disabled-model");
     expect(first.status).toBe(403);
     await first.text();
-    expect(upstreamCalls).toEqual(["POST https://opencode.ai/zen/go/v1/chat/completions"]);
+    expect(upstreamCalls).toEqual(["POST https://opencode.ai/inference/go/v1/chat/completions"]);
 
     upstreamCalls.length = 0;
     const other = await chat("open-model");
     expect(other.status).toBe(200);
     await other.text();
-    expect(upstreamCalls).toEqual(["POST https://opencode.ai/zen/go/v1/chat/completions"]);
+    expect(upstreamCalls).toEqual(["POST https://opencode.ai/inference/go/v1/chat/completions"]);
 
     // A success on another model of the key leaves the cooldown alone.
     upstreamCalls.length = 0;
@@ -152,7 +152,7 @@ describe("OpenCode model cooldown through the ControlPlane", () => {
     const first = await chat("opencode-zen/claude-haiku-4-5");
     expect(first.status).toBe(403);
     await first.text();
-    expect(upstreamCalls).toEqual(["POST https://opencode.ai/zen/v1/messages"]);
+    expect(upstreamCalls).toEqual(["POST https://opencode.ai/inference/v1/messages"]);
 
     // The live check went idle long enough for the Durable Object to be evicted.
     await evictDurableObject(controlPlane());
@@ -172,6 +172,6 @@ describe("OpenCode model cooldown through the ControlPlane", () => {
     const other = await chat("opencode-zen/glm-5.3-flash");
     expect(other.status).toBe(200);
     await other.text();
-    expect(upstreamCalls).toEqual(["POST https://opencode.ai/zen/v1/chat/completions"]);
+    expect(upstreamCalls).toEqual(["POST https://opencode.ai/inference/v1/chat/completions"]);
   });
 });

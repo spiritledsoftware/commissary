@@ -6,6 +6,10 @@
  * (`use-max-completion-tokens` of the config model entry) -> `stream_options.include_usage` (stream) -> payload rules.
  * The stream goes through the openai-compat stream reader (`openai-compat/stream.ts`).
  *
+ * A cloaked attempt (OpenCode Zen free tier, `cloak.ts`, ADR 0033) adds the stub `read` tool before the payload rules,
+ * always streams upstream (a non-stream client gets the stream collected by `chat-collect.ts`), and drops the model's
+ * calls to the stub from the answer.
+ *
  * Deliberate deviation from Go (no OpenCode provider there): the openai-compat executor itself is not reused because
  * it reads its settings from the `openai-compatibility` group of the credential (`resolveCompatConfig`) and sends its
  * own User-Agent; no `prompt_cache_key` is derived (the gateway keys caching on `x-opencode-session`). See
@@ -37,11 +41,16 @@ import {
   transportError,
   translateForOpenCode,
 } from "./attempt.ts";
+import { collectChatStream } from "./chat-collect.ts";
+import { cloakChatBody, removeStubCalls, StubCallFilter } from "./cloak.ts";
 import { openCodeHeaders } from "./headers.ts";
 
 const PATH = "/chat/completions";
 
-/** The Chat Completions body of an attempt (payload rules applied last). */
+/**
+ * The Chat Completions body of an attempt (payload rules applied last), and whether the cloak injected the stub `read`
+ * tool (decided before the payload rules, which may rewrite the tools).
+ */
 export const prepareChatBody = Effect.fnUntraced(function* (
   shaping: OpenCodeShaping,
   stream: boolean,
@@ -49,6 +58,7 @@ export const prepareChatBody = Effect.fnUntraced(function* (
 ) {
   const translated = yield* translateForOpenCode(shaping, Formats.OpenAI, stream);
   let body = translated.body;
+  let stubInjected = false;
 
   if (!forCount) {
     body = normalizeOpenAIMaxTokens(
@@ -58,15 +68,21 @@ export const prepareChatBody = Effect.fnUntraced(function* (
 
     // Ask for usage in the final chunk so token statistics are captured.
     if (stream) body = setBoolIfDifferent(body, "stream_options.include_usage", true);
+
+    if (shaping.cloaked) ({ body, stubInjected } = cloakChatBody(body));
+
     const effort = get(body, "reasoning_effort");
     shaping.context.usage.setReasoningEffort(typeof effort === "string" ? effort : undefined);
   }
 
-  return finalizeForOpenCode(shaping, Formats.OpenAI, translated.original, body);
+  return {
+    body: finalizeForOpenCode(shaping, Formats.OpenAI, translated.original, body),
+    stubInjected,
+  };
 });
 
 const send = Effect.fnUntraced(function* (attempt: OpenCodeAttempt, stream: boolean) {
-  const body = yield* prepareChatBody(attempt, stream);
+  const { body, stubInjected } = yield* prepareChatBody(attempt, stream);
 
   const headers = openCodeHeaders({
     credential: attempt.context.credential,
@@ -74,18 +90,35 @@ const send = Effect.fnUntraced(function* (attempt: OpenCodeAttempt, stream: bool
     protocol: "chat",
     providerKey: attempt.providerKey,
     stream,
+    cloaked: attempt.cloaked,
   });
 
   const response = yield* postJson(attempt, `${attempt.baseUrl}${PATH}`, headers, body);
 
-  return { body, response };
+  return { body, response, stubInjected };
 });
 
 export const executeChat = Effect.fnUntraced(function* (attempt: OpenCodeAttempt) {
   const { context, options, registry } = attempt;
   const responseFormat = responseFormatOf(options);
-  const { body, response } = yield* send(attempt, options.stream);
-  const text = yield* response.text.pipe(Effect.mapError(transportError));
+  const { body, response, stubInjected } = yield* send(attempt, options.stream || attempt.cloaked);
+
+  let text = yield* response.text.pipe(Effect.mapError(transportError));
+
+  if (attempt.cloaked) {
+    const collected = collectChatStream(text);
+
+    if ("error" in collected) {
+      context.usage.fail(collected.error.status, collected.error.message);
+
+      return yield* collected.error;
+    }
+
+    text = stubInjected
+      ? JSON.stringify(removeStubCalls(tryParseJson(collected.text) ?? null))
+      : collected.text;
+  }
+
   context.usage.observeResponseModel(responseModelOf(tryParseJson(text)));
 
   const out = registry.translateNonStream(
@@ -109,7 +142,7 @@ export const executeChat = Effect.fnUntraced(function* (attempt: OpenCodeAttempt
 
 export const executeChatStream = Effect.fnUntraced(function* (attempt: OpenCodeAttempt) {
   const { context, options, registry } = attempt;
-  const { body, response } = yield* send(attempt, true);
+  const { body, response, stubInjected } = yield* send(attempt, true);
 
   const reader = new OpenAICompatStreamReader({
     registry,
@@ -117,6 +150,8 @@ export const executeChatStream = Effect.fnUntraced(function* (attempt: OpenCodeA
     providerFormat: Formats.OpenAI,
     context: openCodeResponseContext(attempt, body),
   });
+
+  const filter = stubInjected ? new StubCallFilter() : undefined;
 
   const observe = (line: string) => {
     const usage = parseOpenAIStreamUsage(line);
@@ -129,7 +164,8 @@ export const executeChatStream = Effect.fnUntraced(function* (attempt: OpenCodeA
     Stream.mapError(transportError),
     Stream.mapAccum(
       () => reader,
-      (state, line: string) => {
+      (state, upstream: string) => {
+        const line = filter === undefined ? upstream : filter.push(upstream);
         observe(line);
 
         return [state, [state.push(line)]] as const;
@@ -157,7 +193,7 @@ export const executeChatStream = Effect.fnUntraced(function* (attempt: OpenCodeA
 
 /** Local token count of the Chat Completions body with the model's BPE encoding. */
 export const countChatTokens = Effect.fnUntraced(function* (shaping: OpenCodeShaping) {
-  const body = yield* prepareChatBody(shaping, false, true);
+  const { body } = yield* prepareChatBody(shaping, false, true);
   const count = countOpenAIChatTokens(getCodec(encodingForModel(shaping.baseModel)), body);
 
   return {

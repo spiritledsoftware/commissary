@@ -132,6 +132,8 @@ export const SETTINGS_TREE = {
       },
     },
     xai: { "inject-x-search": Schema.Boolean },
+    /** OpenCode Zen: turns the free-tier cloak off for every key (ADR 0033). */
+    opencode: { "disable-cloaking": Schema.Boolean },
   },
   client: {
     codex: {

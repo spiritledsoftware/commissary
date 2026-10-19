@@ -164,7 +164,7 @@ describe("System One on OpenCode Zen", () => {
     expect(result.answers.is_billing).toEqual({ type: "noul", noul: 0.9 });
     expect(result.usage).toEqual({ input_tokens: 100_000, output_tokens: 3 });
     expect(upstreamCalls.map((call) => call.url)).toEqual([
-      "POST https://opencode.ai/zen/v1/systemone",
+      "POST https://opencode.ai/inference/v1/systemone",
     ]);
 
     const [call] = upstreamCalls;

@@ -208,14 +208,16 @@ export const catalogModelInfo = (
 
 /**
  * The models a gateway registers when its config lists none: every catalog model that is not deprecated, minus the
- * free models where the gateway rejects them outside OpenCode's own client (Zen), plus `additions`: the gateway's
- * catalog additions (Zen's System One models, ADR 0032), registered as they are whatever their price. An addition is
- * authoritative for its id: a models.dev entry with the same id (free or not) is left out.
+ * free models where the gateway rejects them outside OpenCode's own client (Zen) unless the key cloaks them
+ * (`includeFree`, ADR 0033), plus `additions`: the gateway's catalog additions (Zen's System One models, ADR 0032),
+ * registered as they are whatever their price. An addition is authoritative for its id: a models.dev entry with the
+ * same id (free or not) is left out.
  */
 export const defaultCatalogModels = (
   catalog: OpenCodeCatalog,
   provider: OpenCodeProvider,
   additions: ReadonlyArray<ModelInfo> = [],
+  includeFree = false,
 ): ModelInfo[] => {
   const added = new Set(additions.map((model) => model.id.toLowerCase()));
 
@@ -225,7 +227,7 @@ export const defaultCatalogModels = (
         (model) =>
           !added.has(model.id.toLowerCase()) &&
           !isDeprecatedModel(model) &&
-          !(OPENCODE_SPECS[provider].skipFreeModels && isFreeModel(model)),
+          !(OPENCODE_SPECS[provider].skipFreeModels && !includeFree && isFreeModel(model)),
       )
       .map((model) => catalogModelInfo(catalog, provider, model)),
     ...additions,
