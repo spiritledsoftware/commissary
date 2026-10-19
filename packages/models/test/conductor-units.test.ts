@@ -6,6 +6,7 @@ import { toExecutorSnapshot } from "../src/executor/control-plane-picker.ts";
 import {
   failureReport,
   isCompactRequestFault,
+  isProviderSpecificRequest,
   matchRequestScopedAction,
   requestScopedRules,
   successReport,
@@ -16,6 +17,7 @@ import type { CredentialSnapshot } from "../src/executor/picker.ts";
 import { makeLiveThinking } from "../src/executor/thinking.ts";
 import { compatModelInfo } from "../src/handlers/model-capabilities.ts";
 import { rewriteResponseModel, rewriteStreamChunk } from "../src/handlers/model-rewrite.ts";
+import { providerFailover } from "../src/handlers/provider-failover.ts";
 import { extractSessionInfo, normalizeExplicitId } from "../src/handlers/session.ts";
 import { builtinTranslators } from "@commissary/translation";
 import { Formats } from "@commissary/translation/formats";
@@ -462,6 +464,53 @@ oauth:
         "responses/compact",
       ),
     );
+  });
+});
+
+describe("provider-specific request errors (issue #185)", () => {
+  it("an upstream 400 or 422 qualifies; the executor's own request-scoped errors do not", () => {
+    assert.isTrue(isProviderSpecificRequest(new ExecutionError({ status: 400, message: "bad" })));
+    assert.isTrue(isProviderSpecificRequest(new ExecutionError({ status: 422, message: "bad" })));
+
+    assert.isFalse(
+      isProviderSpecificRequest(
+        new ExecutionError({ status: 400, message: "bad", requestScoped: true }),
+      ),
+    );
+    assert.isFalse(isProviderSpecificRequest(new ExecutionError({ status: 409, message: "bad" })));
+    assert.isFalse(isProviderSpecificRequest(new ExecutionError({ status: 413, message: "bad" })));
+  });
+
+  it("a transport failure is not an upstream 400, whatever status the executor gave it", () => {
+    assert.isFalse(
+      isProviderSpecificRequest(
+        new ExecutionError({ status: 400, message: "bad", code: "transient_transport" }),
+      ),
+    );
+  });
+});
+
+describe("provider failover state (issue #185)", () => {
+  const first = new ExecutionError({ status: 400, message: "first" });
+  const second = new ExecutionError({ status: 422, message: "second" });
+
+  it("excludes a provider whatever the case or padding of its key", () => {
+    const failover = providerFailover(["openai-compatible-a", "claude", "openai-compatible-b"]);
+    failover.exclude(" OpenAI-Compatible-A ", first);
+    assert.deepStrictEqual(failover.remaining(), ["claude", "openai-compatible-b"]);
+
+    const padded = providerFailover([" Claude ", "codex"]);
+    padded.exclude("claude", first);
+    assert.deepStrictEqual(padded.remaining(), ["codex"]);
+  });
+
+  it("remembers the first error that caused an exclusion", () => {
+    const failover = providerFailover(["a", "b", "c"]);
+    assert.isUndefined(failover.firstFault());
+    assert.strictEqual(failover.exclude("a", first), first);
+    assert.strictEqual(failover.exclude("b", second), first);
+    assert.strictEqual(failover.firstFault(), first);
+    assert.deepStrictEqual(failover.remaining(), ["c"]);
   });
 });
 

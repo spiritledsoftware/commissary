@@ -536,9 +536,16 @@ Core contracts every provider slice implements (Go references in each module hea
   cap); a larger body answers 413 (deviation: Go reads it unbounded).
 - **Conductor** (`handlers/conductor.ts`, port of `conductor_execution.go`/`conductor_stream.go`): `conduct(prepared, run)`
   runs retry rounds. A round picks credentials one after another (`excludedIds` grows, no sleeping) until one succeeds, a
-  stop condition hits (request-scoped rule `stop*`, request faults 400/409/413/422 and the listed body codes,
-  `responses/compact` faults) or nothing is selectable; the final error is the last one that reached an upstream. Between
-  rounds the Worker asks `planRetry` (only for 403/408/429/500/502/503/504 and transient transport errors) and sleeps
+  stop condition hits (request-scoped rule `stop*`, request faults 409/413 and the listed body codes,
+  `responses/compact` faults, Commissary's own request-scoped errors) or nothing is selectable; the final error is the
+  last one that reached an upstream. An upstream 400/422 is treated differently from Go (ADR 0019, issue #185): Go stops
+  the request there, Commissary fails over to another provider, because providers shape requests differently
+  (cloaking, betas, translation, gateways) and such an error may be specific to the provider that answered. Request-scoped
+  rules are matched first; without a rule action the credential takes no cooldown, its provider (an OpenAI-compatible
+  endpoint is its own provider) and the rest of its alias pool are excluded for the rest of the request, across retry
+  rounds (`provider-failover.ts`: its remaining providers are what `pick` and `planRetry` are given), and selection picks
+  the next attempt as usual. When no attempt succeeds the client gets that first 400/422, not a later error; a request
+  with no other provider left fails at once. Between rounds the Worker asks `planRetry` (only for 403/408/429/500/502/503/504 and transient transport errors) and sleeps
   `wait + jitter` (Effect clock, so tests use `TestClock`). `max-retry-credentials` caps a round, per-credential
   `request-retry` ages credentials out of later rounds, request-scoped rules (`continue`, `continue-and-cooldown`, `stop`,
   `stop-and-cooldown`) come from credential metadata or `oauth.request-scoped-errors`. Every attempt is reported exactly

@@ -23,6 +23,7 @@ import { ExecutionError, withErrorFields } from "../executor/errors.ts";
 import {
   failureReport,
   isCompactRequestFault,
+  isProviderSpecificRequest,
   isRequestInvalid,
   isRetryRoundError,
   isStopAction,
@@ -60,6 +61,7 @@ import { UsageReporter } from "../usage/reporter.ts";
 import { priceForSpend, UsageSink } from "../usage/sink.ts";
 import { ModelCapabilities } from "./model-capabilities.ts";
 import { ModelsEnv } from "../env.ts";
+import { providerFailover } from "./provider-failover.ts";
 
 /** Upstream attempts (executor calls) allowed for one request. */
 export const MAX_UPSTREAM_ATTEMPTS = 16;
@@ -265,6 +267,7 @@ export const conduct = <T, R>(
     const settings = retrySettings(prepared.config);
     const compact = prepared.options.alt === "responses/compact";
     let upstreamAttempts = 0;
+    const failover = providerFailover(prepared.providers);
 
     const buildAttempt = (
       picked: PickResult,
@@ -456,7 +459,7 @@ export const conduct = <T, R>(
         const pickNext = (excludedIds: ReadonlyArray<string>) =>
           Effect.result(
             picker.pick({
-              providers: credits ? ["antigravity"] : prepared.providers,
+              providers: credits ? ["antigravity"] : failover.remaining(),
               model: prepared.routeModel,
               ...(credits ? { ignoreCooldown: true } : {}),
               callerScope: prepared.callerScope,
@@ -600,19 +603,34 @@ export const conduct = <T, R>(
               return { ok: true, value: result.success } satisfies RoundOutcome<T>;
 
             const error = result.failure;
-            upstreamError = error;
             bootstrap = attempt.bootstrapFailed;
             const action = yield* attempt.finish(error);
 
+            // A request fault takes no penalty. A 400/422 may be specific to this provider: the request moves on to
+            // another provider, except for `responses/compact`, whose capsule belongs to one provider. Every other
+            // request fault ends the request.
+            const providerSpecific =
+              action === undefined && !compact && isProviderSpecificRequest(error);
+
+            // An error that moved the request to another provider says nothing about the next retry round.
+            if (!providerSpecific) upstreamError = error;
+
             if (isStopAction(action)) return failed(error, true);
 
-            if (
-              action === undefined &&
-              (isCompactRequestFault(error, prepared.options.alt) || isRequestInvalid(error))
-            ) {
-              // A request fault: no rotation, no penalty.
+            if (action === undefined && isCompactRequestFault(error, prepared.options.alt)) {
               return failed(error, true);
             }
+
+            if (providerSpecific) {
+              const first = failover.exclude(picked.credential.provider, error);
+
+              if (failover.remaining().length === 0) return failed(first, true);
+
+              // The rest of this credential's alias pool belongs to the excluded provider.
+              break;
+            }
+
+            if (action === undefined && isRequestInvalid(error)) return failed(error, true);
 
             credentialError = error;
 
@@ -634,7 +652,7 @@ export const conduct = <T, R>(
         if (outcome.stop || isRequestInvalid(error) || !isRetryRoundError(error)) return NO_RETRY;
 
         const plan = yield* picker.planRetry({
-          providers: prepared.providers,
+          providers: failover.remaining(),
           model: prepared.routeModel,
           round,
           requestRetry: settings.requestRetry,
@@ -679,8 +697,10 @@ export const conduct = <T, R>(
     }
 
     const last = lastFailure;
-    // Stops return their own error; exhausted retries answer with the error of the last real upstream attempt.
-    const error = last.stop ? last.error : (preferredUpstream ?? last.error);
+    // Stops return their own error; exhausted retries answer with the error of the last real upstream attempt. A
+    // request that failed over after a 400/422 answers with that first error, not a later one.
+    const providerFault = failover.firstFault();
+    const error = providerFault ?? (last.stop ? last.error : (preferredUpstream ?? last.error));
 
     // Google One AI credits (`quota-exceeded.antigravity-credits`): after the normal rotation failed for capacity
     // reasons, Claude models get one more pass over the Antigravity credentials with credits enabled.

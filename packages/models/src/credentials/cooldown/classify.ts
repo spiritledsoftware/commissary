@@ -509,6 +509,18 @@ export const isRequestInvalidError = (error: ClassifiableError): boolean => {
   return isRequestFault(error.status, error.message);
 };
 
+/**
+ * An upstream 400 or 422 that may be specific to the provider that answered it (issue #185; not in Go). Providers
+ * shape requests differently (cloaking, betas, translation, gateways in between), so another provider may accept the
+ * request. Commissary's own request-scoped errors (local validation) and the other request faults (409, 413) are
+ * about the request itself. Whether the error is a request fault for cooldown purposes is {@link isRequestInvalidError}'s
+ * decision and stays unchanged.
+ */
+export const isProviderSpecificRequestError = (error: ClassifiableError): boolean =>
+  (error.status === 400 || error.status === 422) &&
+  error.code !== ErrorCode.requestScoped &&
+  isRequestInvalidError(error);
+
 /** `isRequestScopedResultError`: request-scoped marker, "items not persisted" 404, or an invalid request. */
 export const isRequestScopedResult = (error: ClassifiableError): boolean =>
   error.code === ErrorCode.requestScoped ||

@@ -16,6 +16,7 @@ import {
   isConnectionLifecycleError,
   isModelSupportError,
   isRequestFault,
+  isProviderSpecificRequestError,
   isRequestInvalidError,
   isTransientTransportError,
   shouldSkipCredentialCooldown,
@@ -508,6 +509,40 @@ describe("classification", () => {
     expect(
       shouldSkipCredentialCooldown({ status: 400, message: "bad", code: "force_cooldown" }),
     ).toBe(false);
+  });
+});
+
+describe("provider-specific request errors (issue #185)", () => {
+  it("an upstream 400 or 422 may be specific to one provider", () => {
+    expect(isProviderSpecificRequestError({ status: 400, message: "bad" })).toBe(true);
+    expect(
+      isProviderSpecificRequestError({
+        status: 400,
+        message:
+          '{"type":"error","error":{"type":"invalid_request_error","message":"x: Extra inputs are not permitted"}}',
+      }),
+    ).toBe(true);
+    expect(isProviderSpecificRequestError({ status: 422, message: "bad" })).toBe(true);
+  });
+
+  it("other request faults and Commissary's own request-scoped errors stay with the request", () => {
+    expect(isProviderSpecificRequestError({ status: 409, message: "bad" })).toBe(false);
+    expect(isProviderSpecificRequestError({ status: 413, message: "bad" })).toBe(false);
+    expect(
+      isProviderSpecificRequestError({ status: 404, message: "bad", code: "request_scoped" }),
+    ).toBe(false);
+    expect(
+      isProviderSpecificRequestError({ status: 400, message: "bad", code: "request_scoped" }),
+    ).toBe(false);
+  });
+
+  it("errors that are not request faults at all are not provider-specific request errors", () => {
+    expect(isProviderSpecificRequestError({ status: 400, message: "invalid_grant" })).toBe(false);
+    expect(isProviderSpecificRequestError({ status: 400, message: "unsupported model" })).toBe(
+      false,
+    );
+    expect(isProviderSpecificRequestError({ status: 429, message: "bad" })).toBe(false);
+    expect(isProviderSpecificRequestError({ status: 0, message: "bad" })).toBe(false);
   });
 });
 

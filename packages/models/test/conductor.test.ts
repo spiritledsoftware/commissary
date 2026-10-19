@@ -10,7 +10,7 @@ import { type AccessIdentity, AccessPrincipal } from "@commissary/auth";
 import type { ConfigReader } from "../src/config/reader.ts";
 import { ExecutionError } from "../src/executor/errors.ts";
 import { CredentialRefresher } from "../src/executor/helps/credential-refresh.ts";
-import { ExecutorRegistry } from "../src/executor/registry.ts";
+import { ExecutorRegistry, makeExecutorRegistry } from "../src/executor/registry.ts";
 import type { ProviderExecutor } from "../src/executor/types.ts";
 import type { RefreshResult } from "../src/credentials/refresh/index.ts";
 import { Thinking } from "../src/executor/thinking.ts";
@@ -211,9 +211,9 @@ describe("failover within a round", () => {
     () =>
       Effect.gen(function* () {
         const body = '{"error":{"message":"bad input","type":"invalid_request_error"}}';
-        const run = yield* setup(config(group("a") + group("b")), () => upstreamError(400, body));
+        const run = yield* setup(config(group("a") + group("b")), () => upstreamError(409, body));
         const error = yield* failure(run.exec(executeNonStream(chatInput())));
-        assert.strictEqual(error.status, 400);
+        assert.strictEqual(error.status, 409);
         assert.strictEqual(error.message, body);
         assert.strictEqual(run.calls.length, 1);
         // The credential stays selectable: request faults carry no penalty.
@@ -442,13 +442,272 @@ describe("request-scoped error rules", () => {
 
   it.effect("a rule that does not match leaves the default classification in place", () =>
     Effect.gen(function* () {
-      const run = yield* setup(config(group("a", rule("continue")) + group("b")), () =>
+      const run = yield* setup(config(group("a", rule("continue"))), () =>
         upstreamError(400, "other problem"),
       );
 
       const error = yield* failure(run.exec(executeNonStream(chatInput())));
       assert.strictEqual(error.status, 400);
       assert.strictEqual(run.calls.length, 1);
+    }),
+  );
+});
+
+const EXTRA_INPUTS = JSON.stringify({
+  type: "error",
+  error: {
+    type: "invalid_request_error",
+    message: "messages.0.foo: Extra inputs are not permitted",
+  },
+});
+
+const stopExtraInputs = `request-scoped-errors:\n        - { status: 400, match: ["Extra inputs"], action: stop }`;
+
+/** Provider `a` with two credentials (`key-a1`, `key-a2`): one provider, so one failover unit. */
+const twoKeys = (extra = "") => `
+    - name: a
+      base-url: https://a.example/v1
+      ${extra}
+      models: [{ name: m }]
+      keys: [{ api-key: key-a1 }, { api-key: key-a2 }]`;
+
+describe("provider failover after a 400 that may be specific to one provider (issue #185)", () => {
+  it.effect("a 400 from provider A is served by provider B, and A is not cooled down", () =>
+    Effect.gen(function* () {
+      const run = yield* setup(config(group("a") + group("b")), (call) =>
+        keyOf(call) === "a" ? upstreamError(400, EXTRA_INPUTS) : jsonResponse(CHAT_OK),
+      );
+
+      const result = yield* run.exec(executeNonStream(chatInput()));
+      assert.include(result.payload, "chat.completion");
+      assert.deepStrictEqual(run.calls.map(keyOf), ["a", "b"]);
+      assert.deepStrictEqual(
+        run.records.map((record) => [record.source, record.failed, record.fail?.statusCode]),
+        [
+          ["a", true, 400],
+          ["b", false, undefined],
+        ],
+      );
+      const a = run.harness.pool.list().find((item) => item.label === "a");
+      assert.strictEqual(a?.unavailable, false);
+    }),
+  );
+
+  it.effect("a 422 behaves like a 400", () =>
+    Effect.gen(function* () {
+      const run = yield* setup(config(group("a") + group("b")), (call) =>
+        keyOf(call) === "a" ? upstreamError(422, "unprocessable") : jsonResponse(CHAT_OK),
+      );
+
+      const result = yield* run.exec(executeNonStream(chatInput()));
+      assert.include(result.payload, "chat.completion");
+      assert.deepStrictEqual(run.calls.map(keyOf), ["a", "b"]);
+    }),
+  );
+
+  it.effect("two credentials of the same provider: one attempt, the client gets the 400", () =>
+    Effect.gen(function* () {
+      const run = yield* setup(config(twoKeys()), () => upstreamError(400, EXTRA_INPUTS));
+
+      const error = yield* failure(run.exec(executeNonStream(chatInput())));
+      assert.strictEqual(error.status, 400);
+      assert.strictEqual(error.message, EXTRA_INPUTS);
+      assert.strictEqual(run.calls.length, 1);
+      assert.strictEqual(run.records.length, 1);
+    }),
+  );
+
+  it.effect("the other credentials of the failing provider are skipped", () =>
+    Effect.gen(function* () {
+      // `a` is the higher priority tier, so it is selected first; `b` is the only other provider.
+      const run = yield* setup(config(twoKeys("priority: 5") + group("b")), (call) =>
+        keyOf(call).startsWith("a") ? upstreamError(400, EXTRA_INPUTS) : jsonResponse(CHAT_OK),
+      );
+
+      yield* run.exec(executeNonStream(chatInput()));
+      const keys = run.calls.map(keyOf);
+      assert.strictEqual(keys.length, 2);
+      assert.isTrue(keys[0]?.startsWith("a"));
+      assert.strictEqual(keys[1], "b");
+    }),
+  );
+
+  it.effect("every provider answers 400: one attempt each, the client gets the first error", () =>
+    Effect.gen(function* () {
+      const run = yield* setup(config(group("a") + group("b")), (call) =>
+        upstreamError(400, `rejected by ${keyOf(call)}`),
+      );
+
+      const error = yield* failure(run.exec(executeNonStream(chatInput())));
+      assert.deepStrictEqual(run.calls.map(keyOf), ["a", "b"]);
+      assert.strictEqual(error.status, 400);
+      assert.strictEqual(error.message, "rejected by a");
+      assert.deepStrictEqual(
+        run.records.map((record) => [record.source, record.failed]),
+        [
+          ["a", true],
+          ["b", true],
+        ],
+      );
+    }),
+  );
+
+  it.effect(
+    "A answers 400, then B answers 503: A is not tried again and the client gets A's 400",
+    () =>
+      Effect.gen(function* () {
+        const yaml = config(
+          group("a", "disable-cooling: true\n      priority: 5") +
+            group("b", "disable-cooling: true"),
+          "routing:\n  retry:\n    request-retry: 2",
+        );
+
+        const run = yield* setup(yaml, (call) =>
+          keyOf(call) === "a" ? upstreamError(400, EXTRA_INPUTS) : upstreamError(503, "busy"),
+        );
+
+        const error = yield* failure(run.exec(executeNonStream(chatInput())));
+        // Retry rounds repeat B (its request-retry budget); A, excluded for the request, never comes back.
+        assert.deepStrictEqual(run.calls.map(keyOf), ["a", "b", "b", "b"]);
+        assert.strictEqual(error.status, 400);
+        assert.strictEqual(error.message, EXTRA_INPUTS);
+      }),
+  );
+
+  it.effect("B answers 503 before A answers 400: B still gets its retry rounds", () =>
+    Effect.gen(function* () {
+      // `b` is selected first, then `a` (lower tier). The 400 of `a` must not hide the 503 that opens a retry round.
+      const yaml = config(
+        group("a", "disable-cooling: true") +
+          group("b", "disable-cooling: true\n      priority: 5"),
+        "routing:\n  retry:\n    request-retry: 1",
+      );
+
+      const run = yield* setup(yaml, (call) =>
+        keyOf(call) === "a" ? upstreamError(400, EXTRA_INPUTS) : upstreamError(503, "busy"),
+      );
+
+      const error = yield* failure(run.exec(executeNonStream(chatInput())));
+      assert.deepStrictEqual(run.calls.map(keyOf), ["b", "a", "b"]);
+      assert.strictEqual(error.status, 400);
+      assert.strictEqual(error.message, EXTRA_INPUTS);
+    }),
+  );
+
+  it.effect("a matching stop rule on A keeps the request from failing over", () =>
+    Effect.gen(function* () {
+      const run = yield* setup(config(group("a", stopExtraInputs) + group("b")), (call) =>
+        keyOf(call) === "a" ? upstreamError(400, EXTRA_INPUTS) : jsonResponse(CHAT_OK),
+      );
+
+      const error = yield* failure(run.exec(executeNonStream(chatInput())));
+      assert.strictEqual(error.status, 400);
+      assert.deepStrictEqual(run.calls.map(keyOf), ["a"]);
+    }),
+  );
+
+  it.effect("a 409 or 413 from A does not fail over", () =>
+    Effect.gen(function* () {
+      for (const status of [409, 413]) {
+        const run = yield* setup(config(group("a") + group("b")), (call) =>
+          keyOf(call) === "a" ? upstreamError(status, "nope") : jsonResponse(CHAT_OK),
+        );
+
+        const error = yield* failure(run.exec(executeNonStream(chatInput())));
+        assert.strictEqual(error.status, status);
+        assert.deepStrictEqual(run.calls.map(keyOf), ["a"]);
+      }
+    }),
+  );
+
+  const localValidation = (credentialLabel: string): Layer.Layer<ExecutorRegistry> => {
+    const base = makeExecutorRegistry();
+
+    return Layer.succeed(
+      ExecutorRegistry,
+      ExecutorRegistry.of({
+        get: (provider) => {
+          const executor = base.get(provider);
+
+          if (executor === undefined) return undefined;
+
+          return {
+            ...executor,
+            execute: (context, request, options) =>
+              context.credential.label === credentialLabel
+                ? Effect.fail(
+                    new ExecutionError({
+                      status: 400,
+                      message: "role 'system' is not supported on this model",
+                      requestScoped: true,
+                    }),
+                  )
+                : executor.execute(context, request, options),
+          };
+        },
+      }),
+    );
+  };
+
+  it.effect("a request-scoped 400 raised by Commissary itself does not fail over", () =>
+    Effect.gen(function* () {
+      const run = yield* setup(config(group("a") + group("b")), () => jsonResponse(CHAT_OK), {
+        executors: localValidation("a"),
+      });
+
+      const error = yield* failure(run.exec(executeNonStream(chatInput())));
+      assert.strictEqual(error.status, 400);
+      assert.include(error.message, "role 'system'");
+      assert.strictEqual(run.calls.length, 0);
+      assert.strictEqual(run.records.length, 1);
+    }),
+  );
+
+  it.effect("responses/compact keeps stopping at a request fault", () =>
+    Effect.gen(function* () {
+      const compact = {
+        entryProtocol: Formats.OpenAIResponse,
+        model: "m",
+        body: { model: "m", input: "hello" },
+        alt: "responses/compact",
+        request: fakeRequest(),
+      };
+
+      const answer = (call: UpstreamCall) =>
+        keyOf(call) === "a" ? upstreamError(400, EXTRA_INPUTS) : jsonResponse({ output: [] });
+
+      const stopped = yield* setup(config(group("a") + group("b")), answer);
+      const error = yield* failure(stopped.exec(executeNonStream(compact)));
+      assert.strictEqual(error.status, 400);
+      assert.deepStrictEqual(stopped.calls.map(keyOf), ["a"]);
+
+      // The same request without `alt` fails over, so the compact stop is the rule at work.
+      const failover = yield* setup(config(group("a") + group("b")), answer);
+      yield* failover.exec(executeNonStream({ ...compact, alt: "" }));
+      assert.deepStrictEqual(failover.calls.map(keyOf), ["a", "b"]);
+    }),
+  );
+
+  it.effect("a streamed request fails over before the bootstrap and receives B's stream", () =>
+    Effect.gen(function* () {
+      const run = yield* setup(config(group("a") + group("b")), (call) =>
+        keyOf(call) === "a"
+          ? upstreamError(400, EXTRA_INPUTS)
+          : sseResponse([chunk("hi"), "data: [DONE]\n\n"]),
+      );
+
+      const chunks = yield* collect(run);
+      assert.isTrue(chunks.some((text) => text.includes('"content":"hi"')));
+      assert.deepStrictEqual(run.calls.map(keyOf), ["a", "b"]);
+      assert.deepStrictEqual(
+        run.records.map((record) => [record.source, record.failed]),
+        [
+          ["a", true],
+          ["b", false],
+        ],
+      );
+      const a = run.harness.pool.list().find((item) => item.label === "a");
+      assert.strictEqual(a?.unavailable, false);
     }),
   );
 });
