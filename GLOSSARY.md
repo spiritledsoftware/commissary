@@ -77,7 +77,7 @@ _Avoid_: quota, org quota (a quota is a provider's)
 
 **Platform admin**:
 A person named by the deployment who can repair any org, and the only one who can create orgs on a self-hosted Commissary.
-On Commissary Cloud they also set owned-org limits and suspend people and orgs.
+On Commissary Cloud they also set owned-org limits, suspend people and orgs, raise an org's ceilings and mark it unbilled.
 _Avoid_: operator, superuser, admin (on its own)
 
 **Org slug**:
@@ -600,6 +600,26 @@ _Avoid_: usage (on its own), consumption
 A cap on spend over a calendar day, week or month, set on a member, a team, an org, a shared credential, an API key or a
 shared agent.
 _Avoid_: budget, quota, allowance (a provider's limit)
+
+### Plans
+
+**Plan**:
+What an org holds on Commissary Cloud to decide what it is billed: Free or Pay as you go (ADR 0042). A self-hosted
+Commissary has none.
+_Avoid_: tier, subscription, Pro
+
+**Free usage**:
+The requests and tool calls, browser hours and computer hours an org gets free each month, on either plan.
+_Avoid_: allowance, quota (a provider's), free tier, credits
+
+**Plan limit**:
+Where a plan refuses further use: Free's stop at its free usage, the billing cap, or a ceiling on concurrent browser
+sessions, computers or request rate.
+_Avoid_: spend limit (an org's own cap on cost), quota, rate limit (on its own)
+
+**Billing cap**:
+The most Commissary Cloud may bill a Pay-as-you-go org in a month, which its org owners set.
+_Avoid_: budget, spend limit, overage cap
 
 ### Tools
 
