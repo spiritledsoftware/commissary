@@ -55,7 +55,7 @@ import type {
   ProviderExecutor,
 } from "../executor/types.ts";
 import type { Json } from "@commissary/json";
-import { holdInvocation, CurrentOrg, type OrgId } from "@commissary/core";
+import { holdInvocation, CurrentOrg, type OrgId, outboundRefusalOf } from "@commissary/core";
 import { noteSelection, notePrincipal, RequestTrace } from "../observability/trace.ts";
 import type { SessionRouting } from "../session-routing/routing.ts";
 import { UsageReporter } from "../usage/reporter.ts";
@@ -101,6 +101,24 @@ export const jitteredWait = (waitMs: number, maxWaitMs: number, unit: number): n
   if (maxWaitMs > 0 && range > maxWaitMs - waitMs) range = maxWaitMs - waitMs;
 
   return range <= 0 ? waitMs : waitMs + unit * range;
+};
+
+/**
+ * An attempt the outbound guard refused (ADR 0044: the credential's `base_url`, or a redirect from it, is not a public
+ * HTTPS address) answers `400` with the guard's message: no cooldown, and the request moves on to another provider like
+ * after an upstream 400, so a misconfigured provider does not hide the others.
+ */
+const outboundRefusal = (error: ExecutionError): ExecutionError => {
+  const refused = outboundRefusalOf(error);
+
+  return refused === undefined
+    ? error
+    : new ExecutionError({
+        status: 400,
+        code: "outbound_refused",
+        message: refused.message,
+        cause: refused,
+      });
 };
 
 /** Usage fields of the session and upstream base URL of an attempt (`syncMetadataSessionToContext`, `BaseURL`). */
@@ -604,7 +622,7 @@ export const conduct = <T, R>(
             if (Result.isSuccess(result))
               return { ok: true, value: result.success } satisfies RoundOutcome<T>;
 
-            const error = result.failure;
+            const error = outboundRefusal(result.failure);
             bootstrap = attempt.bootstrapFailed;
             const action = yield* attempt.finish(error);
 

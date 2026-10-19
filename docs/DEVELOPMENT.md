@@ -69,7 +69,7 @@ Billing guards (`apps/api` today) in its `src/env.d.ts` and `vitest.config.ts`.
 `Env`). Regenerate it when those change (Wrangler is used only as a type generator here):
 
 ```bash
-printf '{"name":"t","main":"apps/app/src/index.ts","compatibility_date":"2026-08-01","compatibility_flags":["nodejs_compat"]}' > /tmp/rt.json
+printf '{"name":"t","main":"apps/app/src/index.ts","compatibility_date":"2026-08-01","compatibility_flags":["nodejs_compat","global_fetch_strictly_public"]}' > /tmp/rt.json
 pnpm dlx wrangler@4 types --include-env=false -c /tmp/rt.json tools/workers/worker-configuration.d.ts
 ```
 

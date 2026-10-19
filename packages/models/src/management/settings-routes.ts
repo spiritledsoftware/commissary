@@ -33,6 +33,7 @@ import {
   validateSettings,
 } from "./settings.ts";
 import { modelsControlPlane } from "../env.ts";
+import { refusedConfigBaseUrl } from "./base-url-guard.ts";
 
 const PATH = "/v9/management/settings";
 
@@ -156,6 +157,15 @@ const importDocument = Effect.gen(function* () {
       ...(error.column === undefined ? {} : { column: error.column }),
     });
   }
+
+  // A provider's `base-url` the outbound guard refuses is refused when saved, not only when used (ADR 0044).
+  const refusedBase = yield* refusedConfigBaseUrl(parsed.success);
+
+  if (refusedBase !== undefined)
+    return yield* replyError(422, "invalid_config", {
+      message: refusedBase.refusal.message,
+      path: refusedBase.path,
+    });
 
   const identity = yield* AccessPrincipal;
 

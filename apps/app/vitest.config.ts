@@ -13,6 +13,8 @@ const SELF_HOSTED_BINDINGS = {
   // fail closed (`https://commissary.test/...` answers 500 without Access settings).
   ACCESS_DEV_BYPASS: "true",
   META_MINT_URL: "",
+  // No own hosts: the outbound guard learns the test request's host from the request.
+  OWN_HOSTS: "",
   // Fixed test key of the keyed `auth_index` (deployed: an Alchemy `Random`, alchemy.run.ts); 64 characters, so
   // tests that configure Access (where shorter keys are refused, packages/models/src/management/auth-index.ts) can use it too.
   AUTH_INDEX_KEY: "commissary-test-auth-index-key-0123456789abcdef0123456789abcdef01234",
@@ -48,7 +50,7 @@ const worker = (bindings: Record<string, string>) =>
     main: "./test/worker.ts",
     miniflare: {
       compatibilityDate: "2026-08-01",
-      compatibilityFlags: ["nodejs_compat"],
+      compatibilityFlags: ["nodejs_compat", "global_fetch_strictly_public"],
       // Same module types as the deployed bundle (alchemy.run.ts): tokenizer ranks are `Data` modules (ArrayBuffer).
       modulesRules: [{ type: "Data", include: ["**/*.bin"] }],
       durableObjects: {

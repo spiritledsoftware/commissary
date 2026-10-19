@@ -10,5 +10,6 @@ const { handler } = makeWebHandler();
 // (alchemy.run.ts). A deploy of the state Worker resets them, and the calls cut off then are retried once
 // (`retryOnCodeUpdate`).
 export default {
-  fetch: (request, env, ctx) => handler(request, requestContext(retryOnCodeUpdate(env), ctx)),
+  fetch: (request, env, ctx) =>
+    handler(request, requestContext(retryOnCodeUpdate(env), ctx, request.url)),
 } satisfies ExportedHandler<Env>;

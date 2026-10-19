@@ -7,6 +7,7 @@
  */
 import { Layer } from "effect";
 import { FetchHttpClient, type HttpClient } from "effect/http";
+import { guardedHttpClientLayer } from "@commissary/core";
 import { ConfigReader } from "../config/reader.ts";
 import type { CredentialPicker } from "../executor/picker.ts";
 import { ControlPlanePickerLayer } from "../executor/control-plane-picker.ts";
@@ -83,7 +84,8 @@ export const makeClientApiRoutes = (options: ClientApiLayerOptions = {}) => {
     options.credentialRefresher ?? CredentialRefresher.controlPlane,
     ExecutorRegistry.layer,
     options.usageSink ?? usageSinkLayer,
-    options.httpClient ?? FetchHttpClient.layer,
+    // Every upstream request passes the outbound guard: a provider's `base_url` is user-supplied (ADR 0044).
+    guardedHttpClientLayer(options.httpClient ?? FetchHttpClient.layer),
     options.websocketConnector ?? UpstreamWebSocketConnector.layerFetch,
     options.thinking ?? Thinking.live,
   ).pipe(Layer.provideMerge(config));

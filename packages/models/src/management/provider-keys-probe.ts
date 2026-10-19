@@ -43,6 +43,7 @@ import {
 } from "../executor/opencode/headers.ts";
 import { SUBQ_SNAP } from "../executor/systemone/subq.ts";
 import { isJsonObject, type Json, tryParseJson } from "@commissary/json";
+import { outboundRefusalOf } from "@commissary/core";
 import { DEFAULT_BASE_URLS } from "./provider-keys-view.ts";
 import type { ProviderKeyFamily, ProbeResult } from "@commissary/contract/provider-keys";
 
@@ -146,7 +147,8 @@ const send = (
 
     return { status: response.status, body: tryParseJson(body) };
   }).pipe(
-    Effect.mapError(() => failure("request failed")),
+    // The outbound guard's refusal (ADR 0044) is shown as it is: the base URL is the person's to change.
+    Effect.mapError((error) => failure(outboundRefusalOf(error)?.message ?? "request failed")),
     Effect.provideService(HttpClient.TracerPropagationEnabled, false),
   );
 

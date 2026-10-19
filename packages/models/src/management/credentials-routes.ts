@@ -19,12 +19,13 @@
 import { Clock, Effect } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { AccessPrincipal, AuthConfig, holdsSensitivePowers, isHosted } from "@commissary/auth";
-import { isJsonObject, type Json, type JsonObject } from "@commissary/json";
+import { isJsonObject, type Json, type JsonObject, tryParseJson } from "@commissary/json";
 import { ModelRegistry } from "../registry/service.ts";
 import { currentViewer } from "@commissary/auth";
 import { bodyText, handled, jsonReply, queryParams, replyError } from "@commissary/core";
 import { bodyJson, bodyObject } from "@commissary/state";
 import { modelsControlPlane } from "../env.ts";
+import { refusedMetadataBaseUrl } from "./base-url-guard.ts";
 
 const text = (value: Json | undefined): string => (typeof value === "string" ? value.trim() : "");
 
@@ -173,6 +174,13 @@ const storeUpload = (upload: Upload, wantPrivate: boolean) =>
     if (!name.toLowerCase().endsWith(".json")) return "file must be .json";
 
     if (unsafeName(name)) return "invalid name";
+
+    // A `base_url` the outbound guard refuses is refused when saved, not only when used (ADR 0044). A file that is no
+    // JSON is the ControlPlane's to refuse.
+    const refusedBase = yield* refusedMetadataBaseUrl(tryParseJson(upload.content) ?? null);
+
+    if (refusedBase !== undefined)
+      return `invalid auth file: ${refusedBase.path}: ${refusedBase.refusal.message}`;
     const viewer = yield* currentViewer;
 
     const result = yield* modelsControlPlane("importAuthFile", (stub) =>
@@ -539,6 +547,12 @@ const patchFields = Effect.gen(function* () {
 
   if (name === "") return yield* replyError(400, "name is required");
   const { name: _name, ...fields } = body;
+
+  // A `base_url` the outbound guard refuses is refused when saved, not only when used (ADR 0044).
+  const refusedBase = yield* refusedMetadataBaseUrl(fields);
+
+  if (refusedBase !== undefined)
+    return yield* replyError(422, refusedBase.refusal.message, { path: refusedBase.path });
   const viewer = yield* currentViewer;
 
   const result = yield* modelsControlPlane("patchCredentialFields", (stub) =>

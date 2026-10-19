@@ -12,14 +12,13 @@
  */
 import { Effect, Layer } from "effect";
 import {
-  FetchHttpClient,
   type HttpClient,
   HttpRouter,
   type HttpServerRequest,
   type HttpServerResponse,
 } from "effect/http";
 import type { AccessPrincipal, AuthConfig } from "@commissary/auth";
-import { type CurrentOrg, routeServices } from "@commissary/core";
+import { type CurrentOrg, OutboundHttpClientLive, routeServices } from "@commissary/core";
 import type { StateEnv } from "@commissary/state";
 import type { ModelsEnv } from "../env.ts";
 import { CatalogStore } from "../registry/catalog-store.ts";
@@ -92,9 +91,12 @@ export const ManagementRoutes = HttpRouter.addAll(
   }),
 );
 
-/** The services of {@link ManagementRoutes} in production: the ControlPlane-backed model registry and the global `fetch`. */
+/**
+ * The services of {@link ManagementRoutes} in production: the ControlPlane-backed model registry and the global `fetch`
+ * behind the outbound guard (a probe or quota check reaches a provider's `base_url`, ADR 0044).
+ */
 export const ManagementServicesLive = Layer.mergeAll(
   ModelRegistryLive,
-  FetchHttpClient.layer,
+  OutboundHttpClientLive,
   CatalogStore.layer,
 );
