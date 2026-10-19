@@ -28,6 +28,7 @@ import {
   lifecycleError,
   type Prepared,
 } from "./conductor.ts";
+import { metered } from "./metering.ts";
 import { rewriteResponseModel, rewriteStreamChunk } from "./model-rewrite.ts";
 import { resolveModel } from "./resolve.ts";
 import { prepareSessionRouting, type SessionRouting } from "../session-routing/routing.ts";
@@ -239,8 +240,11 @@ const upstreamHeaders = (config: Config, headers: Headers): Headers | undefined 
 const finalError = (prepared: Prepared, error: ExecutionError): ExecutionError =>
   enrichSelectionError(error, prepared.providers, prepared.routeModel);
 
-/** Non-streaming execution (Go `ExecuteWithAuthManager`). */
-export const executeNonStream = Effect.fnUntraced(function* (input: ExecutionInput) {
+/**
+ * Non-streaming execution (Go `ExecuteWithAuthManager`) without counting it against free usage: for what is not a
+ * Request (GLOSSARY), such as polling a video's status.
+ */
+export const executeNonStreamUnmetered = Effect.fnUntraced(function* (input: ExecutionInput) {
   const prepared = yield* prepare(input, false);
 
   const result = yield* conduct(prepared, (attempt) =>
@@ -269,6 +273,10 @@ export const executeNonStream = Effect.fnUntraced(function* (input: ExecutionInp
 
   return result.value;
 });
+
+/** Non-streaming execution (Go `ExecuteWithAuthManager`) of a Request, counted against free usage (`metering.ts`). */
+export const executeNonStream = (input: ExecutionInput) =>
+  metered(executeNonStreamUnmetered(input));
 
 const NO_CHUNKS: ReadonlyArray<string> = [];
 
@@ -377,11 +385,12 @@ export const executeStream = Effect.fnUntraced(function* (input: ExecutionInput)
       return yield* finalError(prepared, result.error);
     }
   }
-});
+}, metered);
 
 /**
  * Token counting (Go `ExecuteCountWithAuthManager`): the same retry/failover conductor as non-stream execution, through
- * the provider's `countTokens`. Count requests carry no billable tokens and skip the passive quota snapshot.
+ * the provider's `countTokens`. Count requests carry no billable tokens and skip the passive quota snapshot; they are
+ * not Requests (GLOSSARY), so they are not counted against free usage either.
  */
 export const executeCountTokens = Effect.fnUntraced(function* (input: ExecutionInput) {
   const prepared: Prepared = { ...(yield* prepare(input, false)), countTokens: true };

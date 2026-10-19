@@ -60,10 +60,12 @@ its `test/env.d.ts` follows `StateObjectEnv`); one the Models part reads, into `
 the classes read (the secrets keys) is declared for their tests in `apps/app/test/env.d.ts` and `apps/api/test/env.d.ts`,
 not in the Workers' `Env`. One Models reads also goes into `ModelsBindings` (`packages/models/src/env.ts`)
 and the Models test Worker's bindings (`packages/models/vitest.config.ts`; its `test/env.d.ts` follows `ModelsBindings`,
-`StateObjectEnv` and `AuthBindings`).
+`StateObjectEnv` and `AuthBindings`); one Billing reads, into `BillingBindings` (`packages/billing/src/env.ts`) and the
+Billing test Worker's (`packages/billing/vitest.config.ts`, `test/env.d.ts`), and in each Worker that serves a surface
+Billing guards (`apps/api` today) in its `src/env.d.ts` and `vitest.config.ts`.
 
 `tools/workers/worker-configuration.d.ts` holds the Workers runtime types for the compatibility date and flags in
-`alchemy.run.ts`, shared by every program that runs in workerd (`apps/app`, `apps/api`, `packages/state`, `packages/models`; each declares its own
+`alchemy.run.ts`, shared by every program that runs in workerd (`apps/app`, `apps/api`, `packages/state`, `packages/models`, `packages/billing`; each declares its own
 `Env`). Regenerate it when those change (Wrangler is used only as a type generator here):
 
 ```bash
@@ -157,6 +159,15 @@ may have stored its writes before, so it may run twice. Only chains are retried:
   through `ModelsEnv`, its ControlPlane part's through `ModelsPartEnv`, and may import `@commissary/state`, `auth`,
   `translation`, `json`, `contract`, `core`, `effect`, `fzstd`, `yaml` and the runtime modules
   `tools/oxlint/boundaries` lists: nothing from `apps/`.
+- `packages/billing` (`@commissary/billing`): Commissary Cloud's billing area (ADR 0042, #236), shaped like Models: plans
+  (`free`, `payg`), free usage counted per org per calendar month in UTC, the Free plan's stop (`429 plan_limit_reached`),
+  the request-rate ceiling per plan, `GET /billing`, its ControlPlane part (`BillingPart`) and its org-deletion step. It
+  does nothing on a self-hosted Commissary. Entry points `./api` (what the API Worker and the areas that count call:
+  `limitClientRate`, `countRequest`, `uncountRequest`, `BillingEnv`), `./management` (the app Worker's: the route, the
+  org-deletion step), `./state` (the state Worker's: `BillingPart`) and `./testing`; `./plan` (the constants) serves
+  `alchemy.run.ts`, not the Workers. It may import `@commissary/state`, `auth`, `contract`, `core`, `effect` and the
+  runtime modules `tools/oxlint/boundaries` lists, and no other area; Models imports its `./api` only. Its tests run in
+  workerd against `packages/billing/test/worker.ts`, a test-only ControlPlane (state's base composed with its part).
 - `apps/web` (`@commissary/web`): the control panel (below).
 - `packages/auth` (`@commissary/auth`): request-side authentication (#132). The principal and `AccessPrincipal`, roles,
   Access JWT verification, the cross-site checks, API and management keys (their text and the per-isolate caches of
@@ -283,7 +294,10 @@ stays with that Worker.
   runs `test/unit/` in Node.js (the tests whose modules reach no binding and no `cloudflare:*` module), `models` the
   rest in workerd against `packages/models/test/worker.ts`, a test-only ControlPlane (state's base composed with the
   Models part by `composeControlPlane`, as a Worker composes it) with the Platform registry and SessionState, its
-  `CACHE` and `USAGE` and the bindings `test/env.d.ts` declares. Models' client API harnesses put the routes behind
+  `CACHE` and `USAGE` and the bindings `test/env.d.ts` declares. `@commissary/billing` has one workerd project
+  (`billing`): its test Worker, `packages/billing/test/worker.ts`, is a test-only ControlPlane (state's base composed
+  with the Billing part) with the Platform registry and SessionState, on real SQLite storage; the bindings are in
+  `test/env.d.ts`, and the rate-limit bindings are not bound in `vitest.config.ts` (tests inject their own). Models' client API harnesses put the routes behind
   `@commissary/auth`'s client gate (`test/support/client-gate.ts`), not the Worker's. The panel's and the other
   packages' tests run in Node.js. A test
   that restarts a ControlPlane (`evictDurableObject`) first disposes of every stub of a part it holds
@@ -301,9 +315,10 @@ stays with that Worker.
 - **Shared helpers.** A package whose fixtures or helpers its dependants' tests need exports them as `./testing`
   (`test/testing.ts`), e.g. `@commissary/translation/testing` (the thinking and token fixtures, the structural JSON
   comparison, the golden translator harness), `@commissary/state/testing` (a Durable Object's tables, rows and alarm,
-  the ControlPlane's org-wide tables, `withPart`) or `@commissary/models/testing` (the pipeline harness, the recording
+  the ControlPlane's org-wide tables, `withPart`), `@commissary/models/testing` (the pipeline harness, the recording
   `HttpClient`, the ControlPlane and usage helpers, and the constants and modules the Worker's tests seed Models
-  with). There is no test-utils package. Lint allows `@commissary/*/testing`
+  with) or `@commissary/billing/testing` (an org's plan and month's count set and read through the part, the free
+  usage and ceiling constants, `resetBillingCaches`). There is no test-utils package. Lint allows `@commissary/*/testing`
   imports only in `test/` folders.
 - **Fixtures** sit in the `test/fixtures/` of the package whose tests read them (below). A dependant reads them through
   `./testing`, never by a relative path into another package.
@@ -366,10 +381,12 @@ permissions they need, and deploy jobs use no dependency cache.
   `oxlint`, `oxlint-tsgolint` and `@effect/tsgo` are pinned to versions the patch supports, so upgrade them together.
 - **anti-slop** (vendored in `tools/oxlint/anti-slop/`, provenance in its `UPSTREAM.md`): the copy belongs to this
   repository; edit its rules there.
-- **boundaries** (`tools/oxlint/boundaries/`, ours): `boundaries/models-imports` keeps `@commissary/models` behind its
-  entry points (#151). Its sources import only their own files, the dependencies `packages/models/package.json`
-  declares and the runtime modules the rule lists; the apps import it only as `@commissary/models/api`, `/management`
-  and `/state` (their tests also `/testing`), never its other exports or one of its files by a relative path.
+- **boundaries** (`tools/oxlint/boundaries/`, ours): `boundaries/models-imports` and `boundaries/billing-imports` keep
+  `@commissary/models` and `@commissary/billing` behind their entry points (#151; another package's sources import
+  Billing's `./api` only, none import Models). An area's sources import only their own files, the dependencies its
+  `package.json` declares and the runtime modules the rule lists; the apps import it only as `@commissary/<area>/api`,
+  `/management` and `/state` (their tests also `/testing`), never its other exports or one of its files by a relative
+  path.
 
 Rules downgraded to warnings on purpose (reported, not failing): `effecttsgo/unstable-api-usage` (the HTTP stack is
 `effect/unstable/http`), `anti-slop-effect/no-service-constructor-imports` (flags every `make*` function),
@@ -411,7 +428,7 @@ assertion that cannot be removed carries a `// SAFETY: <invariant>` comment on t
 - TypeScript 7 (native `tsc`). Each program has its own tsconfig extending `tsconfig.base.json`: `apps/app/tsconfig.json`
   (app Worker, workerd types), `apps/api/tsconfig.json` (API Worker, workerd types), `apps/auth/tsconfig.json` (auth Worker, workerd types), `apps/state/tsconfig.json` (state Worker, workerd types), `apps/web/tsconfig.app.json` (panel, DOM types) and `tsconfig.node.json` (its Node.js side),
   `packages/contract/tsconfig.json` (no runtime types), `packages/auth`, `packages/core`, `packages/json` and `packages/translation` (Node.js types,
-  no Workers types), `packages/state` and `packages/models` (workerd types, with the Node.js tests of `test/unit/`
+  no Workers types), `packages/state`, `packages/billing` and `packages/models` (workerd types, with the Node.js tests of `test/unit/`
   checked in the same program) and the root's `tsconfig.infra.json` (deploy code, Node.js types). `tsc` only checks (`noEmit`); Turborepo caches it. `capnp-es` (via Alchemy) declares a TypeScript 5/6 peer
   range; it only ships types, so the peer warning is harmless.
 - `@cloudflare/vitest-plugin` (successor of `@cloudflare/vitest-pool-workers`) is used because it supports vitest 5,

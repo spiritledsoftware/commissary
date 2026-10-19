@@ -1,0 +1,16 @@
+{
+  // Billing and its tests, run by workerd (Vitest with @cloudflare/vitest-plugin): the Workers runtime types shared with
+  // the Worker (tools/workers/worker-configuration.d.ts), the Node.js types (nodejs_compat) and the Vitest config, and
+  // the plugin's `cloudflare:test` module. The test Worker's `env` is declared in test/env.d.ts; the sources read their
+  // own view (`BillingEnv`), never the global `Env`.
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2023"],
+    "types": [
+      "node",
+      "../../tools/workers/worker-configuration.d.ts",
+      "@cloudflare/vitest-plugin/types"
+    ]
+  },
+  "include": ["src", "test", "vitest.config.ts"]
+}

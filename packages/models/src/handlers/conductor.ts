@@ -33,6 +33,7 @@ import {
   successReport,
 } from "../executor/classify.ts";
 import { withCredentialRefresh } from "../executor/helps/credential-refresh.ts";
+import { markWorked } from "./metering.ts";
 import {
   CredentialPicker,
   type CredentialSnapshot,
@@ -583,6 +584,7 @@ export const conduct = <T, R>(
 
           for (const upstreamModel of models) {
             upstreamAttempts += 1;
+            yield* markWorked;
             const attempt = yield* buildAttempt(picked, executor, upstreamModel, credits);
 
             // Prepares the credential (`prepareRequestAuth`) and, after a 401, refreshes it and repeats the attempt once

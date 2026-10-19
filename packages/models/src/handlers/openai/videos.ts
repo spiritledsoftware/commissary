@@ -30,7 +30,12 @@ import {
   type JsonObject,
   tryParseJson,
 } from "@commissary/json";
-import { executeNonStream, type ExecutionInput, type ExecutionOutput } from "../execute.ts";
+import {
+  executeNonStream,
+  executeNonStreamUnmetered,
+  type ExecutionInput,
+  type ExecutionOutput,
+} from "../execute.ts";
 import { currentConfig, type ClientApiServices, readRequestBody } from "../request.ts";
 import { errorResponse, withNonStreamKeepAlive } from "../respond.ts";
 import { loadVideoBinding, saveVideoBinding } from "./video-binding.ts";
@@ -88,8 +93,11 @@ interface VideoRun {
   readonly pinnedId?: string;
 }
 
-/** Runs one `openai-video` execution; the serving credential id is part of the output. */
-const runVideo = (request: HttpServerRequest.HttpServerRequest, run: VideoRun) => {
+/**
+ * Runs one `openai-video` execution; the serving credential id is part of the output. Creating a video is a Request
+ * and counts against free usage; polling one (`metered: false`) is not.
+ */
+const runVideo = (request: HttpServerRequest.HttpServerRequest, run: VideoRun, metered = true) => {
   const input: ExecutionInput = {
     entryProtocol: "openai-video",
     model: run.model,
@@ -99,7 +107,7 @@ const runVideo = (request: HttpServerRequest.HttpServerRequest, run: VideoRun) =
     ...(run.pinnedId !== undefined ? { pinnedId: run.pinnedId } : {}),
   };
 
-  return executeNonStream(input);
+  return metered ? executeNonStream(input) : executeNonStreamUnmetered(input);
 };
 
 const upstreamJson = (payload: string, upstream: Headers | undefined) =>
@@ -154,11 +162,15 @@ const retrieve = (request: HttpServerRequest.HttpServerRequest, videoId: string)
 
     return {
       model,
-      output: yield* runVideo(request, {
-        model,
-        body: { request_id: videoId },
-        ...(binding !== undefined ? { pinnedId: binding.authId } : {}),
-      }),
+      output: yield* runVideo(
+        request,
+        {
+          model,
+          body: { request_id: videoId },
+          ...(binding !== undefined ? { pinnedId: binding.authId } : {}),
+        },
+        false,
+      ),
     };
   });
 

@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@commissary/auth": "workspace:*",
+    "@commissary/billing": "workspace:*",
     "@commissary/core": "workspace:*",
     "@commissary/models": "workspace:*",
     "@commissary/state": "workspace:*",

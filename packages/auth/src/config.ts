@@ -1,19 +1,11 @@
 /**
  * What `@commissary/auth` reads from a Worker's env (#132, #134 "How packages get their bindings"): the Access team
- * domain and audience, the platform admin lists, the dev bypass, the hosted mode and the per-org rate limiter. Each
+ * domain and audience, the platform admin lists, the dev bypass and the hosted mode. Each
  * Worker provides its own `env` as {@link AuthConfig}; the variables are parsed where they are read
  * (`access/config.ts`), per request, so a missing setting still fails closed there. State is reached through
  * `AuthDirectory` (`directory.ts`), never through a binding.
  */
 import { Context } from "effect";
-
-/**
- * The Workers rate-limiting binding as auth calls it (`rate-limit.ts`); structural, so auth needs no Workers types and
- * the binding (`RateLimit`) satisfies it.
- */
-export interface OrgRateLimiter {
-  limit(options: { readonly key: string }): Promise<{ readonly success: boolean }>;
-}
 
 export interface AuthBindings {
   /** Access team name or domain (`myteam`, `myteam.cloudflareaccess.com`); empty fails closed. */
@@ -28,8 +20,6 @@ export interface AuthBindings {
   readonly ACCESS_DEV_BYPASS: string;
   /** `cloud`: Commissary Cloud (`mode.ts`); unset or `self-hosted`: Cloudflare Access. */
   readonly COMMISSARY_MODE?: string;
-  /** Hosted: the per-org request rate limit of the client API (`rate-limit.ts`). */
-  readonly ORG_RATE_LIMIT?: OrgRateLimiter;
 }
 
 /** The auth settings of the current Worker invocation, provided per request (the Worker's `requestContext`). */

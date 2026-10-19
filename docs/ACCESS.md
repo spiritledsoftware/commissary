@@ -142,6 +142,7 @@ the Worker asks on every request: a removed member, or a member whose role was l
 | Read, add, edit and remove grants (`/grants`, the panel's Grants page)                         |                   |     ✓     |              ✓               |       ✓        |
 | Read the Spend limits that bind them and limit their own API keys (`/spend`, `/spend/limits`)  |         ✓         |     ✓     |              ✓               |       ✓        |
 | Set any Spend limit and the org's calendar (`/spend/limits`, `/spend/settings`)                |                   |     ✓     |              ✓               |       ✓        |
+| Read the org's plan and this month's usage against free usage (Commissary Cloud, `/billing`)   |                   |     ✓     |              ✓               |       ✓        |
 | Create API keys for themselves; list and revoke their own (`/api-keys`)                        |         ✓         |     ✓     |              ✓               | if a member ¹  |
 | List and revoke every API key of the org                                                       |                   |     ✓     |              ✓               |       ✓        |
 | Turn auto-join, or Access sign-ins for clients in `global`, on or off (`PATCH /membership`)    |                   |           |              ✓               |       ✓        |
@@ -453,8 +454,19 @@ management keys work as above. What changes:
   sessions, API keys and management keys are refused; in a suspended org every member, API key and management key
   is, except platform admins, who lift it. A suspension applies at once in the isolate that made it and within 30
   seconds everywhere.
-- **Rate limit.** Each org's requests on the client API are counted by a Workers rate limit (`ORG_RATE_LIMIT` per
-  minute, keyed by org); past it they answer `429` with `Retry-After: 60`.
+- **Rate limit.** Each org's requests on the client API are counted by a Workers rate limit keyed by org, one per plan:
+  60 a minute on Free and 600 on Pay as you go (constants, ADR 0042; the org's plan picks the binding). Past it requests
+  answer `429` with `Retry-After: 60`. The management API has none.
+- **Plans and free usage** (ADR 0042). Every org holds a plan, `free` (every org starts on it) or `payg`, and gets the same
+  free usage each calendar month (UTC) on either: 25,000 requests and tool calls, 1 browser hour, no computer hours.
+  Each request to a model counts once when Commissary makes its first upstream attempt for it, whatever credential
+  serves it and however it ends. Token counting, video status polls and requests refused before any work
+  (authentication, the rate ceiling, a spend limit, a plan limit, an unknown model, no credential) do not count. A plan
+  change reaches every isolate within 30 seconds (per-isolate caches, like suspension). A Free org
+  over its free usage is refused with `429 plan_limit_reached` and `Retry-After` until the first of the next month UTC;
+  work in flight finishes. `GET /billing` (org admins) answers the plan and the month's usage against free usage; on a
+  self-hosted Commissary there are no plans and it answers 404. Switching plans, the billing cap and invoices come with
+  Polar (#237, #238).
 - **Scripts** use management keys; credential downloads are for platform admins only (§4 "Management API security").
 - **Browser protections.** The cross-site checks of §4 apply unchanged, Better Auth checks the origin of its own
   requests, and the sign-in routes (`/api/auth/*`, `/api/sign-in-options`, `/sign-in`) exist only on Commissary Cloud.

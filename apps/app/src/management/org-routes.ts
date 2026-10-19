@@ -46,6 +46,7 @@ import {
   exportSection as modelsExportSection,
   orgDeletionStep as modelsOrgDeletionStep,
 } from "@commissary/models/management";
+import { orgDeletionStep as billingOrgDeletionStep } from "@commissary/billing/management";
 
 const BASE = "/v9/management";
 
@@ -417,7 +418,7 @@ const signInDeletionFailed = (error: DeletionThrew) =>
   );
 
 /** The org-deletion steps of the areas this Worker mounts, in order. */
-const areaDeletionSteps = Effect.all([modelsOrgDeletionStep]);
+const areaDeletionSteps = Effect.all([modelsOrgDeletionStep, billingOrgDeletionStep]);
 
 const deleteOrgRoute = Effect.gen(function* () {
   const identity = yield* AccessPrincipal;

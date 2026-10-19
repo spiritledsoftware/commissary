@@ -27,6 +27,8 @@ import type { ExecutionContext } from "../../executor/types.ts";
 import { UsageReporter } from "../../usage/reporter.ts";
 import { allowsCodexAlphaSearch, withCredentialPolicy } from "../../executor/policy-picker.ts";
 import { asString, get, isJsonObject, type Json, tryParseJson } from "@commissary/json";
+import { countRequest, uncountRequest } from "@commissary/billing/api";
+import { planLimitError } from "../metering.ts";
 import { currentConfig, type ClientApiServices, readRequestBody } from "../request.ts";
 
 const MAX_BODY_BYTES = 16 << 20;
@@ -104,6 +106,20 @@ const handle = Effect.gen(function* () {
   const model = asString(get(routing, "model")).trim();
   const upstreamBody = sanitizeBody(read.success.text, routing);
 
+  // The request counts against free usage once it starts being served, and a Free org over its limit is refused first.
+  const counted = yield* Effect.result(countRequest);
+
+  if (Result.isFailure(counted)) {
+    const refused = planLimitError(counted.failure);
+
+    // The refusal's message is the whole JSON error body (`PlanLimitReached.body`), not a text for `errorJson` to wrap.
+    return HttpServerResponse.text(refused.message, {
+      status: refused.status,
+      contentType: "application/json",
+      headers: refused.safeHeaders ?? {},
+    });
+  }
+
   const base = yield* CredentialPicker;
   const picker = withCredentialPolicy(base, allowsCodexAlphaSearch, "Codex auth unavailable");
 
@@ -120,6 +136,8 @@ const handle = Effect.gen(function* () {
 
   if (Result.isFailure(picked)) {
     const failure = picked.failure;
+    // No credential was picked, so no upstream attempt was made: the request did no work and is not counted.
+    yield* uncountRequest(counted.success);
     const retryAfter = failure.safeHeaders?.["retry-after"] ?? failure.safeHeaders?.["Retry-After"];
 
     return errorJson(

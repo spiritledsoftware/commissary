@@ -1,8 +1,11 @@
-// The per-org rate limit of Commissary Cloud's client API (packages/auth/src/rate-limit.ts) on the API Worker: the test
-// Worker's binding allows 5 requests per minute and org (vitest.config.ts). That the management API on the app Worker
-// is not limited is tested there (apps/app/test/hosted/rate-limit.test.ts).
+// The per-plan request-rate ceiling of Commissary Cloud's client API (`@commissary/billing`'s `limitClientRate`, called
+// by the gate) on the API Worker: the test Worker's bindings allow 5 requests per minute and org on Free and 8 on Pay as
+// you go (vitest.config.ts). That the management API on the app Worker is not limited is tested there
+// (apps/app/test/hosted/rate-limit.test.ts).
+import { env } from "cloudflare:workers";
 import { beforeAll, describe, expect, it } from "vitest";
-import { RATE_LIMITED } from "@commissary/auth";
+import { RATE_LIMITED } from "@commissary/billing/api";
+import { setPlan } from "@commissary/billing/testing";
 import { resetUsageDb } from "@commissary/models/testing";
 import { keyedOrg, models } from "./support.ts";
 
@@ -10,14 +13,16 @@ beforeAll(async () => {
   await resetUsageDb();
 });
 
-const LIMIT = 5;
+const FREE_LIMIT = 5;
 
-describe("the per-org rate limit", () => {
-  it("answers 429 with Retry-After over an org's limit and leaves other orgs alone", async () => {
+const PAYG_LIMIT = 8;
+
+describe("the per-org rate ceiling", () => {
+  it("answers 429 with Retry-After over a Free org's ceiling and leaves other orgs alone", async () => {
     const busy = (await keyedOrg("busy@example.com")).key;
     const quiet = (await keyedOrg("quiet@example.com")).key;
 
-    for (let sent = 0; sent < LIMIT; sent += 1) expect((await models(busy)).status).toBe(200);
+    for (let sent = 0; sent < FREE_LIMIT; sent += 1) expect((await models(busy)).status).toBe(200);
 
     const limited = await models(busy);
 
@@ -26,5 +31,29 @@ describe("the per-org rate limit", () => {
     expect(await limited.json()).toEqual({ error: RATE_LIMITED });
 
     expect((await models(quiet)).status).toBe(200);
+  });
+
+  it("is higher on Pay as you go", async () => {
+    const { org, key } = await keyedOrg("paying@example.com");
+
+    await setPlan(env, org, "payg");
+
+    for (let sent = 0; sent < PAYG_LIMIT; sent += 1) expect((await models(key)).status).toBe(200);
+
+    const limited = await models(key);
+
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get("retry-after")).toBe("60");
+  });
+
+  it("follows the plan an org is on, from its next request", async () => {
+    const { org, key } = await keyedOrg("switching@example.com");
+
+    for (let sent = 0; sent < FREE_LIMIT; sent += 1) expect((await models(key)).status).toBe(200);
+    expect((await models(key)).status).toBe(429);
+
+    // The other binding counts the org on its own: a plan switch is not held back by what the old one counted.
+    await setPlan(env, org, "payg");
+    expect((await models(key)).status).toBe(200);
   });
 });

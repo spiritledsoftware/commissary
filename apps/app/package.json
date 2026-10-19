@@ -12,6 +12,7 @@
     "@better-auth/core": "1.7.7",
     "@better-auth/sso": "1.7.7",
     "@commissary/auth": "workspace:*",
+    "@commissary/billing": "workspace:*",
     "@commissary/contract": "workspace:*",
     "@commissary/core": "workspace:*",
     "@commissary/json": "workspace:*",
