@@ -18,7 +18,8 @@ import {
   type JsonObject,
   tryParseJson,
 } from "@commissary/json";
-import { CurrentOrg, type OrgId, orgScopedName } from "@commissary/core";
+import { CurrentOrg, type OrgKv } from "@commissary/core";
+import { deploymentKvOf, orgKvOf } from "../../kv.ts";
 import { controlPlaneOf } from "@commissary/state";
 import {
   type AntigravityModelHints,
@@ -43,9 +44,8 @@ const MAX_BACKOFF_MS = 30 * 60_000;
 /** Failure counters older than 2x the refresh interval start over (`registry.ModelsRefreshInterval` = 3 h). */
 const FAILURE_RESET_MS = 2 * 3 * 60 * 60_000;
 
-/** KV key of a credential's entitlements in `org`. */
-export const modelsKey = (org: OrgId, credentialId: string): string =>
-  orgScopedName(org, `ag:models:${credentialId}`);
+/** KV name of a credential's entitlements within its org. */
+export const antigravityModelsName = (credentialId: string): string => `ag:models:${credentialId}`;
 
 export interface FailureState {
   readonly count: number;
@@ -162,13 +162,9 @@ export const nextFailure = (
   return { count, lastFailureAt: now, nextRetryAt: now + Math.floor(half + random * half) };
 };
 
-const readRecord = async (
-  kv: KVNamespace,
-  org: OrgId,
-  credentialId: string,
-): Promise<ModelsRecord | undefined> => {
+const readRecord = async (kv: OrgKv, credentialId: string): Promise<ModelsRecord | undefined> => {
   try {
-    const raw = await kv.get(modelsKey(org, credentialId));
+    const raw = await kv.get(antigravityModelsName(credentialId));
 
     // SAFETY: the cron task only stores `ModelsRecord` values under this key (see `writeRecord`).
     return raw === null ? undefined : (JSON.parse(raw) as ModelsRecord);
@@ -179,8 +175,7 @@ const readRecord = async (
 
 /** Reads the stored entitlements of the given Antigravity credentials of `org` (best effort). */
 export const loadAntigravityHints = async (
-  kv: KVNamespace | undefined,
-  org: OrgId,
+  kv: OrgKv | undefined,
   credentialIds: ReadonlyArray<string>,
 ): Promise<ReadonlyMap<string, AntigravityModelHints>> => {
   const out = new Map<string, AntigravityModelHints>();
@@ -188,7 +183,7 @@ export const loadAntigravityHints = async (
   if (kv === undefined) return out;
   await Promise.all(
     credentialIds.map(async (id) => {
-      const record = await readRecord(kv, org, id);
+      const record = await readRecord(kv, id);
 
       if (record?.hints !== undefined) out.set(id, record.hints);
     }),
@@ -199,8 +194,7 @@ export const loadAntigravityHints = async (
 
 /** Attaches the stored entitlements to the Antigravity sources of a registry snapshot of `org`. */
 export const withAntigravityHints = async (
-  kv: KVNamespace | undefined,
-  org: OrgId,
+  kv: OrgKv | undefined,
   sources: ReadonlyArray<ModelSource>,
 ): Promise<ReadonlyArray<ModelSource>> => {
   const ids = sources.flatMap((source) =>
@@ -208,7 +202,7 @@ export const withAntigravityHints = async (
   );
 
   if (ids.length === 0) return sources;
-  const hints = await loadAntigravityHints(kv, org, ids);
+  const hints = await loadAntigravityHints(kv, ids);
 
   if (hints.size === 0) return sources;
 
@@ -228,14 +222,15 @@ export const refreshAntigravityModels = Effect.gen(function* () {
   const env = yield* ModelsEnv;
   const org = yield* CurrentOrg;
   const plane = controlPlaneOf(env, org);
+  const kv = orgKvOf(env, org);
   const sources = yield* Effect.promise(() => plane.models().listModelSources(FULL_ACCESS));
   const now = Date.now();
-  const version = yield* currentAntigravityVersion(env.CACHE, now);
+  const version = yield* currentAntigravityVersion(deploymentKvOf(env), now);
   const results: Array<{ readonly id: string; readonly status: string }> = [];
 
   for (const source of sources) {
     if (source.provider.trim().toLowerCase() !== "antigravity" || source.disabled) continue;
-    const previous = yield* Effect.promise(() => readRecord(env.CACHE, org, source.id));
+    const previous = yield* Effect.promise(() => readRecord(kv, source.id));
 
     if (previous?.failure !== undefined && previous.failure.nextRetryAt > now) {
       results.push({ id: source.id, status: "backoff" });
@@ -282,7 +277,7 @@ export const refreshAntigravityModels = Effect.gen(function* () {
           };
 
     yield* Effect.tryPromise(() =>
-      env.CACHE.put(modelsKey(org, source.id), JSON.stringify(record)),
+      kv.put(antigravityModelsName(source.id), JSON.stringify(record)),
     ).pipe(Effect.catch(() => Effect.logWarning("antigravity model catalog could not be stored")));
     results.push({ id: source.id, status: outcome.status });
   }

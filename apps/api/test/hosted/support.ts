@@ -19,6 +19,20 @@ export const call = async (path: string, init?: RequestInit): Promise<Response> 
 export const models = (key: string): Promise<Response> =>
   call("/v1/models", { headers: { authorization: `Bearer ${key}` } });
 
+/** The time a burst of requests is given to stay in one rate-limit window, with room to spare on a slow runner. */
+const BURST_MS = 10_000;
+
+/**
+ * Waits, if need be, until the current rate-limit window has {@link BURST_MS} left. Miniflare's rate limiter counts in
+ * windows aligned to the wall-clock minute, so a burst that crossed a minute boundary would start counting again
+ * halfway and never reach its ceiling. Call it before every burst that expects a rate-limit 429.
+ */
+export const roomInWindow = async (): Promise<void> => {
+  const left = 60_000 - (Date.now() % 60_000);
+
+  if (left < BURST_MS) await new Promise((resolve) => setTimeout(resolve, left + 100));
+};
+
 /**
  * A new org owned by `email` and an API key of theirs in it, as signing up (a Personal org) or `POST /orgs` and
  * `POST /api-keys` make them: the org's id and slug, the owner's member id, and the key.

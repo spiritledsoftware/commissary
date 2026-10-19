@@ -14,6 +14,7 @@ import type { OpenCodeProtocol } from "../config/schema.ts";
 import { OPENCODE_SPECS, type OpenCodeProvider } from "../executor/opencode/providers.ts";
 import { embeddedModelsDev, modelsDevFromText } from "./catalog.ts";
 import { usesEmbeddedCatalog } from "./catalog-source.ts";
+import { deploymentKvOf } from "../kv.ts";
 import { CATALOG_KEYS } from "./catalog-store.ts";
 import { isDeprecatedModel, thinkingFromModelsDev } from "./catalog-build.ts";
 import type { ModelInfo } from "./model-info.ts";
@@ -83,7 +84,9 @@ export const currentOpenCodeCatalog: Effect.Effect<OpenCodeCatalog> = Effect.gen
 
   if (Option.isNone(env)) return embeddedModelsDev();
 
-  const stored = yield* Effect.tryPromise(() => env.value.CACHE.get(CATALOG_KEYS.modelsDev)).pipe(
+  const stored = yield* Effect.tryPromise(() =>
+    deploymentKvOf(env.value).get(CATALOG_KEYS.modelsDev),
+  ).pipe(
     Effect.asSome,
     Effect.orElseSucceed(() => Option.none<string | null>()),
   );

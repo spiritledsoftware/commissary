@@ -54,6 +54,7 @@
     "anti-slop-effect/prefer-effect-match": "error",
     "boundaries/models-imports": "error",
     "boundaries/billing-imports": "error",
+    "boundaries/org-scoped-kv": "error",
     "effecttsgo/unstable-api-usage": "warn",
     "no-restricted-imports": [
       "error",

@@ -11,7 +11,7 @@
  */
 import { Clock, Effect } from "effect";
 import type { OrgRole } from "@commissary/contract/members";
-import { InternalError, UnauthorizedError, type OrgId } from "@commissary/core";
+import { InternalError, makeOrgCache, UnauthorizedError, type OrgId } from "@commissary/core";
 import { AuthDirectory, directoryFailure } from "./directory.ts";
 import { looksLikeApiKey, parseApiKey } from "./keys.ts";
 
@@ -73,11 +73,13 @@ interface CachedKey {
   readonly until: number;
 }
 
-/** Verified keys by the SHA-256 of the whole key. */
-const verified = new Map<string, CachedKey>();
+/** Verified keys of an org by the SHA-256 of the whole key; the oldest goes first when it is full. */
+const verified = makeOrgCache<CachedKey>(MAX_CACHED_KEYS);
 
-/** Orgs the Platform registry confirmed, with the epoch ms until which the answer is trusted. */
-const knownOrgs = new Map<OrgId, number>();
+/** Orgs the Platform registry confirmed (under the name {@link KNOWN}), with the epoch ms the answer is trusted until. */
+const knownOrgs = makeOrgCache<number>();
+
+const KNOWN = "listed";
 
 /** Empties the caches, for tests. */
 export const resetApiKeyCaches = (): void => {
@@ -89,18 +91,18 @@ const invalid = new UnauthorizedError({ message: "Invalid API key" });
 
 /** Whether the Platform registry lists `org` (cached per isolate while it does). */
 export const orgExists = Effect.fnUntraced(function* (org: OrgId, now: number) {
-  if (now < (knownOrgs.get(org) ?? 0)) return true;
+  if (now < (knownOrgs.get(org, KNOWN) ?? 0)) return true;
   const directory = yield* AuthDirectory;
 
   const found = yield* directory.getOrgById(org).pipe(Effect.mapError(directoryFailure()));
 
   if (found === undefined) {
-    knownOrgs.delete(org);
+    knownOrgs.delete(org, KNOWN);
 
     return false;
   }
 
-  knownOrgs.set(org, now + VERIFIED_KEY_TTL_MS);
+  knownOrgs.set(org, KNOWN, now + VERIFIED_KEY_TTL_MS);
 
   return true;
 });
@@ -117,10 +119,10 @@ export const verifyApiKey: (
 
     if (parsed === undefined) return yield* invalid;
     const now = yield* Clock.currentTimeMillis;
-    const cached = verified.get(parsed.hash);
+    const cached = verified.get(parsed.org, parsed.hash);
 
     if (cached !== undefined && now < cached.until) return cached.key;
-    verified.delete(parsed.hash);
+    verified.delete(parsed.org, parsed.hash);
 
     if (!(yield* orgExists(parsed.org, now))) return yield* invalid;
     const directory = yield* AuthDirectory;
@@ -139,13 +141,7 @@ export const verifyApiKey: (
       role: verdict.role,
     };
 
-    if (verified.size >= MAX_CACHED_KEYS) {
-      const oldest = verified.keys().next();
-
-      if (oldest.done !== true) verified.delete(oldest.value);
-    }
-
-    verified.set(parsed.hash, {
+    verified.set(parsed.org, parsed.hash, {
       key,
       until: Math.min(now + VERIFIED_KEY_TTL_MS, verdict.expiresAt ?? Number.POSITIVE_INFINITY),
     });

@@ -9,7 +9,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { FREE_USAGE, requestsUsed, seedRequestsUsed, setPlan } from "@commissary/billing/testing";
 import type { OrgId } from "@commissary/core";
 import { resetUsageDb, withModelsPart } from "@commissary/models/testing";
-import { call, keyedOrg } from "./support.ts";
+import { call, keyedOrg, roomInWindow } from "./support.ts";
 
 const FIRST_KEY = "sk-first-0001";
 
@@ -158,6 +158,8 @@ describe("counting requests", () => {
     expect(await used(org)).toBe(0);
 
     // Free's ceiling is 5 a minute in these tests: the 6th request is refused before Models serves it.
+    await roomInWindow();
+
     for (let sent = 0; sent < 5; sent += 1)
       expect((await chat(key, "solo-model")).status).toBe(200);
 

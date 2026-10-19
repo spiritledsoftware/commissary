@@ -48,7 +48,8 @@ export class CurrentOrg extends Context.Service<CurrentOrg, OrgId>()(
 
 /**
  * `name` within `org`: unchanged for `global`, so the names stored before orgs existed stay valid, and
- * `org.<org>.<name>` for any other org. No unscoped name of `global` starts with `org.`.
+ * `org.<org>.<name>` for any other org. No unscoped name of `global` starts with `org.`. KV and per-isolate caches of org
+ * data do not call this directly: they go through `OrgKv` and `OrgCache` (`kv.ts`, ADR 0044).
  */
 export const orgScopedName = (org: OrgId, name: string): string =>
   org === GLOBAL_ORG ? name : `org.${org}.${name}`;

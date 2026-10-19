@@ -6,6 +6,7 @@
 import { Effect } from "effect";
 import type { CatalogMode, CatalogStatus } from "@commissary/contract/catalog";
 import { embeddedModelsDev, modelsDevFromText } from "./catalog.ts";
+import { deploymentKvOf } from "../kv.ts";
 import { CATALOG_KEYS, readRefreshStatus } from "./catalog-store.ts";
 import type { ModelsDevCatalog } from "./models-dev.ts";
 import { resolveSource } from "./catalog-source.ts";
@@ -47,15 +48,15 @@ export const catalogStatus = (configured: string): Effect.Effect<CatalogStatus, 
     const env = yield* ModelsEnv;
     const { mode, host, problem } = catalogMode(configured);
 
-    const text = yield* Effect.tryPromise(() => env.CACHE.get(CATALOG_KEYS.modelsDev)).pipe(
-      Effect.orElseSucceed(() => null),
-    );
+    const text = yield* Effect.tryPromise(() =>
+      deploymentKvOf(env).get(CATALOG_KEYS.modelsDev),
+    ).pipe(Effect.orElseSucceed(() => null));
 
     // `embed` ignores the stored copy: what is served is the shipped one, whatever KV still holds.
     const parsed = text === null || mode === "embed" ? undefined : modelsDevFromText(text);
     const stored = parsed?.ok === true;
 
-    const status = yield* Effect.tryPromise(() => readRefreshStatus(env.CACHE)).pipe(
+    const status = yield* Effect.tryPromise(() => readRefreshStatus(deploymentKvOf(env))).pipe(
       Effect.orElseSucceed(() => undefined),
     );
 

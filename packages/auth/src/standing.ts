@@ -9,7 +9,13 @@
  * that made it (`forgetStanding`). New in the Workers port.
  */
 import { Clock, Effect } from "effect";
-import { ForbiddenError, GLOBAL_ORG, InternalError, type OrgId } from "@commissary/core";
+import {
+  ForbiddenError,
+  GLOBAL_ORG,
+  InternalError,
+  makeOrgCache,
+  type OrgId,
+} from "@commissary/core";
 import { syncOrgIndex } from "./admission.ts";
 import { AuthDirectory, directoryFailure, type Standing } from "./directory.ts";
 
@@ -19,10 +25,10 @@ export const STANDING_TTL_MS = 30_000;
 /** People known to be signed up and not suspended, until the epoch ms. */
 const signedUp = new Map<string, number>();
 
-/** Standings by `<org>\u0000<email>`, until the epoch ms. */
-const standings = new Map<string, { readonly standing: Standing; readonly until: number }>();
-
 const MAX_CACHED = 4096;
+
+/** Standings of an org by email, until the epoch ms; the oldest goes first when it is full. */
+const standings = makeOrgCache<{ readonly standing: Standing; readonly until: number }>(MAX_CACHED);
 
 const remember = <V>(cache: Map<string, V>, key: string, value: V): void => {
   if (cache.size >= MAX_CACHED) {
@@ -38,15 +44,11 @@ const remember = <V>(cache: Map<string, V>, key: string, value: V): void => {
 export const forgetStanding = (change: { readonly email?: string; readonly org?: OrgId }): void => {
   if (change.email !== undefined) signedUp.delete(change.email.toLowerCase());
 
-  for (const key of standings.keys()) {
-    const [org, email] = key.split("\u0000");
-
-    if (
+  standings.deleteWhere(
+    (org, email) =>
       (change.org !== undefined && org === change.org) ||
-      (change.email !== undefined && email === change.email.toLowerCase())
-    )
-      standings.delete(key);
-  }
+      (change.email !== undefined && email === change.email.toLowerCase()),
+  );
 };
 
 /** Empties the caches, for tests. */
@@ -104,9 +106,9 @@ const cachedStanding = Effect.fnUntraced(function* (
   org: OrgId,
   email: string | undefined,
 ): Effect.fn.Return<Standing, InternalError, AuthDirectory> {
-  const key = `${org}\u0000${email?.toLowerCase() ?? ""}`;
+  const person = email?.toLowerCase() ?? "";
   const now = yield* Clock.currentTimeMillis;
-  const cached = standings.get(key);
+  const cached = standings.get(org, person);
 
   const standing =
     cached !== undefined && now < cached.until
@@ -116,7 +118,7 @@ const cachedStanding = Effect.fnUntraced(function* (
           .pipe(Effect.mapError(directoryFailure()));
 
   if (cached === undefined || now >= cached.until)
-    remember(standings, key, { standing, until: now + STANDING_TTL_MS });
+    standings.set(org, person, { standing, until: now + STANDING_TTL_MS });
 
   return standing;
 });

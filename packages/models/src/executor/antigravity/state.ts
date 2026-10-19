@@ -8,11 +8,12 @@
  * state is optimistic (credits assumed available, no cooldown). The balance-probe slot is a lock and needs an atomic
  * claim, which KV cannot give: it is a create-if-absent write in the `SessionState` Durable Object (per credential,
  * TTL 10 min), with the per-isolate map as fallback. Credential ids are only unique within an org, so every key and
- * address is scoped to the org (`orgScopedName`; unchanged for `global`).
+ * address is scoped to the org (`OrgKv`, `OrgCache` and `orgScopedName`; unchanged for `global`).
  */
 import { createHash } from "node:crypto";
 import { addressName, type SessionState } from "@commissary/state";
-import { type OrgId, orgScopedName } from "@commissary/core";
+import { makeOrgCache, type OrgId, type OrgKv, orgScopedName } from "@commissary/core";
+import { type OptionalKvEnv, orgKvIfBound } from "../../kv.ts";
 
 export const CREDITS_TTL_MS = 30 * 60_000;
 
@@ -48,47 +49,42 @@ export interface AntigravityState {
   readonly claimCreditsRefresh: CreditsRefreshClaim;
 }
 
-const memoryCooldowns = new Map<string, number>();
+const memoryCooldowns = makeOrgCache<number>();
 
-const memoryCredits = new Map<
-  string,
-  { readonly record: CreditsRecord; readonly expires: number }
->();
+const memoryCredits = makeOrgCache<{ readonly record: CreditsRecord; readonly expires: number }>();
 
-const memoryRefresh = new Map<string, number>();
+const memoryRefresh = makeOrgCache<number>();
 
 /** Per-isolate implementation of `org` (tests and deployments without KV). */
 export const makeMemoryAntigravityState = (org: OrgId): AntigravityState => {
-  const key = (authId: string): string => `${org}|${authId}`;
-
   return {
     shortCooldownRemaining: async (authId, model, now) => {
-      const deadline = memoryCooldowns.get(`${key(authId)}|${model}`) ?? 0;
+      const deadline = memoryCooldowns.get(org, `${authId}|${model}`) ?? 0;
 
       return Math.max(0, deadline - now);
     },
     markShortCooldown: async (authId, model, durationMs, now) => {
-      memoryCooldowns.set(`${key(authId)}|${model}`, now + durationMs);
+      memoryCooldowns.set(org, `${authId}|${model}`, now + durationMs);
     },
     credits: async (authId) => {
-      const entry = memoryCredits.get(key(authId));
+      const entry = memoryCredits.get(org, authId);
 
       return entry === undefined || entry.expires <= Date.now() ? undefined : entry.record;
     },
     setCredits: async (authId, record) => {
-      memoryCredits.set(key(authId), { record, expires: Date.now() + CREDITS_TTL_MS });
+      memoryCredits.set(org, authId, { record, expires: Date.now() + CREDITS_TTL_MS });
     },
     markCreditsExhausted: async (authId, now) => {
-      memoryCredits.set(key(authId), {
+      memoryCredits.set(org, authId, {
         record: { creditAmount: 0, minCreditAmount: 1, paidTierId: "", updatedAt: now },
         expires: now + CREDITS_TTL_MS,
       });
     },
     claimCreditsRefresh: async (authId, now) => {
-      const last = memoryRefresh.get(key(authId));
+      const last = memoryRefresh.get(org, authId);
 
       if (last !== undefined && now - last < CREDITS_REFRESH_INTERVAL_MS) return false;
-      memoryRefresh.set(key(authId), now);
+      memoryRefresh.set(org, authId, now);
 
       return true;
     },
@@ -139,9 +135,8 @@ export const sessionStateCreditsClaim =
 
 /** KV-backed implementation for `org`; every KV failure degrades to "no state". */
 export const makeKvAntigravityState = (
-  kv: KVNamespace,
-  org: OrgId,
-  claimRefresh: CreditsRefreshClaim = makeMemoryAntigravityState(org).claimCreditsRefresh,
+  kv: OrgKv,
+  claimRefresh: CreditsRefreshClaim = makeMemoryAntigravityState(kv.org).claimCreditsRefresh,
 ): AntigravityState => {
   const swallow = async <T>(run: () => Promise<T>, fallback: T): Promise<T> => {
     try {
@@ -152,9 +147,9 @@ export const makeKvAntigravityState = (
   };
 
   const cooldownKey = (authId: string, model: string): string =>
-    orgScopedName(org, `ag:sc:${authId}:${hashModel(model)}`);
+    `ag:sc:${authId}:${hashModel(model)}`;
 
-  const creditsKey = (authId: string): string => orgScopedName(org, `ag:credits:${authId}`);
+  const creditsKey = (authId: string): string => `ag:credits:${authId}`;
 
   const putCredits = (authId: string, record: CreditsRecord): Promise<void> =>
     swallow(
@@ -201,16 +196,17 @@ export const makeKvAntigravityState = (
  */
 export const antigravityStateFor = (
   env:
-    | {
-        readonly CACHE?: KVNamespace;
+    | (OptionalKvEnv & {
         readonly SESSION_STATE?: DurableObjectNamespace<SessionState>;
-      }
+      })
     | undefined,
   org: OrgId,
 ): AntigravityState => {
-  if (env?.CACHE === undefined) return makeMemoryAntigravityState(org);
+  const kv = orgKvIfBound(env, org);
 
-  return env.SESSION_STATE === undefined
-    ? makeKvAntigravityState(env.CACHE, org)
-    : makeKvAntigravityState(env.CACHE, org, sessionStateCreditsClaim(env.SESSION_STATE, org));
+  if (kv === undefined) return makeMemoryAntigravityState(org);
+
+  return env?.SESSION_STATE === undefined
+    ? makeKvAntigravityState(kv)
+    : makeKvAntigravityState(kv, sessionStateCreditsClaim(env.SESSION_STATE, org));
 };

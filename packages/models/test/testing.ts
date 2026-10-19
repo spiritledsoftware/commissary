@@ -95,6 +95,19 @@ export {
 
 export { CATALOG_KEYS } from "../src/registry/catalog-store.ts";
 
+export { ModelRegistryLive } from "../src/registry/live.ts";
+
+export { ModelRegistry } from "../src/registry/service.ts";
+
 export { MODELS_DEV_URL } from "../src/registry/refresh.ts";
 
-export { GROUP_BY, insertUsageRecord } from "../src/usage/d1.ts";
+export { GROUP_BY, insertUsageRecord, listUsageRecords, summarizeUsage } from "../src/usage/d1.ts";
+
+export {
+  antigravityStateFor,
+  makeMemoryAntigravityState,
+} from "../src/executor/antigravity/state.ts";
+
+export { antigravityModelsName, loadAntigravityHints } from "../src/executor/antigravity/models.ts";
+
+export { makeKvSignatureStore, orgSignatureCache } from "../src/signature/store.ts";

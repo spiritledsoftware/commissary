@@ -16,6 +16,7 @@ import {
   NotFoundError,
   UnauthorizedError,
   type OrgId,
+  makeOrgCache,
 } from "@commissary/core";
 import { orgExists, VERIFIED_KEY_TTL_MS } from "./api-key.ts";
 import { AuthDirectory, directoryFailure } from "./directory.ts";
@@ -34,13 +35,16 @@ export interface VerifiedManagementKey {
 /** The most verified keys one isolate keeps; the oldest is dropped first. */
 const MAX_CACHED_KEYS = 1024;
 
-/** Verified keys by the SHA-256 of the whole key, with the epoch ms until which they are trusted. */
-const verified = new Map<string, { readonly key: VerifiedManagementKey; readonly until: number }>();
+/** Verified keys of an org by the SHA-256 of the whole key, with the epoch ms until which they are trusted. */
+const verified = makeOrgCache<{ readonly key: VerifiedManagementKey; readonly until: number }>(
+  MAX_CACHED_KEYS,
+);
 
 /** Forgets a revoked key of `org` in this isolate, so it is refused here at once. */
 export const forgetVerifiedManagementKey = (org: OrgId, keyId: string): void => {
-  for (const [hash, cached] of verified)
-    if (cached.key.org === org && cached.key.keyId === keyId) verified.delete(hash);
+  verified.deleteWhere(
+    (cachedOrg, _hash, cached) => cachedOrg === org && cached.key.keyId === keyId,
+  );
 };
 
 /** Empties the cache, for tests. */
@@ -66,10 +70,10 @@ export const verifyManagementKey = Effect.fnUntraced(function* (text: string) {
 
   if (parsed === undefined) return yield* invalid;
   const now = yield* Clock.currentTimeMillis;
-  const cached = verified.get(parsed.hash);
+  const cached = verified.get(parsed.org, parsed.hash);
 
   if (cached !== undefined && now < cached.until) return cached.key;
-  verified.delete(parsed.hash);
+  verified.delete(parsed.org, parsed.hash);
 
   if (!(yield* orgExists(parsed.org, now))) return yield* invalid;
   const directory = yield* AuthDirectory;
@@ -88,13 +92,7 @@ export const verifyManagementKey = Effect.fnUntraced(function* (text: string) {
     ...(verdict.ownerEmail === undefined ? {} : { ownerEmail: verdict.ownerEmail }),
   };
 
-  if (verified.size >= MAX_CACHED_KEYS) {
-    const oldest = verified.keys().next();
-
-    if (oldest.done !== true) verified.delete(oldest.value);
-  }
-
-  verified.set(parsed.hash, { key, until: now + VERIFIED_KEY_TTL_MS });
+  verified.set(parsed.org, parsed.hash, { key, until: now + VERIFIED_KEY_TTL_MS });
 
   return key;
 });

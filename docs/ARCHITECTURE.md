@@ -123,7 +123,8 @@ to `packages/billing/src/`) and the JSON path engine as `packages/json`.
   packages/contract/          @commissary/contract: the management API's Effect HttpApi schemas and addressing (browser-safe)
   packages/core/              @commissary/core: the foundation without bindings (org model, shared errors, hashing,
                               log-safe helpers, management replies, route services, the execution context, the
-                              area contracts ScheduledTask and OrgDeletionStep, the outbound guard)
+                              area contracts ScheduledTask and OrgDeletionStep, the outbound guard, and the org-scoped
+                              helpers OrgKv, DeploymentKv and OrgCache of src/kv.ts)
   packages/json/              @commissary/json: gjson/sjson-compatible path engine, Json types, JSON text helpers
   packages/translation/       @commissary/translation: pure translation, tested in Node.js
     src/translator/           registry + one directory per (client -> provider) pair
@@ -214,8 +215,22 @@ to `packages/billing/src/`) and the JSON path engine as `packages/json`.
   bindings), the Antigravity credits-probe slot and OAuth callback states. Caller scopes hash the org in for any org but
   `global` (`callerScope(principal, org)`), and `auth_index` values use a key derived per org from `AUTH_INDEX_KEY`
   (`orgAuthIndexer`; `global` keeps the deployment key, so existing handles and panel links do not change). Worker-side
-  caches of org data (the `ConfigReader` snapshots, the registry snapshots, the per-isolate signature cache and
-  Antigravity state) are keyed by org.
+  caches of org data are keyed by org (below).
+  Org isolation is enforced in code (ADR 0044, #250). KV: code never holds a raw `KVNamespace`; org data goes through
+  an `OrgKv` (`core/kv.ts`), bound to one org, which scopes every name with `orgScopedName` (a name of `global` that
+  starts with `org.` is refused, so it cannot reach another org's entry; `global`'s unprefixed names are the one
+  exception). Deployment-wide entries (the models.dev catalog and its refresh status, the xAI and Antigravity client
+  versions) go through a `DeploymentKv`, whose names are declared one by one with `deploymentKey(...)`. The `CACHE`
+  binding is read in `models/kv.ts` only (`orgKvOf`, `deploymentKvOf`); the lint rule `boundaries/org-scoped-kv` fails
+  any other source file that reads `CACHE`, names the `KVNamespace` type (the `env.ts` and `env.d.ts` declarations
+  aside) or uses the Cache API (the Workers use none today). Per-isolate caches: the auth caches (verified API and
+  management keys, standings), Billing's plans and plan-limit refusals, the `auth_index` indexers and the in-memory
+  Antigravity state are an `OrgCache`
+  (`core/kv.ts`), keyed by the org and the name apart; the `ConfigReader` and registry snapshots are maps keyed by the
+  typed `OrgId`; the signature caches of `@commissary/translation`, which cannot import `core`, take a plain scope,
+  and `orgSignatureCache` (`models/signature/store.ts`) is where it is always an org id. No lint rule covers these
+  caches: they rest on the helper, on that convention and on the cross-org suite (`apps/app/test/org-isolation.test.ts`),
+  which writes the same names in three orgs and reads every store from the others.
 - **`Platform` Durable Object** (the Platform registry, `state/platform/{platform,registry,registry-store}.ts`; one object
   per deployment, `platformOf(env)` = `getByName("platform")`, SQLite storage, tables `CREATE IF NOT EXISTS` on
   construction so a deployment gains it without a migration): what spans orgs. The list of orgs (`orgs`: permanent `id`,

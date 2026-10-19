@@ -13,12 +13,14 @@ import {
   type ModelCatalogs,
   modelsDevFromText,
 } from "./catalog.ts";
+import { type DeploymentKv, deploymentKey } from "@commissary/core";
 import { ModelsEnv } from "../env.ts";
+import { deploymentKvOf } from "../kv.ts";
 
 /** KV key of the refreshed models.dev document (trimmed JSON text) and of the last refresh report. */
 export const CATALOG_KEYS = {
-  modelsDev: "registry/models-dev.json",
-  status: "registry/refresh-status.json",
+  modelsDev: deploymentKey("registry/models-dev.json"),
+  status: deploymentKey("registry/refresh-status.json"),
 } as const;
 
 /** What the last refresh attempt left in KV (`CATALOG_KEYS.status`), for the panel. */
@@ -42,7 +44,7 @@ const decodeStatus = Schema.decodeUnknownResult(Schema.fromJsonString(StatusDocu
 
 /** The stored status record; `undefined` when absent or unreadable. */
 export const readRefreshStatus = async (
-  kv: KVNamespace,
+  kv: DeploymentKv,
 ): Promise<RefreshStatusRecord | undefined> => {
   const text = await kv.get(CATALOG_KEYS.status);
 
@@ -60,7 +62,7 @@ export const readRefreshStatus = async (
   };
 };
 
-export const writeRefreshStatus = (kv: KVNamespace, record: RefreshStatusRecord): Promise<void> =>
+export const writeRefreshStatus = (kv: DeploymentKv, record: RefreshStatusRecord): Promise<void> =>
   kv.put(
     CATALOG_KEYS.status,
     JSON.stringify({
@@ -123,7 +125,7 @@ export class CatalogStore extends Context.Service<
         const env = yield* ModelsEnv;
 
         return yield* Effect.tryPromise({
-          try: () => env.CACHE.get(CATALOG_KEYS.modelsDev),
+          try: () => deploymentKvOf(env).get(CATALOG_KEYS.modelsDev),
           catch: (cause) =>
             cause instanceof Error ? cause : new Error("failed to read the catalog from KV"),
         });

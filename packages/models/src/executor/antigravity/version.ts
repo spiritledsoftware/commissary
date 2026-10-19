@@ -9,7 +9,9 @@
 import { Effect } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { isJsonObject, tryParseJson } from "@commissary/json";
+import { type DeploymentKv, deploymentKey } from "@commissary/core";
 import { ModelsEnv } from "../../env.ts";
+import { deploymentKvOf } from "../../kv.ts";
 
 export const ANTIGRAVITY_FALLBACK_VERSION = "2.9.1";
 
@@ -24,7 +26,7 @@ export const ANTIGRAVITY_GOOG_API_CLIENT_UA = "gl-node/22.21.1";
 export const ANTIGRAVITY_HUB_MANIFEST_URL =
   "https://antigravity-hub-auto-updater-974169037036.us-central1.run.app/manifest/latest-arm64-mac.yml";
 
-export const ANTIGRAVITY_VERSION_KEY = "antigravity:version";
+export const ANTIGRAVITY_VERSION_KEY = deploymentKey("antigravity:version");
 
 const MANIFEST_LIMIT = 4096;
 
@@ -127,7 +129,7 @@ export const resetAntigravityVersionCache = (): void => {
 
 /** The version executors put into user agents (KV read-through, fallback `2.9.1`). */
 export const currentAntigravityVersion = (
-  kv: KVNamespace | undefined,
+  kv: DeploymentKv | undefined,
   now: number,
 ): Effect.Effect<string> =>
   Effect.gen(function* () {
@@ -175,7 +177,7 @@ export const refreshAntigravityVersion = Effect.gen(function* () {
 
   const stored: StoredVersion = { version: fetched, fetchedAt: now };
   yield* Effect.tryPromise(() =>
-    env.CACHE.put(ANTIGRAVITY_VERSION_KEY, JSON.stringify(stored)),
+    deploymentKvOf(env).put(ANTIGRAVITY_VERSION_KEY, JSON.stringify(stored)),
   ).pipe(Effect.catch(() => Effect.logWarning("antigravity version could not be stored")));
   resetAntigravityVersionCache();
 
