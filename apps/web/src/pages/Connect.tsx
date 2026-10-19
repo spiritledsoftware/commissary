@@ -22,6 +22,7 @@ import {
   authFileName,
   CONNECT_OPTIONS,
   type ConnectOption,
+  connectNotices,
   linkHost,
   MAX_AUTH_FILE_BYTES,
   readPastedAddress,
@@ -118,6 +119,21 @@ const Countdown = ({ until }: { readonly until: number }) => {
   );
 };
 
+/** What the provider's terms say, and that the org shares the account, beside the steps; it informs, never gates. */
+const Notices = ({
+  option,
+  shared,
+}: {
+  readonly option: ConnectOption;
+  /** The account becomes a shared credential. */
+  readonly shared: boolean;
+}) =>
+  connectNotices(option, shared).map((text) => (
+    <p key={text} className={styles["notice"]}>
+      {text}
+    </p>
+  ));
+
 const Waiting = ({ text }: { readonly text: string }) => (
   <p className={styles["waiting"]} role="status">
     <LoaderCircle aria-hidden="true" size={18} strokeWidth={2.5} className={kit["spinning"]} />
@@ -131,10 +147,13 @@ const privateQuery = (privately: boolean) => (privately ? ({ private: "true" } a
 const SignIn = ({
   option,
   privately,
+  shared,
 }: {
   readonly option: ConnectOption;
   /** The account becomes the caller's private one. */
   readonly privately: boolean;
+  /** The account becomes a shared credential. */
+  readonly shared: boolean;
 }) => {
   if (option.method.kind !== "sign-in") throw new Error("SignIn needs a sign-in option");
   const { provider, flow: defaultFlow, codeAlternative } = option.method;
@@ -265,7 +284,7 @@ const SignIn = ({
       return (
         <div className={styles["panelBody"]}>
           <p className={styles["lead"]}>{option.how}</p>
-          {option.notice === undefined ? null : <p className={styles["notice"]}>{option.notice}</p>}
+          <Notices option={option} shared={shared} />
           {codeAlternative === true ? (
             <label className={styles["check"]}>
               <input
@@ -552,7 +571,15 @@ interface FileResult {
   readonly problem: string | undefined;
 }
 
-const Files = ({ privately }: { readonly privately: boolean }) => {
+const Files = ({
+  option,
+  privately,
+  shared,
+}: {
+  readonly option: ConnectOption;
+  readonly privately: boolean;
+  readonly shared: boolean;
+}) => {
   const id = useId();
   const upload = useAction(uploadAtom);
   const refreshCredentials = useAtomRefresh(credentialsAtom);
@@ -595,6 +622,7 @@ const Files = ({ privately }: { readonly privately: boolean }) => {
         Each file becomes one account; a file with the same name replaces the account saved under
         it.
       </p>
+      <Notices option={option} shared={shared} />
       <div className={kit["field"]}>
         <label className={kit["fieldLabel"]} htmlFor={id}>
           Auth files (JSON)
@@ -640,17 +668,29 @@ const Files = ({ privately }: { readonly privately: boolean }) => {
 const Panel = ({
   option,
   privately,
+  shared,
 }: {
   readonly option: ConnectOption;
   readonly privately: boolean;
+  /** The account will be a shared credential. */
+  readonly shared: boolean;
 }) => {
   switch (option.method.kind) {
     case "sign-in":
-      return <SignIn key={`${option.id}-${privately}`} option={option} privately={privately} />;
+      return (
+        <SignIn
+          key={`${option.id}-${privately}`}
+          option={option}
+          privately={privately}
+          shared={shared}
+        />
+      );
     case "vertex":
       return <Vertex key={String(privately)} privately={privately} />;
     case "file":
-      return <Files key={String(privately)} privately={privately} />;
+      return (
+        <Files key={String(privately)} option={option} privately={privately} shared={shared} />
+      );
   }
 };
 
@@ -708,7 +748,7 @@ export const ConnectPage = () => {
           ) : (
             <>
               <h2 className={styles["panelTitle"]}>{chosen.name}</h2>
-              <Panel option={chosen} privately={privately} />
+              <Panel option={chosen} privately={privately} shared={!privately} />
             </>
           )}
         </section>

@@ -49,6 +49,12 @@
   color: var(--quiet);
 }
 
+.notice {
+  max-width: 60ch;
+  font-size: var(--text-sm);
+  color: var(--quiet);
+}
+
 .lead {
   max-width: 60ch;
   margin-bottom: var(--space-4);

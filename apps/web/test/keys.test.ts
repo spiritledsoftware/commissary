@@ -15,8 +15,10 @@ import {
   defaultBaseUrl,
   discoversModels,
   draftOf,
+  familyNotice,
   groupFacts,
   groupTitle,
+  FAMILY_ORDER,
   isFamily,
   keptSettings,
   keySections,
@@ -522,5 +524,20 @@ describe("OpenCode default base URLs (#178)", () => {
   it("point at the /inference gateway", () => {
     expect(defaultBaseUrl("opencode-zen")).toBe("https://opencode.ai/inference/v1");
     expect(defaultBaseUrl("opencode-go")).toBe("https://opencode.ai/inference/go/v1");
+  });
+});
+
+describe("provider key terms notices (ADR 0034)", () => {
+  it("warns that OpenCode Go's terms bar use for a third party, at the org's own risk", () => {
+    const notice = familyNotice("opencode-go") ?? "";
+    expect(notice).toContain("not on behalf of or for the benefit of any third party");
+    expect(notice).toContain("cannot invite members");
+    expect(notice).toContain("own risk");
+  });
+
+  it("shows none for every other provider key", () => {
+    for (const family of FAMILY_ORDER.filter((candidate) => candidate !== "opencode-go")) {
+      expect(familyNotice(family), family).toBeUndefined();
+    }
   });
 });
