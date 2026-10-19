@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted, amended below (no default limits; a barebones computer with mise)
 ---
 
 # Sandboxes are a built-in toolkit, and sandboxes and browsers come from pluggable providers
@@ -13,7 +13,7 @@ A hosted agent needs somewhere to run commands and keep files. Rather than give 
 - **Hosted agents.** A hosted agent's definition may name a sandbox toolkit. Its run then opens one sandbox session, and pi's bash and file tools are routed to it.
 - **Lifecycle.**
   - A run's sandbox session lives as long as the run, and its files follow the retention of agent runs (ADR 0040).
-  - A client's sandbox session belongs to the member and API key that opened it. It and its files are deleted when it is closed, or after a fixed idle limit of about a day. A sandbox is not file storage, which is outside v1.
+  - A client's sandbox session belongs to the member and API key that opened it. It and its files are deleted when it is closed, or after it has been idle for about a day. A sandbox is not file storage, which is outside v1.
 
 ## Cloudflare's sandbox: just-bash, then the computer
 
@@ -23,10 +23,11 @@ The built-in sandbox runs on `@cloudflare/computer`. Its Workspace is a filesyst
 - **Fallback.** When just-bash cannot run a command at all (a command it lacks, or syntax it does not support), the sandbox runs the command again on the computer. A command that ran on just-bash and failed is not run again, since its side effects may already have happened. The package offers no fallback of its own, so this is Commissary's code.
 - **"May use the computer"** is a setting, off by default because the computer costs money. With it off, an unsupported command returns just-bash's error.
 - **The computer's lifecycle.** It starts at the first fallback and stops after ten idle minutes. The files stay in the Workspace, so the next fallback starts a fresh computer with the same files. Each deployment fixes one instance size in v1.
+- **A barebones computer.** Its image holds only computerd, mise and what mise needs to download and unpack. A command that needs a runtime or tool (node, python, git) installs it with mise, whose data and shims live in the Workspace, so an install lasts as long as the sandbox session and survives the computer stopping. The "package registries" preset includes mise's download hosts.
 - **Network.** None by default. It may be widened to a list of allowed hosts (with a "package registries" preset: npm, PyPI, GitHub) or to the open internet, and the setting covers both just-bash and the computer. A sandbox with a network and tool results that may carry prompt injection is a way to leak data, so it is off unless someone turns it on.
 - **Credentials never enter a sandbox.** A run reaches other services only through tools, and v1 has no secret environment variables.
 - **Who sets what.** The toolkit carries the org's ceiling: whether the computer is allowed, and the widest network allowed. A hosted agent's definition, or a client's `sandbox_open`, chooses within it. For a private agent, its member chooses.
-- **Cost.** Usage records carry computer seconds. An org admin may set a price per computer hour, which counts toward the dollar spend limits. A deployment setting caps concurrent computers per org. just-bash's small cost is part of the run and is not priced.
+- **Cost.** Usage records carry computer seconds. An org admin may set a price per computer hour, which counts toward the dollar spend limits. just-bash's small cost is part of the run and is not priced.
 - **Requirements.** The computer is present only when the deployment has a container binding, as the browser toolkit needs a `browser` binding. Without one, "may use the computer" cannot be turned on. Workers Paid is needed in either case.
 
 ## Sandbox and browser providers
@@ -57,3 +58,8 @@ So every provider gives the same tools and session model, and a hosted agent can
 - ADR 0039 is amended: Browser Run becomes the first browser provider of the browser toolkit, rather than its only possible one.
 - `@cloudflare/computer` is a preview ("not suitable for production"), and its just-bash backend runs in a Dynamic Worker. Commissary pins exact versions behind its own adapter.
 - A self-hosted Commissary on Workers Free has no Agents area and no sandbox that runs commands. That joins the self-hosted parity question.
+
+## Amendment: no default limits, and a barebones computer
+
+- The decision first capped concurrent computers per org with a deployment setting. The cap is dropped, as are the limits on agent runs (ADR 0040): spend limits, Cloudflare's plans and Commissary Cloud's billing tiers limit use. Limits that org admins configure may come later.
+- The computer's image stays barebones: tools are installed with mise into the Workspace when a run needs them, rather than baked into a large image.
