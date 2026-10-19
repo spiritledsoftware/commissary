@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted, amended by ADR-0041 (Browser Run is the first browser provider)
 ---
 
 # The hosted browser is a built-in toolkit, not an area
