@@ -354,6 +354,13 @@ fixture diff is a change to consider (port the Go change and commit the new fixt
 leave the fixture as it is), not noise to commit blindly. Some
 fixtures contain generated ids or timestamps that differ on every run; the tests mask those.
 
+`tools/fixturegen/session/testdata/throwaway-rsa-2048.pem` is a public throwaway RSA test key: the Vertex service-account
+cases need a fixed key so the fixture stays deterministic (`upstream-drift.yml` diffs regenerated fixtures). It is tied
+to no real account and must never be used for anything real. The key appears in full in
+`packages/models/test/fixtures/session.json`, so `.github/secret_scanning.yml` excludes both files from GitHub secret
+scanning; exclude them from any other scanner too. The TypeScript tests generate their own keys at runtime
+(`packages/models/test/support/vertex.ts`).
+
 `tools/fixturegen/UPSTREAM_COMMIT` records the reference commit the committed fixtures were generated from (the last
 ported upstream state). `tools/upstream-drift.sh` syncs the reference, regenerates every fixture, runs the tests on
 them and reports the upstream commits since that commit and the test files that fail; the weekly

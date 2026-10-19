@@ -254,13 +254,18 @@ type vertexCase struct {
 }
 
 // vertexCases runs the real NormalizeServiceAccountMap over a fixed test key in several spellings.
+// The key is a public throwaway (see the notice in the file); it stays fixed so the fixture is deterministic.
 func vertexCases() []vertexCase {
-	raw, err := os.ReadFile("tools/fixturegen/session/testkey.pem")
+	raw, err := os.ReadFile("tools/fixturegen/session/testdata/throwaway-rsa-2048.pem")
 	if err != nil {
 		panic(err)
 	}
-	pkcs1 := string(raw)
 	block, _ := pem.Decode(raw)
+	if block == nil {
+		panic("throwaway-rsa-2048.pem: no PEM block")
+	}
+	// Re-encode the block so the notice before it stays out of the fixture.
+	pkcs1 := string(pem.EncodeToMemory(block))
 	parsed, err := x509.ParsePKCS1PrivateKey(block.Bytes)
 	if err != nil {
 		panic(err)
