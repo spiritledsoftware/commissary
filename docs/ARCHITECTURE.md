@@ -224,7 +224,8 @@ to `packages/billing/src/`) and the JSON path engine as `packages/json`.
   binding is read in `models/kv.ts` only (`orgKvOf`, `deploymentKvOf`); the lint rule `boundaries/org-scoped-kv` fails
   any other source file that reads `CACHE`, names the `KVNamespace` type (the `env.ts` and `env.d.ts` declarations
   aside) or uses the Cache API (the Workers use none today). Per-isolate caches: the auth caches (verified API and
-  management keys, standings), the `auth_index` indexers and the in-memory Antigravity state are an `OrgCache`
+  management keys, standings), Billing's plans and plan-limit refusals, the `auth_index` indexers and the in-memory
+  Antigravity state are an `OrgCache`
   (`core/kv.ts`), keyed by the org and the name apart; the `ConfigReader` and registry snapshots are maps keyed by the
   typed `OrgId`; the signature caches of `@commissary/translation`, which cannot import `core`, take a plain scope,
   and `orgSignatureCache` (`models/signature/store.ts`) is where it is always an org id. No lint rule covers these

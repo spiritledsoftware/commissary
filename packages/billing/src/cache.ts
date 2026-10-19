@@ -5,7 +5,7 @@
  * change reaches every isolate within that time. Code that switches a plan (Polar, #237) calls {@link forgetBilling} so
  * the isolate that made the change sees it at once.
  */
-import type { OrgId } from "@commissary/core";
+import { makeOrgCache, type OrgId } from "@commissary/core";
 import type { Plan } from "./plan.ts";
 
 /** How long an isolate trusts what it knows of an org's billing without asking again. */
@@ -13,17 +13,20 @@ export const BILLING_TTL_MS = 30_000;
 
 const MAX_CACHED = 4096;
 
-/** A bounded map whose entries expire at a time (epoch ms). */
-class Expiring<V> {
-  readonly #entries = new Map<string, { readonly value: V; readonly until: number }>();
+/** The name an org's entry has in each cache: there is one per org. */
+const ENTRY = "billing";
 
-  get(key: string, now: number): V | undefined {
-    const entry = this.#entries.get(key);
+/** A bounded {@link OrgCache}, one entry per org, whose entries expire at a time (epoch ms). */
+class Expiring<V> {
+  readonly #entries = makeOrgCache<{ readonly value: V; readonly until: number }>(MAX_CACHED);
+
+  get(org: OrgId, now: number): V | undefined {
+    const entry = this.#entries.get(org, ENTRY);
 
     if (entry === undefined) return undefined;
 
     if (now >= entry.until) {
-      this.#entries.delete(key);
+      this.#entries.delete(org, ENTRY);
 
       return undefined;
     }
@@ -31,18 +34,12 @@ class Expiring<V> {
     return entry.value;
   }
 
-  set(key: string, value: V, until: number): void {
-    if (this.#entries.size >= MAX_CACHED) {
-      const oldest = this.#entries.keys().next();
-
-      if (oldest.done !== true) this.#entries.delete(oldest.value);
-    }
-
-    this.#entries.set(key, { value, until });
+  set(org: OrgId, value: V, until: number): void {
+    this.#entries.set(org, ENTRY, { value, until });
   }
 
-  delete(key: string): void {
-    this.#entries.delete(key);
+  delete(org: OrgId): void {
+    this.#entries.delete(org, ENTRY);
   }
 
   clear(): void {

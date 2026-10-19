@@ -35,7 +35,7 @@ export interface VerifiedManagementKey {
 /** The most verified keys one isolate keeps; the oldest is dropped first. */
 const MAX_CACHED_KEYS = 1024;
 
-/** Verified keys by the SHA-256 of the whole key, with the epoch ms until which they are trusted. */
+/** Verified keys of an org by the SHA-256 of the whole key, with the epoch ms until which they are trusted. */
 const verified = makeOrgCache<{ readonly key: VerifiedManagementKey; readonly until: number }>(
   MAX_CACHED_KEYS,
 );
