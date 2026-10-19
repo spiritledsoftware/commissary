@@ -1,6 +1,7 @@
 /**
  * The control panel built from `apps/web` (`pnpm build` writes `apps/web/dist/index.html` and
- * `apps/web/dist/assets/*`): `/`, its page paths (`zones.ts` `PANEL_SECTIONS`), the same pages under an org
+ * `apps/web/dist/assets/*`, with the font's licence in `assets/licenses/`): `/`, its page paths (`zones.ts`
+ * `PANEL_SECTIONS`), the same pages under an org
  * (`/o/<slug>/accounts`, routed as the unscoped page by `org-address.ts`) and the bundled files under `/assets`.
  *
  * New in the Workers port: Go serves the upstream panel at `/management.html` and a public JSON banner at `/`. Here

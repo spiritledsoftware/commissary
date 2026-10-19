@@ -123,7 +123,7 @@ The control panel's font is Atkinson Hyperlegible Next, from the npm package [`@
 
 > Copyright 2020-2024 The Atkinson Hyperlegible Next Project Authors (https://github.com/googlefonts/atkinson-hyperlegible-next)
 
-The full licence text ships with the panel build at `licenses/atkinson-hyperlegible-next.txt`.
+The full licence text ships with the panel build at `assets/licenses/atkinson-hyperlegible-next.txt`, which the app serves at `/assets/licenses/atkinson-hyperlegible-next.txt`.
 
 ## Third-party files that keep their own licence
 

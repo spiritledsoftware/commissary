@@ -6,7 +6,7 @@ on:
   # zizmor: the action never checks out or runs the pull request's code; it reads the event and writes the signatures
   # file, which is why it runs with the base repository's token on `pull_request_target`.
   pull_request_target: # zizmor: ignore[dangerous-triggers]
-    types: [opened, closed, synchronize]
+    types: [opened, synchronize]
   issue_comment: # zizmor: ignore[dangerous-triggers]
     types: [created]
 
@@ -36,5 +36,6 @@ jobs:
           path-to-signatures: signatures/v1/cla.json
           path-to-document: https://github.com/spiritledsoftware/commissary/blob/main/CLA.md
           branch: cla-signatures
+          lock-pullrequest-aftermerge: false
           # The owner and bots.
-          allowlist: ian-pascoe,dependabot[bot],github-actions[bot],renovate[bot],bot*
+          allowlist: ian-pascoe,dependabot[bot],github-actions[bot],renovate[bot],*[bot]

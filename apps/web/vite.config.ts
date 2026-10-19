@@ -1,8 +1,11 @@
-// Vite config of the control panel. `pnpm build` (`vite build`) writes `dist/index.html` and `dist/assets/*`, which the
-// Worker serves at `/` (apps/app/src/management/web-panel.ts). `pnpm --filter @commissary/web dev` serves the panel
-// with hot reload and forwards `/v9` to a running `pnpm dev` Worker, and Commissary Cloud's sign-in calls (`/api`) to
-// its auth Worker (ADR 0030).
+// Vite config of the control panel. `pnpm build` (`vite build`) writes `dist/index.html` and `dist/assets/*` (the bundle
+// and the font's licence, `assets/licenses/`), which the Worker serves at `/` and `/assets`
+// (apps/app/src/management/web-panel.ts). `pnpm --filter @commissary/web dev` serves the panel with hot reload and
+// forwards `/v9` to a running `pnpm dev` Worker, and Commissary Cloud's sign-in calls (`/api`) to its auth Worker
+// (ADR 0030).
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
 import { build, defineConfig, type Plugin } from "vite";
@@ -90,12 +93,17 @@ const themeBoot = (): Plugin => {
 };
 
 /** The font package's `LICENSE` (SIL OFL-1.1), read from the installed package; the OFL requires it to ship with the font. */
-const fontLicensePath = fileURLToPath(
-  new URL("node_modules/@fontsource-variable/atkinson-hyperlegible-next/LICENSE", import.meta.url),
+const fontLicensePath = join(
+  dirname(
+    createRequire(import.meta.url).resolve(
+      "@fontsource-variable/atkinson-hyperlegible-next/package.json",
+    ),
+  ),
+  "LICENSE",
 );
 
-/** Where the built panel carries the font's licence (`NOTICE` names it). */
-const FONT_LICENSE_FILE = "licenses/atkinson-hyperlegible-next.txt";
+/** Where the built panel carries the font's licence (`NOTICE` names it); under `/assets`, which the Worker serves. */
+const FONT_LICENSE_FILE = "assets/licenses/atkinson-hyperlegible-next.txt";
 
 /** Emits the Atkinson Hyperlegible Next licence next to the bundle that includes the font files. */
 const fontLicense = (): Plugin => ({

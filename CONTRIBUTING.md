@@ -16,6 +16,10 @@ The bot records your signature once, on a `cla-signatures` branch of this reposi
 
 If you contribute on behalf of an employer, make sure they allow it (section 4 of the CLA).
 
+### Maintainer notes
+
+The `cla-signatures` branch must exist and stay unprotected (no branch protection or ruleset), because the bot pushes to it with the default `GITHUB_TOKEN`.
+
 ## Working on the code
 
 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) covers the workspace, scripts and conventions; [AGENTS.md](AGENTS.md) the commands to run before a pull request:
