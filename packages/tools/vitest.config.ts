@@ -35,6 +35,7 @@ export default defineConfig({
                 ACCESS_AUD: "",
                 PLATFORM_ADMIN_EMAILS: "",
                 PLATFORM_ADMIN_SERVICE_TOKENS: "",
+                APP_DOMAIN: "app.example.com",
                 // Fixed test keys (deployed: Alchemy `Random`s, alchemy.run.ts), as Models' tests bind them.
                 SECRETS_KEY: "commissary-test-secrets-key-0123456789abcdef0123456789abcdef012345",
               },

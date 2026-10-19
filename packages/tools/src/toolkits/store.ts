@@ -1,7 +1,8 @@
 /**
  * Toolkit storage in the org's ControlPlane SQLite (ADR 0036, ADR 0037): the toolkits, their credentials (secrets
- * sealed with the org's data key), their tool lists and the overrides on their tools. The tables are
- * {@link TOOLS_TABLES}, which the part drops when the org is deleted.
+ * sealed with the org's data key), their tool lists, the overrides on their tools, and the upstream sessions the MCP
+ * endpoint's calls keep (ADR 0038: at most {@link SESSION_LIFETIME_MS}). The tables are {@link TOOLS_TABLES}, which
+ * the part drops when the org is deleted.
  *
  * A toolkit's owner is a member id for a private toolkit and empty for an org toolkit; a credential's owner is empty
  * for the shared credential and the member's id for a private one. Tools and overrides are keyed by their stable id,
@@ -12,7 +13,7 @@
 import type { CredentialsAccepted, ToolClass, ToolkitSecret } from "@commissary/contract/tools";
 import type { Sealer } from "@commissary/state";
 import type { Schema } from "effect";
-import type { UpstreamTool } from "../mcp/client.ts";
+import type { UpstreamSession, UpstreamTool } from "../mcp/client.ts";
 
 /** Every table the store creates, which the part's `wipe` drops (test/control-plane.test.ts checks the list). */
 export const TOOLS_TABLES = [
@@ -20,7 +21,11 @@ export const TOOLS_TABLES = [
   "toolkit_credentials",
   "toolkit_tools",
   "tool_overrides",
+  "toolkit_sessions",
 ] as const;
+
+/** How long an upstream session is kept from when it was opened (ADR 0038: at most seven days, like replay state). */
+export const SESSION_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
 
 const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS toolkits (
@@ -40,6 +45,10 @@ const SCHEMA = [
      toolkit_id TEXT NOT NULL, upstream_name TEXT NOT NULL, hidden INTEGER NOT NULL, name TEXT, description TEXT,
      class TEXT, revision INTEGER NOT NULL, updated_at INTEGER NOT NULL, updated_by TEXT NOT NULL,
      PRIMARY KEY (toolkit_id, upstream_name)
+   )`,
+  `CREATE TABLE IF NOT EXISTS toolkit_sessions (
+     toolkit_id TEXT NOT NULL, owner TEXT NOT NULL, protocol_version TEXT NOT NULL, session_id TEXT NOT NULL,
+     opened_at INTEGER NOT NULL, PRIMARY KEY (toolkit_id, owner)
    )`,
 ];
 
@@ -144,6 +153,12 @@ interface ToolRow {
   annotations: string | null;
   first_seen: number;
   position: number;
+}
+
+interface SessionRow {
+  [column: string]: SqlStorageValue;
+  protocol_version: string;
+  session_id: string;
 }
 
 interface OverrideRow {
@@ -306,7 +321,7 @@ export class ToolkitStore {
     else this.#sql.exec(`UPDATE toolkits SET list_error = ? WHERE id = ?`, outcome.error, id);
   }
 
-  /** Deletes a toolkit with its credentials, tool list and overrides. */
+  /** Deletes a toolkit with its credentials, tool list, overrides and sessions. */
   deleteToolkit(id: string): void {
     this.#transaction(() => {
       for (const table of TOOLS_TABLES)
@@ -378,28 +393,95 @@ export class ToolkitStore {
 
     const param = secret.kind === "header" || secret.kind === "query" ? secret.name : "";
 
-    this.#sql.exec(
-      `INSERT OR REPLACE INTO toolkit_credentials
-         (toolkit_id, owner, kind, param, secret, connected_at, connected_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      toolkitId,
-      key,
-      secret.kind,
-      param,
-      sealed,
-      now,
-      by,
-    );
+    this.#transaction(() => {
+      this.#sql.exec(
+        `INSERT OR REPLACE INTO toolkit_credentials
+           (toolkit_id, owner, kind, param, secret, connected_at, connected_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        toolkitId,
+        key,
+        secret.kind,
+        param,
+        sealed,
+        now,
+        by,
+      );
+      // A session belongs to the identity that opened it.
+      this.deleteSession(toolkitId, owner);
+    });
   }
 
   deleteCredential(toolkitId: string, owner: string | undefined): boolean {
-    return (
-      this.#sql.exec(
-        `DELETE FROM toolkit_credentials WHERE toolkit_id = ? AND owner = ?`,
+    return this.#transaction(() => {
+      this.deleteSession(toolkitId, owner);
+
+      return (
+        this.#sql.exec(
+          `DELETE FROM toolkit_credentials WHERE toolkit_id = ? AND owner = ?`,
+          toolkitId,
+          owner ?? "",
+        ).rowsWritten > 0
+      );
+    });
+  }
+
+  // --- upstream sessions ------------------------------------------------------------------------------------------
+
+  /** The session kept for a toolkit's credential (`owner` undefined: the shared one), unless it expired at `now`. */
+  session(toolkitId: string, owner: string | undefined, now: number): UpstreamSession | undefined {
+    const row = this.#sql
+      .exec<SessionRow>(
+        `SELECT protocol_version, session_id FROM toolkit_sessions
+         WHERE toolkit_id = ? AND owner = ? AND opened_at > ?`,
         toolkitId,
         owner ?? "",
-      ).rowsWritten > 0
+        now - SESSION_LIFETIME_MS,
+      )
+      .toArray()[0];
+
+    return row === undefined
+      ? undefined
+      : {
+          protocolVersion: row.protocol_version,
+          ...(row.session_id === "" ? {} : { sessionId: row.session_id }),
+        };
+  }
+
+  /** Keeps the session a call opened at `now`, in place of the one before. */
+  putSession(
+    toolkitId: string,
+    owner: string | undefined,
+    session: UpstreamSession,
+    now: number,
+  ): void {
+    this.#sql.exec(
+      `INSERT OR REPLACE INTO toolkit_sessions (toolkit_id, owner, protocol_version, session_id, opened_at)
+       VALUES (?, ?, ?, ?, ?)`,
+      toolkitId,
+      owner ?? "",
+      session.protocolVersion,
+      session.sessionId ?? "",
+      now,
     );
+  }
+
+  deleteSession(toolkitId: string, owner: string | undefined): void {
+    this.#sql.exec(
+      `DELETE FROM toolkit_sessions WHERE toolkit_id = ? AND owner = ?`,
+      toolkitId,
+      owner ?? "",
+    );
+  }
+
+  /** Deletes the sessions expired at `now`; answers when the next one expires (`null`: none is kept). */
+  pruneSessions(now: number): number | null {
+    this.#sql.exec(`DELETE FROM toolkit_sessions WHERE opened_at <= ?`, now - SESSION_LIFETIME_MS);
+
+    const first = this.#sql
+      .exec<{ first: number | null }>(`SELECT MIN(opened_at) AS first FROM toolkit_sessions`)
+      .toArray()[0]?.first;
+
+    return first === null || first === undefined ? null : first + SESSION_LIFETIME_MS;
   }
 
   // --- tool lists -------------------------------------------------------------------------------------------------
@@ -517,13 +599,17 @@ export class ToolkitStore {
 
   // --- members ----------------------------------------------------------------------------------------------------
 
-  /** Deletes everything of `member`: their private toolkits (with all they hold) and their private credentials. */
+  /**
+   * Deletes everything of `member`: their private toolkits (with all they hold), their private credentials and the
+   * sessions opened with them.
+   */
   deleteMember(member: string): void {
     this.#transaction(() => {
       for (const toolkit of this.toolkits())
         if (toolkit.owner === member) this.deleteToolkit(toolkit.id);
 
       this.#sql.exec(`DELETE FROM toolkit_credentials WHERE owner = ?`, member);
+      this.#sql.exec(`DELETE FROM toolkit_sessions WHERE owner = ?`, member);
     });
   }
 }

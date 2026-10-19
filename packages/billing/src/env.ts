@@ -38,7 +38,10 @@ export interface BillingBindings extends Pick<StateBindings, "PLATFORM"> {
   readonly FREE_RATE_LIMIT?: RateLimiter | undefined;
   /** Cloud: the request-rate ceiling of Pay as you go (600 a minute). Unbound: no ceiling. */
   readonly PAYG_RATE_LIMIT?: RateLimiter | undefined;
-  /** The app host, which the panel's billing page is at (`meter.ts`); unset: the message names the path only. */
+  /**
+   * The app host, which the panel's billing page is at (`meter.ts`, `panelPageUrl`), bound on every deployed stage;
+   * unset (a preview, `alchemy dev`): the message names the page in words.
+   */
   readonly APP_DOMAIN?: string | undefined;
 }
 

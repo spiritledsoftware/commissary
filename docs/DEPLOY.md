@@ -70,14 +70,15 @@ the auth Worker ([Commissary Cloud](#commissary-cloud)):
    `404` with the address of the client API. It binds the state Worker's Durable Objects by script name, which is also
    why Alchemy deploys it after the state Worker, and no secrets keys, which only the ControlPlane reads.
 3. **`Api`** (`apps/api`), the API Worker: the client API (`/v1`, `/v1beta`, `/v1internal`, `/openai/v1`,
-   `/backend-api/codex`, `/chat/completions`, `/completions`, `/responses`), `/healthz` and the cron trigger, under no Access
+   `/backend-api/codex`, `/chat/completions`, `/completions`, `/responses` and the MCP endpoint `/mcp`), `/healthz` and
+   the cron trigger, under no Access
    application of its own: clients send API keys. It binds the Durable Objects by script name too, and the per-org rate limit
    on Commissary Cloud. Where it answers:
    - on the API host when there is one ([API host](#api-host)), as its custom domain;
    - else on the app host, through **zone routes** `<app host>/v1*`, `/openai/v1*`, `/backend-api/codex*`,
-     `/chat/completions*`, `/completions*` and `/responses*` (a route runs in front of the app Worker's custom domain on
-     the same hostname); the bypass application of the client API paths takes them out of the app host's Access
-     application ([Operations](#operations));
+     `/chat/completions*`, `/completions*`, `/responses*` and `/mcp*` (a route runs in front of the app Worker's custom
+     domain on the same hostname); the bypass application of the client API paths takes them out of the app host's
+     Access application ([Operations](#operations));
    - on a preview, on its own `workers.dev` URL.
 
    The deploy's `apiUrl` output names where clients send API keys (`tools/deploy-stage.sh` passes it to the checks).
@@ -146,9 +147,9 @@ default the base domain, so a `.env` that sets `COMMISSARY_DOMAIN` alone serves 
 
 `COMMISSARY_API_DOMAIN` (optional, ADR 0028) gives a deployment a second hostname, the **API host**: the API Worker's
 custom domain, which serves the client API (`/v1`, `/v1beta`, `/v1internal`, `/openai/v1`, `/backend-api/codex`,
-`/chat/completions`, `/completions`, `/responses`) and `/healthz`, and nothing else. The **app host** ([Base domain and
-app host](#base-domain-and-app-host)) is the app Worker's: the control panel, sign-in and the management API, and no
-client API route, with no zone routes. A path on the wrong host answers `404` with the host that serves it
+`/chat/completions`, `/completions`, `/responses`, `/mcp`) and `/healthz`, and nothing else. The **app host** ([Base
+domain and app host](#base-domain-and-app-host)) is the app Worker's: the control panel, sign-in and the management API,
+and no client API route, with no zone routes. A path on the wrong host answers `404` with the host that serves it
 (`apps/app/src/http/hosts.ts`, `apps/api/src/http/hosts.ts`). The panel's API keys page tells clients the API host
 (`GET /me` `api_url`).
 
@@ -350,15 +351,20 @@ the stack (`pnpm exec alchemy destroy --config stacks/github.ts --stage ci --pro
 - **Control panel.** CI builds the control panel from `apps/web` (`pnpm build`, into `apps/web/dist/`) before each
   deploy.
 - **API keys.** On a stage with one host, the deploy adds, after the API Worker and its zone routes (the bypass depends
-  on the API Worker's output, so the client API never leaves Access while a Worker that only reads the Access edge's
-  JWT serves it), an Access application with a Bypass policy on the client API paths (`/v1*`, `/v1beta*`,
-  `/v1internal*`, `/openai/v1*`, `/backend-api/codex*`, `/chat/completions`, `/completions`, `/responses`), so clients
-  reach the API Worker with an API key and no Access sign-in; an API host or a preview needs none ([ACCESS.md](ACCESS.md#api-keys)). From that deploy on, clients that
-  send Access service token headers to those paths are refused: move them to API keys first
-  ([MIGRATION.md](MIGRATION.md#5-move-clients-to-api-keys)). `cloudflared access` tokens (`cf-access-token`) keep
-  working in `global` while its `access_clients` setting is on. The keys live in each org's ControlPlane (tables
-  created on first use): no migration to run. With your own application (`ACCESS_AUD`) the deploy creates no bypass;
-  add one yourself.
+  on the API Worker's output, so the client API never leaves Access while a Worker that only reads the Access edge's JWT
+  serves it), an Access application with a Bypass policy on the client API paths (`/v1*`, `/v1beta*`, `/v1internal*`,
+  `/openai/v1*`, `/backend-api/codex*`, `/chat/completions`, `/completions`, `/responses`, `/mcp`), so clients reach the
+  API Worker with an API key and no Access sign-in; an API host or a preview needs none
+  ([ACCESS.md](ACCESS.md#api-keys)). From that deploy on, clients that send Access service token headers to those paths
+  are refused: move them to API keys first ([MIGRATION.md](MIGRATION.md#5-move-clients-to-api-keys)).
+  `cloudflared access` tokens (`cf-access-token`) keep working in `global` while its `access_clients` setting is on. The
+  keys live in each org's ControlPlane (tables created on first use): no migration to run. With your own application
+  (`ACCESS_AUD`) the deploy creates no bypass; add one yourself.
+- **MCP endpoint.** The client API gains `/mcp` (Tools, #197): the stack adds its zone route and, with a stack-managed
+  Access application on a stage with one host, puts it in the bypass application. With your own application
+  (`ACCESS_AUD`) on a stage with one host, add `/mcp` to your bypass application of the client API paths, or MCP clients
+  get Access's sign-in instead of the endpoint. An API host needs nothing. No binding, secret or migration: upstream
+  sessions live in each org's ControlPlane (a table created on first use).
 - **Platform registry and orgs.** The `Platform` Durable Object (the list of orgs, ADR 0021) is a new class that the
   next deploy adds; its tables are created on first use, so there is no migration to run, and the org `global` (slug
   `default`) exists from the start with everything the deployment stored before. The addresses of the

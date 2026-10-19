@@ -7,10 +7,12 @@
  * #231) must sit behind this gate or call `limitClientRate` itself: the plan's ceiling is applied here and nowhere else.
  * `/healthz` (and nothing else, `http/hosts.ts` refuses every other path first) passes through. Registered after CORS
  * (`cors.ts`), so preflights are answered before authentication and refusals still carry CORS headers. Refusals on
- * the System One endpoint are in TypeSafe's format (ADR 0032), so TypeSafe's SDKs read them.
+ * the System One endpoint are in TypeSafe's format (ADR 0032), so TypeSafe's SDKs read them. A `401` on the MCP
+ * endpoint carries `WWW-Authenticate: Bearer` (the MCP authorization spec; `resource_metadata` is Commissary Cloud's
+ * OAuth server's, #200), so an MCP client asks for a key rather than retrying.
  */
 import { Effect, Layer, Result } from "effect";
-import { HttpRouter, HttpServerRequest } from "effect/http";
+import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import {
   accessErrorResponse,
   AccessJwks,
@@ -21,7 +23,13 @@ import {
   refusalResponse,
 } from "@commissary/auth";
 import { limitClientRate } from "@commissary/billing/api";
-import { CurrentOrg, isClientApiPath, isSystemOnePath, normalizedPath } from "@commissary/core";
+import {
+  CurrentOrg,
+  isClientApiPath,
+  isMcpPath,
+  isSystemOnePath,
+  normalizedPath,
+} from "@commissary/core";
 import { CorsLayer } from "./cors.ts";
 
 /** Whether a request URL is open to anyone: any path but the client API (a URL that cannot be parsed is not). */
@@ -64,8 +72,13 @@ export const ClientGate = HttpRouter.middleware<{ provides: AccessPrincipal }>()
           ),
         );
 
-        if (Result.isFailure(authenticated))
-          return yield* accessErrorResponse(authenticated.failure, dialect);
+        if (Result.isFailure(authenticated)) {
+          const refusal = yield* accessErrorResponse(authenticated.failure, dialect);
+
+          return refusal.status === 401 && isMcpPath(request.originalUrl)
+            ? HttpServerResponse.setHeader(refusal, "www-authenticate", "Bearer")
+            : refusal;
+        }
 
         return yield* app.pipe(
           Effect.provideService(AccessPrincipal, authenticated.success),

@@ -1,12 +1,12 @@
 /**
  * What `@commissary/tools` reads from a Worker's env (#134 "How packages get their bindings"): the org's ControlPlane,
- * typed as objects with the Tools part ({@link ToolsControlPlane}), so callers write `stub.tools().x(…)`. Tools needs no
- * binding of its own: its state is the ControlPlane's, and it reaches MCP servers through the global `fetch` behind the
- * outbound guard.
+ * typed as objects with the Tools part ({@link ToolsControlPlane}), so callers write `stub.tools().x(…)`, and, for the
+ * MCP endpoint's connect links, the Platform registry and the app host. Tools needs no binding of its own: its state is
+ * the ControlPlane's, and it reaches MCP servers through the global `fetch` behind the outbound guard.
  */
 import { Context, Effect } from "effect";
 import { CurrentOrg, type Reply } from "@commissary/core";
-import { callControlPlane, controlPlaneOf } from "@commissary/state";
+import { callControlPlane, controlPlaneOf, type StateBindings } from "@commissary/state";
 import type { ToolsPart } from "./control-plane-part.ts";
 
 /** The methods of the Tools part callers reach. */
@@ -21,6 +21,8 @@ type ToolsPartMethod =
   | "refreshToolLists"
   | "listTools"
   | "servedTools"
+  | "clientTools"
+  | "callTool"
   | "setOverride"
   | "exportToolkits";
 
@@ -37,6 +39,13 @@ export type ToolsControlPlaneStub = DurableObjectStub<ToolsControlPlane>;
 export interface ToolsBindings {
   /** One ControlPlane per org, seen through {@link ToolsControlPlane}. */
   readonly CONTROL_PLANE: DurableObjectNamespace<ToolsControlPlane>;
+  /** The Platform registry, which names the org's slug in the MCP endpoint's connect links (#197). */
+  readonly PLATFORM: StateBindings["PLATFORM"];
+  /**
+   * The app host (ADR 0028), where the panel's connect page is (`panelPageUrl`), bound on the API Worker on every
+   * deployed stage, one host or split. Unset (a preview, `alchemy dev`), a connect link names the page in words.
+   */
+  readonly APP_DOMAIN?: string | undefined;
 }
 
 /**

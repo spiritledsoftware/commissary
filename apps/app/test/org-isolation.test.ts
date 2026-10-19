@@ -2,7 +2,7 @@
 // everywhere (credential, key, session and model names), and every store of org data is written by one org and read by
 // the others: KV, the signature and Antigravity state, the per-isolate caches, SessionState, the D1 usage records
 // through every query the management API exposes, the ControlPlane addressed by key prefix and by slug, and Tools'
-// toolkits by name and by id.
+// toolkits by name and by id and the upstream MCP sessions their calls keep.
 // Each store is one `storeCase` in `STORES`: a new store (tool calls, approvals, runs, sandbox and browser sessions,
 // profiles) adds one line there (docs/DEVELOPMENT.md, "Tests").
 import { env } from "cloudflare:workers";
@@ -53,6 +53,9 @@ import {
   type StoreCase,
   storeCase,
 } from "./support/org-isolation.ts";
+import { type FakeMcpServer, fakeMcpServer, serveFakeMcpServers } from "@commissary/tools/testing";
+
+serveFakeMcpServers();
 
 const registry = isolatedPlatform();
 
@@ -198,6 +201,49 @@ const toolkitIds = new Map<
   string,
   ReadonlyArray<{ readonly id: string; readonly value: string }>
 >();
+
+/** The fake MCP server of a name: a 2025 server whose one tool, `session`, answers the session it is called in. */
+const sessionServers = new Map<string, FakeMcpServer>();
+
+const sessionServer = (name: string): FakeMcpServer => {
+  const known = sessionServers.get(name);
+
+  if (known !== undefined) return known;
+
+  const server = fakeMcpServer(`https://${name}.iso-mcp.example.com/mcp`, {
+    tools: [{ name: "session" }],
+    call: (_tool, _args, request) => ({
+      content: [{ type: "text", text: request.headers.get("mcp-session-id") ?? "" }],
+    }),
+  });
+
+  sessionServers.set(name, server);
+
+  return server;
+};
+
+/** The org's value of each upstream session id the session case opened. */
+const sessionValues = new Map<string, string>();
+
+const OUTBOUND = { ownHosts: [], localDevelopment: false };
+
+/** The suite's member in `org`, as the Tools part sees them. */
+const isoViewer = (org: IsolationOrg) => ({ member: memberIds.get(org.slug), admin: false });
+
+/** The upstream session a call of the tool of `name` is in, through `org`'s Tools part; none without the toolkit. */
+const sessionOf = async (org: IsolationOrg, name: string): Promise<string | undefined> => {
+  const called = await env.CONTROL_PLANE.getByName(org.id)
+    .tools()
+    .callTool(isoViewer(org), { name: `${toolkitName(name)}_session` }, OUTBOUND);
+
+  if (called.outcome === "unknown") return undefined;
+
+  if (called.outcome !== "result") throw new Error(`the call came to ${called.outcome}`);
+  // SAFETY: the fake server answers one text content (`sessionServer`).
+  const [content] = called.result["content"] as ReadonlyArray<{ text: string }>;
+
+  return content?.text;
+};
 
 // --- the stores ---------------------------------------------------------------------------------------------------------
 
@@ -568,6 +614,45 @@ const STORES: ReadonlyArray<StoreCase> = [
       return undefined;
     },
     value: (index) => `org${index}`,
+  }),
+  // The upstream MCP sessions Tools' calls keep: each org's member calls the same server under the same toolkit name,
+  // and a later call goes on in its own org's session.
+  storeCase("controlplane: upstream MCP sessions", {
+    write: async (org, name, value) => {
+      const plane = env.CONTROL_PLANE.getByName(org.id);
+
+      await plane.setMembershipSettings({ privateCredentials: true });
+
+      const added = await plane.tools().addToolkit(
+        isoViewer(org),
+        {
+          source: sessionServer(name).url,
+          name: toolkitName(name),
+          private: true,
+          accepts: "private",
+          credential: { kind: "none" },
+        },
+        "iso",
+        OUTBOUND,
+      );
+
+      if (!added.ok) throw new Error(added.message);
+      const session = await sessionOf(org, name);
+
+      if (session === undefined || session === "") throw new Error("the call opened no session");
+      sessionValues.set(session, value);
+    },
+    read: async (org, name) => {
+      const session = await sessionOf(org, name);
+
+      return session === undefined ? undefined : sessionValues.get(session);
+    },
+    after: async (shared) => {
+      for (const org of shared)
+        await env.CONTROL_PLANE.getByName(org.id).setMembershipSettings({
+          privateCredentials: false,
+        });
+    },
   }),
 ];
 

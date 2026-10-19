@@ -134,7 +134,7 @@ describe("countRequest", () => {
 
       const refused = yield* Effect.flip(asOrg(org, countRequest));
 
-      assert.include(refused.message, `https://app.example.com/orgs/${slug}/billing`);
+      assert.include(refused.message, `https://app.example.com/o/${slug}/billing`);
 
       resetBillingCaches();
 
@@ -142,8 +142,8 @@ describe("countRequest", () => {
         asOrg(org, countRequest, { ...env, APP_DOMAIN: undefined }),
       );
 
-      assert.include(withoutHost.message, `/orgs/${slug}/billing`);
-      assert.notInclude(withoutHost.message, "https://");
+      assert.include(withoutHost.message, "the billing page of the panel");
+      assert.notInclude(withoutHost.message, `/${slug}/billing`);
     }),
   );
 
