@@ -16,6 +16,7 @@ import {
   isConnectionLifecycleError,
   isExplicitModelNotFound,
   isInvalidGrantError,
+  isProviderSpecificRequestError,
   isRequestFault,
   isRequestInvalidError,
   isRequestRetryRoundError,
@@ -52,6 +53,10 @@ export const classifiable = (error: ExecutionError): ClassifiableError => ({
 /** `isRequestInvalidError`: neither rotate credentials nor penalise them. */
 export const isRequestInvalid = (error: ExecutionError): boolean =>
   isRequestInvalidError(classifiable(error));
+
+/** An upstream 400/422 another provider may accept (issue #185): the request fails over to a credential of another provider. */
+export const isProviderSpecificRequest = (error: ExecutionError): boolean =>
+  isProviderSpecificRequestError(classifiable(error));
 
 /** `isRequestRetryRoundError`: status 403/408/429/500/502/503/504 or a transient transport failure. */
 export const isRetryRoundError = (error: ExecutionError): boolean =>
