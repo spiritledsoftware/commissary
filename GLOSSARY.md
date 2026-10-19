@@ -10,12 +10,12 @@ Its Models area began as a port of the Go server CLIProxyAPI, which it now consu
 
 **Commissary**:
 The product, and any one deployment of it: one service that serves one or more orgs, each with its own credentials,
-through its four areas.
+through its three areas.
 _Avoid_: proxy (as the whole), gateway, server, platform
 
 **Area**:
-One of Commissary's four parts, under one org, one API key and one control panel: Models (the model proxy), Tools, Browser
-and Agents. Commissary Cloud is not an area; it is how Commissary is run.
+One of Commissary's three parts, under one org, one API key and one control panel: Models (the model proxy), Tools (with
+the hosted browser) and Agents. Commissary Cloud is not an area; it is how Commissary is run.
 _Avoid_: product, module, feature
 
 **Hosted agent**:
@@ -600,7 +600,8 @@ _Avoid_: budget, quota, allowance (a provider's limit)
 **Toolkit**:
 A named set of tools that the Tools area builds from one source, such as GitHub's MCP server or Stripe's OpenAPI
 document, and that its tools are named after (`github_create_issue`). An org admin adds a toolkit for the org; a member
-can add a private toolkit, which only they can use and of which org admins see only that it exists.
+can add a private toolkit, which only they can use and of which org admins see only that it exists. Commissary provides
+the browser toolkit itself.
 _Avoid_: integration, connector, app, source, MCP server (for the toolkit itself)
 
 **Toolkit kind**:
@@ -639,6 +640,24 @@ _Avoid_: reviewer
 **Pending approval**:
 A tool call held for its approver, with its arguments, until it is approved, denied or expires.
 _Avoid_: approval request, ticket
+
+**Browser toolkit**:
+The toolkit that Commissary provides itself: a hosted browser that clients and hosted agents drive through tools.
+_Avoid_: Browser area, browser (as an area), browser MCP
+
+**Browser session**:
+One open browser of the browser toolkit, which belongs to the member and API key that opened it.
+_Avoid_: tab, context, browser instance
+
+**Browser profile**:
+Saved logins and site data that a browser session can start from, either shared (used under grants) or private to one
+member.
+_Avoid_: context, cookie jar, identity, credential (a profile holds logins to many sites)
+
+**Handoff**:
+A browser session's request that a person act in it themselves, such as typing a password or solving a CAPTCHA, before
+the tools carry on.
+_Avoid_: takeover, intervention, human-in-the-loop (on its own)
 
 ### The reference
 
