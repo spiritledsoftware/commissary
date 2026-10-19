@@ -2965,5 +2965,7 @@ global `fetch` behind the outbound guard.
 - **Tool class** (ADR 0038): `read` when the tool's annotations say `readOnlyHint: true`, else `write`; an override's
   class wins.
 - **Members and orgs**: a member who leaves takes their private toolkits and their private credentials on org toolkits
-  (`memberLeft`); org deletion drops the tables (`wipe()`), and Tools' org-deletion step has nothing else to delete. The
+  (`memberLeft`); org deletion drops the tables (`wipe()`), and Tools' org-deletion step has nothing else to delete.
+  Tools keeps nothing in KV or a per-isolate cache; the cross-org suite (`apps/app/test/org-isolation.test.ts`) checks
+  that one org's toolkits are neither listed nor reached by id from another. The
   org export lists the toolkits the caller reaches with their credentials' kinds and their overrides, never a secret.

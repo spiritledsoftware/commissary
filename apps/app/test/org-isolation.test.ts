@@ -1,7 +1,8 @@
 // The cross-org suite (ADR 0044, #250): three orgs (two made through the management API and `global`) use the same names
 // everywhere (credential, key, session and model names), and every store of org data is written by one org and read by
 // the others: KV, the signature and Antigravity state, the per-isolate caches, SessionState, the D1 usage records
-// through every query the management API exposes, and the ControlPlane addressed by key prefix and by slug.
+// through every query the management API exposes, the ControlPlane addressed by key prefix and by slug, and Tools'
+// toolkits by name and by id.
 // Each store is one `storeCase` in `STORES`: a new store (tool calls, approvals, runs, sandbox and browser sessions,
 // profiles) adds one line there (docs/DEVELOPMENT.md, "Tests").
 import { env } from "cloudflare:workers";
@@ -180,6 +181,23 @@ const usage = async (org: IsolationOrg, path: string) =>
   (await managed(org, `${USAGE}${path}`)).body;
 
 const usageValue = (index: number) => String(index);
+
+// --- toolkits ----------------------------------------------------------------------------------------------------------
+
+/** A toolkit's name from the suite's `name` (a toolkit's name holds no `-`). */
+const toolkitName = (name: string): string => name.replaceAll("-", "_");
+
+/** A toolkit's source that carries the org's value in its host; no list is built, as no credential is connected. */
+const toolkitSource = (value: string): string => `https://${value}.iso-tools.example.com/mcp`;
+
+const valueOfSource = (source: string | undefined): string | undefined =>
+  source === undefined ? undefined : new URL(source).hostname.split(".")[0];
+
+/** The toolkits the by-id case added, by the suite's name: their ids and the value of their org. */
+const toolkitIds = new Map<
+  string,
+  ReadonlyArray<{ readonly id: string; readonly value: string }>
+>();
 
 // --- the stores ---------------------------------------------------------------------------------------------------------
 
@@ -503,6 +521,53 @@ const STORES: ReadonlyArray<StoreCase> = [
         .find((file) => file.name === `${name}.json`)
         ?.email?.replace(/@example\.com$/, "");
     },
+  }),
+
+  // Tools' toolkits, in the ControlPlane's Tools part: listed by name, and reached by id.
+  storeCase("controlplane: toolkits by name", {
+    write: async (org, name, value) => {
+      const added = await managed(org, "/toolkits", {
+        ...jsonInit("POST", { source: toolkitSource(value), name: toolkitName(name) }),
+      });
+
+      expect(added.status).toBe(201);
+    },
+    read: async (org, name) => {
+      const listed = await managed(org, "/toolkits");
+
+      const toolkits = (
+        listed.body as { toolkits: ReadonlyArray<{ name: string; source: string }> }
+      ).toolkits;
+
+      return valueOfSource(toolkits.find((toolkit) => toolkit.name === toolkitName(name))?.source);
+    },
+    value: (index) => `org${index}`,
+  }),
+  storeCase("controlplane: toolkits by id", {
+    write: async (org, name, value) => {
+      const added = await managed(org, "/toolkits", {
+        ...jsonInit("POST", { source: toolkitSource(value), name: toolkitName(name) }),
+      });
+
+      expect(added.status).toBe(201);
+      toolkitIds.set(name, [
+        ...(toolkitIds.get(name) ?? []),
+        { id: (added.body as { id: string }).id, value },
+      ]);
+    },
+    // Every id any org's toolkit of `name` has: only the org's own answers.
+    read: async (org, name) => {
+      for (const written of toolkitIds.get(name) ?? []) {
+        const reached = await managed(org, `/toolkits/${written.id}/tools`);
+
+        if (reached.status === 200) return written.value;
+
+        expect(reached.status).toBe(404);
+      }
+
+      return undefined;
+    },
+    value: (index) => `org${index}`,
   }),
 ];
 
