@@ -192,6 +192,9 @@ the Worker asks on every request: a removed member, or a member whose role was l
 | Read the agents they may use; create and manage their own private agents (`/agents`)             |         ✓         |     ✓     |              ✓               |       ✓        |
 | Create, edit and remove shared agents; disable or remove a member's private agent                |                   |     ✓     |              ✓               |       ✓        |
 | Read, add, edit and remove agent grants (`/grants/agents`)                                       |                   |     ✓     |              ✓               |       ✓        |
+| Create, rename and remove their own private browser profiles (`/browser-profiles`)               |         ✓         |     ✓     |              ✓               |       ✓        |
+| Create, rename and remove shared browser profiles; remove a member's private browser profile     |                   |     ✓     |              ✓               |       ✓        |
+| Read, add, edit and remove browser profile grants (`/grants/profiles`)                           |                   |     ✓     |              ✓               |       ✓        |
 | Read the Spend limits that bind them and limit their own API keys (`/spend`, `/spend/limits`)    |         ✓         |     ✓     |              ✓               |       ✓        |
 | Set any Spend limit and the org's calendar (`/spend/limits`, `/spend/settings`)                  |                   |     ✓     |              ✓               |       ✓        |
 | Read the org's plan, usage, bill, billing cap and notices (Commissary Cloud, `GET /billing`)     |                   |     ✓     |              ✓               |       ✓        |
@@ -286,6 +289,21 @@ the Worker asks on every request: a removed member, or a member whose role was l
   creating one answers `403 private_agents_unavailable` and the private agents are kept but not usable until it is on
   again. `GET /agents/mine` lists what the caller may use. Without the deployment's Dynamic Workers binding the Agents
   routes answer `404`.
+- **Browser profiles** (`/browser-profiles`, `/grants/profiles`, #215, ADR 0039): saved logins and site data a browser
+  session of the browser toolkit starts from (`browser_open`'s `profile`), one member's (private) or the org's
+  (shared), sealed with the org's data key. Every member creates, renames and removes their own private profiles; a
+  plain member's are always private, and they need no grant. An org admin sees only that another member's private
+  profile exists (its member, not its name) and may remove it. Shared profiles, and the profile grants that say who may
+  use one (`/grants/profiles`, beside `/grants`, `/grants/tools` and `/grants/agents`), are for org admins (`403
+  forbidden`); there is no default grant, so an org admin needs one too, and the session tools themselves still need
+  the browser toolkit's tool grant. Saving a session back into a profile (`browser_close` with `save`) is its member's
+  for a private profile and an org admin's for a shared one: that is the org admin's right as such, checked at save
+  time without a profile grant (the grant only let them open the session), and any other save is refused with a tool
+  error, the session closing all the same. A profile no one may use answers `browser_open` as an unknown one. Names
+  shadow as toolkits' do: a member's private profile hides, for them, a shared profile of the same name, which they
+  then cannot open by that name. Private profiles
+  follow `private_toolkits` of `/membership`: with it off, creating one answers `403 private_toolkits_unavailable`, and
+  the ones there are kept but neither opened nor saved into until it is on again.
 - **Approvals** (`/approvals`, the panel's Approvals page, #201, ADR 0038): an approval rule on a toolkit makes calls
   of its write tools, or of tools marked one by one, wait for their approver. An org admin sets rules on org toolkits,
   a member on their own private toolkits (`PATCH /toolkits/:id`, `approval_rules`). The approver is the caller (the

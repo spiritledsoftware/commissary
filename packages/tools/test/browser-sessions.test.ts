@@ -43,9 +43,15 @@ const SESSION_TOOLS = [
   "browser_tab_new",
   "browser_tab_select",
   "browser_close",
+  "browser_profile_list",
 ];
 
-const READS = new Set(["browser_snapshot", "browser_take_screenshot", "browser_tab_list"]);
+const READS = new Set([
+  "browser_snapshot",
+  "browser_take_screenshot",
+  "browser_tab_list",
+  "browser_profile_list",
+]);
 
 afterEach(() => {
   fakeBrowsers.refuseNew = false;
@@ -135,7 +141,7 @@ const unknown = (session: string) => ({
 });
 
 describe("browser sessions", () => {
-  it("are tools of the browser toolkit after its Quick Actions, which read only to snapshot, screenshot and list tabs", async () => {
+  it("are tools of the browser toolkit after its Quick Actions, which read only to snapshot, screenshot, list tabs and list profiles", async () => {
     const plane = await org();
     const tools = await plane.stub.tools().clientTools(ALICE);
     const sessionTools = tools.filter((tool) => SESSION_TOOLS.includes(tool.name));

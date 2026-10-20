@@ -141,18 +141,19 @@ to `packages/agents/src/`) and the JSON path engine as `packages/json`.
                               sessions' Durable Object (BrowserSession and its env view, BrowserSessionEnv) and the
                               sandbox's classes (SandboxSession, SandboxEgress, WorkspaceServiceProxy)
     src/control-plane-part.ts the ControlPlane's Tools part (toolkits, their credentials, tool lists, overrides, tool
-                              grants, the endpoint's list and calls, upstream sessions)
+                              grants, the endpoint's list and calls, upstream sessions, browser profiles and their
+                              grants)
     src/toolkits/             storage, names, the flat list of unique full names, static secrets, built-in toolkits
     src/browser/              the browser toolkit: its Quick Action tools (#212), the browser-provider interface and
                               its Browser Run adapters; its session tools, what they do in a browser (masking
-                              included) and the sessions' Durable Object (#213)
+                              included) and the sessions' Durable Object (#213); browser profiles' storage (#215)
     src/sandbox/              the sandbox toolkit (#222): its tools, the sandbox-provider interface, sandbox networks,
                               output cuts, and Cloudflare's sandbox (cloudflare/: the SandboxSession object, the
                               egress entrypoint, the guarded loader, the adapter)
     src/grants/               tool grants (#198): their storage and what a member's grants give
     src/mcp/                  the MCP client that lists and calls a remote MCP server's tools, and Commissary's MCP
                               endpoint (protocol.ts, endpoint.ts)
-    src/management/           Tools' /v9/management routes (toolkits, tool grants)
+    src/management/           Tools' /v9/management routes (toolkits, tool grants, browser profiles and their grants)
     test/                     Node.js tests (test/unit/) and workerd tests against a test-only ControlPlane
                               (test/worker.ts), fake MCP servers, a fake Browser Run binding, a fake browser
                               provider's sessions (test/support/fake-sessions.ts) and a fake second sandbox
@@ -3856,7 +3857,7 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
     `interestingOnly`); each is one record of `QUICK_ACTIONS` (its description and the Effect schema of its arguments,
     which is the tool's input schema, `Schema.toJsonSchemaDocument`). Left out:
     what would run script in the page (`addScriptTag`, ADR 0039), carry sign-ins (`cookies`, `authenticate`, extra
-    headers: profiles and handoff are #213's), render given HTML, pick a backend, and the cache (`cacheTTL` is always
+    headers: logins are browser profiles' and handoff's, below), render given HTML, pick a backend, and the cache (`cacheTTL` is always
     `0`). A result is a text content (Markdown, HTML, or JSON for links, scraped elements and the tree), an `image` (a
     screenshot) or an embedded `resource` with a `blob` (a PDF, its `uri` the page's URL), at most 10 MiB (a larger
     declared length is refused unread; a body is read in chunks and cancelled as soon as it passes the limit), and is
@@ -3873,8 +3874,9 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
     tab's accessibility snapshot, Playwright's YAML for a model, whose `[ref=e3]` references the actions take),
     `browser_click`, `browser_type` (fills a field, `submit` presses Enter), `browser_press_key`,
     `browser_select_option`, `browser_hover`, `browser_wait_for` (a text or a CSS selector, at most 60 s; below),
-    `browser_take_screenshot`, `browser_tab_list`, `browser_tab_new`, `browser_tab_select` and `browser_close`. The
-    snapshot, the screenshot and the tab list are `read` (`readOnlyHint`); the rest are `write`. An action answers the
+    `browser_take_screenshot`, `browser_tab_list`, `browser_tab_new`, `browser_tab_select` and `browser_close`, and
+    `browser_profile_list` (the browser profiles the caller may open a session from, below; it takes no session). The
+    snapshot, the screenshot, the tab list and the profile list are `read` (`readOnlyHint`); the rest are `write`. An action answers the
     page's URL and title afterwards; invalid arguments and the provider's failures (a ref that names nothing, a
     timeout: Playwright's message's first line, at most 500 characters) are tool results with `isError`, and the
     session stays open. No tool evaluates JavaScript in the page or returns an element's value beyond the masked
@@ -3892,7 +3894,9 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
       same member or the same member through Access answers `Unknown browser session <id>`, exactly as an id never
       opened; a hosted agent's run, #232, will be a principal of its own), the provider it opened on (the toolkit's
       source, from which it finds the provider's browsers again: `sessionProviderOf`) and the provider's id of the
-      browser, the current tab's index, the fields to mask and its times, nothing of the pages; what it stored is
+      browser, the id of the browser profile it opened from, whether its browser was reached again on a new connection,
+      the current tab's index, the fields to mask and its times,
+      nothing of the pages (nor of the profile's state); what it stored is
       decoded with a schema. Its calls and its alarm run one at a time (a promise chain): a Durable Object takes
       another call while one waits on the browser. Its alarm closes it after 10 minutes (`IDLE_TIMEOUT_MS`)
       without a call (each call moves it), ending the browser at the provider; `browser_close` does at once; a browser
@@ -3903,6 +3907,49 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
       session. No caps on sessions per org or member (ADR 0039's amendment): Browser Run's refusal at the
       account's limit (429: its concurrent browsers or new browsers per second) answers `browser_open` with a tool error
       that says so.
+    - **Browser profiles** (`tools/browser/profiles.ts`, the part's profile methods, #215, ADR 0039, GLOSSARY "Browser
+      profile"): saved logins and site data a session can start from: a Playwright storage state (cookies and each
+      origin's local storage; not IndexedDB), the provider-neutral `StorageState` of `provider.ts`. A profile is created
+      empty and named (`POST /browser-profiles`), renamed (`PATCH`) and removed (`DELETE`, with its grants) at its
+      revision (`If-Match`); it is kept until removed, its member's private ones until they leave the org. It is not a
+      credential: one holds logins to many sites. Stored in the ControlPlane's SQLite (`browser_profiles`, one row per
+      profile, and `browser_profile_grants`; the part's `wipe` drops them, and they are not keyed by a toolkit), its
+      state sealed with the org's data key for its row (`browser_profiles/<id>`, `enc:v1:`), `NULL` until a session
+      saves into it. Only the Tools part opens it, to hand it to the session's object over RPC; the object keeps the
+      profile's id only. Who may do what:
+      - A **shared** profile is an org admin's to create, rename and remove; the profile grants
+        (`/grants/profiles`, `BrowserProfileGrantsGroup`: a member, a team or everyone, as the other grants; org admins
+        only) decide who may use it, and there is no default grant, so an org admin needs one too. Only an org admin
+        saves into it, so a member with a grant cannot replace the org's login with their own.
+      - A **private** profile is one member's (a plain member's profile always is; an org admin's when it says so),
+        needs no grant and is saved into only by its member. An org admin sees only that it exists (`others`: its member
+        and dates, not its name, as for private toolkits) and may remove it. It follows the org's `private_toolkits`
+        setting: while it is off, no private profile is created (`403 private_toolkits_unavailable`), opened or saved
+        into, and the ones there are kept.
+      - **Names** are 1-64 of `[a-z0-9_-]`, scoped as toolkits' are: a shared profile's unique among the shared ones, a
+        private one's among its member's and the shared ones; a shared profile added later with a private one's name
+        is shadowed by it for that member.
+      - **Opening**: `browser_open`'s `profile` names one the caller may use (their private ones while the setting
+        allows them, and the shared ones a profile grant gives them); any other name, whether it does not exist, is
+        another member's or another org's (the part resolves it among its own org's only) or lacks a grant, answers the
+        same tool error, `Unknown browser profile <name>`, and opens nothing. The session starts from the state the
+        profile holds (Browser Run's adapter loads it into the browser's default context, below).
+        `browser_profile_list` lists the usable ones by name; `browser_open`'s description points at it (one static
+        description per tool, as the tool list and its overrides are not per caller).
+      - **Saving** is explicit: `browser_close` with `save: true` reads the browser's state, closes the session, then
+        saves the state into the profile the session opened from, replacing it whole (two sessions saving into one
+        profile: the later save wins), and moves its `saved_at` (not its revision). A save into a shared profile by
+        anyone but an org admin, into a private profile by anyone but its member (or while the setting is off), into a
+        profile removed meanwhile, from a session opened without a profile, or that storage refuses (SQLite's 2 MB per
+        value: no quota of Commissary's own) answers a tool error that says why, and the session is closed all the
+        same. A save over a browser reached again since the session opened keeps its cookies but misses the local
+        storage of the sites visited before, and says so (Browser Run's sessions, below). A stored state that does not
+        open (sealed for another row or org) answers `browser_open` with `The browser profile <name> could not be
+        read.`, and opens nothing. The usual way to log in is to open an empty profile, use a handoff (#216), and close with `save`.
+      - **Isolation**: a profile lives in its org's ControlPlane, so it opens only in its own org, and a private one
+        only for its member; a grant naming another org's profile id is refused (`422 invalid`). The cross-org suite
+        has a case for it (`controlplane: browser profiles`). The management API answers whether or not the deployment
+        has the browser toolkit: a profile is org data, kept while the binding is absent, like the toolkit's grants.
     - **Masking** (`session.ts`): Playwright's snapshot copies every input's value as the element's text, password
       fields' included and whatever the input's role (`<input type="password" role="button">` too), so the session
       masks the snapshot before anyone sees it. The masked selectors are `input[type="password" i]` plus the fields a
@@ -3928,7 +3975,18 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
       minutes; the comment in `@cloudflare/playwright` 1.3.6's types, 10 s to 10 min, predates that) and reached again
       by its id with `connect()` (Browser Run's session reuse). The `keep_alive` counts from the browser's last command,
       about the session's last call, so the session's 10 idle minutes end it first. The tabs are the pages of its
-      default context, which outlives a connection; closing sends CDP's `Browser.close`. A browser acquired but not
+      default context, which outlives a connection; closing sends CDP's `Browser.close`. A browser opened from a
+      browser profile gets its state in that default context (a new context would not outlive the connection:
+      Playwright creates it with `disposeOnDetach`): its cookies with `addCookies`, then each origin's local storage in a
+      page of its own whose requests all answer an empty document (no request reaches a site) and which is closed
+      afterwards, as Playwright's own `setStorageState` does (its client offers that for a new context only). A save
+      reads Playwright's `storageState()`: every cookie, and the local storage of the origins Playwright saw on the
+      connection that reads it (the restored ones, and those the session's tabs visited), so the local storage of an
+      origin visited only before the browser was reached again (an object that restarted, a dropped connection) is
+      not in the save; cookies always are. The session's object keeps that its browser was reached again
+      (`reconnected`), and such a save answers that its cookies were saved but not the local storage of the sites
+      visited before. A profile's state that fails to load answers a fixed message, and the log has the error's name
+      only (Playwright's message can quote the script, which holds the profile's entries). A browser acquired but not
       reached (its connection failed) is ended again by its id, as far as it can be. A refused connection is the
       browser gone when Browser Run no longer lists the session (`sessions()`), else a failure. The snapshot is
       Playwright's `_snapshotForAI` (internal, as Playwright MCP uses it; its refs are what `aria-ref=` locators
@@ -3955,7 +4013,7 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
     the provider and whose shared (or a member's private) credential is the org's key for it, serving the same tools;
     none is built. A provider that has browsers for sessions says so (`sessions: true`); its browsers are a
     `BrowserSessionProvider` (open, connect by id, and a browser's tabs, driven by snapshot refs and masked by CSS
-    selectors), which the session's object finds by the provider's id it stored when the session opened
+    selectors; opened from a browser profile's state, which a save reads back with `storageState`, #215), which the session's object finds by the provider's id it stored when the session opened
     (`sessionProviderOf(source, env)`): Browser Run's are `browserRunSessions` (above), over the binding; a later
     provider is another case there, and its sessions need no migration. The sandbox toolkit's sandbox provider (#222)
     follows the pattern. The tests run the toolkit over a fake binding and over a fake second provider, which serves

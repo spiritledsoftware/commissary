@@ -4,7 +4,8 @@
 // through every query the management API exposes, the ControlPlane addressed by key prefix and by slug, and Tools'
 // toolkits by name and by id, their tool grants, the upstream MCP sessions their calls keep, the pending approvals
 // of their calls, Commissary Cloud's OAuth grants for MCP clients, the browser sessions, the sessions of the built-in
-// sandbox toolkit with its network ceiling, the hosted agents, their runs and the runs' own objects.
+// sandbox toolkit with its network ceiling, the hosted agents, their runs and the runs' own objects, and the browser
+// profiles with their grants.
 // Each store is one `storeCase` in `STORES`: a new store (tool calls, approvals, runs, profiles) adds one line there
 // (docs/DEVELOPMENT.md, "Tests").
 import { env } from "cloudflare:workers";
@@ -1129,6 +1130,48 @@ const STORES: ReadonlyArray<StoreCase> = [
       const [content] = listed["content"] as ReadonlyArray<{ readonly text: string }>;
 
       return /https:\/\/([a-z0-9]+)\.iso-browser\.example\.com/.exec(content?.text ?? "")?.[1];
+    },
+    value: (index) => `org${index}`,
+  }),
+  // The browser toolkit's profiles (#215) and the grants on shared ones: each org's admin creates a shared profile under
+  // the same name, which carries the org's value (`<name>-<value>`), and grants it to everyone; each finds only its own
+  // profile, granted in its own grants (a profile opens only in its own org: the Tools part resolves `browser_open`'s
+  // profile among its org's, test/browser-profiles.test.ts of `@commissary/tools`).
+  storeCase("controlplane: browser profiles", {
+    write: async (org, name, value) => {
+      const created = await managed(org, "/browser-profiles", {
+        ...jsonInit("POST", { name: `${name}-${value}` }),
+      });
+
+      expect(created.status).toBe(201);
+
+      const granted = await managed(org, "/grants/profiles", {
+        ...jsonInit("POST", {
+          subject: { kind: "everyone" },
+          profile: (created.body as { id: string }).id,
+        }),
+      });
+
+      expect(granted.status).toBe(200);
+    },
+    read: async (org, name) => {
+      const profiles = (
+        (await managed(org, "/browser-profiles")).body as {
+          profiles: ReadonlyArray<{ id: string; name: string }>;
+        }
+      ).profiles;
+
+      const profile = profiles.find((found) => found.name.startsWith(`${name}-`));
+
+      const grants = (
+        (await managed(org, "/grants/profiles")).body as {
+          grants: ReadonlyArray<{ profile: string }>;
+        }
+      ).grants;
+
+      return profile !== undefined && grants.some((grant) => grant.profile === profile.id)
+        ? profile.name.slice(`${name}-`.length)
+        : undefined;
     },
     value: (index) => `org${index}`,
   }),

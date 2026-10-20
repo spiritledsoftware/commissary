@@ -13,7 +13,16 @@
  * well within Browser Run's `keep_alive` of 20 minutes, which counts from the browser's last command. A browser the
  * provider closed itself (Browser Run on a release of its own) closes the session too. A closed session answers that it
  * is closed for {@link CLOSED_KEPT_MS}, then forgets everything and answers as unknown. Nothing of the pages is stored:
- * only the owner, the provider and its id of the browser, the current tab, the fields to mask and the times.
+ * only the owner, the provider and its id of the browser, the browser profile it opened from, whether the browser was
+ * reached again, the current tab, the fields to mask and the times.
+ *
+ * **Profiles.** A session opened from a browser profile (#215) starts with the profile's state (its cookies and site
+ * storage), which the Tools part unsealed and hands over, and keeps only the profile's id. Closing it with a save
+ * ({@link BrowserSession.close}) reads the browser's state back and hands it to the part, which decides whether the
+ * caller may save into the profile and seals it: the object never stores it. A browser reached again on a new
+ * connection (the object restarted, or the connection dropped) reads back its cookies, but the local storage of only
+ * the sites visited since (Playwright knows a context's sites per connection): the session keeps that it was
+ * (`reconnected`), and a save says what it missed.
  *
  * **Masking.** Password fields are always masked; {@link BrowserSession.maskFields} adds the fields a person filled
  * during a handoff (#216), which are masked from then on in the session's snapshots and screenshots.
@@ -22,7 +31,7 @@ import { DurableObject } from "cloudflare:workers";
 import { Clock, Effect, Option, Schema } from "effect";
 import { BROWSER_RUN } from "./browser-run.ts";
 import { browserRunSessions, type BrowserRunSessionBinding } from "./browser-run-sessions.ts";
-import type { BrowserSessionProvider, ProviderBrowser } from "./provider.ts";
+import type { BrowserSessionProvider, ProviderBrowser, StorageState } from "./provider.ts";
 import { runOperation, textResult, toolError } from "./session.ts";
 import { IDLE_TIME, IDLE_TIMEOUT_MS, notCss, type SessionOperation } from "./session-tools.ts";
 
@@ -72,6 +81,10 @@ const StoredSession = Schema.Struct({
   source: Schema.String,
   /** The provider's id of the browser. */
   browser: Schema.String,
+  /** The browser profile it opened from (#215), which a save goes into; absent: none. */
+  profile: Schema.optionalKey(Schema.String),
+  /** Whether its browser was reached on a connection other than the one it opened on; absent: not yet. */
+  reconnected: Schema.optionalKey(Schema.Boolean),
   openedAt: Schema.Number,
   usedAt: Schema.Number,
   tab: Schema.Int,
@@ -104,6 +117,29 @@ const closedSession = (id: string, reason: ClosedReason): Schema.JsonObject =>
   toolError(
     `Browser session ${id} is closed (${CLOSED_BECAUSE[reason]}). Open a new one with browser_open.`,
   );
+
+/** The browser profile a session opens from (#215): its id, and the state it holds (none while it is empty). */
+export interface SessionProfile {
+  readonly id: string;
+  readonly state: StorageState | undefined;
+}
+
+/**
+ * The browser's state read back for a save: `reconnected` when it was read over a connection other than the session's
+ * first, whose local storage misses the sites visited before it; or why it could not be read.
+ */
+export type SavedState =
+  | { readonly state: StorageState; readonly reconnected: boolean }
+  | { readonly failed: string };
+
+/**
+ * What closing a session answers: the tool result of a session that could not be closed (unknown, or closed already),
+ * or that it closed, with the profile it was opened from and, when a save was asked of a session opened from one, the
+ * browser's state to save into it.
+ */
+export type SessionClosed =
+  | { readonly kind: "answer"; readonly result: Schema.JsonObject }
+  | { readonly kind: "closed"; readonly profile?: string; readonly saved?: SavedState };
 
 const owns = (stored: StoredSession, caller: SessionCaller): boolean =>
   stored.org === caller.org &&
@@ -184,17 +220,18 @@ export class BrowserSession extends DurableObject<BrowserSessionEnv> {
   }
 
   /**
-   * Opens the session `id` for `caller`, with a new browser of the provider `source` (the browser toolkit's), and
-   * loads `url` in it when given. Answers the tool result: the id, or why the provider refused (its account's limit
-   * included).
+   * Opens the session `id` for `caller`, with a new browser of the provider `source` (the browser toolkit's), started
+   * from the browser profile `profile` when given (#215), and loads `url` in it when given. Answers the tool result: the
+   * id, or why the provider refused (its account's limit included).
    */
   open(
     caller: SessionCaller,
     id: string,
     source: string,
     url?: string,
+    profile?: SessionProfile,
   ): Promise<Schema.JsonObject> {
-    return this.#serial(() => this.#open(caller, id, source, url));
+    return this.#serial(() => this.#open(caller, id, source, url, profile));
   }
 
   async #open(
@@ -202,6 +239,7 @@ export class BrowserSession extends DurableObject<BrowserSessionEnv> {
     id: string,
     source: string,
     url: string | undefined,
+    profile: SessionProfile | undefined,
   ): Promise<Schema.JsonObject> {
     const provider = this.sessionProvider(source);
 
@@ -209,7 +247,7 @@ export class BrowserSession extends DurableObject<BrowserSessionEnv> {
       return toolError("The browser could not open a session here.");
 
     const opened = await Effect.runPromise(
-      provider.open().pipe(
+      provider.open(profile?.state).pipe(
         Effect.map((browser) => ({ browser })),
         Effect.catchTags({
           BrowserLimitReached: (error) => Effect.succeed({ refused: error.message }),
@@ -232,6 +270,7 @@ export class BrowserSession extends DurableObject<BrowserSessionEnv> {
       principal: caller.principal,
       source,
       browser: opened.browser.id,
+      ...(profile === undefined ? {} : { profile: profile.id }),
       openedAt: now,
       usedAt: now,
       tab: 0,
@@ -267,7 +306,7 @@ export class BrowserSession extends DurableObject<BrowserSessionEnv> {
   operate(
     caller: SessionCaller,
     id: string,
-    operation: SessionOperation,
+    operation: Exclude<SessionOperation, { readonly tool: "close" }>,
   ): Promise<Schema.JsonObject> {
     return this.#serial(async () => {
       const session = this.#stored();
@@ -276,14 +315,78 @@ export class BrowserSession extends DurableObject<BrowserSessionEnv> {
 
       if (session.closed !== null) return closedSession(id, session.closed.reason);
 
-      if (operation.tool === "close") {
-        await this.#close(session, "closed");
-
-        return textResult(`Browser session ${id} is closed.`);
-      }
-
       return await this.#operate(session, id, operation);
     });
+  }
+
+  /**
+   * Closes the session `id` for `caller`: the session's own `browser_close`. With `save`, the browser's state is read
+   * first and handed back with the profile the session opened from, for the Tools part to save (or refuse); without a
+   * profile there is nothing to read. The session closes whether or not the state could be read.
+   */
+  close(caller: SessionCaller, id: string, save: boolean): Promise<SessionClosed> {
+    return this.#serial(async (): Promise<SessionClosed> => {
+      const session = this.#stored();
+
+      if (session === undefined || !owns(session, caller))
+        return { kind: "answer", result: unknownSession(id) };
+
+      if (session.closed !== null)
+        return { kind: "answer", result: closedSession(id, session.closed.reason) };
+
+      const { profile } = session;
+
+      if (profile === undefined) {
+        await this.#close(session, "closed");
+
+        return { kind: "closed" };
+      }
+
+      if (!save) {
+        await this.#close(session, "closed");
+
+        return { kind: "closed", profile };
+      }
+
+      const saved = await this.#state(session);
+
+      await this.#close(session, "closed");
+
+      return { kind: "closed", profile, saved };
+    });
+  }
+
+  /** The browser's state now, for a save; why it could not be read when it could not. */
+  async #state(session: StoredSession): Promise<SavedState> {
+    const provider = this.sessionProvider(session.source);
+
+    if (provider === undefined) return { failed: CLOSED_BECAUSE.provider };
+
+    const read = (browser: ProviderBrowser) =>
+      browser.storageState().pipe(Effect.map((state) => ({ browser, state })));
+
+    const reach = Effect.flatMap(provider.connect(session.browser), read);
+    const cached = this.#browser;
+
+    return await Effect.runPromise(
+      (cached === undefined
+        ? reach
+        : read(cached).pipe(Effect.catchTag("BrowserGone", () => reach))
+      ).pipe(
+        Effect.map(({ browser, state }) => {
+          this.#browser = browser;
+
+          return { state, reconnected: session.reconnected === true || browser !== cached };
+        }),
+        Effect.catchTags({
+          BrowserGone: () => Effect.succeed({ failed: CLOSED_BECAUSE.provider }),
+          BrowserProviderError: (error) =>
+            Effect.logWarning("browser session state not read").pipe(
+              Effect.as({ failed: error.message }),
+            ),
+        }),
+      ),
+    );
   }
 
   /**
@@ -360,11 +463,14 @@ export class BrowserSession extends DurableObject<BrowserSessionEnv> {
       return toolError(outcome.failed);
     }
 
-    this.#browser = outcome.ran.browser;
-    this.#save({ ...latest, usedAt: now, tab: outcome.ran.done.tab });
+    const { browser, done } = outcome.ran;
+    const reconnected = latest.reconnected === true || browser !== cached;
+
+    this.#browser = browser;
+    this.#save({ ...latest, usedAt: now, tab: done.tab, reconnected });
     await this.ctx.storage.setAlarm(now + IDLE_TIMEOUT_MS);
 
-    return outcome.ran.done.result;
+    return done.result;
   }
 
   /** Closes the session once it was idle long enough, and forgets a closed one once its day is over. */
@@ -405,26 +511,42 @@ export type BrowserSessionNamespace = DurableObjectNamespace<BrowserSession>;
 export const browserSessionStub = (namespace: BrowserSessionNamespace, org: string, id: string) =>
   namespace.getByName(`${org}:${id}`);
 
-/** How the Tools part reaches its org's sessions: opening one, and calling a tool in one. */
+/** How the Tools part reaches its org's sessions: opening one, calling a tool in one, and closing one. */
 export interface BrowserSessions {
-  /** Opens a session on a browser of the provider `source` (the browser toolkit's source). */
+  /**
+   * Opens a session on a browser of the provider `source` (the browser toolkit's source), from the browser profile
+   * `profile` when given.
+   */
   readonly open: (
     caller: SessionCaller,
     source: string,
     url: string | undefined,
+    profile?: SessionProfile,
   ) => Promise<Schema.JsonObject>;
   readonly operate: (
     caller: SessionCaller,
-    operation: SessionOperation,
+    operation: Exclude<SessionOperation, { readonly tool: "close" }>,
   ) => Promise<Schema.JsonObject>;
+  /** Closes the session `sessionId`, reading its state first for a save. */
+  readonly close: (
+    caller: SessionCaller,
+    sessionId: string,
+    save: boolean,
+  ) => Promise<SessionClosed>;
 }
 
 /** The sessions behind `namespace`. An id that is not one of a session's answers as unknown without reaching any. */
 export const browserSessions = (namespace: BrowserSessionNamespace): BrowserSessions => ({
-  open: async (caller, source, url) => {
+  open: async (caller, source, url, profile) => {
     const id = newSessionId();
 
-    return await browserSessionStub(namespace, caller.org, id).open(caller, id, source, url);
+    return await browserSessionStub(namespace, caller.org, id).open(
+      caller,
+      id,
+      source,
+      url,
+      profile,
+    );
   },
   operate: async (caller, operation) => {
     const id = operation.args.sessionId;
@@ -432,5 +554,10 @@ export const browserSessions = (namespace: BrowserSessionNamespace): BrowserSess
     if (!SESSION_ID.test(id)) return unknownSession(id);
 
     return await browserSessionStub(namespace, caller.org, id).operate(caller, id, operation);
+  },
+  close: async (caller, id, save) => {
+    if (!SESSION_ID.test(id)) return { kind: "answer", result: unknownSession(id) };
+
+    return await browserSessionStub(namespace, caller.org, id).close(caller, id, save);
   },
 });

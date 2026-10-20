@@ -22,11 +22,22 @@
  * `/v9/management/approvals` (`ApprovalsGroup` in `@commissary/contract/approvals`): the pending approvals of tool calls
  * (#201, ADR 0038), which the panel's approval page and pending list read and decide. Every member may call them; the
  * Tools part shows each approval to its eligible approvers and its caller only, and lets only the former decide it.
+ *
+ * `/v9/management/browser-profiles` (`BrowserProfilesGroup` in `@commissary/contract/browser-profiles`): the browser
+ * toolkit's profiles (#215, ADR 0039), created empty, renamed and removed (at their revision, `If-Match`). Every member
+ * may call them; the Tools part decides from the viewer (a member's private profiles, an org admin's shared ones).
+ * `/v9/management/grants/profiles` (`BrowserProfileGrantsGroup`): the grants on shared profiles, beside the other
+ * grants; org admins only (the role table's default).
  */
 import { Effect, Result, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, type HttpServerResponse } from "effect/http";
 import { AccessPrincipal, currentViewer } from "@commissary/auth";
 import { ApprovalDecision } from "@commissary/contract/approvals";
+import {
+  BrowserProfileGrantBody,
+  CreateBrowserProfile,
+  UpdateBrowserProfile,
+} from "@commissary/contract/browser-profiles";
 import { ToolGrantBody } from "@commissary/contract/grants";
 import {
   AddToolkit,
@@ -577,6 +588,95 @@ const usable = Effect.gen(function* () {
   );
 });
 
+// --- browser profiles (#215) -----------------------------------------------------------------------------------------
+
+const listProfiles = Effect.gen(function* () {
+  const viewer = yield* currentViewer;
+
+  return jsonReply(
+    200,
+    yield* toolsControlPlane("listProfiles", (stub) => stub.tools().listProfiles(viewer)),
+  );
+});
+
+const createProfile = Effect.gen(function* () {
+  const viewer = yield* currentViewer;
+  const { principalId } = yield* AccessPrincipal;
+  const input = yield* decode(CreateBrowserProfile);
+
+  const result = yield* toolsControlPlane("createProfile", (stub) =>
+    stub.tools().createProfile(viewer, input, principalId),
+  );
+
+  return jsonReply(201, yield* orRefuse(result));
+});
+
+const updateProfile = Effect.gen(function* () {
+  const viewer = yield* currentViewer;
+  const { principalId } = yield* AccessPrincipal;
+  const id = yield* idParam;
+  const revision = yield* ifMatch;
+  const input = yield* decode(UpdateBrowserProfile);
+
+  const result = yield* toolsControlPlane("updateProfile", (stub) =>
+    stub.tools().updateProfile(viewer, id, revision, input, principalId),
+  );
+
+  return jsonReply(200, yield* orRefuse(result));
+});
+
+const removeProfile = Effect.gen(function* () {
+  const viewer = yield* currentViewer;
+  const id = yield* idParam;
+  const revision = yield* ifMatch;
+
+  const result = yield* toolsControlPlane("removeProfile", (stub) =>
+    stub.tools().removeProfile(viewer, id, revision),
+  );
+
+  return jsonReply(200, yield* orRefuse(result));
+});
+
+const listProfileGrants = Effect.gen(function* () {
+  return jsonReply(
+    200,
+    yield* toolsControlPlane("listProfileGrants", (stub) => stub.tools().listProfileGrants()),
+  );
+});
+
+/** Writes one profile grant (`value` `null` deletes it) and answers its id and new revision. */
+const writeProfileGrant = Effect.fnUntraced(function* (
+  id: string | undefined,
+  revision: number,
+  value: BrowserProfileGrantBody | null,
+) {
+  const { principalId } = yield* AccessPrincipal;
+
+  const result = yield* toolsControlPlane("writeProfileGrant", (stub) =>
+    stub.tools().writeProfileGrant({ id, revision, value }, principalId),
+  );
+
+  return jsonReply(200, { status: "ok", ...(yield* orRefuse(result)) });
+});
+
+const createProfileGrant = Effect.gen(function* () {
+  return yield* writeProfileGrant(undefined, 0, yield* decode(BrowserProfileGrantBody));
+});
+
+const replaceProfileGrant = Effect.gen(function* () {
+  const id = yield* idParam;
+  const revision = yield* ifMatch;
+
+  return yield* writeProfileGrant(id, revision, yield* decode(BrowserProfileGrantBody));
+});
+
+const removeProfileGrant = Effect.gen(function* () {
+  const id = yield* idParam;
+  const revision = yield* ifMatch;
+
+  return yield* writeProfileGrant(id, revision, null);
+});
+
 // --- pending approvals ------------------------------------------------------------------------------------------------
 
 const listApprovals = Effect.gen(function* () {
@@ -640,6 +740,14 @@ export const ManagementRoutes = HttpRouter.addAll([
   route("POST", "/grants/tools", createGrant),
   route("PUT", "/grants/tools/:id", replaceGrant),
   route("DELETE", "/grants/tools/:id", removeGrant),
+  route("GET", "/browser-profiles", listProfiles),
+  route("POST", "/browser-profiles", createProfile),
+  route("PATCH", "/browser-profiles/:id", updateProfile),
+  route("DELETE", "/browser-profiles/:id", removeProfile),
+  route("GET", "/grants/profiles", listProfileGrants),
+  route("POST", "/grants/profiles", createProfileGrant),
+  route("PUT", "/grants/profiles/:id", replaceProfileGrant),
+  route("DELETE", "/grants/profiles/:id", removeProfileGrant),
   route("GET", "/approvals", listApprovals),
   route("GET", "/approvals/:id", getApproval),
   route("POST", "/approvals/:id/decision", decideApproval),
