@@ -65,9 +65,13 @@ const worker = (bindings: Record<string, string>, hosted: boolean) =>
         CONTROL_PLANE: { className: "ControlPlane", useSQLite: true },
         SESSION_STATE: { className: "SessionState", useSQLite: true },
         PLATFORM: { className: "Platform", useSQLite: true },
+        // The sandbox toolkit's sessions (#222), which the ControlPlane reaches as on every deployment.
+        SANDBOX_SESSION: { className: "SandboxSession", useSQLite: true },
       },
       kvNamespaces: hosted ? ["CACHE", "OAUTH_KV"] : ["CACHE"],
       d1Databases: ["USAGE"],
+      // Dynamic Workers, where a sandbox session's just-bash runs (ADR 0043: every deployment has them).
+      workerLoaders: { LOADER: {} },
       ...(hosted
         ? {
             ratelimits: {

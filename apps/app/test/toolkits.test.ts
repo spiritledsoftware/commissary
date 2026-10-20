@@ -97,6 +97,16 @@ const origin = () => `https://mcp-${crypto.randomUUID().slice(0, 8)}.example.com
 
 const toolkitOf = (reply: { body: unknown }) => Schema.decodeUnknownSync(ToolkitView)(reply.body);
 
+/**
+ * `/toolkits` as `who` sees it, but for the built-in sandbox toolkit, which every deployment has (#222) and which is
+ * listed first: these tests are about the org's own toolkits.
+ */
+const listedFor = async (org: Org, who: Person) => {
+  const list = Schema.decodeUnknownSync(ToolkitsList)((await send(org, "/toolkits", who)).body);
+
+  return { ...list, toolkits: list.toolkits.filter((toolkit) => toolkit.built_in !== true) };
+};
+
 const errorOf = (reply: { body: unknown }) => (reply.body as { error?: string }).error;
 
 const revised = (revision: number) => ({ "if-match": String(revision) });
@@ -168,11 +178,7 @@ describe("an org toolkit", () => {
 
     // Plain members see the org's toolkits and their tools; managing them is for org admins.
     expect((await send(org, `/toolkits/${toolkit.id}/tools`, org.alice)).status).toBe(200);
-    expect(
-      Schema.decodeUnknownSync(ToolkitsList)(
-        (await send(org, "/toolkits", org.alice)).body,
-      ).toolkits.map((t) => t.id),
-    ).toEqual([toolkit.id]);
+    expect((await listedFor(org, org.alice)).toolkits.map((t) => t.id)).toEqual([toolkit.id]);
     expect(
       (await send(org, `/toolkits/${toolkit.id}`, org.alice, "PATCH", { name: "gh" }, revised(1)))
         .status,
@@ -217,9 +223,7 @@ describe("an org toolkit", () => {
 
     expect(added.source).toBe(source);
 
-    const sourceFor = async (who: Person) =>
-      Schema.decodeUnknownSync(ToolkitsList)((await send(org, "/toolkits", who)).body).toolkits[0]
-        ?.source;
+    const sourceFor = async (who: Person) => (await listedFor(org, who)).toolkits[0]?.source;
 
     expect(await sourceFor(org.admin)).toBe(source);
     expect(await sourceFor(org.alice)).toBe(`${server.url}?team=***&key=***&***`);
@@ -300,10 +304,7 @@ describe("an org toolkit", () => {
       });
     }
 
-    expect(
-      Schema.decodeUnknownSync(ToolkitsList)((await send(org, "/toolkits", org.admin)).body)
-        .toolkits,
-    ).toEqual([]);
+    expect((await listedFor(org, org.admin)).toolkits).toEqual([]);
   });
 });
 
@@ -334,9 +335,7 @@ describe("a private toolkit", () => {
     });
 
     // Bob: nothing.
-    expect(
-      Schema.decodeUnknownSync(ToolkitsList)((await send(org, "/toolkits", org.bob)).body),
-    ).toEqual({ toolkits: [] });
+    expect(await listedFor(org, org.bob)).toEqual({ toolkits: [] });
 
     for (const [method, path, body, headers] of [
       ["GET", `/toolkits/${toolkit.id}/tools`, undefined, {}],
@@ -350,9 +349,7 @@ describe("a private toolkit", () => {
       expect((await send(org, path, org.bob, method, body, headers)).status).toBe(404);
 
     // The org admin: existence only, and they may remove it.
-    const seen = Schema.decodeUnknownSync(ToolkitsList)(
-      (await send(org, "/toolkits", org.admin)).body,
-    );
+    const seen = await listedFor(org, org.admin);
 
     expect(seen.toolkits).toEqual([]);
     expect(seen.others).toEqual([
@@ -386,9 +383,7 @@ describe("a private toolkit", () => {
       ).status,
     ).toBe(200);
 
-    const revision = Schema.decodeUnknownSync(ToolkitsList)(
-      (await send(org, "/toolkits", org.admin)).body,
-    ).others?.[0]?.revision;
+    const revision = (await listedFor(org, org.admin)).others?.[0]?.revision;
 
     expect(revision).toBe(2);
     expect(
@@ -400,7 +395,7 @@ describe("a private toolkit", () => {
       (await send(org, `/toolkits/${toolkit.id}`, org.admin, "DELETE", undefined, revised(2)))
         .status,
     ).toBe(200);
-    expect((await send(org, "/toolkits", org.alice)).body).toEqual({ toolkits: [] });
+    expect(await listedFor(org, org.alice)).toEqual({ toolkits: [] });
   });
 
   it("may not take an org toolkit's name, nor the name of another of its member's", async () => {
@@ -467,18 +462,15 @@ describe("private credentials on toolkits", () => {
       tool_list: { tools: 1 },
     });
     // An org admin sees that a member connected one, nothing more.
-    expect(
-      Schema.decodeUnknownSync(ToolkitsList)((await send(org, "/toolkits", org.admin)).body)
-        .toolkits[0],
-    ).toMatchObject({ credentials: { private_count: 1 } });
+    expect((await listedFor(org, org.admin)).toolkits[0]).toMatchObject({
+      credentials: { private_count: 1 },
+    });
 
     expect(
       (await send(org, "/membership", org.admin, "PATCH", { private_credentials: false })).status,
     ).toBe(200);
 
-    const off = Schema.decodeUnknownSync(ToolkitsList)(
-      (await send(org, "/toolkits", org.alice)).body,
-    ).toolkits[0];
+    const off = (await listedFor(org, org.alice)).toolkits[0];
 
     expect(off?.credentials.mine).toMatchObject({ active: false });
     expect(errorOf(await send(org, `/toolkits/${toolkit.id}/refresh`, org.alice, "POST"))).toBe(
@@ -506,8 +498,7 @@ describe("a private credential on an org toolkit", () => {
       (await send(org, path, org.alice, "PUT", { kind: "bearer", token: "alice-key" })).status,
     ).toBe(200);
 
-    const viewOf = async (who: Person) =>
-      Schema.decodeUnknownSync(ToolkitsList)((await send(org, "/toolkits", who)).body).toolkits[0];
+    const viewOf = async (who: Person) => (await listedFor(org, who)).toolkits[0];
 
     expect((await viewOf(org.bob))?.credentials).toEqual({});
     expect(errorOf(await send(org, path, org.bob, "DELETE"))).toBe("not_found");
@@ -687,6 +678,18 @@ describe("the org export", () => {
 
     expect(exported.status).toBe(200);
     expect((exported.body as { toolkits: unknown }).toolkits).toEqual([
+      // The built-in sandbox toolkit (#222), with what the org set on it: no grants, no network yet.
+      {
+        name: "sandbox",
+        kind: "sandbox",
+        source: "cloudflare",
+        private: false,
+        accepts: "shared",
+        credentials: [{ slot: "shared", kind: "none" }],
+        overrides: [],
+        grants: [],
+        network: { kind: "none" },
+      },
       {
         name: "kit",
         kind: "mcp",

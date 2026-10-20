@@ -3,10 +3,12 @@
 // the others: KV, the signature and Antigravity state, the per-isolate caches, SessionState, the D1 usage records
 // through every query the management API exposes, the ControlPlane addressed by key prefix and by slug, and Tools'
 // toolkits by name and by id, their tool grants, the upstream MCP sessions their calls keep, the pending approvals
-// of their calls, Commissary Cloud's OAuth grants for MCP clients and the browser sessions.
-// Each store is one `storeCase` in `STORES`: a new store (tool calls, approvals, runs, sandbox and browser sessions,
-// profiles) adds one line there (docs/DEVELOPMENT.md, "Tests").
+// of their calls, Commissary Cloud's OAuth grants for MCP clients, the browser sessions and the sessions of the built-in
+// sandbox toolkit with its network ceiling.
+// Each store is one `storeCase` in `STORES`: a new store (tool calls, approvals, runs, profiles) adds one line there
+// (docs/DEVELOPMENT.md, "Tests").
 import { env } from "cloudflare:workers";
+import type { SandboxNetwork } from "@commissary/contract/tools";
 import { Effect, Layer, ManagedRuntime, Result } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -321,6 +323,50 @@ const browserCaller = (org: IsolationOrg) => ({
   member: "iso-member",
   principal: "key:iso",
 });
+
+/** The sandbox sessions the sandbox case opened, by the suite's name, whichever org opened them. */
+const sandboxSessions = new Map<string, ReadonlyArray<string>>();
+
+/** The grant of the sandbox toolkit the sandbox case wrote in each org, to delete once it ran. */
+const sandboxGrants = new Map<string, { readonly id: string; readonly revision: number }>();
+
+/** The sandbox toolkit as an org admin of `org` sees it. */
+const sandboxToolkitOf = async (org: IsolationOrg) =>
+  (
+    await env.CONTROL_PLANE.getByName(org.id)
+      .tools()
+      .listToolkits({ ...isoViewer(org), admin: true })
+  ).toolkits.find((toolkit) => toolkit.id === "sandbox");
+
+/** Sets `org`'s sandbox network ceiling, as an org admin. */
+const setCeiling = async (org: IsolationOrg, network: SandboxNetwork) =>
+  await env.CONTROL_PLANE.getByName(org.id)
+    .tools()
+    .updateToolkit(
+      { ...isoViewer(org), admin: true },
+      "sandbox",
+      (await sandboxToolkitOf(org))?.revision ?? 1,
+      { network },
+      "iso",
+      OUTBOUND,
+    );
+
+/** A sandbox tool's result for the suite's member in `org`; none when the org has no such tool for them. */
+const sandboxCall = async (
+  org: IsolationOrg,
+  name: string,
+  args: Record<string, string>,
+): Promise<Record<string, unknown> | undefined> => {
+  const called = await env.CONTROL_PLANE.getByName(org.id)
+    .tools()
+    .callTool(isoViewer(org), { name, arguments: args, principalId: "iso" }, OUTBOUND);
+
+  if (called.outcome === "unknown") return undefined;
+
+  if (called.outcome !== "result") throw new Error(`the call came to ${called.outcome}`);
+
+  return called.result;
+};
 
 // --- the stores ---------------------------------------------------------------------------------------------------------
 
@@ -972,6 +1018,73 @@ const STORES: ReadonlyArray<StoreCase> = [
       return /https:\/\/([a-z0-9]+)\.iso-browser\.example\.com/.exec(content?.text ?? "")?.[1];
     },
     value: (index) => `org${index}`,
+  }),
+  // The sandbox toolkit's network ceiling (#222): each org's admin allows one host of its own, and each finds only its own.
+  storeCase("controlplane: sandbox network ceiling", {
+    write: async (org, _name, value) => {
+      const updated = await setCeiling(org, { kind: "hosts", hosts: [`${value}.example.com`] });
+
+      if (!updated.ok) throw new Error(updated.message);
+    },
+    read: async (org) => {
+      const network = (await sandboxToolkitOf(org))?.network;
+
+      return network?.kind === "hosts" ? network.hosts[0]?.split(".")[0] : undefined;
+    },
+    value: (index) => `org${index}`,
+    after: async (shared) => {
+      for (const org of shared) await setCeiling(org, { kind: "none" });
+    },
+  }),
+  // The sessions of the built-in sandbox toolkit (#222): each org's member opens one and writes the org's value to the
+  // same file; every org then reads that file in every session opened under the name, and gets into its own only.
+  storeCase("controlplane: sandbox sessions", {
+    write: async (org, name, value) => {
+      const tools = env.CONTROL_PLANE.getByName(org.id).tools();
+
+      const granted = await tools.writeGrant(
+        {
+          revision: 0,
+          value: { subject: { kind: "everyone" }, toolkit: "sandbox", tools: { kind: "all" } },
+        },
+        "iso",
+      );
+
+      if (!granted.ok) throw new Error(granted.message);
+      sandboxGrants.set(org.id, granted.value);
+
+      const opened = await sandboxCall(org, "sandbox_open", {});
+      // SAFETY: `sandbox_open` answers the session id in its structured content.
+      const session = (opened?.["structuredContent"] as { session: string } | undefined)?.session;
+
+      if (session === undefined) throw new Error("the call opened no session");
+      sandboxSessions.set(name, [...(sandboxSessions.get(name) ?? []), session]);
+      await sandboxCall(org, "sandbox_write", { session, path: "value.txt", content: value });
+    },
+    read: async (org, name) => {
+      for (const session of sandboxSessions.get(name) ?? []) {
+        const read = await sandboxCall(org, "sandbox_read", { session, path: "value.txt" });
+
+        if (read !== undefined && read["isError"] !== true) {
+          // SAFETY: a sandbox tool answers one text content (`text` in `src/sandbox/toolkit.ts`).
+          const [content] = read["content"] as ReadonlyArray<{ text: string }>;
+
+          return content?.text;
+        }
+      }
+
+      return undefined;
+    },
+    after: async (shared) => {
+      for (const org of shared) {
+        const grant = sandboxGrants.get(org.id);
+
+        if (grant !== undefined)
+          await env.CONTROL_PLANE.getByName(org.id)
+            .tools()
+            .writeGrant({ id: grant.id, revision: grant.revision, value: null }, "iso");
+      }
+    },
   }),
 ];
 

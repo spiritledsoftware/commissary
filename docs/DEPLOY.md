@@ -60,11 +60,13 @@ Any machine with the deploy settings can deploy a preview by hand: `pnpm run dep
 A stage deploys three Workers (ADR 0030) from the one stack, the state Worker first, and a fourth on Commissary Cloud,
 the auth Worker ([Commissary Cloud](#commissary-cloud)):
 
-1. **`State`** (`apps/state`) defines the Durable Objects `ControlPlane`, `SessionState`, `Platform` and
-   `BrowserSession` (one per browser session of the browser toolkit): every org's state and the Platform registry. It
-   has no routes, no domain and no `workers.dev` URL, and binds only what those classes read: the secrets keys, the
-   `auth_index` key, `META_MINT_URL`, `OWN_HOSTS`, the platform admins, the mode and the Access settings that mark a
-   deployed stage, and Browser Run unless `COMMISSARY_BROWSER=off` ([Optional pieces](#optional-pieces)).
+1. **`State`** (`apps/state`) defines the Durable Objects `ControlPlane`, `SessionState`, `Platform`,
+   `BrowserSession` (one per browser session of the browser toolkit) and `SandboxSession` (one per sandbox session of
+   the sandbox toolkit): every org's state and the Platform registry. It has no routes, no domain and no `workers.dev`
+   URL, and binds only what those classes read: the Worker Loader (`LOADER`, Dynamic Workers, which run the sandboxes'
+   shells), the secrets keys, the `auth_index` key, `META_MINT_URL`, `OWN_HOSTS`, the platform admins, the mode and the
+   Access settings that mark a deployed stage, and Browser Run unless `COMMISSARY_BROWSER=off`
+   ([Optional pieces](#optional-pieces)).
 2. **`Commissary`** (`apps/app`), the app Worker: the control panel (with Commissary Cloud's sign-in page) and the
    management API, on the stage's
    domain (the app host) or `workers.dev` URL, behind Access on a self-hosted stage. It answers the client API paths
@@ -183,6 +185,15 @@ depend on an extra binding the deployment chooses. `GET /v9/management/me` repor
 | The browser toolkit (ADR 0039, #212) | `COMMISSARY_BROWSER`: `on` (default) or `off` | Browser Run (`browser`, as `BROWSER`) on the `State` and app (`Commissary`) Workers | The whole toolkit: it is not on the MCP endpoint, in toolkit lists or in tool grants, and `deployment.browser` is `false`. Nothing else changes | Browser Run includes 10 browser hours a month on Workers Paid, then $0.09 an hour, on the deployment's Cloudflare account |
 
 The sandbox's computer (#223) adds its row.
+
+**The sandbox.** The sandbox toolkit (#222) is not optional: every deployment has it, since it runs on Durable Objects
+and Dynamic Workers (the Worker Loader binding), which Workers Paid includes. There is nothing to configure, no account
+setup and no API token (Dynamic Workers are in open beta for every Workers Paid account); the deploy binds the loader
+and the `SandboxSession` namespace on the `State` Worker. Each session is one Dynamic Worker (Workers Paid includes
+1,000 unique Dynamic Workers a month, then $0.002 per Dynamic Worker per day it runs, beside the usual requests and CPU
+time) and one Durable Object with its files; both land on the deployment's account, whoever's org used them; an
+org reaches the toolkit only once an org admin grants it (there is no default grant), and its sessions have no network
+until an org admin sets the toolkit's network ceiling.
 
 **The browser.** Browser Run needs no account setup beyond Workers Paid (on Workers Free it is capped at 10 minutes a day,
 too little to be useful) and no API token: the deploy binds it, and the toolkit calls its Quick Actions through the

@@ -24,6 +24,7 @@ import type {
   StartSignIn,
   ToolClass,
   RemovedToolOverride,
+  SandboxNetwork,
   SetToolOverride,
   ToolkitCredentialView,
   ToolkitDocument,
@@ -124,6 +125,9 @@ import {
   COMMISSARY,
 } from "./toolkits/built-in.ts";
 import type { BuiltInToolkit, StoredToolkit, Toolkit } from "./toolkits/toolkit.ts";
+import { NO_NETWORK, networkProblem, normalizedNetwork } from "./sandbox/network.ts";
+import type { SandboxProvider } from "./sandbox/provider.ts";
+import { SandboxSessionStore, type TrackedSession } from "./sandbox/sessions.ts";
 
 /** Why a call of the part was refused; the routes answer each with its status. */
 export type ToolsErrorCode =
@@ -261,7 +265,7 @@ const NOT_FOUND = refuse("not_found", "toolkit not found");
 
 const BUILT_IN = refuse(
   "built_in",
-  "the toolkit is Commissary's own: it cannot be renamed, edited (but for its approval rules), given a credential, refreshed or removed",
+  "the toolkit is Commissary's own: it cannot be renamed, edited (but for its approval rules, and the sandbox's network), given a credential, refreshed or removed",
 );
 
 const iso = (at: number): string => new Date(at).toISOString();
@@ -359,6 +363,8 @@ export interface ToolkitExport {
   }>;
   /** An org toolkit's tool grants, in an org admin's export only. */
   readonly grants?: ReadonlyArray<ExportedToolGrant>;
+  /** The sandbox toolkit's network ceiling (#222). */
+  readonly network?: SandboxNetwork;
   /** Its approval rules (#201): marked tools by upstream name, approvers by what a person reads. */
   readonly approval_rules?: {
     readonly writes?: { readonly approver: ExportedApprover };
@@ -578,6 +584,9 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   readonly #outbound: OutboundPolicy;
   /** The token refreshes in flight, by credential: concurrent callers share one. */
   readonly #refreshes = new Map<string, Promise<Signed>>();
+  /** The org's open sandbox sessions (#222), and the sandbox they are in. */
+  readonly #sandboxSessions: SandboxSessionStore;
+  readonly #sandbox: SandboxProvider | undefined;
   /** What the part reads the time from: the live clock, or a test's (`useClock`). */
   #clock: Clock.Clock = Clock.Clock.defaultValue();
 
@@ -597,6 +606,8 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     this.#approvals = new ApprovalStore(ctx.storage.sql, core.secrets);
     this.#oauth = new OAuthStore(ctx.storage.sql, core.secrets);
     this.#outbound = outboundPolicy({ hosts: [ownHosts] });
+    this.#sandboxSessions = new SandboxSessionStore(ctx.storage.sql);
+    this.#sandbox = providers.sandbox;
     this.#yieldBuiltInNames();
   }
 
@@ -620,10 +631,11 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   }
 
   /**
-   * Forgets the upstream sessions older than seven days (ADR 0038), deletes the pending approvals (and forms) that
-   * expired (#201) and refreshes the tokens of the OAuth credentials that expire soon (#202), then wakes up when the
-   * next of these is due. Tool lists are rebuilt by the cron task. Each token refresh stands alone: one that throws is
-   * logged and tried again after {@link REFRESH_RETRY_MS}, and the others, the pruning and the next wake-up go on.
+   * Forgets the upstream sessions older than seven days (ADR 0038) and the sandbox sessions the sandbox ended for want
+   * of use (#222), deletes the pending approvals (and forms) that expired (#201) and refreshes the tokens of the OAuth
+   * credentials that expire soon (#202), then wakes up when the next of these is due. Tool lists are rebuilt by the
+   * cron task. Each token refresh stands alone: one that throws is logged and tried again after {@link
+   * REFRESH_RETRY_MS}, and the others, the pruning and the next wake-up go on.
    */
   async alarm(now: number): Promise<number | null> {
     const due = this.#store.refreshesDue(now);
@@ -661,14 +673,15 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   }
 
   /**
-   * Prunes what is due at `now`; answers the part's next wake-up, the earliest of the sessions', the approvals' and the
-   * credentials' token refreshes (none before `refreshFrom`).
+   * Prunes what is due at `now`; answers the part's next wake-up, the earliest of the sessions' (upstream and sandbox),
+   * the approvals' and the credentials' token refreshes (none before `refreshFrom`).
    */
   #nextWakeUp(now: number, refreshFrom = now): number | null {
     const refresh = this.#store.nextRefreshAt();
 
     const wakes = [
       this.#store.pruneSessions(now),
+      this.#sandboxSessions.prune(now),
       this.#approvals.prune(now),
       refresh === null ? null : Math.max(refresh, refreshFrom),
     ].filter((at): at is number => at !== null);
@@ -688,8 +701,11 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   /**
    * Zero data retention (ADR 0027): a member's private toolkits and private credentials go with them, and so do the
    * tool grants that named them and the pending approvals of their calls (#201). They leave every list of approvers.
+   * Their open sandbox sessions (#222) are deleted at once, with their files.
    */
   async memberLeft(member: string): Promise<void> {
+    await this.#purgeSandboxSessions(this.#sandboxSessions.sessions({ member }));
+
     this.#core.transaction(() => {
       this.#store.deleteMember(member);
       this.#oauth.deleteMember(member);
@@ -706,6 +722,52 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
         if (rules !== undefined) this.#store.replaceApprovalRules(toolkit.id, rules);
       }
     });
+  }
+
+  /**
+   * Deletes up to `limit` of the org's open sandbox sessions with their files (#222): Tools' step of deleting the org
+   * (`org-deletion.ts`), within its budget. Answers how many it deleted and how many are left.
+   */
+  async purgeSandboxSessions(
+    limit: number,
+  ): Promise<{ readonly purged: number; readonly remaining: number }> {
+    const sessions = this.#sandboxSessions.sessions({ limit });
+    const purged = await this.#purgeSandboxSessions(sessions);
+
+    return {
+      purged,
+      remaining: this.#sandboxSessions.sessions().length,
+    };
+  }
+
+  /**
+   * Deletes `sessions` in their sandbox, and their rows once deleted; answers how many it asked the sandbox to delete.
+   * One the sandbox could not reach keeps its row, for the next try (it ends by itself after a day without use).
+   */
+  async #purgeSandboxSessions(sessions: ReadonlyArray<TrackedSession>): Promise<number> {
+    const sandbox = this.#sandbox;
+
+    if (sandbox === undefined || sessions.length === 0) return 0;
+
+    const purged = await Promise.all(
+      sessions.map(async (session) =>
+        Effect.runPromise(
+          sandbox.purge(this.#core.org, session.id).pipe(
+            Effect.as(session.id),
+            Effect.catchTag("SandboxError", (error) =>
+              Effect.logWarning("sandbox session not purged").pipe(
+                Effect.annotateLogs({ reason: error.reason, message: error.message }),
+                Effect.as(undefined),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    this.#sandboxSessions.ended(purged.filter((id) => id !== undefined));
+
+    return sessions.length;
   }
 
   /** The tool grants that named the team go with it. */
@@ -896,6 +958,9 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       return this.#updateBuiltIn(viewer, managed.value, revision, change, by);
     const current = managed.value;
 
+    if (change.network !== undefined)
+      return refuse("invalid", "only the sandbox toolkit has a network");
+
     if (current.revision !== revision)
       return refuse("conflict", `the toolkit is at revision ${current.revision}, not ${revision}`);
 
@@ -945,8 +1010,10 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   }
 
   /**
-   * Sets a built-in toolkit's approval rules (#201): they apply as any toolkit's. Nothing else of it changes (`403
-   * built_in` for a name, what it accepts or a price).
+   * Sets a built-in toolkit's approval rules (#201), which apply as any toolkit's, and the sandbox toolkit's network
+   * ceiling (#222), the widest network its sessions may ask for (an org admin's: the toolkit is an org toolkit). Nothing
+   * else of it changes (`403 built_in` for a name, what it accepts or a price; a network on the browser toolkit too).
+   * Open sessions keep the network they opened with.
    */
   #updateBuiltIn(
     viewer: Viewer,
@@ -955,17 +1022,33 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     change: UpdateToolkit,
     by: string,
   ): ToolsResult<ToolkitView> {
-    const { approval_rules: _rules, ...rest } = change;
+    const { approval_rules: _rules, network, ...rest } = change;
 
-    if (Object.values(rest).some((value) => value !== undefined)) return BUILT_IN;
+    if (
+      Object.values(rest).some((value) => value !== undefined) ||
+      (network !== undefined && current.kind !== "sandbox")
+    )
+      return BUILT_IN;
 
     if (current.revision !== revision)
       return refuse("conflict", `the toolkit is at revision ${current.revision}, not ${revision}`);
     const rules = this.#rulesChange(current, change.approval_rules);
 
     if (!rules.ok) return rules;
+    const problem = network === undefined ? undefined : networkProblem(network);
 
-    this.#store.updateBuiltIn(current.id, current.revision, rules.value, by, this.#now());
+    if (problem !== undefined) return refuse("invalid", problem);
+
+    this.#store.updateBuiltIn(
+      current.id,
+      current.revision,
+      {
+        approvalRules: rules.value,
+        network: network === undefined ? current.network : normalizedNetwork(network),
+      },
+      by,
+      this.#now(),
+    );
     this.#dropOrphanedApprovals(current.id);
 
     return this.#viewOf(current.id, viewer);
@@ -2116,16 +2199,44 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     const approved = approval.approval;
 
     // A built-in tool always answers a result, a failure as one with `isError`; it is charged like an upstream's. A
-    // browser session's tools (#213) act for the org, member and principal of the call: the session's owner (a call
-    // without a principal reaches no session).
+    // browser or sandbox session's tools (#213, #222) act for the org, member and principal of the call: the session's
+    // owner (a call without a principal reaches no session).
     if ("builtIn" in serving) {
+      const now = this.#now();
+      const { builtIn } = serving;
+      const { principalId } = call;
+      let opened = false;
+
       const result = await Effect.runPromise(
-        serving.builtIn.call(tool.upstreamName, call.arguments, {
+        builtIn.call(tool.upstreamName, call.arguments, {
+          // A sandbox session is its principal's (a member, or one API key of theirs): a call without one may not use
+          // the sandbox.
           org: this.#core.org,
           member: viewer.member,
-          principal: call.principalId,
+          principal: principalId,
+          sessions: {
+            opened: (id) => {
+              opened = true;
+              this.#sandboxSessions.opened({
+                id,
+                toolkitId: builtIn.toolkit.id,
+                member: viewer.member,
+                principal: principalId ?? "",
+                openedAt: now,
+              });
+            },
+            used: (id) => this.#sandboxSessions.used(id, now),
+            ended: (id) => this.#sandboxSessions.ended([id]),
+          },
+          policy,
+          now,
+          // The toolkit with what the org set on it (its network ceiling).
+          toolkit: this.#withSettings(builtIn.toolkit),
         }),
       );
+
+      // A new sandbox session ends a day after its last use: the part wakes up then to forget it.
+      if (opened) await this.#core.wakeUpChanged(this.#nextWakeUp(now));
 
       if (price > 0) ledger.charge(ledger.scopes(spender, charged), price, this.#now());
 
@@ -2838,6 +2949,9 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
           ...(toolkit.approvalRules === undefined
             ? {}
             : { approval_rules: this.#exportedRules(toolkit.approvalRules) }),
+          ...(toolkit.builtIn && toolkit.kind === "sandbox"
+            ? { network: toolkit.network ?? NO_NETWORK }
+            : {}),
         },
       ];
     });
@@ -3130,6 +3244,9 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       ...(resolution.renameSuggested.has(toolkit.id) ? { rename_suggested: true } : {}),
       ...(resolution.shadowed.has(toolkit.id) ? { shadowed: true } : {}),
       ...(toolkit.builtIn ? { built_in: true } : {}),
+      ...(toolkit.builtIn && toolkit.kind === "sandbox"
+        ? { network: toolkit.network ?? NO_NETWORK }
+        : {}),
       ...(toolkit.approvalRules === undefined
         ? {}
         : {

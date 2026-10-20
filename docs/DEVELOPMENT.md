@@ -68,7 +68,10 @@ into `packages/tools/vitest.config.ts` the same way. Its ControlPlane part reads
 #212) from the state Worker's env (`ToolsPartEnv`, which `apps/state/src/env.d.ts` includes), as the Models part reads
 `ModelsPartEnv`; the app Worker binds it too, for `/me` only (`AppBindings`). No test config binds it: the Tools test
 Worker hands its part a fake (`packages/tools/test/worker.ts`), and an app test that needs it passes one
-(`fakeBrowserRun`).
+(`fakeBrowserRun`). The part and the sandbox's `SandboxSession` objects also read `LOADER` (the Worker Loader) and
+`SANDBOX_SESSION` (#222), which every state Worker binds; Miniflare runs both, so the Tools, app and API test configs
+bind them (`workerLoaders`, a Durable Object namespace) and their test Workers export `SandboxSession`,
+`SandboxEgress` and `WorkspaceServiceProxy` beside the ControlPlane.
 
 Under `pnpm dev` with `COMMISSARY_MODE=cloud`, Commissary Cloud's OAuth server for MCP clients (#200) is on, with its KV
 namespace emulated: its issuer is the app Worker (`http://localhost:1337`) and its resource the API Worker's `/mcp`
@@ -200,11 +203,11 @@ may have stored its writes before, so it may run twice. Only chains are retried:
   role-table entries, its section of the org export), the ControlPlane part, its cron task (refreshing tool lists) and
   its org-deletion step. Three entry points like Models': `./api` (the API Worker's: cron tasks, `ToolsEnv`),
   `./management` (the app Worker's) and `./state` (the state Worker's: `ToolsPart` and the browser sessions' Durable
-  Object, `BrowserSession`); `./testing` serves fake MCP servers to the Worker's tests (`fakeMcpServer`,
+  Object, `BrowserSession`, and the sandbox's `SandboxSession`, `SandboxEgress` and `WorkspaceServiceProxy`); `./testing` serves fake MCP servers to the Worker's tests (`fakeMcpServer`,
   `serveFakeMcpServers`), a fake Browser Run binding (`fakeBrowserRun`) and the browser sessions' object over a fake
   provider's browsers (`FakeBrowserSession`, `browserSessionStub`), and holds Tools' usage writer
   (`insertToolCallRecord`), with which other tests seed tool calls' records. `browser` holds the browser toolkit
-  (#212) and its sessions (#213). It reads its bindings through `ToolsEnv` (`CONTROL_PLANE`,
+  (#212) and its sessions (#213), `sandbox` the sandbox toolkit (#222). It reads its bindings through `ToolsEnv` (`CONTROL_PLANE`,
   `PLATFORM`, `APP_DOMAIN` and `USAGE`, the usage database its tool calls' records go into) and may import
   `@commissary/state`, `auth`, `contract`, `core`, `effect` and the runtime
   modules `tools/oxlint/boundaries` lists: nothing from `apps/` or Models.
@@ -353,8 +356,9 @@ stays with that Worker.
   held until the test ends, and the eviction never finishes. `@commissary/tools` has two projects the same way:
   `tools-unit` (`test/unit/`, Node.js) and `tools` (workerd, `packages/tools/test/worker.ts`: state's base composed
   with the Tools part only, and three more ControlPlanes whose browser toolkit runs on a fake Browser Run binding or a
-  fake second browser provider, or that gains the fake binding when a test restarts it, and the browser sessions'
-  object over a fake provider's browsers, `test/support/fake-sessions.ts`). Its upstreams are fakes the tests serve by
+  fake second browser provider, or that gains the fake binding when a test restarts it, the browser sessions'
+  object over a fake provider's browsers, `test/support/fake-sessions.ts`, and two whose sandbox toolkit runs on real
+  sandbox sessions or a fake second sandbox provider). Its upstreams are fakes the tests serve by
   replacing the isolate's `fetch`, which the ControlPlane in the same isolate calls: one routing `fetch` hands each
   request to the fake of its origin (`test/support/fake-fetch.ts`, `serveFakeServers`; the Worker's tests install it as
   `serveFakeMcpServers` from `@commissary/tools/testing`), fake MCP servers (`fakeMcpServer`) and fake HTTP servers for

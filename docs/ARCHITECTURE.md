@@ -135,24 +135,29 @@ to `packages/billing/src/`), Tools' as `tools/...` (relative to `packages/tools/
     src/api.ts                for the API Worker: the MCP endpoint (/mcp), its cron task (tool-list-refresh), ToolsEnv
     src/management.ts         for the app Worker: management routes, role-table entries, org-deletion step, its section
                               of the org export
-    src/state.ts              for the state Worker: ToolsPart, its part of the ControlPlane, and the built-in toolkits'
-                              providers from its env (builtInProviders, ToolsPartEnv: the optional browser binding and
-                              BROWSER_SESSIONS); the browser sessions' Durable Object (BrowserSession and its env view,
-                              BrowserSessionEnv)
+    src/state.ts              for the state Worker: ToolsPart, its part of the ControlPlane, the built-in toolkits'
+                              providers from its env (builtInProviders, ToolsPartEnv: the optional browser binding,
+                              BROWSER_SESSIONS, the Worker Loader and the sandbox sessions' namespace); the browser
+                              sessions' Durable Object (BrowserSession and its env view, BrowserSessionEnv) and the
+                              sandbox's classes (SandboxSession, SandboxEgress, WorkspaceServiceProxy)
     src/control-plane-part.ts the ControlPlane's Tools part (toolkits, their credentials, tool lists, overrides, tool
                               grants, the endpoint's list and calls, upstream sessions)
     src/toolkits/             storage, names, the flat list of unique full names, static secrets, built-in toolkits
     src/browser/              the browser toolkit: its Quick Action tools (#212), the browser-provider interface and
                               its Browser Run adapters; its session tools, what they do in a browser (masking
                               included) and the sessions' Durable Object (#213)
+    src/sandbox/              the sandbox toolkit (#222): its tools, the sandbox-provider interface, sandbox networks,
+                              output cuts, and Cloudflare's sandbox (cloudflare/: the SandboxSession object, the
+                              egress entrypoint, the guarded loader, the adapter)
     src/grants/               tool grants (#198): their storage and what a member's grants give
     src/mcp/                  the MCP client that lists and calls a remote MCP server's tools, and Commissary's MCP
                               endpoint (protocol.ts, endpoint.ts)
     src/management/           Tools' /v9/management routes (toolkits, tool grants)
     test/                     Node.js tests (test/unit/) and workerd tests against a test-only ControlPlane
-                              (test/worker.ts), fake MCP servers, a fake Browser Run binding and a fake browser
-                              provider's sessions (test/support/fake-sessions.ts); test/fixtures/ has the snapshot
-                              masking's golden fixtures; test/testing.ts is ./testing
+                              (test/worker.ts), fake MCP servers, a fake Browser Run binding, a fake browser
+                              provider's sessions (test/support/fake-sessions.ts) and a fake second sandbox
+                              provider; test/fixtures/ has the snapshot masking's golden fixtures; test/testing.ts is
+                              ./testing
   packages/contract/          @commissary/contract: the management API's Effect HttpApi schemas and addressing (browser-safe)
   packages/core/              @commissary/core: the foundation without bindings (org model, shared errors, hashing,
                               log-safe helpers, management replies, route services, the execution context, the
@@ -1255,8 +1260,8 @@ Every URL an org or member supplies passes one **outbound guard** before Commiss
   the metadata names (authorization, token, registration), on every sign-in and token refresh; a toolkit's OAuth app's
   authorize and token URLs and a client credentials grant's token URL, on save and on every use.
 
-The toolkit catalog's live checks and the sandbox's egress point use the same guard when they land, from
-`@commissary/core`.
+The sandbox's egress point (`SandboxEgress`, see "Tools") applies it to every request a sandbox session makes, after
+the session's network. The toolkit catalog's live checks use the same guard when they land, from `@commissary/core`.
 
 - **The check** (`core/outbound/check.ts`, `checkOutboundUrl`): only `https:`, plus `http:` and `https:` to loopback
   (`localhost`, `*.localhost`, `127.0.0.0/8`, `::1`) in local development; no IP literal outside the public internet
@@ -3223,12 +3228,14 @@ document, the cron task), `./management`, `./state` and `./testing`, a lint boun
 a ControlPlane part, `ToolsPart`, reached as `stub.tools().x(…)`. Its one binding of its own is the usage database; its
 state is the ControlPlane's (`TOOLS_TABLES`: `toolkits`, `toolkit_credentials`, `toolkit_tools`, `tool_overrides`,
 `toolkit_sessions`, `tool_grants`, `tool_approvals`, `built_in_toolkits`, `toolkit_documents`, and OAuth's
-`toolkit_oauth_apps`, `toolkit_oauth_clients` and `toolkit_sign_ins`, dropped by `wipe()`). Its view of `env`
+`toolkit_oauth_apps`, `toolkit_oauth_clients` and `toolkit_sign_ins`, and the sandbox's `sandbox_sessions`, dropped
+by `wipe()`). Its view of `env`
 (`ToolsBindings`) adds the Platform registry and the app host (`APP_DOMAIN`) for the endpoint's connect links and the
 callback its CIMD document names, the API host (`API_DOMAIN`) where toolkit sign-ins name that document, and `USAGE`,
 the D1 database its tool calls' records go into (Models' records go there too); it reaches MCP servers and HTTP APIs
-from the ControlPlane through the global `fetch` behind the outbound guard. The part reads two things of the state
-Worker's env (`ToolsPartEnv`): the optional Browser Run binding `BROWSER` (`builtInProviders`), which the browser
+from the ControlPlane through the global `fetch` behind the outbound guard. The part reads the state Worker's env
+(`ToolsPartEnv`): the optional Browser Run binding `BROWSER` (`builtInProviders`), which the browser toolkit runs on,
+the Worker Loader `LOADER` with the `SandboxSession` namespace `SANDBOX_SESSION`, always there, which the sandbox
 toolkit runs on (_Built-in toolkits_ below), and `OWN_HOSTS`, which its alarm's token refreshes refuse. Beside it the
 state Worker defines and always binds the browser sessions' Durable Object (#213: `BrowserSession`, whose namespace
 `BROWSER_SESSIONS` the part reads too), which reads `BROWSER` through its own view (`BrowserSessionEnv`).
@@ -3240,7 +3247,7 @@ state Worker defines and always binds the browser sessions' Durable Object (#213
   behind them, so an RPC would add a round trip and a dependency between the areas' parts for nothing. Sealing is the
   org-wide base's already (`core.secrets`). Tools imports nothing of Models (its manifest does not name it, so the lint
   rule refuses it).
-- **Toolkits** (`tools/toolkits/store.ts`): a kind (`mcp`; `browser` for the built-in browser toolkit, below), a source (the MCP server's URL), a name and which
+- **Toolkits** (`tools/toolkits/store.ts`): a kind (`mcp`; `browser` and `sandbox` for the built-in toolkits, below), a source (the MCP server's URL), a name and which
   credentials it accepts (`shared`, `private` or `both`; a private toolkit takes its owner's only). An org admin adds
   org toolkits; any member adds private toolkits (a plain member's toolkit is always private) while the org setting
   `membership.private_toolkits` allows them (#198, ADR 0038). The setting mirrors `private_credentials`: on for
@@ -3648,28 +3655,31 @@ state Worker defines and always binds the browser sessions' Durable Object (#213
 - **Who a call is**: on the app host a call is the member's Access principal (`user:<email>`), as a panel request is,
   so what records calls (usage, logs) shows the member, not the MCP client; Access's tokens carry no client. A static API
   key on the API host is the key and its member.
-- **Built-in toolkits** (`tools/toolkits/built-in.ts`, #212, ADR 0039, ADR 0041): toolkits Commissary provides itself,
-  so far the **browser toolkit**. One exists exactly when the deployment has what it runs on: the state Worker's
-  composition hands the Tools part the providers its env's bindings give (`new ToolsPart(ctx, core,
-  builtInProviders(env))`; a `browser` binding gives Browser Run). Without the binding (`COMMISSARY_BROWSER=off`,
-  ADR 0043) the toolkit is missing everywhere: not in toolkit lists, the MCP endpoint's list or calls (an unknown tool),
+- **Built-in toolkits** (`tools/toolkits/built-in.ts`, #212, #222, ADR 0039, ADR 0041): toolkits Commissary provides
+  itself, the **browser toolkit** and the **sandbox toolkit**. One exists exactly when the deployment has what it runs
+  on: the state Worker's composition hands the Tools part the providers its env's bindings give (`new ToolsPart(ctx,
+  core, builtInProviders(env))`; a `browser` binding gives Browser Run, and the Worker Loader with the sessions'
+  namespace, which every deployment has (ADR 0043), gives Cloudflare's sandbox). Without its binding
+  (`COMMISSARY_BROWSER=off`, ADR 0043) the browser toolkit is missing everywhere: not in toolkit lists, the MCP endpoint's list or calls (an unknown tool),
   the export or the grants list, and a grant naming it is refused like one of a toolkit the org lacks; nothing else
   changes. A built-in toolkit is not stored: the part lists it
-  beside the stored toolkits as an org toolkit with a fixed id, its name (`browser`, never a `tk_…` id), kind `browser`,
-  source its browser provider (`browser-run`), `accepts: "shared"`, `built_in: true`, revision 1 and the epoch as its
+  beside the stored toolkits as an org toolkit with a fixed id, its name (`browser` or `sandbox`, never a `tk_…` id),
+  its kind (`browser` or `sandbox`), source its provider (`browser-run` or `cloudflare`), `accepts: "shared"`, `built_in: true`, revision 1 and the epoch as its
   times, and a tool list from code (a `BuiltInToolkit`, `tools/toolkits/toolkit.ts`, beside the rows' `StoredToolkit`
   of kind `mcp`; what only a stored one takes goes through the part's one resolver, `#stored`). Its shared credential is Commissary's own binding, shown as kind `none`, so tool
   grants decide who reaches it, and there is no default grant: an org admin grants it like any org toolkit (all tools,
-  read tools or named ones, stable ids `browser:<tool>`). A call is recorded in usage like any tool call (#199, on the
+  read tools or named ones, stable ids `browser:<tool>` and `sandbox:<tool>`). A call is recorded in usage like any tool call (#199, on the
   shared credential) and charged a tool override's price, if an org admin set one. Overrides (hide, rename, re-describe, reclassify) and grants on
   it are stored by its id in the usual tables, kept while the binding is absent and applied again when it is back.
   So are its approval rules (#201), which apply as any toolkit's: `PATCH /toolkits/browser` with `approval_rules` only,
-  at its revision, stored in `built_in_toolkits` (its revision, rules and last change: it has no `toolkits` row), so
-  its revision moves on from 1 with each change of its rules. Renaming it, changing what it accepts, connecting or removing a credential, refreshing its list and removing it answer
+  at its revision, stored in `built_in_toolkits` (its revision, rules, the sandbox's network and last change: it has
+  no `toolkits` row), so its revision moves on from 1 with each change of its rules. The sandbox toolkit also takes
+  `network`, its ceiling (below); a network on the browser toolkit answers `403 built_in`, on a stored one `422
+  invalid`. Renaming it, changing what it accepts, connecting or removing a credential, refreshing its list and removing it answer
   `403 built_in`; while it exists its name is taken (`409 name_taken`) for org and private toolkits alike, so a member
   cannot add a private copy (and adding a toolkit takes an MCP URL anyway). A stored toolkit, org or private, named
-  `browser` from before the deployment had the binding is renamed once when the part starts with it, to the first
-  `browser_<n>` from 2 that no toolkit of the org has, by `commissary` (its revision moves on). Its tools hold their full names against a
+  `browser` (or `sandbox`) from before the deployment had the binding is renamed once when the part starts with it, to
+  the first `browser_<n>` (`sandbox_<n>`) from 2 that no toolkit of the org has, by `commissary` (its revision moves on). Its tools hold their full names against a
   stored toolkit's (they count as seen first). API keys' tool scopes (ADR 0036) do not exist yet; `?toolkits=browser`
   narrows to it as to any toolkit.
   - **The browser toolkit's tools** (`tools/browser/toolkit.ts`): Browser Run's stateless Quick Actions, all of class
@@ -3785,22 +3795,98 @@ state Worker defines and always binds the browser sessions' Durable Object (#213
     `BrowserSessionProvider` (open, connect by id, and a browser's tabs, driven by snapshot refs and masked by CSS
     selectors), which the session's object finds by the provider's id it stored when the session opened
     (`sessionProviderOf(source, env)`): Browser Run's are `browserRunSessions` (above), over the binding; a later
-    provider is another case there, and its sessions need no migration. The sandbox toolkit's sandbox provider (#223)
+    provider is another case there, and its sessions need no migration. The sandbox toolkit's sandbox provider (#222)
     follows the pattern. The tests run the toolkit over a fake binding and over a fake second provider, which serves
     the same tools.
+  - **The sandbox toolkit's tools** (`tools/sandbox/toolkit.ts`, #222, ADR 0041): a shell and a filesystem in a
+    session, shaped after pi's coding tools (bash, read, write, edit, ls) so a hosted agent's tools map onto them one
+    to one (#230). MCP calls are stateless, so `sandbox_open` (write) answers a session id (`sbx_` and 32 hex digits)
+    and the network it got, and the others take it: `sandbox_bash` (write; a command run with just-bash in
+    `/workspace`, `timeout` in seconds, 120 by default and at most 600), `sandbox_read` (read; `offset` and `limit` in
+    lines), `sandbox_write` (write; creates parent directories), `sandbox_edit` (write; exact replacements, each
+    `oldText` unique and not overlapping, applied together: a read and a write through the provider),
+    `sandbox_list` (read) and `sandbox_close` (write). Output is cut as pi cuts it (`tools/sandbox/truncate.ts`): at
+    2,000 lines or 50 KB, a command's stdout and stderr each from its end and a file's from its start, and the cut is
+    stated as pi's bash tool states it (`[Showing lines X-Y of Z.]`, with `(50.0KB limit)` when bytes cut it, and
+    `[Showing last N of line Z.]` when one line alone passes it), whether the toolkit or the provider cut it (the
+    provider says how: `OutputCut`, its limit and whether the kept part starts within a line); a cut command's whole
+    output is kept as a file in the session (where `@cloudflare/computer` puts it), which the note names. Invalid
+    arguments, a network above the org's ceiling, an unknown or closed session, a failed command (`Command exited
+    with code N`, with its output) and the provider's failures are results with `isError`; so is any call that names
+    no principal (an endpoint from before calls carried one): a session must have an owner.
+  - **Sessions**: a session is its principal's alone (`SandboxOwner`: the org and the call's principal, `user:<email>`
+    on the app host, `key:<id>` for an API key; later an agent run, #230): a call with another principal's id, in the
+    same org or another, is answered as an unknown session. It ends on `sandbox_close` or after a day without a call,
+    its files deleted at once (a command still running is killed and the Workspace closed first, so nothing writes
+    its files back); for a week after, its owner's calls answer that it is closed, and after that week that it is
+    unknown. Commissary sets no size limit of its own: the Durable Object's storage limit applies (a write past it
+    answers that the storage is full and the file was not written). The ControlPlane keeps the org's open sessions
+    (`sandbox_sessions`, `tools/sandbox/sessions.ts`: id, toolkit, member, principal, opened and last used): every
+    call goes through the Tools part, which adds a session when it opens, marks it on each use, drops it when it is
+    closed or found closed, and forgets it a day after its last use, from its alarm, as the sandbox ends it. A member
+    who leaves takes their sessions at once (`memberLeft`: each is purged, deleted with its files and no note), and
+    the org's deletion purges every one (Tools' org-deletion step, `purgeSandboxSessions`, a page of 20 at a time
+    within the deletion's budget, before `wipeOrg` drops the table). Calls are recorded and priced as any tool call;
+    sandbox time is not metered.
+  - **Networks** (`tools/sandbox/network.ts`, ADR 0041, ADR 0044): `none` (the default), `hosts` (DNS names or `*.` and a
+    name, plus the `package_registries` preset: npm, PyPI, GitHub and mise's download hosts), or `open`. The sandbox
+    toolkit's `network` is the org's ceiling, set by org admins (`PATCH /toolkits/sandbox`, shown in its view and the
+    export), `none` until set; `sandbox_open` asks for one within it (a host list the ceiling covers, `open` only
+    under `open`), and the session keeps it for its life, whatever the ceiling becomes later.
+  - **Sandbox providers** (`tools/sandbox/provider.ts`, ADR 0041): the toolkit reaches its sandbox only through the
+    `SandboxProvider` interface (open, bash, read, write, list, close, each as an owner, and purge, for the
+    ControlPlane; a `SandboxError` with a reason the toolkit words). Cloudflare's sandbox (`tools/sandbox/cloudflare/`,
+    source `cloudflare`) is the one adapter, and the only code that imports `@cloudflare/computer` or just-bash (lint:
+    `no-restricted-imports` in `.oxlintrc.json`; pinned at 0.5.1, with just-bash pinned at 3.2.0 by a workspace
+    override, upgraded together in a Dependabot group of their own once the sandbox tests pass): each session is a `SandboxSession` Durable Object in the state Worker, named
+    `<org>:<session id>`, holding the session's `@cloudflare/computer` Workspace (its files, in the object's SQLite)
+    and running commands with its worker-shell backend, just-bash in a Dynamic Worker loaded through `LOADER`. That
+    Worker gets nothing but its files: the loader is wrapped (`cloudflare/loader.ts`) so that its one binding is the
+    Workspace's proxy (`HOST`, `WorkspaceServiceProxy`, `cloudflare/proxy.ts`: Commissary's own, offering no
+    Artifacts) and its `globalOutbound` is always `SandboxEgress`
+    (`cloudflare/egress.ts`), the one egress point, whose props carry the session's network and the outbound guard's
+    policy. It checks every request (the network first, then the guard, so an address the guard refuses stays refused
+    on an `open` network), fails a refused one (the command's `curl` fails) and forwards an allowed one without
+    following redirects, so each hop comes back to it (a redirect to an address the network or the guard refuses
+    fails without reaching it). The Workspace's `git`, `assets` and `artifacts` stay unconfigured and no command but
+    `curl` is added: they would fetch from the session's object with the state Worker's own `fetch`, not through
+    `SandboxEgress`, so `git clone` reaches nothing, even on a host the network allows (a test holds this). No
+    credential, secret or environment variable enters a sandbox. `@cloudflare/computer` is a preview: its API may
+    change, so the pins move only with a test run; the state Worker needs no `experimental` compatibility flag for it.
+    It and just-bash are loaded with a dynamic import when a session first needs its Workspace, never at module load:
+    the state Worker hosts every ControlPlane, and a cold start of one should not evaluate them (they are still
+    compiled, as every module of the bundle is). The state Worker's bundle and startup, from `wrangler deploy
+    --dry-run` and then `wrangler check startup` on the bundle (the median active startup of 9 local runs, interleaved
+    within each series; the Playwright note above was measured another way, and its numbers don't compare with these):
+
+    | Series | State Worker                                             | Gzipped   | Startup |
+    | ------ | -------------------------------------------------------- | --------- | ------- |
+    | 1      | before the browser sessions and the sandbox (9188dc98)   | 2,300 KiB | 51.6 ms |
+    | 1      | with the sandbox imported at module load                 | 3,096 KiB | 64.1 ms |
+    | 1      | with the sandbox loaded lazily                           | 3,245 KiB | 58.4 ms |
+    | 2      | with the browser sessions (#213, 26af3df1)               | 2,976 KiB | 59.5 ms |
+    | 2      | with the browser sessions and the sandbox, loaded lazily | 3,922 KiB | 72.0 ms |
+
+    Each series ran on its own, so compare rows within one. All stay within Workers Paid's 10 MiB, which a
+    self-hosted Commissary needs anyway (ADR 0043), and far from the 1 s startup limit. Another provider (Daytona, E2B,
+    Modal, Vercel Sandbox) is another adapter, a stored toolkit of kind `sandbox` whose credential is the org's key
+    for it; the computer (#223) sends its traffic through the same egress point. The workerd tests run real sessions
+    over Miniflare's Worker Loader, and the toolkit over a fake second provider.
 - **Members and orgs**: a member who leaves takes their private toolkits, their private credentials on org toolkits, the
-  upstream sessions of those, the sign-ins they started, the tool grants that named them and the pending approvals of
-  their calls, and leaves every list of approvers (`memberLeft`); a deleted team takes its tool grants (`teamDeleted`),
+  upstream sessions of those, the sign-ins they started, the tool grants that named them, the pending approvals of
+  their calls and their open sandbox sessions, and leaves every list of approvers (`memberLeft`); a deleted team takes its tool grants (`teamDeleted`),
   and a removed toolkit its own and its pending approvals (`tool_grants` and `tool_approvals` are keyed by `toolkit_id`
   like the other tables) and its Spend limits; org deletion drops the tables (`wipe()`), and Tools' org-deletion step
-  deletes the org's OAuth sign-ins of MCP clients on Commissary Cloud (grants and tokens in `OAUTH_KV`, the one thing
+  first deletes the org's open sandbox sessions (each a Durable Object of its own), then the org's OAuth sign-ins of
+  MCP clients on Commissary Cloud (grants and tokens in `OAUTH_KV`, the one thing
   Tools keeps in KV; the per-isolate cache of OAuth servers in `oauth/server.ts` holds no org data): its usage records
   go with Models' step, which deletes every usage row of the org. The cross-org suite
   (`apps/app/test/org-isolation.test.ts`) checks that one org's toolkits are neither listed nor reached by id from
   another, that its tool grants and OAuth apps are its own, that a sign-in's state reads only in its org, that a call
   goes on in its own org's upstream session, that a member finds only their own org's pending approvals, and that a
-  browser session id opened in each org by the same member and key reaches only its own org's session. A member who
-  leaves keeps no reach to their browser sessions (their calls are refused before the tools), which close when idle.
-  The org export lists the toolkits the caller reaches with their credentials' kinds, their overrides and their approval
+  browser session id opened in each org by the same member and key reaches only its own org's session, as a sandbox
+  session and the sandbox's network ceiling are reached from their own org only. A member who leaves keeps no reach to
+  their browser sessions (their calls are refused before the tools), which close when idle. The org export lists the
+  toolkits the caller reaches with their credentials' kinds, their overrides and their approval
   rules, never a secret, and for an org admin each org toolkit's tool grants (subjects by email or team name, as
   Models' grants; tools `all`, `read` or the named tools' upstream names; `updated_at`).

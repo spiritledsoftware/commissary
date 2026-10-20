@@ -176,7 +176,11 @@ describe("approval rules on a toolkit", () => {
 
     const listed = await send(org, "/toolkits", org.alice);
 
-    expect((listed.body as { toolkits: ReadonlyArray<ToolkitBody> }).toolkits[0]).toMatchObject({
+    expect(
+      (listed.body as { toolkits: ReadonlyArray<ToolkitBody> }).toolkits.find(
+        (each) => each.id === toolkit.id,
+      ),
+    ).toMatchObject({
       approval_rules: { writes: { approver: { kind: "team", id: team } } },
     });
 

@@ -69,11 +69,15 @@ const worker = (bindings: Record<string, string>) =>
         PLATFORM: { className: "Platform", useSQLite: true },
         // The browser sessions' objects (#213), over a fake provider's browsers (test/worker.ts).
         BROWSER_SESSIONS: { className: "BrowserSession", useSQLite: true },
+        // The sandbox toolkit's sessions (#222), which the ControlPlane reaches as on every deployment.
+        SANDBOX_SESSION: { className: "SandboxSession", useSQLite: true },
       },
       // `OAUTH_KV` everywhere: the cross-org suite (self-hosted) stores OAuth grants in it too; the OAuth server is on
       // only with the hosted bindings.
       kvNamespaces: ["CACHE", "OAUTH_KV"],
       d1Databases: ["USAGE"],
+      // Dynamic Workers, where a sandbox session's just-bash runs (ADR 0043: every deployment has them).
+      workerLoaders: { LOADER: {} },
       assets: {
         // The control panel's build (`pnpm build`), as deployed. No test reads it (a missing folder serves nothing): the
         // tests that need a panel bind their own `ASSETS`, so it is not an input of the test task (turbo.json).

@@ -14,7 +14,7 @@
  * as a row that sets nothing (a tombstone), so its revision never goes back and a write based on an earlier one is
  * refused.
  */
-import type { CredentialsAccepted, ToolClass } from "@commissary/contract/tools";
+import type { CredentialsAccepted, SandboxNetwork, ToolClass } from "@commissary/contract/tools";
 import type { Sealer } from "@commissary/state";
 import type { Schema } from "effect";
 import type { StoredApprovalRules } from "../approvals/rules.ts";
@@ -27,7 +27,8 @@ import type { StoredSecret } from "./secret.ts";
 /**
  * Every table of the Tools part (this store's, the tool grants', `grants/store.ts`, and the pending approvals',
  * `approvals/store.ts`), which the part's `wipe` drops. `built_in_toolkits` holds what an org says of a built-in toolkit
- * beyond its grants and overrides, which has no `toolkits` row: its approval rules (#201) and their revision
+ * beyond its grants and overrides, which has no `toolkits` row: its approval rules (#201), the sandbox toolkit's network
+ * ceiling (#222), and their revision; `sandbox_sessions`, the org's open sandbox sessions (`sandbox/sessions.ts`)
  * (test/control-plane.test.ts checks the list). Each but `toolkits` is keyed by `toolkit_id`, so {@link
  * ToolkitStore.deleteToolkit} deletes a toolkit's rows from all of them.
  */
@@ -42,6 +43,7 @@ export const TOOLS_TABLES = [
   "built_in_toolkits",
   "toolkit_documents",
   ...OAUTH_TABLES,
+  "sandbox_sessions",
 ] as const;
 
 /** The most bytes of an uploaded document one row holds: well within SQLite's limit on one value (2 MB). */
@@ -76,7 +78,7 @@ const SCHEMA = [
    )`,
   `CREATE TABLE IF NOT EXISTS built_in_toolkits (
      toolkit_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, approval_rules TEXT, updated_at INTEGER NOT NULL,
-     updated_by TEXT NOT NULL
+     updated_by TEXT NOT NULL, network TEXT
    )`,
   `CREATE TABLE IF NOT EXISTS toolkit_sessions (
      toolkit_id TEXT NOT NULL, owner TEXT NOT NULL, member TEXT NOT NULL, protocol_version TEXT NOT NULL,
@@ -243,6 +245,17 @@ const parseRules = (text: string | null): StoredApprovalRules | undefined =>
   // SAFETY: the column holds the JSON of the cleaned rules this store wrote.
   text === null ? undefined : (JSON.parse(text) as StoredApprovalRules);
 
+const parseNetwork = (text: string | null): SandboxNetwork | undefined =>
+  // SAFETY: the column holds the JSON of a decoded, normalized `SandboxNetwork` this store wrote.
+  text === null ? undefined : (JSON.parse(text) as SandboxNetwork);
+
+/** What an org says of a built-in toolkit beyond its grants and overrides. */
+export interface BuiltInSettings {
+  readonly approvalRules: StoredApprovalRules | undefined;
+  /** The sandbox toolkit's network ceiling; undefined: none, the default. */
+  readonly network: SandboxNetwork | undefined;
+}
+
 const toolkitOf = (row: ToolkitRow): StoredToolkit => ({
   id: row.id,
   // SAFETY: the store writes `kind` from a stored toolkit's kind.
@@ -396,6 +409,15 @@ export class ToolkitStore {
     ] as const)
       if (!credentialColumns.includes(column))
         sql.exec(`ALTER TABLE toolkit_credentials ADD COLUMN ${column} ${type}`);
+
+    // So did the sandbox toolkit's network ceiling (#222): a built-in toolkit set before has none, the default.
+    const builtInColumns = sql
+      .exec<{ name: string }>(`PRAGMA table_info(built_in_toolkits)`)
+      .toArray()
+      .map((column) => column.name);
+
+    if (!builtInColumns.includes("network"))
+      sql.exec(`ALTER TABLE built_in_toolkits ADD COLUMN network TEXT`);
   }
 
   // --- toolkits ---------------------------------------------------------------------------------------------------
@@ -485,21 +507,22 @@ export class ToolkitStore {
   }
 
   /**
-   * What the org set on the built-in toolkit `id` (#201): its approval rules and the revision and time of the last
-   * change, or undefined when it set nothing yet (the toolkit is then at its first revision).
+   * What the org set on the built-in toolkit `id` (#201, #222): its approval rules, its network ceiling (the sandbox
+   * toolkit's) and the revision and time of the last change, or undefined when it set nothing yet (the toolkit is then
+   * at its first revision).
    */
   builtInSettings(id: string):
-    | {
+    | (BuiltInSettings & {
         readonly revision: number;
-        readonly approvalRules: StoredApprovalRules | undefined;
         readonly updatedAt: number;
         readonly updatedBy: string;
-      }
+      })
     | undefined {
     const row = this.#sql
       .exec<{
         revision: number;
         approval_rules: string | null;
+        network: string | null;
         updated_at: number;
         updated_by: string;
       }>(`SELECT * FROM built_in_toolkits WHERE toolkit_id = ?`, id)
@@ -510,27 +533,30 @@ export class ToolkitStore {
       : {
           revision: row.revision,
           approvalRules: parseRules(row.approval_rules),
+          network: parseNetwork(row.network),
           updatedAt: row.updated_at,
           updatedBy: row.updated_by,
         };
   }
 
-  /** Sets the approval rules of the built-in toolkit `id`, moving its revision on from `revision`. */
+  /** Sets what the org says of the built-in toolkit `id`, moving its revision on from `revision`. */
   updateBuiltIn(
     id: string,
     revision: number,
-    rules: StoredApprovalRules | undefined,
+    settings: BuiltInSettings,
     by: string,
     now: number,
   ): void {
     this.#sql.exec(
-      `INSERT INTO built_in_toolkits (toolkit_id, revision, approval_rules, updated_at, updated_by)
-       VALUES (?, ?, ?, ?, ?)
+      `INSERT INTO built_in_toolkits (toolkit_id, revision, approval_rules, network, updated_at, updated_by)
+       VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT (toolkit_id) DO UPDATE SET revision = excluded.revision,
-         approval_rules = excluded.approval_rules, updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
+         approval_rules = excluded.approval_rules, network = excluded.network, updated_at = excluded.updated_at,
+         updated_by = excluded.updated_by`,
       id,
       revision + 1,
-      rules === undefined ? null : JSON.stringify(rules),
+      settings.approvalRules === undefined ? null : JSON.stringify(settings.approvalRules),
+      settings.network === undefined ? null : JSON.stringify(settings.network),
       now,
       by,
     );

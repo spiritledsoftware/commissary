@@ -2,7 +2,7 @@
   "name": "@commissary/tools",
   "version": "0.0.0",
   "private": true,
-  "description": "The Tools area: toolkits built from remote MCP servers and OpenAPI documents, their credentials and tool lists, the built-in browser toolkit, Commissary's MCP endpoint, its management routes, its cron task and its ControlPlane part; tested in Node.js (test/unit) and workerd",
+  "description": "The Tools area: toolkits built from remote MCP servers and OpenAPI documents, their credentials and tool lists, the built-in browser and sandbox toolkits, Commissary's MCP endpoint, its management routes, its cron task and its ControlPlane part; tested in Node.js (test/unit) and workerd",
   "license": "FSL-1.1-ALv2",
   "type": "module",
   "exports": {
@@ -16,6 +16,7 @@
     "typecheck": "tsc"
   },
   "dependencies": {
+    "@cloudflare/computer": "0.5.1",
     "@cloudflare/playwright": "1.3.6",
     "@cloudflare/workers-oauth-provider": "1.2.3",
     "@commissary/auth": "workspace:*",

@@ -11,6 +11,9 @@ declare namespace Cloudflare {
     META_MINT_URL: string;
     AUTH_INDEX_KEY: string;
     SECRETS_KEY: string;
+    /** The sandbox toolkit's sessions and the Dynamic Workers they run just-bash in (#222, `ToolsPartEnv`). */
+    SANDBOX_SESSION: DurableObjectNamespace<import("@commissary/state-worker").SandboxSession>;
+    LOADER: WorkerLoader;
   }
 }
 

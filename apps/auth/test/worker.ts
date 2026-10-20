@@ -3,4 +3,11 @@
 // Worker's own, so global `fetch` stubs reach them, with no auxiliary Worker.
 export { AuthWorker, default } from "../src/index.ts";
 
-export { ControlPlane, Platform, SessionState } from "@commissary/state-worker";
+export {
+  ControlPlane,
+  Platform,
+  SandboxEgress,
+  SandboxSession,
+  SessionState,
+  WorkspaceServiceProxy,
+} from "@commissary/state-worker";

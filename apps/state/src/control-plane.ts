@@ -3,7 +3,8 @@
  * `@commissary/state`'s org-wide base composed with the areas' parts (`composeControlPlane`; #134 "How an area's
  * ControlPlane part works", #148). Today that is the Models part, Billing's and Tools', reached as `stub.models().x(…)`,
  * `stub.billing().x(…)` and `stub.tools().x(…)`. The Tools part gets the built-in toolkits the env's bindings give (the
- * browser toolkit with a `browser` binding, #212).
+ * browser toolkit with a `browser` binding, #212; the sandbox toolkit on the `SandboxSession` objects and Dynamic
+ * Workers, which every deployment has, #222).
  */
 import { composeControlPlane } from "@commissary/state";
 import { BillingPart } from "@commissary/billing/state";

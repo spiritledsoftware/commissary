@@ -19,7 +19,14 @@ catalog:
 allowBuilds:
   esbuild: true
   workerd: true
+  # Native compressors just-bash may use in Node.js (optional); the sandbox's shell runs in a Dynamic Worker without them.
+  "@mongodb-js/zstd": false
+  node-liblzma: false
 
 # samlify (through Better Auth's SSO plugin) pulls three copies of xpath; one keeps the Worker's bundle smaller.
 overrides:
   xpath: 0.0.34
+  # The sandbox toolkit's shell (@commissary/tools, #222): `@cloudflare/computer` is a preview, pinned exactly in
+  # packages/tools, and so is the just-bash its worker-shell backend runs (the version its own tests run). An upgrade
+  # of either needs a test run (packages/tools/test/sandbox-toolkit.test.ts) first: .github/dependabot.yml groups them.
+  just-bash: 3.2.0

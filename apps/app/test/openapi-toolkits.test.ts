@@ -78,8 +78,11 @@ const REFUSED = [
   "https://169.254.169.254/latest",
 ];
 
+/** The org's own toolkits: every deployment also lists the built-in sandbox toolkit (#222). */
 const toolkitsOf = async (org: Org) =>
-  Schema.decodeUnknownSync(ToolkitsList)((await send(org, "/toolkits", org.admin)).body).toolkits;
+  Schema.decodeUnknownSync(ToolkitsList)(
+    (await send(org, "/toolkits", org.admin)).body,
+  ).toolkits.filter((toolkit) => toolkit.built_in !== true);
 
 describe("an OpenAPI toolkit", () => {
   it("is refused on save when the outbound guard refuses its document's URL or its base URL", async () => {
@@ -193,9 +196,14 @@ describe("an OpenAPI toolkit", () => {
     // The export says the toolkit is built from an uploaded document, without the document.
     const exported = await send(org, "/export", org.admin);
 
+    // Beside the built-in sandbox toolkit (#222), which every deployment has.
     expect(exported).toMatchObject({
       status: 200,
-      body: { toolkits: [{ name: "example", source: "", uploaded: true }] },
+      body: {
+        toolkits: expect.arrayContaining([
+          expect.objectContaining({ name: "example", source: "", uploaded: true }),
+        ]),
+      },
     });
     expect(JSON.stringify(exported.body)).not.toContain("Ping API");
   });

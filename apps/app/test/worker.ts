@@ -15,7 +15,14 @@ import { api } from "@commissary/api";
 import type { SignedInPerson, SignInService } from "@commissary/auth";
 import app from "../src/index.ts";
 
-export { ControlPlane, Platform, SessionState } from "@commissary/state-worker";
+export {
+  ControlPlane,
+  Platform,
+  SandboxEgress,
+  SandboxSession,
+  SessionState,
+  WorkspaceServiceProxy,
+} from "@commissary/state-worker";
 
 /** A request that carries this header goes to the API Worker's handler rather than the app Worker's. */
 export const API_WORKER_HEADER = "x-test-api-worker";

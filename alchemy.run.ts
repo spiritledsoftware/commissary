@@ -227,10 +227,11 @@ export default Alchemy.Stack(
     // dev`: `quickAction()` has no local emulation (Browser Run's docs), and its remote mode needs a Cloudflare login.
     const browserEnv = settings.browser && !dev ? { BROWSER: Cloudflare.Browser("BROWSER") } : {};
 
-    // The state Worker (apps/state, ADR 0030): defines ControlPlane, SessionState, Platform and BrowserSession, and
-    // binds only what their classes read (apps/state/src/env.d.ts). No routes, no domain, no workers.dev URL: the other
-    // Workers reach it through their Durable Object bindings. A deploy restarts the Durable Objects a Worker defines,
-    // and Alchemy uploads a Worker again only when its bundle changes, so they restart only when their own code does.
+    // The state Worker (apps/state, ADR 0030): defines ControlPlane, SessionState, Platform, BrowserSession and the
+    // sandbox toolkit's SandboxSession (#222), and binds only what their classes read (apps/state/src/env.d.ts). No
+    // routes, no domain, no workers.dev URL: the other Workers reach it through their Durable Object bindings. A deploy
+    // restarts the Durable Objects a Worker defines, and Alchemy uploads a Worker again only when its bundle changes, so
+    // they restart only when their own code does.
     //
     // The namespaces used to live in the app Worker (`Commissary`). `transferredFrom` moves each one with every stored
     // object on the first deploy of a stage that still has it there (prod, cloud, a self-hosted stage upgrading); on a
@@ -255,6 +256,11 @@ export default Alchemy.Stack(
         // with or without Browser Run: without it the toolkit is absent and no session opens, and the class never comes
         // and goes with `COMMISSARY_BROWSER`.
         BROWSER_SESSIONS: Cloudflare.DurableObject("BrowserSession"),
+        // The sandbox toolkit (ADR 0041, ADR 0043, #222), on every deployment: one object per sandbox session, reached
+        // by the ControlPlane only, and Dynamic Workers (Workers Paid), where each session's just-bash runs with no
+        // binding beyond its files and the sandbox's egress entrypoint as its only way out.
+        SANDBOX_SESSION: Cloudflare.DurableObject("SandboxSession"),
+        LOADER: Cloudflare.WorkerLoader("LOADER"),
         ...(hosted === undefined ? {} : { COMMISSARY_MODE: "cloud" }),
         ...stateSettings,
         ...secretsKeyBindings,

@@ -51,8 +51,12 @@ export default defineConfig({
           CONTROL_PLANE: { className: "ControlPlane", useSQLite: true },
           SESSION_STATE: { className: "SessionState", useSQLite: true },
           PLATFORM: { className: "Platform", useSQLite: true },
+          // The sandbox toolkit's sessions (#222), which the ControlPlane reaches as on every deployment.
+          SANDBOX_SESSION: { className: "SandboxSession", useSQLite: true },
         },
         d1Databases: ["SIGN_IN"],
+        // Dynamic Workers, where a sandbox session's just-bash runs (ADR 0043: every deployment has them).
+        workerLoaders: { LOADER: {} },
         bindings: BINDINGS,
       },
     }),
