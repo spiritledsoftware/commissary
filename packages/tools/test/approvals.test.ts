@@ -101,6 +101,7 @@ const setRules = async (
     current?.revision ?? 0,
     { approval_rules: rules },
     "test",
+    POLICY,
   );
 
   return updated.ok ? updated.value.revision : updated.error;
@@ -699,6 +700,7 @@ describe("a change of the rules", () => {
       current?.revision ?? 0,
       { price_micros: 100 },
       "test",
+      POLICY,
     );
     expect(await row(plane, deleted)).toBeDefined();
 

@@ -41,10 +41,14 @@ const send = async (
   headers: Record<string, string> = {},
 ): Promise<{ status: number; body: unknown }> => {
   const init = body === undefined ? { method } : jsonInit(method, body);
+  // The extra headers go beside the body's content type.
+  const merged = new Headers(init.headers);
+
+  for (const [name, value] of Object.entries(headers)) merged.set(name, value);
 
   return await harness.json(`/v9/management/orgs/${org.slug}${path}`, {
     ...init,
-    headers: { ...(init.headers as Record<string, string> | undefined), ...headers },
+    headers: merged,
     auth: typeof who === "string" ? who : who.auth,
   });
 };

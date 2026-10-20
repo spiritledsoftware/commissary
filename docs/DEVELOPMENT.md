@@ -196,7 +196,8 @@ may have stored its writes before, so it may run twice. Only chains are retried:
 - `packages/tools` (`@commissary/tools`): the Tools area (#196): toolkits built from remote MCP servers, their
   credentials, tool lists and prices. `toolkits` (names, the store, resolving the tools a caller sees, credential
   secrets, prices), `usage` (the usage record of a tool call),
-  `mcp` (a minimal Streamable HTTP MCP client, behind the outbound guard), `management` (its management routes,
+  `mcp` (a minimal Streamable HTTP MCP client, behind the outbound guard), `openapi` (OpenAPI documents read into tool
+  lists, and the requests their tools make), `http` (the HTTP-call path API-calling kinds share), `management` (its management routes,
   role-table entries, its section of the org export), the ControlPlane part, its cron task (refreshing tool lists) and
   its org-deletion step. Three entry points like Models': `./api` (the API Worker's: cron tasks, `ToolsEnv`),
   `./management` (the app Worker's) and `./state` (the state Worker's: `ToolsPart`); `./testing` serves fake MCP
@@ -351,8 +352,12 @@ stays with that Worker.
   held until the test ends, and the eviction never finishes. `@commissary/tools` has two projects the same way:
   `tools-unit` (`test/unit/`, Node.js) and `tools` (workerd, `packages/tools/test/worker.ts`: state's base composed
   with the Tools part only, and three more ControlPlanes whose browser toolkit runs on a fake Browser Run binding or a
-  fake second browser provider, or that gains the fake binding when a test restarts it); its MCP servers are fakes the tests serve by replacing the isolate's `fetch`, which the
-  ControlPlane in the same isolate calls (`serveFakeMcpServers`, also what the Worker's tests use through `@commissary/tools/testing`).
+  fake second browser provider, or that gains the fake binding when a test restarts it). Its upstreams are fakes the
+  tests serve by replacing the isolate's `fetch`, which the ControlPlane in the same isolate calls: one routing `fetch`
+  hands each request to the fake of its origin (`test/support/fake-fetch.ts`, `serveFakeServers`; the Worker's tests
+  install it as `serveFakeMcpServers` from `@commissary/tools/testing`), fake MCP servers (`fakeMcpServer`) and fake
+  HTTP servers for OpenAPI toolkits' documents and calls (`test/support/http-server.ts`, `fakeHttpServer`, which records
+  each request with its body).
 - **Package config.** A workerd package's `vitest.config.ts` uses `cloudflareTest` with its test Worker, the deployed
   Worker's compatibility settings and the bindings its env view names; its tsconfig adds the shared Workers runtime
   types and `@cloudflare/vitest-plugin/types`. A Node.js package's `vitest.config.ts` is

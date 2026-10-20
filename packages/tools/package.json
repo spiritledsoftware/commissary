@@ -2,7 +2,7 @@
   "name": "@commissary/tools",
   "version": "0.0.0",
   "private": true,
-  "description": "The Tools area: toolkits built from remote MCP servers, their credentials and tool lists, the built-in browser toolkit, Commissary's MCP endpoint, its management routes, its cron task and its ControlPlane part; tested in Node.js (test/unit) and workerd",
+  "description": "The Tools area: toolkits built from remote MCP servers and OpenAPI documents, their credentials and tool lists, the built-in browser toolkit, Commissary's MCP endpoint, its management routes, its cron task and its ControlPlane part; tested in Node.js (test/unit) and workerd",
   "license": "FSL-1.1-ALv2",
   "type": "module",
   "exports": {
@@ -21,11 +21,14 @@
     "@commissary/contract": "workspace:*",
     "@commissary/core": "workspace:*",
     "@commissary/state": "workspace:*",
-    "effect": "catalog:"
+    "@scalar/openapi-upgrader": "0.4.5",
+    "effect": "catalog:",
+    "js-yaml": "catalog:"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "1.4.2",
     "@effect/vitest": "catalog:",
+    "@types/js-yaml": "catalog:",
     "@types/node": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"

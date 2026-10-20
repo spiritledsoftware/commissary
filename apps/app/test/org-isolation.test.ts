@@ -753,6 +753,7 @@ const STORES: ReadonlyArray<StoreCase> = [
         added.value.revision,
         { approval_rules: { writes: {} } },
         "iso",
+        OUTBOUND,
       );
 
       if (!ruled.ok) throw new Error(ruled.message);

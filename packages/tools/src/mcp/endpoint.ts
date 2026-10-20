@@ -44,7 +44,7 @@ import {
   type RpcRequest,
   resultAnswer,
 } from "./protocol.ts";
-import { isJsonObject } from "./json.ts";
+import { isJsonObject } from "../http/shared.ts";
 
 /** The most one POST may carry: a tool call's arguments. */
 const MAX_BODY_BYTES = 4 * 1024 * 1024;

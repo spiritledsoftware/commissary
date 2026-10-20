@@ -17,7 +17,7 @@
  */
 import { Option, Schema } from "effect";
 import { decodeHeaderValue } from "./header-value.ts";
-import { isJsonObject } from "./json.ts";
+import { isJsonObject } from "../http/shared.ts";
 
 /** The stateless revision. */
 export const MODERN_VERSION = "2026-07-28";

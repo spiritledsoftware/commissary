@@ -1,4 +1,5 @@
-// The outbound guard around an HttpClient: every hop of a redirect is checked, with a small hop limit.
+// The outbound guard around an HttpClient: every hop of a redirect is checked, with a small hop limit; and a caller that
+// follows same-origin redirects only (`executeSameOriginRedirects`), so a credential never reaches another origin.
 import { describe, expect, it } from "@effect/vitest";
 import { Context, Effect, Exit, Match, Option, Stream } from "effect";
 import {
@@ -10,6 +11,7 @@ import {
 } from "effect/http";
 import {
   CurrentOutboundPolicy,
+  executeSameOriginRedirects,
   guardHttpClient,
   MAX_OUTBOUND_REDIRECTS,
   outboundPolicy,
@@ -278,6 +280,57 @@ describe("guardHttpClient", () => {
         expect(response.status).toBe(302);
         expect(sent).toHaveLength(1);
       }),
+  );
+});
+
+describe("executeSameOriginRedirects", () => {
+  it.effect("follows redirects on the request's origin and answers one to another origin", () =>
+    Effect.gen(function* () {
+      const { sent, client } = upstream((url) =>
+        url.pathname === "/a" ? redirect("/b") : redirect("https://other.example.com/c?code=1"),
+      );
+
+      const response = yield* executeSameOriginRedirects(
+        client,
+        HttpClientRequest.get("https://api.example.com/a").pipe(
+          HttpClientRequest.setHeader("x-api-key", "secret"),
+        ),
+      );
+
+      expect(response.status).toBe(302);
+      expect(response.headers["location"]).toBe("https://other.example.com/c?code=1");
+      // Each hop its own request, with the caller's manual redirects, never to the other origin.
+      expect(sent.map((request) => [request.url, request.redirect])).toEqual([
+        ["https://api.example.com/a", "manual"],
+        ["https://api.example.com/b", "manual"],
+      ]);
+    }),
+  );
+
+  it.effect("answers the redirect past the hop limit, and checks each hop", () =>
+    Effect.gen(function* () {
+      let hop = 0;
+
+      const { sent, client } = upstream(() => {
+        hop += 1;
+
+        return redirect(`/hop/${hop}`);
+      });
+
+      const response = yield* executeSameOriginRedirects(
+        client,
+        HttpClientRequest.get("https://api.example.com/start"),
+      );
+
+      expect(response.status).toBe(302);
+      expect(sent).toHaveLength(MAX_OUTBOUND_REDIRECTS + 1);
+
+      const refused = yield* Effect.exit(
+        executeSameOriginRedirects(client, HttpClientRequest.get("https://10.0.0.1/start")),
+      );
+
+      expect(refusalOf(refused)?.reason).toBe("address");
+    }),
   );
 });
 

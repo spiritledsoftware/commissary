@@ -169,11 +169,13 @@ const redirected = (
 };
 
 /**
- * Lets go of a hop's body without reading it: opening the stream in a scope and closing the scope cancels its reader,
- * so a hop that never sends its body cannot hold the request.
+ * Lets go of a response's body without reading it: opening the stream in a scope and closing the scope cancels its
+ * reader, so a hop that never sends its body cannot hold the request.
  */
-const releaseBody = (response: HttpClientResponse.HttpClientResponse) =>
-  Effect.scoped(Effect.asVoid(Stream.toPull(response.stream)));
+export const releaseResponseBody = (
+  response: HttpClientResponse.HttpClientResponse,
+): Effect.Effect<void> =>
+  Effect.scoped(Effect.asVoid(Stream.toPull(response.stream))).pipe(Effect.ignore);
 
 /**
  * `client` behind the outbound guard. A caller that asked for `redirect: "manual"` (or `"error"`) itself
@@ -219,7 +221,7 @@ export const guardHttpClient = (client: HttpClient.HttpClient): HttpClient.HttpC
 
             // A followed or refused hop's body is never read: cancel it so its connection is let go.
             if (hop >= MAX_OUTBOUND_REDIRECTS) {
-              yield* releaseBody(response);
+              yield* releaseResponseBody(response);
 
               return yield* refusedRequest(
                 request,
@@ -231,13 +233,53 @@ export const guardHttpClient = (client: HttpClient.HttpClient): HttpClient.HttpC
 
             if (next === undefined) return response;
 
-            yield* releaseBody(response);
+            yield* releaseResponseBody(response);
             request = next;
           }
         }),
       ),
     Effect.succeed,
   );
+
+/** A caller's own `redirect: "manual"`: the guard checks the request and hands any redirect back. */
+const MANUAL_REDIRECTS: globalThis.RequestInit = { redirect: "manual" };
+
+/**
+ * Executes `request` with `client` (the guard's) following only same-origin redirects, at most
+ * {@link MAX_OUTBOUND_REDIRECTS} of them: a redirect to another origin, or one past the limit, is the response. A
+ * credential the request carries (in a named header, a cookie, its query) so never reaches another origin. Each hop is
+ * its own request, which the guard checks.
+ */
+export const executeSameOriginRedirects = (
+  client: HttpClient.HttpClient,
+  request: HttpClientRequest.HttpClientRequest,
+): Effect.Effect<HttpClientResponse.HttpClientResponse, HttpClientError.HttpClientError> =>
+  Effect.gen(function* () {
+    let current = request;
+
+    for (let hop = 0; ; hop += 1) {
+      const response = yield* client
+        .execute(current)
+        .pipe(Effect.provideService(FetchHttpClient.RequestInit, MANUAL_REDIRECTS));
+
+      const location = response.headers["location"];
+
+      if (
+        !REDIRECTS.has(response.status) ||
+        location === undefined ||
+        hop >= MAX_OUTBOUND_REDIRECTS
+      )
+        return response;
+
+      const next = redirected(current, response, location);
+
+      if (next === undefined || new URL(next.url).origin !== new URL(response.request.url).origin)
+        return response;
+
+      yield* releaseResponseBody(response);
+      current = next;
+    }
+  });
 
 /** The `HttpClient` of `inner` behind the outbound guard ({@link guardHttpClient}). */
 export const guardedHttpClientLayer = (

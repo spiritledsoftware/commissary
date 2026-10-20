@@ -5,8 +5,10 @@
  *
  * Every member of the org may use them (`access-rules.ts`); the Tools part decides what the caller reaches from the
  * viewer each route hands it: an org admin manages org toolkits, a member their private ones and their private
- * credentials. A toolkit's source passes the outbound guard when it is saved (ADR 0044), and the part builds tool lists
- * with the request's guard policy. Edits of a toolkit or an override name its revision in `If-Match`.
+ * credentials. A toolkit's source, and an OpenAPI toolkit's base URL, pass the outbound guard when they are saved (ADR
+ * 0044), and the part builds tool lists with the request's guard policy. An OpenAPI toolkit's document may be uploaded
+ * instead of given by URL (#203), at most {@link MAX_DOCUMENT_BYTES}; its managers read it back. Edits of a toolkit or
+ * an override name its revision in `If-Match`.
  *
  * `GET /v9/management/tools`: the tools the caller may use, by toolkit (#200): what a key's tool scope picks from.
  *
@@ -28,9 +30,11 @@ import {
   ConnectCredential,
   CredentialSlot,
   SetToolOverride,
+  ToolkitDocument,
   UpdateToolkit,
 } from "@commissary/contract/tools";
 import {
+  boundedBodyText,
   checkOutboundUrl,
   CurrentOutboundPolicy,
   handled,
@@ -42,6 +46,7 @@ import {
 import { bodyJson } from "@commissary/state";
 import type { ToolsErrorCode, ToolsResult } from "../control-plane-part.ts";
 import { toolsControlPlane } from "../env.ts";
+import { MAX_DOCUMENT_BYTES } from "../http/call.ts";
 import { defaultToolkitName } from "../toolkits/names.ts";
 
 const BASE = "/v9/management";
@@ -74,6 +79,30 @@ const decode = <S extends Schema.Decoder<unknown>>(schema: S) =>
     ),
   );
 
+/**
+ * A body that may carry an OpenAPI document: read up to twice {@link MAX_DOCUMENT_BYTES} (a document's JSON string
+ * escapes its newlines and quotes), `413 body_too_large` above; the document itself is checked by {@link checkedDocument}.
+ */
+const decodeWithDocument = <S extends Schema.Top & { readonly DecodingServices: never }>(
+  schema: S,
+) =>
+  Effect.flatMap(boundedBodyText(2 * MAX_DOCUMENT_BYTES), (text) =>
+    Schema.decodeUnknownEffect(Schema.fromJsonString(schema))(text).pipe(
+      Effect.mapError(() => replyError(400, "invalid body")),
+    ),
+  );
+
+/** An uploaded document within {@link MAX_DOCUMENT_BYTES}; `413 body_too_large` otherwise. */
+const checkedDocument = Effect.fnUntraced(function* (document: string) {
+  if (new TextEncoder().encode(document).byteLength > MAX_DOCUMENT_BYTES)
+    return yield* replyError(413, "body_too_large", {
+      message: `the document is larger than ${MAX_DOCUMENT_BYTES} bytes`,
+      path: "document",
+    });
+
+  return document;
+});
+
 const idParam = Effect.gen(function* () {
   const { id } = yield* HttpRouter.params;
 
@@ -88,21 +117,25 @@ const slotParam = Effect.gen(function* () {
   return slot;
 });
 
-/** The source of a new toolkit as the outbound guard allows it, normalised; 422 otherwise. */
-const checkedSource = Effect.fnUntraced(function* (source: string) {
+/**
+ * A toolkit's source (`path: "source"`) or base URL (`path: "base_url"`) as the outbound guard allows it, normalised;
+ * 422 otherwise.
+ */
+const checkedSource = Effect.fnUntraced(function* (source: string, path = "source") {
   const checked = checkOutboundUrl(source.trim(), yield* CurrentOutboundPolicy);
 
-  if (Result.isFailure(checked))
-    return yield* replyError(422, checked.failure.message, { path: "source" });
+  if (Result.isFailure(checked)) return yield* replyError(422, checked.failure.message, { path });
 
   if (checked.success.username !== "" || checked.success.password !== "")
     return yield* replyError(422, "invalid", {
-      message: "a toolkit's source names no user or password: connect a credential instead",
-      path: "source",
+      message: `a toolkit's ${path === "source" ? "source" : "base URL"} names no user or password: connect a credential instead`,
+      path,
     });
 
   return checked.success;
 });
+
+const invalid = (message: string, path: string) => replyError(422, "invalid", { message, path });
 
 const list = Effect.gen(function* () {
   const viewer = yield* currentViewer;
@@ -116,8 +149,32 @@ const list = Effect.gen(function* () {
 const add = Effect.gen(function* () {
   const viewer = yield* currentViewer;
   const { principalId } = yield* AccessPrincipal;
-  const input = yield* decode(AddToolkit);
-  const source = yield* checkedSource(input.source);
+  const input = yield* decodeWithDocument(AddToolkit);
+  const kind = input.kind ?? "mcp";
+
+  if (kind === "mcp" && (input.document !== undefined || input.base_url !== undefined))
+    return yield* invalid(
+      "an MCP toolkit takes neither a document nor a base URL",
+      input.document === undefined ? "base_url" : "document",
+    );
+
+  if (kind === "mcp" && input.source === undefined)
+    return yield* invalid("an MCP toolkit names its server's URL", "source");
+
+  if (kind === "openapi" && (input.source === undefined) === (input.document === undefined))
+    return yield* invalid(
+      "an OpenAPI toolkit gives either its document's URL (source) or the document",
+      "source",
+    );
+
+  const source = input.source === undefined ? undefined : yield* checkedSource(input.source);
+
+  const baseUrl =
+    input.base_url === undefined ? undefined : yield* checkedSource(input.base_url, "base_url");
+
+  const document =
+    input.document === undefined ? undefined : yield* checkedDocument(input.document);
+
   const policy = yield* CurrentOutboundPolicy;
   // A plain member only ever adds private toolkits; an org admin chooses.
   const isPrivate = input.private === true || !viewer.admin;
@@ -126,8 +183,14 @@ const add = Effect.gen(function* () {
     stub.tools().addToolkit(
       viewer,
       {
-        source: source.toString(),
-        name: input.name ?? defaultToolkitName(source),
+        kind,
+        source: source?.toString() ?? "",
+        document,
+        baseUrl: baseUrl?.toString(),
+        // An OpenAPI toolkit's default comes from its document, which the part reads.
+        name:
+          input.name ??
+          (kind === "mcp" && source !== undefined ? defaultToolkitName(source) : undefined),
         private: isPrivate,
         accepts: input.accepts ?? (isPrivate ? "private" : "shared"),
         credential: input.credential,
@@ -147,8 +210,44 @@ const update = Effect.gen(function* () {
   const revision = yield* ifMatch;
   const input = yield* decode(UpdateToolkit);
 
+  // A base URL is checked here; `null` (clearing it) and its absence pass as they are.
+  const change =
+    input.base_url === undefined || input.base_url === null
+      ? input
+      : { ...input, base_url: (yield* checkedSource(input.base_url, "base_url")).toString() };
+
+  const policy = yield* CurrentOutboundPolicy;
+
   const result = yield* toolsControlPlane("updateToolkit", (stub) =>
-    stub.tools().updateToolkit(viewer, id, revision, input, principalId),
+    stub.tools().updateToolkit(viewer, id, revision, change, principalId, policy),
+  );
+
+  return jsonReply(200, yield* orRefuse(result));
+});
+
+const replaceDocument = Effect.gen(function* () {
+  const viewer = yield* currentViewer;
+  const { principalId } = yield* AccessPrincipal;
+  const id = yield* idParam;
+  const revision = yield* ifMatch;
+  const input = yield* decodeWithDocument(ToolkitDocument);
+  const document = yield* checkedDocument(input.document);
+
+  const policy = yield* CurrentOutboundPolicy;
+
+  const result = yield* toolsControlPlane("replaceDocument", (stub) =>
+    stub.tools().replaceDocument(viewer, id, revision, document, principalId, policy),
+  );
+
+  return jsonReply(200, yield* orRefuse(result));
+});
+
+const getDocument = Effect.gen(function* () {
+  const viewer = yield* currentViewer;
+  const id = yield* idParam;
+
+  const result = yield* toolsControlPlane("toolkitDocument", (stub) =>
+    stub.tools().toolkitDocument(viewer, id),
   );
 
   return jsonReply(200, yield* orRefuse(result));
@@ -332,6 +431,8 @@ export const ManagementRoutes = HttpRouter.addAll([
   route("DELETE", "/toolkits/:id", remove),
   route("PUT", "/toolkits/:id/credentials/:slot", connect),
   route("DELETE", "/toolkits/:id/credentials/:slot", disconnect),
+  route("PUT", "/toolkits/:id/document", replaceDocument),
+  route("GET", "/toolkits/:id/document", getDocument),
   route("POST", "/toolkits/:id/refresh", refresh),
   route("GET", "/toolkits/:id/tools", tools),
   route("PUT", "/toolkits/:id/overrides", override),

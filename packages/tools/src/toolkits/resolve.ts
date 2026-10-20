@@ -42,6 +42,8 @@ export interface ResolvedTool {
   readonly hidden: boolean;
   readonly clash: boolean;
   readonly missing: boolean;
+  /** A deprecated OpenAPI operation: hidden unless its override shows it. */
+  readonly deprecated: boolean;
 }
 
 export interface Resolution {
@@ -57,9 +59,19 @@ export interface Resolution {
 export const stableId = (toolkitId: string, upstreamName: string): string =>
   `${toolkitId}:${upstreamName}`;
 
-/** A tool's class from its source: an MCP tool reads only with `readOnlyHint: true` (ADR 0038). */
-const sourceClass = (tool: StoredTool | undefined): ToolClass =>
-  tool?.annotations?.["readOnlyHint"] === true ? "read" : "write";
+/** Methods of an OpenAPI operation that read (#203); every other one writes. */
+const READING_METHODS: ReadonlySet<string> = new Set(["GET", "HEAD"]);
+
+/**
+ * A tool's class from its source (ADR 0038): an MCP tool reads only with `readOnlyHint: true`; an OpenAPI operation
+ * reads when its method is `GET` or `HEAD`.
+ */
+const sourceClass = (tool: StoredTool | undefined): ToolClass => {
+  if (tool?.operation !== undefined)
+    return READING_METHODS.has(tool.operation.method) ? "read" : "write";
+
+  return tool?.annotations?.["readOnlyHint"] === true ? "read" : "write";
+};
 
 const resolved = (
   toolkit: Toolkit,
@@ -68,6 +80,7 @@ const resolved = (
   override: ToolOverride | undefined,
 ): ResolvedTool => {
   const full = fullToolName(toolkit.name, override?.name ?? upstreamName);
+  const deprecated = tool?.operation?.deprecated === true;
 
   return {
     toolkit,
@@ -80,9 +93,11 @@ const resolved = (
     priceMicros: override?.priceMicros ?? toolkit.priceMicros,
     shortened: full.shortened,
     renamed: override?.name !== undefined,
-    hidden: override?.hidden === true,
+    // A deprecated operation is hidden by default; an override that shows it (or hides it) decides.
+    hidden: override?.hidden === true || (deprecated && override?.shown !== true),
     clash: false,
     missing: tool === undefined,
+    deprecated,
   };
 };
 

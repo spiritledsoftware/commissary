@@ -11,7 +11,7 @@ import type { StoredApprovalRules } from "../approvals/rules.ts";
 interface ToolkitFields {
   readonly id: string;
   readonly name: string;
-  /** The MCP server's URL; a built-in toolkit's provider. */
+  /** The MCP server's URL, or the OpenAPI document's (empty for an uploaded one); a built-in toolkit's provider. */
   readonly source: string;
   /** The member of a private toolkit; undefined for an org toolkit. */
   readonly owner: string | undefined;
@@ -30,11 +30,13 @@ interface ToolkitFields {
    * apart from it (`ToolkitStore.builtInSettings`), as it has no row of its own.
    */
   readonly approvalRules: StoredApprovalRules | undefined;
+  /** An OpenAPI toolkit's base URL, which an org admin may set in place of the document's servers. */
+  readonly baseUrl: string | undefined;
 }
 
-/** A toolkit of the org's `toolkits` table: an MCP server's (ADR 0036). */
+/** A toolkit of the org's `toolkits` table: an MCP server's or an OpenAPI document's (ADR 0036, #203). */
 export interface StoredToolkit extends ToolkitFields {
-  readonly kind: "mcp";
+  readonly kind: "mcp" | "openapi";
   readonly builtIn: false;
 }
 
@@ -49,6 +51,7 @@ export interface BuiltInToolkit extends ToolkitFields {
   readonly listBuiltAt: undefined;
   readonly listError: undefined;
   readonly priceMicros: undefined;
+  readonly baseUrl: undefined;
   readonly builtIn: true;
 }
 

@@ -2,7 +2,9 @@
  * Toolkit storage in the org's ControlPlane SQLite (ADR 0036, ADR 0037): the toolkits, their credentials (secrets
  * sealed with the org's data key), their tool lists, the overrides on their tools, and the upstream sessions the MCP
  * endpoint's calls keep (ADR 0038: at most {@link SESSION_LIFETIME_MS}). The tables are {@link TOOLS_TABLES}, which
- * the part drops when the org is deleted.
+ * the part drops when the org is deleted. An OpenAPI toolkit's uploaded document (#203) is kept in chunks
+ * ({@link DOCUMENT_CHUNK_BYTES}), so a document of several MB never meets SQLite's limit on one value; one fetched from a
+ * URL is not kept, as its tool list holds what a call needs (each tool's {@link OpenApiOperation}).
  *
  * A toolkit's owner is a member id for a private toolkit and empty for an org toolkit; a credential's owner is empty
  * for the shared credential and the member's id for a private one. An upstream session is kept per credential and per
@@ -17,6 +19,7 @@ import type { Sealer } from "@commissary/state";
 import type { Schema } from "effect";
 import type { StoredApprovalRules } from "../approvals/rules.ts";
 import type { UpstreamSession, UpstreamTool } from "../mcp/client.ts";
+import type { OpenApiOperation } from "../openapi/tools.ts";
 import type { StoredToolkit } from "./toolkit.ts";
 
 /**
@@ -35,7 +38,11 @@ export const TOOLS_TABLES = [
   "tool_grants",
   "tool_approvals",
   "built_in_toolkits",
+  "toolkit_documents",
 ] as const;
+
+/** The most bytes of an uploaded document one row holds: well within SQLite's limit on one value (2 MB). */
+export const DOCUMENT_CHUNK_BYTES = 1024 * 1024;
 
 /** How long an upstream session is kept from when it was opened (ADR 0038: at most seven days, like replay state). */
 export const SESSION_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
@@ -45,7 +52,7 @@ const SCHEMA = [
      id TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL, source TEXT NOT NULL, owner TEXT NOT NULL,
      accepts TEXT NOT NULL, revision INTEGER NOT NULL, created_at INTEGER NOT NULL, created_by TEXT NOT NULL,
      updated_at INTEGER NOT NULL, updated_by TEXT NOT NULL, list_built_at INTEGER, list_error TEXT, price_micros INTEGER,
-     approval_rules TEXT
+     approval_rules TEXT, base_url TEXT
    )`,
   `CREATE TABLE IF NOT EXISTS toolkit_credentials (
      toolkit_id TEXT NOT NULL, owner TEXT NOT NULL, kind TEXT NOT NULL, param TEXT NOT NULL, secret TEXT NOT NULL,
@@ -53,12 +60,12 @@ const SCHEMA = [
    )`,
   `CREATE TABLE IF NOT EXISTS toolkit_tools (
      toolkit_id TEXT NOT NULL, upstream_name TEXT NOT NULL, description TEXT, input_schema TEXT, annotations TEXT,
-     first_seen INTEGER NOT NULL, position INTEGER NOT NULL, PRIMARY KEY (toolkit_id, upstream_name)
+     first_seen INTEGER NOT NULL, position INTEGER NOT NULL, operation TEXT, PRIMARY KEY (toolkit_id, upstream_name)
    )`,
   `CREATE TABLE IF NOT EXISTS tool_overrides (
      toolkit_id TEXT NOT NULL, upstream_name TEXT NOT NULL, hidden INTEGER NOT NULL, name TEXT, description TEXT,
      class TEXT, revision INTEGER NOT NULL, updated_at INTEGER NOT NULL, updated_by TEXT NOT NULL, price_micros INTEGER,
-     PRIMARY KEY (toolkit_id, upstream_name)
+     shown INTEGER, PRIMARY KEY (toolkit_id, upstream_name)
    )`,
   `CREATE TABLE IF NOT EXISTS built_in_toolkits (
      toolkit_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, approval_rules TEXT, updated_at INTEGER NOT NULL,
@@ -68,6 +75,20 @@ const SCHEMA = [
      toolkit_id TEXT NOT NULL, owner TEXT NOT NULL, member TEXT NOT NULL, protocol_version TEXT NOT NULL,
      session_id TEXT NOT NULL, opened_at INTEGER NOT NULL, PRIMARY KEY (toolkit_id, owner, member)
    )`,
+  `CREATE TABLE IF NOT EXISTS toolkit_documents (
+     toolkit_id TEXT NOT NULL, chunk INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (toolkit_id, chunk)
+   )`,
+];
+
+/** Columns added after their tables were first created: a table from before gets each, unset. */
+const ADDED_COLUMNS: ReadonlyArray<readonly [table: string, column: string, type: string]> = [
+  // Prices (#199): every price unset (free).
+  ["toolkits", "price_micros", "INTEGER"],
+  ["tool_overrides", "price_micros", "INTEGER"],
+  // OpenAPI toolkits (#203).
+  ["toolkits", "base_url", "TEXT"],
+  ["toolkit_tools", "operation", "TEXT"],
+  ["tool_overrides", "shown", "INTEGER"],
 ];
 
 /** A credential without its secret. */
@@ -95,7 +116,12 @@ export interface StoredTool {
   readonly firstSeen: number;
   /** Its place in the source's list. */
   readonly position: number;
+  /** An OpenAPI tool's operation: what a call needs to make its request. */
+  readonly operation: OpenApiOperation | undefined;
 }
+
+/** A tool as a build lists it: an MCP server's, or an OpenAPI document's operation with what a call needs. */
+export type ListedTool = UpstreamTool & { readonly operation?: OpenApiOperation | undefined };
 
 export interface ToolOverride {
   readonly toolkitId: string;
@@ -106,6 +132,8 @@ export interface ToolOverride {
   readonly toolClass: ToolClass | undefined;
   /** What a call of the tool costs, in micro-USD, whatever its toolkit's price (#199); undefined: the toolkit's. */
   readonly priceMicros: number | undefined;
+  /** Shows a tool its source hides by default (a deprecated OpenAPI operation, #203). */
+  readonly shown: boolean;
   readonly revision: number;
   readonly updatedAt: number;
   readonly updatedBy: string;
@@ -118,7 +146,7 @@ export interface StoredOverride extends ToolOverride {
 
 /** The SQL condition of an override that sets something (not a tombstone); the negation of `cleared` in `overrideOf`. */
 const LIVE_OVERRIDE = `(hidden = 1 OR name IS NOT NULL OR description IS NOT NULL OR class IS NOT NULL
-  OR price_micros IS NOT NULL)`;
+  OR price_micros IS NOT NULL OR shown = 1)`;
 
 interface ToolkitRow {
   [column: string]: SqlStorageValue;
@@ -137,6 +165,7 @@ interface ToolkitRow {
   list_error: string | null;
   price_micros: number | null;
   approval_rules: string | null;
+  base_url: string | null;
 }
 
 interface CredentialRow {
@@ -159,6 +188,7 @@ interface ToolRow {
   annotations: string | null;
   first_seen: number;
   position: number;
+  operation: string | null;
 }
 
 interface SessionRow {
@@ -176,6 +206,7 @@ interface OverrideRow {
   description: string | null;
   class: string | null;
   price_micros: number | null;
+  shown: number | null;
   revision: number;
   updated_at: number;
   updated_by: string;
@@ -195,10 +226,12 @@ const parseRules = (text: string | null): StoredApprovalRules | undefined =>
 
 const toolkitOf = (row: ToolkitRow): StoredToolkit => ({
   id: row.id,
-  kind: "mcp",
+  // SAFETY: the store writes `kind` from a stored toolkit's kind.
+  kind: row.kind as StoredToolkit["kind"],
   builtIn: false,
   name: row.name,
   source: row.source,
+  baseUrl: orUndefined(row.base_url),
   owner: ownerOf(row.owner),
   // SAFETY: the store writes `accepts` from a decoded `CredentialsAccepted`.
   accepts: row.accepts as CredentialsAccepted,
@@ -231,6 +264,8 @@ const toolOf = (row: ToolRow): StoredTool => ({
   annotations: parseObject(row.annotations),
   firstSeen: row.first_seen,
   position: row.position,
+  // SAFETY: the column holds the JSON of the operation this store wrote from a build.
+  operation: row.operation === null ? undefined : (JSON.parse(row.operation) as OpenApiOperation),
 });
 
 const overrideOf = (row: OverrideRow): StoredOverride => ({
@@ -242,6 +277,7 @@ const overrideOf = (row: OverrideRow): StoredOverride => ({
   // SAFETY: the store writes `class` from a decoded `ToolClass`.
   toolClass: orUndefined(row.class) as ToolClass | undefined,
   priceMicros: orUndefined(row.price_micros),
+  shown: row.shown === 1,
   revision: row.revision,
   updatedAt: row.updated_at,
   updatedBy: row.updated_by,
@@ -251,7 +287,8 @@ const overrideOf = (row: OverrideRow): StoredOverride => ({
     row.name === null &&
     row.description === null &&
     row.class === null &&
-    row.price_micros === null,
+    row.price_micros === null &&
+    row.shown !== 1,
 });
 
 /** Where a credential's secret is sealed: a value opens only where it was written. */
@@ -283,15 +320,13 @@ export class ToolkitStore {
 
     for (const statement of SCHEMA) sql.exec(statement);
 
-    // Prices (#199) came after the first toolkits: a table from before gets the column, every price unset (free).
-    for (const table of ["toolkits", "tool_overrides"]) {
+    for (const [table, column, type] of ADDED_COLUMNS) {
       const columns = sql
         .exec<{ name: string }>(`PRAGMA table_info(${table})`)
         .toArray()
-        .map((column) => column.name);
+        .map((existing) => existing.name);
 
-      if (!columns.includes("price_micros"))
-        sql.exec(`ALTER TABLE ${table} ADD COLUMN price_micros INTEGER`);
+      if (!columns.includes(column)) sql.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
     }
 
     // Approval rules (#201) came later too: a toolkit from before has none, so no call of it waits.
@@ -328,8 +363,8 @@ export class ToolkitStore {
   ): void {
     this.#sql.exec(
       `INSERT INTO toolkits (id, kind, name, source, owner, accepts, revision, created_at, created_by, updated_at,
-         updated_by, list_built_at, list_error)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)`,
+         updated_by, list_built_at, list_error, base_url)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)`,
       toolkit.id,
       toolkit.kind,
       toolkit.name,
@@ -341,10 +376,13 @@ export class ToolkitStore {
       toolkit.createdBy,
       toolkit.updatedAt,
       toolkit.updatedBy,
+      toolkit.baseUrl ?? null,
     );
   }
 
-  /** Renames a toolkit, changes what it accepts, its price or its approval rules, moving its revision on. */
+  /**
+   * Renames a toolkit, changes what it accepts, its price, its approval rules or its base URL, moving its revision on.
+   */
   updateToolkit(
     id: string,
     change: {
@@ -352,18 +390,20 @@ export class ToolkitStore {
       readonly accepts: CredentialsAccepted;
       readonly priceMicros: number | undefined;
       readonly approvalRules: StoredApprovalRules | undefined;
+      readonly baseUrl: string | undefined;
     },
     by: string,
     now: number,
   ): void {
     this.#sql.exec(
-      `UPDATE toolkits SET name = ?, accepts = ?, price_micros = ?, approval_rules = ?, revision = revision + 1,
-         updated_at = ?, updated_by = ?
+      `UPDATE toolkits SET name = ?, accepts = ?, price_micros = ?, approval_rules = ?, base_url = ?,
+         revision = revision + 1, updated_at = ?, updated_by = ?
        WHERE id = ?`,
       change.name,
       change.accepts,
       change.priceMicros ?? null,
       change.approvalRules === undefined ? null : JSON.stringify(change.approvalRules),
+      change.baseUrl ?? null,
       now,
       by,
       id,
@@ -437,21 +477,42 @@ export class ToolkitStore {
     );
   }
 
-  /** Records a build of the tool list: when it succeeded, or why it failed (the last good list stays). */
+  /**
+   * Records a build of the tool list: when it succeeded, with what keeps some of its tools from being called as its
+   * error (`warning`), or why it failed (the last good list stays).
+   */
   setListStatus(
     id: string,
-    outcome: { readonly builtAt: number } | { readonly error: string },
+    outcome:
+      | { readonly builtAt: number; readonly warning?: string | undefined }
+      | { readonly error: string },
   ): void {
     if ("builtAt" in outcome)
       this.#sql.exec(
-        `UPDATE toolkits SET list_built_at = ?, list_error = NULL WHERE id = ?`,
+        `UPDATE toolkits SET list_built_at = ?, list_error = ? WHERE id = ?`,
         outcome.builtAt,
+        outcome.warning ?? null,
         id,
       );
-    else this.#sql.exec(`UPDATE toolkits SET list_error = ? WHERE id = ?`, outcome.error, id);
+    else this.setListError(id, outcome.error);
   }
 
-  /** Deletes a toolkit with its credentials, tool list, overrides, sessions and tool grants. */
+  /** Sets the tool list's error (undefined clears it), its tools kept as they are. */
+  setListError(id: string, error: string | undefined): void {
+    this.#sql.exec(`UPDATE toolkits SET list_error = ? WHERE id = ?`, error ?? null, id);
+  }
+
+  /** Moves a toolkit's revision on: its uploaded document was replaced. */
+  touchToolkit(id: string, by: string, now: number): void {
+    this.#sql.exec(
+      `UPDATE toolkits SET revision = revision + 1, updated_at = ?, updated_by = ? WHERE id = ?`,
+      now,
+      by,
+      id,
+    );
+  }
+
+  /** Deletes a toolkit with its credentials, tool list, overrides, sessions, tool grants and document. */
   deleteToolkit(id: string): void {
     this.#transaction(() => {
       for (const table of TOOLS_TABLES)
@@ -656,7 +717,7 @@ export class ToolkitStore {
    * one is seen in this build (after every tool stored), and one the source no longer lists drops out. Of two tools
    * with one upstream name the first is kept.
    */
-  replaceTools(toolkitId: string, listed: ReadonlyArray<UpstreamTool>): void {
+  replaceTools(toolkitId: string, listed: ReadonlyArray<ListedTool>): void {
     this.#transaction(() => {
       const seen = new Map(
         this.tools(toolkitId).map((tool) => [tool.upstreamName, tool.firstSeen]),
@@ -676,8 +737,8 @@ export class ToolkitStore {
 
         this.#sql.exec(
           `INSERT INTO toolkit_tools
-             (toolkit_id, upstream_name, description, input_schema, annotations, first_seen, position)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+             (toolkit_id, upstream_name, description, input_schema, annotations, first_seen, position, operation)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
           toolkitId,
           tool.name,
           tool.description ?? null,
@@ -685,6 +746,7 @@ export class ToolkitStore {
           tool.annotations === undefined ? null : JSON.stringify(tool.annotations),
           seen.get(tool.name) ?? build,
           position,
+          tool.operation === undefined ? null : JSON.stringify(tool.operation),
         );
       }
     });
@@ -729,6 +791,7 @@ export class ToolkitStore {
           readonly description: string | undefined;
           readonly toolClass: ToolClass | undefined;
           readonly priceMicros: number | undefined;
+          readonly shown: boolean;
         }
       | undefined,
     revision: number,
@@ -737,8 +800,9 @@ export class ToolkitStore {
   ): void {
     this.#sql.exec(
       `INSERT OR REPLACE INTO tool_overrides
-         (toolkit_id, upstream_name, hidden, name, description, class, price_micros, revision, updated_at, updated_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (toolkit_id, upstream_name, hidden, name, description, class, price_micros, shown, revision, updated_at,
+          updated_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       toolkitId,
       upstreamName,
       value?.hidden === true ? 1 : 0,
@@ -746,10 +810,55 @@ export class ToolkitStore {
       value?.description ?? null,
       value?.toolClass ?? null,
       value?.priceMicros ?? null,
+      value?.shown === true ? 1 : null,
       revision,
       now,
       by,
     );
+  }
+
+  // --- uploaded documents -----------------------------------------------------------------------------------------
+
+  /** Keeps `text` as the toolkit's uploaded document, in place of the one before, in chunks of UTF-8 bytes. */
+  putDocument(toolkitId: string, text: string): void {
+    const bytes = new TextEncoder().encode(text);
+
+    this.#transaction(() => {
+      this.#sql.exec(`DELETE FROM toolkit_documents WHERE toolkit_id = ?`, toolkitId);
+
+      for (
+        let start = 0, chunk = 0;
+        start < bytes.byteLength;
+        start += DOCUMENT_CHUNK_BYTES, chunk += 1
+      )
+        this.#sql.exec(
+          `INSERT INTO toolkit_documents (toolkit_id, chunk, data) VALUES (?, ?, ?)`,
+          toolkitId,
+          chunk,
+          bytes.slice(start, start + DOCUMENT_CHUNK_BYTES).buffer,
+        );
+    });
+  }
+
+  /** The toolkit's uploaded document, if it has one. */
+  document(toolkitId: string): string | undefined {
+    const chunks = this.#sql
+      .exec<{ data: ArrayBuffer }>(
+        `SELECT data FROM toolkit_documents WHERE toolkit_id = ? ORDER BY chunk`,
+        toolkitId,
+      )
+      .toArray();
+
+    if (chunks.length === 0) return undefined;
+    const bytes = new Uint8Array(chunks.reduce((total, { data }) => total + data.byteLength, 0));
+    let offset = 0;
+
+    for (const { data } of chunks) {
+      bytes.set(new Uint8Array(data), offset);
+      offset += data.byteLength;
+    }
+
+    return new TextDecoder().decode(bytes);
   }
 
   // --- members ----------------------------------------------------------------------------------------------------

@@ -32,7 +32,7 @@ import {
 import { OUTBOUND_REFUSED_MESSAGE, outboundRefusalOf } from "@commissary/core";
 import type { ToolkitSecret } from "@commissary/contract/tools";
 import { encodeHeaderValue } from "./header-value.ts";
-import { isJsonObject } from "./json.ts";
+import { isJsonObject } from "../http/shared.ts";
 
 /** The 2025 revision the handshake asks for; the server may answer an older one. */
 const LEGACY_PROTOCOL_VERSION = "2025-11-25";

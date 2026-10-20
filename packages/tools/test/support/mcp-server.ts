@@ -1,9 +1,12 @@
-// A fake remote MCP server (Streamable HTTP) served in workerd: the test replaces the isolate's `fetch` with one that
-// routes each request to the fake of its origin. The ControlPlane runs in the test's isolate, so its builds and calls
-// reach the fakes. A fake speaks the 2025 handshake (a session after `initialize`, which it may forget) or,
-// `stateless`, the 2026-07-28 revision only; it answers JSON or SSE, pages its tool list, answers `tools/call` with
-// its `call` handler, and refuses requests its `authorized` check refuses.
-import { afterAll, beforeAll } from "vitest";
+// A fake remote MCP server (Streamable HTTP) served in workerd through the routing `fetch` of `fake-fetch.ts`
+// (`serveFakeMcpServers` installs it, for the fake HTTP servers of `http-server.ts` too). A fake speaks the 2025
+// handshake (a session after `initialize`, which it may forget) or, `stateless`, the 2026-07-28 revision only; it
+// answers JSON or SSE, pages its tool list, answers `tools/call` with its `call` handler, and refuses requests its
+// `authorized` check refuses.
+import { routeFakeServer } from "./fake-fetch.ts";
+
+/** Installs the routing `fetch` for the file's tests, which serves every fake. */
+export { serveFakeServers as serveFakeMcpServers } from "./fake-fetch.ts";
 
 export interface FakeTool {
   readonly name: string;
@@ -67,28 +70,6 @@ interface RpcResult {
 const rpcError = (id: RequestId, code: number, message: string) =>
   Response.json({ jsonrpc: "2.0", id, error: { code, message } });
 
-const servers = new Map<string, (request: Request) => Promise<Response>>();
-
-const realFetch = globalThis.fetch;
-
-/** Installs the routing `fetch` for the file's tests (FetchHttpClient resolves `globalThis.fetch` once). */
-export const serveFakeMcpServers = (): void => {
-  beforeAll(() => {
-    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
-      const request = input instanceof Request ? input : new Request(input, init);
-      const handle = servers.get(new URL(request.url).origin);
-
-      return handle === undefined
-        ? new Response("no such server", { status: 599 })
-        : await handle(request);
-    };
-  });
-
-  afterAll(() => {
-    globalThis.fetch = realFetch;
-  });
-};
-
 /** A fake MCP server at `url` (a unique origin per test keeps tests apart). */
 export const fakeMcpServer = (url: string, options: FakeMcpOptions = {}): FakeMcpServer => {
   const sessions = new Set<string>();
@@ -112,7 +93,7 @@ export const fakeMcpServer = (url: string, options: FakeMcpOptions = {}): FakeMc
       : new Response(message, { headers: { "content-type": "application/json", ...headers } });
   };
 
-  servers.set(new URL(url).origin, async (request) => {
+  routeFakeServer(new URL(url).origin, async (request) => {
     const body =
       request.method === "POST"
         ? await request.json<{
