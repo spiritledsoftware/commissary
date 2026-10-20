@@ -200,6 +200,9 @@ importers:
       '@commissary/billing':
         specifier: workspace:*
         version: link:packages/billing
+      '@commissary/core':
+        specifier: workspace:*
+        version: link:packages/core
       '@commissary/models':
         specifier: workspace:*
         version: link:packages/models
@@ -764,6 +767,9 @@ importers:
       js-yaml:
         specifier: 'catalog:'
         version: 4.3.2
+      just-bash:
+        specifier: 3.2.0
+        version: 3.2.0(supports-color@10.2.2)
     devDependencies:
       '@cloudflare/vitest-plugin':
         specifier: 1.4.2

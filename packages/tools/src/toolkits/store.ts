@@ -22,6 +22,7 @@ import type {
   SandboxNetwork,
   ToolClass,
 } from "@commissary/contract/tools";
+import { NO_NETWORK, type SandboxAllowance } from "../sandbox/network.ts";
 import type { Sealer } from "@commissary/state";
 import type { Schema } from "effect";
 import type { StoredApprovalRules } from "../approvals/rules.ts";
@@ -89,7 +90,7 @@ const SCHEMA = [
    )`,
   `CREATE TABLE IF NOT EXISTS built_in_toolkits (
      toolkit_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, approval_rules TEXT, updated_at INTEGER NOT NULL,
-     updated_by TEXT NOT NULL, network TEXT
+     updated_by TEXT NOT NULL, network TEXT, computer INTEGER
    )`,
   `CREATE TABLE IF NOT EXISTS toolkit_sessions (
      toolkit_id TEXT NOT NULL, owner TEXT NOT NULL, member TEXT NOT NULL, protocol_version TEXT NOT NULL,
@@ -288,8 +289,8 @@ const parseNetwork = (text: string | null): SandboxNetwork | undefined =>
 /** What an org says of a built-in toolkit beyond its grants and overrides. */
 export interface BuiltInSettings {
   readonly approvalRules: StoredApprovalRules | undefined;
-  /** The sandbox toolkit's network ceiling; undefined: none, the default. */
-  readonly network: SandboxNetwork | undefined;
+  /** The sandbox toolkit's ceiling (its network, #222, and the computer, #223); undefined: none, the default. */
+  readonly ceiling: SandboxAllowance | undefined;
 }
 
 const toolkitOf = (row: ToolkitRow): StoredToolkit => ({
@@ -468,6 +469,10 @@ export class ToolkitStore {
 
     if (!builtInColumns.includes("network"))
       sql.exec(`ALTER TABLE built_in_toolkits ADD COLUMN network TEXT`);
+
+    // And whether it allows the computer (#223): a sandbox toolkit set before does not, the default.
+    if (!builtInColumns.includes("computer"))
+      sql.exec(`ALTER TABLE built_in_toolkits ADD COLUMN computer INTEGER`);
   }
 
   // --- toolkits ---------------------------------------------------------------------------------------------------
@@ -562,8 +567,8 @@ export class ToolkitStore {
   }
 
   /**
-   * What the org set on the built-in toolkit `id` (#201, #222): its approval rules, its network ceiling (the sandbox
-   * toolkit's) and the revision and time of the last change, or undefined when it set nothing yet (the toolkit is then
+   * What the org set on the built-in toolkit `id` (#201, #222, #223): its approval rules, its network ceiling and
+   * whether it allows the computer (the sandbox toolkit's) and the revision and time of the last change, or undefined when it set nothing yet (the toolkit is then
    * at its first revision).
    */
   builtInSettings(id: string):
@@ -578,6 +583,7 @@ export class ToolkitStore {
         revision: number;
         approval_rules: string | null;
         network: string | null;
+        computer: number | null;
         updated_at: number;
         updated_by: string;
       }>(`SELECT * FROM built_in_toolkits WHERE toolkit_id = ?`, id)
@@ -588,7 +594,11 @@ export class ToolkitStore {
       : {
           revision: row.revision,
           approvalRules: parseRules(row.approval_rules),
-          network: parseNetwork(row.network),
+          // A ceiling set before the computer (#223) has no computer column yet: it does not allow it.
+          ceiling:
+            row.network === null && row.computer === null
+              ? undefined
+              : { network: parseNetwork(row.network) ?? NO_NETWORK, computer: row.computer === 1 },
           updatedAt: row.updated_at,
           updatedBy: row.updated_by,
         };
@@ -603,15 +613,16 @@ export class ToolkitStore {
     now: number,
   ): void {
     this.#sql.exec(
-      `INSERT INTO built_in_toolkits (toolkit_id, revision, approval_rules, network, updated_at, updated_by)
-       VALUES (?, ?, ?, ?, ?, ?)
+      `INSERT INTO built_in_toolkits (toolkit_id, revision, approval_rules, network, computer, updated_at, updated_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (toolkit_id) DO UPDATE SET revision = excluded.revision,
-         approval_rules = excluded.approval_rules, network = excluded.network, updated_at = excluded.updated_at,
-         updated_by = excluded.updated_by`,
+         approval_rules = excluded.approval_rules, network = excluded.network, computer = excluded.computer,
+         updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
       id,
       revision + 1,
       settings.approvalRules === undefined ? null : JSON.stringify(settings.approvalRules),
-      settings.network === undefined ? null : JSON.stringify(settings.network),
+      settings.ceiling === undefined ? null : JSON.stringify(settings.ceiling.network),
+      settings.ceiling === undefined ? null : Number(settings.ceiling.computer),
       now,
       by,
     );

@@ -4,11 +4,8 @@
  * them apart: what only a stored toolkit has (a source to build its list from, a credential to connect, a row to edit
  * or remove) is reached through the {@link StoredToolkit} the part's resolver answers.
  */
-import type {
-  CredentialSettings,
-  CredentialsAccepted,
-  SandboxNetwork,
-} from "@commissary/contract/tools";
+import type { CredentialSettings, CredentialsAccepted } from "@commissary/contract/tools";
+import type { SandboxAllowance } from "../sandbox/network.ts";
 import type { StoredApprovalRules } from "../approvals/rules.ts";
 
 /** What every toolkit has, stored or built in. */
@@ -71,10 +68,11 @@ export interface BuiltInToolkit extends ToolkitFields {
   readonly baseUrl: undefined;
   readonly builtIn: true;
   /**
-   * The sandbox toolkit's (#222): the widest network a session may ask for, as the org set it (stored apart, as its
-   * approval rules are); undefined: none, the default. The browser toolkit has none.
+   * The sandbox toolkit's (#222, #223): the most a session may ask for, its network and the computer, as the org set it
+   * (stored apart, as its approval rules are); undefined: no network and no computer, the default. The browser toolkit
+   * has none.
    */
-  readonly network: SandboxNetwork | undefined;
+  readonly ceiling: SandboxAllowance | undefined;
 }
 
 export type Toolkit = StoredToolkit | BuiltInToolkit;

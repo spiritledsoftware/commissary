@@ -6,7 +6,8 @@
   "license": "FSL-1.1-ALv2",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./computer": "./src/computer.ts"
   },
   "scripts": {
     "test": "vitest run",

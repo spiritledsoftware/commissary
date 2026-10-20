@@ -5,7 +5,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { ProviderKeysList } from "@commissary/contract/provider-keys";
 import type { RoutingModels } from "@commissary/contract/routing";
 import type { SettingsView } from "@commissary/contract/settings";
-import { GLOBAL_ORG, OrgId } from "@commissary/core";
+import { COMPUTER_MARKER, GLOBAL_ORG, OrgId } from "@commissary/core";
 import {
   claudeFile,
   controlPlane,
@@ -428,6 +428,18 @@ describe("GET /me", () => {
       expect(body["deployment"]).toEqual({ ...SELF_HOSTED, browser: true });
     } finally {
       await withBrowser.dispose();
+    }
+  });
+
+  it("reports the computer when the deploy attached it, from the marker it binds beside it (#223)", async () => {
+    const withComputer = makeHarness(undefined, { ...registry.bindings, ...COMPUTER_MARKER });
+
+    try {
+      const body = (await withComputer.json("/v9/management/me")).body as Record<string, unknown>;
+
+      expect(body["deployment"]).toEqual({ ...SELF_HOSTED, computer: true });
+    } finally {
+      await withComputer.dispose();
     }
   });
 

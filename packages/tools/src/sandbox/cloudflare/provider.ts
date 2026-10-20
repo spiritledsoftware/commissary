@@ -47,9 +47,13 @@ const caller = (owner: SandboxOwner, now: number): SessionCaller => ({
   now,
 });
 
-/** Cloudflare's sandbox over `namespace`, the state Worker's `SANDBOX_SESSION`. */
+/**
+ * Cloudflare's sandbox over `namespace`, the state Worker's `SANDBOX_SESSION`; `computer`: whether the deployment
+ * attached the computer's container to its class (#223, ADR 0043).
+ */
 export const cloudflareSandbox = (
   namespace: DurableObjectNamespace<SandboxSession>,
+  { computer }: { readonly computer: boolean },
 ): SandboxProvider => {
   /** The session `id`'s object in `owner`'s org, or `unknown_session` for an id no session could have. */
   const object = <A>(
@@ -63,12 +67,13 @@ export const cloudflareSandbox = (
 
   return {
     id: CLOUDFLARE_SANDBOX,
-    open: (owner, { network, policy, now }) => {
+    computer,
+    open: (owner, { network, computer: asked, policy, now }) => {
       const id = newSessionId();
 
-      return object(owner, id, (stub) => stub.open(caller(owner, now), network, policy)).pipe(
-        Effect.as(id),
-      );
+      return object(owner, id, (stub) =>
+        stub.open(caller(owner, now), { network, computer: asked && computer }, policy),
+      ).pipe(Effect.as(id));
     },
     run: (owner, id, { command, timeoutMs, now }) =>
       object<CommandResult>(owner, id, (stub) => stub.run(caller(owner, now), command, timeoutMs)),

@@ -29,7 +29,7 @@ caches each task: run again with no change, a task replays its logs (and `build`
 | `pnpm build`                        | Build the control panel (`apps/web`) into `apps/web/dist/` (the Worker's assets, served at `/`)                                                                                                                                                                             |
 | `pnpm --filter @commissary/web dev` | Vite dev server for the panel on :5173 with hot reload, forwarding `/v9` to `pnpm dev` (`COMMISSARY_DEV_URL`, default :1337) and `/api` to the auth Worker (`COMMISSARY_AUTH_DEV_URL`, default :1340)                                                                       |
 | `pnpm typecheck`                    | `tsc` over every program: each package's `typecheck` (Worker, panel, packages) and the root's deploy code (`typecheck:root`, `tsconfig.infra.json`)                                                                                                                         |
-| `pnpm lint`                         | `lint:root`: `oxlint` over the whole repository (type-aware, with type checking, Effect and anti-slop rules) + `oxfmt --check`                                                                                                                                              |
+| `pnpm lint`                         | `lint:root`: `oxlint` over the whole repository (type-aware, with type checking, Effect and anti-slop rules) + `oxfmt --check` + `tools/check-computerd.sh`                                                                                                                 |
 | `pnpm format`                       | `oxfmt`                                                                                                                                                                                                                                                                     |
 | `pnpm test`                         | Each package's `vitest run`: the Worker's inside the Workers runtime (`@cloudflare/vitest-plugin`), the panel's and the packages' in Node.js; arguments go to every run (`pnpm test --shard=1/3`)                                                                           |
 | `pnpm smoke`                        | Builds the panel, boots `alchemy dev` with local state, waits for the Workers' ready lines, checks a few routes of each and an API key's journey across them, stops it (bundle + startup check); `COMMISSARY_MODE=cloud` runs Commissary Cloud with the auth Worker instead |
@@ -287,7 +287,7 @@ the classes in its test entry), `apps/web` imports only
 are pinned once in the `catalog:` of `pnpm-workspace.yaml`.
 
 `turbo.json` declares the tasks: `typecheck`, `test` and `build` run each package's script of that name, and the root
-adds `typecheck:root` (the deploy code) and `lint:root` (one `oxlint`/`oxfmt` run over the repository). The packages
+adds `typecheck:root` (the deploy code) and `lint:root` (one `oxlint`/`oxfmt` run over the repository, and the computerd version check). The packages
 depend on each other's sources, not on build output, so every package task depends on `transit`, a task with no script whose
 hash covers a package's files and those of its dependencies (Turborepo's transit-node pattern): a change in
 `packages/contract` re-runs the panel's, auth's, state's, Tools' and the Worker's tasks, one in `packages/json` re-runs translation's and the
@@ -486,7 +486,8 @@ permissions they need, and deploy jobs use no dependency cache.
 
 ## Lint and format
 
-`pnpm lint` runs oxlint and `oxfmt --check`. oxlint (`.oxlintrc.json`) is type-aware (`options.typeAware`, via
+`pnpm lint` runs oxlint, `oxfmt --check` and `tools/check-computerd.sh` (the computer image's computerd and
+`@cloudflare/computer` name one version, ADR 0041). oxlint (`.oxlintrc.json`) is type-aware (`options.typeAware`, via
 `oxlint-tsgolint`) and also reports TypeScript errors (`options.typeCheck`); on top of its own rules it runs:
 
 - **Effect tsgo** (`@effect/tsgo`, recommended preset): Effect-specific diagnostics. The `prepare` script

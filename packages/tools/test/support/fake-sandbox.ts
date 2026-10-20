@@ -37,6 +37,8 @@ export const fakeSandboxProvider = (): SandboxProvider => {
 
   return {
     id: FAKE_SANDBOX,
+    // It runs every command on its own machine: it has no computer to fall back to (#223).
+    computer: false,
     open: (owner) =>
       Effect.sync(() => {
         next += 1;

@@ -17,6 +17,22 @@ export type { SandboxNetwork };
 export const NO_NETWORK: SandboxNetwork = { kind: "none" };
 
 /**
+ * What a sandbox session may have (#222, #223): its network and whether it may use the computer. The sandbox toolkit's
+ * is the org's ceiling, set by its admins; a session asks for one within it when it opens, and keeps it.
+ */
+export interface SandboxAllowance {
+  readonly network: SandboxNetwork;
+  /**
+   * Whether it may use the computer (ADR 0041): a provider with one runs there a command its own shell cannot run at
+   * all. Never on a deployment without the computer.
+   */
+  readonly computer: boolean;
+}
+
+/** What a sandbox has unless an org admin and its session ask for more: no network and no computer. */
+export const NO_ALLOWANCE: SandboxAllowance = { network: NO_NETWORK, computer: false };
+
+/**
  * The hosts of each preset. `package_registries`: npm, PyPI, GitHub (its API, its downloads and release assets), and
  * mise's download hosts (its versions index and the runtimes it installs most: Node.js, Python's builds, Go), for the
  * computer's mise (#223).

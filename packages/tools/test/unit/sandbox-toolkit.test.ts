@@ -35,7 +35,7 @@ const IGNORED: SandboxSessionLog = { opened: () => {}, used: () => {}, ended: ()
 const CALL = {
   owner: { org: "org-a", principal: "user:alice@example.com" },
   sessions: IGNORED,
-  ceiling: NONE,
+  ceiling: { network: NONE, computer: false },
   policy: POLICY,
   now: 0,
 };
@@ -332,6 +332,112 @@ describe("the sandbox toolkit's tools", () => {
       ).toBe("Offset 4000 is beyond end of file (3000 lines total)");
     }),
   );
+});
+
+describe("the computer (#223)", () => {
+  /** A provider with a computer, which records what each session opened with. */
+  const withComputer = () => {
+    const opened: Array<boolean> = [];
+    const fake = fakeSandboxProvider();
+
+    const provider: SandboxProvider = {
+      ...fake,
+      computer: true,
+      open: (owner, options) => {
+        opened.push(options.computer);
+
+        return fake.open(owner, options);
+      },
+    };
+
+    return { opened, provider };
+  };
+
+  it("is off unless a session asks for it, and then only within the org's ceiling", () =>
+    Effect.gen(function* () {
+      const { opened, provider } = withComputer();
+
+      const plain = yield* callSandboxTool(
+        provider,
+        { ...CALL, ceiling: { network: NONE, computer: true } },
+        "open",
+        {},
+      );
+
+      expect(plain["structuredContent"]).toMatchObject({ computer: false });
+      expect(textOf(plain)).toContain("the computer off");
+
+      const refused = yield* callSandboxTool(provider, CALL, "open", { computer: true });
+
+      expect([refused["isError"], textOf(refused)]).toEqual([
+        true,
+        "The org does not allow the computer: a sandbox runs every command with just-bash. An org admin may allow it on the sandbox toolkit.",
+      ]);
+
+      const allowed = yield* callSandboxTool(
+        provider,
+        { ...CALL, ceiling: { network: NONE, computer: true } },
+        "open",
+        {
+          computer: true,
+        },
+      );
+
+      expect(allowed["structuredContent"]).toMatchObject({ computer: true });
+      expect(textOf(allowed)).toContain("the computer allowed");
+      expect(opened).toEqual([false, true]);
+    }).pipe(Effect.runPromise));
+
+  it("cannot be turned on where the provider has none, and the toolkit says so", () =>
+    Effect.gen(function* () {
+      const result = yield* callSandboxTool(
+        fakeSandboxProvider(),
+        { ...CALL, ceiling: { network: NONE, computer: true } },
+        "open",
+        { computer: true },
+      );
+
+      expect([result["isError"], textOf(result)]).toEqual([
+        true,
+        'This deployment has no computer, so a sandbox runs every command with just-bash. Its operator can add one (docs/DEPLOY.md, "Optional pieces").',
+      ]);
+    }).pipe(Effect.runPromise));
+
+  it("tells the model the provider's note after a command's output", () =>
+    Effect.gen(function* () {
+      const note = "just-bash could not run this command, and this session's computer is off.";
+
+      const result = yield* callSandboxTool(
+        running({
+          exitCode: 127,
+          stdout: { text: "" },
+          stderr: { text: "bash: node: command not found\n" },
+          note,
+        }),
+        CALL,
+        "bash",
+        { session: "fake_1", command: "node --version" },
+      );
+
+      expect(result["isError"]).toBe(true);
+      expect(textOf(result).startsWith("stderr:\nbash: node: command not found")).toBe(true);
+      expect(textOf(result).endsWith(`Command exited with code 127\n\n${note}`)).toBe(true);
+      expect(result["structuredContent"]).toMatchObject({ exit_code: 127, note });
+    }).pipe(Effect.runPromise));
+
+  it("may download mise's tools under the package registries preset", () => {
+    const registries = hosts([], true);
+
+    for (const url of [
+      "https://mise.jdx.dev/install.sh",
+      "https://mise-versions.jdx.dev/node",
+      "https://nodejs.org/dist/v22.11.0/node-v22.11.0-linux-x64.tar.xz",
+      "https://github.com/astral-sh/python-build-standalone/releases/download/x/cpython.tar.gz",
+      "https://release-assets.githubusercontent.com/github-production-release-asset/1",
+      "https://objects.githubusercontent.com/github-production-release-asset-2e65be/1",
+    ])
+      expect([url, egressRefusal(url, registries, POLICY)]).toEqual([url, undefined]);
+  });
 });
 
 describe("an edit", () => {

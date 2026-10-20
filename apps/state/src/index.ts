@@ -2,9 +2,10 @@
  * The state Worker (ADR 0030, #128): it defines the Durable Objects `ControlPlane`, `SessionState` and `Platform`, and
  * the other Workers bind them by script name (alchemy.run.ts); and `BrowserSession`, one per browser session of the
  * browser toolkit (#213), which only its own ControlPlane reaches. It also defines the sandbox toolkit's
- * `SandboxSession` objects (#222), which only its ControlPlane reaches, and exports the two entrypoints their Dynamic
- * Workers reach over `ctx.exports`: `SandboxEgress`, the sandbox's one egress point, and `WorkspaceServiceProxy`, their
- * files. It has no routes, no domain and no workers.dev URL.
+ * `SandboxSession` objects (#222), which only its ControlPlane reaches, and exports the entrypoints their Dynamic
+ * Workers and computers reach over `ctx.exports`: `SandboxEgress`, the sandbox's one egress point,
+ * `WorkspaceServiceProxy`, their files, and `WorkspaceProxy`, the computer's way back to its session (#223). It has
+ * no routes, no domain and no workers.dev URL.
  * Deploying a Worker restarts the Durable Objects it defines; this one changes only when their code does, so a client
  * API or panel change no longer restarts them.
  *
@@ -21,6 +22,7 @@ export {
   BrowserSession,
   SandboxEgress,
   SandboxSession,
+  WorkspaceProxy,
   WorkspaceServiceProxy,
 } from "@commissary/tools/state";
 

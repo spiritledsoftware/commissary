@@ -24,6 +24,10 @@ const SELF_HOSTED_BINDINGS = {
   // secrets/).
   SECRETS_KEY: "commissary-test-secrets-key-0123456789abcdef0123456789abcdef012345",
   SECRETS_KEY_PREVIOUS: "commissary-test-previous-secrets-key-0123456789abcdef012345678901",
+  // The sandbox's computer (#223): off, as on a deployment without its container (`COMMISSARY_COMPUTER=off`); the test
+  // that needs it on passes the marker (`COMPUTER_MARKER`). The state Worker's session objects read the size.
+  COMPUTER: "off",
+  COMPUTER_INSTANCE: "standard-1",
 };
 
 /**

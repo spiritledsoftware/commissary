@@ -21,6 +21,7 @@ import { BUNDLE_ALIASES } from "./infra/bundle.ts";
 import { previewAppName, previewOrigin } from "./infra/preview-origin.ts";
 import { readSettings } from "./infra/settings.ts";
 import { RATE_LIMIT_PERIOD_SECONDS, REQUEST_RATE_CEILING } from "@commissary/billing/plan";
+import { COMPUTER_IMAGE, COMPUTER_MARKER } from "@commissary/core/computer";
 import { DEV_AUTH_INDEX_KEY } from "@commissary/models/auth-index-key";
 import { DEV_SECRETS_KEY, secretsKeyResourceId } from "./packages/state/src/secrets/key.ts";
 
@@ -229,8 +230,25 @@ export default Alchemy.Stack(
     // dev`: `quickAction()` has no local emulation (Browser Run's docs), and its remote mode needs a Cloudflare login.
     const browserEnv = settings.browser && !dev ? { BROWSER: Cloudflare.Browser("BROWSER") } : {};
 
+    // The sandbox's computer (ADR 0041, ADR 0043, #223), when `COMMISSARY_COMPUTER=on`: one image (infra/computer/,
+    // computerd and mise), attached to the `SandboxSession` class as a Durable Object-managed Container, which each
+    // session object starts itself (`ctx.container`, keyed by the Container's id) with its instance size. A container
+    // attached to a class has no binding in any Worker's `env`, so the State and app Workers get the `COMPUTER` marker
+    // beside it (`@commissary/core`'s `COMPUTER_MARKER`), the one exception to "presence is the binding". Never under
+    // `alchemy dev`, which would build and run the image with Docker.
+    const computer =
+      settings.computer && !dev
+        ? Cloudflare.Container(COMPUTER_IMAGE, {
+            schedulingPolicy: "durable_object",
+            context: "./infra/computer",
+          })
+        : undefined;
+
+    const computerMarker = computer === undefined ? {} : COMPUTER_MARKER;
+
     // The state Worker (apps/state, ADR 0030): defines ControlPlane, SessionState, Platform, BrowserSession and the
-    // sandbox toolkit's SandboxSession (#222), and binds only what their classes read (apps/state/src/env.d.ts). No
+    // sandbox toolkit's SandboxSession (#222, with the computer's container when there is one, #223), and binds only
+    // what their classes read (apps/state/src/env.d.ts). No
     // routes, no domain, no workers.dev URL: the other Workers reach it through their Durable Object bindings. A deploy
     // restarts the Durable Objects a Worker defines, and Alchemy uploads a Worker again only when its bundle changes, so
     // they restart only when their own code does.
@@ -261,12 +279,18 @@ export default Alchemy.Stack(
         // The sandbox toolkit (ADR 0041, ADR 0043, #222), on every deployment: one object per sandbox session, reached
         // by the ControlPlane only, and Dynamic Workers (Workers Paid), where each session's just-bash runs with no
         // binding beyond its files and the sandbox's egress entrypoint as its only way out.
-        SANDBOX_SESSION: Cloudflare.DurableObject("SandboxSession"),
+        // With the computer, its container is attached to the class; the session objects read its instance size.
+        SANDBOX_SESSION:
+          computer === undefined
+            ? Cloudflare.DurableObject("SandboxSession")
+            : Cloudflare.DurableObject("SandboxSession", { containers: [computer] }),
         LOADER: Cloudflare.WorkerLoader("LOADER"),
         ...(hosted === undefined ? {} : { COMMISSARY_MODE: "cloud" }),
         ...stateSettings,
         ...secretsKeyBindings,
         ...browserEnv,
+        ...computerMarker,
+        ...(computer === undefined ? {} : { COMPUTER_INSTANCE: settings.computerInstance }),
       },
     });
 
@@ -351,6 +375,8 @@ export default Alchemy.Stack(
           ...stateSettings,
           ACCESS_DEV_BYPASS: dev && hosted === undefined ? settings.devBypass : "",
           ...browserEnv,
+          // Read for `/me`'s `deployment.computer` only.
+          ...computerMarker,
           // Dynamic Workers (ADR 0043, Workers Paid, on every deployment): the Agents area exists where they do (#226);
           // only its presence is read here, for the Agents routes and `/me`'s `deployment.agents`.
           LOADER: Cloudflare.WorkerLoader("LOADER"),

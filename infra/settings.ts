@@ -1,6 +1,12 @@
 import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
+import {
+  COMPUTER_INSTANCES,
+  type ComputerInstance,
+  computerInstanceOf,
+  DEFAULT_COMPUTER_INSTANCE,
+} from "@commissary/core/computer";
 
 /**
  * Commissary Cloud's settings (ADR 0026, `COMMISSARY_MODE=cloud`): the auth Worker signs people in on the auth host (ADR
@@ -165,6 +171,14 @@ export interface Settings {
    * browser toolkit exists (#212). Never bound under `alchemy dev`, where `quickAction()` has no local emulation.
    */
   readonly browser: boolean;
+  /**
+   * `COMMISSARY_COMPUTER` (ADR 0041, ADR 0043, #223, default off): the sandbox's computer, a Cloudflare Container
+   * attached to the `SandboxSession` class, with the `COMPUTER` marker on the State and app Workers. Never attached
+   * under `alchemy dev`, which would build and run the image with Docker.
+   */
+  readonly computer: boolean;
+  /** `COMMISSARY_COMPUTER_INSTANCE`: the computer's instance size, one of Cloudflare's (default `standard-1`). */
+  readonly computerInstance: ComputerInstance;
 }
 
 const text = (name: string, fallback = "") =>
@@ -302,20 +316,47 @@ const commissaryMode = Effect.gen(function* () {
   );
 });
 
+/** An `on`/`off` setting `name`, `fallback` when unset (or set empty, as CI passes an unset variable). */
+const onOff = (name: string, fallback: boolean) =>
+  Effect.gen(function* () {
+    const value = (yield* text(name)).trim().toLowerCase();
+
+    if (value === "") return fallback;
+
+    if (value === "on" || value === "off") return value === "on";
+
+    return yield* Effect.die(
+      new Error(`Invalid deploy settings:\n- ${name} must be on or off, not "${value}"`),
+    );
+  });
+
 /**
  * `COMMISSARY_BROWSER` (ADR 0043): whether the deployment binds Browser Run (`browser`), which the browser toolkit runs
  * on (#212). `on` (or unset) by default, as Browser Run includes 10 hours a month on Workers Paid; `off` deploys no
  * binding and no browser toolkit.
  */
-const browserSetting = Effect.gen(function* () {
-  const value = (yield* text("COMMISSARY_BROWSER")).trim().toLowerCase();
+const browserSetting = onOff("COMMISSARY_BROWSER", true);
 
-  if (value === "" || value === "on") return true;
+/**
+ * `COMMISSARY_COMPUTER` (ADR 0041, ADR 0043, #223): whether the deployment attaches the sandbox's computer
+ * (`computer`). `off` (or unset) by default, as a container bills its running time and the deploy needs Docker to build
+ * its image; `on` attaches it, and org admins may then let sandbox sessions use it.
+ */
+const computerSetting = onOff("COMMISSARY_COMPUTER", false);
 
-  if (value === "off") return false;
+/** `COMMISSARY_COMPUTER_INSTANCE`: the computer's instance size, `standard-1` unless set to another of Cloudflare's. */
+const computerInstanceSetting = Effect.gen(function* () {
+  const value = yield* text("COMMISSARY_COMPUTER_INSTANCE");
+
+  if (value.trim() === "") return DEFAULT_COMPUTER_INSTANCE;
+  const instance = computerInstanceOf(value);
+
+  if (instance !== undefined) return instance;
 
   return yield* Effect.die(
-    new Error(`Invalid deploy settings:\n- COMMISSARY_BROWSER must be on or off, not "${value}"`),
+    new Error(
+      `Invalid deploy settings:\n- COMMISSARY_COMPUTER_INSTANCE must be one of ${COMPUTER_INSTANCES.join(", ")}, not "${value.trim()}"`,
+    ),
   );
 });
 
@@ -514,6 +555,8 @@ export const readSettings = (dev: boolean, stage: string) =>
       secretsKeyGeneration: secretsKey.current,
       secretsKeyPreviousGeneration: secretsKey.previous,
       browser: yield* browserSetting,
+      computer: yield* computerSetting,
+      computerInstance: yield* computerInstanceSetting,
     };
 
     if (dev) return settings;

@@ -478,7 +478,7 @@ export const ToolkitView = Schema.Struct({
    * A toolkit Commissary provides itself (the browser toolkit, `id` and `name` `browser`; the sandbox toolkit, `sandbox`):
    * present while the deployment has what it runs on, reached under tool grants (no default grant), its tools'
    * overrides as any toolkit's; it cannot be renamed, edited (but for its approval rules, #201, and the sandbox's
-   * network, #222), given a credential, refreshed or removed (`403 built_in`).
+   * network, #222, and computer, #223), given a credential, refreshed or removed (`403 built_in`).
    * Its times are the epoch until its approval rules change.
    */
   built_in: optional(Schema.Literal(true)),
@@ -516,6 +516,11 @@ export const ToolkitView = Schema.Struct({
   approval_rules: optional(ApprovalRulesView),
   /** The sandbox toolkit's (#222): the widest network a sandbox session may ask for, the org's ceiling. */
   network: optional(SandboxNetwork),
+  /**
+   * The sandbox toolkit's (#223): whether a sandbox session may use the computer, the org's ceiling (`false` until an
+   * org admin allows it). A deployment without the computer (`deployment.computer` of `GET /me`) cannot allow it.
+   */
+  computer: optional(Schema.Boolean),
 });
 
 export type ToolkitView = typeof ToolkitView.Type;
@@ -617,6 +622,12 @@ export const UpdateToolkit = Schema.Struct({
    * the browser toolkit, `422 invalid` on any other). Sessions keep the network they opened with.
    */
   network: optional(SandboxNetwork),
+  /**
+   * The sandbox toolkit only (#223), org admins: whether a sandbox session may use the computer (`403 built_in` on the
+   * browser toolkit, `422 invalid` on any other, and for `true` on a deployment without the computer). Sessions keep
+   * what they opened with.
+   */
+  computer: optional(Schema.Boolean),
 });
 
 export type UpdateToolkit = typeof UpdateToolkit.Type;
@@ -768,8 +779,9 @@ export class ToolsGroup extends HttpApiGroup.make("tools").add(
    * Rename, change which credentials an org toolkit accepts, price its calls, or set its approval rules; `409 conflict`
    * when the revision is stale, `422 invalid` for a price on a private toolkit or one that is not a whole number of
    * micro-USD, 0 or more, and for approval rules that mark a tool of another toolkit or name a team or member the org
-   * does not have, and for a network that is not the sandbox toolkit's or not a valid one; `403 built_in` for anything
-   * but approval rules (and the sandbox's network) on a built-in toolkit (also on removing it, and on connecting or
+   * does not have, and for a network or computer setting that is not the sandbox toolkit's, a network that is not a
+   * valid one, and the computer on a deployment without it; `403 built_in` for anything but approval rules (and the
+   * sandbox's network and computer) on a built-in toolkit (also on removing it, and on connecting or
    * removing its credential).
    */
   HttpApiEndpoint.patch("update", "/toolkits/:id", {

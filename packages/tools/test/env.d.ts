@@ -19,9 +19,16 @@ interface __ToolsTestEnv extends Omit<
   OTHER_SANDBOX_CONTROL_PLANE: DurableObjectNamespace<
     import("./worker.ts").OtherSandboxControlPlane
   >;
+  /** A deployment with the sandbox's computer (#223), whose container the session objects fake. */
+  COMPUTER_SANDBOX_CONTROL_PLANE: DurableObjectNamespace<
+    import("./worker.ts").ComputerSandboxControlPlane
+  >;
   /** The sandbox's sessions, and the Dynamic Workers their just-bash runs in (`ToolsPartEnv`). */
   SANDBOX_SESSION: DurableObjectNamespace<import("./worker.ts").SandboxSession>;
   LOADER: WorkerLoader;
+  /** The sandbox's computer's marker and size (#223, `ToolsPartEnv`): off here, as without its container. */
+  COMPUTER: string;
+  COMPUTER_INSTANCE: string;
   PLATFORM: DurableObjectNamespace<import("./worker.ts").Platform>;
   SESSION_STATE: DurableObjectNamespace<import("./worker.ts").SessionState>;
   /** The usage database the MCP endpoint writes tool calls' records to (`ToolsBindings`). */
@@ -41,6 +48,7 @@ declare namespace Cloudflare {
       | "BrowserSession"
       | "SandboxControlPlane"
       | "OtherSandboxControlPlane"
+      | "ComputerSandboxControlPlane"
       | "SandboxSession"
       | "SessionState"
       | "Platform";

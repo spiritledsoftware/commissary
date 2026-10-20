@@ -701,3 +701,46 @@ describe("the browser (COMMISSARY_BROWSER, ADR 0043)", () => {
     }),
   );
 });
+
+describe("the sandbox's computer (COMMISSARY_COMPUTER, #223)", () => {
+  it.effect(
+    "is off by default, also when CI passes the unset variable as empty, and on when set on",
+    () =>
+      Effect.gen(function* () {
+        for (const variables of [{}, { COMMISSARY_COMPUTER: "" }, { COMMISSARY_COMPUTER: "off" }])
+          assert.strictEqual(
+            (yield* read({ ...selfHosted, ...variables })).settings.computer,
+            false,
+          );
+
+        assert.strictEqual(
+          (yield* read({ ...selfHosted, COMMISSARY_COMPUTER: " On " })).settings.computer,
+          true,
+        );
+      }),
+  );
+
+  it.effect("runs on standard-1 unless another of Cloudflare's sizes is named", () =>
+    Effect.gen(function* () {
+      assert.strictEqual((yield* read(selfHosted)).settings.computerInstance, "standard-1");
+      assert.strictEqual(
+        (yield* read({ ...selfHosted, COMMISSARY_COMPUTER_INSTANCE: "standard-2" })).settings
+          .computerInstance,
+        "standard-2",
+      );
+    }),
+  );
+
+  it.effect("refuses any other value", () =>
+    Effect.gen(function* () {
+      assert.include(
+        yield* refusal({ ...selfHosted, COMMISSARY_COMPUTER: "yes" }),
+        'COMMISSARY_COMPUTER must be on or off, not "yes"',
+      );
+      assert.include(
+        yield* refusal({ ...selfHosted, COMMISSARY_COMPUTER_INSTANCE: "huge" }),
+        'COMMISSARY_COMPUTER_INSTANCE must be one of lite, basic, standard-1, standard-2, standard-3, standard-4, not "huge"',
+      );
+    }),
+  );
+});

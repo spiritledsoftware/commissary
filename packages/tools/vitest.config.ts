@@ -1,9 +1,10 @@
 // Tools' tests, two projects like Models': `tools-unit` runs the pure tests (`test/unit/`) in Node.js; `tools` runs the rest
 // in workerd (@cloudflare/vitest-plugin) against the test Worker (test/worker.ts), whose ControlPlane is the org-wide
 // base composed with the Tools part only (two more have a fake browser behind the browser toolkit, #212: the test Worker
-// hands their Tools part a fake `browser` binding, so the config binds none), and two more have the sandbox toolkit (#222):
-// one Cloudflare's, whose sessions are this Worker's `SandboxSession` objects running just-bash in Dynamic Workers of the
-// test `LOADER`, one a fake second sandbox provider. Compatibility settings as the deployed Worker's (alchemy.run.ts);
+// hands their Tools part a fake `browser` binding, so the config binds none), and three more have the sandbox toolkit
+// (#222): one Cloudflare's, whose sessions are this Worker's `SandboxSession` objects running just-bash in Dynamic
+// Workers of the test `LOADER`, one the same with the sandbox's computer (#223, its container faked), and one a fake
+// second sandbox provider. Compatibility settings as the deployed Worker's (alchemy.run.ts);
 // the bindings are the ones test/env.d.ts declares, with the Worker tests' fixed keys.
 import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import { defineConfig } from "vitest/config";
@@ -52,6 +53,11 @@ export default defineConfig({
                   className: "OtherSandboxControlPlane",
                   useSQLite: true,
                 },
+                // A deployment with the sandbox's computer (#223), whose container the session objects fake.
+                COMPUTER_SANDBOX_CONTROL_PLANE: {
+                  className: "ComputerSandboxControlPlane",
+                  useSQLite: true,
+                },
                 SANDBOX_SESSION: { className: "SandboxSession", useSQLite: true },
                 SESSION_STATE: { className: "SessionState", useSQLite: true },
                 PLATFORM: { className: "Platform", useSQLite: true },
@@ -74,6 +80,11 @@ export default defineConfig({
                 API_DOMAIN: "api.example.com",
                 // Fixed test keys (deployed: Alchemy `Random`s, alchemy.run.ts), as Models' tests bind them.
                 SECRETS_KEY: "commissary-test-secrets-key-0123456789abcdef0123456789abcdef012345",
+                // The sandbox's computer (#223): off, as on a deployment without its container; the ControlPlane
+                // that has it adds the marker (`ComputerSandboxControlPlane`, test/worker.ts) and its session objects a
+                // fake container (test/support/fake-container.ts).
+                COMPUTER: "off",
+                COMPUTER_INSTANCE: "standard-1",
               },
             },
           }),

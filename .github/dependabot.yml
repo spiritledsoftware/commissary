@@ -27,7 +27,9 @@ updates:
       # The sandbox toolkit's shell (#222): `@cloudflare/computer` is a preview whose API may change, pinned exactly in
       # packages/tools, with the just-bash its worker-shell backend runs pinned by the override in pnpm-workspace.yaml.
       # Upgrade them together, in a PR of their own, and only once packages/tools/test/sandbox-toolkit.test.ts passes
-      # (the override moves by hand).
+      # (the override moves by hand). The computer's computerd image (infra/computer/Dockerfile, the `docker` entry
+      # below) moves with `@cloudflare/computer`: tools/check-computerd.sh, run by `pnpm lint`, fails until both name
+      # the same version.
       sandbox:
         patterns: ["@cloudflare/computer", "just-bash"]
       cloudflare:
@@ -37,6 +39,17 @@ updates:
         patterns: ["husky", "lint-staged", "@commitlint/*"]
       minor-and-patch:
         update-types: [minor, patch]
+  # The sandbox's computer image (#223): its two base images, pinned by digest.
+  - package-ecosystem: docker
+    directory: /infra/computer
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: chore
+      include: scope
   - package-ecosystem: github-actions
     directories: ["/", "/.github/actions/*"]
     schedule:

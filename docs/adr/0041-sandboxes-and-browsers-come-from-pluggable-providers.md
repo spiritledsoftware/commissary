@@ -1,5 +1,5 @@
 ---
-status: accepted, amended below (no default limits; a barebones computer with mise)
+status: accepted, amended below (no default limits; a barebones computer with mise; the computer's presence marker)
 ---
 
 # Sandboxes are a built-in toolkit, and sandboxes and browsers come from pluggable providers
@@ -63,3 +63,7 @@ So every provider gives the same tools and session model, and a hosted agent can
 
 - The decision first capped concurrent computers per org with a deployment setting. The cap is dropped, as are the limits on agent runs (ADR 0040): spend limits, Cloudflare's plans and Commissary Cloud's billing tiers limit use. Limits that org admins configure may come later.
 - The computer's image stays barebones: tools are installed with mise into the Workspace when a run needs them, rather than baked into a large image.
+
+## Amendment: the computer's presence is a marker variable
+
+- "Requirements" said the computer is present when the deployment has a container binding. A container attached to a Durable Object class gives no Worker a binding in its `env`: the class reaches it through `ctx.container`, and the Workers that decide whether "may use the computer" can be turned on (the app Worker for the settings, the State Worker for the session) never see it. So a deployment that attaches the container also gives those Workers a `COMPUTER` variable as its marker, set by the same deploy setting (`COMMISSARY_COMPUTER`), with the instance size beside it. It is the one piece whose presence is a variable rather than the binding itself.
