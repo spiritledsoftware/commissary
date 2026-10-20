@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import type { PickResult, ReportResult } from "../src/credentials/selection/types.ts";
 import { SpendLedger } from "@commissary/state/spend";
 import { makePool, TestNow } from "./support/pool.ts";
-import { limit, MemorySpendBook, USD } from "./support/spend.ts";
+import { limit, MemorySpendBook, USD } from "@commissary/state/testing";
 
 const group = (name: string) => `
     - name: ${name}

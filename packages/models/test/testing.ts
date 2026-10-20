@@ -34,7 +34,7 @@ export {
 
 export { asBeforeEncryption } from "./support/secrets.ts";
 
-export { USD } from "./support/spend.ts";
+export { USD } from "@commissary/state/testing";
 
 export { HELD, spendingOrg, spendRows } from "./support/spending-org.ts";
 

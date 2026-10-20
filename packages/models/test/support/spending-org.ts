@@ -8,7 +8,7 @@ import { OrgId } from "@commissary/core";
 import { controlPlaneOf } from "@commissary/state";
 import { FULL_ACCESS } from "../../src/credentials/ownership.ts";
 import { claudeFile } from "./control-plane.ts";
-import { USD } from "./spend.ts";
+import { USD } from "@commissary/state/testing";
 
 /** The owner of the org, as the org-wide base answers its caller. */
 export const OWNER = { role: "owner", sensitive: true } as const;

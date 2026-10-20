@@ -11,7 +11,7 @@ import { OrgId } from "@commissary/core";
 import { controlPlaneOf } from "@commissary/state";
 import type { NewSpendLimit, SpendEntry } from "@commissary/state/spend";
 import { claudeFile } from "./support/control-plane.ts";
-import { USD } from "./support/spend.ts";
+import { USD } from "@commissary/state/testing";
 
 const OWNER = { role: "owner", sensitive: true } as const;
 

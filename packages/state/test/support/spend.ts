@@ -1,15 +1,16 @@
 // Test doubles for Spend limits: an in-memory {@link SpendBook} (the ControlPlane keeps limits and counters in SQLite,
 // `@commissary/state/spend`) and a small constructor for limits.
-import type { Period } from "@commissary/state/spend";
-import type { SpendBook } from "@commissary/state/spend";
-import { DEFAULT_TIME_ZONE, DEFAULT_WEEK_START } from "@commissary/state/spend";
-import type {
-  LimitSource,
-  SpendLimit,
-  SpendScope,
-  SpendSettings,
-  SubjectKind,
-} from "@commissary/state/spend";
+import {
+  DEFAULT_TIME_ZONE,
+  DEFAULT_WEEK_START,
+  type LimitSource,
+  type Period,
+  type SpendBook,
+  type SpendLimit,
+  type SpendScope,
+  type SpendSettings,
+  type SubjectKind,
+} from "../../src/spend/index.ts";
 
 export const USD = 1_000_000;
 

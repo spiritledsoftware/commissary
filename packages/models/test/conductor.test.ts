@@ -41,7 +41,7 @@ import {
   type PoolHarness,
 } from "./support/pool.ts";
 import { CurrentOrg, GLOBAL_ORG } from "@commissary/core";
-import { limit, MemorySpendBook, USD } from "./support/spend.ts";
+import { limit, MemorySpendBook, USD } from "@commissary/state/testing";
 import { envContext } from "./support/context.ts";
 
 const identity = {

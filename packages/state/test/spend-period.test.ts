@@ -1,7 +1,7 @@
 // Spend periods (issue #71): the day, week and month a Spend limit counts in, by the org's time zone and first day of
 // the week. Pure: the boundaries are epoch milliseconds computed from a time, so DST changes need no clock.
 import { describe, expect, it } from "vitest";
-import { isTimeZone, periodBounds, type WeekStart } from "@commissary/state/spend";
+import { isTimeZone, periodBounds, type WeekStart } from "../src/spend/index.ts";
 
 const at = (iso: string): number => Date.parse(iso);
 

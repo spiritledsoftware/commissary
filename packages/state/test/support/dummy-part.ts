@@ -151,4 +151,21 @@ export class DummyPart extends RpcTarget implements ControlPlanePart {
   spendCredentials(): readonly [] {
     return [];
   }
+
+  /**
+   * Charges `micros` to the Spend limits of a call by `caller` on a shared credential, through the base's one ledger
+   * (`core.spend`), as an area's part charges its traffic.
+   */
+  chargeSpend(
+    caller: { readonly memberId?: string; readonly apiKeyId?: string },
+    micros: number,
+  ): void {
+    const ledger = this.#core.spend.ledger();
+
+    ledger.charge(
+      ledger.scopes(caller, { id: "dummy-credential", shared: true }),
+      micros,
+      Date.now(),
+    );
+  }
 }

@@ -2,11 +2,10 @@
 // member-vs-admin rule on an API key, counters of the current period, the org's calendar, and the upgrade of a
 // ControlPlane that predates Spend limits (it keeps working, with no limit).
 import { runInDurableObject } from "cloudflare:test";
+import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { OrgId } from "@commissary/core";
-import { SpendLedger } from "@commissary/state/spend";
-import { SpendStore, type SpendResult } from "@commissary/state/spend";
-import { controlPlane } from "./support/control-plane.ts";
+import { SpendLedger, SpendStore, type SpendResult } from "../src/spend/index.ts";
 import { USD } from "./support/spend.ts";
 
 /** Runs `body` against a store on the SQLite of a fresh org's Durable Object. */
@@ -14,7 +13,7 @@ const withStore = async (body: (store: SpendStore, sql: SqlStorage) => void | Pr
   const org = OrgId.make(`spend-${crypto.randomUUID().slice(0, 8)}`);
   let tick = 1_000;
 
-  await runInDurableObject(controlPlane(org), async (_instance, state) => {
+  await runInDurableObject(env.CONTROL_PLANE.getByName(org), async (_instance, state) => {
     await body(new SpendStore(state.storage.sql, () => (tick += 1)), state.storage.sql);
   });
 };

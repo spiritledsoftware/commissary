@@ -78,3 +78,6 @@ export const withPart = async <P extends Disposable, R>(
     held[Symbol.dispose]();
   }
 };
+
+/** An in-memory Spend book, limits and the micro-USD in a dollar, for tests of the Spend ledger and its callers. */
+export { limit, MemorySpendBook, USD } from "./support/spend.ts";
