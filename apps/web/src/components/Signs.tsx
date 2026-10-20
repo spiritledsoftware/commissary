@@ -1,7 +1,7 @@
 // Trail-sign pieces. The reset blade: a yellow trail-sign blade naming the window that resets next and how long
 // until it does, set like a destination and its walking time (red when the account is closed; the white-red-white
 // mountain-trail band on its tip when the account is near its limit). The trail mark: the red paint band beside
-// something closed or failing.
+// something closed or failing; the near mark: the white-red-white band beside something near its limit.
 import styles from "./Signs.module.css";
 
 interface ResetBladeProps {
@@ -57,3 +57,16 @@ export const ResetBlade = ({
 );
 
 export const TrailMark = () => <span className={styles["mark"]} aria-hidden="true" />;
+
+/** The white-red-white band beside something near its limit. */
+export const NearMark = () => <span className={styles["nearMark"]} aria-hidden="true" />;
+
+/** Which mark stands beside something near its limit, and beside something at it. */
+const LIMIT_MARKS = { near: NearMark, out: TrailMark } as const;
+
+/** The mark of how near a limit something is: the near mark at 80%, the trail mark at 100%. */
+export const LimitMark = ({ level }: { readonly level: keyof typeof LIMIT_MARKS }) => {
+  const Mark = LIMIT_MARKS[level];
+
+  return <Mark />;
+};

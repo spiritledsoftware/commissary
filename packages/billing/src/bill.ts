@@ -9,6 +9,7 @@
  * (`docs/DEPLOY.md` "Polar", step 2): they must equal {@link PAYG_RATE_MICROS}, or the bill the cap stops is not the
  * one Polar invoices.
  */
+import type { BillingRate } from "@commissary/contract/billing";
 import { FREE_USAGE, UNITS, type Unit, type Usage } from "./plan.ts";
 
 /** Micro-dollars in a dollar. */
@@ -31,6 +32,22 @@ export const DEFAULT_BILLING_CAP = 50;
 export const toMicros = (dollars: number): number => Math.round(dollars * MICROS);
 
 export const toDollars = (micros: number): number => micros / MICROS;
+
+/**
+ * How much of each unit a rate is stated for (ADR 0042: "$0.50 per 100,000" requests and tool calls, "$0.15 per hour"):
+ * how `GET /billing` states {@link PAYG_RATE_MICROS}, so the panel shows the rates the bill counts at.
+ */
+export const PAYG_RATE_PER: Readonly<Record<Unit, number>> = {
+  requests: 100_000,
+  browserHours: 1,
+  computerHours: 1,
+};
+
+/** A unit's rate in dollars per {@link PAYG_RATE_PER} of it. */
+export const paygRate = (unit: Unit): BillingRate => ({
+  dollars: toDollars(PAYG_RATE_MICROS[unit] * PAYG_RATE_PER[unit]),
+  per: PAYG_RATE_PER[unit],
+});
 
 /** What a month's usage bills above free usage, in micro-dollars (whatever the plan: the bill on Pay as you go). */
 export const billMicros = (used: Usage): number =>

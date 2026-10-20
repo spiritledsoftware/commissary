@@ -50,6 +50,7 @@ import {
   billingControlPlane,
   callPart,
 } from "./env.ts";
+import { paygRate } from "./bill.ts";
 import { billingNotices } from "./notices.ts";
 import { type Ceiling, FREE_USAGE, PLAN_CEILINGS } from "./plan.ts";
 import type { BillingProvider, BillingProviderError } from "./provider.ts";
@@ -101,6 +102,11 @@ const billingSummary = (billing: BillingUsage, cardOnFile: boolean | null): Bill
     requests: { used: billing.used.requests, free: FREE_USAGE.requests },
     browser_hours: { used: billing.used.browserHours, free: FREE_USAGE.browserHours },
     computer_hours: { used: billing.used.computerHours, free: FREE_USAGE.computerHours },
+  },
+  rates: {
+    requests: paygRate("requests"),
+    browser_hours: paygRate("browserHours"),
+    computer_hours: paygRate("computerHours"),
   },
   billing_cap: billing.billingCap,
   bill: billing.bill,

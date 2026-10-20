@@ -93,6 +93,28 @@ export const orgListAtom = ManagementClient.query("orgs", "list", {
 /** Suspends or unsuspends an org on Commissary Cloud (platform admins; call with `reactivityKeys: ORGS`). */
 export const updateOrgAtom = ManagementClient.mutation("orgs", "update");
 
+/** The org's billing (the Billing page and the plan notices) refetches after a mutation tagged with this key. */
+export const BILLING = ["billing"] as const;
+
+/**
+ * The org's plan, this month's usage against free usage, the bill, the billing cap and the plan notices (`GET /billing`,
+ * Commissary Cloud's org admins; a self-hosted Commissary answers 404, so read it only where `deployment.hosted`).
+ */
+export const billingAtom = ManagementClient.query("billing", "overview", {
+  reactivityKeys: BILLING,
+  timeToLive: Duration.seconds(30),
+});
+
+// Org owners' billing calls. The cap and the switch to Free answer the new billing: call them with
+// `reactivityKeys: BILLING`. Checkout and the portal answer a Polar URL to send the owner to.
+export const setBillingCapAtom = ManagementClient.mutation("billing", "cap");
+
+export const switchToFreeAtom = ManagementClient.mutation("billing", "plan");
+
+export const startCheckoutAtom = ManagementClient.mutation("billing", "checkout");
+
+export const billingPortalAtom = ManagementClient.mutation("billing", "portal");
+
 /** An org's billing refetches after a platform admin's change tagged with this key (`orgBillingKeys(slug)`). */
 export const orgBillingKeys = (slug: string) => ["org-billing", slug] as const;
 

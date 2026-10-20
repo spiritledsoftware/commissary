@@ -1,0 +1,43 @@
+/* The plan notices over an org's pages: one set-apart block on the sunk ground (no card, no shadow) across the page
+   column, a mark and an ink sentence per notice (the red trail mark when something is refused or a payment failed,
+   the white-red-white band when near), then the link to the Billing page. */
+.notices {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3) var(--space-5);
+  margin-bottom: var(--space-6);
+  padding: var(--space-3) var(--space-4);
+  background: var(--sunk);
+  border-radius: var(--radius);
+}
+
+.list {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  flex: 1 1 32rem;
+  gap: var(--space-2);
+}
+
+.line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2) var(--space-3);
+}
+
+.text {
+  flex: 1 1 24rem;
+  max-width: 70ch;
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.link {
+  font-size: var(--text-sm);
+  font-weight: 700;
+  white-space: nowrap;
+}

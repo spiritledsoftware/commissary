@@ -6,6 +6,7 @@ import { AccountPage } from "./pages/Account.tsx";
 import { AccountsPage } from "./pages/Accounts.tsx";
 import { ApprovalPage } from "./pages/Approval.tsx";
 import { ApprovalsPage } from "./pages/Approvals.tsx";
+import { BillingPage } from "./pages/Billing.tsx";
 import { AuthorizePage } from "./pages/Authorize.tsx";
 import { ConnectPage } from "./pages/Connect.tsx";
 import { GrantsPage } from "./pages/Grants.tsx";
@@ -25,6 +26,7 @@ import { SettingsPage } from "./pages/Settings.tsx";
 import { SsoPage } from "./pages/Sso.tsx";
 import { UsagePage } from "./pages/Usage.tsx";
 import { readNewKeySearch } from "./lib/keys.ts";
+import { BILLING_PAGE } from "./lib/role.ts";
 import { legacyHashTarget } from "./lib/legacy-hash.ts";
 import { panelBasepath } from "./lib/org.ts";
 import { readPricesSearch } from "./lib/prices.ts";
@@ -100,6 +102,8 @@ const routeTree = rootRoute.addChildren([
   }),
   createRoute({ getParentRoute: () => rootRoute, path: "/settings", component: SettingsPage }),
   createRoute({ getParentRoute: () => rootRoute, path: "/settings/sso", component: SsoPage }),
+  // Commissary Cloud's billing of the org (ADR 0042); the page answers Not found on a self-hosted Commissary.
+  createRoute({ getParentRoute: () => rootRoute, path: BILLING_PAGE, component: BillingPage }),
 ]);
 
 // The panel of an org lives under `/o/<slug>` (the router's base path), so its pages keep the paths above.

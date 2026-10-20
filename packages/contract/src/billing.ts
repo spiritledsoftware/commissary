@@ -26,6 +26,15 @@ export const BillingUnitUsage = Schema.Struct({
 export type BillingUnitUsage = typeof BillingUnitUsage.Type;
 
 /**
+ * What Pay as you go bills for one unit above free usage: `dollars` for every `per` of it ($0.50 per 100,000 requests
+ * and tool calls, $0.15 per browser or computer hour; ADR 0042). The same on either plan: Free bills nothing, but the
+ * panel states the terms an upgrade brings.
+ */
+export const BillingRate = Schema.Struct({ dollars: Schema.Finite, per: Schema.Finite });
+
+export type BillingRate = typeof BillingRate.Type;
+
+/**
  * Whether Pay as you go's payments go through: `past_due` once Polar marked the subscription past due, until a payment
  * succeeds; the org keeps Pay as you go but is held to Free's limits meanwhile. Always `ok` on Free.
  */
@@ -94,7 +103,8 @@ export type BillingCeilings = typeof BillingCeilings.Type;
  * browser and computer hours read 0 until they are counted. Times are ISO: when this month began and when the next one
  * starts and the counters start over. `billing_cap` is the most Pay as you go may bill the org a month, in dollars ($50
  * until an org owner sets it; `null`: no cap; it applies on Pay as you go only); `bill` what the month's usage above
- * free usage bills so far, in dollars. `ceilings` is for platform admins only.
+ * free usage bills so far, in dollars, at `rates`, each unit's rate above free usage (from the rates the bill counts
+ * at, `PAYG_RATE_MICROS` in `packages/billing`). `ceilings` is for platform admins only.
  */
 export const BillingView = Schema.Struct({
   plan: BillingPlan,
@@ -107,6 +117,11 @@ export const BillingView = Schema.Struct({
     requests: BillingUnitUsage,
     browser_hours: BillingUnitUsage,
     computer_hours: BillingUnitUsage,
+  }),
+  rates: Schema.Struct({
+    requests: BillingRate,
+    browser_hours: BillingRate,
+    computer_hours: BillingRate,
   }),
   billing_cap: Schema.NullOr(Schema.Number),
   bill: Schema.Number,

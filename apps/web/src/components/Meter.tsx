@@ -12,6 +12,8 @@ interface MeterProps {
   readonly level: QuotaLevel;
   /** The allowance's pace, when it has one. */
   readonly pace?: Pace | undefined;
+  /** What assistive technology calls the meter, when "<label> allowance used" does not say it (free usage). */
+  readonly spokenLabel?: string | undefined;
 }
 
 const caption = (pace: Pace): string =>
@@ -20,14 +22,14 @@ const caption = (pace: Pace): string =>
 const spoken = (pace: Pace): string =>
   pace.verdict === "on" ? "on pace" : `${pace.points} points ${pace.verdict} of pace`;
 
-export const Meter = ({ label, percent, level, pace }: MeterProps) => (
+export const Meter = ({ label, percent, level, pace, spokenLabel }: MeterProps) => (
   <div className={styles["meter"]}>
     <span className={styles["label"]}>{label}</span>
     <div className={styles["gauge"]}>
       <div
         className={styles["track"]}
         role="meter"
-        aria-label={`${label} allowance used`}
+        aria-label={spokenLabel ?? `${label} allowance used`}
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={Math.round(percent)}

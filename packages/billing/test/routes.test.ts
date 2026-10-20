@@ -118,6 +118,12 @@ describe("GET /billing", () => {
       browser_hours: { used: 0, free: 1 },
       computer_hours: { used: 0, free: 0 },
     });
+    // Pay as you go's rates above free usage (ADR 0042), the ones the bill counts at.
+    expect(shown.rates).toEqual({
+      requests: { dollars: 0.5, per: 100_000 },
+      browser_hours: { dollars: 0.15, per: 1 },
+      computer_hours: { dollars: 0.15, per: 1 },
+    });
     expect(shown.billing_cap).toBe(50);
     expect(shown.bill).toBe(0);
     expect(shown.notices).toEqual([]);
