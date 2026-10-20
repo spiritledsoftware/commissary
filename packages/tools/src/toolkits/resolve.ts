@@ -34,6 +34,8 @@ export interface ResolvedTool {
   readonly name: string;
   readonly description: string | undefined;
   readonly toolClass: ToolClass;
+  /** What a call costs in micro-USD (#199): the tool's override's price, else its toolkit's; undefined: free. */
+  readonly priceMicros: number | undefined;
   readonly shortened: boolean;
   readonly renamed: boolean;
   readonly hidden: boolean;
@@ -74,6 +76,7 @@ const resolved = (
     name: full.name,
     description: override?.description ?? tool?.description,
     toolClass: override?.toolClass ?? sourceClass(tool),
+    priceMicros: override?.priceMicros ?? toolkit.priceMicros,
     shortened: full.shortened,
     renamed: override?.name !== undefined,
     hidden: override?.hidden === true,

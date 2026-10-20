@@ -25,8 +25,8 @@ import type { UsageCost } from "../src/usage/pricing.ts";
 import type { UsageRecord } from "../src/usage/record.ts";
 import { UsageSink } from "../src/usage/sink.ts";
 import type { PoolOptions } from "../src/credentials/pool.ts";
-import { SpendLedger } from "../src/spend/ledger.ts";
-import { periodBounds } from "../src/spend/period.ts";
+import { SpendLedger } from "@commissary/state/spend";
+import { periodBounds } from "@commissary/state/spend";
 import {
   jsonResponse,
   mockHttpClient,
@@ -41,7 +41,7 @@ import {
   type PoolHarness,
 } from "./support/pool.ts";
 import { CurrentOrg, GLOBAL_ORG } from "@commissary/core";
-import { limit, MemorySpendBook, USD } from "./support/spend.ts";
+import { limit, MemorySpendBook, USD } from "@commissary/state/testing";
 import { envContext } from "./support/context.ts";
 
 const identity = {

@@ -79,7 +79,7 @@ export const makePool = async (
     readonly clock?: TestNow;
     /** What a member may use; everything unless a test says otherwise. */
     readonly reach?: (member: string | undefined) => Reach;
-    /** The org's Spend limits (`src/spend/ledger.ts`). */
+    /** The org's Spend limits (`@commissary/state/spend`). */
     readonly spend?: PoolOptions["spend"];
     /** Members' private provider key groups: YAML configs by owner (member id). */
     readonly privateConfigs?: Readonly<Record<string, string>>;

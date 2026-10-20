@@ -34,7 +34,7 @@ export {
 
 export { asBeforeEncryption } from "./support/secrets.ts";
 
-export { USD } from "./support/spend.ts";
+export { USD } from "@commissary/state/testing";
 
 export { HELD, spendingOrg, spendRows } from "./support/spending-org.ts";
 
@@ -101,7 +101,13 @@ export { ModelRegistry } from "../src/registry/service.ts";
 
 export { MODELS_DEV_URL } from "../src/registry/refresh.ts";
 
-export { GROUP_BY, insertUsageRecord, listUsageRecords, summarizeUsage } from "../src/usage/d1.ts";
+export {
+  GROUP_BY,
+  insertUsageRecord,
+  listUsageRecords,
+  rowToPayload,
+  summarizeUsage,
+} from "../src/usage/d1.ts";
 
 export {
   antigravityStateFor,

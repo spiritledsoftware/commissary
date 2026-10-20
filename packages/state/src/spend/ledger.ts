@@ -8,14 +8,17 @@
  *
  * - An API key's limits count everything the key spends, whatever credential served it.
  * - Member, team, org and credential limits count traffic served by a **shared** credential only: what a private
- *   credential serves is the member's own account with the provider, so only a key limit sees it.
+ *   credential serves is the member's own account with the provider, so only a key limit sees it. A tool call (#199)
+ *   counts the same way; its shared credential is the toolkit's (a `toolkit_credential` limit).
  * - A limit with no room refuses (key), keeps the shared credentials away (member, team, org) or skips one credential
- *   (credential limit): the `gate`. Several limits on one subject and period (an admin's and a member's) are enforced
+ *   (credential limit): the `gate`. A tool call has one credential to go to, so any limit it would be charged to
+ *   without room refuses it (`refusal`). Several limits on one subject and period (an admin's and a member's) are enforced
  *   together, so the smaller amount binds.
  * - A scope is charged only while it has a limit: an org without limits stores no counters, and `gate` answers at once.
  */
 import { type Period, type PeriodBounds, periodBounds } from "./period.ts";
 import {
+  type ChargedCredential,
   ORG_SUBJECT,
   type Refusal,
   type SpendCaller,
@@ -40,10 +43,7 @@ export interface SpendPolicy {
   /** `undefined` when no limit applies to the request. */
   gate(caller: SpendCaller, now: number): SpendGate | undefined;
   /** The scopes a request served by `credential` is charged to (only those with a limit). */
-  scopes(
-    caller: SpendCaller,
-    credential: { readonly id: string; readonly shared: boolean },
-  ): ReadonlyArray<SpendScope>;
+  scopes(caller: SpendCaller, credential: ChargedCredential): ReadonlyArray<SpendScope>;
   charge(scopes: ReadonlyArray<SpendScope>, micros: number, now: number): void;
 }
 
@@ -93,22 +93,26 @@ export class SpendLedger implements SpendPolicy {
     };
   }
 
-  scopes(
-    caller: SpendCaller,
-    credential: { readonly id: string; readonly shared: boolean },
-  ): ReadonlyArray<SpendScope> {
+  scopes(caller: SpendCaller, credential: ChargedCredential): ReadonlyArray<SpendScope> {
     const limits = this.#book.limits();
 
     if (limits.length === 0) return [];
 
-    const candidates: Array<SpendScope> = [
-      ...this.#keyScopes(caller),
-      ...(credential.shared
-        ? [...this.#sharedScopes(caller), { kind: "credential" as const, subject: credential.id }]
-        : []),
-    ];
+    return this.#chargedScopes(caller, credential).filter((scope) =>
+      limits.some((limit) => sameScope(limit, scope)),
+    );
+  }
 
-    return candidates.filter((scope) => limits.some((limit) => sameScope(limit, scope)));
+  /**
+   * The limit without room that a call served by `credential` alone would be charged to, if any: the one that frees up
+   * last. For a tool call (#199), which has no other credential to go to, so any such limit refuses it.
+   */
+  refusal(caller: SpendCaller, credential: ChargedCredential, now: number): Refusal | undefined {
+    const limits = this.#book.limits();
+
+    if (limits.length === 0) return undefined;
+
+    return this.#exhausted(limits, this.#chargedScopes(caller, credential), this.#boundsAt(now));
   }
 
   charge(scopes: ReadonlyArray<SpendScope>, micros: number, now: number): void {
@@ -135,6 +139,19 @@ export class SpendLedger implements SpendPolicy {
       week: periodBounds("week", now, timeZone, weekStart),
       month: periodBounds("month", now, timeZone, weekStart),
     };
+  }
+
+  /** Every scope a call served by `credential` counts toward, with a limit or not. */
+  #chargedScopes(caller: SpendCaller, credential: ChargedCredential): ReadonlyArray<SpendScope> {
+    return [
+      ...this.#keyScopes(caller),
+      ...(credential.shared
+        ? [
+            ...this.#sharedScopes(caller),
+            { kind: credential.kind ?? "credential", subject: credential.id },
+          ]
+        : []),
+    ];
   }
 
   #keyScopes(caller: SpendCaller): ReadonlyArray<SpendScope> {

@@ -13,13 +13,13 @@
  * in place, with no limits (nothing is limited). All methods are synchronous; refusals are plain data. Implements the
  * {@link SpendBook} the ledger reads and charges.
  */
-import { freshEntryId } from "../credentials/key-ids.ts";
 import type { SpendBook } from "./ledger.ts";
 import {
   type LimitSource,
   type SpendLimit,
   type SpendScope,
   type SpendSettings,
+  SUBJECT_KINDS,
   type SubjectKind,
 } from "./model.ts";
 import {
@@ -110,7 +110,7 @@ const isPeriod = (value: string): value is Period => PERIODS.some((period) => pe
 
 const isWeekStart = (value: string): value is WeekStart => WEEK_STARTS.some((day) => day === value);
 
-const KINDS: ReadonlySet<string> = new Set(["member", "team", "org", "credential", "key"]);
+const KINDS: ReadonlySet<string> = new Set(SUBJECT_KINDS);
 
 const isKind = (value: string): value is SubjectKind => KINDS.has(value);
 
@@ -131,6 +131,9 @@ const limitOf = (row: LimitRow): SpendLimit | undefined =>
         updatedBy: row.updated_by,
       }
     : undefined;
+
+/** A new limit's id, `limit:<24 hex characters>`, as Models' config entries' ids are made. */
+const freshLimitId = (): string => `limit:${crypto.randomUUID().replaceAll("-", "").slice(0, 24)}`;
 
 const validAmount = (amount: number): boolean =>
   Number.isSafeInteger(amount) && amount >= 0 && amount <= MAX_AMOUNT_MICROS;
@@ -257,7 +260,7 @@ export class SpendStore implements SpendBook {
     if (capped !== undefined) return capped;
 
     const now = this.#now();
-    const id = freshEntryId("limit");
+    const id = freshLimitId();
 
     this.#sql.exec(
       `INSERT INTO spend_limits (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,

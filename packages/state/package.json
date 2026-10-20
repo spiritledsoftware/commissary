@@ -8,6 +8,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./dev-state-bridge": "./src/dev-state-bridge.ts",
+    "./spend": "./src/spend/index.ts",
     "./testing": "./test/testing.ts"
   },
   "scripts": {

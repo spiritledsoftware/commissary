@@ -479,6 +479,134 @@ describe("overrides", () => {
   });
 });
 
+describe("prices (#199)", () => {
+  it("price a call on the toolkit, a tool's override wins, and an unpriced tool is free", async () => {
+    const server = fakeMcpServer(`${origin()}/mcp`, {
+      tools: [{ name: "search" }, { name: "scrape" }, { name: "ping" }],
+    });
+
+    const stub = await plane();
+    const toolkit = await add(stub, ADMIN, orgToolkit(server.url, "web"));
+
+    expect((await toolsOf(stub, ADMIN, toolkit.id)).map((tool) => tool.price_micros)).toEqual([
+      undefined,
+      undefined,
+      undefined,
+    ]);
+
+    const priced = await stub
+      .tools()
+      .updateToolkit(ADMIN, toolkit.id, toolkit.revision, { price_micros: 2_000 }, "test");
+
+    expect(priced).toMatchObject({ ok: true, value: { price_micros: 2_000 } });
+    await stub
+      .tools()
+      .setOverride(ADMIN, toolkit.id, 0, { tool: "scrape", price_micros: 5_000 }, "test");
+    await stub.tools().setOverride(ADMIN, toolkit.id, 0, { tool: "ping", price_micros: 0 }, "test");
+
+    const prices = Object.fromEntries(
+      (await toolsOf(stub, ADMIN, toolkit.id)).map((tool) => [
+        tool.upstream_name,
+        tool.price_micros,
+      ]),
+    );
+
+    expect(prices).toEqual({ search: 2_000, scrape: 5_000, ping: 0 });
+
+    // Clearing the toolkit's price leaves the tools priced by their overrides only.
+    const revision = priced.ok ? priced.value.revision : 0;
+
+    expect(
+      await stub.tools().updateToolkit(ADMIN, toolkit.id, revision, { price_micros: null }, "test"),
+    ).toMatchObject({ ok: true, value: { revision: revision + 1 } });
+    expect(
+      (await toolsOf(stub, ADMIN, toolkit.id)).map((tool) => [
+        tool.upstream_name,
+        tool.price_micros,
+      ]),
+    ).toEqual([
+      ["search", undefined],
+      ["scrape", 5_000],
+      ["ping", 0],
+    ]);
+  });
+
+  it("are an org admin's on an org toolkit, never on a private toolkit, and whole micro-USD", async () => {
+    const server = fakeMcpServer(`${origin()}/mcp`, { tools: [{ name: "t" }] });
+    const stub = await plane();
+    const shared = await add(stub, ADMIN, orgToolkit(server.url, "kit"));
+    const personal = await add(stub, ALICE, privateToolkit(server.url, "mine"));
+
+    expect(
+      await stub.tools().updateToolkit(ALICE, shared.id, shared.revision, { price_micros: 1 }, "t"),
+    ).toMatchObject({ ok: false, error: "forbidden" });
+    expect(
+      await stub
+        .tools()
+        .updateToolkit(ALICE, personal.id, personal.revision, { price_micros: 1 }, "t"),
+    ).toMatchObject({ ok: false, error: "invalid" });
+    expect(
+      await stub.tools().setOverride(ALICE, personal.id, 0, { tool: "t", price_micros: 1 }, "t"),
+    ).toMatchObject({ ok: false, error: "invalid" });
+
+    for (const price of [-1, 1.5, 1e13])
+      expect(
+        await stub
+          .tools()
+          .updateToolkit(ADMIN, shared.id, shared.revision, { price_micros: price }, "t"),
+      ).toMatchObject({ ok: false, error: "invalid" });
+  });
+
+  it("upgrade a ControlPlane whose toolkits predate them: every tool stays free", async () => {
+    const stub = env.CONTROL_PLANE.getByName(crypto.randomUUID());
+
+    const prices = await runInDurableObject(stub, (_instance, state) => {
+      const sql = state.storage.sql;
+
+      // The tables as #196 created them, before prices.
+      sql.exec(`DROP TABLE IF EXISTS toolkits`);
+      sql.exec(`DROP TABLE IF EXISTS tool_overrides`);
+      sql.exec(
+        `CREATE TABLE toolkits (id TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL, source TEXT NOT NULL,
+           owner TEXT NOT NULL, accepts TEXT NOT NULL, revision INTEGER NOT NULL, created_at INTEGER NOT NULL,
+           created_by TEXT NOT NULL, updated_at INTEGER NOT NULL, updated_by TEXT NOT NULL, list_built_at INTEGER,
+           list_error TEXT)`,
+      );
+      sql.exec(
+        `CREATE TABLE tool_overrides (toolkit_id TEXT NOT NULL, upstream_name TEXT NOT NULL, hidden INTEGER NOT NULL,
+           name TEXT, description TEXT, class TEXT, revision INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+           updated_by TEXT NOT NULL, PRIMARY KEY (toolkit_id, upstream_name))`,
+      );
+      sql.exec(
+        `INSERT INTO toolkits VALUES ('tk_old', 'mcp', 'old', 'https://x.example.com/mcp', '', 'shared', 1, 0, 't', 0,
+           't', NULL, NULL)`,
+      );
+      sql.exec(`INSERT INTO tool_overrides VALUES ('tk_old', 't', 1, NULL, NULL, NULL, 1, 0, 't')`);
+      const store = storeOf(sql);
+
+      return {
+        toolkit: store.toolkit("tk_old")?.priceMicros,
+        override: store.override("tk_old", "t")?.priceMicros,
+      };
+    });
+
+    expect(prices).toEqual({ toolkit: undefined, override: undefined });
+  });
+
+  it("go into the org export", async () => {
+    const server = fakeMcpServer(`${origin()}/mcp`, { tools: [{ name: "t" }] });
+    const stub = await plane();
+    const toolkit = await add(stub, ADMIN, orgToolkit(server.url, "kit"));
+
+    await stub.tools().updateToolkit(ADMIN, toolkit.id, toolkit.revision, { price_micros: 7 }, "t");
+    await stub.tools().setOverride(ADMIN, toolkit.id, 0, { tool: "t", price_micros: 9 }, "t");
+
+    expect(await stub.tools().exportToolkits(ADMIN)).toMatchObject([
+      { name: "kit", price_micros: 7, overrides: [{ tool: "t", hidden: false, price_micros: 9 }] },
+    ]);
+  });
+});
+
 describe("credentials", () => {
   it("builds with a member's private credential when the toolkit has no shared one", async () => {
     const server = fakeMcpServer(`${origin()}/mcp`, {

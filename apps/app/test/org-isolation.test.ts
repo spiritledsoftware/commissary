@@ -53,7 +53,12 @@ import {
   type StoreCase,
   storeCase,
 } from "./support/org-isolation.ts";
-import { type FakeMcpServer, fakeMcpServer, serveFakeMcpServers } from "@commissary/tools/testing";
+import {
+  type FakeMcpServer,
+  fakeMcpServer,
+  insertToolCallRecord,
+  serveFakeMcpServers,
+} from "@commissary/tools/testing";
 
 serveFakeMcpServers();
 
@@ -545,6 +550,35 @@ const STORES: ReadonlyArray<StoreCase> = [
 
       return count((records.body as { records: unknown[] }).records.length);
     },
+    value: usageValue,
+  }),
+
+  storeCase("usage: tool calls", {
+    // Tools' own writer: the toolkit's id is the suite's name in both orgs.
+    write: async (org, name, value) => {
+      for (let i = 0; i < Number(value); i += 1)
+        await insertToolCallRecord(env.USAGE, {
+          requestId: crypto.randomUUID(),
+          orgId: org.id,
+          principalId: "user:iso@example.com",
+          memberId: undefined,
+          toolkitId: name,
+          toolId: `${name}:search`,
+          credential: "shared",
+          private: false,
+          outcome: "success",
+          requestedAt: Date.now() - 60_000 - i,
+          latencyMs: 1,
+          requestBytes: 2,
+          responseBytes: 3,
+          costMicros: 0,
+        });
+    },
+    read: async (org, name) =>
+      count(
+        ((await usage(org, `/records?toolkit=${name}&limit=1000`)) as { records: unknown[] })
+          .records.length,
+      ),
     value: usageValue,
   }),
 

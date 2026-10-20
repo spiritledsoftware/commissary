@@ -44,3 +44,30 @@ export const holdInvocation: Effect.Effect<() => void> = Effect.serviceOption(
     return release;
   }),
 );
+
+/**
+ * Runs `effect` off the response path: in `ctx.waitUntil`, so it never delays the response, with the caller's context
+ * (its services and loggers). Without an execution context, or once the invocation has finished (`waitUntil` throws),
+ * the caller awaits it instead. `effect` must handle its own failures: a write of bookkeeping (a usage record) logs
+ * and drops what it could not store.
+ */
+export const runAfterResponse = <R>(
+  effect: Effect.Effect<void, never, R>,
+): Effect.Effect<void, never, R> =>
+  Effect.gen(function* () {
+    const context = yield* Effect.context<R>();
+    const run = Effect.runPromiseWith(context)(effect);
+    const ctx = Context.getOrUndefined(context, WorkerExecutionContext);
+
+    if (ctx !== undefined) {
+      try {
+        ctx.waitUntil(run);
+
+        return;
+      } catch {
+        // waitUntil is unavailable (the invocation already finished): await the work instead.
+      }
+    }
+
+    yield* Effect.promise(() => run);
+  });

@@ -72,4 +72,9 @@ export class BillingPart extends RpcTarget implements ControlPlanePart {
   apiKeysDeleted(): void {}
 
   privateCredentialsChanged(): void {}
+
+  /** Billing holds no credentials: no Spend limit names one of its. */
+  spendCredentials(): readonly [] {
+    return [];
+  }
 }

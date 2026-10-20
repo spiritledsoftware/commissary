@@ -151,7 +151,7 @@ may have stored its writes before, so it may run twice. Only chains are retried:
 - `packages/models` (`@commissary/models`): the Models area (#134, #151). `handlers` (inbound protocols and the shared
   execution pipeline), `executor` (one directory per provider, the `Thinking` service, `translateRequestForExecutor`
   with the Codex rewrites), `credentials` (credential pool, selection, token refresh), `registry` (model catalogs and
-  `/models`), `config` (with the payload rules), `oauth`, `quota`, `usage` (D1 usage records), `grants`, `spend`,
+  `/models`), `config` (with the payload rules), `oauth`, `quota`, `usage` (D1 usage records), `grants`,
   `signature` (the `CACHE` KV store of signatures), `session-routing`, `management` (its management routes), the
   ControlPlane part, the client-API HTTP helpers, the request trace, its cron tasks and its org-deletion step. Three
   entry points and no root export: `./api` (the API Worker's: client API routes, request trace, cron tasks,
@@ -173,13 +173,16 @@ may have stored its writes before, so it may run twice. Only chains are retried:
   runtime modules `tools/oxlint/boundaries` lists, and no other area; Models imports its `./api` only. Its tests run in
   workerd against `packages/billing/test/worker.ts`, a test-only ControlPlane (state's base composed with its part).
 - `packages/tools` (`@commissary/tools`): the Tools area (#196): toolkits built from remote MCP servers, their
-  credentials and tool lists. `toolkits` (names, the store, resolving the tools a caller sees, credential secrets),
+  credentials, tool lists and prices. `toolkits` (names, the store, resolving the tools a caller sees, credential
+  secrets, prices), `usage` (the usage record of a tool call),
   `mcp` (a minimal Streamable HTTP MCP client, behind the outbound guard), `management` (its management routes,
   role-table entries, its section of the org export), the ControlPlane part, its cron task (refreshing tool lists) and
   its org-deletion step. Three entry points like Models': `./api` (the API Worker's: cron tasks, `ToolsEnv`),
   `./management` (the app Worker's) and `./state` (the state Worker's: `ToolsPart`); `./testing` serves fake MCP
-  servers to the Worker's tests (`fakeMcpServer`, `serveFakeMcpServers`). It reads its bindings through `ToolsEnv`
-  (only `CONTROL_PLANE`) and may import `@commissary/state`, `auth`, `contract`, `core`, `effect` and the runtime
+  servers to the Worker's tests (`fakeMcpServer`, `serveFakeMcpServers`) and holds Tools' usage writer
+  (`insertToolCallRecord`), with which other tests seed tool calls' records. It reads its bindings through `ToolsEnv`
+  (`CONTROL_PLANE`, `PLATFORM`, `APP_DOMAIN` and `USAGE`, the usage database its tool calls' records go into) and may
+  import `@commissary/state`, `auth`, `contract`, `core`, `effect` and the runtime
   modules `tools/oxlint/boundaries` lists: nothing from `apps/` or Models.
 - `apps/web` (`@commissary/web`): the control panel (below).
 - `packages/auth` (`@commissary/auth`): request-side authentication (#132). The principal and `AccessPrincipal`, roles,
@@ -210,8 +213,11 @@ may have stored its writes before, so it may run twice. Only chains are retried:
   each reached through a method of its name, `stub.models().x()`), the Platform registry (`src/platform`), the
   general-purpose lease store (`src/lease.ts`), `SessionState` (`src/session-state`: class, client, protocol, engine),
   the stub helpers (`controlPlaneOf`, `platformOf`, `currentControlPlane`, the management routes' `controlPlane` and
-  body readers), the retry on a code-update reset (`retryOnCodeUpdate`) and the one `AuthDirectory` adapter, all behind the one export `.`; `./testing` holds the workerd test helpers
-  (`tablesOf`, `storedText`, `alarmOf`, `withPart`, `ORG_WIDE_TABLES`). It reads its bindings through `StateEnv` and its
+  body readers), the retry on a code-update reset (`retryOnCodeUpdate`) and the one `AuthDirectory` adapter, all behind the one export `.`; `./spend` holds
+  Spend limits (`src/spend`: model, calendar, store, ledger, the `SpendService` the base owns; pure, so Node.js tests
+  import it too); `./testing` holds the workerd test helpers
+  (`tablesOf`, `storedText`, `alarmOf`, `withPart`, `ORG_WIDE_TABLES`, and the in-memory Spend book `MemorySpendBook`
+  with `limit` and `USD`). It reads its bindings through `StateEnv` and its
   classes' settings from `StateObjectEnv`, and may import `@commissary/auth`, `@commissary/core`,
   `@commissary/contract`, `@commissary/json` and `effect` only: nothing from an area's code or `apps/`.
 - `packages/json` (`@commissary/json`): the gjson/sjson path engine over parsed JSON, the `Json` types, `isValidJson`,
@@ -247,7 +253,7 @@ hash covers a package's files and those of its dependencies (Turborepo's transit
 Worker's (and Models'), one in `packages/core` or `packages/auth` re-runs state's, Models', Tools' and the Worker's (and core's
 auth's too), one in `packages/state` re-runs Models', Tools', the state Worker's, the app Worker's and the API Worker's, and one in
 `packages/models` re-runs the state Worker's, the app Worker's and the API Worker's (`apps/state` is a dependency of
-`apps/app` and `apps/api`), as does one in `packages/tools` (the root lists Models as a dev dependency for its deploy code; that re-runs no other package's tasks). The root `typecheck` and `test` tasks also hash `tools/vitest/` (the packages' Vitest configs import it), and
+`apps/app` and `apps/api`), as does one in `packages/tools`, which also re-runs Models' (Models' tests use `@commissary/tools/testing` through a dev dependency; the root lists Models as a dev dependency for its deploy code, which re-runs no other package's tasks). The root `typecheck` and `test` tasks also hash `tools/vitest/` (the packages' Vitest configs import it), and
 `typecheck` hashes `tools/workers/` (the Workers runtime types); a
 package's `turbo.json` appends the root files its tasks read (`"$TURBO_EXTENDS$"`; `apps/app`: `infra/bundle.ts`,
 `infra/preview-origin.ts`, `infra/settings.ts`, `migrations/`; `apps/auth`: `infra/bundle.ts`, `migrations/`; `apps/api`
@@ -417,7 +423,7 @@ permissions they need, and deploy jobs use no dependency cache.
   repository; edit its rules there.
 - **boundaries** (`tools/oxlint/boundaries/`, ours): `boundaries/models-imports`, `boundaries/billing-imports` and
   `boundaries/tools-imports` keep `@commissary/models`, `@commissary/billing` and `@commissary/tools` behind their entry
-  points (#151, #196; another package's sources import Billing's `./api` only, none import Models or Tools). An area's
+  points (#151, #196; another package's sources import Billing's `./api` only, none import Models or Tools; Models' tests use `@commissary/tools/testing` (`insertToolCallRecord`) through a dev dependency). An area's
   sources import only their own files, the dependencies its `package.json` declares and the runtime modules the rule
   lists; the apps import it only as `@commissary/<area>/api`, `/management` and `/state` (their tests also `/testing`),
   never its other exports or one of its files by a relative path. `boundaries/org-scoped-kv` (ADR 0044, #250) keeps org data out of raw KV: a source file of a package or an app

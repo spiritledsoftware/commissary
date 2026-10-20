@@ -16,6 +16,9 @@ export const ORG_WIDE_TABLES: ReadonlyArray<string> = [
   "removed_principals",
   "service_tokens",
   "session_instances",
+  "spend_counters",
+  "spend_limits",
+  "spend_settings",
   "sso_domains",
   "sso_provider",
   "team_members",
@@ -75,3 +78,6 @@ export const withPart = async <P extends Disposable, R>(
     held[Symbol.dispose]();
   }
 };
+
+/** An in-memory Spend book, limits and the micro-USD in a dollar, for tests of the Spend ledger and its callers. */
+export { limit, MemorySpendBook, USD } from "./support/spend.ts";

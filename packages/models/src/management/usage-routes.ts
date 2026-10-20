@@ -16,7 +16,12 @@
  * lists the provider and model pairs that had no price. Every route reads the records of the request's org only (ADR 0021).
  *
  * Members (ADR 0022): `member` and `team` filter by member id or by a team's members, `group_by=member` groups the
- * summary by member id. A plain member may read `records`, `summary` and `series` (`policy.ts`), and only their
+ * summary by member id.
+ *
+ * Tool calls (#199): Tools writes a usage record per call into the same table. `records`, `summary` and `series` read
+ * model attempts unless `area` says `tools` or `all` (when unset, a `toolkit`/`tool` filter or grouping means `tools`
+ * and a grouping by `area` means `all`), so a model-only client reads what it read before; `summary` groups by `area`,
+ * `toolkit` or `tool` too, `series` by `toolkit` or `tool`. The queue and `unpriced` are model attempts only. A plain member may read `records`, `summary` and `series` (`policy.ts`), and only their
  * own records: by their member id, or their Access principal for records from before members existed.
  */
 import { Clock, Effect } from "effect";
@@ -202,6 +207,21 @@ const parseFilter = (params: URLSearchParams) =>
       filter.failed = failed === "true";
     }
 
+    const area = optional(params, "area");
+
+    if (area !== undefined) {
+      if (area !== "models" && area !== "tools" && area !== "all")
+        return yield* replyError(400, "area must be models, tools or all");
+      filter.area = area;
+    }
+
+    const toolkit = optional(params, "toolkit");
+    const tool = optional(params, "tool");
+
+    if (toolkit !== undefined) filter.toolkit = toolkit;
+
+    if (tool !== undefined) filter.tool = tool;
+
     return filter;
   });
 
@@ -341,6 +361,9 @@ const usageSeries = Effect.gen(function* () {
     "team",
     "auth_index",
     "auth_id",
+    "area",
+    "toolkit",
+    "tool",
   ]) {
     const value = params.get(name);
 
@@ -398,6 +421,9 @@ const usageSeries = Effect.gen(function* () {
         ...(filter.memberIds === undefined ? {} : { memberIds: filter.memberIds }),
         ...(filter.own === undefined ? {} : { own: filter.own }),
         ...(filter.privateOf === undefined ? {} : { privateOf: filter.privateOf }),
+        ...(filter.area === undefined ? {} : { area: filter.area }),
+        ...(filter.toolkit === undefined ? {} : { toolkit: filter.toolkit }),
+        ...(filter.tool === undefined ? {} : { tool: filter.tool }),
       },
       authIndexOf,
     ),

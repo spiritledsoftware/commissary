@@ -11,13 +11,15 @@
  * `GET` and `DELETE` answer `405`, as the 2026-07-28 revision's backward compatibility asks of a server that opens no
  * stream and keeps no session (and as the 2025 revisions allow).
  */
-import { Effect, Layer, type Schema } from "effect";
+import { Clock, Effect, Layer, type Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
-import { type AccessPrincipal, currentViewer } from "@commissary/auth";
+import { AccessPrincipal, currentViewer, viewerOf } from "@commissary/auth";
 import { boundedBodyText, CurrentOrg, CurrentOutboundPolicy, MCP_PATH } from "@commissary/core";
 import { panelPageUrl } from "@commissary/state";
-import type { ClientTool } from "../control-plane-part.ts";
+import { type Refusal, spendRefusalMessage } from "@commissary/state/spend";
+import type { ClientTool, ToolCallOutcome } from "../control-plane-part.ts";
 import { toolsControlPlane, ToolsEnv } from "../env.ts";
+import { writeToolCallRecord } from "../usage/record.ts";
 import {
   acceptedUnder,
   type Answer,
@@ -128,47 +130,52 @@ const declined = (params: Schema.JsonObject, key: string): boolean => {
   return isJsonObject(response) && response["action"] !== "accept";
 };
 
+/** A priced call a Spend limit without room refused (#199): the limit and when it starts over, as for a model. */
+const refusedText = (name: string, refusal: Refusal): string =>
+  `${spendRefusalMessage(refusal)}. ${name} was not called.`;
+
+/** What a call came to, as its usage record says it (#199). */
+const recordedOutcome = (outcome: Exclude<ToolCallOutcome, { outcome: "unknown" }>) => {
+  switch (outcome.outcome) {
+    case "connect":
+      return "needs_credential";
+    case "refused":
+      return "refused";
+    case "failed":
+      return "upstream_failure";
+    case "result":
+      return outcome.result["isError"] === true ? "tool_error" : "success";
+  }
+};
+
+/** The bytes of `value` as JSON (UTF-8), 0 for nothing: all a usage record keeps of a call's arguments and result. */
+const jsonBytes = (value: Schema.JsonObject | undefined): number =>
+  value === undefined ? 0 : new TextEncoder().encode(JSON.stringify(value)).byteLength;
+
 /**
- * `tools/call`: the tool's result, a short tool error, or, for a tool that needs the member's private credential, the
- * link to connect it. A stateless client that declares URL-mode elicitation is asked to open it (an
- * `InputRequiredResult`, MRTR) until it declines; any other client gets the link as a tool error, a 2025 client too, as
- * its elicitation would need the request's SSE stream (docs/ARCHITECTURE.md, "Tools"), and so does every client when
- * there is no URL to open.
+ * The tool result a call that reached a tool answers: the upstream's result, a short tool error (an upstream failure, a
+ * Spend limit without room), or, for a tool that needs the member's private credential, the link to connect it. A
+ * stateless client that declares URL-mode elicitation is asked to open it (an `InputRequiredResult`, MRTR) until it
+ * declines; any other client gets the link as a tool error, a 2025 client too, as its elicitation would need the
+ * request's SSE stream (docs/ARCHITECTURE.md, "Tools"), and so does every client when there is no URL to open.
  */
-const callTool = Effect.fnUntraced(function* (request: RpcRequest, context: Served) {
-  const name = request.params["name"];
-  const args = request.params["arguments"];
+const toolResult = Effect.fnUntraced(function* (
+  outcome: Exclude<ToolCallOutcome, { outcome: "unknown" }>,
+  name: string,
+  request: RpcRequest,
+  context: Served,
+) {
+  if (outcome.outcome === "result") return outcome.result;
 
-  if (typeof name !== "string" || (args !== undefined && !isJsonObject(args)))
-    return errorAnswer(200, request.id, RpcCode.invalidParams, "Invalid params");
+  if (outcome.outcome === "failed") return toolError(outcome.message);
 
-  const viewer = yield* currentViewer;
-  const policy = yield* CurrentOutboundPolicy;
-
-  const call = {
-    name,
-    arguments: args,
-    toolkits: context.toolkits === undefined ? undefined : [...context.toolkits],
-  };
-
-  const outcome = yield* toolsControlPlane("callTool", (stub) =>
-    stub.tools().callTool(viewer, call, policy),
-  );
-
-  const result = (value: Schema.JsonObject) => resultAnswer(request.id, framed(context.era, value));
-
-  if (outcome.outcome === "unknown")
-    return errorAnswer(200, request.id, RpcCode.invalidParams, `Unknown tool: ${name}`);
-
-  if (outcome.outcome === "result") return result(outcome.result);
-
-  if (outcome.outcome === "failed") return result(toolError(outcome.message));
+  if (outcome.outcome === "refused") return toolError(refusedText(name, outcome.refusal));
 
   const link = yield* connectLink(outcome.toolkit.id);
   const key = `connect_${outcome.toolkit.name}`;
 
   if (link !== CONNECT_PAGE && elicitsUrls(context.era) && !declined(request.params, key))
-    return result({
+    return {
       resultType: "input_required",
       inputRequests: {
         [key]: {
@@ -180,14 +187,70 @@ const callTool = Effect.fnUntraced(function* (request: RpcRequest, context: Serv
           },
         },
       },
-    });
+    };
 
-  return result(
-    toolError(
-      `${name} needs your own credential for the toolkit ${outcome.toolkit.name}, which you have not ` +
-        `connected. Connect it at ${link}, then call the tool again.`,
-    ),
+  return toolError(
+    `${name} needs your own credential for the toolkit ${outcome.toolkit.name}, which you have not ` +
+      `connected. Connect it at ${link}, then call the tool again.`,
   );
+});
+
+/**
+ * `tools/call`: the call in the org's ControlPlane, answered with its tool result ({@link toolResult}); a tool the
+ * member does not reach is an unknown tool. A call that reached a tool leaves a usage record (#199), written off the
+ * response path: who called, the toolkit and the tool, the outcome, the latency, the sizes of the arguments and of the
+ * result, and the cost; never their content. A call of an unknown tool leaves none: it names no toolkit or tool, only
+ * what the client typed.
+ */
+const callTool = Effect.fnUntraced(function* (request: RpcRequest, context: Served) {
+  const name = request.params["name"];
+  const args = request.params["arguments"];
+
+  if (typeof name !== "string" || (args !== undefined && !isJsonObject(args)))
+    return errorAnswer(200, request.id, RpcCode.invalidParams, "Invalid params");
+
+  const identity = yield* AccessPrincipal;
+  const viewer = viewerOf(identity);
+  const policy = yield* CurrentOutboundPolicy;
+  const org = yield* CurrentOrg;
+  const requestedAt = yield* Clock.currentTimeMillis;
+
+  const call = {
+    name,
+    arguments: args,
+    toolkits: context.toolkits === undefined ? undefined : [...context.toolkits],
+    apiKeyId: identity.principal.kind === "key" ? identity.principal.keyId : undefined,
+  };
+
+  const outcome = yield* toolsControlPlane("callTool", (stub) =>
+    stub.tools().callTool(viewer, call, policy),
+  );
+
+  if (outcome.outcome === "unknown")
+    return errorAnswer(200, request.id, RpcCode.invalidParams, `Unknown tool: ${name}`);
+
+  const value = yield* toolResult(outcome, name, request, context);
+  const answeredAt = yield* Clock.currentTimeMillis;
+  const { usage } = outcome;
+
+  yield* writeToolCallRecord({
+    requestId: crypto.randomUUID(),
+    orgId: org,
+    principalId: identity.principalId,
+    memberId: identity.memberId,
+    toolkitId: usage.toolkitId,
+    toolId: usage.toolId,
+    credential: usage.credential,
+    private: usage.private,
+    outcome: recordedOutcome(outcome),
+    requestedAt,
+    latencyMs: Math.max(0, answeredAt - requestedAt),
+    requestBytes: jsonBytes(args),
+    responseBytes: jsonBytes(value),
+    costMicros: usage.costMicros,
+  });
+
+  return resultAnswer(request.id, framed(context.era, value));
 });
 
 /** The answer to one request. */

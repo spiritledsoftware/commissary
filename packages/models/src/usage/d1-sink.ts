@@ -7,7 +7,7 @@
  * Go counterpart: the `usage.Plugin` registered by internal/redisqueue (HandleUsage -> Enqueue).
  */
 import { Context, Effect, Layer } from "effect";
-import { causeSummary, WorkerExecutionContext } from "@commissary/core";
+import { causeSummary, runAfterResponse } from "@commissary/core";
 import { insertUsageRecord } from "./d1.ts";
 import { UsagePricing } from "./pricing-service.ts";
 import type { UsageRecord } from "./record.ts";
@@ -71,27 +71,13 @@ export const D1UsageSink = Layer.effect(
 
           if (db === undefined) return Effect.void;
 
-          // Runs detached from the response (and possibly after it), keeping the invocation's context (loggers).
-          const write = Effect.runPromiseWith(context)(
+          // Detached from the response (and possibly after it), keeping the invocation's context (loggers).
+          return runAfterResponse(
             costed(pricing, record).pipe(
               Effect.provideService(ModelsEnv, env),
               Effect.flatMap((priced) => writeUsageRecord(db, priced)),
             ),
           );
-
-          const ctx = Context.getOrUndefined(context, WorkerExecutionContext);
-
-          if (ctx !== undefined) {
-            try {
-              ctx.waitUntil(write);
-
-              return Effect.void;
-            } catch {
-              // waitUntil is unavailable (invocation already finished): fall through and await the write.
-            }
-          }
-
-          return Effect.promise(() => write);
         }),
     });
   }),

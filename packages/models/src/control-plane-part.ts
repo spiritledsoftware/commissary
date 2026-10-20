@@ -107,15 +107,7 @@ import {
   outboundPolicy,
 } from "@commissary/core";
 import { QuotaReportStore } from "./quota/store.ts";
-import type { SpendSettings } from "./spend/model.ts";
-import {
-  type NewSpendLimit,
-  type SpendEntry,
-  type SpendOverview,
-  SpendService,
-  type SpendServiceResult,
-} from "./spend/service.ts";
-import { type SpendResult, SpendStore } from "./spend/store.ts";
+import type { SpendCredential, SpendService } from "@commissary/state/spend";
 import {
   type ControlPlanePart,
   type LeaseSource,
@@ -164,9 +156,6 @@ const MODELS_TABLES = [
   "private_key_changes",
   "grants",
   "grant_state",
-  "spend_limits",
-  "spend_counters",
-  "spend_settings",
   "oauth_sessions",
   "quota_sweep_lease",
 ] as const;
@@ -352,7 +341,10 @@ export class ModelsPart extends RpcTarget implements ControlPlanePart {
   readonly #modelGrants: GrantStore;
   /** The members' private provider key groups (sealed rows of their own, never config entries). */
   readonly #privateKeys: PrivateKeyStore;
-  /** The org's Spend limits (issue #71): what the management API does with them and the ledger the pool checks. */
+  /**
+   * The org's Spend limits (issue #71), the org-wide base's (`core.spend`, which tool calls are charged through too):
+   * the ledger the pool checks and charges, and the credentials' limits to forget when one goes.
+   */
   readonly #spend: SpendService;
   /** The org this object serves, from its name. */
   readonly #org: OrgId;
@@ -385,26 +377,7 @@ export class ModelsPart extends RpcTarget implements ControlPlanePart {
     this.#privateKeys = new PrivateKeyStore(ctx.storage.sql, transaction, core.secrets);
     this.#quota = new QuotaReportStore(ctx.storage.sql);
     this.#leases = new LeaseStore(ctx.storage.sql, () => Date.now());
-
-    this.#spend = new SpendService(new SpendStore(ctx.storage.sql), {
-      members: () => core.members(),
-      teams: () => core.teams(),
-      teamsOf: (memberId) => core.member(memberId)?.teams ?? [],
-      keys: () => core.apiKeys(Date.now()),
-      credentials: () =>
-        this.#pool.entries().flatMap(({ credential }) =>
-          credential.owner === undefined
-            ? [
-                {
-                  id: credential.id,
-                  authIndex: this.#authIndex(credential.id),
-                  provider: credential.provider,
-                  label: credential.label,
-                },
-              ]
-            : [],
-        ),
-    });
+    this.#spend = core.spend;
 
     this.#grants = new ResetGrantStore(ctx.storage.sql);
     this.#pool = new CredentialPool({
@@ -498,13 +471,11 @@ export class ModelsPart extends RpcTarget implements ControlPlanePart {
 
   /**
    * Zero data retention (ADR 0027): a member who leaves the org takes with them everything of theirs here: private
-   * accounts (with their cooldown and quota state), private provider key groups, the OAuth logins they started and their
-   * Spend limits. Shared credentials and other members' data stay. A member an org admin removed also takes the grants
+   * accounts (with their cooldown and quota state), private provider key groups and the OAuth logins they started (the base
+   * forgets their Spend limits). Shared credentials and other members' data stay. A member an org admin removed also takes the grants
    * that named them: whoever joins again under that email is a new member.
    */
   async memberLeft(member: string, how: "left" | "removed"): Promise<void> {
-    this.#spend.forget("member", member);
-
     const accounts = this.#pool
       .entries()
       .filter(({ credential }) => credential.owner === member)
@@ -521,10 +492,9 @@ export class ModelsPart extends RpcTarget implements ControlPlanePart {
     if (how === "removed") this.#modelGrants.forget({ kind: "member", id: member });
   }
 
-  /** Grants and Spend limits that named the team go with it. */
+  /** Grants that named the team go with it (the base forgets its Spend limits). */
   teamDeleted(team: string): void {
     this.#modelGrants.forget({ kind: "team", id: team });
-    this.#spend.forget("team", team);
   }
 
   /** Who is in which team moved: the members' reach changes with it. */
@@ -532,9 +502,23 @@ export class ModelsPart extends RpcTarget implements ControlPlanePart {
     this.#modelGrants.membershipChanged();
   }
 
-  /** A deleted key takes its Spend limits and counters along. */
-  apiKeysDeleted(ids: ReadonlyArray<string>): void {
-    for (const id of ids) this.#spend.forget("key", id);
+  /** The base forgets a deleted key's Spend limits and counters. */
+  apiKeysDeleted(): void {}
+
+  /** The shared credentials, named by their keyed `auth_index`: what a credential's Spend limit names. */
+  spendCredentials(): ReadonlyArray<SpendCredential> {
+    return this.#pool.entries().flatMap(({ credential }) =>
+      credential.owner === undefined
+        ? [
+            {
+              kind: "credential" as const,
+              id: credential.id,
+              publicId: this.#authIndex(credential.id),
+              label: `${credential.provider}: ${credential.label}`,
+            },
+          ]
+        : [],
+    );
   }
 
   /** Every private credential turns off or on again at once. */
@@ -616,53 +600,6 @@ export class ModelsPart extends RpcTarget implements ControlPlanePart {
    */
   importConfig(text: string, by: string, basedOn?: number): ImportResult {
     return this.#config.importDocument(text, by, basedOn);
-  }
-
-  // --- Spend limits (issue #71, `spend/service.ts`) -------------------------------------------------------------------
-
-  /** The limits `viewer` sees with their Spend so far, and the org's calendar. */
-  spendOverview(viewer: Viewer): SpendOverview {
-    this.#core.seedPlatformAdmins();
-
-    return this.#spend.overview(viewer);
-  }
-
-  createSpendLimit(
-    viewer: Viewer,
-    input: NewSpendLimit,
-    by: string,
-  ): SpendServiceResult<SpendEntry> {
-    this.#core.seedPlatformAdmins();
-
-    return this.#spend.create(viewer, input, by);
-  }
-
-  updateSpendLimit(
-    viewer: Viewer,
-    id: string,
-    revision: number,
-    amountMicros: number,
-    by: string,
-  ): SpendServiceResult<SpendEntry> {
-    this.#core.seedPlatformAdmins();
-
-    return this.#spend.update(viewer, id, revision, amountMicros, by);
-  }
-
-  removeSpendLimit(viewer: Viewer, id: string, revision: number): SpendServiceResult<SpendEntry> {
-    this.#core.seedPlatformAdmins();
-
-    return this.#spend.remove(viewer, id, revision);
-  }
-
-  /** Sets the org's time zone and first day of the week; counters of periods that begin differently start over. */
-  setSpendSettings(settings: {
-    readonly timeZone?: string | undefined;
-    readonly weekStart?: string | undefined;
-  }): SpendResult<SpendSettings> {
-    this.#core.seedPlatformAdmins();
-
-    return this.#spend.setSettings(settings);
   }
 
   // --- grants (ADR 0023, `grants/store.ts`) -----------------------------------------------------------------------

@@ -3,12 +3,54 @@
  * (the request log, newest first, keyset-paged) from the D1 usage history (`packages/models/src/management/usage-routes.ts`,
  * `packages/models/src/usage/d1.ts` `summarizeUsage` / `summarizeUsageSeries` / `listUsageRecords` / `rowToPayload`). Shared
  * with the browser: imports `effect` only.
+ *
+ * Two areas write usage records (#199): Models one per upstream attempt, Tools one per call of Commissary's MCP endpoint
+ * (`packages/tools/src/usage/record.ts`). Every read is of model attempts unless it asks for another `area` (`tools`,
+ * or `all` for both); naming a `toolkit` or a `tool` asks for tool calls. A tool call's record holds no arguments and no
+ * results: its toolkit, the tool's stable id, its outcome, its latency, its sizes and its cost.
  */
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import { managementErrors } from "./errors.ts";
 
 const optional = Schema.optionalKey;
+
+/** Who wrote a usage record: Models (an upstream attempt) or Tools (a tool call, #199). */
+export const UsageArea = Schema.Literals(["models", "tools"]);
+
+export type UsageArea = typeof UsageArea.Type;
+
+/**
+ * What a read covers: one area, or `all` of them. Unset: `models`, or `tools` with a `toolkit` or `tool` filter or a
+ * grouping by toolkit or tool, or `all` with a grouping by area.
+ */
+export const UsageAreaFilter = Schema.Literals(["models", "tools", "all"]);
+
+export type UsageAreaFilter = typeof UsageAreaFilter.Type;
+
+/**
+ * What a tool call came to: the upstream's result (`success`, or `tool_error` when it says `isError`), an upstream or
+ * transport failure (`upstream_failure`), a Spend limit without room (`refused`, before the upstream is reached), or a
+ * tool that needs the member's own credential, which they have not connected (`needs_credential`).
+ */
+export const ToolCallRecordOutcome = Schema.Literals([
+  "success",
+  "tool_error",
+  "upstream_failure",
+  "refused",
+  "needs_credential",
+]);
+
+export type ToolCallRecordOutcome = typeof ToolCallRecordOutcome.Type;
+
+/** The filters every read takes besides its own: the area, and a tool call's toolkit and tool (its stable id). */
+const areaFilters = {
+  area: optional(UsageAreaFilter),
+  /** A toolkit's id: its tool calls. */
+  toolkit: optional(Schema.String),
+  /** A tool's stable id, `<toolkit id>:<upstream name>`: its calls. */
+  tool: optional(Schema.String),
+};
 
 /** Keys a summary can be grouped by (`packages/models/src/usage/d1.ts` `GROUP_BY`; a contract test keeps them equal). */
 export const UsageGroupBy = Schema.Literals([
@@ -21,6 +63,9 @@ export const UsageGroupBy = Schema.Literals([
   "day",
   "key",
   "team",
+  "area",
+  "toolkit",
+  "tool",
 ]);
 
 export type UsageGroupBy = typeof UsageGroupBy.Type;
@@ -80,6 +125,7 @@ export const UsageSummaryQuery = Schema.Struct({
   auth_index: optional(Schema.String),
   failed: optional(Schema.Literals(["true", "false"])),
   limit: optional(Schema.Number),
+  ...areaFilters,
 });
 
 /** Series buckets: UTC hours or UTC days, each point keyed by its start (epoch milliseconds). */
@@ -87,8 +133,8 @@ export const UsageBucket = Schema.Literals(["hour", "day"]);
 
 export type UsageBucket = typeof UsageBucket.Type;
 
-/** Keys a series can be split by: one series per credential (keyed by `auth_index`), model or provider. */
-export const UsageSeriesGroupBy = Schema.Literals(["auth", "model", "provider"]);
+/** Keys a series can be split by: one series per credential (keyed by `auth_index`), model, provider, toolkit or tool. */
+export const UsageSeriesGroupBy = Schema.Literals(["auth", "model", "provider", "toolkit", "tool"]);
 
 export const UsagePoint = Schema.Struct({
   start: Schema.Number,
@@ -120,6 +166,7 @@ export const UsageSeriesQuery = Schema.Struct({
   auth_index: optional(Schema.String),
   member: optional(Schema.String),
   team: optional(Schema.String),
+  ...areaFilters,
 });
 
 const tokenBreakdown = Schema.Struct({
@@ -179,6 +226,19 @@ export const UsageRecord = Schema.Struct({
   cost_micros: optional(Schema.Number),
   /** The model had no price when the request was recorded (the cost is 0); absent with `cost_micros`. */
   unpriced: optional(Schema.Boolean),
+  /** `tools` on a tool call's record (#199); absent on a model attempt's. The fields below come with it. */
+  area: optional(UsageArea),
+  toolkit_id: optional(Schema.String),
+  /** The tool's stable id, `<toolkit id>:<upstream name>`. */
+  tool_id: optional(Schema.String),
+  outcome: optional(ToolCallRecordOutcome),
+  /** Which of the toolkit's credentials served the call; absent when none did (`needs_credential`). */
+  credential: optional(Schema.Literals(["shared", "private"])),
+  /** Bytes of the call's arguments and of its result as JSON; never their content. */
+  request_bytes: optional(Schema.Number),
+  response_bytes: optional(Schema.Number),
+  /** How an approval rule decided the call; absent until approvals exist (#201). */
+  approval: optional(Schema.String),
 });
 
 export type UsageRecord = typeof UsageRecord.Type;
@@ -201,6 +261,7 @@ export const UsageRecordsQuery = Schema.Struct({
   failed: optional(Schema.Literals(["true", "false"])),
   limit: optional(Schema.Number),
   before: optional(Schema.String),
+  ...areaFilters,
 });
 
 export type UsageRecordsQuery = typeof UsageRecordsQuery.Type;

@@ -1,0 +1,14 @@
+/**
+ * Prices of tool calls (#199, ADR 0038): what an org admin charges per call of an org toolkit's tools, on the toolkit or
+ * per tool (the tool's override wins), in micro-USD like costs (1 USD = 1,000,000). A call without a price is free and
+ * is not flagged, unlike a model without one: most tools cost nothing. A private toolkit takes no price.
+ */
+
+/** The highest price of one call, US$1,000,000: prices and the Spend they add up to stay exact integers. */
+export const MAX_PRICE_MICROS = 1_000_000_000_000;
+
+/** Why `price` cannot be a call's price, if it cannot. */
+export const priceRefusal = (price: number): string | undefined =>
+  Number.isSafeInteger(price) && price >= 0 && price <= MAX_PRICE_MICROS
+    ? undefined
+    : `price_micros is a whole number of micro-USD per call, from 0 to ${MAX_PRICE_MICROS}`;

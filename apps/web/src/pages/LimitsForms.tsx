@@ -178,6 +178,8 @@ const useSubjects = (): Readonly<Record<SpendSubjectKind, ReadonlyArray<Subject>
             label: key.mine ? key.name : `${key.name} (${key.member_email ?? key.member_id})`,
           }))
       : [],
+    // The form does not offer toolkit limits yet (#209).
+    toolkit_credential: [],
   };
 };
 

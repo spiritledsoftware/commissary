@@ -23,7 +23,7 @@ import { type CooldownSettings, coolingDisabledFor, markResult } from "./cooldow
 import { shouldSkipCredentialCooldown } from "./cooldown/classify.ts";
 import { type Credential, type CredentialState, emptyState } from "./model.ts";
 import { MerklePrefixMatcher } from "../session-routing/matcher.ts";
-import type { SpendPolicy } from "../spend/ledger.ts";
+import type { SpendPolicy } from "@commissary/state/spend";
 import { SessionCache } from "./selection/affinity.ts";
 import { spendLimitReached } from "./selection/failures.ts";
 import { canonicalModelKey } from "./selection/model-name.ts";

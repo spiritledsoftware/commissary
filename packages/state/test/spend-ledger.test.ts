@@ -1,8 +1,8 @@
 // The Spend ledger (issue #71): which limits a request meets before a credential is chosen, what it is charged to, and
 // when a period resets. Pure over an in-memory book with an explicit `now`.
 import { describe, expect, it } from "vitest";
-import { SpendLedger } from "../../src/spend/ledger.ts";
-import { MemorySpendBook, limit, USD } from "../support/spend.ts";
+import { SpendLedger } from "../src/spend/index.ts";
+import { MemorySpendBook, limit, USD } from "./support/spend.ts";
 
 const at = (iso: string): number => Date.parse(iso);
 
@@ -255,5 +255,73 @@ describe("SpendLedger.scopes", () => {
     spend(ledger, { memberId: "m1" }, -5, now);
 
     expect(ledger.gate({ memberId: "m1" }, now)).toBeUndefined();
+  });
+});
+
+describe("SpendLedger and tool calls (#199)", () => {
+  const toolkit = { id: "kit-1", shared: true, kind: "toolkit_credential" } as const;
+  const now = at("2026-03-10T12:00:00Z");
+
+  it("charges a call on a toolkit's shared credential to the member, their teams, the org, the toolkit and the key", () => {
+    const ledger = ledgerOf(
+      new MemorySpendBook([
+        limit("member", "m1", "day", 1 * USD),
+        limit("team", "t1", "day", 1 * USD),
+        limit("org", "", "day", 1 * USD),
+        limit("toolkit_credential", "kit-1", "day", 1 * USD),
+        limit("credential", "kit-1", "day", 1 * USD),
+        limit("key", "k1", "day", 1 * USD),
+      ]),
+      { m1: ["t1"] },
+    );
+
+    expect(ledger.scopes({ memberId: "m1", apiKeyId: "k1" }, toolkit)).toEqual([
+      { kind: "key", subject: "k1" },
+      { kind: "member", subject: "m1" },
+      { kind: "team", subject: "t1" },
+      { kind: "org", subject: "" },
+      { kind: "toolkit_credential", subject: "kit-1" },
+    ]);
+  });
+
+  it("refuses a call that any limit it would be charged to has no room under", () => {
+    const book = new MemorySpendBook([
+      limit("toolkit_credential", "kit-1", "day", 1 * USD),
+      limit("member", "m1", "month", 3 * USD),
+    ]);
+
+    const ledger = ledgerOf(book);
+    const caller = { memberId: "m1" };
+
+    expect(ledger.refusal(caller, toolkit, now)).toBeUndefined();
+    spend(ledger, caller, 1 * USD, now, toolkit);
+    expect(ledger.refusal(caller, toolkit, now)).toEqual({
+      kind: "toolkit_credential",
+      period: "day",
+      resetsAt: at("2026-03-11T00:00:00Z"),
+    });
+    // Another toolkit's shared credential has its own limit; the member's month still has room.
+    expect(ledger.refusal(caller, { ...toolkit, id: "kit-2" }, now)).toBeUndefined();
+
+    spend(ledger, caller, 2 * USD, now, { ...toolkit, id: "kit-2" });
+    expect(ledger.refusal(caller, { ...toolkit, id: "kit-2" }, now)?.kind).toBe("member");
+  });
+
+  it("refuses a call on a private credential only by its API key's limits", () => {
+    const book = new MemorySpendBook([
+      limit("member", "m1", "day", 1 * USD),
+      limit("key", "k1", "day", 1 * USD),
+    ]);
+
+    const ledger = ledgerOf(book);
+    const caller = { memberId: "m1", apiKeyId: "k1" };
+    const mine = { id: "kit-1", shared: false, kind: "toolkit_credential" } as const;
+
+    spend(ledger, { memberId: "m1" }, 1 * USD, now, toolkit);
+    expect(ledger.refusal(caller, mine, now)).toBeUndefined();
+    expect(ledger.refusal(caller, toolkit, now)?.kind).toBe("member");
+
+    spend(ledger, caller, 1 * USD, now, mine);
+    expect(ledger.refusal(caller, mine, now)?.kind).toBe("key");
   });
 });

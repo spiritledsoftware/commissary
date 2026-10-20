@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { WorkerExecutionContext, GLOBAL_ORG, OrgId } from "@commissary/core";
 import { scheduledTasks } from "../src/scheduled-tasks.ts";
 import {
+  deleteOrgUsage,
   insertUsageRecord,
   listUsageRecords,
   popUsageQueue,
@@ -35,7 +36,9 @@ import privateMigration from "../../../migrations/usage/0006_usage_private.sql?r
 import failureMigration from "../../../migrations/usage/0007_usage_failure.sql?raw";
 import hostedAuthMigration from "../../../migrations/usage/0008_hosted_auth.sql?raw";
 import dropHostedAuthMigration from "../../../migrations/usage/0009_drop_hosted_auth.sql?raw";
+import toolCallsMigration from "../../../migrations/usage/0010_usage_tool_calls.sql?raw";
 import { platformOf } from "@commissary/state";
+import { insertToolCallRecord } from "@commissary/tools/testing";
 import { envContext } from "./support/context.ts";
 
 /** The D1 sink without pricing: records are stored as they are published. */
@@ -89,6 +92,7 @@ describe("migration 0003 (usage org)", () => {
       ...statementsOf(memberMigration),
       ...statementsOf(privateMigration),
       ...statementsOf(failureMigration),
+      ...statementsOf(toolCallsMigration),
     ])
       await db.prepare(statement).run();
 
@@ -181,7 +185,11 @@ describe("migration 0007 (usage failure)", () => {
       )
       .run();
 
-    for (const statement of statementsOf(failureMigration)) await db.prepare(statement).run();
+    for (const statement of [
+      ...statementsOf(failureMigration),
+      ...statementsOf(toolCallsMigration),
+    ])
+      await db.prepare(statement).run();
 
     const [row] = await rows();
     expect(row).toMatchObject({
@@ -235,6 +243,7 @@ describe("migration 0004 (usage cost)", () => {
       ...statementsOf(memberMigration),
       ...statementsOf(privateMigration),
       ...statementsOf(failureMigration),
+      ...statementsOf(toolCallsMigration),
     ])
       await db.prepare(statement).run();
 
@@ -318,6 +327,7 @@ describe("migration 0005 (usage member)", () => {
       ...statementsOf(memberMigration),
       ...statementsOf(privateMigration),
       ...statementsOf(failureMigration),
+      ...statementsOf(toolCallsMigration),
     ])
       await db.prepare(statement).run();
 
@@ -400,7 +410,11 @@ describe("migration 0006 (usage private)", () => {
       )
       .run();
 
-    for (const statement of [...statementsOf(privateMigration), ...statementsOf(failureMigration)])
+    for (const statement of [
+      ...statementsOf(privateMigration),
+      ...statementsOf(failureMigration),
+      ...statementsOf(toolCallsMigration),
+    ])
       await db.prepare(statement).run();
 
     const [row] = await rows();
@@ -1046,5 +1060,211 @@ describe("usage session identity and base URL", () => {
     expect(plain).not.toHaveProperty("base_url");
     expect(same).toHaveProperty("session_id");
     expect(same).not.toHaveProperty("parent_session_id");
+  });
+});
+
+describe("tool calls (#199)", () => {
+  const acme = OrgId.make("acme-tools");
+
+  /** A tool call's record, written by Tools' own writer (what the reads below must understand). */
+  const insertToolCall = (fields: {
+    readonly requestId: string;
+    readonly requestedAt: number;
+    readonly toolkit?: string;
+    readonly tool?: string;
+    readonly memberId?: string;
+    readonly private?: boolean;
+    readonly costMicros?: number;
+    readonly org?: OrgId;
+  }) => {
+    const toolkit = fields.toolkit ?? "tk_a";
+
+    return insertToolCallRecord(db, {
+      requestId: fields.requestId,
+      orgId: fields.org ?? acme,
+      principalId: "key:k1",
+      memberId: fields.memberId,
+      toolkitId: toolkit,
+      toolId: `${toolkit}:${fields.tool ?? "search"}`,
+      credential: fields.private === true ? "private" : "shared",
+      private: fields.private === true,
+      outcome: "success",
+      requestedAt: fields.requestedAt,
+      latencyMs: 7,
+      requestBytes: 12,
+      responseBytes: 34,
+      costMicros: fields.costMicros ?? 0,
+    });
+  };
+
+  /** Two model attempts and three tool calls of `acme`. */
+  const mixed = async () => {
+    await insertUsageRecord(db, sampleRecord({ requestId: "m1", requestedAt: 1000, orgId: acme }));
+    await insertUsageRecord(db, sampleRecord({ requestId: "m2", requestedAt: 2000, orgId: acme }));
+    await insertToolCall({ requestId: "t1", requestedAt: 1500, costMicros: 1_000 });
+    await insertToolCall({ requestId: "t2", requestedAt: 2500, tool: "scrape", costMicros: 5_000 });
+    await insertToolCall({ requestId: "t3", requestedAt: 3000, toolkit: "tk_b", tool: "ping" });
+  };
+
+  const ids = (page: { readonly rows: ReadonlyArray<UsageRow> }) =>
+    page.rows.map((row) => row.request_id);
+
+  it("are left out of every read that does not ask for them, and of the export queue", async () => {
+    await mixed();
+
+    expect(ids(await listUsageRecords(db, acme, {}, authIndexOf))).toEqual(["m2", "m1"]);
+    expect(
+      (await summarizeUsage(db, acme, { groupBy: "model" }, authIndexOf)).totals.requests,
+    ).toBe(2);
+    expect(
+      (
+        await summarizeUsageSeries(
+          db,
+          acme,
+          { since: 0, until: 10_000, bucket: "hour", groupBy: "model" },
+          authIndexOf,
+        )
+      ).flatMap((series) => series.points.map((point) => point.requests)),
+    ).toEqual([2]);
+    expect(await unpricedModels(db, acme, {}, authIndexOf)).toEqual([]);
+
+    const exported = await popUsageQueue(db, acme, 100, 9000);
+
+    expect(exported.map((row) => row.request_id)).toEqual(["m1", "m2"]);
+    expect(await popUsageQueue(db, acme, 100, 9500)).toEqual([]);
+    // A tool call is never marked exported.
+    expect(
+      (await rows()).filter((row) => row.area === "tools").map((row) => row.exported_at),
+    ).toEqual([null, null, null]);
+  });
+
+  it("are read beside model attempts, by area, toolkit and tool, with what their record holds", async () => {
+    await mixed();
+
+    expect(ids(await listUsageRecords(db, acme, { area: "tools" }, authIndexOf))).toEqual([
+      "t3",
+      "t2",
+      "t1",
+    ]);
+    expect(ids(await listUsageRecords(db, acme, { area: "all" }, authIndexOf))).toEqual([
+      "t3",
+      "t2",
+      "m2",
+      "t1",
+      "m1",
+    ]);
+    // A toolkit or a tool asks for tool calls.
+    expect(ids(await listUsageRecords(db, acme, { toolkit: "tk_a" }, authIndexOf))).toEqual([
+      "t2",
+      "t1",
+    ]);
+    expect(ids(await listUsageRecords(db, acme, { tool: "tk_b:ping" }, authIndexOf))).toEqual([
+      "t3",
+    ]);
+
+    const [latest] = (await listUsageRecords(db, acme, { tool: "tk_a:scrape" }, authIndexOf)).rows;
+
+    expect(latest === undefined ? undefined : rowToPayload(latest, authIndexOf)).toMatchObject({
+      area: "tools",
+      toolkit_id: "tk_a",
+      tool_id: "tk_a:scrape",
+      outcome: "success",
+      credential: "shared",
+      request_bytes: 12,
+      response_bytes: 34,
+      auth_index: "",
+      api_key: "key:k1",
+      latency_ms: 7,
+      cost_micros: 5_000,
+      unpriced: false,
+      failed: false,
+    });
+
+    // Grouping by tool reads tool calls, by area both areas, unless the filter names an area.
+    const byTool = await summarizeUsage(db, acme, { groupBy: "tool" }, authIndexOf);
+
+    expect(byTool.totals).toMatchObject({ requests: 3, cost_micros: 6_000, total_tokens: 0 });
+    expect(byTool.groups.map((group) => [group.key, group.requests, group.cost_micros])).toEqual([
+      ["tk_a:scrape", 1, 5_000],
+      ["tk_a:search", 1, 1_000],
+      ["tk_b:ping", 1, 0],
+    ]);
+
+    const byArea = await summarizeUsage(db, acme, { groupBy: "area" }, authIndexOf);
+
+    expect(Object.fromEntries(byArea.groups.map((group) => [group.key, group.requests]))).toEqual({
+      models: 2,
+      tools: 3,
+    });
+
+    const byToolkit = await summarizeUsageSeries(
+      db,
+      acme,
+      { since: 0, until: 10_000, bucket: "hour", groupBy: "toolkit" },
+      authIndexOf,
+    );
+
+    expect(byToolkit.map((series) => [series.key, series.points[0]?.requests])).toEqual([
+      ["tk_a", 2],
+      ["tk_b", 1],
+    ]);
+    expect(
+      (await summarizeUsage(db, acme, { groupBy: "area", area: "models" }, authIndexOf)).groups,
+    ).toEqual([expect.objectContaining({ key: "models", requests: 2 })]);
+
+    // A tool call has no credential of Models': grouped by account, its key is empty, not an index of nothing.
+    const byAuth = await summarizeUsage(db, acme, { groupBy: "auth", area: "all" }, authIndexOf);
+
+    expect(byAuth.groups.find((group) => group.key === "")).toMatchObject({ requests: 3 });
+    expect(byAuth.groups.filter((group) => group.key !== "")).toEqual([
+      expect.objectContaining({ key: authIndexOf(sampleRecord().authId), requests: 2 }),
+    ]);
+
+    const authSeries = await summarizeUsageSeries(
+      db,
+      acme,
+      { since: 0, until: 10_000, bucket: "hour", groupBy: "auth", area: "tools" },
+      authIndexOf,
+    );
+
+    expect(authSeries.map((series) => series.key)).toEqual([""]);
+  });
+
+  it("keep a private call to its member, out of every org-wide read", async () => {
+    await insertToolCall({
+      requestId: "mine",
+      requestedAt: 1000,
+      memberId: "alice",
+      private: true,
+    });
+    await insertToolCall({ requestId: "org", requestedAt: 2000, memberId: "bob" });
+
+    const read = async (privateOf?: string) =>
+      ids(
+        await listUsageRecords(
+          db,
+          acme,
+          { area: "tools", ...(privateOf === undefined ? {} : { privateOf }) },
+          authIndexOf,
+        ),
+      );
+
+    expect(await read()).toEqual(["org"]);
+    expect(await read("alice")).toEqual(["org", "mine"]);
+    expect(await read("bob")).toEqual(["org"]);
+  });
+
+  it("are pruned with the org's records past its retention, and deleted with the org", async () => {
+    await mixed();
+    await insertToolCall({ requestId: "other", requestedAt: 1000, org: OrgId.make("other") });
+
+    expect(await pruneUsageRecords(db, acme, 2200)).toBe(3);
+    expect(ids(await listUsageRecords(db, acme, { area: "all" }, authIndexOf))).toEqual([
+      "t3",
+      "t2",
+    ]);
+
+    expect(await deleteOrgUsage(db, acme)).toMatchObject({ removed: 2, complete: true });
+    expect((await rows()).map((row) => row.request_id)).toEqual(["other"]);
   });
 });

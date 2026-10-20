@@ -25,6 +25,7 @@ import {
   type OutboundPolicy,
 } from "@commissary/core";
 import type { ControlPlanePart, OrgCore } from "@commissary/state";
+import type { ChargedCredential, Refusal, SpendCredential } from "@commissary/state/spend";
 import {
   connectGrant,
   type ToolGrantChange,
@@ -49,6 +50,7 @@ import {
   ToolkitStore,
   TOOLS_TABLES,
 } from "./toolkits/store.ts";
+import { priceRefusal } from "./toolkits/price.ts";
 import { secretRefusal } from "./toolkits/secret.ts";
 
 /** Why a call of the part was refused; the routes answer each with its status. */
@@ -139,6 +141,8 @@ export interface ToolkitExport {
   readonly source: string;
   readonly private: boolean;
   readonly accepts: CredentialsAccepted;
+  /** Micro-USD per call of an org toolkit's tools (#199). */
+  readonly price_micros?: number;
   readonly credentials: ReadonlyArray<{
     readonly slot: CredentialSlot;
     readonly kind: ToolkitSecret["kind"];
@@ -150,6 +154,7 @@ export interface ToolkitExport {
     readonly name?: string;
     readonly description?: string;
     readonly class?: "read" | "write";
+    readonly price_micros?: number;
   }>;
   /** An org toolkit's tool grants, in an org admin's export only. */
   readonly grants?: ReadonlyArray<ExportedToolGrant>;
@@ -184,22 +189,42 @@ export interface ToolCall {
   readonly arguments?: Schema.JsonObject | undefined;
   /** The toolkits `?toolkits=` names; undefined: every toolkit. */
   readonly toolkits?: ReadonlyArray<string> | undefined;
+  /** The API key the call came with, whose Spend limits a priced call counts toward (#199). */
+  readonly apiKeyId?: string | undefined;
+}
+
+/**
+ * What a call's usage record says of it (#199), beyond who called and how it went: never its arguments or its result.
+ */
+export interface CallUsage {
+  readonly toolkitId: string;
+  /** The tool's stable id, `<toolkit id>:<upstream name>`. */
+  readonly toolId: string;
+  /** Which of the toolkit's credentials served it; undefined when none could. */
+  readonly credential: CredentialSlot | undefined;
+  /** On a private credential, or of a private toolkit's tool: its member's alone. */
+  readonly private: boolean;
+  /** Micro-USD charged: the tool's price on a result, 0 when free, refused or failed upstream. */
+  readonly costMicros: number;
 }
 
 /**
  * What a call came to: `unknown`, a tool the member does not reach (answered as a tool that does not exist);
- * `connect`, a tool that needs a private credential the member has not connected; the upstream's `result`, an `isError`
- * one included; or `failed`, an upstream or transport failure, with a short message that quotes neither the source nor
- * the server's answer.
+ * `connect`, a tool that needs a private credential the member has not connected; `refused`, a priced call that a
+ * Spend limit without room keeps from the upstream (#199); the upstream's `result`, an `isError` one included; or
+ * `failed`, an upstream or transport failure, with a short message that quotes neither the source nor the server's
+ * answer. All but `unknown` say what the call's usage record holds.
  */
 export type ToolCallOutcome =
   | { readonly outcome: "unknown" }
   | {
       readonly outcome: "connect";
       readonly toolkit: { readonly id: string; readonly name: string };
+      readonly usage: CallUsage;
     }
-  | { readonly outcome: "result"; readonly result: Schema.JsonObject }
-  | { readonly outcome: "failed"; readonly message: string };
+  | { readonly outcome: "refused"; readonly refusal: Refusal; readonly usage: CallUsage }
+  | { readonly outcome: "result"; readonly result: Schema.JsonObject; readonly usage: CallUsage }
+  | { readonly outcome: "failed"; readonly message: string; readonly usage: CallUsage };
 
 /** A tool the MCP endpoint serves a member, and how they reach it. */
 interface ReachableTool {
@@ -300,6 +325,29 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   /** Read on every use: nothing to forget. */
   privateCredentialsChanged(): void {}
 
+  /**
+   * The org toolkits' shared credentials, by their toolkit (a toolkit holds at most one): what a toolkit's Spend limit
+   * names (#199). Its tool calls on the shared credential count toward it.
+   */
+  spendCredentials(): ReadonlyArray<SpendCredential> {
+    const shared = new Set(
+      this.#store
+        .credentials()
+        .filter((credential) => credential.owner === undefined)
+        .map((credential) => credential.toolkitId),
+    );
+
+    return this.#store
+      .toolkits()
+      .filter((toolkit) => toolkit.owner === undefined && shared.has(toolkit.id))
+      .map((toolkit) => ({
+        kind: "toolkit_credential",
+        id: toolkit.id,
+        publicId: toolkit.id,
+        label: toolkit.name,
+      }));
+  }
+
   // --- toolkits ---------------------------------------------------------------------------------------------------
 
   /** The toolkits `viewer` reaches; an org admin also gets the other members' private toolkits, as existence only. */
@@ -397,8 +445,9 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   }
 
   /**
-   * Renames a toolkit, or changes which credentials an org toolkit accepts. A credential it no longer accepts is kept,
-   * shown inactive and not used, until it accepts that kind again or its holder removes it.
+   * Renames a toolkit, changes which credentials an org toolkit accepts, or prices its calls (#199; `null` clears the
+   * price). A credential it no longer accepts is kept, shown inactive and not used, until it accepts that kind again or
+   * its holder removes it.
    */
   updateToolkit(
     viewer: Viewer,
@@ -407,6 +456,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     change: {
       readonly name?: string | undefined;
       readonly accepts?: CredentialsAccepted | undefined;
+      readonly price_micros?: number | null | undefined;
     },
     by: string,
   ): ToolsResult<ToolkitView> {
@@ -421,6 +471,10 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     if (change.accepts !== undefined && current.owner !== undefined && change.accepts !== "private")
       return refuse("invalid", "a private toolkit takes its owner's credential only");
 
+    const price = this.#priceChange(current, change.price_micros);
+
+    if (!price.ok) return price;
+
     const name = change.name ?? current.name;
 
     if (name !== current.name) {
@@ -431,7 +485,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
     this.#store.updateToolkit(
       id,
-      { name, accepts: change.accepts ?? current.accepts },
+      { name, accepts: change.accepts ?? current.accepts, priceMicros: price.value },
       by,
       Date.now(),
     );
@@ -454,7 +508,10 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     if (toolkit.revision !== revision)
       return refuse("conflict", `the toolkit is at revision ${toolkit.revision}, not ${revision}`);
 
-    this.#store.deleteToolkit(id);
+    this.#core.transaction(() => {
+      this.#store.deleteToolkit(id);
+      this.#core.spend.forget("toolkit_credential", id);
+    });
 
     return ok({ id });
   }
@@ -505,8 +562,16 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
     if (!target.ok) return target;
 
-    if (!this.#store.deleteCredential(id, target.value.owner))
-      return refuse("not_found", "no such credential is connected");
+    const removed = this.#core.transaction(() => {
+      if (!this.#store.deleteCredential(id, target.value.owner)) return false;
+
+      // The shared credential's Spend limits go with it, as a Models credential's do.
+      if (target.value.owner === undefined) this.#core.spend.forget("toolkit_credential", id);
+
+      return true;
+    });
+
+    if (!removed) return refuse("not_found", "no such credential is connected");
 
     return this.#viewOf(id, viewer);
   }
@@ -803,6 +868,10 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
    * is asked to connect theirs. The upstream session the call opens is kept for the next call on that credential, at
    * most seven days; a call that fails in a kept session drops it, so the next call opens a new one. A failure is
    * logged with the toolkit and the reason only.
+   *
+   * A priced call (#199) is checked against the Spend limits it would count toward before the upstream is reached, and
+   * refused when one has no room; a free call goes ahead whatever the limits. It is charged once the upstream answered
+   * with a result, an `isError` one included (the upstream did the work); a call that failed upstream is not.
    */
   async callTool(viewer: Viewer, call: ToolCall, policy: OutboundPolicy): Promise<ToolCallOutcome> {
     const reached = this.#reachable(viewer).find(
@@ -824,8 +893,38 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     const owner = own ? viewer.member : undefined;
     const secret = own || granted ? this.#store.secret(toolkit.id, owner) : undefined;
 
+    const usage = (credential: CredentialSlot | undefined, costMicros = 0): CallUsage => ({
+      toolkitId: toolkit.id,
+      toolId: stableId(toolkit.id, tool.upstreamName),
+      credential,
+      private: credential === "private" || toolkit.owner !== undefined,
+      costMicros,
+    });
+
     if (secret === undefined)
-      return { outcome: "connect", toolkit: { id: toolkit.id, name: toolkit.name } };
+      return {
+        outcome: "connect",
+        toolkit: { id: toolkit.id, name: toolkit.name },
+        usage: usage(undefined),
+      };
+
+    const slot: CredentialSlot = owner === undefined ? "shared" : "private";
+    const price = tool.priceMicros ?? 0;
+    const ledger = this.#core.spend.ledger();
+    const spender = { memberId: viewer.member, apiKeyId: call.apiKeyId };
+
+    // The toolkit's shared credential is a `toolkit_credential` limit's; a private one counts toward the API key's limits only.
+    const charged: ChargedCredential = {
+      id: toolkit.id,
+      shared: slot === "shared",
+      kind: "toolkit_credential",
+    };
+
+    if (price > 0) {
+      const refusal = ledger.refusal(spender, charged, Date.now());
+
+      if (refusal !== undefined) return { outcome: "refused", refusal, usage: usage(slot) };
+    }
 
     const connectedAt = this.#store.credential(toolkit.id, owner)?.connectedAt;
     // Sessions are the calling member's, also on the shared credential: an upstream's session state never carries over.
@@ -865,17 +964,19 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
           this.#store.deleteSession(toolkit.id, owner, caller);
       }
 
-      return { outcome: "failed", message: called.failure.message };
+      return { outcome: "failed", message: called.failure.message, usage: usage(slot) };
     }
 
     const { result, session } = called.success;
+
+    if (price > 0) ledger.charge(ledger.scopes(spender, charged), price, Date.now());
 
     if (session !== known && sameCredential) {
       this.#store.putSession(toolkit.id, owner, caller, session, Date.now());
       await this.#core.wakeUpChanged(this.#store.pruneSessions(Date.now()));
     }
 
-    return { outcome: "result", result };
+    return { outcome: "result", result, usage: usage(slot, price) };
   }
 
   /**
@@ -1054,18 +1155,25 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       if (taken) return refuse("name_taken", `another tool is named ${full.name}`);
     }
 
+    // The whole override: a price the input leaves out is cleared, as every other field is.
+    const price = this.#priceChange(toolkit, input.price_micros ?? null);
+
+    if (!price.ok) return price;
+
     const value = {
       hidden: input.hidden ?? false,
       name,
       description: input.description ?? undefined,
       toolClass: input.class ?? undefined,
+      priceMicros: price.value,
     };
 
     const empty =
       !value.hidden &&
       value.name === undefined &&
       value.description === undefined &&
-      value.toolClass === undefined;
+      value.toolClass === undefined &&
+      value.priceMicros === undefined;
 
     // Past every revision the row reached, a tombstone's included.
     const next = (stored?.revision ?? 0) + 1;
@@ -1080,6 +1188,25 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     return resolved === undefined
       ? ok({ id: stableId(id, tool), removed: true })
       : ok(toolView(resolved));
+  }
+
+  /**
+   * The price a write leaves on `toolkit` or one of its tools: `change` (`null` clears it, `undefined` keeps the
+   * toolkit's), or why not. A private toolkit takes none: a member may not price the tools of their own (ADR 0038).
+   */
+  #priceChange(
+    toolkit: Toolkit,
+    change: number | null | undefined,
+  ): ToolsResult<number | undefined> {
+    if (change === undefined) return ok(toolkit.priceMicros);
+
+    if (change === null) return ok(undefined);
+
+    if (toolkit.owner !== undefined)
+      return refuse("invalid", "a private toolkit's tools take no price");
+    const invalid = priceRefusal(change);
+
+    return invalid === undefined ? ok(change) : refuse("invalid", invalid);
   }
 
   // --- export -----------------------------------------------------------------------------------------------------
@@ -1116,6 +1243,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
           source: toolkit.source,
           private: toolkit.owner !== undefined,
           accepts: toolkit.accepts,
+          ...(toolkit.priceMicros === undefined ? {} : { price_micros: toolkit.priceMicros }),
           credentials,
           overrides: this.#store.overrides(toolkit.id).map((override) => ({
             tool: override.upstreamName,
@@ -1123,6 +1251,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
             ...(override.name === undefined ? {} : { name: override.name }),
             ...(override.description === undefined ? {} : { description: override.description }),
             ...(override.toolClass === undefined ? {} : { class: override.toolClass }),
+            ...(override.priceMicros === undefined ? {} : { price_micros: override.priceMicros }),
           })),
           ...(admin && toolkit.owner === undefined
             ? {
@@ -1286,6 +1415,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
         ...(admin && toolkit.owner === undefined ? { private_count: privateCount } : {}),
       },
       tool_list: this.#listStatus(toolkit),
+      ...(toolkit.priceMicros === undefined ? {} : { price_micros: toolkit.priceMicros }),
       ...(resolution.renameSuggested.has(toolkit.id) ? { rename_suggested: true } : {}),
       ...(resolution.shadowed.has(toolkit.id) ? { shadowed: true } : {}),
     };
@@ -1333,6 +1463,7 @@ const toolView = (tool: ResolvedTool): ToolView => {
     ...(tool.tool?.inputSchema === undefined ? {} : { input_schema: tool.tool.inputSchema }),
     ...(tool.tool?.annotations === undefined ? {} : { annotations: tool.tool.annotations }),
     class: tool.toolClass,
+    ...(tool.priceMicros === undefined ? {} : { price_micros: tool.priceMicros }),
     flags: {
       shortened: tool.shortened,
       renamed: tool.renamed,
@@ -1349,6 +1480,7 @@ const toolView = (tool: ResolvedTool): ToolView => {
             ...(override.name === undefined ? {} : { name: override.name }),
             ...(override.description === undefined ? {} : { description: override.description }),
             ...(override.toolClass === undefined ? {} : { class: override.toolClass }),
+            ...(override.priceMicros === undefined ? {} : { price_micros: override.priceMicros }),
             updated_at: iso(override.updatedAt),
             updated_by: override.updatedBy,
           },

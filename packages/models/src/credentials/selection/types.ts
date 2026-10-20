@@ -3,7 +3,7 @@
  * RPC boundary. Requests are decoded with these schemas inside the DO; results are plain objects.
  */
 import { Schema } from "effect";
-import { SpendScope } from "../../spend/model.ts";
+import { SpendScope } from "@commissary/state/spend";
 import { AuthKind, Credential, CredentialError } from "../model.ts";
 
 const optional = Schema.optionalKey;

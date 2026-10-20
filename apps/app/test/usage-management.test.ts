@@ -1,7 +1,9 @@
 // /v9/management/observability/usage/*: queue, records and summary (D1).
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { makeHarness, resetControlPlane, token } from "./support/management.ts";
+import { GLOBAL_ORG } from "@commissary/core";
 import { insertUsageRecord, resetUsageDb, sampleRecord } from "@commissary/models/testing";
+import { insertToolCallRecord } from "@commissary/tools/testing";
 
 const harness = makeHarness();
 
@@ -149,5 +151,78 @@ describe("GET /records and /summary", () => {
     });
     const byModel = await json(`${BASE}/summary`);
     expect((byModel.body as { group_by: string }).group_by).toBe("model");
+  });
+});
+
+describe("tool calls (#199)", () => {
+  /** A tool call's record of the `global` org, written by Tools' own writer. */
+  const seedToolCall = () =>
+    insertToolCallRecord(db, {
+      requestId: "t1",
+      orgId: GLOBAL_ORG,
+      principalId: "user:a",
+      memberId: undefined,
+      toolkitId: "tk_a",
+      toolId: "tk_a:search",
+      credential: "shared",
+      private: false,
+      outcome: "tool_error",
+      requestedAt: 1_700_000_003_000,
+      latencyMs: 9,
+      requestBytes: 10,
+      responseBytes: 20,
+      costMicros: 0,
+    });
+
+  type Records = { readonly records: ReadonlyArray<Record<string, unknown>> };
+
+  const requestIds = async (query: string) =>
+    // SAFETY: the records route answers `{records}`.
+    ((await json(`${BASE}/records${query}`)).body as Records).records.map(
+      (record) => record["request_id"],
+    );
+
+  it("are read only when asked for, by area, toolkit or tool, and never exported", async () => {
+    await seed();
+    await seedToolCall();
+
+    expect(await requestIds("")).toEqual(["r3", "r2", "r1"]);
+    expect(await requestIds("?area=all")).toEqual(["t1", "r3", "r2", "r1"]);
+    expect(await requestIds("?toolkit=tk_a")).toEqual(["t1"]);
+    expect(await requestIds("?tool=tk_a:other")).toEqual([]);
+
+    const tools = await json(`${BASE}/records?area=tools`);
+
+    // SAFETY: the records route answers `{records}`.
+    expect((tools.body as Records).records).toEqual([
+      expect.objectContaining({
+        area: "tools",
+        toolkit_id: "tk_a",
+        tool_id: "tk_a:search",
+        outcome: "tool_error",
+        credential: "shared",
+        request_bytes: 10,
+        response_bytes: 20,
+        failed: true,
+        fail: { status_code: 200 },
+        cost_micros: 0,
+      }),
+    ]);
+
+    const summary = await json(`${BASE}/summary?group_by=toolkit&area=tools`);
+
+    expect(summary.body).toMatchObject({
+      group_by: "toolkit",
+      totals: { requests: 1, failed: 1 },
+      groups: [{ key: "tk_a", requests: 1 }],
+    });
+    expect((await json(`${BASE}/records?area=nope`)).status).toBe(400);
+
+    // SAFETY: the queue answers an array of records.
+    const queue = (await json(`${BASE}/queue?count=10`)).body as ReadonlyArray<
+      Record<string, unknown>
+    >;
+
+    expect(queue.map((record) => record["request_id"])).toEqual(["r1", "r2", "r3"]);
   });
 });

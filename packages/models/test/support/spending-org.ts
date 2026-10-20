@@ -8,7 +8,7 @@ import { OrgId } from "@commissary/core";
 import { controlPlaneOf } from "@commissary/state";
 import { FULL_ACCESS } from "../../src/credentials/ownership.ts";
 import { claudeFile } from "./control-plane.ts";
-import { USD } from "./spend.ts";
+import { USD } from "@commissary/state/testing";
 
 /** The owner of the org, as the org-wide base answers its caller. */
 export const OWNER = { role: "owner", sensitive: true } as const;
@@ -45,13 +45,11 @@ export const spendingOrg = async () => {
   };
 
   const limit = async (kind: "member" | "key" | "org", subject: string) => {
-    const made = await stub
-      .models()
-      .createSpendLimit(
-        viewer,
-        { kind, subject, period: "day", amountMicros: 100 * USD },
-        "test@example.com",
-      );
+    const made = await stub.createSpendLimit(
+      viewer,
+      { kind, subject, period: "day", amountMicros: 100 * USD },
+      "test@example.com",
+    );
 
     if (!made.ok) throw new Error(`${made.error}: ${made.message}`);
   };

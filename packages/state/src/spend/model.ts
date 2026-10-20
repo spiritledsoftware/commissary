@@ -3,7 +3,7 @@
  * counterpart.
  *
  * A **Spend limit** caps the Cost (micro-USD) that one subject may spend in one period. The subject is a member, a team,
- * the org, a shared credential or an API key; the periods are a day, a week and a month in the org's time zone
+ * the org, a shared credential (a Models credential, or a toolkit's shared credential, #199) or an API key; the periods are a day, a week and a month in the org's time zone
  * (`period.ts`). Spend is counted per **scope** (a subject) and period, not per limit: an admin's and a member's limit
  * on one API key share a counter. A counter starts when the first limit of its scope and period is written, and goes
  * when the last one is deleted.
@@ -11,9 +11,19 @@
 import { Schema } from "effect";
 import type { Period, WeekStart } from "./period.ts";
 
-export const SUBJECT_KINDS = ["member", "team", "org", "credential", "key"] as const;
+export const SUBJECT_KINDS = [
+  "member",
+  "team",
+  "org",
+  "credential",
+  "key",
+  "toolkit_credential",
+] as const;
 
 export type SubjectKind = (typeof SUBJECT_KINDS)[number];
+
+/** The kinds of a shared credential's limit: a Models credential's (by its id), or a toolkit's shared credential's. */
+export type CredentialKind = Extract<SubjectKind, "credential" | "toolkit_credential">;
 
 /** The subject of the `org` kind: the org itself has no id. */
 export const ORG_SUBJECT = "";
@@ -34,7 +44,7 @@ export type LimitSource = (typeof LIMIT_SOURCES)[number];
 export interface SpendLimit {
   readonly id: string;
   readonly kind: SubjectKind;
-  /** A member, team, credential or API key id; empty for the org. */
+  /** A member, team, credential, API key or toolkit id; empty for the org. */
   readonly subject: string;
   readonly period: Period;
   /** Micro-USD (1 USD = 1,000,000), at least 0 (nothing may be spent). */
@@ -66,12 +76,20 @@ export interface Refusal {
  * What the Spend limits say about a request before a credential is chosen:
  * - `refuse`: a limit of the request's API key has no room, so nothing may serve it;
  * - `sharedBlocked`: a member, team or org limit has no room, so only the member's private credentials may serve it;
- * - `credentials`: the shared credentials whose own limit has no room, skipped like unavailable ones.
+ * - `credentials`: the shared Models credentials whose own limit has no room, skipped like unavailable ones.
  */
 export interface SpendGate {
   readonly refuse?: Refusal;
   readonly sharedBlocked?: Refusal;
   readonly credentials: ReadonlyMap<string, Refusal>;
+}
+
+/** The credential that serves a request or a tool call: a Models credential (the default kind) or a toolkit's. */
+export interface ChargedCredential {
+  /** A Models credential's id, or the toolkit's id for its shared credential. */
+  readonly id: string;
+  readonly shared: boolean;
+  readonly kind?: CredentialKind | undefined;
 }
 
 /** Who a request is for, as the limits see it. */
