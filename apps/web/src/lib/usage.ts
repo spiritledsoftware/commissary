@@ -111,7 +111,8 @@ export interface UsageFilters {
 export type FilterKey = keyof UsageFilters;
 
 export interface Breakdown {
-  readonly id: Exclude<UsageGroupBy, "day">;
+  /** The page reads model attempts: tool calls' groupings (#199) wait for the Tools pages (#209). */
+  readonly id: Exclude<UsageGroupBy, "day" | "area" | "toolkit" | "tool">;
   readonly label: string;
   /** The column heading. */
   readonly noun: string;
