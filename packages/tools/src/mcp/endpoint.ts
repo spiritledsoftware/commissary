@@ -100,14 +100,14 @@ const listed = (tool: ClientTool): Schema.JsonObject => ({
 
 /**
  * A hosted agent's run (#227): its definition's tool scope, as the shared agent itself or as its member, and its
- * starter, the caller of its approvals; `undefined` for any other caller.
+ * starter (if anyone started it), the caller of its approvals; `undefined` for any other caller.
  */
 const runToolReach = (identity: AccessIdentity): RunToolReach | undefined =>
   identity.principal.kind === "run"
     ? {
         toolScope: identity.principal.reach.toolScope,
         asAgent: isSharedAgentRun(identity.principal),
-        starterMember: identity.principal.starter.id,
+        starterMember: identity.principal.starter?.id,
       }
     : undefined;
 

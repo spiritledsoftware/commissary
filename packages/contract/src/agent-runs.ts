@@ -22,10 +22,10 @@ import { managementErrors } from "./errors.ts";
 const optional = Schema.optionalKey;
 
 /**
- * How a run was started (GLOSSARY "Trigger kind"): the panel's chat, for now. The agents toolkit (#229), schedules and
- * webhooks (#231) add theirs.
+ * How a run was started (GLOSSARY "Trigger kind"): the panel's chat, or a trigger configured on the agent, a schedule or
+ * a webhook (`./agent-triggers.ts`, #231). The agents toolkit (#229) adds its own.
  */
-export const TriggerKind = Schema.Literals(["chat"]);
+export const TriggerKind = Schema.Literals(["chat", "schedule", "webhook"]);
 
 export type TriggerKind = typeof TriggerKind.Type;
 
@@ -95,7 +95,9 @@ export const RunView = Schema.Struct({
   id: Schema.String,
   agent: Schema.Struct({ id: Schema.String, name: optional(Schema.String) }),
   trigger: TriggerKind,
-  /** Who started it; a run no one started (a schedule's or a webhook's, #231) will have none. */
+  /** The trigger configured on the agent that started it (a schedule or a webhook); none for a chat. */
+  trigger_id: optional(Schema.String),
+  /** Who started it; none for a run no one started (a shared agent's schedule or webhook, #231). */
   starter: optional(RunStarterView),
   state: RunState,
   created_at: Schema.String,

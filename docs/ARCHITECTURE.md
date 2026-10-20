@@ -3112,8 +3112,10 @@ the package checks `isHosted` before it counts, refuses or reads anything, and i
   seconds like `@commissary/auth`'s standing) picks one. The API Worker's
   client gate calls `limitClientRate` after authentication and the standing checks (it left `@commissary/auth`'s hosted
   gate, which no longer knows plans), so every client-facing surface behind that gate is covered, and the MCP endpoint
-  (#197) and webhook triggers (#231) join it by sitting behind the gate or calling the same function. The management
-  API has none. Like before, a deployment without the bindings has no ceiling and a failing binding lets the
+  (#197) and webhook triggers (#231) join it by sitting behind the gate or calling the same function (a proven
+  delivery; every delivery is counted before its proof on a bucket of its own in the same bindings,
+  `limitWebhookAttempts`, key `webhook:<org>`, so unproven ones never use up the org's ceiling). The management API has
+  none. Like before, a deployment without the bindings has no ceiling and a failing binding lets the
   request through (logged); an org whose plan cannot be read gets Free's ceiling. The ceilings are constants; only the
   namespaces are deployment settings (`ORG_RATE_LIMIT_NAMESPACE_ID`, `ORG_RATE_LIMIT_PAYG_NAMESPACE_ID`, `docs/DEPLOY.md`).
   Since the bindings' limits are fixed, an org whose rate a platform admin raised above its plan's is counted by its
@@ -4298,11 +4300,12 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
 The Agents area (ADR 0040) holds **hosted agents**: an agent's definition saved in Commissary (name, description,
 instructions, one model with an optional thinking level, a tool scope), its **runs** (GLOSSARY "Agent run", "Turn") on
 pi-durable, and later its calls as a tool of the agents toolkit (#229). It saves definitions, private and shared, the
-grants on shared agents and their watchers (#226), and runs them as their starter asks, one turn at a time (#227);
-triggers other than chat, watchers acting in runs, sandboxes and the panel's chat come later (#230 to #234). The package (`@commissary/agents`) is shaped like Tools: entry
+grants on shared agents and their watchers (#226), runs them as their starter asks, one turn at a time (#227), and
+starts runs from the schedules and webhooks configured on them (#231); watchers acting in runs, sandboxes and the
+panel's chat come later (#230, #232 to #234). The package (`@commissary/agents`) is shaped like Tools: entry
 points `./api`, `./management`, `./state` and `./testing`, a lint boundary (`boundaries/agents-imports`) and a
 ControlPlane part, `AgentsPart`, reached as `stub.agents().x(…)`. Its state is the ControlPlane's (`AGENTS_TABLES`:
-`agents` and `agent_grants`, dropped by `wipe()`); its view of `env` (`AgentsBindings`) is the ControlPlane namespace and
+`agents`, `agent_grants`, `agent_runs` and `agent_triggers`, dropped by `wipe()`); its view of `env` (`AgentsBindings`) is the ControlPlane namespace and
 the deployment's Dynamic Workers binding `LOADER`.
 
 - **Presence** (ADR 0043): the area exists exactly when `LOADER` is bound (`agentsPresent`), on the app Worker, which
@@ -4363,8 +4366,9 @@ the deployment's Dynamic Workers binding `LOADER`.
   class with a gateway that answers `503`. A start names the run (org and id), and the object takes it only when that
   is its own name; under `alchemy dev` only, where the dev registry drops `ctx.id.name`, the dev entry lets it through.
 - **The org's index** (`agents/runs/store.ts`, table `agent_runs` of `AGENTS_TABLES`, dropped by `wipe()`): one row per
-  run with its agent, trigger kind (`chat`, the only one for now), starter (a member, for now; two columns, so child
-  runs and runs no one started need no migration), idempotency key, state as its object last reported it
+  run with its agent, trigger kind (`chat`, `schedule` or `webhook`) and trigger (`trigger_id`, none for `chat`),
+  starter (a member, or none for a run no one started, below; two columns, so child runs need no migration),
+  idempotency key, state as its object last reported it
   (`runStateChanged`; an ended run stays ended) and the definition its latest turn read (`turn_definition`). It lists a
   member's runs, finds the run an idempotency key already started and resolves a run's principal without reaching the
   run. The cross-org suite checks it (`controlplane: agent runs`) and the runs' objects (`agent runs' objects`).
@@ -4428,10 +4432,99 @@ the deployment's Dynamic Workers binding `LOADER`.
 - **Management routes** (`agents/management/run-routes.ts`, `AgentRunsGroup` in `@commissary/contract/agent-runs`):
   `POST /agents/:id/runs` (start, as the asking member, trigger `chat`), `GET /agent-runs`, `GET /agent-runs/:run`,
   `POST /agent-runs/:run/messages`, `POST /agent-runs/:run/wait` (default 30 s) and `POST /agent-runs/:run/cancel`.
-  Only a run's starter sees it for now (watchers and org admins with #232); any other run answers like an unknown one.
+  Only a run's starter sees it for now (watchers and org admins with #232); any other run answers like an unknown one,
+  so a shared agent's triggered runs, which no one started, are seen by no one until #232.
 - **pi packages**: `@earendil-works/*` 1.3.0, pinned exactly (their APIs are experimental), imported only by
   `agents/runs/pi.ts`, an adapter the object loads with a dynamic `import()` on its first event. The adapter gives pi-ai
   one OpenAI-compatible provider (`commissary`) whose `fetch` is the run gateway, and installs the tools the MCP
   endpoint lists for the run (`@earendil-works/pi-mcp` over the same `fetch`). The cost, measured with `wrangler deploy
   --dry-run` and `wrangler check startup` (median of nine): the API Worker is 3,041 KiB gzipped with a 68.8 ms startup,
   against 2,665 KiB and 64.4 ms with the pi packages stubbed out.
+
+### Triggers (#231)
+
+- **The model** (`agents/triggers/`, table `agent_triggers` of `AGENTS_TABLES`): a trigger is configured on one agent:
+  its kind (`schedule` or `webhook`), a name, whether it is enabled, an input (a schedule's first message, required; a
+  webhook's template, optional), the kind's own fields (a schedule's cron expression and time zone) and a revision.
+  Every kind ends in `Runs.startTriggered`, which records the run's kind and trigger, keys it by the delivery's
+  idempotency key and decides its starter; runs, the run's principal and usage records know nothing else of kinds.
+  Starting a run through a trigger needs nothing but the trigger: no member is present. The part's runs and triggers
+  read one clock (`useClock` puts a test's `TestClock` in its place).
+- **Starters**: a private agent's triggered run counts as started by its member (it acts as them, as their chat runs
+  do; refused while the org serves no private agents or the member left). A shared agent's triggered run has **no
+  starter** (ADR 0040: a run records its starter "if anyone did"), and so, until #232, **no one sees it, cancels it or
+  answers its approvals**: the run routes show a run to its starter only, and under an approval rule of the caller its
+  tool calls wait for an approver that only #232's watchers will be. Its turns check no starter (its agent's state
+  alone decides), Commissary Cloud checks no starter's standing, and its usage records' `starter` is `NULL` (not a
+  member, so no filter by member or starter matches it). The panel's notice that an unattended agent acts with no one
+  present (ADR 0044) comes with the panel (#233).
+- **Schedules** (`triggers/schedule.ts`, `triggers/schedule-object.ts`): a five-field cron expression (minute to day of
+  week, no seconds) in an IANA time zone, through Effect's `Cron`; one that matches no date is refused. Each schedule
+  has a Durable Object of its own, `AgentSchedule` (`<org>:<trigger>`, `agentScheduleName`), whose alarm is its next
+  tick. It lives in the API Worker beside the runs' objects, not in the state Worker, because a tick starts a run's
+  object, which the state Worker cannot bind (the API Worker binds the state Worker's objects: a binding back would be
+  a cycle no fresh stage could deploy); the app Worker binds it by the API Worker's script name, as `AGENT_RUN`. The
+  management routes arm it (`arm`: it asks the ControlPlane for the next tick and sets the alarm) when a schedule is
+  added, enabled or edited. At the alarm it first asks the Platform registry whether the org still exists (a deleted
+  org's object deletes itself without reaching the org's ControlPlane, which would be created again, empty), then
+  fires the tick (the part's `fireSchedule`), which starts the tick's run keyed by the tick, so a retried alarm finds
+  that run; it starts the run's object with the schedule's input (a run this attempt created whose object cannot be
+  reached is ended, and the schedule goes on), then sets the next tick. A ControlPlane that cannot be reached is asked
+  again a minute later for the same tick. A tick while the agent is disabled starts nothing and is not caught up; a
+  disabled schedule has no alarm until it is armed again.
+- **Gone schedules' objects** (`agent_schedule_objects`): the ControlPlane cannot reach the objects, so it
+  lists every schedule whose object may exist, from its creation until its object was deleted, apart from the
+  triggers' rows. A schedule removed (by its route), with its agent (the agent's route) or with its member (the app
+  Worker's member removal and account deletion) leaves its row there, and the route then sweeps the org's gone
+  schedules' objects (`sweepRetiredSchedules`, best effort, three pages of twenty); one the sweep missed deletes itself
+  at its next alarm, when it finds its schedule gone, and org deletion deletes every listed object.
+- **Webhooks** (`triggers/webhook.ts`, `triggers/webhook-route.ts`): `POST /agent-webhooks/<org>/<trigger>` on the
+  API Worker (not `/webhooks`, whose `/webhooks/polar` is the app Worker's), a client API path
+  (`AGENT_WEBHOOK_PREFIX` in `CLIENT_API_PREFIXES`, so the app host's zone routes and the Access bypass cover it) that
+  the gate lets through (`isPublic`): it proves itself with the trigger's secret, not a key. A secret is
+  `whsec_` and 32 random bytes, sealed in the ControlPlane (`agent_triggers/<id>`), shown once on creation and on
+  rotation (`POST .../secret`, the old one stops at once); the URL is always shown. The route, in this order: a
+  malformed address answers `401` before the body is read; the Platform registry must know the org (as for an API
+  key, so a made-up org id never instantiates a ControlPlane), else `401`; on Commissary Cloud every delivery to a
+  known org, proven or not, counts against the org's webhook bucket (`limitWebhookAttempts`: key `webhook:<org>` in
+  the plan's rate-limiting binding, as many a minute as the org's ceiling, Pay as you go's binding for a raised one)
+  before the org's ControlPlane is asked anything, so a flood of unproven deliveries is refused there (`429`) instead
+  of loading it, and never uses up the ceiling the org's API keys count against; the body is at most 1 MiB (`413
+  body_too_large`); then the ControlPlane checks the proof in constant time, so the secret never leaves it; a proven
+  delivery then counts against the org's request-rate ceiling (`limitClientRate`), as an API key's request does. A
+  delivery proves itself with `Authorization: Bearer <secret>`, or with a signature, Standard Webhooks' scheme under
+  Commissary's header names: `X-Commissary-Delivery: <id>`, `X-Commissary-Timestamp: <unix seconds>` and
+  `X-Commissary-Signature: sha256=<hex>`, an HMAC-SHA256 under the secret of `<id>.<timestamp>.<raw body>`, whose
+  timestamp must be within five minutes of the ControlPlane's clock (Standard Webhooks' tolerance, as Polar's
+  webhooks, `billing/polar.ts`). A captured signed delivery cannot be replayed later, and within the five minutes a
+  replay either names the signed id, which finds the run that id started, or proves nothing. An unknown trigger and a
+  wrong or stale proof answer the same `401`, after the same work. Its run is keyed by its delivery id
+  (`X-Commissary-Delivery`, which a signature signs, else Standard Webhooks' `Webhook-Id`), else, for a bearer
+  delivery without one, by the body's SHA-256 and the minute: senders should send `X-Commissary-Delivery`, since
+  without it identical bodies within a minute are one delivery (one run) and a retry that crosses a minute's boundary
+  starts a second run. The first turn is the template with each
+  `{{body}}` replaced by the body, or the body alone (`422` when that is empty). The route answers `202 {run}` once the
+  run's object took that turn, never waiting for the answer; a disabled trigger or agent answers `409`.
+- **What a new kind adds** (the extension point): its literal and fields in the contract (`ConfiguredTriggerKind`,
+  `CreateTrigger`, `TriggerView`), its stored config (`TriggerConfig`), its row in the kinds' table (`triggers/kinds.ts`,
+  `TRIGGER_KINDS`: whether its input is required, whether it has a secret or an object of its own, its config from a
+  creation or an edit, its fields in a view and in the export), and its own way in (an alarm, a route, a queue) that
+  ends in `Runs.startTriggered` with an idempotency key of its own.
+- **Members, agents and orgs**: removing an agent, or its member leaving, deletes its triggers (and sweeps their
+  schedules' objects, above). Org deletion's Agents step deletes every listed schedule's object first (its alarm
+  would start runs), then each run's, twenty at a time (`scheduleObjectsPage`, `forgetScheduleObjects`). The org
+  export lists each agent's triggers (kind, name, enabled, input or template, a schedule's cron expression and time
+  zone; never a secret, a webhook's id or its URL). The cross-org suite checks that one org's triggers are not listed in
+  another (`controlplane: agent triggers`) and that one org's schedules' objects answer nothing for another's
+  (`agent schedules' objects`); the API Worker's tests check that one org's webhook trigger or secret proves nothing
+  at another existing org's address.
+- **Management routes** (`agents/management/trigger-routes.ts`, `AgentTriggersGroup` in
+  `@commissary/contract/agent-triggers`): `GET` and `POST /agents/:id/triggers`, `PATCH` and `DELETE
+  /agents/:id/triggers/:trigger` (`If-Match` names the revision) and `POST /agents/:id/triggers/:trigger/secret`
+  (rotation), for the agent's manager only (a private agent's member, an org admin for a shared agent; an org admin
+  seeing a member's private agent gets `403`). The part takes each call as one request (`TriggersRequest`,
+  `TriggerRequest`: viewer, agent, the client API's origin, who asks, and a trigger and its revision). A schedule
+  whose object cannot be armed is not added (`502`); an edit whose arming fails is kept and answers `502
+  schedule_not_armed`, to be armed by the next edit. A webhook's URL is on the API host (`API_DOMAIN`), else on the
+  request's host (zone routes; under `alchemy dev` without an API host, the app's origin, which is fine for local
+  development: nothing outside reaches it there).

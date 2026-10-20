@@ -3,10 +3,11 @@
  * `@commissary/auth`'s `authenticateClient` accepts (an API key, or an Access sign-in where the org still accepts them;
  * on Commissary Cloud an API key, under the request-rate ceiling of the org's plan, `@commissary/billing`), after the
  * cross-site checks (`crossSiteRejection`). On success the principal is available to handlers as `AccessPrincipal`, and
- * `CurrentOrg` is the org the API key names. Any new client-facing surface (the MCP endpoint, #197; webhook triggers,
- * #231) must sit behind this gate or call `limitClientRate` itself: the plan's ceiling is applied here and nowhere else.
- * `/healthz` and the MCP endpoint's OAuth metadata (and nothing else, `http/hosts.ts` refuses every other path first)
- * pass through. Registered after CORS (`cors.ts`), so preflights are answered before authentication and refusals
+ * `CurrentOrg` is the org the API key names. Any new client-facing surface (the MCP endpoint, #197) must sit behind
+ * this gate or call `limitClientRate` itself: the plan's ceiling is applied here and in hosted agents' webhook route
+ * (#231, `@commissary/agents`' `webhookRoutes`, handed `limitClientRate` for proven deliveries and
+ * `limitWebhookAttempts` for every delivery before its proof), nowhere else. `/healthz`, the MCP endpoint's
+ * OAuth metadata and the webhook route (and nothing else, `http/hosts.ts` refuses every other path first) pass through. Registered after CORS (`cors.ts`), so preflights are answered before authentication and refusals
  * still carry CORS headers. A request of a hosted agent's run comes only from the run gateway (`run-gateway.ts`), which
  * presents the run (`PresentedRun`) rather than a credential: the gate resolves its principal from the org's
  * ControlPlane (`runPrincipal`) and its standing on Commissary Cloud (`authenticateRun`), then counts it against the
@@ -33,6 +34,7 @@ import { limitClientRate } from "@commissary/billing/api";
 import { mcpChallenge, withMcpAccessToken } from "@commissary/tools/api";
 import {
   CurrentOrg,
+  isAgentWebhookPath,
   isClientApiPath,
   isMcpPath,
   isSystemOnePath,
@@ -43,13 +45,17 @@ import { CorsLayer } from "./cors.ts";
 import { PresentedRun } from "./presented-run.ts";
 
 /**
- * Whether a request URL is open to anyone: any path but the client API (a URL that cannot be parsed is not), and
- * Commissary's CIMD document of toolkits' OAuth sign-ins (#202), which an authorization server fetches without a key.
+ * Whether a request URL is open to anyone: any path but the client API (a URL that cannot be parsed is not),
+ * Commissary's CIMD document of toolkits' OAuth sign-ins (#202), which an authorization server fetches without a key,
+ * and hosted agents' webhook triggers (#231), whose route checks the trigger's secret and the org's ceiling itself.
  */
 const isPublic = (requestUrl: string): boolean => {
   const path = normalizedPath(requestUrl);
 
-  return path !== undefined && (!isClientApiPath(path) || path === TOOLKIT_OAUTH_CLIENT_PATH);
+  return (
+    path !== undefined &&
+    (!isClientApiPath(path) || path === TOOLKIT_OAUTH_CLIENT_PATH || isAgentWebhookPath(path))
+  );
 };
 
 /** Global middleware: authenticates every client API request (see the module comment). */

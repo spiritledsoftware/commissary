@@ -4,7 +4,11 @@
  * `REQUEST_RATE_CEILING` in `plan.ts`, set where the bindings are declared, `alchemy.run.ts`), the one the org's plan
  * picks, keyed by the org so one org's traffic never slows another's. A binding counts per Cloudflare location and is
  * eventually consistent: a ceiling against abuse, not exact accounting. It covers every client-facing surface (the
- * client API now; the MCP endpoint and webhook triggers when they exist); the management API has none.
+ * client API, the MCP endpoint and hosted agents' proven webhook deliveries); the management API has none.
+ *
+ * Webhook deliveries are also counted before their proof is checked, on a bucket of their own in the same bindings
+ * (`limitWebhookAttempts`, key `webhook:<org>`, the same size as the org's ceiling): a flood of unproven deliveries is
+ * refused there without loading the org's ControlPlane, and never uses up the ceiling its API keys count against.
  *
  * The bindings' limits are fixed, so an org whose rate a platform admin raised above its plan's (#240) is counted by
  * its own ControlPlane instead (`BillingStore.admitRate`): one call per request for that org only; every other org
@@ -19,7 +23,7 @@ import { Clock, Effect } from "effect";
 import { RateLimitedError, type OrgId } from "@commissary/core";
 import { isHosted } from "@commissary/auth";
 import { BILLING_TTL_MS, rateCeilings } from "./cache.ts";
-import { BillingEnv, billingPartOf, type RateLimiter } from "./env.ts";
+import { type BillingBindings, BillingEnv, billingPartOf, type RateLimiter } from "./env.ts";
 import { DEFAULT_PLAN, RATE_LIMIT_PERIOD_SECONDS } from "./plan.ts";
 import type { RateCeiling } from "./store.ts";
 
@@ -66,16 +70,26 @@ const withinRaised = (org: OrgId): Effect.Effect<boolean, never, BillingEnv> =>
     );
   });
 
-/** Whether the plan's binding admits a request of `org`; through when it is not bound, or fails (logged). */
-const onBinding = (limiter: RateLimiter | undefined, org: OrgId): Effect.Effect<boolean> =>
+/**
+ * Whether the plan's binding admits a request counted under `key` (an org id, or an org's webhook bucket); through when
+ * it is not bound, or fails (logged).
+ */
+const onBinding = (limiter: RateLimiter | undefined, key: string): Effect.Effect<boolean> =>
   limiter === undefined
     ? Effect.succeed(true)
-    : Effect.tryPromise(async () => await limiter.limit({ key: org })).pipe(
+    : Effect.tryPromise(async () => await limiter.limit({ key })).pipe(
         Effect.map((outcome) => outcome.success),
         Effect.catch((error) =>
           Effect.logWarning(`rate limit not checked: ${error.message}`).pipe(Effect.as(true)),
         ),
       );
+
+const rateLimited = () =>
+  new RateLimitedError({ message: RATE_LIMITED, retryAfterSeconds: RATE_LIMIT_PERIOD_SECONDS });
+
+/** Whether the deployment counts rates at all: Commissary Cloud with at least one binding. */
+const counts = (env: BillingBindings): boolean =>
+  isHosted(env) && (env.FREE_RATE_LIMIT !== undefined || env.PAYG_RATE_LIMIT !== undefined);
 
 /**
  * Counts a request of `org` against its ceiling (its plan's, or a raised one); over it, `429 Rate limit exceeded` with
@@ -85,9 +99,7 @@ export const limitClientRate = (org: OrgId): Effect.Effect<void, RateLimitedErro
   Effect.gen(function* () {
     const env = yield* BillingEnv;
 
-    if (!isHosted(env) || (env.FREE_RATE_LIMIT === undefined && env.PAYG_RATE_LIMIT === undefined))
-      return;
-
+    if (!counts(env)) return;
     const ceiling = yield* ceilingOf(org);
 
     const success =
@@ -95,9 +107,28 @@ export const limitClientRate = (org: OrgId): Effect.Effect<void, RateLimitedErro
         ? yield* onBinding(ceiling.plan === "payg" ? env.PAYG_RATE_LIMIT : env.FREE_RATE_LIMIT, org)
         : yield* withinRaised(org);
 
-    if (!success)
-      return yield* new RateLimitedError({
-        message: RATE_LIMITED,
-        retryAfterSeconds: RATE_LIMIT_PERIOD_SECONDS,
-      });
+    if (!success) return yield* rateLimited();
+  });
+
+/**
+ * Counts a webhook delivery to `org` before its proof is checked, on the org's webhook bucket (key `webhook:<org>` in
+ * the plan's binding, the size of the org's ceiling; Pay as you go's for an org with a raised ceiling, which the
+ * bindings cannot hold, so that an unproven delivery never costs a ControlPlane call); over it, `429`. The org's
+ * ceiling itself counts only proven deliveries (`limitClientRate`). Does nothing on a self-hosted Commissary.
+ */
+export const limitWebhookAttempts = (
+  org: OrgId,
+): Effect.Effect<void, RateLimitedError, BillingEnv> =>
+  Effect.gen(function* () {
+    const env = yield* BillingEnv;
+
+    if (!counts(env)) return;
+    const ceiling = yield* ceilingOf(org);
+
+    const limiter =
+      ceiling.plan === "payg" || ceiling.raised !== null
+        ? env.PAYG_RATE_LIMIT
+        : env.FREE_RATE_LIMIT;
+
+    if (!(yield* onBinding(limiter, `webhook:${org}`))) return yield* rateLimited();
   });

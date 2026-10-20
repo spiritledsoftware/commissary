@@ -128,7 +128,7 @@ const rowOf = (
   approval: record.approval,
   agent_id: record.run?.agentId ?? null,
   run_id: record.run?.runId ?? null,
-  starter: record.run === undefined ? null : (record.run.starter ?? ""),
+  starter: record.run?.starter ?? null,
   browser_ms: record.browserMs ?? null,
   browser_profile_id: null,
 });

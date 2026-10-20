@@ -357,7 +357,11 @@ stays with that Worker.
   Worker's run gateway over `ctx.exports`; so the app's test Worker also exports `@commissary/api`'s `AgentRun` and
   `AgentRunGateway`, and the runs' end-to-end tests (`test/agent-runs.test.ts`) stay with the app Worker. What runs
   without the client API (the index of runs, the turns' readings of the definition, the object's checks) is
-  `@commissary/agents`' own (`packages/agents/test/runs.test.ts`). A test that goes through the client API's
+  `@commissary/agents`' own (`packages/agents/test/runs.test.ts`). The schedule triggers' objects (`AgentSchedule`, #231)
+  are the API Worker's too, exported the same way for the triggers' routes (`test/agent-triggers.test.ts`); their ticks
+  and the webhooks' checks (signatures' tolerance and deliveries' keys under `TestClock`) are Agents' own
+  (`packages/agents/test/triggers.test.ts`), and webhook deliveries, a client
+  API route, the API Worker's (`apps/api/test/agent-webhooks.test.ts`). A test that goes through the client API's
   router or `fetch` is the API Worker's; one that needs an org, member or API key there sets it up straight through the
   Durable Objects (`apps/api/test/support/client.ts`), since the management routes that make them are the app Worker's.
   So do

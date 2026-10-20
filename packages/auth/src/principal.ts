@@ -6,8 +6,8 @@ import type { OrgRole } from "@commissary/contract/members";
 import { GLOBAL_ORG, type OrgId } from "@commissary/core";
 
 /**
- * Who started an agent run (GLOSSARY "Starter"): a member, for now. Child runs (#229) and runs no one started (#231) come
- * later.
+ * Who started an agent run (GLOSSARY "Starter"): a member, for now (child runs, #229, add a run). A run no one started
+ * (a shared agent's schedule or webhook, #231) has none.
  */
 export interface RunStarter {
   readonly kind: "member";
@@ -60,9 +60,10 @@ export type Principal =
       readonly kind: "run";
       readonly runId: string;
       readonly agentId: string;
-      readonly starter: RunStarter;
+      /** None for a run no one started (a shared agent's schedule or webhook). */
+      readonly starter?: RunStarter | undefined;
       /** The starter's email: on Commissary Cloud their standing is checked on every request of the run. */
-      readonly starterEmail: string;
+      readonly starterEmail?: string | undefined;
       readonly actsAs: RunActsAs;
       readonly reach: RunReach;
     };
@@ -167,7 +168,7 @@ export const isSharedAgentRun = (
 export interface UsageRun {
   readonly agentId: string;
   readonly runId: string;
-  /** `member:<member id>`. */
+  /** `member:<member id>`; none for a run no one started. */
   readonly starter?: string;
 }
 
@@ -177,7 +178,9 @@ export const usageRunOf = (principal: Principal): UsageRun | undefined =>
     ? {
         agentId: principal.agentId,
         runId: principal.runId,
-        starter: `${principal.starter.kind}:${principal.starter.id}`,
+        ...(principal.starter === undefined
+          ? {}
+          : { starter: `${principal.starter.kind}:${principal.starter.id}` }),
       }
     : undefined;
 

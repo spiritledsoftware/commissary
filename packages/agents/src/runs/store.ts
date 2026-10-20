@@ -6,8 +6,9 @@
  * acts as) without reaching the run: the definition its running turn started with ({@link TurnDefinition}). A table of
  * the Agents part (`AGENTS_TABLES`), dropped by its `wipe()`; the org's deletion deletes the runs' objects first.
  *
- * The starter is two columns (`starter_kind`, `starter_id`), though only members start runs for now, so that child runs
- * (#229) and runs no one started (#231) need no migration.
+ * The starter is two columns (`starter_kind`, `starter_id`), so that child runs (#229) need no migration; a run no one
+ * started (a shared agent's schedule or webhook, #231) has `none` and an empty id. A run a trigger configured on the
+ * agent started names it (`trigger_id`, added by #231 to the table #227 created).
  */
 import { Option, Schema } from "effect";
 import type { RunStarter } from "@commissary/auth";
@@ -24,6 +25,11 @@ const SCHEMA = [
    )`,
   `CREATE INDEX IF NOT EXISTS agent_runs_starter ON agent_runs (starter_kind, starter_id, updated_at)`,
 ];
+
+/** The starter columns of a run no one started. */
+const NO_STARTER = { kind: "none", id: "" } as const;
+
+const starterColumns = (starter: RunStarter | undefined) => starter ?? NO_STARTER;
 
 /**
  * The agent's definition as a turn read it when it started, with whom the run acts as: the reach of every call of that
@@ -53,7 +59,10 @@ export interface StoredRun {
   readonly id: string;
   readonly agent: string;
   readonly trigger: TriggerKind;
-  readonly starter: RunStarter;
+  /** The trigger configured on the agent that started it; none for a chat. */
+  readonly triggerId?: string | undefined;
+  /** None for a run no one started. */
+  readonly starter?: RunStarter | undefined;
   readonly idempotencyKey: string;
   readonly state: RunState;
   /** The definition its latest turn started with; none before its first turn. */
@@ -68,6 +77,7 @@ interface RunRow {
   id: string;
   agent_id: string;
   trigger: string;
+  trigger_id: string | null;
   starter_kind: string;
   starter_id: string;
   idempotency_key: string;
@@ -91,7 +101,8 @@ const runOf = (row: RunRow): StoredRun => {
     id: row.id,
     agent: row.agent_id,
     trigger: isTrigger(row.trigger) ? row.trigger : "chat",
-    starter: { kind: "member", id: row.starter_id },
+    ...(row.trigger_id === null ? {} : { triggerId: row.trigger_id }),
+    ...(row.starter_kind === "member" ? { starter: { kind: "member", id: row.starter_id } } : {}),
     idempotencyKey: row.idempotency_key,
     state: isState(row.state) ? row.state : "idle",
     ...(definition === undefined ? {} : { definition }),
@@ -110,6 +121,16 @@ export class RunStore {
     this.#sql = sql;
 
     for (const statement of SCHEMA) sql.exec(statement);
+
+    // #231: the trigger that started a run, on a table #227 created without it.
+    const columns = new Set(
+      sql
+        .exec<{ name: string }>("PRAGMA table_info(agent_runs)")
+        .toArray()
+        .map((column) => column.name),
+    );
+
+    if (!columns.has("trigger_id")) sql.exec(`ALTER TABLE agent_runs ADD COLUMN trigger_id TEXT`);
   }
 
   run(id: string): StoredRun | undefined {
@@ -118,15 +139,21 @@ export class RunStore {
     return row === undefined ? undefined : runOf(row);
   }
 
-  /** The run `starter` started of `agent` with `idempotencyKey`, if any. */
-  byKey(agent: string, starter: RunStarter, idempotencyKey: string): StoredRun | undefined {
+  /** The run `starter` (none: no one) started of `agent` with `idempotencyKey`, if any. */
+  byKey(
+    agent: string,
+    starter: RunStarter | undefined,
+    idempotencyKey: string,
+  ): StoredRun | undefined {
+    const { kind, id } = starterColumns(starter);
+
     const row = this.#sql
       .exec<RunRow>(
         `SELECT * FROM agent_runs
          WHERE agent_id = ? AND starter_kind = ? AND starter_id = ? AND idempotency_key = ?`,
         agent,
-        starter.kind,
-        starter.id,
+        kind,
+        id,
         idempotencyKey,
       )
       .toArray()[0];
@@ -148,15 +175,18 @@ export class RunStore {
   }
 
   insert(run: StoredRun): void {
+    const starter = starterColumns(run.starter);
+
     this.#sql.exec(
       `INSERT INTO agent_runs
-         (id, agent_id, trigger, starter_kind, starter_id, idempotency_key, state, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (id, agent_id, trigger, trigger_id, starter_kind, starter_id, idempotency_key, state, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       run.id,
       run.agent,
       run.trigger,
-      run.starter.kind,
-      run.starter.id,
+      run.triggerId ?? null,
+      starter.kind,
+      starter.id,
       run.idempotencyKey,
       run.state,
       run.createdAt,

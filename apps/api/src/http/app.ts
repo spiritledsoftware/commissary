@@ -1,5 +1,7 @@
 import { Layer } from "effect";
 import { HttpRouter } from "effect/http";
+import { webhookRoutes } from "@commissary/agents/api";
+import { limitClientRate, limitWebhookAttempts } from "@commissary/billing/api";
 import { WorkersLoggerLayer } from "@commissary/core";
 import { ClientApiLayer as ModelsClientApi, TraceLayer } from "@commissary/models/api";
 import {
@@ -11,12 +13,17 @@ import { RootRoutes } from "./routes.ts";
 
 /**
  * All routes and global middleware of the API Worker (ADR 0030): `/healthz` and the client API of each area it mounts,
- * listed here explicitly (Models' model routes, Tools' MCP endpoint), behind CORS and the client gate (`gate.ts`).
+ * listed here explicitly (Models' model routes, Tools' MCP endpoint, Agents' webhook triggers), behind CORS and the
+ * client gate (`gate.ts`).
  */
 export const ApiLayer = Layer.mergeAll(
   RootRoutes,
   // Public: the MCP endpoint's OAuth metadata on Commissary Cloud (#200), unknown elsewhere.
   ProtectedResourceMetadataRoutes,
+  // Public: hosted agents' webhook triggers (#231), which prove themselves with the trigger's secret. On Commissary Cloud
+  // every delivery to a known org counts against its webhook bucket first, and a proven one against the org's
+  // request-rate ceiling, as the gate counts an API key's requests.
+  webhookRoutes({ attempt: limitWebhookAttempts, proven: limitClientRate }),
   GateLayer,
   behindGate(Layer.mergeAll(ModelsClientApi, ToolsClientApi)),
   // Request trace id header and structured request logs (packages/models/src/observability).

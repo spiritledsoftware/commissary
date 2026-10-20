@@ -498,12 +498,13 @@ export interface ClientTool {
  * reaches as an API key's does, and whether it acts as the shared agent itself (`asAgent`), whose reach is its
  * definition: every org toolkit with a shared credential, whatever the tool grants. A private agent's run acts as its
  * member (the viewer), with their reach. Its starter (`starterMember`) is the caller of its approvals (ADR 0040): under
- * a rule of the caller they decide, and under the others they do not.
+ * a rule of the caller they decide, and under the others they do not. A run no one started (a shared agent's schedule
+ * or webhook, #231) has none: under a rule of the caller its calls have no approver (its watchers answer with #232).
  */
 export interface RunToolReach {
   readonly toolScope: ToolScope;
   readonly asAgent: boolean;
-  readonly starterMember: string;
+  readonly starterMember?: string | undefined;
 }
 
 /** A call of Commissary's MCP endpoint (#197): the tool's full name, its arguments, and the toolkits it narrows to. */

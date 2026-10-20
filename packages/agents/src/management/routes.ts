@@ -8,22 +8,25 @@
  * without the deployment's Dynamic Workers binding (`LOADER`) every route here answers 404, whoever asks. The Agents
  * part decides what the caller reaches from the viewer each `/agents` route hands it; the grants are for org admins,
  * checked here after the absence. Writes name the revision they were based on in `If-Match`. The agent runs' routes
- * (`/agents/:id/runs`, `/agent-runs`, #227) are `run-routes.ts`', mounted with these.
+ * (`/agents/:id/runs`, `/agent-runs`, #227) are `run-routes.ts`', and the triggers' (`/agents/:id/triggers`, #231)
+ * `trigger-routes.ts`', mounted with these.
  */
 import { Effect, Layer } from "effect";
 import { HttpRouter } from "effect/http";
 import { AccessPrincipal, currentViewer } from "@commissary/auth";
 import { AgentGrantBody, CreateAgent, UpdateAgent } from "@commissary/contract/agents";
-import { ifMatch, jsonReply, replyError } from "@commissary/core";
+import { CurrentOrg, ifMatch, jsonReply, replyError } from "@commissary/core";
 import {
   type AgentsErrorCode,
   createsPrivate,
   type ReferenceCheck,
 } from "../control-plane-part.ts";
-import { agentsControlPlane } from "../env.ts";
+import { agentsControlPlane, AgentsEnv } from "../env.ts";
+import { sweepRetiredSchedules } from "../org-deletion.ts";
 import { decode, orRefuseWith, param, route } from "./http.ts";
 import { type AgentReferences, checkReferences } from "./references.ts";
 import { runRoutes } from "./run-routes.ts";
+import { triggerRoutes } from "./trigger-routes.ts";
 
 const STATUS: Readonly<Record<AgentsErrorCode, number>> = {
   invalid: 422,
@@ -86,7 +89,12 @@ const remove = Effect.gen(function* () {
     stub.agents().removeAgent(viewer, id, revision),
   );
 
-  return jsonReply(200, yield* orRefuse(result));
+  const removed = yield* orRefuse(result);
+
+  // Its triggers went with it: their schedules' objects are deleted now.
+  yield* sweepRetiredSchedules(yield* AgentsEnv, yield* CurrentOrg);
+
+  return jsonReply(200, removed);
 });
 
 /** The grants on shared agents are for org admins (`403 forbidden` otherwise). */
@@ -208,5 +216,5 @@ export const managementRoutes = <R>(references: AgentReferences<R>) => {
     route("POST", "/grants/agents", createGrant),
     route("PUT", "/grants/agents/:id", replaceGrant),
     route("DELETE", "/grants/agents/:id", removeGrant),
-  ]).pipe(Layer.merge(runRoutes));
+  ]).pipe(Layer.merge(runRoutes), Layer.merge(triggerRoutes));
 };

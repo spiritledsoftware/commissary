@@ -702,6 +702,24 @@ describe("D1 usage sink", () => {
       ensureTokenBreakdown(sampleRecord().detail, "codex", "codex").tokenBreakdown?.totalTokens,
     ).toBe(130);
   });
+
+  it("names an agent run's starter, and none (null) for a run no one started (#231)", () => {
+    const started = recordToRow(
+      sampleRecord({ run: { agentId: "agt_1", runId: "run_1", starter: "member:m1" } }),
+    );
+
+    const unattended = recordToRow(sampleRecord({ run: { agentId: "agt_1", runId: "run_2" } }));
+
+    expect(started).toMatchObject({ agent_id: "agt_1", run_id: "run_1", starter: "member:m1" });
+    // Neither "" nor a member: a filter by starter or by member never matches it.
+    expect(unattended).toMatchObject({
+      agent_id: "agt_1",
+      run_id: "run_2",
+      starter: null,
+      member_id: null,
+    });
+    expect(recordToRow(sampleRecord()).starter).toBeNull();
+  });
 });
 
 describe("export queue (GET /observability/usage/queue)", () => {

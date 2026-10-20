@@ -55,6 +55,7 @@ import { AgentsEnv } from "@commissary/agents/api";
 import {
   exportSection as agentsExportSection,
   orgDeletionStep as agentsOrgDeletionStep,
+  sweepRetiredSchedules,
 } from "@commissary/agents/management";
 
 const BASE = "/v9/management";
@@ -593,6 +594,8 @@ const deleteAccount = Effect.gen(function* () {
         try: async () => await controlPlaneOf(state, org.id).leaveOrg(email),
         catch: (cause) => new DeletionThrew({ cause }),
       }).pipe(Effect.catch(planeFailed("leaveOrg", org.id)));
+      // Their private agents' schedules went with them: their objects are deleted now.
+      yield* sweepRetiredSchedules(yield* AgentsEnv, org.id);
       yield* syncOrgIndex(org.id);
       left.push(org.slug);
     }

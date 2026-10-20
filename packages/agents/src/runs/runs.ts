@@ -8,6 +8,10 @@
  * a revoked grant applies from the next turn, which ends the run when the agent or its starter can no longer go on. A
  * private agent's member who left the org stops the running turn at once: the run acted as them. The part's methods
  * delegate here; plain data in and out.
+ *
+ * **Runs a trigger starts** (#231, {@link Runs.startTriggered}): a schedule's or a webhook's run of a private agent
+ * counts as started by its member, a shared agent's as started by no one (its watchers watch it, #232); either names its
+ * trigger. A run no one started has no starter to check at its turns: its agent's state alone decides.
  */
 import type { RunActsAs, RunStarter, Viewer } from "@commissary/auth";
 import type { RunState, RunView, TriggerKind } from "@commissary/contract/agent-runs";
@@ -27,6 +31,7 @@ export type RunsErrorCode =
   | "forbidden"
   | "not_found"
   | "agent_disabled"
+  | "trigger_disabled"
   | "run_ended"
   | "unavailable";
 
@@ -41,9 +46,10 @@ export const MAX_IDEMPOTENCY_KEY = 200;
 export interface RunContext {
   readonly runId: string;
   readonly agentId: string;
-  readonly starter: RunStarter;
+  /** None for a run no one started. */
+  readonly starter?: RunStarter | undefined;
   /** The starter's email, whose standing Commissary Cloud checks on every call of the run. */
-  readonly starterEmail: string;
+  readonly starterEmail?: string | undefined;
   readonly actsAs: RunActsAs;
   readonly model: string;
   readonly thinking?: ThinkingLevel | undefined;
@@ -64,19 +70,25 @@ export interface StartedRunRecord {
 }
 
 const isStarter = (run: StoredRun, member: string | undefined): boolean =>
-  member !== undefined && run.starter.id === member;
+  member !== undefined && run.starter?.kind === "member" && run.starter.id === member;
 
 const contextOf = (
   run: StoredRun,
-  starterEmail: string,
+  starterEmail: string | undefined,
   definition: TurnDefinition,
 ): RunContext => ({
   runId: run.id,
   agentId: run.agent,
-  starter: run.starter,
-  starterEmail,
+  ...(run.starter === undefined ? {} : { starter: run.starter }),
+  ...(starterEmail === undefined ? {} : { starterEmail }),
   ...definition,
 });
+
+/** The trigger configured on an agent that starts a run: its kind and id. */
+export interface RunTrigger {
+  readonly kind: Exclude<TriggerKind, "chat">;
+  readonly id: string;
+}
 
 export class Runs {
   readonly #runs: RunStore;
@@ -87,17 +99,21 @@ export class Runs {
    * private agent while the org serves them, or a shared agent a grant gives them).
    */
   readonly #reaches: (agent: StoredAgent, member: string) => boolean;
+  /** The part's clock (epoch ms), the triggers' too: a test's `TestClock` drives both. */
+  readonly #now: () => number;
 
   constructor(
     runs: RunStore,
     agents: AgentStore,
     core: OrgCore,
     reaches: (agent: StoredAgent, member: string) => boolean,
+    now: () => number,
   ) {
     this.#runs = runs;
     this.#agents = agents;
     this.#core = core;
     this.#reaches = reaches;
+    this.#now = now;
   }
 
   /**
@@ -133,7 +149,7 @@ export class Runs {
       if (existing !== undefined) return ok({ run: this.view(existing), created: false });
     }
 
-    const now = Date.now();
+    const now = this.#now();
     const id = freshRunId();
 
     const run: StoredRun = {
@@ -150,6 +166,57 @@ export class Runs {
     this.#runs.insert(run);
 
     return ok({ run: this.view(run), created: true });
+  }
+
+  /**
+   * Starts a run of `agent` that its trigger `trigger` starts, or returns the run its `idempotencyKey` (a schedule's tick,
+   * a webhook's delivery) already started. A private agent's run counts as started by its member, while the org serves
+   * private agents; a shared agent's by no one. A disabled agent starts nothing (`agent_disabled`).
+   */
+  startTriggered(
+    agent: StoredAgent,
+    trigger: RunTrigger,
+    idempotencyKey: string,
+  ): RunsResult<StartedRunRecord> {
+    if (!agent.enabled) return refuse("agent_disabled", "the agent is disabled");
+    let starter: RunStarter | undefined;
+
+    if (agent.owner !== undefined) {
+      if (!this.#core.privateAgents() || this.#core.member(agent.owner) === undefined)
+        return refuse("agent_disabled", "the org does not serve the agent's member's agents");
+
+      starter = { kind: "member", id: agent.owner };
+    }
+
+    const existing = this.#runs.byKey(agent.id, starter, idempotencyKey);
+
+    if (existing !== undefined) return ok({ run: this.view(existing), created: false });
+
+    const now = this.#now();
+
+    const run: StoredRun = {
+      id: freshRunId(),
+      agent: agent.id,
+      trigger: trigger.kind,
+      triggerId: trigger.id,
+      ...(starter === undefined ? {} : { starter }),
+      idempotencyKey,
+      state: "idle",
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    this.#runs.insert(run);
+
+    return ok({ run: this.view(run), created: true });
+  }
+
+  /** Ends the run `runId` a trigger started, whose object could not be reached to start it. */
+  abandonTriggered(runId: string): void {
+    const run = this.#runs.run(runId);
+
+    if (run !== undefined && run.triggerId !== undefined)
+      this.#runs.setState(runId, "ended", this.#now());
   }
 
   /** The run `runId` if `viewer` started it; any other answers like an unknown one. */
@@ -203,10 +270,17 @@ export class Runs {
     if (agent.owner !== undefined && !this.#core.privateAgents())
       return refuse("run_ended", "the org does not serve private agents");
 
-    const starter = this.#core.member(run.starter.id);
+    // A run no one started (a shared agent's trigger) has no starter to check.
+    let starterEmail: string | undefined;
 
-    if (starter === undefined || !this.#reaches(agent, run.starter.id))
-      return refuse("run_ended", "the run's starter may no longer use the agent");
+    if (run.starter !== undefined) {
+      const starter = this.#core.member(run.starter.id);
+
+      if (starter === undefined || !this.#reaches(agent, run.starter.id))
+        return refuse("run_ended", "the run's starter may no longer use the agent");
+
+      starterEmail = starter.email;
+    }
 
     const definition: TurnDefinition = {
       actsAs: actsAs.value,
@@ -216,9 +290,9 @@ export class Runs {
       toolScope: agent.toolScope,
     };
 
-    this.#runs.beginTurn(run.id, definition, Date.now());
+    this.#runs.beginTurn(run.id, definition, this.#now());
 
-    return ok(contextOf(run, starter.email, definition));
+    return ok(contextOf(run, starterEmail, definition));
   }
 
   /**
@@ -238,6 +312,8 @@ export class Runs {
 
     if (actsAs.kind === "member" && this.#core.member(actsAs.memberId) === undefined)
       return refuse("run_ended", "the agent's member left the org");
+
+    if (run.starter === undefined) return ok(contextOf(run, undefined, run.definition));
     const starter = this.#core.member(run.starter.id);
 
     if (starter === undefined) return refuse("run_ended", "the run's starter left the org");
@@ -249,7 +325,7 @@ export class Runs {
   stateChanged(runId: string, state: RunState): void {
     const run = this.#runs.run(runId);
 
-    if (run !== undefined && run.state !== "ended") this.#runs.setState(runId, state, Date.now());
+    if (run !== undefined && run.state !== "ended") this.#runs.setState(runId, state, this.#now());
   }
 
   /** Ends the run `runId` that `viewer` started: its object could not be reached to start it. */
@@ -257,7 +333,7 @@ export class Runs {
     const run = this.#runs.run(runId);
 
     if (run !== undefined && isStarter(run, viewer.member))
-      this.#runs.setState(runId, "ended", Date.now());
+      this.#runs.setState(runId, "ended", this.#now());
   }
 
   /** Up to `limit` runs' ids, and how many the index holds: the org's deletion deletes their objects first. */
@@ -277,7 +353,8 @@ export class Runs {
       id: run.id,
       agent: { id: run.agent, ...(name === undefined ? {} : { name }) },
       trigger: run.trigger,
-      starter: run.starter,
+      ...(run.triggerId === undefined ? {} : { trigger_id: run.triggerId }),
+      ...(run.starter === undefined ? {} : { starter: run.starter }),
       state: run.state,
       created_at: iso(run.createdAt),
       updated_at: iso(run.updatedAt),

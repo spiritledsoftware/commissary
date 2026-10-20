@@ -400,6 +400,8 @@ export default Alchemy.Stack(
           // The agent runs (#227): the API Worker's class (ADR 0030's amendment), bound by its script name, which also
           // makes this Worker deploy after it on every stage.
           AGENT_RUN: Cloudflare.DurableObject("AgentRun", { scriptName: api.workerName }),
+          // The schedule triggers (#231): the API Worker's class too, which the Agents routes arm.
+          AGENT_SCHEDULE: Cloudflare.DurableObject("AgentSchedule", { scriptName: api.workerName }),
           // Where the panel tells clients to send API keys (`GET /me` `api_url`).
           ...(apiDomain === undefined ? {} : { API_DOMAIN: apiDomain }),
           ...(hosted === undefined || auth === undefined
@@ -463,6 +465,9 @@ export default Alchemy.Stack(
           ...(split ? { API_DOMAIN: settings.apiDomain } : {}),
           // The agent runs (#227, `@commissary/agents/api`'s `AgentRun`), one object per run, defined here.
           AGENT_RUN: Cloudflare.DurableObject("AgentRun"),
+          // The schedule triggers (#231, `@commissary/agents/api`'s `AgentScheduleObject`), one object per schedule,
+          // whose alarm starts the runs above: here, as the state Worker's ControlPlane cannot reach them.
+          AGENT_SCHEDULE: Cloudflare.DurableObject("AgentSchedule"),
           ...hostedApiEnv,
           ...mcpOAuthEnv,
         },

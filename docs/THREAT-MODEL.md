@@ -89,6 +89,7 @@ A Live View link is a bearer link. Commissary mints it only for the session's me
 
 - Cloudflare absorbs volumetric attacks.
 - Spend limits bound members, keys and shared agents. On Commissary Cloud, plan limits, the billing cap and a per-org request-rate ceiling bound orgs; the ceiling covers the client API, the MCP endpoint and webhook triggers. The management API has no ceiling: it serves people and management keys.
+- A hosted agent's webhook trigger (#231) is a public URL that starts runs. A delivery proves it holds the trigger's secret (sealed, checked in the org's ControlPlane): as a bearer, or as an HMAC-SHA256 signature of its delivery id, timestamp and body (Standard Webhooks' scheme), refused more than 5 minutes from that timestamp, so a captured signed delivery cannot be replayed later, and within the 5 minutes a replay finds the run its signed id started or proves nothing. A malformed address or an org that does not exist is refused before the body is read or a ControlPlane is reached; on Commissary Cloud every delivery to an existing org counts against a webhook bucket of the org's (the size of its ceiling) before the proof is checked, so a flood of unproven deliveries cannot load the org's ControlPlane, nor use up the ceiling its API keys count against; proven deliveries count against that ceiling.
 - A self-hosted Commissary has no default caps (ADR 0041): a member can run up the operator's Cloudflare bill within their grants.
 
 ### Supply chain

@@ -309,6 +309,17 @@ const runsOf = (name: string): string[] => {
   return known;
 };
 
+/** The schedule triggers each case name's writes added, in every org (the schedules' objects' case). */
+const schedulesByName = new Map<string, string[]>();
+
+const schedulesOf = (name: string): string[] => {
+  const known = schedulesByName.get(name) ?? [];
+
+  schedulesByName.set(name, known);
+
+  return known;
+};
+
 /** The upstream session a call of the tool of `name` is in, through `org`'s Tools part; none without the toolkit. */
 const sessionOf = async (org: IsolationOrg, name: string): Promise<string | undefined> => {
   const called = await env.CONTROL_PLANE.getByName(org.id)
@@ -1059,6 +1070,103 @@ const STORES: ReadonlyArray<StoreCase> = [
       (await env.CONTROL_PLANE.getByName(org.id).agents().listRuns(isoViewer(org))).runs.find(
         (run) => run.agent.name?.startsWith("run_value_") === true,
       )?.agent.name,
+  }),
+  // The triggers configured on hosted agents (#231), in the org's ControlPlane: each org gives a shared agent of the same
+  // name a webhook named after its value; each lists its own agent's trigger only. Written and read on the part (the
+  // routes are `agent-triggers.test.ts`').
+  storeCase("controlplane: agent triggers", {
+    write: async (org, name, value) => {
+      const agents = env.CONTROL_PLANE.getByName(org.id).agents();
+      const admin = { ...isoViewer(org), admin: true };
+
+      const created = await agents.createAgent(
+        admin,
+        { ...agentBody(`trg_${agentName(name)}`, "shared-model"), subject: { kind: "everyone" } },
+        { modelServed: true },
+        "iso",
+      );
+
+      if (!created.ok) throw new Error(created.message);
+
+      const hook = await agents.createTrigger(
+        { viewer: admin, agentId: created.value.id, origin: "https://api.example.com", by: "iso" },
+        { kind: "webhook", name: value },
+      );
+
+      expect(hook.ok).toBe(true);
+    },
+    read: async (org, name) => {
+      const agents = env.CONTROL_PLANE.getByName(org.id).agents();
+      const admin = { ...isoViewer(org), admin: true };
+
+      const agent = (await agents.listAgents(admin)).agents.find(
+        (found) => found.name === `trg_${agentName(name)}`,
+      );
+
+      if (agent === undefined) return undefined;
+
+      const listed = await agents.listTriggers({
+        viewer: admin,
+        agentId: agent.id,
+        origin: "https://api.example.com",
+        by: "iso",
+      });
+
+      return listed.ok ? listed.value.triggers[0]?.name : undefined;
+    },
+  }),
+  // The schedule triggers' own objects (#231), named by org and trigger, whose alarm is the schedule's next tick: each
+  // org's shared agent has a schedule at midnight UTC on the 1st of the month its value names, armed on its object;
+  // each org's objects answer its own schedule's next tick, and an object under this org's name for another org's
+  // trigger finds it gone (and deletes itself).
+  storeCase("agent schedules' objects", {
+    value: (index) => String(index),
+    write: async (org, name, value) => {
+      const agents = env.CONTROL_PLANE.getByName(org.id).agents();
+      const admin = { ...isoViewer(org), admin: true };
+
+      const created = await agents.createAgent(
+        admin,
+        { ...agentBody(`sch_${agentName(name)}`, "shared-model"), subject: { kind: "everyone" } },
+        { modelServed: true },
+        "iso",
+      );
+
+      if (!created.ok) throw new Error(created.message);
+
+      const schedule = await agents.createTrigger(
+        { viewer: admin, agentId: created.value.id, origin: "https://api.example.com", by: "iso" },
+        {
+          kind: "schedule",
+          name: "Monthly",
+          input: "Report.",
+          schedule: { cron: `0 0 1 ${value} *`, time_zone: "UTC" },
+        },
+      );
+
+      if (!schedule.ok) throw new Error(schedule.message);
+      schedulesOf(name).push(schedule.value.id);
+
+      const armed = await env.AGENT_SCHEDULE.getByName(`${org.id}:${schedule.value.id}`).arm({
+        org: org.id,
+        trigger: schedule.value.id,
+      });
+
+      expect(armed.ok).toBe(true);
+    },
+    read: async (org, name) => {
+      for (const trigger of schedulesOf(name)) {
+        const armed = await env.AGENT_SCHEDULE.getByName(`${org.id}:${trigger}`).arm({
+          org: org.id,
+          trigger,
+        });
+
+        if (armed.ok && armed.value.next !== null)
+          return String(new Date(armed.value.next).getUTCMonth() + 1);
+      }
+
+      return undefined;
+    },
   }),
   // The agent runs' own objects (#227), named by org and run, which hold each run's transcript and turns: each org's
   // member starts a run whose first input is the org's value; each org's objects show its own run's input, and the

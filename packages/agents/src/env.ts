@@ -2,14 +2,16 @@
  * What `@commissary/agents` reads from a Worker's env (#134 "How packages get their bindings"): the org's ControlPlane,
  * typed as objects with the Agents part ({@link AgentsControlPlane}), so callers write `stub.agents().x(…)`, and the
  * deployment's Dynamic Workers binding (`LOADER`), whose presence is the Agents area's (#226): without it the area is
- * absent. Its state is the ControlPlane's, and each run's its own Durable Object's (`AGENT_RUN`, #227), which the API
- * Worker defines and the app Worker binds by its script name.
+ * absent. Its state is the ControlPlane's, each run's its own Durable Object's (`AGENT_RUN`, #227) and each schedule
+ * trigger's ticks its own object's (`AGENT_SCHEDULE`, #231), which the API Worker defines and the app Worker binds by its
+ * script name.
  */
 import { Context, Effect } from "effect";
 import { CurrentOrg, type OrgId, type Reply } from "@commissary/core";
 import { callControlPlane, controlPlaneOf } from "@commissary/state";
 import type { AgentsPart } from "./control-plane-part.ts";
 import type { AgentRunObject } from "./runs/run-object.ts";
+import { type AgentScheduleObject, agentScheduleName } from "./triggers/schedule-object.ts";
 
 /** The methods of the Agents part callers reach. */
 type AgentsPartMethod =
@@ -31,7 +33,20 @@ type AgentsPartMethod =
   | "abandonRun"
   | "runsPage"
   | "forgetRuns"
-  | "runStateChanged";
+  | "runStateChanged"
+  | "abandonTriggeredRun"
+  | "listTriggers"
+  | "createTrigger"
+  | "updateTrigger"
+  | "removeTrigger"
+  | "rotateTriggerSecret"
+  | "armSchedule"
+  | "fireSchedule"
+  | "verifyWebhook"
+  | "startWebhookRun"
+  | "scheduleObjectsPage"
+  | "retiredSchedules"
+  | "forgetScheduleObjects";
 
 /** The Agents part of an org's ControlPlane (`AgentsPart`) as Agents sees it: the methods it calls. */
 export type AgentsControlPlanePart = Pick<AgentsPart, AgentsPartMethod> & Rpc.RpcTargetBranded;
@@ -56,6 +71,16 @@ export interface AgentsBindings {
    * which the app Worker binds by the API Worker's script name.
    */
   readonly AGENT_RUN: DurableObjectNamespace<AgentRunObject>;
+  /**
+   * The schedule triggers (#231), one object per schedule ({@link agentScheduleOf}), whose alarm is its next tick: the
+   * API Worker's class, which the app Worker binds by the API Worker's script name to arm it.
+   */
+  readonly AGENT_SCHEDULE: DurableObjectNamespace<AgentScheduleObject>;
+  /**
+   * The API host (`COMMISSARY_API_DOMAIN`), where webhook triggers' URLs point; unset where the client API answers on
+   * the app host (zone routes), whose URLs then take the request's origin.
+   */
+  readonly API_DOMAIN?: string | undefined;
 }
 
 /** The name of the run `run` of `org`'s object: both, so a run id never reaches another org's run. */
@@ -67,6 +92,14 @@ export const agentRunOf = (
   org: OrgId,
   run: string,
 ): DurableObjectStub<AgentRunObject> => env.AGENT_RUN.getByName(agentRunName(org, run));
+
+/** The object of the schedule trigger `trigger` of `org` (`agentScheduleName`). */
+export const agentScheduleOf = (
+  env: Pick<AgentsBindings, "AGENT_SCHEDULE">,
+  org: OrgId,
+  trigger: string,
+): DurableObjectStub<AgentScheduleObject> =>
+  env.AGENT_SCHEDULE.getByName(agentScheduleName(org, trigger));
 
 /**
  * The Agents bindings of the current Worker invocation. Provided per request through the `Context` handed to the web
