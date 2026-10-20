@@ -60,6 +60,11 @@ export interface MembershipSettingsWire {
   /** Members may connect private credentials, and the private credentials they connected are used (ADR 0023). */
   readonly privateCredentials: boolean;
   /**
+   * Members may add private toolkits, and the private toolkits they added are served (ADR 0038). Separate from
+   * {@link privateCredentials}, with the same defaults.
+   */
+  readonly privateToolkits: boolean;
+  /**
    * The client API routes still accept an Access sign-in instead of an API key, for the clients of the time before API
    * keys (`api-keys/store.ts`). Only `global` uses it: an Access sign-in names no org.
    */
@@ -149,6 +154,7 @@ const removedToken = (clientId: string) => `service:${clientId}`;
 interface StateRow {
   auto_join: number;
   private_credentials: number;
+  private_toolkits: number;
   admins_migrated: number;
   counter: number;
   index_synced: number;
@@ -269,11 +275,25 @@ export class MemberStore {
       if (org === GLOBAL_ORG) sql.exec("UPDATE membership SET private_credentials = 1");
     }
 
+    // An org from before the private toolkits setting keeps serving what it served: private toolkits while it let
+    // members hold private credentials.
+    if (
+      !sql
+        .exec<{ name: string }>("PRAGMA table_info(membership)")
+        .toArray()
+        .some((column) => column.name === "private_toolkits")
+    ) {
+      sql.exec("ALTER TABLE membership ADD COLUMN private_toolkits INTEGER NOT NULL DEFAULT 0");
+      sql.exec("UPDATE membership SET private_toolkits = private_credentials");
+    }
+
+    // Private credentials and private toolkits start on for `global` and off for every other org.
     sql.exec(
       `INSERT OR IGNORE INTO membership
-         (id, auto_join, private_credentials, admins_migrated, counter, index_synced)
-       VALUES (1, ?, ?, 0, 0, 0)`,
+         (id, auto_join, private_credentials, private_toolkits, admins_migrated, counter, index_synced)
+       VALUES (1, ?, ?, ?, 0, 0, 0)`,
       org === GLOBAL_ORG && globalAutoJoin ? 1 : 0,
+      org === GLOBAL_ORG ? 1 : 0,
       org === GLOBAL_ORG ? 1 : 0,
     );
   }
@@ -408,6 +428,14 @@ export class MemberStore {
 
   setPrivateCredentials(on: boolean): void {
     this.#sql.exec(`UPDATE membership SET private_credentials = ? WHERE id = 1`, on ? 1 : 0);
+  }
+
+  privateToolkits(): boolean {
+    return this.#state().private_toolkits === 1;
+  }
+
+  setPrivateToolkits(on: boolean): void {
+    this.#sql.exec(`UPDATE membership SET private_toolkits = ? WHERE id = 1`, on ? 1 : 0);
   }
 
   // --- members ------------------------------------------------------------------------------------------------
@@ -779,7 +807,8 @@ export class MemberStore {
   #state(): StateRow {
     const row = this.#sql
       .exec<StateRow>(
-        `SELECT auto_join, private_credentials, admins_migrated, counter, index_synced FROM membership WHERE id = 1`,
+        `SELECT auto_join, private_credentials, private_toolkits, admins_migrated, counter, index_synced
+         FROM membership WHERE id = 1`,
       )
       .toArray()[0];
 

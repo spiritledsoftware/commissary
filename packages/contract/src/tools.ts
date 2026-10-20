@@ -1,7 +1,7 @@
 /**
  * Toolkits (`/v9/management/toolkits`, `packages/tools/src/management/routes.ts`; ADR 0036, ADR 0037, ADR 0038): the
  * org's and the caller's private toolkits built from remote MCP servers, their credentials, their tool lists and the
- * overrides on their tools. Shared with the browser: imports `effect` and `./errors.ts` only.
+ * overrides on their tools. Shared with the browser: imports `effect`, `./errors.ts` and `./grants.ts` only.
  *
  * An org admin adds and manages org toolkits; any member adds private toolkits, which only they see in full (an org
  * admin sees that one exists, and may remove it). A toolkit holds at most one shared credential and one private
@@ -10,9 +10,10 @@
  * overrides survive renames and refreshes. Edits of a toolkit or an override name its revision in `If-Match` (0 for a
  * new override).
  */
-import { Schema } from "effect";
+import { Schema, Tuple } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
 import { managementErrors } from "./errors.ts";
+import { GrantSubject } from "./grants.ts";
 
 const optional = Schema.optionalKey;
 
@@ -53,6 +54,19 @@ export const ToolkitSecret = Schema.Union([
 ]);
 
 export type ToolkitSecret = typeof ToolkitSecret.Type;
+
+/**
+ * A credential as it is connected: its secret and, for a toolkit's shared credential, who may use it (ADR 0038). There
+ * is no default tool grant, so connecting a shared credential names a `subject` (`422 invalid` without one). If the
+ * subject holds no grant on the toolkit, its grant of every tool is added in the same write; if it holds one, nothing is
+ * added and its grants stay as they are, so its reach is unchanged only then. The answer's `grant` says which. A private
+ * credential is its owner's alone and names none.
+ */
+export const ConnectCredential = ToolkitSecret.mapMembers(
+  Tuple.map(Schema.fieldsAssign({ subject: optional(GrantSubject) })),
+);
+
+export type ConnectCredential = typeof ConnectCredential.Type;
 
 /** A connected credential, without its secret. Times are ISO. */
 export const ToolkitCredentialView = Schema.Struct({
@@ -121,6 +135,22 @@ export const ToolkitView = Schema.Struct({
 
 export type ToolkitView = typeof ToolkitView.Type;
 
+/**
+ * What connecting a shared credential did to its subject's tool grants: the grant it added (`created`), or the first
+ * grant the subject already held on the toolkit, kept as it is.
+ */
+export const ConnectedGrant = Schema.Struct({ id: Schema.String, created: Schema.Boolean });
+
+export type ConnectedGrant = typeof ConnectedGrant.Type;
+
+/** A toolkit as adding it or connecting a credential answers it: `grant` when a shared credential was connected. */
+export const ConnectedToolkitView = Schema.Struct({
+  ...ToolkitView.fields,
+  grant: optional(ConnectedGrant),
+});
+
+export type ConnectedToolkitView = typeof ConnectedToolkitView.Type;
+
 /** Another member's private toolkit as an org admin sees it: only that it exists. */
 export const LimitedToolkitView = Schema.Struct({
   id: Schema.String,
@@ -151,8 +181,11 @@ export const AddToolkit = Schema.Struct({
   private: optional(Schema.Boolean),
   /** Org toolkits; default `shared`. */
   accepts: optional(CredentialsAccepted),
-  /** Connected at once: the shared credential of an org toolkit, the caller's of a private one. */
-  credential: optional(ToolkitSecret),
+  /**
+   * Connected at once: the shared credential of an org toolkit, which names who may use it (`subject`), or the caller's
+   * of a private one.
+   */
+  credential: optional(ConnectCredential),
 });
 
 export type AddToolkit = typeof AddToolkit.Type;
@@ -250,12 +283,14 @@ export class ToolsGroup extends HttpApiGroup.make("tools").add(
    * `422 invalid` (name, accepts, credential; a source naming a user or password, with `path: "source"`),
    * `422 not_accepted` (a credential the toolkit does not take), `422` with
    * the outbound guard's message as `error` and `path: "source"` (a source the guard refuses), `409 name_taken`,
-   * `403 private_credentials_unavailable` (a private credential while the org has them off). A plain member's toolkit is
-   * always private. A tool list that cannot be built does not fail the add: `tool_list.error` says why.
+   * `403 private_credentials_unavailable` (a private credential while the org has them off), `403
+   * private_toolkits_unavailable` (a private toolkit while the org has them off). A plain member's toolkit is always
+   * private. A shared credential names its `subject` (`ConnectCredential`; `grant` says what it did). A tool list that
+   * cannot be built does not fail the add: `tool_list.error` says why.
    */
   HttpApiEndpoint.post("add", "/toolkits", {
     payload: AddToolkit,
-    success: ToolkitView.pipe(HttpApiSchema.status(201)),
+    success: ConnectedToolkitView.pipe(HttpApiSchema.status(201)),
     error: managementErrors,
   }),
   /** Rename, or change which credentials an org toolkit accepts; `409 conflict` when the revision is stale. */
@@ -273,11 +308,16 @@ export class ToolsGroup extends HttpApiGroup.make("tools").add(
     success: RemovedToolkit,
     error: managementErrors,
   }),
-  /** Connect (or replace) the shared credential or the caller's private one. */
+  /**
+   * Connect (or replace) the shared credential, naming who may use it (`subject`, `422 invalid` without one; `grant`
+   * says whether its grant was added or one it held kept), or the caller's private one (`403
+   * private_credentials_unavailable` on an org toolkit, `403 private_toolkits_unavailable` on a private toolkit, while
+   * the org has that setting off).
+   */
   HttpApiEndpoint.put("connect", "/toolkits/:id/credentials/:slot", {
     ...slotParams,
-    payload: ToolkitSecret,
-    success: ToolkitView,
+    payload: ConnectCredential,
+    success: ConnectedToolkitView,
     error: managementErrors,
   }),
   HttpApiEndpoint.delete("disconnect", "/toolkits/:id/credentials/:slot", {

@@ -366,6 +366,7 @@ describe("Access sign-ins on the client API", () => {
     expect((await harness.json("/v9/management/membership", await owner())).body).toEqual({
       auto_join: true,
       private_credentials: true,
+      private_toolkits: true,
       access_clients: true,
     });
 
@@ -374,6 +375,7 @@ describe("Access sign-ins on the client API", () => {
     expect((await send(slug, "/membership", await owner())).body).toEqual({
       auto_join: false,
       private_credentials: false,
+      private_toolkits: false,
     });
   });
 
@@ -394,6 +396,7 @@ describe("Access sign-ins on the client API", () => {
       expect(await setAccessClients(false)).toEqual({
         auto_join: true,
         private_credentials: true,
+        private_toolkits: true,
         access_clients: false,
       });
     } finally {

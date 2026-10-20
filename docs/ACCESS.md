@@ -140,7 +140,7 @@ the Worker asks on every request: a removed member, or a member whose role was l
 | Read the org's single sign-on settings (Commissary Cloud, `/sso`)                                |                   |     ✓     |              ✓               |       ✓        |
 | Change single sign-on: identity provider, domains, requiring it (not with a management key)      |                   |           |              ✓               |       ✓        |
 | Read the models they may use (`GET /models/mine`, the panel's My models)                         |         ✓         |     ✓     |              ✓               |       ✓        |
-| Read, add, edit and remove grants (`/grants`, the panel's Grants page)                           |                   |     ✓     |              ✓               |       ✓        |
+| Read, add, edit and remove grants (`/grants`, `/grants/tools`, the panel's Grants page)          |                   |     ✓     |              ✓               |       ✓        |
 | Read the org's toolkits and their tools; add and manage their own private toolkits (`/toolkits`) |         ✓         |     ✓     |              ✓               |       ✓        |
 | Add, edit and remove org toolkits, their shared credentials and their tool overrides             |                   |     ✓     |              ✓               |       ✓        |
 | Read the Spend limits that bind them and limit their own API keys (`/spend`, `/spend/limits`)    |         ✓         |     ✓     |              ✓               |       ✓        |
@@ -150,6 +150,7 @@ the Worker asks on every request: a removed member, or a member whose role was l
 | List and revoke every API key of the org                                                         |                   |     ✓     |              ✓               |       ✓        |
 | Turn auto-join, or Access sign-ins for clients in `global`, on or off (`PATCH /membership`)      |                   |           |              ✓               |       ✓        |
 | Allow or stop private credentials (`PATCH /membership`, `private_credentials`)                   |                   |     ✓     |              ✓               |       ✓        |
+| Allow or stop private toolkits (`PATCH /membership`, `private_toolkits`)                         |                   |     ✓     |              ✓               |       ✓        |
 | Give a service token a role above plain member; download a credential                            |                   |           | owner **service token** only |       ✓        |
 | List, create and rename orgs                                                                     |                   |           |                              |       ✓        |
 | Read the org and its retention period (`GET /org`)                                               |                   |     ✓     |              ✓               |       ✓        |
@@ -166,6 +167,12 @@ the Worker asks on every request: a removed member, or a member whose role was l
   shared credentials, every model": delete it and add narrower ones to restrict. A model a member has no grant for answers
   `400 model_not_found`, like an unknown model, and is left out of their model lists; a request without a member (a service
   token) is served by the grants for everyone only. Private credentials are never granted: they are their owner's alone.
+  **Tool grants** (`/grants/tools`, ADR 0038) give a member, a team or everyone the tools of one org toolkit's shared
+  credential: all of them, its read tools, or named tools by stable id (`<toolkit id>:<upstream name>`); a member's
+  tool grants add up, so a subject may hold the read tools and some named ones of a toolkit. There is no default tool
+  grant: connecting a toolkit's shared credential names who may use it (`subject`), and that grant of every
+  tool is written with it. A shared-credential tool a member has no grant for is missing from their MCP tool list, and
+  calling it answers as an unknown tool. Model grants and tool grants are apart: neither gives the other's.
 - **Spend limits** (ADR 0024): an org admin caps what a member, a team, the org, a shared credential or an API key may spend
   (API-equivalent Cost) in a day, week or month of the org's time zone (the Limits page). A plain member sees the limits that
   bind them and may cap their own API keys, never above a limit an org admin set on that key (`422
@@ -198,11 +205,17 @@ the Worker asks on every request: a removed member, or a member whose role was l
   an org toolkit, its shared credentials and its tool overrides are for org admins (`403 forbidden`). A private toolkit is
   its owner's: an org admin sees that it exists and may remove it, and reaches nothing else about it (`404`); a private
   credential on an org toolkit is its owner's alone, which an org admin cannot remove. With `private_credentials` off, no
-  one connects a private credential (`403 private_credentials_unavailable`) and the ones connected are not used. A
-  plain member sees an org toolkit's source with the values of its query parameters masked (names kept, a parameter
-  without a value masked whole) and its host and path as they are; org admins and the org export see the whole URL, so
-  a key goes in a credential (sealed; a `query` one for the query), never in the source's path or query. An org toolkit
-  that stops accepting shared or private credentials keeps the ones connected, inactive, until it accepts them again.
+  one connects a private credential to an org toolkit (`403 private_credentials_unavailable`) and the ones connected
+  are not used. `private_toolkits` of `/membership` is the org setting for private toolkits, with `private_credentials`'
+  defaults (on for `global`, and for a new org only when `POST /orgs` asks): with it off, adding a private toolkit answers
+  `403 private_toolkits_unavailable` and the private toolkits there are kept but not served until it is on again; a private
+  toolkit's own credential follows `private_toolkits`, not `private_credentials`. A member uses an org toolkit's tools
+  on their own private credential with no grant; its shared credential only through a tool grant, and their private
+  credential wins when they hold both. A plain member sees an org toolkit's source with the values of its query parameters
+  masked (names kept, a parameter without a value masked whole) and its host and path as they are; org admins and the org
+  export see the whole URL, so a key goes in a credential (sealed; a `query` one for the query), never in the source's path
+  or query. An org toolkit that stops accepting shared or private credentials keeps the ones connected, inactive, until it
+  accepts them again.
 - **Service tokens** (`/service-tokens`) are registered to one org by their Client ID with a role (`409 service_token_taken`
   when another org has the token, also when two orgs register it at once: the one the registry indexes first keeps it). With
   auto-join on, an unregistered token is admitted as a plain member without being stored,
@@ -535,7 +548,8 @@ changes them. A self-hosted Commissary has none of this: Access is where its ide
 | 403 `platform_admin_required`          | Listing, creating or renaming orgs needs a platform admin                                                |
 | 404 on `/o/<slug>/...`                 | No org has that slug (a platform admin sees 404; others 403)                                             |
 | 403 `private_credential`               | Download of a member's private credential by anyone but its owner                                        |
-| 403 `private_credentials_unavailable`  | Adding a private provider key group, or a private toolkit credential, where the org does not allow them  |
+| 403 `private_credentials_unavailable`  | Adding a private provider key group, or a private credential on an org toolkit, where the org forbids it |
+| 403 `private_toolkits_unavailable`     | Adding a private toolkit or its credential where the org does not allow them (`private_toolkits`)        |
 | 403 `download_requires_service_token`  | Credential download called by a person: use a service token that is an owner of the org                  |
 | 403 `Cross-site request rejected`      | Browser request from another origin (or a client API POST from a web app)                                |
 | 415 `Unsupported Content-Type`         | Management write without `content-type: application/json` (or YAML/multipart)                            |

@@ -37,12 +37,14 @@ export type OrgList = typeof OrgList.Type;
 
 /**
  * `POST /orgs`: 1-63 lowercase letters, digits and inner hyphens; a display name of up to 100 characters.
- * `private_credentials` chooses whether members may connect private credentials in the new org (default: no).
+ * `private_credentials` chooses whether members may connect private credentials in the new org, `private_toolkits`
+ * whether they may add private toolkits (default: no for both).
  */
 export const CreateOrg = Schema.Struct({
   slug: Schema.String,
   name: Schema.String,
   private_credentials: Schema.optionalKey(Schema.Boolean),
+  private_toolkits: Schema.optionalKey(Schema.Boolean),
 });
 
 export type CreateOrg = typeof CreateOrg.Type;
@@ -147,6 +149,11 @@ export const Me = Schema.Struct({
    * panel offers a plain member their own Accounts page only then. Absent when the caller belongs to no org there.
    */
   private_credentials: Schema.optionalKey(Schema.Boolean),
+  /**
+   * Whether the addressed org lets members add private toolkits (`private_toolkits` of `/membership`). Absent when the
+   * caller belongs to no org there.
+   */
+  private_toolkits: Schema.optionalKey(Schema.Boolean),
   /** Which optional pieces this deployment has, and whether it is Commissary Cloud. */
   deployment: Deployment,
   /**

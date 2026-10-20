@@ -1,7 +1,11 @@
 import { RpcTarget } from "cloudflare:workers";
 import { type Duration, Effect, Result, type Schema } from "effect";
 import { type Access, accessTo, isFullAccess, type Scope, type Viewer } from "@commissary/auth";
+import type { GrantSubject, ToolGrant, ToolGrants } from "@commissary/contract/grants";
 import type {
+  ConnectCredential,
+  ConnectedGrant,
+  ConnectedToolkitView,
   CredentialSlot,
   CredentialsAccepted,
   LimitedToolkitView,
@@ -21,6 +25,14 @@ import {
   type OutboundPolicy,
 } from "@commissary/core";
 import type { ControlPlanePart, OrgCore } from "@commissary/state";
+import {
+  connectGrant,
+  type ToolGrantChange,
+  type ToolGrantEntry,
+  type ToolGrantValue,
+} from "./grants/grant.ts";
+import { type GrantableTool, grantedTools } from "./grants/reach.ts";
+import { cleanToolGrant, ToolGrantStore } from "./grants/store.ts";
 import { callUpstreamTool, LISTING_TIMEOUT, listUpstreamTools } from "./mcp/client.ts";
 import { isToolkitName, isToolName, fullToolName, MAX_FULL_NAME } from "./toolkits/names.ts";
 import {
@@ -48,6 +60,7 @@ export type ToolsErrorCode =
   | "name_taken"
   | "not_accepted"
   | "private_credentials_unavailable"
+  | "private_toolkits_unavailable"
   | "no_credential"
   | "tool_list_failed";
 
@@ -107,7 +120,8 @@ export interface AddToolkitInput {
   readonly name: string;
   readonly private: boolean;
   readonly accepts: CredentialsAccepted;
-  readonly credential?: ToolkitSecret | undefined;
+  /** Connected at once; an org toolkit's shared credential names who may use it (`subject`). */
+  readonly credential?: ConnectCredential | undefined;
 }
 
 /** What the cron task's refresh did. */
@@ -137,6 +151,20 @@ export interface ToolkitExport {
     readonly description?: string;
     readonly class?: "read" | "write";
   }>;
+  /** An org toolkit's tool grants, in an org admin's export only. */
+  readonly grants?: ReadonlyArray<ExportedToolGrant>;
+}
+
+/** A tool grant as the export holds it: its subject by what a person reads, and its tools by upstream name. */
+export interface ExportedToolGrant {
+  readonly subject:
+    | { readonly kind: "everyone" }
+    | { readonly kind: "member"; readonly email: string }
+    | { readonly kind: "team"; readonly name: string };
+  readonly tools:
+    | { readonly kind: "all" | "read" }
+    | { readonly kind: "named"; readonly tools: ReadonlyArray<string> };
+  readonly updated_at: string;
 }
 
 /** A tool as Commissary's MCP endpoint lists it (#197): its full name, its toolkit's name, and what the client sees. */
@@ -173,6 +201,22 @@ export type ToolCallOutcome =
   | { readonly outcome: "result"; readonly result: Schema.JsonObject }
   | { readonly outcome: "failed"; readonly message: string };
 
+/** A tool the MCP endpoint serves a member, and how they reach it. */
+interface ReachableTool {
+  readonly tool: ResolvedTool;
+  /** As themselves: their private toolkit, or an org toolkit that takes private credentials (no grant needed). */
+  readonly asMember: boolean;
+  /** Through a grant of the org toolkit's shared credential. */
+  readonly granted: boolean;
+}
+
+/** A credential's secret, without the subject it was connected for. */
+const secretOf = (credential: ConnectCredential): ToolkitSecret => {
+  const { subject: _subject, ...secret } = credential;
+
+  return secret;
+};
+
 /** Whether `viewer` reads a toolkit (an org toolkit: every member) or manages it (`full`), or only sees it (`limited`). */
 const reach = (toolkit: Toolkit, viewer: Scope): Access | "read" => {
   const access = accessTo(toolkit.owner, viewer);
@@ -188,10 +232,11 @@ const accepts = (toolkit: Pick<Toolkit, "owner" | "accepts">, slot: CredentialSl
 
 /**
  * The Tools part of an org's ControlPlane (#196): the single writer for the org's toolkits, their credentials (sealed
- * with the org's data key, `core.secrets`), their tool lists and the overrides on their tools. An `RpcTarget` the
- * composed `ControlPlane` constructs once per object (`new ToolsPart(ctx, core)`); callers reach it as
- * `stub.tools().x(…)`. A tool list is built here, from the MCP server, so a credential's secret never leaves the object;
- * the caller hands over its outbound guard's policy (ADR 0044), and every request goes through the guard.
+ * with the org's data key, `core.secrets`), their tool lists, the overrides on their tools and the tool grants (#198,
+ * `grants/`). An `RpcTarget` the composed `ControlPlane` constructs once per object (`new ToolsPart(ctx, core)`);
+ * callers reach it as `stub.tools().x(…)`. A tool list is built here, from the MCP server, so a credential's secret
+ * never leaves the object; the caller hands over its outbound guard's policy (ADR 0044), and every request goes through
+ * the guard.
  *
  * Who may do what follows `@commissary/auth`'s ownership rules: an org toolkit is read by every member and managed by
  * org admins; a private toolkit is its owner's, and an org admin only sees that it exists (and may remove it). Methods
@@ -201,12 +246,14 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   readonly #ctx: DurableObjectState;
   readonly #core: OrgCore;
   readonly #store: ToolkitStore;
+  readonly #grants: ToolGrantStore;
 
   constructor(ctx: DurableObjectState, core: OrgCore) {
     super();
     this.#ctx = ctx;
     this.#core = core;
     this.#store = new ToolkitStore(ctx.storage.sql, core.secrets, (body) => core.transaction(body));
+    this.#grants = new ToolGrantStore(ctx.storage.sql, (body) => core.transaction(body));
   }
 
   // --- the org-wide base's calls (`ControlPlanePart`, `@commissary/state`) ------------------------------------
@@ -229,13 +276,23 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     for (const table of TOOLS_TABLES) this.#ctx.storage.sql.exec(`DROP TABLE IF EXISTS ${table}`);
   }
 
-  /** Zero data retention (ADR 0027): a member's private toolkits and private credentials go with them. */
+  /**
+   * Zero data retention (ADR 0027): a member's private toolkits and private credentials go with them, and so do the
+   * tool grants that named them.
+   */
   async memberLeft(member: string): Promise<void> {
-    this.#store.deleteMember(member);
+    this.#core.transaction(() => {
+      this.#store.deleteMember(member);
+      this.#grants.forget({ kind: "member", id: member });
+    });
   }
 
-  teamDeleted(): void {}
+  /** The tool grants that named the team go with it. */
+  teamDeleted(team: string): void {
+    this.#grants.forget({ kind: "team", id: team });
+  }
 
+  /** Read on every use (`core.teamIdsOf`): nothing to forget. */
   teamMembersChanged(): void {}
 
   apiKeysDeleted(): void {}
@@ -247,7 +304,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
   /** The toolkits `viewer` reaches; an org admin also gets the other members' private toolkits, as existence only. */
   listToolkits(viewer: Scope): ToolkitsList {
-    const resolution = this.#resolve(this.#memberOf(viewer));
+    const resolution = this.#resolve(this.#servedMember(this.#memberOf(viewer)));
     const toolkits: Array<ToolkitView> = [];
     const others: Array<LimitedToolkitView> = [];
 
@@ -270,7 +327,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     input: AddToolkitInput,
     by: string,
     policy: OutboundPolicy,
-  ): Promise<ToolsResult<ToolkitView>> {
+  ): Promise<ToolsResult<ConnectedToolkitView>> {
     const owner = input.private ? viewer.member : undefined;
 
     if (input.private && owner === undefined)
@@ -279,6 +336,12 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     if (!input.private && !viewer.admin)
       return refuse("forbidden", "only an org admin can add an org toolkit");
 
+    if (input.private && !this.#core.privateToolkits())
+      return refuse(
+        "private_toolkits_unavailable",
+        "the org does not let members add private toolkits",
+      );
+
     if (input.private && input.accepts !== "private")
       return refuse("invalid", "a private toolkit takes its owner's credential only");
 
@@ -286,22 +349,28 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
     if (refused !== undefined) return refused;
 
+    const id = freshToolkitId();
+    let grant: ToolGrantValue | undefined;
+
     if (input.credential !== undefined) {
       const slot: CredentialSlot = input.private ? "private" : "shared";
 
       const credentialRefusal = this.#credentialRefusal(
         { owner, accepts: input.accepts },
         slot,
-        input.credential,
+        secretOf(input.credential),
       );
 
       if (credentialRefusal !== undefined) return credentialRefusal;
+      const granted = this.#connectGrant(id, slot, input.credential.subject);
+
+      if (!granted.ok) return granted;
+      grant = granted.value;
     }
 
     const now = Date.now();
-    const id = freshToolkitId();
 
-    this.#core.transaction(() => {
+    const connected = this.#core.transaction(() => {
       this.#store.insertToolkit({
         id,
         kind: "mcp",
@@ -317,12 +386,14 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       });
 
       if (input.credential !== undefined)
-        this.#store.putCredential(id, owner, input.credential, by, now);
+        this.#store.putCredential(id, owner, secretOf(input.credential), by, now);
+
+      return grant === undefined ? undefined : this.#grantOnConnect(grant, by, now);
     });
 
     if (input.credential !== undefined) await this.#buildFor(id, viewer.member, policy);
 
-    return this.#viewOf(id, viewer);
+    return withGrant(this.#viewOf(id, viewer), connected);
   }
 
   /**
@@ -392,30 +463,41 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
   /**
    * Connects the toolkit's shared credential (org admins) or the caller's private one, replacing what was there, and
-   * builds the tool list if it was never built.
+   * builds the tool list if it was never built. A shared credential names who may use it (`subject`): there is no
+   * default tool grant, so the subject's grant of every tool is written with it, unless the subject holds a grant on
+   * the toolkit already (which stays as it is). The answer's `grant` says which.
    */
   async connectCredential(
     viewer: Viewer,
     id: string,
     slot: CredentialSlot,
-    secret: ToolkitSecret,
+    credential: ConnectCredential,
     by: string,
     policy: OutboundPolicy,
-  ): Promise<ToolsResult<ToolkitView>> {
+  ): Promise<ToolsResult<ConnectedToolkitView>> {
     const target = this.#credentialTarget(viewer, id, slot);
 
     if (!target.ok) return target;
     const { toolkit, owner } = target.value;
+    const secret = secretOf(credential);
 
     const refused = this.#credentialRefusal(toolkit, slot, secret);
 
     if (refused !== undefined) return refused;
+    const grant = this.#connectGrant(id, slot, credential.subject);
 
-    this.#store.putCredential(id, owner, secret, by, Date.now());
+    if (!grant.ok) return grant;
+    const now = Date.now();
+
+    const connected = this.#core.transaction(() => {
+      this.#store.putCredential(id, owner, secret, by, now);
+
+      return grant.value === undefined ? undefined : this.#grantOnConnect(grant.value, by, now);
+    });
 
     if (toolkit.listBuiltAt === undefined) await this.#buildFor(id, viewer.member, policy);
 
-    return this.#viewOf(id, viewer);
+    return withGrant(this.#viewOf(id, viewer), connected);
   }
 
   disconnectCredential(viewer: Viewer, id: string, slot: CredentialSlot): ToolsResult<ToolkitView> {
@@ -467,15 +549,83 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     if (!accepts(toolkit, slot))
       return refuse("not_accepted", `the toolkit does not accept a ${slot} credential`);
 
-    if (slot === "private" && !this.#core.privateCredentials())
-      return refuse(
-        "private_credentials_unavailable",
-        "the org does not let members hold private credentials",
-      );
+    if (slot === "private" && !this.#privateAllowed(toolkit))
+      return toolkit.owner === undefined
+        ? refuse(
+            "private_credentials_unavailable",
+            "the org does not let members hold private credentials",
+          )
+        : refuse(
+            "private_toolkits_unavailable",
+            "the org does not let members use private toolkits",
+          );
 
     const invalid = secretRefusal(secret);
 
     return invalid === undefined ? undefined : refuse("invalid", invalid);
+  }
+
+  /**
+   * The grant connecting a credential in `slot` of the toolkit `id` writes: a shared credential's for the subject it
+   * names (refused without one: nobody would reach it), none for a private credential, which names no subject.
+   */
+  #connectGrant(
+    id: string,
+    slot: CredentialSlot,
+    subject: GrantSubject | undefined,
+  ): ToolsResult<ToolGrantValue | undefined> {
+    if (slot === "private")
+      return subject === undefined
+        ? ok(undefined)
+        : refuse("invalid", "a private credential is its owner's alone: it names no subject");
+
+    if (subject === undefined)
+      return refuse(
+        "invalid",
+        "connecting a shared credential names who may use it (subject): there is no default tool grant",
+      );
+
+    const grant = cleanToolGrant(connectGrant(subject, id));
+
+    if ("ok" in grant) return grant;
+    const missing = this.#subjectRefusal(grant.subject);
+
+    return missing === undefined ? ok(grant) : refuse("invalid", missing);
+  }
+
+  /**
+   * Writes the grant a shared credential was connected for, unless its subject holds a grant on the toolkit already
+   * (that one is kept as it is); answers which.
+   */
+  #grantOnConnect(grant: ToolGrantValue, by: string, now: number): ConnectedGrant {
+    const held = this.#grants.heldOn(grant.subject, grant.toolkit);
+
+    if (held !== undefined) return { id: held.id, created: false };
+
+    const written = this.#grants.write({ revision: 0, value: grant }, by, now);
+
+    if (!written.ok) throw new Error(`the connect grant was refused: ${written.message}`);
+
+    return { id: written.id, created: true };
+  }
+
+  /**
+   * Whether the org lets a private credential of `toolkit` be connected and used: on an org toolkit while members may
+   * hold private credentials, on a private toolkit (its owner's) while they may use private toolkits. The two settings
+   * are apart (ADR 0038).
+   */
+  #privateAllowed(toolkit: Pick<Toolkit, "owner">): boolean {
+    return toolkit.owner === undefined
+      ? this.#core.privateCredentials()
+      : this.#core.privateToolkits();
+  }
+
+  /**
+   * Whose private toolkits are in the set the MCP endpoint serves `member`: theirs while the org allows private
+   * toolkits, none otherwise (they are kept, but neither served nor shadowing an org toolkit of their name).
+   */
+  #servedMember(member: string | undefined): string | undefined {
+    return this.#core.privateToolkits() ? member : undefined;
   }
 
   // --- tool lists -------------------------------------------------------------------------------------------------
@@ -544,8 +694,8 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
   /**
    * The credential a build of `toolkit` asked for by `member` uses: the shared credential, or, if there is none, the
-   * member's private one (a private toolkit's is its owner's). Private credentials count only while the org allows
-   * them.
+   * member's private one (a private toolkit's is its owner's). A private credential counts only while the org allows
+   * it ({@link #privateAllowed}).
    */
   #secretFor(toolkit: Toolkit, member: string | undefined): ToolkitSecret | undefined {
     if (toolkit.owner === undefined && accepts(toolkit, "shared")) {
@@ -554,7 +704,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       if (shared !== undefined) return shared;
     }
 
-    if (member === undefined || !accepts(toolkit, "private") || !this.#core.privateCredentials())
+    if (member === undefined || !accepts(toolkit, "private") || !this.#privateAllowed(toolkit))
       return undefined;
 
     if (toolkit.owner !== undefined && toolkit.owner !== member) return undefined;
@@ -604,7 +754,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
   /**
    * The tools of a toolkit, with their flags: an org toolkit's among the org's toolkits, a private toolkit's among the
-   * org's and its owner's.
+   * org's and its owner's (none while the org does not serve private toolkits).
    */
   listTools(viewer: Scope, id: string): ToolsResult<ToolsList> {
     const toolkit = this.#store.toolkit(id);
@@ -613,7 +763,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     const access = reach(toolkit, viewer);
 
     if (access === "none" || access === "limited") return NOT_FOUND;
-    const resolution = this.#resolve(toolkit.owner);
+    const resolution = this.#resolve(this.#servedMember(toolkit.owner));
 
     return ok({
       toolkit_id: id,
@@ -627,17 +777,18 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
    * without hidden, clashing or missing tools (the MCP endpoint, #197, narrows it further).
    */
   servedTools(viewer: Viewer): ReadonlyArray<ToolView> {
-    return this.#resolve(viewer.member).tools.filter(isServed).map(toolView);
+    return this.#resolve(this.#servedMember(viewer.member)).tools.filter(isServed).map(toolView);
   }
 
   /**
-   * The tools Commissary's MCP endpoint lists for `viewer` (#197), sorted by full name: the served tools they may use.
-   * A member uses every tool of their own private toolkits and every tool of an org toolkit that takes private
-   * credentials, as themselves (ADR 0038), while the org lets members hold private credentials. A shared credential's
-   * tools need a grant (#198), and there is no default grant for tools, so nobody reaches them yet.
+   * The tools Commissary's MCP endpoint lists for `viewer` (#197), sorted by full name: the served tools they reach
+   * (ADR 0038). A member uses every tool of their own private toolkits (while the org lets members add them) and every
+   * tool of an org toolkit that takes private credentials, as themselves, while the org lets members hold private
+   * credentials; and the tools of org toolkits' shared credentials their tool grants give (#198). There is no default
+   * tool grant.
    */
   clientTools(viewer: Viewer): ReadonlyArray<ClientTool> {
-    return this.#reachable(viewer).map((tool) => ({
+    return this.#reachable(viewer).map(({ tool }) => ({
       name: tool.name,
       toolkit: tool.toolkit.name,
       ...(tool.description === undefined ? {} : { description: tool.description }),
@@ -654,22 +805,32 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
    * logged with the toolkit and the reason only.
    */
   async callTool(viewer: Viewer, call: ToolCall, policy: OutboundPolicy): Promise<ToolCallOutcome> {
-    const tool = this.#reachable(viewer).find(
-      (reachable) =>
-        reachable.name === call.name &&
-        (call.toolkits === undefined || call.toolkits.includes(reachable.toolkit.name)),
+    const reached = this.#reachable(viewer).find(
+      ({ tool }) =>
+        tool.name === call.name &&
+        (call.toolkits === undefined || call.toolkits.includes(tool.toolkit.name)),
     );
 
-    if (tool === undefined || viewer.member === undefined) return { outcome: "unknown" };
+    if (reached === undefined) return { outcome: "unknown" };
+    const { tool, asMember, granted } = reached;
     const toolkit = tool.toolkit;
-    const owner = viewer.member;
-    const secret = this.#store.secret(toolkit.id, owner);
+
+    const own =
+      asMember &&
+      viewer.member !== undefined &&
+      this.#store.credential(toolkit.id, viewer.member) !== undefined;
+
+    // The member's own credential, or else the shared one a grant gives them.
+    const owner = own ? viewer.member : undefined;
+    const secret = own || granted ? this.#store.secret(toolkit.id, owner) : undefined;
 
     if (secret === undefined)
       return { outcome: "connect", toolkit: { id: toolkit.id, name: toolkit.name } };
 
     const connectedAt = this.#store.credential(toolkit.id, owner)?.connectedAt;
-    const known = this.#store.session(toolkit.id, owner, Date.now());
+    // Sessions are the calling member's, also on the shared credential: an upstream's session state never carries over.
+    const caller = viewer.member ?? "";
+    const known = this.#store.session(toolkit.id, owner, caller, Date.now());
 
     const called = await Effect.runPromise(
       callUpstreamTool(toolkit.source, secret, known, {
@@ -698,10 +859,10 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     if (Result.isFailure(called)) {
       // The session the call failed in may be lost; the next call opens a new one, unless another call already did.
       if (known !== undefined && sameCredential) {
-        const kept = this.#store.session(toolkit.id, owner, Date.now());
+        const kept = this.#store.session(toolkit.id, owner, caller, Date.now());
 
         if (kept?.protocolVersion === known.protocolVersion && kept.sessionId === known.sessionId)
-          this.#store.deleteSession(toolkit.id, owner);
+          this.#store.deleteSession(toolkit.id, owner, caller);
       }
 
       return { outcome: "failed", message: called.failure.message };
@@ -710,22 +871,129 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     const { result, session } = called.success;
 
     if (session !== known && sameCredential) {
-      this.#store.putSession(toolkit.id, owner, session, Date.now());
+      this.#store.putSession(toolkit.id, owner, caller, session, Date.now());
       await this.#core.wakeUpChanged(this.#store.pruneSessions(Date.now()));
     }
 
     return { outcome: "result", result };
   }
 
-  /** The served tools `viewer` reaches ({@link clientTools}), sorted by full name. */
-  #reachable(viewer: Viewer): ReadonlyArray<ResolvedTool> {
+  /**
+   * The served tools `viewer` reaches ({@link clientTools}), sorted by full name, and how. A private toolkit counts
+   * only while the org lets members add them: otherwise it is kept, but not served, and does not shadow an org toolkit
+   * of its name.
+   */
+  #reachable(viewer: Viewer): ReadonlyArray<ReachableTool> {
     const member = viewer.member;
 
-    if (member === undefined || !this.#core.privateCredentials()) return [];
+    const shared = new Set(
+      this.#store
+        .credentials()
+        .filter((credential) => credential.owner === undefined)
+        .map((credential) => credential.toolkitId),
+    );
 
-    return this.#resolve(member)
-      .tools.filter((tool) => isServed(tool) && accepts(tool.toolkit, "private"))
-      .toSorted((a, b) => (a.name < b.name ? -1 : 1));
+    const granted = grantedTools(this.#grants.entries(), {
+      member,
+      teams: member === undefined ? [] : this.#core.teamIdsOf(member),
+    });
+
+    return this.#resolve(this.#servedMember(member))
+      .tools.filter(isServed)
+      .map((tool) => ({
+        tool,
+        asMember:
+          member !== undefined &&
+          accepts(tool.toolkit, "private") &&
+          this.#privateAllowed(tool.toolkit),
+        granted:
+          tool.toolkit.owner === undefined &&
+          accepts(tool.toolkit, "shared") &&
+          shared.has(tool.toolkit.id) &&
+          granted(grantable(tool)),
+      }))
+      .filter((reachable) => reachable.asMember || reachable.granted)
+      .toSorted((a, b) => (a.tool.name < b.tool.name ? -1 : 1));
+  }
+
+  // --- tool grants (ADR 0038) -------------------------------------------------------------------------------------
+
+  /**
+   * Every tool grant of the org (org admins; the route's policy checks), each with the named tools its toolkit's tool
+   * list no longer has (`missing`).
+   */
+  listGrants(): ToolGrants {
+    const listed = new Set(
+      this.#store.tools().map((tool) => stableId(tool.toolkitId, tool.upstreamName)),
+    );
+
+    return {
+      grants: this.#grants.entries().map((entry): ToolGrant => {
+        const missing =
+          entry.tools.kind === "named" ? entry.tools.ids.filter((id) => !listed.has(id)) : [];
+
+        return {
+          id: entry.id,
+          subject: entry.subject,
+          toolkit: entry.toolkit,
+          tools: entry.tools,
+          revision: entry.revision,
+          updated_at: entry.updatedAt,
+          updated_by: entry.updatedBy,
+          ...(missing.length === 0 ? {} : { missing }),
+        };
+      }),
+    };
+  }
+
+  /**
+   * Creates, replaces or deletes (`value: null`) one tool grant at the revision it is based on (0 to create). A grant
+   * names a member or team the org has and one of its org toolkits; one per subject, toolkit and selection.
+   */
+  writeGrant(
+    change: ToolGrantChange,
+    by: string,
+  ): ToolsResult<{ readonly id: string; readonly revision: number }> {
+    let value: ToolGrantValue | null = null;
+
+    if (change.value !== null) {
+      const cleaned = cleanToolGrant(change.value);
+
+      if ("ok" in cleaned) return cleaned;
+      const refused = this.#grantRefusal(cleaned);
+
+      if (refused !== undefined) return refuse("invalid", refused);
+      value = cleaned;
+    }
+
+    const written = this.#grants.write({ ...change, value }, by, Date.now());
+
+    return written.ok ? ok({ id: written.id, revision: written.revision }) : written;
+  }
+
+  /** What a grant names that the org does not have, if anything. */
+  #grantRefusal(grant: ToolGrantValue): string | undefined {
+    const missing = this.#subjectRefusal(grant.subject);
+
+    if (missing !== undefined) return missing;
+    const toolkit = this.#store.toolkit(grant.toolkit);
+
+    if (toolkit === undefined) return `the org has no toolkit ${grant.toolkit}`;
+
+    return toolkit.owner === undefined
+      ? undefined
+      : "a private toolkit is its owner's alone: its tools take no grant";
+  }
+
+  /** The member or team a subject names that the org does not have, if any. */
+  #subjectRefusal(subject: GrantSubject): string | undefined {
+    if (subject.kind === "member" && this.#core.member(subject.id) === undefined)
+      return `the org has no member ${subject.id}`;
+
+    if (subject.kind === "team" && this.#core.team(subject.id) === undefined)
+      return `the org has no team ${subject.id}`;
+
+    return undefined;
   }
 
   // --- overrides --------------------------------------------------------------------------------------------------
@@ -816,8 +1084,14 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
   // --- export -----------------------------------------------------------------------------------------------------
 
-  /** The toolkits `viewer` reaches, with what their credentials are (never their secrets) and their overrides. */
+  /**
+   * The toolkits `viewer` reaches, with what their credentials are (never their secrets) and their overrides, and, for
+   * an org admin, each org toolkit's tool grants.
+   */
   exportToolkits(viewer: Scope): ReadonlyArray<ToolkitExport> {
+    const admin = isFullAccess(viewer) || viewer.admin;
+    const grants = admin ? this.#grants.entries() : [];
+
     return this.#store.toolkits().flatMap((toolkit) => {
       const access = reach(toolkit, viewer);
 
@@ -850,9 +1124,43 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
             ...(override.description === undefined ? {} : { description: override.description }),
             ...(override.toolClass === undefined ? {} : { class: override.toolClass }),
           })),
+          ...(admin && toolkit.owner === undefined
+            ? {
+                grants: grants
+                  .filter((grant) => grant.toolkit === toolkit.id)
+                  .map((grant) => this.#exportedGrant(grant)),
+              }
+            : {}),
         },
       ];
     });
+  }
+
+  /** A tool grant for the export: the member's email or the team's name instead of an id, upstream tool names. */
+  #exportedGrant(grant: ToolGrantEntry): ExportedToolGrant {
+    const { subject, tools } = grant;
+
+    return {
+      subject: this.#exportedSubject(subject),
+      tools:
+        tools.kind === "named"
+          ? {
+              kind: "named",
+              tools: tools.ids.map((id) => id.slice(`${grant.toolkit}:`.length)),
+            }
+          : { kind: tools.kind },
+      updated_at: iso(grant.updatedAt),
+    };
+  }
+
+  #exportedSubject(subject: GrantSubject): ExportedToolGrant["subject"] {
+    if (subject.kind === "member")
+      return { kind: "member", email: this.#core.member(subject.id)?.email ?? "" };
+
+    if (subject.kind === "team")
+      return { kind: "team", name: this.#core.team(subject.id)?.name ?? "" };
+
+    return { kind: "everyone" };
   }
 
   // --- helpers ----------------------------------------------------------------------------------------------------
@@ -918,7 +1226,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
     return toolkit === undefined
       ? NOT_FOUND
-      : ok(this.#view(toolkit, viewer, this.#resolve(this.#memberOf(viewer))));
+      : ok(this.#view(toolkit, viewer, this.#resolve(this.#servedMember(this.#memberOf(viewer)))));
   }
 
   #listStatus(toolkit: Toolkit): ToolsList["tool_list"] {
@@ -931,7 +1239,8 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
   /**
    * A credential without its secret. It is inactive (and not used) while the toolkit does not accept its kind, or, for
-   * a private one, while the org has private credentials off.
+   * a private one, while the org has private credentials off (an org toolkit's) or private toolkits off (a private
+   * toolkit's).
    */
   #credentialView(toolkit: Toolkit, credential: ToolkitCredential): ToolkitCredentialView {
     const slot: CredentialSlot = credential.owner === undefined ? "shared" : "private";
@@ -941,7 +1250,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       ...(credential.param === undefined ? {} : { name: credential.param }),
       connected_at: iso(credential.connectedAt),
       connected_by: credential.connectedBy,
-      active: accepts(toolkit, slot) && (slot === "shared" || this.#core.privateCredentials()),
+      active: accepts(toolkit, slot) && (slot === "shared" || this.#privateAllowed(toolkit)),
     };
   }
 
@@ -996,6 +1305,20 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     };
   }
 }
+
+/** A toolkit's view with what connecting its shared credential did to its subject's grants, if it was connected. */
+const withGrant = (
+  view: ToolsResult<ToolkitView>,
+  grant: ConnectedGrant | undefined,
+): ToolsResult<ConnectedToolkitView> =>
+  view.ok && grant !== undefined ? ok({ ...view.value, grant }) : view;
+
+/** A resolved tool as a grant is asked about it. */
+const grantable = (tool: ResolvedTool): GrantableTool => ({
+  toolkitId: tool.toolkit.id,
+  upstreamName: tool.upstreamName,
+  toolClass: tool.toolClass,
+});
 
 /** A resolved tool as the management API shows it. */
 const toolView = (tool: ResolvedTool): ToolView => {

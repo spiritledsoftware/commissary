@@ -72,6 +72,8 @@ export interface OrgCore {
   teamIdsOf(member: string): ReadonlyArray<string>;
   /** Whether the org lets members hold private credentials (a membership setting). */
   privateCredentials(): boolean;
+  /** Whether the org lets members add private toolkits (a membership setting); read on every use. */
+  privateToolkits(): boolean;
   /** Every member's live API keys at `now` (epoch ms). */
   apiKeys(now: number): ReadonlyArray<ApiKeyRecord>;
   /**
@@ -209,6 +211,7 @@ export class OrgControlPlane<P extends ControlPlaneParts> extends DurableObject<
       teams: () => this.#members.teams(),
       teamIdsOf: (member) => this.#members.teamIdsOf(member),
       privateCredentials: () => this.#members.privateCredentials(),
+      privateToolkits: () => this.#members.privateToolkits(),
       apiKeys: (now) => this.#apiKeys.list(undefined, now),
       wakeUpChanged: async (at) => {
         this.#wakeUps.set(name, at);
@@ -358,13 +361,15 @@ export class OrgControlPlane<P extends ControlPlaneParts> extends DurableObject<
     return {
       autoJoin: this.#members.autoJoin(),
       privateCredentials: this.#members.privateCredentials(),
+      privateToolkits: this.#members.privateToolkits(),
       accessClients: this.#apiKeys.accessClients(),
     };
   }
 
   /**
    * Changes the settings named; the others keep their value. `privateCredentials` turns every private credential off
-   * or on again at once.
+   * or on again at once; `privateToolkits` stops serving every private toolkit (kept, not deleted) or serves them again,
+   * which the Tools part reads on every use.
    */
   setMembershipSettings(settings: Partial<MembershipSettingsWire>): MembershipSettingsWire {
     this.#seedPlatformAdmins();
@@ -379,6 +384,9 @@ export class OrgControlPlane<P extends ControlPlaneParts> extends DurableObject<
 
       for (const part of this.#partList()) part.privateCredentialsChanged();
     }
+
+    if (settings.privateToolkits !== undefined)
+      this.#members.setPrivateToolkits(settings.privateToolkits);
 
     if (settings.accessClients !== undefined)
       this.#apiKeys.setAccessClients(settings.accessClients);

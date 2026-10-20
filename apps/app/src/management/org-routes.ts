@@ -145,7 +145,12 @@ const me = Effect.gen(function* () {
     role: identity.role ?? null,
     orgs: orgs.map((org) => ({ slug: org.slug, name: org.name })),
     deployment: deploymentOf(yield* AuthConfig, yield* AppEnv),
-    ...(settings === undefined ? {} : { private_credentials: settings.privateCredentials }),
+    ...(settings === undefined
+      ? {}
+      : {
+          private_credentials: settings.privateCredentials,
+          private_toolkits: settings.privateToolkits,
+        }),
     ...(yield* ownedOrgs(identity)),
     ...(api === undefined ? {} : { api_url: api }),
   });
@@ -214,9 +219,17 @@ const creator = Effect.gen(function* () {
 const create = Effect.gen(function* () {
   const person = yield* creator;
   const body = yield* bodyObject;
-  const { private_credentials: privateCredentials, ...named } = body;
 
-  if (privateCredentials !== undefined && typeof privateCredentials !== "boolean")
+  const {
+    private_credentials: privateCredentials,
+    private_toolkits: privateToolkits,
+    ...named
+  } = body;
+
+  if (
+    (privateCredentials !== undefined && typeof privateCredentials !== "boolean") ||
+    (privateToolkits !== undefined && typeof privateToolkits !== "boolean")
+  )
     return yield* replyError(400, "invalid body");
   const { slug, name } = yield* stringFields(named, ["slug", "name"]);
 
@@ -225,14 +238,17 @@ const create = Effect.gen(function* () {
   const id = newOrgId();
   const env = yield* StateEnv;
 
-  // The creator chooses whether members of the new org may connect private credentials (off unless asked). The org's
-  // ControlPlane takes the choice before the org exists in the registry: a failure here creates nothing (a retry is safe),
-  // and an org that does exist never has a different setting than the one chosen. A refused registry write leaves the
-  // unreachable ControlPlane of an id nobody holds, which has no slug and is never addressed.
-  if (privateCredentials === true) {
+  // The creator chooses whether members of the new org may connect private credentials and add private toolkits (off
+  // unless asked). The org's ControlPlane takes the choice before the org exists in the registry: a failure here creates
+  // nothing (a retry is safe), and an org that does exist never has a different setting than the one chosen. A refused
+  // registry write leaves the unreachable ControlPlane of an id nobody holds, which has no slug and is never addressed.
+  if (privateCredentials === true || privateToolkits === true) {
     yield* Effect.tryPromise({
       try: async () =>
-        await controlPlaneOf(env, id).setMembershipSettings({ privateCredentials: true }),
+        await controlPlaneOf(env, id).setMembershipSettings({
+          ...(privateCredentials === true ? { privateCredentials: true } : {}),
+          ...(privateToolkits === true ? { privateToolkits: true } : {}),
+        }),
       catch: () => replyError(502, "control plane unavailable"),
     });
   }

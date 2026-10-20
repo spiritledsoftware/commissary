@@ -1,8 +1,9 @@
 /**
  * Tools' section of the export of an org (`GET /v9/management/export`, ADR 0027; the app Worker's `org-routes.ts` builds
  * the rest, #134 "The area package convention"): the toolkits the caller reaches, with their sources, which credentials
- * they accept, what kind of credential is connected (never a secret) and the overrides on their tools. Tool lists are
- * not part of it: they are rebuilt from the sources.
+ * they accept, what kind of credential is connected (never a secret), the overrides on their tools and, in an org
+ * admin's export, each org toolkit's tool grants (subjects by email or team name, tools by upstream name). Tool lists
+ * are not part of it: they are rebuilt from the sources.
  */
 import { Effect } from "effect";
 import { currentViewer } from "@commissary/auth";

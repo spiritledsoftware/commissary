@@ -31,7 +31,7 @@ describe("the tool list refresh", () => {
         name: "cron",
         private: false,
         accepts: "shared",
-        credential: { kind: "none" },
+        credential: { kind: "none", subject: { kind: "everyone" } },
       },
       "test",
       POLICY,

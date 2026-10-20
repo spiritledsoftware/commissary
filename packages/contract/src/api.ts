@@ -13,7 +13,7 @@ import { BillingGroup } from "./billing.ts";
 import { ProviderKeysGroup } from "./provider-keys.ts";
 import { CatalogGroup } from "./catalog.ts";
 import { CredentialsGroup } from "./credentials.ts";
-import { GrantsGroup } from "./grants.ts";
+import { GrantsGroup, ToolGrantsGroup } from "./grants.ts";
 import { MembersGroup } from "./members.ts";
 import { OAuthGroup } from "./oauth.ts";
 import { ManagementKeysGroup } from "./management-keys.ts";
@@ -49,6 +49,7 @@ export class ManagementApi extends HttpApi.make("management")
   .add(SsoGroup)
   .add(BillingGroup)
   .add(ToolsGroup)
+  .add(ToolGrantsGroup)
   .prefix(MANAGEMENT_API_PREFIX) {}
 
 // Below the prefix `/orgs...` is platform-level and every other route exists per org; `/me` is not platform-level:

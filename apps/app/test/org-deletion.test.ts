@@ -70,7 +70,7 @@ const newOrg = async (): Promise<Org> => {
 
   const created = await harness.json(
     "/v9/management/orgs",
-    jsonInit("POST", { slug, name, private_credentials: true }),
+    jsonInit("POST", { slug, name, private_credentials: true, private_toolkits: true }),
   );
 
   expect(created.status).toBe(201);
@@ -109,11 +109,12 @@ const newOrg = async (): Promise<Org> => {
 
   expect(group.status).toBe(200);
 
-  // Toolkits: an org toolkit with its shared credential, tool list and an override, and Alice's private toolkit.
+  // Toolkits: an org toolkit with its shared credential (granted to everyone), tool list and an override, and Alice's
+  // private toolkit.
   const toolkit = await send(slug, "/toolkits", platform, "POST", {
     source: MCP_SERVER.url,
     name: "search",
-    credential: { kind: "bearer", token: "mcp-token" },
+    credential: { kind: "bearer", token: "mcp-token", subject: { kind: "everyone" } },
   });
 
   expect(toolkit.status).toBe(201);
@@ -211,6 +212,7 @@ describe("deleting an org", () => {
         "toolkit_credentials",
         "toolkit_tools",
         "tool_overrides",
+        "tool_grants",
       ]),
     );
 

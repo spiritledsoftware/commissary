@@ -24,6 +24,8 @@ type ToolsPartMethod =
   | "clientTools"
   | "callTool"
   | "setOverride"
+  | "listGrants"
+  | "writeGrant"
   | "exportToolkits";
 
 /** The Tools part of an org's ControlPlane (`ToolsPart`) as Tools sees it: the methods it calls. */
