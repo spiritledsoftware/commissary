@@ -6,11 +6,13 @@ import { RefreshCw } from "lucide-react";
 import { AsyncResult } from "effect/reactivity";
 import { credentialsAtom, meAtom, usageEpochAtom, usageLastDayAtom } from "../api/client.ts";
 import { NotAllowed } from "../pages/NotAllowed.tsx";
+import { changesBilling, seesBilling } from "../lib/billing.ts";
 import { canManageMembers, homeFor, pageAllowed, pageGroupsFor } from "../lib/role.ts";
 import { type RoleState, useRole } from "../lib/use-role.ts";
 import { AccountMenu } from "./AccountMenu.tsx";
 import { Problem } from "./Kit.tsx";
 import { OrgSwitcher } from "./OrgSwitcher.tsx";
+import { PlanNotices } from "./PlanNotices.tsx";
 import styles from "./Shell.module.css";
 import { Sidebar, SidebarDrawer } from "./Sidebar.tsx";
 import { ThemeMenu } from "./ThemeMenu.tsx";
@@ -101,7 +103,7 @@ const Gate = ({ role }: { readonly role: RoleState }) => {
 export const Shell = () => {
   const role = useRole();
   const me = useAtomValue(meAtom);
-  // Commissary Cloud adds a page (Single sign-on) and the account menu's Sign out.
+  // Commissary Cloud adds pages (Single sign-on, Billing), the plan notices and the account menu's Sign out.
   const hosted = AsyncResult.isSuccess(me) && me.value.deployment.hosted;
 
   const groups =
@@ -110,6 +112,8 @@ export const Shell = () => {
       : [];
 
   const admin = role.kind === "ready" && canManageMembers(role.caller);
+  // Commissary Cloud's plan notices, over every page for the org's owners and admins (ADR 0042).
+  const showsPlanNotices = role.kind === "ready" && seesBilling(hosted, role.caller);
 
   return (
     <>
@@ -139,6 +143,7 @@ export const Shell = () => {
       <div className={styles["frame"]}>
         <Sidebar groups={groups} />
         <main id="main" tabIndex={-1} className={styles["main"]}>
+          {showsPlanNotices ? <PlanNotices owner={changesBilling(role.caller)} /> : null}
           <Gate role={role} />
         </main>
       </div>

@@ -58,6 +58,10 @@ describe("pages", () => {
     expect(pageAllowed("member", "/approvals")).toBe(true);
     expect(pageAllowed("member", "/approvals/ap_123")).toBe(true);
     expect(pageAllowed("member", "/approvalsx")).toBe(false);
+    // Billing is the org admins' (ADR 0042): a plain member has no billing page, on Commissary Cloud either.
+    expect(pageAllowed("member", "/billing")).toBe(false);
+    expect(pagesFor("member", true, true).map((page) => page.to)).not.toContain("/billing");
+    expect(pageAllowed("admin", "/billing")).toBe(true);
     expect(pageAllowed("member", "/usage/prices")).toBe(false);
     expect(pageAllowed("member", "/members")).toBe(false);
     expect(pageAllowed("admin", "/usage/prices")).toBe(true);
@@ -81,10 +85,14 @@ describe("the sidebar's groups of pages", () => {
     expect(outline(pageGroupsFor("owner"))).toEqual(outline(pageGroupsFor("admin")));
   });
 
-  it("puts Single sign-on beside Settings on Commissary Cloud only", () => {
+  it("puts Single sign-on and Billing beside Settings on Commissary Cloud only", () => {
     expect(outline(pageGroupsFor("admin", false, true)).at(-1)).toEqual([
       "Org",
-      ["Settings", "Single sign-on"],
+      ["Settings", "Single sign-on", "Billing"],
+    ]);
+    expect(outline(pageGroupsFor("owner", false, true)).at(-1)).toEqual([
+      "Org",
+      ["Settings", "Single sign-on", "Billing"],
     ]);
     expect(outline(pageGroupsFor("admin", false, false)).at(-1)).toEqual(["Org", ["Settings"]]);
     expect(outline(pageGroupsFor("member", true, true)).map(([heading]) => heading)).toEqual([

@@ -1,0 +1,216 @@
+/* Billing: one 60rem column like Limits. The plan reads as a heavy name with a plain sentence; the month is a ruled
+   table with a thin meter of free usage in each row; the bill is a total over the same meter against the cap. Red only
+   where a limit refuses or a payment failed; near a limit is an ink note. */
+.head {
+  display: grid;
+  gap: var(--space-3);
+  max-width: 60rem;
+  padding-bottom: var(--space-5);
+  border-bottom: 2px solid var(--text);
+}
+
+.title {
+  font-size: 2rem;
+  font-weight: 750;
+  letter-spacing: -0.025em;
+}
+
+.intro,
+.lead,
+.footnote {
+  max-width: 65ch;
+  font-size: var(--text-sm);
+  color: var(--quiet);
+}
+
+.footnote {
+  margin-top: var(--space-3);
+}
+
+/* Sections keep to the page's 60rem column, so a heading's aside ends where the table does, and may shrink below the
+   table's width (it scrolls inside them). */
+.section {
+  min-width: 0;
+  max-width: 60rem;
+}
+
+.plan,
+.cap {
+  display: grid;
+  gap: var(--space-4);
+  max-width: 60rem;
+  justify-items: start;
+}
+
+/* The plan, set like the cap's amount below: body size in the heavy sign weight. */
+.planName {
+  font-size: var(--text-md);
+  font-weight: 750;
+}
+
+/* Back from checkout, waiting for the webhook: a set-apart block on the sunk ground. */
+.waiting {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3) var(--space-4);
+  max-width: 60rem;
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--text-sm);
+  background: var(--sunk);
+  border-radius: var(--radius);
+}
+
+.waiting > p {
+  flex: 1 1 24rem;
+  max-width: 65ch;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: start;
+  gap: var(--space-3);
+}
+
+.note {
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+/* A live region: it stays mounted, taking no room while it is empty. */
+.note:empty {
+  display: none;
+}
+
+.scroll {
+  max-width: 60rem;
+  overflow-x: auto;
+}
+
+.table {
+  width: 100%;
+  font-size: var(--text-sm);
+}
+
+.table th,
+.table td {
+  padding: var(--space-3) var(--space-4);
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.table > thead th {
+  padding-top: 0;
+  padding-bottom: var(--space-2);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--quiet);
+  border-bottom: 2px solid var(--text);
+  white-space: nowrap;
+}
+
+.table tr > :first-child {
+  padding-left: 0;
+}
+
+.table tr > :last-child {
+  padding-right: 0;
+}
+
+.unit {
+  font-weight: 650;
+}
+
+/* Numbers right-aligned (the Tables rule). */
+.table .number {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.figure {
+  font-weight: 650;
+}
+
+tr[data-level="out"] .figure {
+  color: var(--danger);
+}
+
+/* Free usage: the meter (the amount as its label, the share used as its value) with its notes under it. */
+.free {
+  width: 18rem;
+  min-width: 15rem;
+}
+
+.none {
+  color: var(--quiet);
+}
+
+/* Near or at a limit: the mark and an ink note, never grey or red text (the Near-Limit Rule). */
+.levelNote {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  max-width: 70ch;
+  font-size: var(--text-sm);
+  font-weight: 650;
+  color: var(--text);
+}
+
+.secondary {
+  display: block;
+  margin-top: var(--space-1);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-body);
+  color: var(--quiet);
+}
+
+.capLine {
+  font-size: var(--text-md);
+  font-weight: 750;
+}
+
+.bill {
+  display: grid;
+  gap: var(--space-1);
+  width: min(26rem, 100%);
+}
+
+.billFigure {
+  font-size: var(--text-xl);
+  font-weight: 750;
+  letter-spacing: -0.025em;
+  line-height: 1.1;
+}
+
+.bill[data-level="out"] .billFigure {
+  color: var(--danger);
+}
+
+.billOf {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  letter-spacing: normal;
+  color: var(--quiet);
+}
+
+.capForm {
+  justify-self: stretch;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: var(--space-3);
+}
+
+.capForm > div {
+  flex: 0 1 14rem;
+}
+
+@container (max-width: 43rem) {
+  .table th,
+  .table td {
+    padding-inline: var(--space-2);
+  }
+}

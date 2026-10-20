@@ -1,0 +1,6 @@
+/* The portal's button with, under it, why it could not open. */
+.portal {
+  display: grid;
+  gap: var(--space-2);
+  justify-items: start;
+}

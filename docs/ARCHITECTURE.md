@@ -3084,7 +3084,9 @@ the package checks `isHosted` before it counts, refuses or reads anything, and i
   the payment state (`payment`: `ok` or `past_due`), whether the org's Polar customer has a card on file (`card_on_file`:
   asked of Polar on each read; `false` before the first checkout or without Polar, `null` when Polar cannot be asked),
   the month's start and end and, for each unit, `used` and the `free` usage, the billing cap (`billing_cap`, dollars,
-  `null` for none), the month's bill so far (`bill`, dollars) and the **notices** (`billing/notices.ts`); any org admin
+  `null` for none), the month's bill so far (`bill`, dollars), Pay as you go's rate of each unit above free usage
+  (`rates`: `dollars` per `per` of it, from `PAYG_RATE_MICROS` and `PAYG_RATE_PER` in `billing/bill.ts`, so the panel
+  states the rates the bill counts at) and the **notices** (`billing/notices.ts`); any org admin
   may read it (the role table's default; `docs/ACCESS.md`). Units not counted yet read 0. Commissary sends no billing
   email (ADR 0042): the notices are state the panel (#239) shows owners and admins. `free_usage` (a unit, 80 or 100):
   where Free's limits apply (on Free, and on Pay as you go while past due), at 80% and at 100% of a unit's free usage,
@@ -3181,6 +3183,20 @@ the package checks `isHosted` before it counts, refuses or reads anything, and i
   `GET /billing` adds `ceilings` for platform admins (each one's `plan` value, of the plan whose limits apply, and
   `raised`; the maximum raise is `MAX_RAISED_CEILING` in `@commissary/contract/billing`); `unbilled` is for every
   reader.
+- **Panel** (#239, `apps/web/src/pages/Billing.tsx`, `components/PlanNotices.tsx`, model in `apps/web/src/lib/billing.ts`):
+  **Billing** (`/billing`, the address `plan_limit_reached` links to; in the sidebar's Org group on Commissary Cloud
+  only, for org admins; a self-hosted panel answers Not found there, and plain members are refused by the shell's
+  gate) shows the plan, each unit's use this month against its free usage with Pay as you go's rate above it (`GET
+  /billing`'s `rates`), and on Pay as you go the bill so far against the billing cap. Org owners upgrade (`POST /billing/checkout`, then the browser goes to
+  Polar; back on the page, which Polar returns to before its webhook may have arrived, it reads the billing again
+  every 5 seconds for a minute while the org still reads Free, for up to an hour after the checkout started), switch
+  to Free after a confirmation that it takes effect at once, set or remove the cap (`PATCH /billing`) and open the
+  customer portal (`POST /billing/portal`); other org admins read the same without the controls. An unbilled org shows
+  "Pay as you go, unbilled" with no checkout, switch or cap. The **plan notices** (`GET /billing`'s `notices`) show
+  over every other page of the org for its owners and admins on Commissary Cloud, most urgent first (the red trail mark for
+  100% and a failed payment, the white-red-white band at 80%), with a link to the Billing page; a failed payment
+  offers an owner the portal and tells other admins to ask an owner. The page and the notices say only what the server
+  does today: requests are counted and refused (tool calls, browser and computer hours are not counted yet).
 - **Org deletion** (`billing/org-deletion.ts`): with a billing provider, Billing's `OrgDeletionStep` sends the org's
   unsent usage, then cancels its subscription at the end of its period (as switching to Free does, so the usage sent is
   invoiced); deletion does not wait for payment. A failure that may pass (the part cannot be reached; Polar rate limits,

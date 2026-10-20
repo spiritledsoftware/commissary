@@ -330,11 +330,22 @@ Square signage. Buttons take a 3px radius; meters 1px. Blades have a square tail
 ### Meter
 
 - Grid of label (5rem; a longer window name wraps rather than touching the track), track, value (2.75rem). Track stone-2, 8px high; fill ink; at 100% fill and value turn red. The scale is a shared 0–100%.
+- **Free usage** (the Billing page): the label is the month's free usage of the unit ("25,000"), so the column head names it once. The meter turns red only where using it up refuses something (on Free, or while a payment is past due): on Pay as you go what is above free usage is billed, not refused, so a meter at 100% stays ink. The billing cap's meter turns red once the cap is reached.
 - **Pace:** when an allowance has a pace, a tick marks the share of its period that had passed when the figures were read: ink, 2px by 14px, so it stands proud of the track, with a 1px ground-coloured edge so it reads over the fill. A caption sits under the track (0.8125rem, stone-4): "8 pts ahead", "On pace" or "12 pts behind". Pace is information, so neither tick nor caption ever turns yellow or red. The meter's spoken value carries the pace ("62%, 8 points ahead of pace"); the caption is hidden from assistive technology so it isn't read twice. Without a pace, the meter has neither.
 
 ### Trail Mark
 
 - The red 1rem by 0.5rem band beside a closed or failing item, including load-error messages.
+- **Near mark:** its near-limit twin, the white-red-white band (paint, danger, paint, with the 1px paint edge) beside
+  something at 80% of a limit, per the Near-Limit Rule.
+
+### Plan Notices
+
+- Commissary Cloud's notices of free usage and the billing cap at 80% and 100% and of a failed payment, over an org's
+  pages for its owners and admins (not on the Billing page, which shows the same state in place): one set-apart block
+  on the sunk ground across the page column, a mark and a 600-weight sentence per notice (the trail mark for 100% and a failed
+  payment, the near mark at 80%), most urgent first, then a "Plan and usage" link to the Billing page. No colour fill,
+  no stripe: the marks carry the urgency.
 
 ### Tables
 
