@@ -28,7 +28,7 @@ From most to least sensitive:
 
 - What grants access is **sealed** (AES-256-GCM, `enc:v1:`, bound to its table and row): credentials, toolkit sign-ins, browser profiles, private key groups, config entries, the SSO secret, webhook trigger secrets. A sealed value copied to another row or org does not open.
 - Each org has its own data key, stored only wrapped by a key derived from the deployment's `SECRETS_KEY`, which only the state Worker holds. `SECRETS_KEY` rotates by re-wrapping (`docs/DEPLOY.md`).
-- Content (transcripts, sandbox files, pending approvals' arguments) is **not** sealed: only the Worker holding the key ever reads it, and Cloudflare encrypts storage at rest, so sealing it would add nothing against a reader who has the Worker (ADR 0044).
+- Content (transcripts, sandbox files) is **not** sealed: only the Worker holding the key ever reads it, and Cloudflare encrypts storage at rest, so sealing it would add nothing against a reader who has the Worker (ADR 0044). Pending approvals' arguments are the exception: they are sealed with the org's data key for their row, as #201 decided (ADR 0044 amended, `tools/approvals/store.ts`), and deleted with the decision or with the approval an hour after the call.
 - API keys and management keys are stored as unsalted SHA-256 hashes, compared in constant time; they are random secrets, so a salt adds nothing.
 - Secrets never reach the browser (ADR 0013), the logs (`redactHeaders`, `packages/core/src/logging.ts`), a sandbox (ADR 0041) or the model (handoff, ADR 0039).
 
@@ -44,7 +44,7 @@ From most to least sensitive:
 Commissary assumes any content an agent or client reads can steer it, and does not try to detect injection (ADR 0044). Security comes from limiting what a steered agent or client can do:
 
 - **Reach**: grants, tool scopes, `?toolkits=` and each tool's class. A tool with no sign of reading writes; upstream annotations are hints an admin overrides (ADR 0038).
-- **Approval rules**: an org admin can make write tools, or any tool, wait for an approver who is not the agent (ADR 0038).
+- **Approval rules**: an org admin can make write tools, or any tool, wait for an approver who is not the agent (ADR 0038). A steered client cannot answer for its person: an answer to the approve-or-deny form counts only with the `requestState` sealed for that form and that very call (tool and arguments), once and within the hour; a pending approval is decided only in the panel, by a person its rule names, and goes once its hour is over or its rule is removed or narrowed.
 - **Spend limits**, and on Commissary Cloud plan limits and the billing cap.
 - **The sandbox's network**: none by default (ADR 0041), enforced at one point (below).
 - **The browser**: passwords are typed by a person through handoff and never reach the model; password and handoff fields are masked; no tool runs JavaScript in the page; there is no raw CDP endpoint (ADR 0039).

@@ -1,7 +1,8 @@
 /**
  * Toolkits (`/v9/management/toolkits`, `packages/tools/src/management/routes.ts`; ADR 0036, ADR 0037, ADR 0038): the
  * org's and the caller's private toolkits built from remote MCP servers, their credentials, their tool lists and the
- * overrides on their tools. Shared with the browser: imports `effect`, `./errors.ts` and `./grants.ts` only.
+ * overrides on their tools. Shared with the browser: imports `effect`, `./approvals.ts`, `./errors.ts` and `./grants.ts`
+ * only.
  *
  * An org admin adds and manages org toolkits; any member adds private toolkits, which only they see in full (an org
  * admin sees that one exists, and may remove it). A toolkit holds at most one shared credential and one private
@@ -16,6 +17,7 @@
  */
 import { Schema, Tuple } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
+import { ApprovalRules, ApprovalRulesView } from "./approvals.ts";
 import { managementErrors } from "./errors.ts";
 import { GrantSubject } from "./grants.ts";
 
@@ -121,7 +123,8 @@ export const ToolkitView = Schema.Struct({
   /**
    * A toolkit Commissary provides itself (the browser toolkit, `id` and `name` `browser`): present while the deployment
    * has what it runs on, reached under tool grants (no default grant), its tools' overrides as any toolkit's; it cannot
-   * be renamed, edited, given a credential, refreshed or removed (`403 built_in`). Its times are the epoch.
+   * be renamed, edited (but for its approval rules, #201), given a credential, refreshed or removed (`403 built_in`).
+   * Its times are the epoch until its approval rules change.
    */
   built_in: optional(Schema.Literal(true)),
   /** A private toolkit, the caller's own. */
@@ -147,6 +150,11 @@ export const ToolkitView = Schema.Struct({
   rename_suggested: optional(Schema.Boolean),
   /** An org toolkit whose name the caller's private toolkit has: hidden for the caller. */
   shadowed: optional(Schema.Boolean),
+  /**
+   * Its approval rules (#201), each approver named, a rule no one can approve under flagged `nobody_decides`; absent:
+   * no call of its tools waits.
+   */
+  approval_rules: optional(ApprovalRulesView),
 });
 
 export type ToolkitView = typeof ToolkitView.Type;
@@ -212,6 +220,11 @@ export const UpdateToolkit = Schema.Struct({
   accepts: optional(CredentialsAccepted),
   /** Org toolkits only: a whole number of micro-USD per call, 0 or more; `null` clears it (calls are free). */
   price_micros: optional(Schema.NullOr(Schema.Number)),
+  /**
+   * The whole of its approval rules (#201): org admins on an org toolkit, its owner on a private one; `null` clears
+   * them. An approver left out is the caller.
+   */
+  approval_rules: optional(Schema.NullOr(ApprovalRules)),
 });
 
 export type UpdateToolkit = typeof UpdateToolkit.Type;
@@ -318,9 +331,11 @@ export class ToolsGroup extends HttpApiGroup.make("tools").add(
     error: managementErrors,
   }),
   /**
-   * Rename, change which credentials an org toolkit accepts, or price its calls; `409 conflict` when the revision is
-   * stale, `422 invalid` for a price on a private toolkit or one that is not a whole number of micro-USD, 0 or more,
-   * `403 built_in` for a built-in toolkit (also on removing it, and on connecting or removing its credential).
+   * Rename, change which credentials an org toolkit accepts, price its calls, or set its approval rules; `409 conflict`
+   * when the revision is stale, `422 invalid` for a price on a private toolkit or one that is not a whole number of
+   * micro-USD, 0 or more, and for approval rules that mark a tool of another toolkit or name a team or member the org
+   * does not have; `403 built_in` for anything but approval rules on a built-in toolkit (also on removing it, and on
+   * connecting or removing its credential).
    */
   HttpApiEndpoint.patch("update", "/toolkits/:id", {
     ...idParam,

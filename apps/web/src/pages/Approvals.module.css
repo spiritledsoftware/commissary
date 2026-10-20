@@ -1,0 +1,111 @@
+/* The Approvals pages: the pending list, grouped by approver set, and one approval's page. */
+.page {
+  display: grid;
+  gap: var(--space-6);
+  max-width: 56rem;
+}
+
+.head {
+  display: grid;
+  gap: var(--space-3);
+  padding-bottom: var(--space-5);
+  border-bottom: 2px solid var(--text);
+}
+
+.title {
+  font-size: 2rem;
+  font-weight: 750;
+  letter-spacing: -0.025em;
+  overflow-wrap: anywhere;
+}
+
+.intro {
+  max-width: 65ch;
+  font-size: var(--text-sm);
+  color: var(--quiet);
+}
+
+.empty {
+  max-width: 60ch;
+  color: var(--quiet);
+}
+
+.table {
+  width: 100%;
+  font-size: var(--text-sm);
+}
+
+.table th,
+.table td {
+  padding: var(--space-3) var(--space-4);
+  text-align: left;
+  vertical-align: middle;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.table > thead th {
+  padding-top: 0;
+  padding-bottom: var(--space-2);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--quiet);
+  border-bottom: 2px solid var(--text);
+  white-space: nowrap;
+}
+
+.table tr > :first-child {
+  padding-left: 0;
+}
+
+.table tr > :last-child {
+  padding-right: 0;
+}
+
+.name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.secondary {
+  display: block;
+  font-size: var(--text-xs);
+  font-weight: var(--weight-body);
+  color: var(--quiet);
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--space-2) var(--space-5);
+  font-size: var(--text-sm);
+}
+
+.facts dt {
+  color: var(--quiet);
+}
+
+.facts dd {
+  overflow-wrap: anywhere;
+}
+
+.arguments {
+  max-height: 32rem;
+  overflow: auto;
+  padding: var(--space-4);
+  font-size: var(--text-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--hairline);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+@container (max-width: 43rem) {
+  .wide {
+    display: none;
+  }
+}

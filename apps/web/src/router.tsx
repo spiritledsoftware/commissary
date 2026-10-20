@@ -4,6 +4,8 @@ import { createRootRoute, createRoute, createRouter } from "@tanstack/react-rout
 import { Shell } from "./components/Shell.tsx";
 import { AccountPage } from "./pages/Account.tsx";
 import { AccountsPage } from "./pages/Accounts.tsx";
+import { ApprovalPage } from "./pages/Approval.tsx";
+import { ApprovalsPage } from "./pages/Approvals.tsx";
 import { ConnectPage } from "./pages/Connect.tsx";
 import { GrantsPage } from "./pages/Grants.tsx";
 import { KeyGroupPage, NewKeyGroupPage, OwnKeyGroupPage } from "./pages/KeyGroup.tsx";
@@ -82,6 +84,12 @@ const routeTree = rootRoute.addChildren([
   createRoute({ getParentRoute: () => rootRoute, path: "/my-models", component: MyModelsPage }),
   createRoute({ getParentRoute: () => rootRoute, path: "/api-keys", component: ApiKeysPage }),
   createRoute({ getParentRoute: () => rootRoute, path: "/limits", component: LimitsPage }),
+  createRoute({ getParentRoute: () => rootRoute, path: "/approvals", component: ApprovalsPage }),
+  createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/approvals/$approvalId",
+    component: ApprovalPage,
+  }),
   createRoute({
     getParentRoute: () => rootRoute,
     path: "/management-keys",

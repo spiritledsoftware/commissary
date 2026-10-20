@@ -1,6 +1,13 @@
 import { RpcTarget } from "cloudflare:workers";
-import { type Duration, Effect, Result, type Schema } from "effect";
+import { Clock, type Duration, Effect, Result, type Schema } from "effect";
 import { type Access, accessTo, isFullAccess, type Scope, type Viewer } from "@commissary/auth";
+import type {
+  ApprovalDecision,
+  ApprovalsList,
+  ApprovalView,
+  Approver,
+  ApproverView,
+} from "@commissary/contract/approvals";
 import type { GrantSubject, ToolGrant, ToolGrants } from "@commissary/contract/grants";
 import type {
   ConnectCredential,
@@ -19,7 +26,9 @@ import type {
   ToolkitView,
   ToolsList,
   ToolView,
+  UpdateToolkit,
 } from "@commissary/contract/tools";
+import type { ToolCallApproval } from "@commissary/contract/usage";
 import {
   CurrentOutboundPolicy,
   OutboundHttpClientLive,
@@ -27,6 +36,19 @@ import {
 } from "@commissary/core";
 import type { ControlPlanePart, OrgCore } from "@commissary/state";
 import type { ChargedCredential, Refusal, SpendCredential } from "@commissary/state/spend";
+import { argumentsHash, canonicalJson } from "./approvals/hash.ts";
+import {
+  approvalRulesView,
+  approverFor,
+  approversOf,
+  cleanApprovalRules,
+  mayDecide,
+  noRules,
+  rulesWithoutMember,
+  type StoredApprovalRules,
+  withoutMember,
+} from "./approvals/rules.ts";
+import { type ApprovalKey, ApprovalStore, type StoredApproval } from "./approvals/store.ts";
 import {
   connectGrant,
   type ToolGrantChange,
@@ -59,7 +81,7 @@ import {
   builtInToolkits,
   COMMISSARY,
 } from "./toolkits/built-in.ts";
-import type { StoredToolkit, Toolkit } from "./toolkits/toolkit.ts";
+import type { BuiltInToolkit, StoredToolkit, Toolkit } from "./toolkits/toolkit.ts";
 
 /** Why a call of the part was refused; the routes answer each with its status. */
 export type ToolsErrorCode =
@@ -87,7 +109,7 @@ const NOT_FOUND = refuse("not_found", "toolkit not found");
 
 const BUILT_IN = refuse(
   "built_in",
-  "the toolkit is Commissary's own: it cannot be renamed, edited, given a credential, refreshed or removed",
+  "the toolkit is Commissary's own: it cannot be renamed, edited (but for its approval rules), given a credential, refreshed or removed",
 );
 
 const iso = (at: number): string => new Date(at).toISOString();
@@ -172,7 +194,18 @@ export interface ToolkitExport {
   }>;
   /** An org toolkit's tool grants, in an org admin's export only. */
   readonly grants?: ReadonlyArray<ExportedToolGrant>;
+  /** Its approval rules (#201): marked tools by upstream name, approvers by what a person reads. */
+  readonly approval_rules?: {
+    readonly writes?: { readonly approver: ExportedApprover };
+    readonly tools?: ReadonlyArray<{ readonly tool: string; readonly approver: ExportedApprover }>;
+  };
 }
+
+/** An approver as the export holds it: a team by its name, members by their emails. */
+export type ExportedApprover =
+  | { readonly kind: "caller" }
+  | { readonly kind: "team"; readonly name: string }
+  | { readonly kind: "members"; readonly emails: ReadonlyArray<string> };
 
 /** A tool grant as the export holds it: its subject by what a person reads, and its tools by upstream name. */
 export interface ExportedToolGrant {
@@ -205,7 +238,36 @@ export interface ToolCall {
   readonly toolkits?: ReadonlyArray<string> | undefined;
   /** The API key the call came with, whose Spend limits a priced call counts toward (#199). */
   readonly apiKeyId?: string | undefined;
+  /** The caller's principal, which names a caller without a member in a pending approval (#201). */
+  readonly principalId?: string | undefined;
+  /**
+   * Present when the client shows the caller an approve-or-deny form (MCP form-mode elicitation, #201), with the
+   * caller's answer to it when this is the call made again after the form: `accept` approves, anything else denies.
+   * An answer counts only with the `requestState` the form was sent with (`approve`), for this very call; without it
+   * the caller is asked again.
+   */
+  readonly approvalForm?:
+    | {
+        readonly answer?: FormAction | undefined;
+        readonly requestState?: string | undefined;
+      }
+    | undefined;
+  /**
+   * Set by an MCP endpoint that understands the approval outcomes (`approve`, `pending`, `not_approved`, #201). An
+   * API Worker deployed before them sends a call without it, and gets those outcomes as `failed` (docs/DEVELOPMENT.md,
+   * "State RPC: expand, then contract"); it sends no `approvalForm`, so it is never asked to show one.
+   */
+  readonly approvalOutcomes?: true | undefined;
 }
+
+/** How a client's caller answered an elicitation form (MCP `ElicitResult.action`). */
+export type FormAction = "accept" | "decline" | "cancel";
+
+/**
+ * Why a call an approval rule held was not made (#201): `denied` on its form or its approval page, or `no_approver`, a
+ * caller without a member under a rule whose approver is the caller, from a client that shows no forms.
+ */
+export type NotApprovedReason = "denied" | "no_approver";
 
 /**
  * What a call's usage record says of it (#199), beyond who called and how it went: never its arguments or its result.
@@ -220,17 +282,45 @@ export interface CallUsage {
   readonly private: boolean;
   /** Micro-USD charged: the tool's price on a result, 0 when free, refused or failed upstream. */
   readonly costMicros: number;
+  /** How an approval rule decided the call (#201); `none` when no rule made it wait. */
+  readonly approval: ToolCallApproval;
 }
 
 /**
  * What a call came to: `unknown`, a tool the member does not reach (answered as a tool that does not exist);
  * `connect`, a tool that needs a private credential the member has not connected; `refused`, a priced call that a
- * Spend limit without room keeps from the upstream (#199); the upstream's `result`, an `isError` one included; or
- * `failed`, an upstream or transport failure, with a short message that quotes neither the source nor the server's
- * answer. All but `unknown` say what the call's usage record holds.
+ * Spend limit without room keeps from the upstream (#199); under an approval rule (#201), `approve`, a call its caller
+ * approves on a form first (the client makes it again with their answer), `pending`, a call that waits for its
+ * approver in the panel, or `not_approved`, one that was denied (or that no one could approve); the upstream's
+ * `result`, an `isError` one included; or `failed`, an upstream or transport failure, with a short message that
+ * quotes neither the source nor the server's answer. All but `unknown` and `approve` say what the call's usage record
+ * holds (a call on a form writes its record once it ends). The approval outcomes go only to a call that says it
+ * understands them (`ToolCall.approvalOutcomes`).
  */
 export type ToolCallOutcome =
   | { readonly outcome: "unknown" }
+  | {
+      readonly outcome: "approve";
+      readonly toolkit: { readonly id: string; readonly name: string };
+      readonly arguments: Schema.JsonObject;
+      /** What the client sends back with the answer, so it counts for this call only (MRTR `requestState`). */
+      readonly requestState: string;
+    }
+  | {
+      readonly outcome: "pending";
+      readonly approval: {
+        readonly id: string;
+        readonly approver: Approver;
+        /** Epoch ms. */
+        readonly expiresAt: number;
+      };
+      readonly usage: CallUsage;
+    }
+  | {
+      readonly outcome: "not_approved";
+      readonly reason: NotApprovedReason;
+      readonly usage: CallUsage;
+    }
   | {
       readonly outcome: "connect";
       readonly toolkit: { readonly id: string; readonly name: string };
@@ -291,6 +381,9 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   readonly #store: ToolkitStore;
   readonly #grants: ToolGrantStore;
   readonly #builtIns: ReadonlyArray<BuiltIn>;
+  readonly #approvals: ApprovalStore;
+  /** What the part reads the time from: the live clock, or a test's (`useClock`). */
+  #clock: Clock.Clock = Clock.Clock.defaultValue();
 
   constructor(ctx: DurableObjectState, core: OrgCore, providers: BuiltInProviders = {}) {
     super();
@@ -299,10 +392,23 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     this.#builtIns = builtInToolkits(providers);
     this.#store = new ToolkitStore(ctx.storage.sql, core.secrets, (body) => core.transaction(body));
     this.#grants = new ToolGrantStore(ctx.storage.sql, (body) => core.transaction(body));
+    this.#approvals = new ApprovalStore(ctx.storage.sql, core.secrets);
     this.#yieldBuiltInNames();
   }
 
   // --- the org-wide base's calls (`ControlPlanePart`, `@commissary/state`) ------------------------------------
+
+  /**
+   * Makes the part read the time from `clock` (a test's `TestClock`) instead of the live clock. In the object's isolate
+   * only (`runInDurableObject`): a clock is not data an RPC can carry.
+   */
+  useClock(clock: Clock.Clock): void {
+    this.#clock = clock;
+  }
+
+  #now(): number {
+    return this.#clock.currentTimeMillisUnsafe();
+  }
 
   /** Tools sealed its secrets from the start: nothing was stored in plain text. */
   sealPlaintext(): number {
@@ -310,11 +416,21 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   }
 
   /**
-   * Forgets the upstream sessions older than seven days (ADR 0038) and wakes up when the next one is. Tool lists are
-   * rebuilt by the cron task.
+   * Forgets the upstream sessions older than seven days (ADR 0038), deletes the pending approvals (and forms) that
+   * expired (#201), and wakes up when the next of either is due. Tool lists are rebuilt by the cron task.
    */
   async alarm(now: number): Promise<number | null> {
-    return this.#store.pruneSessions(now);
+    return this.#nextWakeUp(now);
+  }
+
+  /** Prunes what is due at `now`; answers the part's next wake-up, the earliest of the sessions' and approvals'. */
+  #nextWakeUp(now: number): number | null {
+    const sessions = this.#store.pruneSessions(now);
+    const approvals = this.#approvals.prune(now);
+
+    if (sessions === null) return approvals;
+
+    return approvals === null ? sessions : Math.min(sessions, approvals);
   }
 
   /** Deletes the part's tables: the org was deleted (`wipeOrg`). */
@@ -324,12 +440,23 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
   /**
    * Zero data retention (ADR 0027): a member's private toolkits and private credentials go with them, and so do the
-   * tool grants that named them.
+   * tool grants that named them and the pending approvals of their calls (#201). They leave every list of approvers.
    */
   async memberLeft(member: string): Promise<void> {
     this.#core.transaction(() => {
       this.#store.deleteMember(member);
       this.#grants.forget({ kind: "member", id: member });
+
+      this.#approvals.deleteMember(member, (approver) => withoutMember(approver, member));
+
+      for (const toolkit of this.#store.toolkits()) {
+        const rules =
+          toolkit.approvalRules === undefined
+            ? undefined
+            : rulesWithoutMember(toolkit.approvalRules, member);
+
+        if (rules !== undefined) this.#store.replaceApprovalRules(toolkit.id, rules);
+      }
     });
   }
 
@@ -437,7 +564,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       grant = granted.value;
     }
 
-    const now = Date.now();
+    const now = this.#now();
 
     const connected = this.#core.transaction(() => {
       this.#store.insertToolkit({
@@ -466,28 +593,24 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   }
 
   /**
-   * Renames a toolkit, changes which credentials an org toolkit accepts, or prices its calls (#199; `null` clears the
-   * price). A credential it no longer accepts is kept, shown inactive and not used, until it accepts that kind again or
-   * its holder removes it.
+   * Renames a toolkit, changes which credentials an org toolkit accepts, prices its calls (#199; `null` clears the
+   * price) or sets its approval rules (#201; `null` clears them). A credential it no longer accepts is kept, shown
+   * inactive and not used, until it accepts that kind again or its holder removes it.
    */
   updateToolkit(
     viewer: Viewer,
     id: string,
     revision: number,
-    change: {
-      readonly name?: string | undefined;
-      readonly accepts?: CredentialsAccepted | undefined;
-      readonly price_micros?: number | null | undefined;
-    },
+    change: UpdateToolkit,
     by: string,
   ): ToolsResult<ToolkitView> {
     const managed = this.#managed(id, viewer);
 
     if (!managed.ok) return managed;
-    const toolkit = this.#stored(managed.value);
 
-    if (!toolkit.ok) return toolkit;
-    const current = toolkit.value;
+    if (managed.value.builtIn)
+      return this.#updateBuiltIn(viewer, managed.value, revision, change, by);
+    const current = managed.value;
 
     if (current.revision !== revision)
       return refuse("conflict", `the toolkit is at revision ${current.revision}, not ${revision}`);
@@ -498,6 +621,9 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     const price = this.#priceChange(current, change.price_micros);
 
     if (!price.ok) return price;
+    const rules = this.#rulesChange(current, change.approval_rules);
+
+    if (!rules.ok) return rules;
 
     const name = change.name ?? current.name;
 
@@ -509,12 +635,74 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
     this.#store.updateToolkit(
       id,
-      { name, accepts: change.accepts ?? current.accepts, priceMicros: price.value },
+      {
+        name,
+        accepts: change.accepts ?? current.accepts,
+        priceMicros: price.value,
+        approvalRules: rules.value,
+      },
       by,
-      Date.now(),
+      this.#now(),
     );
+    this.#dropOrphanedApprovals(id);
 
     return this.#viewOf(id, viewer);
+  }
+
+  /**
+   * Sets a built-in toolkit's approval rules (#201): they apply as any toolkit's. Nothing else of it changes (`403
+   * built_in` for a name, what it accepts or a price).
+   */
+  #updateBuiltIn(
+    viewer: Viewer,
+    current: BuiltInToolkit,
+    revision: number,
+    change: UpdateToolkit,
+    by: string,
+  ): ToolsResult<ToolkitView> {
+    const { approval_rules: _rules, ...rest } = change;
+
+    if (Object.values(rest).some((value) => value !== undefined)) return BUILT_IN;
+
+    if (current.revision !== revision)
+      return refuse("conflict", `the toolkit is at revision ${current.revision}, not ${revision}`);
+    const rules = this.#rulesChange(current, change.approval_rules);
+
+    if (!rules.ok) return rules;
+
+    this.#store.updateBuiltIn(current.id, current.revision, rules.value, by, this.#now());
+    this.#dropOrphanedApprovals(current.id);
+
+    return this.#viewOf(current.id, viewer);
+  }
+
+  /**
+   * The approval rules a write leaves on `toolkit`: `change` cleaned (`null` clears them, `undefined` keeps the
+   * toolkit's), or why not: a mark of another toolkit's tool, or a team or member the org does not have.
+   */
+  #rulesChange(
+    toolkit: Toolkit,
+    change: UpdateToolkit["approval_rules"],
+  ): ToolsResult<StoredApprovalRules | undefined> {
+    if (change === undefined) return ok(toolkit.approvalRules);
+
+    if (change === null) return ok(undefined);
+    const cleaned = cleanApprovalRules(toolkit.id, change);
+
+    if ("refused" in cleaned) return refuse("invalid", cleaned.refused);
+
+    for (const approver of approversOf(cleaned)) {
+      if (approver.kind === "team" && this.#core.team(approver.id) === undefined)
+        return refuse("invalid", `the org has no team ${approver.id}`);
+
+      if (approver.kind === "members") {
+        const missing = approver.ids.find((member) => this.#core.member(member) === undefined);
+
+        if (missing !== undefined) return refuse("invalid", `the org has no member ${missing}`);
+      }
+    }
+
+    return ok(noRules(cleaned) ? undefined : cleaned);
   }
 
   /** Removes a toolkit with all it holds; an org admin may remove a member's private toolkit too. */
@@ -575,7 +763,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     const grant = this.#connectGrant(id, slot, credential.subject);
 
     if (!grant.ok) return grant;
-    const now = Date.now();
+    const now = this.#now();
 
     const connected = this.#core.transaction(() => {
       this.#store.putCredential(id, owner, secret, by, now);
@@ -853,7 +1041,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
     this.#core.transaction(() => {
       this.#store.replaceTools(id, listed.success);
-      this.#store.setListStatus(id, { builtAt: Date.now() });
+      this.#store.setListStatus(id, { builtAt: this.#now() });
     });
 
     return ok(true);
@@ -917,8 +1105,49 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
    *
    * A built-in toolkit's tool (#212) is called on its provider, through Commissary's own binding (the toolkit's shared
    * credential, which a grant gives), and recorded and charged the same way; it always answers a result.
+   *
+   * After the Spend check, a call an approval rule makes wait (#201) goes no further until it is approved
+   * ({@link #approvalOf}): on the caller's form, or in the panel, after which the same call goes through once. The
+   * approved call is the one made again, so it passes the reach and Spend checks again on its way to the upstream (or
+   * a built-in toolkit's provider: its rules apply as any toolkit's).
+   *
+   * A caller deployed before approvals (without `ToolCall.approvalOutcomes`) gets a call that waits, or was not
+   * approved, as `failed`, an outcome it knows, with words that say so: its records say `upstream_failure` until it is
+   * replaced (docs/DEVELOPMENT.md, "State RPC: expand, then contract").
    */
   async callTool(viewer: Viewer, call: ToolCall, policy: OutboundPolicy): Promise<ToolCallOutcome> {
+    const outcome = await this.#callTool(viewer, call, policy);
+
+    if (call.approvalOutcomes === true) return outcome;
+
+    switch (outcome.outcome) {
+      case "pending":
+        return {
+          outcome: "failed",
+          message:
+            `the call waits for approval (approval ${outcome.approval.id}, in the panel's approvals); once it is ` +
+            `approved, call the tool again with the same arguments`,
+          usage: outcome.usage,
+        };
+      case "not_approved":
+        return {
+          outcome: "failed",
+          message:
+            outcome.reason === "denied"
+              ? "the call was not approved"
+              : "the call waits for its caller's approval, which no one can give here",
+          usage: outcome.usage,
+        };
+      default:
+        return outcome;
+    }
+  }
+
+  async #callTool(
+    viewer: Viewer,
+    call: ToolCall,
+    policy: OutboundPolicy,
+  ): Promise<ToolCallOutcome> {
     const reached = this.#reachable(viewer).find(
       ({ tool }) =>
         tool.name === call.name &&
@@ -950,12 +1179,17 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
           ? undefined
           : { secret };
 
-    const usage = (credential: CredentialSlot | undefined, costMicros = 0): CallUsage => ({
+    const usage = (
+      credential: CredentialSlot | undefined,
+      costMicros = 0,
+      approval: ToolCallApproval = "none",
+    ): CallUsage => ({
       toolkitId: toolkit.id,
       toolId: stableId(toolkit.id, tool.upstreamName),
       credential,
       private: credential === "private" || toolkit.owner !== undefined,
       costMicros,
+      approval,
     });
 
     if (serving === undefined)
@@ -978,10 +1212,42 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     };
 
     if (price > 0) {
-      const refusal = ledger.refusal(spender, charged, Date.now());
+      const refusal = ledger.refusal(spender, charged, this.#now());
 
       if (refusal !== undefined) return { outcome: "refused", refusal, usage: usage(slot) };
     }
+
+    const approval = await this.#approvalOf(viewer, call, tool, slot);
+
+    switch (approval.kind) {
+      case "approve":
+        return {
+          outcome: "approve",
+          toolkit: { id: toolkit.id, name: toolkit.name },
+          arguments: call.arguments ?? {},
+          requestState: approval.requestState,
+        };
+      case "pending":
+        return {
+          outcome: "pending",
+          approval: {
+            id: approval.approval.id,
+            approver: approval.approval.approver,
+            expiresAt: approval.approval.expiresAt,
+          },
+          usage: usage(slot, 0, "pending"),
+        };
+      case "not_approved":
+        return {
+          outcome: "not_approved",
+          reason: approval.reason,
+          usage: usage(slot, 0, "denied"),
+        };
+      case "go":
+        break;
+    }
+
+    const approved = approval.approval;
 
     // A built-in tool always answers a result, a failure as one with `isError`; it is charged like an upstream's.
     if ("builtIn" in serving) {
@@ -989,15 +1255,15 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
         serving.builtIn.call(tool.upstreamName, call.arguments),
       );
 
-      if (price > 0) ledger.charge(ledger.scopes(spender, charged), price, Date.now());
+      if (price > 0) ledger.charge(ledger.scopes(spender, charged), price, this.#now());
 
-      return { outcome: "result", result, usage: usage(slot, price) };
+      return { outcome: "result", result, usage: usage(slot, price, approved) };
     }
 
     const connectedAt = this.#store.credential(toolkit.id, owner)?.connectedAt;
     // Sessions are the calling member's, also on the shared credential: an upstream's session state never carries over.
     const caller = viewer.member ?? "";
-    const known = this.#store.session(toolkit.id, owner, caller, Date.now());
+    const known = this.#store.session(toolkit.id, owner, caller, this.#now());
 
     const called = await Effect.runPromise(
       callUpstreamTool(toolkit.source, serving.secret, known, {
@@ -1026,25 +1292,131 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     if (Result.isFailure(called)) {
       // The session the call failed in may be lost; the next call opens a new one, unless another call already did.
       if (known !== undefined && sameCredential) {
-        const kept = this.#store.session(toolkit.id, owner, caller, Date.now());
+        const kept = this.#store.session(toolkit.id, owner, caller, this.#now());
 
         if (kept?.protocolVersion === known.protocolVersion && kept.sessionId === known.sessionId)
           this.#store.deleteSession(toolkit.id, owner, caller);
       }
 
-      return { outcome: "failed", message: called.failure.message, usage: usage(slot) };
+      return {
+        outcome: "failed",
+        message: called.failure.message,
+        usage: usage(slot, 0, approved),
+      };
     }
 
     const { result, session } = called.success;
 
-    if (price > 0) ledger.charge(ledger.scopes(spender, charged), price, Date.now());
+    if (price > 0) ledger.charge(ledger.scopes(spender, charged), price, this.#now());
 
     if (session !== known && sameCredential) {
-      this.#store.putSession(toolkit.id, owner, caller, session, Date.now());
-      await this.#core.wakeUpChanged(this.#store.pruneSessions(Date.now()));
+      this.#store.putSession(toolkit.id, owner, caller, session, this.#now());
+      await this.#core.wakeUpChanged(this.#nextWakeUp(this.#now()));
     }
 
-    return { outcome: "result", result, usage: usage(slot, price) };
+    return { outcome: "result", result, usage: usage(slot, price, approved) };
+  }
+
+  /**
+   * Whether a call goes on to the upstream under the toolkit's approval rules (#201), and how it was approved. No rule:
+   * it goes (`none`). A rule whose approver is the caller, from a client that shows forms: the caller is asked
+   * (`approve`, with a `requestState` that binds the form to this call), and the call made again with their answer and
+   * that state goes (`approved_elicitation`) or is denied; an answer without a state this part issued for this very call
+   * (the same caller, tool and arguments, within the hour, once) is no answer, and the caller is asked again. Otherwise
+   * the call is matched with its pending approval (same caller, tool and arguments' hash, within the hour): an approved
+   * one lets it through once (`approved_panel`) and is settled; a denied one answers so and is settled, so the next
+   * identical call asks anew; an undecided one answers pending again. Without one (none, or it expired), a pending
+   * approval is created, the arguments sealed. A caller without a member under a rule of the caller, without a form,
+   * cannot be approved by anyone.
+   */
+  async #approvalOf(
+    viewer: Viewer,
+    call: ToolCall,
+    tool: ResolvedTool,
+    slot: CredentialSlot,
+  ): Promise<
+    | { readonly kind: "go"; readonly approval: ToolCallApproval }
+    | { readonly kind: "approve"; readonly requestState: string }
+    | { readonly kind: "pending"; readonly approval: StoredApproval }
+    | { readonly kind: "not_approved"; readonly reason: NotApprovedReason }
+  > {
+    const approver = approverFor(tool.toolkit.approvalRules, tool.upstreamName, tool.toolClass);
+
+    if (approver === undefined) return { kind: "go", approval: "none" };
+    const now = this.#now();
+
+    const key: ApprovalKey = {
+      toolkitId: tool.toolkit.id,
+      upstreamName: tool.upstreamName,
+      argsHash: argumentsHash(call.arguments),
+      callerMember: viewer.member,
+      callerPrincipal: call.principalId ?? "",
+    };
+
+    const approval = { ...key, toolName: tool.name, credential: slot, approver };
+
+    if (approver.kind === "caller" && call.approvalForm !== undefined) {
+      const { answer, requestState } = call.approvalForm;
+
+      if (answer !== undefined && this.#approvals.takeForm(requestState, key, now))
+        return answer === "accept"
+          ? { kind: "go", approval: "approved_elicitation" }
+          : { kind: "not_approved", reason: "denied" };
+
+      const state = this.#approvals.createForm(approval, now);
+
+      await this.#core.wakeUpChanged(this.#nextWakeUp(now));
+
+      return { kind: "approve", requestState: state };
+    }
+
+    if (approver.kind === "caller" && viewer.member === undefined)
+      return { kind: "not_approved", reason: "no_approver" };
+
+    const kept = this.#approvals.unsettled(key, now);
+
+    if (kept !== undefined) {
+      if (kept.status === "pending") return { kind: "pending", approval: kept };
+      // Taken once: the call goes through, or learns that it was denied.
+      this.#approvals.settle(kept.id);
+
+      return kept.status === "denied"
+        ? { kind: "not_approved", reason: "denied" }
+        : { kind: "go", approval: "approved_panel" };
+    }
+
+    const created = this.#approvals.create(approval, call.arguments ?? {}, now);
+
+    await this.#core.wakeUpChanged(this.#nextWakeUp(now));
+
+    return { kind: "pending", approval: created };
+  }
+
+  /**
+   * Deletes the approvals (and forms) of the toolkit `toolkitId` that its rules no longer hold as they were: the rule
+   * they wait on was removed or narrowed, its approver changed, or their tool was reclassified out of it (or is gone). An
+   * approval never outlives its rule, so restoring the rule does not bring it back.
+   */
+  #dropOrphanedApprovals(toolkitId: string): void {
+    const toolkit = this.#toolkit(toolkitId);
+
+    const tools =
+      toolkit === undefined
+        ? []
+        : this.#resolve(toolkit.owner).tools.filter((tool) => tool.toolkit.id === toolkitId);
+
+    const orphaned = this.#approvals.ofToolkit(toolkitId).filter((approval) => {
+      const tool = tools.find((resolved) => resolved.upstreamName === approval.upstreamName);
+
+      const approver =
+        tool === undefined
+          ? undefined
+          : approverFor(tool.toolkit.approvalRules, tool.upstreamName, tool.toolClass);
+
+      return approver === undefined || canonicalJson(approver) !== canonicalJson(approval.approver);
+    });
+
+    this.#approvals.delete(orphaned.map((approval) => approval.id));
   }
 
   /**
@@ -1141,7 +1513,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       value = cleaned;
     }
 
-    const written = this.#grants.write({ ...change, value }, by, Date.now());
+    const written = this.#grants.write({ ...change, value }, by, this.#now());
 
     return written.ok ? ok({ id: written.id, revision: written.revision }) : written;
   }
@@ -1169,6 +1541,148 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       return `the org has no team ${subject.id}`;
 
     return undefined;
+  }
+
+  // --- pending approvals (#201, ADR 0038) -------------------------------------------------------------------------
+
+  /**
+   * The pending approvals `viewer` may decide or made, newest first: undecided (and not expired). Only one they may
+   * decide shows the call's arguments.
+   */
+  listApprovals(viewer: Viewer): ApprovalsList {
+    const now = this.#now();
+
+    return {
+      approvals: this.#approvals
+        .approvals(now)
+        .filter((approval) => approval.status === "pending")
+        .flatMap((approval) => {
+          const view = this.#approvalView(approval, viewer, now);
+
+          return view === undefined ? [] : [view];
+        }),
+    };
+  }
+
+  /**
+   * One approval, until it expires, to its eligible approvers and its caller; `not_found` to anyone else, and once it
+   * expired.
+   */
+  getApproval(viewer: Viewer, id: string): ToolsResult<ApprovalView> {
+    const now = this.#now();
+    const approval = this.#approvals.approval(id, now);
+    const view = approval === undefined ? undefined : this.#approvalView(approval, viewer, now);
+
+    return view === undefined ? refuse("not_found", "approval not found") : ok(view);
+  }
+
+  /**
+   * Approves or denies a pending approval: an eligible approver only (`forbidden` for its caller under a team or list
+   * rule), while it is undecided (`conflict`); an expired one is not found. Its arguments are deleted with the
+   * decision. Approving does not make the call: the client makes it again, and it goes through once.
+   */
+  decideApproval(
+    viewer: Viewer,
+    id: string,
+    decision: ApprovalDecision["decision"],
+    by: string,
+  ): ToolsResult<ApprovalView> {
+    const now = this.#now();
+    const approval = this.#approvals.approval(id, now);
+    const view = approval === undefined ? undefined : this.#approvalView(approval, viewer, now);
+
+    if (approval === undefined || view === undefined)
+      return refuse("not_found", "approval not found");
+
+    if (!this.#mayDecide(approval, viewer))
+      return refuse(
+        "forbidden",
+        approval.approver.kind === "caller"
+          ? "only its caller approves this call"
+          : "a caller cannot approve their own call: another of its approvers decides it",
+      );
+
+    if (approval.status !== "pending")
+      return refuse("conflict", `the approval was ${approval.status} already`);
+
+    this.#approvals.decide(id, decision === "approve" ? "approved" : "denied", by, now);
+
+    return this.getApproval(viewer, id);
+  }
+
+  /** Whether `viewer` may decide `approval` now (its approver, the teams they are in now). */
+  #mayDecide(approval: StoredApproval, viewer: Viewer): boolean {
+    const member = viewer.member;
+
+    return mayDecide(approval.approver, approval.callerMember, {
+      member,
+      teams: member === undefined ? [] : this.#core.teamIdsOf(member),
+    });
+  }
+
+  /**
+   * An approval as `viewer` sees it at `now`, or undefined when they may not see it: its eligible approvers and its
+   * caller see it; only the former get its arguments, while it keeps them.
+   */
+  #approvalView(approval: StoredApproval, viewer: Viewer, now: number): ApprovalView | undefined {
+    const decides = this.#mayDecide(approval, viewer);
+
+    const caller = viewer.member !== undefined && approval.callerMember === viewer.member;
+
+    if (!decides && !caller) return undefined;
+
+    const pending = approval.status === "pending";
+    const args = decides && pending ? this.#approvals.arguments(approval.id, now) : undefined;
+
+    const callerEmail =
+      approval.callerMember === undefined
+        ? undefined
+        : this.#core.member(approval.callerMember)?.email;
+
+    return {
+      id: approval.id,
+      status: approvalStatus(approval),
+      toolkit: {
+        id: approval.toolkitId,
+        name: this.#store.toolkit(approval.toolkitId)?.name ?? "",
+      },
+      tool: { id: stableId(approval.toolkitId, approval.upstreamName), name: approval.toolName },
+      caller: {
+        ...(approval.callerMember === undefined ? {} : { member_id: approval.callerMember }),
+        ...(callerEmail === undefined ? {} : { email: callerEmail }),
+        principal: approval.callerPrincipal,
+      },
+      credential: approval.credential,
+      approver: this.#approverView(approval.approver),
+      created_at: iso(approval.createdAt),
+      expires_at: iso(approval.expiresAt),
+      ...(approval.decidedAt === undefined ? {} : { decided_at: iso(approval.decidedAt) }),
+      ...(approval.decidedBy === undefined ? {} : { decided_by: approval.decidedBy }),
+      ...(args === undefined ? {} : { arguments: args }),
+      can_decide: decides && pending,
+    };
+  }
+
+  #approverView(approver: Approver): ApproverView {
+    switch (approver.kind) {
+      case "caller":
+        return approver;
+      case "team": {
+        const name = this.#core.team(approver.id)?.name;
+
+        return { kind: "team", id: approver.id, ...(name === undefined ? {} : { name }) };
+      }
+
+      case "members":
+        return {
+          kind: "members",
+          members: approver.ids.map((id) => {
+            const email = this.#core.member(id)?.email;
+
+            return { id, ...(email === undefined ? {} : { email }) };
+          }),
+        };
+    }
   }
 
   // --- overrides --------------------------------------------------------------------------------------------------
@@ -1252,7 +1766,8 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     // Past every revision the row reached, a tombstone's included.
     const next = (stored?.revision ?? 0) + 1;
 
-    this.#store.putOverride(id, tool, empty ? undefined : value, next, by, Date.now());
+    this.#store.putOverride(id, tool, empty ? undefined : value, next, by, this.#now());
+    this.#dropOrphanedApprovals(id);
 
     const resolved = this.#resolve(toolkit.owner).tools.find(
       (entry) => entry.toolkit.id === id && entry.upstreamName === tool,
@@ -1333,6 +1848,9 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
                   .map((grant) => this.#exportedGrant(grant)),
               }
             : {}),
+          ...(toolkit.approvalRules === undefined
+            ? {}
+            : { approval_rules: this.#exportedRules(toolkit.approvalRules) }),
         },
       ];
     });
@@ -1355,6 +1873,34 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     };
   }
 
+  #exportedRules(rules: StoredApprovalRules): NonNullable<ToolkitExport["approval_rules"]> {
+    const approver = (given: Approver): ExportedApprover => {
+      switch (given.kind) {
+        case "caller":
+          return given;
+        case "team":
+          return { kind: "team", name: this.#core.team(given.id)?.name ?? "" };
+        case "members":
+          return {
+            kind: "members",
+            emails: given.ids.map((id) => this.#core.member(id)?.email ?? ""),
+          };
+      }
+    };
+
+    return {
+      ...(rules.writes === undefined ? {} : { writes: { approver: approver(rules.writes) } }),
+      ...(rules.tools.length === 0
+        ? {}
+        : {
+            tools: rules.tools.map((mark) => ({
+              tool: mark.tool,
+              approver: approver(mark.approver),
+            })),
+          }),
+    };
+  }
+
   #exportedSubject(subject: GrantSubject): ExportedToolGrant["subject"] {
     if (subject.kind === "member")
       return { kind: "member", email: this.#core.member(subject.id)?.email ?? "" };
@@ -1369,11 +1915,23 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
   /** Every toolkit of the org: the built-in ones, then the stored ones. */
   #toolkits(): ReadonlyArray<Toolkit> {
-    return [...this.#builtIns.map((builtIn) => builtIn.toolkit), ...this.#store.toolkits()];
+    return [
+      ...this.#builtIns.map((builtIn) => this.#withSettings(builtIn.toolkit)),
+      ...this.#store.toolkits(),
+    ];
   }
 
   #toolkit(id: string): Toolkit | undefined {
-    return this.#builtIn(id)?.toolkit ?? this.#store.toolkit(id);
+    const builtIn = this.#builtIn(id);
+
+    return builtIn === undefined ? this.#store.toolkit(id) : this.#withSettings(builtIn.toolkit);
+  }
+
+  /** A built-in toolkit with what the org set on it (#201): its approval rules, at their revision. */
+  #withSettings(toolkit: BuiltInToolkit): BuiltInToolkit {
+    const settings = this.#store.builtInSettings(toolkit.id);
+
+    return settings === undefined ? toolkit : { ...toolkit, ...settings };
   }
 
   #builtIn(id: string): BuiltIn | undefined {
@@ -1413,9 +1971,10 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
             name: `${toolkit.name}_${suffix}`,
             accepts: toolkit.accepts,
             priceMicros: toolkit.priceMicros,
+            approvalRules: toolkit.approvalRules,
           },
           COMMISSARY,
-          Date.now(),
+          this.#now(),
         );
       }
     });
@@ -1571,7 +2130,26 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       ...(resolution.renameSuggested.has(toolkit.id) ? { rename_suggested: true } : {}),
       ...(resolution.shadowed.has(toolkit.id) ? { shadowed: true } : {}),
       ...(toolkit.builtIn ? { built_in: true } : {}),
+      ...(toolkit.approvalRules === undefined
+        ? {}
+        : {
+            approval_rules: approvalRulesView(toolkit.id, toolkit.approvalRules, (approver) =>
+              this.#nobodyDecides(approver),
+            ),
+          }),
     };
+  }
+
+  /** Whether no one can be `approver` now: a team the org deleted, or a list none of whose members is left. */
+  #nobodyDecides(approver: Approver): boolean {
+    switch (approver.kind) {
+      case "caller":
+        return false;
+      case "team":
+        return this.#core.team(approver.id) === undefined;
+      case "members":
+        return approver.ids.every((id) => this.#core.member(id) === undefined);
+    }
   }
 
   #limitedView(toolkit: Toolkit): LimitedToolkitView {
@@ -1588,6 +2166,10 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     };
   }
 }
+
+/** Where an approval stands as the API says it: `used` once its approved call went through. */
+const approvalStatus = (approval: StoredApproval): ApprovalView["status"] =>
+  approval.status === "approved" && approval.settled ? "used" : approval.status;
 
 /** A toolkit's view with what connecting its shared credential did to its subject's grants, if it was connected. */
 const withGrant = (

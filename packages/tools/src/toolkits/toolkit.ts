@@ -5,6 +5,7 @@
  * or remove) is reached through the {@link StoredToolkit} the part's resolver answers.
  */
 import type { CredentialsAccepted } from "@commissary/contract/tools";
+import type { StoredApprovalRules } from "../approvals/rules.ts";
 
 /** What every toolkit has, stored or built in. */
 interface ToolkitFields {
@@ -24,6 +25,11 @@ interface ToolkitFields {
   readonly listError: string | undefined;
   /** What a call of its tools costs, in micro-USD, unless a tool's override says otherwise (#199); undefined: free. */
   readonly priceMicros: number | undefined;
+  /**
+   * Which calls of its tools wait for approval, and whose (#201); undefined: none. A built-in toolkit's are stored
+   * apart from it (`ToolkitStore.builtInSettings`), as it has no row of its own.
+   */
+  readonly approvalRules: StoredApprovalRules | undefined;
 }
 
 /** A toolkit of the org's `toolkits` table: an MCP server's (ADR 0036). */

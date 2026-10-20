@@ -168,6 +168,15 @@ as an unknown tool). When a tool needs your own credential for its toolkit and y
 answers with a link to the panel's connect page instead: a client of the 2026-07-28 revision that supports URL
 elicitation offers to open it, any other client shows it in the tool's result. Connect, then call the tool again.
 
+A toolkit's approval rules may make a call wait for approval. When you are its approver and your client is of the
+2026-07-28 revision with form elicitation, it shows you the tool and its arguments to approve or deny, and the call
+finishes once you answer (the client sends your answer back with the `requestState` it got with the form; an answer
+without it, or for other arguments, is not taken, and you are asked again). Otherwise the call answers, not as an
+error, that it waits, with a link to its approval page in the panel: once an approver approves it there (you, or
+another member of the team or list the rule names; never you under those), make the same call again, with the same
+arguments, within the hour after the first call. It goes through once. After that hour the approval is gone, and the
+same call waits for a new one.
+
 A self-hosted Commissary serves the endpoint at two addresses (ADR 0045):
 
 - **Signed in through Access**, for clients a person uses: `https://commissary.example.com/mcp` on the **app host** (the

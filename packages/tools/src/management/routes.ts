@@ -11,10 +11,15 @@
  * `/v9/management/grants/tools` (`ToolGrantsGroup` in `@commissary/contract/grants`): the tool grants (#198, ADR 0038),
  * beside Models' model grants at `/grants`, so the panel shows both on one Grants page. Org admins only (the role
  * table's default); a write names the grant's revision in `If-Match` (`POST` creates at 0).
+ *
+ * `/v9/management/approvals` (`ApprovalsGroup` in `@commissary/contract/approvals`): the pending approvals of tool calls
+ * (#201, ADR 0038), which the panel's approval page and pending list read and decide. Every member may call them; the
+ * Tools part shows each approval to its eligible approvers and its caller only, and lets only the former decide it.
  */
 import { Effect, Result, Schema } from "effect";
 import { HttpRouter, type HttpServerResponse } from "effect/http";
 import { AccessPrincipal, currentViewer } from "@commissary/auth";
+import { ApprovalDecision } from "@commissary/contract/approvals";
 import { ToolGrantBody } from "@commissary/contract/grants";
 import {
   AddToolkit,
@@ -265,6 +270,41 @@ const removeGrant = Effect.gen(function* () {
   return yield* writeGrant(id, revision, null);
 });
 
+// --- pending approvals ------------------------------------------------------------------------------------------------
+
+const listApprovals = Effect.gen(function* () {
+  const viewer = yield* currentViewer;
+
+  return jsonReply(
+    200,
+    yield* toolsControlPlane("listApprovals", (stub) => stub.tools().listApprovals(viewer)),
+  );
+});
+
+const getApproval = Effect.gen(function* () {
+  const viewer = yield* currentViewer;
+  const id = yield* idParam;
+
+  const result = yield* toolsControlPlane("getApproval", (stub) =>
+    stub.tools().getApproval(viewer, id),
+  );
+
+  return jsonReply(200, yield* orRefuse(result));
+});
+
+const decideApproval = Effect.gen(function* () {
+  const viewer = yield* currentViewer;
+  const { principalId } = yield* AccessPrincipal;
+  const id = yield* idParam;
+  const { decision } = yield* decode(ApprovalDecision);
+
+  const result = yield* toolsControlPlane("decideApproval", (stub) =>
+    stub.tools().decideApproval(viewer, id, decision, principalId),
+  );
+
+  return jsonReply(200, yield* orRefuse(result));
+});
+
 const route = <R>(
   method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
   path: string,
@@ -286,4 +326,7 @@ export const ManagementRoutes = HttpRouter.addAll([
   route("POST", "/grants/tools", createGrant),
   route("PUT", "/grants/tools/:id", replaceGrant),
   route("DELETE", "/grants/tools/:id", removeGrant),
+  route("GET", "/approvals", listApprovals),
+  route("GET", "/approvals/:id", getApproval),
+  route("POST", "/approvals/:id/decision", decideApproval),
 ]);
