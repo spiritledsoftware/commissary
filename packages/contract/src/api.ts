@@ -32,6 +32,7 @@ import { RoutingGroup } from "./routing.ts";
 import { SettingsGroup } from "./settings.ts";
 import { SpendGroup } from "./spend.ts";
 import { SsoGroup } from "./sso.ts";
+import { ToolkitCatalogGroup } from "./toolkit-catalog.ts";
 import { ToolsGroup } from "./tools.ts";
 import { UsageGroupApi } from "./usage.ts";
 
@@ -56,6 +57,7 @@ export class ManagementApi extends HttpApi.make("management")
   .add(SsoGroup)
   .add(BillingGroup)
   .add(ToolsGroup)
+  .add(ToolkitCatalogGroup)
   .add(ToolGrantsGroup)
   .add(ApprovalsGroup)
   .add(McpSignInsGroup)

@@ -63,7 +63,7 @@ export class KindFailure extends Schema.TaggedError<KindFailure>()("KindFailure"
 
 /** What a build of a toolkit's list reads. */
 export interface ListInput {
-  readonly toolkit: Pick<StoredToolkit, "source" | "baseUrl">;
+  readonly toolkit: Pick<StoredToolkit, "source" | "baseUrl" | "specPatch">;
   /** The credential a build lists with, for a kind that needs one ({@link KindDriver.listsWithCredential}). */
   readonly secret: UpstreamSecret;
   /** The toolkit's uploaded document: an OpenAPI document, a GraphQL schema's SDL. */
@@ -246,15 +246,24 @@ const openapi: KindDriver = {
       const { toolkit, policy } = input;
       const source = toolkit.source;
       const text = yield* documentText(input);
-      const list = openApiToolList(text, source === "" ? undefined : source);
+      const list = openApiToolList(text, source === "" ? undefined : source, toolkit.specPatch);
 
       if (Result.isFailure(list)) return yield* failed(list.failure);
-      const warning = serverWarning(toolkit, list.success.tools, policy);
+      const { unpatched } = list.success;
+
+      const warning = [
+        unpatched === undefined
+          ? undefined
+          : `the catalog's fixes to the document do not apply: ${unpatched}`,
+        serverWarning(toolkit, list.success.tools, policy),
+      ]
+        .filter((part) => part !== undefined)
+        .join("; ");
 
       return {
         tools: list.success.tools,
         name: openApiName(list.success, source),
-        ...(warning === undefined ? {} : { warning }),
+        ...(warning === "" ? {} : { warning }),
       };
     }),
   call: ({ toolkit, tool, secret, args, policy }) =>

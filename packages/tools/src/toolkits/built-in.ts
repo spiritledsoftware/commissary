@@ -92,6 +92,12 @@ export interface ToolsPartEnv extends SandboxSessionEnv, ComputerMarker {
   readonly BROWSER_SESSIONS?: BrowserSessionNamespace | undefined;
   /** One object per sandbox session (`SandboxSession`, #222). */
   readonly SANDBOX_SESSION: DurableObjectNamespace<SandboxSession>;
+  /**
+   * `cloud` on Commissary Cloud (ADR 0026), the one deployment with managed OAuth apps (#207): their client secrets are
+   * the bindings the toolkit catalog additions name (`TOOLKIT_OAUTH_*`), read by name (`catalog/managed-apps.ts`), each
+   * optional.
+   */
+  readonly COMMISSARY_MODE?: string | undefined;
 }
 
 /** The services the built-in toolkits run on; one that is missing takes its toolkit (or its tools) with it. */

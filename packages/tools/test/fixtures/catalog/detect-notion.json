@@ -1,0 +1,63 @@
+{
+  "domain": "mcp.notion.com",
+  "found": [
+    "mcp",
+    "mcp-self-onboard",
+    "oauth-protected-resource",
+    "auth"
+  ],
+  "probed": [
+    "integrations.json",
+    "llms.txt",
+    "api-catalog",
+    "openapi-schema",
+    "mcp-server-card",
+    "oauth-protected-resource",
+    "agent-card",
+    "agent-skills"
+  ],
+  "integrationsJson": null,
+  "auth": {
+    "oauth": {
+      "authorizationServers": [
+        "https://mcp.notion.com"
+      ],
+      "authorizationEndpoint": "https://mcp.notion.com/authorize",
+      "tokenEndpoint": "https://mcp.notion.com/token",
+      "protectedResourceUrl": "https://mcp.notion.com/.well-known/oauth-protected-resource",
+      "scopes": [
+        "default"
+      ],
+      "registrationEndpoint": "https://mcp.notion.com/register",
+      "dcr": true,
+      "cimd": true,
+      "grantTypes": [
+        "authorization_code",
+        "refresh_token",
+        "urn:ietf:params:oauth:grant-type:jwt-bearer"
+      ]
+    },
+    "mcp": [
+      {
+        "url": "https://mcp.notion.com/mcp",
+        "type": "oauth2",
+        "authorizationServer": "https://mcp.notion.com",
+        "authorizationServerMetadataFetched": true,
+        "dcr": true,
+        "cimd": true
+      }
+    ]
+  },
+  "mcp": [
+    {
+      "url": "https://mcp.notion.com/mcp",
+      "source": "probe",
+      "auth": "oauth2",
+      "authorizationServer": "https://mcp.notion.com",
+      "authorizationServerMetadataFetched": true,
+      "dcr": true,
+      "cimd": true
+    }
+  ],
+  "errors": []
+}

@@ -37,6 +37,8 @@ export default defineConfig({
               compatibilityFlags: ["nodejs_compat", "global_fetch_strictly_public"],
               durableObjects: {
                 CONTROL_PLANE: { className: "ControlPlane", useSQLite: true },
+                // Commissary Cloud's, with a managed OAuth app (#207).
+                CLOUD_CONTROL_PLANE: { className: "CloudControlPlane", useSQLite: true },
                 // The ControlPlane with a fake `browser` binding, and with a fake second browser provider (#212).
                 BROWSER_CONTROL_PLANE: { className: "BrowserControlPlane", useSQLite: true },
                 OTHER_BROWSER_CONTROL_PLANE: {
@@ -68,7 +70,8 @@ export default defineConfig({
               // The OAuth server's store for MCP clients (#200), which its tests hand `oauth/` in a config of their own:
               // the stage stays self-hosted (no `COMMISSARY_MODE`, `MCP_OAUTH_ISSUER` or `MCP_OAUTH_RESOURCE`), so
               // nothing else turns the OAuth server on; its flows are the app Worker's hosted tests'.
-              kvNamespaces: ["OAUTH_KV"],
+              // `CACHE`: the deployment's namespace, where the toolkit catalog's refreshed registry is kept (#207).
+              kvNamespaces: ["OAUTH_KV", "CACHE"],
               // Dynamic Workers, where the sandbox's just-bash runs (ADR 0043: every deployment has them).
               workerLoaders: { LOADER: {} },
               // A self-hosted stage under test, as the Worker's tests bind it.

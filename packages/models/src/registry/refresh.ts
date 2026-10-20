@@ -18,8 +18,8 @@ import { Clock, Data, Effect, Result, Stream } from "effect";
 import type { HttpClientResponse } from "effect/http";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { ConfigReader } from "../config/reader.ts";
-import { holdInvocation, CurrentOrg, GLOBAL_ORG, outboundRefusalOf } from "@commissary/core";
-import { type NamedLease, platformOf, type StateBindings, StateEnv } from "@commissary/state";
+import { CurrentOrg, GLOBAL_ORG, outboundRefusalOf } from "@commissary/core";
+import { refreshRunningMessage, StateEnv, withPlatformLease } from "@commissary/state";
 import {
   catalogsFromModelsDev,
   embeddedCatalogs,
@@ -266,38 +266,11 @@ const refreshNow = (
   });
 
 /**
- * The model catalog is shared by every org, so its refresh lease is deployment-wide: it lives in the Platform registry
- * (it was in the `global` org's ControlPlane before the registry existed, which no other org should have to reach).
+ * The model catalog is shared by every org, so its refresh lease is deployment-wide: the Platform registry's
+ * `catalog_refresh` (it was in the `global` org's ControlPlane before the registry existed, which no other org should
+ * have to reach).
  */
-const catalogLeaseHolder = (env: StateBindings) => platformOf(env);
-
-/** The Platform registry's lease (`@commissary/state` `lease.ts`) of the catalog refresh: `catalog_refresh_lease`. */
 const CATALOG_REFRESH_LEASE = "catalog_refresh";
-
-type Taken =
-  | { readonly kind: "taken"; readonly token: string }
-  | { readonly kind: "held"; readonly held: NamedLease }
-  | { readonly kind: "unavailable" };
-
-const takeLease = (trigger: RefreshTrigger): Effect.Effect<Taken, never, StateEnv> =>
-  Effect.gen(function* () {
-    const env = yield* StateEnv;
-
-    return yield* Effect.tryPromise(async (): Promise<Taken> => {
-      const taken = await catalogLeaseHolder(env).takeLease(CATALOG_REFRESH_LEASE, trigger);
-
-      return taken.ok
-        ? { kind: "taken", token: taken.lease.token }
-        : { kind: "held", held: taken.held };
-    }).pipe(Effect.orElseSucceed((): Taken => ({ kind: "unavailable" })));
-  });
-
-const releaseLease = (token: string): Effect.Effect<void, never, StateEnv> =>
-  Effect.gen(function* () {
-    const env = yield* StateEnv;
-
-    yield* Effect.tryPromise(() => catalogLeaseHolder(env).releaseLease(token)).pipe(Effect.ignore);
-  });
 
 const record = (outcome: RefreshOutcome): Effect.Effect<void, never, ModelsEnv> =>
   Effect.gen(function* () {
@@ -335,11 +308,10 @@ const record = (outcome: RefreshOutcome): Effect.Effect<void, never, ModelsEnv> 
   });
 
 /**
- * One refresh under the refresh lease (Platform registry, `catalog_refresh`): cron and the panel never download at
- * once, whichever isolates they run in. The second one gets `status: "running"` without any request being made. A
- * Platform registry that cannot be reached fails the refresh (exclusivity cannot be shown); the stored catalog stays.
- * `disabled` and `embed` do not fetch and need no lease. The invocation is held open until the lease is given back
- * (`holdInvocation`), so a request the client abandoned still releases it; a lease never released expires.
+ * One refresh under the refresh lease (Platform registry, `catalog_refresh`, `withPlatformLease`): cron and the panel
+ * never download at once, whichever isolates they run in. The second one gets `status: "running"` without any request
+ * being made. A Platform registry that cannot be reached fails the refresh (exclusivity cannot be shown); the stored
+ * catalog stays. `disabled` and `embed` do not fetch and need no lease.
  */
 export const refreshModelsDev = (
   configured: string,
@@ -353,35 +325,23 @@ export const refreshModelsDev = (
 
   if (source.mode !== "fetch") return refreshNow(configured).pipe(Effect.tap(record));
 
-  return Effect.acquireUseRelease(
-    Effect.gen(function* () {
-      const hold = yield* holdInvocation;
-      const taken = yield* takeLease(trigger);
+  return Effect.gen(function* () {
+    const ran = yield* withPlatformLease(
+      yield* StateEnv,
+      CATALOG_REFRESH_LEASE,
+      trigger,
+      refreshNow(configured).pipe(Effect.tap(record)),
+    );
 
-      return { hold, taken };
-    }),
-    ({
-      taken,
-    }): Effect.Effect<RefreshOutcome, never, HttpClient.HttpClient | ModelsEnv | CatalogStore> => {
-      if (taken.kind === "unavailable")
-        return Effect.succeed(failed("platform registry unavailable")).pipe(Effect.tap(record));
+    if (ran.kind === "ran") return ran.value;
 
-      if (taken.kind === "held") {
-        const by = taken.held.source === "cron" ? "the scheduled refresh" : "the panel";
+    if (ran.kind === "held") return { status: "running", message: refreshRunningMessage(ran.held) };
+    const outcome = failed("platform registry unavailable");
 
-        return Effect.succeed({
-          status: "running",
-          message: `a refresh started by ${by} at ${new Date(taken.held.startedAt).toISOString()} is still running`,
-        });
-      }
+    yield* record(outcome);
 
-      return refreshNow(configured).pipe(Effect.tap(record));
-    },
-    ({ hold, taken }) =>
-      (taken.kind === "taken" ? releaseLease(taken.token) : Effect.void).pipe(
-        Effect.ensuring(Effect.sync(hold)),
-      ),
-  );
+    return outcome;
+  });
 };
 
 /**

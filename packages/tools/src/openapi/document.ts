@@ -106,13 +106,23 @@ const asDocument = (value: Schema.Json): DocumentObject | undefined =>
  * The OpenAPI 3.1 document `text` holds (JSON or YAML; OpenAPI 3.0, 3.1 or 3.2, or Swagger 2.0), or why it holds none.
  * Messages never quote the text.
  */
-export const parseOpenApiDocument = (text: string): Result.Result<DocumentObject, string> => {
-  const read = parsed(text);
+export const parseOpenApiDocument = (text: string): Result.Result<DocumentObject, string> =>
+  Result.flatMap(readOpenApiDocument(text), upgradedOpenApiDocument);
 
-  if (Result.isFailure(read)) return Result.fail(read.failure);
-  const value = asDocument(read.success);
+/** The object the document `text` holds (JSON or YAML), as it is: not checked as OpenAPI, nor upgraded. */
+export const readOpenApiDocument = (text: string): Result.Result<DocumentObject, string> =>
+  Result.flatMap(parsed(text), (value) => {
+    const document = asDocument(value);
 
-  if (value === undefined) return Result.fail("the document is not an OpenAPI document");
+    return document === undefined
+      ? Result.fail("the document is not an OpenAPI document")
+      : Result.succeed(document);
+  });
+
+/** A read document (`readOpenApiDocument`) brought to OpenAPI 3.1, or why it cannot be. */
+export const upgradedOpenApiDocument = (
+  value: DocumentObject,
+): Result.Result<DocumentObject, string> => {
   const revision = revisionOf(value);
 
   if (revision === undefined)

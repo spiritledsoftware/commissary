@@ -3,13 +3,16 @@
  * typed as objects with the Tools part ({@link ToolsControlPlane}), so callers write `stub.tools().x(…)`, and, for the
  * MCP endpoint's connect links, the Platform registry and the app host, the API host, where toolkit sign-ins name
  * Commissary's CIMD document (#202), the usage database its tool calls' records go into (#199, `USAGE`, the D1
- * database Models' records go into too), and on Commissary Cloud its OAuth server for MCP clients (#200: `OAUTH_KV`,
+ * database Models' records go into too), the deployment's KV namespace `CACHE`, where the toolkit catalog's refreshed
+ * registry is kept (#207), and on Commissary Cloud its OAuth server for MCP clients (#200: `OAUTH_KV`,
  * `MCP_OAUTH_ISSUER`, `MCP_OAUTH_RESOURCE`). Its state is the ControlPlane's, and it reaches MCP servers through the
  * global `fetch` behind the outbound guard. Its ControlPlane part reads values of the state Worker's apart from these
  * (`ToolsPartEnv`, `toolkits/built-in.ts`): Browser Run's optional `BROWSER` (#212) with its crawls' optional
  * `BROWSER_RUN_ACCOUNT_ID` and `BROWSER_RUN_API_TOKEN` (#270), `OWN_HOSTS`, which its alarm's
- * token refreshes refuse (#202), and the sandbox's (#222) Worker Loader `LOADER` and `SandboxSession` namespace
- * `SANDBOX_SESSION`, which the sessions' objects read too (`SandboxSessionEnv`, `sandbox/cloudflare/session.ts`).
+ * token refreshes refuse (#202), the sandbox's (#222) Worker Loader `LOADER` and `SandboxSession` namespace
+ * `SANDBOX_SESSION`, which the sessions' objects read too (`SandboxSessionEnv`, `sandbox/cloudflare/session.ts`), and
+ * on Commissary Cloud the client secrets of its managed OAuth apps (#207, `TOOLKIT_OAUTH_*`, named by the catalog
+ * additions and read by name, `catalog/managed-apps.ts`): only the state Worker binds them.
  */
 import { Context, Effect } from "effect";
 import { CurrentOrg, type Reply } from "@commissary/core";
@@ -55,7 +58,9 @@ type ToolsPartMethod =
   | "writeProfileGrant"
   | "purgeBrowserCrawls"
   | "browserSessionClosed"
-  | "purgeBrowserSessions";
+  | "purgeBrowserSessions"
+  | "hasManagedApp"
+  | "takeCatalogLookup";
 
 /** The Tools part of an org's ControlPlane (`ToolsPart`) as Tools sees it: the methods it calls. */
 export type ToolsControlPlanePart = Pick<ToolsPart, ToolsPartMethod> & Rpc.RpcTargetBranded;
@@ -85,6 +90,11 @@ export interface ToolsBindings {
   readonly API_DOMAIN?: string | undefined;
   /** Usage records (D1, `migrations/usage/`): one per tool call (#199), beside Models' model attempts. */
   readonly USAGE: D1Database;
+  /**
+   * The deployment's KV namespace (Models' too), where the toolkit catalog's refreshed registry is kept (#207), through
+   * a `DeploymentKv` only (`kv.ts`, ADR 0044).
+   */
+  readonly CACHE: KVNamespace;
   /** `cloud` on Commissary Cloud (ADR 0026), the only deployment with an OAuth server for MCP clients (#200). */
   readonly COMMISSARY_MODE?: string | undefined;
   /**

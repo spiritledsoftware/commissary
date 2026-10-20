@@ -90,7 +90,8 @@ _Avoid_: org name (a free-text display name), handle, subdomain
 
 **Platform registry**:
 The deployment's own record of what spans orgs: the list of orgs with their slugs, which orgs each person and each service
-token belong to, and the lease that keeps the shared model catalog to one refresh at a time. Platform admins are not in it;
+token belong to, and the leases that keep the shared model catalog and the toolkit catalog to one refresh at a time.
+Platform admins are not in it;
 the deployment's settings name them.
 _Avoid_: org table, tenant directory
 

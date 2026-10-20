@@ -13,6 +13,10 @@
     "worker-configuration.d.ts",
     "packages/*/test/fixtures",
     "packages/models/src/registry/catalog",
+    // The integrations.sh snapshot, written by `pnpm toolkits:sync`
+    "packages/tools/src/catalog/integrations-sh.json",
+    // Its credentials, one source per line, written by the same script
+    "packages/tools/src/catalog/integrations-sh-credentials.json",
     // Design decision records written by the impeccable tooling
     ".impeccable",
     // Codex corpus requests are compact on purpose: Go forwards some raw JSON text (tool_use input) verbatim.

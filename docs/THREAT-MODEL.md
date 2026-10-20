@@ -95,7 +95,7 @@ A Live View link is a bearer link. Commissary mints it only for the session's me
 ### Supply chain
 
 - `@earendil-works/pi-durable` (experimental) and `@cloudflare/computer` (preview) are pinned behind adapters (ADR 0040, ADR 0041). Dependabot watches dependencies.
-- MCP servers' tool descriptions and the toolkit catalog are untrusted content. The catalog only says where a source is; an admin still adds each toolkit, so a bad catalog entry cannot act by itself.
+- MCP servers' tool descriptions and the toolkit catalog are untrusted content. The catalog, and a live lookup of a domain it lacks, only say where a source is: nothing acts until someone adds a toolkit from it (an org admin an org toolkit, a member a private one), and its source passes the outbound guard when it is saved, as a typed URL does. A bad entry reaches only those who add it, with the credential they connect.
 
 ## Commissary Cloud only
 

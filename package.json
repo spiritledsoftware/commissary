@@ -8,6 +8,7 @@
   "scripts": {
     "build": "turbo run build",
     "catalog:sync": "node tools/sync-models-dev-catalog.ts",
+    "toolkits:sync": "node tools/sync-integrations-sh-catalog.ts",
     "ci:setup": "alchemy deploy --config stacks/github.ts --stage ci --profile admin --adopt && alchemy state read commissary-github/ci/output --profile admin",
     "deploy": "alchemy deploy",
     "deploy:cloud": "alchemy deploy --stage cloud --env-file .env.cloud",
@@ -29,6 +30,7 @@
     "@commissary/billing": "workspace:*",
     "@commissary/core": "workspace:*",
     "@commissary/models": "workspace:*",
+    "@commissary/tools": "workspace:*",
     "@commitlint/cli": "21.2.3",
     "@commitlint/config-conventional": "21.2.3",
     "@distilled.cloud/cloudflare": "1.0.0-rc.15",

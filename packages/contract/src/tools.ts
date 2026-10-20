@@ -307,15 +307,31 @@ export const CredentialSettings = Schema.Struct({
 export type CredentialSettings = typeof CredentialSettings.Type;
 
 /**
+ * A key in a header or the query, as it is connected: it may leave out its `name` on a toolkit added from the toolkit
+ * catalog (#207), whose source names it (`catalog.credential`); the header's prefix (`Token`) then goes before the key
+ * too. Without one, `422 invalid` with `path` `name`.
+ */
+const PlacedKey = <K extends "header" | "query">(kind: K) =>
+  Schema.Struct({
+    kind: Schema.Literal(kind),
+    name: optional(Schema.String),
+    value: Schema.String,
+    subject: optional(GrantSubject),
+  });
+
+/**
  * A credential as it is connected: its secret and, for a toolkit's shared credential, who may use it (ADR 0038). There
  * is no default tool grant, so connecting a shared credential names a `subject` (`422 invalid` without one). If the
  * subject holds no grant on the toolkit, its grant of every tool is added in the same write; if it holds one, nothing is
  * added and its grants stay as they are, so its reach is unchanged only then. The answer's `grant` says which. A private
  * credential is its owner's alone and names none.
  */
-export const ConnectCredential = ToolkitSecret.mapMembers(
-  Tuple.map(Schema.fieldsAssign({ subject: optional(GrantSubject) })),
-);
+export const ConnectCredential = Schema.Union([
+  PlacedKey("header"),
+  PlacedKey("query"),
+  ...ToolkitSecret.mapMembers(Tuple.map(Schema.fieldsAssign({ subject: optional(GrantSubject) })))
+    .members,
+]);
 
 export type ConnectCredential = typeof ConnectCredential.Type;
 
@@ -446,6 +462,33 @@ export const SignInStatus = Schema.Struct({
 
 export type SignInStatus = typeof SignInStatus.Type;
 
+/**
+ * One way to sign in to a toolkit catalog source (#207), as a toolkit credential's kind (`ToolkitSecret`):
+ * integrations.sh's credential types map onto them directly (`oauth2` is a sign-in, `oauth`; `oauth2_cc` a client
+ * credentials grant; `two_step` a token exchange; an `api_key` a `header` or `query` key), with where a key goes.
+ */
+export const CatalogCredential = Schema.Struct({
+  kind: ToolkitCredentialKind,
+  /** A `header` or `query` key's header or query parameter, when the registry names it. */
+  name: optional(Schema.String),
+  /** What goes before the key in its header (`Token` in `Authorization: Token <key>`). */
+  prefix: optional(Schema.String),
+});
+
+export type CatalogCredential = typeof CatalogCredential.Type;
+
+/**
+ * A toolkit catalog service and one of its sources (`@commissary/contract/toolkit-catalog`, #207), by id, and the
+ * source's way to sign in the toolkit was added with: a key connected without a `name` goes where it says.
+ */
+export const ToolkitCatalogLink = Schema.Struct({
+  service: Schema.String,
+  source: Schema.String,
+  credential: optional(CatalogCredential),
+});
+
+export type ToolkitCatalogLink = typeof ToolkitCatalogLink.Type;
+
 export const ToolkitOwner = Schema.Struct({
   member_id: Schema.String,
   email: optional(Schema.String),
@@ -501,6 +544,13 @@ export const ToolkitView = Schema.Struct({
   tool_list: ToolListStatus,
   /** Its managers: the OAuth app an `oauth` sign-in uses, when one is set (#202). */
   oauth_app: optional(OAuthAppView),
+  /** The toolkit catalog's service and source it was added from (#207). */
+  catalog: optional(ToolkitCatalogLink),
+  /**
+   * On Commissary Cloud, a toolkit added from the catalog without an OAuth app of its own (`oauth_app`): its `oauth`
+   * sign-ins use Commissary Cloud's OAuth app with the service (#207). An OAuth app the org sets wins.
+   */
+  managed_oauth_app: optional(Schema.Literal(true)),
   /** The settings of its credential types (#206), when it has any. */
   credential_settings: optional(CredentialSettings),
   /** What a call of its tools costs in micro-USD, unless a tool's override prices it; absent: free. */
@@ -605,6 +655,20 @@ export const AddToolkit = Schema.Struct({
   credential: optional(ConnectCredential),
   /** The settings of its credential types (#206), which `credential` may need. */
   credential_settings: optional(CredentialSettings),
+  /**
+   * Added from the toolkit catalog (#207): the source's kind, URL and credential settings, and the service's slug as its
+   * name, fill what the body leaves out (a `kind` or `source` given must be the source's), and its tools get the
+   * catalog additions' overrides. `credential` picks the source's way to sign in (by default, the one of `credential`'s
+   * kind), which the toolkit keeps: a key connected without a `name`, now or later, goes where it says. `422 invalid`
+   * with `path: "catalog"` for a service or source the catalog lacks, `catalog.credential` for a kind it does not take.
+   */
+  catalog: optional(
+    Schema.Struct({
+      service: Schema.String,
+      source: Schema.String,
+      credential: optional(ToolkitCredentialKind),
+    }),
+  ),
 });
 
 export type AddToolkit = typeof AddToolkit.Type;
