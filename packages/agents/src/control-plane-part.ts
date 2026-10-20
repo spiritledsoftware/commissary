@@ -17,6 +17,7 @@ import type { ToolScope } from "@commissary/contract/api-keys";
 import type { GrantSubject } from "@commissary/contract/grants";
 import { type ControlPlanePart, normalizedToolScope, type OrgCore } from "@commissary/state";
 import type { SpendAgent, SpendCredential } from "@commissary/state/spend";
+import type { RunState, RunsList, RunView, TriggerKind } from "@commissary/contract/agent-runs";
 import { definitionRefusal } from "./agents/definition.ts";
 import {
   AGENTS_TABLES,
@@ -25,6 +26,15 @@ import {
   freshAgentId,
   type StoredAgent,
 } from "./agents/store.ts";
+import { iso, ok, type Refusable, refuse as refuseWith } from "./result.ts";
+import {
+  type RunContext,
+  Runs,
+  type RunsPage,
+  type RunsResult,
+  type StartedRunRecord,
+} from "./runs/runs.ts";
+import { RunStore } from "./runs/store.ts";
 
 /** Why a call of the part was refused; the routes answer each with its status. */
 export type AgentsErrorCode =
@@ -38,18 +48,11 @@ export type AgentsErrorCode =
   | "unknown_toolkit"
   | "unknown_agent";
 
-export type AgentsResult<A> =
-  | { readonly ok: true; readonly value: A }
-  | { readonly ok: false; readonly error: AgentsErrorCode; readonly message: string };
+export type AgentsResult<A> = Refusable<AgentsErrorCode, A>;
 
-const refuse = (error: AgentsErrorCode, message: string) =>
-  ({ ok: false, error, message }) as const;
-
-const ok = <A>(value: A): AgentsResult<A> => ({ ok: true, value });
+const refuse = (error: AgentsErrorCode, message: string) => refuseWith(error, message);
 
 const NOT_FOUND = refuse("not_found", "agent not found");
-
-const iso = (at: number): string => new Date(at).toISOString();
 
 /**
  * What the management route found of what a definition names outside the Agents area (its `AgentReferences`, filled
@@ -129,8 +132,8 @@ const trimmedSubject = (subject: GrantSubject): GrantSubject =>
 /**
  * The Agents part of an org's ControlPlane (#226, ADR 0040): the single writer for the org's hosted agents (their
  * definitions, a shared agent's watchers) and the grants on shared agents. An `RpcTarget` the composed `ControlPlane`
- * constructs once per object (`new AgentsPart(ctx, core)`); callers reach it as `stub.agents().x(…)`. Nothing runs yet:
- * runs, which act as a private agent's member or as a shared agent itself, come with #227.
+ * constructs once per object (`new AgentsPart(ctx, core)`); callers reach it as `stub.agents().x(…)`. It keeps the org's
+ * index of agent runs (#227, `runs/`), which act as a private agent's member or as a shared agent itself.
  *
  * Who may do what follows `@commissary/auth`'s ownership rules: a private agent is its member's, and an org admin only
  * sees that it exists (its name and member) and may disable or remove it; a shared agent is for org admins, and members
@@ -141,12 +144,16 @@ export class AgentsPart extends RpcTarget implements ControlPlanePart {
   readonly #ctx: DurableObjectState;
   readonly #core: OrgCore;
   readonly #store: AgentStore;
+  readonly #runs: Runs;
 
   constructor(ctx: DurableObjectState, core: OrgCore) {
     super();
     this.#ctx = ctx;
     this.#core = core;
     this.#store = new AgentStore(ctx.storage.sql);
+    this.#runs = new Runs(new RunStore(ctx.storage.sql), this.#store, core, (agent, member) =>
+      this.#reaches(agent, member),
+    );
   }
 
   // --- the org-wide base's calls (`ControlPlanePart`, `@commissary/state`) ------------------------------------
@@ -542,6 +549,67 @@ export class AgentsPart extends RpcTarget implements ControlPlanePart {
     return ok({ id: current.id, revision });
   }
 
+  // --- agent runs (#227) --------------------------------------------------------------------------------------------
+
+  /**
+   * Starts a run of `agentId` that the member `viewer` starts (its row in the org's index; its Durable Object is the
+   * caller's to start next), or finds the run their `idempotencyKey` started of it before (`created: false`).
+   */
+  startRun(
+    viewer: Viewer,
+    agentId: string,
+    trigger: TriggerKind,
+    idempotencyKey: string | undefined,
+  ): RunsResult<StartedRunRecord> {
+    return this.#runs.start(viewer, agentId, trigger, idempotencyKey);
+  }
+
+  /** The run `runId` as its starter sees it; anyone else's answers like an unknown run. */
+  getRun(viewer: Viewer, runId: string): RunsResult<RunView> {
+    return this.#runs.ofStarter(viewer, runId);
+  }
+
+  /** The runs `viewer` started, the latest activity first. */
+  listRuns(viewer: Viewer): RunsList {
+    return { runs: this.#runs.startedBy(viewer) };
+  }
+
+  /**
+   * A new turn of the run `runId` starts (its object asks): its agent's definition as it stands now, recorded as the
+   * turn's reach; or why the run cannot go on (`run_ended`). See `runs/runs.ts`.
+   */
+  beginTurn(runId: string): RunsResult<RunContext> {
+    return this.#runs.beginTurn(runId);
+  }
+
+  /**
+   * The run `runId` at its latest turn, as that turn read its definition: the run's principal, which the API Worker's
+   * run gateway reads on every call; or why the run cannot call anything.
+   */
+  turnContext(runId: string): RunsResult<RunContext> {
+    return this.#runs.turnContext(runId);
+  }
+
+  /** Ends the run `runId` `viewer` started, whose object could not be reached to start it. */
+  abandonRun(viewer: Viewer, runId: string): void {
+    this.#runs.abandon(viewer, runId);
+  }
+
+  /** Up to `limit` of the org's runs, for its deletion (`org-deletion.ts`), which deletes their objects first. */
+  runsPage(limit: number): RunsPage {
+    return this.#runs.page(limit);
+  }
+
+  /** Forgets the runs `ids`, whose objects the org's deletion deleted. */
+  forgetRuns(ids: ReadonlyArray<string>): void {
+    this.#runs.forget(ids);
+  }
+
+  /** The run's object reports its state (`running`, `idle`, `ended`), kept in the index as its last activity. */
+  runStateChanged(runId: string, state: RunState): void {
+    this.#runs.stateChanged(runId, state);
+  }
+
   // --- the org export ------------------------------------------------------------------------------------------------
 
   /** The agents `viewer` manages, for the org export: definitions, and a shared agent's watchers and grants. */
@@ -720,6 +788,16 @@ export class AgentsPart extends RpcTarget implements ControlPlanePart {
             ? granted.has(agent.id)
             : privateServed && agent.owner === member),
       );
+  }
+
+  /** Whether `member` may use `agent`, enabled or not: their private agent while served, or a granted shared one. */
+  #reaches(agent: StoredAgent, member: string): boolean {
+    if (agent.owner !== undefined) return agent.owner === member && this.#core.privateAgents();
+    const teams = this.#core.teamIdsOf(member);
+
+    return this.#store
+      .grants()
+      .some((grant) => grant.agent === agent.id && names(grant.subject, member, teams));
   }
 
   /** The members a shared agent's watchers name: its watching members and the members of its watching teams. */

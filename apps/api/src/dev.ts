@@ -5,9 +5,27 @@
 // dev-only `DevStateBridge` entrypoint (`DEV_STATE_BRIDGE`, apps/state/src/dev.ts): the state namespaces are replaced
 // with bridged ones, whose stubs send their calls, with the object's name, over that service binding
 // (`@commissary/state/dev-state-bridge`). Deployed, the API Worker binds the state Worker's objects by script name and
-// runs src/index.ts.
+// runs src/index.ts. The agent runs' object and the run gateway (#227) are this Worker's own, given the bridged `env`
+// too: the run's object reads its org's ControlPlane, and the gateway serves the client API.
 import { type DevBridgedEnv, devBridgedEnv } from "@commissary/state/dev-state-bridge";
-import { api } from "./index.ts";
+import {
+  AgentRun as DeployedAgentRun,
+  AgentRunGateway as DeployedAgentRunGateway,
+  api,
+} from "./index.ts";
+
+export class AgentRun extends DeployedAgentRun {
+  constructor(ctx: DurableObjectState, env: DevBridgedEnv<Env>) {
+    // The app Worker reaches this object through the dev registry too, by its hex id: its name is lost there.
+    super(ctx, devBridgedEnv(env), { unnamedInDev: true });
+  }
+}
+
+export class AgentRunGateway extends DeployedAgentRunGateway {
+  constructor(ctx: ExecutionContext, env: DevBridgedEnv<Env>) {
+    super(ctx, devBridgedEnv(env));
+  }
+}
 
 export default {
   fetch: (request, env, ctx) => api.fetch(request, devBridgedEnv(env), ctx),

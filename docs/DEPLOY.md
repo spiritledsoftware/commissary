@@ -57,8 +57,9 @@ Any machine with the deploy settings can deploy a preview by hand: `pnpm run dep
 
 ## The Workers
 
-A stage deploys three Workers (ADR 0030) from the one stack, the state Worker first, and a fourth on Commissary Cloud,
-the auth Worker ([Commissary Cloud](#commissary-cloud)):
+A stage deploys three Workers (ADR 0030) from the one stack, and a fourth on Commissary Cloud, the auth Worker
+([Commissary Cloud](#commissary-cloud)). On every stage they deploy in this order: the state Worker, the API Worker, the
+auth Worker, the app Worker.
 
 1. **`State`** (`apps/state`) defines the Durable Objects `ControlPlane`, `SessionState`, `Platform`,
    `BrowserSession` (one per browser session of the browser toolkit) and `SandboxSession` (one per sandbox session of
@@ -72,12 +73,16 @@ the auth Worker ([Commissary Cloud](#commissary-cloud)):
    domain (the app host) or `workers.dev` URL, behind Access on a self-hosted stage. It answers the client API paths
    `404` with the address of the client API, except, on a self-hosted stage, the MCP endpoint `/mcp` (and `/o/<slug>/mcp`), which
    it serves behind Access to MCP clients Access signs in (ADR 0045). It binds the state Worker's Durable Objects by script name, which is also
-   why Alchemy deploys it after the state Worker, and no secrets keys, which only the ControlPlane reads.
+   why Alchemy deploys it after the state Worker, the API Worker's `AgentRun` (the agent runs, #227) by script name,
+   which is why it deploys after the API Worker, and no secrets keys, which only the ControlPlane reads.
 3. **`Api`** (`apps/api`), the API Worker: the client API (`/v1`, `/v1beta`, `/v1internal`, `/openai/v1`,
    `/backend-api/codex`, `/chat/completions`, `/completions`, `/responses`, the MCP endpoint `/mcp` and toolkits' CIMD
    document `/oauth/toolkits/client.json`), `/healthz` and the cron trigger, under no Access
    application of its own: clients send API keys. It binds the Durable Objects by script name too, and the per-org rate limit
-   on Commissary Cloud. Where it answers:
+   on Commissary Cloud. It defines one Durable Object of its own, `AgentRun`, one per run of a hosted agent (#227, ADR
+   0030's amendment): a run reaches the client API and the MCP endpoint through this Worker's own loopback entrypoint
+   (`ctx.exports`), which no Worker of the deployment binds (the trust boundary is the Cloudflare account, as for the
+   Durable Objects). Where it answers:
    - on the API host when there is one ([API host](#api-host)), as its custom domain;
    - else on the app host, through **zone routes** `<app host>/v1*`, `/openai/v1*`, `/backend-api/codex*`,
      `/chat/completions*`, `/completions*`, `/responses*` and `/oauth/toolkits/client.json*`, and on Commissary Cloud
@@ -96,7 +101,9 @@ changes, so the Durable Objects restart only on a deploy that changes their code
 change. When they restart, the requests in flight fail with "Durable Object reset because its code was updated"; the
 app and the API Worker send each such call once more (`retryOnCodeUpdate`). Because a deploy can run the new state
 Worker with the old app and API Workers for a moment, state RPC changes are expand-then-contract
-(`docs/DEVELOPMENT.md`, "State RPC: expand, then contract").
+(`docs/DEVELOPMENT.md`, "State RPC: expand, then contract"). The agent runs' objects are the API Worker's, so they
+restart on every deploy of it (every merge, in CI): a run that was working resumes on its own within a minute (its
+heartbeat alarm), without making a finished tool call again; a model call it was waiting on is made again.
 
 **Revocation and suspension** made on the app Worker reach the API Worker's isolates within the same windows as
 before (30 s for a verified API key, 30 s for a suspension's standing), since the API Worker is another isolate.
@@ -118,8 +125,15 @@ state Worker and the move happens on that deploy, with no setting or manual step
 - the requests in flight during the deploy may fail once while the Durable Objects restart, as on any deploy that
   changed their code;
 - no change to URLs, API keys, management keys, sessions or stored data. The client API may answer `404` for a few
-  seconds within the deploy: with an API host, the hostname moves from the app Worker (where it was an alias) to the
-  API Worker; on one host, the new app Worker may refuse the client API paths before the zone routes exist.
+  seconds within the deploy: on one host, the new app Worker may refuse the client API paths before the zone routes
+  exist.
+
+**A stage with an API host that skipped the split.** Since the agent runs (#227) the API Worker deploys before the app
+Worker on every stage ([The Workers](#the-workers)). A stage still on a release before the split (#172) with an API host
+has that hostname on its app Worker (as an alias), so the API Worker, deployed first, cannot take it. Deploy an
+intermediate release first (one after the split and before the agent runs): its deploy moves the hostname to the API
+Worker. Then deploy the current release. A stage on one host, or one already past the split, deploys the current
+release directly.
 
 **Before merging the split** a person rehearses the move on a throwaway stage `pr-0`, self-hosted and Commissary Cloud
 (#152): deploy `main`, seed an org, a member, a credential and an API key, deploy the split onto the same stage, check

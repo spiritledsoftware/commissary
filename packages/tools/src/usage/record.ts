@@ -13,6 +13,7 @@
  * response path (`ctx.waitUntil`), as model records are; a failed write is logged and the record dropped.
  */
 import { Effect } from "effect";
+import type { UsageRun } from "@commissary/auth";
 import type { ToolCallApproval, ToolCallRecordOutcome } from "@commissary/contract/usage";
 import { type OrgId, runAfterResponse } from "@commissary/core";
 import { ToolsEnv } from "../env.ts";
@@ -23,6 +24,8 @@ export interface ToolCallRecord {
   /** The caller's principal (`key:<key id>` for an API key, which names the key). */
   readonly principalId: string;
   readonly memberId: string | undefined;
+  /** The agent run the call is of (#227): its agent, the run and its starter. */
+  readonly run?: UsageRun | undefined;
   readonly toolkitId: string;
   /** The tool's stable id, `<toolkit id>:<upstream name>`. */
   readonly toolId: string;
@@ -73,6 +76,9 @@ const COLUMNS = [
   "request_bytes",
   "response_bytes",
   "approval",
+  "agent_id",
+  "run_id",
+  "starter",
 ] as const;
 
 const INSERT_SQL = `INSERT OR IGNORE INTO usage_records (${COLUMNS.join(", ")}) VALUES (${COLUMNS.map(
@@ -110,6 +116,9 @@ const rowOf = (
   request_bytes: record.requestBytes,
   response_bytes: record.responseBytes,
   approval: record.approval,
+  agent_id: record.run?.agentId ?? null,
+  run_id: record.run?.runId ?? null,
+  starter: record.run === undefined ? null : (record.run.starter ?? ""),
 });
 
 /** Stores one record (idempotent on `request_id`). */

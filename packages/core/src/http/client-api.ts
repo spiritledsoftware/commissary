@@ -8,6 +8,12 @@
 export const MCP_PATH = "/mcp";
 
 /**
+ * The `_meta` key of a tool result the MCP endpoint gives an agent run (#227) when a spend limit refused the call: the
+ * refusal's text, by which the run ends its turn with that text as the answer (Tools writes it, Agents reads it).
+ */
+export const SPEND_REFUSAL_META = "commissary.dev/spend_refusal";
+
+/**
  * Commissary's Client ID Metadata Document (CIMD) for toolkits' OAuth sign-ins (Tools, #202): the `client_id` an MCP
  * server's authorization server fetches, unauthenticated. A client API path, so it is served where an authorization
  * server reaches it (the API host, or the app host's zone route, outside Access).

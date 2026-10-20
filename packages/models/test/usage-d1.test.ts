@@ -37,6 +37,7 @@ import failureMigration from "../../../migrations/usage/0007_usage_failure.sql?r
 import hostedAuthMigration from "../../../migrations/usage/0008_hosted_auth.sql?raw";
 import dropHostedAuthMigration from "../../../migrations/usage/0009_drop_hosted_auth.sql?raw";
 import toolCallsMigration from "../../../migrations/usage/0010_usage_tool_calls.sql?raw";
+import agentRunsMigration from "../../../migrations/usage/0011_usage_agent_runs.sql?raw";
 import { platformOf } from "@commissary/state";
 import { insertToolCallRecord } from "@commissary/tools/testing";
 import { envContext } from "./support/context.ts";
@@ -93,6 +94,7 @@ describe("migration 0003 (usage org)", () => {
       ...statementsOf(privateMigration),
       ...statementsOf(failureMigration),
       ...statementsOf(toolCallsMigration),
+      ...statementsOf(agentRunsMigration),
     ])
       await db.prepare(statement).run();
 
@@ -188,6 +190,7 @@ describe("migration 0007 (usage failure)", () => {
     for (const statement of [
       ...statementsOf(failureMigration),
       ...statementsOf(toolCallsMigration),
+      ...statementsOf(agentRunsMigration),
     ])
       await db.prepare(statement).run();
 
@@ -244,6 +247,7 @@ describe("migration 0004 (usage cost)", () => {
       ...statementsOf(privateMigration),
       ...statementsOf(failureMigration),
       ...statementsOf(toolCallsMigration),
+      ...statementsOf(agentRunsMigration),
     ])
       await db.prepare(statement).run();
 
@@ -328,6 +332,7 @@ describe("migration 0005 (usage member)", () => {
       ...statementsOf(privateMigration),
       ...statementsOf(failureMigration),
       ...statementsOf(toolCallsMigration),
+      ...statementsOf(agentRunsMigration),
     ])
       await db.prepare(statement).run();
 
@@ -414,6 +419,7 @@ describe("migration 0006 (usage private)", () => {
       ...statementsOf(privateMigration),
       ...statementsOf(failureMigration),
       ...statementsOf(toolCallsMigration),
+      ...statementsOf(agentRunsMigration),
     ])
       await db.prepare(statement).run();
 

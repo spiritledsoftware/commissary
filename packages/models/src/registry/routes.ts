@@ -6,7 +6,7 @@
  */
 import { Effect } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
-import { AccessPrincipal } from "@commissary/auth";
+import { type AccessIdentity, AccessPrincipal } from "@commissary/auth";
 import { buildCodexClientModels, supportsApplyPatchProviders } from "./codex-client-models.ts";
 import {
   respondGeminiDetail,
@@ -14,7 +14,8 @@ import {
   respondModels,
   type ModelsReply,
 } from "./models-api.ts";
-import { ModelRegistry } from "./service.ts";
+import { callerView, runModelFilter } from "./caller-view.ts";
+import { ModelRegistry, type RegistrySnapshot } from "./service.ts";
 
 const JSON_CONTENT_TYPE = "application/json; charset=utf-8";
 
@@ -41,15 +42,23 @@ const remainder = (pathname: string, prefix: string): string | undefined => {
 
 type Registry = ModelRegistry["Service"];
 
+/** The models the caller may name: an agent run's list is its definition's model alone (#227). */
+const callerModels = (snapshot: RegistrySnapshot, identity: AccessIdentity) => {
+  const only = runModelFilter(identity);
+  const models = snapshot.availableModels();
+
+  return only === undefined ? models : models.filter((model) => only(model.id));
+};
+
 const v1Models = (registry: Registry) =>
   Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
     const url = new URL(request.originalUrl, "http://localhost");
     const identity = yield* AccessPrincipal;
-    const snapshot = (yield* registry.snapshot).visibleTo(identity.memberId);
+    const snapshot = callerView(yield* registry.snapshot, identity);
 
     const reply = respondModels(
-      snapshot.availableModels(),
+      callerModels(snapshot, identity),
       {
         userAgent: request.headers["user-agent"] ?? "",
         anthropicVersion: request.headers["anthropic-version"] ?? "",
@@ -92,8 +101,7 @@ const v1betaModels = (registry: Registry) =>
     const request = yield* HttpServerRequest.HttpServerRequest;
     const url = new URL(request.originalUrl, "http://localhost");
     const identity = yield* AccessPrincipal;
-    const snapshot = (yield* registry.snapshot).visibleTo(identity.memberId);
-    const models = snapshot.availableModels();
+    const models = callerModels(callerView(yield* registry.snapshot, identity), identity);
     const action = remainder(url.pathname, "/v1beta/models");
 
     return toResponse(

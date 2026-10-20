@@ -71,6 +71,9 @@ const worker = (bindings: Record<string, string>) =>
         BROWSER_SESSIONS: { className: "BrowserSession", useSQLite: true },
         // The sandbox toolkit's sessions (#222), which the ControlPlane reaches as on every deployment.
         SANDBOX_SESSION: { className: "SandboxSession", useSQLite: true },
+        // The agent runs (#227): the API Worker's class with its run gateway (test/worker.ts), where the deployed app
+        // binds them by the API Worker's script name.
+        AGENT_RUN: { className: "AgentRun", useSQLite: true },
       },
       // `OAUTH_KV` everywhere: the cross-org suite (self-hosted) stores OAuth grants in it too; the OAuth server is on
       // only with the hosted bindings.

@@ -12,9 +12,11 @@ import { configCredentials, openAICompatModelIds } from "../executor/config-cred
 import { ExecutionError } from "../executor/errors.ts";
 import type { SpawnAgentSource } from "../executor/helps/codex-multi-agent-v2.ts";
 import type { CurrentOrg } from "@commissary/core";
+import { callerView, runModelFilter } from "../registry/caller-view.ts";
 import { ModelRegistry } from "../registry/service.ts";
 import type { ModelsEnv } from "../env.ts";
 
+/** The base of a model name as clients send it: without its thinking suffix, case aside. */
 export class ModelProviders extends Context.Service<
   ModelProviders,
   {
@@ -63,16 +65,33 @@ export class ModelProviders extends Context.Service<
       );
 
       // What the caller may use (ADR 0023): the registry as their grants and private credentials leave it, so a
-      // model they cannot reach has no provider and answers like an unknown one.
+      // model they cannot reach has no provider and answers like an unknown one. A shared agent's run (#227, ADR 0040)
+      // acts as the agent, whose reach is its definition: the org's shared credentials, whatever the grants.
       const visible = Effect.gen(function* () {
-        const identity = yield* Effect.serviceOption(AccessPrincipal);
+        const principal = Option.getOrUndefined(yield* Effect.serviceOption(AccessPrincipal));
 
-        return (yield* snapshot).visibleTo(Option.getOrUndefined(identity)?.memberId);
+        return callerView(yield* snapshot, principal);
       });
 
+      // An agent run reaches its definition's model alone (ADR 0040): any other, `auto` included, has no provider.
+      const reachable = Effect.map(Effect.serviceOption(AccessPrincipal), (principal) =>
+        runModelFilter(Option.getOrUndefined(principal)),
+      );
+
       return ModelProviders.of({
-        providersFor: (model) => Effect.map(visible, (current) => current.providersForModel(model)),
-        firstAvailableModel: Effect.map(visible, (current) => current.firstAvailableModel()),
+        providersFor: (model) =>
+          Effect.gen(function* () {
+            const only = yield* reachable;
+
+            if (only !== undefined && !only(model)) return [];
+
+            return (yield* visible).providersForModel(model);
+          }),
+        firstAvailableModel: Effect.gen(function* () {
+          if ((yield* reachable) !== undefined) return undefined;
+
+          return (yield* visible).firstAvailableModel();
+        }),
         modelType: (model) =>
           Effect.map(snapshot, (current) => current.lookupModelInfo(model, "")?.type),
         // The model list a request may name: a private credential's models are its owner's (ADR 0023).

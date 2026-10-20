@@ -349,7 +349,12 @@ stays with that Worker.
   Auth's own flows are tested in `apps/auth`. A request to the app's test Worker with the header `x-test-api-worker`
   goes to the API Worker's handler (`@commissary/api`, a dev dependency of the app) with the same bindings, as zone
   routes send the client API there on a stage with one host: the one test that follows an MCP client from the app host's
-  OAuth server to `/mcp` (`test/hosted/mcp-oauth.test.ts`, #200) uses it. A test that goes through the client API's
+  OAuth server to `/mcp` (`test/hosted/mcp-oauth.test.ts`, #200) uses it. The other flow that crosses both Workers is an
+  agent run (#227): the app Worker's routes start it, and its object, the API Worker's `AgentRun`, calls the API
+  Worker's run gateway over `ctx.exports`; so the app's test Worker also exports `@commissary/api`'s `AgentRun` and
+  `AgentRunGateway`, and the runs' end-to-end tests (`test/agent-runs.test.ts`) stay with the app Worker. What runs
+  without the client API (the index of runs, the turns' readings of the definition, the object's checks) is
+  `@commissary/agents`' own (`packages/agents/test/runs.test.ts`). A test that goes through the client API's
   router or `fetch` is the API Worker's; one that needs an org, member or API key there sets it up straight through the
   Durable Objects (`apps/api/test/support/client.ts`), since the management routes that make them are the app Worker's.
   So do

@@ -1,5 +1,5 @@
 ---
-status: partly superseded by ADR-0031
+status: partly superseded by ADR-0031, amended below (#227: the agent runs' Durable Object lives in the API Worker)
 ---
 
 # Commissary runs as several Workers
@@ -36,3 +36,10 @@ This replaces ADR 0028's statement that one Worker answers on both hostnames. It
 - Service-binding and RPC calls cost no extra request but count toward the subrequest limits (50 per request on the Free plan) and the cap of 32 invocations per request. Self-hosted Commissary has no service-binding hop; the app-to-auth hop is Cloud-only.
 - Self-hosted Commissary now runs three Workers, which count against the account's Worker limit and share the daily request quota.
 - Commissary Cloud's people sign in once more after the move, because the session cookie and Better Auth's tables are new.
+
+## Amendment: the agent runs' Durable Object lives in the API Worker
+
+Hosted agents' runs (#227, ADR 0040) are one Durable Object each, `AgentRun`, and it is defined by the API Worker, not the state Worker. A run reaches models through the client API and tools through the MCP endpoint, so its object must call the API Worker. From the state Worker that would take a service binding to the API Worker, which already binds the state Worker's Durable Objects: each Worker would need the other to exist first, and no fresh stage (every `pr-<n>` preview, a new self-hosted deployment) could deploy. In the API Worker, a run calls the client API through the Worker's own loopback entrypoint (`ctx.exports`), a named entrypoint that the internet cannot reach and no Worker of the deployment binds. The trust boundary for the run's principal is therefore the Cloudflare account, as for the Durable Objects (any Worker deployed to the account could bind the entrypoint); within the deployment, the run's object keeps the gateway out of its RPC methods and takes a start only for the run its name says it is, and the principal is always resolved from the org's ControlPlane.
+
+- The app Worker binds `AGENT_RUN` by the API Worker's `scriptName`, so on every stage the API Worker deploys before the app Worker: the state Worker, then the API Worker, then the auth Worker, then the app Worker.
+- Deploying the API Worker restarts the runs' objects, and every merge deploys it. A run resumes from its storage: a finished tool call is never made again, but a model call that was cut off is made again.
