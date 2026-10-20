@@ -11,6 +11,7 @@
  */
 import { HttpApi } from "effect/http-api";
 import { AgentRunsGroup } from "./agent-runs.ts";
+import { AgentTriggersGroup } from "./agent-triggers.ts";
 import { AgentGrantsGroup, AgentsGroup } from "./agents.ts";
 import { ApprovalsGroup } from "./approvals.ts";
 import { BillingGroup } from "./billing.ts";
@@ -61,6 +62,7 @@ export class ManagementApi extends HttpApi.make("management")
   .add(AgentsGroup)
   .add(AgentGrantsGroup)
   .add(AgentRunsGroup)
+  .add(AgentTriggersGroup)
   .add(BrowserProfilesGroup)
   .add(BrowserProfileGrantsGroup)
   .prefix(MANAGEMENT_API_PREFIX) {}

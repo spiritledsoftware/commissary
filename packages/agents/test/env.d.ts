@@ -1,6 +1,6 @@
 // The test Worker's bindings (vitest.config.ts) as `env` from `cloudflare:workers` types them: what state's Durable
 // Object classes read (`StateObjectEnv`), with the namespaces typed through the test Worker's classes (test/worker.ts),
-// and Agents' `LOADER` and `AGENT_RUN`.
+// and Agents' `LOADER`, `AGENT_RUN`, `AGENT_SCHEDULE` and `API_DOMAIN`.
 interface __AgentsTestEnv extends Omit<
   import("@commissary/state").StateObjectEnv,
   keyof import("@commissary/state").StateBindings
@@ -12,12 +12,16 @@ interface __AgentsTestEnv extends Omit<
   LOADER: WorkerLoader;
   /** The agent runs (`AgentsBindings`, #227), with no client API behind them. */
   AGENT_RUN: DurableObjectNamespace<import("./worker.ts").AgentRun>;
+  /** The schedule triggers' ticks (`AgentsBindings`, #231). */
+  AGENT_SCHEDULE: DurableObjectNamespace<import("./worker.ts").AgentSchedule>;
+  /** The API host (`AgentsBindings`), where webhooks' URLs point. */
+  API_DOMAIN: string;
 }
 
 declare namespace Cloudflare {
   interface GlobalProps {
     mainModule: typeof import("./worker.ts");
-    durableNamespaces: "ControlPlane" | "SessionState" | "Platform" | "AgentRun";
+    durableNamespaces: "ControlPlane" | "SessionState" | "Platform" | "AgentRun" | "AgentSchedule";
   }
 
   interface Env extends __AgentsTestEnv {}

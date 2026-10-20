@@ -78,19 +78,21 @@ auth Worker, the app Worker.
    domain (the app host) or `workers.dev` URL, behind Access on a self-hosted stage. It answers the client API paths
    `404` with the address of the client API, except, on a self-hosted stage, the MCP endpoint `/mcp` (and `/o/<slug>/mcp`), which
    it serves behind Access to MCP clients Access signs in (ADR 0045). It binds the state Worker's Durable Objects by script name, which is also
-   why Alchemy deploys it after the state Worker, the API Worker's `AgentRun` (the agent runs, #227) by script name,
-   which is why it deploys after the API Worker, and no secrets keys, which only the ControlPlane reads.
+   why Alchemy deploys it after the state Worker, the API Worker's `AgentRun` (the agent runs, #227) and
+   `AgentSchedule` (agents' schedule triggers, #231) by script name, which is why it deploys after the API Worker, and no secrets keys, which only the ControlPlane reads.
 3. **`Api`** (`apps/api`), the API Worker: the client API (`/v1`, `/v1beta`, `/v1internal`, `/openai/v1`,
-   `/backend-api/codex`, `/chat/completions`, `/completions`, `/responses`, the MCP endpoint `/mcp` and toolkits' CIMD
-   document `/oauth/toolkits/client.json`), `/healthz` and the cron trigger, under no Access
+   `/backend-api/codex`, `/chat/completions`, `/completions`, `/responses`, the MCP endpoint `/mcp`, toolkits' CIMD
+   document `/oauth/toolkits/client.json` and hosted agents' webhook triggers `/agent-webhooks`), `/healthz` and the cron trigger, under no Access
    application of its own: clients send API keys. It binds the Durable Objects by script name too, and the per-org rate limit
-   on Commissary Cloud. It defines one Durable Object of its own, `AgentRun`, one per run of a hosted agent (#227, ADR
-   0030's amendment): a run reaches the client API and the MCP endpoint through this Worker's own loopback entrypoint
+   on Commissary Cloud. It defines two Durable Objects of its own: `AgentRun`, one per run of a hosted agent (#227, ADR
+   0030's amendment), and `AgentSchedule`, one per schedule trigger of a hosted agent, whose alarm starts its runs
+   (#231). A run reaches the client API and the MCP endpoint through this Worker's own loopback entrypoint
    (`ctx.exports`), which no Worker of the deployment binds (the trust boundary is the Cloudflare account, as for the
    Durable Objects). Where it answers:
    - on the API host when there is one ([API host](#api-host)), as its custom domain;
    - else on the app host, through **zone routes** `<app host>/v1*`, `/openai/v1*`, `/backend-api/codex*`,
-     `/chat/completions*`, `/completions*`, `/responses*` and `/oauth/toolkits/client.json*`, and on Commissary Cloud
+     `/chat/completions*`, `/completions*`, `/responses*`, `/agent-webhooks*` (hosted agents' webhook triggers, #231)
+     and `/oauth/toolkits/client.json*`, and on Commissary Cloud
      `/mcp*` (a route runs in front of
      the app Worker's custom domain on the same hostname); the bypass application of the client API paths takes them
      out of the app host's Access application ([Operations](#operations)). A self-hosted stage with one host has no
@@ -108,7 +110,9 @@ app and the API Worker send each such call once more (`retryOnCodeUpdate`). Beca
 Worker with the old app and API Workers for a moment, state RPC changes are expand-then-contract
 (`docs/DEVELOPMENT.md`, "State RPC: expand, then contract"). The agent runs' objects are the API Worker's, so they
 restart on every deploy of it (every merge, in CI): a run that was working resumes on its own within a minute (its
-heartbeat alarm), without making a finished tool call again; a model call it was waiting on is made again.
+heartbeat alarm), without making a finished tool call again; a model call it was waiting on is made again. The
+schedule triggers' objects are the API Worker's too: a restart keeps their alarms, and a tick whose alarm fails is
+fired again without starting a second run.
 
 **Revocation and suspension** made on the app Worker reach the API Worker's isolates within the same windows as
 before (30 s for a verified API key, 30 s for a suspension's standing), since the API Worker is another isolate.

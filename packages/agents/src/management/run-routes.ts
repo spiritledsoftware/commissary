@@ -41,6 +41,7 @@ const orRefuse = orRefuseWith<RunsErrorCode>({
   forbidden: 403,
   not_found: 404,
   agent_disabled: 409,
+  trigger_disabled: 409,
   run_ended: 409,
   unavailable: 503,
 });

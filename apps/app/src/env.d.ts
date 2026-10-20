@@ -92,6 +92,11 @@ interface __BaseEnv_Env {
    */
   AGENT_RUN: DurableObjectNamespace<import("@commissary/agents/api").AgentRunObject>;
   /**
+   * The schedule triggers (#231): the API Worker's class (`AgentSchedule`), bound by its script name, on every
+   * deployment; the Agents routes arm a schedule's object when it is added, enabled or edited.
+   */
+  AGENT_SCHEDULE: DurableObjectNamespace<import("@commissary/agents/api").AgentScheduleObject>;
+  /**
    * Commissary Cloud's OAuth server for MCP clients (#200, src/hosted/mcp-oauth.ts, `@commissary/tools`' `oauth/`): the
    * KV namespace `@cloudflare/workers-oauth-provider` keeps clients, grants, tokens and consents in; bound on the
    * `cloud` stage only (and under `alchemy dev`), never on a self-hosted stage or a preview.

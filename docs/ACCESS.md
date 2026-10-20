@@ -6,7 +6,9 @@ that the Worker verifies. The Worker never sees their passwords. Clients of the 
 `/backend-api/codex*`, the unprefixed aliases, and the MCP endpoint `/mcp` on the API host) are not behind Access: they
 send an **API key** Commissary issued to a member, which the Worker checks itself (§4, "API keys" below,
 [CLIENTS.md](CLIENTS.md)). MCP clients may also sign in through Access instead, at the app host's `/mcp`, with Access's
-**Managed OAuth** ("MCP clients through Access" below, ADR 0045).
+**Managed OAuth** ("MCP clients through Access" below, ADR 0045). Hosted agents' webhook triggers
+(`/agent-webhooks/<org>/<trigger>`, #231) are client API paths too, open to anyone: a delivery proves itself with the
+trigger's secret instead of an API key ("Webhook triggers" below).
 Scripts on the management API may send a **management key** instead of an Access service token ("Management keys"
 below).
 
@@ -79,8 +81,8 @@ client that signs in through Access sends the token of the app host's applicatio
 (`cloudflared access token -app=https://<app host>`) in `cf-access-token` to the API host; the API Worker checks it
 against `ACCESS_AUD` itself. Without an API host, zone routes send the client API paths of the app host to the API
 Worker, and the bypass application (`infra/access.ts` `provisionClientApiBypass`) covers `/v1`, `/v1beta`,
-`/v1internal`, `/openai/v1`, `/backend-api/codex`, `/chat/completions`, `/completions` and `/responses` with their
-sub-paths, and `/oauth/toolkits/client.json`, Commissary's Client ID Metadata Document for toolkits' OAuth sign-ins
+`/v1internal`, `/openai/v1`, `/backend-api/codex`, `/chat/completions`, `/completions`, `/responses` and
+`/agent-webhooks` (hosted agents' webhook triggers, #231) with their sub-paths, and `/oauth/toolkits/client.json`, Commissary's Client ID Metadata Document for toolkits' OAuth sign-ins
 (#202), which an MCP server's authorization server fetches without signing in and which needs no key. Access applies
 the most specific application to a request, so these paths reach the API Worker without a
 sign-in while every other path stays behind the main application. The API Worker is then the only gate of the client
@@ -118,7 +120,7 @@ fail at the servers that take one (give those toolkits an OAuth app).
 | ------------------------------------ | ---------------------------- | -------------------------- | ------------------------------------------------------ |
 | People using the panel / browsers    | **Allow**                    | Emails, email domain       | Interactive login                                      |
 | Management automation (scripts, CI)  | **Service Auth**             | The stack's service tokens | Non-interactive; an Allow policy does not match tokens |
-| Clients of the client API            | **Bypass**                   | Everyone                   | The Worker checks their API key instead                |
+| Clients of the client API            | **Bypass**                   | Everyone                   | The Worker checks their API key (a webhook's secret)   |
 | MCP clients on the app host's `/mcp` | **Allow** / **Service Auth** | As the panel's             | Signed in through Managed OAuth, or a service token    |
 
 Need IdP groups, device posture or other rules? Extend the policies in `infra/access.ts` (Alchemy's
@@ -353,6 +355,36 @@ characters>`), its member, its name and when it was created, last used (to the m
   waiting out one frees its place.
 - API keys are never accepted on the management API or the panel: those stay behind Access.
 
+### Webhook triggers
+
+A hosted agent's webhook trigger (#231) has a URL, `https://<API host>/agent-webhooks/<org id>/<trigger id>` (or the
+app host's, where zone routes send it to the API Worker), and a secret (`whsec_...`), which its agent's manager sees
+once, when it is created and each time it is rotated (`POST /v9/management/agents/<id>/triggers/<trigger>/secret`; the
+old secret stops working at once). The URL is not secret on its own. A sender `POST`s a body of at most 1 MiB and
+proves it holds the secret in one of two ways:
+
+- `Authorization: Bearer <secret>`, for senders that can only set a header; or
+- a signature, which never sends the secret (Standard Webhooks' scheme, under Commissary's header names): three
+  headers, all required: `X-Commissary-Delivery: <id>` (the delivery's id, the same on every retry of it),
+  `X-Commissary-Timestamp: <unix seconds>` and `X-Commissary-Signature: sha256=<hex>`, the lowercase or uppercase hex
+  of HMAC-SHA256, keyed with the secret as written (its UTF-8 bytes, `whsec_` included), of the id, a `.`, the
+  timestamp, a `.` and the raw body: `<id>.<timestamp>.<body>`. A signature whose timestamp is more than five minutes
+  from the API Worker's clock, either way, is refused, so a delivery someone captured cannot be replayed later; within
+  those five minutes a replay names the signed id, and finds the run that id started (under another id it proves
+  nothing).
+
+A delivery id sent again finds the run the first one started, so a sender retries with the same id (and a signing
+sender signs a retry afresh, with a new timestamp). Bearer deliveries should name theirs in `X-Commissary-Delivery`
+too (Standard Webhooks' `Webhook-Id` is read as well): without one, a bearer delivery is known by its body's hash and
+the minute it came in, so identical bodies within one minute start one run, and a retry that crosses a minute's
+boundary starts a second run. A delivery answers `202 {"run": "<run id>"}` once the run started;
+`401` for anything that does not prove itself (a malformed address, an org or trigger that does not exist, a wrong
+secret, a bad or stale signature: the same answer for all), `409` while the trigger or its agent is disabled, `413`
+for a larger body, and on Commissary Cloud `429`: every delivery to an existing org, proven or not, counts first
+against the org's webhook bucket (as many a minute as its request-rate ceiling, apart from it), so a flood of
+unproven deliveries is refused there and leaves the ceiling of the org's API keys alone; a proven delivery then counts
+against the org's request-rate ceiling too, as an API key's request does.
+
 ### Management keys
 
 A **management key** (ADR 0026) is how a script calls the management API without a person's session:
@@ -398,8 +430,9 @@ characters; a missing key is refused everywhere.
 
 1. The path is classified (`apps/app/src/management/zones.ts`): `/v1*` (incl. `/v1beta`, `/v1internal`), `/openai/v1*`,
    `/backend-api/codex*`, the unprefixed aliases `/chat/completions`, `/completions`, `/responses`, the MCP endpoint
-   `/mcp` and toolkits' CIMD document `/oauth/toolkits/client.json` are the client API and need a principal, all but
-   the CIMD document, which the API Worker serves to anyone (the app Worker answers them `404`, naming the API Worker's
+   `/mcp`, toolkits' CIMD document `/oauth/toolkits/client.json` and hosted agents' webhook triggers `/agent-webhooks*`
+   are the client API and need a principal, all but the CIMD document, which the API Worker serves to anyone, and the
+   webhook triggers, whose route checks the trigger's secret itself (the app Worker answers them `404`, naming the API Worker's
    address, except the MCP endpoint `/mcp` itself on a self-hosted Commissary, which it serves behind Access: below);
    `/v9/management*` (also `/v9/management/orgs/<slug>/...`), the
    control panel (`/`, `/accounts`, `/keys`, `/models`, `/usage`, `/members`, `/api-keys`, `/limits`, `/settings` with

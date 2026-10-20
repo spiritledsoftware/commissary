@@ -21,9 +21,25 @@ export const SPEND_REFUSAL_META = "commissary.dev/spend_refusal";
 export const TOOLKIT_OAUTH_CLIENT_PATH = "/oauth/toolkits/client.json";
 
 /**
+ * Where hosted agents' webhook triggers take deliveries (Agents, #231): `/agent-webhooks/<org id>/<trigger id>`, a client
+ * API path served on the API host (or the app host's zone route, outside Access), whose requests prove themselves with
+ * the trigger's secret instead of an API key. Not `/webhooks`: the app Worker takes Polar's at `/webhooks/polar`.
+ */
+export const AGENT_WEBHOOK_PREFIX = "/agent-webhooks";
+
+/** The path of the webhook trigger `trigger` of `org` ({@link AGENT_WEBHOOK_PREFIX}). */
+export const agentWebhookPath = (org: string, trigger: string): string =>
+  `${AGENT_WEBHOOK_PREFIX}/${org}/${trigger}`;
+
+/** Whether a normalised path ({@link normalizedPath}) is under {@link AGENT_WEBHOOK_PREFIX}. */
+export const isAgentWebhookPath = (path: string): boolean =>
+  path.startsWith(`${AGENT_WEBHOOK_PREFIX}/`);
+
+/**
  * The client API's path prefixes. `/v1` also covers `/v1beta*` and `/v1internal`; `/chat/completions`, `/completions`
  * and `/responses` are the unprefixed aliases of the `/v1` routes (not in Go, see Models' handlers/openai/routes.ts);
- * `/mcp` is the MCP endpoint ({@link MCP_PATH}); the toolkits' CIMD document is {@link TOOLKIT_OAUTH_CLIENT_PATH}.
+ * `/mcp` is the MCP endpoint ({@link MCP_PATH}); the toolkits' CIMD document is {@link TOOLKIT_OAUTH_CLIENT_PATH}; hosted
+ * agents' webhook triggers are under {@link AGENT_WEBHOOK_PREFIX}.
  */
 export const CLIENT_API_PREFIXES = [
   "/v1",
@@ -34,6 +50,7 @@ export const CLIENT_API_PREFIXES = [
   "/responses",
   MCP_PATH,
   TOOLKIT_OAUTH_CLIENT_PATH,
+  AGENT_WEBHOOK_PREFIX,
 ] as const;
 
 /**

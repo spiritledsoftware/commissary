@@ -20,7 +20,7 @@ export {
   uncountRequest,
 } from "./meter.ts";
 
-export { limitClientRate, RATE_LIMITED } from "./rate-limit.ts";
+export { limitClientRate, limitWebhookAttempts, RATE_LIMITED } from "./rate-limit.ts";
 
 export { scheduledTasks } from "./scheduled-tasks.ts";
 

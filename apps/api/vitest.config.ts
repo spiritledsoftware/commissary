@@ -69,6 +69,8 @@ const worker = (bindings: Record<string, string>, hosted: boolean) =>
         SANDBOX_SESSION: { className: "SandboxSession", useSQLite: true },
         // The agent runs (#227): the API Worker's own class, as deployed.
         AGENT_RUN: { className: "AgentRun", useSQLite: true },
+        // The schedule triggers (#231): the API Worker's own class, as deployed.
+        AGENT_SCHEDULE: { className: "AgentSchedule", useSQLite: true },
       },
       kvNamespaces: hosted ? ["CACHE", "OAUTH_KV"] : ["CACHE"],
       d1Databases: ["USAGE"],

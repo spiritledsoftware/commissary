@@ -41,9 +41,9 @@ export const authenticateClient = (
 
 /**
  * The identity of an agent run of `org` (#227), whose principal the API Worker's run gateway resolved from the org's
- * ControlPlane (never from the request). On Commissary Cloud the org, the run's starter and the member a private
- * agent's run acts as must be in good standing, as a key's person must (403 `Suspended`, `standing.ts`): a suspended
- * starter's runs, of shared agents too, are refused at once.
+ * ControlPlane (never from the request). On Commissary Cloud the org, the run's starter (if anyone started it) and the
+ * member a private agent's run acts as must be in good standing, as a key's person must (403 `Suspended`,
+ * `standing.ts`): a suspended starter's runs, of shared agents too, are refused at once.
  */
 export const authenticateRun = (
   principal: RunPrincipal,

@@ -2,7 +2,12 @@
 // with the Agents part the way a Worker composes it (`composeControlPlane`), the Platform registry and SessionState, on
 // real SQLite storage. Agents' tests depend on no other area and on no app.
 import { composeControlPlane } from "@commissary/state";
-import { type AgentRunEnv, AgentRunObject, type RunGateway } from "../src/api.ts";
+import {
+  type AgentRunEnv,
+  AgentRunObject,
+  AgentScheduleObject,
+  type RunGateway,
+} from "../src/api.ts";
 import { AgentsPart } from "../src/state.ts";
 
 export { Platform, SessionState } from "@commissary/state";
@@ -25,6 +30,9 @@ export class AgentRun extends AgentRunObject {
     super(ctx, env, { gateway: () => NO_CLIENT_API });
   }
 }
+
+/** The schedule triggers' object (`AGENT_SCHEDULE`, #231), as the API Worker defines it. */
+export class AgentSchedule extends AgentScheduleObject {}
 
 export default {
   fetch: () => new Response("Agents' test Worker serves no requests", { status: 404 }),

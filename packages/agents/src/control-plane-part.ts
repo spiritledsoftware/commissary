@@ -1,4 +1,5 @@
 import { RpcTarget } from "cloudflare:workers";
+import { Clock } from "effect";
 import { accessTo, isFullAccess, roleAtLeast, type Scope, type Viewer } from "@commissary/auth";
 import type {
   AgentGrantBody,
@@ -18,6 +19,15 @@ import type { GrantSubject } from "@commissary/contract/grants";
 import { type ControlPlanePart, normalizedToolScope, type OrgCore } from "@commissary/state";
 import type { SpendAgent, SpendCredential } from "@commissary/state/spend";
 import type { RunState, RunsList, RunView, TriggerKind } from "@commissary/contract/agent-runs";
+import type {
+  ConfiguredTriggerKind,
+  CreatedTrigger,
+  CreateTrigger,
+  RemovedTrigger,
+  TriggersList,
+  TriggerView,
+  UpdateTrigger,
+} from "@commissary/contract/agent-triggers";
 import { definitionRefusal } from "./agents/definition.ts";
 import {
   AGENTS_TABLES,
@@ -35,6 +45,19 @@ import {
   type StartedRunRecord,
 } from "./runs/runs.ts";
 import { RunStore } from "./runs/store.ts";
+import { TriggerStore } from "./triggers/store.ts";
+import {
+  type ScheduleArming,
+  type ScheduleFired,
+  type TriggerExport,
+  type TriggerRequest,
+  Triggers,
+  type TriggersRequest,
+  type TriggersResult,
+  type WebhookCheck,
+  type WebhookRun,
+} from "./triggers/triggers.ts";
+import type { WebhookProof } from "./triggers/webhook.ts";
 
 /** Why a call of the part was refused; the routes answer each with its status. */
 export type AgentsErrorCode =
@@ -81,7 +104,9 @@ export type ExportedSubject =
   | { readonly member: string }
   | { readonly team: string };
 
-/** An agent in the org export (`exportSection`): its definition, and a shared agent's watchers and grants. */
+/**
+ * An agent in the org export (`exportSection`): its definition, its triggers, and a shared agent's watchers and grants.
+ */
 export interface AgentExport {
   readonly name: string;
   readonly description: string;
@@ -91,6 +116,7 @@ export interface AgentExport {
   readonly tool_scope: ToolScope;
   readonly enabled: boolean;
   readonly private: boolean;
+  readonly triggers: ReadonlyArray<TriggerExport>;
   readonly watchers?: ReadonlyArray<ExportedSubject>;
   readonly grants?: ReadonlyArray<ExportedSubject>;
   readonly created_at: string;
@@ -138,32 +164,58 @@ const trimmedSubject = (subject: GrantSubject): GrantSubject =>
  * Who may do what follows `@commissary/auth`'s ownership rules: a private agent is its member's, and an org admin only
  * sees that it exists (its name and member) and may disable or remove it; a shared agent is for org admins, and members
  * use it through grants. The org's `privateAgents` setting is read on every use: while it is off a private agent cannot
- * be created and none is served, but none is deleted. Methods exchange plain data only.
+ * be created and none is served, but none is deleted. It keeps the triggers configured on agents (#231,
+ * `triggers/`): schedules and webhooks, which start runs a private agent's member or no one starts. Methods exchange
+ * plain data only.
  */
 export class AgentsPart extends RpcTarget implements ControlPlanePart {
   readonly #ctx: DurableObjectState;
   readonly #core: OrgCore;
   readonly #store: AgentStore;
   readonly #runs: Runs;
+  readonly #triggers: Triggers;
+  /** What the part reads the time from: the live clock, or a test's (`useClock`). */
+  #clock: Clock.Clock = Clock.Clock.defaultValue();
 
   constructor(ctx: DurableObjectState, core: OrgCore) {
     super();
     this.#ctx = ctx;
     this.#core = core;
     this.#store = new AgentStore(ctx.storage.sql);
-    this.#runs = new Runs(new RunStore(ctx.storage.sql), this.#store, core, (agent, member) =>
-      this.#reaches(agent, member),
+    const now = () => this.#clock.currentTimeMillisUnsafe();
+
+    this.#runs = new Runs(
+      new RunStore(ctx.storage.sql),
+      this.#store,
+      core,
+      (agent, member) => this.#reaches(agent, member),
+      now,
     );
+    this.#triggers = new Triggers(
+      new TriggerStore(ctx.storage.sql, core.secrets),
+      this.#store,
+      this.#runs,
+      core,
+      now,
+    );
+  }
+
+  /**
+   * Makes the part read the time from `clock` (a test's `TestClock`) instead of the live clock, for its runs and its
+   * triggers (schedules' ticks, signatures' timestamps). In the object's isolate only (`runInDurableObject`): a clock is not data an RPC can carry.
+   */
+  useClock(clock: Clock.Clock): void {
+    this.#clock = clock;
   }
 
   // --- the org-wide base's calls (`ControlPlanePart`, `@commissary/state`) ------------------------------------
 
-  /** Agents stores no secret. */
+  /** Webhook triggers' secrets (#231) were sealed from the start: nothing was stored in plain text. */
   sealPlaintext(): number {
     return 0;
   }
 
-  /** Nothing is due: agents have no schedule yet (runs and triggers come later). */
+  /** Nothing is due here: a schedule's ticks are its own object's alarms (`triggers/schedule-object.ts`). */
   async alarm(): Promise<number | null> {
     return null;
   }
@@ -181,8 +233,10 @@ export class AgentsPart extends RpcTarget implements ControlPlanePart {
   async memberLeft(member: string): Promise<void> {
     this.#core.transaction(() => {
       for (const agent of this.#store.agents())
-        if (agent.owner === member) this.#store.delete(agent.id);
-        else
+        if (agent.owner === member) {
+          this.#store.delete(agent.id);
+          this.#triggers.forgetAgent(agent.id);
+        } else
           this.#dropWatchers(
             agent,
             (watcher) => watcher.kind === "member" && watcher.id === member,
@@ -420,7 +474,7 @@ export class AgentsPart extends RpcTarget implements ControlPlanePart {
     return ok(access === "full" ? this.#view(updated) : this.#limitedView(updated));
   }
 
-  /** Deletes an agent at once (ADR 0027), with its grants and, for a shared agent, its Spend limits. */
+  /** Deletes an agent at once (ADR 0027), with its grants, its triggers and, for a shared agent, its Spend limits. */
   removeAgent(viewer: Viewer, id: string, revision: number): AgentsResult<RemovedAgent> {
     const agent = this.#store.agent(id);
 
@@ -431,6 +485,7 @@ export class AgentsPart extends RpcTarget implements ControlPlanePart {
 
     this.#core.transaction(() => {
       this.#store.delete(id);
+      this.#triggers.forgetAgent(id);
 
       if (agent.owner === undefined) this.#core.spend.forget("agent", id);
     });
@@ -610,9 +665,88 @@ export class AgentsPart extends RpcTarget implements ControlPlanePart {
     this.#runs.stateChanged(runId, state);
   }
 
+  /** Ends the run `runId` a trigger started, whose object could not be reached to start it. */
+  abandonTriggeredRun(runId: string): void {
+    this.#runs.abandonTriggered(runId);
+  }
+
+  // --- triggers (#231) -----------------------------------------------------------------------------------------------
+  // A webhook's URL starts at `origin`, where the deployment's client API answers (the route knows it).
+
+  /** The triggers of the agent the request names, which its viewer manages, oldest first. */
+  listTriggers(request: TriggersRequest): TriggersResult<TriggersList> {
+    return this.#triggers.list(request);
+  }
+
+  /** Adds a trigger to the agent the request names; a webhook's secret is in the answer, and only there. */
+  createTrigger(request: TriggersRequest, input: CreateTrigger): TriggersResult<CreatedTrigger> {
+    return this.#triggers.create(request, input);
+  }
+
+  /** Changes what `input` names of a trigger at its revision (enabling and disabling it among them). */
+  updateTrigger(request: TriggerRequest, input: UpdateTrigger): TriggersResult<TriggerView> {
+    return this.#triggers.update(request, input);
+  }
+
+  /** Removes a trigger; answers its kind too (a schedule's object is the route's to delete). */
+  removeTrigger(
+    request: TriggerRequest,
+  ): TriggersResult<RemovedTrigger & { readonly kind: ConfiguredTriggerKind }> {
+    return this.#triggers.remove(request);
+  }
+
+  /** A webhook's new secret, shown once. */
+  rotateTriggerSecret(request: TriggerRequest): TriggersResult<CreatedTrigger> {
+    return this.#triggers.rotateSecret(request);
+  }
+
+  /** A schedule's next tick from now, which its object's alarm is set to (`null` while it is disabled). */
+  armSchedule(triggerId: string): ScheduleArming {
+    return this.#triggers.arm(triggerId);
+  }
+
+  /** Fires a schedule's tick (its object's alarm): its run, once per tick, and the next tick. */
+  fireSchedule(triggerId: string, tick: number): ScheduleFired {
+    return this.#triggers.fire(triggerId, tick);
+  }
+
+  /** Whether a delivery of `body` to the webhook `triggerId` proves it holds its secret, and its input template. */
+  verifyWebhook(triggerId: string, proof: WebhookProof, body: Uint8Array): WebhookCheck {
+    return this.#triggers.verifyWebhook(triggerId, proof, body);
+  }
+
+  /** Starts the run of a proven delivery to the webhook `triggerId`, once per `idempotencyKey`. */
+  startWebhookRun(triggerId: string, idempotencyKey: string): RunsResult<WebhookRun> {
+    return this.#triggers.startWebhookRun(triggerId, idempotencyKey);
+  }
+
+  /**
+   * Up to `limit` schedules whose object may exist, removed ones' included, for the org's deletion
+   * (`org-deletion.ts`), which deletes every one before the tables go.
+   */
+  scheduleObjectsPage(limit: number): ReadonlyArray<string> {
+    return this.#triggers.scheduleObjects(limit);
+  }
+
+  /**
+   * Up to `limit` schedules that are gone (removed, or with their agent or its member) but whose object may still
+   * exist, for the sweep that deletes them (`sweepRetiredSchedules`).
+   */
+  retiredSchedules(limit: number): ReadonlyArray<string> {
+    return this.#triggers.retiredSchedules(limit);
+  }
+
+  /** Forgets the schedules `ids`, whose objects were deleted. */
+  forgetScheduleObjects(ids: ReadonlyArray<string>): void {
+    this.#triggers.forgetScheduleObjects(ids);
+  }
+
   // --- the org export ------------------------------------------------------------------------------------------------
 
-  /** The agents `viewer` manages, for the org export: definitions, and a shared agent's watchers and grants. */
+  /**
+   * The agents `viewer` manages, for the org export: definitions, their triggers (never a secret), and a shared agent's
+   * watchers and grants.
+   */
   exportAgents(viewer: Scope): ReadonlyArray<AgentExport> {
     const grants = this.#store.grants();
 
@@ -628,6 +762,7 @@ export class AgentsPart extends RpcTarget implements ControlPlanePart {
         tool_scope: agent.toolScope,
         enabled: agent.enabled,
         private: agent.owner !== undefined,
+        triggers: this.#triggers.exported(agent.id),
         ...(agent.owner === undefined
           ? {
               watchers: agent.watchers.flatMap((watcher) => this.#exportedSubject(watcher) ?? []),

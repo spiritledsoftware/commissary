@@ -21,6 +21,8 @@ export default defineConfig({
           PLATFORM: { className: "Platform", useSQLite: true },
           // The agent runs (#227, `AgentsBindings`), with no client API behind them (test/worker.ts).
           AGENT_RUN: { className: "AgentRun", useSQLite: true },
+          // The schedule triggers' ticks (#231, `AgentsBindings`), which start runs of the class above.
+          AGENT_SCHEDULE: { className: "AgentSchedule", useSQLite: true },
         },
         // Dynamic Workers (ADR 0043): bound on every deployment, the Agents area's presence (#226).
         workerLoaders: { LOADER: {} },
@@ -31,6 +33,8 @@ export default defineConfig({
           PLATFORM_ADMIN_SERVICE_TOKENS: "",
           // Fixed test key (deployed: an Alchemy `Random`, alchemy.run.ts), as the other areas' tests bind it.
           SECRETS_KEY: "commissary-test-secrets-key-0123456789abcdef0123456789abcdef012345",
+          // The API host (`AgentsBindings`), where webhooks' URLs point; the part's tests hand it their own origin.
+          API_DOMAIN: "api.example.com",
         },
       },
     }),

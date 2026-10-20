@@ -13,12 +13,13 @@
 //
 // The agent runs (#227) are the API Worker's `AgentRun` and run gateway, exported here as the API Worker exports them: a
 // run's model and tool calls go through the API Worker's handler over this Worker's `ctx.exports`, with its bindings.
+// The schedule triggers' `AgentSchedule` (#231) is the API Worker's too.
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { api } from "@commissary/api";
 import type { SignedInPerson, SignInService } from "@commissary/auth";
 import app from "../src/index.ts";
 
-export { AgentRun, AgentRunGateway } from "@commissary/api";
+export { AgentRun, AgentRunGateway, AgentSchedule } from "@commissary/api";
 
 export {
   ControlPlane,

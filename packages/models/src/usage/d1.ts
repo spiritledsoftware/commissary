@@ -118,8 +118,8 @@ export interface UsageRow {
   approval: ToolCallApproval | null;
   /**
    * The agent run a record comes from (`migrations/usage/0011_usage_agent_runs.sql`, #227): its agent, the run and its
-   * starter (`member:<id>`; child runs, #229, and runs no one started, #231, will add theirs); `null` on any other
-   * record.
+   * starter (`member:<id>`; child runs, #229, will add theirs), `null` for a run no one started (a shared agent's
+   * trigger, #231); `null` on any other record.
    */
   agent_id: string | null;
   run_id: string | null;
@@ -277,7 +277,7 @@ export const recordToRow = (record: UsageRecord): ModelColumns => {
     unpriced: record.cost?.unpriced === true ? 1 : 0,
     agent_id: record.run?.agentId ?? null,
     run_id: record.run?.runId ?? null,
-    starter: record.run === undefined ? null : (record.run.starter ?? ""),
+    starter: record.run?.starter ?? null,
   };
 };
 
