@@ -16,7 +16,12 @@
  * as a row that sets nothing (a tombstone), so its revision never goes back and a write based on an earlier one is
  * refused.
  */
-import type { CredentialsAccepted, SandboxNetwork, ToolClass } from "@commissary/contract/tools";
+import type {
+  CredentialSettings,
+  CredentialsAccepted,
+  SandboxNetwork,
+  ToolClass,
+} from "@commissary/contract/tools";
 import type { Sealer } from "@commissary/state";
 import type { Schema } from "effect";
 import type { StoredApprovalRules } from "../approvals/rules.ts";
@@ -64,7 +69,7 @@ const SCHEMA = [
      id TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL, source TEXT NOT NULL, owner TEXT NOT NULL,
      accepts TEXT NOT NULL, revision INTEGER NOT NULL, created_at INTEGER NOT NULL, created_by TEXT NOT NULL,
      updated_at INTEGER NOT NULL, updated_by TEXT NOT NULL, list_built_at INTEGER, list_error TEXT, price_micros INTEGER,
-     approval_rules TEXT, base_url TEXT, uploaded INTEGER
+     approval_rules TEXT, base_url TEXT, uploaded INTEGER, credential_settings TEXT
    )`,
   `CREATE TABLE IF NOT EXISTS toolkit_credentials (
      toolkit_id TEXT NOT NULL, owner TEXT NOT NULL, kind TEXT NOT NULL, param TEXT NOT NULL, secret TEXT NOT NULL,
@@ -110,6 +115,8 @@ const ADDED_COLUMNS: ReadonlyArray<readonly [table: string, column: string, type
   ["tool_overrides", "shown", "INTEGER"],
   // GraphQL toolkits (#204).
   ["toolkit_tools", "graphql", "TEXT"],
+  // The credential types of #206: a toolkit from before has no settings.
+  ["toolkits", "credential_settings", "TEXT"],
 ];
 
 /** A credential without its secret. */
@@ -204,6 +211,7 @@ interface ToolkitRow {
   approval_rules: string | null;
   base_url: string | null;
   uploaded: number | null;
+  credential_settings: string | null;
 }
 
 interface CredentialRow {
@@ -267,6 +275,10 @@ const parseRules = (text: string | null): StoredApprovalRules | undefined =>
   // SAFETY: the column holds the JSON of the cleaned rules this store wrote.
   text === null ? undefined : (JSON.parse(text) as StoredApprovalRules);
 
+const parseSettings = (text: string | null): CredentialSettings | undefined =>
+  // SAFETY: the column holds the JSON of decoded `CredentialSettings` this store wrote.
+  text === null ? undefined : (JSON.parse(text) as CredentialSettings);
+
 const parseNetwork = (text: string | null): SandboxNetwork | undefined =>
   // SAFETY: the column holds the JSON of a decoded, normalized `SandboxNetwork` this store wrote.
   text === null ? undefined : (JSON.parse(text) as SandboxNetwork);
@@ -299,6 +311,7 @@ const toolkitOf = (row: ToolkitRow): StoredToolkit => ({
   listError: orUndefined(row.list_error),
   priceMicros: orUndefined(row.price_micros),
   approvalRules: parseRules(row.approval_rules),
+  credentialSettings: parseSettings(row.credential_settings),
 });
 
 const credentialOf = (row: CredentialRow): ToolkitCredential => ({
@@ -334,7 +347,7 @@ export const refreshAtOf = (secret: StoredSecret, now: number): number | undefin
 };
 
 const expiresAtOf = (secret: StoredSecret): number | undefined =>
-  secret.kind === "oauth" || secret.kind === "client_credentials" ? secret.expires_at : undefined;
+  "expires_at" in secret ? secret.expires_at : undefined;
 
 const toolOf = (row: ToolRow): StoredTool => ({
   toolkitId: row.toolkit_id,
@@ -372,6 +385,10 @@ const overrideOf = (row: OverrideRow): StoredOverride => ({
     row.price_micros === null &&
     row.shown !== 1,
 });
+
+/** Settings as the `credential_settings` column holds them: none, or their JSON. */
+const settingsText = (settings: CredentialSettings | undefined): string | null =>
+  settings === undefined ? null : JSON.stringify(settings);
 
 /** Where a credential's secret is sealed: a value opens only where it was written. */
 const secretContext = (toolkitId: string, owner: string): string =>
@@ -476,8 +493,8 @@ export class ToolkitStore {
   ): void {
     this.#sql.exec(
       `INSERT INTO toolkits (id, kind, name, source, owner, accepts, revision, created_at, created_by, updated_at,
-         updated_by, list_built_at, list_error, base_url, uploaded)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)`,
+         updated_by, list_built_at, list_error, base_url, uploaded, credential_settings)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?)`,
       toolkit.id,
       toolkit.kind,
       toolkit.name,
@@ -491,11 +508,13 @@ export class ToolkitStore {
       toolkit.updatedBy,
       toolkit.baseUrl ?? null,
       toolkit.uploaded ? 1 : null,
+      settingsText(toolkit.credentialSettings),
     );
   }
 
   /**
-   * Renames a toolkit, changes what it accepts, its price, its approval rules or its base URL, moving its revision on.
+   * Renames a toolkit, changes what it accepts, its price, its approval rules, its base URL or its credential settings,
+   * moving its revision on.
    */
   updateToolkit(
     id: string,
@@ -505,19 +524,21 @@ export class ToolkitStore {
       readonly priceMicros: number | undefined;
       readonly approvalRules: StoredApprovalRules | undefined;
       readonly baseUrl: string | undefined;
+      readonly credentialSettings: CredentialSettings | undefined;
     },
     by: string,
     now: number,
   ): void {
     this.#sql.exec(
       `UPDATE toolkits SET name = ?, accepts = ?, price_micros = ?, approval_rules = ?, base_url = ?,
-         revision = revision + 1, updated_at = ?, updated_by = ?
+         credential_settings = ?, revision = revision + 1, updated_at = ?, updated_by = ?
        WHERE id = ?`,
       change.name,
       change.accepts,
       change.priceMicros ?? null,
       change.approvalRules === undefined ? null : JSON.stringify(change.approvalRules),
       change.baseUrl ?? null,
+      settingsText(change.credentialSettings),
       now,
       by,
       id,

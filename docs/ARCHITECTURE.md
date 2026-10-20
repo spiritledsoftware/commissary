@@ -3286,8 +3286,8 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
 - **Credentials**: a toolkit holds at most one shared credential and one private credential per member, connected and
   removed under `/toolkits/:id/credentials/{shared,private}`. A static secret (none, a bearer token, an API key in a
   named header or query parameter, basic auth; `tools/toolkits/secret.ts`, a header the MCP client sets itself is
-  refused), an OAuth 2 client credentials grant (a shared credential only), or the tokens of an OAuth 2 sign-in, which
-  is signed in to rather than connected (OAuth 2 sign-in, below). The secret is sealed with the org's data key for its
+  refused), an OAuth 2 client credentials grant (a shared credential only), the tokens of an OAuth 2 sign-in, which
+  is signed in to rather than connected (OAuth 2 sign-in, below), or one of the other credential types (below, #206). The secret is sealed with the org's data key for its
   row (`toolkit_credentials/<toolkit>/<owner>`) and never answered; views show the kind and the header or parameter
   name. Connecting a shared credential (`PUT /toolkits/:id/credentials/shared`, or adding an org toolkit with one) names
   who may use it (`subject`, as a grant names it; `422 invalid` without one, or for a member or team the org does not
@@ -3376,6 +3376,51 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
     message and `path`: `authorize_url`, `token_url`, `credential.token_url` when adding a toolkit) and on use, and
     those metadata names before Commissary fetches them or sends the browser there (`422`, `path`: the metadata's
     field, e.g. `token_endpoint`). Other failures are `502 sign_in_failed` with a short message that quotes no body.
+- **The other credential types** (#206; `tools/signing/`, `tools/toolkits/credential-settings.ts`): what a credential
+  holds is its secret; how it is used is the toolkit's **credential settings** (`credential_settings`, a JSON column on
+  `toolkits`, set by the toolkit's managers on adding it or with `PATCH` (`null` clears it), shown to whoever reads the
+  toolkit and kept in its export; nothing in them is secret), so every member's private credential is used the same
+  way. Each type is a shared or a private credential; connecting one whose settings are missing, a compound one lacking
+  a field the template names, or a JWT exchanged at a token endpoint without its issuer is `422 invalid`, and a
+  credential whose settings are removed later is not used (a call says why). Every URL in the settings passes the
+  outbound guard on save and on use. The types are integrations.sh's, under its names, so catalog entries map to them:
+  - **Signed per request**: `oauth1` (`consumer_key`, `consumer_secret`, `token`, `token_secret`; settings `oauth1:
+    { signature_method?: HMAC-SHA1 | HMAC-SHA256, realm? }`), `tba` (NetSuite token-based authentication: OAuth 1.0a
+    with HMAC-SHA256 and the account as realm; `consumer_key`, `consumer_secret`, `token_id`, `token_secret`; settings
+    `tba: { account_id }`) and `aws_sigv4` (`access_key_id`, `secret_access_key`, `session_token?`; settings
+    `aws_sigv4: { region, service }`). Each request is signed as it is sent over its method, its URL as sent and its
+    body: `signingClient` wraps the client of an MCP call, listing or session `DELETE` and of an HTTP-API call, so each
+    hop of a same-origin redirect is signed anew. OAuth 1.0a signs a form body's parameters. SigV4 sends the path and
+    query percent-encoded as RFC 3986 says (a query's space `%20`, a plus `%2B`, which AWS reads as a plus), so what
+    AWS reads is what was signed, and signs the path normalized and encoded once more (S3's as it is sent), as AWS's
+    test suite does; it hashes the payload, encoding a multipart body first (a raw or streamed body, which toolkits'
+    calls do not send, only S3 takes, as `UNSIGNED-PAYLOAD`). HMAC is `node:crypto`'s.
+  - **Minted** like client credentials (a token on first use, kept sealed with the credential until a minute before it
+    expires, minted again once on a `401`, a refusal marking it `needs_sign_in` until it is connected again; the token
+    is kept with a fingerprint of the settings it was minted with, so changing them mints a new one): `jwt`
+    (`private_key`, `key_id?`, `issuer?`, `subject?`, `client_id?`, `client_secret?`; settings `jwt: { algorithm (RS,
+    PS, HS 256-512, ES256, ES384), token_url?, audience?, scope?, lifetime_seconds? (120 to 3600, the default),
+    claims? }`; a JWT signed with WebCrypto from a PEM key (PKCS#8, PKCS#1 RSA or SEC1 EC) or an HMAC secret,
+    exchanged at `token_url` with RFC 7523's JWT bearer grant (the JWT names its `iss`; the request sends `scope`,
+    which the JWT also carries as Google asks, and the client's id and secret in its body when the credential names
+    them, as Box asks), else sent itself as the bearer token), `app` (a GitHub App: `app_id`, `private_key`,
+    `installation_id`; settings `app: { api_url? }` for GitHub Enterprise; an RS256 app JWT exchanged for an
+    installation token) and `token_exchange` (RFC 8693, which integrations.sh has no type for: `subject_token`,
+    `client_id?`, `client_secret?` (HTTP Basic, each part form-encoded); settings `token_exchange: { token_url,
+    subject_token_type?, requested_token_type?, audience?, resource?, scope? }`; the answer must name its
+    `issued_token_type`). The token is sent as a bearer token, as an OAuth 2 one is.
+  - **Compound** (`compound`, `fields`: named secret values; settings `compound: { headers?, query?, base_url? }`):
+    templates that place the fields, `{field}` standing for one (integrations.sh's header patterns), e.g. a header
+    `DD-API-KEY: {api_key}` beside `DD-APPLICATION-KEY: {app_key}`, or a per-tenant `base_url`
+    (`https://{subdomain}.example.com/api`, an OpenAPI toolkit's only, each field percent-encoded, guarded on use).
+    Header names are checked as a static secret's are.
+  - **OAuth 1.0a sign-in** (three-legged, `tools/oauth/oauth1.ts`): a toolkit's OAuth app with a `request_token_url`
+    is an OAuth 1.0a consumer (`client_id` the consumer key, `client_secret` required; `authorize_url` and `token_url`
+    the provider's authorize and access token URLs). Signing in gets temporary credentials with `oauth_callback` the
+    deployment's callback URL carrying the sign-in's `state` (OAuth 1.0a has no state parameter, and no PKCE), keeps
+    them sealed in the sign-in's flow, sends the browser to authorize them, and on the callback, whose `oauth_token`
+    must be the sign-in's, trades the `oauth_verifier` for the token credentials, which become an `oauth1` credential
+    with the app's consumer, under the callback's rules above.
   - **Commissary's CIMD document** (`GET /oauth/toolkits/client.json`, `TOOLKIT_OAUTH_CLIENT_PATH`): a client API
     path (`CLIENT_API_PREFIXES`), served by the API Worker (`ClientMetadataRoutes`) without an API key (the gate lets
     this path through), on the API host (`https://<API host>/oauth/toolkits/client.json`, the `client_id`) or, on a

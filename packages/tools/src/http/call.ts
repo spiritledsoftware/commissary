@@ -6,7 +6,8 @@
  * - **Credentials** ({@link signRequest}): a source that names security schemes decides where the credential goes (an
  *   API key in a header, the query or a cookie, an HTTP bearer or basic sign-in, an OAuth 2 or OpenID Connect token as
  *   a bearer); one that names none gets the credential as it was connected (a bearer token, a named header or query
- *   parameter, basic auth).
+ *   parameter, basic auth). The types of #206 go their own way: a compound credential where the toolkit's template
+ *   puts it, an OAuth 1.0a or AWS SigV4 signature on each request as it is sent (`signing/sign.ts`).
  * - **The outbound guard** ({@link withOutboundGuard}): every request goes through the guard's `HttpClient` with the
  *   caller's policy. A call follows only same-origin redirects itself, so a credential in a named header, a cookie or
  *   the query never reaches another origin; a document fetch carries no credential and lets the guard follow redirects,
@@ -36,7 +37,8 @@ import {
   outboundRefusalOf,
   releaseResponseBody,
 } from "@commissary/core";
-import type { UpstreamSecret } from "../toolkits/secret.ts";
+import { signingClient } from "../signing/sign.ts";
+import { type StaticSecret, signsEachRequest, type UpstreamSecret } from "../toolkits/secret.ts";
 import { TOOL_CALL_TIMEOUT } from "../mcp/client.ts";
 import { JSON_MEDIA_TYPE } from "./shared.ts";
 
@@ -85,7 +87,7 @@ export type SecurityScheme =
 export type Security = ReadonlyArray<ReadonlyArray<SecurityScheme>> | undefined;
 
 /** The one secret value a credential carries (a token or a key), if it carries one. */
-const secretValue = (secret: UpstreamSecret): string | undefined => {
+const secretValue = (secret: StaticSecret): string | undefined => {
   switch (secret.kind) {
     case "bearer":
       return secret.token;
@@ -118,7 +120,7 @@ const bearerTokenScheme = (scheme: SecurityScheme): boolean =>
  */
 const placementFor = (
   scheme: SecurityScheme,
-  secret: UpstreamSecret,
+  secret: StaticSecret,
   strict: boolean,
 ): Placement | undefined => {
   if (scheme.type === "http" && scheme.scheme === "basic")
@@ -147,7 +149,7 @@ const placementFor = (
 };
 
 /** The credential as it was connected, for a source that names no scheme it fits. */
-const connectedPlacement = (secret: UpstreamSecret): ReadonlyArray<Placement> => {
+const connectedPlacement = (secret: StaticSecret): ReadonlyArray<Placement> => {
   switch (secret.kind) {
     case "none":
       return [];
@@ -168,6 +170,15 @@ const connectedPlacement = (secret: UpstreamSecret): ReadonlyArray<Placement> =>
  * it was connected, as a source with no schemes gets it (a document's schemes are sometimes wrong or incomplete).
  */
 const placementsOf = (secret: UpstreamSecret, security: Security): ReadonlyArray<Placement> => {
+  // A compound credential goes where the toolkit's template puts it; a signature is the signing client's.
+  if (secret.kind === "compound")
+    return [
+      ...secret.headers.map(([name, value]) => ({ in: "header" as const, name, value })),
+      ...secret.query.map(([name, value]) => ({ in: "query" as const, name, value })),
+    ];
+
+  if (signsEachRequest(secret)) return [];
+
   if (security === undefined || secret.kind === "none") return connectedPlacement(secret);
 
   for (const strict of [true, false])
@@ -181,7 +192,10 @@ const placementsOf = (secret: UpstreamSecret, security: Security): ReadonlyArray
   return security.some((alternative) => alternative.length === 0) ? [] : connectedPlacement(secret);
 };
 
-/** `request` signed in with `secret` as `security` says (see {@link placementsOf}). */
+/**
+ * `request` signed in with `secret` as `security` says (see {@link placementsOf}). A secret that signs each request
+ * (OAuth 1.0a, AWS SigV4) signs it through {@link signingClient} when it is sent.
+ */
 export const signRequest = (
   request: HttpClientRequest.HttpClientRequest,
   secret: UpstreamSecret,
@@ -360,7 +374,7 @@ export const requestDocument = (
   what: string,
 ): Effect.Effect<string, HttpCallError, HttpClient.HttpClient> =>
   Effect.gen(function* () {
-    const client = yield* HttpClient.HttpClient;
+    const client = signingClient(yield* HttpClient.HttpClient, secret);
     const onError = transportError(what);
     const request = signRequest(requestOf(call), secret, undefined);
 
@@ -642,7 +656,7 @@ export const callHttp = (
   { timeout = TOOL_CALL_TIMEOUT, reading }: CallOptions = {},
 ): Effect.Effect<HttpAnswer, HttpCallError, HttpClient.HttpClient> =>
   Effect.gen(function* () {
-    const client = yield* HttpClient.HttpClient;
+    const client = signingClient(yield* HttpClient.HttpClient, secret);
     const request = signRequest(requestOf(call), secret, security);
 
     const response = yield* executeSameOriginRedirects(client, request).pipe(

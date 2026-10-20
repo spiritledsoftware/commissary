@@ -18,7 +18,7 @@ import type { HttpClient } from "effect/http";
 import type { ClientCredentialsSecret, OAuthSecret } from "../toolkits/secret.ts";
 import { discover } from "./discovery.ts";
 import { guardedUrl, OAuthError } from "./http.ts";
-import type { OAuthApp, RegisteredOAuthClient, SignInFlow } from "./store.ts";
+import type { OAuth2SignInFlow, OAuthApp, RegisteredOAuthClient } from "./store.ts";
 import {
   type ClientAuth,
   registerClient,
@@ -33,7 +33,7 @@ import type { ClientUrls } from "./urls.ts";
  * to send the browser, and what to ask for.
  */
 export interface PreparedSignIn {
-  readonly flow: Omit<SignInFlow, "verifier" | "subject" | "by">;
+  readonly flow: Omit<OAuth2SignInFlow, "verifier" | "subject" | "by">;
   readonly authorizationEndpoint: string;
   readonly scopes: ReadonlyArray<string>;
 }
@@ -132,7 +132,7 @@ export const prepareSignIn = Effect.fnUntraced(function* (input: {
 /** The URL the browser opens to sign in: the endpoint's own query kept, the request's parameters set. */
 export const authorizationUrl = (
   endpoint: string,
-  flow: Pick<SignInFlow, "clientId" | "redirectUri" | "resource">,
+  flow: Pick<OAuth2SignInFlow, "clientId" | "redirectUri" | "resource">,
   state: string,
   challenge: string,
   scopes: ReadonlyArray<string>,
@@ -156,7 +156,7 @@ export const authorizationUrl = (
 
 /** The client a flow's token requests present, its secret from the store it was registered in. */
 export const tokenClient = (
-  flow: Pick<SignInFlow, "tokenEndpoint" | "clientId" | "auth">,
+  flow: Pick<OAuth2SignInFlow, "tokenEndpoint" | "clientId" | "auth">,
   clientSecret: string | undefined,
 ): TokenClient => ({
   tokenEndpoint: flow.tokenEndpoint,
@@ -167,7 +167,7 @@ export const tokenClient = (
 
 /** The authorization code exchange of a sign-in's callback: its tokens, as the credential keeps them. */
 export const exchangeCode = Effect.fnUntraced(function* (
-  flow: SignInFlow,
+  flow: OAuth2SignInFlow,
   clientSecret: string | undefined,
   code: string,
   now: number,

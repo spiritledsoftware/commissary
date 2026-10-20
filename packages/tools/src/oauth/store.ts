@@ -1,7 +1,8 @@
 /**
  * The OAuth 2 state of the org's toolkits (#202), in the ControlPlane's SQLite beside the toolkits (`toolkits/store.ts`):
  *
- * - each toolkit's own OAuth app (`toolkit_oauth_apps`), its client secret sealed with the org's data key for its row;
+ * - each toolkit's own OAuth app (`toolkit_oauth_apps`), its client secret sealed with the org's data key for its row
+ *   (an OAuth 1.0a consumer when it names a temporary credential request URL, #206);
  * - the client dynamic registration gave Commissary at a toolkit's authorization server (`toolkit_oauth_clients`), kept
  *   per toolkit with the issuer and redirect URI it was made for, so a changed authorization server registers again. A
  *   new registration is kept once a sign-in with it completed (it rides in the sign-in's flow until then), so a sign-in
@@ -40,7 +41,7 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS toolkit_oauth_apps (
      toolkit_id TEXT PRIMARY KEY, client_id TEXT NOT NULL, secret TEXT NOT NULL, authorize_url TEXT NOT NULL,
      token_url TEXT NOT NULL, scopes TEXT NOT NULL, issuer TEXT NOT NULL, updated_at INTEGER NOT NULL,
-     updated_by TEXT NOT NULL
+     updated_by TEXT NOT NULL, request_token_url TEXT
    )`,
   `CREATE TABLE IF NOT EXISTS toolkit_oauth_clients (
      toolkit_id TEXT PRIMARY KEY, issuer TEXT NOT NULL, redirect_uri TEXT NOT NULL, client_id TEXT NOT NULL,
@@ -63,6 +64,11 @@ export interface OAuthApp {
   readonly scopes: ReadonlyArray<string>;
   /** The authorization server's issuer, which a sign-in's answer must name (RFC 9207); undefined: not checked. */
   readonly issuer: string | undefined;
+  /**
+   * An OAuth 1.0a consumer's temporary credential request URL (#206): the app signs in with OAuth 1.0a then, its
+   * `authorizeUrl` the resource owner authorization URL and its `tokenUrl` the token request URL.
+   */
+  readonly requestTokenUrl?: string | undefined;
   readonly updatedAt: number;
   readonly updatedBy: string;
 }
@@ -79,8 +85,10 @@ export interface RegisteredOAuthClient {
 
 export type { ClientVia };
 
-/** What a sign-in needs at its callback. */
-export interface SignInFlow {
+/** What an OAuth 2 sign-in needs at its callback. */
+export interface OAuth2SignInFlow {
+  /** Absent in a flow kept before OAuth 1.0a sign-ins (#206). */
+  readonly kind?: "oauth2";
   readonly verifier: string;
   readonly redirectUri: string;
   readonly via: ClientVia;
@@ -100,6 +108,22 @@ export interface SignInFlow {
   /** A shared credential's subject, whose grant connecting it writes. */
   readonly subject: GrantSubject | undefined;
 }
+
+/**
+ * An OAuth 1.0a sign-in's flow (#206): the consumer (the toolkit's OAuth app) and its token request URL, and the
+ * temporary credentials, which the callback's `oauth_token` must name and which sign the token request.
+ */
+export interface OAuth1SignInFlow {
+  readonly kind: "oauth1";
+  readonly consumerKey: string;
+  readonly tokenRequestUrl: string;
+  readonly token: string;
+  readonly tokenSecret: string;
+  readonly by: string;
+  readonly subject: GrantSubject | undefined;
+}
+
+export type SignInFlow = OAuth2SignInFlow | OAuth1SignInFlow;
 
 export interface SignInSession {
   readonly state: string;
@@ -129,6 +153,7 @@ interface AppRow {
   issuer: string;
   updated_at: number;
   updated_by: string;
+  request_token_url: string | null;
 }
 
 interface ClientRow {
@@ -170,6 +195,15 @@ export class OAuthStore {
     this.#secrets = secrets;
 
     for (const statement of SCHEMA) sql.exec(statement);
+
+    // OAuth 1.0a apps (#206) came later: an app from before is an OAuth 2 one.
+    const appColumns = sql
+      .exec<{ name: string }>("PRAGMA table_info(toolkit_oauth_apps)")
+      .toArray()
+      .map((column) => column.name);
+
+    if (!appColumns.includes("request_token_url"))
+      sql.exec(`ALTER TABLE toolkit_oauth_apps ADD COLUMN request_token_url TEXT`);
   }
 
   #open(sealed: string, context: string): string | undefined {
@@ -198,6 +232,7 @@ export class OAuthStore {
           // SAFETY: the column holds the JSON array of strings this store wrote.
           scopes: JSON.parse(row.scopes) as ReadonlyArray<string>,
           issuer: row.issuer === "" ? undefined : row.issuer,
+          requestTokenUrl: row.request_token_url ?? undefined,
           updatedAt: row.updated_at,
           updatedBy: row.updated_by,
         };
@@ -206,8 +241,9 @@ export class OAuthStore {
   putApp(app: OAuthApp): void {
     this.#sql.exec(
       `INSERT OR REPLACE INTO toolkit_oauth_apps
-         (toolkit_id, client_id, secret, authorize_url, token_url, scopes, issuer, updated_at, updated_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (toolkit_id, client_id, secret, authorize_url, token_url, scopes, issuer, updated_at, updated_by,
+          request_token_url)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       app.toolkitId,
       app.clientId,
       this.#seal(app.clientSecret, appContext(app.toolkitId)),
@@ -217,6 +253,7 @@ export class OAuthStore {
       app.issuer ?? "",
       app.updatedAt,
       app.updatedBy,
+      app.requestTokenUrl ?? null,
     );
   }
 

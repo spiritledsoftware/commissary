@@ -31,6 +31,7 @@ import { ToolGrantBody } from "@commissary/contract/grants";
 import {
   AddToolkit,
   ConnectCredential,
+  type CredentialSettings,
   CredentialSlot,
   SetOAuthApp,
   SetToolOverride,
@@ -54,6 +55,7 @@ import { toolsControlPlane, ToolsEnv } from "../env.ts";
 import { MAX_SDL_BYTES } from "../graphql/schema.ts";
 import { MAX_DOCUMENT_BYTES } from "../http/call.ts";
 import { signInUrls } from "../oauth/urls.ts";
+import { templateAs } from "../signing/template.ts";
 import { defaultToolkitName } from "../toolkits/names.ts";
 
 const BASE = "/v9/management";
@@ -185,6 +187,37 @@ const checkedCredential = Effect.fnUntraced(function* (
   return { ...credential, token_url: yield* checkedUrl(credential.token_url, path) };
 });
 
+/**
+ * A toolkit's credential settings (#206) with their URLs checked by the outbound guard and normalised (`422` with the
+ * guard's message and `path`, e.g. `credential_settings.jwt.token_url`, ADR 0044): a JWT's and a token exchange's token
+ * endpoints, a GitHub App's API, and a compound template's base URL (with each field it names standing in as `x`).
+ */
+const checkedSettings = Effect.fnUntraced(function* (settings: CredentialSettings, prefix: string) {
+  const { jwt, app, token_exchange: exchange, compound } = settings;
+  const path = (field: string) => `${prefix}.${field}`;
+
+  if (compound?.base_url !== undefined)
+    yield* checkedUrl(templateAs(compound.base_url, "x"), path("compound.base_url"));
+
+  return {
+    ...settings,
+    ...(jwt?.token_url === undefined
+      ? {}
+      : { jwt: { ...jwt, token_url: yield* checkedUrl(jwt.token_url, path("jwt.token_url")) } }),
+    ...(app?.api_url === undefined
+      ? {}
+      : { app: { ...app, api_url: yield* checkedUrl(app.api_url, path("app.api_url")) } }),
+    ...(exchange === undefined
+      ? {}
+      : {
+          token_exchange: {
+            ...exchange,
+            token_url: yield* checkedUrl(exchange.token_url, path("token_exchange.token_url")),
+          },
+        }),
+  } satisfies CredentialSettings;
+});
+
 const list = Effect.gen(function* () {
   const viewer = yield* currentViewer;
 
@@ -254,6 +287,11 @@ const add = Effect.gen(function* () {
       ? undefined
       : yield* checkedCredential(input.credential, "credential.token_url");
 
+  const credentialSettings =
+    input.credential_settings === undefined
+      ? undefined
+      : yield* checkedSettings(input.credential_settings, "credential_settings");
+
   const policy = yield* CurrentOutboundPolicy;
   // A plain member only ever adds private toolkits; an org admin chooses.
   const isPrivate = input.private === true || !viewer.admin;
@@ -275,6 +313,7 @@ const add = Effect.gen(function* () {
         private: isPrivate,
         accepts: input.accepts ?? (isPrivate ? "private" : "shared"),
         credential,
+        credentialSettings,
       },
       principalId,
       policy,
@@ -291,11 +330,22 @@ const update = Effect.gen(function* () {
   const revision = yield* ifMatch;
   const input = yield* decode(UpdateToolkit);
 
-  // A base URL is checked here; `null` (clearing it) and its absence pass as they are.
-  const change =
-    input.base_url === undefined || input.base_url === null
-      ? input
-      : { ...input, base_url: (yield* checkedSource(input.base_url, "base_url")).toString() };
+  // A base URL and the credential settings' URLs are checked here; `null` (clearing them) and their absence pass as
+  // they are.
+  const change = {
+    ...input,
+    ...(input.base_url === undefined || input.base_url === null
+      ? {}
+      : { base_url: (yield* checkedSource(input.base_url, "base_url")).toString() }),
+    ...(input.credential_settings === undefined || input.credential_settings === null
+      ? {}
+      : {
+          credential_settings: yield* checkedSettings(
+            input.credential_settings,
+            "credential_settings",
+          ),
+        }),
+  };
 
   const policy = yield* CurrentOutboundPolicy;
 
@@ -415,6 +465,9 @@ const setOAuthApp = Effect.gen(function* () {
     ...input,
     authorize_url: yield* checkedUrl(input.authorize_url, "authorize_url"),
     token_url: yield* checkedUrl(input.token_url, "token_url"),
+    ...(input.request_token_url === undefined
+      ? {}
+      : { request_token_url: yield* checkedUrl(input.request_token_url, "request_token_url") }),
   };
 
   const result = yield* toolsControlPlane("setOAuthApp", (stub) =>
