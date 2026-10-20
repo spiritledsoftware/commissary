@@ -246,7 +246,10 @@ describe("400s", () => {
     [`since=${D0}&until=${D0}`, "until must be after since"],
     [`since=${D0}&until=${D0 - 1}`, "until must be after since"],
     [`since=${D0}&bucket=week`, "bucket must be one of hour, day"],
-    [`since=${D0}&group_by=principal`, "group_by must be one of auth, model, provider"],
+    [
+      `since=${D0}&group_by=principal`,
+      "group_by must be one of auth, model, provider, toolkit, tool",
+    ],
     [`since=${D0}&until=${D0 + 31 * DAY + 1}`, "range must not exceed 31 days for bucket=hour"],
     [
       `since=${D0}&until=${D0 + 400 * DAY + 1}&bucket=day`,

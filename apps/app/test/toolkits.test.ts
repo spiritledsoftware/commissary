@@ -515,6 +515,129 @@ describe("a private credential on an org toolkit", () => {
   });
 });
 
+describe("prices and Spend limits (#199)", () => {
+  it("prices an org toolkit and its tools through the routes, and limits its shared credential's Spend", async () => {
+    const server = fakeMcpServer(`${origin()}/mcp`, { tools: [{ name: "search" }] });
+    const org = await newOrg();
+
+    const added = toolkitOf(
+      await send(org, "/toolkits", org.admin, "POST", {
+        source: server.url,
+        name: "web",
+        credential: { kind: "none", subject: EVERYONE },
+      }),
+    );
+
+    const priced = await send(
+      org,
+      `/toolkits/${added.id}`,
+      org.admin,
+      "PATCH",
+      { price_micros: 2_500 },
+      revised(added.revision),
+    );
+
+    expect(priced.status).toBe(200);
+    expect(toolkitOf(priced).price_micros).toBe(2_500);
+
+    const tool = await send(
+      org,
+      `/toolkits/${added.id}/overrides`,
+      org.admin,
+      "PUT",
+      { tool: "search", price_micros: 4_000 },
+      revised(0),
+    );
+
+    expect(Schema.decodeUnknownSync(ToolView)(tool.body)).toMatchObject({
+      price_micros: 4_000,
+      override: { price_micros: 4_000 },
+    });
+
+    const cleared = await send(
+      org,
+      `/toolkits/${added.id}`,
+      org.admin,
+      "PATCH",
+      { price_micros: null },
+      revised(toolkitOf(priced).revision),
+    );
+
+    expect(toolkitOf(cleared).price_micros).toBeUndefined();
+    expect(
+      errorOf(
+        await send(
+          org,
+          `/toolkits/${added.id}`,
+          org.admin,
+          "PATCH",
+          { price_micros: 0.5 },
+          revised(toolkitOf(cleared).revision),
+        ),
+      ),
+    ).toBe("invalid");
+
+    // The toolkit's shared credential takes a Spend limit, named by the toolkit's id; it goes with the credential.
+    const limit = await send(org, "/spend/limits", org.admin, "POST", {
+      kind: "toolkit",
+      subject: added.id,
+      period: "day",
+      amount_micros: 1_000_000,
+    });
+
+    expect(limit.status).toBe(201);
+    expect(limit.body).toMatchObject({ kind: "toolkit", subject: added.id, label: "web" });
+    expect(
+      errorOf(
+        await send(org, "/spend/limits", org.admin, "POST", {
+          kind: "toolkit",
+          subject: "tk_nope",
+          period: "day",
+          amount_micros: 1,
+        }),
+      ),
+    ).toBe("subject_not_found");
+
+    const limits = async () =>
+      (
+        (await send(org, "/spend", org.admin)).body as {
+          readonly limits: ReadonlyArray<{ readonly kind: string }>;
+        }
+      ).limits.map((entry) => entry.kind);
+
+    expect(await limits()).toEqual(["toolkit"]);
+    expect(
+      (await send(org, `/toolkits/${added.id}/credentials/shared`, org.admin, "DELETE")).status,
+    ).toBe(200);
+    expect(await limits()).toEqual([]);
+  });
+
+  it("refuses a price on a private toolkit", async () => {
+    const server = fakeMcpServer(`${origin()}/mcp`, { tools: [{ name: "t" }] });
+    const org = await newOrg();
+
+    const mine = toolkitOf(
+      await send(org, "/toolkits", org.alice, "POST", {
+        source: server.url,
+        name: "mine",
+        credential: { kind: "none" },
+      }),
+    );
+
+    const refused = await send(
+      org,
+      `/toolkits/${mine.id}`,
+      org.alice,
+      "PATCH",
+      { price_micros: 1 },
+      revised(mine.revision),
+    );
+
+    expect(refused.status).toBe(422);
+    expect(errorOf(refused)).toBe("invalid");
+  });
+});
+
 describe("the org export", () => {
   it("holds the toolkits the caller reaches, with what kind of credential they have, their grants and never a secret", async () => {
     const server = fakeMcpServer(`${origin()}/mcp`, { tools: [{ name: "t" }] });
