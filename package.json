@@ -33,7 +33,7 @@
     "@distilled.cloud/cloudflare": "1.0.0-rc.15",
     "@effect/platform-node": "4.0.4",
     "@effect/tsgo": "0.52.0",
-    "@oxlint/plugins": "1.87.0",
+    "@oxlint/plugins": "1.88.0",
     "@types/node": "catalog:",
     "alchemy": "2.0.0-beta.83",
     "effect": "catalog:",
