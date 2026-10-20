@@ -153,8 +153,11 @@ export const ToolkitSecret = Schema.Union([
     key_id: optional(Schema.String),
     /** The `iss` claim (a Google service account's email, a DocuSign integration key). */
     issuer: optional(Schema.String),
-    /** The `sub` claim (a user the key acts for). */
-    subject: optional(Schema.String),
+    /**
+     * The `sub` claim (a user the key acts for). Named after the claim, as `subject` names who may use a shared
+     * credential in the same body (`ConnectCredential`).
+     */
+    sub: optional(Schema.String),
     /**
      * The client the token request authenticates as, when the token endpoint asks for one beside the JWT (Box's
      * `client_id` and `client_secret`, sent in the request's body).

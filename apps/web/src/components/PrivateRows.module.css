@@ -20,6 +20,10 @@
   border-bottom: 1px solid var(--rule);
 }
 
+.row[data-kindless="true"] {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+}
+
 .row[data-disabled="true"] .provider,
 .row[data-disabled="true"] .label {
   color: var(--quiet);
@@ -51,7 +55,8 @@
 }
 
 @container (max-width: 43rem) {
-  .row {
+  .row,
+  .row[data-kindless="true"] {
     grid-template-columns: minmax(0, 1fr);
     gap: var(--space-1);
   }

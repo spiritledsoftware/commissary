@@ -360,6 +360,18 @@ Square signage. Buttons take a 3px radius; meters 1px. Blades have a square tail
   the trail mark and the HTTP status. Older pages append below behind a secondary "Show older requests" button. On
   narrow screens each request becomes three lines: time and result, model and tokens, account and latency.
 
+### Row Editor
+
+- A table row edited in place (a toolkit's tools): an underlined "Edit" link button at the row's end opens a stone-1
+  block of fields in the next row, as the Request Log opens a request; it reads "Close" while open, and one row is open
+  at a time. Save (primary), Cancel (secondary) and a link button for the edit that undoes it ("Reset to its source").
+
+### Setup Snippets
+
+- What a client is set up with (the endpoint URL builder): the client's name (750), a stone-4 sentence of where it
+  goes, then the text to paste or run in a monospace block on the sunk ground, scrolling sideways rather than
+  wrapping. A secret is never in one: a snippet reads it from an environment variable it names.
+
 ### Links
 
 - Ink text with a 2px stone-3 underline that goes ink on hover. Never yellow.

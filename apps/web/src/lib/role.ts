@@ -85,6 +85,9 @@ export interface PanelPage {
   readonly hosted?: boolean;
 }
 
+/** The Toolkits page's path, under which the pages of each toolkit, adding one and the endpoint URL builder live. */
+export const TOOLS_PAGE = "/tools";
+
 /** The Billing page's path: the sidebar's link, its route, and where the plan notices lead. */
 export const BILLING_PAGE = "/billing";
 
@@ -95,6 +98,8 @@ export const PAGES: ReadonlyArray<PanelPage> = [
   { to: "/accounts", label: "Accounts", group: "providers", role: "admin", privateMembers: true },
   { to: "/keys", label: "Provider keys", group: "providers", role: "admin", privateMembers: true },
   { to: "/models", label: "Models", group: "providers", role: "admin" },
+  // Every member's (#208): the org toolkits they reach and their private ones; the server shows each only theirs.
+  { to: TOOLS_PAGE, label: "Tools", group: "providers", role: "member" },
   { to: "/members", label: "Members", group: "people", role: "admin" },
   { to: "/grants", label: "Grants", group: "people", role: "admin" },
   { to: "/my-models", label: "My models", group: "people", role: "member" },
@@ -164,13 +169,15 @@ const within = (pathname: string, page: string): boolean =>
 /**
  * Whether a role may open a page of the panel (`pathname` is relative to the org's base path). Sub-pages of a page
  * need an org admin, like `/usage/prices`, except the page itself. A plain member opens Usage, My models, API keys and Limits, the
- * Approvals page with each approval's page (#201: the server shows each to its approvers and its caller only), and the
+ * Approvals page with each approval's page (#201: the server shows each to its approvers and its caller only), Tools with
+ * its pages (#208: the toolkits they reach and their private ones, and connecting their own credentials), and the
  * pages of their own private accounts and provider keys, with their sub-pages, where the org lets members connect private
  * credentials.
  */
 export const pageAllowed = (role: OrgRole, pathname: string, privateCredentials = false): boolean =>
   atLeast(role, "admin") ||
   within(pathname, "/approvals") ||
+  within(pathname, TOOLS_PAGE) ||
   trimmed(pathname) === "/usage" ||
   trimmed(pathname) === "/my-models" ||
   trimmed(pathname) === "/api-keys" ||

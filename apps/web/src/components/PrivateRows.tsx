@@ -7,7 +7,8 @@ import styles from "./PrivateRows.module.css";
 
 export interface PrivateRow {
   readonly key: string;
-  readonly provider: string;
+  /** What it is, where rows differ in that (an account's provider); absent where every row is the same kind. */
+  readonly provider?: string;
   readonly label: string;
   /** The owner's email, or their member id when they have no email on record. */
   readonly owner: string;
@@ -64,8 +65,15 @@ export const PrivateRows = ({
       )}
       <ul className={styles["list"]}>
         {rows.map((row) => (
-          <li key={row.key} className={styles["row"]} data-disabled={row.disabled === true}>
-            <span className={styles["provider"]}>{row.provider}</span>
+          <li
+            key={row.key}
+            className={styles["row"]}
+            data-disabled={row.disabled === true}
+            data-kindless={row.provider === undefined}
+          >
+            {row.provider === undefined ? null : (
+              <span className={styles["provider"]}>{row.provider}</span>
+            )}
             <span className={styles["label"]}>{row.label}</span>
             <span className={styles["owner"]}>{row.owner}</span>
             <span className={styles["actions"]}>
@@ -88,7 +96,9 @@ export const PrivateRows = ({
                     title: `Remove this ${noun}?`,
                     body: (
                       <p>
-                        {row.provider} &ldquo;{row.label}&rdquo;, owned by {row.owner}, is deleted.
+                        {row.provider === undefined
+                          ? `The ${noun} of ${row.owner} (${row.label.toLowerCase()}) is deleted.`
+                          : `${row.provider} “${row.label}”, owned by ${row.owner}, is deleted.`}{" "}
                         Its owner loses it and cannot get it back.
                       </p>
                     ),

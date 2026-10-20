@@ -104,7 +104,7 @@ export const mintJwt = Effect.fnUntraced(function* (
       ...settings.claims,
       ...present({
         iss: secret.issuer,
-        sub: secret.subject,
+        sub: secret.sub,
         aud: audience,
         scope: settings.scope,
       }),
