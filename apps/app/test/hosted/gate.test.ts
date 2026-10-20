@@ -179,8 +179,14 @@ describe("authentication", () => {
   it("does not serve the MCP endpoint on the app host: Cloud's MCP clients sign in with its own OAuth", async () => {
     const cookie = await signIn({ email: "ada@example.com" });
 
-    for (const method of ["GET", "POST"]) {
-      const response = await call("/mcp", {
+    const org = (await me(cookie)).orgs[0]?.slug ?? "";
+
+    for (const [method, path] of [
+      ["GET", "/mcp"],
+      ["POST", "/mcp"],
+      ["POST", `/o/${org}/mcp`],
+    ] as const) {
+      const response = await call(path, {
         method,
         headers: { cookie, "content-type": "application/json" },
         ...(method === "POST"
@@ -188,7 +194,7 @@ describe("authentication", () => {
           : {}),
       });
 
-      expect(response.status, method).toBe(404);
+      expect(response.status, `${method} ${path}`).toBe(404);
       expect(await response.json()).toEqual({
         error: "Not found: the client API is served by the API Worker",
       });

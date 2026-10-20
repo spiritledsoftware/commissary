@@ -7,7 +7,7 @@ import { ManagementRoutesLive } from "../management/routes.ts";
 import { WorkersLoggerLayer } from "@commissary/core";
 import { TraceLayer } from "@commissary/models/api";
 import { OAuthCallbackRoutes } from "@commissary/models/management";
-import { McpRoutes } from "@commissary/tools/api";
+import { AppMcpRoutes } from "./mcp.ts";
 import { RootRoutes } from "./routes.ts";
 
 /**
@@ -24,7 +24,7 @@ export const AppLayer = Layer.mergeAll(
   withAccess(ManagementRoutesLive),
   // The MCP endpoint behind Access, for MCP clients Access signs in (ADR 0045); the Access gate refuses it on Commissary
   // Cloud, whose MCP clients use the API host's.
-  withAccess(McpRoutes),
+  withAccess(AppMcpRoutes),
   // Request trace id header and structured request logs (packages/models/src/observability).
   TraceLayer,
   WorkersLoggerLayer,

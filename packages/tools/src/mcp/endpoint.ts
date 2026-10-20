@@ -1,8 +1,10 @@
 /**
- * Commissary's MCP endpoint (#197, ADR 0036, ADR 0037, ADR 0038): `/mcp` on the API host, Streamable HTTP, both
- * protocol eras (`protocol.ts`). The API Worker mounts it behind its client gate, so a request comes with the member of
- * its API key (`AccessPrincipal`) and their org (`CurrentOrg`), and counts against the org's request-rate ceiling on
- * Commissary Cloud. The member's tools and the calls are the org's ControlPlane's (`ToolsPart.clientTools`,
+ * Commissary's MCP endpoint (#197, ADR 0036, ADR 0037, ADR 0038, ADR 0045): Streamable HTTP, both protocol eras
+ * (`protocol.ts`), mounted at a path the Worker chooses ({@link mcpRoutesAt}). The API Worker mounts it at `/mcp` on the
+ * API host, behind its client gate, so a request comes with the member of its API key (`AccessPrincipal`) and their org
+ * (`CurrentOrg`), and counts against the org's request-rate ceiling on Commissary Cloud. A self-hosted Commissary's app
+ * Worker also mounts it on the app host, at `/mcp` (the org `global`) and `/o/<slug>/mcp`, behind its Access gate, so a
+ * request comes with the person (or service token) Access signed in and the org its address names (#251). The member's tools and the calls are the org's ControlPlane's (`ToolsPart.clientTools`,
  * `ToolsPart.callTool`), where the credentials are; `?toolkits=a,b` narrows both to those toolkits, by the names the
  * member sees.
  *
@@ -246,9 +248,17 @@ const methodNotAllowed = Effect.succeed(
   ),
 );
 
-/** The endpoint's routes; the API Worker puts them behind its client gate. */
-export const McpRoutes = Layer.mergeAll(
-  HttpRouter.add("POST", MCP_PATH, serve),
-  HttpRouter.add("GET", MCP_PATH, methodNotAllowed),
-  HttpRouter.add("DELETE", MCP_PATH, methodNotAllowed),
-);
+/**
+ * The endpoint's routes at `path` (a router path, which may name parameters, such as `/o/:slug/mcp`). The Worker that
+ * mounts them puts them behind its gate, which provides the principal and the org: the API Worker's client gate at
+ * `/mcp` ({@link McpRoutes}), a self-hosted Commissary's app Worker's Access gate at `/mcp` and `/o/:slug/mcp`.
+ */
+export const mcpRoutesAt = (path: HttpRouter.PathInput) =>
+  Layer.mergeAll(
+    HttpRouter.add("POST", path, serve),
+    HttpRouter.add("GET", path, methodNotAllowed),
+    HttpRouter.add("DELETE", path, methodNotAllowed),
+  );
+
+/** The endpoint at `/mcp`, the API Worker's client API path. */
+export const McpRoutes = mcpRoutesAt(MCP_PATH);

@@ -3,7 +3,7 @@
 import { Effect, Predicate, Result } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { CurrentOrg } from "@commissary/core";
-import { authenticateRequest } from "./authenticate.ts";
+import { authenticateMcp, authenticateRequest, MCP_SIGN_IN } from "./authenticate.ts";
 import { crossSiteRejection } from "./csrf.ts";
 import {
   type AccessError,
@@ -106,19 +106,24 @@ export const AccessGate = HttpRouter.middleware<{ provides: AccessPrincipal }>()
         if (rejection !== undefined) return errorResponse(rejection.status, rejection.message);
 
         const authenticated = yield* Effect.result(
-          authenticateRequest(request.headers, request.originalUrl, request.method, zone).pipe(
-            Effect.provideService(AccessJwks, jwks),
-          ),
+          (zone === "mcp"
+            ? authenticateMcp(request.headers, request.originalUrl, request.method)
+            : authenticateRequest(request.headers, request.originalUrl, request.method)
+          ).pipe(Effect.provideService(AccessJwks, jwks)),
         );
 
         if (Result.isFailure(authenticated)) {
           const page = hosted ? signInRedirect(request, authenticated.failure) : undefined;
-
           const refusal = page ?? (yield* accessErrorResponse(authenticated.failure));
 
-          // The MCP authorization spec's challenge, as on the API Worker; Access answers its own (Managed OAuth) first.
+          // An MCP client is told to sign in through Access, with the MCP authorization spec's challenge, as on the API
+          // Worker; with Managed OAuth, Access answers a client without a sign-in itself, before this.
           return zone === "mcp" && refusal.status === 401
-            ? HttpServerResponse.setHeader(refusal, "www-authenticate", "Bearer")
+            ? HttpServerResponse.setHeader(
+                errorResponse(401, MCP_SIGN_IN),
+                "www-authenticate",
+                "Bearer",
+              )
             : refusal;
         }
 

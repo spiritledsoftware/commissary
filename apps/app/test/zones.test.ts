@@ -1,7 +1,12 @@
 // The path zones of the panel page and the client API aliases (`src/management/zones.ts`), which decide the Access
 // gate's treatment of a request.
 import { describe, expect, it } from "vitest";
-import { classifyPath, isPanelPagePath, LEGACY_PANEL_PATH } from "../src/management/zones.ts";
+import {
+  classifyPath,
+  isPanelPagePath,
+  LEGACY_PANEL_PATH,
+  mcpAddress,
+} from "../src/management/zones.ts";
 
 describe("access classification of the panel page", () => {
   it("keeps the legacy panel path (a redirect to /) in the management zone", () => {
@@ -24,12 +29,28 @@ describe("access classification of the panel page", () => {
       expect(classifyPath(`https://x.test${path}`)).toBe("protected");
   });
 
-  it("puts the MCP endpoint, however spelt, in a zone of its own, and the paths under it in the client API's", () => {
-    for (const path of ["/mcp", "/mcp/", "//MCP", "/%6dcp?toolkits=a"])
+  it("puts the MCP endpoint of global and of an org, however spelt, in a zone of its own, never a panel page", () => {
+    for (const path of [
+      "/mcp",
+      "/mcp/",
+      "//MCP",
+      "/%6dcp?toolkits=a",
+      "/o/acme/mcp",
+      "/O/Acme/MCP/",
+      "//o//acme//mcp?toolkits=a",
+    ]) {
       expect(classifyPath(`https://x.test${path}`), path).toBe("mcp");
+      expect(isPanelPagePath(path), path).toBe(false);
+    }
+
+    expect(mcpAddress("https://x.test/mcp")).toEqual({ slug: undefined });
+    expect(mcpAddress("https://x.test/O/Acme/mcp/")).toEqual({ slug: "acme" });
 
     for (const path of ["/mcp/x", "/mcpx"])
       expect(classifyPath(`https://x.test${path}`), path).toBe("protected");
+
+    for (const path of ["/o/acme/mcp/x", "/o/acme/mcpx", "/o/acme/x/mcp", "/o/-bad-/mcp"])
+      expect(mcpAddress(`https://x.test${path}`), path).toBeUndefined();
   });
 
   it("names the pages a cross-site navigation may open (not the API, not the bundle)", () => {
