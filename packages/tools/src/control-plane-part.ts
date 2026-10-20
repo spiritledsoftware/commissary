@@ -25,6 +25,7 @@ import {
   type OutboundPolicy,
 } from "@commissary/core";
 import type { ControlPlanePart, OrgCore } from "@commissary/state";
+import type { SpendCredential } from "@commissary/state/spend";
 import {
   connectGrant,
   type ToolGrantChange,
@@ -300,6 +301,29 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   /** Read on every use: nothing to forget. */
   privateCredentialsChanged(): void {}
 
+  /**
+   * The org toolkits' shared credentials, by their toolkit (a toolkit holds at most one): what a toolkit's Spend limit
+   * names (#199). Its tool calls on the shared credential count toward it.
+   */
+  spendCredentials(): ReadonlyArray<SpendCredential> {
+    const shared = new Set(
+      this.#store
+        .credentials()
+        .filter((credential) => credential.owner === undefined)
+        .map((credential) => credential.toolkitId),
+    );
+
+    return this.#store
+      .toolkits()
+      .filter((toolkit) => toolkit.owner === undefined && shared.has(toolkit.id))
+      .map((toolkit) => ({
+        kind: "toolkit",
+        id: toolkit.id,
+        publicId: toolkit.id,
+        label: toolkit.name,
+      }));
+  }
+
   // --- toolkits ---------------------------------------------------------------------------------------------------
 
   /** The toolkits `viewer` reaches; an org admin also gets the other members' private toolkits, as existence only. */
@@ -454,7 +478,10 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     if (toolkit.revision !== revision)
       return refuse("conflict", `the toolkit is at revision ${toolkit.revision}, not ${revision}`);
 
-    this.#store.deleteToolkit(id);
+    this.#core.transaction(() => {
+      this.#store.deleteToolkit(id);
+      this.#core.spend.forget("toolkit", id);
+    });
 
     return ok({ id });
   }
@@ -505,8 +532,16 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
     if (!target.ok) return target;
 
-    if (!this.#store.deleteCredential(id, target.value.owner))
-      return refuse("not_found", "no such credential is connected");
+    const removed = this.#core.transaction(() => {
+      if (!this.#store.deleteCredential(id, target.value.owner)) return false;
+
+      // The shared credential's Spend limits go with it, as a Models credential's do.
+      if (target.value.owner === undefined) this.#core.spend.forget("toolkit", id);
+
+      return true;
+    });
+
+    if (!removed) return refuse("not_found", "no such credential is connected");
 
     return this.#viewOf(id, viewer);
   }

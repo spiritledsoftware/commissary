@@ -25,8 +25,8 @@ import type { UsageCost } from "../src/usage/pricing.ts";
 import type { UsageRecord } from "../src/usage/record.ts";
 import { UsageSink } from "../src/usage/sink.ts";
 import type { PoolOptions } from "../src/credentials/pool.ts";
-import { SpendLedger } from "../src/spend/ledger.ts";
-import { periodBounds } from "../src/spend/period.ts";
+import { SpendLedger } from "@commissary/state/spend";
+import { periodBounds } from "@commissary/state/spend";
 import {
   jsonResponse,
   mockHttpClient,

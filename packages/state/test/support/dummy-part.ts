@@ -147,4 +147,8 @@ export class DummyPart extends RpcTarget implements ControlPlanePart {
   privateCredentialsChanged(): void {
     this.#record("privateCredentialsChanged");
   }
+
+  spendCredentials(): readonly [] {
+    return [];
+  }
 }

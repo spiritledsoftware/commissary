@@ -4,7 +4,7 @@
  * Go source: sdk/cliproxy/auth/selector.go (`modelCooldownError`, `getAvailableAuthsWithPriorityMode`) and
  * errors.go (`newAuthUnavailableError`). Docs: credentials.md §6.5.
  */
-import type { Refusal, SubjectKind } from "../../spend/model.ts";
+import type { Refusal, SubjectKind } from "@commissary/state/spend";
 import type { PickFailure } from "./types.ts";
 
 /** Go `Duration.String()` for whole seconds (`45s`, `1m30s`, `1h0m0s`). */
@@ -107,6 +107,7 @@ const SUBJECT: Readonly<Record<SubjectKind, string>> = {
   team: "your team",
   org: "your org",
   credential: "this credential",
+  toolkit: "this toolkit's shared credential",
 };
 
 /**

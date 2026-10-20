@@ -1,5 +1,5 @@
 // The Limits page's model: how a Spend limit reads (subject, period, spent and remaining), the order of the list,
-// the checks that mirror the server's (packages/models/src/spend/store.ts), the dollar amounts typed into the forms and what a
+// the checks that mirror the server's (packages/state/src/spend/store.ts), the dollar amounts typed into the forms and what a
 // refused write tells the caller. Pure: no DOM, tested in test/spend.test.ts.
 import type {
   SpendLimitView,
@@ -30,8 +30,13 @@ export const SUBJECT_KINDS: ReadonlyArray<{
   { id: "key", label: "API key" },
 ];
 
+/** A toolkit's shared credential (#199): listed, not offered in the form yet (the panel's toolkits are #209's). */
+const TOOLKIT_LABEL = "Toolkit credential";
+
 export const kindLabel = (kind: SpendSubjectKind): string =>
-  SUBJECT_KINDS.find((candidate) => candidate.id === kind)?.label ?? kind;
+  kind === "toolkit"
+    ? TOOLKIT_LABEL
+    : (SUBJECT_KINDS.find((candidate) => candidate.id === kind)?.label ?? kind);
 
 export const WEEK_STARTS: ReadonlyArray<{ readonly id: SpendWeekStart; readonly label: string }> = [
   { id: "monday", label: "Monday" },
@@ -49,6 +54,7 @@ const KIND_RANK: Readonly<Record<SpendSubjectKind, number>> = {
   member: 2,
   key: 3,
   credential: 4,
+  toolkit: 5,
 };
 
 const PERIOD_RANK: Readonly<Record<SpendPeriod, number>> = { day: 0, week: 1, month: 2 };

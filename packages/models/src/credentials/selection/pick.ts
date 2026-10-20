@@ -12,7 +12,7 @@
 import type { Json } from "@commissary/json";
 import type { RoutingStrategy } from "../../config/schema.ts";
 import { boundSessionIdentity } from "../../session-routing/identity.ts";
-import type { SpendGate } from "../../spend/model.ts";
+import type { SpendGate } from "@commissary/state/spend";
 import { lcpNamespace, type MerklePrefixMatcher } from "../../session-routing/matcher.ts";
 import type { Reach } from "../../grants/reach.ts";
 import { type Credential, type CredentialState, executorKey } from "../model.ts";
@@ -63,7 +63,7 @@ export interface SelectionInput {
    */
   readonly reach: Reach;
   readonly now: number;
-  /** What the Spend limits say about this request (`spend/ledger.ts`); absent: nothing limits it. */
+  /** What the Spend limits say about this request (`@commissary/state/spend`); absent: nothing limits it. */
   readonly spend?: SpendGate;
 }
 

@@ -1,13 +1,14 @@
 /**
  * Spend limits (`/v9/management/spend`, `packages/models/src/management/spend-routes.ts`; the rules live in
- * `packages/models/src/spend/`): what a member, team, the org, a shared credential or an API key may spend in a day, week or
- * month of the org's time zone. Workers addition, no Go counterpart. Shared with the browser: imports `effect` and
+ * `packages/state/src/spend/`): what a member, team, the org, a shared credential (a Models credential, or an org
+ * toolkit's) or an API key may spend in a day, week or month of the org's time zone; model attempts and priced tool
+ * calls (#199) count toward the same limits. Workers addition, no Go counterpart. Shared with the browser: imports `effect` and
  * `./errors.ts` only.
  *
  * Amounts are micro-USD (1 USD = 1,000,000). An org admin sees and writes every limit and sets the calendar; a plain
  * member sees the limits that bind them (their own, their teams', the org's and those on their API keys) and writes
  * limits on their own API keys, never above an admin's limit on that key. A credential limit names the credential by
- * its `auth_index`. Each limit has a revision: an edit names the one it was based on in `If-Match`.
+ * its `auth_index`, a toolkit limit the toolkit by its id. Each limit has a revision: an edit names the one it was based on in `If-Match`.
  */
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
@@ -15,7 +16,15 @@ import { managementErrors } from "./errors.ts";
 
 const optional = Schema.optionalKey;
 
-export const SpendSubjectKind = Schema.Literals(["member", "team", "org", "credential", "key"]);
+/** `toolkit`: an org toolkit's shared credential (#199), named by the toolkit's id; its tool calls count toward it. */
+export const SpendSubjectKind = Schema.Literals([
+  "member",
+  "team",
+  "org",
+  "credential",
+  "key",
+  "toolkit",
+]);
 
 export type SpendSubjectKind = typeof SpendSubjectKind.Type;
 
@@ -39,9 +48,9 @@ export type SpendWeekStart = typeof SpendWeekStart.Type;
 export const SpendLimitView = Schema.Struct({
   id: Schema.String,
   kind: SpendSubjectKind,
-  /** Member, team and API key ids; the `auth_index` of a credential; empty for the org. */
+  /** Member, team, API key and toolkit ids; the `auth_index` of a credential; empty for the org. */
   subject: Schema.String,
-  /** What to show for the subject: an email, a team name, an API key's name, a credential's label. */
+  /** What to show for the subject: an email, a team name, an API key's name, a credential's label, a toolkit's name. */
   label: Schema.String,
   period: SpendPeriod,
   amount_micros: Schema.Number,

@@ -1,11 +1,11 @@
-// The Spend store (src/spend/store.ts) over the SQLite of a ControlPlane Durable Object: limits with revisions and the
+// The Spend store (`@commissary/state/spend`) over the SQLite of a ControlPlane Durable Object: limits with revisions and the
 // member-vs-admin rule on an API key, counters of the current period, the org's calendar, and the upgrade of a
 // ControlPlane that predates Spend limits (it keeps working, with no limit).
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { OrgId } from "@commissary/core";
-import { SpendLedger } from "../src/spend/ledger.ts";
-import { SpendStore, type SpendResult } from "../src/spend/store.ts";
+import { SpendLedger } from "@commissary/state/spend";
+import { SpendStore, type SpendResult } from "@commissary/state/spend";
 import { controlPlane } from "./support/control-plane.ts";
 import { USD } from "./support/spend.ts";
 

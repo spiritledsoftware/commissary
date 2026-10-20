@@ -1,6 +1,6 @@
 /**
  * An org's plan and free-usage counters inside its ControlPlane Durable Object (SQLite). New in the Workers port, no
- * Go counterpart; the counters follow how Spend limits keep theirs (`packages/models/src/spend/store.ts`), not D1
+ * Go counterpart; the counters follow how Spend limits keep theirs (`packages/state/src/spend/store.ts`), not D1
  * usage records.
  *
  * - **billing_plan**: one row with the org's plan; no row means the default (`free`), so an org that existed before

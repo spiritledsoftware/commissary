@@ -18,7 +18,7 @@ import {
   type CredentialState,
   executorKey,
 } from "../model.ts";
-import type { SpendGate } from "../../spend/model.ts";
+import type { SpendGate } from "@commissary/state/spend";
 import { servesMember } from "../ownership.ts";
 import { availabilityBlock, isBlockedForModel } from "./availability.ts";
 import { grantedRoute } from "./grants.ts";
@@ -201,7 +201,7 @@ export interface RetryPlanInput {
   /** `credential -> cooling disabled`. */
   readonly coolingDisabled: (credential: Credential) => boolean;
   readonly now: number;
-  /** The Spend limits of the request's member (`spend/ledger.ts`): shared credentials may be out of reach until a period ends. */
+  /** The Spend limits of the request's member (`@commissary/state/spend`): shared credentials may be out of reach until a period ends. */
   readonly spend?: SpendGate | undefined;
 }
 

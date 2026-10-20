@@ -1,7 +1,8 @@
 /**
  * What the management API does with Spend limits (issue #71): who may write which limit, what each viewer sees with the
  * Spend so far, and the translation of a credential limit's subject between the stored credential id and the
- * `auth_index` clients know. New in the Workers port, no Go counterpart.
+ * `auth_index` clients know. New in the Workers port, no Go counterpart. The org-wide base's since #199: the shared
+ * credentials come from the areas' parts (a Models credential, a toolkit's shared credential).
  *
  * - An **org admin** writes any limit (source `admin`) and the org's calendar, and sees every limit.
  * - A **plain member** writes limits on their own API keys only (source `member`, never above an admin's limit on
@@ -14,6 +15,7 @@
 import type { Viewer } from "@commissary/auth";
 import { SpendLedger } from "./ledger.ts";
 import {
+  type CredentialKind,
   type LimitSource,
   ORG_SUBJECT,
   type SpendLimit,
@@ -42,13 +44,19 @@ export interface SpendDirectory {
     readonly prefix: string;
     readonly revokedAt?: number | undefined;
   }>;
-  /** The shared credentials (a private credential has no limit of its own). */
-  credentials(): ReadonlyArray<{
-    readonly id: string;
-    readonly authIndex: string;
-    readonly provider: string;
-    readonly label: string;
-  }>;
+  /** The shared credentials of every area (a private credential has no limit of its own). */
+  credentials(): ReadonlyArray<SpendCredential>;
+}
+
+/** A shared credential a limit may name, as an area's part describes it (`ControlPlanePart.spendCredentials`). */
+export interface SpendCredential {
+  readonly kind: CredentialKind;
+  /** What the limit stores: a Models credential's id, a toolkit's id. */
+  readonly id: string;
+  /** What clients name it by: a Models credential's keyed `auth_index`, a toolkit's id. */
+  readonly publicId: string;
+  /** What to show for it: `<provider>: <label>`, the toolkit's name. */
+  readonly label: string;
 }
 
 export type SpendServiceErrorCode = SpendErrorCode | "forbidden" | "subject_not_found";
@@ -65,9 +73,9 @@ export type SpendServiceResult<A> = { readonly ok: true; readonly value: A } | S
 export interface SpendEntry {
   readonly id: string;
   readonly kind: SubjectKind;
-  /** Member, team and API key ids; the `auth_index` of a credential; empty for the org. */
+  /** Member, team, API key and toolkit ids; the `auth_index` of a credential; empty for the org. */
   readonly subject: string;
-  /** What to show for the subject: an email, a team name, an API key's name, a credential's label. */
+  /** What to show for the subject: an email, a team name, an API key's name, a credential's label, a toolkit's name. */
   readonly label: string;
   readonly period: Period;
   readonly amountMicros: number;
@@ -112,6 +120,7 @@ const KIND_ORDER: Readonly<Record<SubjectKind, number>> = {
   member: 2,
   key: 3,
   credential: 4,
+  toolkit: 5,
 };
 
 export class SpendService {
@@ -192,13 +201,18 @@ export class SpendService {
         return refuse("forbidden", "members may limit their own API keys only");
     }
 
-    if (input.kind === "credential") {
+    if (input.kind === "credential" || input.kind === "toolkit") {
       const credential = this.#directory
         .credentials()
-        .find((candidate) => candidate.authIndex === input.subject);
+        .find((candidate) => candidate.kind === input.kind && candidate.publicId === input.subject);
 
       if (credential === undefined)
-        return refuse("subject_not_found", "no shared credential has this auth_index");
+        return refuse(
+          "subject_not_found",
+          input.kind === "credential"
+            ? "no shared credential has this auth_index"
+            : "no org toolkit with this id has a shared credential",
+        );
       subject = credential.id;
     } else if (input.kind === "member") {
       if (!this.#directory.members().some((member) => member.id === subject))
@@ -350,6 +364,7 @@ export class SpendService {
       case "key":
         return member !== undefined && keys.get(limit.subject)?.memberId === member;
       case "credential":
+      case "toolkit":
         return false;
     }
   }
@@ -363,17 +378,17 @@ export class SpendService {
       this.#directory.keys().map((key) => [key.id, `${key.name} (${key.prefix})`]),
     );
 
-    // Only credential limits need the credentials (and their keyed `auth_index`).
-    let credentials:
-      | ReadonlyMap<string, ReturnType<SpendDirectory["credentials"]>[number]>
-      | undefined;
+    // Only credential and toolkit limits need the credentials (and a Models credential's keyed `auth_index`).
+    let credentials: ReadonlyMap<string, SpendCredential> | undefined;
 
-    const credentialOf = (id: string) => {
+    const credentialOf = (kind: CredentialKind, id: string) => {
       credentials ??= new Map(
-        this.#directory.credentials().map((credential) => [credential.id, credential]),
+        this.#directory
+          .credentials()
+          .map((credential) => [`${credential.kind}\0${credential.id}`, credential]),
       );
 
-      return credentials.get(id);
+      return credentials.get(`${kind}\0${id}`);
     };
 
     return {
@@ -387,18 +402,14 @@ export class SpendService {
             return teams.get(limit.subject);
           case "key":
             return keys.get(limit.subject);
-          case "credential": {
-            const credential = credentialOf(limit.subject);
-
-            return credential === undefined
-              ? undefined
-              : `${credential.provider}: ${credential.label}`;
-          }
+          case "credential":
+          case "toolkit":
+            return credentialOf(limit.kind, limit.subject)?.label;
         }
       },
       publicSubject: (limit: SpendLimit): string =>
-        limit.kind === "credential"
-          ? (credentialOf(limit.subject)?.authIndex ?? "")
+        limit.kind === "credential" || limit.kind === "toolkit"
+          ? (credentialOf(limit.kind, limit.subject)?.publicId ?? "")
           : limit.subject,
     };
   }

@@ -16,7 +16,7 @@ const OWNER = { role: "owner", sensitive: true } as const;
 
 const HOUR_MS = 60 * 60_000;
 
-/** The Models part's tables, as the ControlPlane named them before the split. */
+/** The Models part's tables, as the ControlPlane named them before the split (Spend limits' are the base's since #199). */
 const MODELS_TABLES = [
   "config_changes",
   "config_key_groups",
@@ -36,9 +36,6 @@ const MODELS_TABLES = [
   "private_key_changes",
   "private_key_groups",
   "quota_sweep_lease",
-  "spend_counters",
-  "spend_limits",
-  "spend_settings",
 ];
 
 const fresh = () =>

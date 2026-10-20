@@ -10,7 +10,11 @@
 import { Effect, Schema } from "effect";
 import { HttpRouter, type HttpServerResponse } from "effect/http";
 import { AccessPrincipal } from "@commissary/auth";
-import type { SpendEntry, SpendServiceErrorCode, SpendServiceResult } from "../spend/service.ts";
+import type {
+  SpendEntry,
+  SpendServiceErrorCode,
+  SpendServiceResult,
+} from "@commissary/state/spend";
 import {
   CreateSpendLimit,
   type SpendLimitView,

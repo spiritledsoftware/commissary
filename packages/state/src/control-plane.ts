@@ -46,10 +46,12 @@ import {
   ApiKeyStore,
 } from "./api-keys/store.ts";
 import type { StateObjectEnv } from "./env.ts";
+import { type SpendCredential, SpendService } from "./spend/service.ts";
+import { SpendStore } from "./spend/store.ts";
 
 /**
  * The org-wide ControlPlane as an area's part sees it from inside the Durable Object (#134 "How an area's ControlPlane
- * part works"): the org, its members and teams, its data key, and the one alarm.
+ * part works"): the org, its members and teams, its data key, its Spend limits, and the one alarm.
  */
 export interface OrgCore {
   /** The org this object serves. */
@@ -76,6 +78,11 @@ export interface OrgCore {
   privateToolkits(): boolean;
   /** Every member's live API keys at `now` (epoch ms). */
   apiKeys(now: number): ReadonlyArray<ApiKeyRecord>;
+  /**
+   * The org's Spend limits (ADR 0024): one service per object, which model attempts and tool calls are checked and
+   * charged through (`ledger()`), and whose limits on a part's shared credentials the part forgets when they go.
+   */
+  readonly spend: SpendService;
   /**
    * The part's next wake-up (epoch ms, `null`: none) changed: the base sets the object's one alarm to the earliest
    * wake-up of any part.
@@ -107,6 +114,8 @@ export interface ControlPlanePart {
   apiKeysDeleted(ids: ReadonlyArray<string>): void;
   /** The org turned private credentials off or on. */
   privateCredentialsChanged(): void;
+  /** The part's shared credentials a Spend limit may name (none for a part without credentials). */
+  spendCredentials(): ReadonlyArray<SpendCredential>;
 }
 
 /** The areas' parts of a ControlPlane, by name. */
@@ -118,7 +127,8 @@ export type PartFactories<P> = { readonly [K in keyof P]: (core: OrgCore) => P[K
 /**
  * The org-wide ControlPlane (#134, #148): one Durable Object per org (`controlPlaneOf(env, org)`, named by the org id;
  * ADR 0021), the single writer for the org's members, teams, service tokens, membership index and settings, API keys,
- * management keys, single sign-on, `SessionState` instances and data key. The `ControlPlane` a Worker binds is this
+ * management keys, single sign-on, `SessionState` instances, Spend limits (#199: model attempts and tool calls count
+ * toward the same ones) and data key. The `ControlPlane` a Worker binds is this
  * base composed with the areas' parts (`composeControlPlane`, `compose.ts`), each an `RpcTarget` with its own tables
  * that callers reach through a method of the composed class (`stub.models().x()`).
  *
@@ -141,6 +151,8 @@ export class OrgControlPlane<P extends ControlPlaneParts> extends DurableObject<
   readonly #managementKeys: ManagementKeyStore;
   /** The org's single sign-on on Commissary Cloud (issue #76): its identity provider and email domains. */
   readonly #sso: SsoStore;
+  /** The org's Spend limits (ADR 0024), for every area (`OrgCore.spend`). */
+  readonly #spend: SpendService;
   /** The org this object serves, from its name. */
   readonly #org: OrgId;
   /** Set when the org was deleted: the storage is gone (`wipeOrg`), so the stores must not be used again. */
@@ -171,11 +183,21 @@ export class OrgControlPlane<P extends ControlPlaneParts> extends DurableObject<
       !isHosted(env),
     );
     this.#apiKeys = new ApiKeyStore(ctx.storage.sql, this.#org, (ids) => {
+      // A deleted key takes its Spend limits and counters along.
+      for (const id of ids) this.#spend.forget("key", id);
+
       for (const part of this.#partList()) part.apiKeysDeleted(ids);
     });
     this.#sessionInstances = new SessionInstanceStore(ctx.storage.sql);
     this.#managementKeys = new ManagementKeyStore(ctx.storage.sql, this.#org);
     this.#sso = new SsoStore(ctx.storage.sql, this.#secrets);
+    this.#spend = new SpendService(new SpendStore(ctx.storage.sql), {
+      members: () => this.#members.members(),
+      teams: () => this.#members.teams(),
+      teamsOf: (memberId) => this.#members.member(memberId)?.teams ?? [],
+      keys: () => this.#apiKeys.list(undefined, Date.now()),
+      credentials: () => this.#partList().flatMap((part) => part.spendCredentials()),
+    });
 
     const built: Partial<Record<string, ControlPlanePart>> = {};
 
@@ -213,6 +235,7 @@ export class OrgControlPlane<P extends ControlPlaneParts> extends DurableObject<
       privateCredentials: () => this.#members.privateCredentials(),
       privateToolkits: () => this.#members.privateToolkits(),
       apiKeys: (now) => this.#apiKeys.list(undefined, now),
+      spend: this.#spend,
       wakeUpChanged: async (at) => {
         this.#wakeUps.set(name, at);
         await this.#setAlarm();
@@ -347,10 +370,11 @@ export class OrgControlPlane<P extends ControlPlaneParts> extends DurableObject<
 
   /**
    * Zero data retention (ADR 0027): a member who leaves the org takes with them everything of theirs here: API keys,
-   * and what each part holds of theirs (`ControlPlanePart.memberLeft`). Other members' data stays.
+   * the Spend limits on them and their keys, and what each part holds of theirs (`ControlPlanePart.memberLeft`). Other members' data stays.
    */
   async #deleteMemberData(member: string, how: "left" | "removed"): Promise<void> {
     this.#apiKeys.removeMemberKeys(member);
+    this.#spend.forget("member", member);
 
     for (const part of this.#partList()) await part.memberLeft(member, how);
   }
@@ -600,7 +624,11 @@ export class OrgControlPlane<P extends ControlPlaneParts> extends DurableObject<
 
     const deleted = this.#members.deleteTeam(id);
 
-    if (deleted.ok) for (const part of this.#partList()) part.teamDeleted(id);
+    if (deleted.ok) {
+      this.#spend.forget("team", id);
+
+      for (const part of this.#partList()) part.teamDeleted(id);
+    }
 
     return deleted;
   }
