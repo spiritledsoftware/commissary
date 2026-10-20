@@ -12,9 +12,9 @@
  * and org deletion Models runs on it (docs/ARCHITECTURE.md, "Usage accounting and observability"). Written off the
  * response path (`ctx.waitUntil`), as model records are; a failed write is logged and the record dropped.
  */
-import { Context, Effect } from "effect";
-import type { ToolCallOutcome } from "@commissary/contract/usage";
-import { type OrgId, WorkerExecutionContext } from "@commissary/core";
+import { Effect } from "effect";
+import type { ToolCallRecordOutcome } from "@commissary/contract/usage";
+import { type OrgId, runAfterResponse } from "@commissary/core";
 import { ToolsEnv } from "../env.ts";
 
 export interface ToolCallRecord {
@@ -30,7 +30,7 @@ export interface ToolCallRecord {
   readonly credential: "shared" | "private" | undefined;
   /** A private credential or a private toolkit: its member's alone. */
   readonly private: boolean;
-  readonly outcome: ToolCallOutcome;
+  readonly outcome: ToolCallRecordOutcome;
   /** Epoch ms when the call came in. */
   readonly requestedAt: number;
   readonly latencyMs: number;
@@ -128,9 +128,8 @@ export const insertToolCallRecord = async (
 export const writeToolCallRecord = (record: ToolCallRecord): Effect.Effect<void, never, ToolsEnv> =>
   Effect.gen(function* () {
     const env = yield* ToolsEnv;
-    const context = yield* Effect.context<never>();
 
-    const write = Effect.runPromiseWith(context)(
+    yield* runAfterResponse(
       Effect.tryPromise({
         try: () => insertToolCallRecord(env.USAGE, record),
         catch: (cause) => (cause instanceof Error ? cause.message : String(cause)),
@@ -142,18 +141,4 @@ export const writeToolCallRecord = (record: ToolCallRecord): Effect.Effect<void,
         ),
       ),
     );
-
-    const ctx = Context.getOrUndefined(context, WorkerExecutionContext);
-
-    if (ctx !== undefined) {
-      try {
-        ctx.waitUntil(write);
-
-        return;
-      } catch {
-        // waitUntil is unavailable (the invocation already finished): await the write instead.
-      }
-    }
-
-    yield* Effect.promise(() => write);
   });

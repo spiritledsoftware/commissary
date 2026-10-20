@@ -20,7 +20,10 @@ export const UsageArea = Schema.Literals(["models", "tools"]);
 
 export type UsageArea = typeof UsageArea.Type;
 
-/** What a read covers: one area, or `all` of them. Unset: `models` (or `tools` with a `toolkit` or `tool` filter). */
+/**
+ * What a read covers: one area, or `all` of them. Unset: `models`, or `tools` with a `toolkit` or `tool` filter or a
+ * grouping by toolkit or tool, or `all` with a grouping by area.
+ */
 export const UsageAreaFilter = Schema.Literals(["models", "tools", "all"]);
 
 export type UsageAreaFilter = typeof UsageAreaFilter.Type;
@@ -30,7 +33,7 @@ export type UsageAreaFilter = typeof UsageAreaFilter.Type;
  * transport failure (`upstream_failure`), a Spend limit without room (`refused`, before the upstream is reached), or a
  * tool that needs the member's own credential, which they have not connected (`needs_credential`).
  */
-export const ToolCallOutcome = Schema.Literals([
+export const ToolCallRecordOutcome = Schema.Literals([
   "success",
   "tool_error",
   "upstream_failure",
@@ -38,7 +41,7 @@ export const ToolCallOutcome = Schema.Literals([
   "needs_credential",
 ]);
 
-export type ToolCallOutcome = typeof ToolCallOutcome.Type;
+export type ToolCallRecordOutcome = typeof ToolCallRecordOutcome.Type;
 
 /** The filters every read takes besides its own: the area, and a tool call's toolkit and tool (its stable id). */
 const areaFilters = {
@@ -228,7 +231,7 @@ export const UsageRecord = Schema.Struct({
   toolkit_id: optional(Schema.String),
   /** The tool's stable id, `<toolkit id>:<upstream name>`. */
   tool_id: optional(Schema.String),
-  outcome: optional(ToolCallOutcome),
+  outcome: optional(ToolCallRecordOutcome),
   /** Which of the toolkit's credentials served the call; absent when none did (`needs_credential`). */
   credential: optional(Schema.Literals(["shared", "private"])),
   /** Bytes of the call's arguments and of its result as JSON; never their content. */

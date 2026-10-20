@@ -32,9 +32,9 @@
  * asks for another area (`UsageFilter.area`), so a model-only consumer reads what it read before; the queue never hands
  * out a tool call. Retention and org deletion delete by org, tool calls included.
  */
-import type { AuthIndexer } from "../management/auth-index.ts";
-import type { ToolCallOutcome, UsageArea, UsageAreaFilter } from "@commissary/contract/usage";
+import type { ToolCallRecordOutcome, UsageArea, UsageAreaFilter } from "@commissary/contract/usage";
 import type { OrgId } from "@commissary/core";
+import type { AuthIndexer } from "../management/auth-index.ts";
 import { normalizeToCanonicalUuid } from "../session-routing/identity.ts";
 import {
   ensureTokenBreakdown,
@@ -106,7 +106,7 @@ export interface UsageRow {
   /** A tool call's toolkit, the tool's stable id, its outcome and its sizes; `null` on a model attempt's row. */
   toolkit_id: string | null;
   tool_id: string | null;
-  tool_outcome: ToolCallOutcome | null;
+  tool_outcome: ToolCallRecordOutcome | null;
   request_bytes: number | null;
   response_bytes: number | null;
   /** How an approval rule decided a tool call; `null` until approvals exist (#201). */
@@ -461,6 +461,25 @@ export interface UsageFilter {
 const areaOf = (filter: UsageFilter): UsageAreaFilter =>
   filter.area ?? (filter.toolkit !== undefined || filter.tool !== undefined ? "tools" : "models");
 
+/**
+ * `query` reading the area its grouping implies when it names none: tool calls for a grouping by toolkit or tool (a
+ * model attempt has neither), both areas for a grouping by area.
+ */
+const withGroupArea = <Q extends { readonly area?: UsageAreaFilter }>(
+  query: Q,
+  groupBy: string,
+): Q => {
+  if (query.area !== undefined) return query;
+
+  if (groupBy === "toolkit" || groupBy === "tool") return { ...query, area: "tools" };
+
+  return groupBy === "area" ? { ...query, area: "all" } : query;
+};
+
+/** A group's key by `auth`: the credential's keyed `auth_index`; empty for a record without one (a tool call). */
+const authKey = (authIndexOf: AuthIndexer, authId: string): string =>
+  authId === "" ? "" : authIndexOf(authId);
+
 export interface OwnRecords {
   readonly memberId: string | undefined;
   readonly principalId: string;
@@ -758,9 +777,10 @@ export interface UsageSummaryQuery extends UsageFilter {
 export const summarizeUsage = async (
   db: D1Database,
   org: OrgId,
-  query: UsageSummaryQuery,
+  asked: UsageSummaryQuery,
   authIndexOf: AuthIndexer,
 ): Promise<UsageSummary> => {
+  const query = withGroupArea(asked, asked.groupBy);
   const { where, params } = await resolvedClauses(db, org, query, authIndexOf);
 
   const limit = Math.max(
@@ -826,7 +846,7 @@ export const summarizeUsage = async (
     groups: (groups?.results ?? []).map((group) => {
       const key = String(group.key ?? "");
 
-      return { ...group, key: query.groupBy === "auth" ? authIndexOf(key) : key };
+      return { ...group, key: query.groupBy === "auth" ? authKey(authIndexOf, key) : key };
     }),
   };
 };
@@ -952,9 +972,11 @@ interface SeriesRow {
 export const summarizeUsageSeries = async (
   db: D1Database,
   org: OrgId,
-  query: UsageSeriesQuery,
+  asked: UsageSeriesQuery,
   authIndexOf: AuthIndexer,
 ): Promise<ReadonlyArray<UsageSeriesGroup>> => {
+  const query = withGroupArea(asked, asked.groupBy);
+
   const { where, params } = await resolvedClauses(
     db,
     org,
@@ -992,7 +1014,7 @@ export const summarizeUsageSeries = async (
 
   for (const row of result.results) {
     const rawKey = String(row.key ?? "");
-    const rowKey = query.groupBy === "auth" ? authIndexOf(rawKey) : rawKey;
+    const rowKey = query.groupBy === "auth" ? authKey(authIndexOf, rawKey) : rawKey;
     let current = series[series.length - 1];
 
     if (current === undefined || current.key !== rowKey) {

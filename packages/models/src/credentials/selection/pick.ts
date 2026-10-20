@@ -10,9 +10,9 @@
  * per-provider slot cursor is not reproduced.
  */
 import type { Json } from "@commissary/json";
+import type { SpendGate } from "@commissary/state/spend";
 import type { RoutingStrategy } from "../../config/schema.ts";
 import { boundSessionIdentity } from "../../session-routing/identity.ts";
-import type { SpendGate } from "@commissary/state/spend";
 import { lcpNamespace, type MerklePrefixMatcher } from "../../session-routing/matcher.ts";
 import type { Reach } from "../../grants/reach.ts";
 import { type Credential, type CredentialState, executorKey } from "../model.ts";

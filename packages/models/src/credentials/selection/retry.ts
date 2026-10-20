@@ -7,8 +7,9 @@
  * answers this question because it owns the cooldown state of every credential.
  */
 import { Schema } from "effect";
-import type { Reach } from "../../grants/reach.ts";
 import type { Json } from "@commissary/json";
+import type { SpendGate } from "@commissary/state/spend";
+import type { Reach } from "../../grants/reach.ts";
 import { isCredentialRetryRoundStatus } from "../cooldown/classify.ts";
 import { MIN_QUOTA_COOLDOWN_MS } from "../cooldown/mark-result.ts";
 import {
@@ -18,7 +19,6 @@ import {
   type CredentialState,
   executorKey,
 } from "../model.ts";
-import type { SpendGate } from "@commissary/state/spend";
 import { servesMember } from "../ownership.ts";
 import { availabilityBlock, isBlockedForModel } from "./availability.ts";
 import { grantedRoute } from "./grants.ts";

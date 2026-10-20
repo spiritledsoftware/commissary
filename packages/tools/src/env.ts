@@ -2,8 +2,8 @@
  * What `@commissary/tools` reads from a Worker's env (#134 "How packages get their bindings"): the org's ControlPlane,
  * typed as objects with the Tools part ({@link ToolsControlPlane}), so callers write `stub.tools().x(…)`, and, for the
  * MCP endpoint's connect links, the Platform registry and the app host, and the usage database its tool calls' records
- * go into (#199). Tools needs no binding of its own: its state is the ControlPlane's, its usage records share Models'
- * table, and it reaches MCP servers through the global `fetch` behind the outbound guard.
+ * go into (#199, `USAGE`, the D1 database Models' records go into too). Its state is the ControlPlane's, and it reaches
+ * MCP servers through the global `fetch` behind the outbound guard.
  */
 import { Context, Effect } from "effect";
 import { CurrentOrg, type Reply } from "@commissary/core";
