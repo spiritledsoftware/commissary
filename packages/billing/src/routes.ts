@@ -1,9 +1,13 @@
 /**
  * `/v9/management/billing` (`BillingGroup` in @commissary/contract/billing). Workers addition, no Go counterpart.
  *
- * - `GET /billing`: the org's plan, its payment state, whether a card is on file, and this month's usage against free
- *   usage in each unit (units not counted yet read 0). Any org admin may read it (the role table's default for a route
+ * - `GET /billing`: the org's plan, its payment state, whether a card is on file, this month's usage against free
+ *   usage in each unit (units not counted yet read 0), the billing cap, the month's bill so far and the notices of plan
+ *   limits and a failed payment (`notices.ts`; the failed-payment notice carries no link, the panel asks
+ *   `POST /billing/portal` when an owner follows it). Any org admin may read it (the role table's default for a route
  *   without an entry, `apps/app/src/management/policy.ts`).
+ * - `PATCH /billing {billing_cap: <dollars> | null}` (#238): sets or removes the billing cap, in whole cents; org
+ *   owners only ({@link accessRules}). It needs no billing provider: Commissary enforces the cap itself.
  * - `POST /billing/checkout`, `POST /billing/portal`, `POST /billing/plan {plan: "free"}` (#237): Pay as you go through
  *   the billing provider (Polar, `polar.ts`); org owners only ({@link accessRules}). Without the provider's settings
  *   they answer 404, like a path the router does not know.
@@ -15,7 +19,7 @@
 import { Clock, Effect, Option, Schema } from "effect";
 import { HttpRouter, HttpServerError, HttpServerRequest } from "effect/http";
 import { type AccessRule, AccessPrincipal, isHosted } from "@commissary/auth";
-import { type BillingView, SwitchBillingPlan } from "@commissary/contract/billing";
+import { BillingCap, type BillingView, SwitchBillingPlan } from "@commissary/contract/billing";
 import {
   CurrentOrg,
   handled,
@@ -33,6 +37,7 @@ import {
   billingControlPlane,
   callPart,
 } from "./env.ts";
+import { billingNotices } from "./notices.ts";
 import { FREE_USAGE } from "./plan.ts";
 import type { BillingProvider, BillingProviderError } from "./provider.ts";
 import { BillingProviders } from "./providers.ts";
@@ -41,8 +46,12 @@ import type { BillingUsage } from "./store.ts";
 
 const BASE = "/v9/management";
 
-/** The billing routes only org owners may call (ADR 0042: owners switch plans and change the payment method). */
+/**
+ * The billing routes only org owners may call (ADR 0042: owners switch plans, change the payment method and set the
+ * billing cap).
+ */
 export const accessRules: ReadonlyArray<AccessRule> = [
+  { path: `${BASE}/billing`, methods: ["PATCH"], role: "owner" },
   { path: `${BASE}/billing/checkout`, role: "owner" },
   { path: `${BASE}/billing/portal`, role: "owner" },
   { path: `${BASE}/billing/plan`, role: "owner" },
@@ -61,6 +70,9 @@ const billingView = (billing: BillingUsage, cardOnFile: boolean | null): Billing
     browser_hours: { used: billing.used.browserHours, free: FREE_USAGE.browserHours },
     computer_hours: { used: billing.used.computerHours, free: FREE_USAGE.computerHours },
   },
+  billing_cap: billing.billingCap,
+  bill: billing.bill,
+  notices: billingNotices(billing),
 });
 
 /** The billing provider of the invocation, `undefined` without one. */
@@ -86,11 +98,25 @@ const cardOnFile = (provider: BillingProvider | undefined, billing: BillingUsage
           ),
         );
 
+/** What the billing routes answer of the org: {@link billingView} with whether a card is on file. */
+const viewReply = (provider: BillingProvider | undefined, billing: BillingUsage) =>
+  Effect.map(cardOnFile(provider, billing), (card) => jsonReply(200, billingView(billing, card)));
+
+/** The request's JSON body decoded by `schema`, excess properties refused; `400 invalid body` saying `expected`. */
+const decodeBody = <S extends Schema.ConstraintDecoder<unknown>>(schema: S, expected: string) =>
+  bodyJson.pipe(
+    Effect.flatMap((value) =>
+      Option.match(Schema.decodeUnknownOption(schema, { onExcessProperty: "error" })(value), {
+        onNone: () => Effect.fail(replyError(400, "invalid body", { message: expected })),
+        onSome: (body: S["Type"]) => Effect.succeed(body),
+      }),
+    ),
+  );
+
 const overview = Effect.gen(function* () {
   const billing = yield* usageNow;
-  const provider = yield* invocationProvider;
 
-  return jsonReply(200, billingView(billing, yield* cardOnFile(provider, billing)));
+  return yield* viewReply(yield* invocationProvider, billing);
 });
 
 /** Answers like a path the router does not know (`apps/app/src/http/not-found.ts` turns that into the plain 404). */
@@ -260,21 +286,9 @@ const switchPlan = (provider: BillingProvider) =>
     const env = yield* BillingEnv;
     const org = yield* CurrentOrg;
 
-    const body = yield* bodyJson.pipe(
-      Effect.flatMap((value) =>
-        Option.match(
-          Schema.decodeUnknownOption(SwitchBillingPlan, { onExcessProperty: "error" })(value),
-          {
-            onNone: () =>
-              Effect.fail(
-                replyError(400, "invalid body", {
-                  message: 'expected {"plan": "free"}; upgrade through POST /billing/checkout',
-                }),
-              ),
-            onSome: Effect.succeed,
-          },
-        ),
-      ),
+    const body = yield* decodeBody(
+      SwitchBillingPlan,
+      'expected {"plan": "free"}; upgrade through POST /billing/checkout',
     );
 
     const billing = yield* usageNow;
@@ -291,16 +305,44 @@ const switchPlan = (provider: BillingProvider) =>
       forgetBilling(org);
     }
 
-    const after = yield* usageNow;
-
-    return jsonReply(200, billingView(after, yield* cardOnFile(provider, after)));
+    return yield* viewReply(provider, yield* usageNow);
   }).pipe(
     Effect.catchTag("BillingProviderError", providerUnavailable),
     Effect.catchTag("BillingPartUnavailable", partUnavailable),
   );
 
+/** `PATCH /billing`'s shape; the amount is checked apart ({@link isBillingCap}): a wrong one answers 422, not 400. */
+const CapBody = Schema.Struct({ billing_cap: Schema.NullOr(Schema.Number) });
+
+const isBillingCap = Schema.is(BillingCap);
+
+/**
+ * Sets or removes the billing cap; the org's next request sees it (this isolate forgets its refusal at once, the API
+ * Worker's within `BILLING_CAP_REFUSAL_TTL_MS`).
+ */
+const setCap = Effect.gen(function* () {
+  const env = yield* BillingEnv;
+  const org = yield* CurrentOrg;
+
+  const { billing_cap: cap } = yield* decodeBody(
+    CapBody,
+    'expected {"billing_cap": <dollars> | null}',
+  );
+
+  if (cap !== null && !isBillingCap(cap))
+    return yield* replyError(422, "invalid_billing_cap", {
+      message: "the billing cap is an amount of dollars from 0, in whole cents",
+    });
+
+  yield* callPart(env, org, "billing cap", (part) => part.setBillingCap(cap));
+  forgetBilling(org);
+
+  return yield* viewReply(yield* invocationProvider, yield* usageNow);
+}).pipe(Effect.catchTag("BillingPartUnavailable", partUnavailable));
+
 export const BillingRoutes = HttpRouter.addAll([
   HttpRouter.route("GET", `${BASE}/billing`, hostedOnly(handled(overview))),
+  HttpRouter.route("PATCH", `${BASE}/billing`, hostedOnly(handled(setCap))),
   HttpRouter.route(
     "POST",
     `${BASE}/billing/checkout`,

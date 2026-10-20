@@ -305,7 +305,9 @@ Set up each Polar organization (production for `cloud`, a sandbox one for previe
    `commissary_requests` (requests and tool calls), `commissary_browser_hours`, `commissary_computer_hours`.
 2. **Product.** One recurring (monthly) product, "Pay as you go", with a metered price on each meter at ADR 0042's
    rates and no minimum: $0.000005 per request (that is, $0.50 per 100,000), $0.15 per browser hour, $0.15 per
-   computer hour. Commissary sends only the usage above free usage, so the prices have no free tier and no credits
+   computer hour. These must equal `PAYG_RATE_MICROS` (`packages/billing/src/bill.ts`), from which Commissary
+   computes the month's bill that the billing cap stops: a Polar price that differs bills orgs past their cap or short
+   of it. Commissary sends only the usage above free usage, so the prices have no free tier and no credits
    benefit. Whether Polar accepts a $0 fixed price beside the metered prices is still to be tested in the sandbox;
    until then the product has only the metered prices (to be checked in the sandbox: #274). Its id
    is `POLAR_PRODUCT_ID`.

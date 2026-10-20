@@ -1,7 +1,8 @@
 // `/v9/management/billing` on Commissary Cloud (packages/billing/src/routes.ts, @commissary/contract/billing): a new
 // org is on Free with nothing used of its free usage; the plan and the month's count follow what Billing stores; any org
-// admin may read it and a plain member may not; checkout, the portal and switching plans are for org owners. Polar's
-// webhook route is public on the app host. A self-hosted Commissary answers 404 (test/billing-self-hosted.test.ts).
+// admin may read it and a plain member may not; checkout, the portal, switching plans and setting the billing cap are
+// for org owners. Polar's webhook route is public on the app host. A self-hosted Commissary answers 404
+// (test/billing-self-hosted.test.ts).
 import { env } from "cloudflare:workers";
 import { Schema } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -119,6 +120,39 @@ describe("billing", () => {
 
     expect(switched.status).toBe(200);
     expect((await billing(admin, slug)).status).toBe(200);
+  });
+
+  it("keeps setting the billing cap for org owners: an org admin gets 403", async () => {
+    const owner = await signIn({ email: "owner-cap@example.com" });
+    const { slug } = await personalOrg(owner);
+
+    const added = await call(`/v9/management/orgs/${slug}/members`, {
+      method: "POST",
+      headers: panelHeaders(owner, { "content-type": "application/json" }),
+      body: JSON.stringify({ email: "admin-cap@example.com", role: "admin" }),
+    });
+
+    expect(added.status).toBe(201);
+
+    const admin = await signIn({ email: "admin-cap@example.com" });
+
+    const setCap = (cookie: string) =>
+      call(`/v9/management/orgs/${slug}/billing`, {
+        method: "PATCH",
+        headers: panelHeaders(cookie, { "content-type": "application/json" }),
+        body: JSON.stringify({ billing_cap: null }),
+      });
+
+    expect((await setCap(admin)).status).toBe(403);
+
+    const removed = await setCap(owner);
+
+    expect(removed.status).toBe(200);
+    expect(Schema.decodeUnknownSync(BillingView)(await removed.json()).billing_cap).toBeNull();
+    // The admin still reads the overview, cap included.
+    expect(
+      Schema.decodeUnknownSync(BillingView)(await (await billing(admin, slug)).json()).billing_cap,
+    ).toBeNull();
   });
 
   it("takes Polar's webhooks on the app host without a session, and refuses an unsigned one", async () => {

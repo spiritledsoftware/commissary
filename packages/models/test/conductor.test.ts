@@ -1434,6 +1434,7 @@ describe("free usage metering (ADR 0042)", () => {
           ? {
               ok: false,
               limit: {
+                limit: "requests",
                 allowed: limit,
                 // An hour after the test clock's start.
                 resetsAt: 3_600_000,

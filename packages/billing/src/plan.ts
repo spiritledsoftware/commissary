@@ -2,6 +2,7 @@
  * Plans, free usage and the request-rate ceilings of Commissary Cloud (ADR 0042), as named constants: the numbers are
  * the deployment's pricing, not settings. New in the Workers port, no Go counterpart.
  */
+import { Schema } from "effect";
 
 /** What an org holds to decide what it is billed: Free or Pay as you go. A self-hosted Commissary has none. */
 export const PLANS = ["free", "payg"] as const;
@@ -37,6 +38,14 @@ export const FREE_USAGE: Usage = {
   browserHours: 1,
   computerHours: 0,
 };
+
+/**
+ * Which plan limit refuses use: free usage of requests and tool calls (`requests`, on Free or while past due), or the
+ * billing cap (`billing_cap`, on Pay as you go; `bill.ts`). It is a `plan_limit_reached` body's `limit`.
+ */
+export const PlanLimitKind = Schema.Literals(["requests", "billing_cap"]);
+
+export type PlanLimitKind = typeof PlanLimitKind.Type;
 
 /** Requests an org may send a minute on the client API, by plan (ADR 0042 "Ceilings for fairness between orgs"). */
 export const REQUEST_RATE_CEILING: Readonly<Record<Plan, number>> = {

@@ -13,6 +13,7 @@ type BillingPartMethod =
   | "plan"
   | "setPlan"
   | "limitsPlan"
+  | "setBillingCap"
   | "usage"
   | "admit"
   | "refund"

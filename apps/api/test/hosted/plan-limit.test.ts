@@ -2,8 +2,9 @@
 // (`exports.default.fetch`) with the real ControlPlane picker and Billing part; only the upstream is mocked, through the
 // global `fetch`. A request counts once when Models starts serving it, whatever the credential, outcome or number of
 // attempts; a Free org's request over 25,000 a month is refused with `429 plan_limit_reached`; a request a spend limit
-// refuses is not counted. (Each org is on Free with 5 requests a minute here, vitest.config.ts: the tests seed the month's
-// count instead of sending 25,000 requests. The month turning is tested with `TestClock` in packages/billing.)
+// refuses is not counted; a Pay-as-you-go org's request past its billing cap is refused the same way. (Each org is on
+// Free with 5 requests a minute here, vitest.config.ts: the tests seed the month's count instead of sending 25,000
+// requests. The month turning is tested with `TestClock` in packages/billing.)
 import { env } from "cloudflare:workers";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { FREE_USAGE, requestsUsed, seedRequestsUsed, setPlan } from "@commissary/billing/testing";
@@ -229,5 +230,36 @@ describe("the Free plan's limit", () => {
 
     expect((await chat(key, "solo-model")).status).toBe(200);
     expect(await used(org)).toBe(FREE_USAGE.requests + 1);
+  });
+});
+
+describe("the billing cap", () => {
+  it("refuses a Pay as you go org's request once the month's bill reaches its $50 cap", async () => {
+    const { org, key } = await configuredOrg("capped@example.com");
+
+    await setPlan(env, org, "payg");
+    // One request short of $50 above free usage, at $0.50 per 100,000.
+    await seedRequestsUsed(env, org, Date.now(), FREE_USAGE.requests + 10_000_000 - 1);
+
+    expect((await chat(key, "solo-model")).status).toBe(200);
+
+    upstream.length = 0;
+
+    const refused = await chat(key, "solo-model");
+
+    expect(refused.status).toBe(429);
+    expect(Number(refused.headers.get("retry-after"))).toBeGreaterThan(0);
+
+    const body = await refused.json<{
+      error: { code: string; message: string; limit: string; allowed: number };
+    }>();
+
+    expect(body.error).toEqual(
+      expect.objectContaining({ code: "plan_limit_reached", limit: "billing_cap", allowed: 50 }),
+    );
+    expect(body.error.message).toContain("billing cap of $50.00");
+    expect(body.error.message).toContain("the billing page of the panel");
+    expect(upstream).toEqual([]);
+    expect(await used(org)).toBe(FREE_USAGE.requests + 10_000_000);
   });
 });

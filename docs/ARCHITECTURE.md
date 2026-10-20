@@ -118,12 +118,15 @@ to `packages/billing/src/`), Tools' as `tools/...` (relative to `packages/tools/
     src/management.ts         for the app Worker: the /billing routes and their role-table entries, Polar's webhook
                               route (/webhooks/polar), its org-deletion step
     src/state.ts              for the state Worker: BillingPart, its part of the ControlPlane
-    src/part.ts, store.ts     the Billing part (plan, free-usage counters, Polar account and meter batches in SQLite)
+    src/part.ts, store.ts     the Billing part (plan, free-usage counters, billing cap, Polar account and meter batches
+                              in SQLite)
     src/provider.ts, providers.ts, polar.ts
                               the billing provider adapter, which one an invocation uses, and Polar's
     src/send-usage.ts, scheduled-tasks.ts, webhook.ts, org-deletion.ts
                               sending usage above free usage, the cron task, Polar's webhooks, the deletion step
     src/plan.ts, month.ts     the constants (plans, free usage, ceilings) and the calendar month in UTC
+    src/bill.ts, notices.ts   Pay as you go's rates, the month's bill and the default billing cap; GET /billing's
+                              notices
     src/meter.ts              counting a request against free usage and the plan limit
     src/rate-limit.ts         the per-plan request-rate ceiling
     test/                     workerd tests against a test-only ControlPlane (test/worker.ts); test/testing.ts is ./testing
@@ -2970,9 +2973,9 @@ is the Access one, unchanged, and there is no auth Worker. User docs: `docs/ACCE
 ## Billing (`billing/`, `models/handlers/metering.ts`, `apps/api/src/http/gate.ts`, `billing/routes.ts`)
 
 Workers addition, no Go counterpart; ADR 0042, #236, #237. Commissary Cloud's plans: every org holds one, `free` or
-`payg`, and has a month's **free usage** counted in its ControlPlane; Pay as you go is billed through Polar. The billing
-cap, notices and the other units come later (#238, #241). **A self-hosted Commissary has none of it**: the package checks
-`isHosted` before it counts, refuses or reads anything, and its routes answer 404.
+`payg`, and has a month's **free usage** counted in its ControlPlane; Pay as you go is billed through Polar and stopped
+by the org's **billing cap** (#238). The other units come later (#241). **A self-hosted Commissary has none of it**:
+the package checks `isHosted` before it counts, refuses or reads anything, and its routes answer 404.
 
 - **Seam** (`codebase-design`): Billing is an area package (`packages/billing`, entries `./api`, `./management`,
   `./state`, `./testing`, lint rule `boundaries/billing-imports`) that imports no other area. What callers see is small:
@@ -2991,9 +2994,14 @@ cap, notices and the other units come later (#238, #241). **A self-hosted Commis
   through `applySubscription`). Three tables serve Polar (#237): `billing_account` (one row: the Polar customer, the
   current subscription, the payment state `ok`/`past_due`, and Polar's `modified_at` of the last change applied),
   `billing_meter_sent` (what was sent of each unit and month) and `billing_meter_batch` (the one batch on its way).
-  `wipe()` drops all five.
+  `billing_cap` (#238) holds the billing cap org owners set (`setBillingCap`, dollars a month or `NULL` for none; no
+  row: the default $50). `usage(now)` also answers the month's bill and the cap. `wipe()` drops all six.
 - **Constants** (`billing/plan.ts`, ADR 0042): free usage `25,000` requests and tool calls, 1 browser hour, 0 computer
-  hours; request-rate ceilings 60 a minute on Free and 600 on Pay as you go. The month is the calendar month in UTC
+  hours; request-rate ceilings 60 a minute on Free and 600 on Pay as you go; Pay as you go's rates above free usage,
+  $0.50 per 100,000 requests and tool calls and $0.15 a browser or computer hour, and the default billing cap, $50 a
+  month (`billing/bill.ts`). Amounts are summed in micro-dollars (5 µ$ a request), so a month's bill is exact and
+  compares with a cap without floating-point drift; the API speaks dollars. The Polar product's prices must equal
+  these rates (`docs/DEPLOY.md` "Polar"). The month is the calendar month in UTC
   (`billing/month.ts`); the Worker side passes `Clock.currentTimeMillis` to the object, so tests drive it with `TestClock`.
 - **Counting and the plan limit** (`billing/meter.ts`, `models/handlers/metering.ts`): only a **Request** counts
   (GLOSSARY: one model call a client makes). `executeNonStream`, `executeStream` and the Codex alpha search wrap their
@@ -3014,6 +3022,18 @@ cap, notices and the other units come later (#238, #241). **A self-hosted Commis
   (logged): serving needs the same object. An isolate remembers a refusal for 30 seconds (`billing/cache.ts`; the
   registry lookup of the org's slug for the link, which the client API's key (an org id) does not carry, runs once per
   refusal), so a client that retries against the limit does not reach the ControlPlane.
+- **Billing cap** (`billing/store.ts` `admit`, `billing/bill.ts`, #238): what Commissary Cloud may bill a Pay-as-you-go
+  org in a month, default $50, which org owners set to any amount from $0 in whole cents or remove (`PATCH /billing`);
+  Polar has no customer spending cap, so Commissary enforces it (ADR 0042). The month's bill is computed from the
+  counters at the rates above, above free usage, whatever the plan. A Pay-as-you-go org's request that would be billed
+  (its free usage of requests is used up) and would take the bill past the cap is refused like Free's limit (one test,
+  `capRefusesNextRequest`, which the 100% notice uses too): `429 plan_limit_reached`, `Retry-After` to the first of the
+  next month UTC, the body's `limit` `billing_cap` and `allowed` the cap in dollars, a message that names the cap and
+  links to the billing page. So the request that brings the bill to exactly the cap is served, and use within free
+  usage is never refused, even at a cap of $0. A past-due org is held to Free's limits, so the cap does not apply to
+  it. Work in flight finishes. Changing the cap takes effect at the next request in the isolate that changed it
+  (`forgetBilling`) and **within 5 seconds on the client API**: the app Worker cannot clear the API Worker's isolates,
+  so they remember a refusal by the cap for 5 seconds only (`BILLING_CAP_REFUSAL_TTL_MS`), not Free's 30.
 - **Request-rate ceiling** (`billing/rate-limit.ts`): two Workers rate-limiting bindings on the API Worker,
   `FREE_RATE_LIMIT` (60 a minute) and `PAYG_RATE_LIMIT` (600), keyed by org id; the plan whose limits apply (a
   `limitsPlan()` call to its Billing part: Free's while a Pay-as-you-go org is past due; cached per isolate for 30
@@ -3027,8 +3047,20 @@ cap, notices and the other units come later (#238, #241). **A self-hosted Commis
 - **Management API** (`billing/routes.ts`, `@commissary/contract/billing`): `GET /v9/management/billing` answers the plan,
   the payment state (`payment`: `ok` or `past_due`), whether the org's Polar customer has a card on file (`card_on_file`:
   asked of Polar on each read; `false` before the first checkout or without Polar, `null` when Polar cannot be asked),
-  the month's start and end and, for each unit, `used` and the `free` usage; any org admin may read it (the role table's
-  default; `docs/ACCESS.md`). Units not counted yet read 0. `POST /billing/checkout`, `POST /billing/portal` and
+  the month's start and end and, for each unit, `used` and the `free` usage, the billing cap (`billing_cap`, dollars,
+  `null` for none), the month's bill so far (`bill`, dollars) and the **notices** (`billing/notices.ts`); any org admin
+  may read it (the role table's default; `docs/ACCESS.md`). Units not counted yet read 0. Commissary sends no billing
+  email (ADR 0042): the notices are state the panel (#239) shows owners and admins. `free_usage` (a unit, 80 or 100):
+  where Free's limits apply (on Free, and on Pay as you go while past due), at 80% and at 100% of a unit's free usage,
+  for the units that have some; `billing_cap` (80 or 100): on Pay as you go, at 80% of the cap and at 100% exactly when
+  the cap refuses the next request (none without a cap; a cap of $0 shows 100% once free usage of requests is used
+  up); `payment_failed`: while past due, first, with no link (a read asks Polar for nothing more than the card on
+  file). The panel opens Polar's customer portal through `POST /billing/portal` when an org owner follows the notice,
+  and tells admins who are not owners to ask an owner, since only owners may change the payment method.
+  `PATCH /billing {"billing_cap": <dollars> | null}` sets or removes the cap and answers the overview: `400` for
+  another shape, `422 invalid_billing_cap` for an amount below 0 or in fractions of a cent. It is for org owners only
+  (Billing's `accessRules`, `PATCH` only) and works on any Commissary Cloud stage (it needs no billing provider).
+  `POST /billing/checkout`, `POST /billing/portal` and
   `POST /billing/plan {"plan":"free"}` are for org owners (Billing's `accessRules`, which the app Worker's role table
   lists) and exist only with a billing provider (see below), else they answer 404 like an unknown path.
 - **Pay as you go through Polar** (`billing/provider.ts`, `providers.ts`, `polar.ts`, #237). Polar is the merchant of

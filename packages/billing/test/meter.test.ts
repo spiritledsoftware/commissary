@@ -163,6 +163,67 @@ describe("countRequest", () => {
     }),
   );
 
+  it.effect(
+    "refuses a Pay as you go org's billed request at its billing cap, naming the cap until next month",
+    () =>
+      Effect.gen(function* () {
+        const org = newOrgId();
+
+        yield* Effect.promise(() => setPlan(env, org, "payg"));
+        // $50 above free usage: 10,000,000 requests at $0.50 per 100,000.
+        yield* Effect.promise(() =>
+          seedRequestsUsed(env, org, MID_MARCH, FREE_USAGE.requests + 10_000_000),
+        );
+        yield* TestClock.setTime(MID_MARCH);
+
+        const refused = yield* Effect.flip(asOrg(org, countRequest));
+
+        assert.instanceOf(refused, PlanLimitReached);
+        assert.strictEqual(refused.retryAfterSeconds, (FIRST_OF_APRIL - MID_MARCH) / 1000);
+        assert.include(refused.message, "billing cap of $50.00");
+        assert.include(refused.message, "2026-04-01T00:00:00.000Z");
+        assert.include(refused.message, "the billing page of the panel");
+        assert.deepStrictEqual(JSON.parse(refused.body), {
+          error: {
+            code: "plan_limit_reached",
+            message: refused.message,
+            limit: "billing_cap",
+            allowed: 50,
+            resets_at: "2026-04-01T00:00:00.000Z",
+            reset_seconds: (FIRST_OF_APRIL - MID_MARCH) / 1000,
+          },
+        });
+        resetBillingCaches();
+      }),
+  );
+
+  it.effect(
+    "forgets a billing-cap refusal within 5 seconds, so a cap raised elsewhere lets use resume",
+    () =>
+      Effect.gen(function* () {
+        const org = newOrgId();
+
+        yield* Effect.promise(() => setPlan(env, org, "payg"));
+        yield* Effect.promise(() =>
+          seedRequestsUsed(env, org, MID_MARCH, FREE_USAGE.requests + 10_000_000),
+        );
+        yield* TestClock.setTime(MID_MARCH);
+        assert.instanceOf(yield* Effect.flip(asOrg(org, countRequest)), PlanLimitReached);
+
+        // An owner removed the cap through the app Worker: this isolate's refusal was not forgotten.
+        yield* Effect.promise(
+          async () => await env.CONTROL_PLANE.getByName(org).billing().setBillingCap(null),
+        );
+        assert.instanceOf(yield* Effect.flip(asOrg(org, countRequest)), PlanLimitReached);
+
+        yield* TestClock.adjust("4999 millis");
+        assert.instanceOf(yield* Effect.flip(asOrg(org, countRequest)), PlanLimitReached);
+
+        yield* TestClock.adjust("1 millis");
+        assert.isDefined(yield* asOrg(org, countRequest));
+      }),
+  );
+
   it.effect("holds a past-due Pay as you go org to Free's stop, and says why", () =>
     Effect.gen(function* () {
       const org = newOrgId();

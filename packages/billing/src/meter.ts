@@ -4,7 +4,8 @@
  * whose requests and tool calls of the month are used up, refuses it with {@link PlanLimitReached} (`429
  * plan_limit_reached`, `Retry-After` until the first of the next month UTC), and so for a Pay-as-you-go org whose
  * payment failed (Polar marked its subscription past due), which is held to Free's limits until a payment succeeds;
- * work in flight finishes. On a self-hosted Commissary it does nothing. A request the plan refuses is not counted, and
+ * a Pay-as-you-go org's request that would be billed past its billing cap is refused the same way (#238). Work in
+ * flight finishes. On a self-hosted Commissary it does nothing. A request the plan refuses is not counted, and
  * one that did no work (no upstream attempt: a spend limit, an unknown model, no credential) is taken back
  * ({@link uncountRequest}). New in the Workers port, no Go counterpart.
  *
@@ -17,16 +18,24 @@ import { Clock, Effect, Schema } from "effect";
 import { CurrentOrg, type OrgId } from "@commissary/core";
 import { isHosted } from "@commissary/auth";
 import { panelPageUrl } from "@commissary/state";
-import { BILLING_TTL_MS, type CachedRefusal, refusals } from "./cache.ts";
+import {
+  BILLING_CAP_REFUSAL_TTL_MS,
+  BILLING_TTL_MS,
+  type CachedRefusal,
+  refusals,
+} from "./cache.ts";
 import { type BillingBindings, BillingEnv, billingPartOf } from "./env.ts";
+import { PlanLimitKind } from "./plan.ts";
 
 export const PLAN_LIMIT_REACHED = "plan_limit_reached";
 
-/** A Free org used up its free usage for the month. */
+/** A Free org used up its free usage for the month, or a Pay-as-you-go org's bill reached its billing cap. */
 export class PlanLimitReached extends Schema.TaggedError<PlanLimitReached>()("PlanLimitReached", {
   /** Names the limit and links to the billing page; safe to show. */
   message: Schema.String,
-  /** The month's free usage of requests and tool calls. */
+  /** Which limit refused: free usage of requests and tool calls, or the billing cap. */
+  limit: PlanLimitKind,
+  /** The month's free usage of requests and tool calls, or the billing cap in dollars. */
   allowed: Schema.Number,
   /** The seconds until free usage starts over (at least 1). */
   retryAfterSeconds: Schema.Number,
@@ -39,7 +48,7 @@ export class PlanLimitReached extends Schema.TaggedError<PlanLimitReached>()("Pl
       error: {
         code: PLAN_LIMIT_REACHED,
         message: this.message,
-        limit: "requests",
+        limit: this.limit,
         allowed: this.allowed,
         resets_at: this.resetsAt,
         reset_seconds: this.retryAfterSeconds,
@@ -62,16 +71,27 @@ const billingPage = (env: BillingBindings, org: OrgId): Effect.Effect<string> =>
 
 const groups = new Intl.NumberFormat("en-US");
 
-/** The refusal of a request at `now`: what the month allows, when it starts over and where to see usage. */
-const refused = (refusal: CachedRefusal, now: number): PlanLimitReached => {
-  const resetsAt = new Date(refusal.resetsAt).toISOString();
+const dollars = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
+
+/** What a refusal says: the limit, when it starts over and where to see usage. */
+const refusalMessage = (refusal: CachedRefusal, resetsAt: string): string => {
+  if (refusal.limit === "billing_cap")
+    return `The billing cap of ${dollars.format(refusal.allowed)} a month is reached: use that would be billed is refused until ${resetsAt} unless an org owner raises or removes the cap. Plan and usage: ${refusal.page}`;
 
   const held = refusal.pastDue
     ? "A payment failed: Pay as you go is held to the Free plan's limits until a payment succeeds, and the"
     : "The";
 
+  return `${held} Free plan's ${groups.format(refusal.allowed)} requests and tool calls a month are used up; free usage starts over at ${resetsAt}. Plan and usage: ${refusal.page}`;
+};
+
+/** The refusal of a request at `now`: what the month allows, when it starts over and where to see usage. */
+const refused = (refusal: CachedRefusal, now: number): PlanLimitReached => {
+  const resetsAt = new Date(refusal.resetsAt).toISOString();
+
   return new PlanLimitReached({
-    message: `${held} Free plan's ${groups.format(refusal.allowed)} requests and tool calls a month are used up; free usage starts over at ${resetsAt}. Plan and usage: ${refusal.page}`,
+    message: refusalMessage(refusal, resetsAt),
+    limit: refusal.limit,
     allowed: refusal.allowed,
     retryAfterSeconds: Math.max(1, Math.ceil((refusal.resetsAt - now) / 1000)),
     resetsAt,
@@ -114,13 +134,17 @@ export const countRequest: Effect.Effect<
   const page = yield* billingPage(env, org);
 
   const refusal = {
+    limit: limit.limit,
     allowed: limit.allowed,
     resetsAt: limit.resetsAt,
     page,
     pastDue: limit.pastDue,
   };
 
-  refusals.set(org, refusal, Math.min(limit.resetsAt, now + BILLING_TTL_MS));
+  // A cap an owner raises in the app Worker must reach this isolate soon: its refusals lapse sooner than Free's.
+  const ttl = limit.limit === "billing_cap" ? BILLING_CAP_REFUSAL_TTL_MS : BILLING_TTL_MS;
+
+  refusals.set(org, refusal, Math.min(limit.resetsAt, now + ttl));
 
   return yield* refused(refusal, now);
 });
