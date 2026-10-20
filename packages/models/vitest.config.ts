@@ -6,11 +6,15 @@
 import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import { defineConfig } from "vitest/config";
 import { nodePackageTests } from "../../tools/vitest/node-package.ts";
+import { testWorkerOptions } from "../../tools/vitest/test-workers.ts";
 
 const unit = nodePackageTests("models-unit");
 
 export default defineConfig({
   test: {
+    // The local test budget (tools/vitest/test-workers.ts: Vitest's default workers in CI). The workerd project, which
+    // does not extend this config, takes the root's value, as `models-unit` and `tools-unit` set the same one.
+    ...testWorkerOptions(),
     // CI's shards reach every package's run; a shard may get none of this package's files.
     passWithNoTests: true,
     projects: [

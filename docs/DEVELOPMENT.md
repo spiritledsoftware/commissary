@@ -277,7 +277,8 @@ package's `turbo.json` appends the root files its tasks read (`"$TURBO_EXTENDS$"
 and `packages/models`: `migrations/`). The cache is local
 (`.turbo/cache`, one per git worktree: `cacheDir` keeps a worktree from writing into the main checkout's); there is
 no remote cache. `pnpm exec turbo run <task> --force`
-ignores it, `--dry` shows what would run and why.
+ignores it, `--dry` shows what would run and why. `pnpm test` also sets a local budget ("Tests" below); CI keeps
+Turborepo's and Vitest's defaults.
 
 ## Model catalog
 
@@ -363,9 +364,20 @@ stays with that Worker.
   imports only in `test/` folders.
 - **Fixtures** sit in the `test/fixtures/` of the package whose tests read them (below). A dependant reads them through
   `./testing`, never by a relative path into another package.
-- **Runs.** `pnpm test` is `turbo run test`: transit nodes re-run a package's tests and its dependants' when its files
+- **Runs.** `pnpm test` (`tools/test.sh`) is `turbo run test`: transit nodes re-run a package's tests and its dependants' when its files
   change, and an unchanged package is answered from the cache. `pnpm test --shard=N/3` (CI's three jobs) shards
   every package's run; one package: `pnpm --filter @commissary/<name> exec vitest run [file]`.
+- **Local test budget.** Turborepo runs up to 10 packages at once and each Vitest one worker per core less one, and
+  many of the workers are a workerd process each (a Miniflare per worker, `@cloudflare/vitest-plugin`), so an unbudgeted run starts dozens of heavy processes. Locally `pnpm test` runs turbo
+  with `--concurrency=$COMMISSARY_TEST_PACKAGES` (default 2), and every `vitest.config.ts` sets `test.maxWorkers` to
+  `testWorkers()` (`tools/vitest/test-workers.ts`; the Node.js packages through `nodePackageTests`): `COMMISSARY_TEST_WORKERS`
+  if set, else the cores divided by `COMMISSARY_TEST_PACKAGES` (at least 1), so packages at once × workers each stays
+  near the core count (8 cores: 2 × 4). With `CI` set (GitHub Actions) turbo keeps its default concurrency and `testWorkers()`
+  is `undefined`, so Vitest keeps its own. Tune it on the command line, e.g. `COMMISSARY_TEST_PACKAGES=1 pnpm test` for the
+  lightest run (one package, all cores) or `COMMISSARY_TEST_WORKERS=1 pnpm test`. Both variables are `passThroughEnv` of the
+  `test` task (`turbo.json`: strict mode filters other variables out of tasks), outside its hash: they change how many
+  run at once, not a result, so a cached package stays cached. A package run directly (`pnpm --filter … test`, `turbo run test`
+  without the script) takes the budget as if two packages ran. Vitest's own `VITEST_MAX_WORKERS`, if set, beats the config. A new `vitest.config.ts` sets `maxWorkers: testWorkers()` too.
 - **Cross-org suite** (ADR 0044). `apps/app/test/org-isolation.test.ts` writes the same names (credential, key, session
   and model names) in three orgs (two made through the management API, and `global`) and checks that each store shows
   every org only its own: KV (`OrgKv`, the signature store, video bindings, Antigravity state and entitlements),

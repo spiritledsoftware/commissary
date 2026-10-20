@@ -2,7 +2,8 @@
   // Code that runs in Node.js, not in workerd: alchemy.run.ts, infra/, stacks/ (Alchemy CLI), the catalog sync script
   // and the import-boundary lint rules (tools/oxlint/boundaries, loaded by oxlint). The workspace modules they import
   // (`@commissary/models/models-dev`, `@commissary/models/auth-index-key`, `@commissary/billing/plan`,
-  // packages/state/src/secrets/key.ts) are checked here too, with Node.js types.
+  // packages/state/src/secrets/key.ts) are checked here too, with Node.js types, as are the Vitest settings the packages'
+  // configs share (tools/vitest, which import `node:os`).
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
     "lib": ["ES2023"],
@@ -13,6 +14,7 @@
     "infra",
     "stacks",
     "tools/sync-models-dev-catalog.ts",
-    "tools/oxlint/boundaries"
+    "tools/oxlint/boundaries",
+    "tools/vitest"
   ]
 }

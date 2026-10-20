@@ -19,9 +19,10 @@
       "outputs": []
     },
     "test": {
-      "description": "Vitest; arguments after `--` (such as CI's --shard=N/3) reach every package's run and its cache key. The packages' Vitest configs import tools/vitest",
+      "description": "Vitest; arguments after `--` (such as CI's --shard=N/3) reach every package's run and its cache key. The packages' Vitest configs import tools/vitest. Locally `pnpm test` (tools/test.sh) limits the packages that test at once and each Vitest's workers (the local test budget, docs/DEVELOPMENT.md): the variables below only change how many run at once, never a result, so they pass through to the task without entering its hash (CI also keeps Vitest's defaults)",
       "dependsOn": ["transit"],
       "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/tools/vitest/**"],
+      "passThroughEnv": ["CI", "COMMISSARY_TEST_WORKERS", "COMMISSARY_TEST_PACKAGES"],
       "outputs": []
     },
     "build": {
