@@ -246,6 +246,19 @@ export default Alchemy.Stack(
 
     const computerMarker = computer === undefined ? {} : COMPUTER_MARKER;
 
+    // Browser Run's crawls (#270), on its REST API only: the account and API token ("Browser Run - Edit", a secret) the
+    // browser toolkit's crawl tools call it with, on the state Worker, whose ControlPlane runs the toolkit. Optional, and
+    // only with the binding (infra/settings.ts): without them the toolkit has no crawl tools and nothing else changes.
+    // `COMMISSARY_CRAWL_MAX_PAGES` caps the pages of one crawl, whose browser time lands on the deployment's account.
+    const browserCrawlEnv =
+      settings.browserCrawls === undefined
+        ? {}
+        : {
+            BROWSER_RUN_ACCOUNT_ID: settings.browserCrawls.accountId,
+            BROWSER_RUN_API_TOKEN: settings.browserCrawls.apiToken,
+            COMMISSARY_CRAWL_MAX_PAGES: String(settings.browserCrawls.maxPages),
+          };
+
     // The state Worker (apps/state, ADR 0030): defines ControlPlane, SessionState, Platform, BrowserSession and the
     // sandbox toolkit's SandboxSession (#222, with the computer's container when there is one, #223), and binds only
     // what their classes read (apps/state/src/env.d.ts). No
@@ -291,6 +304,7 @@ export default Alchemy.Stack(
         ...browserEnv,
         ...computerMarker,
         ...(computer === undefined ? {} : { COMPUTER_INSTANCE: settings.computerInstance }),
+        ...browserCrawlEnv,
       },
     });
 

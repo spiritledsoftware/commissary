@@ -136,16 +136,17 @@ to `packages/agents/src/`) and the JSON path engine as `packages/json`.
     src/management.ts         for the app Worker: management routes, role-table entries, org-deletion step, its section
                               of the org export
     src/state.ts              for the state Worker: ToolsPart, its part of the ControlPlane, the built-in toolkits'
-                              providers from its env (builtInProviders, ToolsPartEnv: the optional browser binding,
-                              BROWSER_SESSIONS, the Worker Loader and the sandbox sessions' namespace); the browser
+                              providers from its env (builtInProviders, ToolsPartEnv: the optional browser binding
+                              and its crawls' account and API token, BROWSER_SESSIONS, the Worker Loader and the sandbox sessions' namespace); the browser
                               sessions' Durable Object (BrowserSession and its env view, BrowserSessionEnv) and the
                               sandbox's classes (SandboxSession, SandboxEgress, WorkspaceServiceProxy)
     src/control-plane-part.ts the ControlPlane's Tools part (toolkits, their credentials, tool lists, overrides, tool
                               grants, the endpoint's list and calls, upstream sessions, browser profiles and their
                               grants)
     src/toolkits/             storage, names, the flat list of unique full names, static secrets, built-in toolkits
-    src/browser/              the browser toolkit: its Quick Action tools (#212), the browser-provider interface and
-                              its Browser Run adapters; its session tools, what they do in a browser (masking
+    src/browser/              the browser toolkit: its Quick Action tools (#212), its crawl tools and the log of who
+                              started each crawl (#270), the browser-provider interface and its Browser Run adapters
+                              (the binding's, the crawl REST API's); its session tools, what they do in a browser (masking
                               included) and the sessions' Durable Object (#213); browser profiles' storage (#215)
     src/sandbox/              the sandbox toolkit (#222): its tools, the sandbox-provider interface, sandbox networks,
                               output cuts, and Cloudflare's sandbox (cloudflare/: the SandboxSession object, the
@@ -1274,6 +1275,8 @@ Every URL an org or member supplies passes one **outbound guard** before Commiss
 - toolkits' OAuth 2 sign-ins (#202, "Tools", OAuth 2 sign-in): every metadata URL discovery fetches and every endpoint
   the metadata names (authorization, token, registration), on every sign-in and token refresh; a toolkit's OAuth app's
   authorize and token URLs and a client credentials grant's token URL, on save and on every use.
+- the URL a browser crawl starts from (#270, "Tools", Crawls), before Browser Run is asked to crawl it; the browser
+  toolkit's other URLs are exempt, as Browser Run fetches them from its own network (ADR 0044).
 
 The sandbox's egress point (`SandboxEgress`, see "Tools") applies it to every request a sandbox session makes, after
 the session's network. The toolkit catalog's live checks use the same guard when they land, from `@commissary/core`.
@@ -3267,12 +3270,14 @@ boundary (`boundaries/tools-imports`) and a ControlPlane part, `ToolsPart`, reac
 binding of its own is the usage database; its state is the ControlPlane's (`TOOLS_TABLES`: `toolkits`,
 `toolkit_credentials`, `toolkit_tools`, `tool_overrides`, `toolkit_sessions`, `tool_grants`, `tool_approvals`,
 `built_in_toolkits`, `toolkit_documents`, `toolkit_schemas`, and OAuth's `toolkit_oauth_apps`, `toolkit_oauth_clients`
-and `toolkit_sign_ins`, and the sandbox's `sandbox_sessions`, dropped by `wipe()`). Its view of `env` (`ToolsBindings`)
+and `toolkit_sign_ins`, the sandbox's `sandbox_sessions` and the browser crawls' `browser_crawls`, dropped by `wipe()`). Its view of `env` (`ToolsBindings`)
 adds the Platform registry and the app host (`APP_DOMAIN`) for the endpoint's connect links and the callback its CIMD
 document names, the API host (`API_DOMAIN`) where toolkit sign-ins name that document, and `USAGE`, the D1 database its
 tool calls' records go into (Models' records go there too); it reaches MCP servers and HTTP APIs from the ControlPlane
 through the global `fetch` behind the outbound guard. The part reads the state Worker's env (`ToolsPartEnv`): the
-optional Browser Run binding `BROWSER` (`builtInProviders`), which the browser toolkit runs on, the Worker Loader
+optional Browser Run binding `BROWSER` (`builtInProviders`), which the browser toolkit runs on, with the optional
+account and API token of its crawls (`BROWSER_RUN_ACCOUNT_ID`, `BROWSER_RUN_API_TOKEN`, #270) and their cap on pages
+(`COMMISSARY_CRAWL_MAX_PAGES`), the Worker Loader
 `LOADER` with the `SandboxSession` namespace `SANDBOX_SESSION`, always there, which the sandbox toolkit runs on
 (_Built-in toolkits_ below), and `OWN_HOSTS`, which its alarm's token refreshes refuse. Beside it the state Worker
 defines and always binds the browser sessions' Durable Object (#213: `BrowserSession`, whose namespace
@@ -3883,9 +3888,45 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
     declared length is refused unread; a body is read in chunks and cancelled as soon as it passes the limit), and is
     kept nowhere. Invalid arguments and Browser Run's refusals (its own `errors` messages, at most 500 characters) are tool
     results with `isError`, logged as a warning with the provider, action and status only. Browser Run's `/json` (an AI
-    model under the deployment's account) is left out (#212); so is **crawling**: Browser Run's `/crawl` is on its REST
-    API only, which needs an account API token with "Browser Run - Edit", not the binding, so the crawl start, result
-    and cancel tools are a follow-up. Browser time in usage records and its price are #214.
+    model under the deployment's account) is left out (#212). Browser time in usage records and its price are #214.
+  - **Crawls** (`tools/browser/crawl-tools.ts`, `browser-run-crawls.ts`, `crawls.ts`, #270): `browser_crawl_start`
+    (`write`) starts crawling a site from a URL and answers the crawl's id at once (text, and `structuredContent`
+    `{crawlId}`); `browser_crawl_result` (`read`) answers the crawl as JSON: its `status` (`running`, `completed`,
+    `errored`, `cancelled_by_user`, `cancelled_due_to_timeout`, `cancelled_due_to_limits`), `total`, `finished`,
+    `skipped`, its pages (`records`, each Browser Run's: URL, status, content in the formats asked, metadata) and a
+    `cursor` while there are more, `limit` pages at a time (default 5, at most 20), optionally of one page `status`; an
+    answer over 1 MiB (`MAX_CRAWL_RESULT_BYTES`) is refused unread, telling the caller to ask for fewer from the same
+    cursor, so a few large pages fill neither the ControlPlane's memory nor the model's context; `browser_crawl_cancel`
+    (`write`) cancels it, its pages staying readable. Browser Run's `/crawl` is on its REST API only, not the binding:
+    the adapter calls `https://api.cloudflare.com/client/v4/accounts/<account>/browser-run/crawl` (`POST`, `GET /<id>`,
+    `DELETE /<id>`) with the deployment's optional API token (held `Redacted`, unwrapped only to send it), so the crawl
+    tools are listed only on a deployment with the binding and `BROWSER_RUN_API_TOKEN` (a provider's `crawls`, a
+    capability like `sessions`); without it nothing changes. Cloudflare's API reference still names the path by the
+    product's old name, `/browser-rendering/crawl`: it is the one to fall back to should `/browser-run/` stop answering.
+    Each request is aborted after a minute (the timeout aborts the `fetch`'s signal); one race is left, a `POST` Browser
+    Run accepted whose answer was lost, whose crawl is logged for no one and ends by itself at its page limit or after
+    seven days. A crawl takes Browser Run's own options under its names (`limit`, `depth`, `source`, `formats` (`html`,
+    `markdown`), `render`, `modifiedSince`, `options` (`includeExternalLinks`, `includeSubdomains`, `includePatterns`,
+    `excludePatterns`), `crawlPurposes`, `contentUse`, and the page's `waitUntil`, `timeout`, `waitForSelector`,
+    `rejectResourceTypes`); `limit` is at most the deployment's cap (`COMMISSARY_CRAWL_MAX_PAGES`, default 1000, Browser
+    Run's own ceiling being 100000), and `depth` at most 100 links deep, as each page's browser time lands on the
+    deployment's account. Left out are sign-ins (`cookies`, `authenticate`, extra headers), Browser Run's cache
+    (`maxAge`), as for the Quick Actions, and the `json` format, which runs Workers AI under the deployment's account,
+    as `/json` is. Unlike a Quick Action's, the crawl's starting URL is guarded (ADR 0044): `https:` only, no private
+    address, none of the deployment's own hosts (`checkOutboundUrl` with the call's policy), refused as `Invalid
+    arguments: Commissary only reaches public HTTPS addresses` before Browser Run is asked; the pages the crawl then
+    follows are Browser Run's to fetch, from its network. Browser Run's crawl ids are account-wide, so a crawl belongs
+    to the member and principal that started it, like a session: the Tools part logs each one it starts
+    (`browser_crawls`: id, toolkit, member, principal, start; the member null for a caller that is no member), and a
+    result or cancel of an id not logged for the caller answers `There is no crawl <id>.`, as an id never started,
+    without asking Browser Run (a call without a principal is refused). The part forgets a crawl 21 days after its start
+    (`CRAWL_KEPT_MS`: Browser Run's longest run, seven days, and the 14 days it keeps the pages, from the part's alarm).
+    A member's leaving first asks Browser Run to cancel their crawls that may still be running (started less than seven
+    days before), as far as it answers, then forgets them all; the org's deletion cancels the org's the same way, in
+    Tools' org-deletion step (`purgeBrowserCrawls`, 20 a call within the deletion's budget), since `wipe()` is
+    synchronous and cannot call Browser Run. Commissary keeps nothing of the pages; Browser Run keeps them 14 days after
+    a crawl ends. Browser Run's refusals (a site whose Content Signals refuse the crawl's purposes answers 400) are tool
+    results with `isError` in its own words.
   - **Browser sessions** (`tools/browser/session-tools.ts`, `session.ts`, `session-object.ts`, #213, ADR 0039): an
     interactive browser, on the same toolkit after the Quick Actions, with Playwright MCP's tool set as Commissary's own
     code on `@cloudflare/playwright` (`@cloudflare/playwright-mcp` is archived): `browser_open` (optionally at a URL)
@@ -4158,14 +4199,15 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
     `@cloudflare/computer`'s own launch (`WorkspaceContainerAPI`) and the real egress path (`WorkspaceProxy` to the
     session's `fetch` to `SandboxEgress`).
 - **Members and orgs**: a member who leaves takes their private toolkits, their private credentials on org toolkits, the
-  upstream sessions of those, the sign-ins they started, the tool grants that named them, the pending approvals of
-  their calls and their open sandbox sessions, and leaves every list of approvers (`memberLeft`); a deleted team takes its tool grants (`teamDeleted`),
-  and a removed toolkit its own and its pending approvals (`tool_grants` and `tool_approvals` are keyed by `toolkit_id`
-  like the other tables) and its Spend limits; org deletion drops the tables (`wipe()`), and Tools' org-deletion step
-  first deletes the org's open sandbox sessions (each a Durable Object of its own), then the org's OAuth sign-ins of
-  MCP clients on Commissary Cloud (grants and tokens in `OAUTH_KV`, the one thing
-  Tools keeps in KV; the per-isolate cache of OAuth servers in `oauth/server.ts` holds no org data): its usage records
-  go with Models' step, which deletes every usage row of the org. The cross-org suite
+  upstream sessions of those, the sign-ins they started, the tool grants that named them, the pending approvals of their
+  calls, their open sandbox sessions and their browser crawls, and leaves every list of approvers (`memberLeft`); a
+  deleted team takes its tool grants (`teamDeleted`), and a removed toolkit its own and its pending approvals
+  (`tool_grants` and `tool_approvals` are keyed by `toolkit_id` like the other tables) and its Spend limits; org
+  deletion drops the tables (`wipe()`), and Tools' org-deletion step first deletes the org's open sandbox sessions (each
+  a Durable Object of its own), then cancels the org's browser crawls that may still be running at Browser Run
+  (`purgeBrowserCrawls`), then the org's OAuth sign-ins of MCP clients on Commissary Cloud (grants and tokens in
+  `OAUTH_KV`, the one thing Tools keeps in KV; the per-isolate cache of OAuth servers in `oauth/server.ts` holds no org
+  data): its usage records go with Models' step, which deletes every usage row of the org. The cross-org suite
   (`apps/app/test/org-isolation.test.ts`) checks that one org's toolkits are neither listed nor reached by id from
   another, that its tool grants and OAuth apps are its own, that a sign-in's state reads only in its org, that a call
   goes on in its own org's upstream session, that a member finds only their own org's pending approvals, and that a

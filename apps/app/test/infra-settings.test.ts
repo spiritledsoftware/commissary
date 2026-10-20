@@ -1,5 +1,6 @@
-// Deploy settings (infra/settings.ts): the platform admins (PLATFORM_ADMIN_*), the secrets key generations and
-// Commissary Cloud's settings (its auth host among them).
+// Deploy settings (infra/settings.ts): the platform admins (PLATFORM_ADMIN_*), the secrets key generations, Commissary
+// Cloud's settings (its auth host among them), the browser (`COMMISSARY_BROWSER`) with its crawls (#270), and the
+// sandbox's computer.
 import { assert, describe, it } from "@effect/vitest";
 import { ConfigProvider, Effect, Logger, Redacted } from "effect";
 import {
@@ -740,6 +741,112 @@ describe("the sandbox's computer (COMMISSARY_COMPUTER, #223)", () => {
       assert.include(
         yield* refusal({ ...selfHosted, COMMISSARY_COMPUTER_INSTANCE: "huge" }),
         'COMMISSARY_COMPUTER_INSTANCE must be one of lite, basic, standard-1, standard-2, standard-3, standard-4, not "huge"',
+      );
+    }),
+  );
+});
+
+describe("the browser's crawls (BROWSER_RUN_API_TOKEN, #270)", () => {
+  const prod = { stage: "prod" };
+
+  it.effect("are off without the token, also when CI passes the unset secret as empty", () =>
+    Effect.gen(function* () {
+      for (const variables of [{}, { BROWSER_RUN_API_TOKEN: "", BROWSER_RUN_ACCOUNT_ID: "" }]) {
+        const { settings } = yield* read({ ...selfHosted, ...variables }, prod);
+
+        assert.strictEqual(settings.browserCrawls, undefined);
+      }
+    }),
+  );
+
+  it.effect("take the token and its account, by default the deploy's (CLOUDFLARE_ACCOUNT_ID)", () =>
+    Effect.gen(function* () {
+      const own = yield* read(
+        { ...selfHosted, BROWSER_RUN_API_TOKEN: " token ", CLOUDFLARE_ACCOUNT_ID: "acct" },
+        prod,
+      );
+
+      assert.strictEqual(own.settings.browserCrawls?.accountId, "acct");
+      assert.strictEqual(
+        Redacted.value(own.settings.browserCrawls?.apiToken ?? Redacted.make("")),
+        "token",
+      );
+
+      const other = yield* read(
+        {
+          ...selfHosted,
+          BROWSER_RUN_API_TOKEN: "token",
+          BROWSER_RUN_ACCOUNT_ID: " crawls ",
+          CLOUDFLARE_ACCOUNT_ID: "acct",
+        },
+        prod,
+      );
+
+      assert.strictEqual(other.settings.browserCrawls?.accountId, "crawls");
+    }),
+  );
+
+  it.effect(
+    "cap a crawl at 1000 pages, or at COMMISSARY_CRAWL_MAX_PAGES up to Browser Run's 100000",
+    () =>
+      Effect.gen(function* () {
+        const crawls = {
+          ...selfHosted,
+          BROWSER_RUN_API_TOKEN: "token",
+          CLOUDFLARE_ACCOUNT_ID: "acct",
+        };
+
+        for (const [value, pages] of [
+          [undefined, 1000],
+          ["", 1000],
+          [" 50 ", 50],
+          ["100000", 100_000],
+        ] as const) {
+          const { settings } = yield* read(
+            value === undefined ? crawls : { ...crawls, COMMISSARY_CRAWL_MAX_PAGES: value },
+            prod,
+          );
+
+          assert.strictEqual(settings.browserCrawls?.maxPages, pages);
+        }
+
+        for (const value of ["0", "100001", "1.5", "many"])
+          assert.include(
+            yield* refusal({ ...crawls, COMMISSARY_CRAWL_MAX_PAGES: value }),
+            "COMMISSARY_CRAWL_MAX_PAGES must be a whole number from 1 to 100000",
+          );
+
+        // Without the token there are no crawls to cap, and the setting is not read.
+        assert.strictEqual(
+          (yield* read({ ...selfHosted, COMMISSARY_CRAWL_MAX_PAGES: "0" }, prod)).settings
+            .browserCrawls,
+          undefined,
+        );
+      }),
+  );
+
+  it.effect(
+    "are off under alchemy dev, and off with a warning when the deploy has no browser",
+    () =>
+      Effect.gen(function* () {
+        const crawls = { BROWSER_RUN_API_TOKEN: "token", CLOUDFLARE_ACCOUNT_ID: "acct" };
+
+        assert.strictEqual((yield* read({ ...crawls })).settings.browserCrawls, undefined);
+
+        const off = yield* read({ ...selfHosted, ...crawls, COMMISSARY_BROWSER: "off" }, prod);
+
+        assert.strictEqual(off.settings.browserCrawls, undefined);
+        assert.deepStrictEqual(off.warnings, [
+          "BROWSER_RUN_API_TOKEN is ignored with COMMISSARY_BROWSER=off: there is no browser toolkit to crawl with",
+        ]);
+      }),
+  );
+
+  it.effect("refuse a token without the account it is of", () =>
+    Effect.gen(function* () {
+      assert.include(
+        yield* refusal({ ...selfHosted, BROWSER_RUN_API_TOKEN: "token" }),
+        "BROWSER_RUN_API_TOKEN needs the account it is of: BROWSER_RUN_ACCOUNT_ID, or CLOUDFLARE_ACCOUNT_ID",
       );
     }),
   );

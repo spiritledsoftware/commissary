@@ -14,6 +14,8 @@ interface __ToolsTestEnv extends Omit<
   BROWSER_SESSIONS: DurableObjectNamespace<import("./worker.ts").BrowserSession>;
   /** A deployment that gains a `browser` binding once its storage says so (`UPGRADE_TO_BROWSER`). */
   UPGRADED_CONTROL_PLANE: DurableObjectNamespace<import("./worker.ts").UpgradedControlPlane>;
+  /** A deployment with a (fake) `browser` binding and the account token of Browser Run's crawls (#270). */
+  CRAWL_CONTROL_PLANE: DurableObjectNamespace<import("./worker.ts").CrawlControlPlane>;
   /** The sandbox toolkit with Cloudflare's sandbox, and with a fake second sandbox provider (#222). */
   SANDBOX_CONTROL_PLANE: DurableObjectNamespace<import("./worker.ts").SandboxControlPlane>;
   OTHER_SANDBOX_CONTROL_PLANE: DurableObjectNamespace<
@@ -45,6 +47,7 @@ declare namespace Cloudflare {
       | "BrowserControlPlane"
       | "OtherBrowserControlPlane"
       | "UpgradedControlPlane"
+      | "CrawlControlPlane"
       | "BrowserSession"
       | "SandboxControlPlane"
       | "OtherSandboxControlPlane"

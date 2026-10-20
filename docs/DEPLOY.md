@@ -197,11 +197,13 @@ and no client API route, with no zone routes. A path on the wrong host answers `
 A self-hosted Commissary needs Workers Paid (Workers Free isn't supported, ADR 0043) and then has every area. Two pieces
 depend on an extra binding the deployment chooses (the computer's is a container attached to a Durable Object class,
 with a marker variable beside it, since the container itself has no binding in a Worker's `env`). `GET /v9/management/me` reports whether each is present in its
-`deployment` object (`browser`, `computer`); the panel decides what to show from it.
+`deployment` object (`browser`, `computer`); the panel decides what to show from it. The browser toolkit's crawl tools
+also need an optional API token ([Crawls](#crawls) below); `/me` does not report them, as the toolkit lists its tools.
 
 | Piece                                   | Deploy setting                                                                                                  | Binding                                                                                                                                                           | What its absence removes                                                                                                                                                                                                                                                                               | Cost                                                                                                                                                                                                                                                                                                                                               |
 | --------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | The browser toolkit (ADR 0039, #212)    | `COMMISSARY_BROWSER`: `on` (default) or `off`                                                                   | Browser Run (`browser`, as `BROWSER`) on the `State` and app (`Commissary`) Workers                                                                               | The whole toolkit: it is not on the MCP endpoint, in toolkit lists or in tool grants, and `deployment.browser` is `false`. Nothing else changes                                                                                                                                                        | Browser Run includes 10 browser hours a month on Workers Paid, then $0.09 an hour, on the deployment's Cloudflare account                                                                                                                                                                                                                          |
+| The browser's crawl tools (#270)        | `BROWSER_RUN_API_TOKEN` ([Crawls](#crawls))                                                                     | None: an API token, on the `State` Worker                                                                                                                         | `browser_crawl_start`, `browser_crawl_result` and `browser_crawl_cancel`. Nothing else changes                                                                                                                                                                                                         | Browser time, as above                                                                                                                                                                                                                                                                                                                             |
 | The sandbox's computer (ADR 0041, #223) | `COMMISSARY_COMPUTER`: `on` or `off` (default); `COMMISSARY_COMPUTER_INSTANCE`: its size (default `standard-1`) | The `Computer` container (`infra/computer/`) attached to the `State` Worker's `SandboxSession` class, and the marker `COMPUTER=on` on the `State` and app Workers | "May use the computer" stays off on the sandbox toolkit (an org admin cannot turn it on, and `sandbox_open` refuses `computer: true`): sandbox sessions run every command with just-bash, and a command it cannot run says the computer is off. `deployment.computer` is `false`. Nothing else changes | Containers' running time on the deployment's Cloudflare account (Workers Paid includes 25 GiB-hours of memory, 375 vCPU-minutes and 200 GB-hours of disk a month, then $0.0000025 per GiB-second, $0.000020 per vCPU-second and $0.00000007 per GB-second); each computer stops after 10 idle minutes. The deploy needs Docker, to build the image |
 
 **The sandbox.** The sandbox toolkit (#222) is not optional: every deployment has it, since it runs on Durable Objects
@@ -236,6 +238,31 @@ binding. Commissary Cloud, `prod` and previews keep the default, `on`. A self-ho
 the binding; set `COMMISSARY_BROWSER=off` to deploy without it (no other change). `alchemy dev` never binds it, since
 Browser Run's Quick Actions have no local emulation. Browser time lands on the deployment's account, whoever's org used
 it; an org reaches the toolkit only once an org admin grants it (there is no default grant).
+
+### Crawls
+
+Browser Run's `/crawl` is on its REST API only, not the binding, so the crawl tools need an API token
+(#270); without one the browser toolkit has every other tool and nothing changes. To turn them on:
+
+1. In the Cloudflare dashboard (My Profile or Manage Account, API Tokens), create a custom token with the account
+   permission **Browser Run - Edit** (shown as "Browser Rendering - Edit" on older dashboards), for the account the
+   deployment runs on.
+2. Set it as `BROWSER_RUN_API_TOKEN`: in `.env` for a local deploy, and for CI as a secret of the GitHub environments
+   `production` and `cloud` (and `preview`, for previews' crawl tools); `pnpm ci:setup` writes it to `production` and
+   `preview` when `.env` sets it, and to `cloud` when `.env.cloud` does. `BROWSER_RUN_ACCOUNT_ID` names the token's
+   account if it is not the deploy's own (`CLOUDFLARE_ACCOUNT_ID`, which CI sets); a token without either is refused.
+3. Optionally cap the pages of one crawl with `COMMISSARY_CRAWL_MAX_PAGES` (default 1000, at most Browser Run's own
+   100000; a GitHub variable for CI, which `pnpm ci:setup` writes like `BROWSER_RUN_ACCOUNT_ID`): a crawl asking for
+   more is refused. Each page is browser time on the deployment's account.
+4. Deploy: the state Worker gets `BROWSER_RUN_ACCOUNT_ID`, `COMMISSARY_CRAWL_MAX_PAGES` and the token (a secret). With
+   `COMMISSARY_BROWSER=off` the token is ignored, with a warning. Remove the secret and deploy again to take the tools
+   away.
+
+Crawls run under that account: their browser time lands on it like the Quick Actions'. Browser Run keeps a crawl's
+pages 14 days after it ends; Commissary keeps none of them, and forgets which member started a crawl after 21 days.
+When a member leaves, or the org is deleted, Commissary asks Browser Run to cancel their crawls that may still be
+running, as far as Browser Run answers; a crawl it could not cancel ends by itself at its page limit or after seven
+days.
 
 ## Commissary Cloud only
 

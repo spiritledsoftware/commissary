@@ -12,7 +12,9 @@
 // browser ones leave the sandbox out, so their toolkits are the browser's alone. `ComputerSandboxControlPlane` is a
 // deployment that has the sandbox's computer (#223, the `COMPUTER` marker); the tests fake the container, so the
 // session objects are the deployed class with a fake computer in its place (`FakeComputerSandboxSession`), which a
-// session uses only when it opened with the computer, as deployed.
+// session uses only when it opened with the computer, as deployed. `CrawlControlPlane` has its built-in toolkits from a
+// deployment's bindings with a fake Browser Run binding and the account and API token of Browser Run's crawls (#270),
+// whose REST API a test serves through the global `fetch` (`fake-crawl.ts`, `fake-fetch.ts`).
 import { COMPUTER_MARKER } from "@commissary/core";
 import { composeControlPlane } from "@commissary/state";
 import { browserRun } from "../src/browser/browser-run.ts";
@@ -20,6 +22,7 @@ import { browserSessions } from "../src/browser/session-object.ts";
 import { builtInProviders, ToolsPart } from "../src/state.ts";
 import { fakeBrowserRun, fakeOtherProvider } from "./support/fake-browser.ts";
 import { FakeComputerSandboxSession } from "./support/fake-computer.ts";
+import { CRAWL_ACCOUNT, CRAWL_MAX_PAGES, CRAWL_TOKEN } from "./support/fake-crawl.ts";
 import { FakeBrowserSession } from "./support/fake-session-object.ts";
 import { fakeSandboxProvider } from "./support/fake-sandbox.ts";
 
@@ -64,6 +67,25 @@ export class UpgradedControlPlane extends composeControlPlane({
       ctx.storage.kv.get(UPGRADE_TO_BROWSER) === true
         ? { browser: browserRun(fakeBrowserRun()) }
         : {},
+    ),
+}) {}
+
+/**
+ * A deployment's built-in toolkits from its bindings, with Browser Run and the account token of its crawls (#270), which
+ * take at most {@link CRAWL_MAX_PAGES} pages each.
+ */
+export class CrawlControlPlane extends composeControlPlane({
+  tools: (ctx, env: Cloudflare.Env, core) =>
+    new ToolsPart(
+      ctx,
+      core,
+      builtInProviders({
+        ...env,
+        BROWSER: fakeBrowserRun(),
+        BROWSER_RUN_ACCOUNT_ID: CRAWL_ACCOUNT,
+        BROWSER_RUN_API_TOKEN: CRAWL_TOKEN,
+        COMMISSARY_CRAWL_MAX_PAGES: String(CRAWL_MAX_PAGES),
+      }),
     ),
 }) {}
 

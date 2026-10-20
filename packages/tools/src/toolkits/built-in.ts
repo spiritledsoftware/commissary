@@ -1,5 +1,5 @@
 /**
- * Built-in toolkits (ADR 0039, ADR 0041, #212, #213, #222): the toolkits Commissary provides itself, the browser toolkit
+ * Built-in toolkits (ADR 0039, ADR 0041, #212, #213, #222, #270): the toolkits Commissary provides itself, the browser toolkit
  * and the sandbox toolkit. An org connects nothing for one: it exists exactly when the deployment has what it runs on (the
  * browser toolkit: a `browser` binding, so a browser provider; the sandbox toolkit: Dynamic Workers, which every
  * deployment has, ADR 0043), and is otherwise missing everywhere (the MCP endpoint, toolkit lists, grants).
@@ -20,7 +20,19 @@
 import { type ComputerMarker, hasComputer, type OutboundPolicy } from "@commissary/core";
 import { Effect, Result, Schema } from "effect";
 import { browserRun, type BrowserRunBinding } from "../browser/browser-run.ts";
-import type { BrowserProvider, StorageState } from "../browser/provider.ts";
+import { browserRunCrawls, crawlCredentialsOf } from "../browser/browser-run-crawls.ts";
+import {
+  callCrawlTool,
+  type CrawlLog,
+  crawlToolList,
+  isCrawlTool,
+} from "../browser/crawl-tools.ts";
+import {
+  BROWSER_RUN_CRAWL_MAX_PAGES,
+  type BrowserProvider,
+  DEFAULT_CRAWL_MAX_PAGES,
+  type StorageState,
+} from "../browser/provider.ts";
 import { textResult, toolError } from "../browser/session.ts";
 import {
   type BrowserSessionNamespace,
@@ -51,14 +63,23 @@ import type { BuiltInToolkit } from "./toolkit.ts";
 
 /**
  * What the Tools part, and the sandbox's `SandboxSession` objects, read from the state Worker's env: the optional
- * `browser` binding (ADR 0043), the namespace of the browser sessions' Durable Objects (#213), and Dynamic Workers with
- * the sandbox sessions' namespace, which every deployment has (ADR 0043), and the marker that the deployment attached
- * the sandbox's computer to them (#223, `COMPUTER`). The browser sessions' objects read their own view
- * (`BrowserSessionEnv`, `session-object.ts`).
+ * `browser` binding (ADR 0043) with the optional account and API token of its crawls (#270), the namespace of the
+ * browser sessions' Durable Objects (#213), and Dynamic Workers with the sandbox sessions' namespace, which every
+ * deployment has (ADR 0043), and the marker that the deployment attached the sandbox's computer to them (#223,
+ * `COMPUTER`). The browser sessions' objects read their own view (`BrowserSessionEnv`, `session-object.ts`).
  */
 export interface ToolsPartEnv extends SandboxSessionEnv, ComputerMarker {
   /** Browser Run (#212); absent on a deployment with `COMMISSARY_BROWSER=off`, which has no browser toolkit. */
   readonly BROWSER?: BrowserRunBinding | undefined;
+  /**
+   * The Cloudflare account Browser Run's crawls run under (#270), with {@link BROWSER_RUN_API_TOKEN}: `/crawl` is on
+   * Browser Run's REST API only. Both are optional; without either, the browser toolkit has no crawl tools.
+   */
+  readonly BROWSER_RUN_ACCOUNT_ID?: string | undefined;
+  /** An API token of that account with "Browser Run - Edit" (a secret), for its crawls. */
+  readonly BROWSER_RUN_API_TOKEN?: string | undefined;
+  /** The most pages one crawl may take (#270), a whole number; unset, {@link DEFAULT_CRAWL_MAX_PAGES}. */
+  readonly COMMISSARY_CRAWL_MAX_PAGES?: string | undefined;
   /** The deployment's own hosts, which the part's own requests (its alarm's token refreshes, #202) refuse. */
   readonly OWN_HOSTS?: string | undefined;
   /** One object per browser session (`BrowserSession`); without it the browser toolkit has no session tools. */
@@ -72,24 +93,48 @@ export interface BuiltInProviders {
   readonly browser?: BrowserProvider | undefined;
   /** The browser sessions' objects, for the session tools of a provider that has sessions. */
   readonly browserSessions?: BrowserSessions | undefined;
+  /** The most pages one crawl of the browser provider's may take; unset, {@link DEFAULT_CRAWL_MAX_PAGES}. */
+  readonly crawlMaxPages?: number | undefined;
   readonly sandbox?: SandboxProvider | undefined;
 }
 
 /**
- * The providers a deployment's bindings give: Browser Run's binding, as the browser provider, with the browser
- * sessions' namespace, whose objects reach the provider's browsers themselves; and Cloudflare's sandbox on the sandbox
- * sessions' namespace, always, with the computer when the deployment has its container (#223, the `COMPUTER` marker).
+ * `COMMISSARY_CRAWL_MAX_PAGES` as a number of pages: a whole number from 1 to Browser Run's own ceiling, else (unset,
+ * or a value the deploy would have refused) {@link DEFAULT_CRAWL_MAX_PAGES}.
  */
-export const builtInProviders = (env: ToolsPartEnv): BuiltInProviders => ({
-  ...(env.BROWSER === undefined
-    ? {}
-    : {
-        browser: browserRun(env.BROWSER),
-        browserSessions:
-          env.BROWSER_SESSIONS === undefined ? undefined : browserSessions(env.BROWSER_SESSIONS),
-      }),
-  sandbox: cloudflareSandbox(env.SANDBOX_SESSION, { computer: hasComputer(env) }),
-});
+const crawlMaxPagesOf = (setting: string | undefined): number => {
+  const text = setting?.trim() ?? "";
+  const pages = text === "" ? Number.NaN : Number(text);
+
+  return Number.isSafeInteger(pages) && pages >= 1 && pages <= BROWSER_RUN_CRAWL_MAX_PAGES
+    ? pages
+    : DEFAULT_CRAWL_MAX_PAGES;
+};
+
+/**
+ * The providers a deployment's bindings give: Browser Run's binding, as the browser provider, with its crawls when the
+ * deployment has an API token for them, and with the browser sessions' namespace, whose objects reach the provider's
+ * browsers themselves; and Cloudflare's sandbox on the sandbox sessions' namespace, always, with the computer when
+ * the deployment has its container (#223, the `COMPUTER` marker).
+ */
+export const builtInProviders = (env: ToolsPartEnv): BuiltInProviders => {
+  const crawls = crawlCredentialsOf(env);
+
+  return {
+    ...(env.BROWSER === undefined
+      ? {}
+      : {
+          browser: browserRun(
+            env.BROWSER,
+            crawls === undefined ? undefined : browserRunCrawls(crawls),
+          ),
+          browserSessions:
+            env.BROWSER_SESSIONS === undefined ? undefined : browserSessions(env.BROWSER_SESSIONS),
+          crawlMaxPages: crawlMaxPagesOf(env.COMMISSARY_CRAWL_MAX_PAGES),
+        }),
+    sandbox: cloudflareSandbox(env.SANDBOX_SESSION, { computer: hasComputer(env) }),
+  };
+};
 
 /** The id (and name) of the browser toolkit. */
 export const BROWSER_TOOLKIT = "browser";
@@ -122,8 +167,8 @@ export interface CallerProfiles {
 /**
  * Who calls a built-in tool, and with what: the org, the call's member and principal (a browser or sandbox session's
  * owner; absent from a call that names none, which sessions refuse), the browser profiles the caller reaches, the Tools
- * part's log of the org's sandbox sessions, the outbound guard's policy, the Tools part's time, and the toolkit with
- * what the org set on it (its network ceiling and whether it allows the computer).
+ * part's log of the org's sandbox sessions and of the caller's browser crawls, the outbound guard's policy, the Tools
+ * part's time, and the toolkit with what the org set on it (its network ceiling and whether it allows the computer).
  */
 export interface BuiltInCall {
   readonly org: string;
@@ -131,6 +176,8 @@ export interface BuiltInCall {
   readonly principal: string | undefined;
   readonly profiles: CallerProfiles;
   readonly sessions: SandboxSessionLog;
+  /** The crawls of the call's member and principal (#270). */
+  readonly crawls: CrawlLog;
   readonly policy: OutboundPolicy;
   readonly now: number;
   readonly toolkit: BuiltInToolkit;
@@ -356,21 +403,46 @@ const builtInToolkit = (
   })),
 });
 
+/** A crawl belongs to its caller's principal, as a session does: a call without one starts or reaches none. */
+const NO_CRAWL_PRINCIPAL = toolError(
+  "Browser crawls need a caller with an identity: an API key or a signed-in person.",
+);
+
+/**
+ * The browser toolkit on `provider`: its Quick Actions, its crawl tools when the provider has crawls (#270), and its
+ * session tools when it has sessions and the deployment their objects.
+ */
 const browserToolkit = (
   provider: BrowserProvider,
   sessions: BrowserSessions | undefined,
+  maxPages: number,
 ): BuiltIn => {
   const withSessions = sessions !== undefined && provider.sessions ? sessions : undefined;
+  const { crawls } = provider;
 
-  const tools: ReadonlyArray<ListedTool> =
-    withSessions === undefined ? BROWSER_TOOLS : [...BROWSER_TOOLS, ...SESSION_BROWSER_TOOLS];
+  const tools: ReadonlyArray<ListedTool> = [
+    ...BROWSER_TOOLS,
+    ...(crawls === undefined ? [] : crawlToolList(maxPages)),
+    ...(withSessions === undefined ? [] : SESSION_BROWSER_TOOLS),
+  ];
 
   return {
     ...builtInToolkit(BROWSER_TOOLKIT, "browser", provider.id, tools),
-    call: (tool, args, caller) =>
-      withSessions !== undefined && isSessionTool(tool)
-        ? callSessionTool(withSessions, provider.id, tool, args, caller)
-        : callBrowserTool(provider, tool, args),
+    call: (tool, args, caller) => {
+      if (withSessions !== undefined && isSessionTool(tool))
+        return callSessionTool(withSessions, provider.id, tool, args, caller);
+
+      if (crawls !== undefined && isCrawlTool(tool))
+        return caller.principal === undefined
+          ? Effect.succeed(NO_CRAWL_PRINCIPAL)
+          : callCrawlTool(crawls, tool, args, {
+              policy: caller.policy,
+              log: caller.crawls,
+              maxPages,
+            });
+
+      return callBrowserTool(provider, tool, args);
+    },
   };
 };
 
@@ -397,6 +469,12 @@ const sandboxToolkit = (provider: SandboxProvider): BuiltIn => ({
 export const builtInToolkits = (providers: BuiltInProviders): ReadonlyArray<BuiltIn> => [
   ...(providers.browser === undefined
     ? []
-    : [browserToolkit(providers.browser, providers.browserSessions)]),
+    : [
+        browserToolkit(
+          providers.browser,
+          providers.browserSessions,
+          providers.crawlMaxPages ?? DEFAULT_CRAWL_MAX_PAGES,
+        ),
+      ]),
   ...(providers.sandbox === undefined ? [] : [sandboxToolkit(providers.sandbox)]),
 ];
