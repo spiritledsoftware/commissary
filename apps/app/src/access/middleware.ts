@@ -3,7 +3,7 @@
 import { Effect, Predicate, Result } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { CurrentOrg } from "@commissary/core";
-import { authenticateRequest } from "./authenticate.ts";
+import { authenticateMcp, authenticateRequest, MCP_SIGN_IN } from "./authenticate.ts";
 import { crossSiteRejection } from "./csrf.ts";
 import {
   type AccessError,
@@ -58,15 +58,16 @@ const signInRedirect = (
 };
 
 /**
- * Global middleware: requests of the management zone (`management/zones.ts`: the management API and the panel) must
+ * Global middleware: requests of the management zone (`management/zones.ts`: the management API and the panel) and, on
+ * a self-hosted Commissary, of the MCP endpoint (`/mcp`, `/o/<slug>/mcp`, ADR 0045: Access signs MCP clients in) must
  * carry a credential `@commissary/auth` accepts (`authenticate.ts`): an Access JWT, a Commissary Cloud session or a
  * management key, and come from a member of the request's org with the role the route needs (`management/policy.ts`,
  * ADR 0022): a platform admin (`PLATFORM_ADMIN_*`) is an owner of every org, anyone else has the role their membership
  * gives them. Cross-site requests and cross-origin WebSocket upgrades are refused first (`csrf.ts`). A client API path
- * is refused with a 404 that says where the client API is (`http/hosts.ts`): the API Worker serves it (ADR 0030).
- * Everything else (`/healthz`, unknown paths) is passed through untouched. On success the principal is available to
- * handlers as `AccessPrincipal`, and `CurrentOrg` is the org of the request: the org addressed by an org-scoped
- * management URL (`management/org-address.ts`), unchanged otherwise.
+ * is refused with a 404 that says where the client API is (`http/hosts.ts`): the API Worker serves it (ADR 0030), and
+ * so is `/mcp` on Commissary Cloud. Everything else (`/healthz`, unknown paths) is passed through untouched. On success
+ * the principal is available to handlers as `AccessPrincipal`, and `CurrentOrg` is the org of the request: the org
+ * addressed by an org-scoped management URL (`management/org-address.ts`), unchanged otherwise.
  */
 export const AccessGate = HttpRouter.middleware<{ provides: AccessPrincipal }>()(
   Effect.gen(function* () {
@@ -85,7 +86,9 @@ export const AccessGate = HttpRouter.middleware<{ provides: AccessPrincipal }>()
           return yield* Effect.provideService(app, AccessPrincipal, PUBLIC_ROUTE_IDENTITY);
         }
 
-        if (zone === "protected")
+        // Commissary Cloud serves the MCP endpoint on the API host only: its MCP clients sign in through its own OAuth
+        // server (ADR 0036), not here (ADR 0045).
+        if (zone === "protected" || (zone === "mcp" && hosted))
           return HttpServerResponse.setHeader(
             errorResponse(404, clientApiElsewhere(yield* AppEnv)),
             "cache-control",
@@ -102,15 +105,25 @@ export const AccessGate = HttpRouter.middleware<{ provides: AccessPrincipal }>()
         if (rejection !== undefined) return errorResponse(rejection.status, rejection.message);
 
         const authenticated = yield* Effect.result(
-          authenticateRequest(request.headers, request.originalUrl, request.method).pipe(
-            Effect.provideService(AccessJwks, jwks),
-          ),
+          (zone === "mcp"
+            ? authenticateMcp(request.headers, request.originalUrl, request.method)
+            : authenticateRequest(request.headers, request.originalUrl, request.method)
+          ).pipe(Effect.provideService(AccessJwks, jwks)),
         );
 
         if (Result.isFailure(authenticated)) {
           const page = hosted ? signInRedirect(request, authenticated.failure) : undefined;
+          const refusal = page ?? (yield* accessErrorResponse(authenticated.failure));
 
-          return page ?? (yield* accessErrorResponse(authenticated.failure));
+          // An MCP client is told to sign in through Access, with the MCP authorization spec's challenge, as on the API
+          // Worker; with Managed OAuth, Access answers a client without a sign-in itself, before this.
+          return zone === "mcp" && refusal.status === 401
+            ? HttpServerResponse.setHeader(
+                errorResponse(401, MCP_SIGN_IN),
+                "www-authenticate",
+                "Bearer",
+              )
+            : refusal;
         }
 
         return yield* app.pipe(

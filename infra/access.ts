@@ -7,7 +7,7 @@ import * as Redacted from "effect/Redacted";
 import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import type { Settings } from "./settings.ts";
-import { CLIENT_API_PREFIXES } from "../packages/core/src/http/client-api.ts";
+import { CLIENT_API_PATHS, type ManagedOAuth, managedOAuth } from "./access-config.ts";
 
 /** Where `alchemy deploy` writes the service token credentials (gitignored, mode 0600). */
 export const SERVICE_TOKENS_FILE = ".alchemy/access-service-tokens.json";
@@ -22,9 +22,12 @@ export interface AccessWiring {
 }
 
 /**
- * Re-applies the cookie and single-header settings the Alchemy `Access.Application` resource does not manage.
- * Cloudflare's update endpoint is PUT-style, so every update of the application by Alchemy resets them; the
- * application's `updatedAt` is part of the input so this runs again after each such update.
+ * Re-applies the cookie and single-header settings the Alchemy `Access.Application` resource does not manage, and
+ * Managed OAuth when it is on ({@link managedOAuth}), which the resource sets but this PUT would otherwise reset,
+ * keeping the grant the application has. Cloudflare's update endpoint is PUT-style, so every update of the application
+ * by Alchemy resets them; the application's `updatedAt` is part of the input so this runs again after each such update.
+ * With Managed OAuth on it fails the deploy when Cloudflare answers with it off, so a stage never deploys with MCP
+ * clients unable to sign in unnoticed.
  */
 const ApplicationSettings = Alchemy.Action(
   "CommissaryAccessApplicationSettings",
@@ -33,6 +36,7 @@ const ApplicationSettings = Alchemy.Action(
     readonly applicationId: string;
     readonly updatedAt: string | undefined;
     readonly serviceTokenHeader: string;
+    readonly oauth: ManagedOAuth | null;
   }) {
     // The GET response is a union over every application type; only the fields Alchemy manages are copied back.
     // SAFETY: every member of the response union has these fields with these types (all optional, read-only here).
@@ -50,9 +54,22 @@ const ApplicationSettings = Alchemy.Action(
       readonly tags?: Array<string>;
       readonly policies?: ReadonlyArray<{ readonly id?: string; readonly precedence?: number }>;
       readonly destinations?: zeroTrust.AccessApplicationsUpdateRequestDestinations;
+      readonly oauthConfiguration?: {
+        readonly grant?: {
+          readonly accessTokenLifetime?: string | null;
+          readonly sessionDuration?: string | null;
+        } | null;
+      } | null;
     };
 
-    yield* zeroTrust.updateAccessApplicationForAccount({
+    // The grant set on the application (in the dashboard, say), which a PUT without it would reset to the defaults.
+    const grant = Object.fromEntries(
+      Object.entries(app.oauthConfiguration?.grant ?? {}).filter(
+        (entry): entry is [string, string] => typeof entry[1] === "string",
+      ),
+    );
+
+    const updated = yield* zeroTrust.updateAccessApplicationForAccount({
       accountId: input.accountId,
       appId: input.applicationId,
       // Preview applications have no domain: they protect the Worker through its `worker` destinations, which a
@@ -89,25 +106,33 @@ const ApplicationSettings = Alchemy.Action(
       ...(input.serviceTokenHeader === ""
         ? {}
         : { readServiceTokensFromHeader: input.serviceTokenHeader }),
+      ...(input.oauth === null
+        ? {}
+        : {
+            oauthConfiguration: {
+              ...input.oauth,
+              ...(Object.keys(grant).length === 0 ? {} : { grant }),
+            },
+          }),
     });
+
+    if (input.oauth === null) return { applied: true };
+
+    // SAFETY: every member of the response union has an optional `oauthConfiguration` with an optional `enabled`.
+    const oauth = (
+      updated as { readonly oauthConfiguration?: { readonly enabled?: boolean } | null }
+    ).oauthConfiguration;
+
+    if (oauth?.enabled !== true)
+      return yield* Effect.die(
+        new Error(
+          "Cloudflare did not turn Managed OAuth on for the Access application: MCP clients could not sign in to the app host's /mcp (docs/DEPLOY.md)",
+        ),
+      );
 
     return { applied: true };
   }),
 );
-
-/**
- * The client API (`CLIENT_API_PREFIXES`, packages/core/src/http/client-api.ts), which the zone routes of a stage with one
- * host send to the API Worker: clients authenticate there with API keys the Worker checks itself (ADR 0022), so Access
- * lets every request through. Access matches a path and its sub-paths (`/v1` covers `/v1/models`), not other paths
- * that start with the same letters, so `/v1beta` and `/v1internal`, which the `/v1*` zone route covers, are listed on
- * their own (the order is the one the deployed applications were created with).
- */
-export const CLIENT_API_PATHS: readonly [string, ...string[]] = [
-  "/v1",
-  "/v1beta",
-  "/v1internal",
-  ...CLIENT_API_PREFIXES.filter((prefix) => prefix !== "/v1"),
-];
 
 /**
  * A bypass application for the client API of `host` (the domain of a stage with one host): a hostname-and-path
@@ -170,10 +195,11 @@ const WriteServiceTokens = Alchemy.Action(
 
 /**
  * Cloudflare Access for the Worker's custom domain: one self-hosted application covering the whole hostname (the client
- * API leaves it through {@link provisionClientApiBypass}), an Allow
- * policy for people, a Service Auth policy for the stack's service tokens (and `ACCESS_ALLOW_SERVICE_TOKEN_IDS`), and
- * the tokens themselves. With `ACCESS_AUD` set, an application managed elsewhere is used instead and nothing is
- * created. Preview stages get an application without a domain that the Worker enrolls into (see `application`).
+ * API leaves it through {@link provisionClientApiBypass}), with Managed OAuth for MCP clients when
+ * `ACCESS_MANAGED_OAUTH` is on ({@link managedOAuth}), an Allow policy for people, a Service Auth policy for the
+ * stack's service tokens (and `ACCESS_ALLOW_SERVICE_TOKEN_IDS`), and the tokens themselves. With `ACCESS_AUD` set, an
+ * application managed elsewhere is used instead and nothing is created. Preview stages get an application without a
+ * domain that the Worker enrolls into (see `application`).
  */
 export const provisionAccess = (settings: Settings) =>
   Effect.gen(function* () {
@@ -227,11 +253,14 @@ export const provisionAccess = (settings: Settings) =>
       policies.push(serviceAuth.policyId);
     }
 
+    const oauth = managedOAuth(settings);
+
     const app = yield* Cloudflare.Access.Application("Access", {
       type: "self_hosted",
       ...(settings.preview ? {} : { domain: settings.appDomain }),
       sessionDuration: settings.sessionDuration,
       policies,
+      ...(oauth === undefined ? {} : { oauthConfiguration: oauth }),
     });
 
     yield* ApplicationSettings({
@@ -239,6 +268,7 @@ export const provisionAccess = (settings: Settings) =>
       applicationId: app.applicationId,
       updatedAt: app.updatedAt,
       serviceTokenHeader: settings.serviceTokenHeader,
+      oauth: oauth ?? null,
     });
 
     if (tokens.length > 0) {

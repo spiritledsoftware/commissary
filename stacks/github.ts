@@ -24,7 +24,12 @@ import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
 import * as Stream from "effect/Stream";
 import { existsSync, readFileSync } from "node:fs";
-import { CLOUD_STAGE, isWithin, readSettings } from "../infra/settings.ts";
+import {
+  CLOUD_STAGE,
+  DEFAULT_OAUTH_REDIRECT_URIS,
+  isWithin,
+  readSettings,
+} from "../infra/settings.ts";
 
 /** The `cloud` stage's deploy settings, next to `.env` (docs/DEPLOY.md "The Commissary Cloud stage"). */
 const CLOUD_ENV_FILE = ".env.cloud";
@@ -200,6 +205,22 @@ export default Alchemy.Stack(
 
     const { variables: hostedVariables, secrets: hostedSecrets } = yield* hostedConfig;
 
+    // Managed OAuth (ADR 0045), written only when it is on, and then only what differs from the defaults ("" is
+    // skipped). Production's only: a cloud-preview deploy, which uses Preview, would be refused it, and a preview's
+    // Access application has no domain; previews get it once #267 checks one.
+    const { managedOAuth } = settings;
+
+    const redirectUris = managedOAuth.redirectUris.join(",");
+
+    const managedOAuthVariables = managedOAuth.enabled
+      ? {
+          ACCESS_MANAGED_OAUTH: "true",
+          ACCESS_OAUTH_REDIRECT_URIS:
+            redirectUris === DEFAULT_OAUTH_REDIRECT_URIS.join(",") ? "" : redirectUris,
+          ACCESS_OAUTH_LOOPBACK_CLIENTS: managedOAuth.loopbackClients ? "" : "false",
+        }
+      : {};
+
     const variables = {
       ...hostedVariables,
       CLOUDFLARE_ACCOUNT_ID: accountId,
@@ -234,6 +255,7 @@ export default Alchemy.Stack(
               // The auth host of Commissary Cloud (ADR 0030), a subdomain of COMMISSARY_DOMAIN.
               COMMISSARY_AUTH_DOMAIN: settings.hosted?.authDomain ?? "",
               COMMISSARY_MODE: settings.hosted === undefined ? "" : "cloud",
+              ...managedOAuthVariables,
             }
           : variables;
 

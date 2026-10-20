@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted, amended below (Managed OAuth off by default)
 ---
 
 # A self-hosted Commissary signs MCP clients in through Access
@@ -23,3 +23,9 @@ ADR 0036 made Commissary the OAuth server for its MCP endpoint: an MCP client th
 - Two sign-in paths for MCP clients, by deployment.
 - Managed OAuth is in open beta, and Access documents DCR but not CIMD, so a client that only registers through CIMD cannot sign in to a self-hosted Commissary yet; it uses a static API key.
 - Access's tokens are short-lived (15 minutes by default) and refreshing re-checks the Access policy, so removing a person from the Access policy cuts their clients off at the next refresh.
+
+## Amendment: Managed OAuth is opt-in
+
+The deploy turns Managed OAuth on only with `ACCESS_MANAGED_OAUTH=true`; it is off by default. Managed OAuth is in open beta, and it changes how Access answers the whole app host, not just `/mcp`: a non-browser request without a sign-in gets `401` and a pointer to Access's OAuth metadata where it used to be redirected to the login page. That may break `cloudflared access login` and `cloudflared access token`, which scripts on the management API use, and #267 is to confirm it does not on a deployed stage before the default changes.
+
+Without Managed OAuth the app host's MCP endpoint is still served behind Access: a `cloudflared` token in `cf-access-token` and an Access service token reach it as before, as their member or the token's role. Only the sign-in that MCP clients start by themselves needs the setting. The redirect URIs and loopback setting apply only with it on, and the deploy refuses them otherwise.

@@ -471,3 +471,173 @@ describe("base domain and app host", () => {
     }),
   );
 });
+
+describe("Managed OAuth settings (ADR 0045)", () => {
+  const managed = { ...selfHosted, ACCESS_MANAGED_OAUTH: "true" };
+
+  it.effect("are off by default, also when CI passes them empty", () =>
+    Effect.gen(function* () {
+      for (const variables of [
+        selfHosted,
+        {
+          ...selfHosted,
+          ACCESS_MANAGED_OAUTH: "",
+          ACCESS_OAUTH_REDIRECT_URIS: "",
+          ACCESS_OAUTH_LOOPBACK_CLIENTS: "",
+        },
+        { ...selfHosted, ACCESS_MANAGED_OAUTH: "false" },
+      ])
+        assert.isFalse((yield* read(variables, { stage: "prod" })).settings.managedOAuth.enabled);
+    }),
+  );
+
+  it.effect(
+    "default to the hosted clients' redirect URIs and loopback clients, also when CI passes them empty",
+    () =>
+      Effect.gen(function* () {
+        for (const variables of [
+          managed,
+          { ...managed, ACCESS_OAUTH_REDIRECT_URIS: "", ACCESS_OAUTH_LOOPBACK_CLIENTS: "" },
+          { ...managed, ACCESS_MANAGED_OAUTH: " TRUE " },
+        ])
+          assert.deepStrictEqual(
+            (yield* read(variables, { stage: "prod" })).settings.managedOAuth,
+            {
+              enabled: true,
+              redirectUris: [
+                "https://claude.ai/api/mcp/auth_callback",
+                "https://www.cursor.com/agents/mcp/oauth/callback",
+              ],
+              loopbackClients: true,
+            },
+          );
+      }),
+  );
+
+  it.effect(
+    "read the redirect URIs in place of the defaults, a client's own scheme among them, and loopback clients turned off",
+    () =>
+      Effect.gen(function* () {
+        const { settings } = yield* read(
+          {
+            ...managed,
+            ACCESS_OAUTH_REDIRECT_URIS: "https://chat.example.com/oauth/*, myclient://callback",
+            ACCESS_OAUTH_LOOPBACK_CLIENTS: " FALSE ",
+          },
+          { stage: "prod" },
+        );
+
+        assert.deepStrictEqual(settings.managedOAuth, {
+          enabled: true,
+          redirectUris: ["https://chat.example.com/oauth/*", "myclient://callback"],
+          loopbackClients: false,
+        });
+      }),
+  );
+
+  it.effect(
+    "refuse an http, relative or content redirect URI and a setting other than true or false",
+    () =>
+      Effect.gen(function* () {
+        for (const [variables, message] of [
+          [
+            { ACCESS_OAUTH_REDIRECT_URIS: "http://chat.example.com/cb" },
+            'ACCESS_OAUTH_REDIRECT_URIS: "http://chat.example.com/cb" must be https',
+          ],
+          [
+            { ACCESS_OAUTH_REDIRECT_URIS: "/callback" },
+            'ACCESS_OAUTH_REDIRECT_URIS: "/callback" is not an absolute URL',
+          ],
+          [
+            { ACCESS_OAUTH_REDIRECT_URIS: "javascript:alert(1)" },
+            "must be https or a client's own scheme, not javascript:",
+          ],
+          [
+            { ACCESS_OAUTH_REDIRECT_URIS: "data:text/html,hi" },
+            "must be https or a client's own scheme, not data:",
+          ],
+          [
+            { ACCESS_OAUTH_REDIRECT_URIS: "file:///etc/passwd" },
+            "must be https or a client's own scheme, not file:",
+          ],
+          [
+            { ACCESS_OAUTH_LOOPBACK_CLIENTS: "yes" },
+            'ACCESS_OAUTH_LOOPBACK_CLIENTS must be true or false, not "yes"',
+          ],
+          [{ ACCESS_MANAGED_OAUTH: "on" }, 'ACCESS_MANAGED_OAUTH must be true or false, not "on"'],
+        ] as const)
+          assert.include(yield* refusal({ ...managed, ...variables }), message);
+      }),
+  );
+
+  it.effect("refuse the redirect URIs and loopback clients while Managed OAuth is off", () =>
+    Effect.gen(function* () {
+      for (const variables of [
+        { ACCESS_OAUTH_REDIRECT_URIS: "https://chat.example.com/cb" },
+        { ACCESS_OAUTH_LOOPBACK_CLIENTS: "false" },
+        { ACCESS_MANAGED_OAUTH: "false", ACCESS_OAUTH_LOOPBACK_CLIENTS: "true" },
+      ])
+        assert.include(
+          yield* refusal({ ...selfHosted, ...variables }),
+          "ACCESS_OAUTH_REDIRECT_URIS and ACCESS_OAUTH_LOOPBACK_CLIENTS apply to Managed OAuth: set ACCESS_MANAGED_OAUTH=true",
+        );
+    }),
+  );
+
+  it.effect("refuse them with an Access application managed outside the stack", () =>
+    Effect.gen(function* () {
+      const external = { ...selfHosted, ACCESS_AUD: "aud", ACCESS_ALLOW_EMAILS: "" };
+
+      assert.strictEqual(yield* refusal(external), "accepted");
+
+      for (const [variables, named] of [
+        [{ ACCESS_MANAGED_OAUTH: "true" }, "ACCESS_MANAGED_OAUTH"],
+        [
+          { ACCESS_OAUTH_REDIRECT_URIS: "https://chat.example.com/cb" },
+          "ACCESS_OAUTH_REDIRECT_URIS",
+        ],
+        [{ ACCESS_OAUTH_LOOPBACK_CLIENTS: "false" }, "ACCESS_OAUTH_LOOPBACK_CLIENTS"],
+      ] as const)
+        assert.include(
+          yield* refusal({ ...external, ...variables }),
+          `${named} need a stack-managed Access application`,
+        );
+    }),
+  );
+
+  it.effect("refuse them on Commissary Cloud, which has no Access application", () =>
+    Effect.gen(function* () {
+      const hosted = {
+        COMMISSARY_MODE: "cloud",
+        COMMISSARY_DOMAIN: "commissary.example.com",
+        SIGN_IN_GITHUB_CLIENT_ID: "gh-id",
+        SIGN_IN_GITHUB_CLIENT_SECRET: "gh-secret",
+        TURNSTILE_SITE_KEY: "site",
+        TURNSTILE_SECRET_KEY: "turnstile-secret",
+      };
+
+      assert.strictEqual(yield* refusal(hosted), "accepted");
+
+      assert.include(
+        yield* refusal({
+          ...hosted,
+          ACCESS_MANAGED_OAUTH: "true",
+          ACCESS_OAUTH_LOOPBACK_CLIENTS: "false",
+        }),
+        "ACCESS_MANAGED_OAUTH, ACCESS_OAUTH_LOOPBACK_CLIENTS: Commissary Cloud has no Access application",
+      );
+
+      // Without the flag: the one refusal of Commissary Cloud, not also the one of Managed OAuth being off.
+      const refused = yield* refusal({
+        ...hosted,
+        ACCESS_OAUTH_REDIRECT_URIS: "https://a.example/cb",
+      });
+
+      assert.include(
+        refused,
+        "ACCESS_OAUTH_REDIRECT_URIS: Commissary Cloud has no Access application",
+      );
+      assert.notInclude(refused, "apply to Managed OAuth");
+    }),
+  );
+});

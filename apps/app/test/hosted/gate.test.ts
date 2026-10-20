@@ -176,6 +176,32 @@ describe("authentication", () => {
     }
   });
 
+  it("does not serve the MCP endpoint on the app host: Cloud's MCP clients sign in with its own OAuth", async () => {
+    const cookie = await signIn({ email: "ada@example.com" });
+
+    const org = (await me(cookie)).orgs[0]?.slug ?? "";
+
+    for (const [method, path] of [
+      ["GET", "/mcp"],
+      ["POST", "/mcp"],
+      ["POST", `/o/${org}/mcp`],
+      ["POST", "/o/-bad-/mcp"],
+    ] as const) {
+      const response = await call(path, {
+        method,
+        headers: { cookie, "content-type": "application/json" },
+        ...(method === "POST"
+          ? { body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" }) }
+          : {}),
+      });
+
+      expect(response.status, `${method} ${path}`).toBe(404);
+      expect(await response.json()).toEqual({
+        error: "Not found: the client API is served by the API Worker",
+      });
+    }
+  });
+
   it("refuses cross-site management requests and form posts", async () => {
     const cookie = await signIn({ email: "ada@example.com" });
 

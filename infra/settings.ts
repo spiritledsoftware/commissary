@@ -114,6 +114,20 @@ export interface Settings {
   readonly sessionDuration: string;
   /** Optional header Access reads a JSON service token from (single-header mode), e.g. `x-api-key`. */
   readonly serviceTokenHeader: string;
+  /**
+   * Managed OAuth of the stack's Access application (ADR 0045), which signs MCP clients in to the app host's `/mcp`:
+   * whether it is on (`ACCESS_MANAGED_OAUTH`, off by default while it is in open beta and until a stage confirms that
+   * `cloudflared access` clients keep working with it, #267), the redirect URIs a dynamically registered client may use
+   * (`ACCESS_OAUTH_REDIRECT_URIS`, by default {@link DEFAULT_OAUTH_REDIRECT_URIS}), and whether any client redirecting
+   * to `localhost` or `127.0.0.1` may (`ACCESS_OAUTH_LOOPBACK_CLIENTS`, by default on: Claude Code, Codex, Cursor's
+   * desktop app). The three are refused with `ACCESS_AUD` (docs/DEPLOY.md gives the dashboard steps) and on Commissary
+   * Cloud, and the last two while Managed OAuth is off.
+   */
+  readonly managedOAuth: {
+    readonly enabled: boolean;
+    readonly redirectUris: ReadonlyArray<string>;
+    readonly loopbackClients: boolean;
+  };
   readonly metaMintUrl: string;
   readonly cpuMs: number;
   /** Local development identity (`alchemy dev` only). */
@@ -172,6 +186,51 @@ const secretsKeyGenerations = Effect.gen(function* () {
 });
 
 const TOKEN_NAME = /^[a-z0-9][a-z0-9-]{0,40}$/;
+
+/**
+ * The redirect URIs Managed OAuth allows by default: the hosted clients of docs/CLIENTS.md that sign in from a web
+ * origin (Claude's apps, Cursor's web and agents). Clients on the person's machine redirect to a loopback address,
+ * which `ACCESS_OAUTH_LOOPBACK_CLIENTS` allows.
+ */
+export const DEFAULT_OAUTH_REDIRECT_URIS: ReadonlyArray<string> = [
+  "https://claude.ai/api/mcp/auth_callback",
+  "https://www.cursor.com/agents/mcp/oauth/callback",
+];
+
+/** Schemes no client redirects to: they run or embed content rather than return to an application. */
+const UNSAFE_REDIRECT_SCHEMES = new Set(["javascript:", "data:", "file:"]);
+
+/**
+ * Why `uri` cannot be a redirect URI Managed OAuth allows, `undefined` when it can: an absolute URL, `https:` (a path
+ * may end in `/*`) or a client's own scheme (`cursor://…`), never `http:` (loopback clients have their own setting) nor
+ * a scheme that runs or embeds content (`javascript:`, `data:`, `file:`).
+ */
+const notARedirectUri = (uri: string): string | undefined => {
+  if (!URL.canParse(uri)) return `ACCESS_OAUTH_REDIRECT_URIS: "${uri}" is not an absolute URL`;
+  const { protocol } = new URL(uri);
+
+  if (protocol === "http:")
+    return `ACCESS_OAUTH_REDIRECT_URIS: "${uri}" must be https (ACCESS_OAUTH_LOOPBACK_CLIENTS allows clients on localhost)`;
+
+  return UNSAFE_REDIRECT_SCHEMES.has(protocol)
+    ? `ACCESS_OAUTH_REDIRECT_URIS: "${uri}" must be https or a client's own scheme, not ${protocol}`
+    : undefined;
+};
+
+/** The Managed OAuth settings, which apply only to a stack-managed Access application. */
+const MANAGED_OAUTH_SETTINGS = [
+  "ACCESS_MANAGED_OAUTH",
+  "ACCESS_OAUTH_REDIRECT_URIS",
+  "ACCESS_OAUTH_LOOPBACK_CLIENTS",
+] as const;
+
+/** A boolean setting: `true`, `false` or unset (""), lowercased. */
+const flag = (name: string) => Config.map(text(name), (value) => value.trim().toLowerCase());
+
+const notAFlag = (name: string, value: string): string | undefined =>
+  value === "" || value === "true" || value === "false"
+    ? undefined
+    : `${name} must be true or false, not "${value}"`;
 
 /** A hostname as a custom domain takes it: lowercase labels, at least two, no scheme, port or path. */
 const HOSTNAME =
@@ -349,6 +408,19 @@ export const readSettings = (dev: boolean, stage: string) =>
         ? yield* hostedSettings(dev, stage, preview, { baseDomain, appDomain, apiDomain })
         : undefined;
 
+    const managedOAuthSetting = yield* flag("ACCESS_MANAGED_OAUTH");
+    const oauthRedirectUris = yield* list("ACCESS_OAUTH_REDIRECT_URIS");
+    const oauthLoopbackClients = yield* flag("ACCESS_OAUTH_LOOPBACK_CLIENTS");
+
+    // Which of the Managed OAuth settings are set, for the refusals where they do not apply.
+    const setOAuth: Record<(typeof MANAGED_OAUTH_SETTINGS)[number], boolean> = {
+      ACCESS_MANAGED_OAUTH: managedOAuthSetting !== "",
+      ACCESS_OAUTH_REDIRECT_URIS: oauthRedirectUris.length > 0,
+      ACCESS_OAUTH_LOOPBACK_CLIENTS: oauthLoopbackClients !== "",
+    };
+
+    const configuredOAuth = MANAGED_OAUTH_SETTINGS.filter((name) => setOAuth[name]);
+
     const settings: Settings = {
       hosted: hosted?.hosted,
       preview,
@@ -365,6 +437,12 @@ export const readSettings = (dev: boolean, stage: string) =>
       adminServiceTokens: yield* list("PLATFORM_ADMIN_SERVICE_TOKENS"),
       sessionDuration: (yield* text("ACCESS_SESSION_DURATION", "24h")).trim(),
       serviceTokenHeader: (yield* text("ACCESS_SERVICE_TOKEN_HEADER")).trim(),
+      managedOAuth: {
+        enabled: managedOAuthSetting === "true",
+        redirectUris:
+          oauthRedirectUris.length === 0 ? DEFAULT_OAUTH_REDIRECT_URIS : oauthRedirectUris,
+        loopbackClients: oauthLoopbackClients !== "false",
+      },
       metaMintUrl: (yield* text("META_MINT_URL")).trim(),
       cpuMs: yield* Config.Number("COMMISSARY_CPU_MS").pipe(Config.withDefault(300_000)),
       devBypass: (yield* text("ACCESS_DEV_BYPASS", "dev@example.com")).trim(),
@@ -413,6 +491,11 @@ export const readSettings = (dev: boolean, stage: string) =>
     }
 
     if (hosted !== undefined) {
+      if (configuredOAuth.length > 0)
+        problems.push(
+          `${configuredOAuth.join(", ")}: Commissary Cloud has no Access application (its MCP clients sign in with Commissary's own OAuth); unset them`,
+        );
+
       if (settings.adminServiceTokens.length > 0)
         yield* Effect.logWarning(
           "PLATFORM_ADMIN_SERVICE_TOKENS is ignored on Commissary Cloud: platform admins sign in with PLATFORM_ADMIN_EMAILS",
@@ -427,6 +510,23 @@ export const readSettings = (dev: boolean, stage: string) =>
 
     if (settings.teamDomain === "")
       problems.push("ACCESS_TEAM_DOMAIN is required (your Zero Trust team name)");
+
+    for (const problem of [
+      notAFlag("ACCESS_MANAGED_OAUTH", managedOAuthSetting),
+      notAFlag("ACCESS_OAUTH_LOOPBACK_CLIENTS", oauthLoopbackClients),
+      ...oauthRedirectUris.map(notARedirectUri),
+    ])
+      if (problem !== undefined) problems.push(problem);
+
+    // Commissary Cloud refused them above, and ACCESS_AUD does below: each setting is refused once.
+    if (
+      settings.existingAud === "" &&
+      !settings.managedOAuth.enabled &&
+      (oauthRedirectUris.length > 0 || oauthLoopbackClients !== "")
+    )
+      problems.push(
+        "ACCESS_OAUTH_REDIRECT_URIS and ACCESS_OAUTH_LOOPBACK_CLIENTS apply to Managed OAuth: set ACCESS_MANAGED_OAUTH=true, or unset them",
+      );
 
     if (settings.existingAud === "") {
       if (
@@ -444,10 +544,16 @@ export const readSettings = (dev: boolean, stage: string) =>
         if (!TOKEN_NAME.test(name))
           problems.push(`ACCESS_SERVICE_TOKENS: "${name}" must match ${TOKEN_NAME.source}`);
       }
-    } else if (settings.serviceTokens.length > 0 || settings.allowServiceTokenIds.length > 0) {
-      problems.push(
-        "ACCESS_SERVICE_TOKENS and ACCESS_ALLOW_SERVICE_TOKEN_IDS need a stack-managed Access application: unset ACCESS_AUD",
-      );
+    } else {
+      if (settings.serviceTokens.length > 0 || settings.allowServiceTokenIds.length > 0)
+        problems.push(
+          "ACCESS_SERVICE_TOKENS and ACCESS_ALLOW_SERVICE_TOKEN_IDS need a stack-managed Access application: unset ACCESS_AUD",
+        );
+
+      if (configuredOAuth.length > 0)
+        problems.push(
+          `${configuredOAuth.join(", ")} need a stack-managed Access application: unset ACCESS_AUD, or turn Managed OAuth on in your application (docs/DEPLOY.md)`,
+        );
     }
 
     if (problems.length > 0) {

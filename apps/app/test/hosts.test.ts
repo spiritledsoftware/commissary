@@ -15,7 +15,8 @@ const CLIENT_API_PATHS = [
   "/%76%31/models",
   "//V1/models",
   "/backend-api/codex/responses",
-  "/mcp",
+  // Under the MCP endpoint, which a self-hosted Commissary serves here itself (test/mcp-access.test.ts).
+  "/mcp/sessions",
 ];
 
 /** A request to the Worker with the host settings `hosts` bound. */

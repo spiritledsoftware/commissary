@@ -3,7 +3,7 @@
 // (ADR 0021), which are new in the Workers port. The Access gate (`access/middleware.ts`) classifies each request here
 // and passes what `@commissary/auth` needs of it (the org a URL addresses, the role it needs: `policy.ts`).
 import { Schema } from "effect";
-import { isClientApiPath, normalizedPath, OrgSlug } from "@commissary/core";
+import { isClientApiPath, isMcpPath, MCP_PATH, normalizedPath, OrgSlug } from "@commissary/core";
 
 export { normalizedPath };
 
@@ -150,6 +150,52 @@ export const scopedUrl = (
     : { slug: address.slug, url: `${address.path}${parsed.search}` };
 };
 
+/**
+ * The router path of the MCP endpoint of an org other than `global` on the app host (ADR 0045): `/o/<slug>/mcp`. Bare
+ * `/mcp` is the endpoint of `global`, as the panel's addresses without an org are. Not a panel page: the org's address
+ * is parsed by {@link mcpAddress}, not {@link parseOrgAddress}, and the router matches the path with its org.
+ */
+export const MCP_ORG_ROUTE = `${PANEL_ORG_PREFIX}/:slug${MCP_PATH}` as const;
+
+/**
+ * The org a request URL addresses on the MCP endpoint of the app host: `segment` for `/o/<segment>/mcp`, none for
+ * `/mcp` (the request's `CurrentOrg`, `global`); `undefined` when the URL is not the endpoint. Every segment counts,
+ * valid slug or not, as the router's `:slug` matches any: the endpoint's gate refuses one that is no slug
+ * ({@link mcpOrgSlug}), so no spelling of the address reaches the MCP handler past it. Like the zones, it is case-,
+ * slash- and percent-encoding-insensitive and takes a trailing slash, as the router does.
+ */
+export const mcpAddress = (
+  requestUrl: string,
+): { readonly segment: string | undefined } | undefined => {
+  if (isMcpPath(requestUrl)) return { segment: undefined };
+  const path = normalizedPath(requestUrl);
+
+  if (path === undefined) return undefined;
+  const [empty, prefix, segment, endpoint, ...rest] = path.split("/");
+
+  return empty === "" &&
+    prefix === PANEL_ORG_PREFIX.slice(1) &&
+    segment !== undefined &&
+    segment !== "" &&
+    `/${endpoint}` === MCP_PATH &&
+    (rest.length === 0 || (rest.length === 1 && rest[0] === ""))
+    ? { segment }
+    : undefined;
+};
+
+/**
+ * The org slug an MCP endpoint address names ({@link mcpAddress}): `{ slug }` (`undefined` for `/mcp`, `global`), or
+ * `"invalid"` when its segment is no org slug.
+ */
+export const mcpOrgSlug = (address: {
+  readonly segment: string | undefined;
+}): { readonly slug: OrgSlug | undefined } | "invalid" =>
+  address.segment === undefined
+    ? { slug: undefined }
+    : isOrgSlug(address.segment)
+      ? { slug: address.segment }
+      : "invalid";
+
 /** The path of a (normalised) path once its org is taken out: the page or API path the router matches. */
 export const unscopedPath = (path: string): string => parseOrgAddress(path)?.path ?? path;
 
@@ -176,11 +222,13 @@ export const isPanelAssetPath = (requestUrl: string): boolean => {
 };
 
 /**
- * `management`: the management API and the panel, which need a caller (an Access sign-in, a Commissary Cloud session
- * or a management key). `protected`: the client API (`@commissary/core`'s `isClientApiPath`), which the API Worker
- * serves and this Worker refuses (`access/middleware.ts`). `public`: everything else.
+ * `management`: the management API and the panel, which need a caller (an Access sign-in, a Commissary Cloud session or
+ * a management key). `protected`: the client API (`@commissary/core`'s `isClientApiPath`), which the API Worker serves
+ * and this Worker refuses (`access/middleware.ts`). `mcp`: the MCP endpoint (`/mcp` for `global`, `/o/<slug>/mcp` for
+ * another org, {@link mcpAddress}), which a self-hosted Commissary also serves here, behind Access, to MCP clients
+ * Access signs in (ADR 0045), and Commissary Cloud refuses like the rest of the client API. `public`: everything else.
  */
-export type AccessZone = "public" | "protected" | "management";
+export type AccessZone = "public" | "protected" | "management" | "mcp";
 
 /**
  * Classifies a request URL. Matching is deliberately a superset of what the router matches (percent-decoding,
@@ -191,6 +239,9 @@ export const classifyPath = (requestUrl: string): AccessZone => {
   const path = normalizedPath(requestUrl);
 
   if (path === undefined) return "protected";
+
+  // Before the panel: `/o/<slug>/mcp` is under the panel's org prefix, but no page.
+  if (mcpAddress(requestUrl) !== undefined) return "mcp";
 
   if (path.startsWith(MANAGEMENT_PREFIX) || path.startsWith(LEGACY_PANEL_PATH) || isPanelPath(path))
     return "management";

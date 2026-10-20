@@ -13,6 +13,12 @@
 #   `global` keeps Access sign-ins for clients on by default. The JWT is the `CF_Authorization` cookie Access sets for
 #   the service token, which is issued for the main application, like a `cloudflared access login` token;
 # - the control panel without credentials is stopped by Access (anything but 200);
+# - the app host's MCP endpoint is the app Worker's, behind Access (ADR 0045): through Access with the service token it
+#   answers a GET 405 (no stream), or 403 `Forbidden` where the token holds no role in `global`; the API Worker would
+#   answer 401 `Missing API key` (on one host, a `/mcp*` zone route or bypass left over);
+# - with Managed OAuth on (`ACCESS_MANAGED_OAUTH=true`), Access answers the app host's MCP endpoint for a non-browser
+#   client without a sign-in 401 with `resource_metadata` in `WWW-Authenticate`, where MCP clients find its OAuth
+#   server;
 # - when the client API has a host of its own (an API host, or a preview's API Worker workers.dev URL): /healthz answers
 #   200 there, the client API answers 404 on the app host (through Access, from the app Worker) and the management API
 #   404 there (from the API Worker).
@@ -35,7 +41,8 @@ trap 'rm -f "$body" "$headers"' EXIT
 jwt=""
 
 # Prints the status of `$1$2` with the credentials `$3`: `token` goes through Access with the service token,
-# `cloudflared` sends `$jwt` in `cf-access-token` with a dummy API key, `none` sends nothing. Redirects are not followed,
+# `cloudflared` sends `$jwt` in `cf-access-token` with a dummy API key, `none` sends nothing, and `client` nothing but
+# `Accept: application/json`, as a non-browser client without a sign-in does. Redirects are not followed,
 # so an Access sign-in page shows as 302. The response headers land in `$headers`.
 status() {
   local auth=()
@@ -44,6 +51,7 @@ status() {
     auth=(-H "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" -H "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET")
     ;;
   cloudflared) auth=(-H "cf-access-token: $jwt" -H "Authorization: Bearer sk-dummy") ;;
+  client) auth=(-H "Accept: application/json") ;;
   esac
   curl -sS -o "$body" -D "$headers" -w '%{http_code}' --max-time 20 "${auth[@]}" "$1$2" || echo 000
 }
@@ -68,6 +76,8 @@ ok() { [ "$1" = 200 ]; }
 worker_401() { [ "$1" = 401 ] && grep -q '"Missing API key"' "$body"; }
 worker_404() { [ "$1" = 404 ] && grep -q '"Not found: ' "$body"; }
 not_ok() { [ "$1" != 200 ] && [ "$1" != 000 ]; }
+app_mcp() { [ "$1" = 405 ] || { [ "$1" = 403 ] && grep -q '"Forbidden"' "$body"; }; }
+oauth_challenge() { [ "$1" = 401 ] && grep -qiE '^www-authenticate:.*resource_metadata' "$headers"; }
 
 expect "$base" /healthz token "200 through Access" ok
 expect "$base" /v9/management/me token "200 through Access" ok
@@ -83,6 +93,11 @@ expect "$api" /v1/models cloudflared "200 with cf-access-token and a dummy key" 
 expect "$api" /v1/models none "401 Missing API key from the Worker" worker_401
 expect "$api" /v1beta/models none "401 Missing API key from the Worker" worker_401
 expect "$base" / none "no 200 without Access" not_ok
+expect "$base" /mcp token "405 (or 403) from the app Worker's MCP endpoint behind Access" app_mcp
+
+if [ "$(echo "${ACCESS_MANAGED_OAUTH:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')" = true ]; then
+  expect "$base" /mcp client "401 from Access with resource_metadata (Managed OAuth)" oauth_challenge
+fi
 
 if [ "$api" != "$base" ]; then
   expect "$api" /healthz none "200 without Access" ok
