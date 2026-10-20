@@ -215,7 +215,8 @@ describe("management contract", () => {
 
       for (const groupBy of UsageGroupBy.literals) {
         const summary = yield* api.usage.summary({
-          query: { group_by: groupBy, since: 1_600_000_000_000 },
+          // `all`: a toolkit or tool grouping reads tool calls only by default, and these are model attempts.
+          query: { group_by: groupBy, since: 1_600_000_000_000, area: "all" },
         });
 
         assert.strictEqual(summary.group_by, groupBy);
