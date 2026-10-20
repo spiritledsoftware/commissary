@@ -11,12 +11,19 @@
 import { Schema } from "effect";
 import type { Period, WeekStart } from "./period.ts";
 
-export const SUBJECT_KINDS = ["member", "team", "org", "credential", "key", "toolkit"] as const;
+export const SUBJECT_KINDS = [
+  "member",
+  "team",
+  "org",
+  "credential",
+  "key",
+  "toolkit_credential",
+] as const;
 
 export type SubjectKind = (typeof SUBJECT_KINDS)[number];
 
 /** The kinds of a shared credential's limit: a Models credential's (by its id), or a toolkit's shared credential's. */
-export type CredentialKind = Extract<SubjectKind, "credential" | "toolkit">;
+export type CredentialKind = Extract<SubjectKind, "credential" | "toolkit_credential">;
 
 /** The subject of the `org` kind: the org itself has no id. */
 export const ORG_SUBJECT = "";

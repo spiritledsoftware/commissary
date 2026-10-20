@@ -269,7 +269,7 @@ describe("a priced tool call", () => {
   const limit = async (
     org: OrgId,
     admin: TestMember,
-    kind: "member" | "team" | "org" | "toolkit" | "key",
+    kind: "member" | "team" | "org" | "toolkit_credential" | "key",
     subject: string,
     amountMicros: number,
   ) => {
@@ -296,7 +296,7 @@ describe("a priced tool call", () => {
     await limit(org, admin, "member", alice.id, roomy);
     await limit(org, admin, "team", team.value.id, roomy);
     await limit(org, admin, "org", "", roomy);
-    await limit(org, admin, "toolkit", toolkit.id, roomy);
+    await limit(org, admin, "toolkit_credential", toolkit.id, roomy);
     await limit(org, admin, "key", client.keyId, roomy);
 
     await client.call("paid_search");
@@ -314,9 +314,9 @@ describe("a priced tool call", () => {
 
     expect(
       Object.fromEntries(overview.entries.map((entry) => [entry.kind, entry.spentMicros])),
-    ).toEqual({ member: 6_000, team: 6_000, org: 6_000, toolkit: 6_000, key: 6_000 });
+    ).toEqual({ member: 6_000, team: 6_000, org: 6_000, toolkit_credential: 6_000, key: 6_000 });
     // A toolkit limit names the toolkit by its id, and shows its name.
-    expect(overview.entries.find((entry) => entry.kind === "toolkit")).toMatchObject({
+    expect(overview.entries.find((entry) => entry.kind === "toolkit_credential")).toMatchObject({
       subject: toolkit.id,
       label: "paid",
     });
@@ -326,7 +326,7 @@ describe("a priced tool call", () => {
     const { org, admin, alice, toolkit, server } = await pricedOrg("refused");
     const client = await clientOf(org, alice);
 
-    await limit(org, admin, "toolkit", toolkit.id, 0);
+    await limit(org, admin, "toolkit_credential", toolkit.id, 0);
     const calls = () => server.requests.filter((request) => request.rpc === "tools/call").length;
 
     const refused = await client.call("paid_search");

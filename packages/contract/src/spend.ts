@@ -8,7 +8,7 @@
  * Amounts are micro-USD (1 USD = 1,000,000). An org admin sees and writes every limit and sets the calendar; a plain
  * member sees the limits that bind them (their own, their teams', the org's and those on their API keys) and writes
  * limits on their own API keys, never above an admin's limit on that key. A credential limit names the credential by
- * its `auth_index`, a toolkit limit the toolkit by its id. Each limit has a revision: an edit names the one it was based on in `If-Match`.
+ * its `auth_index`, a `toolkit_credential` limit the toolkit by its id. Each limit has a revision: an edit names the one it was based on in `If-Match`.
  */
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
@@ -16,14 +16,14 @@ import { managementErrors } from "./errors.ts";
 
 const optional = Schema.optionalKey;
 
-/** `toolkit`: an org toolkit's shared credential (#199), named by the toolkit's id; its tool calls count toward it. */
+/** `toolkit_credential`: an org toolkit's shared credential (#199), named by the toolkit's id; its tool calls count toward it. */
 export const SpendSubjectKind = Schema.Literals([
   "member",
   "team",
   "org",
   "credential",
   "key",
-  "toolkit",
+  "toolkit_credential",
 ]);
 
 export type SpendSubjectKind = typeof SpendSubjectKind.Type;

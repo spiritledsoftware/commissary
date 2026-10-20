@@ -341,7 +341,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       .toolkits()
       .filter((toolkit) => toolkit.owner === undefined && shared.has(toolkit.id))
       .map((toolkit) => ({
-        kind: "toolkit",
+        kind: "toolkit_credential",
         id: toolkit.id,
         publicId: toolkit.id,
         label: toolkit.name,
@@ -510,7 +510,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
     this.#core.transaction(() => {
       this.#store.deleteToolkit(id);
-      this.#core.spend.forget("toolkit", id);
+      this.#core.spend.forget("toolkit_credential", id);
     });
 
     return ok({ id });
@@ -566,7 +566,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       if (!this.#store.deleteCredential(id, target.value.owner)) return false;
 
       // The shared credential's Spend limits go with it, as a Models credential's do.
-      if (target.value.owner === undefined) this.#core.spend.forget("toolkit", id);
+      if (target.value.owner === undefined) this.#core.spend.forget("toolkit_credential", id);
 
       return true;
     });
@@ -917,7 +917,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     const charged: ChargedCredential = {
       id: toolkit.id,
       shared: slot === "shared",
-      kind: "toolkit",
+      kind: "toolkit_credential",
     };
 
     if (price > 0) {

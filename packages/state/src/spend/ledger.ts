@@ -9,7 +9,7 @@
  * - An API key's limits count everything the key spends, whatever credential served it.
  * - Member, team, org and credential limits count traffic served by a **shared** credential only: what a private
  *   credential serves is the member's own account with the provider, so only a key limit sees it. A tool call (#199)
- *   counts the same way; its shared credential is the toolkit's (a `toolkit` limit).
+ *   counts the same way; its shared credential is the toolkit's (a `toolkit_credential` limit).
  * - A limit with no room refuses (key), keeps the shared credentials away (member, team, org) or skips one credential
  *   (credential limit): the `gate`. A tool call has one credential to go to, so any limit it would be charged to
  *   without room refuses it (`refusal`). Several limits on one subject and period (an admin's and a member's) are enforced

@@ -579,18 +579,22 @@ describe("prices and Spend limits (#199)", () => {
 
     // The toolkit's shared credential takes a Spend limit, named by the toolkit's id; it goes with the credential.
     const limit = await send(org, "/spend/limits", org.admin, "POST", {
-      kind: "toolkit",
+      kind: "toolkit_credential",
       subject: added.id,
       period: "day",
       amount_micros: 1_000_000,
     });
 
     expect(limit.status).toBe(201);
-    expect(limit.body).toMatchObject({ kind: "toolkit", subject: added.id, label: "web" });
+    expect(limit.body).toMatchObject({
+      kind: "toolkit_credential",
+      subject: added.id,
+      label: "web",
+    });
     expect(
       errorOf(
         await send(org, "/spend/limits", org.admin, "POST", {
-          kind: "toolkit",
+          kind: "toolkit_credential",
           subject: "tk_nope",
           period: "day",
           amount_micros: 1,
@@ -605,7 +609,7 @@ describe("prices and Spend limits (#199)", () => {
         }
       ).limits.map((entry) => entry.kind);
 
-    expect(await limits()).toEqual(["toolkit"]);
+    expect(await limits()).toEqual(["toolkit_credential"]);
     expect(
       (await send(org, `/toolkits/${added.id}/credentials/shared`, org.admin, "DELETE")).status,
     ).toBe(200);

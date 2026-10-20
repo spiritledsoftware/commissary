@@ -259,7 +259,7 @@ describe("SpendLedger.scopes", () => {
 });
 
 describe("SpendLedger and tool calls (#199)", () => {
-  const toolkit = { id: "kit-1", shared: true, kind: "toolkit" } as const;
+  const toolkit = { id: "kit-1", shared: true, kind: "toolkit_credential" } as const;
   const now = at("2026-03-10T12:00:00Z");
 
   it("charges a call on a toolkit's shared credential to the member, their teams, the org, the toolkit and the key", () => {
@@ -268,7 +268,7 @@ describe("SpendLedger and tool calls (#199)", () => {
         limit("member", "m1", "day", 1 * USD),
         limit("team", "t1", "day", 1 * USD),
         limit("org", "", "day", 1 * USD),
-        limit("toolkit", "kit-1", "day", 1 * USD),
+        limit("toolkit_credential", "kit-1", "day", 1 * USD),
         limit("credential", "kit-1", "day", 1 * USD),
         limit("key", "k1", "day", 1 * USD),
       ]),
@@ -280,13 +280,13 @@ describe("SpendLedger and tool calls (#199)", () => {
       { kind: "member", subject: "m1" },
       { kind: "team", subject: "t1" },
       { kind: "org", subject: "" },
-      { kind: "toolkit", subject: "kit-1" },
+      { kind: "toolkit_credential", subject: "kit-1" },
     ]);
   });
 
   it("refuses a call that any limit it would be charged to has no room under", () => {
     const book = new MemorySpendBook([
-      limit("toolkit", "kit-1", "day", 1 * USD),
+      limit("toolkit_credential", "kit-1", "day", 1 * USD),
       limit("member", "m1", "month", 3 * USD),
     ]);
 
@@ -296,7 +296,7 @@ describe("SpendLedger and tool calls (#199)", () => {
     expect(ledger.refusal(caller, toolkit, now)).toBeUndefined();
     spend(ledger, caller, 1 * USD, now, toolkit);
     expect(ledger.refusal(caller, toolkit, now)).toEqual({
-      kind: "toolkit",
+      kind: "toolkit_credential",
       period: "day",
       resetsAt: at("2026-03-11T00:00:00Z"),
     });
@@ -315,7 +315,7 @@ describe("SpendLedger and tool calls (#199)", () => {
 
     const ledger = ledgerOf(book);
     const caller = { memberId: "m1", apiKeyId: "k1" };
-    const mine = { id: "kit-1", shared: false, kind: "toolkit" } as const;
+    const mine = { id: "kit-1", shared: false, kind: "toolkit_credential" } as const;
 
     spend(ledger, { memberId: "m1" }, 1 * USD, now, toolkit);
     expect(ledger.refusal(caller, mine, now)).toBeUndefined();

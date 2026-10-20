@@ -7,6 +7,8 @@
  */
 export * from "./ledger.ts";
 
+export * from "./message.ts";
+
 export * from "./model.ts";
 
 export * from "./period.ts";

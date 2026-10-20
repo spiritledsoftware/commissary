@@ -179,7 +179,7 @@ const useSubjects = (): Readonly<Record<SpendSubjectKind, ReadonlyArray<Subject>
           }))
       : [],
     // The form does not offer toolkit limits yet (#209).
-    toolkit: [],
+    toolkit_credential: [],
   };
 };
 

@@ -16,7 +16,7 @@ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { AccessPrincipal, currentViewer, viewerOf } from "@commissary/auth";
 import { boundedBodyText, CurrentOrg, CurrentOutboundPolicy, MCP_PATH } from "@commissary/core";
 import { panelPageUrl } from "@commissary/state";
-import type { Refusal } from "@commissary/state/spend";
+import { type Refusal, spendRefusalMessage } from "@commissary/state/spend";
 import type { ClientTool, ToolCallOutcome } from "../control-plane-part.ts";
 import { toolsControlPlane, ToolsEnv } from "../env.ts";
 import { writeToolCallRecord } from "../usage/record.ts";
@@ -130,23 +130,9 @@ const declined = (params: Schema.JsonObject, key: string): boolean => {
   return isJsonObject(response) && response["action"] !== "accept";
 };
 
-/** "daily": how a Spend limit's period reads in its refusal. */
-const ADJECTIVE = { day: "daily", week: "weekly", month: "monthly" } as const;
-
-/** Whose Spend limit refused a call, as its refusal names it (the words of Models' `spend_limit_reached`). */
-const SUBJECT: Readonly<Record<Refusal["kind"], string>> = {
-  key: "this API key",
-  member: "your membership",
-  team: "your team",
-  org: "your org",
-  credential: "this credential",
-  toolkit: "this toolkit's shared credential",
-};
-
 /** A priced call a Spend limit without room refused (#199): the limit and when it starts over, as for a model. */
 const refusedText = (name: string, refusal: Refusal): string =>
-  `The ${ADJECTIVE[refusal.period]} Spend limit of ${SUBJECT[refusal.kind]} is reached; it resets at ` +
-  `${new Date(refusal.resetsAt).toISOString()}. ${name} was not called.`;
+  `${spendRefusalMessage(refusal)}. ${name} was not called.`;
 
 /** What a call came to, as its usage record says it (#199). */
 const recordedOutcome = (outcome: Exclude<ToolCallOutcome, { outcome: "unknown" }>) => {

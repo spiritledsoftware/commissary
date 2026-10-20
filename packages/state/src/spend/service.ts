@@ -120,7 +120,7 @@ const KIND_ORDER: Readonly<Record<SubjectKind, number>> = {
   member: 2,
   key: 3,
   credential: 4,
-  toolkit: 5,
+  toolkit_credential: 5,
 };
 
 export class SpendService {
@@ -201,7 +201,7 @@ export class SpendService {
         return refuse("forbidden", "members may limit their own API keys only");
     }
 
-    if (input.kind === "credential" || input.kind === "toolkit") {
+    if (input.kind === "credential" || input.kind === "toolkit_credential") {
       const credential = this.#directory
         .credentials()
         .find((candidate) => candidate.kind === input.kind && candidate.publicId === input.subject);
@@ -364,7 +364,7 @@ export class SpendService {
       case "key":
         return member !== undefined && keys.get(limit.subject)?.memberId === member;
       case "credential":
-      case "toolkit":
+      case "toolkit_credential":
         return false;
     }
   }
@@ -403,12 +403,12 @@ export class SpendService {
           case "key":
             return keys.get(limit.subject);
           case "credential":
-          case "toolkit":
+          case "toolkit_credential":
             return credentialOf(limit.kind, limit.subject)?.label;
         }
       },
       publicSubject: (limit: SpendLimit): string =>
-        limit.kind === "credential" || limit.kind === "toolkit"
+        limit.kind === "credential" || limit.kind === "toolkit_credential"
           ? (credentialOf(limit.kind, limit.subject)?.publicId ?? "")
           : limit.subject,
     };
