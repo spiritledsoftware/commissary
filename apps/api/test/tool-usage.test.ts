@@ -13,7 +13,13 @@ import {
   rowToPayload,
 } from "@commissary/models/testing";
 import { controlPlaneOf, platformOf } from "@commissary/state";
-import { fakeMcpServer, type FakeMcpOptions, serveFakeMcpServers } from "@commissary/tools/testing";
+import {
+  fakeMcpServer,
+  type FakeMcpOptions,
+  insertBrowserSessionRecord,
+  insertToolCallRecord,
+  serveFakeMcpServers,
+} from "@commissary/tools/testing";
 import worker from "../src/index.ts";
 import { addMember, issueKey, type TestMember } from "./support/client.ts";
 
@@ -236,6 +242,69 @@ describe("a tool call's usage record", () => {
     ]);
     // Model attempts' reads leave it out.
     expect((await listUsageRecords(env.USAGE, org, {}, authIndexOf)).rows).toEqual([]);
+  });
+
+  it("carries the browser toolkit's browser time, a Quick Action's and a closed session's, and reads it back", async () => {
+    // The browser toolkit needs Browser Run, which this Worker's tests do not bind: the records are seeded with Tools'
+    // writers, as the MCP endpoint and a session's object write them (#214).
+    const { org, alice } = await staffedOrg("browser-time");
+    const at = Date.now();
+
+    await insertToolCallRecord(env.USAGE, {
+      requestId: crypto.randomUUID(),
+      orgId: org,
+      principalId: "key:k-browser",
+      memberId: alice.id,
+      toolkitId: "browser",
+      toolId: "browser:markdown",
+      credential: "shared",
+      private: false,
+      outcome: "success",
+      requestedAt: at,
+      latencyMs: 2_000,
+      requestBytes: 30,
+      responseBytes: 300,
+      costMicros: 1_500,
+      approval: "none",
+      browserMs: 1_500,
+    });
+    await insertBrowserSessionRecord(env.USAGE, {
+      sessionId: `bs_${"0".repeat(32)}`,
+      orgId: org,
+      principalId: "key:k-browser",
+      memberId: alice.id,
+      toolkitId: "browser",
+      openedAt: at + 1,
+      browserMs: 90_000,
+      costMicros: 2_250,
+      profileId: "bp_work",
+    });
+
+    const page = await listUsageRecords(env.USAGE, org, { toolkit: "browser" }, authIndexOf);
+    const payloads = page.rows.map((row) => rowToPayload(row, authIndexOf));
+
+    expect(payloads).toEqual([
+      expect.objectContaining({
+        area: "tools",
+        toolkit_id: "browser",
+        credential: "shared",
+        browser_ms: 90_000,
+        browser_profile_id: "bp_work",
+        cost_micros: 2_250,
+        api_key: "key:k-browser",
+        member_id: alice.id,
+      }),
+      expect.objectContaining({
+        tool_id: "browser:markdown",
+        outcome: "success",
+        browser_ms: 1_500,
+        cost_micros: 1_500,
+      }),
+    ]);
+    // The session's record names no tool and no outcome.
+    expect(payloads[0]).not.toHaveProperty("tool_id");
+    expect(payloads[0]).not.toHaveProperty("outcome");
+    expect(payloads[1]).not.toHaveProperty("browser_profile_id");
   });
 
   it("is written when the member must connect their own credential, and marked private on a private toolkit", async () => {

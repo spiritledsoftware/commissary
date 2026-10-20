@@ -53,7 +53,9 @@ type ToolsPartMethod =
   | "removeProfile"
   | "listProfileGrants"
   | "writeProfileGrant"
-  | "purgeBrowserCrawls";
+  | "purgeBrowserCrawls"
+  | "browserSessionClosed"
+  | "purgeBrowserSessions";
 
 /** The Tools part of an org's ControlPlane (`ToolsPart`) as Tools sees it: the methods it calls. */
 export type ToolsControlPlanePart = Pick<ToolsPart, ToolsPartMethod> & Rpc.RpcTargetBranded;

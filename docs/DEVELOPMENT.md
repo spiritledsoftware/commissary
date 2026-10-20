@@ -136,7 +136,10 @@ a part's methods) is made in steps, one release apart:
 A new kind of result goes the same way: an old caller that meets a value it does not know may fail on it. So the new
 caller asks for the new values with a flag, and the state Worker answers a call without it in the old values: the
 Tools part's `callTool` returns the approval outcomes only to a call with `approvalOutcomes: true` (#201), and an API
-Worker from before them gets a call that waits for approval as `failed`.
+Worker from before them gets a call that waits for approval as `failed`. A browser session's object answers a call
+with its browser time only when the call passes its metering (#214, an optional last argument), and the bare tool result
+to a Tools part from before; the part takes such a bare answer from an object from before as one that used no browser
+time (`session-object.ts`).
 
 A deploy of the state Worker resets its Durable Objects, and the calls in flight fail with "Durable Object reset because
 its code was updated." The app and the API Worker retry such a call once, on a new stub (`retryOnCodeUpdate`,

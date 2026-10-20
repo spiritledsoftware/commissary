@@ -7,7 +7,8 @@
  * Two areas write usage records (#199): Models one per upstream attempt, Tools one per call of Commissary's MCP endpoint
  * (`packages/tools/src/usage/record.ts`). Every read is of model attempts unless it asks for another `area` (`tools`,
  * or `all` for both); naming a `toolkit` or a `tool` asks for tool calls. A tool call's record holds no arguments and no
- * results: its toolkit, the tool's stable id, its outcome, its latency, its sizes and its cost.
+ * results: its toolkit, the tool's stable id, its outcome, its latency, its sizes and its cost. The browser toolkit's
+ * records carry browser time besides (#214), and a browser session writes one of its own when it closes.
  */
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
@@ -111,6 +112,11 @@ const usageTotalsFields = {
   unpriced_requests: Schema.Number,
   avg_latency_ms: Schema.Number,
   avg_ttft_ms: Schema.NullOr(Schema.Number),
+  /**
+   * Browser time (#214), in milliseconds: the browser toolkit's Quick Actions' and its sessions' (whose own records, one
+   * per session, count toward no request, failure or latency; their cost counts in `cost_micros`).
+   */
+  browser_ms: optional(Schema.Number),
 };
 
 export const UsageTotals = Schema.Struct(usageTotalsFields);
@@ -263,6 +269,14 @@ export const UsageRecord = Schema.Struct({
   response_bytes: optional(Schema.Number),
   /** How an approval rule decided the call (#201); absent on a record from before approvals. */
   approval: optional(ToolCallApproval),
+  /**
+   * The browser toolkit's (#214): the browser time a Quick Action's call used, or, on the record a browser session
+   * writes when it closes (no `tool_id`, no `outcome`), the session's from opening to closing, in milliseconds; its
+   * `cost_micros` is what that time cost at the price per browser hour, prorated (0 without one).
+   */
+  browser_ms: optional(Schema.Number),
+  /** The browser profile (#215) a browser session's record (#214) opened from; absent when it opened from none. */
+  browser_profile_id: optional(Schema.String),
 });
 
 export type UsageRecord = typeof UsageRecord.Type;

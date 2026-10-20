@@ -29,7 +29,7 @@ import {
   SPEND_REFUSAL_META,
 } from "@commissary/core";
 import { panelPageUrl } from "@commissary/state";
-import { type Refusal, spendRefusalMessage } from "@commissary/state/spend";
+import { spendRefusalMessage } from "@commissary/state/spend";
 import type {
   ClientTool,
   FormAction,
@@ -222,9 +222,18 @@ const declined = (params: Schema.JsonObject, key: string): boolean => {
   return isJsonObject(response) && response["action"] !== "accept";
 };
 
-/** A priced call a Spend limit without room refused (#199): the limit and when it starts over, as for a model. */
-const refusedText = (name: string, refusal: Refusal): string =>
-  `${spendRefusalMessage(refusal)}. ${name} was not called.`;
+/**
+ * A priced call a Spend limit without room refused (#199): the limit and when it starts over, as for a model; and when
+ * the browser session it named was closed with it, as its browser time costs money (#214), that it was.
+ */
+export const refusedText = (
+  name: string,
+  outcome: Extract<ToolCallOutcome, { outcome: "refused" }>,
+): string =>
+  `${spendRefusalMessage(outcome.refusal)}. ${name} was not called` +
+  (outcome.sessionClosed === true
+    ? `, and the browser session is closed: its browser time counts toward the limit.`
+    : `.`);
 
 /** A call that ended: every outcome but an unknown tool and a form the caller is asked to answer first. */
 type EndedCall = Exclude<ToolCallOutcome, { outcome: "unknown" } | { outcome: "approve" }>;
@@ -311,7 +320,7 @@ const toolResult = Effect.fnUntraced(function* (
 
   if (outcome.outcome === "failed") return toolError(outcome.message);
 
-  if (outcome.outcome === "refused") return toolError(refusedText(name, outcome.refusal));
+  if (outcome.outcome === "refused") return toolError(refusedText(name, outcome));
 
   if (outcome.outcome === "not_approved") return toolError(notApprovedText(name, outcome.reason));
 
@@ -413,7 +422,7 @@ const callTool = Effect.fnUntraced(function* (request: RpcRequest, context: Serv
   // An agent run learns that a spend limit refused the call, and ends its turn with the refusal as the answer (#227).
   const value =
     outcome.outcome === "refused" && call.run !== undefined
-      ? runRefusal(refusedText(name, outcome.refusal))
+      ? runRefusal(refusedText(name, outcome))
       : yield* toolResult(outcome, name, request, context);
 
   const answeredAt = yield* Clock.currentTimeMillis;
@@ -436,6 +445,7 @@ const callTool = Effect.fnUntraced(function* (request: RpcRequest, context: Serv
     responseBytes: jsonBytes(value),
     costMicros: usage.costMicros,
     approval: usage.approval,
+    browserMs: usage.browserMs,
   });
 
   return resultAnswer(request.id, framed(context.era, value));

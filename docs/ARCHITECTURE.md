@@ -1926,6 +1926,19 @@ once; a 401 retry keeps the rejected attempt's failed record, a failed-over cred
   `0010` is forward-only, as every migration here; code from before it reads every record as a model attempt, so
   reverting the code means first running `DELETE FROM usage_records WHERE area = 'tools'` (the migration's header
   also gives the dropped export-queue index to recreate).
+- **Browser time** (#214, ADR 0039; `migrations/usage/0012_usage_browser_time.sql`): `browser_ms`, the browser time a
+  browser toolkit's record holds, in milliseconds: a Quick Action's call's (what Browser Run reported for it), or a
+  browser session's from opening to closing, on the one record the session writes when it closes (_Tools_, "Its
+  browser time"): `area = 'tools'`, the toolkit, no `tool_id` and no `tool_outcome`, `auth_type` `shared`, the
+  session's id as `request_id`, its browser time's cost at the price per browser hour as `cost_micros`, and the browser
+  profile it opened from (#215) as `browser_profile_id` (`NULL` for none). The calls
+  in a session keep their own records, without browser time, so a cost is never counted twice. The JSON of a tool's
+  record adds `browser_ms` (and a session's `browser_profile_id`) when it has one; a session's record has no `tool_id`
+  or `outcome`. Browser hours are not requests (ADR 0042): a summary and a series count a session's record toward no
+  request, failure or average latency (`area = 'tools' AND tool_id IS NULL`, `usage/d1.ts`), while its cost counts in
+  `cost_micros` and its browser time in the totals' `browser_ms` (the Quick Actions' and the sessions'). `NULL` on every
+  other record; code from before the migration ignores the columns. Tools' org-deletion step deletes the org's
+  session records once it deleted its open sessions, for one written after Models' step deleted the org's rows.
 - **Management** (`models/management/usage-routes.ts`): `GET /v9/management/observability/usage/queue?count=N` (atomically pops the oldest unexported records, Go queue JSON with
   `token_breakdown`; `api_key` = Access principal id, `auth_index` = the management (keyed) `auth_index`) and the Workers
   additions `.../records` (filters `since|until|provider|model|principal|member|team|auth_index|failed`, `limit`, keyset
@@ -2718,7 +2731,8 @@ Workers addition replacing the Go server's client keys (`access.api-keys`, impor
 
 Workers addition, no Go counterpart; ADR 0024. A Spend limit caps the Cost an org's traffic adds up to over a day, week or
 month. Cost is the attempt's token breakdown at the model's price (_Usage accounting and observability_), or a tool
-call's price (_Tools_); the Worker prices each attempt, the ControlPlane prices each tool call, counts and decides.
+call's price (_Tools_), or browser time at the price per browser hour (#214); the Worker prices each attempt, the
+ControlPlane prices each tool call and browser time, counts and decides.
 
 - **Where it lives** (#199): the org-wide base, `@commissary/state/spend` (model, calendar, store, ledger and
   `SpendService`, pure modules that Node.js tests import too). The base owns the object's one `SpendService` and gives
@@ -2773,6 +2787,25 @@ call's price (_Tools_); the Worker prices each attempt, the ControlPlane prices 
   shared credential counts toward the key's, member's, teams', org's and toolkit's limits, one on the member's private
   credential toward the key's only. As for model attempts, the check comes before the call and the charge after it,
   so priced calls running at once can each pass the check and together overrun a limit by their prices.
+- **Browser time** (`ToolsPart.callTool`, `browserSessionClosed`, `tools/browser/session-object.ts`; #214, ADR 0039):
+  with a price per browser hour on the browser toolkit, its browser time costs that price, prorated by the millisecond
+  and rounded half up, computed exactly (`browserTimeCost`, `tools/browser/browser-time.ts`), on top of any price per
+  call of the tool, and counts toward the same limits as the toolkit's priced calls (the key's, member's, teams' and
+  org's; the browser toolkit's credential is its shared one). Each tool says what it does with browser time
+  (`browserTimeOf`, from the session tools' table, `SESSION_TOOLS[...].browserTime`): the Quick Actions and the session
+  tools that reach the browser use it, so with a price each call of one is checked as a priced call is (a Quick Action
+  or `browser_open` is refused when a limit it counts toward has no room); `browser_close` ends it and
+  `browser_profile_list` reaches no browser, so neither is checked; the crawl tools are not metered yet (#270, a
+  follow-up). A Quick Action is charged its browser time (Browser Run's `X-Browser-Ms-Used`) with its call. A session's
+  time is charged as it runs: each call in it charges the time since the call before, at the price in force since
+  then (the session's object meters it and answers it with the call's result), and the alarm that closes an idle
+  session reports the close with the last stretch to the org's ControlPlane (`browserSessionClosed`), which charges it,
+  since no call is there to. A new price applies from the next call of a session on: the stretch before that call is
+  costed at the price in force when it began, as a cost is a price at the time (ADR 0024). So a session's own time uses a limit up while it
+  is open, and once a limit it counts toward has no room the next call in it is refused and the session closed with
+  it (the tool error says so; its object writes its record). The check is on each call: between calls a session's
+  time can pass a limit by up to its idle minutes' worth. Without a price browser time costs nothing and is never
+  checked.
 - **Charge** (`conductor.ts` `finish`, `usage/sink.ts` `priceForSpend`): when the lease carries limits the Worker builds the
   attempt's usage records first, prices them (`UsageSink.cost`, the same price table the D1 sink writes with, so the
   stored record and the counter agree), reports `costMicros` with `report`, and the ControlPlane adds it to every
@@ -3857,13 +3890,17 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
   of kind `mcp`; what only a stored one takes goes through the part's one resolver, `#stored`). Its shared credential is Commissary's own binding, shown as kind `none`, so tool
   grants decide who reaches it, and there is no default grant: an org admin grants it like any org toolkit (all tools,
   read tools or named ones, stable ids `browser:<tool>` and `sandbox:<tool>`). A call is recorded in usage like any tool call (#199, on the
-  shared credential) and charged a tool override's price, if an org admin set one. Overrides (hide, rename, re-describe, reclassify) and grants on
+  shared credential) and charged a tool override's price, if an org admin set one (and the browser toolkit's browser time
+  at its price per browser hour, #214). Overrides (hide, rename, re-describe, reclassify) and grants on
   it are stored by its id in the usual tables, kept while the binding is absent and applied again when it is back.
   So are its approval rules (#201), which apply as any toolkit's: `PATCH /toolkits/browser` with `approval_rules` only,
-  at its revision, stored in `built_in_toolkits` (its revision, rules, the sandbox's network and last change: it has
-  no `toolkits` row), so its revision moves on from 1 with each change of its rules. The sandbox toolkit also takes
-  `network`, its ceiling (below); a network on the browser toolkit answers `403 built_in`, on a stored one `422
-  invalid`. Renaming it, changing what it accepts, connecting or removing a credential, refreshing its list and removing it answer
+  at its revision, stored in `built_in_toolkits` (its revision, rules, the sandbox's network, the browser's price per
+  browser hour and last change: it has no `toolkits` row), so its revision moves on from 1 with each change of its
+  rules. The sandbox toolkit also takes `network`, its ceiling (below); a network on the browser toolkit answers `403
+  built_in`, on a stored one `422 invalid`. The browser toolkit also takes `browser_hour_price_micros` (#214), its
+  price per browser hour (below), a whole number of micro-USD from 0 to 10^12 (`null` clears it; `422 invalid`
+  otherwise), shown on its view and carried by the org export; on the sandbox toolkit it answers `403 built_in`, on a
+  stored one `422 invalid`. Renaming it, changing what it accepts, connecting or removing a credential, refreshing its list and removing it answer
   `403 built_in`; while it exists its name is taken (`409 name_taken`) for org and private toolkits alike, so a member
   cannot add a private copy (and adding a toolkit takes an MCP URL anyway). A stored toolkit, org or private, named
   `browser` (or `sandbox`) from before the deployment had the binding is renamed once when the part starts with it, to
@@ -3888,7 +3925,7 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
     declared length is refused unread; a body is read in chunks and cancelled as soon as it passes the limit), and is
     kept nowhere. Invalid arguments and Browser Run's refusals (its own `errors` messages, at most 500 characters) are tool
     results with `isError`, logged as a warning with the provider, action and status only. Browser Run's `/json` (an AI
-    model under the deployment's account) is left out (#212). Browser time in usage records and its price are #214.
+    model under the deployment's account) is left out (#212). Browser time in usage records and its price: below.
   - **Crawls** (`tools/browser/crawl-tools.ts`, `browser-run-crawls.ts`, `crawls.ts`, #270): `browser_crawl_start`
     (`write`) starts crawling a site from a URL and answers the crawl's id at once (text, and `structuredContent`
     `{crawlId}`); `browser_crawl_result` (`read`) answers the crawl as JSON: its `status` (`running`, `completed`,
@@ -3927,6 +3964,16 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
     synchronous and cannot call Browser Run. Commissary keeps nothing of the pages; Browser Run keeps them 14 days after
     a crawl ends. Browser Run's refusals (a site whose Content Signals refuse the crawl's purposes answers 400) are tool
     results with `isError` in its own words.
+  - **Browser time** (#214, ADR 0039): Browser Run's binding reports the browser time an action used in its
+    `X-Browser-Ms-Used` header (on a refusal of the page too, below status 500), which the adapter answers with the
+    result or the failure; the call's usage outcome carries it (`CallUsage.browserMs`) and its record holds it
+    (`browser_ms`, `migrations/usage/0012_usage_browser_time.sql`). A session's browser time is metered by its object
+    (below) and recorded once, when it closes. An org admin may set a price per browser hour on the toolkit
+    (`browser_hour_price_micros`, above): browser time then costs it, prorated by the millisecond, on top of any price
+    per call of the tool (a tool override's), toward the Spend limits (_Spend limits_, "Browser time"). Without one
+    browser time is recorded and costs nothing. No record holds a URL, page content or a screenshot. Crawls (#270)
+    are not metered yet: Browser Run reports a crawl job's `browserSecondsUsed`, and recording and pricing it is a
+    follow-up.
   - **Browser sessions** (`tools/browser/session-tools.ts`, `session.ts`, `session-object.ts`, #213, ADR 0039): an
     interactive browser, on the same toolkit after the Quick Actions, with Playwright MCP's tool set as Commissary's own
     code on `@cloudflare/playwright` (`@cloudflare/playwright-mcp` is archived): `browser_open` (optionally at a URL)
@@ -4011,6 +4058,34 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
         only for its member; a grant naming another org's profile id is refused (`422 invalid`). The cross-org suite
         has a case for it (`controlplane: browser profiles`). The management API answers whether or not the deployment
         has the browser toolkit: a profile is org data, kept while the binding is absent, like the toolkit's grants.
+    - **Its browser time** (#214): the object meters it from asking the provider for the browser to closing the
+      session (for a browser the provider ended itself, to when the session learnt so). Each call passes the toolkit's
+      price per browser hour (`SessionMetering`) and answers, with its result, the time since the call before and what
+      it cost at the price in force since then (`SessionAnswer`), which the Tools part charges with the call; the
+      call's own record carries only its price per call. The stretch is committed with the call's last storage write,
+      after everything that can fail, so a call that fails before it leaves the stretch to the next call (one whose
+      answer is lost after that write, in transit, is the one stretch the record holds and no limit counted). When the
+      session closes, however it closes, the object writes its usage record (`insertBrowserSessionRecord`, into
+      `USAGE`, which the state Worker binds for it): `request_id` the session's id (so it is written once), the toolkit,
+      no tool and no outcome, its principal (which names the API key) and member, the browser profile it opened from
+      (`browser_profile_id`, #215), `browser_ms` from opening to closing and `cost_micros` the sum of what it was
+      charged. Its alarm has no call to charge the last stretch with, so it reports the close with that stretch's cost
+      to the org's ControlPlane (`stub.tools().browserSessionClosed(id, costMicros)`), which charges it to the limits of
+      the session's opener as the part logged it (a session it did not log, or a cost that is not a whole number of
+      micro-USD from 0, charges nothing). The close is stored first, with what is left to do (`unrecorded`, `owed`); a
+      record write or a report that fails is tried again from the alarm every minute (`SETTLE_RETRY_MS`) until the
+      closed session is forgotten a day on, and each is done once. The Tools part logs the org's open sessions
+      (`browser_sessions`, `tools/browser/session-log.ts`: id, toolkit, member, principal, opening), forgetting one a
+      call closes or whose alarm's close it hears of; the org's deletion deletes each logged session's object at once,
+      without a record or a report (`ToolsPart.purgeBrowserSessions`, 20 a call, `BrowserSession.purge`), so no alarm
+      of a deleted org's writes a usage row or wakes its wiped ControlPlane. A session opened before metering keeps
+      working: it counts as the browser toolkit's, metered from its opening, free so far, and is not logged (it closes
+      within its idle minutes).
+    - **Deploys** (docs/DEVELOPMENT.md, "State RPC: expand, then contract"): the metering is an optional last argument
+      of the object's `open`, `operate` and `close`. A Tools part from before #214 passes none and gets the bare tool
+      result it expects; its calls meter nothing (their stretch is the next metered call's, or free at its close). A
+      part from #214 on takes an object from before's bare answer as one that used no browser time (`browserSessions`),
+      so during a deploy no call fails, and only time no one metered goes unpriced.
     - **Masking** (`session.ts`): Playwright's snapshot copies every input's value as the element's text, password
       fields' included and whatever the input's role (`<input type="password" role="button">` too), so the session
       masks the snapshot before anyone sees it. The masked selectors are `input[type="password" i]` plus the fields a
@@ -4066,7 +4141,7 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
   - **Browser providers** (`tools/browser/provider.ts`, ADR 0041): the toolkit reaches its browser only through the
     `BrowserProvider` interface, one method so far, `quickAction(request)`, whose request is the action and its decoded
     arguments (provider-neutral) and whose answer is text, JSON or a file, or a `BrowserProviderError` whose message is
-    told to the model. Browser Run (`tools/browser/browser-run.ts`, `browserRun(binding)`) is the one adapter: each
+    told to the model, either with the browser time the action used when the provider reports it (#214). Browser Run (`tools/browser/browser-run.ts`, `browserRun(binding)`) is the one adapter: each
     action is one `quickAction()` call of the binding (no API token), within three minutes, from one record per Quick
     Action keyed like `QUICK_ACTIONS` (the binding's action, its options built from the arguments, its answer's
     decoder). A later provider

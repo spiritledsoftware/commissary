@@ -124,6 +124,14 @@ export interface UsageRow {
   agent_id: string | null;
   run_id: string | null;
   starter: string | null;
+  /**
+   * The browser time a browser toolkit's record holds, in ms (`migrations/usage/0012_usage_browser_time.sql`, #214): a
+   * Quick Action's call's, or a browser session's whole, on the record the session writes when it closes (no tool, no
+   * outcome); `null` on any other record.
+   */
+  browser_ms: number | null;
+  /** The browser profile a browser session's record (#214) opened from (#215); `null` on any other record. */
+  browser_profile_id: string | null;
 }
 
 /** The columns of a model attempt's row (Models writes those); a tool call's are Tools'. */
@@ -137,6 +145,8 @@ type ModelColumns = Omit<
   | "request_bytes"
   | "response_bytes"
   | "approval"
+  | "browser_ms"
+  | "browser_profile_id"
 >;
 
 type Column = keyof UsageRow;
@@ -299,7 +309,8 @@ const sessionPayload = (row: UsageRow) => {
 
 /**
  * What a tool call's record adds to its JSON (#199): its area, toolkit, tool, outcome, credential slot, sizes and
- * approval. Nothing on a model attempt's, whose JSON stays as it was.
+ * approval, and the browser time a browser toolkit's record holds (#214; a browser session's record names no tool and
+ * no outcome). Nothing on a model attempt's, whose JSON stays as it was.
  */
 const toolPayload = (row: UsageRow) =>
   row.area !== "tools"
@@ -315,6 +326,8 @@ const toolPayload = (row: UsageRow) =>
         ...(row.request_bytes === null ? {} : { request_bytes: row.request_bytes }),
         ...(row.response_bytes === null ? {} : { response_bytes: row.response_bytes }),
         ...(row.approval === null ? {} : { approval: row.approval }),
+        ...(row.browser_ms === null ? {} : { browser_ms: row.browser_ms }),
+        ...(row.browser_profile_id === null ? {} : { browser_profile_id: row.browser_profile_id }),
       };
 
 /**
@@ -717,7 +730,17 @@ const GROUP_EXPRESSIONS: Readonly<Record<Exclude<GroupBy, "team">, string>> = {
   tool: "tool_id",
 };
 
-const AGGREGATES = `COUNT(*) AS requests,
+/**
+ * A browser session's own record (#214, ADR 0042: browser hours are not requests): a tool record without a tool, which
+ * Tools writes when a session closes. It counts toward no request, failure or latency, but its cost and browser time
+ * count toward the totals like any record's.
+ */
+const SESSION_RECORD = "(area = 'tools' AND tool_id IS NULL)";
+
+/** Counts the records that are requests (not a browser session's own). */
+const REQUESTS = `COALESCE(SUM(CASE WHEN ${SESSION_RECORD} THEN 0 ELSE 1 END), 0)`;
+
+const AGGREGATES = `${REQUESTS} AS requests,
   COALESCE(SUM(failed), 0) AS failed,
   COALESCE(SUM(acct_input_tokens), 0) AS input_tokens,
   COALESCE(SUM(acct_input_uncached_tokens), 0) AS uncached_input_tokens,
@@ -729,8 +752,9 @@ const AGGREGATES = `COUNT(*) AS requests,
   COALESCE(SUM(acct_total_tokens), 0) AS total_tokens,
   COALESCE(SUM(cost_micros), 0) AS cost_micros,
   COALESCE(SUM(unpriced), 0) AS unpriced_requests,
-  COALESCE(AVG(latency_ms), 0) AS avg_latency_ms,
-  AVG(ttft_ms) AS avg_ttft_ms`;
+  COALESCE(AVG(CASE WHEN ${SESSION_RECORD} THEN NULL ELSE latency_ms END), 0) AS avg_latency_ms,
+  AVG(ttft_ms) AS avg_ttft_ms,
+  COALESCE(SUM(browser_ms), 0) AS browser_ms`;
 
 export interface UsageTotals {
   readonly requests: number;
@@ -749,6 +773,8 @@ export interface UsageTotals {
   readonly unpriced_requests: number;
   readonly avg_latency_ms: number;
   readonly avg_ttft_ms: number | null;
+  /** Browser time (#214), in ms: the Quick Actions' and the browser sessions' (their own records'). */
+  readonly browser_ms: number;
 }
 
 const EMPTY_TOTALS: UsageTotals = {
@@ -766,6 +792,7 @@ const EMPTY_TOTALS: UsageTotals = {
   unpriced_requests: 0,
   avg_latency_ms: 0,
   avg_ttft_ms: null,
+  browser_ms: 0,
 };
 
 export interface UsageGroup extends UsageTotals {
@@ -1021,7 +1048,7 @@ export const summarizeUsageSeries = async (
 
   const result = await db
     .prepare(
-      `SELECT ${key} AS key, (requested_at / ${ms}) * ${ms} AS start, COUNT(*) AS requests,
+      `SELECT ${key} AS key, (requested_at / ${ms}) * ${ms} AS start, ${REQUESTS} AS requests,
          COALESCE(SUM(failed), 0) AS failed, COALESCE(SUM(acct_total_tokens), 0) AS total_tokens,
          COALESCE(SUM(cost_micros), 0) AS cost_micros
        FROM usage_records${where} GROUP BY key, start ORDER BY key ASC, start ASC`,

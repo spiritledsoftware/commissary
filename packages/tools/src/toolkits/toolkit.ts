@@ -73,6 +73,11 @@ export interface BuiltInToolkit extends ToolkitFields {
    * has none.
    */
   readonly ceiling: SandboxAllowance | undefined;
+  /**
+   * The browser toolkit's (#214): what an hour of its browser time costs in micro-USD, prorated, as the org set it
+   * (stored apart, as its approval rules are); undefined: browser time is free. The sandbox toolkit has none.
+   */
+  readonly browserHourPriceMicros: number | undefined;
 }
 
 export type Toolkit = StoredToolkit | BuiltInToolkit;

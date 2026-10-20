@@ -33,21 +33,27 @@ import {
   DEFAULT_CRAWL_MAX_PAGES,
   type StorageState,
 } from "../browser/provider.ts";
+import { type Timed, untimed } from "../browser/browser-time.ts";
 import { textResult, toolError } from "../browser/session.ts";
 import {
   type BrowserSessionNamespace,
   type BrowserSessions,
   browserSessions,
+  type SessionAnswer,
   type SessionCaller,
+  type SessionClosed,
+  type SessionMetering,
+  type SessionProfile,
 } from "../browser/session-object.ts";
 import {
+  type BrowserTimeUse,
   isSessionTool,
   SESSION_TOOL_NAMES,
   SESSION_TOOLS,
   sessionRequestOf,
   type SessionToolName,
 } from "../browser/session-tools.ts";
-import { BROWSER_TOOLS, callBrowserTool } from "../browser/toolkit.ts";
+import { BROWSER_TOOLS, callBrowserTool, isQuickAction } from "../browser/toolkit.ts";
 import { cloudflareSandbox } from "../sandbox/cloudflare/provider.ts";
 import type { SandboxSession, SandboxSessionEnv } from "../sandbox/cloudflare/session.ts";
 import { NO_ALLOWANCE } from "../sandbox/network.ts";
@@ -167,8 +173,9 @@ export interface CallerProfiles {
 /**
  * Who calls a built-in tool, and with what: the org, the call's member and principal (a browser or sandbox session's
  * owner; absent from a call that names none, which sessions refuse), the browser profiles the caller reaches, the Tools
- * part's log of the org's sandbox sessions and of the caller's browser crawls, the outbound guard's policy, the Tools
- * part's time, and the toolkit with what the org set on it (its network ceiling and whether it allows the computer).
+ * part's logs of the org's sandbox and browser sessions and of the caller's browser crawls, the outbound guard's policy,
+ * the Tools part's time, and the toolkit with what the org set on it (its network ceiling and whether it allows the
+ * computer, its price per browser hour).
  */
 export interface BuiltInCall {
   readonly org: string;
@@ -176,12 +183,36 @@ export interface BuiltInCall {
   readonly principal: string | undefined;
   readonly profiles: CallerProfiles;
   readonly sessions: SandboxSessionLog;
+  /** The org's open browser sessions (#214), which the org's deletion deletes. */
+  readonly browserSessions: BrowserSessionLog;
   /** The crawls of the call's member and principal (#270). */
   readonly crawls: CrawlLog;
   readonly policy: OutboundPolicy;
   readonly now: number;
   readonly toolkit: BuiltInToolkit;
 }
+
+/** The Tools part's log of the org's open browser sessions (#214): a session opened, or a call closed it. */
+export interface BrowserSessionLog {
+  readonly opened: (id: string) => void;
+  readonly closed: (id: string) => void;
+}
+
+/**
+ * What a built-in tool's call answers: its tool result, and the browser time it used with its cost at the toolkit's
+ * price per browser hour (#214), which the call charges. A Quick Action's is its own, which its usage record carries; a
+ * browser session's (`inSession`) is the session's since the call before, which the session's own record carries.
+ */
+export interface BuiltInAnswer extends Timed {
+  readonly inSession?: true | undefined;
+}
+
+/**
+ * What a call of the browser toolkit's tool `tool` does with browser time (#214): a Quick Action uses it, a session tool
+ * says (`SESSION_TOOLS`), and a crawl's is not metered yet (#270: Browser Run reports it per crawl job, a follow-up).
+ */
+export const browserTimeOf = (tool: string): BrowserTimeUse =>
+  isSessionTool(tool) ? SESSION_TOOLS[tool].browserTime : isQuickAction(tool) ? "uses" : "none";
 
 /** A built-in toolkit with its tools, and how a tool of it is called. */
 export interface BuiltIn {
@@ -192,7 +223,7 @@ export interface BuiltIn {
     tool: string,
     args: Schema.JsonObject | undefined,
     call: BuiltInCall,
-  ) => Effect.Effect<Schema.JsonObject>;
+  ) => Effect.Effect<BuiltInAnswer>;
 }
 
 /** A tool of a built-in toolkit as it lists it. */
@@ -255,23 +286,13 @@ const readProfile = async (
   }
 };
 
-/**
- * Closes a session for `owner` and, when `save` was asked, saves its state into the profile it was opened from through
- * `profiles`: a session opened from none, a state that could not be read and a save the caller may not make answer a
- * tool error, and the session is closed all the same. A save over a browser reached again since it opened says that the
- * local storage of the sites visited before was not saved (`SavedState`).
- */
-const closeSession = async (
-  sessions: BrowserSessions,
-  owner: SessionCaller,
+/** What closing the session `id` answers once it closed (`closed`): whether its state was saved, when asked. */
+const closedAnswer = async (
   profiles: CallerProfiles,
   id: string,
   save: boolean,
+  closed: Extract<SessionClosed, { readonly kind: "closed" }>,
 ): Promise<Schema.JsonObject> => {
-  const closed = await sessions.close(owner, id, save);
-
-  if (closed.kind === "answer") return closed.result;
-
   if (!save) return textResult(`Browser session ${id} is closed.`);
 
   const notSaved = (why: string) =>
@@ -293,10 +314,37 @@ const closeSession = async (
 };
 
 /**
+ * Closes a session for `owner` and, when `save` was asked, saves its state into the profile it was opened from through
+ * `profiles`: a session opened from none, a state that could not be read and a save the caller may not make answer a
+ * tool error, and the session is closed all the same. A save over a browser reached again since it opened says that the
+ * local storage of the sites visited before was not saved (`SavedState`).
+ */
+const closeSession = async (
+  sessions: BrowserSessions,
+  owner: SessionCaller,
+  profiles: CallerProfiles,
+  id: string,
+  save: boolean,
+  metering: SessionMetering,
+  log: BrowserSessionLog,
+): Promise<SessionAnswer> => {
+  const closed = await sessions.close(owner, id, save, metering);
+
+  if (closed.kind === "answer") return untimed(closed.result);
+  log.closed(id);
+  const result = await closedAnswer(profiles, id, save, closed);
+
+  return closed.browserTime === undefined
+    ? untimed(result)
+    : { result, browserTime: closed.browserTime };
+};
+
+/**
  * Calls the session tool `name` in `sessions` for `caller`, on the browsers of the provider `source`: its Durable
- * Object's answer, never a failure. A session belongs to its caller's principal, so a call without one opens or reaches
- * none. A session opens from a browser profile only when the caller may use it (#215), and saves into one only when
- * the caller may save into it (`CallerProfiles`, the Tools part's answers).
+ * Object's answer, with the session's browser time since the call before costed at the toolkit's price per browser hour
+ * (#214), never a failure; it logs the sessions it opens and closes (`BrowserSessionLog`). A session belongs to its caller's principal, so a call without one opens or reaches none. A
+ * session opens from a browser profile only when the caller may use it (#215), and saves into one only when the caller
+ * may save into it (`CallerProfiles`, the Tools part's answers).
  */
 const callSessionTool = (
   sessions: BrowserSessions,
@@ -304,39 +352,55 @@ const callSessionTool = (
   name: SessionToolName,
   args: Schema.JsonObject | undefined,
   caller: BuiltInCall,
-): Effect.Effect<Schema.JsonObject> => {
-  const { principal, profiles } = caller;
+): Effect.Effect<BuiltInAnswer> => {
+  const { principal, profiles, toolkit } = caller;
 
   if (principal === undefined)
-    return Effect.succeed(
-      toolError(
+    return Effect.succeed({
+      result: toolError(
         "Browser sessions need a caller with an identity: an API key or a signed-in person.",
       ),
-    );
+    });
 
   const request = sessionRequestOf(name, args ?? {});
 
   if (Result.isFailure(request))
-    return Effect.succeed(toolError(`Invalid arguments: ${request.failure}`));
+    return Effect.succeed({ result: toolError(`Invalid arguments: ${request.failure}`) });
   const decoded = request.success;
   const owner = { org: caller.org, member: caller.member, principal };
+  const metering = { hourPriceMicros: toolkit.browserHourPriceMicros ?? 0 };
+  const log = caller.browserSessions;
 
-  const answer = async (): Promise<Schema.JsonObject> => {
+  const opened = async (url: string | undefined, profile?: SessionProfile) => {
+    const answer = await sessions.open(
+      owner,
+      source,
+      url,
+      { ...metering, toolkitId: toolkit.id },
+      profile,
+    );
+
+    if (answer.session === "opened") log.opened(answer.id);
+
+    return answer;
+  };
+
+  const answer = async (): Promise<SessionAnswer> => {
     switch (decoded.tool) {
       case "profile_list":
-        return profileList(profiles);
+        return untimed(profileList(profiles));
       case "open": {
         const { profile } = decoded.args;
 
-        if (profile === undefined) return await sessions.open(owner, source, decoded.args.url);
+        if (profile === undefined) return await opened(decoded.args.url);
         const usable = await readProfile(profiles, profile);
 
         if (usable === "unreadable")
-          return toolError(`The browser profile ${profile} could not be read.`);
+          return untimed(toolError(`The browser profile ${profile} could not be read.`));
 
         return usable === undefined
-          ? unknownProfile(profile)
-          : await sessions.open(owner, source, decoded.args.url, usable);
+          ? untimed(unknownProfile(profile))
+          : await opened(decoded.args.url, usable);
       }
 
       case "close":
@@ -346,17 +410,27 @@ const callSessionTool = (
           profiles,
           decoded.args.sessionId,
           decoded.args.save === true,
+          metering,
+          log,
         );
-      default:
-        return await sessions.operate(owner, decoded);
+      default: {
+        const operated = await sessions.operate(owner, decoded, metering);
+
+        if (operated.session === "closed") log.closed(decoded.args.sessionId);
+
+        return operated;
+      }
     }
   };
 
   return Effect.tryPromise(answer).pipe(
+    Effect.map(({ result, browserTime }): BuiltInAnswer =>
+      browserTime === undefined ? { result } : { result, browserTime, inSession: true },
+    ),
     Effect.catch(() =>
       Effect.logWarning("browser session could not be reached").pipe(
         Effect.annotateLogs({ tool: name }),
-        Effect.as(toolError("The browser session could not be reached; try again.")),
+        Effect.as({ result: toolError("The browser session could not be reached; try again.") }),
       ),
     ),
   );
@@ -387,6 +461,7 @@ const builtInToolkit = (
     approvalRules: undefined,
     baseUrl: undefined,
     ceiling: undefined,
+    browserHourPriceMicros: undefined,
     builtIn: true,
   },
   tools: tools.map((tool, position) => ({
@@ -433,15 +508,17 @@ const browserToolkit = (
         return callSessionTool(withSessions, provider.id, tool, args, caller);
 
       if (crawls !== undefined && isCrawlTool(tool))
-        return caller.principal === undefined
-          ? Effect.succeed(NO_CRAWL_PRINCIPAL)
-          : callCrawlTool(crawls, tool, args, {
-              policy: caller.policy,
-              log: caller.crawls,
-              maxPages,
-            });
+        return (
+          caller.principal === undefined
+            ? Effect.succeed(NO_CRAWL_PRINCIPAL)
+            : callCrawlTool(crawls, tool, args, {
+                policy: caller.policy,
+                log: caller.crawls,
+                maxPages,
+              })
+        ).pipe(Effect.map((result): BuiltInAnswer => ({ result })));
 
-      return callBrowserTool(provider, tool, args);
+      return callBrowserTool(provider, tool, args, caller.toolkit.browserHourPriceMicros ?? 0);
     },
   };
 };
@@ -449,7 +526,7 @@ const browserToolkit = (
 const sandboxToolkit = (provider: SandboxProvider): BuiltIn => ({
   ...builtInToolkit(SANDBOX_TOOLKIT, "sandbox", provider.id, SANDBOX_TOOLS),
   call: (tool, args, { org, principal, sessions, policy, now, toolkit }) =>
-    principal === undefined
+    (principal === undefined
       ? Effect.succeed(NO_PRINCIPAL)
       : callSandboxTool(
           provider,
@@ -462,7 +539,8 @@ const sandboxToolkit = (provider: SandboxProvider): BuiltIn => ({
           },
           tool,
           args,
-        ),
+        )
+    ).pipe(Effect.map((result): BuiltInAnswer => ({ result }))),
 });
 
 /** The built-in toolkits `providers` give. */

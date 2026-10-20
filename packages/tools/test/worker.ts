@@ -15,10 +15,14 @@
 // session uses only when it opened with the computer, as deployed. `CrawlControlPlane` has its built-in toolkits from a
 // deployment's bindings with a fake Browser Run binding and the account and API token of Browser Run's crawls (#270),
 // whose REST API a test serves through the global `fetch` (`fake-crawl.ts`, `fake-fetch.ts`).
+import { env } from "cloudflare:workers";
+import type { Clock } from "effect";
 import { COMPUTER_MARKER } from "@commissary/core";
 import { composeControlPlane } from "@commissary/state";
+import type { ToolsControlPlane } from "../src/env.ts";
 import { browserRun } from "../src/browser/browser-run.ts";
-import { browserSessions } from "../src/browser/session-object.ts";
+import { type BrowserSessionEnv, browserSessions } from "../src/browser/session-object.ts";
+import type { BrowserSessionRecord } from "../src/usage/record.ts";
 import { builtInProviders, ToolsPart } from "../src/state.ts";
 import { fakeBrowserRun, fakeOtherProvider } from "./support/fake-browser.ts";
 import { FakeComputerSandboxSession } from "./support/fake-computer.ts";
@@ -28,7 +32,44 @@ import { fakeSandboxProvider } from "./support/fake-sandbox.ts";
 
 export { Platform, SessionState } from "@commissary/state";
 
-export class BrowserSession extends FakeBrowserSession {}
+/**
+ * The browser sessions' objects report their alarm's closes, with the browser time before them, to the ControlPlane
+ * that opened them (#214): here the browser one, as only it opens sessions. A test of browser time sets what new
+ * objects read the time from (`clock`, a `TestClock` it also gives the part, so both read one time from before a
+ * session opens), and makes the next usage record writes or reports fail (`failRecords`, `failReports`), through an
+ * instance's constructor in the objects' isolate (browser-time.test.ts).
+ */
+export class BrowserSession extends FakeBrowserSession {
+  static clock: Clock.Clock | undefined;
+  static failRecords = 0;
+  static failReports = 0;
+
+  constructor(ctx: DurableObjectState, sessionEnv: BrowserSessionEnv) {
+    super(ctx, sessionEnv);
+
+    if (BrowserSession.clock !== undefined) this.useClock(BrowserSession.clock);
+  }
+
+  protected override controlPlane(org: string): DurableObjectStub<ToolsControlPlane> {
+    if (BrowserSession.failReports > 0) {
+      BrowserSession.failReports -= 1;
+
+      throw new Error("the ControlPlane could not be reached");
+    }
+
+    return env.BROWSER_CONTROL_PLANE.getByName(org);
+  }
+
+  protected override async writeRecord(record: BrowserSessionRecord): Promise<void> {
+    if (BrowserSession.failRecords > 0) {
+      BrowserSession.failRecords -= 1;
+
+      throw new Error("the usage database could not be reached");
+    }
+
+    await super.writeRecord(record);
+  }
+}
 
 // The sandbox's session objects, and the entrypoints their Dynamic Workers and computers reach, as the state Worker
 // exports them.

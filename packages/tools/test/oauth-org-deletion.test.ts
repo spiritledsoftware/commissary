@@ -3,12 +3,18 @@
 // deletion's budget; another org's stay, even one whose id starts with the deleted org's, and so do the clients.
 import { env } from "cloudflare:workers";
 import { Effect } from "effect";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { OrgId } from "@commissary/core";
 import type { McpOAuthConfig } from "../src/oauth/config.ts";
 import { deleteOrgSignIns, orgDeletionStep } from "../src/org-deletion.ts";
 import { ToolsEnv } from "../src/env.ts";
 import { signInGrants } from "./support/sign-in-grants.ts";
+import { migrateUsageDb } from "./support/usage-db.ts";
+
+// Tools' step also deletes the org's browser sessions' usage records (#214).
+beforeAll(async () => {
+  await migrateUsageDb();
+});
 
 const config: McpOAuthConfig = {
   issuer: "https://commissary.test",
@@ -80,8 +86,9 @@ describe("Tools' org deletion step", () => {
       orgDeletionStep.pipe(Effect.provideService(ToolsEnv, env)),
     );
 
-    // Two calls of the ControlPlane, which has no sandbox sessions to delete and no browser crawls to cancel.
-    expect(await step(org, 400)).toEqual({ complete: true, calls: 2 });
+    // Three calls of the ControlPlane, which has no sandbox or browser sessions to delete and no browser crawls to
+    // cancel, and one of the usage database, for the browser sessions' records.
+    expect(await step(org, 400)).toEqual({ complete: true, calls: 4 });
     expect(await grants.keyIds(org, "member-a")).toEqual(["key-a"]);
   });
 });

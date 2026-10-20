@@ -569,8 +569,10 @@ Commissary's own record of the traffic it served.
 _Avoid_: usage as a word for allowances
 
 **Usage record**:
-The stored account of one attempt or tool call: its org, principal, credential, tokens or tool, cost, latency and
-outcome, and the hosted agent, agent run and starter behind it if any, never its content. A request that fails over leaves one record per attempt.
+The stored account of one attempt, tool call or browser session, never its content: an attempt's or a tool call's org,
+principal, credential, tokens or tool, cost, latency and outcome, and the hosted agent, agent run and starter behind it
+if any; a browser session's org, principal, browser profile, browser time and cost. A request that fails over leaves
+one record per attempt; a browser session leaves one when it closes, which is not a request.
 _Avoid_: request, log entry
 
 **Token breakdown**:
@@ -594,7 +596,8 @@ _Avoid_: custom pricing, rate card
 
 **Cost**:
 The API-equivalent price of an attempt: its token breakdown at the model's prices. Attempts on subscription accounts
-are costed the same way as attempts on provider keys. A tool call costs its tool's price per call, or nothing.
+are costed the same way as attempts on provider keys. A tool call costs its tool's price per call, or nothing; browser
+time costs the price per browser hour, prorated, or nothing.
 _Avoid_: charge, bill, spend (for one attempt)
 
 **Unpriced**:

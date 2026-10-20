@@ -87,20 +87,30 @@ const SESSION = { sessionId };
 /** The tool class Commissary gives a session tool (ADR 0038). */
 type SessionToolClass = "read" | "write";
 
+/**
+ * What a call of a session tool does with browser time (#214): `uses` it (it reaches the session's browser, which runs
+ * on for it), `ends` it (it closes the session), or `none` (it reaches no browser). A call that uses browser time is
+ * refused once a Spend limit it counts toward has no room while browser time has a price; one that ends it never is.
+ */
+export type BrowserTimeUse = "uses" | "ends" | "none";
+
 interface SessionTool<S extends Schema.Top> {
   readonly description: string;
   readonly arguments: S;
   readonly toolClass: SessionToolClass;
+  readonly browserTime: BrowserTimeUse;
 }
 
 const tool = <Fields extends Schema.Struct.Fields>(
   toolClass: SessionToolClass,
   description: string,
   fields: Fields,
+  browserTime: BrowserTimeUse = "uses",
 ): SessionTool<Schema.Struct<Fields>> => ({
   description,
   arguments: Schema.Struct(fields),
   toolClass,
+  browserTime,
 });
 
 /** `browser_wait_for`'s arguments: exactly one of a text and a selector. */
@@ -196,6 +206,7 @@ export const SESSION_TOOLS = {
   hover: tool("write", "Move the mouse over an element of the current tab.", { ...SESSION, ref }),
   wait_for: {
     toolClass: "write",
+    browserTime: "uses",
     description:
       "Wait until a text is shown, or an element matches a CSS selector, in the current tab.",
     arguments: WAIT_FOR,
@@ -230,15 +241,20 @@ export const SESSION_TOOLS = {
         }),
       ),
     },
+    "ends",
   ),
   profile_list: tool(
     "read",
     "List the browser profiles you may open a session from (browser_open's profile), by name.",
     {},
+    "none",
   ),
 } as const;
 
 export type SessionToolName = keyof typeof SESSION_TOOLS;
+
+/** The session tool that closes a session, the one that ends its browser time. */
+export const CLOSE_TOOL = "close" satisfies SessionToolName;
 
 // SAFETY: `SESSION_TOOLS`'s own keys are exactly its names.
 export const SESSION_TOOL_NAMES = Object.keys(SESSION_TOOLS) as ReadonlyArray<SessionToolName>;

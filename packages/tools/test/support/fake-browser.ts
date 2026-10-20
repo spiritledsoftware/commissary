@@ -1,7 +1,8 @@
 // A fake Browser Run binding (`quickAction()` only) and a fake second browser provider, for the browser toolkit's tests
 // (#212). The binding answers the way Browser Run's does, from the options it was asked with, and records each call:
 // Markdown, HTML, links, scraped elements and the accessibility tree as JSON; a screenshot and a PDF as bytes; a page on
-// `unreachable.invalid` as Browser Run's refusal. The second provider answers every Quick Action as text naming itself,
+// `unreachable.invalid` as Browser Run's refusal; each answer says it used {@link BROWSER_MS} of browser time
+// (`X-Browser-Ms-Used`, #214), as Browser Run's do below status 500. The second provider answers every Quick Action as text naming itself,
 // so a test tells which provider served a call.
 import type { BrowserRunBinding } from "../../src/browser/browser-run.ts";
 import type { BrowserProvider } from "../../src/browser/provider.ts";
@@ -15,6 +16,9 @@ export interface RecordedQuickAction {
 export interface FakeBrowserRun extends BrowserRunBinding {
   readonly calls: Array<RecordedQuickAction>;
 }
+
+/** The browser time every answer of the fake binding reports, in milliseconds (#214). */
+export const BROWSER_MS = 1_500;
 
 /** The first bytes of a PNG, as a screenshot. */
 export const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -72,6 +76,13 @@ const answer = (action: string, options: Record<string, unknown>, bytes?: Uint8A
   }
 };
 
+/** `response` with the browser time Browser Run reports below status 500. */
+const used = (response: Response): Response => {
+  if (response.status < 500) response.headers.set("x-browser-ms-used", String(BROWSER_MS));
+
+  return response;
+};
+
 /** A fake `browser` binding; `screenshotBytes` replaces the screenshot it answers. */
 export const fakeBrowserRun = (screenshotBytes?: Uint8Array): FakeBrowserRun => {
   const calls: Array<RecordedQuickAction> = [];
@@ -81,7 +92,7 @@ export const fakeBrowserRun = (screenshotBytes?: Uint8Array): FakeBrowserRun => 
 
     calls.push({ action, options });
 
-    return answer(action, options, action === "screenshot" ? screenshotBytes : undefined);
+    return used(answer(action, options, action === "screenshot" ? screenshotBytes : undefined));
   };
 
   return {
@@ -99,5 +110,8 @@ export const fakeOtherProvider = (): BrowserProvider => ({
   id: "other-browser",
   sessions: true,
   quickAction: (request) =>
-    Effect.succeed({ kind: "text", text: `other-browser ${request.action} ${request.args.url}` }),
+    Effect.succeed({
+      result: { kind: "text", text: `other-browser ${request.action} ${request.args.url}` },
+      browserMs: undefined,
+    }),
 });

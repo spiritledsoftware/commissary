@@ -39,9 +39,10 @@ import type { StoredSecret } from "./secret.ts";
  * approvals', `approvals/store.ts`), which the part's `wipe` drops with the browser profiles' (`PROFILE_TABLES`,
  * `browser/profiles.ts`, which outlive any toolkit and so are not in this list). `built_in_toolkits` holds what an org says of a built-in toolkit
  * beyond its grants and overrides, which has no `toolkits` row: its approval rules (#201), the sandbox toolkit's network
- * ceiling (#222), and their revision; `sandbox_sessions`, the org's open sandbox sessions (`sandbox/sessions.ts`);
- * `browser_crawls`, who started each of the org's browser crawls (`browser/crawls.ts`) (test/control-plane.test.ts
- * checks the list). Each but `toolkits` is keyed by `toolkit_id`, so {@link
+ * ceiling (#222), the browser toolkit's price per browser hour (#214), and their revision; `sandbox_sessions`, the
+ * org's open sandbox sessions (`sandbox/sessions.ts`); `browser_crawls`, who started each of the org's browser crawls
+ * (`browser/crawls.ts`); `browser_sessions`, the org's open browser sessions (`browser/session-log.ts`)
+ * (test/control-plane.test.ts checks the list). Each but `toolkits` is keyed by `toolkit_id`, so {@link
  * ToolkitStore.deleteToolkit} deletes a toolkit's rows from all of them.
  */
 export const TOOLS_TABLES = [
@@ -58,6 +59,7 @@ export const TOOLS_TABLES = [
   ...OAUTH_TABLES,
   "sandbox_sessions",
   "browser_crawls",
+  "browser_sessions",
 ] as const;
 
 /** The most bytes of an uploaded document one row holds: well within SQLite's limit on one value (2 MB). */
@@ -92,7 +94,7 @@ const SCHEMA = [
    )`,
   `CREATE TABLE IF NOT EXISTS built_in_toolkits (
      toolkit_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, approval_rules TEXT, updated_at INTEGER NOT NULL,
-     updated_by TEXT NOT NULL, network TEXT, computer INTEGER
+     updated_by TEXT NOT NULL, network TEXT, computer INTEGER, browser_hour_price_micros INTEGER
    )`,
   `CREATE TABLE IF NOT EXISTS toolkit_sessions (
      toolkit_id TEXT NOT NULL, owner TEXT NOT NULL, member TEXT NOT NULL, protocol_version TEXT NOT NULL,
@@ -293,6 +295,8 @@ export interface BuiltInSettings {
   readonly approvalRules: StoredApprovalRules | undefined;
   /** The sandbox toolkit's ceiling (its network, #222, and the computer, #223); undefined: none, the default. */
   readonly ceiling: SandboxAllowance | undefined;
+  /** The browser toolkit's price per browser hour (#214), in micro-USD; undefined: browser time is free. */
+  readonly browserHourPriceMicros: number | undefined;
 }
 
 const toolkitOf = (row: ToolkitRow): StoredToolkit => ({
@@ -475,6 +479,10 @@ export class ToolkitStore {
     // And whether it allows the computer (#223): a sandbox toolkit set before does not, the default.
     if (!builtInColumns.includes("computer"))
       sql.exec(`ALTER TABLE built_in_toolkits ADD COLUMN computer INTEGER`);
+
+    // And the browser toolkit's price per browser hour (#214): unset, browser time is free.
+    if (!builtInColumns.includes("browser_hour_price_micros"))
+      sql.exec(`ALTER TABLE built_in_toolkits ADD COLUMN browser_hour_price_micros INTEGER`);
   }
 
   // --- toolkits ---------------------------------------------------------------------------------------------------
@@ -569,8 +577,9 @@ export class ToolkitStore {
   }
 
   /**
-   * What the org set on the built-in toolkit `id` (#201, #222, #223): its approval rules, its network ceiling and
-   * whether it allows the computer (the sandbox toolkit's) and the revision and time of the last change, or undefined when it set nothing yet (the toolkit is then
+   * What the org set on the built-in toolkit `id` (#201, #222, #223, #214): its approval rules, its network ceiling and
+   * whether it allows the computer (the sandbox toolkit's), its price per browser hour (the browser toolkit's) and the
+   * revision and time of the last change, or undefined when it set nothing yet (the toolkit is then
    * at its first revision).
    */
   builtInSettings(id: string):
@@ -586,6 +595,7 @@ export class ToolkitStore {
         approval_rules: string | null;
         network: string | null;
         computer: number | null;
+        browser_hour_price_micros: number | null;
         updated_at: number;
         updated_by: string;
       }>(`SELECT * FROM built_in_toolkits WHERE toolkit_id = ?`, id)
@@ -601,6 +611,7 @@ export class ToolkitStore {
             row.network === null && row.computer === null
               ? undefined
               : { network: parseNetwork(row.network) ?? NO_NETWORK, computer: row.computer === 1 },
+          browserHourPriceMicros: orUndefined(row.browser_hour_price_micros),
           updatedAt: row.updated_at,
           updatedBy: row.updated_by,
         };
@@ -615,16 +626,19 @@ export class ToolkitStore {
     now: number,
   ): void {
     this.#sql.exec(
-      `INSERT INTO built_in_toolkits (toolkit_id, revision, approval_rules, network, computer, updated_at, updated_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO built_in_toolkits (toolkit_id, revision, approval_rules, network, computer,
+         browser_hour_price_micros, updated_at, updated_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (toolkit_id) DO UPDATE SET revision = excluded.revision,
          approval_rules = excluded.approval_rules, network = excluded.network, computer = excluded.computer,
-         updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
+         browser_hour_price_micros = excluded.browser_hour_price_micros, updated_at = excluded.updated_at,
+         updated_by = excluded.updated_by`,
       id,
       revision + 1,
       settings.approvalRules === undefined ? null : JSON.stringify(settings.approvalRules),
       settings.ceiling === undefined ? null : JSON.stringify(settings.ceiling.network),
       settings.ceiling === undefined ? null : Number(settings.ceiling.computer),
+      settings.browserHourPriceMicros ?? null,
       now,
       by,
     );

@@ -1,9 +1,12 @@
 /**
  * Tools' step of deleting an org (ADR 0027, #134 "Org deletion and crons"). Tools keeps nearly everything in the org's
  * ControlPlane, whose tables go with `wipeOrg` (`ToolsPart.wipe`): its toolkits, credentials, tool lists and
- * overrides. Three things are kept outside it. The org's open sandbox sessions (#222) are Durable Objects of their own,
+ * overrides. Four things are kept outside it. The org's open sandbox sessions (#222) are Durable Objects of their own,
  * with their files: this step has the ControlPlane delete each (`ToolsPart.purgeSandboxSessions`), before `wipeOrg`
- * drops the table that lists them. The org's browser crawls (#270) run at the browser provider: the ControlPlane
+ * drops the table that lists them. So are its open browser sessions (#214), whose alarm would write a usage record and
+ * report to the ControlPlane once they close: the ControlPlane deletes each at once (`ToolsPart.purgeBrowserSessions`),
+ * then this step deletes the org's browser sessions' usage records, for one written after Models' step deleted the
+ * org's usage rows. The org's browser crawls (#270) run at the browser provider: the ControlPlane
  * cancels each that may still be running (`ToolsPart.purgeBrowserCrawls`, as far as the provider answers), as
  * `wipeOrg` cannot: it is synchronous. On Commissary Cloud the org's OAuth sign-ins of MCP clients (#200) are kept in
  * the OAuth server's KV namespace (`OAUTH_KV`, `oauth/config.ts`): this step deletes their grants and tokens, which the
@@ -15,6 +18,7 @@ import type { OrgDeletionStep } from "@commissary/core";
 import { controlPlaneOf } from "@commissary/state";
 import { type ToolsBindings, ToolsEnv } from "./env.ts";
 import { type McpOAuthConfig, mcpOAuthConfig } from "./oauth/config.ts";
+import { deleteBrowserSessionRecords } from "./usage/record.ts";
 import { signInUserId } from "./oauth/server.ts";
 
 /** Keys read and deleted per page: each key is one KV call. */
@@ -43,6 +47,36 @@ export const deleteOrgSandboxSessions =
 
       if (remaining === 0) return { complete: true, calls };
     }
+  };
+
+/** Browser sessions deleted per call of the ControlPlane: each is one call of its own, from the ControlPlane. */
+const BROWSER_SESSION_PAGE = 20;
+
+/**
+ * Deletes the org's open browser sessions, a page at a time within `budget` (each page is one call of the ControlPlane
+ * and, counted against the budget too, one call of each session's object), then their usage records (one call).
+ */
+export const deleteOrgBrowserSessions =
+  (env: Pick<ToolsBindings, "CONTROL_PLANE" | "USAGE">): OrgDeletionStep =>
+  async (org, budget) => {
+    let calls = 0;
+
+    for (;;) {
+      if (budget - calls < BROWSER_SESSION_PAGE + 2)
+        return { complete: false, calls, part: "browser sessions" };
+
+      const { purged, remaining } = await controlPlaneOf(env, org)
+        .tools()
+        .purgeBrowserSessions(BROWSER_SESSION_PAGE);
+
+      calls += 1 + purged;
+
+      if (remaining === 0) break;
+    }
+
+    await deleteBrowserSessionRecords(env.USAGE, org);
+
+    return { complete: true, calls: calls + 1 };
   };
 
 /** Browser crawls cancelled per call of the ControlPlane: each is one request of the ControlPlane's to the provider. */
@@ -120,8 +154,8 @@ export const deleteOrgSignIns =
   };
 
 /**
- * Tools' step over the invocation's bindings: the sandbox sessions, the browser crawls, then the OAuth sign-ins, if it
- * has the server.
+ * Tools' step over the invocation's bindings: the sandbox sessions, the browser sessions, the browser crawls, then the
+ * OAuth sign-ins, if it has the server.
  */
 export const orgDeletionStep: Effect.Effect<OrgDeletionStep, never, ToolsEnv> = Effect.gen(
   function* () {
@@ -130,6 +164,7 @@ export const orgDeletionStep: Effect.Effect<OrgDeletionStep, never, ToolsEnv> = 
 
     return inTurn([
       deleteOrgSandboxSessions(env),
+      deleteOrgBrowserSessions(env),
       deleteOrgBrowserCrawls(env),
       ...(config === undefined ? [] : [deleteOrgSignIns(config.kv)]),
     ]);
