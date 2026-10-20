@@ -34,7 +34,7 @@
  * its cost at the price in force since then (a new price costs from the call that passes it on), which the Tools part
  * charges to the Spend limits it counts toward. A call's stretch is committed with the call's last write, so a call
  * that fails before it leaves the stretch to the next. When the session closes, it writes one usage record of its
- * whole browser time and cost, naming the browser profile it opened from (`insertBrowserSessionRecord`); when its
+ * whole browser time and cost, naming the browser profile it opened from (`insertSessionRecord`); when its
  * alarm closed it, no call is there to charge the last stretch, so the object reports the close with that cost to the
  * org's ControlPlane itself (`browserSessionClosed`). A record or report that fails is kept to do (`unrecorded`,
  * `owed`) and tried again from the alarm, every {@link SETTLE_RETRY_MS}, until the closed session is forgotten.
@@ -51,19 +51,25 @@ import type { OrgId } from "@commissary/core";
 import { controlPlaneOf } from "@commissary/state";
 import type { ToolsControlPlane } from "../env.ts";
 import { BROWSER_TOOLKIT } from "../toolkits/built-in.ts";
-import { type BrowserSessionRecord, insertBrowserSessionRecord } from "../usage/record.ts";
+import { hourlyCost } from "../toolkits/price.ts";
+import { insertSessionRecord, type SessionRecord } from "../usage/record.ts";
+import {
+  forgottenUnsettled,
+  remaining,
+  SETTLE_RETRY_MS,
+  type Settled,
+  sessionIdOf,
+  settleClose,
+} from "../usage/session-close.ts";
 import { BROWSER_RUN } from "./browser-run.ts";
 import { browserRunSessions, type BrowserRunSessionBinding } from "./browser-run-sessions.ts";
-import { type BrowserTime, browserTimeCost, type Timed, untimed } from "./browser-time.ts";
+import { type BrowserTime, type Timed, untimed } from "./browser-time.ts";
 import type { BrowserSessionProvider, ProviderBrowser, StorageState } from "./provider.ts";
 import { runOperation, textResult, toolError } from "./session.ts";
 import { IDLE_TIME, IDLE_TIMEOUT_MS, notCss, type SessionOperation } from "./session-tools.ts";
 
 /** How long a closed session answers that it is closed, before it answers as unknown. */
 export const CLOSED_KEPT_MS = 24 * 60 * 60_000;
-
-/** How soon a closed session's alarm tries again to write its usage record or report its close (#214). */
-export const SETTLE_RETRY_MS = 60_000;
 
 /**
  * What the session's object reads from the state Worker's env: the optional `browser` binding, over which it reaches
@@ -244,7 +250,7 @@ const meterSession = (
 ): Metered => {
   const from = session.meteredAt ?? session.openedAt;
   const browserMs = Math.max(0, at - from);
-  const costMicros = free ? 0 : browserTimeCost(browserMs, session.hourPriceMicros ?? 0);
+  const costMicros = free ? 0 : hourlyCost(browserMs, session.hourPriceMicros ?? 0);
 
   return {
     session: {
@@ -258,17 +264,10 @@ const meterSession = (
 };
 
 /** `session` without what is left to do once it closed. */
-const settled = (
-  session: StoredSession,
-  done: { readonly recorded: boolean; readonly reported: boolean },
-): StoredSession => {
-  const { unrecorded, owed, ...rest } = session;
+const settled = (session: StoredSession, done: Settled): StoredSession => {
+  const { unrecorded: _unrecorded, owed: _owed, ...rest } = session;
 
-  return {
-    ...rest,
-    ...(unrecorded === true && !done.recorded ? { unrecorded } : {}),
-    ...(owed !== undefined && !done.reported ? { owed } : {}),
-  };
+  return { ...rest, ...remaining(session, done) };
 };
 
 const owns = (stored: StoredSession, caller: SessionCaller): boolean =>
@@ -303,8 +302,8 @@ export class BrowserSession extends DurableObject<BrowserSessionEnv> {
   }
 
   /** Writes the usage record of a session (a test's subclass may fail it). */
-  protected writeRecord(record: BrowserSessionRecord): Promise<void> {
-    return insertBrowserSessionRecord(this.env.USAGE, record);
+  protected writeRecord(record: SessionRecord): Promise<void> {
+    return insertSessionRecord(this.env.USAGE, record);
   }
 
   /** Makes the object read the time from `clock` (a test's `TestClock`). In the object's isolate only. */
@@ -390,22 +389,11 @@ export class BrowserSession extends DurableObject<BrowserSessionEnv> {
   async #settle(session: StoredSession): Promise<void> {
     if (session.closed === null) return;
 
-    const recorded =
-      session.unrecorded !== true || (await this.#record(session, session.closed.at));
+    const { closed } = session;
 
-    const reported = session.owed === undefined || (await this.#report(session, session.owed));
-    const left = settled(session, { recorded, reported });
-
-    this.#save(left);
-    await this.ctx.storage.setAlarm(
-      recorded && reported ? session.closed.at + CLOSED_KEPT_MS : this.#now() + SETTLE_RETRY_MS,
-    );
-  }
-
-  /** Writes the usage record of `session`, closed at `at` (#214); whether it was written (a failure is logged). */
-  async #record(session: StoredSession, at: number): Promise<boolean> {
-    return await Effect.runPromise(
-      Effect.tryPromise(() =>
+    const done = await settleClose(session, {
+      what: "browser session",
+      record: () =>
         this.writeRecord({
           sessionId: session.id ?? this.#nameId(),
           orgId: session.org,
@@ -413,50 +401,29 @@ export class BrowserSession extends DurableObject<BrowserSessionEnv> {
           memberId: session.member ?? undefined,
           toolkitId: session.toolkit ?? BROWSER_TOOLKIT,
           openedAt: session.openedAt,
-          browserMs: Math.max(0, at - session.openedAt),
+          browserMs: Math.max(0, closed.at - session.openedAt),
           costMicros: session.costMicros ?? 0,
           profileId: session.profile,
           run: session.run,
         }),
-      ).pipe(
-        Effect.as(true),
-        Effect.catch((error) =>
-          Effect.logWarning("browser session usage record write failed").pipe(
-            Effect.annotateLogs({ error: error.message }),
-            Effect.as(false),
-          ),
-        ),
-      ),
-    );
-  }
-
-  /**
-   * Reports the alarm's close of `session` to its org's Tools part, which charges `costMicros` of its browser time and
-   * forgets the session; whether it went through (a failure is logged).
-   */
-  async #report(session: StoredSession, costMicros: number): Promise<boolean> {
-    return await Effect.runPromise(
-      Effect.tryPromise(() =>
+      // Its org's Tools part charges the cost and forgets the session.
+      report: (owed) =>
         this.controlPlane(session.org)
           .tools()
-          .browserSessionClosed(session.id ?? this.#nameId(), costMicros),
-      ).pipe(
-        Effect.as(true),
-        Effect.catch((error) =>
-          Effect.logWarning("browser session close not reported").pipe(
-            Effect.annotateLogs({ error: error.message }),
-            Effect.as(false),
-          ),
-        ),
-      ),
+          .browserSessionClosed(session.id ?? this.#nameId(), owed),
+    });
+
+    const left = settled(session, done);
+
+    this.#save(left);
+    await this.ctx.storage.setAlarm(
+      done.recorded && done.reported ? closed.at + CLOSED_KEPT_MS : this.#now() + SETTLE_RETRY_MS,
     );
   }
 
   /** The session's id from the name its object was reached by, `<org>:<id>` ({@link browserSessionStub}). */
   #nameId(): string {
-    const name = this.ctx.id.name ?? "";
-
-    return name.slice(name.lastIndexOf(":") + 1);
+    return sessionIdOf(this.ctx.id.name);
   }
 
   /**
@@ -831,16 +798,7 @@ export class BrowserSession extends DurableObject<BrowserSessionEnv> {
         const forgetAt = session.closed.at + CLOSED_KEPT_MS;
 
         if (now >= forgetAt) {
-          if (session.unrecorded === true || session.owed !== undefined)
-            await Effect.runPromise(
-              Effect.logError("browser session forgotten before its close was recorded").pipe(
-                Effect.annotateLogs({
-                  unrecorded: session.unrecorded === true,
-                  owed: session.owed ?? 0,
-                }),
-              ),
-            );
-
+          await forgottenUnsettled("browser session", session);
           await this.ctx.storage.deleteAll();
         } else if (session.unrecorded === true || session.owed !== undefined)
           await this.#settle(session);

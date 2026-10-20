@@ -23,10 +23,15 @@ import {
 } from "./network.ts";
 import {
   type CommandOutput,
+  type ComputerMeter,
+  addedTime,
+  type ComputerTime,
+  type Metered,
   SANDBOX_HOME,
-  type SandboxError,
+  SandboxError,
   type SandboxOwner,
   type SandboxProvider,
+  type SessionOpener,
 } from "./provider.ts";
 import {
   byteLength,
@@ -56,7 +61,56 @@ export interface SandboxCall {
   readonly policy: OutboundPolicy;
   /** Epoch ms, the Tools part's clock. */
   readonly now: number;
+  /** The session's computer time's metering (#224), which every call of a session passes to the provider. */
+  readonly meter?: ComputerMeter | undefined;
+  /** Who opens a session, which its usage record of computer time names (#224). */
+  readonly opener?: SessionOpener | undefined;
 }
+
+/**
+ * What a sandbox tool's call answers: its tool result, with its session's computer time since the call before when it
+ * was metered (#224), which the call charges, and `needed` when the session refused it because a Spend limit has no
+ * room and the command would have run on the computer, with `computerStopped` when the call stopped the computer,
+ * which ran, first.
+ */
+export interface SandboxAnswer {
+  readonly result: Schema.JsonObject;
+  readonly computerTime?: ComputerTime | undefined;
+  readonly computer?: "needed" | undefined;
+  readonly computerStopped?: true | undefined;
+}
+
+/**
+ * The note a call's result carries when the call stopped the session's running computer because a Spend limit its time
+ * counts toward has no room (#224): `sandbox_bash`'s `note`, and a text block after any other tool's result.
+ */
+export const COMPUTER_STOPPED_NOTE =
+  "The sandbox session's computer was stopped: a Spend limit its computer time counts toward is reached. Commands just-bash can run still run; one that needs the computer is refused.";
+
+/** `result` with `note` after it, as a text block of its own. */
+const noted = (result: Schema.JsonObject, note: string): Schema.JsonObject => {
+  const content = Array.isArray(result["content"]) ? result["content"] : [];
+
+  return Object.assign({}, result, { content: [...content, { type: "text", text: note }] });
+};
+
+/**
+ * A tool result with the computer time of the provider's answer that it renders, and the note that the call stopped
+ * the computer, when it did: `render` takes the note when it words it itself (`sandbox_bash`), else it follows.
+ */
+const answered = <A>(
+  metered: Metered<A>,
+  render: (value: A, note: string | undefined) => Schema.JsonObject,
+  ownNote = false,
+): SandboxAnswer => {
+  const note = metered.computerStopped === true ? COMPUTER_STOPPED_NOTE : undefined;
+  const rendered = render(metered.value, note);
+  const result = note === undefined || ownNote ? rendered : noted(rendered, note);
+
+  return metered.computerTime === undefined
+    ? { result }
+    : { result, computerTime: metered.computerTime };
+};
 
 /** A command's longest run: ten minutes. Without a timeout it may run two. */
 export const MAX_TIMEOUT_SECONDS = 600;
@@ -208,6 +262,14 @@ export const SANDBOX_TOOLS: ReadonlyArray<SandboxTool> = TOOL_NAMES.map((name) =
 
 const isTool = (name: string): name is SandboxToolName => Object.hasOwn(TOOLS, name);
 
+/**
+ * Whether a call of the sandbox tool `name` meets its session's computer, so that a Spend limit its computer time counts
+ * toward is checked on it (#224): every tool of an open session but `sandbox_close`, which stops the computer anyway.
+ * `sandbox_open` has no session yet.
+ */
+export const meetsComputer = (name: string): boolean =>
+  isTool(name) && name !== "open" && name !== "close";
+
 /** An MCP tool result of one text block. */
 interface TextResult {
   [field: string]: Schema.Json;
@@ -270,6 +332,7 @@ const failure = (error: SandboxError, sessionId: string | undefined): Schema.Jso
       );
     case "file":
     case "unavailable":
+    case "refused":
       return toolError(error.message);
   }
 };
@@ -445,78 +508,93 @@ const run = (
   request: {
     readonly [K in SandboxToolName]: { readonly tool: K; readonly args: Arguments<K> };
   }[SandboxToolName],
-): Effect.Effect<Schema.JsonObject, SandboxError> => {
-  const { owner, now } = call;
+): Effect.Effect<SandboxAnswer, SandboxError> => {
+  const { owner, now, meter } = call;
 
   switch (request.tool) {
     case "open": {
       const asked = request.args.network ?? NO_NETWORK;
       const problem = networkProblem(asked);
 
-      if (problem !== undefined) return Effect.succeed(toolError(`Invalid network: ${problem}`));
+      if (problem !== undefined)
+        return Effect.succeed({ result: toolError(`Invalid network: ${problem}`) });
       const network = normalizedNetwork(asked);
 
       if (!withinCeiling(network, call.ceiling.network))
-        return Effect.succeed(
-          toolError(
+        return Effect.succeed({
+          result: toolError(
             `The org does not allow that network: a sandbox may have at most ${describeNetwork(call.ceiling.network)}.`,
           ),
-        );
+        });
       const computer = request.args.computer ?? false;
 
-      if (computer && !provider.computer) return Effect.succeed(toolError(NO_COMPUTER));
+      if (computer && !provider.computer) return Effect.succeed({ result: toolError(NO_COMPUTER) });
 
       if (computer && !call.ceiling.computer)
-        return Effect.succeed(
-          toolError(
+        return Effect.succeed({
+          result: toolError(
             "The org does not allow the computer: a sandbox runs every command with just-bash. An org admin may allow it on the sandbox toolkit.",
           ),
-        );
+        });
 
-      return provider.open(owner, { network, computer, policy: call.policy, now }).pipe(
-        Effect.tap((id) => Effect.sync(() => call.sessions.opened(id))),
-        Effect.map((id) =>
-          text(
-            `Opened sandbox session ${id} (working directory ${SANDBOX_HOME}, ${describeNetwork(network)}, ${computer ? "the computer allowed" : "the computer off"}). Pass session="${id}" to the other sandbox tools.`,
-            { structuredContent: { session: id, network, computer } },
-          ),
-        ),
-      );
+      return provider
+        .open(owner, { network, computer, policy: call.policy, now, meter, opener: call.opener })
+        .pipe(
+          Effect.tap((id) => Effect.sync(() => call.sessions.opened(id))),
+          Effect.map((id) => ({
+            result: text(
+              `Opened sandbox session ${id} (working directory ${SANDBOX_HOME}, ${describeNetwork(network)}, ${computer ? "the computer allowed" : "the computer off"}). Pass session="${id}" to the other sandbox tools.`,
+              { structuredContent: { session: id, network, computer } },
+            ),
+          })),
+        );
     }
 
     case "bash": {
       const { session: id, command, timeout } = request.args;
 
       return provider
-        .run(owner, id, {
-          command,
-          timeoutMs: Math.round((timeout ?? DEFAULT_TIMEOUT_SECONDS) * 1000),
-          now,
-        })
+        .run(
+          owner,
+          id,
+          { command, timeoutMs: Math.round((timeout ?? DEFAULT_TIMEOUT_SECONDS) * 1000), now },
+          meter,
+        )
         .pipe(
-          Effect.map((result) => {
-            const stdout = renderedOutput(result.stdout);
-            const stderr = renderedOutput(result.stderr);
+          Effect.map((metered) =>
+            answered(
+              metered,
+              (result, stoppedNote) => {
+                const stdout = renderedOutput(result.stdout);
+                const stderr = renderedOutput(result.stderr);
 
-            const body = [
-              stdout === "" && stderr === "" ? "(no output)" : stdout,
-              ...(stderr === "" ? [] : [`stderr:\n${stderr}`]),
-              ...(result.exitCode === 0 ? [] : [`Command exited with code ${result.exitCode}`]),
-              ...(result.note === undefined ? [] : [result.note]),
-            ]
-              .filter((part) => part !== "")
-              .join("\n\n");
+                // The provider's note, and that the call stopped the computer (#224).
+                const note = [result.note, stoppedNote]
+                  .filter((part) => part !== undefined)
+                  .join("\n\n");
 
-            return text(body, {
-              structuredContent: {
-                exit_code: result.exitCode,
-                stdout,
-                stderr,
-                ...(result.note === undefined ? {} : { note: result.note }),
+                const body = [
+                  stdout === "" && stderr === "" ? "(no output)" : stdout,
+                  ...(stderr === "" ? [] : [`stderr:\n${stderr}`]),
+                  ...(result.exitCode === 0 ? [] : [`Command exited with code ${result.exitCode}`]),
+                  note,
+                ]
+                  .filter((part) => part !== "")
+                  .join("\n\n");
+
+                return text(body, {
+                  structuredContent: {
+                    exit_code: result.exitCode,
+                    stdout,
+                    stderr,
+                    ...(note === "" ? {} : { note }),
+                  },
+                  isError: result.exitCode !== 0,
+                });
               },
-              isError: result.exitCode !== 0,
-            });
-          }),
+              true,
+            ),
+          ),
         );
     }
 
@@ -525,8 +603,12 @@ const run = (
       const filePath = resolvePath(request.args.path);
 
       return provider
-        .readFile(owner, id, filePath, now)
-        .pipe(Effect.map((content) => renderedRead(content, filePath, offset, limit)));
+        .readFile(owner, id, filePath, now, meter)
+        .pipe(
+          Effect.map((metered) =>
+            answered(metered, (content) => renderedRead(content, filePath, offset, limit)),
+          ),
+        );
     }
 
     case "write": {
@@ -534,25 +616,54 @@ const run = (
       const filePath = resolvePath(request.args.path);
 
       return provider
-        .writeFile(owner, id, filePath, content, now)
-        .pipe(Effect.as(text(`Successfully wrote ${byteLength(content)} bytes to ${filePath}`)));
+        .writeFile(owner, id, filePath, content, now, meter)
+        .pipe(
+          Effect.map((metered) =>
+            answered(metered, () =>
+              text(`Successfully wrote ${byteLength(content)} bytes to ${filePath}`),
+            ),
+          ),
+        );
     }
 
     case "edit": {
       const { session: id, edits } = request.args;
       const filePath = resolvePath(request.args.path);
 
-      return provider.readFile(owner, id, filePath, now).pipe(
-        Effect.flatMap((content) => {
-          const edited = applyEdits(content, edits, filePath);
+      return provider.readFile(owner, id, filePath, now, meter).pipe(
+        Effect.flatMap((read) => {
+          const edited = applyEdits(read.value, edits, filePath);
 
-          return Result.isFailure(edited)
-            ? Effect.succeed(toolError(edited.failure))
-            : provider
-                .writeFile(owner, id, filePath, edited.success, now)
-                .pipe(
-                  Effect.as(text(`Successfully replaced ${edits.length} block(s) in ${filePath}.`)),
-                );
+          if (Result.isFailure(edited))
+            return Effect.succeed(answered(read, () => toolError(edited.failure)));
+
+          // The write answers the computer time since the read: the call's is both, and the read may have stopped the
+          // computer.
+          const both = (written: { readonly computerTime?: ComputerTime | undefined }) => {
+            const computerTime = addedTime(read.computerTime, written.computerTime);
+
+            return {
+              ...(computerTime === undefined ? {} : { computerTime }),
+              ...(read.computerStopped === true ? { computerStopped: true as const } : {}),
+            };
+          };
+
+          return provider.writeFile(owner, id, filePath, edited.success, now, meter).pipe(
+            Effect.map((written) =>
+              answered({ value: undefined, ...both(written) }, () =>
+                text(`Successfully replaced ${edits.length} block(s) in ${filePath}.`),
+              ),
+            ),
+            Effect.mapError(
+              (error) =>
+                new SandboxError({
+                  reason: error.reason,
+                  message: error.message,
+                  ...(error.computerStopped === true ? { computerStopped: true as const } : {}),
+                  ...both(error),
+                }),
+            ),
+          );
         }),
       );
     }
@@ -561,35 +672,45 @@ const run = (
       const { session: id, limit } = request.args;
 
       return provider
-        .list(owner, id, resolvePath(request.args.path ?? SANDBOX_HOME), now)
-        .pipe(Effect.map((entries) => renderedList(entries, limit ?? DEFAULT_LIST_LIMIT)));
+        .list(owner, id, resolvePath(request.args.path ?? SANDBOX_HOME), now, meter)
+        .pipe(
+          Effect.map((metered) =>
+            answered(metered, (entries) => renderedList(entries, limit ?? DEFAULT_LIST_LIMIT)),
+          ),
+        );
     }
 
     case "close": {
       const { session: id } = request.args;
 
       return provider
-        .close(owner, id, now)
-        .pipe(Effect.as(text(`Closed sandbox session ${id}; its files are deleted.`)));
+        .close(owner, id, now, meter)
+        .pipe(
+          Effect.map((metered) =>
+            answered(metered, () => text(`Closed sandbox session ${id}; its files are deleted.`)),
+          ),
+        );
     }
   }
 };
 
 /**
- * Calls the sandbox tool `name` (its upstream name) with the client's arguments on `provider`, as `call` says. Never
- * fails: an unknown tool, invalid arguments and the provider's failures are tool results with `isError`.
+ * Calls the sandbox tool `name` (its upstream name) with the client's arguments on `provider`, as `call` says, with the
+ * computer time it answered (#224). Never fails: an unknown tool, invalid arguments and the provider's failures are tool
+ * results with `isError`.
  */
 export const callSandboxTool = (
   provider: SandboxProvider,
   call: SandboxCall,
   name: string,
   args: Schema.JsonObject | undefined,
-): Effect.Effect<Schema.JsonObject> => {
-  if (!isTool(name)) return Effect.succeed(toolError(`The sandbox has no tool ${name}.`));
+): Effect.Effect<SandboxAnswer> => {
+  if (!isTool(name))
+    return Effect.succeed({ result: toolError(`The sandbox has no tool ${name}.`) });
   const decoded = argumentsOf(name, args ?? {});
 
   if (Result.isFailure(decoded))
-    return Effect.succeed(toolError(`Invalid arguments: ${decoded.failure}`));
+    return Effect.succeed({ result: toolError(`Invalid arguments: ${decoded.failure}`) });
   // SAFETY: `decoded` holds the arguments of `name`.
   const request = { tool: name, args: decoded.success } as Parameters<typeof run>[2];
   const sessionId = "session" in decoded.success ? decoded.success.session : undefined;
@@ -614,11 +735,24 @@ export const callSandboxTool = (
             }),
           );
 
-        if (error.reason === "closed") yield* logged("ended");
+        // A session found closed stays logged: its close, by its alarm, is the session's to report (#224). A failure
+        // of the sandbox is a use too: the session's object counts the call (its idle day starts over).
+        if (error.reason === "file" || error.reason === "refused" || error.reason === "unavailable")
+          yield* logged("used");
 
-        if (error.reason === "file") yield* logged("used");
+        const result = failure(error, sessionId);
 
-        return failure(error, sessionId);
+        return {
+          result:
+            error.computerStopped === true && error.reason !== "refused"
+              ? noted(result, COMPUTER_STOPPED_NOTE)
+              : result,
+          ...(error.computerTime === undefined ? {} : { computerTime: error.computerTime }),
+          ...(error.reason === "refused" ? { computer: "needed" as const } : {}),
+          ...(error.reason === "refused" && error.computerStopped === true
+            ? { computerStopped: true as const }
+            : {}),
+        };
       }),
     ),
   );

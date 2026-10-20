@@ -11,7 +11,8 @@ import type { Schema } from "effect";
 import type { SandboxNetwork } from "@commissary/contract/tools";
 import { OrgId } from "@commissary/core";
 import { deleteOrgSandboxSessions } from "../src/org-deletion.ts";
-import { SESSION_IDLE_MS as IDLE_MS } from "../src/sandbox/provider.ts";
+import { CLOSE_REPORT_MS, SESSION_IDLE_MS as IDLE_MS } from "../src/sandbox/provider.ts";
+import { migrateUsageDb } from "./support/usage-db.ts";
 
 const POLICY = { ownHosts: ["app.example.com"], localDevelopment: false };
 
@@ -28,6 +29,11 @@ const withSandbox = () => env.SANDBOX_CONTROL_PLANE.getByName(crypto.randomUUID(
 const withOtherProvider = () => env.OTHER_SANDBOX_CONTROL_PLANE.getByName(crypto.randomUUID());
 
 type Stub = ReturnType<typeof withSandbox>;
+
+// A session's close writes a usage record of its computer time (#224), even of none.
+beforeAll(async () => {
+  await migrateUsageDb();
+});
 
 const grantEveryone = async (stub: Stub) => {
   const written = await stub.tools().writeGrant(
@@ -249,6 +255,13 @@ describe("the sandbox toolkit", () => {
     expect(before.alarm).toBeGreaterThan(before.now + IDLE_MS - 60_000);
     expect(before.alarm).toBeLessThanOrEqual(before.now + IDLE_MS);
 
+    // The day is over: the alarm, run now, finds the session idle that long.
+    await runInDurableObject(object, (_instance, state) => {
+      const record = state.storage.kv.get<{ idleAt: number }>("sandbox:session");
+
+      if (record === undefined) throw new Error("no session");
+      state.storage.kv.put("sandbox:session", { ...record, idleAt: Date.now() });
+    });
     expect(await runDurableObjectAlarm(object)).toBe(true);
 
     const after = await call(stub, ALICE, "sandbox_read", { session, path: "kept.txt" });
@@ -267,6 +280,15 @@ describe("the sandbox toolkit", () => {
     );
 
     // A week later the note goes too.
+    await runInDurableObject(object, (_instance, state) => {
+      const note = state.storage.kv.get<{ closedAt: number }>("sandbox:session");
+
+      if (note === undefined) throw new Error("no note");
+      state.storage.kv.put("sandbox:session", {
+        ...note,
+        closedAt: note.closedAt - CLOSE_REPORT_MS,
+      });
+    });
     expect(await runDurableObjectAlarm(object)).toBe(true);
     expect(textOf(await call(stub, ALICE, "sandbox_list", { session }))).toContain(
       "Unknown sandbox session",
@@ -347,20 +369,46 @@ describe("the org's open sandbox sessions", () => {
     );
   });
 
-  it("are forgotten by the ControlPlane once a day passes without a call, as the sandbox ends them", async () => {
+  it("leave a member's session idle past its day, closed by the sandbox already, to report its close when they leave", async () => {
+    const org = crypto.randomUUID();
+    const stub = env.SANDBOX_CONTROL_PLANE.getByName(org);
+
+    await grantEveryone(stub);
+    const idle = await open(stub, ALICE);
+    const recent = await open(stub, ALICE);
+
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec(
+        `UPDATE sandbox_sessions SET last_used = ? WHERE id = ?`,
+        Date.now() - IDLE_MS - 60_000,
+        idle,
+      );
+    });
+    await runInDurableObject(stub, async (instance) => {
+      await instance.tools().memberLeft(ALICE.member);
+    });
+
+    // Only the session used within the day is purged; the other is left to its own close.
+    expect(await heldBy(org, recent)).toEqual([]);
+    expect(await heldBy(org, idle)).not.toEqual([]);
+    expect((await tracked(stub)).map(([id]) => id)).toEqual([idle]);
+  });
+
+  it("are forgotten by the ControlPlane when the sandbox's close of one it never heard of is overdue", async () => {
     const stub = withSandbox();
 
     await grantEveryone(stub);
     const session = await open(stub, ALICE);
     const now = Date.now();
+    const overdue = now + IDLE_MS + CLOSE_REPORT_MS;
 
     await runInDurableObject(stub, async (instance) => {
-      await instance.tools().alarm(now + IDLE_MS - 60_000);
+      await instance.tools().alarm(overdue - 60_000);
     });
     expect((await tracked(stub)).map(([id]) => id)).toEqual([session]);
 
     await runInDurableObject(stub, async (instance) => {
-      await instance.tools().alarm(now + IDLE_MS + 60_000);
+      await instance.tools().alarm(overdue + 60_000);
     });
     expect(await tracked(stub)).toEqual([]);
   });

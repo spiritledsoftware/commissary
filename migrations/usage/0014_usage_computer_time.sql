@@ -1,0 +1,11 @@
+-- Computer time (#224, ADR 0041): a sandbox session writes one record of its own when it closes, as a browser session
+-- does (0012): `area = 'tools'`, its toolkit, no tool, no outcome, its id as `request_id`, and `computer_ms`, the time
+-- its computer ran (from the command that started it to its last command and its idle minutes, or to when the session
+-- stopped it), whose cost at the org's price per computer hour, prorated, is its `cost_micros`. just-bash's time is
+-- not metered: a session that never used the computer holds 0. `NULL` on every other record. No record holds a
+-- command, a path, file content or output.
+--
+-- Forward only, like every migration here: code from before it ignores the column. Reverting the code to before it
+-- leaves the sessions' records, which that code reads as tool calls of no tool; delete them first if that matters:
+--   DELETE FROM usage_records WHERE area = 'tools' AND tool_id IS NULL AND computer_ms IS NOT NULL;
+ALTER TABLE usage_records ADD COLUMN computer_ms INTEGER;

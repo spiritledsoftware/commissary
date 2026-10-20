@@ -69,7 +69,8 @@ auth Worker, the app Worker.
    `BrowserSession` (one per browser session of the browser toolkit) and `SandboxSession` (one per sandbox session of
    the sandbox toolkit): every org's state and the Platform registry. It has no routes, no domain and no `workers.dev`
    URL, and binds only what those classes read: the Worker Loader (`LOADER`, Dynamic Workers, which run the sandboxes'
-   shells), the usage database (`USAGE`, which a browser session writes its record of browser time into), the secrets
+   shells), the usage database (`USAGE`, which a browser session writes its record of browser time into, and a sandbox
+   session its record of computer time), the secrets
    keys, the `auth_index` key, `META_MINT_URL`, `OWN_HOSTS`, the platform admins, the mode and the
    Access settings that mark a deployed stage, and Browser Run unless `COMMISSARY_BROWSER=off`
    ([Optional pieces](#optional-pieces)).

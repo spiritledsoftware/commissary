@@ -58,6 +58,7 @@ type ToolsPartMethod =
   | "writeProfileGrant"
   | "purgeBrowserCrawls"
   | "browserSessionClosed"
+  | "sandboxComputerTime"
   | "purgeBrowserSessions"
   | "hasManagedApp"
   | "takeCatalogLookup";

@@ -1956,6 +1956,17 @@ once; a 401 retry keeps the rejected attempt's failed record, a failed-over cred
   `cost_micros` and its browser time in the totals' `browser_ms` (the Quick Actions' and the sessions'). `NULL` on every
   other record; code from before the migration ignores the columns. Tools' org-deletion step deletes the org's
   session records once it deleted its open sessions, for one written after Models' step deleted the org's rows.
+- **Computer time** (#224, ADR 0041; `migrations/usage/0014_usage_computer_time.sql`): `computer_ms`, how long a
+  sandbox session's computer ran, in milliseconds, on the one record the session writes when it closes (_Tools_,
+  "Computer time"), shaped as a browser session's: `area = 'tools'`, the sandbox toolkit, no `tool_id` and no
+  `tool_outcome`, `auth_type` `shared`, the session's id as `request_id`, the member and the agent run (#228) that
+  opened it, and its computer time's cost at the price per computer hour as `cost_micros`. The calls in a session keep
+  their own records, without computer time. The JSON of the record adds `computer_ms`; a summary and a series count it
+  toward no request, failure or average latency (the same `area = 'tools' AND tool_id IS NULL`), while its cost counts
+  in `cost_micros` and its computer time in the totals' `computer_ms`. A session that never started its computer
+  writes one too, with `computer_ms` 0 (a session opened before #224 writes none). `NULL` on every other record; code
+  from before the migration ignores the column. Tools' org-deletion step deletes these records with the browser
+  sessions' (`deleteSessionRecords`).
 - **Management** (`models/management/usage-routes.ts`): `GET /v9/management/observability/usage/queue?count=N` (atomically pops the oldest unexported records, Go queue JSON with
   `token_breakdown`; `api_key` = Access principal id, `auth_index` = the management (keyed) `auth_index`) and the Workers
   additions `.../records` (filters `since|until|provider|model|principal|member|team|auth_index|failed`, `limit`, keyset
@@ -2750,8 +2761,9 @@ Workers addition replacing the Go server's client keys (`access.api-keys`, impor
 
 Workers addition, no Go counterpart; ADR 0024. A Spend limit caps the Cost an org's traffic adds up to over a day, week or
 month. Cost is the attempt's token breakdown at the model's price (_Usage accounting and observability_), or a tool
-call's price (_Tools_), or browser time at the price per browser hour (#214); the Worker prices each attempt, the
-ControlPlane prices each tool call and browser time, counts and decides.
+call's price (_Tools_), or browser time at the price per browser hour (#214), or a sandbox session's computer time at
+the price per computer hour (#224); the Worker prices each attempt, the ControlPlane prices each tool call, browser
+time and computer time, counts and decides.
 
 - **Where it lives** (#199): the org-wide base, `@commissary/state/spend` (model, calendar, store, ledger and
   `SpendService`, pure modules that Node.js tests import too). The base owns the object's one `SpendService` and gives
@@ -2808,7 +2820,7 @@ ControlPlane prices each tool call and browser time, counts and decides.
   so priced calls running at once can each pass the check and together overrun a limit by their prices.
 - **Browser time** (`ToolsPart.callTool`, `browserSessionClosed`, `tools/browser/session-object.ts`; #214, ADR 0039):
   with a price per browser hour on the browser toolkit, its browser time costs that price, prorated by the millisecond
-  and rounded half up, computed exactly (`browserTimeCost`, `tools/browser/browser-time.ts`), on top of any price per
+  and rounded half up, computed exactly (`hourlyCost`, `tools/toolkits/price.ts`), on top of any price per
   call of the tool, and counts toward the same limits as the toolkit's priced calls (the key's, member's, teams' and
   org's; the browser toolkit's credential is its shared one). Each tool says what it does with browser time
   (`browserTimeOf`, from the session tools' table, `SESSION_TOOLS[...].browserTime`): the Quick Actions and the session
@@ -2825,6 +2837,34 @@ ControlPlane prices each tool call and browser time, counts and decides.
   it (the tool error says so; its object writes its record). The check is on each call: between calls a session's
   time can pass a limit by up to its idle minutes' worth. Without a price browser time costs nothing and is never
   checked.
+- **Computer time** (`ToolsPart.callTool`, `sandboxComputerTime`, `tools/sandbox/cloudflare/session.ts`; #224, ADR
+  0041): one mechanism with browser time (`HOUR_PRICES`, `tools/toolkits/price.ts`): with a price per computer hour on
+  the sandbox toolkit, the time a sandbox session's computer runs (the fallback for what just-bash cannot run, #223)
+  costs that price, prorated the same way, on top of any price per call, toward the same limits as the toolkit's priced
+  calls (the key's, member's, teams' and org's, or a shared agent's run's agent's and the org's, #228; the sandbox
+  toolkit's credential is its shared one). Its computer runs from the command that starts it until its container's
+  idle minutes after its last command ended, or until the session stops it (`computer-time.ts`), so the idle minutes
+  cost as the container's do; a command that could not start the computer (its container refused, or failing before
+  it reached it) adds nothing, and just-bash's time costs nothing. It is charged as it runs: each call in the session
+  charges its computer time since the call before, at the price in force since then (the object meters it and the
+  provider answers it with the call's result or failure, `Metered`, `SandboxError.computerTime`); when the computer
+  stops by itself, its idle minutes over, the session's alarm meters that run at once and reports its cost
+  (`sandboxComputerTime`, tried again until it goes through or a call answers it), and the alarm that closes an idle
+  session reports the close with what is left, which charges it. Each stretch is charged once, and the session's
+  record holds their sum. A member who leaves has their sessions settled as closes first (`memberLeft`, _Tools_,
+  "Sessions"); the org's deletion charges and records nothing. Only the session knows whether a call meets its
+  computer, so every session tool but `sandbox_open` and `sandbox_close` (`meetsComputer`, `tools/sandbox/toolkit.ts`)
+  is checked, and the check's answer goes with the call (`ComputerMeter.limitReached`); once a limit it counts toward
+  has no room the session decides (`#stopForLimit`). The issue's two rules read: "a running computer is stopped" (a
+  call that finds the computer running stops it quietly and goes on, its result saying so: `note` on `sandbox_bash`,
+  an added text on the others, `COMPUTER_STOPPED_NOTE`), and "the fallback is refused" (only a command that would run
+  on the computer is refused, the refusal saying it needs the computer, and that the call stopped it when it found it
+  running); so a just-bash command, a read or a list goes
+  on, and the session's just-bash and files stay usable. A tool with a price per call (`sandbox_close` too) is refused
+  before it reaches the session, so the part stops a running computer itself (`stopComputer`, the provider's
+  operation, `stopForLimit` on the object, which is no use of the session: its idle day goes on), and the refusal
+  says so. Between calls a running computer can pass a limit by up to its idle minutes' worth. Without a price
+  computer time is recorded and costs nothing, and is never checked.
 - **Charge** (`conductor.ts` `finish`, `usage/sink.ts` `priceForSpend`): when the lease carries limits the Worker builds the
   attempt's usage records first, prices them (`UsageSink.cost`, the same price table the D1 sink writes with, so the
   stored record and the counter agree), reports `costMicros` with `report`, and the ControlPlane adds it to every
@@ -4023,23 +4063,26 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
   of kind `mcp`; what only a stored one takes goes through the part's one resolver, `#stored`). Its shared credential is Commissary's own binding, shown as kind `none`, so tool
   grants decide who reaches it, and there is no default grant: an org admin grants it like any org toolkit (all tools,
   read tools or named ones, stable ids `browser:<tool>` and `sandbox:<tool>`). A call is recorded in usage like any tool call (#199, on the
-  shared credential) and charged a tool override's price, if an org admin set one (and the browser toolkit's browser time
-  at its price per browser hour, #214). Overrides (hide, rename, re-describe, reclassify) and grants on
-  it are stored by its id in the usual tables, kept while the binding is absent and applied again when it is back.
-  So are its approval rules (#201), which apply as any toolkit's: `PATCH /toolkits/browser` with `approval_rules` only,
-  at its revision, stored in `built_in_toolkits` (its revision, rules, the sandbox's network, the browser's price per
-  browser hour and last change: it has no `toolkits` row), so its revision moves on from 1 with each change of its
-  rules. The sandbox toolkit also takes `network`, its ceiling (below); a network on the browser toolkit answers `403
-  built_in`, on a stored one `422 invalid`. The browser toolkit also takes `browser_hour_price_micros` (#214), its
-  price per browser hour (below), a whole number of micro-USD from 0 to 10^12 (`null` clears it; `422 invalid`
-  otherwise), shown on its view and carried by the org export; on the sandbox toolkit it answers `403 built_in`, on a
-  stored one `422 invalid`. Renaming it, changing what it accepts, connecting or removing a credential, refreshing its list and removing it answer
-  `403 built_in`; while it exists its name is taken (`409 name_taken`) for org and private toolkits alike, so a member
-  cannot add a private copy (and adding a toolkit takes an MCP URL anyway). A stored toolkit, org or private, named
-  `browser` (or `sandbox`) from before the deployment had the binding is renamed once when the part starts with it, to
-  the first `browser_<n>` (`sandbox_<n>`) from 2 that no toolkit of the org has, by `commissary` (its revision moves on). Its tools hold their full names against a
-  stored toolkit's (they count as seen first). API keys' tool scopes (ADR 0036) do not exist yet; `?toolkits=browser`
-  narrows to it as to any toolkit.
+  shared credential) and charged a tool override's price, if an org admin set one (and the browser toolkit's browser
+  time at its price per browser hour, #214, and the sandbox toolkit's computer time at its price per computer hour,
+  #224). Overrides (hide, rename, re-describe, reclassify) and grants on it are stored by its id in the usual tables,
+  kept while the binding is absent and applied again when it is back. So are its approval rules (#201), which apply as
+  any toolkit's: `PATCH /toolkits/browser` with `approval_rules` only, at its revision, stored in `built_in_toolkits`
+  (its revision, rules, the sandbox's network, its price per hour (the browser's per browser hour or the sandbox's per
+  computer hour, one column) and last change: it has no `toolkits` row), so its revision moves on from 1 with each
+  change of its rules. The sandbox toolkit also takes `network`, its ceiling (below); a network on the browser toolkit
+  answers `403 built_in`, on a stored one `422 invalid`. The browser toolkit also takes `browser_hour_price_micros`
+  (#214), its price per browser hour (below), a whole number of micro-USD from 0 to 10^12 (`null` clears it; `422
+  invalid` otherwise), shown on its view and carried by the org export; the sandbox toolkit takes
+  `computer_hour_price_micros` (#224), its price per computer hour (_Spend limits_, "Computer time"), the same way. Each
+  answers `403 built_in` on the other built-in toolkit and `422 invalid` on a stored one (`HOUR_PRICES`,
+  `tools/toolkits/price.ts`). Renaming it, changing what it accepts, connecting or removing a credential, refreshing its
+  list and removing it answer `403 built_in`; while it exists its name is taken (`409 name_taken`) for org and private
+  toolkits alike, so a member cannot add a private copy (and adding a toolkit takes an MCP URL anyway). A stored
+  toolkit, org or private, named `browser` (or `sandbox`) from before the deployment had the binding is renamed once
+  when the part starts with it, to the first `browser_<n>` (`sandbox_<n>`) from 2 that no toolkit of the org has, by
+  `commissary` (its revision moves on). Its tools hold their full names against a stored toolkit's (they count as seen
+  first). API keys' tool scopes (ADR 0036) do not exist yet; `?toolkits=browser` narrows to it as to any toolkit.
   - **The browser toolkit's tools** (`tools/browser/toolkit.ts`): Browser Run's stateless Quick Actions, all of class
     `read` (Commissary sets its own tools' class: `readOnlyHint`): `browser_markdown`, `browser_html`,
     `browser_screenshot`, `browser_pdf`, `browser_links`, `browser_scrape` and `browser_accessibility_tree`. Each takes a
@@ -4310,24 +4353,51 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
     its files back); for a week after, its owner's calls answer that it is closed, and after that week that it is
     unknown. Commissary sets no size limit of its own: the Durable Object's storage limit applies (a write past it
     answers that the storage is full and the file was not written). The ControlPlane keeps the org's open sessions
-    (`sandbox_sessions`, `tools/sandbox/sessions.ts`: id, toolkit, member, principal, opened and last used): every
-    call goes through the Tools part, which adds a session when it opens, marks it on each use, drops it when it is
-    closed or found closed, and forgets it a day after its last use, from its alarm, as the sandbox ends it. A member
-    who leaves takes their sessions at once (`memberLeft`: each is purged, deleted with its files and no note), and
-    the org's deletion purges every one (Tools' org-deletion step, `purgeSandboxSessions`, a page of 20 at a time
-    within the deletion's budget, before `wipeOrg` drops the table). Calls are recorded and priced as any tool call;
-    sandbox time is not metered.
+    (`sandbox_sessions`, `tools/sandbox/sessions.ts`: id, toolkit, member, principal, the shared agent whose run opened
+    it (`agent`, #228, which the close's charge goes to), opened and last used): every call goes through the Tools
+    part, which adds a session when it opens, marks it on each use (a call the sandbox failed is one too: the session's
+    object counted it), and drops it when the call closed it or the
+    session's alarm reports its close (#224, below). A session a call found closed is kept, as its close's report is
+    still to come. One whose close was never heard of is forgotten from the part's alarm `SESSION_IDLE_MS` +
+    `CLOSE_REPORT_MS` (a day and a week) after its last use, so a session whose report keeps failing stays listed up to
+    eight days. A member who leaves takes their sessions at once (`memberLeft`: each used within the day is purged,
+    settled first as a close is, its last stretch of computer time charged and its usage record written (#224), then
+    deleted with its files and no note; an older one is closed already, its files gone, and left to report its close),
+    and the org's deletion purges every one (Tools' org-deletion step, `purgeSandboxSessions`, a page of 20 at a time
+    within the deletion's budget, before `wipeOrg` drops the table). Calls are recorded and priced as any tool call.
+  - **Computer time** (#224, `tools/sandbox/cloudflare/computer-time.ts`): a session's object meters its computer
+    (`ComputerMetering`, kept with the session): the time from the command that starts it to the container's idle
+    minutes after its last command, or to when the session stops it (closing, or a Spend limit with no room), a command
+    still running keeping it running; a run whose command could not start the computer is dropped. Each call passes the
+    price per computer hour and whether a limit has no room (`SessionMetering`, an optional last argument; opening, who
+    opens too: toolkit, member and agent run, `SessionOpener`) and answers the time since the call before and its cost
+    (`SessionReply.computerTime`, which the provider hands on as `Metered.computerTime`, or a failure's
+    `SandboxError.computerTime`), which the part charges. The object's alarm is set for the sooner of the session's
+    idle day and the computer's end (`computerEndsAt`: its last use plus its idle minutes): at the computer's end it
+    meters the run that ended and reports its cost to the org's ControlPlane (`sandboxComputerTime(id, cost, false)`);
+    a report that fails is kept (`ComputerMetering.owed`) and answered by the next call or reported again from the
+    alarm soon after (`SETTLE_RETRY_MS`), so each stretch is charged once. With a limit's room gone a call stops a
+    running computer quietly and goes on (`computerStopped`), and only a command for the computer is refused. When
+    the session closes it writes its one usage record (`insertSessionRecord`, _Usage_, "Computer time"); when its alarm
+    closed it, it reports the close with what no call or report charged to the org's ControlPlane
+    (`sandboxComputerTime(id, cost, true)`), which charges it and forgets the session; a purge for a member's leaving
+    settles the same way, by the part's call (`purge(org, settle)`); one its alarm closed already is left to its alarm,
+    and the part keeps it until its close is reported. A close or a member's leaving waits for the alarm's report in
+    flight (`#reporting`), so the part still keeps the session the report names, and what that report could not report
+    is in what the close charges. A record or report that fails is kept in the closed note and tried again from the alarm (`usage/session-close.ts`, shared with the browser sessions) until the
+    note goes, `CLOSE_REPORT_MS` (a week) after the close.
   - **Networks** (`tools/sandbox/network.ts`, ADR 0041, ADR 0044): `none` (the default), `hosts` (DNS names or `*.` and a
     name, plus the `package_registries` preset: npm, PyPI, GitHub and mise's download hosts), or `open`. The sandbox
     toolkit's `network` is the org's ceiling, set by org admins (`PATCH /toolkits/sandbox`, shown in its view and the
     export), `none` until set; `sandbox_open` asks for one within it (a host list the ceiling covers, `open` only
     under `open`), and the session keeps it for its life, whatever the ceiling becomes later.
   - **Sandbox providers** (`tools/sandbox/provider.ts`, ADR 0041): the toolkit reaches its sandbox only through the
-    `SandboxProvider` interface (open, bash, read, write, list, close, each as an owner, and purge, for the
-    ControlPlane; a `SandboxError` with a reason the toolkit words). Cloudflare's sandbox (`tools/sandbox/cloudflare/`,
-    source `cloudflare`) is the one adapter, and the only code that imports `@cloudflare/computer` or just-bash (lint:
-    `no-restricted-imports` in `.oxlintrc.json`; pinned at 0.5.1, with just-bash pinned at 3.2.0 by a workspace
-    override, upgraded together in a Dependabot group of their own once the sandbox tests pass): each session is a `SandboxSession` Durable Object in the state Worker, named
+    `SandboxProvider` interface (open, bash, read, write, list, close, each as an owner, with the call's `ComputerMeter`
+    (#224), and purge and `stopComputer`, for the ControlPlane; a `SandboxError` with a reason the toolkit words).
+    Cloudflare's sandbox (`tools/sandbox/cloudflare/`, source `cloudflare`) is the one adapter, and the only code that
+    imports `@cloudflare/computer` or just-bash (lint: `no-restricted-imports` in `.oxlintrc.json`; pinned at 0.5.1,
+    with just-bash pinned at 3.2.0 by a workspace override, upgraded together in a Dependabot group of their own once
+    the sandbox tests pass): each session is a `SandboxSession` Durable Object in the state Worker, named
     `<org>:<session id>`, holding the session's `@cloudflare/computer` Workspace (its files, in the object's SQLite)
     and running commands with its worker-shell backend, just-bash in a Dynamic Worker loaded through `LOADER`. That
     Worker gets nothing but its files: the loader is wrapped (`cloudflare/loader.ts`) so that its one binding is the
@@ -4383,7 +4453,8 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
     bundled: the `just-bash` override in `pnpm-workspace.yaml` keeps them one version, and a unit test
     (`test/unit/sandbox-fallback.test.ts`) fails when they differ. The computer starts at a
     session's first fallback and stops after 10 idle minutes (the container's inactivity timeout, set after every
-    start); the files stay in the object, so the next fallback starts a fresh computer on them. mise keeps its data,
+    start); the files stay in the object, so the next fallback starts a fresh computer on them. Its running time is
+    metered and may have a price per computer hour (#224, "Computer time" above). mise keeps its data,
     cache, config and state in `/workspace/.mise`, its shims first on the commands' `PATH`, so `mise use node@22`
     lasts the session and survives the computer stopping. **Its one way out** (ADR 0044) is the same `SandboxEgress`:
     `enableInternet` is always `false`, set explicitly by Commissary's guard over the container host whatever the
@@ -4580,9 +4651,10 @@ the deployment's Dynamic Workers binding `LOADER`.
   tool call's (a tool error whose `_meta` carries the refusal, `SPEND_REFUSAL_META`, given to runs only; the object
   then aborts the turn). The refusal is kept in the object's storage until the turn settles, so an eviction keeps it.
   A shared agent's run counts toward the agent's own Spend limits and the org's (#228, `SpendCaller.agentId`; the
-  pool's caller, `RunToolReach.usage` for tool calls and the browser session log's `agent` column for browser time
-  charged when an idle session closes), never its starter's; a private agent's run counts as its member's traffic. A
-  tool call from an API Worker that predates #228 sends no `usage`, so the agent's limits do not see it.
+  pool's caller, `RunToolReach.usage` for tool calls and the browser and sandbox session logs' `agent` column for
+  browser and computer time charged when an idle session closes), never its starter's; a private agent's run counts as
+  its member's traffic. A tool call from an API Worker that predates #228 sends no `usage`, so the agent's limits do not
+  see it.
 - **Approvals**: the run's starter is the caller of its tool calls' approvals (ADR 0040; `RunToolReach.starterMember`;
   a child run's: the member who started the run at the head of its chain), for a shared agent's run too, which has no member of its own. Under a rule of the caller the starter decides (in the
   panel), and under a team's or members' rule they do not; the model gets the
@@ -4590,8 +4662,9 @@ the deployment's Dynamic Workers binding `LOADER`.
 - **Usage records** (migration `usage/0011_usage_agent_runs.sql`): a model attempt or tool call of a run names the
   agent (`agent_id`), the run (`run_id`) and its starter (`starter`: `member:<id>`, or `run:<id>` for a child run); its principal is `run:<run id>`, and
   `member_id` is the member a private agent's run acts as. A browser session a run opens names the run too
-  (`StoredSession.run`), so its browser time's records do. The usage reads filter by agent and run (#228, "Usage
-  accounting"), and a private agent's run's records are its member's alone.
+  (`StoredSession.run`), so its browser time's records do, and a sandbox session's computer time record (#224) too. The
+  usage reads filter by agent and run (#228, "Usage accounting"), and a private agent's run's records are its member's
+  alone.
 - **Org deletion** (`agents/org-deletion.ts`): the app Worker's step deletes each run's object (`purge`: its alarm and
   all its storage), twenty at a time within the deletion's budget, and forgets them in the index (`runsPage`,
   `forgetRuns`), before `wipeOrg` drops the index, the queue of deleted runs below included.

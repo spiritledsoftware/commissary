@@ -241,7 +241,8 @@ const declined = (params: Schema.JsonObject, key: string): boolean => {
 
 /**
  * A priced call a Spend limit without room refused (#199): the limit and when it starts over, as for a model; and when
- * the browser session it named was closed with it, as its browser time costs money (#214), that it was.
+ * the browser session it named was closed with it, as its browser time costs money (#214), that it was; and when the
+ * sandbox session it named had its computer stopped, or needed it (#224), that, and that just-bash still runs commands.
  */
 export const refusedText = (
   name: string,
@@ -250,7 +251,11 @@ export const refusedText = (
   `${spendRefusalMessage(outcome.refusal)}. ${name} was not called` +
   (outcome.sessionClosed === true
     ? `, and the browser session is closed: its browser time counts toward the limit.`
-    : `.`);
+    : outcome.computer === "stopped"
+      ? `, and the sandbox session's computer is stopped: its computer time counts toward the limit. Commands just-bash can run still run.`
+      : outcome.computer === "needed"
+        ? `: it would run on the sandbox session's computer, whose time counts toward the limit${outcome.computerStopped === true ? `, and the computer, which was running, is stopped` : ``}. Commands just-bash can run still run.`
+        : `.`);
 
 /**
  * A call that ended: every outcome but an unknown tool, a form the caller is asked to answer first, and an agents

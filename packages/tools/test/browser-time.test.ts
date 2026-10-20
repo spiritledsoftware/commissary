@@ -13,11 +13,13 @@ import {
   type BrowserSessionNamespace,
   browserSessions,
   browserSessionStub,
-  SETTLE_RETRY_MS,
 } from "../src/browser/session-object.ts";
 import { IDLE_TIMEOUT_MS } from "../src/browser/session-tools.ts";
 import { refusedText } from "../src/mcp/endpoint.ts";
-import { deleteBrowserSessionRecords } from "../src/usage/record.ts";
+import { deleteSessionRecords } from "../src/usage/record.ts";
+import { SETTLE_RETRY_MS } from "../src/usage/session-close.ts";
+import { testClockStart } from "./support/clock.ts";
+import { spentAt } from "./support/spend.ts";
 import { migrateUsageDb } from "./support/usage-db.ts";
 import type { BrowserSession as TestBrowserSession } from "./worker.ts";
 
@@ -79,7 +81,8 @@ const browserOrg = async (hourPrice?: number) => {
 
   const clock = await Effect.runPromise(Effect.scoped(TestClock.make()));
 
-  await Effect.runPromise(clock.setTime(Date.now()));
+  // Noon UTC ahead: its daily limits' day never ends within a test, and the sessions' alarms are never past.
+  await Effect.runPromise(clock.setTime(testClockStart()));
   await runInDurableObject(stub, (instance) => instance.tools().useClock(clock));
   (await sessionClass()).clock = clock;
 
@@ -140,9 +143,9 @@ const browserOrg = async (hourPrice?: number) => {
 
       if (!made.ok) throw new Error(made.message);
     },
-    /** What the limit of `kind` has counted today. */
+    /** What the limit of `kind` has counted in its day at the clock. */
     spent: async (kind: NewSpendLimit["kind"] = "org") =>
-      (await stub.spendOverview(admin)).entries.find((entry) => entry.kind === kind)?.spentMicros,
+      await spentAt(stub, kind, await Effect.runPromise(clock.currentTimeMillis)),
   };
 
   if (hourPrice !== undefined) await plane.price(hourPrice);
@@ -735,7 +738,7 @@ describe("the org's deletion", () => {
 
     await org.call("browser_close", { sessionId: other });
     expect(await sessionRecord(other)).not.toBeNull();
-    await deleteBrowserSessionRecords(env.USAGE, org.name);
+    await deleteSessionRecords(env.USAGE, org.name);
     expect(await sessionRecord(other)).toBeNull();
   });
 });

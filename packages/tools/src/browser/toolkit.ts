@@ -12,7 +12,8 @@
  */
 import { Buffer } from "node:buffer";
 import { Effect, Result, Schema } from "effect";
-import { browserTimeCost, type Timed, untimed } from "./browser-time.ts";
+import { hourlyCost } from "../toolkits/price.ts";
+import { type Timed, untimed } from "./browser-time.ts";
 import {
   type BrowserProvider,
   QUICK_ACTION_NAMES,
@@ -96,7 +97,7 @@ const timed = (
     ? untimed(result)
     : {
         result,
-        browserTime: { browserMs, costMicros: browserTimeCost(browserMs, hourPriceMicros) },
+        browserTime: { browserMs, costMicros: hourlyCost(browserMs, hourPriceMicros) },
       };
 
 /**

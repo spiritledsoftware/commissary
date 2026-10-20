@@ -22,13 +22,15 @@ import { env } from "cloudflare:workers";
 import type { Clock } from "effect";
 import { COMPUTER_MARKER } from "@commissary/core";
 import { composeControlPlane } from "@commissary/state";
+import type { SpendAgent } from "@commissary/state/spend";
 import type { ToolsControlPlane } from "../src/env.ts";
 import { browserRun } from "../src/browser/browser-run.ts";
 import { type BrowserSessionEnv, browserSessions } from "../src/browser/session-object.ts";
-import type { BrowserSessionRecord } from "../src/usage/record.ts";
+import type { SessionRecord } from "../src/usage/record.ts";
 import { builtInProviders, type RunnableAgent, ToolsPart } from "../src/state.ts";
 import { fakeBrowserRun, fakeOtherProvider } from "./support/fake-browser.ts";
 import { FakeComputerSandboxSession } from "./support/fake-computer.ts";
+import type { SandboxSessionEnv } from "../src/sandbox/cloudflare/session.ts";
 import { CRAWL_ACCOUNT, CRAWL_MAX_PAGES, CRAWL_TOKEN } from "./support/fake-crawl.ts";
 import { FakeBrowserSession } from "./support/fake-session-object.ts";
 import { fakeSandboxProvider } from "./support/fake-sandbox.ts";
@@ -64,7 +66,7 @@ export class BrowserSession extends FakeBrowserSession {
     return env.BROWSER_CONTROL_PLANE.getByName(org);
   }
 
-  protected override async writeRecord(record: BrowserSessionRecord): Promise<void> {
+  protected override async writeRecord(record: SessionRecord): Promise<void> {
     if (BrowserSession.failRecords > 0) {
       BrowserSession.failRecords -= 1;
 
@@ -79,7 +81,97 @@ export class BrowserSession extends FakeBrowserSession {
 // exports them.
 export { SandboxEgress, WorkspaceProxy, WorkspaceServiceProxy } from "../src/state.ts";
 
-export class SandboxSession extends FakeComputerSandboxSession {}
+/**
+ * The sandbox sessions' objects report the computer time no call charged, from their alarms, to the ControlPlane
+ * that opened them (#224): here the one with the computer, as only its sessions use one (a report reaching another
+ * org's ControlPlane finds no session there, and charges nothing). A test of computer time sets what new objects read
+ * the time from (`clock`, a `TestClock` it also gives the part) and makes the next usage record writes or reports fail
+ * (`failRecords`, `failReports`), through an instance's constructor in the objects' isolate (computer-time.test.ts).
+ * With `before224` set, every object answers as one from before #224 would: it takes no metering, so it meters
+ * nothing and answers no computer time, and has no `stopForLimit`.
+ */
+export class SandboxSession extends FakeComputerSandboxSession {
+  static clock: Clock.Clock | undefined;
+  static failRecords = 0;
+  static failReports = 0;
+  static before224 = false;
+
+  constructor(ctx: DurableObjectState, sessionEnv: SandboxSessionEnv) {
+    super(ctx, sessionEnv);
+
+    if (SandboxSession.clock !== undefined) this.useClock(SandboxSession.clock);
+  }
+
+  protected override controlPlane(org: string): DurableObjectStub<ToolsControlPlane> {
+    if (SandboxSession.failReports > 0) {
+      SandboxSession.failReports -= 1;
+
+      throw new Error("the ControlPlane could not be reached");
+    }
+
+    return env.COMPUTER_SANDBOX_CONTROL_PLANE.getByName(org);
+  }
+
+  protected override async writeRecord(record: SessionRecord): Promise<void> {
+    if (SandboxSession.failRecords > 0) {
+      SandboxSession.failRecords -= 1;
+
+      throw new Error("the usage database could not be reached");
+    }
+
+    await super.writeRecord(record);
+  }
+
+  /** `metering`, unless the object is one from before #224, which takes none. */
+  static #taken<M>(metering: M): M | undefined {
+    return SandboxSession.before224 ? undefined : metering;
+  }
+
+  override open(
+    ...[caller, allowance, policy, metering, opener]: Parameters<FakeComputerSandboxSession["open"]>
+  ) {
+    return super.open(
+      caller,
+      allowance,
+      policy,
+      SandboxSession.#taken(metering),
+      SandboxSession.#taken(opener),
+    );
+  }
+
+  override run(
+    ...[caller, command, timeoutMs, metering]: Parameters<FakeComputerSandboxSession["run"]>
+  ) {
+    return super.run(caller, command, timeoutMs, SandboxSession.#taken(metering));
+  }
+
+  override readFile(
+    ...[caller, path, metering]: Parameters<FakeComputerSandboxSession["readFile"]>
+  ) {
+    return super.readFile(caller, path, SandboxSession.#taken(metering));
+  }
+
+  override writeFile(
+    ...[caller, path, text, metering]: Parameters<FakeComputerSandboxSession["writeFile"]>
+  ) {
+    return super.writeFile(caller, path, text, SandboxSession.#taken(metering));
+  }
+
+  override list(...[caller, path, metering]: Parameters<FakeComputerSandboxSession["list"]>) {
+    return super.list(caller, path, SandboxSession.#taken(metering));
+  }
+
+  override close(...[caller, metering]: Parameters<FakeComputerSandboxSession["close"]>) {
+    return super.close(caller, SandboxSession.#taken(metering));
+  }
+
+  override async stopForLimit(...args: Parameters<FakeComputerSandboxSession["stopForLimit"]>) {
+    // An object from before #224 has no such method: its RPC call fails.
+    if (SandboxSession.before224) throw new TypeError("stopForLimit is not a function");
+
+    return await super.stopForLimit(...args);
+  }
+}
 
 export class ControlPlane extends composeControlPlane({
   tools: (ctx, _env, core) => new ToolsPart(ctx, core),
@@ -144,10 +236,23 @@ export class SandboxControlPlane extends composeControlPlane({
   tools: (ctx, env: Cloudflare.Env, core) => new ToolsPart(ctx, core, builtInProviders(env)),
 }) {}
 
-/** A deployment that attached the sandbox's computer: the marker the deploy binds beside it (#223). */
+/** The shared agent whose runs a test of computer time limits (#224, #228), as the Agents area would name it. */
+export const SHARED_AGENT = { id: "ag_shared", label: "shared" };
+
+/** The Tools part with {@link SHARED_AGENT} for a Spend limit to name, as an org with the Agents area has. */
+class WithSharedAgent extends ToolsPart {
+  override spendAgents(): ReadonlyArray<SpendAgent> {
+    return [SHARED_AGENT];
+  }
+}
+
+/**
+ * A deployment that attached the sandbox's computer: the marker the deploy binds beside it (#223); a shared agent's
+ * Spend limits apply to its runs ({@link SHARED_AGENT}).
+ */
 export class ComputerSandboxControlPlane extends composeControlPlane({
   tools: (ctx, env: Cloudflare.Env, core) =>
-    new ToolsPart(ctx, core, builtInProviders({ ...env, ...COMPUTER_MARKER })),
+    new WithSharedAgent(ctx, core, builtInProviders({ ...env, ...COMPUTER_MARKER })),
 }) {}
 
 export class OtherSandboxControlPlane extends composeControlPlane({

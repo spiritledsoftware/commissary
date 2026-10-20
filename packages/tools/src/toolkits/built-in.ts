@@ -61,10 +61,11 @@ import { BROWSER_TOOLS, callBrowserTool, isQuickAction } from "../browser/toolki
 import { cloudflareSandbox } from "../sandbox/cloudflare/provider.ts";
 import type { SandboxSession, SandboxSessionEnv } from "../sandbox/cloudflare/session.ts";
 import { NO_ALLOWANCE } from "../sandbox/network.ts";
-import type { SandboxProvider } from "../sandbox/provider.ts";
+import type { ComputerMeter, SandboxProvider } from "../sandbox/provider.ts";
 import {
   callSandboxTool,
   NO_PRINCIPAL,
+  type SandboxAnswer,
   SANDBOX_TOOLS,
   type SandboxSessionLog,
 } from "../sandbox/toolkit.ts";
@@ -196,10 +197,12 @@ export interface BuiltInCall {
   readonly org: string;
   readonly member: string | undefined;
   readonly principal: string | undefined;
-  /** The agent run making the call (#228), which a browser session's usage record names. */
+  /** The agent run making the call (#228), which a browser or sandbox session's usage record names. */
   readonly run?: UsageRun | undefined;
   readonly profiles: CallerProfiles;
   readonly sessions: SandboxSessionLog;
+  /** A sandbox session's computer time's metering (#224); absent for other toolkits. */
+  readonly computer?: ComputerMeter | undefined;
   /** The org's open browser sessions (#214), which the org's deletion deletes. */
   readonly browserSessions: BrowserSessionLog;
   /** The crawls of the call's member and principal (#270). */
@@ -222,6 +225,14 @@ export interface BrowserSessionLog {
  */
 export interface BuiltInAnswer extends Timed {
   readonly inSession?: true | undefined;
+  /**
+   * A sandbox session's computer time since its call before (#224), which the call charges and the session's own
+   * record carries; and, when the session refused the call for want of room, that its command needed the computer, and
+   * whether the call stopped the computer, which ran, first.
+   */
+  readonly computerTime?: SandboxAnswer["computerTime"];
+  readonly computer?: SandboxAnswer["computer"];
+  readonly computerStopped?: SandboxAnswer["computerStopped"];
 }
 
 /**
@@ -399,7 +410,7 @@ const callSessionTool = (
     return Effect.succeed({ result: toolError(`Invalid arguments: ${request.failure}`) });
   const decoded = request.success;
   const owner = { org: caller.org, member: caller.member, principal };
-  const metering = { hourPriceMicros: toolkit.browserHourPriceMicros ?? 0 };
+  const metering = { hourPriceMicros: toolkit.hourPriceMicros ?? 0 };
   const log = caller.browserSessions;
 
   const opened = async (url: string | undefined, profile?: SessionProfile) => {
@@ -496,7 +507,7 @@ const builtInToolkit = (
     approvalRules: undefined,
     baseUrl: undefined,
     ceiling: undefined,
-    browserHourPriceMicros: undefined,
+    hourPriceMicros: undefined,
     builtIn: true,
   },
   tools: tools.map((tool, position) => ({
@@ -554,7 +565,7 @@ const browserToolkit = (
               })
         ).pipe(Effect.map((result): BuiltInAnswer => ({ result })));
 
-      return callBrowserTool(provider, tool, args, caller.toolkit.browserHourPriceMicros ?? 0);
+      return callBrowserTool(provider, tool, args, caller.toolkit.hourPriceMicros ?? 0);
     },
   };
 };
@@ -562,9 +573,9 @@ const browserToolkit = (
 const sandboxToolkit = (provider: SandboxProvider): CalledBuiltIn => ({
   calledBy: "part",
   ...builtInToolkit(SANDBOX_TOOLKIT, "sandbox", provider.id, SANDBOX_TOOLS),
-  call: (tool, args, { org, principal, sessions, policy, now, toolkit }) =>
-    (principal === undefined
-      ? Effect.succeed(NO_PRINCIPAL)
+  call: (tool, args, { org, principal, member, run, sessions, policy, now, toolkit, computer }) =>
+    principal === undefined
+      ? Effect.succeed({ result: NO_PRINCIPAL })
       : callSandboxTool(
           provider,
           {
@@ -573,11 +584,12 @@ const sandboxToolkit = (provider: SandboxProvider): CalledBuiltIn => ({
             policy,
             now,
             ceiling: toolkit.ceiling ?? NO_ALLOWANCE,
+            meter: computer,
+            opener: { toolkitId: toolkit.id, member, run },
           },
           tool,
           args,
-        )
-    ).pipe(Effect.map((result): BuiltInAnswer => ({ result }))),
+        ),
 });
 
 /** The agents toolkit (#229): its tools from code, its calls made by the MCP endpoint's Worker. */

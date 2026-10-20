@@ -570,10 +570,11 @@ Commissary's own record of the traffic it served.
 _Avoid_: usage as a word for allowances
 
 **Usage record**:
-The stored account of one attempt, tool call or browser session, never its content: an attempt's or a tool call's org,
-principal, credential, tokens or tool, cost, latency and outcome, and the hosted agent, agent run and starter behind it
-if any; a browser session's org, principal, browser profile, browser time and cost. A request that fails over leaves
-one record per attempt; a browser session leaves one when it closes, which is not a request.
+The stored account of one attempt, tool call, browser session or sandbox session, never its content: an attempt's or a
+tool call's org, principal, credential, tokens or tool, cost, latency and outcome, and the hosted agent, agent run and
+starter behind it if any; a browser session's org, principal, browser profile, browser time and cost; a sandbox
+session's org, principal, computer time and cost. A request that fails over leaves one record per attempt; a browser
+or sandbox session leaves one when it closes, which is not a request.
 _Avoid_: request, log entry
 
 **Token breakdown**:
@@ -598,7 +599,8 @@ _Avoid_: custom pricing, rate card
 **Cost**:
 The API-equivalent price of an attempt: its token breakdown at the model's prices. Attempts on subscription accounts
 are costed the same way as attempts on provider keys. A tool call costs its tool's price per call, or nothing; browser
-time costs the price per browser hour, prorated, or nothing.
+time costs the price per browser hour, prorated, or nothing, and a sandbox session's computer time the price per
+computer hour, prorated, or nothing.
 _Avoid_: charge, bill, spend (for one attempt)
 
 **Unpriced**:
@@ -777,6 +779,11 @@ _Avoid_: container, VM, workspace (on its own)
 **Computer**:
 The Linux machine that Cloudflare's sandbox falls back to for a command its shell cannot run, working on the same files.
 _Avoid_: container (for the sandbox), VM, box
+
+**Computer time**:
+How long a sandbox session's computer ran, from the command that starts it until it stops, its idle minutes included;
+the time a price per computer hour applies to.
+_Avoid_: sandbox time, container time (just-bash's time is not metered)
 
 **Sandbox provider**:
 The service behind a sandbox toolkit, reached through Commissary's own adapter, such as Cloudflare or Daytona.

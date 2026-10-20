@@ -140,7 +140,13 @@ Tools part's `callTool` returns the approval outcomes only to a call with `appro
 Worker from before them gets a call that waits for approval as `failed`. A browser session's object answers a call
 with its browser time only when the call passes its metering (#214, an optional last argument), and the bare tool result
 to a Tools part from before; the part takes such a bare answer from an object from before as one that used no browser
-time (`session-object.ts`).
+time (`session-object.ts`). A sandbox session's object does the same with its computer time (#224, `SessionMetering`,
+an optional last argument of each call, `cloudflare/session.ts`): its answers only add `computerTime`, a call without
+metering meters nothing. Its new method `stopForLimit` may meet an object from before it, whose call fails: the part
+takes any failure of it as "no computer stopped" (`Effect.orElseSucceed`, answering `false`, in
+`ToolsPart.#stopComputer`), which is what such an object, metering nothing, would answer. The object's reports of
+computer time no call charged (`ToolsPart.sandboxComputerTime`, from its alarm) are tried again until they go through,
+so one that meets a part from before is only late.
 
 A deploy of the state Worker resets its Durable Objects, and the calls in flight fail with "Durable Object reset because
 its code was updated." The app and the API Worker retry such a call once, on a new stub (`retryOnCodeUpdate`,

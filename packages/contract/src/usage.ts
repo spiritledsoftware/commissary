@@ -124,6 +124,11 @@ const usageTotalsFields = {
    * per session, count toward no request, failure or latency; their cost counts in `cost_micros`).
    */
   browser_ms: optional(Schema.Number),
+  /**
+   * Computer time (#224), in milliseconds: the sandbox toolkit's sessions' (whose own records, one per session, count
+   * toward no request, failure or latency; their cost counts in `cost_micros`).
+   */
+  computer_ms: optional(Schema.Number),
 };
 
 export const UsageTotals = Schema.Struct(usageTotalsFields);
@@ -282,6 +287,12 @@ export const UsageRecord = Schema.Struct({
    * `cost_micros` is what that time cost at the price per browser hour, prorated (0 without one).
    */
   browser_ms: optional(Schema.Number),
+  /**
+   * The sandbox toolkit's (#224): on the record a sandbox session writes when it closes (no `tool_id`, no `outcome`),
+   * how long its computer ran, in milliseconds; its `cost_micros` is what that time cost at the price per computer
+   * hour, prorated (0 without one).
+   */
+  computer_ms: optional(Schema.Number),
   /** The browser profile (#215) a browser session's record (#214) opened from; absent when it opened from none. */
   browser_profile_id: optional(Schema.String),
   /**
