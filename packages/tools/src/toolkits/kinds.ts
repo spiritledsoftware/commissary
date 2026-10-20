@@ -9,10 +9,28 @@
  * - **OpenAPI** (#203): the document is read without a credential (fetched from the source, or the uploaded one); a
  *   call is one HTTP request built from the tool's operation. A build warns when operations name no server the outbound
  *   guard lets a call reach and the toolkit has no base URL ({@link serverWarning}).
+ * - **GraphQL** (#204): the schema comes from introspection of the endpoint with a credential, or from an uploaded SDL
+ *   file without one (the cron rebuilds only an introspected list); a call is one `POST` to the endpoint, and checks a
+ *   caller's selection against the schema the list was built from ({@link Listing.schema}). Introspection asks for
+ *   `@oneOf` input objects, and again without when the endpoint refuses that ({@link introspect}).
  */
+import type { GraphQLSchema } from "graphql";
 import { type Duration, Effect, Result, Schema } from "effect";
 import { checkOutboundUrl, type OutboundPolicy } from "@commissary/core";
-import { callHttp, fetchDocument, withOutboundGuard } from "../http/call.ts";
+import { graphQLAnswer, graphQLCall } from "../graphql/request.ts";
+import {
+  graphQLToolList,
+  INTROSPECTION_QUERY,
+  LEGACY_INTROSPECTION_QUERY,
+  NO_INTROSPECTION,
+} from "../graphql/schema.ts";
+import {
+  callHttp,
+  fetchDocument,
+  type HttpCallError,
+  requestDocument,
+  withOutboundGuard,
+} from "../http/call.ts";
 import {
   callUpstreamTool,
   listUpstreamTools,
@@ -39,11 +57,14 @@ export interface ListInput {
   readonly toolkit: Pick<StoredToolkit, "source" | "baseUrl">;
   /** The credential a build lists with, for a kind that needs one ({@link KindDriver.listsWithCredential}). */
   readonly secret: UpstreamSecret;
-  /** An OpenAPI toolkit's uploaded document. */
+  /** The toolkit's uploaded document: an OpenAPI document, a GraphQL schema's SDL. */
   readonly document: string | undefined;
   readonly timeout: Duration.Input;
   readonly policy: OutboundPolicy;
 }
+
+/** What a driver reads of a toolkit to tell how its list is built: whether it is built from an uploaded document. */
+export type ListSource = Pick<StoredToolkit, "uploaded">;
 
 /** A built tool list. */
 export interface Listing {
@@ -52,6 +73,8 @@ export interface Listing {
   readonly name?: string;
   /** What keeps some of its tools from being called as they are, kept as the list's error. */
   readonly warning?: string;
+  /** The schema the list was built from, as SDL, kept for calls (a GraphQL toolkit's). */
+  readonly schema?: string;
 }
 
 /** What a call of a tool reads. */
@@ -63,6 +86,8 @@ export interface CallInput {
   readonly policy: OutboundPolicy;
   /** The upstream session kept for the caller on the credential, for a kind that keeps them. */
   readonly session: UpstreamSession | undefined;
+  /** The schema kept with the list ({@link Listing.schema}), built, for a call that needs it. */
+  readonly schema: () => Result.Result<GraphQLSchema, string>;
 }
 
 /** A call's tool result, and the session it ran in for a kind that keeps them. */
@@ -74,10 +99,13 @@ export interface Called {
 }
 
 export interface KindDriver {
-  /** Whether a build lists the tools with a credential (an MCP server's), else it reads its source without one. */
-  readonly listsWithCredential: boolean;
+  /**
+   * Whether a build lists `toolkit`'s tools with a credential (an MCP server's, a GraphQL endpoint's introspection),
+   * else it reads its source without one.
+   */
+  readonly listsWithCredential: (toolkit: ListSource) => boolean;
   /** Whether the cron task rebuilds `toolkit`'s list (given a credential, for a kind that lists with one). */
-  readonly refreshed: (toolkit: Pick<StoredToolkit, "source">) => boolean;
+  readonly refreshed: (toolkit: ListSource) => boolean;
   /** Whether calls run in an upstream session the part keeps per caller and credential. */
   readonly keepsSessions: boolean;
   readonly list: (input: ListInput) => Effect.Effect<Listing, KindFailure>;
@@ -113,7 +141,7 @@ const logFailure = (toolkit: string, reason: string, status?: number) =>
   );
 
 const mcp: KindDriver = {
-  listsWithCredential: true,
+  listsWithCredential: () => true,
   refreshed: () => true,
   keepsSessions: true,
   list: ({ toolkit, secret, timeout, policy }) =>
@@ -177,9 +205,9 @@ const openApiName = (list: OpenApiToolList, source: string): string => {
 };
 
 const openapi: KindDriver = {
-  listsWithCredential: false,
+  listsWithCredential: () => false,
   // An uploaded document changes only when it is replaced.
-  refreshed: (toolkit) => toolkit.source !== "",
+  refreshed: ({ uploaded }) => !uploaded,
   keepsSessions: false,
   list: ({ toolkit, document, timeout, policy }) =>
     Effect.gen(function* () {
@@ -226,5 +254,107 @@ const openapi: KindDriver = {
   warning: serverWarning,
 };
 
+/**
+ * A GraphQL endpoint's failure to answer introspection as a driver's: a `401` says it refused the credential's token
+ * itself; another `4xx` (but `429`), that it may not allow introspection, as Apollo Server and Hasura answer then.
+ */
+const introspectionFailed = (error: HttpCallError) => {
+  if (error.status === 401) return new KindFailure({ message: error.message, unauthorized: true });
+
+  return error.status !== undefined &&
+    error.status >= 400 &&
+    error.status < 500 &&
+    error.status !== 429
+    ? failed(`${NO_INTROSPECTION} (HTTP ${error.status})`)
+    : failed(error.message);
+};
+
+const GRAPHQL_ACCEPT = "application/graphql-response+json, application/json;q=0.9";
+
+/** The endpoint's answer to the introspection query `query`, with the credential. */
+const introspection = (
+  input: ListInput,
+  query: string,
+): Effect.Effect<Result.Result<string, HttpCallError>> =>
+  requestDocument(
+    {
+      method: "POST",
+      url: input.toolkit.source,
+      headers: { accept: GRAPHQL_ACCEPT },
+      body: { kind: "text", contentType: "application/json", text: JSON.stringify({ query }) },
+    },
+    input.secret,
+    input.timeout,
+    "the GraphQL endpoint",
+  ).pipe(withOutboundGuard(input.policy), Effect.result);
+
+/**
+ * The tool list of the endpoint's answer to {@link INTROSPECTION_QUERY}, or, when the endpoint answers it with an error
+ * (`4xx` but `401` and `429`, or an answer without a schema: one older than `@oneOf` does not know `isOneOf`), of its
+ * answer to {@link LEGACY_INTROSPECTION_QUERY}.
+ */
+const introspect = (input: ListInput) =>
+  Effect.gen(function* () {
+    const first = yield* introspection(input, INTROSPECTION_QUERY);
+
+    if (Result.isSuccess(first)) {
+      const list = graphQLToolList({ introspection: first.success });
+
+      if (Result.isSuccess(list) || list.failure !== NO_INTROSPECTION) return list;
+    } else {
+      const status = first.failure.status;
+
+      if (status === undefined || status < 400 || status >= 500 || status === 401 || status === 429)
+        return yield* introspectionFailed(first.failure);
+    }
+
+    const second = yield* introspection(input, LEGACY_INTROSPECTION_QUERY);
+
+    if (Result.isFailure(second)) return yield* introspectionFailed(second.failure);
+
+    return graphQLToolList({ introspection: second.success });
+  });
+
+const graphql: KindDriver = {
+  // An uploaded schema is read without a credential, and changes only when it is replaced.
+  listsWithCredential: ({ uploaded }) => !uploaded,
+  refreshed: ({ uploaded }) => !uploaded,
+  keepsSessions: false,
+  list: (input) =>
+    Effect.gen(function* () {
+      const list =
+        input.document === undefined
+          ? yield* introspect(input)
+          : graphQLToolList({ sdl: input.document });
+
+      if (Result.isFailure(list)) return yield* failed(list.failure);
+
+      return { tools: list.success.tools, schema: list.success.schema };
+    }),
+  call: ({ toolkit, tool, secret, args, policy, schema }) =>
+    Effect.gen(function* () {
+      const operation = tool.tool?.graphql;
+
+      if (operation === undefined) return yield* failed("the tool has no field to call");
+      const request = graphQLCall(operation, toolkit.source, args, schema);
+
+      if (Result.isFailure(request)) return yield* failed(request.failure);
+
+      const { result, status } = yield* callHttp(request.success, secret, undefined, {
+        reading: graphQLAnswer,
+      }).pipe(
+        Effect.tapError((error) => logFailure(toolkit.id, error.reason)),
+        Effect.mapError((error) => failed(error.message)),
+        withOutboundGuard(policy),
+      );
+
+      return status === 401 ? { result, unauthorized: true } : { result };
+    }),
+};
+
 /** The driver of each kind of stored toolkit. */
-export const KIND_DRIVERS: Readonly<Record<StoredToolkit["kind"], KindDriver>> = { mcp, openapi };
+export const KIND_DRIVERS: Readonly<Record<StoredToolkit["kind"], KindDriver>> = {
+  mcp,
+  openapi,
+  graphql,
+};

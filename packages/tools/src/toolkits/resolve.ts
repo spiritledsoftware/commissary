@@ -42,7 +42,7 @@ export interface ResolvedTool {
   readonly hidden: boolean;
   readonly clash: boolean;
   readonly missing: boolean;
-  /** A deprecated OpenAPI operation: hidden unless its override shows it. */
+  /** A deprecated OpenAPI operation or GraphQL field: hidden unless its override shows it. */
   readonly deprecated: boolean;
 }
 
@@ -64,9 +64,11 @@ const READING_METHODS: ReadonlySet<string> = new Set(["GET", "HEAD"]);
 
 /**
  * A tool's class from its source (ADR 0038): an MCP tool reads only with `readOnlyHint: true`; an OpenAPI operation
- * reads when its method is `GET` or `HEAD`.
+ * reads when its method is `GET` or `HEAD`; a GraphQL field when it is a query's.
  */
 const sourceClass = (tool: StoredTool | undefined): ToolClass => {
+  if (tool?.graphql !== undefined) return tool.graphql.root === "query" ? "read" : "write";
+
   if (tool?.operation !== undefined)
     return READING_METHODS.has(tool.operation.method) ? "read" : "write";
 
@@ -80,7 +82,7 @@ const resolved = (
   override: ToolOverride | undefined,
 ): ResolvedTool => {
   const full = fullToolName(toolkit.name, override?.name ?? upstreamName);
-  const deprecated = tool?.operation?.deprecated === true;
+  const deprecated = tool?.operation?.deprecated === true || tool?.graphql?.deprecated === true;
 
   return {
     toolkit,

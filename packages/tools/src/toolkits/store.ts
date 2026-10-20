@@ -4,7 +4,9 @@
  * endpoint's calls keep (ADR 0038: at most {@link SESSION_LIFETIME_MS}). The tables are {@link TOOLS_TABLES}, which
  * the part drops when the org is deleted. An OpenAPI toolkit's uploaded document (#203) is kept in chunks
  * ({@link DOCUMENT_CHUNK_BYTES}), so a document of several MB never meets SQLite's limit on one value; one fetched from a
- * URL is not kept, as its tool list holds what a call needs (each tool's {@link OpenApiOperation}).
+ * URL is not kept, as its tool list holds what a call needs (each tool's {@link OpenApiOperation}). A GraphQL toolkit's
+ * uploaded SDL file (#204) is its document too, and the schema its list was last built from is kept the same way
+ * (`toolkit_schemas`, as SDL), as a call checks a caller's selection against it.
  *
  * A toolkit's owner is a member id for a private toolkit and empty for an org toolkit; a credential's owner is empty
  * for the shared credential and the member's id for a private one. An upstream session is kept per credential and per
@@ -18,6 +20,7 @@ import type { CredentialsAccepted, SandboxNetwork, ToolClass } from "@commissary
 import type { Sealer } from "@commissary/state";
 import type { Schema } from "effect";
 import type { StoredApprovalRules } from "../approvals/rules.ts";
+import type { GraphQLOperation } from "../graphql/schema.ts";
 import type { UpstreamSession, UpstreamTool } from "../mcp/client.ts";
 import type { OpenApiOperation } from "../openapi/tools.ts";
 import type { StoredToolkit } from "./toolkit.ts";
@@ -42,6 +45,7 @@ export const TOOLS_TABLES = [
   "tool_approvals",
   "built_in_toolkits",
   "toolkit_documents",
+  "toolkit_schemas",
   ...OAUTH_TABLES,
   "sandbox_sessions",
 ] as const;
@@ -60,7 +64,7 @@ const SCHEMA = [
      id TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL, source TEXT NOT NULL, owner TEXT NOT NULL,
      accepts TEXT NOT NULL, revision INTEGER NOT NULL, created_at INTEGER NOT NULL, created_by TEXT NOT NULL,
      updated_at INTEGER NOT NULL, updated_by TEXT NOT NULL, list_built_at INTEGER, list_error TEXT, price_micros INTEGER,
-     approval_rules TEXT, base_url TEXT
+     approval_rules TEXT, base_url TEXT, uploaded INTEGER
    )`,
   `CREATE TABLE IF NOT EXISTS toolkit_credentials (
      toolkit_id TEXT NOT NULL, owner TEXT NOT NULL, kind TEXT NOT NULL, param TEXT NOT NULL, secret TEXT NOT NULL,
@@ -87,7 +91,13 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS toolkit_documents (
      toolkit_id TEXT NOT NULL, chunk INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (toolkit_id, chunk)
    )`,
+  `CREATE TABLE IF NOT EXISTS toolkit_schemas (
+     toolkit_id TEXT NOT NULL, chunk INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (toolkit_id, chunk)
+   )`,
 ];
+
+/** The tables that keep a text in chunks of {@link DOCUMENT_CHUNK_BYTES}. */
+type ChunkTable = "toolkit_documents" | "toolkit_schemas";
 
 /** Columns added after their tables were first created: a table from before gets each, unset. */
 const ADDED_COLUMNS: ReadonlyArray<readonly [table: string, column: string, type: string]> = [
@@ -98,6 +108,8 @@ const ADDED_COLUMNS: ReadonlyArray<readonly [table: string, column: string, type
   ["toolkits", "base_url", "TEXT"],
   ["toolkit_tools", "operation", "TEXT"],
   ["tool_overrides", "shown", "INTEGER"],
+  // GraphQL toolkits (#204).
+  ["toolkit_tools", "graphql", "TEXT"],
 ];
 
 /** A credential without its secret. */
@@ -135,10 +147,18 @@ export interface StoredTool {
   readonly position: number;
   /** An OpenAPI tool's operation: what a call needs to make its request. */
   readonly operation: OpenApiOperation | undefined;
+  /** A GraphQL tool's root field: what a call needs to make its request. */
+  readonly graphql: GraphQLOperation | undefined;
 }
 
-/** A tool as a build lists it: an MCP server's, or an OpenAPI document's operation with what a call needs. */
-export type ListedTool = UpstreamTool & { readonly operation?: OpenApiOperation | undefined };
+/**
+ * A tool as a build lists it: an MCP server's, an OpenAPI document's operation or a GraphQL schema's root field, with
+ * what a call needs.
+ */
+export type ListedTool = UpstreamTool & {
+  readonly operation?: OpenApiOperation | undefined;
+  readonly graphql?: GraphQLOperation | undefined;
+};
 
 export interface ToolOverride {
   readonly toolkitId: string;
@@ -183,6 +203,7 @@ interface ToolkitRow {
   price_micros: number | null;
   approval_rules: string | null;
   base_url: string | null;
+  uploaded: number | null;
 }
 
 interface CredentialRow {
@@ -210,6 +231,7 @@ interface ToolRow {
   first_seen: number;
   position: number;
   operation: string | null;
+  graphql: string | null;
 }
 
 interface SessionRow {
@@ -264,6 +286,7 @@ const toolkitOf = (row: ToolkitRow): StoredToolkit => ({
   name: row.name,
   source: row.source,
   baseUrl: orUndefined(row.base_url),
+  uploaded: row.uploaded === 1,
   owner: ownerOf(row.owner),
   // SAFETY: the store writes `accepts` from a decoded `CredentialsAccepted`.
   accepts: row.accepts as CredentialsAccepted,
@@ -323,6 +346,8 @@ const toolOf = (row: ToolRow): StoredTool => ({
   position: row.position,
   // SAFETY: the column holds the JSON of the operation this store wrote from a build.
   operation: row.operation === null ? undefined : (JSON.parse(row.operation) as OpenApiOperation),
+  // SAFETY: the column holds the JSON of the root field this store wrote from a build.
+  graphql: row.graphql === null ? undefined : (JSON.parse(row.graphql) as GraphQLOperation),
 });
 
 const overrideOf = (row: OverrideRow): StoredOverride => ({
@@ -395,6 +420,13 @@ export class ToolkitStore {
     if (!toolkitColumns.includes("approval_rules"))
       sql.exec(`ALTER TABLE toolkits ADD COLUMN approval_rules TEXT`);
 
+    // Whether a toolkit is built from an uploaded document came with GraphQL toolkits (#204): before, an OpenAPI
+    // toolkit was when it had no source URL.
+    if (!toolkitColumns.includes("uploaded")) {
+      sql.exec(`ALTER TABLE toolkits ADD COLUMN uploaded INTEGER`);
+      sql.exec(`UPDATE toolkits SET uploaded = 1 WHERE kind = 'openapi' AND source = ''`);
+    }
+
     // OAuth (#202) came after the first credentials: a table from before gets its columns, every one unset.
     const credentialColumns = sql
       .exec<{ name: string }>("PRAGMA table_info(toolkit_credentials)")
@@ -444,8 +476,8 @@ export class ToolkitStore {
   ): void {
     this.#sql.exec(
       `INSERT INTO toolkits (id, kind, name, source, owner, accepts, revision, created_at, created_by, updated_at,
-         updated_by, list_built_at, list_error, base_url)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)`,
+         updated_by, list_built_at, list_error, base_url, uploaded)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)`,
       toolkit.id,
       toolkit.kind,
       toolkit.name,
@@ -458,6 +490,7 @@ export class ToolkitStore {
       toolkit.updatedAt,
       toolkit.updatedBy,
       toolkit.baseUrl ?? null,
+      toolkit.uploaded ? 1 : null,
     );
   }
 
@@ -587,10 +620,13 @@ export class ToolkitStore {
     this.#sql.exec(`UPDATE toolkits SET list_error = ? WHERE id = ?`, error ?? null, id);
   }
 
-  /** Moves a toolkit's revision on: its uploaded document was replaced. */
-  touchToolkit(id: string, by: string, now: number): void {
+  /**
+   * Moves a toolkit's revision on: its uploaded document was replaced, or a GraphQL toolkit's first one uploaded, which
+   * marks it built from an uploaded document from then on.
+   */
+  documentUploaded(id: string, by: string, now: number): void {
     this.#sql.exec(
-      `UPDATE toolkits SET revision = revision + 1, updated_at = ?, updated_by = ? WHERE id = ?`,
+      `UPDATE toolkits SET revision = revision + 1, updated_at = ?, updated_by = ?, uploaded = 1 WHERE id = ?`,
       now,
       by,
       id,
@@ -894,8 +930,9 @@ export class ToolkitStore {
 
         this.#sql.exec(
           `INSERT INTO toolkit_tools
-             (toolkit_id, upstream_name, description, input_schema, annotations, first_seen, position, operation)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+             (toolkit_id, upstream_name, description, input_schema, annotations, first_seen, position, operation,
+              graphql)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           toolkitId,
           tool.name,
           tool.description ?? null,
@@ -904,6 +941,7 @@ export class ToolkitStore {
           seen.get(tool.name) ?? build,
           position,
           tool.operation === undefined ? null : JSON.stringify(tool.operation),
+          tool.graphql === undefined ? null : JSON.stringify(tool.graphql),
         );
       }
     });
@@ -978,10 +1016,29 @@ export class ToolkitStore {
 
   /** Keeps `text` as the toolkit's uploaded document, in place of the one before, in chunks of UTF-8 bytes. */
   putDocument(toolkitId: string, text: string): void {
+    this.#putChunks("toolkit_documents", toolkitId, text);
+  }
+
+  /** The toolkit's uploaded document, if it has one. */
+  document(toolkitId: string): string | undefined {
+    return this.#chunks("toolkit_documents", toolkitId);
+  }
+
+  /** Keeps `sdl` as the schema a GraphQL toolkit's list was built from, in place of the one before. */
+  putSchema(toolkitId: string, sdl: string): void {
+    this.#putChunks("toolkit_schemas", toolkitId, sdl);
+  }
+
+  /** The schema a GraphQL toolkit's list was built from, as SDL, if it has one. */
+  schema(toolkitId: string): string | undefined {
+    return this.#chunks("toolkit_schemas", toolkitId);
+  }
+
+  #putChunks(table: ChunkTable, toolkitId: string, text: string): void {
     const bytes = new TextEncoder().encode(text);
 
     this.#transaction(() => {
-      this.#sql.exec(`DELETE FROM toolkit_documents WHERE toolkit_id = ?`, toolkitId);
+      this.#sql.exec(`DELETE FROM ${table} WHERE toolkit_id = ?`, toolkitId);
 
       for (
         let start = 0, chunk = 0;
@@ -989,7 +1046,7 @@ export class ToolkitStore {
         start += DOCUMENT_CHUNK_BYTES, chunk += 1
       )
         this.#sql.exec(
-          `INSERT INTO toolkit_documents (toolkit_id, chunk, data) VALUES (?, ?, ?)`,
+          `INSERT INTO ${table} (toolkit_id, chunk, data) VALUES (?, ?, ?)`,
           toolkitId,
           chunk,
           bytes.slice(start, start + DOCUMENT_CHUNK_BYTES).buffer,
@@ -997,11 +1054,10 @@ export class ToolkitStore {
     });
   }
 
-  /** The toolkit's uploaded document, if it has one. */
-  document(toolkitId: string): string | undefined {
+  #chunks(table: ChunkTable, toolkitId: string): string | undefined {
     const chunks = this.#sql
       .exec<{ data: ArrayBuffer }>(
-        `SELECT data FROM toolkit_documents WHERE toolkit_id = ? ORDER BY chunk`,
+        `SELECT data FROM ${table} WHERE toolkit_id = ? ORDER BY chunk`,
         toolkitId,
       )
       .toArray();

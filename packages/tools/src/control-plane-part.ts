@@ -82,6 +82,7 @@ import { newPkce, newSignInState } from "./oauth/pkce.ts";
 import type { ClientUrls } from "./oauth/urls.ts";
 import { type ClientVia, OAuthStore } from "./oauth/store.ts";
 import { refusedForGood } from "./oauth/token.ts";
+import { MAX_SDL_BYTES, SchemaCache } from "./graphql/schema.ts";
 import {
   KIND_DRIVERS,
   type KindDriver,
@@ -141,6 +142,7 @@ export type ToolsErrorCode =
   | "private_toolkits_unavailable"
   | "no_credential"
   | "tool_list_failed"
+  | "body_too_large"
   | "built_in"
   | "outbound_refused"
   | "sign_in_failed";
@@ -151,7 +153,7 @@ export type ToolsResult<A> =
       readonly ok: false;
       readonly error: ToolsErrorCode;
       readonly message: string;
-      /** The field an `outbound_refused` URL came in. */
+      /** The field an `outbound_refused` URL or a `body_too_large` document came in. */
       readonly path?: string;
     };
 
@@ -313,7 +315,7 @@ export interface AddToolkitInput {
   readonly kind?: StoredToolkit["kind"] | undefined;
   /** The source, already checked by the outbound guard; empty for an uploaded OpenAPI document. */
   readonly source: string;
-  /** An OpenAPI toolkit's uploaded document. */
+  /** An OpenAPI toolkit's uploaded document, or a GraphQL toolkit's uploaded schema (SDL). */
   readonly document?: string | undefined;
   /** An OpenAPI toolkit's base URL, already checked by the outbound guard. */
   readonly baseUrl?: string | undefined;
@@ -340,7 +342,10 @@ export interface ToolkitExport {
   /** Empty for an uploaded OpenAPI document, which the export does not hold (`uploaded`). */
   readonly source: string;
   readonly base_url?: string;
-  /** An OpenAPI toolkit built from an uploaded document: its managers download it on its own route. */
+  /**
+   * An OpenAPI toolkit built from an uploaded document, or a GraphQL toolkit from an uploaded schema: its managers
+   * download it on its own route.
+   */
   readonly uploaded?: true;
   readonly private: boolean;
   readonly accepts: CredentialsAccepted;
@@ -358,7 +363,7 @@ export interface ToolkitExport {
     readonly description?: string;
     readonly class?: "read" | "write";
     readonly price_micros?: number;
-    /** A tool its source hides by default (a deprecated OpenAPI operation), shown. */
+    /** A tool its source hides by default (a deprecated OpenAPI operation or GraphQL field), shown. */
     readonly shown?: true;
   }>;
   /** An org toolkit's tool grants, in an org admin's export only. */
@@ -545,16 +550,17 @@ const accepts = (toolkit: Pick<Toolkit, "owner" | "accepts">, slot: CredentialSl
     ? toolkit.accepts === "both" || toolkit.accepts === slot
     : slot === "private";
 
-/** Whether a toolkit is built from an uploaded OpenAPI document (it has no source URL to fetch). */
-const uploaded = (toolkit: Pick<Toolkit, "kind" | "source">): boolean =>
-  toolkit.kind === "openapi" && toolkit.source === "";
-
 /** A new toolkit's name when its source names none: the slug of its source's host. */
 const fallbackName = (source: string): string =>
   source === "" ? "toolkit" : defaultToolkitName(new URL(source));
 
-/** The credential of a build that lists without one (an OpenAPI document's). */
+/** The credential of a build that lists without one (an OpenAPI document's, an uploaded GraphQL schema's). */
 const NO_SECRET: UpstreamSecret = { kind: "none" };
+
+/**
+ * Whether `toolkit` is built from an uploaded document the part keeps (an OpenAPI document, a GraphQL schema's SDL).
+ */
+const uploaded = (toolkit: Toolkit): boolean => !toolkit.builtIn && toolkit.uploaded;
 
 /**
  * The Tools part of an org's ControlPlane (#196): the single writer for the org's toolkits, their credentials (sealed
@@ -576,6 +582,8 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   readonly #ctx: DurableObjectState;
   readonly #core: OrgCore;
   readonly #store: ToolkitStore;
+  /** The GraphQL schema kept built for calls that check a caller's selection (#204). */
+  readonly #schemas = new SchemaCache();
   readonly #grants: ToolGrantStore;
   readonly #builtIns: ReadonlyArray<BuiltIn>;
   readonly #approvals: ApprovalStore;
@@ -696,6 +704,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   /** Deletes the part's tables: the org was deleted (`wipeOrg`). */
   wipe(): void {
     for (const table of TOOLS_TABLES) this.#ctx.storage.sql.exec(`DROP TABLE IF EXISTS ${table}`);
+    this.#schemas.forget();
   }
 
   /**
@@ -885,10 +894,12 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
     const driver = KIND_DRIVERS[kind];
 
-    // A source read without a credential (an OpenAPI document) is read before the toolkit is added: it names the
-    // toolkit by default. One that cannot be read does not keep the toolkit from being added, as a list that cannot be
-    // built does not.
-    const listing = driver.listsWithCredential
+    const listSource = { uploaded: input.document !== undefined };
+
+    // A source read without a credential (an OpenAPI document, an uploaded GraphQL schema) is read before the toolkit
+    // is added: an OpenAPI document names the toolkit by default. One that cannot be read does not keep the toolkit
+    // from being added, as a list that cannot be built does not.
+    const listing = driver.listsWithCredential(listSource)
       ? undefined
       : await this.#listing(driver, {
           toolkit: { source: input.source, baseUrl: input.baseUrl },
@@ -916,6 +927,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
         name,
         source: input.source,
         baseUrl: kind === "openapi" ? input.baseUrl : undefined,
+        uploaded: listSource.uploaded,
         owner,
         accepts: input.accepts,
         revision: 1,
@@ -925,8 +937,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
         updatedBy: by,
       });
 
-      if (input.document !== undefined && input.source === "")
-        this.#store.putDocument(id, input.document);
+      if (input.document !== undefined) this.#store.putDocument(id, input.document);
 
       if (listing !== undefined) this.#storeListing(id, listing);
 
@@ -936,7 +947,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       return grant === undefined ? undefined : this.#grantOnConnect(grant, by, now);
     });
 
-    if (driver.listsWithCredential && input.credential !== undefined)
+    if (driver.listsWithCredential(listSource) && input.credential !== undefined)
       await this.#buildFor(id, viewer.member, policy);
 
     return withGrant(this.#viewOf(id, viewer), connected);
@@ -1089,8 +1100,10 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   }
 
   /**
-   * Replaces an uploaded OpenAPI document (managers) and builds its tool list from it. A document that cannot be read
-   * replaces nothing.
+   * Replaces an uploaded document (managers): an OpenAPI document, a GraphQL schema's SDL (#204), and builds its tool
+   * list from it. A GraphQL toolkit built from introspection takes a first SDL file too (an endpoint that stopped
+   * answering introspection), and is built from uploaded files from then on: the cron task leaves it alone, and a build
+   * needs no credential. A document that cannot be read replaces nothing.
    */
   async replaceDocument(
     viewer: Viewer,
@@ -1108,10 +1121,16 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     if (current.revision !== revision)
       return refuse("conflict", `the toolkit is at revision ${current.revision}, not ${revision}`);
 
-    if (!uploaded(current))
-      return refuse("invalid", "the toolkit is not built from an uploaded OpenAPI document");
+    if (current.builtIn || (!current.uploaded && current.kind !== "graphql"))
+      return refuse("invalid", "the toolkit is not built from an uploaded document");
 
-    const listing = await this.#listing(KIND_DRIVERS.openapi, {
+    if (current.kind === "graphql" && new TextEncoder().encode(document).byteLength > MAX_SDL_BYTES)
+      return {
+        ...refuse("body_too_large", `the schema is larger than ${MAX_SDL_BYTES} bytes`),
+        path: "document",
+      };
+
+    const listing = await this.#listing(KIND_DRIVERS[current.kind], {
       toolkit: current,
       secret: NO_SECRET,
       document,
@@ -1126,7 +1145,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
     this.#core.transaction(() => {
       this.#store.putDocument(id, document);
-      this.#store.touchToolkit(id, by, now);
+      this.#store.documentUploaded(id, by, now);
       this.#storeListing(id, listing);
     });
 
@@ -1134,8 +1153,8 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   }
 
   /**
-   * An OpenAPI toolkit's uploaded document, for its managers only: a document may describe more of an API than its
-   * tools show (a member who reads the toolkit sees its tool list).
+   * A toolkit's uploaded document (an OpenAPI document, a GraphQL schema's SDL), for its managers only: a document may
+   * describe more of an API than its tools show (a member who reads the toolkit sees its tool list).
    */
   toolkitDocument(viewer: Scope, id: string): ToolsResult<ToolkitDocument> {
     const toolkit = this.#store.toolkit(id);
@@ -1181,6 +1200,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       this.#store.deleteToolkit(id);
       this.#core.spend.forget("toolkit_credential", id);
     });
+    this.#schemas.forget(id);
 
     return ok({ id });
   }
@@ -1661,7 +1681,8 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   /**
    * Cron task `tool-list-refresh`: rebuilds every toolkit's list with its shared credential, or a private toolkit's with
    * its owner's. An org toolkit with private credentials only waits for a member to refresh it. An OpenAPI toolkit's
-   * document is fetched again (no credential needed); an uploaded one is skipped.
+   * document is fetched again (no credential needed), a GraphQL endpoint introspected again; an uploaded document or
+   * schema is skipped.
    */
   async refreshToolLists(policy: OutboundPolicy): Promise<RefreshSummary> {
     const toolkits = this.#store.toolkits();
@@ -1672,7 +1693,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
       return (
         driver.refreshed(toolkit) &&
-        (!driver.listsWithCredential ||
+        (!driver.listsWithCredential(toolkit) ||
           this.#credentialFor(toolkit, toolkit.owner)?.needsSignIn === false)
       );
     });
@@ -1904,8 +1925,9 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   }
 
   /**
-   * Builds the tool list of the toolkit `id` as its kind does ({@link KIND_DRIVERS}: from its MCP server with a
-   * credential, from its OpenAPI document without) and stores it, or records why it failed.
+   * Builds the tool list of the toolkit `id` as its kind does ({@link KIND_DRIVERS}: from its MCP server or its GraphQL
+   * endpoint's introspection with a credential, from its OpenAPI document or uploaded GraphQL schema without) and
+   * stores it, with the schema calls read (a GraphQL toolkit's), or records why it failed.
    */
   async #buildFor(
     id: string,
@@ -1928,7 +1950,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
     let listing: Result.Result<Listing, KindFailure>;
 
-    if (driver.listsWithCredential) {
+    if (driver.listsWithCredential(toolkit)) {
       const credential = this.#credentialFor(toolkit, member);
 
       if (credential === undefined)
@@ -1956,8 +1978,8 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   }
 
   /**
-   * Stores a built tool list, with its warning as the list's error (cleared when it has none), or records why the build
-   * failed (the last good list stays).
+   * Stores a built tool list, with its warning as the list's error (cleared when it has none) and the schema it was
+   * built from (a GraphQL toolkit's), or records why the build failed (the last good list and schema stay).
    */
   #storeListing(id: string, listing: Result.Result<Listing, KindFailure>): void {
     if (Result.isFailure(listing)) {
@@ -1967,6 +1989,9 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     }
 
     this.#store.replaceTools(id, listing.success.tools);
+    this.#schemas.forget(id);
+
+    if (listing.success.schema !== undefined) this.#store.putSchema(id, listing.success.schema);
     this.#store.setListStatus(id, { builtAt: this.#now(), warning: listing.success.warning });
   }
 
@@ -2309,6 +2334,10 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
           args: call.args,
           policy,
           session: known,
+          schema: () =>
+            this.#schemas.schema(toolkit.id, toolkit.listBuiltAt, () =>
+              this.#store.schema(toolkit.id),
+            ),
         }),
       (called) => called.unauthorized === true,
     );

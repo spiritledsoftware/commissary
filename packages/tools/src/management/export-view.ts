@@ -4,8 +4,9 @@
  * they accept, what kind of credential is connected (never a secret), the overrides on their tools and, in an org
  * admin's export, each org toolkit's tool grants (subjects by email or team name, tools by upstream name), and their
  * approval rules (approvers by email or team name). Tool lists are not part of it: they are rebuilt from the sources;
- * nor are pending approvals, which hold a call's arguments for an hour at most, nor uploaded OpenAPI documents (a
- * toolkit built from one says `uploaded: true`): its managers download one from `GET /toolkits/:id/document`.
+ * nor are pending approvals, which hold a call's arguments for an hour at most, nor uploaded documents (OpenAPI
+ * documents, GraphQL schemas; a toolkit built from one says `uploaded: true`): its managers download one from
+ * `GET /toolkits/:id/document`.
  */
 import { Effect } from "effect";
 import { currentViewer } from "@commissary/auth";

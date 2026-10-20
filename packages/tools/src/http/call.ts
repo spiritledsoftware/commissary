@@ -13,7 +13,8 @@
  *   checking each hop.
  * - **Answers** ({@link callHttp}): JSON pretty-printed as text, other text as it is, binary described rather than
  *   inlined, an answer above {@link MAX_ANSWER_BYTES} cut with a note saying so, and a `4xx`/`5xx` status an `isError`
- *   result with the status and the body.
+ *   result with the status and the body. A kind may tell an error of its own in a JSON answer ({@link JsonAnswer}: a
+ *   GraphQL answer of errors without data).
  *
  * Error messages never quote a URL (a query parameter may carry a key) nor an upstream's body.
  */
@@ -43,9 +44,9 @@ import { JSON_MEDIA_TYPE } from "./shared.ts";
 export const MAX_ANSWER_BYTES = 64 * 1024;
 
 /**
- * The largest document a toolkit is built from (an OpenAPI document, fetched or uploaded): Stripe's is several MB. An
- * OpenAPI document in YAML has a lower bound ({@link MAX_YAML_DOCUMENT_BYTES}); docs/ARCHITECTURE.md has the memory
- * each takes.
+ * The largest document a toolkit is built from (an OpenAPI document, fetched or uploaded; a GraphQL endpoint's answer
+ * to introspection): Stripe's OpenAPI document is several MB. An OpenAPI document in YAML and a GraphQL schema's SDL
+ * have lower bounds (`MAX_YAML_DOCUMENT_BYTES`, `MAX_SDL_BYTES`); docs/ARCHITECTURE.md has the memory each takes.
  */
 export const MAX_DOCUMENT_BYTES = 8 * 1024 * 1024;
 
@@ -60,6 +61,8 @@ export class HttpCallError extends Schema.TaggedError<HttpCallError>()("HttpCall
    */
   reason: Schema.Literals(["refused", "unreachable", "http", "too_large"]),
   message: Schema.String,
+  /** The status of an `http` failure. */
+  status: Schema.optionalKey(Schema.Number),
 }) {}
 
 // --- credentials -----------------------------------------------------------------------------------------------------
@@ -295,37 +298,82 @@ export const fetchDocument = (
       )
       .pipe(Effect.mapError(onError));
 
-    if (response.status < 200 || response.status >= 300) {
-      yield* releaseResponseBody(response);
-
-      return yield* new HttpCallError({
-        reason: "http",
-        message: `the document's server answered HTTP ${response.status}`,
-      });
-    }
-
-    const tooLarge = new HttpCallError({
-      reason: "too_large",
-      message: `the document is larger than ${MAX_DOCUMENT_BYTES} bytes`,
+    return yield* documentText(response, {
+      status: (status) => `the document's server answered HTTP ${status}`,
+      tooLarge: `the document is larger than ${MAX_DOCUMENT_BYTES} bytes`,
+      onError,
     });
-
-    if (Number(response.headers["content-length"] ?? 0) > MAX_DOCUMENT_BYTES) {
-      yield* releaseResponseBody(response);
-
-      return yield* tooLarge;
-    }
-
-    const { bytes, cut } = yield* readBounded(response, MAX_DOCUMENT_BYTES, onError);
-
-    if (cut) return yield* tooLarge;
-
-    return new TextDecoder().decode(bytes);
   }).pipe(
     Effect.timeoutOrElse({
       duration: timeout,
       orElse: () => timedOut("the document"),
     }),
   );
+
+/** What a document's failures say. */
+interface DocumentMessages {
+  readonly status: (status: number) => string;
+  readonly tooLarge: string;
+  readonly onError: (error: HttpClientError.HttpClientError) => HttpCallError;
+}
+
+/** The body of a `2xx` answer as text, refused above {@link MAX_DOCUMENT_BYTES}; any other status an `http` failure. */
+const documentText = Effect.fnUntraced(function* (
+  response: HttpClientResponse.HttpClientResponse,
+  messages: DocumentMessages,
+): Effect.fn.Return<string, HttpCallError> {
+  if (response.status < 200 || response.status >= 300) {
+    yield* releaseResponseBody(response);
+
+    return yield* new HttpCallError({
+      reason: "http",
+      message: messages.status(response.status),
+      status: response.status,
+    });
+  }
+
+  const tooLarge = new HttpCallError({ reason: "too_large", message: messages.tooLarge });
+
+  if (Number(response.headers["content-length"] ?? 0) > MAX_DOCUMENT_BYTES) {
+    yield* releaseResponseBody(response);
+
+    return yield* tooLarge;
+  }
+
+  const { bytes, cut } = yield* readBounded(response, MAX_DOCUMENT_BYTES, messages.onError);
+
+  if (cut) return yield* tooLarge;
+
+  return new TextDecoder().decode(bytes);
+});
+
+/**
+ * The answer to `call` as text, signed in with `secret` as it was connected: a document a kind reads with the
+ * toolkit's credential (a GraphQL endpoint's answer to introspection). Like {@link fetchDocument}, within `timeout` and
+ * refused above {@link MAX_DOCUMENT_BYTES}, but only same-origin redirects are followed, as for a call, so the
+ * credential never reaches another origin. `what` names the upstream in failures (`the GraphQL endpoint`).
+ */
+export const requestDocument = (
+  call: HttpCall,
+  secret: UpstreamSecret,
+  timeout: Duration.Input,
+  what: string,
+): Effect.Effect<string, HttpCallError, HttpClient.HttpClient> =>
+  Effect.gen(function* () {
+    const client = yield* HttpClient.HttpClient;
+    const onError = transportError(what);
+    const request = signRequest(requestOf(call), secret, undefined);
+
+    const response = yield* executeSameOriginRedirects(client, request).pipe(
+      Effect.mapError(onError),
+    );
+
+    return yield* documentText(response, {
+      status: (status) => `${what} answered HTTP ${status}`,
+      tooLarge: `${what}'s answer is larger than ${MAX_DOCUMENT_BYTES} bytes`,
+      onError,
+    });
+  }).pipe(Effect.timeoutOrElse({ duration: timeout, orElse: () => timedOut(what) }));
 
 // --- calls -----------------------------------------------------------------------------------------------------------
 
@@ -429,35 +477,56 @@ const binaryText = (type: string, size: number | undefined): string =>
   `${size === undefined ? "" : `, ${size} bytes`}); Commissary does not show it.`;
 
 /**
- * The text of an answer's body: JSON pretty-printed, other text as it is, binary described; cut to
- * {@link MAX_ANSWER_BYTES} with a note when longer.
+ * Whether a JSON answer that was read whole is an error to the kind (a GraphQL answer of errors without data), as a
+ * `4xx`/`5xx` status is. An answer cut at {@link MAX_ANSWER_BYTES} is not read.
+ */
+export type JsonAnswer = (body: Schema.Json) => boolean;
+
+/** The text an answer's body shows, and whether a {@link JsonAnswer} read it as an error. */
+interface AnswerText {
+  readonly text: string;
+  readonly isError: boolean;
+}
+
+/**
+ * The text of an answer's body: JSON pretty-printed (as `reading` reads it, if it does), other text as it is, binary
+ * described; cut to {@link MAX_ANSWER_BYTES} with a note when longer.
  */
 const answerText = (
   bytes: Uint8Array,
   readCut: boolean,
   contentType: string | undefined,
   declaredLength: number | undefined,
-): string => {
+  reading: JsonAnswer | undefined,
+): AnswerText => {
   const type = mediaType(contentType);
   const total = readCut ? declaredLength : bytes.byteLength;
 
   const text =
     JSON_MEDIA_TYPE.test(type) || TEXT_TYPE.test(type) || type === "" ? utf8(bytes) : undefined;
 
-  if (text === undefined) return binaryText(type, total);
+  if (text === undefined) return { text: binaryText(type, total), isError: false };
 
   let shown = text;
+  let isError = false;
 
   if (JSON_MEDIA_TYPE.test(type) && !readCut)
     try {
-      shown = JSON.stringify(JSON.parse(text), null, 2);
+      // SAFETY: JSON.parse yields JSON values only.
+      const body = JSON.parse(text) as Schema.Json;
+
+      shown = JSON.stringify(body, null, 2);
+      isError = reading?.(body) === true;
     } catch {
       shown = text;
     }
 
   const cut = cutText(shown, MAX_ANSWER_BYTES);
 
-  return cut.cut || readCut ? `${cut.text}${cutNote(readCut ? total : undefined)}` : cut.text;
+  return {
+    text: cut.cut || readCut ? `${cut.text}${cutNote(readCut ? total : undefined)}` : cut.text,
+    isError,
+  };
 };
 
 /**
@@ -474,9 +543,13 @@ const redirectTarget = (location: string, from: string): string | undefined => {
   }
 };
 
-/** The MCP tool result of an upstream's answer: its text, `isError` with the status for a `4xx`/`5xx`. */
+/**
+ * The MCP tool result of an upstream's answer: its text, `isError` with the status for a `4xx`/`5xx`, or when `reading`
+ * reads its JSON as an error.
+ */
 const toolResultOf = Effect.fnUntraced(function* (
   response: HttpClientResponse.HttpClientResponse,
+  reading: JsonAnswer | undefined,
 ): Effect.fn.Return<Schema.JsonObject, HttpCallError> {
   const status = response.status;
   const failed = status >= 400;
@@ -489,6 +562,7 @@ const toolResultOf = Effect.fnUntraced(function* (
   const contentType = response.headers["content-type"];
 
   let body = "";
+  let readAsError = false;
 
   if (bodiless) yield* releaseResponseBody(response);
   else {
@@ -502,12 +576,18 @@ const toolResultOf = Effect.fnUntraced(function* (
       transportError("the API"),
     );
 
+    const answer =
+      bytes.byteLength === 0 || !textual
+        ? undefined
+        : answerText(bytes, cut, contentType, declaredLength, reading);
+
     body =
       bytes.byteLength === 0
         ? ""
-        : textual
-          ? answerText(bytes, cut, contentType, declaredLength)
-          : binaryText(type, declaredLength);
+        : answer === undefined
+          ? binaryText(type, declaredLength)
+          : answer.text;
+    readAsError = answer?.isError === true;
   }
 
   const location = response.headers["location"];
@@ -531,7 +611,7 @@ const toolResultOf = Effect.fnUntraced(function* (
 
   return {
     content: [{ type: "text", text }],
-    ...(failed ? { isError: true } : {}),
+    ...(failed || readAsError ? { isError: true } : {}),
   };
 });
 
@@ -541,17 +621,25 @@ export interface HttpAnswer {
   readonly status: number;
 }
 
+/** How {@link callHttp} makes a call, beyond its defaults. */
+export interface CallOptions {
+  /** How long the upstream has to answer: {@link TOOL_CALL_TIMEOUT} by default. */
+  readonly timeout?: Duration.Input;
+  /** Whether a JSON answer is an error to the kind ({@link JsonAnswer}). */
+  readonly reading?: JsonAnswer;
+}
+
 /**
  * Makes `call` signed in with `secret` as `security` says, through the caller's `HttpClient` (the outbound guard's:
- * {@link withOutboundGuard}), within `timeout`, and answers its MCP tool result with the status. Same-origin redirects
- * are followed; one to another origin is the answer, so the credential never goes there. A failure to reach the
- * upstream is an {@link HttpCallError}; any status is a result.
+ * {@link withOutboundGuard}), within the timeout, and answers its MCP tool result with the status. Same-origin
+ * redirects are followed; one to another origin is the answer, so the credential never goes there. A failure to reach
+ * the upstream is an {@link HttpCallError}; any status is a result.
  */
 export const callHttp = (
   call: HttpCall,
   secret: UpstreamSecret,
   security: Security,
-  timeout: Duration.Input = TOOL_CALL_TIMEOUT,
+  { timeout = TOOL_CALL_TIMEOUT, reading }: CallOptions = {},
 ): Effect.Effect<HttpAnswer, HttpCallError, HttpClient.HttpClient> =>
   Effect.gen(function* () {
     const client = yield* HttpClient.HttpClient;
@@ -561,5 +649,5 @@ export const callHttp = (
       Effect.mapError(transportError("the API")),
     );
 
-    return { result: yield* toolResultOf(response), status: response.status };
+    return { result: yield* toolResultOf(response, reading), status: response.status };
   }).pipe(Effect.timeoutOrElse({ duration: timeout, orElse: () => timedOut("the API") }));

@@ -5,7 +5,8 @@
 import { describe, expect, it } from "vitest";
 import { Result } from "effect";
 import { MAX_YAML_DOCUMENT_BYTES } from "../../src/openapi/document.ts";
-import { MAX_SCHEMA_BYTES, openApiToolList } from "../../src/openapi/tools.ts";
+import { openApiToolList } from "../../src/openapi/tools.ts";
+import { MAX_SCHEMA_BYTES } from "../../src/toolkits/input-schema.ts";
 import petstore from "../fixtures/openapi/petstore-3.0.yaml?raw";
 import swagger from "../fixtures/openapi/swagger-2.0.json?raw";
 import widgets from "../fixtures/openapi/widgets-3.1.json?raw";

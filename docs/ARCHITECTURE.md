@@ -3232,27 +3232,27 @@ server can still be imported through management.
 ## Tools (`tools/`, `tools/management/routes.ts`, `tools/mcp/endpoint.ts`)
 
 The Tools area (ADR 0036, ADR 0037, ADR 0038) turns outside sources into **toolkits** and serves them on Commissary's
-own MCP endpoint. This version builds two kinds, the remote MCP server (Streamable HTTP) and the OpenAPI document (#203,
-_OpenAPI toolkits_ below), each through its driver (`tools/toolkits/kinds.ts`: how its list is built, whether that
-needs a credential, how a call reaches the upstream, whether calls keep an upstream session); GraphQL and Discovery
-toolkits, the toolkit catalog and the panel's toolkit pages come later (#200 to #209); grants (#198), prices, usage
-records and Spend limits of tool calls (#199), approval rules with pending approvals (#201) and OAuth 2 sign-in to
-toolkits (#202, around the drivers: a driver gets a credential's secret already signed in) are here. The package
-(`@commissary/tools`) is shaped like Models: entry points `./api` (the MCP endpoint's routes, Commissary's CIMD
-document, the cron task), `./management`, `./state` and `./testing`, a lint boundary (`boundaries/tools-imports`) and
-a ControlPlane part, `ToolsPart`, reached as `stub.tools().x(…)`. Its one binding of its own is the usage database; its
-state is the ControlPlane's (`TOOLS_TABLES`: `toolkits`, `toolkit_credentials`, `toolkit_tools`, `tool_overrides`,
-`toolkit_sessions`, `tool_grants`, `tool_approvals`, `built_in_toolkits`, `toolkit_documents`, and OAuth's
-`toolkit_oauth_apps`, `toolkit_oauth_clients` and `toolkit_sign_ins`, and the sandbox's `sandbox_sessions`, dropped
-by `wipe()`). Its view of `env`
-(`ToolsBindings`) adds the Platform registry and the app host (`APP_DOMAIN`) for the endpoint's connect links and the
-callback its CIMD document names, the API host (`API_DOMAIN`) where toolkit sign-ins name that document, and `USAGE`,
-the D1 database its tool calls' records go into (Models' records go there too); it reaches MCP servers and HTTP APIs
-from the ControlPlane through the global `fetch` behind the outbound guard. The part reads the state Worker's env
-(`ToolsPartEnv`): the optional Browser Run binding `BROWSER` (`builtInProviders`), which the browser toolkit runs on,
-the Worker Loader `LOADER` with the `SandboxSession` namespace `SANDBOX_SESSION`, always there, which the sandbox
-toolkit runs on (_Built-in toolkits_ below), and `OWN_HOSTS`, which its alarm's token refreshes refuse. Beside it the
-state Worker defines and always binds the browser sessions' Durable Object (#213: `BrowserSession`, whose namespace
+own MCP endpoint. This version builds three kinds, the remote MCP server (Streamable HTTP), the OpenAPI document (#203,
+_OpenAPI toolkits_ below) and the GraphQL endpoint (#204, _GraphQL toolkits_ below), each through its driver
+(`tools/toolkits/kinds.ts`: how its list is built, whether that needs a credential, how a call reaches the upstream,
+whether calls keep an upstream session); Discovery toolkits, the toolkit catalog and the panel's toolkit pages come
+later (#200 to #209); grants (#198), prices, usage records and Spend limits of tool calls (#199), approval rules with
+pending approvals (#201) and OAuth 2 sign-in to toolkits (#202, around the drivers: a driver gets a credential's secret
+already signed in) are here. The package (`@commissary/tools`) is shaped like Models: entry points `./api` (the MCP
+endpoint's routes, Commissary's CIMD document, the cron task), `./management`, `./state` and `./testing`, a lint
+boundary (`boundaries/tools-imports`) and a ControlPlane part, `ToolsPart`, reached as `stub.tools().x(…)`. Its one
+binding of its own is the usage database; its state is the ControlPlane's (`TOOLS_TABLES`: `toolkits`,
+`toolkit_credentials`, `toolkit_tools`, `tool_overrides`, `toolkit_sessions`, `tool_grants`, `tool_approvals`,
+`built_in_toolkits`, `toolkit_documents`, `toolkit_schemas`, and OAuth's `toolkit_oauth_apps`, `toolkit_oauth_clients`
+and `toolkit_sign_ins`, and the sandbox's `sandbox_sessions`, dropped by `wipe()`). Its view of `env` (`ToolsBindings`)
+adds the Platform registry and the app host (`APP_DOMAIN`) for the endpoint's connect links and the callback its CIMD
+document names, the API host (`API_DOMAIN`) where toolkit sign-ins name that document, and `USAGE`, the D1 database its
+tool calls' records go into (Models' records go there too); it reaches MCP servers and HTTP APIs from the ControlPlane
+through the global `fetch` behind the outbound guard. The part reads the state Worker's env (`ToolsPartEnv`): the
+optional Browser Run binding `BROWSER` (`builtInProviders`), which the browser toolkit runs on, the Worker Loader
+`LOADER` with the `SandboxSession` namespace `SANDBOX_SESSION`, always there, which the sandbox toolkit runs on
+(_Built-in toolkits_ below), and `OWN_HOSTS`, which its alarm's token refreshes refuse. Beside it the state Worker
+defines and always binds the browser sessions' Durable Object (#213: `BrowserSession`, whose namespace
 `BROWSER_SESSIONS` the part reads too), which reads `BROWSER` through its own view (`BrowserSessionEnv`).
 
 - **What Tools shares with Models**: the ownership rules (`Scope`, `FULL_ACCESS`, `accessTo`: who reaches a shared or a
@@ -3458,6 +3458,71 @@ state Worker defines and always binds the browser sessions' Durable Object (#213
   does (`TOOL_CALL_TIMEOUT`); a document fetch has the build's budget (60 seconds, a cron build's 20
   seconds). A missing required argument or no server to call fails the call before anything is sent. A document URL or
   base URL the guard refuses is refused on save (`422`, `path: "source"` or `"base_url"`).
+- **GraphQL toolkits** (`tools/graphql/`, `tools/http/call.ts`, #204): kind `graphql`, whose source is the endpoint's
+  `https:` URL (the outbound guard on save, `422`, `path: "source"`, and on every request; no base URL, `422 invalid`).
+  graphql-js (`graphql`, MIT, plain JavaScript that runs in the Workers runtime) reads the schema, from the endpoint's
+  answer to its introspection query, sent with the toolkit's credential, so the list is built when a credential is
+  connected, as an MCP server's is; or from an uploaded SDL file (`document` on `POST /toolkits`, replaced and read
+  back on `/toolkits/:id/document` as an OpenAPI document is, `uploaded: true`), which needs no credential and is read
+  when the toolkit is added. The query asks for descriptions and `@oneOf` input objects (`isOneOf`); an endpoint that
+  answers it with a `4xx` (but `401` and `429`) or without a schema is asked again without `isOneOf`, which a server
+  older than `@oneOf` does not know. Refresh and the cron task introspect again; an uploaded schema is rebuilt only
+  when it is replaced. A toolkit built by introspection takes a first SDL file on `PUT /toolkits/:id/document` too (an
+  endpoint that stopped allowing introspection), and is built from uploaded files from then on (`toolkits.uploaded`,
+  set when a toolkit is added with a document or takes its first one); switching back means adding the toolkit again.
+  A schema is read as valid (`assumeValid`): GitHub's public schema, for one, breaks a rule graphql-js enforces on
+  deprecated interface fields. An endpoint that does not answer introspection (an answer without a schema, or a `4xx`
+  but `401` and `429`, as Apollo Server and Hasura refuse it) keeps the toolkit with `tool_list.error` saying to upload
+  its schema; a `401` lets an OAuth credential's token be refreshed, as for the other kinds. **Tools**: each field of
+  the query root, then of the mutation root, is one tool, its upstream name the root and the field (`query.issues`,
+  `mutation.createIssue`); subscriptions are skipped. Its input schema has one property per argument: `Int` an
+  integer, `Float` a number, `String` and `ID` strings, `Boolean` a boolean, a custom scalar any value (described by
+  its name), an enum its values (deprecated ones left out), a list an array, an input object an object of its fields
+  without other properties (a `@oneOf` one with exactly one), a non-null argument or field without a default required,
+  and defaults as `default`; recursive input objects are cut at a shallower depth until the schema fits 16 KiB, as
+  OpenAPI's are (`tools/toolkits/input-schema.ts` holds the bounds both kinds keep). Its description is the field's (at
+  most 2,048 characters). A query field is `read`, a mutation field `write`. A deprecated field is listed, flagged
+  `deprecated` and hidden by default, shown by an override as a deprecated operation is. A root field whose result is
+  a list or a connection, with an optional `Int` argument `first` or `limit` the schema gives no default, sends 10 for
+  it when a call leaves it out (`default: 10` in the input schema), so a call that names no page size does not ask for
+  the whole list. What a call needs (the root, the field, each argument's type and default, the default selection) is
+  stored with the tool (`toolkit_tools.graphql`), and the schema itself as SDL (`toolkit_schemas`, in 1 MiB chunks
+  like documents), which a call reads only to check a caller's selection. **The default selection** of a field whose
+  result is an object, an interface or a union is a breadth-first walk of the result: each type's scalar and enum
+  fields (not deprecated, without required arguments), the result's own first, then those of the objects it links to,
+  level by level, at most 3 levels and 50 fields. A field below the result that is a list or a Relay connection (an
+  object named `...Connection` with `nodes` or `edges`) is capped at 10 items through its `first` or `limit` argument,
+  and left out when it has neither; a connection selects `pageInfo { hasNextPage endCursor }`, `totalCount` and its
+  `nodes` (or `edges { node }`) at its own level. An interface or a union adds `__typename`, a union each member's
+  fields in an inline fragment, and a result with nothing to take selects `{ __typename }`. Fields of one name in a
+  union's fragments must select the same (graphql-js's `OverlappingFieldsCanBeMerged`): a member's field that another
+  member selects under its name with another type or arguments is aliased `<Member>_<field>` (GitHub's
+  `descriptionHTML`, `HTML!` on one owner and `String` on another; 16 of its 309 tools). Each tool's default is
+  checked against the schema when the list is built, and one that does not check out is `{ __typename }` (none of
+  GitHub's). The tool also takes `selection` (or `selection_2`, ... when an argument has that name): a selection set in
+  place of the default (`{ id title }`, braces optional, at most 16 KiB), which the call checks against the stored
+  schema with graphql-js's validation (and that it is still one operation selecting one field) and refuses before
+  anything is sent, naming what does not check out. **Calls** go through the shared HTTP-call module: one `POST` to
+  the endpoint of `{ query, variables }`, the operation declaring a variable of the argument's type for each argument
+  the call gives (a missing required one fails the call before it is sent), the credential as it was connected (a
+  GraphQL endpoint names no security schemes). The answer is shown whole (`data`, `errors`, `extensions`); one with
+  `errors` and no `data` is an `isError` result, one with partial data and errors a result holding both, and an HTTP
+  `4xx`/`5xx` an `isError` result as for any HTTP answer. An answer cut above 64 KiB is shown as text and not read, so
+  one of errors alone that long is not an `isError` result unless its status says so. **Sizes**: an introspection
+  answer is read up to 8 MiB, an uploaded SDL file is at most 4 MiB (`413 body_too_large` above, on `POST` and on
+  `PUT .../document`). graphql-js's syntax tree of SDL is far larger than the schema an introspection answer builds:
+  the least Node.js heap beyond about 22 MB for Node.js itself that reads a synthetic schema (types of 30 described
+  fields) and builds its tools is about 12, 23 and 36 MB for introspection answers of 4.45, 8.89 and 13.3 MB (2.6 times
+  the text), and 16, 32 and 47 MB for SDL of 1.67, 3.34 and 5.01 MB (9.5 times, read without locations, which take
+  three quarters more); GitHub's public schema, 1.56 MB of SDL and 3.34 MB as an introspection answer (309 tools),
+  takes 20 and 11 MB, and about 260 ms to build its tools from SDL. At the limits a build holds about 23 MB
+  (introspection) or 40 MB (SDL), under half the ControlPlane's 128 MB isolate. The cron task runs four builds at once
+  in an org, but a build is synchronous once its source is read, so only one is built at a time while up to three
+  more answers (at most 8 MiB each) wait: about 23 + 3 × 8 MB at worst, and an uploaded schema is never built by the
+  cron. A call with a selection checks it against the stored schema built again from its SDL (about 16 MB and 60 ms
+  for GitHub's, 26 MB for the schema of an 8.9 MB introspection answer); the part keeps the last one built in memory
+  (`SchemaCache`, one toolkit's, for the list built at the time), so a run of such calls on one toolkit builds it
+  once, and forgets it when the toolkit's list is stored again or the toolkit is removed.
 - **Names** (`tools/toolkits/names.ts`, ADR 0037): a full name is `<toolkit>_<tool>` in `[a-z0-9_]` (the upstream name
   lowercased, every other character `_`); above 46 characters it is cut to 41 and ends in `_` and the first four hex
   characters of the SHA-256 of the whole name, flagged `shortened`. A toolkit's name is lowercase words of `[a-z0-9]`
@@ -3480,7 +3545,7 @@ state Worker defines and always binds the browser sessions' Durable Object (#213
   renames of the toolkit and refreshes; an override of a tool its source no longer lists is shown flagged `missing`,
   and clearing it answers `{ id, removed: true }`, as the tool then leaves the list.
 - **Tool class** (ADR 0038): an MCP tool is `read` when its annotations say `readOnlyHint: true`, an OpenAPI tool when
-  its method is `GET` or `HEAD`, else `write`; an override's class wins.
+  its method is `GET` or `HEAD`, a GraphQL tool when it is a query field, else `write`; an override's class wins.
 - **Prices** (`tools/toolkits/price.ts`, #199, ADR 0038): an org admin prices a call of an org toolkit's tools in
   micro-USD, on the toolkit (`PATCH /toolkits/:id` `price_micros`; `null` clears it) or per tool in its override
   (`price_micros`, which wins, so `0` makes one tool of a priced toolkit free; the override is written whole, so one

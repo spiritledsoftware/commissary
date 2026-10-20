@@ -1,0 +1,154 @@
+"""
+An issue tracker, for GraphQL toolkits' tests (#204): connections, an interface, a union whose members have a field of
+one name and different types (`body`), enums, a custom scalar, nested, recursive and @oneOf input objects, a root
+connection without a default page size, a deprecated field and a subscription.
+"""
+schema {
+  query: Query
+  mutation: Mutation
+  subscription: Subscription
+}
+
+type Query {
+  "Issues of a project, newest first."
+  issues(
+    "The project's id."
+    project: ID!
+    state: IssueState = OPEN
+    labels: [String!]
+    first: Int
+    after: String
+  ): IssueConnection!
+  "One issue by its id."
+  issue(id: ID!): Issue
+  issueBy(ref: IssueRef!): Issue
+  viewer: User!
+  search(query: String!): [SearchResult!]!
+  node(id: ID!): Node
+  issueCount(filter: IssueFilter): Int!
+  oldIssues: [Issue!]! @deprecated(reason: "Use issues.")
+}
+
+type Mutation {
+  "Opens an issue."
+  createIssue("The issue to open." input: CreateIssueInput!): CreateIssuePayload!
+  closeIssue(id: ID!, reason: CloseReason): Issue
+}
+
+type Subscription {
+  issueChanged(id: ID!): Issue
+}
+
+interface Node {
+  id: ID!
+}
+
+enum IssueState {
+  OPEN
+  CLOSED
+}
+
+enum CloseReason {
+  COMPLETED
+  NOT_PLANNED
+  DUPLICATE @deprecated(reason: "Use NOT_PLANNED.")
+}
+
+union SearchResult = Issue | User | Comment
+
+scalar DateTime
+
+type User implements Node {
+  id: ID!
+  login: String!
+  name: String
+  avatarUrl(size: Int!): String
+  issues(first: Int, after: String): IssueConnection!
+}
+
+type Issue implements Node {
+  id: ID!
+  number: Int!
+  title: String!
+  body: String
+  state: IssueState!
+  createdAt: DateTime!
+  author: User
+  labels(first: Int): LabelConnection!
+  comments(first: Int): [Comment!]!
+  assignees: [User!]!
+  oldField: String @deprecated
+  project: Project!
+}
+
+type Project {
+  id: ID!
+  name: String!
+  owner: User!
+}
+
+type Label {
+  name: String!
+  color: String!
+}
+
+type LabelConnection {
+  nodes: [Label!]!
+  pageInfo: PageInfo!
+  totalCount: Int!
+}
+
+type IssueConnection {
+  edges: [IssueEdge!]!
+  pageInfo: PageInfo!
+  totalCount: Int!
+}
+
+type IssueEdge {
+  cursor: String!
+  node: Issue!
+}
+
+type PageInfo {
+  hasNextPage: Boolean!
+  endCursor: String
+  hasPreviousPage: Boolean!
+}
+
+type Comment {
+  id: ID!
+  body: String!
+  author: User
+}
+
+type CreateIssuePayload {
+  clientMutationId: String
+  issue: Issue!
+}
+
+input CreateIssueInput {
+  project: ID!
+  title: String!
+  body: String
+  labels: [String!] = []
+  state: IssueState = OPEN
+  meta: IssueMeta
+  clientMutationId: String
+}
+
+input IssueMeta {
+  "From 0 (none) to 4 (urgent)."
+  priority: Int
+  dueAt: DateTime
+}
+
+input IssueFilter {
+  state: IssueState
+  and: [IssueFilter!]
+  or: [IssueFilter!]
+}
+
+input IssueRef @oneOf {
+  id: ID
+  number: Int
+}

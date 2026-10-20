@@ -9,8 +9,9 @@
  *   share takes its location as a prefix, `query_id`) and the request body (`body`), each property name made one that
  *   model APIs take (`[A-Za-z0-9_.-]`, at most 64 characters). Local `$ref`s are resolved, a recursive one ends in an
  *   empty schema, and keywords that only document (`example`, `xml`, extensions, ...) are dropped, as are a request
- *   body's read-only properties. A schema above {@link MAX_SCHEMA_BYTES} is cut at a shallower depth until it fits.
- * - **Description**: the summary and the description, at most {@link MAX_DESCRIPTION} characters.
+ *   body's read-only properties. A schema above `MAX_SCHEMA_BYTES` is cut at a shallower depth until it fits.
+ * - **Description**: the summary and the description, at most `MAX_DESCRIPTION` characters
+ *   (`toolkits/input-schema.ts`).
  * - **Class** (`resolve.ts`): `GET` and `HEAD` read, every other method writes.
  * - **Deprecated** operations are listed, flagged, and hidden unless an override shows them.
  *
@@ -20,20 +21,14 @@ import { Predicate, Result, type Schema } from "effect";
 import type { HttpMethod } from "effect/http/HttpMethod";
 import type { Security, SecurityScheme } from "../http/call.ts";
 import { HTTP_METHODS, JSON_MEDIA_TYPE } from "../http/shared.ts";
+import {
+  descriptionText,
+  fittedInputSchema,
+  type InputWalk,
+  visit,
+} from "../toolkits/input-schema.ts";
 import type { ListedTool } from "../toolkits/store.ts";
 import { type DocumentObject, parseOpenApiDocument } from "./document.ts";
-
-/** The most JSON one tool's input schema may take. */
-export const MAX_SCHEMA_BYTES = 16 * 1024;
-
-/** The longest description kept. */
-export const MAX_DESCRIPTION = 2048;
-
-/** Schema nodes one attempt at a schema may visit before it is abandoned for a shallower one. */
-const NODE_BUDGET = 20_000;
-
-/** Depths an input schema is tried at, deepest first. */
-const DEPTHS = [8, 5, 3, 2, 1, 0];
 
 const LOCATIONS = ["path", "query", "header", "cookie"] as const;
 
@@ -171,13 +166,8 @@ const SCHEMA_LISTS = new Set(["allOf", "anyOf", "oneOf", "prefixItems"]);
 /** Keywords whose value maps names to schemas. */
 const SCHEMA_MAPS = new Set(["properties", "patternProperties", "dependentSchemas"]);
 
-class OverBudget extends Error {}
-
-interface SchemaWalk {
+interface SchemaWalk extends InputWalk {
   readonly document: Node;
-  readonly maxDepth: number;
-  readonly descriptions: boolean;
-  nodes: number;
 }
 
 /** A schema past the depth limit: its type alone, if it has one. */
@@ -202,9 +192,7 @@ const resolveSchema = (
   refs: ReadonlySet<string>,
   writing: boolean,
 ): Schema.JsonObject => {
-  walk.nodes += 1;
-
-  if (walk.nodes > NODE_BUDGET) throw new OverBudget();
+  visit(walk);
   const schema = asObject(node);
 
   if (schema === undefined) return {};
@@ -431,7 +419,7 @@ const securityOf = (document: Node, operation: Node): Security => {
   return requirements.map((requirement) => Object.keys(asObject(requirement) ?? {}).map(scheme));
 };
 
-/** The summary and the description, cut to {@link MAX_DESCRIPTION} characters. */
+/** The summary and the description, cut to `MAX_DESCRIPTION` characters (`descriptionText`). */
 const descriptionOf = (operation: Node): string | undefined => {
   const summaryText = asString(operation["summary"])?.trim();
   const description = asString(operation["description"])?.trim();
@@ -441,9 +429,7 @@ const descriptionOf = (operation: Node): string | undefined => {
       ? `${summaryText}\n\n${description}`
       : (description ?? summaryText);
 
-  if (text === undefined) return undefined;
-
-  return text.length > MAX_DESCRIPTION ? `${text.slice(0, MAX_DESCRIPTION - 1)}…` : text;
+  return descriptionText(text);
 };
 
 /** The input schema's properties before resolution: each argument's schema, and whether it is required. */
@@ -456,28 +442,22 @@ interface Argument {
   readonly writing: boolean;
 }
 
-/** The input schema of `args` at `maxDepth`, or undefined when its walk ran over {@link NODE_BUDGET}. */
+/** The input schema of `args` as `walk` goes. */
 const inputSchemaAt = (
   document: Node,
   args: ReadonlyArray<Argument>,
-  maxDepth: number,
-  descriptions: boolean,
-): Schema.JsonObject | undefined => {
-  const walk: SchemaWalk = { document, maxDepth, descriptions, nodes: 0 };
+  input: InputWalk,
+): Schema.JsonObject => {
+  const walk: SchemaWalk = { ...input, document };
   const properties: Record<string, Schema.Json> = {};
 
-  try {
-    for (const argument of args) {
-      const schema = resolveSchema(walk, argument.schema, 0, new Set(), argument.writing);
+  for (const argument of args) {
+    const schema = resolveSchema(walk, argument.schema, 0, new Set(), argument.writing);
 
-      properties[argument.name] =
-        descriptions && argument.description !== undefined && schema["description"] === undefined
-          ? Object.fromEntries([...Object.entries(schema), ["description", argument.description]])
-          : schema;
-    }
-  } catch (error) {
-    if (error instanceof OverBudget) return undefined;
-    throw error;
+    properties[argument.name] =
+      walk.descriptions && argument.description !== undefined && schema["description"] === undefined
+        ? Object.fromEntries([...Object.entries(schema), ["description", argument.description]])
+        : schema;
   }
 
   const required = args.flatMap((argument) => (argument.required ? [argument.name] : []));
@@ -489,20 +469,9 @@ const inputSchemaAt = (
   };
 };
 
-const jsonBytes = (value: Schema.Json): number =>
-  new TextEncoder().encode(JSON.stringify(value)).byteLength;
-
-/** The deepest input schema of `args` within {@link MAX_SCHEMA_BYTES}; at worst an object of any properties. */
-const inputSchema = (document: Node, args: ReadonlyArray<Argument>): Schema.JsonObject => {
-  for (const descriptions of [true, false])
-    for (const depth of DEPTHS) {
-      const schema = inputSchemaAt(document, args, depth, descriptions);
-
-      if (schema !== undefined && jsonBytes(schema) <= MAX_SCHEMA_BYTES) return schema;
-    }
-
-  return { type: "object" };
-};
+/** The deepest input schema of `args` within `MAX_SCHEMA_BYTES` ({@link fittedInputSchema}). */
+const inputSchema = (document: Node, args: ReadonlyArray<Argument>): Schema.JsonObject =>
+  fittedInputSchema((walk) => inputSchemaAt(document, args, walk));
 
 /** One operation as a tool, or undefined when it cannot be one. */
 const operationTool = (
