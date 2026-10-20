@@ -34,12 +34,13 @@ describe("the caller's role", () => {
 });
 
 describe("pages", () => {
-  it("opens only Usage, My models, API keys and Limits to a plain member and everything to an admin", () => {
+  it("opens only Usage, My models, API keys, Limits and Approvals to a plain member and everything to an admin", () => {
     expect(pagesFor("member").map((page) => page.to)).toEqual([
       "/usage",
       "/my-models",
       "/api-keys",
       "/limits",
+      "/approvals",
     ]);
     expect(pagesFor("admin").map((page) => page.to)).toContain("/api-keys");
     expect(pagesFor("admin").map((page) => page.to)).toContain("/members");
@@ -53,6 +54,10 @@ describe("pages", () => {
     expect(pageAllowed("member", "/api-keys")).toBe(true);
     expect(pageAllowed("member", "/api-keys/")).toBe(true);
     expect(pageAllowed("member", "/limits")).toBe(true);
+    // An approval's page too (#201): the link a pending tool call answers.
+    expect(pageAllowed("member", "/approvals")).toBe(true);
+    expect(pageAllowed("member", "/approvals/ap_123")).toBe(true);
+    expect(pageAllowed("member", "/approvalsx")).toBe(false);
     expect(pageAllowed("member", "/usage/prices")).toBe(false);
     expect(pageAllowed("member", "/members")).toBe(false);
     expect(pageAllowed("admin", "/usage/prices")).toBe(true);
@@ -69,7 +74,7 @@ describe("the sidebar's groups of pages", () => {
       ["Providers", ["Accounts", "Provider keys", "Models"]],
       [
         "People and access",
-        ["Members", "Grants", "My models", "API keys", "Management keys", "Limits"],
+        ["Members", "Grants", "My models", "API keys", "Management keys", "Limits", "Approvals"],
       ],
       ["Org", ["Settings"]],
     ]);
@@ -92,12 +97,12 @@ describe("the sidebar's groups of pages", () => {
   it("leaves out the groups a plain member has no page in", () => {
     expect(outline(pageGroupsFor("member"))).toEqual([
       ["", ["Usage"]],
-      ["People and access", ["My models", "API keys", "Limits"]],
+      ["People and access", ["My models", "API keys", "Limits", "Approvals"]],
     ]);
     expect(outline(pageGroupsFor("member", true))).toEqual([
       ["", ["Usage"]],
       ["Providers", ["Accounts", "Provider keys"]],
-      ["People and access", ["My models", "API keys", "Limits"]],
+      ["People and access", ["My models", "API keys", "Limits", "Approvals"]],
     ]);
   });
 
@@ -130,12 +135,14 @@ describe("private credentials in the panel (ADR 0023)", () => {
       "/my-models",
       "/api-keys",
       "/limits",
+      "/approvals",
     ]);
     expect(pagesFor("member", false).map((page) => page.to)).toEqual([
       "/usage",
       "/my-models",
       "/api-keys",
       "/limits",
+      "/approvals",
     ]);
     expect(pageAllowed("member", "/accounts", true)).toBe(true);
     expect(pageAllowed("member", "/accounts/connect", true)).toBe(true);

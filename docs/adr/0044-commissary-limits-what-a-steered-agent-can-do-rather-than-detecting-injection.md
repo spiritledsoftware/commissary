@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted, amended by #201 for pending approvals' arguments, which are sealed
 ---
 
 # Commissary limits what a steered agent can do, rather than detecting injection
@@ -12,7 +12,7 @@ Commissary now holds an org's credentials for outside services, browser profiles
 - **One outbound guard for every user-supplied URL**: toolkit sources, OAuth discovery and metadata (CIMD, DCR), a provider's `base_url`, and any other URL a person types in. It allows only `https:` (and loopback in local development), refuses IP literals in non-public ranges (IPv4 and IPv6) and Commissary's own hosts, and follows redirects itself, checking each hop. Every Worker sets `global_fetch_strictly_public`. The guard does not resolve names; it relies on Cloudflare's network not routing to private addresses, which a test of a deployed Worker confirms.
 - **One egress point for the sandbox.** Both backends' traffic goes through one filtering Worker entrypoint: just-bash through its Dynamic Worker's `globalOutbound`, the computer through its outbound handler with `enableInternet` always set explicitly, never left to a default. The entrypoint applies the sandbox's network setting (ADR 0041) and the outbound guard. The Dynamic Worker gets no bindings beyond its files.
 - **The browser toolkit reaches the open web.** Browsing is its point, so v1 has no domain allowlist; a navigation can carry data in its URL, accepted as with chains of tools. Browser navigation is exempt from the outbound guard, because Browser Run fetches from Cloudflare's network, not from Commissary's Workers. Live View links are minted only for the session's member, with the shortest lifetime (60 seconds).
-- **Seal what grants access, not content.** Credentials, toolkit sign-ins, browser profiles and webhook trigger secrets are sealed. Transcripts, sandbox files and pending approvals' arguments are not: only the Worker holding the key reads them, and Cloudflare encrypts storage at rest, so sealing would add nothing against a reader who has the Worker, and would fight `pi-durable`'s storage.
+- **Seal what grants access, not content.** Credentials, toolkit sign-ins, browser profiles and webhook trigger secrets are sealed. Transcripts and sandbox files are not: only the Worker holding the key reads them, and Cloudflare encrypts storage at rest, so sealing would add nothing against a reader who has the Worker, and would fight `pi-durable`'s storage. Pending approvals' arguments are the exception, sealed with the org's data key for their row (amended by #201): they are a tool call's content, kept for at most an hour in the ControlPlane's own SQLite, where sealing is cheap and fights no other storage, and a copy of that storage does not show them.
 - **Org isolation is enforced in code.** KV and cache access goes through an org-scoped helper, so an unscoped name is a type error, and a cross-org test suite covers every store, including Tools' and Agents'. The `global` org's unprefixed KV names stay the one exception.
 
 ## Considered Options

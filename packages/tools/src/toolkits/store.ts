@@ -15,11 +15,14 @@
 import type { CredentialsAccepted, ToolClass, ToolkitSecret } from "@commissary/contract/tools";
 import type { Sealer } from "@commissary/state";
 import type { Schema } from "effect";
+import type { StoredApprovalRules } from "../approvals/rules.ts";
 import type { UpstreamSession, UpstreamTool } from "../mcp/client.ts";
 import type { StoredToolkit } from "./toolkit.ts";
 
 /**
- * Every table of the Tools part (this store's and the tool grants', `grants/store.ts`), which the part's `wipe` drops
+ * Every table of the Tools part (this store's, the tool grants', `grants/store.ts`, and the pending approvals',
+ * `approvals/store.ts`), which the part's `wipe` drops. `built_in_toolkits` holds what an org says of a built-in toolkit
+ * beyond its grants and overrides, which has no `toolkits` row: its approval rules (#201) and their revision
  * (test/control-plane.test.ts checks the list). Each but `toolkits` is keyed by `toolkit_id`, so {@link
  * ToolkitStore.deleteToolkit} deletes a toolkit's rows from all of them.
  */
@@ -30,6 +33,8 @@ export const TOOLS_TABLES = [
   "tool_overrides",
   "toolkit_sessions",
   "tool_grants",
+  "tool_approvals",
+  "built_in_toolkits",
 ] as const;
 
 /** How long an upstream session is kept from when it was opened (ADR 0038: at most seven days, like replay state). */
@@ -39,7 +44,8 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS toolkits (
      id TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL, source TEXT NOT NULL, owner TEXT NOT NULL,
      accepts TEXT NOT NULL, revision INTEGER NOT NULL, created_at INTEGER NOT NULL, created_by TEXT NOT NULL,
-     updated_at INTEGER NOT NULL, updated_by TEXT NOT NULL, list_built_at INTEGER, list_error TEXT, price_micros INTEGER
+     updated_at INTEGER NOT NULL, updated_by TEXT NOT NULL, list_built_at INTEGER, list_error TEXT, price_micros INTEGER,
+     approval_rules TEXT
    )`,
   `CREATE TABLE IF NOT EXISTS toolkit_credentials (
      toolkit_id TEXT NOT NULL, owner TEXT NOT NULL, kind TEXT NOT NULL, param TEXT NOT NULL, secret TEXT NOT NULL,
@@ -53,6 +59,10 @@ const SCHEMA = [
      toolkit_id TEXT NOT NULL, upstream_name TEXT NOT NULL, hidden INTEGER NOT NULL, name TEXT, description TEXT,
      class TEXT, revision INTEGER NOT NULL, updated_at INTEGER NOT NULL, updated_by TEXT NOT NULL, price_micros INTEGER,
      PRIMARY KEY (toolkit_id, upstream_name)
+   )`,
+  `CREATE TABLE IF NOT EXISTS built_in_toolkits (
+     toolkit_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, approval_rules TEXT, updated_at INTEGER NOT NULL,
+     updated_by TEXT NOT NULL
    )`,
   `CREATE TABLE IF NOT EXISTS toolkit_sessions (
      toolkit_id TEXT NOT NULL, owner TEXT NOT NULL, member TEXT NOT NULL, protocol_version TEXT NOT NULL,
@@ -126,6 +136,7 @@ interface ToolkitRow {
   list_built_at: number | null;
   list_error: string | null;
   price_micros: number | null;
+  approval_rules: string | null;
 }
 
 interface CredentialRow {
@@ -178,6 +189,10 @@ const parseObject = (text: string | null): Schema.JsonObject | undefined =>
   // SAFETY: the column holds the JSON object this store wrote from a decoded tool.
   text === null ? undefined : (JSON.parse(text) as Schema.JsonObject);
 
+const parseRules = (text: string | null): StoredApprovalRules | undefined =>
+  // SAFETY: the column holds the JSON of the cleaned rules this store wrote.
+  text === null ? undefined : (JSON.parse(text) as StoredApprovalRules);
+
 const toolkitOf = (row: ToolkitRow): StoredToolkit => ({
   id: row.id,
   kind: "mcp",
@@ -195,6 +210,7 @@ const toolkitOf = (row: ToolkitRow): StoredToolkit => ({
   listBuiltAt: orUndefined(row.list_built_at),
   listError: orUndefined(row.list_error),
   priceMicros: orUndefined(row.price_micros),
+  approvalRules: parseRules(row.approval_rules),
 });
 
 const credentialOf = (row: CredentialRow): ToolkitCredential => ({
@@ -277,6 +293,15 @@ export class ToolkitStore {
       if (!columns.includes("price_micros"))
         sql.exec(`ALTER TABLE ${table} ADD COLUMN price_micros INTEGER`);
     }
+
+    // Approval rules (#201) came later too: a toolkit from before has none, so no call of it waits.
+    const toolkitColumns = sql
+      .exec<{ name: string }>(`PRAGMA table_info(toolkits)`)
+      .toArray()
+      .map((column) => column.name);
+
+    if (!toolkitColumns.includes("approval_rules"))
+      sql.exec(`ALTER TABLE toolkits ADD COLUMN approval_rules TEXT`);
   }
 
   // --- toolkits ---------------------------------------------------------------------------------------------------
@@ -294,9 +319,12 @@ export class ToolkitStore {
     return row === undefined ? undefined : toolkitOf(row);
   }
 
-  /** A new toolkit has no price: an org admin sets one afterwards (`updateToolkit`). */
+  /** A new toolkit has no price and no approval rules: they are set afterwards (`updateToolkit`). */
   insertToolkit(
-    toolkit: Omit<StoredToolkit, "builtIn" | "listBuiltAt" | "listError" | "priceMicros">,
+    toolkit: Omit<
+      StoredToolkit,
+      "builtIn" | "listBuiltAt" | "listError" | "priceMicros" | "approvalRules"
+    >,
   ): void {
     this.#sql.exec(
       `INSERT INTO toolkits (id, kind, name, source, owner, accepts, revision, created_at, created_by, updated_at,
@@ -316,27 +344,96 @@ export class ToolkitStore {
     );
   }
 
-  /** Renames a toolkit, changes what it accepts or its price, moving its revision on. */
+  /** Renames a toolkit, changes what it accepts, its price or its approval rules, moving its revision on. */
   updateToolkit(
     id: string,
     change: {
       readonly name: string;
       readonly accepts: CredentialsAccepted;
       readonly priceMicros: number | undefined;
+      readonly approvalRules: StoredApprovalRules | undefined;
     },
     by: string,
     now: number,
   ): void {
     this.#sql.exec(
-      `UPDATE toolkits SET name = ?, accepts = ?, price_micros = ?, revision = revision + 1, updated_at = ?,
-         updated_by = ?
+      `UPDATE toolkits SET name = ?, accepts = ?, price_micros = ?, approval_rules = ?, revision = revision + 1,
+         updated_at = ?, updated_by = ?
        WHERE id = ?`,
       change.name,
       change.accepts,
       change.priceMicros ?? null,
+      change.approvalRules === undefined ? null : JSON.stringify(change.approvalRules),
       now,
       by,
       id,
+    );
+  }
+
+  /**
+   * Replaces a toolkit's approval rules as they are, its revision kept: a member who left leaves them. A stored
+   * toolkit's or a built-in one's alike.
+   */
+  replaceApprovalRules(id: string, rules: StoredApprovalRules | undefined): void {
+    const text = rules === undefined ? null : JSON.stringify(rules);
+
+    this.#sql.exec(`UPDATE toolkits SET approval_rules = ? WHERE id = ?`, text, id);
+    this.#sql.exec(
+      `UPDATE built_in_toolkits SET approval_rules = ? WHERE toolkit_id = ?`,
+      text,
+      id,
+    );
+  }
+
+  /**
+   * What the org set on the built-in toolkit `id` (#201): its approval rules and the revision and time of the last
+   * change, or undefined when it set nothing yet (the toolkit is then at its first revision).
+   */
+  builtInSettings(id: string):
+    | {
+        readonly revision: number;
+        readonly approvalRules: StoredApprovalRules | undefined;
+        readonly updatedAt: number;
+        readonly updatedBy: string;
+      }
+    | undefined {
+    const row = this.#sql
+      .exec<{
+        revision: number;
+        approval_rules: string | null;
+        updated_at: number;
+        updated_by: string;
+      }>(`SELECT * FROM built_in_toolkits WHERE toolkit_id = ?`, id)
+      .toArray()[0];
+
+    return row === undefined
+      ? undefined
+      : {
+          revision: row.revision,
+          approvalRules: parseRules(row.approval_rules),
+          updatedAt: row.updated_at,
+          updatedBy: row.updated_by,
+        };
+  }
+
+  /** Sets the approval rules of the built-in toolkit `id`, moving its revision on from `revision`. */
+  updateBuiltIn(
+    id: string,
+    revision: number,
+    rules: StoredApprovalRules | undefined,
+    by: string,
+    now: number,
+  ): void {
+    this.#sql.exec(
+      `INSERT INTO built_in_toolkits (toolkit_id, revision, approval_rules, updated_at, updated_by)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT (toolkit_id) DO UPDATE SET revision = excluded.revision,
+         approval_rules = excluded.approval_rules, updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
+      id,
+      revision + 1,
+      rules === undefined ? null : JSON.stringify(rules),
+      now,
+      by,
     );
   }
 

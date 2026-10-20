@@ -98,6 +98,7 @@ export const PAGES: ReadonlyArray<PanelPage> = [
   { to: "/api-keys", label: "API keys", group: "people", role: "member" },
   { to: "/management-keys", label: "Management keys", group: "people", role: "admin" },
   { to: "/limits", label: "Limits", group: "people", role: "member" },
+  { to: "/approvals", label: "Approvals", group: "people", role: "member" },
   { to: "/settings", label: "Settings", group: "org", role: "admin", exact: true },
   // Under Settings: the Worker serves the panel at `/settings/*` already (`PANEL_SECTIONS`).
   {
@@ -157,12 +158,14 @@ const within = (pathname: string, page: string): boolean =>
 
 /**
  * Whether a role may open a page of the panel (`pathname` is relative to the org's base path). Sub-pages of a page
- * need an org admin, like `/usage/prices`, except the page itself. A plain member opens Usage, My models, API keys and Limits, and the
+ * need an org admin, like `/usage/prices`, except the page itself. A plain member opens Usage, My models, API keys and Limits, the
+ * Approvals page with each approval's page (#201: the server shows each to its approvers and its caller only), and the
  * pages of their own private accounts and provider keys, with their sub-pages, where the org lets members connect private
  * credentials.
  */
 export const pageAllowed = (role: OrgRole, pathname: string, privateCredentials = false): boolean =>
   atLeast(role, "admin") ||
+  within(pathname, "/approvals") ||
   trimmed(pathname) === "/usage" ||
   trimmed(pathname) === "/my-models" ||
   trimmed(pathname) === "/api-keys" ||

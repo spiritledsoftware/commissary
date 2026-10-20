@@ -717,3 +717,24 @@ export const nowAtom = Atom.make((get) => {
 
   return Date.now();
 });
+
+/** The Approvals pages refetch after a decision tagged with this key. */
+export const APPROVALS = ["approvals"] as const;
+
+/** The pending approvals of tool calls the caller may decide or made (#201). */
+export const approvalsAtom = ManagementClient.query("approvals", "list", {
+  reactivityKeys: APPROVALS,
+  timeToLive: KEEP,
+});
+
+/** One approval, by id: its page in the panel, the link a pending tool call answers. */
+export const approvalAtom = Atom.family((id: string) =>
+  ManagementClient.query("approvals", "get", {
+    params: { id },
+    reactivityKeys: APPROVALS,
+    timeToLive: KEEP,
+  }),
+);
+
+/** Approves or denies an approval (call with `reactivityKeys: APPROVALS`). */
+export const decideApprovalAtom = ManagementClient.mutation("approvals", "decide");

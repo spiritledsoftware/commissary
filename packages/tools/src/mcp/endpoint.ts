@@ -14,16 +14,24 @@
 import { Clock, Effect, Layer, type Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { AccessPrincipal, currentViewer, viewerOf } from "@commissary/auth";
+import type { Approver } from "@commissary/contract/approvals";
 import { boundedBodyText, CurrentOrg, CurrentOutboundPolicy, MCP_PATH } from "@commissary/core";
 import { panelPageUrl } from "@commissary/state";
 import { type Refusal, spendRefusalMessage } from "@commissary/state/spend";
-import type { ClientTool, ToolCallOutcome } from "../control-plane-part.ts";
+import type {
+  ClientTool,
+  FormAction,
+  NotApprovedReason,
+  ToolCall,
+  ToolCallOutcome,
+} from "../control-plane-part.ts";
 import { toolsControlPlane, ToolsEnv } from "../env.ts";
 import { writeToolCallRecord } from "../usage/record.ts";
 import {
   acceptedUnder,
   type Answer,
   discoverResult,
+  elicitsForms,
   elicitsUrls,
   type Era,
   eraOf,
@@ -116,6 +124,47 @@ const connectLink = Effect.fnUntraced(function* (toolkitId: string) {
   );
 });
 
+/** Where an approval is decided when the panel's URL is not known (`panelPageUrl`). */
+const APPROVAL_PAGE = "the approvals page in the panel";
+
+/** The panel's page of the pending approval `id` (#201), or {@link APPROVAL_PAGE}. */
+const approvalLink = Effect.fnUntraced(function* (id: string) {
+  const env = yield* ToolsEnv;
+  const org = yield* CurrentOrg;
+
+  return yield* panelPageUrl(env, org, `approvals/${encodeURIComponent(id)}`, APPROVAL_PAGE);
+});
+
+/** The key of the approve-or-deny form among a call's input requests (#201). */
+const APPROVAL_KEY = "approval";
+
+/**
+ * The caller's answer to the approve-or-deny form, when the call is made again with one, and the `requestState` the
+ * client sent back with it: the part counts the answer only with the state it sent the form with.
+ */
+const approvalFormOf = (params: Schema.JsonObject): NonNullable<ToolCall["approvalForm"]> => {
+  const responses = params["inputResponses"];
+  const response = isJsonObject(responses) ? responses[APPROVAL_KEY] : undefined;
+  const state = params["requestState"];
+  const requestState = typeof state === "string" ? state : undefined;
+
+  if (!isJsonObject(response)) return { requestState };
+  const action = response["action"];
+  const answer: FormAction = action === "accept" || action === "decline" ? action : "cancel";
+
+  return { answer, requestState };
+};
+
+/** Who approves a pending call, in the words of its tool result. */
+const approvedBy = (approver: Approver): string =>
+  approver.kind === "caller" ? "you" : "one of its approvers other than you";
+
+/** A tool result that tells the model something in words, not a failure. */
+const toolText = (text: string): Schema.JsonObject => ({
+  content: [{ type: "text", text }],
+  isError: false,
+});
+
 /** A tool result that reports a failure to the model. */
 const toolError = (text: string): Schema.JsonObject => ({
   content: [{ type: "text", text }],
@@ -134,13 +183,20 @@ const declined = (params: Schema.JsonObject, key: string): boolean => {
 const refusedText = (name: string, refusal: Refusal): string =>
   `${spendRefusalMessage(refusal)}. ${name} was not called.`;
 
-/** What a call came to, as its usage record says it (#199). */
-const recordedOutcome = (outcome: Exclude<ToolCallOutcome, { outcome: "unknown" }>) => {
+/** A call that ended: every outcome but an unknown tool and a form the caller is asked to answer first. */
+type EndedCall = Exclude<ToolCallOutcome, { outcome: "unknown" } | { outcome: "approve" }>;
+
+/** What a call came to, as its usage record says it (#199, #201). */
+const recordedOutcome = (outcome: EndedCall) => {
   switch (outcome.outcome) {
     case "connect":
       return "needs_credential";
     case "refused":
       return "refused";
+    case "pending":
+      return "approval_pending";
+    case "not_approved":
+      return "not_approved";
     case "failed":
       return "upstream_failure";
     case "result":
@@ -152,15 +208,58 @@ const recordedOutcome = (outcome: Exclude<ToolCallOutcome, { outcome: "unknown" 
 const jsonBytes = (value: Schema.JsonObject | undefined): number =>
   value === undefined ? 0 : new TextEncoder().encode(JSON.stringify(value)).byteLength;
 
+/** Why a call an approval rule held was not made (#201). */
+const notApprovedText = (name: string, reason: NotApprovedReason): string => {
+  switch (reason) {
+    case "denied":
+      return `${name} was not called: the call was denied.`;
+    case "no_approver":
+      return (
+        `${name} was not called: its calls wait for their caller's approval, which a caller without a member of ` +
+        `the org gives only on a form their client shows.`
+      );
+  }
+};
+
+/**
+ * The approve-or-deny form a caller who is their call's approver answers (#201): an `InputRequiredResult` (MRTR) whose
+ * `approval` input request is a form-mode `elicitation/create` showing the tool and its arguments, with no field to
+ * fill: accepting approves, declining or dismissing denies. The client makes the call again with the answer and the
+ * `requestState`, which binds the answer to this call: an answer sent without it, or with the arguments changed, does
+ * not count, and the caller is asked again.
+ */
+const approvalForm = (
+  name: string,
+  outcome: Extract<ToolCallOutcome, { outcome: "approve" }>,
+): Schema.JsonObject => ({
+  resultType: "input_required",
+  inputRequests: {
+    [APPROVAL_KEY]: {
+      method: "elicitation/create",
+      params: {
+        mode: "form",
+        message:
+          `Approve the call of ${name} (toolkit ${outcome.toolkit.name}) with these arguments? ` +
+          `Accept to approve it, decline to deny it.\n\n${JSON.stringify(outcome.arguments, null, 2)}`,
+        requestedSchema: { type: "object", properties: {} },
+      },
+    },
+  },
+  requestState: outcome.requestState,
+});
+
 /**
  * The tool result a call that reached a tool answers: the upstream's result, a short tool error (an upstream failure, a
- * Spend limit without room), or, for a tool that needs the member's private credential, the link to connect it. A
- * stateless client that declares URL-mode elicitation is asked to open it (an `InputRequiredResult`, MRTR) until it
- * declines; any other client gets the link as a tool error, a 2025 client too, as its elicitation would need the
- * request's SSE stream (docs/ARCHITECTURE.md, "Tools"), and so does every client when there is no URL to open.
+ * Spend limit without room, a call not approved), for a call that waits for approval a result (not an error: the call
+ * is not refused) that says so with the link to its approval page, or,
+ * for a tool that needs the member's private credential, the link to connect it. A stateless client that declares
+ * URL-mode elicitation is asked to open the connect link (an `InputRequiredResult`, MRTR) until it declines; any other
+ * client gets the link as a tool error, a 2025 client too, as its elicitation would need the request's SSE stream
+ * (docs/ARCHITECTURE.md, "Tools"), and so does every client when there is no URL to open. A pending call's link is
+ * always a tool result: its approver may be someone else, and the call is made again once approved.
  */
 const toolResult = Effect.fnUntraced(function* (
-  outcome: Exclude<ToolCallOutcome, { outcome: "unknown" }>,
+  outcome: EndedCall,
   name: string,
   request: RpcRequest,
   context: Served,
@@ -170,6 +269,21 @@ const toolResult = Effect.fnUntraced(function* (
   if (outcome.outcome === "failed") return toolError(outcome.message);
 
   if (outcome.outcome === "refused") return toolError(refusedText(name, outcome.refusal));
+
+  if (outcome.outcome === "not_approved") return toolError(notApprovedText(name, outcome.reason));
+
+  if (outcome.outcome === "pending") {
+    const link = yield* approvalLink(outcome.approval.id);
+    const by = new Date(outcome.approval.expiresAt).toISOString();
+
+    const where = link === APPROVAL_PAGE ? `on ${link}` : `at ${link}`;
+
+    return toolText(
+      `${name} was not called yet: the call waits for approval by ${approvedBy(outcome.approval.approver)}. ` +
+        `It can be approved or denied ${where} until ${by}. Once it is approved, call ${name} again with the ` +
+        `same arguments: it goes through once.`,
+    );
+  }
 
   const link = yield* connectLink(outcome.toolkit.id);
   const key = `connect_${outcome.toolkit.name}`;
@@ -215,11 +329,15 @@ const callTool = Effect.fnUntraced(function* (request: RpcRequest, context: Serv
   const org = yield* CurrentOrg;
   const requestedAt = yield* Clock.currentTimeMillis;
 
-  const call = {
+  const call: ToolCall = {
     name,
     arguments: args,
     toolkits: context.toolkits === undefined ? undefined : [...context.toolkits],
     apiKeyId: identity.principal.kind === "key" ? identity.principal.keyId : undefined,
+    principalId: identity.principalId,
+    // A 2025 client is never asked (see `toolResult`): it gets a pending approval's link.
+    approvalForm: elicitsForms(context.era) ? approvalFormOf(request.params) : undefined,
+    approvalOutcomes: true,
   };
 
   const outcome = yield* toolsControlPlane("callTool", (stub) =>
@@ -228,6 +346,10 @@ const callTool = Effect.fnUntraced(function* (request: RpcRequest, context: Serv
 
   if (outcome.outcome === "unknown")
     return errorAnswer(200, request.id, RpcCode.invalidParams, `Unknown tool: ${name}`);
+
+  // The call goes on once the caller answers the form: its record is written then.
+  if (outcome.outcome === "approve")
+    return resultAnswer(request.id, framed(context.era, approvalForm(name, outcome)));
 
   const value = yield* toolResult(outcome, name, request, context);
   const answeredAt = yield* Clock.currentTimeMillis;
@@ -248,6 +370,7 @@ const callTool = Effect.fnUntraced(function* (request: RpcRequest, context: Serv
     requestBytes: jsonBytes(args),
     responseBytes: jsonBytes(value),
     costMicros: usage.costMicros,
+    approval: usage.approval,
   });
 
   return resultAnswer(request.id, framed(context.era, value));

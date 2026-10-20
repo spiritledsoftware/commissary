@@ -71,6 +71,8 @@ const browserToolkit = (provider: BrowserProvider): BuiltIn => ({
     listBuiltAt: undefined,
     listError: undefined,
     priceMicros: undefined,
+    // The org's rules, if it set any, are the part's to add (`ToolkitStore.builtInSettings`).
+    approvalRules: undefined,
     builtIn: true,
   },
   tools: BROWSER_TOOLS.map((tool, position) => ({

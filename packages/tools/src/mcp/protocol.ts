@@ -252,6 +252,21 @@ export const elicitsUrls = (era: Era): boolean => {
   return era.modern && isJsonObject(elicitation) && isJsonObject(elicitation["url"]);
 };
 
+/**
+ * Whether a modern client declared form-mode elicitation: `elicitation.form`, or an `elicitation` that names neither
+ * mode (form mode only, as the revision reads it).
+ */
+export const elicitsForms = (era: Era): boolean => {
+  const elicitation = era.capabilities["elicitation"];
+
+  if (!era.modern || !isJsonObject(elicitation)) return false;
+
+  return (
+    isJsonObject(elicitation["form"]) ||
+    (elicitation["form"] === undefined && elicitation["url"] === undefined)
+  );
+};
+
 /** `meta` without the keys MCP reserves ({@link RESERVED_META}): an upstream's are its own revision's, not ours. */
 const unreserved = (meta: Schema.JsonObject): Schema.JsonObject =>
   Object.fromEntries(Object.entries(meta).filter(([key]) => !key.startsWith(RESERVED_META)));

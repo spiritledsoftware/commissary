@@ -59,6 +59,9 @@ describe("web panel", () => {
     "/o/default/keys",
     "/o/default/models",
     "/o/default/usage",
+    "/o/default/approvals",
+    // A pending approval's page, the link a waiting tool call answers with (#201).
+    "/o/default/approvals/ap_0123456789abcdef01234567",
     "/o/default/settings/",
     "/o/DEFAULT/Settings",
   ])("serves index.html for %s with the panel's security headers", async (path) => {

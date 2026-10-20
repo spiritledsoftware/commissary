@@ -182,7 +182,8 @@ the Worker asks on every request: a removed member, or a member whose role was l
 | Read the models they may use (`GET /models/mine`, the panel's My models)                         |         ✓         |     ✓     |              ✓               |       ✓        |
 | Read, add, edit and remove grants (`/grants`, `/grants/tools`, the panel's Grants page)          |                   |     ✓     |              ✓               |       ✓        |
 | Read the org's toolkits and their tools; add and manage their own private toolkits (`/toolkits`) |         ✓         |     ✓     |              ✓               |       ✓        |
-| Add, edit and remove org toolkits, their shared credentials and their tool overrides             |                   |     ✓     |              ✓               |       ✓        |
+| Add, edit and remove org toolkits, their shared credentials, tool overrides and approval rules   |                   |     ✓     |              ✓               |       ✓        |
+| See and decide the pending approvals of tool calls they are an approver of (`/approvals`)        |         ✓         |     ✓     |              ✓               |       ✓        |
 | Read the Spend limits that bind them and limit their own API keys (`/spend`, `/spend/limits`)    |         ✓         |     ✓     |              ✓               |       ✓        |
 | Set any Spend limit and the org's calendar (`/spend/limits`, `/spend/settings`)                  |                   |     ✓     |              ✓               |       ✓        |
 | Read the org's plan and this month's usage against free usage (Commissary Cloud, `/billing`)     |                   |     ✓     |              ✓               |       ✓        |
@@ -256,6 +257,19 @@ the Worker asks on every request: a removed member, or a member whose role was l
   export see the whole URL, so a key goes in a credential (sealed; a `query` one for the query), never in the source's path
   or query. An org toolkit that stops accepting shared or private credentials keeps the ones connected, inactive, until it
   accepts them again.
+- **Approvals** (`/approvals`, the panel's Approvals page, #201, ADR 0038): an approval rule on a toolkit makes calls
+  of its write tools, or of tools marked one by one, wait for their approver. An org admin sets rules on org toolkits,
+  a member on their own private toolkits (`PATCH /toolkits/:id`, `approval_rules`). The approver is the caller (the
+  default), a team, or a list of members. Under a caller rule only the caller decides their call (on their client's
+  form, or in the panel); under a team or a list any member of it **except the caller** decides, even when the caller
+  is in it. Being an org admin, owner or platform admin gives no say: they decide only the approvals they are approvers
+  of. A pending approval shows to its eligible approvers, with the call's arguments while it waits, and to its caller
+  without them (unless they are its approver); anyone else gets `404`, the caller deciding under a team or list rule
+  `403 forbidden`, and a decided approval `409 conflict`. An approval expires an hour after the call and is deleted
+  then (`404` from then on); approving lets the same call (same member, tool and arguments) through once within that
+  hour, and a repeat after it waits for a new approval. Removing or narrowing the rule an approval waits on (or
+  reclassifying its tool) deletes it. A rule whose team was deleted, or whose listed members all left, keeps its calls
+  waiting with nobody to decide them (it fails closed); the toolkit's view flags it `nobody_decides`.
 - **Service tokens** (`/service-tokens`) are registered to one org by their Client ID with a role (`409 service_token_taken`
   when another org has the token, also when two orgs register it at once: the one the registry indexes first keeps it). With
   auto-join on, an unregistered token is admitted as a plain member without being stored,

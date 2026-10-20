@@ -1094,6 +1094,7 @@ describe("tool calls (#199)", () => {
       requestBytes: 12,
       responseBytes: 34,
       costMicros: fields.costMicros ?? 0,
+      approval: "none",
     });
   };
 

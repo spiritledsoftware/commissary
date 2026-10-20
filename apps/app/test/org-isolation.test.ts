@@ -2,7 +2,8 @@
 // everywhere (credential, key, session and model names), and every store of org data is written by one org and read by
 // the others: KV, the signature and Antigravity state, the per-isolate caches, SessionState, the D1 usage records
 // through every query the management API exposes, the ControlPlane addressed by key prefix and by slug, and Tools'
-// toolkits by name and by id, their tool grants and the upstream MCP sessions their calls keep.
+// toolkits by name and by id, their tool grants, the upstream MCP sessions their calls keep and the pending approvals
+// of their calls.
 // Each store is one `storeCase` in `STORES`: a new store (tool calls, approvals, runs, sandbox and browser sessions,
 // profiles) adds one line there (docs/DEVELOPMENT.md, "Tests").
 import { env } from "cloudflare:workers";
@@ -225,6 +226,21 @@ const sessionServer = (name: string): FakeMcpServer => {
   sessionServers.set(name, server);
 
   return server;
+};
+
+/** The fake MCP server of a name for the approvals case: its one tool, `act`, is never reached (its calls wait). */
+const approvalServers = new Map<string, FakeMcpServer>();
+
+const approvalServer = (name: string): FakeMcpServer => {
+  const known =
+    approvalServers.get(name) ??
+    fakeMcpServer(`https://${name}.iso-approvals.example.com/mcp`, {
+      tools: [{ name: "act" }],
+    });
+
+  approvalServers.set(name, known);
+
+  return known;
 };
 
 /** The org's value of each upstream session id the session case opened. */
@@ -572,6 +588,7 @@ const STORES: ReadonlyArray<StoreCase> = [
           requestBytes: 2,
           responseBytes: 3,
           costMicros: 0,
+          approval: "none",
         });
     },
     read: async (org, name) =>
@@ -689,6 +706,62 @@ const STORES: ReadonlyArray<StoreCase> = [
       return id?.slice(`${toolkit}:`.length);
     },
     value: (index) => `org${index}`,
+  }),
+  // The pending approvals of Tools' calls: each org's member calls the same tool, under the same toolkit name, with the
+  // org's value as its argument; the call waits for them (the caller is its approver), and each finds its own only.
+  storeCase("controlplane: pending approvals", {
+    write: async (org, name, value) => {
+      const tools = env.CONTROL_PLANE.getByName(org.id).tools();
+      const admin = { ...isoViewer(org), admin: true };
+
+      const added = await tools.addToolkit(
+        admin,
+        {
+          source: approvalServer(name).url,
+          name: toolkitName(name),
+          private: false,
+          accepts: "shared",
+          credential: { kind: "none", subject: { kind: "everyone" } },
+        },
+        "iso",
+        OUTBOUND,
+      );
+
+      if (!added.ok) throw new Error(added.message);
+
+      const ruled = await tools.updateToolkit(
+        admin,
+        added.value.id,
+        added.value.revision,
+        { approval_rules: { writes: {} } },
+        "iso",
+      );
+
+      if (!ruled.ok) throw new Error(ruled.message);
+
+      const called = await tools.callTool(
+        isoViewer(org),
+        {
+          name: `${toolkitName(name)}_act`,
+          arguments: { value },
+          principalId: "iso",
+          approvalOutcomes: true,
+        },
+        OUTBOUND,
+      );
+
+      if (called.outcome !== "pending") throw new Error(`the call came to ${called.outcome}`);
+    },
+    read: async (org, name) => {
+      const { approvals } = await env.CONTROL_PLANE.getByName(org.id)
+        .tools()
+        .listApprovals(isoViewer(org));
+
+      const found = approvals.find((approval) => approval.toolkit.name === toolkitName(name));
+      const value = found?.arguments?.["value"];
+
+      return typeof value === "string" ? value : undefined;
+    },
   }),
   // The upstream MCP sessions Tools' calls keep: each org's member calls the same server under the same toolkit name,
   // and a later call goes on in its own org's session.

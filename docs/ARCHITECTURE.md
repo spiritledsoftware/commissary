@@ -1851,9 +1851,11 @@ once; a 401 retry keeps the rejected attempt's failed record, a failed-over cred
   Commissary's MCP endpoint that reaches a tool leaves one record in `usage_records`, beside the model attempts. The
   migration adds `area` (`models` by default, so every earlier record is a model attempt's; `tools` for a tool call),
   `toolkit_id`, `tool_id` (the stable id, `<toolkit id>:<upstream name>`), `tool_outcome` (`success`, `tool_error` for
-  an upstream result with `isError`, `upstream_failure`, `refused` by a Spend limit, `needs_credential`),
-  `request_bytes` and `response_bytes` (the UTF-8 bytes of the arguments and of the answered result as JSON) and
-  `approval` (empty until approvals, #201); it holds no arguments and no results. The org, principal (an API key's
+  an upstream result with `isError`, `upstream_failure`, `refused` by a Spend limit, `needs_credential`, and under an
+  approval rule `approval_pending` or `not_approved`), `request_bytes` and `response_bytes` (the UTF-8 bytes of the
+  arguments and of the answered result as JSON) and `approval` (#201: `none`, `approved_elicitation`,
+  `approved_panel`, `denied` or `pending`; empty on records from before approvals, _Tools_,
+  "Approvals"); it holds no arguments and no results. The org, principal (an API key's
   `key:<id>` names the key), member, `private` (a private credential or a private toolkit), latency (measured in the
   endpoint, from the call's arrival to its answer), `cost_micros` (the price charged, else 0; never `unpriced`) and
   `failed` (any outcome but `success`) are the columns model attempts use. Two columns of Models' credentials are
@@ -3000,13 +3002,14 @@ server can still be imported through management.
 
 The Tools area (ADR 0036, ADR 0037, ADR 0038) turns outside sources into **toolkits** and serves them on Commissary's
 own MCP endpoint. This version builds one kind, the remote MCP server (Streamable HTTP); OpenAPI, GraphQL and Discovery
-toolkits, OAuth sign-in, the toolkit catalog and approval rules come later (#200 to #209); grants (#198) and prices,
-usage records and Spend limits of tool calls (#199) are here. The package
+toolkits, OAuth sign-in, the toolkit catalog and the panel's toolkit pages come later (#200 to #209); grants (#198),
+prices, usage records and Spend limits of tool calls (#199), and approval rules with pending approvals (#201) are
+here. The package
 (`@commissary/tools`) is shaped like Models: entry points `./api` (the MCP endpoint's routes, the cron task),
 `./management`, `./state` and `./testing`, a lint boundary (`boundaries/tools-imports`) and a ControlPlane part,
 `ToolsPart`, reached as `stub.tools().x(…)`. Its one binding of its own is the usage database; its state is the ControlPlane's
 (`TOOLS_TABLES`: `toolkits`, `toolkit_credentials`, `toolkit_tools`, `tool_overrides`, `toolkit_sessions`,
-`tool_grants`, dropped by `wipe()`), its view of `env` (`ToolsBindings`) adds the Platform registry and the app
+`tool_grants`, `tool_approvals`, `built_in_toolkits`, dropped by `wipe()`), its view of `env` (`ToolsBindings`) adds the Platform registry and the app
 host for the endpoint's connect links, and `USAGE`, the D1 database its tool calls' records go into (Models' records
 go there too), and it reaches MCP servers from the ControlPlane through the global `fetch`
 behind the outbound guard. The part's one binding is optional: Browser Run's `BROWSER` on the state Worker
@@ -3170,7 +3173,7 @@ behind the outbound guard. The part's one binding is optional: Browser Run's `BR
     reason and status only. An upstream call (`callUpstreamTool`, `mcp/client.ts`) speaks the era the upstream does,
     with the stateless revision's `Mcp-Name` and the `Mcp-Param-*` headers its input schema's `x-mcp-header` asks for,
     within 240 seconds; an upstream that asks for input (`InputRequiredResult`) is a failure, as Commissary relays none
-    yet (#201).
+    of an upstream's requests (its own approval form, below, is Commissary's, not the upstream's).
   - **Missing private credential** (ADR 0036): a tool that needs the member's private credential, without one, answers a
     link to the panel's connect page, `https://<app host>/o/<org slug>/tools/<toolkit id>/connect` (`panelPageUrl`,
     `@commissary/state`, as Billing's link to the billing page). The API Worker gets `APP_DOMAIN` on every deployed
@@ -3182,7 +3185,8 @@ behind the outbound guard. The part's one binding is optional: Browser Run's `BR
     is a URL-mode `elicitation/create`, again on each retry until the credential is there; a declined or dismissed
     elicitation, and every other client, get the link in a tool result with `isError`. **A 2025 client never gets an
     elicitation**: it would need the request's SSE stream and a session to send the request on and wait for the answer,
-    which this endpoint keeps neither of, so it gets the tool result (#201 follows this choice).
+    which this endpoint keeps neither of, so it gets the tool result (approvals follow this choice: a 2025 client gets a
+    pending approval's link, _Approvals_ below).
   - **Upstream sessions** (`toolkit_sessions`, ADR 0038): what a call learned of an upstream is kept per toolkit,
     credential and calling member (a request without a member is one caller), for that caller's next call on it, so
     members sharing a credential never share an upstream session's state (#198; sessions kept from before, per toolkit
@@ -3195,6 +3199,90 @@ behind the outbound guard. The part's one binding is optional: Browser Run's `BR
     the toolkit and the member's leaving delete it too. Every caller without a member (service tokens, org API keys)
     is one caller, so they share one upstream session per credential: accepted for now, as all of them act for the
     org; keying their sessions by principal is a possible follow-up.
+- **Approvals** (`tools/approvals/`, `tools/management/routes.ts` `/approvals`, #201, ADR 0038): an approval rule makes
+  calls of some of a toolkit's tools wait for an approver. A toolkit's rules (`approval_rules`, a JSON column of
+  `toolkits`, added by `ALTER TABLE` to a ControlPlane from before them, so nothing waits after an upgrade) are the
+  toolkit-wide "write tools require approval" switch (`writes`), which follows each tool's resolved class, so a
+  reclassified tool changes at once whether it waits, and marks on single tools by stable id (`tools`; a mark wins
+  over `writes`, so a marked tool waits for its mark's approver whatever its class). Each names its approver: the
+  caller (the default), a team or a list of members; of a team or a list any member but the caller decides, even when
+  the caller is in it (teams are read when someone decides). Rules apply to every call on the toolkit, whatever the
+  credential, and to the built-in toolkits' tools too (stored apart, _Built-in toolkits_). An org admin sets them on
+  an org toolkit and a member on their own private toolkit, written whole with the toolkit at its revision (`PATCH /toolkits/:id`, `approval_rules`, `null` clears them; `422 invalid` for a mark of
+  another toolkit's tool, a tool marked twice, an empty list, or a team or member the org does not have); views show
+  them to whoever reads the toolkit, and the org export with approvers by team name and email. A member who leaves
+  leaves every list (a list may end up empty: nobody decides its calls); a deleted team's rules stay, and nobody
+  decides their calls until an admin names another approver: a rule fails closed. A toolkit's view flags such a rule
+  `nobody_decides: true` (a team the org no longer has, a list none of whose members is left), and the panel words a
+  warning for it (`apps/web` `lib/approvals.ts`: `approvalRulesWarnings` for the rules editor, #209, and on an
+  approval's page, whose approver then has no team name or no member emails).
+  - **A change of the rules** (`ToolsPart.#dropOrphanedApprovals`, after `PATCH /toolkits/:id` and after an override
+    is written): every pending approval (and form) of the toolkit whose tool's rule no longer names the approver it
+    stored, compared as canonical JSON, is deleted: the rule was removed or narrowed, its approver changed, or the tool
+    was reclassified out of it (or is gone). An approval never outlives its rule, so restoring the rule brings none
+    back: the identical call waits anew.
+  - **Order of checks** (`ToolsPart.callTool`): reach, the credential (a missing private one answers its connect link),
+    the Spend check, then the approval, then the upstream. The approved call is the one made again, so it passes reach
+    and the Spend check again before it goes upstream; approving makes no call.
+  - **The caller as approver, on a form**: a 2026-07-28 client that declares form-mode elicitation
+    (`clientCapabilities.elicitation.form`, or an `elicitation` naming neither mode) gets an `InputRequiredResult`
+    (MRTR) whose `approval` input request is a form-mode `elicitation/create`: the message shows the tool, its toolkit
+    and the arguments as indented JSON, and the form has no field (`properties: {}`), so accepting approves and
+    declining or dismissing denies. The result carries a `requestState` that binds the answer to this call: the id of a
+    **form** row in `tool_approvals` (`form = 1`, no arguments, the caller, tool and arguments' hash, an hour to live)
+    and, sealed with the org's data key for it (`tool_approvals/<id>/form`), that id, the tool's stable id and the hash.
+    The call made again with `inputResponses.approval` and that `requestState` finishes in that call: accepted, it goes
+    upstream (`approved_elicitation`); otherwise it answers a tool error (`denied`). The answer counts only when the
+    state opens, names its row, matches the call's tool and hash, and the row is unanswered, of the same caller and
+    within its hour; it is then settled, so a form is answered once. An answer without such a state (sent unasked, with
+    other arguments, by another caller, again, or late) is no answer: the caller is asked again, with a new form. Forms
+    are not pending approvals: never listed, shown or matched by a repeated call. A 2025 client never gets a form (the
+    connect link's reason above), nor does a client without form elicitation: they take the pending path, where the
+    caller decides in the panel.
+  - **Pending** (`approvals/store.ts`, the `tool_approvals` table): every other call that waits answers a tool result
+    that is not an error (`isError: false`: the call is not refused, it waits) saying it waits, for whom, and until
+    when, with the link to its approval page, `https://<app host>/o/<org slug>/approvals/<id>` (`panelPageUrl`; "the
+    approvals page in the panel" without an app host), and creates a **pending approval**: the caller (their member, or the principal of a caller without one),
+    the tool's stable id and full name, the credential slot, the approver the rule named then, the hash of the
+    arguments and the arguments themselves, **sealed with the org's data key** for the row (`tool_approvals/<id>`):
+    the one place Commissary keeps a tool call's content. A repeat of the same call (same member, tool and hash) while
+    it is undecided answers the same approval rather than another. Once an approver approves it, the same call goes
+    through **once** (`approved_panel`) and only until the approval's hour, counted from the call, is over: approving
+    starts no new hour. The approval is then settled, so a third identical call asks anew, as does one with other
+    arguments; a repeat after a denial answers that it was denied (`denied`) and settles it. A repeat after the hour
+    finds no approval (it expired, and is gone) and waits for a new one. A caller without a member (a service token)
+    under a rule of the caller, without a form, is answered a tool error that no one can approve it (`not_approved`,
+    reason `no_approver`, recorded `denied`): no member could decide it in the panel.
+  - **The hash**: SHA-256 (hex) of the arguments in the JSON Canonicalization Scheme's form (RFC 8785) for what
+    arguments hold: object keys sorted by UTF-16 code units at every depth, arrays in order, no whitespace, strings and
+    numbers as `JSON.stringify` writes them; absent arguments are `{}` (`approvals/hash.ts`).
+  - **Expiry** deletes an approval (or form) an hour after its call, arguments and all, enforced both lazily and by the
+    alarm: every read ignores a row whose `expires_at` has passed, so an expired approval is never listed, shown
+    (`404`), decided or used, and the part's alarm (the earliest of the sessions' next time and the approvals'
+    `MIN(expires_at)`) deletes the rows. A decision deletes the arguments at once. Nothing says "expired": the approval
+    is gone, there is no `expired` status, reason or record value. The part reads the time from a `Clock`
+    (`ToolsPart.useClock`, the live one by default) so tests drive the hour with `TestClock`. Pending approvals are
+    not part of the org export.
+  - **Deciding** (`GET /approvals`, `GET /approvals/:id`, `POST /approvals/:id/decision` with `{decision: "approve" |
+    "deny"}`, a member route): an approval shows to its eligible approvers, with its arguments while it waits, and to
+    its caller, without them unless the caller is its approver; anyone else, org admins included, gets `404`. Only an
+    eligible approver decides (`403 forbidden` for the caller under a team or list rule), once (`409 conflict`) and
+    within its hour (`404` after). An approval's `status` is `pending`, `approved`, `used` (approved, and its call went
+    through once: beyond the issue's words, so the page can say so) or `denied`. The pending list holds the undecided approvals the member may decide or made; the panel groups it
+    by approver set (`apps/web` `/approvals`, and each approval's page at `/approvals/<id>`, the link's target). No email
+    or Slack notices.
+  - **Records**: a call that waits writes its usage record when it ends: when it answers pending (`tool_outcome`
+    `approval_pending`, `approval` `pending`), is not approved (`not_approved`, `denied`: denied on its form or page,
+    or `no_approver`), or goes upstream (its outcome, `approved_elicitation` or `approved_panel`); a call no rule holds
+    records `none`. The form's first round (`InputRequiredResult`) writes none. Records never hold the arguments. The
+    outcomes `approval_pending` and `not_approved` are beyond #199's list, so usage tells a held call from a failed one.
+  - **Members**: a member who leaves takes the pending approvals (and forms) of their calls, arguments and all.
+  - **Rollout** (docs/DEVELOPMENT.md, "State RPC: expand, then contract"): `ToolsPart.callTool` returns the approval
+    outcomes (`approve`, `pending`, `not_approved`) only to a call with `approvalOutcomes: true`, which the endpoint
+    sends. An API Worker from before approvals sends a call without it (and without `approvalForm`, so it is never
+    asked to show a form) and gets those as `failed`, an outcome it knows, with words saying the call waits for
+    approval (with its id) or was not approved; it records them `upstream_failure` until it is replaced. The flag goes
+    once no deployed endpoint lacks it.
 - **Who a call is**: on the app host a call is the member's Access principal (`user:<email>`), as a panel request is,
   so what records calls (usage, logs) shows the member, not the MCP client; Access's tokens carry no client. A static API
   key on the API host is the key and its member.
@@ -3213,7 +3301,9 @@ behind the outbound guard. The part's one binding is optional: Browser Run's `BR
   read tools or named ones, stable ids `browser:<tool>`). A call is recorded in usage like any tool call (#199, on the
   shared credential) and charged a tool override's price, if an org admin set one. Overrides (hide, rename, re-describe, reclassify) and grants on
   it are stored by its id in the usual tables, kept while the binding is absent and applied again when it is back.
-  Renaming it, changing what it accepts, connecting or removing a credential, refreshing its list and removing it answer
+  So are its approval rules (#201), which apply as any toolkit's: `PATCH /toolkits/browser` with `approval_rules` only,
+  at its revision, stored in `built_in_toolkits` (its revision, rules and last change: it has no `toolkits` row), so
+  its revision moves on from 1 with each change of its rules. Renaming it, changing what it accepts, connecting or removing a credential, refreshing its list and removing it answer
   `403 built_in`; while it exists its name is taken (`409 name_taken`) for org and private toolkits alike, so a member
   cannot add a private copy (and adding a toolkit takes an MCP URL anyway). A stored toolkit, org or private, named
   `browser` from before the deployment had the binding is renamed once when the part starts with it, to the first
@@ -3254,12 +3344,14 @@ behind the outbound guard. The part's one binding is optional: Browser Run's `BR
     follows the pattern. The tests run the toolkit over a fake binding and over a fake second provider, which serves
     the same tools.
 - **Members and orgs**: a member who leaves takes their private toolkits, their private credentials on org toolkits,
-  the upstream sessions of those and the tool grants that named them (`memberLeft`); a deleted team takes its tool
-  grants (`teamDeleted`), and a removed toolkit its own (`tool_grants` is keyed by `toolkit_id` like the other
+  the upstream sessions of those, the tool grants that named them and the pending approvals of their calls, and leaves
+  every list of approvers (`memberLeft`); a deleted team takes its tool grants (`teamDeleted`), and a removed toolkit
+  its own and its pending approvals (`tool_grants` and `tool_approvals` are keyed by `toolkit_id` like the other
   tables) and its Spend limits; org deletion drops the tables (`wipe()`), and Tools' org-deletion step has nothing
   else to delete: its usage records go with Models' step, which deletes every usage row of the org. Tools
   keeps nothing in KV or a per-isolate cache; the cross-org suite (`apps/app/test/org-isolation.test.ts`) checks that
-  one org's toolkits are neither listed nor reached by id from another, that its tool grants are its own, and that a
-  call goes on in its own org's upstream session. The org export lists the toolkits the caller reaches with their
-  credentials' kinds and their overrides, never a secret, and for an org admin each org toolkit's tool grants (subjects
-  by email or team name, as Models' grants; tools `all`, `read` or the named tools' upstream names; `updated_at`).
+  one org's toolkits are neither listed nor reached by id from another, that its tool grants are its own, that a
+  call goes on in its own org's upstream session, and that a member finds only their own org's pending approvals. The
+  org export lists the toolkits the caller reaches with their credentials' kinds, their overrides and their approval
+  rules, never a secret, and for an org admin each org toolkit's tool grants (subjects by email or team name, as
+  Models' grants; tools `all`, `read` or the named tools' upstream names; `updated_at`).

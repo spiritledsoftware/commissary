@@ -122,6 +122,11 @@ a part's methods) is made in steps, one release apart:
 2. **Switch** the callers to it.
 3. **Contract**: remove the old method or field a release later, once no deployed caller uses it.
 
+A new kind of result goes the same way: an old caller that meets a value it does not know may fail on it. So the new
+caller asks for the new values with a flag, and the state Worker answers a call without it in the old values: the
+Tools part's `callTool` returns the approval outcomes only to a call with `approvalOutcomes: true` (#201), and an API
+Worker from before them gets a call that waits for approval as `failed`.
+
 A deploy of the state Worker resets its Durable Objects, and the calls in flight fail with "Durable Object reset because
 its code was updated." The app and the API Worker retry such a call once, on a new stub (`retryOnCodeUpdate`,
 `packages/state/src/code-update-retry.ts`, applied to the `env` in each `src/index.ts`); a call cut off by the reset

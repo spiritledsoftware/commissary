@@ -191,7 +191,7 @@ describe("a tool call's usage record", () => {
       failed: 0,
       cost_micros: 0,
       unpriced: 0,
-      approval: null,
+      approval: "none",
       exported_at: null,
       request_bytes: JSON.stringify({ query: marker }).length,
     });

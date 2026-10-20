@@ -32,7 +32,12 @@
  * asks for another area (`UsageFilter.area`), so a model-only consumer reads what it read before; the queue never hands
  * out a tool call. Retention and org deletion delete by org, tool calls included.
  */
-import type { ToolCallRecordOutcome, UsageArea, UsageAreaFilter } from "@commissary/contract/usage";
+import type {
+  ToolCallApproval,
+  ToolCallRecordOutcome,
+  UsageArea,
+  UsageAreaFilter,
+} from "@commissary/contract/usage";
 import type { OrgId } from "@commissary/core";
 import type { AuthIndexer } from "../management/auth-index.ts";
 import { normalizeToCanonicalUuid } from "../session-routing/identity.ts";
@@ -109,8 +114,8 @@ export interface UsageRow {
   tool_outcome: ToolCallRecordOutcome | null;
   request_bytes: number | null;
   response_bytes: number | null;
-  /** How an approval rule decided a tool call; `null` until approvals exist (#201). */
-  approval: string | null;
+  /** How an approval rule decided a tool call (#201); `null` on a record from before approvals. */
+  approval: ToolCallApproval | null;
 }
 
 /** The columns of a model attempt's row (Models writes those); a tool call's are Tools'. */

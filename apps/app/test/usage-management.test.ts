@@ -172,6 +172,7 @@ describe("tool calls (#199)", () => {
       requestBytes: 10,
       responseBytes: 20,
       costMicros: 0,
+      approval: "approved_panel",
     });
 
   type Records = { readonly records: ReadonlyArray<Record<string, unknown>> };
@@ -206,6 +207,7 @@ describe("tool calls (#199)", () => {
         failed: true,
         fail: { status_code: 200 },
         cost_micros: 0,
+        approval: "approved_panel",
       }),
     ]);
 

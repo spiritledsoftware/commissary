@@ -253,6 +253,59 @@ describe("the browser toolkit", () => {
     ]);
   });
 
+  it("takes approval rules as any toolkit, and nothing else of an edit: its marked tools' calls wait", async () => {
+    const stub = withBrowser();
+    const tools = stub.tools();
+
+    await grant(stub, { subject: EVERYONE, toolkit: "browser", tools: { kind: "all" } });
+
+    expect(
+      await tools.updateToolkit(
+        ADMIN,
+        "browser",
+        1,
+        { approval_rules: { tools: [{ id: "browser:screenshot" }] } },
+        "test",
+      ),
+    ).toMatchObject({
+      ok: true,
+      value: {
+        revision: 2,
+        approval_rules: { tools: [{ id: "browser:screenshot", approver: { kind: "caller" } }] },
+      },
+    });
+    // A stale revision, or anything but its rules, is refused.
+    expect(
+      await tools.updateToolkit(ADMIN, "browser", 1, { approval_rules: null }, "test"),
+    ).toMatchObject({ ok: false, error: "conflict" });
+    expect(
+      await tools.updateToolkit(ADMIN, "browser", 2, { name: "web", approval_rules: null }, "test"),
+    ).toMatchObject({ ok: false, error: "built_in" });
+    expect(
+      await tools.updateToolkit(ALICE, "browser", 2, { approval_rules: null }, "test"),
+    ).toMatchObject({ ok: false, error: "forbidden" });
+
+    expect(
+      await tools.callTool(
+        ALICE,
+        {
+          name: "browser_screenshot",
+          arguments: { url: "https://example.com/" },
+          principalId: "user:alice",
+          approvalOutcomes: true,
+        },
+        POLICY,
+      ),
+    ).toMatchObject({ outcome: "pending", usage: { toolkitId: "browser", approval: "pending" } });
+    expect(await call(stub, ALICE, "browser_links")).toMatchObject({ content: expect.any(Array) });
+
+    // Cleared, the call goes to the provider.
+    await tools.updateToolkit(ADMIN, "browser", 2, { approval_rules: null }, "test");
+    expect(await call(stub, ALICE, "browser_screenshot")).toMatchObject({
+      content: expect.any(Array),
+    });
+  });
+
   it("serves the same tools whatever browser provider is behind it", async () => {
     const browserRun = withBrowser();
     const other = withOtherProvider();

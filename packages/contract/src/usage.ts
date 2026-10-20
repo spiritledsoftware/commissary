@@ -30,8 +30,12 @@ export type UsageAreaFilter = typeof UsageAreaFilter.Type;
 
 /**
  * What a tool call came to: the upstream's result (`success`, or `tool_error` when it says `isError`), an upstream or
- * transport failure (`upstream_failure`), a Spend limit without room (`refused`, before the upstream is reached), or a
- * tool that needs the member's own credential, which they have not connected (`needs_credential`).
+ * transport failure (`upstream_failure`), a Spend limit without room (`refused`, before the upstream is reached), a
+ * tool that needs the member's own credential, which they have not connected (`needs_credential`), or, under an
+ * approval rule (#201), an answer that the call waits for its approver (`approval_pending`) or that it was not
+ * approved (`not_approved`: it was denied, on its form or its approval page, or no one could approve it: a caller
+ * without a member under a rule whose approver is the caller, from a client that shows no forms); neither reaches the
+ * upstream. The last two are beyond the outcomes #199 named, so a usage view can tell a held call from a failed one.
  */
 export const ToolCallRecordOutcome = Schema.Literals([
   "success",
@@ -39,9 +43,29 @@ export const ToolCallRecordOutcome = Schema.Literals([
   "upstream_failure",
   "refused",
   "needs_credential",
+  "approval_pending",
+  "not_approved",
 ]);
 
 export type ToolCallRecordOutcome = typeof ToolCallRecordOutcome.Type;
+
+/**
+ * How an approval rule decided a tool call (#201): `none` (no rule applies), `approved_elicitation` (its caller approved
+ * it on a form), `approved_panel` (an approver approved it on its approval page; this is the repeat that went through),
+ * `denied` (denied on its form or its approval page, or no one could approve it; outcome `not_approved`), or `pending`
+ * (the call answered that it waits; outcome `approval_pending`). An approval that expires is deleted with its hour: a
+ * call repeated after it waits anew (`pending`), so no record says `expired`. Absent on the records of tool calls
+ * from before approvals.
+ */
+export const ToolCallApproval = Schema.Literals([
+  "none",
+  "approved_elicitation",
+  "approved_panel",
+  "denied",
+  "pending",
+]);
+
+export type ToolCallApproval = typeof ToolCallApproval.Type;
 
 /** The filters every read takes besides its own: the area, and a tool call's toolkit and tool (its stable id). */
 const areaFilters = {
@@ -237,8 +261,8 @@ export const UsageRecord = Schema.Struct({
   /** Bytes of the call's arguments and of its result as JSON; never their content. */
   request_bytes: optional(Schema.Number),
   response_bytes: optional(Schema.Number),
-  /** How an approval rule decided the call; absent until approvals exist (#201). */
-  approval: optional(Schema.String),
+  /** How an approval rule decided the call (#201); absent on a record from before approvals. */
+  approval: optional(ToolCallApproval),
 });
 
 export type UsageRecord = typeof UsageRecord.Type;

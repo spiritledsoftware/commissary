@@ -3,8 +3,8 @@
  * member reaches, written into the usage database's `usage_records` beside Models' model attempts (`area = 'tools'`,
  * `migrations/usage/0010_usage_tool_calls.sql`). It holds who called (org, principal, member, API key through the
  * principal), which credential served (the toolkit's shared one, or the member's private one), the toolkit and the
- * tool's stable id, the outcome, the latency, the sizes of the arguments and of the result, and the cost; never the
- * arguments or the result. A call on a private credential or of a private toolkit's tool is marked private, so only its
+ * tool's stable id, the outcome, the latency, the sizes of the arguments and of the result, the cost, and how an
+ * approval rule decided it (#201); never the arguments or the result. A call on a private credential or of a private toolkit's tool is marked private, so only its
  * member reads it, as a model attempt on a private credential.
  *
  * Tools writes its own records rather than through Models' usage writer, which is the model attempt's (token
@@ -13,7 +13,7 @@
  * response path (`ctx.waitUntil`), as model records are; a failed write is logged and the record dropped.
  */
 import { Effect } from "effect";
-import type { ToolCallRecordOutcome } from "@commissary/contract/usage";
+import type { ToolCallApproval, ToolCallRecordOutcome } from "@commissary/contract/usage";
 import { type OrgId, runAfterResponse } from "@commissary/core";
 import { ToolsEnv } from "../env.ts";
 
@@ -39,6 +39,8 @@ export interface ToolCallRecord {
   readonly responseBytes: number;
   /** Micro-USD: the tool's price when the call was charged, else 0. */
   readonly costMicros: number;
+  /** How an approval rule decided the call (#201): `none` when none made it wait. */
+  readonly approval: ToolCallApproval;
 }
 
 /**
@@ -70,6 +72,7 @@ const COLUMNS = [
   "tool_outcome",
   "request_bytes",
   "response_bytes",
+  "approval",
 ] as const;
 
 const INSERT_SQL = `INSERT OR IGNORE INTO usage_records (${COLUMNS.join(", ")}) VALUES (${COLUMNS.map(
@@ -106,6 +109,7 @@ const rowOf = (
   tool_outcome: record.outcome,
   request_bytes: record.requestBytes,
   response_bytes: record.responseBytes,
+  approval: record.approval,
 });
 
 /** Stores one record (idempotent on `request_id`). */

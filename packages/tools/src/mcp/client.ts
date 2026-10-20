@@ -651,7 +651,7 @@ const callIn = Effect.fnUntraced(function* (
 
   const result = yield* resultOf(decodeCall, answer.reply, "tools/call");
 
-  // Commissary asked for no input capability; a server that asks anyway is not passed on (#201 relays approvals).
+  // Commissary asked for no input capability; a server that asks anyway is not passed on.
   if (result["resultType"] === "input_required")
     return yield* protocolError("the MCP server asked for input Commissary does not pass on");
 

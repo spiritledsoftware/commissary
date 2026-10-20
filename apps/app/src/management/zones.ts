@@ -34,6 +34,7 @@ export const PANEL_SECTIONS = [
   "limits",
   "management-keys",
   "people",
+  "approvals",
   "assets",
 ] as const;
 
