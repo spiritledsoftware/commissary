@@ -9,6 +9,10 @@
  * to by their stable id, the toolkit's id and the tool's upstream name (`id`: `<toolkit id>:<upstream name>`), so
  * overrides survive renames and refreshes. Edits of a toolkit or an override name its revision in `If-Match` (0 for a
  * new override).
+ *
+ * Prices (#199, ADR 0038): an org admin may price a call of an org toolkit's tools, in micro-USD (1 USD = 1,000,000),
+ * on the toolkit (`PATCH /toolkits/:id`, `price_micros`) and per tool in its override, which wins (`0` makes one tool of
+ * a priced toolkit free). A tool without a price costs nothing. A private toolkit takes no price (`422 invalid`).
  */
 import { Schema, Tuple } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
@@ -125,6 +129,8 @@ export const ToolkitView = Schema.Struct({
     private_count: optional(Schema.Int),
   }),
   tool_list: ToolListStatus,
+  /** What a call of its tools costs in micro-USD, unless a tool's override prices it; absent: free. */
+  price_micros: optional(Schema.Number),
   /**
    * A private toolkit whose name an org toolkit took later: it wins for its owner, who should rename it (ADR 0037).
    */
@@ -194,6 +200,8 @@ export const UpdateToolkit = Schema.Struct({
   name: optional(Schema.String),
   /** Org toolkits only. */
   accepts: optional(CredentialsAccepted),
+  /** Org toolkits only: a whole number of micro-USD per call, 0 or more; `null` clears it (calls are free). */
+  price_micros: optional(Schema.NullOr(Schema.Number)),
 });
 
 export type UpdateToolkit = typeof UpdateToolkit.Type;
@@ -206,6 +214,8 @@ export const ToolOverrideView = Schema.Struct({
   name: optional(Schema.String),
   description: optional(Schema.String),
   class: optional(ToolClass),
+  /** What a call of the tool costs in micro-USD, whatever its toolkit's price. */
+  price_micros: optional(Schema.Number),
   updated_at: Schema.String,
   updated_by: Schema.String,
 });
@@ -221,6 +231,8 @@ export const ToolView = Schema.Struct({
   input_schema: optional(Schema.Record(Schema.String, Schema.Json)),
   annotations: optional(Schema.Record(Schema.String, Schema.Json)),
   class: ToolClass,
+  /** What a call costs in micro-USD: its override's price, else its toolkit's; absent: free. */
+  price_micros: optional(Schema.Number),
   flags: Schema.Struct({
     /** The full name was cut to 46 characters and ends in a hash: rename it. */
     shortened: Schema.Boolean,
@@ -252,6 +264,8 @@ export const SetToolOverride = Schema.Struct({
   name: optional(Schema.NullOr(Schema.String)),
   description: optional(Schema.NullOr(Schema.String)),
   class: optional(Schema.NullOr(ToolClass)),
+  /** Org toolkits only: micro-USD per call, a whole number, 0 or more, that wins over the toolkit's price. */
+  price_micros: optional(Schema.NullOr(Schema.Number)),
 });
 
 export type SetToolOverride = typeof SetToolOverride.Type;
@@ -293,7 +307,10 @@ export class ToolsGroup extends HttpApiGroup.make("tools").add(
     success: ConnectedToolkitView.pipe(HttpApiSchema.status(201)),
     error: managementErrors,
   }),
-  /** Rename, or change which credentials an org toolkit accepts; `409 conflict` when the revision is stale. */
+  /**
+   * Rename, change which credentials an org toolkit accepts, or price its calls; `409 conflict` when the revision is
+   * stale, `422 invalid` for a price on a private toolkit or one that is not a whole number of micro-USD, 0 or more.
+   */
   HttpApiEndpoint.patch("update", "/toolkits/:id", {
     ...idParam,
     ...IfMatch,
@@ -337,8 +354,9 @@ export class ToolsGroup extends HttpApiGroup.make("tools").add(
     error: managementErrors,
   }),
   /**
-   * `409 name_taken` (a rename to a full name in use), `409 conflict` (a stale revision). Clearing the override of a
-   * tool its source no longer lists answers {@link RemovedToolOverride}.
+   * `409 name_taken` (a rename to a full name in use), `409 conflict` (a stale revision), `422 invalid` (a price on a
+   * private toolkit's tool, or one that is not a whole number of micro-USD, 0 or more). Clearing the override of a tool
+   * its source no longer lists answers {@link RemovedToolOverride}.
    */
   HttpApiEndpoint.put("override", "/toolkits/:id/overrides", {
     ...idParam,

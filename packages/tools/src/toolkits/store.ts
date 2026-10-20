@@ -38,7 +38,7 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS toolkits (
      id TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL, source TEXT NOT NULL, owner TEXT NOT NULL,
      accepts TEXT NOT NULL, revision INTEGER NOT NULL, created_at INTEGER NOT NULL, created_by TEXT NOT NULL,
-     updated_at INTEGER NOT NULL, updated_by TEXT NOT NULL, list_built_at INTEGER, list_error TEXT
+     updated_at INTEGER NOT NULL, updated_by TEXT NOT NULL, list_built_at INTEGER, list_error TEXT, price_micros INTEGER
    )`,
   `CREATE TABLE IF NOT EXISTS toolkit_credentials (
      toolkit_id TEXT NOT NULL, owner TEXT NOT NULL, kind TEXT NOT NULL, param TEXT NOT NULL, secret TEXT NOT NULL,
@@ -50,7 +50,7 @@ const SCHEMA = [
    )`,
   `CREATE TABLE IF NOT EXISTS tool_overrides (
      toolkit_id TEXT NOT NULL, upstream_name TEXT NOT NULL, hidden INTEGER NOT NULL, name TEXT, description TEXT,
-     class TEXT, revision INTEGER NOT NULL, updated_at INTEGER NOT NULL, updated_by TEXT NOT NULL,
+     class TEXT, revision INTEGER NOT NULL, updated_at INTEGER NOT NULL, updated_by TEXT NOT NULL, price_micros INTEGER,
      PRIMARY KEY (toolkit_id, upstream_name)
    )`,
   `CREATE TABLE IF NOT EXISTS toolkit_sessions (
@@ -74,6 +74,8 @@ export interface Toolkit {
   readonly updatedBy: string;
   readonly listBuiltAt: number | undefined;
   readonly listError: string | undefined;
+  /** What a call of its tools costs, in micro-USD, unless a tool's override says otherwise (#199); undefined: free. */
+  readonly priceMicros: number | undefined;
 }
 
 /** A credential without its secret. */
@@ -110,6 +112,8 @@ export interface ToolOverride {
   readonly name: string | undefined;
   readonly description: string | undefined;
   readonly toolClass: ToolClass | undefined;
+  /** What a call of the tool costs, in micro-USD, whatever its toolkit's price (#199); undefined: the toolkit's. */
+  readonly priceMicros: number | undefined;
   readonly revision: number;
   readonly updatedAt: number;
   readonly updatedBy: string;
@@ -121,7 +125,8 @@ export interface StoredOverride extends ToolOverride {
 }
 
 /** The SQL condition of an override that sets something (not a tombstone); the negation of `cleared` in `overrideOf`. */
-const LIVE_OVERRIDE = `(hidden = 1 OR name IS NOT NULL OR description IS NOT NULL OR class IS NOT NULL)`;
+const LIVE_OVERRIDE = `(hidden = 1 OR name IS NOT NULL OR description IS NOT NULL OR class IS NOT NULL
+  OR price_micros IS NOT NULL)`;
 
 interface ToolkitRow {
   [column: string]: SqlStorageValue;
@@ -138,6 +143,7 @@ interface ToolkitRow {
   updated_by: string;
   list_built_at: number | null;
   list_error: string | null;
+  price_micros: number | null;
 }
 
 interface CredentialRow {
@@ -176,6 +182,7 @@ interface OverrideRow {
   name: string | null;
   description: string | null;
   class: string | null;
+  price_micros: number | null;
   revision: number;
   updated_at: number;
   updated_by: string;
@@ -204,6 +211,7 @@ const toolkitOf = (row: ToolkitRow): Toolkit => ({
   updatedBy: row.updated_by,
   listBuiltAt: orUndefined(row.list_built_at),
   listError: orUndefined(row.list_error),
+  priceMicros: orUndefined(row.price_micros),
 });
 
 const credentialOf = (row: CredentialRow): ToolkitCredential => ({
@@ -234,11 +242,17 @@ const overrideOf = (row: OverrideRow): StoredOverride => ({
   description: orUndefined(row.description),
   // SAFETY: the store writes `class` from a decoded `ToolClass`.
   toolClass: orUndefined(row.class) as ToolClass | undefined,
+  priceMicros: orUndefined(row.price_micros),
   revision: row.revision,
   updatedAt: row.updated_at,
   updatedBy: row.updated_by,
   // The negation of LIVE_OVERRIDE, its SQL form: change both together.
-  cleared: row.hidden === 0 && row.name === null && row.description === null && row.class === null,
+  cleared:
+    row.hidden === 0 &&
+    row.name === null &&
+    row.description === null &&
+    row.class === null &&
+    row.price_micros === null,
 });
 
 /** Where a credential's secret is sealed: a value opens only where it was written. */
@@ -269,6 +283,17 @@ export class ToolkitStore {
       sql.exec("DROP TABLE toolkit_sessions");
 
     for (const statement of SCHEMA) sql.exec(statement);
+
+    // Prices (#199) came after the first toolkits: a table from before gets the column, every price unset (free).
+    for (const table of ["toolkits", "tool_overrides"]) {
+      const columns = sql
+        .exec<{ name: string }>(`PRAGMA table_info(${table})`)
+        .toArray()
+        .map((column) => column.name);
+
+      if (!columns.includes("price_micros"))
+        sql.exec(`ALTER TABLE ${table} ADD COLUMN price_micros INTEGER`);
+    }
   }
 
   // --- toolkits ---------------------------------------------------------------------------------------------------
@@ -286,7 +311,8 @@ export class ToolkitStore {
     return row === undefined ? undefined : toolkitOf(row);
   }
 
-  insertToolkit(toolkit: Omit<Toolkit, "listBuiltAt" | "listError">): void {
+  /** A new toolkit has no price: an org admin sets one afterwards (`updateToolkit`). */
+  insertToolkit(toolkit: Omit<Toolkit, "listBuiltAt" | "listError" | "priceMicros">): void {
     this.#sql.exec(
       `INSERT INTO toolkits (id, kind, name, source, owner, accepts, revision, created_at, created_by, updated_at,
          updated_by, list_built_at, list_error)
@@ -305,18 +331,24 @@ export class ToolkitStore {
     );
   }
 
-  /** Renames a toolkit or changes what it accepts, moving its revision on. */
+  /** Renames a toolkit, changes what it accepts or its price, moving its revision on. */
   updateToolkit(
     id: string,
-    change: { readonly name: string; readonly accepts: CredentialsAccepted },
+    change: {
+      readonly name: string;
+      readonly accepts: CredentialsAccepted;
+      readonly priceMicros: number | undefined;
+    },
     by: string,
     now: number,
   ): void {
     this.#sql.exec(
-      `UPDATE toolkits SET name = ?, accepts = ?, revision = revision + 1, updated_at = ?, updated_by = ?
+      `UPDATE toolkits SET name = ?, accepts = ?, price_micros = ?, revision = revision + 1, updated_at = ?,
+         updated_by = ?
        WHERE id = ?`,
       change.name,
       change.accepts,
+      change.priceMicros ?? null,
       now,
       by,
       id,
@@ -614,6 +646,7 @@ export class ToolkitStore {
           readonly name: string | undefined;
           readonly description: string | undefined;
           readonly toolClass: ToolClass | undefined;
+          readonly priceMicros: number | undefined;
         }
       | undefined,
     revision: number,
@@ -622,14 +655,15 @@ export class ToolkitStore {
   ): void {
     this.#sql.exec(
       `INSERT OR REPLACE INTO tool_overrides
-         (toolkit_id, upstream_name, hidden, name, description, class, revision, updated_at, updated_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (toolkit_id, upstream_name, hidden, name, description, class, price_micros, revision, updated_at, updated_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       toolkitId,
       upstreamName,
       value?.hidden === true ? 1 : 0,
       value?.name ?? null,
       value?.description ?? null,
       value?.toolClass ?? null,
+      value?.priceMicros ?? null,
       revision,
       now,
       by,

@@ -50,6 +50,7 @@ import {
   ToolkitStore,
   TOOLS_TABLES,
 } from "./toolkits/store.ts";
+import { priceRefusal } from "./toolkits/price.ts";
 import { secretRefusal } from "./toolkits/secret.ts";
 
 /** Why a call of the part was refused; the routes answer each with its status. */
@@ -140,6 +141,8 @@ export interface ToolkitExport {
   readonly source: string;
   readonly private: boolean;
   readonly accepts: CredentialsAccepted;
+  /** Micro-USD per call of an org toolkit's tools (#199). */
+  readonly price_micros?: number;
   readonly credentials: ReadonlyArray<{
     readonly slot: CredentialSlot;
     readonly kind: ToolkitSecret["kind"];
@@ -151,6 +154,7 @@ export interface ToolkitExport {
     readonly name?: string;
     readonly description?: string;
     readonly class?: "read" | "write";
+    readonly price_micros?: number;
   }>;
   /** An org toolkit's tool grants, in an org admin's export only. */
   readonly grants?: ReadonlyArray<ExportedToolGrant>;
@@ -421,8 +425,9 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   }
 
   /**
-   * Renames a toolkit, or changes which credentials an org toolkit accepts. A credential it no longer accepts is kept,
-   * shown inactive and not used, until it accepts that kind again or its holder removes it.
+   * Renames a toolkit, changes which credentials an org toolkit accepts, or prices its calls (#199; `null` clears the
+   * price). A credential it no longer accepts is kept, shown inactive and not used, until it accepts that kind again or
+   * its holder removes it.
    */
   updateToolkit(
     viewer: Viewer,
@@ -431,6 +436,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     change: {
       readonly name?: string | undefined;
       readonly accepts?: CredentialsAccepted | undefined;
+      readonly price_micros?: number | null | undefined;
     },
     by: string,
   ): ToolsResult<ToolkitView> {
@@ -445,6 +451,10 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     if (change.accepts !== undefined && current.owner !== undefined && change.accepts !== "private")
       return refuse("invalid", "a private toolkit takes its owner's credential only");
 
+    const price = this.#priceChange(current, change.price_micros);
+
+    if (!price.ok) return price;
+
     const name = change.name ?? current.name;
 
     if (name !== current.name) {
@@ -455,7 +465,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
     this.#store.updateToolkit(
       id,
-      { name, accepts: change.accepts ?? current.accepts },
+      { name, accepts: change.accepts ?? current.accepts, priceMicros: price.value },
       by,
       Date.now(),
     );
@@ -1089,18 +1099,25 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       if (taken) return refuse("name_taken", `another tool is named ${full.name}`);
     }
 
+    // The whole override: a price the input leaves out is cleared, as every other field is.
+    const price = this.#priceChange(toolkit, input.price_micros ?? null);
+
+    if (!price.ok) return price;
+
     const value = {
       hidden: input.hidden ?? false,
       name,
       description: input.description ?? undefined,
       toolClass: input.class ?? undefined,
+      priceMicros: price.value,
     };
 
     const empty =
       !value.hidden &&
       value.name === undefined &&
       value.description === undefined &&
-      value.toolClass === undefined;
+      value.toolClass === undefined &&
+      value.priceMicros === undefined;
 
     // Past every revision the row reached, a tombstone's included.
     const next = (stored?.revision ?? 0) + 1;
@@ -1115,6 +1132,25 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     return resolved === undefined
       ? ok({ id: stableId(id, tool), removed: true })
       : ok(toolView(resolved));
+  }
+
+  /**
+   * The price a write leaves on `toolkit` or one of its tools: `change` (`null` clears it, `undefined` keeps the
+   * toolkit's), or why not. A private toolkit takes none: a member may not price the tools of their own (ADR 0038).
+   */
+  #priceChange(
+    toolkit: Toolkit,
+    change: number | null | undefined,
+  ): ToolsResult<number | undefined> {
+    if (change === undefined) return ok(toolkit.priceMicros);
+
+    if (change === null) return ok(undefined);
+
+    if (toolkit.owner !== undefined)
+      return refuse("invalid", "a private toolkit's tools take no price");
+    const invalid = priceRefusal(change);
+
+    return invalid === undefined ? ok(change) : refuse("invalid", invalid);
   }
 
   // --- export -----------------------------------------------------------------------------------------------------
@@ -1151,6 +1187,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
           source: toolkit.source,
           private: toolkit.owner !== undefined,
           accepts: toolkit.accepts,
+          ...(toolkit.priceMicros === undefined ? {} : { price_micros: toolkit.priceMicros }),
           credentials,
           overrides: this.#store.overrides(toolkit.id).map((override) => ({
             tool: override.upstreamName,
@@ -1158,6 +1195,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
             ...(override.name === undefined ? {} : { name: override.name }),
             ...(override.description === undefined ? {} : { description: override.description }),
             ...(override.toolClass === undefined ? {} : { class: override.toolClass }),
+            ...(override.priceMicros === undefined ? {} : { price_micros: override.priceMicros }),
           })),
           ...(admin && toolkit.owner === undefined
             ? {
@@ -1321,6 +1359,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
         ...(admin && toolkit.owner === undefined ? { private_count: privateCount } : {}),
       },
       tool_list: this.#listStatus(toolkit),
+      ...(toolkit.priceMicros === undefined ? {} : { price_micros: toolkit.priceMicros }),
       ...(resolution.renameSuggested.has(toolkit.id) ? { rename_suggested: true } : {}),
       ...(resolution.shadowed.has(toolkit.id) ? { shadowed: true } : {}),
     };
@@ -1368,6 +1407,7 @@ const toolView = (tool: ResolvedTool): ToolView => {
     ...(tool.tool?.inputSchema === undefined ? {} : { input_schema: tool.tool.inputSchema }),
     ...(tool.tool?.annotations === undefined ? {} : { annotations: tool.tool.annotations }),
     class: tool.toolClass,
+    ...(tool.priceMicros === undefined ? {} : { price_micros: tool.priceMicros }),
     flags: {
       shortened: tool.shortened,
       renamed: tool.renamed,
@@ -1384,6 +1424,7 @@ const toolView = (tool: ResolvedTool): ToolView => {
             ...(override.name === undefined ? {} : { name: override.name }),
             ...(override.description === undefined ? {} : { description: override.description }),
             ...(override.toolClass === undefined ? {} : { class: override.toolClass }),
+            ...(override.priceMicros === undefined ? {} : { price_micros: override.priceMicros }),
             updated_at: iso(override.updatedAt),
             updated_by: override.updatedBy,
           },
