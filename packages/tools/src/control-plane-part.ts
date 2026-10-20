@@ -172,6 +172,8 @@ import type { BuiltInToolkit, StoredToolkit, Toolkit } from "./toolkits/toolkit.
 import { NO_ALLOWANCE, networkProblem, normalizedNetwork } from "./sandbox/network.ts";
 import type { SandboxProvider } from "./sandbox/provider.ts";
 import { SandboxSessionStore, type TrackedSession } from "./sandbox/sessions.ts";
+import { BrowserCrawlStore } from "./browser/crawls.ts";
+import type { BrowserCrawlProvider } from "./browser/provider.ts";
 
 /** Why a call of the part was refused; the routes answer each with its status. */
 export type ToolsErrorCode =
@@ -223,6 +225,9 @@ const REFRESH_RECHECK_MS = 30_000;
 
 /** The alarm's token refreshes at once. */
 const REFRESH_CONCURRENCY = 4;
+
+/** Browser crawls cancelled at once when a member leaves or the org is deleted (#270). */
+const CRAWL_CANCEL_CONCURRENCY = 4;
 
 /**
  * What signs a request on a credential in: its secret (an OAuth credential's current access token as a bearer), or
@@ -724,6 +729,9 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   readonly #sandbox: SandboxProvider | undefined;
   /** The org's browser profiles (#215) and the grants on shared ones. */
   readonly #profiles: ProfileStore;
+  /** Who started each of the org's browser crawls (#270), and the browser provider's crawls they run at. */
+  readonly #crawls: BrowserCrawlStore;
+  readonly #browserCrawls: BrowserCrawlProvider | undefined;
   /** What the part reads the time from: the live clock, or a test's (`useClock`). */
   #clock: Clock.Clock = Clock.Clock.defaultValue();
 
@@ -746,6 +754,8 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     this.#sandboxSessions = new SandboxSessionStore(ctx.storage.sql);
     this.#sandbox = providers.sandbox;
     this.#profiles = new ProfileStore(ctx.storage.sql, core.secrets);
+    this.#crawls = new BrowserCrawlStore(ctx.storage.sql);
+    this.#browserCrawls = providers.browser?.crawls;
     this.#yieldBuiltInNames();
   }
 
@@ -769,11 +779,12 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   }
 
   /**
-   * Forgets the upstream sessions older than seven days (ADR 0038) and the sandbox sessions the sandbox ended for want
-   * of use (#222), deletes the pending approvals (and forms) that expired (#201) and refreshes the tokens of the OAuth
-   * credentials that expire soon (#202), then wakes up when the next of these is due. Tool lists are rebuilt by the
-   * cron task. Each token refresh stands alone: one that throws is logged and tried again after {@link
-   * REFRESH_RETRY_MS}, and the others, the pruning and the next wake-up go on.
+   * Forgets the upstream sessions older than seven days (ADR 0038), the sandbox sessions the sandbox ended for want
+   * of use (#222) and the browser crawls whose pages the provider no longer keeps (#270), deletes the pending approvals
+   * (and forms) that expired (#201) and refreshes the tokens of the OAuth credentials that expire soon (#202), then
+   * wakes up when the next of these is due. Tool lists are rebuilt by the cron task. Each token refresh stands alone:
+   * one that throws is logged and tried again after {@link REFRESH_RETRY_MS}, and the others, the pruning and the next
+   * wake-up go on.
    */
   async alarm(now: number): Promise<number | null> {
     const due = this.#store.refreshesDue(now);
@@ -812,7 +823,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
   /**
    * Prunes what is due at `now`; answers the part's next wake-up, the earliest of the sessions' (upstream and sandbox),
-   * the approvals' and the credentials' token refreshes (none before `refreshFrom`).
+   * the browser crawls', the approvals' and the credentials' token refreshes (none before `refreshFrom`).
    */
   #nextWakeUp(now: number, refreshFrom = now): number | null {
     const refresh = this.#store.nextRefreshAt();
@@ -820,6 +831,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     const wakes = [
       this.#store.pruneSessions(now),
       this.#sandboxSessions.prune(now),
+      this.#crawls.prune(now),
       this.#approvals.prune(now),
       refresh === null ? null : Math.max(refresh, refreshFrom),
     ].filter((at): at is number => at !== null);
@@ -841,14 +853,18 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   /**
    * Zero data retention (ADR 0027): a member's private toolkits, private credentials and private browser profiles go
    * with them, and so do the tool and profile grants that named them and the pending approvals of their calls (#201).
-   * They leave every list of approvers. Their open sandbox sessions (#222) are deleted at once, with their files.
+   * They leave every list of approvers. Their open sandbox sessions (#222) are deleted at once, with their files, and
+   * their browser crawls (#270) that may still be running are cancelled at the provider (as far as it answers) before
+   * the part forgets them all.
    */
   async memberLeft(member: string): Promise<void> {
     await this.#purgeSandboxSessions(this.#sandboxSessions.sessions({ member }));
+    await this.#cancelCrawls(this.#crawls.mayRun(this.#now(), { member }));
 
     this.#core.transaction(() => {
       this.#store.deleteMember(member);
       this.#oauth.deleteMember(member);
+      this.#crawls.deleteMember(member);
       this.#grants.forget({ kind: "member", id: member });
       this.#profiles.deleteOwner(member);
       this.#profiles.forgetSubject({ kind: "member", id: member });
@@ -880,6 +896,52 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       purged,
       remaining: this.#sandboxSessions.sessions().length,
     };
+  }
+
+  /**
+   * Cancels up to `limit` of the org's browser crawls that may still be running (#270), and forgets them: Tools' step
+   * of deleting the org (`org-deletion.ts`), within its budget, before `wipe` drops the rest of the log. Answers how
+   * many it asked the provider to cancel and how many are left.
+   */
+  async purgeBrowserCrawls(
+    limit: number,
+  ): Promise<{ readonly purged: number; readonly remaining: number }> {
+    const ids = this.#crawls.mayRun(this.#now(), { limit });
+    const purged = await this.#cancelCrawls(ids);
+
+    this.#crawls.forget(ids);
+
+    return { purged, remaining: this.#crawls.mayRun(this.#now()).length };
+  }
+
+  /**
+   * Cancels the crawls `ids` at the browser provider, a few at a time, as far as it answers: a crawl that already
+   * ended, or a provider that fails, is logged and passed over, as the crawl ends by itself at its page limit or after
+   * seven days. Answers how many it asked to cancel (none without the provider's crawls: the deployment lost its token).
+   */
+  async #cancelCrawls(ids: ReadonlyArray<string>): Promise<number> {
+    const crawls = this.#browserCrawls;
+
+    if (crawls === undefined || ids.length === 0) return 0;
+
+    await Effect.runPromise(
+      Effect.forEach(
+        ids,
+        (id) =>
+          crawls
+            .cancel(id)
+            .pipe(
+              Effect.catchTag("BrowserProviderError", (error) =>
+                Effect.logWarning("browser crawl not cancelled").pipe(
+                  Effect.annotateLogs({ status: error.status ?? "none" }),
+                ),
+              ),
+            ),
+        { concurrency: CRAWL_CANCEL_CONCURRENCY, discard: true },
+      ),
+    );
+
+    return ids.length;
   }
 
   /**
@@ -2620,6 +2682,8 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       const { builtIn } = serving;
       const { principalId } = call;
       let opened = false;
+      let crawlStarted = false;
+      const crawler = { member: viewer.member, principal: principalId ?? "" };
 
       const result = await Effect.runPromise(
         builtIn.call(tool.upstreamName, call.arguments, {
@@ -2643,6 +2707,19 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
             used: (id) => this.#sandboxSessions.used(id, now),
             ended: (id) => this.#sandboxSessions.ended([id]),
           },
+          // A browser crawl is its starter's, member and principal (#270), as a session is.
+          crawls: {
+            started: (id) => {
+              crawlStarted = true;
+              this.#crawls.started({
+                id,
+                toolkitId: builtIn.toolkit.id,
+                ...crawler,
+                startedAt: now,
+              });
+            },
+            owns: (id) => this.#crawls.owns(id, crawler),
+          },
           policy,
           now,
           // The toolkit with what the org set on it (its network ceiling).
@@ -2650,8 +2727,9 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
         }),
       );
 
-      // A new sandbox session ends a day after its last use: the part wakes up then to forget it.
-      if (opened) await this.#core.wakeUpChanged(this.#nextWakeUp(now));
+      // A new sandbox session ends a day after its last use, and a new crawl is kept 21 days: the part wakes up then to
+      // forget it.
+      if (opened || crawlStarted) await this.#core.wakeUpChanged(this.#nextWakeUp(now));
 
       if (price > 0) ledger.charge(ledger.scopes(spender, charged), price, this.#now());
 

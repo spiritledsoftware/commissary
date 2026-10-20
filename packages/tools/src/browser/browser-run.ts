@@ -5,13 +5,15 @@
  * go back to the client and are kept nowhere, Browser Run's cache included.
  *
  * A failure is Browser Run's own message about the page (its `errors`), or a short one of Commissary's when it could not
- * be reached or answered something unreadable. A screenshot or PDF larger than {@link MAX_FILE_BYTES} is refused rather
- * than returned, as a tool result travels in one JSON answer.
+ * be reached or answered something unreadable (`browser-run-http.ts`, shared with the crawls' adapter). A screenshot or
+ * PDF larger than {@link MAX_FILE_BYTES} is refused rather than returned, as a tool result travels in one JSON answer.
  */
 import { Effect, Schema } from "effect";
+import { cappedBody, compact, decoded, fail, refusal } from "./browser-run-http.ts";
 import {
-  BrowserProviderError,
+  type BrowserCrawlProvider,
   type BrowserProvider,
+  type BrowserProviderError,
   type PageArguments,
   type QuickActionArguments,
   type QuickActionName,
@@ -29,18 +31,6 @@ export const MAX_FILE_BYTES = 10 * 1024 * 1024;
 
 /** How long one Quick Action may take: the page's navigation, its waits and the action. */
 const QUICK_ACTION_TIMEOUT = "3 minutes";
-
-/** The longest message of Browser Run's that is passed on. */
-const MAX_MESSAGE_LENGTH = 500;
-
-/** `value` without the keys whose values are undefined (`exactOptionalPropertyTypes`). */
-const compact = <T extends Record<string, unknown>>(
-  value: T,
-): { [K in keyof T]?: Exclude<T[K], undefined> } =>
-  // SAFETY: the entries kept are `value`'s own, minus those that are undefined.
-  Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined)) as {
-    [K in keyof T]?: Exclude<T[K], undefined>;
-  };
 
 /** Browser Run's options for loading the page, never from its cache. */
 const pageOptions = (args: PageArguments) => ({
@@ -74,10 +64,6 @@ const pageOptions = (args: PageArguments) => ({
   }),
 });
 
-const ErrorBody = Schema.Struct({
-  errors: Schema.Array(Schema.Struct({ message: Schema.String })),
-});
-
 const TextBody = Schema.Struct({ result: Schema.String });
 
 const JsonBody = Schema.Struct({ result: Schema.Json });
@@ -86,101 +72,11 @@ const AccessibilityTreeBody = Schema.Struct({
   result: Schema.Struct({ accessibilityTree: Schema.Json }),
 });
 
-const fail = (message: string, status?: number) =>
-  new BrowserProviderError({
-    message,
-    ...(status === undefined ? {} : { status }),
-  });
-
-const unreadable = (status: number) =>
-  fail("Browser Run answered something Commissary could not read", status);
-
-/** The JSON body of `response`, decoded with `schema`. */
-const decoded = <S extends Schema.Decoder<unknown>>(response: Response, schema: S) =>
-  Effect.tryPromise({
-    try: () => response.json(),
-    catch: () => unreadable(response.status),
-  }).pipe(
-    Effect.flatMap((json) =>
-      Schema.decodeUnknownEffect(schema)(json).pipe(
-        Effect.mapError(() => unreadable(response.status)),
-      ),
-    ),
-  );
-
-/** Browser Run's own words about a refused or failed action. */
-const refusal = (response: Response) =>
-  decoded(response, ErrorBody).pipe(
-    Effect.map(({ errors }) => errors.map((error) => error.message).join("; ")),
-    Effect.orElseSucceed(() => ""),
-    Effect.flatMap((message) =>
-      Effect.fail(
-        fail(
-          message === ""
-            ? `Browser Run answered ${response.status}`
-            : message.slice(0, MAX_MESSAGE_LENGTH),
-          response.status,
-        ),
-      ),
-    ),
-  );
-
-/** Stops reading a body; a stream that fails to cancel is left to the runtime, never a defect. */
-const cancel = (stream: { cancel(): Promise<void> }) =>
-  Effect.tryPromise(() => stream.cancel()).pipe(Effect.ignore);
-
-/**
- * The bytes of `response`'s body, read chunk by chunk and given up (the rest cancelled) as soon as they pass
- * {@link MAX_FILE_BYTES}: an oversized file is never held whole.
- */
-const cappedBody = (response: Response, tooLarge: BrowserProviderError) =>
-  Effect.gen(function* () {
-    if (response.body === null) return new Uint8Array();
-    const reader = response.body.getReader();
-    const chunks: Array<Uint8Array> = [];
-    let size = 0;
-
-    for (;;) {
-      const chunk = yield* Effect.tryPromise({
-        try: () => reader.read(),
-        catch: () => unreadable(response.status),
-      }).pipe(Effect.onInterrupt(() => cancel(reader)));
-
-      if (chunk.done) break;
-      size += chunk.value.byteLength;
-
-      if (size > MAX_FILE_BYTES) {
-        yield* cancel(reader);
-
-        return yield* tooLarge;
-      }
-
-      chunks.push(chunk.value);
-    }
-
-    const data = new Uint8Array(size);
-    let offset = 0;
-
-    for (const chunk of chunks) {
-      data.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
-
-    return data;
-  });
-
 /** A screenshot or PDF, at most {@link MAX_FILE_BYTES}. */
 const file = (response: Response, fallbackType: string) =>
   Effect.gen(function* () {
     const tooLarge = fail(`the file is larger than ${MAX_FILE_BYTES / 1024 / 1024} MiB`);
-
-    if (Number(response.headers.get("content-length") ?? "0") > MAX_FILE_BYTES) {
-      if (response.body !== null) yield* cancel(response.body);
-
-      return yield* tooLarge;
-    }
-
-    const data = yield* cappedBody(response, tooLarge);
+    const data = yield* cappedBody(response, MAX_FILE_BYTES, tooLarge);
     const mimeType = (response.headers.get("content-type") ?? fallbackType).split(";")[0]?.trim();
 
     return {
@@ -319,11 +215,16 @@ const run = <K extends QuickActionName>(
 
 /**
  * Browser Run behind the deployment's `browser` binding, as a {@link BrowserProvider}: its sessions' browsers are
- * `browser-run-sessions.ts`'s, which the session's Durable Object reaches over the same binding.
+ * `browser-run-sessions.ts`'s, which the session's Durable Object reaches over the same binding, and its crawls, when
+ * the deployment has an API token for them, `browser-run-crawls.ts`'s (#270).
  */
-export const browserRun = (binding: BrowserRunBinding): BrowserProvider => ({
+export const browserRun = (
+  binding: BrowserRunBinding,
+  crawls?: BrowserCrawlProvider,
+): BrowserProvider => ({
   id: BROWSER_RUN,
   sessions: true,
+  ...(crawls === undefined ? {} : { crawls }),
   quickAction: (request) =>
     run(binding, request.action, request.args).pipe(
       Effect.timeoutOrElse({

@@ -45,6 +45,8 @@ export default defineConfig({
                 },
                 // One that gains the binding when a test says so, and restarts it (#212).
                 UPGRADED_CONTROL_PLANE: { className: "UpgradedControlPlane", useSQLite: true },
+                // One with Browser Run and the account token of its crawls (#270).
+                CRAWL_CONTROL_PLANE: { className: "CrawlControlPlane", useSQLite: true },
                 // The browser sessions' objects (#213), over a fake provider's browsers.
                 BROWSER_SESSIONS: { className: "BrowserSession", useSQLite: true },
                 // The sandbox toolkit with Cloudflare's sandbox, and with a fake second sandbox provider (#222).

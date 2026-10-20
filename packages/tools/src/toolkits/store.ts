@@ -39,8 +39,9 @@ import type { StoredSecret } from "./secret.ts";
  * approvals', `approvals/store.ts`), which the part's `wipe` drops with the browser profiles' (`PROFILE_TABLES`,
  * `browser/profiles.ts`, which outlive any toolkit and so are not in this list). `built_in_toolkits` holds what an org says of a built-in toolkit
  * beyond its grants and overrides, which has no `toolkits` row: its approval rules (#201), the sandbox toolkit's network
- * ceiling (#222), and their revision; `sandbox_sessions`, the org's open sandbox sessions (`sandbox/sessions.ts`)
- * (test/control-plane.test.ts checks the list). Each but `toolkits` is keyed by `toolkit_id`, so {@link
+ * ceiling (#222), and their revision; `sandbox_sessions`, the org's open sandbox sessions (`sandbox/sessions.ts`);
+ * `browser_crawls`, who started each of the org's browser crawls (`browser/crawls.ts`) (test/control-plane.test.ts
+ * checks the list). Each but `toolkits` is keyed by `toolkit_id`, so {@link
  * ToolkitStore.deleteToolkit} deletes a toolkit's rows from all of them.
  */
 export const TOOLS_TABLES = [
@@ -56,6 +57,7 @@ export const TOOLS_TABLES = [
   "toolkit_schemas",
   ...OAUTH_TABLES,
   "sandbox_sessions",
+  "browser_crawls",
 ] as const;
 
 /** The most bytes of an uploaded document one row holds: well within SQLite's limit on one value (2 MB). */

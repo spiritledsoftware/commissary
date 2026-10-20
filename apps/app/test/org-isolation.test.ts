@@ -3,11 +3,12 @@
 // the others: KV, the signature and Antigravity state, the per-isolate caches, SessionState, the D1 usage records
 // through every query the management API exposes, the ControlPlane addressed by key prefix and by slug, and Tools'
 // toolkits by name and by id, their tool grants, the upstream MCP sessions their calls keep, the pending approvals
-// of their calls, Commissary Cloud's OAuth grants for MCP clients, the browser sessions, the sessions of the built-in
-// sandbox toolkit with its network ceiling, the hosted agents, their runs and the runs' own objects, and the browser
-// profiles with their grants.
+// of their calls, Commissary Cloud's OAuth grants for MCP clients, the browser sessions and crawls, the sessions of the
+// built-in sandbox toolkit with its network ceiling, the hosted agents, their runs and the runs' own objects, and the
+// browser profiles with their grants.
 // Each store is one `storeCase` in `STORES`: a new store (tool calls, approvals, runs, profiles) adds one line there
 // (docs/DEVELOPMENT.md, "Tests").
+import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import type { SandboxNetwork } from "@commissary/contract/tools";
 import { Effect, Layer, ManagedRuntime, Result } from "effect";
@@ -58,6 +59,7 @@ import {
   storeCase,
 } from "./support/org-isolation.ts";
 import {
+  BrowserCrawlStore,
   browserSessionStub,
   type FakeMcpServer,
   fakeMcpServer,
@@ -1173,6 +1175,31 @@ const STORES: ReadonlyArray<StoreCase> = [
         ? profile.name.slice(`${name}-`.length)
         : undefined;
     },
+    value: (index) => `org${index}`,
+  }),
+  // The browser toolkit's crawls (#270): each org logs a crawl of the same id, started by the same member through an API
+  // key named after its value, and each finds only its own starter. The tests' ControlPlane has no Browser Run, so no
+  // crawl tools: the case logs and reads the crawls in each org's ControlPlane as the Tools part does.
+  storeCase("controlplane: browser crawls", {
+    write: async (org, name, value) => {
+      await runInDurableObject(env.CONTROL_PLANE.getByName(org.id), (_instance, state) => {
+        new BrowserCrawlStore(state.storage.sql).started({
+          id: name,
+          toolkitId: "browser",
+          member: "iso-member",
+          principal: `key:${value}`,
+          startedAt: Date.now(),
+        });
+      });
+    },
+    read: async (org, name) =>
+      await runInDurableObject(env.CONTROL_PLANE.getByName(org.id), (_instance, state) => {
+        const crawls = new BrowserCrawlStore(state.storage.sql);
+
+        return ["org1", "org2", "org3"].find((value) =>
+          crawls.owns(name, { member: "iso-member", principal: `key:${value}` }),
+        );
+      }),
     value: (index) => `org${index}`,
   }),
   // The sandbox toolkit's network ceiling (#222): each org's admin allows one host of its own, and each finds only its own.

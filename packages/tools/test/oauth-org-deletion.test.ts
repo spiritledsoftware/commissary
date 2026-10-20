@@ -80,8 +80,8 @@ describe("Tools' org deletion step", () => {
       orgDeletionStep.pipe(Effect.provideService(ToolsEnv, env)),
     );
 
-    // One call: the ControlPlane, which has no sandbox sessions to delete.
-    expect(await step(org, 400)).toEqual({ complete: true, calls: 1 });
+    // Two calls of the ControlPlane, which has no sandbox sessions to delete and no browser crawls to cancel.
+    expect(await step(org, 400)).toEqual({ complete: true, calls: 2 });
     expect(await grants.keyIds(org, "member-a")).toEqual(["key-a"]);
   });
 });

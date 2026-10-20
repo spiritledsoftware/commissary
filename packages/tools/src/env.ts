@@ -6,7 +6,8 @@
  * database Models' records go into too), and on Commissary Cloud its OAuth server for MCP clients (#200: `OAUTH_KV`,
  * `MCP_OAUTH_ISSUER`, `MCP_OAUTH_RESOURCE`). Its state is the ControlPlane's, and it reaches MCP servers through the
  * global `fetch` behind the outbound guard. Its ControlPlane part reads values of the state Worker's apart from these
- * (`ToolsPartEnv`, `toolkits/built-in.ts`): Browser Run's optional `BROWSER` (#212), `OWN_HOSTS`, which its alarm's
+ * (`ToolsPartEnv`, `toolkits/built-in.ts`): Browser Run's optional `BROWSER` (#212) with its crawls' optional
+ * `BROWSER_RUN_ACCOUNT_ID` and `BROWSER_RUN_API_TOKEN` (#270), `OWN_HOSTS`, which its alarm's
  * token refreshes refuse (#202), and the sandbox's (#222) Worker Loader `LOADER` and `SandboxSession` namespace
  * `SANDBOX_SESSION`, which the sessions' objects read too (`SandboxSessionEnv`, `sandbox/cloudflare/session.ts`).
  */
@@ -51,7 +52,8 @@ type ToolsPartMethod =
   | "updateProfile"
   | "removeProfile"
   | "listProfileGrants"
-  | "writeProfileGrant";
+  | "writeProfileGrant"
+  | "purgeBrowserCrawls";
 
 /** The Tools part of an org's ControlPlane (`ToolsPart`) as Tools sees it: the methods it calls. */
 export type ToolsControlPlanePart = Pick<ToolsPart, ToolsPartMethod> & Rpc.RpcTargetBranded;

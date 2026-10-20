@@ -14,8 +14,11 @@
  * the options that would run script in the page (`addScriptTag`, ADR 0039: no tool runs JavaScript in the page), carry
  * sign-ins (`cookies`, `authenticate`, extra headers: logins are browser profiles' and handoff's, #213), render HTML
  * instead of a URL, choose a backend, or set Browser Run's cache (the provider never caches: results are not stored).
- * Crawling is not a Quick Action here: Browser Run's `/crawl` is on its REST API only, which needs an account API token
- * (docs/ARCHITECTURE.md "Tools").
+ *
+ * Crawling a site (#270, {@link BrowserCrawlProvider}) is asynchronous: starting a crawl answers the provider's id of
+ * the crawl job, by which its status and pages are read and it is cancelled. A provider may have no crawls: Browser
+ * Run's `/crawl` is on its REST API only, which needs an account API token (`browser-run-crawls.ts`). Who may reach a
+ * crawl (the member and principal that started it) is Commissary's code above the interface (`crawl-tools.ts`).
  */
 import { Schema } from "effect";
 import type { Effect } from "effect";
@@ -187,6 +190,136 @@ export type QuickActionArguments<K extends QuickActionName> =
 
 export type PageArguments = Schema.Struct<typeof PAGE>["Type"];
 
+const wildcards = (description: string) =>
+  optional(Schema.Array(Schema.String).annotate({ description }));
+
+/** The most pages one crawl may take unless the deployment says otherwise (`COMMISSARY_CRAWL_MAX_PAGES`). */
+export const DEFAULT_CRAWL_MAX_PAGES = 1000;
+
+/** Browser Run's own ceiling on a crawl's pages, above which no deployment may raise its own. */
+export const BROWSER_RUN_CRAWL_MAX_PAGES = 100_000;
+
+/** The most links deep a crawl follows from its starting URL. */
+export const MAX_CRAWL_DEPTH = 100;
+
+/**
+ * What a crawl takes, in Commissary's own words (Browser Run's names): the URL it starts from, how far it goes (at most
+ * `maxPages` pages, the deployment's cap, and {@link MAX_CRAWL_DEPTH} links deep: its browser time lands on the
+ * deployment's account), what it returns of each page and how a page is loaded. Left out, as for the Quick Actions:
+ * sign-ins (`cookies`, `authenticate`, extra headers), script in the page, Browser Run's cache (`maxAge`: results are
+ * not kept, #212), and the `json` format, which runs an AI model under the deployment's account (#212 leaves out
+ * `/json` for the same reason). A crawl's user agent is Browser Run's own. Arguments beyond these are dropped.
+ */
+export const crawlStartArguments = (maxPages: number) =>
+  Schema.Struct({
+    url: Schema.String.annotate({
+      description:
+        "The address the crawl starts from: a public https URL. Commissary refuses private addresses and its own hosts.",
+    }),
+    limit: optional(
+      Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: maxPages })).annotate({
+        description: `The most pages to crawl (default 10, at most ${maxPages}).`,
+      }),
+    ),
+    depth: optional(
+      Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: MAX_CRAWL_DEPTH })).annotate({
+        description: `How many links deep to follow from the starting URL (at most ${MAX_CRAWL_DEPTH}).`,
+      }),
+    ),
+    source: optional(
+      Schema.Literals(["all", "sitemaps", "links"]).annotate({
+        description:
+          "Where to find pages: the site's sitemaps, the links on its pages, or both (default all).",
+      }),
+    ),
+    formats: optional(
+      Schema.Array(Schema.Literals(["html", "markdown"]))
+        .check(Schema.isMinLength(1))
+        .annotate({ description: "What each page is returned as (default html)." }),
+    ),
+    render: optional(
+      Schema.Boolean.annotate({
+        description:
+          "Whether to load each page in a browser and run its JavaScript (default true); false fetches the HTML only, faster.",
+      }),
+    ),
+    modifiedSince: optional(
+      Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)).annotate({
+        description: "Only pages modified since this time, in Unix seconds.",
+      }),
+    ),
+    options: optional(
+      Schema.Struct({
+        includeExternalLinks: optional(
+          Schema.Boolean.annotate({
+            description: "Follow links to other domains (default false).",
+          }),
+        ),
+        includeSubdomains: optional(
+          Schema.Boolean.annotate({
+            description: "Follow links to subdomains of the starting URL (default false).",
+          }),
+        ),
+        includePatterns: wildcards(
+          "Only URLs matching one of these wildcard patterns (* any characters but /, ** any characters).",
+        ),
+        excludePatterns: wildcards(
+          "No URL matching one of these wildcard patterns; they win over includePatterns.",
+        ),
+      }).annotate({ description: "Which links the crawl follows." }),
+    ),
+    crawlPurposes: optional(
+      Schema.Array(Schema.Literals(["search", "ai-input", "ai-train"])).annotate({
+        description:
+          "What the content is for, checked against the sites' Content Signals (default all three); a site that refuses one of them refuses the crawl.",
+      }),
+    ),
+    contentUse: optional(
+      Schema.Literals(["reference", "full"]).annotate({
+        description:
+          "How fully the content is used, checked against the sites' Content Signals (default full).",
+      }),
+    ),
+    waitUntil: PAGE.waitUntil,
+    timeout: PAGE.timeout,
+    waitForSelector: PAGE.waitForSelector,
+    rejectResourceTypes: PAGE.rejectResourceTypes,
+  });
+
+export type CrawlStartArguments = ReturnType<typeof crawlStartArguments>["Type"];
+
+/** The status of one page of a crawl. */
+export const CRAWL_RECORD_STATUSES = [
+  "queued",
+  "completed",
+  "disallowed",
+  "skipped",
+  "errored",
+  "cancelled",
+] as const;
+
+/** Which of a crawl's pages to read: from where (a previous answer's cursor), how many, and of which status. */
+export interface CrawlPage {
+  readonly cursor?: string | undefined;
+  readonly limit: number;
+  readonly status?: (typeof CRAWL_RECORD_STATUSES)[number] | undefined;
+}
+
+/**
+ * A crawl job as its provider tells it: its status (Browser Run: `running`, `completed`, `errored`,
+ * `cancelled_by_user`, …), how many pages it has found and crawled, the pages asked for, each as the provider records it
+ * (its URL, status and content in the formats asked), and the cursor of the next pages, if there are more.
+ */
+export interface CrawlJob {
+  readonly id: string;
+  readonly status: string;
+  readonly total?: number | undefined;
+  readonly finished?: number | undefined;
+  readonly skipped?: number | undefined;
+  readonly records: ReadonlyArray<Schema.Json>;
+  readonly cursor?: string | undefined;
+}
+
 /** One Quick Action as the toolkit asks it of a provider. */
 export type QuickActionRequest = {
   readonly [K in QuickActionName]: {
@@ -354,6 +487,17 @@ export interface BrowserSessionProvider {
   readonly connect: (id: string) => Effect.Effect<ProviderBrowser, BrowserFailure>;
 }
 
+/**
+ * Crawls of a site (#270): started, read page by page while and after they run, and cancelled, each by the provider's
+ * id of the crawl job. The provider keeps a crawl's pages for a time of its own (Browser Run: 14 days after it ends).
+ */
+export interface BrowserCrawlProvider {
+  /** Starts a crawl; answers its id. The URL has passed the outbound guard. */
+  readonly start: (args: CrawlStartArguments) => Effect.Effect<string, BrowserProviderError>;
+  readonly result: (id: string, page: CrawlPage) => Effect.Effect<CrawlJob, BrowserProviderError>;
+  readonly cancel: (id: string) => Effect.Effect<void, BrowserProviderError>;
+}
+
 /** The service behind a browser toolkit, reached only through this interface. */
 export interface BrowserProvider {
   /** Which provider it is: the browser toolkit's source (`browser-run`). */
@@ -367,4 +511,6 @@ export interface BrowserProvider {
    * call that opened it.
    */
   readonly sessions: boolean;
+  /** Its crawls, when it has them; without, the toolkit has no crawl tools. */
+  readonly crawls?: BrowserCrawlProvider | undefined;
 }

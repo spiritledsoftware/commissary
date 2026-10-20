@@ -34,5 +34,8 @@ export { signInGrants } from "./support/sign-in-grants.ts";
 
 export { FakeBrowserSession } from "./support/fake-session-object.ts";
 
+/** Who started each of an org's browser crawls (#270), as the Tools part logs them: a store of the cross-org suite. */
+export { BrowserCrawlStore } from "../src/browser/crawls.ts";
+
 /** How the Tools part reaches an org's browser session by its id: the cross-org suite reaches them the same way. */
 export { browserSessionStub } from "../src/browser/session-object.ts";

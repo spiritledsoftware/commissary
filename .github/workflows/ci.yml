@@ -248,6 +248,12 @@ jobs:
       POLAR_ACCESS_TOKEN: ${{ secrets.POLAR_ACCESS_TOKEN }}
       POLAR_WEBHOOK_SECRET: ${{ secrets.POLAR_WEBHOOK_SECRET }}
       POLAR_PRODUCT_ID: ${{ vars.POLAR_PRODUCT_ID }}
+      # Browser Run's crawls (#270, docs/DEPLOY.md "Optional pieces"): an API token with "Browser Run - Edit" and its
+      # account (default CLOUDFLARE_ACCOUNT_ID); optional, without them the browser toolkit has no crawl tools. The
+      # pages of one crawl are capped at COMMISSARY_CRAWL_MAX_PAGES (default 1000).
+      BROWSER_RUN_API_TOKEN: ${{ secrets.BROWSER_RUN_API_TOKEN }}
+      BROWSER_RUN_ACCOUNT_ID: ${{ vars.BROWSER_RUN_ACCOUNT_ID }}
+      COMMISSARY_CRAWL_MAX_PAGES: ${{ vars.COMMISSARY_CRAWL_MAX_PAGES }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -346,6 +352,12 @@ jobs:
       POLAR_ACCESS_TOKEN: ${{ secrets.POLAR_ACCESS_TOKEN }}
       POLAR_WEBHOOK_SECRET: ${{ secrets.POLAR_WEBHOOK_SECRET }}
       POLAR_PRODUCT_ID: ${{ vars.POLAR_PRODUCT_ID }}
+      # Browser Run's crawls (#270, docs/DEPLOY.md "Optional pieces"): an API token with "Browser Run - Edit" and its
+      # account (default CLOUDFLARE_ACCOUNT_ID); optional, without them the browser toolkit has no crawl tools. The
+      # pages of one crawl are capped at COMMISSARY_CRAWL_MAX_PAGES (default 1000).
+      BROWSER_RUN_API_TOKEN: ${{ secrets.BROWSER_RUN_API_TOKEN }}
+      BROWSER_RUN_ACCOUNT_ID: ${{ vars.BROWSER_RUN_ACCOUNT_ID }}
+      COMMISSARY_CRAWL_MAX_PAGES: ${{ vars.COMMISSARY_CRAWL_MAX_PAGES }}
     steps:
       - name: Not set up
         if: env.CONFIGURED != 'true'

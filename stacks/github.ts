@@ -8,9 +8,10 @@
  *
  * The deploy settings (COMMISSARY_DOMAIN, COMMISSARY_APP_DOMAIN, ACCESS_*) come from `.env`, like `alchemy.run.ts`,
  * and so do Commissary Cloud's (SIGN_IN_*, TURNSTILE_*, …), written whenever `.env` sets them: previews labeled
- * `cloud-preview` need them even while production is self-hosted. The `cloud` environment (Commissary Cloud, which CI
- * deploys next to production, stage `cloud`) takes its settings from `.env.cloud` instead, and is left alone while
- * that file does not exist. Production and `cloud` get the sandbox's computer (#223) when `.env` (or `.env.cloud`) sets
+ * `cloud-preview` need them even while production is self-hosted; and so do the browser toolkit's crawls'
+ * (BROWSER_RUN_*, COMMISSARY_CRAWL_MAX_PAGES). The `cloud` environment (Commissary Cloud, which CI deploys next to
+ * production, stage `cloud`) takes its settings from `.env.cloud` instead, and is left alone while that file does not
+ * exist. Production and `cloud` get the sandbox's computer (#223) when `.env` (or `.env.cloud`) sets
  * `COMMISSARY_COMPUTER=on`, with its instance size; a preview gets it only with the `preview-computer` label (ci.yml).
  */
 import * as zones from "@distilled.cloud/cloudflare/zones";
@@ -55,6 +56,11 @@ const HOSTED_SECRETS = [
   "POLAR_WEBHOOK_SECRET",
 ] as const;
 
+/** The browser toolkit's crawls' settings (#270, docs/DEPLOY.md "Crawls"): GitHub variables, then GitHub secrets. */
+const CRAWL_VARIABLES = ["BROWSER_RUN_ACCOUNT_ID", "COMMISSARY_CRAWL_MAX_PAGES"] as const;
+
+const CRAWL_SECRETS = ["BROWSER_RUN_API_TOKEN"] as const;
+
 /** The `.env` value of `name`, trimmed; "" when unset. */
 const optional = (name: string) =>
   Config.String(name).pipe(
@@ -80,14 +86,18 @@ const computerVariables = (settings: {
       : "",
 });
 
-/** Commissary Cloud's GitHub variables and secrets, as set by the active config provider (unset ones left out). */
-const hostedConfig = Effect.gen(function* () {
+/**
+ * Commissary Cloud's and the crawls' GitHub variables and secrets, as set by the active config provider (unset ones left
+ * out).
+ */
+const passedConfig = Effect.gen(function* () {
   const variables: Record<string, string> = {};
   const secrets: Record<string, Redacted.Redacted> = {};
 
-  for (const name of HOSTED_VARIABLES) variables[name] = yield* optional(name);
+  for (const name of [...HOSTED_VARIABLES, ...CRAWL_VARIABLES])
+    variables[name] = yield* optional(name);
 
-  for (const name of HOSTED_SECRETS) {
+  for (const name of [...HOSTED_SECRETS, ...CRAWL_SECRETS]) {
     const value = yield* optional(name);
 
     // GitHub rejects empty secrets; an unset secret reads as "" in the workflow anyway.
@@ -133,7 +143,7 @@ export default Alchemy.Stack(
         ? undefined
         : yield* Effect.all({
             settings: readSettings(false, CLOUD_STAGE),
-            config: hostedConfig,
+            config: passedConfig,
           }).pipe(Effect.provideService(ConfigProvider.ConfigProvider, cloudFile));
 
     const [owner = "", repository = ""] = (yield* Config.String("GITHUB_REPOSITORY").pipe(
@@ -225,7 +235,7 @@ export default Alchemy.Stack(
       }),
     );
 
-    const { variables: hostedVariables, secrets: hostedSecrets } = yield* hostedConfig;
+    const { variables: passedVariables, secrets: passedSecrets } = yield* passedConfig;
 
     // Managed OAuth (ADR 0045), written only when it is on, and then only what differs from the defaults ("" is
     // skipped). Production's only: a cloud-preview deploy, which uses Preview, would be refused it, and a preview's
@@ -244,7 +254,7 @@ export default Alchemy.Stack(
       : {};
 
     const variables = {
-      ...hostedVariables,
+      ...passedVariables,
       CLOUDFLARE_ACCOUNT_ID: accountId,
       ACCESS_TEAM_DOMAIN: settings.teamDomain,
       ACCESS_ALLOW_EMAILS: settings.allowEmails.join(","),
@@ -258,7 +268,7 @@ export default Alchemy.Stack(
       CLOUDFLARE_API_TOKEN: deployToken.value,
       CF_ACCESS_CLIENT_ID: checkToken.clientId.pipe(Output.map((id) => Redacted.make(id))),
       CF_ACCESS_CLIENT_SECRET: checkSecret,
-      ...hostedSecrets,
+      ...passedSecrets,
     } satisfies Record<string, Redacted.Redacted | Output.Output<Redacted.Redacted>>;
 
     for (const [label, environment] of [

@@ -179,7 +179,29 @@ export interface Settings {
   readonly computer: boolean;
   /** `COMMISSARY_COMPUTER_INSTANCE`: the computer's instance size, one of Cloudflare's (default `standard-1`). */
   readonly computerInstance: ComputerInstance;
+  /**
+   * Browser Run's crawls (#270), which are on its REST API only: `BROWSER_RUN_API_TOKEN`, an API token with "Browser
+   * Run - Edit" (a secret), and the account it is of, `BROWSER_RUN_ACCOUNT_ID` (by default `CLOUDFLARE_ACCOUNT_ID`, the
+   * deploy's). Optional: without the token the browser toolkit has no crawl tools, and nothing else changes. Never under
+   * `alchemy dev` nor with the browser off, which have no browser toolkit. `COMMISSARY_CRAWL_MAX_PAGES` caps the pages
+   * of one crawl (default 1000), as each page's browser time lands on the deployment's Cloudflare account.
+   */
+  readonly browserCrawls: BrowserCrawlSettings | undefined;
 }
+
+/** The account and API token of Browser Run's crawls (`Settings.browserCrawls`). */
+export interface BrowserCrawlSettings {
+  readonly accountId: string;
+  readonly apiToken: Redacted.Redacted<string>;
+  /** `COMMISSARY_CRAWL_MAX_PAGES`: the most pages one crawl may take, from 1 to Browser Run's own ceiling. */
+  readonly maxPages: number;
+}
+
+/** The most pages of one crawl unless `COMMISSARY_CRAWL_MAX_PAGES` says otherwise. */
+const DEFAULT_CRAWL_MAX_PAGES = 1000;
+
+/** Browser Run's own ceiling on the pages of one crawl. */
+const BROWSER_RUN_CRAWL_MAX_PAGES = 100_000;
 
 const text = (name: string, fallback = "") =>
   Config.String(name).pipe(Config.withDefault(fallback));
@@ -360,6 +382,31 @@ const computerInstanceSetting = Effect.gen(function* () {
   );
 });
 
+/**
+ * `BROWSER_RUN_API_TOKEN`, the account it is of (`BROWSER_RUN_ACCOUNT_ID`, else `CLOUDFLARE_ACCOUNT_ID`; empty when
+ * neither is set) and the cap on a crawl's pages (`COMMISSARY_CRAWL_MAX_PAGES`; `undefined` when set to something other
+ * than a whole number from 1 to Browser Run's ceiling); `undefined` without the token.
+ */
+const browserCrawlSettings = Effect.gen(function* () {
+  const apiToken = yield* secret("BROWSER_RUN_API_TOKEN");
+
+  if (Redacted.value(apiToken) === "") return undefined;
+  const accountId = (yield* text("BROWSER_RUN_ACCOUNT_ID")).trim();
+
+  const maxPages = wholeNumber(
+    yield* text("COMMISSARY_CRAWL_MAX_PAGES"),
+    DEFAULT_CRAWL_MAX_PAGES,
+    1,
+  );
+
+  return {
+    accountId: accountId === "" ? (yield* text("CLOUDFLARE_ACCOUNT_ID")).trim() : accountId,
+    apiToken,
+    maxPages:
+      maxPages !== undefined && maxPages <= BROWSER_RUN_CRAWL_MAX_PAGES ? maxPages : undefined,
+  };
+});
+
 /** The auth host: `COMMISSARY_AUTH_DOMAIN` (`configured`), else `auth.<base domain>` (empty without a base domain). */
 const authHost = (configured: string, baseDomain: string): string => {
   if (configured !== "") return configured;
@@ -526,6 +573,8 @@ export const readSettings = (dev: boolean, stage: string) =>
     };
 
     const configuredOAuth = MANAGED_OAUTH_SETTINGS.filter((name) => setOAuth[name]);
+    const browser = yield* browserSetting;
+    const browserCrawls = yield* browserCrawlSettings;
 
     const settings: Settings = {
       hosted: hosted?.hosted,
@@ -554,13 +603,33 @@ export const readSettings = (dev: boolean, stage: string) =>
       devBypass: (yield* text("ACCESS_DEV_BYPASS", "dev@example.com")).trim(),
       secretsKeyGeneration: secretsKey.current,
       secretsKeyPreviousGeneration: secretsKey.previous,
-      browser: yield* browserSetting,
+      browser,
       computer: yield* computerSetting,
       computerInstance: yield* computerInstanceSetting,
+      browserCrawls:
+        dev || !browser || browserCrawls === undefined
+          ? undefined
+          : { ...browserCrawls, maxPages: browserCrawls.maxPages ?? DEFAULT_CRAWL_MAX_PAGES },
     };
 
     if (dev) return settings;
     const problems: Array<string> = [...(hosted?.problems ?? [])];
+
+    if (browserCrawls !== undefined && !browser)
+      yield* Effect.logWarning(
+        "BROWSER_RUN_API_TOKEN is ignored with COMMISSARY_BROWSER=off: there is no browser toolkit to crawl with",
+      );
+    else if (browserCrawls !== undefined) {
+      if (browserCrawls.accountId === "")
+        problems.push(
+          "BROWSER_RUN_API_TOKEN needs the account it is of: BROWSER_RUN_ACCOUNT_ID, or CLOUDFLARE_ACCOUNT_ID",
+        );
+
+      if (browserCrawls.maxPages === undefined)
+        problems.push(
+          `COMMISSARY_CRAWL_MAX_PAGES must be a whole number from 1 to ${BROWSER_RUN_CRAWL_MAX_PAGES}`,
+        );
+    }
 
     // A preview ignores the base domain and the app host: its Workers serve their workers.dev URLs.
     if (!preview) {
