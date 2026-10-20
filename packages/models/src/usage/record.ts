@@ -12,6 +12,7 @@ import {
   type TokenBreakdown,
   unclassifiedTokenBreakdown,
 } from "./accounting.ts";
+import type { UsageRun } from "@commissary/auth";
 import type { OrgId } from "@commissary/core";
 import type { UsageFailure } from "./failure.ts";
 import type { UsageCost } from "./pricing.ts";
@@ -73,6 +74,8 @@ export interface UsageRecord {
   readonly memberId?: string;
   /** Served by a private credential (ADR 0023): only its owner reads the record. */
   readonly private?: boolean;
+  /** The agent run the attempt is of (#227): its agent, the run and its starter. */
+  readonly run?: UsageRun;
   readonly authId: string;
   readonly authType: string;
   readonly source: string;

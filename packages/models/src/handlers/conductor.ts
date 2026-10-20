@@ -55,6 +55,7 @@ import type {
   ProviderExecutor,
 } from "../executor/types.ts";
 import type { Json } from "@commissary/json";
+import type { UsageRun } from "@commissary/auth";
 import { holdInvocation, CurrentOrg, type OrgId, outboundRefusalOf } from "@commissary/core";
 import { noteSelection, notePrincipal, RequestTrace } from "../observability/trace.ts";
 import type { SessionRouting } from "../session-routing/routing.ts";
@@ -150,6 +151,10 @@ export interface Prepared {
   readonly memberId?: string;
   /** The API key the request came with (Spend limits of a key apply to everything it spends; issue #71). */
   readonly apiKeyId?: string;
+  /** A shared agent's run (#227): the agent it acts as, whose reach is its definition (`PickRequest.agentId`). */
+  readonly agentId?: string;
+  /** The agent run the request is of (#227): what its usage records name of it. */
+  readonly run?: UsageRun;
   readonly callerScope: string;
   readonly endpoint: string;
   readonly session: PickSession | undefined;
@@ -299,6 +304,7 @@ export const conduct = <T, R>(
             orgId: prepared.orgId,
             ...(prepared.memberId === undefined ? {} : { memberId: prepared.memberId }),
             ...(credential.private === true ? { private: true } : {}),
+            ...(prepared.run === undefined ? {} : { run: prepared.run }),
             authId: credential.id,
             authType: credential.kind,
             source: credential.label ?? credential.id,
@@ -473,6 +479,7 @@ export const conduct = <T, R>(
               callerScope: prepared.callerScope,
               ...(prepared.memberId === undefined ? {} : { memberId: prepared.memberId }),
               ...(prepared.apiKeyId === undefined ? {} : { apiKeyId: prepared.apiKeyId }),
+              ...(prepared.agentId === undefined ? {} : { agentId: prepared.agentId }),
               excludedIds,
               retryRound: round,
               requestRetry: settings.requestRetry,
@@ -671,6 +678,7 @@ export const conduct = <T, R>(
           maxWaitMs: settings.maxWaitMs,
           ...(prepared.pinnedId === undefined ? {} : { pinnedAuthId: prepared.pinnedId }),
           ...(prepared.memberId === undefined ? {} : { memberId: prepared.memberId }),
+          ...(prepared.agentId === undefined ? {} : { agentId: prepared.agentId }),
           ...(prepared.disallowFreeAuth === true ? { disallowFreeCodex: true } : {}),
         });
 

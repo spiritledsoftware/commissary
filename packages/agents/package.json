@@ -20,6 +20,10 @@
     "@commissary/contract": "workspace:*",
     "@commissary/core": "workspace:*",
     "@commissary/state": "workspace:*",
+    "@earendil-works/chord": "1.3.0",
+    "@earendil-works/pi-ai": "1.3.0",
+    "@earendil-works/pi-durable": "1.3.0",
+    "@earendil-works/pi-mcp": "1.3.0",
     "effect": "catalog:"
   },
   "devDependencies": {

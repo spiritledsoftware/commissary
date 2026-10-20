@@ -1,11 +1,13 @@
 import { retryOnCodeUpdate } from "@commissary/state";
-import { makeWebHandler } from "./http/app.ts";
+import { handler } from "./http/handler.ts";
 import { misdirected } from "./http/hosts.ts";
 import { dispatchScheduled } from "./scheduled.ts";
 import { requestContext } from "./worker-env.ts";
 
-// The handler (and its router) is built once per isolate; `env`/`ctx` are provided per request.
-const { handler } = makeWebHandler();
+// Hosted agents' runs (#227): their Durable Object, which lives here (ADR 0030's amendment) and which the app Worker
+// binds by this Worker's script name, and the run gateway, the entrypoint through which a run reaches the client API
+// and the MCP endpoint as itself, over `ctx.exports` only (`http/run-gateway.ts`).
+export { AgentRun, AgentRunGateway } from "./http/run-gateway.ts";
 
 /**
  * The API Worker (ADR 0030): the client API and the cron jobs. Its Durable Objects are the state Worker's (apps/state),

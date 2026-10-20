@@ -1,7 +1,7 @@
 // Bindings and variables of the API Worker (ADR 0030). Deployed values come from the `Api` Worker's `env` in
 // `alchemy.run.ts`; keep both in sync. Tests bind the same names in `vitest.config.ts`. The Durable Object namespaces
-// are the state Worker's (apps/state), bound by script name; under `alchemy dev` they come over the app Worker's
-// dev-only bridge instead (src/dev.ts). `Env` is read only by the entries (`index.ts`, `dev.ts`, `scheduled.ts`) and
+// are the state Worker's (apps/state), bound by script name, but for the agent runs' (`AGENT_RUN`), defined here;
+// under `alchemy dev` the state Worker's come over its dev-only bridge instead (src/dev.ts). `Env` is read only by the entries (`index.ts`, `dev.ts`, `scheduled.ts`) and
 // tests; other code reads its package's view (`AuthConfig`, `StateEnv`, `ModelsEnv`, `BillingEnv`, `ApiBindings`:
 // `worker-env.ts`), which `Env` must satisfy.
 interface __ApiWorkerEnv {
@@ -69,6 +69,11 @@ interface __ApiWorkerEnv {
   SESSION_STATE: DurableObjectNamespace<import("@commissary/state-worker").SessionState>;
   /** The Platform registry: one object per deployment (`platformOf`, `@commissary/state`). */
   PLATFORM: DurableObjectNamespace<import("@commissary/state-worker").Platform>;
+  /**
+   * The agent runs (#227): this Worker's own class (`AgentRun`, src/http/run-gateway.ts; ADR 0030's amendment), one
+   * object per run, which the app Worker binds by this Worker's script name.
+   */
+  AGENT_RUN: DurableObjectNamespace<import("@commissary/agents/api").AgentRunObject>;
   // Not here on purpose: `DEV_STATE_BRIDGE`, bound under `alchemy dev` only (alchemy.run.ts) and typed by the dev entry
   // alone (`DevBridgedEnv`, src/dev.ts), so no deployed code can name it; the tests bind the objects instead.
 }

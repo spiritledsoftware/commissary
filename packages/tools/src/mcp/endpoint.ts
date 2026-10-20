@@ -13,15 +13,28 @@
  */
 import { Clock, Effect, Layer, type Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
-import { AccessPrincipal, viewerOf } from "@commissary/auth";
+import {
+  type AccessIdentity,
+  AccessPrincipal,
+  isSharedAgentRun,
+  usageRunOf,
+  viewerOf,
+} from "@commissary/auth";
 import type { Approver } from "@commissary/contract/approvals";
-import { boundedBodyText, CurrentOrg, CurrentOutboundPolicy, MCP_PATH } from "@commissary/core";
+import {
+  boundedBodyText,
+  CurrentOrg,
+  CurrentOutboundPolicy,
+  MCP_PATH,
+  SPEND_REFUSAL_META,
+} from "@commissary/core";
 import { panelPageUrl } from "@commissary/state";
 import { type Refusal, spendRefusalMessage } from "@commissary/state/spend";
 import type {
   ClientTool,
   FormAction,
   NotApprovedReason,
+  RunToolReach,
   ToolCall,
   ToolCallOutcome,
 } from "../control-plane-part.ts";
@@ -85,6 +98,19 @@ const listed = (tool: ClientTool): Schema.JsonObject => ({
   ...(tool.toolClass === "read" ? { annotations: READ_ANNOTATIONS } : {}),
 });
 
+/**
+ * A hosted agent's run (#227): its definition's tool scope, as the shared agent itself or as its member, and its
+ * starter, the caller of its approvals; `undefined` for any other caller.
+ */
+const runToolReach = (identity: AccessIdentity): RunToolReach | undefined =>
+  identity.principal.kind === "run"
+    ? {
+        toolScope: identity.principal.reach.toolScope,
+        asAgent: isSharedAgentRun(identity.principal),
+        starterMember: identity.principal.starter.id,
+      }
+    : undefined;
+
 /** What one request needs beyond its message: its era and the toolkits it narrows to. */
 interface Served {
   readonly era: Era;
@@ -99,9 +125,12 @@ const listTools = Effect.fnUntraced(function* (context: Served) {
   const identity = yield* AccessPrincipal;
   const viewer = viewerOf(identity);
   const apiKeyId = identity.principal.kind === "key" ? identity.principal.keyId : undefined;
+  const run = runToolReach(identity);
 
   const tools = yield* toolsControlPlane("clientTools", (stub) =>
-    stub.tools().clientTools(viewer, apiKeyId),
+    run === undefined
+      ? stub.tools().clientTools(viewer, apiKeyId)
+      : stub.tools().clientTools(viewer, apiKeyId, run),
   );
 
   return {
@@ -176,6 +205,13 @@ const toolText = (text: string): Schema.JsonObject => ({
 const toolError = (text: string): Schema.JsonObject => ({
   content: [{ type: "text", text }],
   isError: true,
+});
+
+/** A spend limit's refusal as an agent run gets it (#227): the tool error, and the refusal in `_meta`. */
+const runRefusal = (text: string): Schema.JsonObject => ({
+  content: [{ type: "text", text }],
+  isError: true,
+  _meta: { [SPEND_REFUSAL_META]: text },
 });
 
 /** Whether the client's retry says the member declined (or dismissed) the elicitation `key`. */
@@ -356,6 +392,7 @@ const callTool = Effect.fnUntraced(function* (request: RpcRequest, context: Serv
     arguments: args,
     toolkits: context.toolkits === undefined ? undefined : [...context.toolkits],
     apiKeyId: identity.principal.kind === "key" ? identity.principal.keyId : undefined,
+    run: runToolReach(identity),
     principalId: identity.principalId,
     // A 2025 client is never asked (see `toolResult`): it gets a pending approval's link.
     approvalForm: elicitsForms(context.era) ? approvalFormOf(request.params) : undefined,
@@ -373,7 +410,12 @@ const callTool = Effect.fnUntraced(function* (request: RpcRequest, context: Serv
   if (outcome.outcome === "approve")
     return resultAnswer(request.id, framed(context.era, approvalForm(name, outcome)));
 
-  const value = yield* toolResult(outcome, name, request, context);
+  // An agent run learns that a spend limit refused the call, and ends its turn with the refusal as the answer (#227).
+  const value =
+    outcome.outcome === "refused" && call.run !== undefined
+      ? runRefusal(refusedText(name, outcome.refusal))
+      : yield* toolResult(outcome, name, request, context);
+
   const answeredAt = yield* Clock.currentTimeMillis;
   const { usage } = outcome;
 
@@ -382,6 +424,7 @@ const callTool = Effect.fnUntraced(function* (request: RpcRequest, context: Serv
     orgId: org,
     principalId: identity.principalId,
     memberId: identity.memberId,
+    run: usageRunOf(identity.principal),
     toolkitId: usage.toolkitId,
     toolId: usage.toolId,
     credential: usage.credential,

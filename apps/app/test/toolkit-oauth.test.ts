@@ -1,6 +1,7 @@
 // OAuth 2 sign-ins to toolkits (#202) through the app Worker: the management routes that start a sign-in, read where it
 // stands and set a toolkit's own OAuth app, the callback page, which only the member who started the sign-in gets
-// through, and the outbound guard on every URL an admin enters (an OAuth app's, a client credentials grant's token URL), against a fake MCP server and a fake authorization
+// through, and the outbound guard on every URL an admin enters (an OAuth app's, a client credentials grant's token URL,
+// a toolkit's credential settings' URLs, #206), against a fake MCP server and a fake authorization
 // server served in workerd.
 import { afterAll, describe, expect, it } from "vitest";
 import { OUTBOUND_REFUSED_MESSAGE } from "@commissary/core";
@@ -34,11 +35,15 @@ const send = async (
   auth: string,
   method = "GET",
   body?: Payload,
-): Promise<{ status: number; body: unknown }> =>
-  await harness.json(`/v9/management/orgs/${org.slug}${path}`, {
-    ...(body === undefined ? { method } : jsonInit(method, body)),
-    auth,
-  });
+  extraHeaders: Readonly<Record<string, string>> = {},
+): Promise<{ status: number; body: unknown }> => {
+  const init: RequestInit = body === undefined ? { method } : jsonInit(method, body);
+  const headers = new Headers(init.headers);
+
+  for (const [name, value] of Object.entries(extraHeaders)) headers.set(name, value);
+
+  return await harness.json(`/v9/management/orgs/${org.slug}${path}`, { ...init, headers, auth });
+};
 
 /** An org with an org admin and a plain member. */
 const newOrg = async (): Promise<Org> => {
@@ -294,5 +299,63 @@ describe("the outbound guard on what an admin enters", () => {
       status: 422,
       body: { error: OUTBOUND_REFUSED_MESSAGE, path: "credential.token_url" },
     });
+  });
+
+  it("refuses the URLs of a toolkit's credential settings and an OAuth 1.0a app's request token URL (#206)", async () => {
+    const org = await newOrg();
+    const url = `${origin("mcp")}/mcp`;
+
+    fakeMcpServer(url, { tools: [{ name: "echo" }] });
+
+    const added = await send(org, "/toolkits", org.admin, "POST", { source: url, name: "kit" });
+    const { id, revision } = added.body as { id: string; revision: number };
+
+    expect(
+      await send(org, `/toolkits/${id}/oauth-app`, org.admin, "PUT", {
+        client_id: "consumer",
+        client_secret: "consumer-secret",
+        authorize_url: "https://api.example.com/oauth/authorize",
+        token_url: "https://api.example.com/oauth/access_token",
+        request_token_url: "https://10.0.0.1/oauth/request_token",
+      }),
+    ).toMatchObject({
+      status: 422,
+      body: { error: OUTBOUND_REFUSED_MESSAGE, path: "request_token_url" },
+    });
+
+    expect(
+      await send(org, "/toolkits", org.admin, "POST", {
+        source: url,
+        name: "kit2",
+        credential_settings: {
+          jwt: { algorithm: "RS256", token_url: "https://169.254.169.254/token" },
+        },
+      }),
+    ).toMatchObject({
+      status: 422,
+      body: { error: OUTBOUND_REFUSED_MESSAGE, path: "credential_settings.jwt.token_url" },
+    });
+
+    for (const [settings, path] of [
+      [{ app: { api_url: "https://192.168.0.1/api/v3" } }, "credential_settings.app.api_url"],
+      [
+        { token_exchange: { token_url: "http://auth.example.com/token" } },
+        "credential_settings.token_exchange.token_url",
+      ],
+      [
+        { compound: { base_url: "http://{tenant}.example.com/api" } },
+        "credential_settings.compound.base_url",
+      ],
+    ] as const)
+      expect(
+        await send(
+          org,
+          `/toolkits/${id}`,
+          org.admin,
+          "PATCH",
+          { credential_settings: settings },
+          { "if-match": String(revision) },
+        ),
+      ).toMatchObject({ status: 422, body: { error: OUTBOUND_REFUSED_MESSAGE, path } });
   });
 });

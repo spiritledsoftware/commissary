@@ -91,8 +91,14 @@ export type CredentialSlot = typeof CredentialSlot.Type;
 /**
  * A toolkit's sign-in at its source, as it is connected: none (a source that needs no sign-in), a bearer token, an API
  * key in a named header or query parameter, basic auth, or an OAuth 2 client credentials grant (#202; a shared
- * credential only), whose tokens Commissary mints and refreshes itself. It is sealed when stored and never answered. An
- * OAuth 2 authorization code sign-in is not connected this way but signed in to (`signIn`).
+ * credential only), whose tokens Commissary mints and refreshes itself. The other types (#206) take their settings from
+ * the toolkit's {@link CredentialSettings} (which must have the type's entry, but for `oauth1` and `app`): OAuth
+ * 1.0a tokens and NetSuite token-based auth (`tba`), signed per request; a JWT signed from a private key (`jwt`), sent
+ * as a bearer token or exchanged at a token endpoint (RFC 7523); a GitHub App's installation (`app`); a subject
+ * token exchanged at a token endpoint (`token_exchange`, RFC 8693); AWS keys (`aws_sigv4`), signed per request; and
+ * several named secret fields (`compound`) placed by the toolkit's template. Commissary caches the tokens it gets by
+ * exchange until near their expiry. It is sealed when stored and never answered. An OAuth 2 authorization code sign-in
+ * and an OAuth 1.0a sign-in are not connected this way but signed in to (`signIn`).
  */
 export const ToolkitSecret = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("none") }),
@@ -116,9 +122,187 @@ export const ToolkitSecret = Schema.Union([
     /** The scopes asked for, space separated. */
     scope: optional(Schema.String),
   }),
+  /** OAuth 1.0a (RFC 5849): the consumer's key and secret and the token's, which sign each request. */
+  Schema.Struct({
+    kind: Schema.Literal("oauth1"),
+    consumer_key: Schema.String,
+    consumer_secret: Schema.String,
+    token: Schema.String,
+    token_secret: Schema.String,
+  }),
+  /** NetSuite token-based auth: OAuth 1.0a with HMAC-SHA256 and the account as its realm (`tba` settings). */
+  Schema.Struct({
+    kind: Schema.Literal("tba"),
+    consumer_key: Schema.String,
+    consumer_secret: Schema.String,
+    token_id: Schema.String,
+    token_secret: Schema.String,
+  }),
+  /**
+   * A private key that signs a JWT (`jwt` settings: the algorithm, the claims, and a token endpoint to exchange it at):
+   * a PEM PKCS#8 key (`BEGIN PRIVATE KEY`), PKCS#1 for RSA (`BEGIN RSA PRIVATE KEY`), SEC1 for EC (`BEGIN EC PRIVATE
+   * KEY`), or an HMAC algorithm's shared secret as it is.
+   */
+  Schema.Struct({
+    kind: Schema.Literal("jwt"),
+    private_key: Schema.String,
+    /** The JWT header's `kid`. */
+    key_id: optional(Schema.String),
+    /** The `iss` claim (a Google service account's email, a DocuSign integration key). */
+    issuer: optional(Schema.String),
+    /** The `sub` claim (a user the key acts for). */
+    subject: optional(Schema.String),
+    /**
+     * The client the token request authenticates as, when the token endpoint asks for one beside the JWT (Box's
+     * `client_id` and `client_secret`, sent in the request's body).
+     */
+    client_id: optional(Schema.String),
+    client_secret: optional(Schema.String),
+  }),
+  /**
+   * A GitHub App: its id and private key sign the app's JWT, which is exchanged for an installation token of the
+   * installation chosen here, refreshed before it expires.
+   */
+  Schema.Struct({
+    kind: Schema.Literal("app"),
+    app_id: Schema.String,
+    private_key: Schema.String,
+    installation_id: Schema.String,
+  }),
+  /**
+   * A subject token exchanged for an access token at the `token_exchange` settings' token endpoint (RFC 8693), with the
+   * client's id and secret when the endpoint authenticates clients (HTTP Basic).
+   */
+  Schema.Struct({
+    kind: Schema.Literal("token_exchange"),
+    subject_token: Schema.String,
+    client_id: optional(Schema.String),
+    client_secret: optional(Schema.String),
+  }),
+  /** AWS keys, which sign each request (SigV4) for the `aws_sigv4` settings' region and service. */
+  Schema.Struct({
+    kind: Schema.Literal("aws_sigv4"),
+    access_key_id: Schema.String,
+    secret_access_key: Schema.String,
+    session_token: optional(Schema.String),
+  }),
+  /**
+   * Named secret fields (an account id, a key and a secret), placed into headers, the query or the base URL by the
+   * `compound` settings' template.
+   */
+  Schema.Struct({
+    kind: Schema.Literal("compound"),
+    fields: Schema.Record(Schema.String, Schema.String),
+  }),
 ]);
 
 export type ToolkitSecret = typeof ToolkitSecret.Type;
+
+/** The credential types a toolkit's credential is, connected or signed in to. */
+export const ToolkitCredentialKind = Schema.Literals([
+  "none",
+  "bearer",
+  "header",
+  "query",
+  "basic",
+  "client_credentials",
+  "oauth",
+  "oauth1",
+  "tba",
+  "jwt",
+  "app",
+  "token_exchange",
+  "aws_sigv4",
+  "compound",
+]);
+
+export type ToolkitCredentialKind = typeof ToolkitCredentialKind.Type;
+
+/** A JWT's signing algorithm (RFC 7518): RSA, RSA-PSS, ECDSA or HMAC. */
+export const JwtAlgorithm = Schema.Literals([
+  "RS256",
+  "RS384",
+  "RS512",
+  "PS256",
+  "PS384",
+  "PS512",
+  "ES256",
+  "ES384",
+  "HS256",
+  "HS384",
+  "HS512",
+]);
+
+export type JwtAlgorithm = typeof JwtAlgorithm.Type;
+
+/**
+ * The settings of a toolkit's credential types (#206), the toolkit's managers' (filled from the toolkit catalog later,
+ * #207): what is not secret and is the same for every credential of the toolkit, the shared one and members' private
+ * ones. A credential of a type whose entry is missing (but `oauth1` and `app`, whose entries are optional) is
+ * refused (`422 invalid`). Every URL passes the outbound guard on save and on use. Templates name a `compound`
+ * credential's fields as `{name}`, as integrations.sh's header patterns do (`Bearer {token}`).
+ */
+export const CredentialSettings = Schema.Struct({
+  /** OAuth 1.0a (connected or signed in to): its signature method (default `HMAC-SHA1`) and the header's `realm`. */
+  oauth1: optional(
+    Schema.Struct({
+      signature_method: optional(Schema.Literals(["HMAC-SHA1", "HMAC-SHA256"])),
+      realm: optional(Schema.String),
+    }),
+  ),
+  /** NetSuite token-based auth: the account id (`1234567_SB1`), its realm. */
+  tba: optional(Schema.Struct({ account_id: Schema.String })),
+  /**
+   * A signed JWT: its algorithm, its claims (`aud`, `scope` and any others; `iss` and `sub` come from the credential
+   * when it names them, and a JWT exchanged at a token endpoint must name its `iss`, RFC 7523 §3), how long it lives
+   * (at most an hour, the default), and the token endpoint it is exchanged at (RFC 7523's JWT bearer grant); without
+   * one the JWT itself is sent as a bearer token.
+   */
+  jwt: optional(
+    Schema.Struct({
+      algorithm: JwtAlgorithm,
+      token_url: optional(Schema.String),
+      /** The `aud` claim; default the token endpoint. */
+      audience: optional(Schema.String),
+      /** The scopes, space separated: the `scope` claim, and the token request's `scope` (RFC 7523 §2.1). */
+      scope: optional(Schema.String),
+      /** Seconds, 120 to 3600 (the default). */
+      lifetime_seconds: optional(Schema.Int),
+      /** More claims, as they are (they cannot set `iss`, `sub`, `aud`, `iat` or `exp`). */
+      claims: optional(Schema.Record(Schema.String, Schema.Json)),
+    }),
+  ),
+  /** A GitHub App: the API it gets installation tokens from (default `https://api.github.com`, GitHub Enterprise's). */
+  app: optional(Schema.Struct({ api_url: optional(Schema.String) })),
+  /** RFC 8693 token exchange: the endpoint and what the request names. */
+  token_exchange: optional(
+    Schema.Struct({
+      token_url: Schema.String,
+      /** Default `urn:ietf:params:oauth:token-type:access_token`. */
+      subject_token_type: optional(Schema.String),
+      requested_token_type: optional(Schema.String),
+      audience: optional(Schema.String),
+      resource: optional(Schema.String),
+      scope: optional(Schema.String),
+    }),
+  ),
+  /** AWS SigV4: the region (`us-east-1`) and service (`execute-api`, `s3`) requests are signed for. */
+  aws_sigv4: optional(Schema.Struct({ region: Schema.String, service: Schema.String })),
+  /**
+   * Where a `compound` credential's fields go: headers and query parameters by name, each a template of its value
+   * (`Bearer {token}`), and an OpenAPI toolkit's base URL (`https://{account_id}.example.com/api`, each field
+   * percent-encoded), which then wins over the toolkit's.
+   */
+  compound: optional(
+    Schema.Struct({
+      headers: optional(Schema.Record(Schema.String, Schema.String)),
+      query: optional(Schema.Record(Schema.String, Schema.String)),
+      base_url: optional(Schema.String),
+    }),
+  ),
+});
+
+export type CredentialSettings = typeof CredentialSettings.Type;
 
 /**
  * A credential as it is connected: its secret and, for a toolkit's shared credential, who may use it (ADR 0038). There
@@ -143,25 +327,20 @@ export type ClientVia = typeof ClientVia.Type;
 
 /** A connected credential, without its secret. Times are ISO. */
 export const ToolkitCredentialView = Schema.Struct({
-  /** `oauth`: an OAuth 2 authorization code sign-in (#202). */
-  kind: Schema.Literals([
-    "none",
-    "bearer",
-    "header",
-    "query",
-    "basic",
-    "client_credentials",
-    "oauth",
-  ]),
+  /** `oauth`: an OAuth 2 authorization code sign-in (#202); `oauth1` a connected or signed-in OAuth 1.0a one (#206). */
+  kind: ToolkitCredentialKind,
   /** The header or query parameter a `header` or `query` key goes in. */
   name: optional(Schema.String),
   /** How an `oauth` sign-in's client was registered ({@link ClientVia}). */
   via: optional(ClientVia),
-  /** When its access token expires (ISO), for `oauth` and `client_credentials`; Commissary refreshes it before. */
+  /**
+   * When its access token expires (ISO), for `oauth`, `client_credentials` and the types whose token Commissary gets by
+   * exchange (`jwt`, `app`, `token_exchange`); Commissary refreshes it before.
+   */
   expires_at: optional(Schema.String),
   /**
-   * Its token refresh failed for good (the refresh token was refused, or there is none): it is not used until someone
-   * signs in again (`signIn`), or connects it again for `client_credentials`.
+   * Its token refresh failed for good (the refresh token was refused, or there is none; a token endpoint refused an
+   * exchange): it is not used until someone signs in again (`signIn`), or connects it again for the connected types.
    */
   needs_sign_in: optional(Schema.Boolean),
   connected_at: Schema.String,
@@ -212,6 +391,12 @@ export const SetOAuthApp = Schema.Struct({
    * that names another is refused. Absent: the answer's `iss` is not checked.
    */
   issuer: optional(Schema.String),
+  /**
+   * An OAuth 1.0a service's temporary credential request URL (RFC 5849 §2.1, #206): the app is then an OAuth 1.0a
+   * consumer, its key `client_id` and its secret `client_secret` (required), `authorize_url` the resource owner
+   * authorization URL and `token_url` the token request URL, and a sign-in gets OAuth 1.0a tokens (`oauth1`).
+   */
+  request_token_url: optional(Schema.String),
 });
 
 export type SetOAuthApp = typeof SetOAuthApp.Type;
@@ -225,6 +410,8 @@ export const OAuthAppView = Schema.Struct({
   token_url: Schema.String,
   scopes: Schema.Array(Schema.String),
   issuer: optional(Schema.String),
+  /** An OAuth 1.0a consumer's temporary credential request URL. */
+  request_token_url: optional(Schema.String),
   updated_at: Schema.String,
   updated_by: Schema.String,
 });
@@ -312,6 +499,8 @@ export const ToolkitView = Schema.Struct({
   tool_list: ToolListStatus,
   /** Its managers: the OAuth app an `oauth` sign-in uses, when one is set (#202). */
   oauth_app: optional(OAuthAppView),
+  /** The settings of its credential types (#206), when it has any. */
+  credential_settings: optional(CredentialSettings),
   /** What a call of its tools costs in micro-USD, unless a tool's override prices it; absent: free. */
   price_micros: optional(Schema.Number),
   /**
@@ -402,6 +591,8 @@ export const AddToolkit = Schema.Struct({
    * of a private one.
    */
   credential: optional(ConnectCredential),
+  /** The settings of its credential types (#206), which `credential` may need. */
+  credential_settings: optional(CredentialSettings),
 });
 
 export type AddToolkit = typeof AddToolkit.Type;
@@ -419,6 +610,8 @@ export const UpdateToolkit = Schema.Struct({
   approval_rules: optional(Schema.NullOr(ApprovalRules)),
   /** OpenAPI toolkits only: the base URL calls go to (the outbound guard); `null` returns to the document's servers. */
   base_url: optional(Schema.NullOr(Schema.String)),
+  /** The whole of the settings of its credential types (#206), its managers'; `null` clears them. */
+  credential_settings: optional(Schema.NullOr(CredentialSettings)),
   /**
    * The sandbox toolkit only (#222), org admins: the widest network a sandbox session may ask for (`403 built_in` on
    * the browser toolkit, `422 invalid` on any other). Sessions keep the network they opened with.

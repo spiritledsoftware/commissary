@@ -19,6 +19,8 @@ export default defineConfig({
           CONTROL_PLANE: { className: "ControlPlane", useSQLite: true },
           SESSION_STATE: { className: "SessionState", useSQLite: true },
           PLATFORM: { className: "Platform", useSQLite: true },
+          // The agent runs (#227, `AgentsBindings`), with no client API behind them (test/worker.ts).
+          AGENT_RUN: { className: "AgentRun", useSQLite: true },
         },
         // Dynamic Workers (ADR 0043): bound on every deployment, the Agents area's presence (#226).
         workerLoaders: { LOADER: {} },

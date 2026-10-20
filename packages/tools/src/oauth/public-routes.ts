@@ -8,7 +8,9 @@
  *   sign-in, a Commissary Cloud session) as a member of that org (`AccessPrincipal`), and a request from anyone else,
  *   or from no one, is refused like an unknown state, the sign-in left pending for its starter. So a link to the
  *   callback that an attacker got from signing in to their own account cannot connect it for someone else (login
- *   CSRF). It answers with a static page that never holds a code, a state, a token or an error's details.
+ *   CSRF). It answers with a static page that never holds a code, a state, a token or an error's details. An OAuth
+ *   1.0a sign-in (#206) comes back to it too, its `state` in the callback URL it named, with `oauth_token` and
+ *   `oauth_verifier` in place of a code.
  * - **Commissary's Client ID Metadata Document** (`GET /oauth/toolkits/client.json`, `TOOLKIT_OAUTH_CLIENT_PATH`), on
  *   the API Worker: a client API path, so it is served where an MCP server's authorization server reaches it without
  *   signing in (the API host, or the app host's zone route outside Access). Its `client_id` is its own URL and its one
@@ -56,19 +58,37 @@ const callback = Effect.gen(function* () {
   const code = params.get("code")?.trim() ?? "";
   const error = params.get("error")?.trim() ?? "";
   const iss = params.get("iss")?.trim();
+  // An OAuth 1.0a sign-in's (#206): the token the browser authorized and its verifier, or a refusal (`denied`, as
+  // Twitter's servers answer it).
+  const oauthToken = params.get("oauth_token")?.trim() ?? "";
+  const oauthVerifier = params.get("oauth_verifier")?.trim() ?? "";
+  const denied = params.has("denied");
   const org = signInCallbackOrg(request.originalUrl);
   // Who the gate signed in, as a member of the org the state names (it refused anyone else).
   const caller = yield* AccessPrincipal;
   const member = caller.org === org ? caller.memberId : undefined;
 
   // Cheap filters before the ControlPlane is asked.
-  if (org === undefined || member === undefined || (code === "" && error === "")) return rejected;
+  if (
+    org === undefined ||
+    member === undefined ||
+    (code === "" && error === "" && oauthVerifier === "" && !denied)
+  )
+    return rejected;
   const policy = yield* CurrentOutboundPolicy;
 
   const result = yield* toolsControlPlane("completeSignIn", (stub) =>
-    stub
-      .tools()
-      .completeSignIn({ state, code, error, iss: iss === "" ? undefined : iss, member }, policy),
+    stub.tools().completeSignIn(
+      {
+        state,
+        code,
+        error: error === "" && denied ? "access_denied" : error,
+        iss: iss === "" ? undefined : iss,
+        member,
+        ...(oauthVerifier === "" ? {} : { oauthToken, oauthVerifier }),
+      },
+      policy,
+    ),
   ).pipe(
     Effect.provideService(CurrentOrg, org),
     // The org only, never the state (which finishes the sign-in) nor the code (the server's grant).

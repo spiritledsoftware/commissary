@@ -13,6 +13,7 @@ import type { GrantSubject, ToolGrant, ToolGrants } from "@commissary/contract/g
 import type {
   ConnectCredential,
   ConnectedGrant,
+  CredentialSettings,
   ConnectedToolkitView,
   CredentialSlot,
   CredentialsAccepted,
@@ -80,7 +81,19 @@ import {
 import type { OAuthError } from "./oauth/http.ts";
 import { newPkce, newSignInState } from "./oauth/pkce.ts";
 import type { ClientUrls } from "./oauth/urls.ts";
-import { type ClientVia, OAuthStore } from "./oauth/store.ts";
+import {
+  authorizeUrl as oauth1AuthorizeUrl,
+  requestTemporaryCredentials,
+  requestTokenCredentials,
+} from "./oauth/oauth1.ts";
+import {
+  type ClientVia,
+  type OAuth1SignInFlow,
+  type OAuth2SignInFlow,
+  type OAuthApp,
+  OAuthStore,
+} from "./oauth/store.ts";
+import type { OAuth1Keys } from "./signing/oauth1.ts";
 import { refusedForGood } from "./oauth/token.ts";
 import { MAX_SDL_BYTES, SchemaCache } from "./graphql/schema.ts";
 import {
@@ -113,12 +126,23 @@ import {
 } from "./toolkits/store.ts";
 import { priceRefusal } from "./toolkits/price.ts";
 import {
-  type ClientCredentialsSecret,
+  isMinted,
+  isMintedKind,
+  type MintedSecret,
   type OAuthSecret,
   secretRefusal,
   type StoredSecret,
   type UpstreamSecret,
 } from "./toolkits/secret.ts";
+import {
+  credentialRefusal,
+  keyRefusal,
+  mintedWith,
+  oauth1Signing,
+  settingsRefusal,
+  upstreamOf,
+} from "./toolkits/credential-settings.ts";
+import { exchangeToken, type Minted, mintGitHubApp, mintJwt } from "./signing/tokens.ts";
 import {
   type BuiltIn,
   type BuiltInProviders,
@@ -157,7 +181,8 @@ export type ToolsResult<A> =
       readonly path?: string;
     };
 
-const refuse = (error: ToolsErrorCode, message: string) => ({ ok: false, error, message }) as const;
+const refuse = (error: ToolsErrorCode, message: string, path?: string) =>
+  ({ ok: false, error, message, ...(path === undefined ? {} : { path }) }) as const;
 
 /** A refused {@link ToolsResult}. */
 type ToolsRefusal = Extract<ToolsResult<never>, { readonly ok: false }>;
@@ -203,8 +228,18 @@ const fresh = (expiresAt: number | undefined, now: number): boolean =>
   expiresAt === undefined || expiresAt > now + EXPIRY_MARGIN_MS;
 
 /** Whether a credential of `kind` has tokens Commissary refreshes. */
-const refreshable = (kind: StoredSecret["kind"]): boolean =>
-  kind === "oauth" || kind === "client_credentials";
+const refreshable = (kind: StoredSecret["kind"]): boolean => kind === "oauth" || isMintedKind(kind);
+
+/** The credential settings `toolkit`'s credentials use: a built-in toolkit's, none. */
+const settingsOf = (toolkit: Toolkit): CredentialSettings | undefined =>
+  toolkit.builtIn ? undefined : toolkit.credentialSettings;
+
+/** `toolkit`'s `credential_settings` field of a view or an export: none for a toolkit without settings. */
+const settingsField = (toolkit: Toolkit) => {
+  const settings = settingsOf(toolkit);
+
+  return settings === undefined ? {} : { credential_settings: settings };
+};
 
 /** Why a token refresh failed, as its log says it: never a token. */
 interface RefreshFailure {
@@ -259,6 +294,9 @@ export interface SignInCallback {
   readonly error: string;
   readonly iss: string | undefined;
   readonly member: string;
+  /** An OAuth 1.0a sign-in's (#206): the temporary token the browser authorized, and the verifier. */
+  readonly oauthToken?: string | undefined;
+  readonly oauthVerifier?: string | undefined;
 }
 
 const ok = <A>(value: A): ToolsResult<A> => ({ ok: true, value });
@@ -325,6 +363,8 @@ export interface AddToolkitInput {
   readonly accepts: CredentialsAccepted;
   /** Connected at once; an org toolkit's shared credential names who may use it (`subject`). */
   readonly credential?: ConnectCredential | undefined;
+  /** The settings of its credential types (#206), their URLs already checked by the outbound guard. */
+  readonly credentialSettings?: CredentialSettings | undefined;
 }
 
 /** What the cron task's refresh did. */
@@ -351,6 +391,8 @@ export interface ToolkitExport {
   readonly accepts: CredentialsAccepted;
   /** Micro-USD per call of an org toolkit's tools (#199). */
   readonly price_micros?: number;
+  /** The settings of its credential types (#206): nothing secret. */
+  readonly credential_settings?: CredentialSettings;
   readonly credentials: ReadonlyArray<{
     readonly slot: CredentialSlot;
     readonly kind: ToolkitCredential["kind"];
@@ -406,6 +448,19 @@ export interface ClientTool {
   readonly toolClass: ToolClass;
 }
 
+/**
+ * A hosted agent's run calling the MCP endpoint (#227, ADR 0040): its definition's tool scope, which narrows what it
+ * reaches as an API key's does, and whether it acts as the shared agent itself (`asAgent`), whose reach is its
+ * definition: every org toolkit with a shared credential, whatever the tool grants. A private agent's run acts as its
+ * member (the viewer), with their reach. Its starter (`starterMember`) is the caller of its approvals (ADR 0040): under
+ * a rule of the caller they decide, and under the others they do not.
+ */
+export interface RunToolReach {
+  readonly toolScope: ToolScope;
+  readonly asAgent: boolean;
+  readonly starterMember: string;
+}
+
 /** A call of Commissary's MCP endpoint (#197): the tool's full name, its arguments, and the toolkits it narrows to. */
 export interface ToolCall {
   readonly name: string;
@@ -417,6 +472,8 @@ export interface ToolCall {
    * toward its Spend limits (#199).
    */
   readonly apiKeyId?: string | undefined;
+  /** An agent run's reach (#227): its definition's tool scope in place of a key's. */
+  readonly run?: RunToolReach | undefined;
   /** The caller's principal, which names a caller without a member in a pending approval (#201). */
   readonly principalId?: string | undefined;
   /**
@@ -535,6 +592,33 @@ const secretOf = (credential: ConnectCredential): ToolkitSecret => {
   const { subject: _subject, ...secret } = credential;
 
   return secret;
+};
+
+/** An OAuth 1.0a consumer's keys: the toolkit's OAuth app, signing as its credential settings say (#206). */
+const oauth1Consumer = (app: OAuthApp, settings: CredentialSettings | undefined): OAuth1Keys => ({
+  consumerKey: app.clientId,
+  consumerSecret: app.clientSecret ?? "",
+  ...oauth1Signing(settings),
+});
+
+/** A minted secret with the token `minted` got with the settings `with` ({@link mintedWith}), in place of the last one. */
+const withToken =
+  <S extends MintedSecret>(secret: S, minted_with: string) =>
+  (minted: Minted): S & { readonly access_token: string } => {
+    const { access_token: _token, expires_at: _expires, minted_with: _with, ...rest } = secret;
+
+    // SAFETY: `rest` is `secret` without its token fields, which `minted` and `minted_with` give back.
+    return { ...rest, ...minted, minted_with } as S & { readonly access_token: string };
+  };
+
+/** Why `secret`'s key cannot sign as the toolkit's `settings` say, as a refusal ({@link keyRefusal}). */
+const keyRefused = async (
+  secret: ToolkitSecret,
+  settings: CredentialSettings | undefined,
+): Promise<ToolsRefusal | undefined> => {
+  const refused = await Effect.runPromise(keyRefusal(secret, settings));
+
+  return refused === undefined ? undefined : refuse("invalid", refused);
 };
 
 /** Whether `viewer` reads a toolkit (an org toolkit: every member) or manages it (`full`), or only sees it (`limited`). */
@@ -887,17 +971,26 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       if (refused !== undefined) return refused;
     }
 
+    const settings = input.credentialSettings;
+
+    if (settings !== undefined) {
+      const refused = settingsRefusal(settings, kind);
+
+      if (refused !== undefined) return refuse("invalid", refused.message, refused.path);
+    }
+
     const id = freshToolkitId();
     let grant: ToolGrantValue | undefined;
 
     if (input.credential !== undefined) {
       const slot: CredentialSlot = input.private ? "private" : "shared";
 
-      const credentialRefusal = this.#credentialRefusal(
-        { owner, accepts: input.accepts },
-        slot,
-        secretOf(input.credential),
-      );
+      const credentialRefusal =
+        this.#credentialRefusal(
+          { owner, accepts: input.accepts, credentialSettings: settings },
+          slot,
+          secretOf(input.credential),
+        ) ?? (await keyRefused(secretOf(input.credential), settings));
 
       if (credentialRefusal !== undefined) return credentialRefusal;
       const granted = this.#connectGrant(id, slot, input.credential.subject);
@@ -950,6 +1043,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
         source: input.source,
         baseUrl: kind === "openapi" ? input.baseUrl : undefined,
         uploaded: listSource.uploaded,
+        credentialSettings: settings,
         owner,
         accepts: input.accepts,
         revision: 1,
@@ -1015,6 +1109,17 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     if (change.base_url !== undefined && current.kind !== "openapi")
       return refuse("invalid", "only an OpenAPI toolkit takes a base URL");
 
+    const settings =
+      change.credential_settings === undefined
+        ? current.credentialSettings
+        : (change.credential_settings ?? undefined);
+
+    if (change.credential_settings !== undefined && settings !== undefined) {
+      const refused = settingsRefusal(settings, current.kind);
+
+      if (refused !== undefined) return refuse("invalid", refused.message, refused.path);
+    }
+
     const name = change.name ?? current.name;
 
     if (name !== current.name) {
@@ -1035,6 +1140,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
           priceMicros: price.value,
           approvalRules: rules.value,
           baseUrl,
+          credentialSettings: settings,
         },
         by,
         this.#now(),
@@ -1251,7 +1357,9 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     const { toolkit, owner } = target.value;
     const secret = secretOf(credential);
 
-    const refused = this.#credentialRefusal(toolkit, slot, secret);
+    const refused =
+      this.#credentialRefusal(toolkit, slot, secret) ??
+      (await keyRefused(secret, toolkit.credentialSettings));
 
     if (refused !== undefined) return refused;
     const grant = this.#connectGrant(id, slot, credential.subject);
@@ -1320,6 +1428,10 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     if ([clientId, app.client_secret ?? "", issuer, ...scopes].some((value) => value.length > 8192))
       return refuse("invalid", "the OAuth app is too long");
 
+    // An OAuth 1.0a consumer signs every request with its secret (#206).
+    if (app.request_token_url !== undefined && (app.client_secret ?? "") === "")
+      return refuse("invalid", "an OAuth 1.0a app needs its consumer secret (client_secret)");
+
     this.#oauth.putApp({
       toolkitId: id,
       clientId,
@@ -1328,6 +1440,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       tokenUrl: app.token_url,
       scopes,
       issuer: issuer === "" ? undefined : issuer,
+      requestTokenUrl: app.request_token_url,
       updatedAt: this.#now(),
       updatedBy: by,
     });
@@ -1353,8 +1466,9 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
    * Starts an OAuth 2 authorization code sign-in with PKCE for the toolkit's shared credential (org admins, naming its
    * `subject` as connecting one does) or the caller's private one, with the toolkit's OAuth app or Commissary as the
    * MCP server's client (`prepareSignIn`). An OAuth app that sets no scopes asks for those the toolkit's tools name (a
-   * Discovery toolkit's methods', #205). Answers the URL the browser opens; the callback finishes it
-   * ({@link completeSignIn}).
+   * Discovery toolkit's methods', #205). An OAuth app that names a temporary credential request URL is an OAuth 1.0a
+   * consumer, and the sign-in OAuth 1.0a's (#206, {@link #startOAuth1SignIn}). Answers the URL the browser opens; the
+   * callback finishes it ({@link completeSignIn}).
    */
   async startSignIn(
     viewer: Viewer,
@@ -1379,6 +1493,14 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
     if (!grant.ok) return grant;
     const app = this.#oauth.app(id);
+
+    if (app?.requestTokenUrl !== undefined)
+      return await this.#startOAuth1SignIn(
+        { toolkit, owner, member: viewer.member, subject: input.subject, by },
+        { ...app, requestTokenUrl: app.requestTokenUrl },
+        policy,
+        urls,
+      );
 
     const prepared = await this.#outboundRun(
       prepareSignIn({
@@ -1407,7 +1529,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
         toolkitId: id,
         owner,
         startedBy: viewer.member,
-        flow: { ...flow, verifier: pkce.verifier, by, subject: input.subject },
+        flow: { kind: "oauth2", ...flow, verifier: pkce.verifier, by, subject: input.subject },
       },
       now,
     );
@@ -1450,7 +1572,8 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
    * server said it would, or the toolkit's OAuth app names one), before anything else in it is read, an error included
    * (§2.4); its code is exchanged with the PKCE verifier, and the tokens become the credential, a shared one with its
    * subject's grant as connecting one writes it. A dynamic registration made for the sign-in is kept for the toolkit
-   * then, in place of the one before. A failure is the sign-in's, for its starter to read.
+   * then, in place of the one before. An OAuth 1.0a sign-in's verifier gets its token credentials instead
+   * ({@link #completeOAuth1}). A failure is the sign-in's, for its starter to read.
    */
   async completeSignIn(
     callback: SignInCallback,
@@ -1470,6 +1593,62 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
       return { outcome: "failed" };
     };
+
+    let secret: StoredSecret;
+    const registered = flow.kind === "oauth1" ? undefined : flow.registered;
+
+    if (flow.kind === "oauth1") {
+      const done = await this.#completeOAuth1(toolkitId, flow, callback, policy);
+
+      if (typeof done === "string") return fail(done);
+      secret = done;
+    } else {
+      const exchanged = await this.#exchangeCallbackCode(toolkitId, flow, callback, policy);
+
+      if (typeof exchanged === "string") return fail(exchanged);
+      secret = exchanged;
+    }
+
+    // What the toolkit takes may have changed while the browser was away.
+    const toolkit = this.#store.toolkit(toolkitId);
+    const slot: CredentialSlot = owner === undefined ? "shared" : "private";
+
+    if (toolkit === undefined) return fail("the toolkit was removed");
+    const refused = this.#slotRefusal(toolkit, slot);
+
+    if (refused !== undefined) return fail(refused.message);
+    const grant = this.#connectGrant(toolkitId, slot, flow.subject);
+
+    if (!grant.ok) return fail(grant.message);
+    const now = this.#now();
+
+    this.#core.transaction(() => {
+      this.#store.putCredential(toolkitId, owner, secret, flow.by, now);
+
+      if (registered !== undefined) this.#oauth.putClient(registered, now);
+
+      if (grant.value !== undefined) this.#grantOnConnect(grant.value, flow.by, now);
+      this.#oauth.complete(session.state, now);
+    });
+
+    await this.#wake();
+
+    if (toolkit.listBuiltAt === undefined) await this.#buildFor(toolkitId, owner, policy);
+
+    return { outcome: "completed" };
+  }
+
+  /**
+   * An OAuth 2 callback's tokens: the issuer checked (RFC 9207) before anything else in the answer, an error included,
+   * then its code exchanged with the PKCE verifier; or why not, for the sign-in's starter.
+   */
+  async #exchangeCallbackCode(
+    toolkitId: string,
+    flow: OAuth2SignInFlow,
+    callback: SignInCallback,
+    policy: OutboundPolicy,
+  ): Promise<OAuthSecret | string> {
+    const fail = (message: string) => message;
 
     if (
       flow.issuer !== undefined &&
@@ -1501,35 +1680,118 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       policy,
     );
 
-    if (Result.isFailure(exchanged)) return fail(exchanged.failure.message);
+    return Result.isFailure(exchanged) ? fail(exchanged.failure.message) : exchanged.success;
+  }
 
-    // What the toolkit takes may have changed while the browser was away.
-    const toolkit = this.#store.toolkit(toolkitId);
-    const slot: CredentialSlot = owner === undefined ? "shared" : "private";
+  /**
+   * Starts an OAuth 1.0a sign-in (#206) with the toolkit's OAuth app as the consumer: temporary credentials asked for
+   * with the callback naming the sign-in's state, kept (sealed) in its flow, and the authorization URL for the browser.
+   */
+  async #startOAuth1SignIn(
+    target: {
+      readonly toolkit: StoredToolkit;
+      readonly owner: string | undefined;
+      readonly member: string;
+      readonly subject: GrantSubject | undefined;
+      readonly by: string;
+    },
+    app: OAuthApp & { readonly requestTokenUrl: string },
+    policy: OutboundPolicy,
+    urls: ClientUrls,
+  ): Promise<ToolsResult<SignInStarted>> {
+    const { toolkit, owner, member, subject, by } = target;
+    const state = newSignInState(this.#core.org);
+    const callback = new URL(urls.callback);
 
-    if (toolkit === undefined) return fail("the toolkit was removed");
-    const refused = this.#slotRefusal(toolkit, slot);
+    callback.searchParams.set("state", state);
 
-    if (refused !== undefined) return fail(refused.message);
-    const grant = this.#connectGrant(toolkitId, slot, flow.subject);
-
-    if (!grant.ok) return fail(grant.message);
     const now = this.#now();
 
-    this.#core.transaction(() => {
-      this.#store.putCredential(toolkitId, owner, exchanged.success, flow.by, now);
+    const started = await this.#outboundRun(
+      Effect.gen(function* () {
+        const consumer = oauth1Consumer(app, toolkit.credentialSettings);
 
-      if (registered !== undefined) this.#oauth.putClient(registered, now);
+        const temporary = yield* requestTemporaryCredentials(
+          app.requestTokenUrl,
+          consumer,
+          callback.toString(),
+          now,
+        );
 
-      if (grant.value !== undefined) this.#grantOnConnect(grant.value, flow.by, now);
-      this.#oauth.complete(session.state, now);
-    });
+        return { temporary, url: yield* oauth1AuthorizeUrl(app.authorizeUrl, temporary.token) };
+      }),
+      policy,
+    );
 
-    await this.#wake();
+    if (Result.isFailure(started)) return signInRefusal(started.failure);
+    const { temporary, url } = started.success;
 
-    if (toolkit.listBuiltAt === undefined) await this.#buildFor(toolkitId, owner, policy);
+    const session = this.#oauth.start(
+      {
+        state,
+        toolkitId: toolkit.id,
+        owner,
+        startedBy: member,
+        flow: {
+          kind: "oauth1",
+          consumerKey: app.clientId,
+          tokenRequestUrl: app.tokenUrl,
+          token: temporary.token,
+          tokenSecret: temporary.tokenSecret,
+          by,
+          subject,
+        },
+      },
+      this.#now(),
+    );
 
-    return { outcome: "completed" };
+    return ok({ state, url, expires_at: iso(session.deadlineAt) });
+  }
+
+  /**
+   * An OAuth 1.0a callback's token credentials (#206): the token it names must be the sign-in's temporary one, and its
+   * verifier gets the token credentials, signed with the temporary ones; the consumer is the toolkit's OAuth app as it
+   * is now, which must still be the one the sign-in started with. Or why not, for the sign-in's starter.
+   */
+  async #completeOAuth1(
+    toolkitId: string,
+    flow: OAuth1SignInFlow,
+    callback: SignInCallback,
+    policy: OutboundPolicy,
+  ): Promise<StoredSecret | string> {
+    const verifier = callback.oauthVerifier ?? "";
+
+    if (verifier === "" || callback.oauthToken !== flow.token) return "the service did not sign in";
+    const app = this.#oauth.app(toolkitId);
+    const toolkit = this.#store.toolkit(toolkitId);
+
+    if (
+      app?.clientSecret === undefined ||
+      app.clientId !== flow.consumerKey ||
+      toolkit === undefined
+    )
+      return "the toolkit's OAuth app changed: sign in again";
+    const consumer = oauth1Consumer(app, toolkit.credentialSettings);
+
+    const granted = await this.#outboundRun(
+      requestTokenCredentials(
+        flow.tokenRequestUrl,
+        { ...consumer, token: flow.token, tokenSecret: flow.tokenSecret },
+        verifier,
+        this.#now(),
+      ),
+      policy,
+    );
+
+    if (Result.isFailure(granted)) return granted.failure.message;
+
+    return {
+      kind: "oauth1",
+      consumer_key: app.clientId,
+      consumer_secret: app.clientSecret,
+      token: granted.success.token,
+      token_secret: granted.success.tokenSecret,
+    };
   }
 
   /** The toolkit and the owner of the credential `viewer` reaches in `slot`, or why not. */
@@ -1569,7 +1831,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
   /** Why `secret` cannot go into `slot` of `toolkit`, if it cannot. */
   #credentialRefusal(
-    toolkit: Pick<Toolkit, "owner" | "accepts">,
+    toolkit: Pick<StoredToolkit, "owner" | "accepts" | "credentialSettings">,
     slot: CredentialSlot,
     secret: ToolkitSecret,
   ): ToolsResult<never> | undefined {
@@ -1580,7 +1842,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     if (secret.kind === "client_credentials" && slot === "private")
       return refuse("invalid", "a client credentials grant is a shared credential only");
 
-    const invalid = secretRefusal(secret);
+    const invalid = secretRefusal(secret) ?? credentialRefusal(secret, toolkit.credentialSettings);
 
     return invalid === undefined ? undefined : refuse("invalid", invalid);
   }
@@ -1774,7 +2036,9 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
   /**
    * What signs a request on `credential` in now: a static secret as it is, an OAuth credential's access token, with a
-   * token refresh first when it expires within {@link EXPIRY_MARGIN_MS} (a client credentials grant mints its first one).
+   * token refresh first when it expires within {@link EXPIRY_MARGIN_MS} (a client credentials grant, a JWT, a GitHub
+   * App or a token exchange mints its first one, #206), or what the toolkit's credential settings make of a connected
+   * secret (an OAuth 1.0a or SigV4 signer, a compound credential's template).
    */
   async #signedIn(
     toolkit: Toolkit,
@@ -1786,18 +2050,29 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
     if (secret === undefined) return NEEDS_SIGN_IN;
 
-    switch (secret.kind) {
-      case "oauth":
-        return fresh(secret.expires_at, this.#now())
-          ? bearer(secret.access_token)
-          : await this.#refresh(toolkit, credential, policy);
-      case "client_credentials":
-        return secret.access_token !== undefined && fresh(secret.expires_at, this.#now())
-          ? bearer(secret.access_token)
-          : await this.#refresh(toolkit, credential, policy);
-      default:
-        return { kind: "signed", secret };
+    if (secret.kind === "oauth")
+      return fresh(secret.expires_at, this.#now())
+        ? bearer(secret.access_token)
+        : await this.#refresh(toolkit, credential, policy);
+
+    if (isMinted(secret)) {
+      // A token minted with settings since changed (or removed) is not used.
+      const settings = mintedWith(secret.kind, settingsOf(toolkit));
+
+      if (typeof settings !== "string") return { kind: "failed", message: settings.failed };
+
+      return secret.access_token !== undefined &&
+        (secret.minted_with ?? "") === settings &&
+        fresh(secret.expires_at, this.#now())
+        ? bearer(secret.access_token)
+        : await this.#refresh(toolkit, credential, policy);
     }
+
+    const upstream = upstreamOf(secret, settingsOf(toolkit));
+
+    return "failed" in upstream
+      ? { kind: "failed", message: upstream.failed }
+      : { kind: "signed", secret: upstream };
   }
 
   /**
@@ -1843,10 +2118,19 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     };
 
     let refresh: Effect.Effect<
-      OAuthSecret | (ClientCredentialsSecret & { readonly access_token: string }),
+      OAuthSecret | (MintedSecret & { readonly access_token: string }),
       OAuthError,
       HttpClient.HttpClient
     >;
+
+    const settings = settingsOf(toolkit);
+
+    const fingerprint =
+      secret !== undefined && isMinted(secret) ? mintedWith(secret.kind, settings) : "";
+
+    const now = this.#now();
+
+    if (typeof fingerprint !== "string") return { kind: "failed", message: fingerprint.failed };
 
     if (secret?.kind === "oauth") {
       const refreshToken = secret.refresh_token;
@@ -1862,7 +2146,19 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
         this.#now(),
       );
     } else if (secret?.kind === "client_credentials")
-      refresh = mintClientCredentials(secret, toolkit.source, this.#now());
+      refresh = mintClientCredentials(secret, toolkit.source, now);
+    else if (secret?.kind === "jwt")
+      refresh = mintJwt(secret, settings?.jwt, now).pipe(
+        Effect.map(withToken(secret, fingerprint)),
+      );
+    else if (secret?.kind === "app")
+      refresh = mintGitHubApp(secret, settings?.app, now).pipe(
+        Effect.map(withToken(secret, fingerprint)),
+      );
+    else if (secret?.kind === "token_exchange")
+      refresh = exchangeToken(secret, settings?.token_exchange, now).pipe(
+        Effect.map(withToken(secret, fingerprint)),
+      );
     else return NEEDS_SIGN_IN;
 
     const refreshed = await this.#outboundRun(refresh, policy);
@@ -2075,10 +2371,11 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
    * tool of an org toolkit that takes private credentials, as themselves, while the org lets members hold private
    * credentials; and the tools of org toolkits' shared credentials their tool grants give (#198). There is no default
    * tool grant. A request with an API key (`apiKeyId`) gets what both the member's reach and the key's tool scope allow
-   * (#200), read from the key on every request, so a change to the scope applies at once.
+   * (#200), read from the key on every request, so a change to the scope applies at once. An agent run (`run`, #227)
+   * gets what its definition's tool scope allows, as its member or as the shared agent ({@link RunToolReach}).
    */
-  clientTools(viewer: Viewer, apiKeyId?: string): ReadonlyArray<ClientTool> {
-    return this.#reachable(viewer, this.#keyScope(apiKeyId)).map(({ tool }) => ({
+  clientTools(viewer: Viewer, apiKeyId?: string, run?: RunToolReach): ReadonlyArray<ClientTool> {
+    return this.#callerReach(viewer, apiKeyId, run).map(({ tool }) => ({
       name: tool.name,
       toolkit: tool.toolkit.name,
       ...(tool.description === undefined ? {} : { description: tool.description }),
@@ -2143,7 +2440,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     call: ToolCall,
     policy: OutboundPolicy,
   ): Promise<ToolCallOutcome> {
-    const reached = this.#reachable(viewer, this.#keyScope(call.apiKeyId)).find(
+    const reached = this.#callerReach(viewer, call.apiKeyId, call.run).find(
       ({ tool }) =>
         tool.name === call.name &&
         (call.toolkits === undefined || call.toolkits.includes(tool.toolkit.name)),
@@ -2428,11 +2725,14 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     if (approver === undefined) return { kind: "go", approval: "none" };
     const now = this.#now();
 
+    // A run's approvals are its starter's (a shared agent's run has no member of its own).
+    const callerMember = viewer.member ?? call.run?.starterMember;
+
     const key: ApprovalKey = {
       toolkitId: tool.toolkit.id,
       upstreamName: tool.upstreamName,
       argsHash: argumentsHash(call.arguments),
-      callerMember: viewer.member,
+      callerMember,
       callerPrincipal: call.principalId ?? "",
     };
 
@@ -2453,7 +2753,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       return { kind: "approve", requestState: state };
     }
 
-    if (approver.kind === "caller" && viewer.member === undefined)
+    if (approver.kind === "caller" && callerMember === undefined)
       return { kind: "not_approved", reason: "no_approver" };
 
     const kept = this.#approvals.unsettled(key, now);
@@ -2502,13 +2802,27 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     this.#approvals.delete(orphaned.map((approval) => approval.id));
   }
 
+  /** What a caller of the MCP endpoint reaches: an agent run by its definition, anyone else by their key's scope. */
+  #callerReach(
+    viewer: Viewer,
+    apiKeyId: string | undefined,
+    run: RunToolReach | undefined,
+  ): ReadonlyArray<ReachableTool> {
+    if (run === undefined) return this.#reachable(viewer, this.#keyScope(apiKeyId));
+
+    return run.asAgent
+      ? this.#reachable({ admin: false }, run.toolScope, true)
+      : this.#reachable(viewer, run.toolScope);
+  }
+
   /**
    * The served tools `viewer` reaches ({@link clientTools}), sorted by full name, and how. A private toolkit counts
    * only while the org lets members add them: otherwise it is kept, but not served, and does not shadow an org toolkit
-   * of its name. `scope` (an API key's tool scope, #200) narrows them further; `undefined`: no narrowing.
+   * of its name. `scope` (an API key's tool scope, #200) narrows them further; `undefined`: no narrowing. `asAgent` (a
+   * shared agent's run, #227): every tool of an org toolkit's shared credential, whatever the grants, as no member.
    */
-  #reachable(viewer: Viewer, scope?: ToolScope): ReadonlyArray<ReachableTool> {
-    const member = viewer.member;
+  #reachable(viewer: Viewer, scope?: ToolScope, asAgent = false): ReadonlyArray<ReachableTool> {
+    const member = asAgent ? undefined : viewer.member;
 
     // A built-in toolkit's shared credential is Commissary's own binding, always there.
     const shared = new Set([
@@ -2536,7 +2850,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
           tool.toolkit.owner === undefined &&
           accepts(tool.toolkit, "shared") &&
           shared.has(tool.toolkit.id) &&
-          granted(grantable(tool)),
+          (asAgent || granted(grantable(tool))),
       }))
       .filter(
         (reachable) =>
@@ -2993,6 +3307,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
           private: toolkit.owner !== undefined,
           accepts: toolkit.accepts,
           ...(toolkit.priceMicros === undefined ? {} : { price_micros: toolkit.priceMicros }),
+          ...settingsField(toolkit),
           credentials,
           overrides: this.#store.overrides(toolkit.id).map((override) => ({
             tool: override.upstreamName,
@@ -3138,6 +3453,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
             priceMicros: toolkit.priceMicros,
             approvalRules: toolkit.approvalRules,
             baseUrl: toolkit.baseUrl,
+            credentialSettings: toolkit.credentialSettings,
           },
           COMMISSARY,
           this.#now(),
@@ -3310,6 +3626,8 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       },
       tool_list: this.#listStatus(toolkit, tools),
       ...(app === undefined ? {} : { oauth_app: app }),
+      // What a member connecting their own credential must know (a compound template's fields); nothing secret.
+      ...settingsField(toolkit),
       ...(toolkit.priceMicros === undefined ? {} : { price_micros: toolkit.priceMicros }),
       ...(resolution.renameSuggested.has(toolkit.id) ? { rename_suggested: true } : {}),
       ...(resolution.shadowed.has(toolkit.id) ? { shadowed: true } : {}),
@@ -3352,6 +3670,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
           token_url: app.tokenUrl,
           scopes: app.scopes,
           ...(app.issuer === undefined ? {} : { issuer: app.issuer }),
+          ...(app.requestTokenUrl === undefined ? {} : { request_token_url: app.requestTokenUrl }),
           updated_at: iso(app.updatedAt),
           updated_by: app.updatedBy,
         };

@@ -12,4 +12,6 @@ import type { AccessRule } from "@commissary/auth";
 export const accessRules: ReadonlyArray<AccessRule> = [
   { path: "/v9/management/agents", subpaths: true, role: "member" },
   { path: "/v9/management/grants/agents", subpaths: true, role: "member" },
+  // Agent runs (#227): a member starts runs of the agents they may use, and sees the runs they started.
+  { path: "/v9/management/agent-runs", subpaths: true, role: "member" },
 ];

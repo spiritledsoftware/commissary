@@ -7,24 +7,23 @@
  * Every member may call `/agents` and `/grants/agents` (`access-rules.ts`), so that the area's absence comes first:
  * without the deployment's Dynamic Workers binding (`LOADER`) every route here answers 404, whoever asks. The Agents
  * part decides what the caller reaches from the viewer each `/agents` route hands it; the grants are for org admins,
- * checked here after the absence. Writes name the revision they were based on in `If-Match`.
+ * checked here after the absence. Writes name the revision they were based on in `If-Match`. The agent runs' routes
+ * (`/agents/:id/runs`, `/agent-runs`, #227) are `run-routes.ts`', mounted with these.
  */
-import { Effect, Schema } from "effect";
-import { HttpRouter, type HttpServerResponse } from "effect/http";
+import { Effect, Layer } from "effect";
+import { HttpRouter } from "effect/http";
 import { AccessPrincipal, currentViewer } from "@commissary/auth";
 import { AgentGrantBody, CreateAgent, UpdateAgent } from "@commissary/contract/agents";
-import { handled, ifMatch, jsonReply, type Reply, replyError } from "@commissary/core";
-import { bodyJson } from "@commissary/state";
+import { ifMatch, jsonReply, replyError } from "@commissary/core";
 import {
   type AgentsErrorCode,
-  type AgentsResult,
   createsPrivate,
   type ReferenceCheck,
 } from "../control-plane-part.ts";
-import { agentsControlPlane, AgentsEnv, agentsPresent } from "../env.ts";
+import { agentsControlPlane } from "../env.ts";
+import { decode, orRefuseWith, param, route } from "./http.ts";
 import { type AgentReferences, checkReferences } from "./references.ts";
-
-const BASE = "/v9/management";
+import { runRoutes } from "./run-routes.ts";
 
 const STATUS: Readonly<Record<AgentsErrorCode, number>> = {
   invalid: 422,
@@ -45,37 +44,9 @@ const PATH: Partial<Record<AgentsErrorCode, string>> = {
   unknown_agent: "tool_scope",
 };
 
-const orRefuse = <A>(result: AgentsResult<A>): Effect.Effect<A, Reply> => {
-  if (result.ok) return Effect.succeed(result.value);
-  const path = PATH[result.error];
+const orRefuse = orRefuseWith(STATUS, PATH);
 
-  return Effect.fail(
-    replyError(STATUS[result.error], result.error, {
-      message: result.message,
-      ...(path === undefined ? {} : { path }),
-    }),
-  );
-};
-
-const decode = <S extends Schema.Decoder<unknown>>(schema: S) =>
-  bodyJson.pipe(
-    Effect.flatMap((json) =>
-      Schema.decodeUnknownEffect(schema)(json).pipe(
-        Effect.mapError(() => replyError(400, "invalid body")),
-      ),
-    ),
-  );
-
-const idParam = Effect.gen(function* () {
-  const { id } = yield* HttpRouter.params;
-
-  return id ?? "";
-});
-
-/** The Agents area exists only on a deployment with Dynamic Workers (`LOADER`, #226); elsewhere its routes are not. */
-const present = Effect.gen(function* () {
-  if (!agentsPresent(yield* AgentsEnv)) return yield* replyError(404, "not_found");
-});
+const idParam = param("id");
 
 const list = Effect.gen(function* () {
   const viewer = yield* currentViewer;
@@ -226,12 +197,6 @@ export const managementRoutes = <R>(references: AgentReferences<R>) => {
     return jsonReply(200, yield* orRefuse(result));
   });
 
-  const route = <RH>(
-    method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE",
-    path: string,
-    handler: Effect.Effect<HttpServerResponse.HttpServerResponse, Reply, RH>,
-  ) => HttpRouter.route(method, `${BASE}${path}`, handled(Effect.andThen(present, handler)));
-
   return HttpRouter.addAll([
     route("GET", "/agents", list),
     route("GET", "/agents/mine", mine),
@@ -243,5 +208,5 @@ export const managementRoutes = <R>(references: AgentReferences<R>) => {
     route("POST", "/grants/agents", createGrant),
     route("PUT", "/grants/agents/:id", replaceGrant),
     route("DELETE", "/grants/agents/:id", removeGrant),
-  ]);
+  ]).pipe(Layer.merge(runRoutes));
 };

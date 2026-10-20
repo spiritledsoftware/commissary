@@ -70,6 +70,11 @@ export interface PickRequest {
   readonly memberId?: string;
   /** The API key the request came with: its Spend limits apply to whatever credential serves it (issue #71). */
   readonly apiKeyId?: string;
+  /**
+   * The shared agent whose run the request is (#227, ADR 0040): it acts as the agent, whose reach is its definition,
+   * so the org's shared credentials serve it whatever the grants (no member: no private credential).
+   */
+  readonly agentId?: string;
   /** Session identity for affinity/stickiness, when the request carries one. */
   readonly session?: PickSession;
   /** Conversation fingerprints for the LCP matcher (requests without an explicit `session`). */

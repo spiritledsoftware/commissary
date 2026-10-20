@@ -9,8 +9,8 @@ import { AgentWatcher, ThinkingLevel } from "@commissary/contract/agents";
 import { ToolScope } from "@commissary/contract/api-keys";
 import type { GrantSubject } from "@commissary/contract/grants";
 
-/** The Agents part's tables, in the order `wipe()` drops them. */
-export const AGENTS_TABLES = ["agent_grants", "agents"] as const;
+/** The Agents part's tables, in the order `wipe()` drops them: the runs' index (`runs/store.ts`) among them. */
+export const AGENTS_TABLES = ["agent_runs", "agent_grants", "agents"] as const;
 
 const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS agents (

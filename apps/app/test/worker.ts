@@ -10,10 +10,15 @@
 // A request with {@link API_WORKER_HEADER} goes to the API Worker's handler (apps/api) instead, with the same bindings:
 // the client API as the zone routes send it to the API Worker on a stage with one host, so a test can follow an MCP
 // client from the app host's OAuth server to `/mcp` (test/hosted/mcp-oauth.test.ts).
+//
+// The agent runs (#227) are the API Worker's `AgentRun` and run gateway, exported here as the API Worker exports them: a
+// run's model and tool calls go through the API Worker's handler over this Worker's `ctx.exports`, with its bindings.
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { api } from "@commissary/api";
 import type { SignedInPerson, SignInService } from "@commissary/auth";
 import app from "../src/index.ts";
+
+export { AgentRun, AgentRunGateway } from "@commissary/api";
 
 export {
   ControlPlane,

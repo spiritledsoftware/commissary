@@ -92,10 +92,12 @@ export const openableOrgs = (
     if (identity.platformAdmin) return yield* registry("listOrgs", (stub) => stub.listOrgs());
     const { principal } = identity;
 
-    // A management key belongs to its org alone: the org of the request, added below.
+    // A management key belongs to its org alone: the org of the request, added below; so does an agent run (which
+    // never reaches the management API).
     const indexed: ReadonlyArray<OrgRecord> = yield* Match.value(principal).pipe(
       Match.discriminatorsExhaustive("kind")({
         mkey: () => Effect.succeed([]),
+        run: () => Effect.succeed([]),
         service: (service) =>
           registry("orgOfServiceToken", (stub) => stub.orgOfServiceToken(service.commonName)).pipe(
             Effect.map((org) => (org === undefined ? [] : [org])),

@@ -95,6 +95,8 @@ const actorOf = (principal: Principal): string => {
       return `service:${principal.commonName}`;
     case "mkey":
       return `key:${principal.keyId}`;
+    case "run":
+      return `run:${principal.runId}`;
   }
 };
 

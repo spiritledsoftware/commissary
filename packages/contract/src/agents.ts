@@ -1,7 +1,7 @@
 /**
  * Hosted agents (`/v9/management/agents`, `packages/agents/src/management/routes.ts`; ADR 0040, #226): the org's shared
  * agents and the caller's private agents, as saved definitions, and the grants on shared agents
- * (`/v9/management/grants/agents`). Nothing runs yet: runs come with #227. Shared with the browser: imports `effect`,
+ * (`/v9/management/grants/agents`). Their runs are `./agent-runs.ts` (#227). Shared with the browser: imports `effect`,
  * `./api-keys.ts`, `./config.ts`, `./errors.ts` and `./grants.ts` only.
  *
  * A hosted agent has a name (`[a-z0-9_]`, unique in the org, the `agent` argument of the agents toolkit), a

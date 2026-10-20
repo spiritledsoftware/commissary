@@ -724,6 +724,12 @@ the toolkit, for a service that does not let Commissary register itself. Toolkit
 own client.
 _Avoid_: OAuth client (on its own), integration, connected app
 
+**Credential settings**:
+What a toolkit says about how its credentials are used, the same for its shared credential and every member's private
+one, such as a JWT's algorithm and token endpoint, AWS's region and service, or the template that places a compound
+credential's fields. Set by the toolkit's managers and shown to its readers: nothing in them is secret.
+_Avoid_: credential config, auth settings, credential template (on its own)
+
 **Toolkit sign-in**:
 Connecting a toolkit's shared or private credential by signing in to its service with OAuth, in a browser; like a login
 session, it is pending until the member who started it comes back from the service, and expires if they do not. A
