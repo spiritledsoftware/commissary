@@ -62,6 +62,8 @@ describe("web panel", () => {
     "/o/default/approvals",
     // A pending approval's page, the link a waiting tool call answers with (#201).
     "/o/default/approvals/ap_0123456789abcdef01234567",
+    // The billing page a plan_limit_reached refusal links to (#239).
+    "/o/default/billing",
     "/o/default/settings/",
     "/o/DEFAULT/Settings",
   ])("serves index.html for %s with the panel's security headers", async (path) => {

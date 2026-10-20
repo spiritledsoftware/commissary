@@ -85,6 +85,9 @@ export interface PanelPage {
   readonly hosted?: boolean;
 }
 
+/** The Billing page's path: the sidebar's link, its route, and where the plan notices lead. */
+export const BILLING_PAGE = "/billing";
+
 /** The pages of the shell's sidebar, in order, group by group. A plain member's panel is the Usage page. */
 export const PAGES: ReadonlyArray<PanelPage> = [
   { to: "/", label: "Overview", group: "glance", role: "admin" },
@@ -108,6 +111,8 @@ export const PAGES: ReadonlyArray<PanelPage> = [
     role: "admin",
     hosted: true,
   },
+  // The org's plan, usage and billing cap (ADR 0042): org admins read it, org owners change it.
+  { to: BILLING_PAGE, label: "Billing", group: "org", role: "admin", hosted: true },
 ];
 
 /**

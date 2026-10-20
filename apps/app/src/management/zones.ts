@@ -35,6 +35,9 @@ export const PANEL_SECTIONS = [
   "management-keys",
   "people",
   "approvals",
+  // Commissary Cloud's billing page of an org (#239; the panel shows Not found on a self-hosted Commissary), the
+  // address a `plan_limit_reached` refusal links to.
+  "billing",
   // Commissary Cloud's consent page for MCP clients (#200, `hosted/mcp-oauth.ts`), the OAuth server's `/authorize`.
   "authorize",
   "assets",
