@@ -19,11 +19,21 @@
  * closed; after that week they answer that it is unknown. `purge` deletes it with no note (its owner left, or the org
  * is being deleted). Commissary sets no limits of its own on it: the Durable Object's storage limit applies, and a
  * write past it is an error that says so.
+ *
+ * **The computer** (#223, `computer.ts`): a session that may use it, on a deployment that attached the computer's
+ * container to this class (`ctx.container`), has a second backend in its Workspace. A command goes there only when
+ * just-bash cannot run it at all (`fallback.ts`, decided before it runs); in a session without the computer, such a
+ * command runs on just-bash, whose error it answers with a note that the computer is off. The computer's outbound
+ * requests come back to this object (`fetch`, through `WorkspaceProxy`), which hands them to the same egress point.
  */
 import { DurableObject } from "cloudflare:workers";
-import type { Workspace, WorkspaceStub } from "@cloudflare/computer";
-import type { OutboundPolicy } from "@commissary/core";
-import type { SandboxNetwork } from "../network.ts";
+import type { Workspace, WorkspaceBackend, WorkspaceStub } from "@cloudflare/computer";
+import {
+  computerInstanceOf,
+  DEFAULT_COMPUTER_INSTANCE,
+  type OutboundPolicy,
+} from "@commissary/core";
+import type { SandboxAllowance } from "../network.ts";
 import { MAX_BYTES, MAX_LINES } from "../truncate.ts";
 import {
   type CommandResult,
@@ -33,9 +43,19 @@ import {
   type SandboxError,
   SESSION_IDLE_MS,
 } from "../provider.ts";
+import { atLimit, COMPUTER_BACKEND, computerBackend } from "./computer.ts";
 import type { SandboxEgressProps } from "./egress.ts";
+import { computerOffNote, shellRefusal } from "./fallback.ts";
 import { fileFailure } from "./files.ts";
 import { guardedLoader } from "./loader.ts";
+
+/**
+ * A session's computer, as its Workspace runs commands on it and the session hands it the requests that come back
+ * through `WorkspaceProxy` (computerd's connection, the computer's outbound requests). The test Worker's is a fake.
+ */
+export type ComputerBackend = WorkspaceBackend & {
+  handleFetch(request: Request): Promise<Response>;
+};
 
 /** The binding the state Worker gives `SandboxSession`'s namespace; the Workspace's proxy finds the object through it. */
 export const SANDBOX_SESSION_BINDING = "SANDBOX_SESSION";
@@ -46,6 +66,11 @@ export interface SandboxSessionEnv {
   readonly LOADER: WorkerLoader;
   /** Its own namespace, which the Workspace's proxy reaches it through ({@link SANDBOX_SESSION_BINDING}). */
   readonly SANDBOX_SESSION: DurableObjectNamespace;
+  /**
+   * The computer's instance size (#223), bound with its container (`COMMISSARY_COMPUTER_INSTANCE`); unset, or not one
+   * of Cloudflare's sizes: `standard-1`.
+   */
+  readonly COMPUTER_INSTANCE?: string | undefined;
 }
 
 /** How long a closed session remembers that it was, so its owner hears it is closed rather than unknown. */
@@ -56,14 +81,20 @@ const RECORD = "sandbox:session";
 
 /** What the object keeps of its session beside the Workspace. */
 type SessionRecord =
-  | {
+  | ({
       readonly state: "open";
       readonly org: string;
       readonly owner: string;
-      readonly network: SandboxNetwork;
       readonly policy: OutboundPolicy;
-    }
+    } & StoredAllowance)
   | { readonly state: "closed"; readonly org: string; readonly owner: string };
+
+/**
+ * What an open session may have, as stored: a session opened before the computer (#223) has no `computer`, and may not
+ * use it.
+ */
+type StoredAllowance = Omit<SandboxAllowance, "computer"> &
+  Partial<Pick<SandboxAllowance, "computer">>;
 
 type OpenRecord = Extract<SessionRecord, { state: "open" }>;
 
@@ -128,6 +159,15 @@ const cutOf = (
   };
 };
 
+/** The words a session answers a computer's failure with. */
+const computerFailure = (error: Error): string => {
+  const limit = atLimit(error);
+
+  return limit === undefined
+    ? `The computer could not run the command: ${error.message}`
+    : `${limit.message} Try again later.`;
+};
+
 /** Loads `@cloudflare/computer` and the parts of it a session uses, the first time a session needs them. */
 const loadComputer = async () => {
   const [{ Workspace }, { WorkerShellBackend }, { default: curl }] = await Promise.all([
@@ -145,6 +185,54 @@ export class SandboxSession extends DurableObject<SandboxSessionEnv> {
   readonly #running = new Set<{ kill(): Promise<void> }>();
   /** The Workspace stubs handed to the shell, disposed of when the session closes. */
   readonly #stubs = new Set<WorkspaceStub>();
+  /** The session's computer, when its Workspace has one: it takes the computer's requests back (`fetch`). */
+  #computer: ComputerBackend | undefined;
+
+  /**
+   * The object's state with the computer's container (`ctx.container`), or undefined when the deployment attached none
+   * to this class. The test Worker's subclass hands one with a fake container.
+   */
+  protected containerState(): DurableObjectState | undefined {
+    return this.ctx.container === undefined ? undefined : this.ctx;
+  }
+
+  /**
+   * The computer's backend for this session, or undefined when the deployment has none. The test Worker's subclass
+   * hands a fake one.
+   */
+  protected computerBackend(gateway: Fetcher): Promise<ComputerBackend> | undefined {
+    const state = this.containerState();
+
+    if (state === undefined) return undefined;
+
+    return computerBackend({
+      state,
+      workspace: { binding: SANDBOX_SESSION_BINDING, id: this.ctx.id.toString() },
+      gateway,
+      instance: computerInstanceOf(this.env.COMPUTER_INSTANCE ?? "") ?? DEFAULT_COMPUTER_INSTANCE,
+    });
+  }
+
+  /** Whether the deployment attached the computer's container to this class. */
+  protected hasComputer(): boolean {
+    return this.containerState() !== undefined;
+  }
+
+  /** Stops the session's computer, if one runs, before its files go: its copy of them goes with it. */
+  protected async stopComputer(): Promise<void> {
+    const container = this.containerState()?.container;
+
+    if (container?.running === true) await container.destroy().catch(() => undefined);
+  }
+
+  /** computerd's connection and the computer's outbound requests, through `WorkspaceProxy`; nothing else is served. */
+  override async fetch(request: Request): Promise<Response> {
+    const computer = this.#computer;
+
+    return computer === undefined
+      ? new Response("not found", { status: 404 })
+      : await computer.handleFetch(request);
+  }
 
   #record(): SessionRecord | undefined {
     return this.ctx.storage.kv.get<SessionRecord>(RECORD);
@@ -167,11 +255,18 @@ export class SandboxSession extends DurableObject<SandboxSessionEnv> {
       props: { network: record.network, policy: record.policy },
     });
 
+    // The computer, for a session that may use it on a deployment that has it: its requests leave through `gateway`
+    // too.
+    const computer = record.computer === true ? await this.computerBackend(gateway) : undefined;
+
+    this.#computer = computer;
+
     // The one egress point (ADR 0044): the shell's every request leaves through `gateway`. The Workspace's `git`,
     // `assets` and `artifacts` stay unconfigured, and no command but `curl` is added: they would fetch from this object,
     // with the state Worker's own `fetch`, not through `SandboxEgress`.
     return new Workspace({
       storage: this.ctx.storage,
+      // just-bash first: the first backend is the Workspace's default.
       backends: [
         new WorkerShellBackend({
           loader: guardedLoader(this.env.LOADER, gateway),
@@ -181,6 +276,7 @@ export class SandboxSession extends DurableObject<SandboxSessionEnv> {
           // A session's network never changes, so one Dynamic Worker per session serves it.
           egress: { mode: "http-gateway", gateway, revision: "session" },
         }),
+        ...(computer === undefined ? [] : [computer]),
       ],
       // As pi cuts a command's output; the whole is saved in the Workspace, where the model can read it.
       output: { maxLines: MAX_LINES, maxBytes: MAX_BYTES },
@@ -223,10 +319,13 @@ export class SandboxSession extends DurableObject<SandboxSessionEnv> {
     return stub;
   }
 
-  /** Opens the session for `caller`, with `network` and the outbound guard's `policy`; a used object is refused. */
+  /**
+   * Opens the session for `caller`, with what it may have (its network, and the computer when the deployment has one)
+   * and the outbound guard's `policy`; a used object is refused.
+   */
   async open(
     caller: SessionCaller,
-    network: SandboxNetwork,
+    { network, computer }: SandboxAllowance,
     policy: OutboundPolicy,
   ): Promise<SessionReply<null>> {
     if (this.#record() !== undefined) return refused("unavailable", "the session id is taken");
@@ -236,6 +335,7 @@ export class SandboxSession extends DurableObject<SandboxSessionEnv> {
       org: caller.org,
       owner: caller.owner,
       network,
+      computer,
       policy,
     };
 
@@ -255,13 +355,20 @@ export class SandboxSession extends DurableObject<SandboxSessionEnv> {
 
     if (!session.ok) return session;
 
+    // The fallback rule (`fallback.ts`): decided before the line runs, so a line just-bash runs is never run again.
+    const refusal = await shellRefusal(command);
+    let onComputer = false;
+
     try {
       const workspace = await this.#workspaceOf(session.value);
+
+      onComputer = refusal !== undefined && this.#computer !== undefined;
 
       const handle = await workspace.runtime.exec(command, {
         encoding: "utf8",
         cwd: SANDBOX_HOME,
         timeoutMs,
+        ...(onComputer ? { backend: COMPUTER_BACKEND } : {}),
       });
 
       this.#running.add(handle);
@@ -275,6 +382,10 @@ export class SandboxSession extends DurableObject<SandboxSessionEnv> {
           exitCode: result.exitCode,
           stdout: { text: result.stdout, cut: cutOf(result.truncated?.stdout) },
           stderr: { text: result.stderr, cut: cutOf(result.truncated?.stderr) },
+          // Only a failed run: a line that tests for a command and copes without it needs no note.
+          ...(refusal === undefined || onComputer || result.exitCode === 0
+            ? {}
+            : { note: computerOffNote(refusal, this.hasComputer()) }),
         });
       } finally {
         this.#running.delete(handle);
@@ -282,10 +393,13 @@ export class SandboxSession extends DurableObject<SandboxSessionEnv> {
       }
     } catch (error) {
       if (!this.#stillOpen()) return refused("closed");
+      const failure = error instanceof Error ? error : new Error(String(error));
 
       return refused(
         "unavailable",
-        `The sandbox could not run the command: ${error instanceof Error ? error.message : String(error)}`,
+        onComputer
+          ? computerFailure(failure)
+          : `The sandbox could not run the command: ${failure.message}`,
       );
     }
   }
@@ -380,6 +494,7 @@ export class SandboxSession extends DurableObject<SandboxSessionEnv> {
     this.#running.clear();
     this.#stubs.clear();
     this.#workspace = undefined;
+    this.#computer = undefined;
 
     await Promise.allSettled(running.map(async (handle) => await handle.kill()));
 
@@ -390,6 +505,8 @@ export class SandboxSession extends DurableObject<SandboxSessionEnv> {
         async (opened) => await opened.close(),
         () => undefined,
       );
+
+    await this.stopComputer();
   }
 
   /** Deletes the session's files and everything else the object holds, keeping only a note that it was closed. */

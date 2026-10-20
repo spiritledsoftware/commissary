@@ -6,6 +6,8 @@
  */
 export * from "./area.ts";
 
+export * from "./computer.ts";
+
 export * from "./errors.ts";
 
 export * from "./execution-context.ts";

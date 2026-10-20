@@ -2517,11 +2517,15 @@ Platform-level routes (`org-routes.ts`, contract group `orgs`, `packages/contrac
 Anyone else gets `403 platform_admin_required` on the org routes it may not use. The panel reads `/me` for its org switcher.
 
 `deployment` (ADR 0043) is on every deployment: `hosted` is `isHosted`, `browser` is true exactly when the deployment has a
-Browser Run binding, `computer` exactly when it has the sandbox's container binding, each read from `env` at request time.
-**The two binding checks are `hasBrowserBinding` and `hasComputerBinding` in `apps/app/src/management/deployment.ts`**:
-the browser's is wired in (#212: the app Worker binds Browser Run, `BROWSER` in `AppBindings`, exactly when the state
-Worker does, unless `COMMISSARY_BROWSER=off`, and reads only its presence); the computer's binding does not exist yet,
-so its check returns `false` until #223 wires it in there. The panel reads `me.deployment.hosted` for the mode; `browser` and `computer` are exposed for #216, #217
+Browser Run binding, `computer` exactly when it has the sandbox's computer, each read from `env` at request time.
+**The two checks are `hasBrowserBinding` and `hasComputerBinding` in `apps/app/src/management/deployment.ts`**:
+the browser's is its binding (#212: the app Worker binds Browser Run, `BROWSER` in `AppBindings`, exactly when the state
+Worker does, unless `COMMISSARY_BROWSER=off`, and reads only its presence). The computer's is the one piece read from a
+variable rather than its binding (#223): its container is attached to the state Worker's `SandboxSession` class and
+exists only as `ctx.container` inside those objects, with no binding in any Worker's `env`, so the deploy binds the
+marker `COMPUTER=on` on the State and app Workers exactly when it attaches the container, from the one
+`COMMISSARY_COMPUTER` setting (`@commissary/core`'s `COMPUTER_MARKER` and `hasComputer`, which both the deploy and the
+checks use; the session objects check `ctx.container` themselves too). The panel reads `me.deployment.hosted` for the mode; `browser` and `computer` are exposed for #216, #217
 and #225 and unused so far.
 
 Routes of the addressed org (`/org`, `/export`) and the account route (`DELETE /me`), all in `org-routes.ts` (ADR 0027,
@@ -4106,8 +4110,53 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
     Each series ran on its own, so compare rows within one. All stay within Workers Paid's 10 MiB, which a
     self-hosted Commissary needs anyway (ADR 0043), and far from the 1 s startup limit. Another provider (Daytona, E2B,
     Modal, Vercel Sandbox) is another adapter, a stored toolkit of kind `sandbox` whose credential is the org's key
-    for it; the computer (#223) sends its traffic through the same egress point. The workerd tests run real sessions
-    over Miniflare's Worker Loader, and the toolkit over a fake second provider.
+    for it. The workerd tests run real sessions over Miniflare's Worker Loader, and the toolkit over a fake second
+    provider.
+
+  - **The computer** (`tools/sandbox/cloudflare/computer.ts`, `fallback.ts`, #223, ADR 0041): on a deployment with
+    `COMMISSARY_COMPUTER=on`, a Cloudflare Container (the `Computer` image, `infra/computer/`: computerd, mise and what
+    mise needs to download and unpack, no runtime preinstalled) attached to the `SandboxSession` class, one per session
+    object, as the Workspace's second backend: `@cloudflare/computer`'s container backend, computerd's FUSE mount of the
+    same files at `/workspace`. The sandbox toolkit's "may use the computer" (`computer`, the org's ceiling, set by org
+    admins like the network, off by default, refused on a deployment without it) lets `sandbox_open` ask for it
+    (`computer: true`); a session keeps what it opened with. **The fallback rule** is Commissary's
+    (`@cloudflare/computer` has none), and is decided before a line runs, from just-bash's own parser (`Bash.transform`,
+    whose AST is what `exec` runs) and lookup (`type -t`): a line goes to the computer only when just-bash's parser
+    rejects it (or holds a syntax error for a later part) or it names a command just-bash lacks (a literal word in
+    command position anywhere in it, or run by a wrapper among them: `env`, `xargs`, `timeout`, `nice`, `nohup`,
+    `time`, `command`, `exec`, `sudo`, `find -exec` and its kin, and the script of `bash -c`/`sh -c`; not a function
+    it defines, unknown to just-bash with the session shell's commands; a path and `git` count as lacking, a name only
+    known at run time, `$tool`, does not). Everything else runs on just-bash, and **a line just-bash ran is never run
+    again**, whatever it exited with: a run's exit code or output can't tell "could not run" from "ran and failed", and
+    a line may have done part of its work before failing. In a session without the computer such a line runs on
+    just-bash, and when it fails its result ends with a note that the computer is off (and why: the session, or the
+    deployment). The rule asks the just-bash the package imports, the shell runs the one `@cloudflare/computer`
+    bundled: the `just-bash` override in `pnpm-workspace.yaml` keeps them one version, and a unit test
+    (`test/unit/sandbox-fallback.test.ts`) fails when they differ. The computer starts at a
+    session's first fallback and stops after 10 idle minutes (the container's inactivity timeout, set after every
+    start); the files stay in the object, so the next fallback starts a fresh computer on them. mise keeps its data,
+    cache, config and state in `/workspace/.mise`, its shims first on the commands' `PATH`, so `mise use node@22`
+    lasts the session and survives the computer stopping. **Its one way out** (ADR 0044) is the same `SandboxEgress`:
+    `enableInternet` is always `false`, set explicitly by Commissary's guard over the container host whatever the
+    backend asks, and every outbound HTTP and HTTPS request is intercepted (`interceptAllOutboundHttp`) to the session
+    object, through `WorkspaceProxy` (`cloudflare/proxy.ts`, exported by the state Worker), whose `fetch` hands it to
+    the backend and on to `SandboxEgress` with the session's network and the guard. HTTPS is intercepted under
+    Cloudflare's containers CA, which the image's entrypoint adds to the system's trust store (and the commands'
+    environment points Node.js, Python and pip at). **No credential enters it**: its environment is computerd's port,
+    mount point and shell and mise's variables only (the guard refuses any other); beneath it `@cloudflare/computer`
+    adds a random per-container `RPC_CLIENT_SECRET` that authorizes the session object and computerd to each other.
+    computerd keeps it from the commands' environment, but the commands run as root (computerd cannot run them as
+    another user, and its FUSE mount admits its own user only), so a command can read it from `/proc`; it reaches only
+    this session's own computerd channel, the files and commands the command has already. A start Cloudflare refuses at
+    the account's container limit answers that in words. One instance size per deployment
+    (`COMMISSARY_COMPUTER_INSTANCE`: `basic`, `standard-1` (the default: computerd holds its copy of the files in
+    memory, and a runtime from mise is 100 to 200 MB unpacked) to `standard-4`). The image pins its two bases by digest
+    (Dependabot's `docker` updates), computerd's to the `@cloudflare/computer` version (`tools/check-computerd.sh`,
+    run by `pnpm lint`). Cold start, `mise use node@22` and the per-session cost are not measured yet: they need a
+    deployed stage with the computer. The workerd tests run real sessions with a fake computer in the container's
+    place (`test/support/fake-computer.ts`) over a fake `ctx.container` (`test/support/fake-container.ts`), through
+    `@cloudflare/computer`'s own launch (`WorkspaceContainerAPI`) and the real egress path (`WorkspaceProxy` to the
+    session's `fetch` to `SandboxEgress`).
 - **Members and orgs**: a member who leaves takes their private toolkits, their private credentials on org toolkits, the
   upstream sessions of those, the sign-ins they started, the tool grants that named them, the pending approvals of
   their calls and their open sandbox sessions, and leaves every list of approvers (`memberLeft`); a deleted team takes its tool grants (`teamDeleted`),

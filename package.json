@@ -15,7 +15,7 @@
     "dev": "turbo run build --filter=@commissary/web && alchemy dev",
     "format": "oxfmt",
     "lint": "turbo run lint:root",
-    "lint:root": "oxlint && oxfmt --check",
+    "lint:root": "oxlint && oxfmt --check && tools/check-computerd.sh",
     "logs": "alchemy logs",
     "plan": "alchemy plan",
     "prepare": "effect-tsgo patch --no-typescript --oxlint && husky && ([ -n \"$CI\" ] || tools/sync-reference-repos.sh)",
@@ -27,6 +27,7 @@
   },
   "devDependencies": {
     "@commissary/billing": "workspace:*",
+    "@commissary/core": "workspace:*",
     "@commissary/models": "workspace:*",
     "@commitlint/cli": "21.2.3",
     "@commitlint/config-conventional": "21.2.3",

@@ -74,6 +74,13 @@ interface __BaseEnv_Env {
    */
   BROWSER?: Pick<BrowserRun, "quickAction">;
   /**
+   * The sandbox's computer (#223, ADR 0043): `on` exactly when the deploy attached its container
+   * (`COMMISSARY_COMPUTER`) to the state Worker's `SandboxSession` class, which gives it no binding of its own (`@commissary/core`'s
+   * `COMPUTER_MARKER`); only read for `deployment.computer` on `GET /v9/management/me`. Tests bind none unless one
+   * passes it.
+   */
+  COMPUTER?: string;
+  /**
    * Dynamic Workers (ADR 0043), on every deployment: the Agents area exists exactly when it is bound (#226,
    * `@commissary/agents`' `agentsPresent`); only its presence is read here. Tests bind it (vitest.config.ts), and the
    * one that runs a deployment without it passes `LOADER: undefined`.

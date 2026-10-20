@@ -17,7 +17,7 @@
  * names that provider and whose credential is the org's key for it, calling the same tools through that provider's
  * adapter.
  */
-import type { OutboundPolicy } from "@commissary/core";
+import { type ComputerMarker, hasComputer, type OutboundPolicy } from "@commissary/core";
 import { Effect, Result, Schema } from "effect";
 import { browserRun, type BrowserRunBinding } from "../browser/browser-run.ts";
 import type { BrowserProvider, StorageState } from "../browser/provider.ts";
@@ -38,7 +38,7 @@ import {
 import { BROWSER_TOOLS, callBrowserTool } from "../browser/toolkit.ts";
 import { cloudflareSandbox } from "../sandbox/cloudflare/provider.ts";
 import type { SandboxSession, SandboxSessionEnv } from "../sandbox/cloudflare/session.ts";
-import { NO_NETWORK } from "../sandbox/network.ts";
+import { NO_ALLOWANCE } from "../sandbox/network.ts";
 import type { SandboxProvider } from "../sandbox/provider.ts";
 import {
   callSandboxTool,
@@ -52,10 +52,11 @@ import type { BuiltInToolkit } from "./toolkit.ts";
 /**
  * What the Tools part, and the sandbox's `SandboxSession` objects, read from the state Worker's env: the optional
  * `browser` binding (ADR 0043), the namespace of the browser sessions' Durable Objects (#213), and Dynamic Workers with
- * the sandbox sessions' namespace, which every deployment has (ADR 0043). The browser sessions' objects read their own
- * view (`BrowserSessionEnv`, `session-object.ts`).
+ * the sandbox sessions' namespace, which every deployment has (ADR 0043), and the marker that the deployment attached
+ * the sandbox's computer to them (#223, `COMPUTER`). The browser sessions' objects read their own view
+ * (`BrowserSessionEnv`, `session-object.ts`).
  */
-export interface ToolsPartEnv extends SandboxSessionEnv {
+export interface ToolsPartEnv extends SandboxSessionEnv, ComputerMarker {
   /** Browser Run (#212); absent on a deployment with `COMMISSARY_BROWSER=off`, which has no browser toolkit. */
   readonly BROWSER?: BrowserRunBinding | undefined;
   /** The deployment's own hosts, which the part's own requests (its alarm's token refreshes, #202) refuse. */
@@ -77,7 +78,7 @@ export interface BuiltInProviders {
 /**
  * The providers a deployment's bindings give: Browser Run's binding, as the browser provider, with the browser
  * sessions' namespace, whose objects reach the provider's browsers themselves; and Cloudflare's sandbox on the sandbox
- * sessions' namespace, always.
+ * sessions' namespace, always, with the computer when the deployment has its container (#223, the `COMPUTER` marker).
  */
 export const builtInProviders = (env: ToolsPartEnv): BuiltInProviders => ({
   ...(env.BROWSER === undefined
@@ -87,7 +88,7 @@ export const builtInProviders = (env: ToolsPartEnv): BuiltInProviders => ({
         browserSessions:
           env.BROWSER_SESSIONS === undefined ? undefined : browserSessions(env.BROWSER_SESSIONS),
       }),
-  sandbox: cloudflareSandbox(env.SANDBOX_SESSION),
+  sandbox: cloudflareSandbox(env.SANDBOX_SESSION, { computer: hasComputer(env) }),
 });
 
 /** The id (and name) of the browser toolkit. */
@@ -122,7 +123,7 @@ export interface CallerProfiles {
  * Who calls a built-in tool, and with what: the org, the call's member and principal (a browser or sandbox session's
  * owner; absent from a call that names none, which sessions refuse), the browser profiles the caller reaches, the Tools
  * part's log of the org's sandbox sessions, the outbound guard's policy, the Tools part's time, and the toolkit with
- * what the org set on it (its network ceiling).
+ * what the org set on it (its network ceiling and whether it allows the computer).
  */
 export interface BuiltInCall {
   readonly org: string;
@@ -338,7 +339,7 @@ const builtInToolkit = (
     // The org's rules and ceiling, if it set any, are the part's to add (`ToolkitStore.builtInSettings`).
     approvalRules: undefined,
     baseUrl: undefined,
-    network: undefined,
+    ceiling: undefined,
     builtIn: true,
   },
   tools: tools.map((tool, position) => ({
@@ -385,7 +386,7 @@ const sandboxToolkit = (provider: SandboxProvider): BuiltIn => ({
             sessions,
             policy,
             now,
-            ceiling: toolkit.network ?? NO_NETWORK,
+            ceiling: toolkit.ceiling ?? NO_ALLOWANCE,
           },
           tool,
           args,

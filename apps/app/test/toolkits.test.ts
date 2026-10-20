@@ -678,7 +678,8 @@ describe("the org export", () => {
 
     expect(exported.status).toBe(200);
     expect((exported.body as { toolkits: unknown }).toolkits).toEqual([
-      // The built-in sandbox toolkit (#222), with what the org set on it: no grants, no network yet.
+      // The built-in sandbox toolkit (#222), with what the org set on it: no grants, no network yet, no computer
+      // (#223).
       {
         name: "sandbox",
         kind: "sandbox",
@@ -689,6 +690,7 @@ describe("the org export", () => {
         overrides: [],
         grants: [],
         network: { kind: "none" },
+        computer: false,
       },
       {
         name: "kit",

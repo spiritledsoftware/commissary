@@ -12,7 +12,11 @@
 A preview is a Commissary Cloud deploy (`COMMISSARY_MODE=cloud`) while its pull request has the label `cloud-preview` (adding or removing the label
 redeploys it in the other mode); production is one when the `production` environment sets `COMMISSARY_MODE=cloud`
 ([Commissary Cloud](#commissary-cloud)); the `cloud` stage always is ([The Commissary Cloud stage](#the-commissary-cloud-stage)). Everything
-else in this file describes a self-hosted Commissary, the default.
+else in this file describes a self-hosted Commissary, the default. A preview has the sandbox's computer
+(`COMMISSARY_COMPUTER=on`) while its pull request has the label `preview-computer` (adding or removing it redeploys
+it); `prod` and `cloud` have it (ADR 0043) through their deployer settings: `.env` (for `prod`) and `.env.cloud` set
+`COMMISSARY_COMPUTER=on`, in effect once `pnpm ci:setup` has written it into their environments
+([Optional pieces](#optional-pieces)).
 
 Deploys run only after typecheck, lint, workflow lint (actionlint, zizmor), the test shards and the smoke test pass.
 Fork and Dependabot pull requests get the checks but no preview (they receive no deploy secrets). A manual run
@@ -191,14 +195,14 @@ and no client API route, with no zone routes. A path on the wrong host answers `
 ## Optional pieces
 
 A self-hosted Commissary needs Workers Paid (Workers Free isn't supported, ADR 0043) and then has every area. Two pieces
-depend on an extra binding the deployment chooses. `GET /v9/management/me` reports whether each is present in its
+depend on an extra binding the deployment chooses (the computer's is a container attached to a Durable Object class,
+with a marker variable beside it, since the container itself has no binding in a Worker's `env`). `GET /v9/management/me` reports whether each is present in its
 `deployment` object (`browser`, `computer`); the panel decides what to show from it.
 
-| Piece                                | Deploy setting                                | Binding                                                                             | What its absence removes                                                                                                                        | Cost                                                                                                                      |
-| ------------------------------------ | --------------------------------------------- | ----------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| The browser toolkit (ADR 0039, #212) | `COMMISSARY_BROWSER`: `on` (default) or `off` | Browser Run (`browser`, as `BROWSER`) on the `State` and app (`Commissary`) Workers | The whole toolkit: it is not on the MCP endpoint, in toolkit lists or in tool grants, and `deployment.browser` is `false`. Nothing else changes | Browser Run includes 10 browser hours a month on Workers Paid, then $0.09 an hour, on the deployment's Cloudflare account |
-
-The sandbox's computer (#223) adds its row.
+| Piece                                   | Deploy setting                                                                                                  | Binding                                                                                                                                                           | What its absence removes                                                                                                                                                                                                                                                                               | Cost                                                                                                                                                                                                                                                                                                                                               |
+| --------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The browser toolkit (ADR 0039, #212)    | `COMMISSARY_BROWSER`: `on` (default) or `off`                                                                   | Browser Run (`browser`, as `BROWSER`) on the `State` and app (`Commissary`) Workers                                                                               | The whole toolkit: it is not on the MCP endpoint, in toolkit lists or in tool grants, and `deployment.browser` is `false`. Nothing else changes                                                                                                                                                        | Browser Run includes 10 browser hours a month on Workers Paid, then $0.09 an hour, on the deployment's Cloudflare account                                                                                                                                                                                                                          |
+| The sandbox's computer (ADR 0041, #223) | `COMMISSARY_COMPUTER`: `on` or `off` (default); `COMMISSARY_COMPUTER_INSTANCE`: its size (default `standard-1`) | The `Computer` container (`infra/computer/`) attached to the `State` Worker's `SandboxSession` class, and the marker `COMPUTER=on` on the `State` and app Workers | "May use the computer" stays off on the sandbox toolkit (an org admin cannot turn it on, and `sandbox_open` refuses `computer: true`): sandbox sessions run every command with just-bash, and a command it cannot run says the computer is off. `deployment.computer` is `false`. Nothing else changes | Containers' running time on the deployment's Cloudflare account (Workers Paid includes 25 GiB-hours of memory, 375 vCPU-minutes and 200 GB-hours of disk a month, then $0.0000025 per GiB-second, $0.000020 per vCPU-second and $0.00000007 per GB-second); each computer stops after 10 idle minutes. The deploy needs Docker, to build the image |
 
 **The sandbox.** The sandbox toolkit (#222) is not optional: every deployment has it, since it runs on Durable Objects
 and Dynamic Workers (the Worker Loader binding), which Workers Paid includes. There is nothing to configure, no account
@@ -208,6 +212,23 @@ and the `SandboxSession` namespace on the `State` Worker. Each session is one Dy
 time) and one Durable Object with its files; both land on the deployment's account, whoever's org used them; an
 org reaches the toolkit only once an org admin grants it (there is no default grant), and its sessions have no network
 until an org admin sets the toolkit's network ceiling.
+
+**The computer.** With `COMMISSARY_COMPUTER=on` the deploy builds the `Computer` image (`infra/computer/Dockerfile`:
+computerd, mise and what mise needs; no runtime preinstalled) with Docker on the deploying machine (CI's runners have it),
+pushes it to Cloudflare's registry and attaches it to the `SandboxSession` class as a Durable Object-managed container,
+one per sandbox session that uses it; the deploy token needs **Workers Containers Write** (`pnpm ci:setup` grants it). An
+org admin then allows it on the sandbox toolkit ("may use the computer", off by default), and a session opened with
+`computer: true` runs there whatever just-bash cannot run at all (`node`, `python`, `git`, other binaries; the model
+installs runtimes with `mise use node@22`, kept in the session's files). It reaches the network only through the
+sandbox's egress point, within the session's network. It is off unless the deployer turns it on: a local deploy reads
+`COMMISSARY_COMPUTER=on` (and `COMMISSARY_COMPUTER_INSTANCE`, if not the default) from `.env`; deploying through CI, set
+them in `.env` (or `.env.cloud` for the `cloud` stage) and re-run `pnpm ci:setup`, which writes them into the
+`production` (or `cloud`) environment, or set the GitHub variables there yourself. This repository's own `prod` and
+`cloud` have it on that way (ADR 0043), once `pnpm ci:setup` is re-run with the setting; the code's default, for any
+other deployer, stays off. `off`, or unset, deploys no container and needs no Docker. Turning it off later detaches the container; sessions keep their files and run just-bash only. Previews have it
+only with the `preview-computer` label. `alchemy dev` never attaches it (it would build and run the image with Docker).
+The account's container limits apply: when Cloudflare has no container for a session, its command answers that the
+account is at its limit.
 
 **The browser.** Browser Run needs no account setup beyond Workers Paid (on Workers Free it is capped at 10 minutes a day,
 too little to be useful) and no API token: the deploy binds it, and the toolkit calls its Quick Actions through the
@@ -400,15 +421,18 @@ It manages:
 - the GitHub environments `production` (deployments from `main` only, no reviewers: a green push deploys) and
   `preview`, and `cloud` (like `production`) when `.env.cloud` exists ([The Commissary Cloud stage](#the-commissary-cloud-stage));
 - `commissary-ci-deploy`, an account-owned Cloudflare API token limited to what `alchemy.run.ts` deploys: Workers Scripts,
-  Workers KV Storage, D1, Secrets Store (Alchemy's state store) and Access: Apps and Policies (Write), Account Settings
-  (Read), and Zone Read, DNS Write and Workers Routes Write on the zones of the app host, the API host and Commissary
+  Workers KV Storage, D1, Secrets Store (Alchemy's state store), Workers Containers (the sandbox's computer) and Access:
+  Apps and Policies (Write), Account Settings (Read), and Zone Read, DNS Write and Workers Routes Write on the zones of the app host, the API host and Commissary
   Cloud's auth host (and of the `cloud` stage's);
 - `commissary-ci-check`, the Access service token of the post-deploy check;
 - in both environments, the secrets `CLOUDFLARE_API_TOKEN`, `CF_ACCESS_CLIENT_ID`, `CF_ACCESS_CLIENT_SECRET` and the
   variables `CLOUDFLARE_ACCOUNT_ID`, `ACCESS_*` (from `.env`) and `ACCESS_ALLOW_SERVICE_TOKEN_IDS` (the check token's
-  ID); in `production` also `COMMISSARY_DOMAIN`, `COMMISSARY_APP_DOMAIN` and `COMMISSARY_API_DOMAIN`; and Commissary
-  Cloud's settings where `.env` sets them ([Commissary Cloud](#commissary-cloud));
-- in `cloud`, the secret `CLOUDFLARE_API_TOKEN` and the settings of `.env.cloud` (no Access settings or check token).
+  ID); in `production` also `COMMISSARY_DOMAIN`, `COMMISSARY_APP_DOMAIN`, `COMMISSARY_API_DOMAIN` and, when `.env`
+  turns the computer on, `COMMISSARY_COMPUTER=on` and a `COMMISSARY_COMPUTER_INSTANCE` other than the default
+  ([Optional pieces](#optional-pieces)); and Commissary Cloud's settings where `.env` sets them
+  ([Commissary Cloud](#commissary-cloud));
+- in `cloud`, the secret `CLOUDFLARE_API_TOKEN` and the settings of `.env.cloud`, the computer's included (no Access
+  settings or check token).
 
 Raw secrets never leave Alchemy: Cloudflare returns them once, they go to the encrypted state store and are encrypted
 again for GitHub.

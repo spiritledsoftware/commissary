@@ -9,12 +9,17 @@
 // restarts the object, as a deploy that adds the binding does. `SandboxControlPlane` has the sandbox toolkit as every
 // deployment has it (#222): Cloudflare's sandbox, on this Worker's `SandboxSession` objects, whose just-bash runs in a
 // Dynamic Worker loaded through the test `LOADER`; `OtherSandboxControlPlane` has a fake second sandbox provider. The
-// browser ones leave the sandbox out, so their toolkits are the browser's alone.
+// browser ones leave the sandbox out, so their toolkits are the browser's alone. `ComputerSandboxControlPlane` is a
+// deployment that has the sandbox's computer (#223, the `COMPUTER` marker); the tests fake the container, so the
+// session objects are the deployed class with a fake computer in its place (`FakeComputerSandboxSession`), which a
+// session uses only when it opened with the computer, as deployed.
+import { COMPUTER_MARKER } from "@commissary/core";
 import { composeControlPlane } from "@commissary/state";
 import { browserRun } from "../src/browser/browser-run.ts";
 import { browserSessions } from "../src/browser/session-object.ts";
 import { builtInProviders, ToolsPart } from "../src/state.ts";
 import { fakeBrowserRun, fakeOtherProvider } from "./support/fake-browser.ts";
+import { FakeComputerSandboxSession } from "./support/fake-computer.ts";
 import { FakeBrowserSession } from "./support/fake-session-object.ts";
 import { fakeSandboxProvider } from "./support/fake-sandbox.ts";
 
@@ -22,8 +27,11 @@ export { Platform, SessionState } from "@commissary/state";
 
 export class BrowserSession extends FakeBrowserSession {}
 
-// The sandbox's session objects, and the entrypoints their Dynamic Workers reach, as the state Worker exports them.
-export { SandboxEgress, SandboxSession, WorkspaceServiceProxy } from "../src/state.ts";
+// The sandbox's session objects, and the entrypoints their Dynamic Workers and computers reach, as the state Worker
+// exports them.
+export { SandboxEgress, WorkspaceProxy, WorkspaceServiceProxy } from "../src/state.ts";
+
+export class SandboxSession extends FakeComputerSandboxSession {}
 
 export class ControlPlane extends composeControlPlane({
   tools: (ctx, _env, core) => new ToolsPart(ctx, core),
@@ -62,6 +70,12 @@ export class UpgradedControlPlane extends composeControlPlane({
 /** A deployment's built-in toolkits from its bindings, without Browser Run: the sandbox toolkit only. */
 export class SandboxControlPlane extends composeControlPlane({
   tools: (ctx, env: Cloudflare.Env, core) => new ToolsPart(ctx, core, builtInProviders(env)),
+}) {}
+
+/** A deployment that attached the sandbox's computer: the marker the deploy binds beside it (#223). */
+export class ComputerSandboxControlPlane extends composeControlPlane({
+  tools: (ctx, env: Cloudflare.Env, core) =>
+    new ToolsPart(ctx, core, builtInProviders({ ...env, ...COMPUTER_MARKER })),
 }) {}
 
 export class OtherSandboxControlPlane extends composeControlPlane({

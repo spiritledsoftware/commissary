@@ -1,7 +1,8 @@
 # Checks every pull request and push to main, then deploys:
 # - pull requests from this repository: a preview stage `pr-<number>` on its workers.dev URL (destroyed on close); with
 #   the label `cloud-preview` the preview is Commissary Cloud (COMMISSARY_MODE=cloud, ADR 0026), without it a
-#   self-hosted Commissary;
+#   self-hosted Commissary; with the label `preview-computer` it has the sandbox's computer (COMMISSARY_COMPUTER=on,
+#   #223), without it none;
 # - main: the `prod` stage (COMMISSARY_MODE from the production environment, self-hosted when unset) and, once the
 #   `cloud` environment is set up (`.env.cloud`, `pnpm ci:setup`), the `cloud` stage: Commissary Cloud on its own domain.
 # A change to documentation only (Markdown files anywhere, everything under docs/) skips the checks and deploys
@@ -11,7 +12,8 @@ name: ci
 
 on:
   pull_request:
-    # labeled/unlabeled: adding or removing `cloud-preview` redeploys the preview in the other mode.
+    # labeled/unlabeled: adding or removing `cloud-preview` redeploys the preview in the other mode, and
+    # `preview-computer` with or without the computer.
     types: [opened, synchronize, reopened, closed, labeled, unlabeled]
   push:
     branches: [main]
@@ -28,7 +30,7 @@ jobs:
     name: changes
     if: >-
       github.event.action != 'labeled' && github.event.action != 'unlabeled' ||
-      github.event.label.name == 'cloud-preview'
+      github.event.label.name == 'cloud-preview' || github.event.label.name == 'preview-computer'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -61,7 +63,7 @@ jobs:
       !cancelled() && needs.changes.outputs.code != 'false' &&
       github.event.action != 'closed' &&
       (github.event.action != 'labeled' && github.event.action != 'unlabeled' ||
-       github.event.label.name == 'cloud-preview')
+       github.event.label.name == 'cloud-preview' || github.event.label.name == 'preview-computer')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -92,7 +94,7 @@ jobs:
       !cancelled() &&
       github.event.action != 'closed' &&
       (github.event.action != 'labeled' && github.event.action != 'unlabeled' ||
-       github.event.label.name == 'cloud-preview')
+       github.event.label.name == 'cloud-preview' || github.event.label.name == 'preview-computer')
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -126,7 +128,7 @@ jobs:
       !cancelled() && needs.changes.outputs.code != 'false' &&
       github.event.action != 'closed' &&
       (github.event.action != 'labeled' && github.event.action != 'unlabeled' ||
-       github.event.label.name == 'cloud-preview')
+       github.event.label.name == 'cloud-preview' || github.event.label.name == 'preview-computer')
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -149,7 +151,7 @@ jobs:
       !cancelled() && needs.changes.outputs.code != 'false' &&
       github.event.action != 'closed' &&
       (github.event.action != 'labeled' && github.event.action != 'unlabeled' ||
-       github.event.label.name == 'cloud-preview')
+       github.event.label.name == 'cloud-preview' || github.event.label.name == 'preview-computer')
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -175,7 +177,7 @@ jobs:
       needs.changes.outputs.code != 'false' &&
       github.event.action != 'closed' &&
       (github.event.action != 'labeled' && github.event.action != 'unlabeled' ||
-       github.event.label.name == 'cloud-preview') &&
+       github.event.label.name == 'cloud-preview' || github.event.label.name == 'preview-computer') &&
       ((github.event_name == 'pull_request' &&
         github.event.pull_request.head.repo.full_name == github.repository &&
         github.actor != 'dependabot[bot]') ||
@@ -224,6 +226,14 @@ jobs:
         ${{ github.event_name == 'pull_request' &&
         (contains(github.event.pull_request.labels.*.name, 'cloud-preview') && 'cloud' || 'self-hosted') ||
         vars.COMMISSARY_MODE }}
+      # The sandbox's computer (#223, docs/DEPLOY.md "Optional pieces"): previews with the `preview-computer` label,
+      # production when its environment sets COMMISSARY_COMPUTER=on (`pnpm ci:setup` writes it when `.env` does). Off
+      # when unset. Its size: COMMISSARY_COMPUTER_INSTANCE, the default (standard-1) when unset.
+      COMMISSARY_COMPUTER: >-
+        ${{ github.event_name == 'pull_request' &&
+        (contains(github.event.pull_request.labels.*.name, 'preview-computer') && 'on' || 'off') ||
+        vars.COMMISSARY_COMPUTER }}
+      COMMISSARY_COMPUTER_INSTANCE: ${{ vars.COMMISSARY_COMPUTER_INSTANCE }}
       SIGN_IN_GITHUB_CLIENT_ID: ${{ vars.SIGN_IN_GITHUB_CLIENT_ID }}
       SIGN_IN_GITHUB_CLIENT_SECRET: ${{ secrets.SIGN_IN_GITHUB_CLIENT_SECRET }}
       SIGN_IN_GOOGLE_CLIENT_ID: ${{ vars.SIGN_IN_GOOGLE_CLIENT_ID }}
@@ -318,6 +328,10 @@ jobs:
       SECRETS_KEY_PREVIOUS_GENERATION: ${{ vars.SECRETS_KEY_PREVIOUS_GENERATION }}
       # Always Commissary Cloud: infra/settings.ts refuses the stage otherwise.
       COMMISSARY_MODE: cloud
+      # The sandbox's computer (#223): on when the environment sets it (`pnpm ci:setup` writes it when `.env.cloud`
+      # does), at its size.
+      COMMISSARY_COMPUTER: ${{ vars.COMMISSARY_COMPUTER }}
+      COMMISSARY_COMPUTER_INSTANCE: ${{ vars.COMMISSARY_COMPUTER_INSTANCE }}
       SIGN_IN_GITHUB_CLIENT_ID: ${{ vars.SIGN_IN_GITHUB_CLIENT_ID }}
       SIGN_IN_GITHUB_CLIENT_SECRET: ${{ secrets.SIGN_IN_GITHUB_CLIENT_SECRET }}
       SIGN_IN_GOOGLE_CLIENT_ID: ${{ vars.SIGN_IN_GOOGLE_CLIENT_ID }}

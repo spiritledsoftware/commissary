@@ -10,7 +10,8 @@
  * and so do Commissary Cloud's (SIGN_IN_*, TURNSTILE_*, …), written whenever `.env` sets them: previews labeled
  * `cloud-preview` need them even while production is self-hosted. The `cloud` environment (Commissary Cloud, which CI
  * deploys next to production, stage `cloud`) takes its settings from `.env.cloud` instead, and is left alone while
- * that file does not exist.
+ * that file does not exist. Production and `cloud` get the sandbox's computer (#223) when `.env` (or `.env.cloud`) sets
+ * `COMMISSARY_COMPUTER=on`, with its instance size; a preview gets it only with the `preview-computer` label (ci.yml).
  */
 import * as zones from "@distilled.cloud/cloudflare/zones";
 import * as Alchemy from "alchemy";
@@ -24,6 +25,7 @@ import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
 import * as Stream from "effect/Stream";
 import { existsSync, readFileSync } from "node:fs";
+import { DEFAULT_COMPUTER_INSTANCE } from "@commissary/core/computer";
 import {
   CLOUD_STAGE,
   DEFAULT_OAUTH_REDIRECT_URIS,
@@ -62,6 +64,21 @@ const optional = (name: string) =>
 
 /** Account-scoped "Access: Apps and Policies Write" (the catalog name is shared with a zone-scoped group). */
 const ACCESS_APPS_AND_POLICIES_WRITE = { id: "1e13c5124ca64b72b1969a67e8829049" };
+
+/**
+ * The sandbox's computer as a stage's settings have it (#223): `COMMISSARY_COMPUTER=on` and its instance size when it
+ * is on and not the default (empty, so not written, otherwise: unset is off).
+ */
+const computerVariables = (settings: {
+  readonly computer: boolean;
+  readonly computerInstance: string;
+}): Record<"COMMISSARY_COMPUTER" | "COMMISSARY_COMPUTER_INSTANCE", string> => ({
+  COMMISSARY_COMPUTER: settings.computer ? "on" : "",
+  COMMISSARY_COMPUTER_INSTANCE:
+    settings.computer && settings.computerInstance !== DEFAULT_COMPUTER_INSTANCE
+      ? settings.computerInstance
+      : "",
+});
 
 /** Commissary Cloud's GitHub variables and secrets, as set by the active config provider (unset ones left out). */
 const hostedConfig = Effect.gen(function* () {
@@ -174,6 +191,8 @@ export default Alchemy.Stack(
             "D1 Write",
             "Secrets Store Write",
             "Account Settings Read",
+            // The sandbox's computer (#223): its container application and image (COMMISSARY_COMPUTER).
+            "Workers Containers Write",
             ACCESS_APPS_AND_POLICIES_WRITE,
           ],
           resources: { [`com.cloudflare.api.account.${accountId}`]: "*" },
@@ -258,6 +277,9 @@ export default Alchemy.Stack(
               // The auth host of Commissary Cloud (ADR 0030), a subdomain of COMMISSARY_DOMAIN.
               COMMISSARY_AUTH_DOMAIN: settings.hosted?.authDomain ?? "",
               COMMISSARY_MODE: settings.hosted === undefined ? "" : "cloud",
+              // The sandbox's computer (#223, docs/DEPLOY.md "Optional pieces"), as `.env` sets it; a preview's follows
+              // its label.
+              ...computerVariables(settings),
               ...managedOAuthVariables,
             }
           : variables;
@@ -285,6 +307,7 @@ export default Alchemy.Stack(
         COMMISSARY_AUTH_DOMAIN: cloudStage.settings.hosted?.authDomain ?? "",
         PLATFORM_ADMIN_EMAILS: cloudStage.settings.adminEmails.join(","),
         COMMISSARY_MODE: "cloud",
+        ...computerVariables(cloudStage.settings),
       };
 
       for (const [name, value] of Object.entries(scoped)) {

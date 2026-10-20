@@ -31,6 +31,9 @@ allowBuilds:
 overrides:
   xpath: 0.0.34
   # The sandbox toolkit's shell (@commissary/tools, #222): `@cloudflare/computer` is a preview, pinned exactly in
-  # packages/tools, and so is the just-bash its worker-shell backend runs (the version its own tests run). An upgrade
-  # of either needs a test run (packages/tools/test/sandbox-toolkit.test.ts) first: .github/dependabot.yml groups them.
+  # packages/tools, and so is just-bash: the version `@cloudflare/computer` bundled into the worker-shell modules a
+  # session's shell runs, which is also the one the computer's fallback rule parses with (#223, packages/tools'
+  # `fallback.ts`). test/unit/sandbox-fallback.test.ts fails when the bundled modules are not this version's. An
+  # upgrade of either needs a test run (packages/tools/test/sandbox-toolkit.test.ts) first: .github/dependabot.yml
+  # groups them.
   just-bash: 3.2.0

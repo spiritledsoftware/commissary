@@ -169,7 +169,7 @@ import {
   COMMISSARY,
 } from "./toolkits/built-in.ts";
 import type { BuiltInToolkit, StoredToolkit, Toolkit } from "./toolkits/toolkit.ts";
-import { NO_NETWORK, networkProblem, normalizedNetwork } from "./sandbox/network.ts";
+import { NO_ALLOWANCE, networkProblem, normalizedNetwork } from "./sandbox/network.ts";
 import type { SandboxProvider } from "./sandbox/provider.ts";
 import { SandboxSessionStore, type TrackedSession } from "./sandbox/sessions.ts";
 
@@ -431,6 +431,8 @@ export interface ToolkitExport {
   readonly grants?: ReadonlyArray<ExportedToolGrant>;
   /** The sandbox toolkit's network ceiling (#222). */
   readonly network?: SandboxNetwork;
+  /** Whether the sandbox toolkit allows the computer (#223). */
+  readonly computer?: boolean;
   /** Its approval rules (#201): marked tools by upstream name, approvers by what a person reads. */
   readonly approval_rules?: {
     readonly writes?: { readonly approver: ExportedApprover };
@@ -1129,6 +1131,9 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     if (change.network !== undefined)
       return refuse("invalid", "only the sandbox toolkit has a network");
 
+    if (change.computer !== undefined)
+      return refuse("invalid", "only the sandbox toolkit has a computer");
+
     if (current.revision !== revision)
       return refuse("conflict", `the toolkit is at revision ${current.revision}, not ${revision}`);
 
@@ -1191,9 +1196,10 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
   /**
    * Sets a built-in toolkit's approval rules (#201), which apply as any toolkit's, and the sandbox toolkit's network
-   * ceiling (#222), the widest network its sessions may ask for (an org admin's: the toolkit is an org toolkit). Nothing
-   * else of it changes (`403 built_in` for a name, what it accepts or a price; a network on the browser toolkit too).
-   * Open sessions keep the network they opened with.
+   * ceiling (#222), the widest network its sessions may ask for, and whether they may use the computer (#223), which a
+   * deployment without the computer cannot allow (an org admin's: the toolkit is an org toolkit). Nothing else of it
+   * changes (`403 built_in` for a name, what it accepts or a price; a network or computer on the browser toolkit too).
+   * Open sessions keep the network and the computer they opened with.
    */
   #updateBuiltIn(
     viewer: Viewer,
@@ -1202,11 +1208,11 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     change: UpdateToolkit,
     by: string,
   ): ToolsResult<ToolkitView> {
-    const { approval_rules: _rules, network, ...rest } = change;
+    const { approval_rules: _rules, network, computer, ...rest } = change;
 
     if (
       Object.values(rest).some((value) => value !== undefined) ||
-      (network !== undefined && current.kind !== "sandbox")
+      ((network !== undefined || computer !== undefined) && current.kind !== "sandbox")
     )
       return BUILT_IN;
 
@@ -1219,12 +1225,27 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
     if (problem !== undefined) return refuse("invalid", problem);
 
+    if (computer === true && this.#sandbox?.computer !== true)
+      return refuse(
+        "invalid",
+        "this deployment has no computer, so sandbox sessions cannot use one (docs/DEPLOY.md, Optional pieces)",
+      );
+
     this.#store.updateBuiltIn(
       current.id,
       current.revision,
       {
         approvalRules: rules.value,
-        network: network === undefined ? current.network : normalizedNetwork(network),
+        ceiling:
+          network === undefined && computer === undefined
+            ? current.ceiling
+            : {
+                network:
+                  network === undefined
+                    ? (current.ceiling ?? NO_ALLOWANCE).network
+                    : normalizedNetwork(network),
+                computer: computer ?? (current.ceiling ?? NO_ALLOWANCE).computer,
+              },
       },
       by,
       this.#now(),
@@ -3667,7 +3688,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
             ? {}
             : { approval_rules: this.#exportedRules(toolkit.approvalRules) }),
           ...(toolkit.builtIn && toolkit.kind === "sandbox"
-            ? { network: toolkit.network ?? NO_NETWORK }
+            ? { ...(toolkit.ceiling ?? NO_ALLOWANCE) }
             : {}),
         },
       ];
@@ -3971,7 +3992,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       ...(resolution.shadowed.has(toolkit.id) ? { shadowed: true } : {}),
       ...(toolkit.builtIn ? { built_in: true } : {}),
       ...(toolkit.builtIn && toolkit.kind === "sandbox"
-        ? { network: toolkit.network ?? NO_NETWORK }
+        ? { ...(toolkit.ceiling ?? NO_ALLOWANCE) }
         : {}),
       ...(toolkit.approvalRules === undefined
         ? {}

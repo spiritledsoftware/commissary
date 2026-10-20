@@ -16,6 +16,7 @@ import { SandboxNetwork } from "@commissary/contract/tools";
 import {
   describeNetwork,
   NO_NETWORK,
+  type SandboxAllowance,
   networkProblem,
   normalizedNetwork,
   withinCeiling,
@@ -50,8 +51,8 @@ export interface SandboxSessionLog {
 export interface SandboxCall {
   readonly owner: SandboxOwner;
   readonly sessions: SandboxSessionLog;
-  /** The org's ceiling, the sandbox toolkit's network. */
-  readonly ceiling: SandboxNetwork;
+  /** The org's ceiling, the sandbox toolkit's: the widest network a session may ask for, and whether the computer. */
+  readonly ceiling: SandboxAllowance;
   readonly policy: OutboundPolicy;
   /** Epoch ms, the Tools part's clock. */
   readonly now: number;
@@ -79,7 +80,7 @@ const positiveInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1));
 const TOOLS = {
   open: {
     description:
-      "Open a sandbox session: a private working directory (/workspace) where sandbox_bash runs shell commands and the file tools read and write. Answers the session id the other sandbox tools take. Its files are deleted when it is closed, or after a day without use. No network unless one is asked for, within what the org allows.",
+      "Open a sandbox session: a private working directory (/workspace) where sandbox_bash runs shell commands and the file tools read and write. Answers the session id the other sandbox tools take. Its files are deleted when it is closed, or after a day without use. No network unless one is asked for, within what the org allows. Commands run with just-bash; ask for the computer to run what just-bash cannot (node, python, git, other binaries, installed with mise), when the org allows it.",
     arguments: Schema.Struct({
       network: optional(
         SandboxNetwork.annotate({
@@ -87,11 +88,17 @@ const TOOLS = {
             'The network its commands may reach: {"kind":"none"} (the default), {"kind":"hosts","hosts":["example.com","*.example.org"],"presets":["package_registries"]} for only those hosts, or {"kind":"open"} for the internet. It must be within what the org allows.',
         }),
       ),
+      computer: optional(
+        Schema.Boolean.annotate({
+          description:
+            "Whether the session may use the computer (default false): a Linux machine on the same files, where a command just-bash cannot run at all is run instead. It starts with the first such command, and stops after 10 idle minutes. Install runtimes with mise (mise use node@22); installs last as long as the session. The org must allow it.",
+        }),
+      ),
     }),
     read: false,
   },
   bash: {
-    description: `Run a shell command in a sandbox session's working directory (/workspace), with a bash-like shell (just-bash: cat, ls, grep, sed, awk, jq, find, sort, curl and more; no npm, node, python or other binaries). Returns the exit code, stdout and stderr. Output is truncated to the last ${MAX_LINES} lines or ${MAX_BYTES / 1024}KB of each (whichever is hit first); the full output is saved in a file it names. Optionally provide a timeout in seconds (default ${DEFAULT_TIMEOUT_SECONDS}, at most ${MAX_TIMEOUT_SECONDS}).`,
+    description: `Run a shell command in a sandbox session's working directory (/workspace), with a bash-like shell (just-bash: cat, ls, grep, sed, awk, jq, find, sort, curl and more; no npm, node, python, git or other binaries). In a session that may use the computer, a command just-bash cannot run at all (one it lacks, or syntax it does not support) runs on the computer instead, where mise installs runtimes (mise use node@22). Returns the exit code, stdout and stderr. Output is truncated to the last ${MAX_LINES} lines or ${MAX_BYTES / 1024}KB of each (whichever is hit first); the full output is saved in a file it names. Optionally provide a timeout in seconds (default ${DEFAULT_TIMEOUT_SECONDS}, at most ${MAX_TIMEOUT_SECONDS}).`,
     arguments: Schema.Struct({
       session,
       command: Schema.String.annotate({ description: "Shell command to execute" }),
@@ -247,6 +254,10 @@ export const resolvePath = (input: string): string => {
 
   return `/${parts.join("/")}`;
 };
+
+/** What `sandbox_open` answers a session that asks for the computer on a deployment without one (ADR 0043). */
+export const NO_COMPUTER =
+  'This deployment has no computer, so a sandbox runs every command with just-bash. Its operator can add one (docs/DEPLOY.md, "Optional pieces").';
 
 /** A provider failure as the model reads it. */
 const failure = (error: SandboxError, sessionId: string | undefined): Schema.JsonObject => {
@@ -445,19 +456,29 @@ const run = (
       if (problem !== undefined) return Effect.succeed(toolError(`Invalid network: ${problem}`));
       const network = normalizedNetwork(asked);
 
-      if (!withinCeiling(network, call.ceiling))
+      if (!withinCeiling(network, call.ceiling.network))
         return Effect.succeed(
           toolError(
-            `The org does not allow that network: a sandbox may have at most ${describeNetwork(call.ceiling)}.`,
+            `The org does not allow that network: a sandbox may have at most ${describeNetwork(call.ceiling.network)}.`,
+          ),
+        );
+      const computer = request.args.computer ?? false;
+
+      if (computer && !provider.computer) return Effect.succeed(toolError(NO_COMPUTER));
+
+      if (computer && !call.ceiling.computer)
+        return Effect.succeed(
+          toolError(
+            "The org does not allow the computer: a sandbox runs every command with just-bash. An org admin may allow it on the sandbox toolkit.",
           ),
         );
 
-      return provider.open(owner, { network, policy: call.policy, now }).pipe(
+      return provider.open(owner, { network, computer, policy: call.policy, now }).pipe(
         Effect.tap((id) => Effect.sync(() => call.sessions.opened(id))),
         Effect.map((id) =>
           text(
-            `Opened sandbox session ${id} (working directory ${SANDBOX_HOME}, ${describeNetwork(network)}). Pass session="${id}" to the other sandbox tools.`,
-            { structuredContent: { session: id, network } },
+            `Opened sandbox session ${id} (working directory ${SANDBOX_HOME}, ${describeNetwork(network)}, ${computer ? "the computer allowed" : "the computer off"}). Pass session="${id}" to the other sandbox tools.`,
+            { structuredContent: { session: id, network, computer } },
           ),
         ),
       );
@@ -481,12 +502,18 @@ const run = (
               stdout === "" && stderr === "" ? "(no output)" : stdout,
               ...(stderr === "" ? [] : [`stderr:\n${stderr}`]),
               ...(result.exitCode === 0 ? [] : [`Command exited with code ${result.exitCode}`]),
+              ...(result.note === undefined ? [] : [result.note]),
             ]
               .filter((part) => part !== "")
               .join("\n\n");
 
             return text(body, {
-              structuredContent: { exit_code: result.exitCode, stdout, stderr },
+              structuredContent: {
+                exit_code: result.exitCode,
+                stdout,
+                stderr,
+                ...(result.note === undefined ? {} : { note: result.note }),
+              },
               isError: result.exitCode !== 0,
             });
           }),

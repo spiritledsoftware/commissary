@@ -60,6 +60,11 @@ export interface AppBindings {
    * (`management/deployment.ts`); the browser toolkit runs on the state Worker's own binding.
    */
   readonly BROWSER?: Pick<BrowserRun, "quickAction"> | undefined;
+  /**
+   * The sandbox's computer (#223, ADR 0043): `on` exactly when the deploy attached its container to the state Worker's
+   * `SandboxSession` class (`@commissary/core`'s `COMPUTER_MARKER`). Only read for `/me` (`management/deployment.ts`).
+   */
+  readonly COMPUTER?: string | undefined;
 }
 
 /**

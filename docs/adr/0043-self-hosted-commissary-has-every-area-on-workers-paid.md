@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted, amended below (the computer's presence marker; how Commissary Cloud and `prod` turn it on)
 ---
 
 # A self-hosted Commissary has every area, on Workers Paid
@@ -43,3 +43,8 @@ This list is closed. Adding to it is a decision of its own.
 
 - ADR 0041's consequence "a self-hosted Commissary on Workers Free has no Agents area and no sandbox that runs commands" is replaced: Workers Free is not supported at all.
 - The README's prerequisites list Workers Paid and Zero Trust, and say what the browser and the computer cost. DEPLOY.md drops its "Workers Free" section and gains the table above and the list of Cloud-only features.
+
+## Amendment: the computer's marker, and how Commissary Cloud and `prod` turn it on
+
+- The table's "Binding" for the computer is a container attached to the `SandboxSession` class, which gives no Worker an `env` binding. The Workers see it through a `COMPUTER` variable that the same deploy setting sets (ADR 0041's amendment).
+- "Stages" is unchanged: Commissary Cloud and `prod` turn on both. Only the mechanism is settled: each stage reads `COMMISSARY_COMPUTER` from its deployer settings (`.env` for `prod`, `.env.cloud` for Commissary Cloud), which `pnpm ci:setup` writes into the stage's GitHub environment, so the computer is on there once `ci:setup` is re-run with the setting. The code's default stays off, for any other deployer's stage, since the computer needs Docker and its container time is billed. Previews are unchanged.

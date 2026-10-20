@@ -35,7 +35,7 @@
       "outputs": []
     },
     "//#lint:root": {
-      "description": "One oxlint (type-aware) and oxfmt --check run over the whole repository",
+      "description": "One oxlint (type-aware) and oxfmt --check run over the whole repository, and tools/check-computerd.sh",
       "outputs": []
     }
   }

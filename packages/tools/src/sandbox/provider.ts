@@ -13,7 +13,7 @@
  */
 import type { OutboundPolicy } from "@commissary/core";
 import { type Effect, Schema } from "effect";
-import type { SandboxNetwork } from "./network.ts";
+import type { SandboxAllowance } from "./network.ts";
 
 /** Who a sandbox session belongs to: a principal (`user:<email>`, `key:<id>`, later an agent run) in one org. */
 export interface SandboxOwner {
@@ -21,9 +21,11 @@ export interface SandboxOwner {
   readonly principal: string;
 }
 
-/** What a session is opened with: its network, the outbound guard's policy its egress applies, and the time. */
-export interface OpenSandbox {
-  readonly network: SandboxNetwork;
+/**
+ * What a session is opened with: what it may have (its network, and the computer when the provider has one, {@link
+ * SandboxProvider.computer}), the outbound guard's policy its egress applies, and the time.
+ */
+export interface OpenSandbox extends SandboxAllowance {
   readonly policy: OutboundPolicy;
   /** Epoch ms, the caller's clock: the session is idle from then. */
   readonly now: number;
@@ -59,6 +61,11 @@ export interface CommandResult {
   readonly exitCode: number;
   readonly stdout: CommandOutput;
   readonly stderr: CommandOutput;
+  /**
+   * What the provider says about how it ran the command, told to the model after its output: Cloudflare's, that its
+   * shell could not run it and the session's computer is off (#223).
+   */
+  readonly note?: string | undefined;
 }
 
 export interface DirectoryEntry {
@@ -83,6 +90,12 @@ type Sandboxed<A> = Effect.Effect<A, SandboxError>;
 export interface SandboxProvider {
   /** Which provider it is: the sandbox toolkit's source (`cloudflare`). */
   readonly id: string;
+  /**
+   * Whether its sessions may be given a computer (#223): Cloudflare's sandbox, when the deployment has the container
+   * (ADR 0043). Without one, "may use the computer" cannot be turned on. Another provider runs every command on its own
+   * machine and has none.
+   */
+  readonly computer: boolean;
   /** Opens a session of `owner`'s; answers its id. */
   readonly open: (owner: SandboxOwner, options: OpenSandbox) => Sandboxed<string>;
   /** Runs `command` (a shell command line) in the session's working directory. */
