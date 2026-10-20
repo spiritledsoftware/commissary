@@ -67,6 +67,8 @@ const worker = (bindings: Record<string, string>) =>
         CONTROL_PLANE: { className: "ControlPlane", useSQLite: true },
         SESSION_STATE: { className: "SessionState", useSQLite: true },
         PLATFORM: { className: "Platform", useSQLite: true },
+        // The browser sessions' objects (#213), over a fake provider's browsers (test/worker.ts).
+        BROWSER_SESSIONS: { className: "BrowserSession", useSQLite: true },
       },
       // `OAUTH_KV` everywhere: the cross-org suite (self-hosted) stores OAuth grants in it too; the OAuth server is on
       // only with the hosted bindings.

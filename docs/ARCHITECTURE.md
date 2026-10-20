@@ -73,7 +73,7 @@ to `packages/billing/src/`), Tools' as `tools/...` (relative to `packages/tools/
                               adapter, Turnstile
     test/                     vitest suites in workerd: worker.ts re-exports the entry and the state Worker's objects
   apps/state/                 @commissary/state-worker: the state Worker, no routes (ADR 0030)
-    src/index.ts              exports ControlPlane, SessionState and Platform; answers every request 404
+    src/index.ts              exports ControlPlane, SessionState, Platform and BrowserSession; answers every request 404
     src/dev.ts                its `alchemy dev` entry: index.ts plus the dev-only DevStateBridge entrypoint
     src/control-plane.ts      the ControlPlane Durable Object: @commissary/state's base composed with the Models and
                               Billing and Tools parts
@@ -136,19 +136,23 @@ to `packages/billing/src/`), Tools' as `tools/...` (relative to `packages/tools/
     src/management.ts         for the app Worker: management routes, role-table entries, org-deletion step, its section
                               of the org export
     src/state.ts              for the state Worker: ToolsPart, its part of the ControlPlane, and the built-in toolkits'
-                              providers from its env (builtInProviders, ToolsPartEnv: the optional browser binding)
+                              providers from its env (builtInProviders, ToolsPartEnv: the optional browser binding and
+                              BROWSER_SESSIONS); the browser sessions' Durable Object (BrowserSession and its env view,
+                              BrowserSessionEnv)
     src/control-plane-part.ts the ControlPlane's Tools part (toolkits, their credentials, tool lists, overrides, tool
                               grants, the endpoint's list and calls, upstream sessions)
     src/toolkits/             storage, names, the flat list of unique full names, static secrets, built-in toolkits
-    src/browser/              the browser toolkit (#212): its Quick Action tools, the browser-provider interface and
-                              its Browser Run adapter
+    src/browser/              the browser toolkit: its Quick Action tools (#212), the browser-provider interface and
+                              its Browser Run adapters; its session tools, what they do in a browser (masking
+                              included) and the sessions' Durable Object (#213)
     src/grants/               tool grants (#198): their storage and what a member's grants give
     src/mcp/                  the MCP client that lists and calls a remote MCP server's tools, and Commissary's MCP
                               endpoint (protocol.ts, endpoint.ts)
     src/management/           Tools' /v9/management routes (toolkits, tool grants)
     test/                     Node.js tests (test/unit/) and workerd tests against a test-only ControlPlane
-                              (test/worker.ts), fake MCP servers and a fake Browser Run binding; test/testing.ts is
-                              ./testing
+                              (test/worker.ts), fake MCP servers, a fake Browser Run binding and a fake browser
+                              provider's sessions (test/support/fake-sessions.ts); test/fixtures/ has the snapshot
+                              masking's golden fixtures; test/testing.ts is ./testing
   packages/contract/          @commissary/contract: the management API's Effect HttpApi schemas and addressing (browser-safe)
   packages/core/              @commissary/core: the foundation without bindings (org model, shared errors, hashing,
                               log-safe helpers, management replies, route services, the execution context, the
@@ -3225,7 +3229,9 @@ callback its CIMD document names, the API host (`API_DOMAIN`) where toolkit sign
 the D1 database its tool calls' records go into (Models' records go there too); it reaches MCP servers and HTTP APIs
 from the ControlPlane through the global `fetch` behind the outbound guard. The part reads two things of the state
 Worker's env (`ToolsPartEnv`): the optional Browser Run binding `BROWSER` (`builtInProviders`), which the browser
-toolkit runs on (_Built-in toolkits_ below), and `OWN_HOSTS`, which its alarm's token refreshes refuse.
+toolkit runs on (_Built-in toolkits_ below), and `OWN_HOSTS`, which its alarm's token refreshes refuse. Beside it the
+state Worker defines and always binds the browser sessions' Durable Object (#213: `BrowserSession`, whose namespace
+`BROWSER_SESSIONS` the part reads too), which reads `BROWSER` through its own view (`BrowserSessionEnv`).
 
 - **What Tools shares with Models**: the ownership rules (`Scope`, `FULL_ACCESS`, `accessTo`: who reaches a shared or a
   private thing), which lived in `models/credentials/ownership.ts`. They moved into `@commissary/auth`
@@ -3686,7 +3692,86 @@ toolkit runs on (_Built-in toolkits_ below), and `OWN_HOSTS`, which its alarm's 
     results with `isError`, logged as a warning with the provider, action and status only. Browser Run's `/json` (an AI
     model under the deployment's account) is left out (#212); so is **crawling**: Browser Run's `/crawl` is on its REST
     API only, which needs an account API token with "Browser Run - Edit", not the binding, so the crawl start, result
-    and cancel tools are a follow-up. Browser time in usage records and its price are #214; sessions are #213.
+    and cancel tools are a follow-up. Browser time in usage records and its price are #214.
+  - **Browser sessions** (`tools/browser/session-tools.ts`, `session.ts`, `session-object.ts`, #213, ADR 0039): an
+    interactive browser, on the same toolkit after the Quick Actions, with Playwright MCP's tool set as Commissary's own
+    code on `@cloudflare/playwright` (`@cloudflare/playwright-mcp` is archived): `browser_open` (optionally at a URL)
+    answers the session's id (`bs_` and 32 hex digits), which every other tool takes as `sessionId`, as MCP calls are
+    stateless: `browser_navigate`, `browser_navigate_back`, `browser_navigate_forward`, `browser_snapshot` (the current
+    tab's accessibility snapshot, Playwright's YAML for a model, whose `[ref=e3]` references the actions take),
+    `browser_click`, `browser_type` (fills a field, `submit` presses Enter), `browser_press_key`,
+    `browser_select_option`, `browser_hover`, `browser_wait_for` (a text or a CSS selector, at most 60 s; below),
+    `browser_take_screenshot`, `browser_tab_list`, `browser_tab_new`, `browser_tab_select` and `browser_close`. The
+    snapshot, the screenshot and the tab list are `read` (`readOnlyHint`); the rest are `write`. An action answers the
+    page's URL and title afterwards; invalid arguments and the provider's failures (a ref that names nothing, a
+    timeout: Playwright's message's first line, at most 500 characters) are tool results with `isError`, and the
+    session stays open. No tool evaluates JavaScript in the page or returns an element's value beyond the masked
+    snapshot, and there is no CDP endpoint. The session tools are listed while the deployment has the binding and the
+    namespace and the provider has sessions (`BrowserProvider.sessions`, a capability flag). A session belongs to the
+    call's principal, so a call without one (`principalId` unset) is refused with a tool error. `browser_wait_for`'s
+    selector (and the handoff's selectors to mask) are CSS only, sent to Playwright as `css=`: a `>>` chain, another
+    engine's prefix (`xpath=`, `text=`, `internal:…=`), a CSS escape or comment is refused; so are, for a wait, an
+    attribute selector on `value` and any attribute selector on an input or a text area, as a wait answers whether its
+    selector matched and `input[value^="a"]` would read a masked field one character at a time.
+    - **The Durable Object** (`BrowserSession`, in the state Worker beside the ControlPlane, ADR 0030): one per
+      session, named `<org>:<id>` and reached only by its org's Tools part (`browserSessions`), so the same id from
+      another org reaches another, empty object. It keeps its owner (the org, the member and the call's principal:
+      `key:<id>` for an API key, `user:<email>` for a person through Access, so another member, another API key of the
+      same member or the same member through Access answers `Unknown browser session <id>`, exactly as an id never
+      opened; a hosted agent's run, #232, will be a principal of its own), the provider it opened on (the toolkit's
+      source, from which it finds the provider's browsers again: `sessionProviderOf`) and the provider's id of the
+      browser, the current tab's index, the fields to mask and its times, nothing of the pages; what it stored is
+      decoded with a schema. Its calls and its alarm run one at a time (a promise chain): a Durable Object takes
+      another call while one waits on the browser. Its alarm closes it after 10 minutes (`IDLE_TIMEOUT_MS`)
+      without a call (each call moves it), ending the browser at the provider; `browser_close` does at once; a browser
+      the provider ended itself (Browser Run on a release of its own) closes it too. A closed session answers `Browser
+      session <id> is closed (<why>)` with `isError` for a day, then forgets everything and answers as unknown. A
+      connection the object holds is reused while it lives; one that dropped, or an object that restarted, reaches the
+      browser again by its id, in the same current tab, and only a browser the provider no longer has ends the
+      session. No caps on sessions per org or member (ADR 0039's amendment): Browser Run's refusal at the
+      account's limit (429: its concurrent browsers or new browsers per second) answers `browser_open` with a tool error
+      that says so.
+    - **Masking** (`session.ts`): Playwright's snapshot copies every input's value as the element's text, password
+      fields' included and whatever the input's role (`<input type="password" role="button">` too), so the session
+      masks the snapshot before anyone sees it. The masked selectors are `input[type="password" i]` plus the fields a
+      handoff filled (#216: `BrowserSession.maskFields(caller, selectors)` is the hook). It first counts the elements
+      that match them in every frame; a page without any is shown as it is. Otherwise every element of the snapshot
+      that shows a value, on its line or in its `- text:` lines, is asked about in one batch (by its ref), and the
+      value of each that matches, of each the browser gave no ref (not interactable) and of each whose element cannot
+      be found is replaced by `••••••••` (fails closed; on such a page a text without a ref is masked too). The session
+      never reads a field's value. Screenshots paint the same selectors over in every frame (Playwright's `mask`).
+      A sign-in form sent with GET puts its fields, the password included, in the next page's URL, which the session
+      shows (the action's answer, the snapshot, `browser_tab_list`): once a handoff marked fields, every URL the
+      session shows has its query's values masked (`?user=••••••••`); before that, a password a client typed into such
+      a form shows in the URL, as the client typed it. The masking reads Playwright's rendering of its snapshot for a
+      model (`renderAriaTree`, internal to Playwright) and the snapshot method itself (`_snapshotForAI`): that is why
+      `@cloudflare/playwright` is pinned exactly and Dependabot leaves it out. A bump needs a manual check: capture a
+      sign-in page's snapshot with the new version against the golden fixtures
+      (`packages/tools/test/fixtures/sign-in-snapshot-1.3.6*.yaml`, written by hand from 1.3.6's
+      `renderAriaTree`: a password field with and without a placeholder, an iframe, a field without a ref) and run the
+      workerd canary
+      (`packages/tools/test/browser-run-sessions.test.ts`), which checks the client page still has `_snapshotForAI`.
+    - **Browser Run's sessions** (`tools/browser/browser-run-sessions.ts`): a browser is acquired with a `keep_alive` of
+      20 minutes (Browser Run's longest: Cloudflare's limits and its Playwright and Puppeteer pages allow up to 20
+      minutes; the comment in `@cloudflare/playwright` 1.3.6's types, 10 s to 10 min, predates that) and reached again
+      by its id with `connect()` (Browser Run's session reuse). The `keep_alive` counts from the browser's last command,
+      about the session's last call, so the session's 10 idle minutes end it first. The tabs are the pages of its
+      default context, which outlives a connection; closing sends CDP's `Browser.close`. A browser acquired but not
+      reached (its connection failed) is ended again by its id, as far as it can be. A refused connection is the
+      browser gone when Browser Run no longer lists the session (`sessions()`), else a failure. The snapshot is
+      Playwright's `_snapshotForAI` (internal, as Playwright MCP uses it; its refs are what `aria-ref=` locators
+      resolve, frames' too). Each operation is bounded by Playwright's 30 s timeouts and two minutes overall. Like the
+      Quick Actions it has no local emulation: the tests run the object over a fake provider's browsers
+      (`FakeBrowserSession`, `@commissary/tools/testing`), and the adapter over a fake binding's `fetch`, which
+      `@cloudflare/playwright` reaches Browser Run with (429 on a new browser, a session no longer listed).
+    - **Playwright in the state Worker's bundle**: `@cloudflare/playwright` is imported on a session's first call
+      (`import()` in `open` and `connect`), not when the Worker starts. Measured on the state Worker's bundle (esbuild,
+      minified, the tokenizer ranks' `Data` modules left out) and its local startup in workerd (Miniflare: start and
+      first request, the median of 15): without Playwright 1.7 MB (0.50 MB gzipped), ~160 ms; with it imported
+      statically 3.6 MB (1.00 MB gzipped), ~228 ms; imported lazily 3.6 MB (1.00 MB gzipped), ~207 ms. The import is
+      still in the bundle and compiled at startup (`infra/bundle.ts`): the lazy import saves its evaluation, about a
+      third of its startup cost, not its size or its compilation. Both stay well within the limits (3 MiB gzipped on
+      the free plan; 1 s of startup).
   - **Browser providers** (`tools/browser/provider.ts`, ADR 0041): the toolkit reaches its browser only through the
     `BrowserProvider` interface, one method so far, `quickAction(request)`, whose request is the action and its decoded
     arguments (provider-neutral) and whose answer is text, JSON or a file, or a `BrowserProviderError` whose message is
@@ -3696,7 +3781,11 @@ toolkit runs on (_Built-in toolkits_ below), and `OWN_HOSTS`, which its alarm's 
     decoder). A later provider
     (Browserbase, Kernel) is another adapter plus a catalog entry: a stored toolkit of kind `browser` whose source names
     the provider and whose shared (or a member's private) credential is the org's key for it, serving the same tools;
-    none is built. The sessions of #213 join the same interface, and the sandbox toolkit's sandbox provider (#223)
+    none is built. A provider that has browsers for sessions says so (`sessions: true`); its browsers are a
+    `BrowserSessionProvider` (open, connect by id, and a browser's tabs, driven by snapshot refs and masked by CSS
+    selectors), which the session's object finds by the provider's id it stored when the session opened
+    (`sessionProviderOf(source, env)`): Browser Run's are `browserRunSessions` (above), over the binding; a later
+    provider is another case there, and its sessions need no migration. The sandbox toolkit's sandbox provider (#223)
     follows the pattern. The tests run the toolkit over a fake binding and over a fake second provider, which serves
     the same tools.
 - **Members and orgs**: a member who leaves takes their private toolkits, their private credentials on org toolkits, the
@@ -3709,7 +3798,9 @@ toolkit runs on (_Built-in toolkits_ below), and `OWN_HOSTS`, which its alarm's 
   go with Models' step, which deletes every usage row of the org. The cross-org suite
   (`apps/app/test/org-isolation.test.ts`) checks that one org's toolkits are neither listed nor reached by id from
   another, that its tool grants and OAuth apps are its own, that a sign-in's state reads only in its org, that a call
-  goes on in its own org's upstream session, and that a member finds only their own org's pending approvals. The org
-  export lists the toolkits the caller reaches with their credentials' kinds, their overrides and their approval
+  goes on in its own org's upstream session, that a member finds only their own org's pending approvals, and that a
+  browser session id opened in each org by the same member and key reaches only its own org's session. A member who
+  leaves keeps no reach to their browser sessions (their calls are refused before the tools), which close when idle.
+  The org export lists the toolkits the caller reaches with their credentials' kinds, their overrides and their approval
   rules, never a secret, and for an org admin each org toolkit's tool grants (subjects by email or team name, as
   Models' grants; tools `all`, `read` or the named tools' upstream names; `updated_at`).

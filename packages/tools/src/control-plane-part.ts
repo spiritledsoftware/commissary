@@ -2115,10 +2115,16 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
     const approved = approval.approval;
 
-    // A built-in tool always answers a result, a failure as one with `isError`; it is charged like an upstream's.
+    // A built-in tool always answers a result, a failure as one with `isError`; it is charged like an upstream's. A
+    // browser session's tools (#213) act for the org, member and principal of the call: the session's owner (a call
+    // without a principal reaches no session).
     if ("builtIn" in serving) {
       const result = await Effect.runPromise(
-        serving.builtIn.call(tool.upstreamName, call.arguments),
+        serving.builtIn.call(tool.upstreamName, call.arguments, {
+          org: this.#core.org,
+          member: viewer.member,
+          principal: call.principalId,
+        }),
       );
 
       if (price > 0) ledger.charge(ledger.scopes(spender, charged), price, this.#now());

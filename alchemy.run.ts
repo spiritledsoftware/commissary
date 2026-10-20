@@ -227,10 +227,10 @@ export default Alchemy.Stack(
     // dev`: `quickAction()` has no local emulation (Browser Run's docs), and its remote mode needs a Cloudflare login.
     const browserEnv = settings.browser && !dev ? { BROWSER: Cloudflare.Browser("BROWSER") } : {};
 
-    // The state Worker (apps/state, ADR 0030): defines ControlPlane, SessionState and Platform, and binds only what
-    // their classes read (apps/state/src/env.d.ts). No routes, no domain, no workers.dev URL: the other Workers reach
-    // it through their Durable Object bindings. A deploy restarts the Durable Objects a Worker defines, and Alchemy
-    // uploads a Worker again only when its bundle changes, so they restart only when their own code does.
+    // The state Worker (apps/state, ADR 0030): defines ControlPlane, SessionState, Platform and BrowserSession, and
+    // binds only what their classes read (apps/state/src/env.d.ts). No routes, no domain, no workers.dev URL: the other
+    // Workers reach it through their Durable Object bindings. A deploy restarts the Durable Objects a Worker defines,
+    // and Alchemy uploads a Worker again only when its bundle changes, so they restart only when their own code does.
     //
     // The namespaces used to live in the app Worker (`Commissary`). `transferredFrom` moves each one with every stored
     // object on the first deploy of a stage that still has it there (prod, cloud, a self-hosted stage upgrading); on a
@@ -251,6 +251,10 @@ export default Alchemy.Stack(
         CONTROL_PLANE: Cloudflare.DurableObject("ControlPlane", { transferredFrom: "Commissary" }),
         SESSION_STATE: Cloudflare.DurableObject("SessionState", { transferredFrom: "Commissary" }),
         PLATFORM: Cloudflare.DurableObject("Platform", { transferredFrom: "Commissary" }),
+        // The browser toolkit's sessions (#213), one object each, reached only by this Worker's ControlPlane. Bound
+        // with or without Browser Run: without it the toolkit is absent and no session opens, and the class never comes
+        // and goes with `COMMISSARY_BROWSER`.
+        BROWSER_SESSIONS: Cloudflare.DurableObject("BrowserSession"),
         ...(hosted === undefined ? {} : { COMMISSARY_MODE: "cloud" }),
         ...stateSettings,
         ...secretsKeyBindings,

@@ -10,6 +10,11 @@ updates:
     cooldown:
       default-days: 7
     open-pull-requests-limit: 10
+    ignore:
+      # Pinned exactly: the browser sessions read Playwright internals (`_snapshotForAI` and its snapshot's format,
+      # docs/ARCHITECTURE.md "Tools", Masking). A bump is by hand, after checking the snapshot against the golden
+      # fixtures.
+      - dependency-name: "@cloudflare/playwright"
     commit-message:
       prefix: chore
       include: scope

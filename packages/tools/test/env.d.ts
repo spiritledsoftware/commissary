@@ -10,6 +10,8 @@ interface __ToolsTestEnv extends Omit<
   OTHER_BROWSER_CONTROL_PLANE: DurableObjectNamespace<
     import("./worker.ts").OtherBrowserControlPlane
   >;
+  /** The browser sessions' objects (#213), over a fake provider's browsers. */
+  BROWSER_SESSIONS: DurableObjectNamespace<import("./worker.ts").BrowserSession>;
   /** A deployment that gains a `browser` binding once its storage says so (`UPGRADE_TO_BROWSER`). */
   UPGRADED_CONTROL_PLANE: DurableObjectNamespace<import("./worker.ts").UpgradedControlPlane>;
   PLATFORM: DurableObjectNamespace<import("./worker.ts").Platform>;
@@ -28,9 +30,15 @@ declare namespace Cloudflare {
       | "BrowserControlPlane"
       | "OtherBrowserControlPlane"
       | "UpgradedControlPlane"
+      | "BrowserSession"
       | "SessionState"
       | "Platform";
   }
 
   interface Env extends __ToolsTestEnv {}
+}
+
+/** `@cloudflare/playwright`'s client page (vitest.config.ts aliases it): only what the canary reads of it. */
+declare module "playwright-client-page" {
+  export const Page: { readonly prototype: object };
 }

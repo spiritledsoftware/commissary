@@ -2,8 +2,8 @@
 // everywhere (credential, key, session and model names), and every store of org data is written by one org and read by
 // the others: KV, the signature and Antigravity state, the per-isolate caches, SessionState, the D1 usage records
 // through every query the management API exposes, the ControlPlane addressed by key prefix and by slug, and Tools'
-// toolkits by name and by id, their tool grants, the upstream MCP sessions their calls keep and the pending approvals
-// of their calls, and Commissary Cloud's OAuth grants for MCP clients.
+// toolkits by name and by id, their tool grants, the upstream MCP sessions their calls keep, the pending approvals
+// of their calls, Commissary Cloud's OAuth grants for MCP clients and the browser sessions.
 // Each store is one `storeCase` in `STORES`: a new store (tool calls, approvals, runs, sandbox and browser sessions,
 // profiles) adds one line there (docs/DEVELOPMENT.md, "Tests").
 import { env } from "cloudflare:workers";
@@ -55,6 +55,7 @@ import {
   storeCase,
 } from "./support/org-isolation.ts";
 import {
+  browserSessionStub,
   type FakeMcpServer,
   fakeMcpServer,
   insertToolCallRecord,
@@ -302,6 +303,24 @@ const sessionOf = async (org: IsolationOrg, name: string): Promise<string | unde
 
   return content?.text;
 };
+
+/** The browser session id the browser session case uses under the suite's `name`, the same in every org. */
+const browserSessionIds = new Map<string, string>();
+
+const browserSessionId = (name: string): string => {
+  const known = browserSessionIds.get(name) ?? `bs_${crypto.randomUUID().replaceAll("-", "")}`;
+
+  browserSessionIds.set(name, known);
+
+  return known;
+};
+
+/** The same member and principal in every org: only the org tells their sessions apart. */
+const browserCaller = (org: IsolationOrg) => ({
+  org: org.id,
+  member: "iso-member",
+  principal: "key:iso",
+});
 
 // --- the stores ---------------------------------------------------------------------------------------------------------
 
@@ -919,6 +938,40 @@ const STORES: ReadonlyArray<StoreCase> = [
           privateToolkits: false,
         });
     },
+  }),
+  // The browser toolkit's sessions (#213): each org opens a session of the same id, as the same member and API key, at
+  // a page that carries its value; each reaches its own session's page, and an org that opened none finds it unknown.
+  // `browser_open` through the part gives each session a random id, and the suite needs one id in every org: so it
+  // opens and reaches them on their objects, by the org-scoped name the part reaches them by (`browserSessionStub`).
+  storeCase("browser sessions", {
+    write: async (org, name, value) => {
+      const id = browserSessionId(name);
+
+      const opened = await browserSessionStub(env.BROWSER_SESSIONS, org.id, id).open(
+        browserCaller(org),
+        id,
+        "browser-run",
+        `https://${value}.iso-browser.example.com/`,
+      );
+
+      if (opened["isError"] === true) throw new Error(JSON.stringify(opened));
+    },
+    read: async (org, name) => {
+      const id = browserSessionId(name);
+
+      const listed = await browserSessionStub(env.BROWSER_SESSIONS, org.id, id).operate(
+        browserCaller(org),
+        id,
+        { tool: "tab_list", args: { sessionId: id } },
+      );
+
+      if (listed["isError"] === true) return undefined;
+      // SAFETY: a session's tab list is one text content.
+      const [content] = listed["content"] as ReadonlyArray<{ readonly text: string }>;
+
+      return /https:\/\/([a-z0-9]+)\.iso-browser\.example\.com/.exec(content?.text ?? "")?.[1];
+    },
+    value: (index) => `org${index}`,
   }),
 ];
 

@@ -10,6 +10,9 @@ import { testWorkerOptions } from "../../tools/vitest/test-workers.ts";
 
 const unit = nodePackageTests("tools-unit");
 
+const PLAYWRIGHT_CLIENT_PAGE =
+  "node_modules/@cloudflare/playwright/lib/playwright-core/src/client/page.js";
+
 export default defineConfig({
   test: {
     // The local test budget (tools/vitest/test-workers.ts: Vitest's default workers in CI). The workerd project, which
@@ -39,6 +42,8 @@ export default defineConfig({
                 },
                 // One that gains the binding when a test says so, and restarts it (#212).
                 UPGRADED_CONTROL_PLANE: { className: "UpgradedControlPlane", useSQLite: true },
+                // The browser sessions' objects (#213), over a fake provider's browsers.
+                BROWSER_SESSIONS: { className: "BrowserSession", useSQLite: true },
                 SESSION_STATE: { className: "SessionState", useSQLite: true },
                 PLATFORM: { className: "Platform", useSQLite: true },
               },
@@ -62,6 +67,13 @@ export default defineConfig({
             },
           }),
         ],
+        resolve: {
+          alias: {
+            // `@cloudflare/playwright`'s client page, internal to the package (not in its exports): the canary of
+            // test/browser-run-sessions.test.ts checks it still has the snapshot the session tools read.
+            "playwright-client-page": `${import.meta.dirname}/${PLAYWRIGHT_CLIENT_PAGE}`,
+          },
+        },
         test: {
           name: "tools",
           include: ["test/**/*.test.ts"],

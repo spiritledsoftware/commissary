@@ -60,10 +60,11 @@ Any machine with the deploy settings can deploy a preview by hand: `pnpm run dep
 A stage deploys three Workers (ADR 0030) from the one stack, the state Worker first, and a fourth on Commissary Cloud,
 the auth Worker ([Commissary Cloud](#commissary-cloud)):
 
-1. **`State`** (`apps/state`) defines the Durable Objects `ControlPlane`, `SessionState` and `Platform`: every org's
-   state and the Platform registry. It has no routes, no domain and no `workers.dev` URL, and binds only what those
-   classes read: the secrets keys, the `auth_index` key, `META_MINT_URL`, `OWN_HOSTS`, the platform admins, the mode and the Access
-   settings that mark a deployed stage, and Browser Run unless `COMMISSARY_BROWSER=off` ([Optional pieces](#optional-pieces)).
+1. **`State`** (`apps/state`) defines the Durable Objects `ControlPlane`, `SessionState`, `Platform` and
+   `BrowserSession` (one per browser session of the browser toolkit): every org's state and the Platform registry. It
+   has no routes, no domain and no `workers.dev` URL, and binds only what those classes read: the secrets keys, the
+   `auth_index` key, `META_MINT_URL`, `OWN_HOSTS`, the platform admins, the mode and the Access settings that mark a
+   deployed stage, and Browser Run unless `COMMISSARY_BROWSER=off` ([Optional pieces](#optional-pieces)).
 2. **`Commissary`** (`apps/app`), the app Worker: the control panel (with Commissary Cloud's sign-in page) and the
    management API, on the stage's
    domain (the app host) or `workers.dev` URL, behind Access on a self-hosted stage. It answers the client API paths

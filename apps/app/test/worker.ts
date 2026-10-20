@@ -20,6 +20,10 @@ export { ControlPlane, Platform, SessionState } from "@commissary/state-worker";
 /** A request that carries this header goes to the API Worker's handler rather than the app Worker's. */
 export const API_WORKER_HEADER = "x-test-api-worker";
 
+// The browser sessions' objects (#213) over a fake provider's browsers: the cross-org suite opens sessions in them. The
+// tests' ControlPlane has no `BROWSER`, so no browser toolkit reaches them.
+export { FakeBrowserSession as BrowserSession } from "@commissary/tools/testing";
+
 /** The session cookie the fake reads, named like Better Auth's. */
 export const FAKE_SESSION_COOKIE = "__Secure-better-auth.session_token";
 
