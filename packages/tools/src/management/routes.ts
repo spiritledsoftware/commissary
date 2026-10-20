@@ -1,13 +1,14 @@
 /**
  * `/v9/management/toolkits` (`ToolsGroup` in `@commissary/contract/tools`): toolkits built from remote MCP servers,
- * OpenAPI documents and GraphQL endpoints, their credentials, their tool lists and the overrides on their tools (#196,
+ * OpenAPI documents, GraphQL endpoints and Google Discovery documents, their credentials, their tool lists and the overrides on their tools (#196,
  * ADR 0036, ADR 0037, ADR 0038). The app Worker's `management/routes.ts` mounts them next to its own and Models'.
  *
  * Every member of the org may use them (`access-rules.ts`); the Tools part decides what the caller reaches from the
  * viewer each route hands it: an org admin manages org toolkits, a member their private ones and their private
  * credentials. A toolkit's source, and an OpenAPI toolkit's base URL, pass the outbound guard when they are saved (ADR
- * 0044), and the part builds tool lists with the request's guard policy. An OpenAPI toolkit's document may be uploaded
- * instead of given by URL (#203), at most {@link MAX_DOCUMENT_BYTES}, and a GraphQL toolkit's schema as SDL instead of
+ * 0044), and the part builds tool lists with the request's guard policy (a Discovery document's `rootUrl` too, which
+ * refuses the save, #205). An OpenAPI or Discovery toolkit's document may be uploaded instead of given by URL (#203,
+ * #205), at most {@link MAX_DOCUMENT_BYTES}, and a GraphQL toolkit's schema as SDL instead of
  * introspected (#204), at most {@link MAX_SDL_BYTES}, also as a first upload on an introspected one; their managers
  * read it back. Edits of a toolkit or an override name its revision in
  * `If-Match`.
@@ -226,6 +227,15 @@ const add = Effect.gen(function* () {
       "source",
     );
 
+  if (kind === "discovery" && input.base_url !== undefined)
+    return yield* invalid("a Discovery toolkit's calls go to its document's rootUrl", "base_url");
+
+  if (kind === "discovery" && (input.source === undefined) === (input.document === undefined))
+    return yield* invalid(
+      "a Discovery toolkit gives either its document's URL (source) or the document",
+      "source",
+    );
+
   const source = input.source === undefined ? undefined : yield* checkedSource(input.source);
 
   const baseUrl =
@@ -256,10 +266,12 @@ const add = Effect.gen(function* () {
         source: source?.toString() ?? "",
         document,
         baseUrl: baseUrl?.toString(),
-        // An OpenAPI toolkit's default comes from its document, which the part reads.
+        // An OpenAPI or Discovery toolkit's default comes from its document, which the part reads.
         name:
           input.name ??
-          (kind !== "openapi" && source !== undefined ? defaultToolkitName(source) : undefined),
+          ((kind === "mcp" || kind === "graphql") && source !== undefined
+            ? defaultToolkitName(source)
+            : undefined),
         private: isPrivate,
         accepts: input.accepts ?? (isPrivate ? "private" : "shared"),
         credential,

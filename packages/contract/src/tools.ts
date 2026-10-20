@@ -1,8 +1,8 @@
 /**
  * Toolkits (`/v9/management/toolkits`, `packages/tools/src/management/routes.ts`; ADR 0036, ADR 0037, ADR 0038): the
- * org's and the caller's private toolkits built from remote MCP servers, OpenAPI documents or GraphQL endpoints, their
- * credentials, their tool lists and the overrides on their tools. Shared with the browser: imports `effect`,
- * `./approvals.ts`, `./errors.ts` and `./grants.ts` only.
+ * org's and the caller's private toolkits built from remote MCP servers, OpenAPI documents, GraphQL endpoints or Google
+ * Discovery documents, their credentials, their tool lists and the overrides on their tools. Shared with the browser:
+ * imports `effect`, `./approvals.ts`, `./errors.ts` and `./grants.ts` only.
  *
  * An org admin adds and manages org toolkits; any member adds private toolkits, which only they see in full (an org
  * admin sees that one exists, and may remove it). A toolkit holds at most one shared credential and one private
@@ -32,17 +32,25 @@ import { GrantSubject } from "./grants.ts";
 const optional = Schema.optionalKey;
 
 /**
- * What a toolkit is built from: a remote MCP server (Streamable HTTP), an OpenAPI document (3.0, 3.1 or 3.2, or
- * Swagger 2.0, given by URL or uploaded, #203), a GraphQL endpoint (its schema introspected, or uploaded as SDL, #204),
- * or, for a toolkit Commissary provides itself (`built_in`), the kind of service behind it: `browser`, the browser
- * toolkit (ADR 0039), or `sandbox`, the sandbox toolkit (ADR 0041).
+ * What a toolkit is built from: a remote MCP server (Streamable HTTP), an OpenAPI document (3.0, 3.1 or 3.2, or Swagger
+ * 2.0, given by URL or uploaded, #203), a GraphQL endpoint (its schema introspected, or uploaded as SDL, #204), a
+ * Google Discovery document (`discovery`, given by URL or uploaded, #205), or, for a toolkit Commissary provides itself
+ * (`built_in`), the kind of service behind it: `browser`, the browser toolkit (ADR 0039), or `sandbox`, the sandbox
+ * toolkit (ADR 0041).
  */
-export const ToolkitKind = Schema.Literals(["mcp", "openapi", "graphql", "browser", "sandbox"]);
+export const ToolkitKind = Schema.Literals([
+  "mcp",
+  "openapi",
+  "graphql",
+  "discovery",
+  "browser",
+  "sandbox",
+]);
 
 export type ToolkitKind = typeof ToolkitKind.Type;
 
 /** The kinds of toolkit an org adds: a built-in toolkit is never added. */
-export const AddedToolkitKind = Schema.Literals(["mcp", "openapi", "graphql"]);
+export const AddedToolkitKind = Schema.Literals(["mcp", "openapi", "graphql", "discovery"]);
 
 export type AddedToolkitKind = typeof AddedToolkitKind.Type;
 
@@ -194,6 +202,10 @@ export const SetOAuthApp = Schema.Struct({
   client_secret: optional(Schema.String),
   authorize_url: Schema.String,
   token_url: Schema.String,
+  /**
+   * The scopes a sign-in asks for. Absent or empty: those the toolkit's tools name (its `scopes`, a Discovery toolkit's
+   * methods', #205), else none.
+   */
   scopes: optional(Schema.Array(Schema.String)),
   /**
    * The authorization server's issuer identifier (RFC 9207): when set, a sign-in's answer must name it (`iss`), and one
@@ -255,20 +267,26 @@ export const ToolkitView = Schema.Struct({
   kind: ToolkitKind,
   name: Schema.String,
   /**
-   * The MCP server's URL, the OpenAPI document's (empty for an uploaded document) or the GraphQL endpoint's. A member
-   * who only reads an org toolkit sees its query parameters' values masked (`***`), their names kept; managers and the
-   * org export get it whole. A key belongs in a `query` credential, not in the source. A browser toolkit's is its
-   * browser provider (`browser-run`).
+   * The MCP server's URL, the OpenAPI or Discovery document's (empty for an uploaded document) or the GraphQL
+   * endpoint's. A member who only reads an org toolkit sees its query parameters' values masked (`***`), their names
+   * kept; managers and the org export get it whole. A key belongs in a `query` credential, not in the source. A browser
+   * toolkit's is its browser provider (`browser-run`).
    */
   source: Schema.String,
   /** An OpenAPI toolkit's base URL, set in place of its document's servers; masked like `source` for readers. */
   base_url: optional(Schema.String),
   /**
-   * An OpenAPI toolkit built from an uploaded document, or a GraphQL toolkit from an uploaded schema (SDL) instead of
-   * introspection, since it was added or since its first schema was uploaded (`PUT /toolkits/:id/document` replaces
-   * it).
+   * An OpenAPI or Discovery toolkit built from an uploaded document, or a GraphQL toolkit from an uploaded schema (SDL)
+   * instead of introspection, since it was added or since its first schema was uploaded (`PUT /toolkits/:id/document`
+   * replaces it).
    */
   uploaded: optional(Schema.Boolean),
+  /**
+   * The OAuth 2 scopes its tools name, sorted (a Discovery toolkit's methods', #205): what an OAuth app (`oauth_app`)
+   * may ask for; a sign-in through an app that sets no scopes asks for these. A method takes any one of its own
+   * scopes; absent: its tools name none.
+   */
+  scopes: optional(Schema.Array(Schema.String)),
   /**
    * A toolkit Commissary provides itself (the browser toolkit, `id` and `name` `browser`; the sandbox toolkit, `sandbox`):
    * present while the deployment has what it runs on, reached under tool grants (no default grant), its tools'
@@ -354,12 +372,14 @@ export const AddToolkit = Schema.Struct({
   /** Default `mcp`. */
   kind: optional(AddedToolkitKind),
   /**
-   * The MCP server's URL, the OpenAPI document's or the GraphQL endpoint's: a public `https:` address (the outbound
-   * guard, ADR 0044). An OpenAPI toolkit gives either this or `document`; MCP and GraphQL toolkits always give it.
+   * The MCP server's URL, the OpenAPI or Discovery document's or the GraphQL endpoint's: a public `https:` address (the
+   * outbound guard, ADR 0044). An OpenAPI or Discovery toolkit gives either this or `document`; MCP and GraphQL
+   * toolkits always give it.
    */
   source: optional(Schema.String),
   /**
-   * An OpenAPI toolkit's document, uploaded: its JSON or YAML text (at most 8 MiB); or a GraphQL toolkit's schema as
+   * An OpenAPI toolkit's document, uploaded: its JSON or YAML text (at most 8 MiB), a Discovery toolkit's: its JSON
+   * (as much); or a GraphQL toolkit's schema as
    * SDL (at most 4 MiB), which it is built from in place of introspection. `413 body_too_large` above.
    */
   document: optional(Schema.String),
@@ -370,7 +390,7 @@ export const AddToolkit = Schema.Struct({
   base_url: optional(Schema.String),
   /**
    * Defaults to the slug of the source's host (the MCP server's, the GraphQL endpoint's); for an OpenAPI toolkit, of
-   * its document's first server, else of its title.
+   * its document's first server, else of its title; for a Discovery toolkit, of its API's name (`gmail`).
    */
   name: optional(Schema.String),
   /** A private toolkit of the caller; a plain member's toolkit is always private. */
@@ -480,7 +500,10 @@ export type SetToolOverride = typeof SetToolOverride.Type;
 
 export const RemovedToolkit = Schema.Struct({ id: Schema.String });
 
-/** A toolkit's uploaded document: an OpenAPI document's JSON or YAML text, a GraphQL schema's SDL. */
+/**
+ * A toolkit's uploaded document: an OpenAPI document's JSON or YAML text, a Discovery document's JSON, a GraphQL
+ * schema's SDL.
+ */
 export const ToolkitDocument = Schema.Struct({ document: Schema.String });
 
 export type ToolkitDocument = typeof ToolkitDocument.Type;
@@ -536,7 +559,8 @@ export class ToolsGroup extends HttpApiGroup.make("tools").add(
   /**
    * `422 invalid` (name, accepts, credential; a source naming a user or password, with `path: "source"`),
    * `422 not_accepted` (a credential the toolkit does not take), `422` with
-   * the outbound guard's message as `error` and `path: "source"` (a source the guard refuses), `409 name_taken`,
+   * the outbound guard's message as `error` and `path: "source"` (a source the guard refuses; `path: "rootUrl"`, a
+   * Discovery document whose `rootUrl` it refuses, fetched or uploaded: the toolkit is not added), `409 name_taken`,
    * `403 private_credentials_unavailable` (a private credential while the org has them off), `403
    * private_toolkits_unavailable` (a private toolkit while the org has them off). A plain member's toolkit is always
    * private. A shared credential names its `subject` (`ConnectCredential`; `grant` says what it did). A tool list that
@@ -587,12 +611,13 @@ export class ToolsGroup extends HttpApiGroup.make("tools").add(
     error: managementErrors,
   }),
   /**
-   * Replace an uploaded document, an OpenAPI document or a GraphQL schema's SDL (managers; `409 conflict` on a stale
-   * revision, `422 invalid` for a toolkit not built from an uploaded document, `413 body_too_large` above 8 MiB, or
-   * 4 MiB for SDL) and build its tool list again; a document that cannot be read does not replace the one before
-   * (`422 invalid`). A GraphQL toolkit built by introspection takes a first SDL file here too (an endpoint that stopped
-   * allowing introspection), built without a credential and `uploaded` from then on: the cron task no longer
-   * introspects it.
+   * Replace an uploaded document, an OpenAPI or Discovery document or a GraphQL schema's SDL (managers; `409 conflict`
+   * on a stale revision, `422 invalid` for a toolkit not built from an uploaded document, `413 body_too_large` above 8
+   * MiB, or 4 MiB for SDL) and build its tool list again; a document that cannot be read does not replace the one
+   * before (`422 invalid`), nor does a Discovery document whose `rootUrl` the outbound guard refuses (`422` with the
+   * guard's message as `error` and `path: "rootUrl"`). A GraphQL toolkit built by introspection takes a first SDL file
+   * here too (an endpoint that stopped allowing introspection), built without a credential and `uploaded` from then on:
+   * the cron task no longer introspects it.
    */
   HttpApiEndpoint.put("replaceDocument", "/toolkits/:id/document", {
     ...idParam,
@@ -602,8 +627,9 @@ export class ToolsGroup extends HttpApiGroup.make("tools").add(
     error: managementErrors,
   }),
   /**
-   * A toolkit's uploaded document (an OpenAPI document, a GraphQL schema), for its managers (an org admin an org
-   * toolkit's, `403 forbidden` for a member who reads it; a member their private toolkit's); `404` for one with none.
+   * A toolkit's uploaded document (an OpenAPI or Discovery document, a GraphQL schema), for its managers (an org admin
+   * an org toolkit's, `403 forbidden` for a member who reads it; a member their private toolkit's); `404` for one with
+   * none.
    */
   HttpApiEndpoint.get("document", "/toolkits/:id/document", {
     ...idParam,

@@ -45,6 +45,13 @@ export interface OperationParameter {
   readonly required: boolean;
   readonly style?: string;
   readonly explode?: boolean;
+  /**
+   * A path parameter whose value keeps the URI's reserved characters (`/` among them) as they are: a Discovery method's
+   * `{+name}` (#205).
+   */
+  readonly allowReserved?: true;
+  /** The pattern a path argument must match (a Discovery parameter's, for a `{+name}` one). */
+  readonly pattern?: string;
 }
 
 /** An operation's request body, and the input property it is read from. */
@@ -71,6 +78,8 @@ export interface OpenApiOperation {
   /** Its security alternatives (`http/call.ts`); undefined when the document defines no security schemes. */
   readonly security?: Security;
   readonly deprecated?: true;
+  /** The OAuth 2 scopes a Discovery method names (#205), any of which a sign-in may ask for. */
+  readonly scopes?: ReadonlyArray<string>;
 }
 
 /** The tools a document lists, and what names a toolkit by default. */
@@ -85,14 +94,16 @@ export interface OpenApiToolList {
 type Node = Schema.JsonObject;
 
 /** A value of the document, if any. */
-type Value = Schema.Json | undefined;
+export type Value = Schema.Json | undefined;
 
-const asObject = (value: Value): Node | undefined =>
+/** `value` as a JSON object, if it is one (Discovery documents, #205, are read with it too). */
+export const asObject = (value: Value): Node | undefined =>
   // SAFETY: an object inside a JSON value is a JSON object (checked shallowly: a deep check of every node would read
   // a document of several MB over and over).
   Predicate.isObject(value) ? (value as Node) : undefined;
 
-const asString = (value: Value): string | undefined =>
+/** `value` as a string, if it is one with more than white space. */
+export const asString = (value: Value): string | undefined =>
   Predicate.isString(value) && value.trim() !== "" ? value : undefined;
 
 /** The value a local JSON pointer (`#/components/schemas/Pet`) names in `document`. */
@@ -473,8 +484,11 @@ const inputSchemaAt = (
 const inputSchema = (document: Node, args: ReadonlyArray<Argument>): Schema.JsonObject =>
   fittedInputSchema((walk) => inputSchemaAt(document, args, walk));
 
-/** One operation as a tool, or undefined when it cannot be one. */
-const operationTool = (
+/**
+ * One operation of `document` as a tool: its `operationId` (else its method and path) names it. Discovery documents
+ * (#205) build theirs here too, from an OpenAPI operation made of each method.
+ */
+export const operationTool = (
   document: Node,
   documentUrl: string | undefined,
   path: string,

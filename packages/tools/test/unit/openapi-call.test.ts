@@ -215,6 +215,28 @@ describe("the request an operation makes", () => {
       Result.succeed("https://api.example.com/v2/ping"),
     );
   });
+
+  it("refuses a path argument that is . or .., which would climb out of the operation's path", () => {
+    const operation = operationOf(petstore, "showPetById");
+
+    for (const petId of [".", ".."])
+      assert.deepStrictEqual(
+        operationCall(operation, undefined, { petId }),
+        Result.fail("the argument petId cannot be or hold a . or .. path segment"),
+      );
+
+    // Escaped, `%2e` and `/` stay in the segment: `%252e%252e`, `..%2Fadmin`.
+    for (const [petId, segment] of [
+      ["%2e%2e", "%252e%252e"],
+      ["../admin", "..%2Fadmin"],
+    ] as const)
+      assert.deepStrictEqual(
+        Result.map(operationCall(operation, undefined, { petId }), (request) =>
+          new URL(request.url).pathname.split("/").at(-1),
+        ),
+        Result.succeed(segment),
+      );
+  });
 });
 
 describe("the credential, as the document's security schemes say", () => {
