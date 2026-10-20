@@ -29,6 +29,7 @@ export default defineConfig({
                 SESSION_STATE: { className: "SessionState", useSQLite: true },
                 PLATFORM: { className: "Platform", useSQLite: true },
               },
+              d1Databases: ["USAGE"],
               // A self-hosted stage under test, as the Worker's tests bind it.
               bindings: {
                 ACCESS_TEAM_DOMAIN: "",

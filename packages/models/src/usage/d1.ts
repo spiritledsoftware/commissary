@@ -26,8 +26,14 @@
  * hash of its provider key, so it never leaves the database: the `auth` grouping keys are indexes, and the credential filter
  * takes an index, resolved to the live credential's id by the ControlPlane or, for a credential that no longer exists,
  * against the distinct ids of the filtered rows (`resolveAuthIds`).
+ *
+ * The table holds tool calls too (#199, `area = 'tools'`, `migrations/usage/0010_usage_tool_calls.sql`), which Tools
+ * writes (`packages/tools/src/usage/record.ts`). Every read is of model attempts (`area = 'models'`) unless its filter
+ * asks for another area (`UsageFilter.area`), so a model-only consumer reads what it read before; the queue never hands
+ * out a tool call. Retention and org deletion delete by org, tool calls included.
  */
 import type { AuthIndexer } from "../management/auth-index.ts";
+import type { ToolCallOutcome, UsageArea, UsageAreaFilter } from "@commissary/contract/usage";
 import type { OrgId } from "@commissary/core";
 import { normalizeToCanonicalUuid } from "../session-routing/identity.ts";
 import {
@@ -95,7 +101,30 @@ export interface UsageRow {
   /** 1 when the model had no price (the cost is 0). */
   unpriced: number;
   exported_at: number | null;
+  /** Who wrote it (`migrations/usage/0010_usage_tool_calls.sql`): a model attempt or a tool call (#199). */
+  area: UsageArea;
+  /** A tool call's toolkit, the tool's stable id, its outcome and its sizes; `null` on a model attempt's row. */
+  toolkit_id: string | null;
+  tool_id: string | null;
+  tool_outcome: ToolCallOutcome | null;
+  request_bytes: number | null;
+  response_bytes: number | null;
+  /** How an approval rule decided a tool call; `null` until approvals exist (#201). */
+  approval: string | null;
 }
+
+/** The columns of a model attempt's row (Models writes those); a tool call's are Tools'. */
+type ModelColumns = Omit<
+  UsageRow,
+  | "exported_at"
+  | "area"
+  | "toolkit_id"
+  | "tool_id"
+  | "tool_outcome"
+  | "request_bytes"
+  | "response_bytes"
+  | "approval"
+>;
 
 type Column = keyof UsageRow;
 
@@ -163,8 +192,8 @@ const trimmedOrNull = (value: string | undefined): string | null => {
   return trimmed === "" ? null : trimmed;
 };
 
-/** Maps a record (with its v2 breakdown ensured) to a row without `exported_at`. */
-export const recordToRow = (record: UsageRecord): Omit<UsageRow, "exported_at"> => {
+/** Maps a record (with its v2 breakdown ensured) to a model attempt's row: `area` stays `models`, `exported_at` NULL. */
+export const recordToRow = (record: UsageRecord): ModelColumns => {
   const detail = ensureTokenBreakdown(record.detail, record.provider, record.executorType);
   // SAFETY: ensureTokenBreakdown always fills tokenBreakdown.
   const breakdown = detail.tokenBreakdown as TokenBreakdown;
@@ -250,10 +279,32 @@ const sessionPayload = (row: UsageRow) => {
 };
 
 /**
+ * What a tool call's record adds to its JSON (#199): its area, toolkit, tool, outcome, credential slot, sizes and
+ * approval. Nothing on a model attempt's, whose JSON stays as it was.
+ */
+const toolPayload = (row: UsageRow) =>
+  row.area !== "tools"
+    ? {}
+    : {
+        area: row.area,
+        ...(row.toolkit_id === null ? {} : { toolkit_id: row.toolkit_id }),
+        ...(row.tool_id === null ? {} : { tool_id: row.tool_id }),
+        ...(row.tool_outcome === null ? {} : { outcome: row.tool_outcome }),
+        ...(row.auth_type === "shared" || row.auth_type === "private"
+          ? { credential: row.auth_type }
+          : {}),
+        ...(row.request_bytes === null ? {} : { request_bytes: row.request_bytes }),
+        ...(row.response_bytes === null ? {} : { response_bytes: row.response_bytes }),
+        ...(row.approval === null ? {} : { approval: row.approval }),
+      };
+
+/**
  * The export JSON of one record under the deployment's indexer. `api_key` carries the Access principal id (the Go
- * client API key).
+ * client API key). A tool call's record (#199) has no `auth_index` (its credential is the toolkit's, `credential`) and
+ * answers `{status_code: 200}` whatever its outcome, as the MCP endpoint did: `outcome` says how it went.
  */
 export const rowToPayload = (row: UsageRow, authIndexOf: AuthIndexer) => {
+  const tool = row.area === "tools";
   const failed = row.failed === 1;
 
   return {
@@ -262,7 +313,7 @@ export const rowToPayload = (row: UsageRow, authIndexOf: AuthIndexer) => {
     ttft_ms: row.ttft_ms ?? 0,
     source: row.source,
     // The management API's keyed `auth_index`, so collectors can join the two; the credential id is never exported.
-    auth_index: authIndexOf(row.auth_id),
+    auth_index: tool ? "" : authIndexOf(row.auth_id),
     tokens: {
       input_tokens: row.input_tokens,
       output_tokens: row.output_tokens,
@@ -276,13 +327,14 @@ export const rowToPayload = (row: UsageRow, authIndexOf: AuthIndexer) => {
     failed,
     generate: row.generate !== 0,
     stream: row.stream === 1,
-    fail: failed
-      ? {
-          status_code: row.fail_status ?? 500,
-          ...(row.fail_type === null ? {} : { type: row.fail_type }),
-          ...(row.fail_code === null ? {} : { code: row.fail_code }),
-        }
-      : { status_code: 200 },
+    fail:
+      failed && !tool
+        ? {
+            status_code: row.fail_status ?? 500,
+            ...(row.fail_type === null ? {} : { type: row.fail_type }),
+            ...(row.fail_code === null ? {} : { code: row.fail_code }),
+          }
+        : { status_code: 200 },
     accounting_version:
       row.accounting_version === 0 ? TOKEN_ACCOUNTING_SCHEMA_VERSION : row.accounting_version,
     token_breakdown: {
@@ -324,6 +376,7 @@ export const rowToPayload = (row: UsageRow, authIndexOf: AuthIndexer) => {
     ...(row.cost_micros === null
       ? {}
       : { cost_micros: row.cost_micros, unpriced: row.unpriced === 1 }),
+    ...toolPayload(row),
   };
 };
 
@@ -335,7 +388,8 @@ export const MAX_QUEUE_COUNT = 1000;
 
 /**
  * `PopOldest`: atomically marks the oldest `count` unexported records of `org` as exported and returns them oldest
- * first. An exported record stays in D1 (for the listing and summary endpoints) until retention removes it.
+ * first. An exported record stays in D1 (for the listing and summary endpoints) until retention removes it. Model
+ * attempts only: the export keeps the Go server's shape, so a tool call (#199) is never handed out or marked exported.
  */
 export const popUsageQueue = async (
   db: D1Database,
@@ -348,7 +402,8 @@ export const popUsageQueue = async (
   const result = await db
     .prepare(
       `UPDATE usage_records SET exported_at = ?1 WHERE request_id IN (
-         SELECT request_id FROM usage_records WHERE org_id = ?3 AND exported_at IS NULL AND private = 0
+         SELECT request_id FROM usage_records
+         WHERE org_id = ?3 AND exported_at IS NULL AND area = 'models' AND private = 0
          ORDER BY requested_at ASC, request_id ASC LIMIT ?2
        ) RETURNING *`,
     )
@@ -391,7 +446,20 @@ export interface UsageFilter {
   /** The live credential id the ControlPlane resolved `authIndex` to (`credentialIdOfAuthIndex`), if any. */
   readonly liveAuthId?: string;
   readonly failed?: boolean;
+  /**
+   * Whose records (#199): model attempts, tool calls or `all`. Unset: model attempts, or tool calls when `toolkit` or
+   * `tool` is set, so a reader that asks for nothing new reads what it read before tool calls were recorded.
+   */
+  readonly area?: UsageAreaFilter;
+  /** A toolkit's id: its tool calls. */
+  readonly toolkit?: string;
+  /** A tool's stable id: its calls. */
+  readonly tool?: string;
 }
+
+/** The area a filter reads: its own, or model attempts unless it names a toolkit or a tool. */
+const areaOf = (filter: UsageFilter): UsageAreaFilter =>
+  filter.area ?? (filter.toolkit !== undefined || filter.tool !== undefined ? "tools" : "models");
 
 export interface OwnRecords {
   readonly memberId: string | undefined;
@@ -421,6 +489,14 @@ const filterClauses = (
   };
 
   add("org_id = ?", org);
+
+  const area = areaOf(filter);
+
+  if (area !== "all") add("area = ?", area);
+
+  if (filter.toolkit !== undefined) add("toolkit_id = ?", filter.toolkit);
+
+  if (filter.tool !== undefined) add("tool_id = ?", filter.tool);
 
   // Private traffic is its owner's alone: never part of an org-wide read.
   if (filter.privateOf === undefined) clauses.push("private = 0");
@@ -577,6 +653,9 @@ export const GROUP_BY = [
   "day",
   "key",
   "team",
+  "area",
+  "toolkit",
+  "tool",
 ] as const;
 
 export type GroupBy = (typeof GROUP_BY)[number];
@@ -595,6 +674,9 @@ const GROUP_EXPRESSIONS: Readonly<Record<Exclude<GroupBy, "team">, string>> = {
   auth: "auth_id",
   endpoint: "endpoint",
   day: "strftime('%Y-%m-%d', requested_at / 1000, 'unixepoch')",
+  area: "area",
+  toolkit: "toolkit_id",
+  tool: "tool_id",
 };
 
 const AGGREGATES = `COUNT(*) AS requests,
@@ -790,7 +872,7 @@ export const SERIES_BUCKETS = ["hour", "day"] as const;
 
 export type SeriesBucket = (typeof SERIES_BUCKETS)[number];
 
-export const SERIES_GROUP_BY = ["auth", "model", "provider"] as const;
+export const SERIES_GROUP_BY = ["auth", "model", "provider", "toolkit", "tool"] as const;
 
 export type SeriesGroupBy = (typeof SERIES_GROUP_BY)[number];
 
@@ -807,6 +889,8 @@ const SERIES_KEY_EXPRESSIONS: Readonly<Record<SeriesGroupBy, string>> = {
   auth: "auth_id",
   model: "model",
   provider: "provider",
+  toolkit: "toolkit_id",
+  tool: "tool_id",
 };
 
 export interface UsagePoint {
@@ -843,6 +927,10 @@ export interface UsageSeriesQuery {
   readonly own?: OwnRecords;
   /** See {@link UsageFilter.privateOf}. */
   readonly privateOf?: string;
+  /** See {@link UsageFilter.area}. */
+  readonly area?: UsageAreaFilter;
+  readonly toolkit?: string;
+  readonly tool?: string;
 }
 
 const compareKeys = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
@@ -880,6 +968,9 @@ export const summarizeUsageSeries = async (
       ...(query.memberIds === undefined ? {} : { memberIds: query.memberIds }),
       ...(query.own === undefined ? {} : { own: query.own }),
       ...(query.privateOf === undefined ? {} : { privateOf: query.privateOf }),
+      ...(query.area === undefined ? {} : { area: query.area }),
+      ...(query.toolkit === undefined ? {} : { toolkit: query.toolkit }),
+      ...(query.tool === undefined ? {} : { tool: query.tool }),
     },
     authIndexOf,
   );

@@ -1,8 +1,9 @@
 /**
  * What `@commissary/tools` reads from a Worker's env (#134 "How packages get their bindings"): the org's ControlPlane,
  * typed as objects with the Tools part ({@link ToolsControlPlane}), so callers write `stub.tools().x(…)`, and, for the
- * MCP endpoint's connect links, the Platform registry and the app host. Tools needs no binding of its own: its state is
- * the ControlPlane's, and it reaches MCP servers through the global `fetch` behind the outbound guard.
+ * MCP endpoint's connect links, the Platform registry and the app host, and the usage database its tool calls' records
+ * go into (#199). Tools needs no binding of its own: its state is the ControlPlane's, its usage records share Models'
+ * table, and it reaches MCP servers through the global `fetch` behind the outbound guard.
  */
 import { Context, Effect } from "effect";
 import { CurrentOrg, type Reply } from "@commissary/core";
@@ -48,6 +49,8 @@ export interface ToolsBindings {
    * deployed stage, one host or split. Unset (a preview, `alchemy dev`), a connect link names the page in words.
    */
   readonly APP_DOMAIN?: string | undefined;
+  /** Usage records (D1, `migrations/usage/`): one per tool call (#199), beside Models' model attempts. */
+  readonly USAGE: D1Database;
 }
 
 /**

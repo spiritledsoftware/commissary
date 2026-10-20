@@ -7,6 +7,8 @@ interface __ToolsTestEnv extends Omit<
   CONTROL_PLANE: DurableObjectNamespace<import("./worker.ts").ControlPlane>;
   PLATFORM: DurableObjectNamespace<import("./worker.ts").Platform>;
   SESSION_STATE: DurableObjectNamespace<import("./worker.ts").SessionState>;
+  /** The usage database the MCP endpoint writes tool calls' records to (`ToolsBindings`). */
+  USAGE: D1Database;
 }
 
 declare namespace Cloudflare {

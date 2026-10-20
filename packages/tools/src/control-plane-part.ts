@@ -25,7 +25,7 @@ import {
   type OutboundPolicy,
 } from "@commissary/core";
 import type { ControlPlanePart, OrgCore } from "@commissary/state";
-import type { SpendCredential } from "@commissary/state/spend";
+import type { ChargedCredential, Refusal, SpendCredential } from "@commissary/state/spend";
 import {
   connectGrant,
   type ToolGrantChange,
@@ -189,22 +189,42 @@ export interface ToolCall {
   readonly arguments?: Schema.JsonObject | undefined;
   /** The toolkits `?toolkits=` names; undefined: every toolkit. */
   readonly toolkits?: ReadonlyArray<string> | undefined;
+  /** The API key the call came with, whose Spend limits a priced call counts toward (#199). */
+  readonly apiKeyId?: string | undefined;
+}
+
+/**
+ * What a call's usage record says of it (#199), beyond who called and how it went: never its arguments or its result.
+ */
+export interface CallUsage {
+  readonly toolkitId: string;
+  /** The tool's stable id, `<toolkit id>:<upstream name>`. */
+  readonly toolId: string;
+  /** Which of the toolkit's credentials served it; undefined when none could. */
+  readonly credential: CredentialSlot | undefined;
+  /** On a private credential, or of a private toolkit's tool: its member's alone. */
+  readonly private: boolean;
+  /** Micro-USD charged: the tool's price on a result, 0 when free, refused or failed upstream. */
+  readonly costMicros: number;
 }
 
 /**
  * What a call came to: `unknown`, a tool the member does not reach (answered as a tool that does not exist);
- * `connect`, a tool that needs a private credential the member has not connected; the upstream's `result`, an `isError`
- * one included; or `failed`, an upstream or transport failure, with a short message that quotes neither the source nor
- * the server's answer.
+ * `connect`, a tool that needs a private credential the member has not connected; `refused`, a priced call that a
+ * Spend limit without room keeps from the upstream (#199); the upstream's `result`, an `isError` one included; or
+ * `failed`, an upstream or transport failure, with a short message that quotes neither the source nor the server's
+ * answer. All but `unknown` say what the call's usage record holds.
  */
 export type ToolCallOutcome =
   | { readonly outcome: "unknown" }
   | {
       readonly outcome: "connect";
       readonly toolkit: { readonly id: string; readonly name: string };
+      readonly usage: CallUsage;
     }
-  | { readonly outcome: "result"; readonly result: Schema.JsonObject }
-  | { readonly outcome: "failed"; readonly message: string };
+  | { readonly outcome: "refused"; readonly refusal: Refusal; readonly usage: CallUsage }
+  | { readonly outcome: "result"; readonly result: Schema.JsonObject; readonly usage: CallUsage }
+  | { readonly outcome: "failed"; readonly message: string; readonly usage: CallUsage };
 
 /** A tool the MCP endpoint serves a member, and how they reach it. */
 interface ReachableTool {
@@ -848,6 +868,10 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
    * is asked to connect theirs. The upstream session the call opens is kept for the next call on that credential, at
    * most seven days; a call that fails in a kept session drops it, so the next call opens a new one. A failure is
    * logged with the toolkit and the reason only.
+   *
+   * A priced call (#199) is checked against the Spend limits it would count toward before the upstream is reached, and
+   * refused when one has no room; a free call goes ahead whatever the limits. It is charged once the upstream answered
+   * with a result, an `isError` one included (the upstream did the work); a call that failed upstream is not.
    */
   async callTool(viewer: Viewer, call: ToolCall, policy: OutboundPolicy): Promise<ToolCallOutcome> {
     const reached = this.#reachable(viewer).find(
@@ -869,8 +893,38 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     const owner = own ? viewer.member : undefined;
     const secret = own || granted ? this.#store.secret(toolkit.id, owner) : undefined;
 
+    const usage = (credential: CredentialSlot | undefined, costMicros = 0): CallUsage => ({
+      toolkitId: toolkit.id,
+      toolId: stableId(toolkit.id, tool.upstreamName),
+      credential,
+      private: credential === "private" || toolkit.owner !== undefined,
+      costMicros,
+    });
+
     if (secret === undefined)
-      return { outcome: "connect", toolkit: { id: toolkit.id, name: toolkit.name } };
+      return {
+        outcome: "connect",
+        toolkit: { id: toolkit.id, name: toolkit.name },
+        usage: usage(undefined),
+      };
+
+    const slot: CredentialSlot = owner === undefined ? "shared" : "private";
+    const price = tool.priceMicros ?? 0;
+    const ledger = this.#core.spend.ledger();
+    const spender = { memberId: viewer.member, apiKeyId: call.apiKeyId };
+
+    // The toolkit's shared credential is a `toolkit` limit's; a private one counts toward the API key's limits only.
+    const charged: ChargedCredential = {
+      id: toolkit.id,
+      shared: slot === "shared",
+      kind: "toolkit",
+    };
+
+    if (price > 0) {
+      const refusal = ledger.refusal(spender, charged, Date.now());
+
+      if (refusal !== undefined) return { outcome: "refused", refusal, usage: usage(slot) };
+    }
 
     const connectedAt = this.#store.credential(toolkit.id, owner)?.connectedAt;
     // Sessions are the calling member's, also on the shared credential: an upstream's session state never carries over.
@@ -910,17 +964,19 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
           this.#store.deleteSession(toolkit.id, owner, caller);
       }
 
-      return { outcome: "failed", message: called.failure.message };
+      return { outcome: "failed", message: called.failure.message, usage: usage(slot) };
     }
 
     const { result, session } = called.success;
+
+    if (price > 0) ledger.charge(ledger.scopes(spender, charged), price, Date.now());
 
     if (session !== known && sameCredential) {
       this.#store.putSession(toolkit.id, owner, caller, session, Date.now());
       await this.#core.wakeUpChanged(this.#store.pruneSessions(Date.now()));
     }
 
-    return { outcome: "result", result };
+    return { outcome: "result", result, usage: usage(slot, price) };
   }
 
   /**
