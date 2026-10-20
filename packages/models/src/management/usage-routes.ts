@@ -19,9 +19,9 @@
  * summary by member id.
  *
  * Tool calls (#199): Tools writes a usage record per call into the same table. `records`, `summary` and `series` read
- * model attempts unless `area` says `tools` or `all` (unset, a `toolkit` or `tool` filter or grouping means `tools`,
- * a grouping by `area` means `all`), so a model-only client reads what it read before; `summary` groups by `area`, `toolkit` or `tool` too, `series` by `toolkit` or
- * `tool`. The queue and `unpriced` are model attempts only. A plain member may read `records`, `summary` and `series` (`policy.ts`), and only their
+ * model attempts unless `area` says `tools` or `all` (when unset, a `toolkit`/`tool` filter or grouping means `tools`
+ * and a grouping by `area` means `all`), so a model-only client reads what it read before; `summary` groups by `area`,
+ * `toolkit` or `tool` too, `series` by `toolkit` or `tool`. The queue and `unpriced` are model attempts only. A plain member may read `records`, `summary` and `series` (`policy.ts`), and only their
  * own records: by their member id, or their Access principal for records from before members existed.
  */
 import { Clock, Effect } from "effect";

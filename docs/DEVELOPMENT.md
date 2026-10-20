@@ -253,7 +253,7 @@ hash covers a package's files and those of its dependencies (Turborepo's transit
 Worker's (and Models'), one in `packages/core` or `packages/auth` re-runs state's, Models', Tools' and the Worker's (and core's
 auth's too), one in `packages/state` re-runs Models', Tools', the state Worker's, the app Worker's and the API Worker's, and one in
 `packages/models` re-runs the state Worker's, the app Worker's and the API Worker's (`apps/state` is a dependency of
-`apps/app` and `apps/api`), as does one in `packages/tools` (the root lists Models as a dev dependency for its deploy code; that re-runs no other package's tasks). The root `typecheck` and `test` tasks also hash `tools/vitest/` (the packages' Vitest configs import it), and
+`apps/app` and `apps/api`), as does one in `packages/tools`, which also re-runs Models' (Models' tests use `@commissary/tools/testing` through a dev dependency; the root lists Models as a dev dependency for its deploy code, which re-runs no other package's tasks). The root `typecheck` and `test` tasks also hash `tools/vitest/` (the packages' Vitest configs import it), and
 `typecheck` hashes `tools/workers/` (the Workers runtime types); a
 package's `turbo.json` appends the root files its tasks read (`"$TURBO_EXTENDS$"`; `apps/app`: `infra/bundle.ts`,
 `infra/preview-origin.ts`, `infra/settings.ts`, `migrations/`; `apps/auth`: `infra/bundle.ts`, `migrations/`; `apps/api`
@@ -423,7 +423,7 @@ permissions they need, and deploy jobs use no dependency cache.
   repository; edit its rules there.
 - **boundaries** (`tools/oxlint/boundaries/`, ours): `boundaries/models-imports`, `boundaries/billing-imports` and
   `boundaries/tools-imports` keep `@commissary/models`, `@commissary/billing` and `@commissary/tools` behind their entry
-  points (#151, #196; another package's sources import Billing's `./api` only, none import Models or Tools). An area's
+  points (#151, #196; another package's sources import Billing's `./api` only, none import Models or Tools; Models' tests use `@commissary/tools/testing` (`insertToolCallRecord`) through a dev dependency). An area's
   sources import only their own files, the dependencies its `package.json` declares and the runtime modules the rule
   lists; the apps import it only as `@commissary/<area>/api`, `/management` and `/state` (their tests also `/testing`),
   never its other exports or one of its files by a relative path. `boundaries/org-scoped-kv` (ADR 0044, #250) keeps org data out of raw KV: a source file of a package or an app

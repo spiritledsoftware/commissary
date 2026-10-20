@@ -913,7 +913,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     const ledger = this.#core.spend.ledger();
     const spender = { memberId: viewer.member, apiKeyId: call.apiKeyId };
 
-    // The toolkit's shared credential is a `toolkit` limit's; a private one counts toward the API key's limits only.
+    // The toolkit's shared credential is a `toolkit_credential` limit's; a private one counts toward the API key's limits only.
     const charged: ChargedCredential = {
       id: toolkit.id,
       shared: slot === "shared",
