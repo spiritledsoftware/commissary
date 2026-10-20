@@ -4,6 +4,7 @@
 // apps/app/vitest.config.ts); the bindings are the ones `StateObjectEnv` names (test/env.d.ts).
 import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import { defineConfig } from "vitest/config";
+import { testWorkerOptions } from "../../tools/vitest/test-workers.ts";
 
 export default defineConfig({
   plugins: [
@@ -34,6 +35,8 @@ export default defineConfig({
   test: {
     name: "state",
     include: ["test/**/*.test.ts"],
+    // The local test budget (tools/vitest/test-workers.ts): Vitest's default workers in CI.
+    ...testWorkerOptions(),
     // CI's shards reach every package's run; a shard may get none of this package's files.
     passWithNoTests: true,
     // The first test in each file pays for module transformation inside workerd; keep generous timeouts.

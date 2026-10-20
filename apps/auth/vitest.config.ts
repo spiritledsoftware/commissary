@@ -2,6 +2,7 @@ import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import { defineConfig } from "vitest/config";
 import { BUNDLE_ALIASES } from "../../infra/bundle.ts";
 import { BASE_COOKIE_PREFIX } from "../../infra/settings.ts";
+import { testWorkerOptions } from "../../tools/vitest/test-workers.ts";
 
 /**
  * Commissary Cloud (`COMMISSARY_MODE=cloud`, ADR 0026), the only mode the auth Worker runs in (ADR 0030): Better Auth
@@ -59,6 +60,8 @@ export default defineConfig({
   test: {
     name: "hosted",
     include: ["test/**/*.test.ts"],
+    // The local test budget (tools/vitest/test-workers.ts): Vitest's default workers in CI.
+    ...testWorkerOptions(),
     // The first test in each file pays for module transformation inside workerd; keep generous timeouts.
     testTimeout: 30_000,
     // Each file's `installFakes` loads Better Auth once (slow under a full parallel run), outside the tests.

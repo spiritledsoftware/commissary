@@ -1,6 +1,7 @@
 import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import { defineConfig } from "vitest/config";
 import { BUNDLE_ALIASES } from "../../infra/bundle.ts";
+import { testWorkerOptions } from "../../tools/vitest/test-workers.ts";
 
 /** Bindings of a self-hosted Commissary (`COMMISSARY_MODE` unset), the deployment every test but `test/hosted/` runs against. */
 const SELF_HOSTED_BINDINGS = {
@@ -77,6 +78,8 @@ const worker = (bindings: Record<string, string>) =>
 export default defineConfig({
   resolve: { alias: { ...BUNDLE_ALIASES } },
   test: {
+    // The local test budget (tools/vitest/test-workers.ts): Vitest's default workers in CI.
+    ...testWorkerOptions(),
     // The first test in each file pays for module transformation inside workerd; keep generous timeouts.
     testTimeout: 30_000,
     hookTimeout: 30_000,

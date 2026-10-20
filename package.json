@@ -21,7 +21,7 @@
     "prepare": "effect-tsgo patch --no-typescript --oxlint && husky && ([ -n \"$CI\" ] || tools/sync-reference-repos.sh)",
     "repos:sync": "tools/sync-reference-repos.sh",
     "smoke": "sh tools/dev-smoke.sh",
-    "test": "turbo run test --",
+    "test": "sh tools/test.sh",
     "typecheck": "turbo run typecheck typecheck:root",
     "typecheck:root": "tsc -p tsconfig.infra.json"
   },
