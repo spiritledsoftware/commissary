@@ -244,6 +244,42 @@ const approvalServer = (name: string): FakeMcpServer => {
   return known;
 };
 
+/** The sign-ins the sign-in case started, by the suite's name: their states and the value of their org. */
+const signInStates = new Map<
+  string,
+  ReadonlyArray<{ readonly state: string; readonly value: string }>
+>();
+
+/** An OAuth app of a toolkit whose client id names `value`. */
+const oauthApp = (value: string) => ({
+  client_id: `client-${value}`,
+  authorize_url: `https://${value}.iso-auth.example.com/authorize`,
+  token_url: `https://${value}.iso-auth.example.com/token`,
+});
+
+/** Adds the org toolkit of the OAuth cases for `name`: its id. */
+const oauthToolkit = async (org: IsolationOrg, name: string, value: string): Promise<string> => {
+  const added = await managed(org, "/toolkits", {
+    ...jsonInit("POST", { source: toolkitSource(value), name: toolkitName(`oauth-${name}`) }),
+  });
+
+  expect(added.status).toBe(201);
+
+  return (added.body as { id: string }).id;
+};
+
+/** The org's toolkit of the OAuth cases for `name`, as the org's admin lists it. */
+const oauthToolkitOf = async (org: IsolationOrg, name: string) =>
+  (
+    (await managed(org, "/toolkits")).body as {
+      toolkits: ReadonlyArray<{
+        id: string;
+        name: string;
+        oauth_app?: { client_id: string };
+      }>;
+    }
+  ).toolkits.find((toolkit) => toolkit.name === toolkitName(`oauth-${name}`));
+
 /** The org's value of each upstream session id the session case opened. */
 const sessionValues = new Map<string, string>();
 
@@ -781,6 +817,68 @@ const STORES: ReadonlyArray<StoreCase> = [
 
       return typeof value === "string" ? value : undefined;
     },
+  }),
+  // Tools' OAuth apps (#202): each org sets its own app on its toolkit of the same name, and reads its own back.
+  storeCase("controlplane: toolkit OAuth apps", {
+    write: async (org, name, value) => {
+      const id = await oauthToolkit(org, name, value);
+
+      const set = await managed(org, `/toolkits/${id}/oauth-app`, {
+        ...jsonInit("PUT", oauthApp(value)),
+      });
+
+      expect(set.status).toBe(200);
+    },
+    read: async (org, name) =>
+      (await oauthToolkitOf(org, name))?.oauth_app?.client_id.replace(/^client-/, ""),
+    value: (index) => `org${index}`,
+  }),
+  // Tools' OAuth sign-ins (#202): a sign-in's state reads only in the org that started it.
+  storeCase("controlplane: toolkit sign-ins", {
+    write: async (org, name, value) => {
+      const id = await oauthToolkit(org, `signin-${name}`, value);
+
+      expect(
+        (await managed(org, `/toolkits/${id}/oauth-app`, { ...jsonInit("PUT", oauthApp(value)) }))
+          .status,
+      ).toBe(200);
+
+      // Started by the org's member, as an org admin: only a member starts (and finishes) a sign-in.
+      const started = await env.CONTROL_PLANE.getByName(org.id)
+        .tools()
+        .startSignIn(
+          { ...isoViewer(org), admin: true },
+          id,
+          "shared",
+          { subject: { kind: "everyone" } },
+          "iso",
+          OUTBOUND,
+          { callback: "https://commissary.test/oauth/toolkits/callback", clientId: undefined },
+        );
+
+      if (!started.ok) throw new Error(started.message);
+      signInStates.set(name, [
+        ...(signInStates.get(name) ?? []),
+        { state: started.value.state, value },
+      ]);
+    },
+    // Every state any org started for `name`, read at the org's own toolkit: only the org's own answers.
+    read: async (org, name) => {
+      const id = (await oauthToolkitOf(org, `signin-${name}`))?.id;
+
+      if (id === undefined) return undefined;
+
+      for (const written of signInStates.get(name) ?? []) {
+        const status = await managed(org, `/toolkits/${id}/sign-in?state=${written.state}`);
+
+        if (status.status === 200) return written.value;
+
+        expect(status.status).toBe(404);
+      }
+
+      return undefined;
+    },
+    value: (index) => `org${index}`,
   }),
   // The upstream MCP sessions Tools' calls keep: each org's member calls the same server under the same toolkit name,
   // and a later call goes on in its own org's session.

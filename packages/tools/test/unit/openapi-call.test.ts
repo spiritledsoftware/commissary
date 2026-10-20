@@ -5,7 +5,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Predicate, Result, type Schema } from "effect";
 import { HttpClient, type HttpClientRequest, HttpClientResponse } from "effect/http";
-import type { ToolkitSecret } from "@commissary/contract/tools";
+import type { UpstreamSecret } from "../../src/toolkits/secret.ts";
 import { callHttp, MAX_ANSWER_BYTES } from "../../src/http/call.ts";
 import { operationCall } from "../../src/openapi/request.ts";
 import { openApiToolList } from "../../src/openapi/tools.ts";
@@ -61,7 +61,7 @@ const call = (
   document: string,
   name: string,
   args: Schema.JsonObject,
-  secret: ToolkitSecret = { kind: "none" },
+  secret: UpstreamSecret = { kind: "none" },
   baseUrl?: string,
 ) =>
   Effect.gen(function* () {
@@ -70,9 +70,11 @@ const call = (
 
     if (Result.isFailure(request)) return yield* Effect.die(request.failure);
 
-    return yield* callHttp(request.success, secret, operation.security).pipe(
+    const { result } = yield* callHttp(request.success, secret, operation.security).pipe(
       Effect.provideService(HttpClient.HttpClient, stub.client),
     );
+
+    return result;
   });
 
 const textOf = (result: Schema.JsonObject): string => {

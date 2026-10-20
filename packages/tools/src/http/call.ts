@@ -35,7 +35,7 @@ import {
   outboundRefusalOf,
   releaseResponseBody,
 } from "@commissary/core";
-import type { ToolkitSecret } from "@commissary/contract/tools";
+import type { UpstreamSecret } from "../toolkits/secret.ts";
 import { TOOL_CALL_TIMEOUT } from "../mcp/client.ts";
 import { JSON_MEDIA_TYPE } from "./shared.ts";
 
@@ -82,7 +82,7 @@ export type SecurityScheme =
 export type Security = ReadonlyArray<ReadonlyArray<SecurityScheme>> | undefined;
 
 /** The one secret value a credential carries (a token or a key), if it carries one. */
-const secretValue = (secret: ToolkitSecret): string | undefined => {
+const secretValue = (secret: UpstreamSecret): string | undefined => {
   switch (secret.kind) {
     case "bearer":
       return secret.token;
@@ -115,7 +115,7 @@ const bearerTokenScheme = (scheme: SecurityScheme): boolean =>
  */
 const placementFor = (
   scheme: SecurityScheme,
-  secret: ToolkitSecret,
+  secret: UpstreamSecret,
   strict: boolean,
 ): Placement | undefined => {
   if (scheme.type === "http" && scheme.scheme === "basic")
@@ -144,7 +144,7 @@ const placementFor = (
 };
 
 /** The credential as it was connected, for a source that names no scheme it fits. */
-const connectedPlacement = (secret: ToolkitSecret): ReadonlyArray<Placement> => {
+const connectedPlacement = (secret: UpstreamSecret): ReadonlyArray<Placement> => {
   switch (secret.kind) {
     case "none":
       return [];
@@ -164,7 +164,7 @@ const connectedPlacement = (secret: ToolkitSecret): ReadonlyArray<Placement> => 
  * exactly before the ones any token fits; an empty alternative (no sign-in) when it fits none; else the credential as
  * it was connected, as a source with no schemes gets it (a document's schemes are sometimes wrong or incomplete).
  */
-const placementsOf = (secret: ToolkitSecret, security: Security): ReadonlyArray<Placement> => {
+const placementsOf = (secret: UpstreamSecret, security: Security): ReadonlyArray<Placement> => {
   if (security === undefined || secret.kind === "none") return connectedPlacement(secret);
 
   for (const strict of [true, false])
@@ -181,7 +181,7 @@ const placementsOf = (secret: ToolkitSecret, security: Security): ReadonlyArray<
 /** `request` signed in with `secret` as `security` says (see {@link placementsOf}). */
 export const signRequest = (
   request: HttpClientRequest.HttpClientRequest,
-  secret: ToolkitSecret,
+  secret: UpstreamSecret,
   security: Security,
 ): HttpClientRequest.HttpClientRequest => {
   let signed = request;
@@ -535,18 +535,24 @@ const toolResultOf = Effect.fnUntraced(function* (
   };
 });
 
+/** An upstream's answer to a call: its MCP tool result and the status it came with. */
+export interface HttpAnswer {
+  readonly result: Schema.JsonObject;
+  readonly status: number;
+}
+
 /**
  * Makes `call` signed in with `secret` as `security` says, through the caller's `HttpClient` (the outbound guard's:
- * {@link withOutboundGuard}), within `timeout`, and answers its MCP tool result. Same-origin redirects are followed;
- * one to another origin is the answer, so the credential never goes there. A failure to reach the upstream is an
- * {@link HttpCallError}; any status is a result.
+ * {@link withOutboundGuard}), within `timeout`, and answers its MCP tool result with the status. Same-origin redirects
+ * are followed; one to another origin is the answer, so the credential never goes there. A failure to reach the
+ * upstream is an {@link HttpCallError}; any status is a result.
  */
 export const callHttp = (
   call: HttpCall,
-  secret: ToolkitSecret,
+  secret: UpstreamSecret,
   security: Security,
   timeout: Duration.Input = TOOL_CALL_TIMEOUT,
-): Effect.Effect<Schema.JsonObject, HttpCallError, HttpClient.HttpClient> =>
+): Effect.Effect<HttpAnswer, HttpCallError, HttpClient.HttpClient> =>
   Effect.gen(function* () {
     const client = yield* HttpClient.HttpClient;
     const request = signRequest(requestOf(call), secret, security);
@@ -555,5 +561,5 @@ export const callHttp = (
       Effect.mapError(transportError("the API")),
     );
 
-    return yield* toolResultOf(response);
+    return { result: yield* toolResultOf(response), status: response.status };
   }).pipe(Effect.timeoutOrElse({ duration: timeout, orElse: () => timedOut("the API") }));

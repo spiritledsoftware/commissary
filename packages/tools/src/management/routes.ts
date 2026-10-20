@@ -21,7 +21,7 @@
  * Tools part shows each approval to its eligible approvers and its caller only, and lets only the former decide it.
  */
 import { Effect, Result, Schema } from "effect";
-import { HttpRouter, type HttpServerResponse } from "effect/http";
+import { HttpRouter, HttpServerRequest, type HttpServerResponse } from "effect/http";
 import { AccessPrincipal, currentViewer } from "@commissary/auth";
 import { ApprovalDecision } from "@commissary/contract/approvals";
 import { ToolGrantBody } from "@commissary/contract/grants";
@@ -29,7 +29,9 @@ import {
   AddToolkit,
   ConnectCredential,
   CredentialSlot,
+  SetOAuthApp,
   SetToolOverride,
+  StartSignIn,
   ToolkitDocument,
   UpdateToolkit,
 } from "@commissary/contract/tools";
@@ -45,8 +47,9 @@ import {
 } from "@commissary/core";
 import { bodyJson } from "@commissary/state";
 import type { ToolsErrorCode, ToolsResult } from "../control-plane-part.ts";
-import { toolsControlPlane } from "../env.ts";
+import { toolsControlPlane, ToolsEnv } from "../env.ts";
 import { MAX_DOCUMENT_BYTES } from "../http/call.ts";
+import { signInUrls } from "../oauth/urls.ts";
 import { defaultToolkitName } from "../toolkits/names.ts";
 
 const BASE = "/v9/management";
@@ -63,12 +66,20 @@ const STATUS: Readonly<Record<ToolsErrorCode, number>> = {
   no_credential: 409,
   tool_list_failed: 502,
   built_in: 403,
+  outbound_refused: 422,
+  sign_in_failed: 502,
 };
 
-const orRefuse = <A>(result: ToolsResult<A>): Effect.Effect<A, Reply> =>
-  result.ok
-    ? Effect.succeed(result.value)
-    : Effect.fail(replyError(STATUS[result.error], result.error, { message: result.message }));
+const orRefuse = <A>(result: ToolsResult<A>): Effect.Effect<A, Reply> => {
+  if (result.ok) return Effect.succeed(result.value);
+
+  // A URL the outbound guard refused answers as a source it refuses does: its message, and the field's path.
+  return Effect.fail(
+    result.error === "outbound_refused"
+      ? replyError(422, result.message, { path: result.path ?? "" })
+      : replyError(STATUS[result.error], result.error, { message: result.message }),
+  );
+};
 
 const decode = <S extends Schema.Decoder<unknown>>(schema: S) =>
   bodyJson.pipe(
@@ -137,6 +148,29 @@ const checkedSource = Effect.fnUntraced(function* (source: string, path = "sourc
 
 const invalid = (message: string, path: string) => replyError(422, "invalid", { message, path });
 
+/** A URL the outbound guard allows (normalised), or the guard's `422` with `path`. */
+const checkedUrl = Effect.fnUntraced(function* (url: string, path: string) {
+  const checked = checkOutboundUrl(url.trim(), yield* CurrentOutboundPolicy);
+
+  if (Result.isFailure(checked)) return yield* replyError(422, checked.failure.message, { path });
+
+  return checked.success.toString();
+});
+
+/**
+ * A credential as it is connected, a client credentials grant's token URL checked by the outbound guard (`422` with
+ * `path`, ADR 0044) and normalised.
+ */
+const checkedCredential = Effect.fnUntraced(function* (
+  credential: ConnectCredential,
+  path: string,
+) {
+  if (credential.kind !== "client_credentials" || credential.token_url === undefined)
+    return credential;
+
+  return { ...credential, token_url: yield* checkedUrl(credential.token_url, path) };
+});
+
 const list = Effect.gen(function* () {
   const viewer = yield* currentViewer;
 
@@ -175,6 +209,11 @@ const add = Effect.gen(function* () {
   const document =
     input.document === undefined ? undefined : yield* checkedDocument(input.document);
 
+  const credential =
+    input.credential === undefined
+      ? undefined
+      : yield* checkedCredential(input.credential, "credential.token_url");
+
   const policy = yield* CurrentOutboundPolicy;
   // A plain member only ever adds private toolkits; an org admin chooses.
   const isPrivate = input.private === true || !viewer.admin;
@@ -193,7 +232,7 @@ const add = Effect.gen(function* () {
           (kind === "mcp" && source !== undefined ? defaultToolkitName(source) : undefined),
         private: isPrivate,
         accepts: input.accepts ?? (isPrivate ? "private" : "shared"),
-        credential: input.credential,
+        credential,
       },
       principalId,
       policy,
@@ -270,7 +309,7 @@ const connect = Effect.gen(function* () {
   const { principalId } = yield* AccessPrincipal;
   const id = yield* idParam;
   const slot = yield* slotParam;
-  const credential = yield* decode(ConnectCredential);
+  const credential = yield* checkedCredential(yield* decode(ConnectCredential), "token_url");
   const policy = yield* CurrentOutboundPolicy;
 
   const result = yield* toolsControlPlane("connectCredential", (stub) =>
@@ -287,6 +326,68 @@ const disconnect = Effect.gen(function* () {
 
   const result = yield* toolsControlPlane("disconnectCredential", (stub) =>
     stub.tools().disconnectCredential(viewer, id, slot),
+  );
+
+  return jsonReply(200, yield* orRefuse(result));
+});
+
+// --- OAuth sign-ins (#202) -------------------------------------------------------------------------------------------
+
+const signIn = Effect.gen(function* () {
+  const viewer = yield* currentViewer;
+  const { principalId } = yield* AccessPrincipal;
+  const id = yield* idParam;
+  const slot = yield* slotParam;
+  const input = yield* decode(StartSignIn);
+  const policy = yield* CurrentOutboundPolicy;
+  const request = yield* HttpServerRequest.HttpServerRequest;
+  const urls = signInUrls(request.originalUrl, (yield* ToolsEnv).API_DOMAIN);
+
+  const result = yield* toolsControlPlane("startSignIn", (stub) =>
+    stub.tools().startSignIn(viewer, id, slot, input, principalId, policy, urls),
+  );
+
+  return jsonReply(201, yield* orRefuse(result));
+});
+
+const signInStatus = Effect.gen(function* () {
+  const viewer = yield* currentViewer;
+  const id = yield* idParam;
+  const request = yield* HttpServerRequest.HttpServerRequest;
+  const state = new URL(request.originalUrl, "http://localhost").searchParams.get("state") ?? "";
+
+  const result = yield* toolsControlPlane("signInStatus", (stub) =>
+    stub.tools().signInStatus(viewer, id, state),
+  );
+
+  return jsonReply(200, yield* orRefuse(result));
+});
+
+const setOAuthApp = Effect.gen(function* () {
+  const viewer = yield* currentViewer;
+  const { principalId } = yield* AccessPrincipal;
+  const id = yield* idParam;
+  const input = yield* decode(SetOAuthApp);
+
+  const app = {
+    ...input,
+    authorize_url: yield* checkedUrl(input.authorize_url, "authorize_url"),
+    token_url: yield* checkedUrl(input.token_url, "token_url"),
+  };
+
+  const result = yield* toolsControlPlane("setOAuthApp", (stub) =>
+    stub.tools().setOAuthApp(viewer, id, app, principalId),
+  );
+
+  return jsonReply(200, yield* orRefuse(result));
+});
+
+const clearOAuthApp = Effect.gen(function* () {
+  const viewer = yield* currentViewer;
+  const id = yield* idParam;
+
+  const result = yield* toolsControlPlane("clearOAuthApp", (stub) =>
+    stub.tools().clearOAuthApp(viewer, id),
   );
 
   return jsonReply(200, yield* orRefuse(result));
@@ -433,6 +534,10 @@ export const ManagementRoutes = HttpRouter.addAll([
   route("DELETE", "/toolkits/:id/credentials/:slot", disconnect),
   route("PUT", "/toolkits/:id/document", replaceDocument),
   route("GET", "/toolkits/:id/document", getDocument),
+  route("POST", "/toolkits/:id/credentials/:slot/sign-in", signIn),
+  route("GET", "/toolkits/:id/sign-in", signInStatus),
+  route("PUT", "/toolkits/:id/oauth-app", setOAuthApp),
+  route("DELETE", "/toolkits/:id/oauth-app", clearOAuthApp),
   route("POST", "/toolkits/:id/refresh", refresh),
   route("GET", "/toolkits/:id/tools", tools),
   route("PUT", "/toolkits/:id/overrides", override),

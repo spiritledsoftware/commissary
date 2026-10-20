@@ -8,9 +8,16 @@
 export const MCP_PATH = "/mcp";
 
 /**
+ * Commissary's Client ID Metadata Document (CIMD) for toolkits' OAuth sign-ins (Tools, #202): the `client_id` an MCP
+ * server's authorization server fetches, unauthenticated. A client API path, so it is served where an authorization
+ * server reaches it (the API host, or the app host's zone route, outside Access).
+ */
+export const TOOLKIT_OAUTH_CLIENT_PATH = "/oauth/toolkits/client.json";
+
+/**
  * The client API's path prefixes. `/v1` also covers `/v1beta*` and `/v1internal`; `/chat/completions`, `/completions`
  * and `/responses` are the unprefixed aliases of the `/v1` routes (not in Go, see Models' handlers/openai/routes.ts);
- * `/mcp` is the MCP endpoint ({@link MCP_PATH}).
+ * `/mcp` is the MCP endpoint ({@link MCP_PATH}); the toolkits' CIMD document is {@link TOOLKIT_OAUTH_CLIENT_PATH}.
  */
 export const CLIENT_API_PREFIXES = [
   "/v1",
@@ -20,6 +27,7 @@ export const CLIENT_API_PREFIXES = [
   "/completions",
   "/responses",
   MCP_PATH,
+  TOOLKIT_OAUTH_CLIENT_PATH,
 ] as const;
 
 /**

@@ -1247,9 +1247,12 @@ Every URL an org or member supplies passes one **outbound guard** before Commiss
   against the policy of the request being served (an `AsyncLocalStorage` scope, so other requests of the isolate are
   untouched; a `fetch` replaced in the meantime, as tests do, is wrapped again). A refused URL rejects like a failed
   fetch, which the library answers as a CIMD failure.
+- toolkits' OAuth 2 sign-ins (#202, "Tools", OAuth 2 sign-in): every metadata URL discovery fetches and every endpoint
+  the metadata names (authorization, token, registration), on every sign-in and token refresh; a toolkit's OAuth app's
+  authorize and token URLs and a client credentials grant's token URL, on save and on every use.
 
-OAuth sign-in to toolkits, the toolkit catalog's live checks and the sandbox's egress point use the same guard when they
-land, from `@commissary/core`.
+The toolkit catalog's live checks and the sandbox's egress point use the same guard when they land, from
+`@commissary/core`.
 
 - **The check** (`core/outbound/check.ts`, `checkOutboundUrl`): only `https:`, plus `http:` and `https:` to loopback
   (`localhost`, `*.localhost`, `127.0.0.0/8`, `::1`) in local development; no IP literal outside the public internet
@@ -2794,12 +2797,13 @@ call's price (_Tools_); the Worker prices each attempt, the ControlPlane prices 
 - Implementation notes (`src/access/` of the app Worker, `apps/api/src/http/gate.ts`, `packages/auth`): each gate is a
   _global_ router middleware that matches path prefixes, normalising case, duplicate slashes and percent-encoding: the
   API Worker's default-denies the client API (`/v1*`, `/openai/v1*`, `/backend-api/codex*`, the unprefixed
-  `/chat/completions`, `/completions`, `/responses`, and `/mcp`), the app Worker's `/v9/management*` and the panel (and
-  answers a client API path 404 before authenticating anything); each provides `AccessPrincipal`; route layers that read
-  it use `withAccess(...)` (the app Worker) or `behindGate(...)` (the API Worker) for typing. JWKS keys are cached per
-  isolate and refreshed on unknown `kid` at most once per 30 s (no cross-request locks, which workerd forbids).
-  `ACCESS_DEV_BYPASS` only applies when the request host is loopback (i.e. `alchemy dev`) and is refused (warning logged
-  once per isolate) whenever `ACCESS_TEAM_DOMAIN` or `ACCESS_AUD` is set.
+  `/chat/completions`, `/completions`, `/responses`, and `/mcp`; not toolkits' CIMD document
+  `/oauth/toolkits/client.json`, which authorization servers fetch without a key, #202), the app Worker's
+  `/v9/management*` and the panel (and answers a client API path 404 before authenticating anything); each provides
+  `AccessPrincipal`; route layers that read it use `withAccess(...)` (the app Worker) or `behindGate(...)` (the API
+  Worker) for typing. JWKS keys are cached per isolate and refreshed on unknown `kid` at most once per 30 s (no
+  cross-request locks, which workerd forbids). `ACCESS_DEV_BYPASS` only applies when the request host is loopback (i.e.
+  `alchemy dev`) and is refused (warning logged once per isolate) whenever `ACCESS_TEAM_DOMAIN` or `ACCESS_AUD` is set.
 - **`@commissary/auth`** (`packages/auth`, #132): request-side authentication with two entry points,
   `authenticateClient(headers, url)` (the client API) and `authenticateManagement(headers, url, {needs, slug})` (the
   management API and the panel), each picking the Access gate (`auth/access-gate.ts`) or Commissary Cloud's
@@ -3187,18 +3191,21 @@ The Tools area (ADR 0036, ADR 0037, ADR 0038) turns outside sources into **toolk
 own MCP endpoint. This version builds two kinds, the remote MCP server (Streamable HTTP) and the OpenAPI document (#203,
 _OpenAPI toolkits_ below), each through its driver (`tools/toolkits/kinds.ts`: how its list is built, whether that
 needs a credential, how a call reaches the upstream, whether calls keep an upstream session); GraphQL and Discovery
-toolkits, OAuth sign-in, the toolkit catalog and the panel's toolkit pages come later (#200 to #209); grants (#198),
-prices, usage records and Spend limits of tool calls (#199), and approval rules with pending approvals (#201) are
-here. The package (`@commissary/tools`) is shaped like Models: entry points `./api` (the MCP endpoint's routes, the
-cron task), `./management`, `./state` and `./testing`, a lint boundary (`boundaries/tools-imports`) and a ControlPlane
-part, `ToolsPart`, reached as `stub.tools().x(…)`. Its one binding of its own is the usage database; its state is the
-ControlPlane's (`TOOLS_TABLES`: `toolkits`, `toolkit_credentials`, `toolkit_tools`, `tool_overrides`,
-`toolkit_sessions`, `tool_grants`, `tool_approvals`, `built_in_toolkits`, `toolkit_documents`, dropped by `wipe()`),
-its view of `env` (`ToolsBindings`) adds the Platform registry and the app host for the endpoint's connect links, and
-`USAGE`, the D1 database its tool calls' records go into (Models' records go there too), and it reaches MCP servers and
-HTTP APIs from the ControlPlane through the global `fetch` behind the outbound guard. The part's one binding is
-optional: Browser Run's `BROWSER` on the state Worker
-(`ToolsPartEnv`, `builtInProviders`), which the browser toolkit runs on (_Built-in toolkits_ below).
+toolkits, the toolkit catalog and the panel's toolkit pages come later (#200 to #209); grants (#198), prices, usage
+records and Spend limits of tool calls (#199), approval rules with pending approvals (#201) and OAuth 2 sign-in to
+toolkits (#202, around the drivers: a driver gets a credential's secret already signed in) are here. The package
+(`@commissary/tools`) is shaped like Models: entry points `./api` (the MCP endpoint's routes, Commissary's CIMD
+document, the cron task), `./management`, `./state` and `./testing`, a lint boundary (`boundaries/tools-imports`) and
+a ControlPlane part, `ToolsPart`, reached as `stub.tools().x(…)`. Its one binding of its own is the usage database; its
+state is the ControlPlane's (`TOOLS_TABLES`: `toolkits`, `toolkit_credentials`, `toolkit_tools`, `tool_overrides`,
+`toolkit_sessions`, `tool_grants`, `tool_approvals`, `built_in_toolkits`, `toolkit_documents`, and OAuth's
+`toolkit_oauth_apps`, `toolkit_oauth_clients` and `toolkit_sign_ins`, dropped by `wipe()`). Its view of `env`
+(`ToolsBindings`) adds the Platform registry and the app host (`APP_DOMAIN`) for the endpoint's connect links and the
+callback its CIMD document names, the API host (`API_DOMAIN`) where toolkit sign-ins name that document, and `USAGE`,
+the D1 database its tool calls' records go into (Models' records go there too); it reaches MCP servers and HTTP APIs
+from the ControlPlane through the global `fetch` behind the outbound guard. The part reads two things of the state
+Worker's env (`ToolsPartEnv`): the optional Browser Run binding `BROWSER` (`builtInProviders`), which the browser
+toolkit runs on (_Built-in toolkits_ below), and `OWN_HOSTS`, which its alarm's token refreshes refuse.
 
 - **What Tools shares with Models**: the ownership rules (`Scope`, `FULL_ACCESS`, `accessTo`: who reaches a shared or a
   private thing), which lived in `models/credentials/ownership.ts`. They moved into `@commissary/auth`
@@ -3227,22 +3234,110 @@ optional: Browser Run's `BROWSER` on the state Worker
   belongs in a credential (a `query` one for the query), which is sealed, not in the source. Edits name the toolkit's revision in `If-Match`; an org admin's removal of a member's private toolkit
   names the revision its existence-only view shows.
 - **Credentials**: a toolkit holds at most one shared credential and one private credential per member, connected and
-  removed under `/toolkits/:id/credentials/{shared,private}`. Static secrets only: none, a bearer token, an API key in a
-  named header or query parameter, basic auth (`tools/toolkits/secret.ts`; a header the MCP client sets itself is
-  refused). The secret is sealed with the org's data key for its row (`toolkit_credentials/<toolkit>/<owner>`) and
-  never answered; views show the kind and the header or parameter name. Connecting a shared credential (`PUT
-  /toolkits/:id/credentials/shared`, or adding an org toolkit with one) names who may use it (`subject`, as a grant
-  names it; `422 invalid` without one, or for a member or team the org does not have) and writes that subject's grant
-  of every tool of the toolkit in the same transaction, unless the subject holds a grant on the toolkit already (any
-  selection), which stays as it is: rotating a key for a subject already granted changes nobody's reach, while naming
-  a subject without one adds its all-tools grant. The answer says which grant (`grant: { id, created }`). A private
-  credential names no subject (`422 invalid`). A source that needs no sign-in takes a shared credential of kind `none`,
-  so it follows grants like any shared credential: nobody reaches it until someone is granted it. Private credentials on
-  org toolkits follow `membership.private_credentials` as in Models: while it is off a private credential cannot be
-  connected (`403 private_credentials_unavailable`), shows `active: false` and is not used. A private toolkit's
-  credential follows `membership.private_toolkits` the same way (`403 private_toolkits_unavailable`). Changing what an
-  org toolkit accepts keeps the credentials it no longer accepts: they show `active: false` and are not used until it
-  accepts them again, and only their holders remove them (a member's private credential stays theirs alone).
+  removed under `/toolkits/:id/credentials/{shared,private}`. A static secret (none, a bearer token, an API key in a
+  named header or query parameter, basic auth; `tools/toolkits/secret.ts`, a header the MCP client sets itself is
+  refused), an OAuth 2 client credentials grant (a shared credential only), or the tokens of an OAuth 2 sign-in, which
+  is signed in to rather than connected (OAuth 2 sign-in, below). The secret is sealed with the org's data key for its
+  row (`toolkit_credentials/<toolkit>/<owner>`) and never answered; views show the kind and the header or parameter
+  name. Connecting a shared credential (`PUT /toolkits/:id/credentials/shared`, or adding an org toolkit with one) names
+  who may use it (`subject`, as a grant names it; `422 invalid` without one, or for a member or team the org does not
+  have) and writes that subject's grant of every tool of the toolkit in the same transaction, unless the subject holds a
+  grant on the toolkit already (any selection), which stays as it is: rotating a key for a subject already granted
+  changes nobody's reach, while naming a subject without one adds its all-tools grant. The answer says which grant
+  (`grant: { id, created }`). A private credential names no subject (`422 invalid`). A source that needs no sign-in
+  takes a shared credential of kind `none`, so it follows grants like any shared credential: nobody reaches it until
+  someone is granted it. Private credentials on org toolkits follow `membership.private_credentials` as in Models: while
+  it is off a private credential cannot be connected (`403 private_credentials_unavailable`), shows `active: false` and
+  is not used. A private toolkit's credential follows `membership.private_toolkits` the same way (`403
+  private_toolkits_unavailable`). Changing what an org toolkit accepts keeps the credentials it no longer accepts: they
+  show `active: false` and are not used until it accepts them again, and only their holders remove them (a member's
+  private credential stays theirs alone).
+- **OAuth 2 sign-in** (`tools/oauth/`, #202): an MCP server that signs clients in with OAuth 2 (the MCP authorization
+  spec) gets a credential of kind `oauth`, its tokens sealed like any secret and refreshed by Commissary (_token
+  refresh_, GLOSSARY.md).
+  - **Starting** (`POST /toolkits/:id/credentials/{shared,private}/sign-in`, `{ subject? }`, `201 { state, url,
+    expires_at }`): an org admin signs the shared credential in, naming its `subject` as connecting one does (the grant
+    is written when the sign-in completes), a member their private one, under the rules of connecting. The panel opens
+    `url` and polls `GET /toolkits/:id/sign-in?state=` (`wait`, `ok`, or `error` with why) until it is done; only the
+    sign-in's starter reads it (an org admin any sign-in of the shared credential), others get `404`. Only a member
+    starts one (`403 forbidden` for a management key or a service token): only its starter finishes it (below).
+  - **The client** (`oauth/flows.ts` `prepareSignIn`), in the MCP spec's order: the toolkit's own **OAuth app**, when
+    its managers set one (`PUT /toolkits/:id/oauth-app` `{ client_id, client_secret?, authorize_url, token_url, scopes?,
+    issuer? }`, `DELETE` clears it; the secret is sealed and views show `client_secret: true`; the client authenticates
+    with `client_secret_post`, or as a public client without a secret, and no `resource` is sent, which an app's server
+    may not know; `issuer` is the server's RFC 9207 issuer, which its answers must then name); else Commissary as the
+    MCP server's client, after **discovery** (`oauth/discovery.ts`): an unauthenticated `initialize` whose `401` names
+    `resource_metadata` in its `WWW-Authenticate` challenge, else the protected resource metadata at its path-inserted
+    and root well-known URIs (RFC 9728); its `resource` must be the source's origin and a prefix of its path; its first
+    authorization server's metadata at the RFC 8414 and OpenID Connect well-known URIs in the spec's order, whose
+    `issuer` must be the one named, and which must offer PKCE S256. Commissary's **CIMD document** is the `client_id`
+    where the server takes one (`client_id_metadata_document_supported`) and the deployment serves it (below); else
+    **dynamic client registration** (RFC 7591), a public client where the server allows it, kept per toolkit
+    (`toolkit_oauth_clients`, with the issuer and redirect URI it was made for, made again when either changes). A new
+    registration rides in the sign-in's sealed flow and replaces the toolkit's only once that sign-in completes, so an
+    abandoned sign-in never retires the client the toolkit's other credentials refresh their tokens with; a server with
+    neither answers `502 sign_in_failed` ("give the toolkit an OAuth app"). A server that refuses the CIMD document at
+    its authorization endpoint is not retried with DCR: the browser shows its error.
+  - **The authorization request**: PKCE S256, the RFC 8707 `resource`, the scopes of the challenge's `scope` else the
+    resource's `scopes_supported` (an app's own), and a `state` of 128 random bits named by its org
+    (`org.<org>.<hex>`, `orgScopedName`). The toolkit sign-in (`toolkit_sign_ins`, its flow sealed: the PKCE verifier, a
+    new registration) is single-use, has five minutes for the browser to come back and lives 30 minutes (a completed
+    one one minute), the values of Models' login sessions.
+  - **The callback** (`GET /oauth/toolkits/callback`, `SIGN_IN_CALLBACK_PATH`, the app Worker's
+    `SignInCallbackRoutes`): the deployment's one redirect URI, `https://<app host>/oauth/toolkits/callback`, which
+    admins enter in their OAuth apps. It asks only the ControlPlane of the org the state names, and only for the member
+    who started the sign-in, the shared credential's as a private one's: the app Worker's gate signs the request in (an
+    Access sign-in, a Commissary Cloud session) as a member of that org (`authenticateSignInCallback`), and anyone else
+    (nobody signed in, a management key, a service token, a person outside the org, another member, an org admin
+    included) gets the page of an invalid sign-in, `400` as for an unknown, used, expired or other org's state, and
+    leaves the sign-in pending for its starter. So someone who gets a victim to open the callback of the attacker's own
+    authorization (a login CSRF) finishes nothing: the state is not the victim's. Unlike Models' callbacks, which act
+    on the state alone. When the flow knows the server's issuer (from its metadata, or the OAuth app's `issuer`), the
+    answer must name it (`iss`, RFC 9207; required when the server advertises it or the app names one), checked before
+    anything else in it, an error included (§2.4); the code is exchanged with the PKCE verifier (and the `resource`),
+    and the tokens become the credential (`via`: `cimd`, `dcr` or `app`), with the subject's grant as connecting
+    writes it, and the tool list is built if it never was. The page is static (`no-store`, no referrer, not framed)
+    and holds no code, state, token or error detail; a failure is the sign-in's, for its starter to read.
+  - **Token refresh**: the part's alarm refreshes a token five minutes before it expires (halfway through its life
+    when that is shorter), four at a time, through the guard with the deployment's own hosts refused (`OWN_HOSTS`); a
+    token within a minute of expiry is refreshed before it is used, and one the upstream refuses (`401`) is
+    refreshed once and the request made again; concurrent token refreshes of a credential share one. A token endpoint
+    that refuses a refresh (an OAuth error), a sign-in without a refresh token, and a client that is gone (the OAuth
+    app's client id changed, the registration was made again) mark the credential `needs_sign_in`: it is not used, a
+    build records why, and a call answers that it needs sign-in again (the member's own: the connect link; the shared
+    one: that an org admin must sign in again, with no elicitation). A token refresh that may pass (unreachable,
+    `5xx`, `429`), or one that throws in the alarm, is tried again by the alarm after five minutes; one credential's
+    failure stops neither the others' nor the alarm. Each failure is logged (`toolkit token refresh failed`, with the
+    toolkit, the slot, the reason and the server's status and error code, never a token). An OAuth app's secret is
+    read at each refresh, so rotating the secret of the same client id needs no new sign-in.
+  - **Client credentials** (`kind: "client_credentials"`: `client_id`, `client_secret`, `token_url?`, `scope?`, a
+    shared credential only, `422 invalid` as a private one): Commissary mints the token at `token_url`, else at the
+    token endpoint of the MCP server's authorization server (discovered as above, naming the `resource`), with HTTP
+    Basic unless the server names only `client_secret_post`; on first use, when it expires and once again on a `401`.
+    A refused mint marks it `needs_sign_in` until it is connected again. An OpenAPI toolkit has no MCP server to
+    discover from, so its grant names `token_url` (and its OAuth 2 sign-in needs the toolkit's OAuth app).
+  - **Around the drivers** (`tools/toolkits/kinds.ts`): sign-in and token refresh sit around a kind's driver, which
+    gets the credential's secret already signed in; an OAuth credential's is its access token as a `bearer` secret,
+    which an OpenAPI call places where the operation's `oauth2`, `openIdConnect` or `http` bearer scheme says
+    (`http/call.ts`). A driver reports a `401`: the MCP driver as a failure that says so, the OpenAPI driver as the
+    call's result (an `isError` answer with the status); either way the token is refreshed once and the request made
+    again.
+  - **The guard**: every URL above passes the outbound guard, those an admin enters on save (`422` with the guard's
+    message and `path`: `authorize_url`, `token_url`, `credential.token_url` when adding a toolkit) and on use, and
+    those metadata names before Commissary fetches them or sends the browser there (`422`, `path`: the metadata's
+    field, e.g. `token_endpoint`). Other failures are `502 sign_in_failed` with a short message that quotes no body.
+  - **Commissary's CIMD document** (`GET /oauth/toolkits/client.json`, `TOOLKIT_OAUTH_CLIENT_PATH`): a client API
+    path (`CLIENT_API_PREFIXES`), served by the API Worker (`ClientMetadataRoutes`) without an API key (the gate lets
+    this path through), on the API host (`https://<API host>/oauth/toolkits/client.json`, the `client_id`) or, on a
+    stage with one host, through the app host's zone route and the Access bypass
+    (`https://<app host>/oauth/toolkits/client.json`). Its `client_id` is its own URL, its one redirect URI the
+    callback on the app host (`APP_DOMAIN`), a public client (`token_endpoint_auth_method: none`), the same on every
+    request and cacheable for an hour. A Worker without `APP_DOMAIN` (a preview, `alchemy dev`) serves `404`, and a
+    sign-in started on a loopback host, a `workers.dev` host (a preview) or over plain `http:` offers no document, so
+    it registers through DCR where the server allows it. **Caveat**: the CIMD draft (§6.1) lets an authorization server
+    require the redirect URIs to share the `client_id`'s origin; on a deployment with an API host apart from the app
+    host such a server refuses the document (the redirect URI is on the app host), so give the toolkit an OAuth app
+    there. A stage with one host serves both on the app host.
 - **Tool lists** (`tools/mcp/client.ts`): one list per toolkit, from the server's `tools/list`, built with the shared
   credential or, if the toolkit has none, the private credential of the member who asks (a private toolkit's owner's).
   The client speaks the 2025 handshake (`initialize`, `notifications/initialized`, `tools/list` in the session of
@@ -3584,16 +3679,17 @@ optional: Browser Run's `BROWSER` on the state Worker
     none is built. The sessions of #213 join the same interface, and the sandbox toolkit's sandbox provider (#223)
     follows the pattern. The tests run the toolkit over a fake binding and over a fake second provider, which serves
     the same tools.
-- **Members and orgs**: a member who leaves takes their private toolkits, their private credentials on org toolkits,
-  the upstream sessions of those, the tool grants that named them and the pending approvals of their calls, and leaves
-  every list of approvers (`memberLeft`); a deleted team takes its tool grants (`teamDeleted`), and a removed toolkit
-  its own and its pending approvals (`tool_grants` and `tool_approvals` are keyed by `toolkit_id` like the other
-  tables) and its Spend limits; org deletion drops the tables (`wipe()`), and Tools' org-deletion step deletes the
-  org's OAuth sign-ins of MCP clients on Commissary Cloud (grants and tokens in `OAUTH_KV`, the one thing Tools keeps
-  in KV; the per-isolate cache of OAuth servers in `oauth/server.ts` holds no org data): its usage records go with
-  Models' step, which deletes every usage row of the org. The cross-org suite (`apps/app/test/org-isolation.test.ts`)
-  checks that one org's toolkits are neither listed nor reached by id from another, that its tool grants are its own, that a
-  call goes on in its own org's upstream session, and that a member finds only their own org's pending approvals. The
-  org export lists the toolkits the caller reaches with their credentials' kinds, their overrides and their approval
+- **Members and orgs**: a member who leaves takes their private toolkits, their private credentials on org toolkits, the
+  upstream sessions of those, the sign-ins they started, the tool grants that named them and the pending approvals of
+  their calls, and leaves every list of approvers (`memberLeft`); a deleted team takes its tool grants (`teamDeleted`),
+  and a removed toolkit its own and its pending approvals (`tool_grants` and `tool_approvals` are keyed by `toolkit_id`
+  like the other tables) and its Spend limits; org deletion drops the tables (`wipe()`), and Tools' org-deletion step
+  deletes the org's OAuth sign-ins of MCP clients on Commissary Cloud (grants and tokens in `OAUTH_KV`, the one thing
+  Tools keeps in KV; the per-isolate cache of OAuth servers in `oauth/server.ts` holds no org data): its usage records
+  go with Models' step, which deletes every usage row of the org. The cross-org suite
+  (`apps/app/test/org-isolation.test.ts`) checks that one org's toolkits are neither listed nor reached by id from
+  another, that its tool grants and OAuth apps are its own, that a sign-in's state reads only in its org, that a call
+  goes on in its own org's upstream session, and that a member finds only their own org's pending approvals. The org
+  export lists the toolkits the caller reaches with their credentials' kinds, their overrides and their approval
   rules, never a secret, and for an org admin each org toolkit's tool grants (subjects by email or team name, as
   Models' grants; tools `all`, `read` or the named tools' upstream names; `updated_at`).

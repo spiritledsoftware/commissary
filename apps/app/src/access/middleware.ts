@@ -1,9 +1,14 @@
 // Router middleware gating the panel and the management routes, and refusing the client API (mirrors AuthMiddleware in
 // internal/api/server_middleware.go: flat `{"error": "..."}` bodies).
-import { Effect, Predicate, Result } from "effect";
+import { Effect, Option, Predicate, Result } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { CurrentOrg } from "@commissary/core";
-import { authenticateMcp, authenticateRequest, MCP_SIGN_IN } from "./authenticate.ts";
+import {
+  authenticateMcp,
+  authenticateRequest,
+  authenticateSignInCallback,
+  MCP_SIGN_IN,
+} from "./authenticate.ts";
 import { crossSiteRejection } from "./csrf.ts";
 import {
   type AccessError,
@@ -21,6 +26,11 @@ import {
   normalizedPath,
 } from "../management/zones.ts";
 import { SIGN_IN_PAGE_PATH } from "@commissary/contract/sign-in";
+import {
+  SIGN_IN_CALLBACK_PATH,
+  signInCallbackOrg,
+  signInCallbackRejected,
+} from "@commissary/tools/management";
 import { clientApiElsewhere } from "../http/hosts.ts";
 import { AppEnv } from "../worker-env.ts";
 
@@ -65,7 +75,9 @@ const signInRedirect = (
  * ADR 0022): a platform admin (`PLATFORM_ADMIN_*`) is an owner of every org, anyone else has the role their membership
  * gives them. Cross-site requests and cross-origin WebSocket upgrades are refused first (`csrf.ts`). A client API path
  * is refused with a 404 that says where the client API is (`http/hosts.ts`): the API Worker serves it (ADR 0030), and
- * so is `/mcp` on Commissary Cloud. Everything else (`/healthz`, unknown paths) is passed through untouched. On success
+ * so is `/mcp` on Commissary Cloud. A toolkit sign-in's callback (#202) is signed in as a member of the org its state
+ * names, and refused with the page of an invalid sign-in otherwise. Everything else (`/healthz`, unknown paths) is
+ * passed through untouched. On success
  * the principal is available to handlers as `AccessPrincipal`, and `CurrentOrg` is the org of the request: the org
  * addressed by an org-scoped management URL (`management/org-address.ts`), unchanged otherwise.
  */
@@ -80,6 +92,25 @@ export const AccessGate = HttpRouter.middleware<{ provides: AccessPrincipal }>()
         const zone = classifyPath(request.originalUrl);
 
         const hosted = isHosted(yield* AuthConfig);
+
+        // A toolkit sign-in's callback (#202) is its starter's to finish: the person is signed in as a member of the org
+        // its state names, and anyone who is not (nobody signed in, a management key, a service token, someone outside
+        // the org) gets the page of an invalid sign-in, as for a state that is not known.
+        if (normalizedPath(request.originalUrl) === SIGN_IN_CALLBACK_PATH) {
+          const org = signInCallbackOrg(request.originalUrl);
+
+          if (org === undefined) return signInCallbackRejected();
+
+          const caller = yield* authenticateSignInCallback(
+            request.headers,
+            request.originalUrl,
+            org,
+          ).pipe(Effect.provideService(AccessJwks, jwks), Effect.option);
+
+          return Option.isNone(caller)
+            ? signInCallbackRejected()
+            : yield* Effect.provideService(app, AccessPrincipal, caller.value);
+        }
 
         // Commissary Cloud's sign-in page loads the panel's bundle before anyone is signed in; the bundle holds no data.
         if (zone === "public" || (hosted && isPanelAssetPath(request.originalUrl))) {

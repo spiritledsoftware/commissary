@@ -11,27 +11,34 @@
  *   guard lets a call reach and the toolkit has no base URL ({@link serverWarning}).
  */
 import { type Duration, Effect, Result, Schema } from "effect";
-import type { ToolkitSecret } from "@commissary/contract/tools";
 import { checkOutboundUrl, type OutboundPolicy } from "@commissary/core";
 import { callHttp, fetchDocument, withOutboundGuard } from "../http/call.ts";
-import { callUpstreamTool, listUpstreamTools, type UpstreamSession } from "../mcp/client.ts";
+import {
+  callUpstreamTool,
+  listUpstreamTools,
+  type McpError,
+  type UpstreamSession,
+} from "../mcp/client.ts";
 import { operationCall } from "../openapi/request.ts";
 import { type OpenApiOperation, type OpenApiToolList, openApiToolList } from "../openapi/tools.ts";
 import { defaultToolkitName, toolkitNameOf } from "./names.ts";
 import type { ResolvedTool } from "./resolve.ts";
+import type { UpstreamSecret } from "./secret.ts";
 import type { ListedTool } from "./store.ts";
 import type { StoredToolkit } from "./toolkit.ts";
 
 /** Why a build or a call failed: a short message that quotes no URL, secret or upstream body. */
 export class KindFailure extends Schema.TaggedError<KindFailure>()("KindFailure", {
   message: Schema.String,
+  /** The upstream refused the credential's token itself (`401`), which a refreshed one may pass (#202). */
+  unauthorized: Schema.optionalKey(Schema.Boolean),
 }) {}
 
 /** What a build of a toolkit's list reads. */
 export interface ListInput {
   readonly toolkit: Pick<StoredToolkit, "source" | "baseUrl">;
   /** The credential a build lists with, for a kind that needs one ({@link KindDriver.listsWithCredential}). */
-  readonly secret: ToolkitSecret;
+  readonly secret: UpstreamSecret;
   /** An OpenAPI toolkit's uploaded document. */
   readonly document: string | undefined;
   readonly timeout: Duration.Input;
@@ -51,7 +58,7 @@ export interface Listing {
 export interface CallInput {
   readonly toolkit: StoredToolkit;
   readonly tool: ResolvedTool;
-  readonly secret: ToolkitSecret;
+  readonly secret: UpstreamSecret;
   readonly args: Schema.JsonObject | undefined;
   readonly policy: OutboundPolicy;
   /** The upstream session kept for the caller on the credential, for a kind that keeps them. */
@@ -62,6 +69,8 @@ export interface CallInput {
 export interface Called {
   readonly result: Schema.JsonObject;
   readonly session?: UpstreamSession;
+  /** The upstream answered `401` (the result says so), which a refreshed token may pass (#202). */
+  readonly unauthorized?: boolean;
 }
 
 export interface KindDriver {
@@ -91,6 +100,12 @@ export interface ToolOperation {
 
 const failed = (message: string) => new KindFailure({ message });
 
+/** An MCP client's failure as a driver's, saying when the server refused the token itself (`401`). */
+const mcpFailed = (error: McpError) =>
+  error.reason === "unauthorized" && error.status === 401
+    ? new KindFailure({ message: error.message, unauthorized: true })
+    : failed(error.message);
+
 /** Logs an upstream call's failure with the toolkit and the reason only. */
 const logFailure = (toolkit: string, reason: string, status?: number) =>
   Effect.logWarning("upstream tool call failed").pipe(
@@ -104,7 +119,7 @@ const mcp: KindDriver = {
   list: ({ toolkit, secret, timeout, policy }) =>
     listUpstreamTools(toolkit.source, secret, timeout).pipe(
       Effect.map((tools) => ({ tools })),
-      Effect.mapError((error) => failed(error.message)),
+      Effect.mapError(mcpFailed),
       withOutboundGuard(policy),
     ),
   call: ({ toolkit, tool, secret, args, policy, session }) =>
@@ -114,7 +129,7 @@ const mcp: KindDriver = {
       inputSchema: tool.tool?.inputSchema,
     }).pipe(
       Effect.tapError((error) => logFailure(toolkit.id, error.reason, error.status)),
-      Effect.mapError((error) => failed(error.message)),
+      Effect.mapError(mcpFailed),
       withOutboundGuard(policy),
     ),
 };
@@ -200,13 +215,13 @@ const openapi: KindDriver = {
 
       if (Result.isFailure(request)) return yield* failed(request.failure);
 
-      const result = yield* callHttp(request.success, secret, operation.security).pipe(
+      const { result, status } = yield* callHttp(request.success, secret, operation.security).pipe(
         Effect.tapError((error) => logFailure(toolkit.id, error.reason)),
         Effect.mapError((error) => failed(error.message)),
         withOutboundGuard(policy),
       );
 
-      return { result };
+      return status === 401 ? { result, unauthorized: true } : { result };
     }),
   warning: serverWarning,
 };

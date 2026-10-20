@@ -30,7 +30,7 @@ import {
   type HttpClientResponse,
 } from "effect/http";
 import { OUTBOUND_REFUSED_MESSAGE, outboundRefusalOf } from "@commissary/core";
-import type { ToolkitSecret } from "@commissary/contract/tools";
+import type { UpstreamSecret } from "../toolkits/secret.ts";
 import { encodeHeaderValue } from "./header-value.ts";
 import { isJsonObject } from "../http/shared.ts";
 
@@ -132,7 +132,7 @@ const tooLarge = new McpError({
 /** `request` signed in with `secret`. */
 const authorize = (
   request: HttpClientRequest.HttpClientRequest,
-  secret: ToolkitSecret,
+  secret: UpstreamSecret,
 ): HttpClientRequest.HttpClientRequest => {
   switch (secret.kind) {
     case "none":
@@ -267,7 +267,7 @@ const MANUAL_REDIRECTS: globalThis.RequestInit = { redirect: "manual" };
 /** One JSON-RPC message POSTed to `source`, signed in with `secret`. */
 const post = Effect.fnUntraced(function* (
   source: string,
-  secret: ToolkitSecret,
+  secret: UpstreamSecret,
   session: Session,
   message: RpcMessage,
   extraHeaders: Readonly<Record<string, string>> = {},
@@ -407,7 +407,7 @@ const allPages = Effect.fnUntraced(function* (
 /** Deletes the server's session (`DELETE` with `Mcp-Session-Id`). */
 const endSession = Effect.fnUntraced(function* (
   source: string,
-  secret: ToolkitSecret,
+  secret: UpstreamSecret,
   session: Session,
 ) {
   const client = yield* HttpClient.HttpClient;
@@ -441,7 +441,7 @@ const isRefusedHandshake = (error: McpError): boolean =>
 /** Opens the 2025 handshake (`initialize`, `notifications/initialized`); `undefined` when the server refuses it. */
 const openLegacy = Effect.fnUntraced(function* (
   source: string,
-  secret: ToolkitSecret,
+  secret: UpstreamSecret,
 ): Effect.fn.Return<UpstreamSession | undefined, McpError, HttpClient.HttpClient> {
   const opened = yield* post(
     source,
@@ -482,7 +482,7 @@ const openLegacy = Effect.fnUntraced(function* (
 /** The tool list over the 2025 handshake; `undefined` when the server refuses `initialize`. */
 const legacyList = Effect.fnUntraced(function* (
   source: string,
-  secret: ToolkitSecret,
+  secret: UpstreamSecret,
 ): Effect.fn.Return<ReadonlyArray<UpstreamTool> | undefined, McpError, HttpClient.HttpClient> {
   const session = yield* openLegacy(source, secret);
 
@@ -510,7 +510,7 @@ const STATELESS_META = {
 };
 
 /** The tool list over the stateless revision. */
-const statelessList = (source: string, secret: ToolkitSecret) =>
+const statelessList = (source: string, secret: UpstreamSecret) =>
   allPages((cursor, id) =>
     post(
       source,
@@ -534,7 +534,7 @@ const statelessList = (source: string, secret: ToolkitSecret) =>
  */
 export const listUpstreamTools = (
   source: string,
-  secret: ToolkitSecret,
+  secret: UpstreamSecret,
   timeout: Duration.Input = LISTING_TIMEOUT,
 ): Effect.Effect<ReadonlyArray<UpstreamTool>, McpError, HttpClient.HttpClient> =>
   Effect.gen(function* () {
@@ -621,7 +621,7 @@ const paramHeaders = (
 /** One `tools/call` in `session`: the result as the server answered it. */
 const callIn = Effect.fnUntraced(function* (
   source: string,
-  secret: ToolkitSecret,
+  secret: UpstreamSecret,
   session: UpstreamSession,
   call: UpstreamCall,
 ): Effect.fn.Return<Schema.JsonObject, McpError, HttpClient.HttpClient> {
@@ -668,7 +668,7 @@ const callIn = Effect.fnUntraced(function* (
  */
 export const callUpstreamTool = (
   source: string,
-  secret: ToolkitSecret,
+  secret: UpstreamSecret,
   known: UpstreamSession | undefined,
   call: UpstreamCall,
   timeout: Duration.Input = TOOL_CALL_TIMEOUT,

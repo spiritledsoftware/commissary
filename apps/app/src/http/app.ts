@@ -9,7 +9,10 @@ import { BillingWebhookRoutes } from "@commissary/billing/management";
 import { WorkersLoggerLayer } from "@commissary/core";
 import { TraceLayer } from "@commissary/models/api";
 import { OAuthCallbackRoutes } from "@commissary/models/management";
-import { ProtectedResourceMetadataRoutes } from "@commissary/tools/management";
+import {
+  ProtectedResourceMetadataRoutes,
+  SignInCallbackRoutes,
+} from "@commissary/tools/management";
 import { AppMcpRoutes } from "./mcp.ts";
 import { RootRoutes } from "./routes.ts";
 
@@ -32,6 +35,9 @@ export const AppLayer = Layer.mergeAll(
   ProtectedResourceMetadataRoutes,
   AccessLayer,
   withAccess(ManagementRoutesLive),
+  // The callback of toolkits' OAuth sign-ins (#202): the gate signs its caller in as a member of the org the state
+  // names, and only the member who started the sign-in finishes it.
+  withAccess(SignInCallbackRoutes),
   // The MCP endpoint behind Access, for MCP clients Access signs in (ADR 0045); the Access gate refuses it on
   // Commissary Cloud, whose MCP clients use the API host's.
   withAccess(AppMcpRoutes),

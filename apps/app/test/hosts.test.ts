@@ -15,6 +15,8 @@ const CLIENT_API_PATHS = [
   "/%76%31/models",
   "//V1/models",
   "/backend-api/codex/responses",
+  // Commissary's CIMD document of toolkits' OAuth sign-ins (#202); their callback is this Worker's.
+  "/oauth/toolkits/client.json",
   // Under the MCP endpoint, which a self-hosted Commissary serves here itself (test/mcp-access.test.ts).
   "/mcp/sessions",
 ];

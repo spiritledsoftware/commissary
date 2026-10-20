@@ -15,7 +15,7 @@ import {
   presentedManagementKey,
   type SignInSessions,
 } from "@commissary/auth";
-import { type CurrentOrg, ForbiddenError, UnauthorizedError } from "@commissary/core";
+import { CurrentOrg, ForbiddenError, type OrgId, UnauthorizedError } from "@commissary/core";
 import { Effect } from "effect";
 import { routeAccess } from "../management/policy.ts";
 import { mcpAddress, mcpOrgSlug, scopedUrl } from "../management/zones.ts";
@@ -71,3 +71,24 @@ export const authenticateMcp = (
       slug: org.slug,
     });
   });
+
+/**
+ * Who calls a toolkit sign-in's callback (#202): the person signed in (an Access sign-in, a Commissary Cloud session)
+ * as a member of `org`, the org the sign-in's state names, which only its starter may finish. A management key, a
+ * service token, or a person outside the org is refused here like anyone not signed in.
+ */
+export const authenticateSignInCallback = (
+  headers: Readonly<Record<string, string | undefined>>,
+  requestUrl: string,
+  org: OrgId,
+): Effect.Effect<
+  AccessIdentity,
+  AccessError,
+  AuthConfig | AuthDirectory | AccessJwks | SignInSessions
+> =>
+  Effect.gen(function* () {
+    if (presentedManagementKey(headers) !== undefined)
+      return yield* new UnauthorizedError({ message: "Sign in to finish the sign-in" });
+
+    return yield* authenticateManagement(headers, requestUrl, { needs: "member" });
+  }).pipe(Effect.provideService(CurrentOrg, org));

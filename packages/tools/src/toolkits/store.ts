@@ -14,13 +14,15 @@
  * as a row that sets nothing (a tombstone), so its revision never goes back and a write based on an earlier one is
  * refused.
  */
-import type { CredentialsAccepted, ToolClass, ToolkitSecret } from "@commissary/contract/tools";
+import type { CredentialsAccepted, ToolClass } from "@commissary/contract/tools";
 import type { Sealer } from "@commissary/state";
 import type { Schema } from "effect";
 import type { StoredApprovalRules } from "../approvals/rules.ts";
 import type { UpstreamSession, UpstreamTool } from "../mcp/client.ts";
 import type { OpenApiOperation } from "../openapi/tools.ts";
 import type { StoredToolkit } from "./toolkit.ts";
+import { type ClientVia, OAUTH_TABLES } from "../oauth/store.ts";
+import type { StoredSecret } from "./secret.ts";
 
 /**
  * Every table of the Tools part (this store's, the tool grants', `grants/store.ts`, and the pending approvals',
@@ -39,10 +41,14 @@ export const TOOLS_TABLES = [
   "tool_approvals",
   "built_in_toolkits",
   "toolkit_documents",
+  ...OAUTH_TABLES,
 ] as const;
 
 /** The most bytes of an uploaded document one row holds: well within SQLite's limit on one value (2 MB). */
 export const DOCUMENT_CHUNK_BYTES = 1024 * 1024;
+
+/** How long before its access token expires an OAuth credential is refreshed (#202). */
+export const REFRESH_LEAD_MS = 5 * 60_000;
 
 /** How long an upstream session is kept from when it was opened (ADR 0038: at most seven days, like replay state). */
 export const SESSION_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
@@ -56,7 +62,8 @@ const SCHEMA = [
    )`,
   `CREATE TABLE IF NOT EXISTS toolkit_credentials (
      toolkit_id TEXT NOT NULL, owner TEXT NOT NULL, kind TEXT NOT NULL, param TEXT NOT NULL, secret TEXT NOT NULL,
-     connected_at INTEGER NOT NULL, connected_by TEXT NOT NULL, PRIMARY KEY (toolkit_id, owner)
+     connected_at INTEGER NOT NULL, connected_by TEXT NOT NULL, via TEXT, expires_at INTEGER, refresh_at INTEGER,
+     needs_sign_in INTEGER, PRIMARY KEY (toolkit_id, owner)
    )`,
   `CREATE TABLE IF NOT EXISTS toolkit_tools (
      toolkit_id TEXT NOT NULL, upstream_name TEXT NOT NULL, description TEXT, input_schema TEXT, annotations TEXT,
@@ -96,11 +103,19 @@ export interface ToolkitCredential {
   readonly toolkitId: string;
   /** The member of a private credential; undefined for the shared one. */
   readonly owner: string | undefined;
-  readonly kind: ToolkitSecret["kind"];
+  readonly kind: StoredSecret["kind"];
   /** The header or query parameter of a `header` or `query` key. */
   readonly param: string | undefined;
   readonly connectedAt: number;
   readonly connectedBy: string;
+  /** How an `oauth` credential's client was registered. */
+  readonly via: ClientVia | undefined;
+  /** When its access token expires (epoch ms), for `oauth` and `client_credentials`. */
+  readonly expiresAt: number | undefined;
+  /** When the part's alarm gives it a token refresh next (epoch ms); undefined: not scheduled. */
+  readonly refreshAt: number | undefined;
+  /** Its token refresh failed for good: it is not used until it is signed in to or connected again. */
+  readonly needsSignIn: boolean;
 }
 
 export interface StoredTool {
@@ -177,6 +192,10 @@ interface CredentialRow {
   secret: string;
   connected_at: number;
   connected_by: string;
+  via: string | null;
+  expires_at: number | null;
+  refresh_at: number | null;
+  needs_sign_in: number | null;
 }
 
 interface ToolRow {
@@ -249,12 +268,37 @@ const toolkitOf = (row: ToolkitRow): StoredToolkit => ({
 const credentialOf = (row: CredentialRow): ToolkitCredential => ({
   toolkitId: row.toolkit_id,
   owner: ownerOf(row.owner),
-  // SAFETY: the store writes `kind` from a decoded `ToolkitSecret`.
-  kind: row.kind as ToolkitSecret["kind"],
+  // SAFETY: the store writes `kind` from a `StoredSecret`.
+  kind: row.kind as StoredSecret["kind"],
   param: row.param === "" ? undefined : row.param,
   connectedAt: row.connected_at,
   connectedBy: row.connected_by,
+  // SAFETY: the store writes `via` from an `OAuthSecret`'s `ClientVia`.
+  via: (row.via ?? undefined) as ClientVia | undefined,
+  expiresAt: orUndefined(row.expires_at),
+  refreshAt: orUndefined(row.refresh_at),
+  needsSignIn: row.needs_sign_in === 1,
 });
+
+/**
+ * When the alarm gives a credential with `secret` a token refresh (#202): an `oauth` sign-in {@link REFRESH_LEAD_MS} before its token
+ * expires (one without a refresh token when it expires, to mark it as needing sign-in). A client credentials grant
+ * mints a token when one is needed, and a static secret never expires.
+ */
+export const refreshAtOf = (secret: StoredSecret, now: number): number | undefined => {
+  if (secret.kind !== "oauth" || secret.expires_at === undefined) return undefined;
+
+  // A token that lives less than twice the lead gets its refresh halfway through its life.
+  return secret.refresh_token === undefined
+    ? secret.expires_at
+    : Math.max(
+        secret.expires_at - REFRESH_LEAD_MS,
+        now + Math.floor((secret.expires_at - now) / 2),
+      );
+};
+
+const expiresAtOf = (secret: StoredSecret): number | undefined =>
+  secret.kind === "oauth" || secret.kind === "client_credentials" ? secret.expires_at : undefined;
 
 const toolOf = (row: ToolRow): StoredTool => ({
   toolkitId: row.toolkit_id,
@@ -337,6 +381,21 @@ export class ToolkitStore {
 
     if (!toolkitColumns.includes("approval_rules"))
       sql.exec(`ALTER TABLE toolkits ADD COLUMN approval_rules TEXT`);
+
+    // OAuth (#202) came after the first credentials: a table from before gets its columns, every one unset.
+    const credentialColumns = sql
+      .exec<{ name: string }>("PRAGMA table_info(toolkit_credentials)")
+      .toArray()
+      .map((column) => column.name);
+
+    for (const [column, type] of [
+      ["via", "TEXT"],
+      ["expires_at", "INTEGER"],
+      ["refresh_at", "INTEGER"],
+      ["needs_sign_in", "INTEGER"],
+    ] as const)
+      if (!credentialColumns.includes(column))
+        sql.exec(`ALTER TABLE toolkit_credentials ADD COLUMN ${column} ${type}`);
   }
 
   // --- toolkits ---------------------------------------------------------------------------------------------------
@@ -554,52 +613,124 @@ export class ToolkitStore {
   }
 
   /** The secret of a credential, opened with the org's data key. */
-  secret(toolkitId: string, owner: string | undefined): ToolkitSecret | undefined {
+  secret(toolkitId: string, owner: string | undefined): StoredSecret | undefined {
     const row = this.#row(toolkitId, owner ?? "");
 
     if (row === undefined) return undefined;
 
     if (row.kind === "none") return { kind: "none" };
 
-    // SAFETY: the sealed value is the JSON of the decoded `ToolkitSecret` this store wrote for this context.
+    // SAFETY: the sealed value is the JSON of the `StoredSecret` this store wrote for this context.
     return JSON.parse(
       this.#secrets.open(row.secret, secretContext(toolkitId, row.owner)),
-    ) as ToolkitSecret;
+    ) as StoredSecret;
+  }
+
+  #sealed(toolkitId: string, owner: string, secret: StoredSecret): string {
+    return secret.kind === "none"
+      ? ""
+      : this.#secrets.seal(JSON.stringify(secret), secretContext(toolkitId, owner));
   }
 
   /** Connects (or replaces) a credential, its secret sealed. */
   putCredential(
     toolkitId: string,
     owner: string | undefined,
-    secret: ToolkitSecret,
+    secret: StoredSecret,
     by: string,
     now: number,
   ): void {
     const key = owner ?? "";
-
-    const sealed =
-      secret.kind === "none"
-        ? ""
-        : this.#secrets.seal(JSON.stringify(secret), secretContext(toolkitId, key));
-
     const param = secret.kind === "header" || secret.kind === "query" ? secret.name : "";
 
     this.#transaction(() => {
       this.#sql.exec(
         `INSERT OR REPLACE INTO toolkit_credentials
-           (toolkit_id, owner, kind, param, secret, connected_at, connected_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+           (toolkit_id, owner, kind, param, secret, connected_at, connected_by, via, expires_at, refresh_at,
+            needs_sign_in)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
         toolkitId,
         key,
         secret.kind,
         param,
-        sealed,
+        this.#sealed(toolkitId, key, secret),
         now,
         by,
+        secret.kind === "oauth" ? secret.via : null,
+        expiresAtOf(secret) ?? null,
+        refreshAtOf(secret, now) ?? null,
       );
       // A session belongs to the identity that opened it.
       this.deleteSessions(toolkitId, owner);
     });
+  }
+
+  /**
+   * Keeps the tokens a refresh or a mint gave a credential (#202), unless it was connected again since `connectedAt`:
+   * the identity is the same, so its upstream sessions stay. Answers whether it was kept.
+   */
+  refreshSecret(
+    toolkitId: string,
+    owner: string | undefined,
+    connectedAt: number,
+    secret: StoredSecret,
+    now: number,
+  ): boolean {
+    const key = owner ?? "";
+
+    return (
+      this.#sql.exec(
+        `UPDATE toolkit_credentials SET secret = ?, expires_at = ?, refresh_at = ?, needs_sign_in = 0
+         WHERE toolkit_id = ? AND owner = ? AND connected_at = ?`,
+        this.#sealed(toolkitId, key, secret),
+        expiresAtOf(secret) ?? null,
+        refreshAtOf(secret, now) ?? null,
+        toolkitId,
+        key,
+        connectedAt,
+      ).rowsWritten > 0
+    );
+  }
+
+  /** Marks a credential as needing sign-in (its token refresh failed for good), unless it was connected again since. */
+  markNeedsSignIn(toolkitId: string, owner: string | undefined, connectedAt: number): void {
+    this.#sql.exec(
+      `UPDATE toolkit_credentials SET needs_sign_in = 1, refresh_at = NULL
+       WHERE toolkit_id = ? AND owner = ? AND connected_at = ?`,
+      toolkitId,
+      owner ?? "",
+      connectedAt,
+    );
+  }
+
+  /** Puts a credential's next token refresh off to `at` (one that may pass later failed). */
+  deferRefresh(toolkitId: string, owner: string | undefined, at: number): void {
+    this.#sql.exec(
+      `UPDATE toolkit_credentials SET refresh_at = ? WHERE toolkit_id = ? AND owner = ? AND refresh_at IS NOT NULL`,
+      at,
+      toolkitId,
+      owner ?? "",
+    );
+  }
+
+  /** The credentials whose token refresh is due at `now`. */
+  refreshesDue(now: number): ReadonlyArray<ToolkitCredential> {
+    return this.#sql
+      .exec<CredentialRow>(
+        `SELECT * FROM toolkit_credentials WHERE refresh_at IS NOT NULL AND refresh_at <= ? ORDER BY refresh_at`,
+        now,
+      )
+      .toArray()
+      .map(credentialOf);
+  }
+
+  /** When the next token refresh is due (epoch ms); `null`: none is scheduled. */
+  nextRefreshAt(): number | null {
+    return (
+      this.#sql
+        .exec<{ next: number | null }>(`SELECT MIN(refresh_at) AS next FROM toolkit_credentials`)
+        .toArray()[0]?.next ?? null
+    );
   }
 
   deleteCredential(toolkitId: string, owner: string | undefined): boolean {
