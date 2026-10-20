@@ -23,6 +23,7 @@ import {
 } from "../control-plane-part.ts";
 import { agentsControlPlane, AgentsEnv } from "../env.ts";
 import { sweepRetiredSchedules } from "../org-deletion.ts";
+import { sweepDeletedRuns } from "../runs/retention.ts";
 import { decode, orRefuseWith, param, route } from "./http.ts";
 import { type AgentReferences, checkReferences } from "./references.ts";
 import { runRoutes } from "./run-routes.ts";
@@ -91,8 +92,9 @@ const remove = Effect.gen(function* () {
 
   const removed = yield* orRefuse(result);
 
-  // Its triggers went with it: their schedules' objects are deleted now.
+  // Its triggers and its runs went with it: their schedules' and runs' objects are deleted now (#228).
   yield* sweepRetiredSchedules(yield* AgentsEnv, yield* CurrentOrg);
+  yield* sweepDeletedRuns(yield* AgentsEnv, yield* CurrentOrg);
 
   return jsonReply(200, removed);
 });

@@ -297,7 +297,13 @@ export class CredentialPool {
     for (const credential of view.credentials.values())
       entries.push({ credential, state: this.#state(credential.id) });
 
-    const caller = { memberId: request.memberId, apiKeyId: request.apiKeyId };
+    // A shared agent's run counts toward the agent's own Spend limits (#228); it has no member and no API key.
+    const caller = {
+      memberId: request.memberId,
+      apiKeyId: request.apiKeyId,
+      agentId: request.agentId,
+    };
+
     const gate = this.#spend?.gate(caller, now);
 
     // A limit of the request's API key without room refuses it whatever credential would serve: no cooldown, no failover.
@@ -498,7 +504,9 @@ export class CredentialPool {
       reach: this.#callerReach(query),
       coolingDisabled: (credential) => coolingDisabledFor(credential, view.cooldown),
       now,
-      spend: this.#spend?.gate({ memberId: query.memberId }, now),
+      // The shared scopes of the pick's spender (#228): the member's, or the shared agent's a run acts as. (A key
+      // limit refuses at the pick and keeps no credential away, so a retry needs none.)
+      spend: this.#spend?.gate({ memberId: query.memberId, agentId: query.agentId }, now),
     });
   }
 

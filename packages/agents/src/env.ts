@@ -33,6 +33,8 @@ type AgentsPartMethod =
   | "abandonRun"
   | "runsPage"
   | "forgetRuns"
+  | "expireRuns"
+  | "deletedRuns"
   | "runStateChanged"
   | "abandonTriggeredRun"
   | "listTriggers"

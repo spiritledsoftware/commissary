@@ -838,6 +838,213 @@ describe("a turn", () => {
   );
 });
 
+/** The Spend so far of each limit, by kind (one limit per kind here). */
+const spentByKind = async (org: Org) =>
+  Object.fromEntries(
+    ok<{ limits: ReadonlyArray<{ kind: string; spent_micros: number }> }>(
+      await send(org, "/spend", org.admin),
+    ).limits.map((limit) => [limit.kind, limit.spent_micros]),
+  );
+
+describe("a run's spend and usage (#228)", () => {
+  it(
+    "of a shared agent counts toward the agent's own limit, which refuses its next priced call, never toward its starter's",
+    async () => {
+      const upstream = fakeUpstream(toolThenAnswer("looked up"));
+      const org = await newOrg(upstream);
+      const tools = await toolkit(org, { kind: "everyone" });
+
+      ok(
+        await send(
+          org,
+          `/toolkits/${tools.id}`,
+          org.admin,
+          "PATCH",
+          { price_micros: 1_000 },
+          tools.revision,
+        ),
+      );
+
+      const agent = await createAgent(
+        org,
+        org.admin,
+        agentBody("metered", MODEL, {
+          tool_scope: allTools(tools.id),
+          subject: { kind: "member", id: org.alice.id },
+        }),
+      );
+
+      for (const body of [
+        { kind: "agent", subject: agent.id, period: "day", amount_micros: 1_000 },
+        { kind: "member", subject: org.alice.id, period: "day", amount_micros: 1_000_000 },
+      ])
+        ok(await send(org, "/spend/limits", org.admin, "POST", body), 201);
+
+      // The priced tool call fits under the agent's limit, and fills it: the model's next call is refused, which ends
+      // the turn with the refusal as its answer.
+      const started = await start(org, org.alice, agent.id, "look it up");
+
+      expect((await waitFor(org, org.alice, started.run.id)).turn.answer).toMatch(
+        /daily Spend limit of this agent is reached/,
+      );
+      expect(tools.calls()).toHaveLength(1);
+      expect(await spentByKind(org)).toEqual({ agent: 1_000, member: 0 });
+
+      // The next turn is refused at once: nothing reaches the model or the tool, and nothing is charged.
+      const before = upstream.requests.length;
+
+      const next = ok<{ turn: Turn }>(
+        await send(org, `/agent-runs/${started.run.id}/messages`, org.alice, "POST", {
+          message: "again",
+        }),
+      );
+
+      expect((await waitFor(org, org.alice, started.run.id, next.turn.id)).turn.answer).toMatch(
+        /daily Spend limit of this agent is reached/,
+      );
+      expect(upstream.requests).toHaveLength(before);
+      expect(tools.calls()).toHaveLength(1);
+      expect(await spentByKind(org)).toEqual({ agent: 1_000, member: 0 });
+
+      // A model call of the run meets the agent's limit too, before any credential is chosen.
+      const refused = await gateway().serve(org.id, started.run.id, chat(MODEL));
+
+      expect(refused.status).toBe(429);
+      expect(await refused.text()).toContain("spend_limit_reached");
+    },
+    RUN_TIMEOUT,
+  );
+
+  it(
+    "of a private agent is charged to its member: its priced tool call lands on their counter",
+    async () => {
+      const upstream = fakeUpstream(toolThenAnswer("looked up"));
+      const org = await newOrg(upstream);
+      const tools = await toolkit(org, { kind: "everyone" });
+
+      ok(
+        await send(
+          org,
+          `/toolkits/${tools.id}`,
+          org.admin,
+          "PATCH",
+          { price_micros: 1_000 },
+          tools.revision,
+        ),
+      );
+      ok(
+        await send(org, "/spend/limits", org.admin, "POST", {
+          kind: "member",
+          subject: org.alice.id,
+          period: "day",
+          amount_micros: 1_000_000,
+        }),
+        201,
+      );
+
+      const agent = await createAgent(
+        org,
+        org.alice,
+        agentBody("mine", MODEL, { tool_scope: allTools(tools.id) }),
+      );
+
+      const started = await start(org, org.alice, agent.id, "look it up");
+
+      expect((await waitFor(org, org.alice, started.run.id)).turn.answer).toBe("looked up");
+      expect(tools.calls()).toHaveLength(1);
+      expect(await spentByKind(org)).toEqual({ member: 1_000 });
+    },
+    RUN_TIMEOUT,
+  );
+
+  it(
+    "of a private agent counts toward its member's limit, and its records are theirs alone, read by agent and run",
+    async () => {
+      const upstream = fakeUpstream(() => ({ text: "fine" }));
+      const org = await newOrg(upstream);
+      const agent = await createAgent(org, org.alice, agentBody("mine", MODEL));
+      const started = await start(org, org.alice, agent.id, "hello");
+
+      await waitFor(org, org.alice, started.run.id);
+      await recordsOf(started.run.id, 1);
+
+      // Her member limit with no room refuses her private agent's run.
+      ok(
+        await send(org, "/spend/limits", org.admin, "POST", {
+          kind: "member",
+          subject: org.alice.id,
+          period: "day",
+          amount_micros: 0,
+        }),
+        201,
+      );
+      expect((await gateway().serve(org.id, started.run.id, chat(MODEL))).status).toBe(429);
+
+      // Her records of the run name it, filtered by agent or run; an org admin's reads leave them out.
+      const read = async (who: Person, query: string) =>
+        ok<{ records: ReadonlyArray<{ agent_id?: string; run_id?: string; starter?: string }> }>(
+          await send(org, `/observability/usage/records?area=all&${query}`, who),
+        ).records;
+
+      expect(await read(org.alice, `agent=${agent.id}`)).toEqual([
+        expect.objectContaining({
+          agent_id: agent.id,
+          run_id: started.run.id,
+          starter: `member:${org.alice.id}`,
+          private: true,
+        }),
+      ]);
+      expect(await read(org.alice, `run=${started.run.id}`)).toHaveLength(1);
+      expect(await read(org.alice, "agent=ag_other")).toEqual([]);
+      expect(await read(org.admin, `agent=${agent.id}`)).toEqual([]);
+    },
+    RUN_TIMEOUT,
+  );
+});
+
+describe("deleting runs (#228)", () => {
+  it(
+    "removing a member deletes the runs they started of a shared agent, objects and all; removing the agent deletes the rest",
+    async () => {
+      const upstream = fakeUpstream(() => ({ text: "noted" }));
+      const org = await newOrg(upstream);
+
+      const agent = await createAgent(
+        org,
+        org.admin,
+        agentBody("shared", MODEL, { subject: { kind: "everyone" } }),
+      );
+
+      const alices = await start(org, org.alice, agent.id, "mine");
+      const bobs = await start(org, org.bob, agent.id, "his");
+
+      await waitFor(org, org.alice, alices.run.id);
+      await waitFor(org, org.bob, bobs.run.id);
+
+      const object = (run: string) => env.AGENT_RUN.getByName(`${org.id}:${run}`);
+
+      ok(await send(org, `/members/${org.alice.id}`, org.admin, "DELETE"));
+      expect(await object(alices.run.id).show()).toMatchObject({ ok: false, error: "not_found" });
+      expect((await gateway().serve(org.id, alices.run.id, chat(MODEL))).status).toBe(401);
+      expect(await object(bobs.run.id).show()).toMatchObject({ ok: true });
+
+      ok(
+        await send(
+          org,
+          `/agents/${agent.id}`,
+          org.admin,
+          "DELETE",
+          undefined,
+          await revisionOf(org, org.admin, agent.id),
+        ),
+      );
+      expect(await object(bobs.run.id).show()).toMatchObject({ ok: false, error: "not_found" });
+      expect((await send(org, `/agent-runs/${bobs.run.id}`, org.bob)).status).toBe(404);
+    },
+    RUN_TIMEOUT,
+  );
+});
+
 describe("the run principal", () => {
   it(
     "is presented by the run gateway alone, for a run of the org it names that can go on",

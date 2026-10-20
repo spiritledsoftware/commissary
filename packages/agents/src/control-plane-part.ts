@@ -39,6 +39,7 @@ import {
 import { iso, ok, type Refusable, refuse as refuseWith } from "./result.ts";
 import {
   type RunContext,
+  type RunExport,
   Runs,
   type RunsPage,
   type RunsResult,
@@ -119,6 +120,8 @@ export interface AgentExport {
   readonly enabled: boolean;
   readonly private: boolean;
   readonly triggers: ReadonlyArray<TriggerExport>;
+  /** The metadata of its runs (#228): who started each, its trigger, state and times; never its transcript. */
+  readonly runs: ReadonlyArray<RunExport>;
   readonly watchers?: ReadonlyArray<ExportedSubject>;
   readonly grants?: ReadonlyArray<ExportedSubject>;
   readonly created_at: string;
@@ -229,11 +232,20 @@ export class AgentsPart extends RpcTarget implements ControlPlanePart {
 
   /**
    * Zero data retention (ADR 0027): a member's private agents go with them at once, and so do the agent grants that
-   * named them. They leave every shared agent's watchers; a shared agent none of whose watchers is left is watched by
-   * the org admins.
+   * named them, their private agents' runs and every run they started, shared agents' included, with the child runs
+   * of each (#228; their objects wait for a sweep, `deletedRuns`). They leave every shared agent's watchers; a shared
+   * agent none of whose watchers is left is watched by the org admins.
    */
   async memberLeft(member: string): Promise<void> {
     this.#core.transaction(() => {
+      this.#runs.discard({
+        agents: this.#store
+          .agents()
+          .filter((agent) => agent.owner === member)
+          .map((agent) => agent.id),
+      });
+      this.#runs.discard({ member });
+
       for (const agent of this.#store.agents())
         if (agent.owner === member) {
           this.#store.delete(agent.id);
@@ -476,7 +488,10 @@ export class AgentsPart extends RpcTarget implements ControlPlanePart {
     return ok(access === "full" ? this.#view(updated) : this.#limitedView(updated));
   }
 
-  /** Deletes an agent at once (ADR 0027), with its grants, its triggers and, for a shared agent, its Spend limits. */
+  /**
+   * Deletes an agent at once (ADR 0027), with its grants, its triggers, all its runs (#228; their objects wait for a
+   * sweep, `deletedRuns`) and, for a shared agent, its Spend limits.
+   */
   removeAgent(viewer: Viewer, id: string, revision: number): AgentsResult<RemovedAgent> {
     const agent = this.#store.agent(id);
 
@@ -488,6 +503,8 @@ export class AgentsPart extends RpcTarget implements ControlPlanePart {
     this.#core.transaction(() => {
       this.#store.delete(id);
       this.#triggers.forgetAgent(id);
+      // All its runs go with it (#228), whoever started them, with their child runs.
+      this.#runs.discard({ agents: [id] });
 
       if (agent.owner === undefined) this.#core.spend.forget("agent", id);
     });
@@ -707,9 +724,26 @@ export class AgentsPart extends RpcTarget implements ControlPlanePart {
     return this.#runs.page(limit);
   }
 
-  /** Forgets the runs `ids`, whose objects the org's deletion deleted. */
+  /** Forgets the runs `ids`, whose objects were deleted (the org's deletion, or a sweep of deleted runs). */
   forgetRuns(ids: ReadonlyArray<string>): void {
     this.#runs.forget(ids);
+  }
+
+  /**
+   * Deletes, each alone, the runs whose last activity was before `idleBefore` (epoch ms) and that run no turn now: the
+   * org's retention period for agent runs passed (#228; the API Worker's cron task, which computes the time). Their
+   * objects wait for {@link deletedRuns}. Answers how many it deleted.
+   */
+  expireRuns(idleBefore: number): number {
+    return this.#runs.discard({ idleBefore });
+  }
+
+  /**
+   * Up to `limit` runs deleted from the index (with their agent or their member, or past the retention period, #228)
+   * whose objects are still to delete: a sweep deletes each object (`purge`), then forgets it (`forgetRuns`).
+   */
+  deletedRuns(limit: number): ReadonlyArray<string> {
+    return this.#runs.deleted(limit);
   }
 
   /**
@@ -799,8 +833,8 @@ export class AgentsPart extends RpcTarget implements ControlPlanePart {
   // --- the org export ------------------------------------------------------------------------------------------------
 
   /**
-   * The agents `viewer` manages, for the org export: definitions, their triggers (never a secret), and a shared agent's
-   * watchers and grants.
+   * The agents `viewer` manages, for the org export: definitions, their triggers (never a secret), a shared agent's
+   * watchers and grants, and the metadata of their runs (#228), never a transcript.
    */
   exportAgents(viewer: Scope): ReadonlyArray<AgentExport> {
     const grants = this.#store.grants();
@@ -818,6 +852,7 @@ export class AgentsPart extends RpcTarget implements ControlPlanePart {
         enabled: agent.enabled,
         private: agent.owner !== undefined,
         triggers: this.#triggers.exported(agent.id),
+        runs: this.#runs.exported(agent.id),
         ...(agent.owner === undefined
           ? {
               watchers: agent.watchers.flatMap((watcher) => this.#exportedSubject(watcher) ?? []),

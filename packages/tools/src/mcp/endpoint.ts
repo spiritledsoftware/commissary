@@ -102,11 +102,14 @@ const listed = (tool: ClientTool): Schema.JsonObject => ({
 });
 
 /**
- * A hosted agent's run (#227): its definition's tool scope, as the shared agent itself or as its member, and its
- * starter (if anyone started it), the caller of its approvals; `undefined` for any other caller.
+ * A hosted agent's run (#227): its definition's tool scope, as the shared agent itself or as its member, its starter
+ * (if anyone started it), the caller of its approvals, and the run as its usage records name it (#228: a shared
+ * agent's Spend limits, a browser session's record); `undefined` for any other caller.
  */
-const runToolReach = (identity: AccessIdentity): RunToolReach | undefined =>
-  identity.principal.kind === "run"
+const runToolReach = (identity: AccessIdentity): RunToolReach | undefined => {
+  const usage = usageRunOf(identity.principal);
+
+  return identity.principal.kind === "run" && usage !== undefined
     ? {
         toolScope: identity.principal.reach.toolScope,
         asAgent: isSharedAgentRun(identity.principal),
@@ -117,8 +120,10 @@ const runToolReach = (identity: AccessIdentity): RunToolReach | undefined =>
             ? identity.principal.starter.id
             : undefined),
         agentId: identity.principal.agentId,
+        usage,
       }
     : undefined;
+};
 
 /** What one request needs beyond its message: its era and the toolkits it narrows to. */
 interface Served {

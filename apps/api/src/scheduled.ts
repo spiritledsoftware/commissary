@@ -22,6 +22,11 @@ import {
 } from "@commissary/core";
 import { currentControlPlane, platform, type StateBindings, StateEnv } from "@commissary/state";
 import {
+  type AgentsBindings,
+  AgentsEnv,
+  scheduledTasks as agentsTasks,
+} from "@commissary/agents/api";
+import {
   type ModelsBindings,
   ModelsEnv,
   scheduledTasks as modelsTasks,
@@ -43,16 +48,18 @@ export type ScheduledBindings = StateBindings &
   ModelsBindings &
   ToolsBindings &
   BillingBindings &
+  AgentsBindings &
   ApiBindings;
 
 /** Each view of `env` the jobs read, as its service. */
 const bindingsContext = (
   env: ScheduledBindings,
-): Context.Context<StateEnv | ModelsEnv | ToolsEnv | BillingEnv> =>
+): Context.Context<StateEnv | ModelsEnv | ToolsEnv | BillingEnv | AgentsEnv> =>
   Context.make(StateEnv, env).pipe(
     Context.add(ModelsEnv, env),
     Context.add(ToolsEnv, env),
     Context.add(BillingEnv, env),
+    Context.add(AgentsEnv, env),
   );
 
 /** Services available to scheduled jobs (provided by {@link ScheduledLayer} and the invocation's bindings). */
@@ -62,6 +69,7 @@ export type ScheduledServices =
   | ModelsEnv
   | ToolsEnv
   | BillingEnv
+  | AgentsEnv
   | WorkerExecutionContext;
 
 /**
@@ -85,6 +93,7 @@ export const scheduledTasks: ReadonlyArray<ScheduledTask<ScheduledServices>> = [
   ...modelsTasks,
   ...toolsTasks,
   ...billingTasks,
+  ...agentsTasks,
 ];
 
 /**

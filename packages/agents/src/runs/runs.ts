@@ -29,7 +29,13 @@ import { agentsInScope, type ToolScope } from "@commissary/contract/api-keys";
 import type { OrgCore } from "@commissary/state";
 import type { AgentStore, StoredAgent } from "../agents/store.ts";
 import { iso, ok, type Refusable, refuse } from "../result.ts";
-import { freshRunId, type RunStore, type StoredRun, type TurnDefinition } from "./store.ts";
+import {
+  type DiscardedRuns,
+  freshRunId,
+  type RunStore,
+  type StoredRun,
+  type TurnDefinition,
+} from "./store.ts";
 
 /**
  * Why a run call was refused: by the part, or by the run's object (`unavailable`: the org's ControlPlane could not
@@ -69,6 +75,18 @@ export interface RunContext {
   readonly thinking?: ThinkingLevel | undefined;
   readonly instructions: string;
   readonly toolScope: ToolScope;
+}
+
+/** A run in the org export (#228): its metadata, never its transcript. */
+export interface RunExport {
+  readonly id: string;
+  readonly trigger: TriggerKind;
+  /** The member (by email) or the run (by id, a child run) that started it; absent when no one did. */
+  readonly starter?: { readonly member: string } | { readonly run: string };
+  readonly state: RunState;
+  readonly created_at: string;
+  /** Its last activity, from which the org's retention period for agent runs counts. */
+  readonly last_activity_at: string;
 }
 
 /** A page of the org's runs, for its deletion. */
@@ -585,14 +603,61 @@ export class Runs {
     if (run !== undefined && isStarter(run, viewer.member)) this.#end(runId);
   }
 
-  /** Up to `limit` runs' ids, and how many the index holds: the org's deletion deletes their objects first. */
+  /**
+   * Up to `limit` runs' ids, the deleted ones waiting for their objects first, and how many there are of both: the org's
+   * deletion deletes their objects first.
+   */
   page(limit: number): RunsPage {
-    return { ids: this.#runs.ids(limit), total: this.#runs.count() };
+    const queued = this.#runs.queued(limit);
+
+    return {
+      ids: [...queued, ...this.#runs.ids(limit - queued.length)],
+      total: this.#runs.count() + this.#runs.queuedCount(),
+    };
   }
 
-  /** Forgets the runs `ids`, whose objects the org's deletion deleted. */
+  /** Forgets the runs `ids`, whose objects were deleted. */
   forget(ids: ReadonlyArray<string>): void {
     this.#runs.delete(ids);
+  }
+
+  /**
+   * Deletes `runs` from the index at once (#228, ADR 0027), with the child runs each started and theirs: they answer
+   * like unknown runs from now on, and their objects wait for a sweep ({@link deleted}). Answers how many it deleted.
+   */
+  discard(runs: DiscardedRuns): number {
+    return this.#runs.discard(runs, this.#now());
+  }
+
+  /**
+   * The metadata of `agentId`'s runs for the org export (#228, ADR 0027): who started each (a member by email, a run by
+   * id), its trigger, its state and its times; never its transcript, which stays in its object.
+   */
+  exported(agentId: string): ReadonlyArray<RunExport> {
+    return this.#runs.ofAgent(agentId).map(({ run, starterKind, starterId }) => {
+      const email = starterKind === "member" ? this.#core.member(starterId)?.email : undefined;
+
+      const starter =
+        email !== undefined
+          ? { member: email }
+          : starterKind === "run"
+            ? { run: starterId }
+            : undefined;
+
+      return {
+        id: run.id,
+        trigger: run.trigger,
+        ...(starter === undefined ? {} : { starter }),
+        state: run.state,
+        created_at: iso(run.createdAt),
+        last_activity_at: iso(run.updatedAt),
+      };
+    });
+  }
+
+  /** Up to `limit` deleted runs whose objects are still to delete, for the sweeps that delete them. */
+  deleted(limit: number): ReadonlyArray<string> {
+    return this.#runs.queued(limit);
   }
 
   view(run: StoredRun): RunView {

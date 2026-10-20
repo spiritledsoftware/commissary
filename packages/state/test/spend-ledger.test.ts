@@ -1,7 +1,7 @@
 // The Spend ledger (issue #71): which limits a request meets before a credential is chosen, what it is charged to, and
 // when a period resets. Pure over an in-memory book with an explicit `now`.
 import { describe, expect, it } from "vitest";
-import { SpendLedger } from "../src/spend/index.ts";
+import { type SpendCaller, SpendLedger } from "../src/spend/index.ts";
 import { MemorySpendBook, limit, USD } from "./support/spend.ts";
 
 const at = (iso: string): number => Date.parse(iso);
@@ -12,7 +12,7 @@ const ledgerOf = (book: MemorySpendBook, teams: Record<string, ReadonlyArray<str
 /** Charges a request of `caller` served by a shared credential, as the pool does at report time. */
 const spend = (
   ledger: SpendLedger,
-  caller: { memberId?: string; apiKeyId?: string },
+  caller: SpendCaller,
   micros: number,
   now: number,
   credential = { id: "cred-a", shared: true },
@@ -323,5 +323,44 @@ describe("SpendLedger and tool calls (#199)", () => {
 
     spend(ledger, caller, 1 * USD, now, mine);
     expect(ledger.refusal(caller, mine, now)?.kind).toBe("key");
+  });
+});
+
+describe("SpendLedger and agent runs (#228)", () => {
+  const toolkit = { id: "kit-1", shared: true, kind: "toolkit_credential" } as const;
+  const now = at("2026-03-10T12:00:00Z");
+
+  it("counts a shared agent's run toward the agent's own limit and the org's, never its starter's", () => {
+    const book = new MemorySpendBook([
+      limit("agent", "agent-1", "day", 1 * USD),
+      limit("org", "", "day", 10 * USD),
+      limit("member", "m1", "day", 10 * USD),
+    ]);
+
+    const ledger = ledgerOf(book, { m1: ["t1"] });
+    // A shared agent's run acts as the agent: no member, no API key.
+    const run = { agentId: "agent-1" };
+
+    expect(ledger.scopes(run, { id: "shared-1", shared: true })).toEqual([
+      { kind: "org", subject: "" },
+      { kind: "agent", subject: "agent-1" },
+    ]);
+    expect(ledger.scopes(run, toolkit)).toEqual([
+      { kind: "org", subject: "" },
+      { kind: "agent", subject: "agent-1" },
+    ]);
+
+    spend(ledger, run, 1 * USD, now);
+
+    // At its limit, the agent's shared credentials are kept away and its tool calls refused.
+    expect(ledger.gate(run, now)?.sharedBlocked).toEqual({
+      kind: "agent",
+      period: "day",
+      resetsAt: at("2026-03-11T00:00:00Z"),
+    });
+    expect(ledger.refusal(run, toolkit, now)?.kind).toBe("agent");
+    // The member who started it, and another shared agent, are untouched.
+    expect(ledger.gate({ memberId: "m1" }, now)).toBeUndefined();
+    expect(ledger.gate({ agentId: "agent-2" }, now)).toBeUndefined();
   });
 });

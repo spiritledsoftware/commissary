@@ -4,13 +4,16 @@
  * (ADR 0030's amendment), with what it reads from its env (`AgentRunEnv`) and what it asks of the gateway
  * (`RunGateway`); an agent run's principal as the run gateway resolves it (`runPrincipal`); triggers' (#231): the
  * schedules' Durable Object (`AgentScheduleObject`, the API Worker's `AgentSchedule`) and the webhooks' delivery route
- * (`webhookRoutes`); and the agents toolkit's calls (#229, `agentsToolkitCalls`), with which a Worker that serves Tools'
- * MCP endpoint fills its port. The apps import Agents only through this entry, `./management` and `./state` (the lint
- * rule `boundaries/agents-imports`).
+ * (`webhookRoutes`); its cron task, which prunes runs past the org's retention period and deletes deleted runs' objects
+ * (`scheduledTasks`, #228); and the agents toolkit's calls (#229, `agentsToolkitCalls`), with which a Worker that
+ * serves Tools' MCP endpoint fills its port. The apps import Agents only through this entry, `./management` and
+ * `./state` (the lint rule `boundaries/agents-imports`).
  */
 export { type AgentsBindings, AgentsEnv, agentsPresent } from "./env.ts";
 
 export { runPrincipal } from "./runs/principal.ts";
+
+export { scheduledTasks } from "./runs/retention.ts";
 
 export { type AgentRunEnv, AgentRunObject, type RunGateway } from "./runs/run-object.ts";
 

@@ -203,7 +203,7 @@ export interface RetryPlanInput {
   /** `credential -> cooling disabled`. */
   readonly coolingDisabled: (credential: Credential) => boolean;
   readonly now: number;
-  /** The Spend limits of the request's member (`@commissary/state/spend`): shared credentials may be out of reach until a period ends. */
+  /** The Spend limits of the request's member or shared agent (`@commissary/state/spend`): shared credentials may be out of reach until a period ends. */
   readonly spend?: SpendGate | undefined;
 }
 

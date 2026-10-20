@@ -23,6 +23,10 @@
  * and a grouping by `area` means `all`), so a model-only client reads what it read before; `summary` groups by `area`,
  * `toolkit` or `tool` too, `series` by `toolkit` or `tool`. The queue and `unpriced` are model attempts only. A plain member may read `records`, `summary` and `series` (`policy.ts`), and only their
  * own records: by their member id, or their Access principal for records from before members existed.
+ *
+ * Agent runs (#228): `agent` and `run` filter `records`, `summary` and `series` by a hosted agent or a run, in whichever
+ * area they read, and `records` names each record's agent, run and starter. A private agent's run's records are its
+ * member's alone, as private-credential traffic is.
  */
 import { Clock, Effect } from "effect";
 import { HttpRouter } from "effect/http";
@@ -37,6 +41,7 @@ import {
   MAX_QUEUE_COUNT,
   MAX_SERIES_RANGE_DAYS,
   popUsageQueue,
+  recordPayload,
   rowToPayload,
   SERIES_BUCKETS,
   SERIES_GROUP_BY,
@@ -222,6 +227,14 @@ const parseFilter = (params: URLSearchParams) =>
 
     if (tool !== undefined) filter.tool = tool;
 
+    // A hosted agent and an agent run (#228): their records, in whichever area the read covers.
+    const agent = optional(params, "agent");
+    const run = optional(params, "run");
+
+    if (agent !== undefined) filter.agent = agent;
+
+    if (run !== undefined) filter.run = run;
+
     return filter;
   });
 
@@ -263,7 +276,7 @@ const usageRecords = Effect.gen(function* () {
   );
 
   return jsonReply(200, {
-    records: page.rows.map((row) => rowToPayload(row, authIndexOf)),
+    records: page.rows.map((row) => recordPayload(row, authIndexOf)),
     ...(page.nextBefore === undefined ? {} : { next_before: page.nextBefore }),
   });
 });
@@ -364,6 +377,8 @@ const usageSeries = Effect.gen(function* () {
     "area",
     "toolkit",
     "tool",
+    "agent",
+    "run",
   ]) {
     const value = params.get(name);
 
@@ -424,6 +439,8 @@ const usageSeries = Effect.gen(function* () {
         ...(filter.area === undefined ? {} : { area: filter.area }),
         ...(filter.toolkit === undefined ? {} : { toolkit: filter.toolkit }),
         ...(filter.tool === undefined ? {} : { tool: filter.tool }),
+        ...(filter.agent === undefined ? {} : { agent: filter.agent }),
+        ...(filter.run === undefined ? {} : { run: filter.run }),
       },
       authIndexOf,
     ),

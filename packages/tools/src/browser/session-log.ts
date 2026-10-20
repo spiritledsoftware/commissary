@@ -1,7 +1,7 @@
 /**
  * The org's open browser sessions, as the Tools part keeps them (#214): the `browser_sessions` table, one of the part's
  * tables (`TOOLS_TABLES`), keyed by `toolkit_id` like the others. A row holds a session's id, its toolkit and who opened
- * it (the member, and the principal it belongs to), nothing of its pages. The part logs a session it opens, and forgets
+ * it (the member, and the principal it belongs to, and the shared agent whose run opened it, #228), nothing of its pages. The part logs a session it opens, and forgets
  * it when a call closes it or its object reports that its alarm did (`ToolsPart.browserSessionClosed`, which charges
  * the browser time before it to the opener's Spend limits). The org's deletion deletes each logged session's object
  * first (`ToolsPart.purgeBrowserSessions`), so no alarm of theirs writes a usage record or reaches the ControlPlane
@@ -18,8 +18,10 @@ export interface LoggedBrowserSession {
   readonly toolkitId: string;
   /** The member who opened it, if the caller was one (null in the table otherwise). */
   readonly member: string | undefined;
-  /** The principal it belongs to (`user:<email>`, `key:<id>`). */
+  /** The principal it belongs to (`user:<email>`, `key:<id>`, `run:<id>`). */
   readonly principal: string;
+  /** The shared agent whose run opened it (#228), whose Spend limits its browser time counts toward; absent otherwise. */
+  readonly agent?: string | undefined;
   readonly openedAt: number;
 }
 
@@ -32,6 +34,7 @@ type Row = {
   toolkit_id: string;
   member: string | null;
   principal: string;
+  agent: string | null;
   opened_at: number;
 };
 
@@ -41,15 +44,25 @@ export class BrowserSessionStore {
   constructor(sql: SqlStorage) {
     this.#sql = sql;
     sql.exec(SCHEMA);
+
+    // The shared agent whose run opened a session (#228): a log from before has no column for it.
+    const columns = sql
+      .exec<{ name: string }>("PRAGMA table_info(browser_sessions)")
+      .toArray()
+      .map((column) => column.name);
+
+    if (!columns.includes("agent")) sql.exec(`ALTER TABLE browser_sessions ADD COLUMN agent TEXT`);
   }
 
   opened(session: LoggedBrowserSession): void {
     this.#sql.exec(
-      `INSERT OR REPLACE INTO browser_sessions (id, toolkit_id, member, principal, opened_at) VALUES (?, ?, ?, ?, ?)`,
+      `INSERT OR REPLACE INTO browser_sessions (id, toolkit_id, member, principal, agent, opened_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
       session.id,
       session.toolkitId,
       session.member ?? null,
       session.principal,
+      session.agent ?? null,
       session.openedAt,
     );
   }
@@ -65,6 +78,7 @@ export class BrowserSessionStore {
           toolkitId: row.toolkit_id,
           member: row.member ?? undefined,
           principal: row.principal,
+          ...(row.agent === null ? {} : { agent: row.agent }),
           openedAt: row.opened_at,
         };
   }

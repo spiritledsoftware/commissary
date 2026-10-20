@@ -12,7 +12,7 @@
  * On Commissary Cloud (ADR 0026) anyone signed in may create orgs, up to their owned-org limit, and becomes the new org's
  * owner; platform admins suspend and unsuspend orgs through the rename route (`suspended`).
  */
-import { Clock, Data, Effect, Match } from "effect";
+import { Clock, Data, Effect, Match, Schema } from "effect";
 import { HttpRouter } from "effect/http";
 import {
   type AccessIdentity,
@@ -37,10 +37,11 @@ import {
   platform,
   type PlatformStub,
   StateEnv,
+  bodyJson,
   bodyObject,
 } from "@commissary/state";
 import { deleteOrg as deleteOrgData } from "../platform/org-deletion.ts";
-import type { OrgView } from "@commissary/contract/orgs";
+import { type OrgView, UpdateOrgSettings } from "@commissary/contract/orgs";
 import { AppEnv } from "../worker-env.ts";
 import {
   exportSection as modelsExportSection,
@@ -55,6 +56,7 @@ import { AgentsEnv } from "@commissary/agents/api";
 import {
   exportSection as agentsExportSection,
   orgDeletionStep as agentsOrgDeletionStep,
+  sweepDeletedRuns,
   sweepRetiredSchedules,
 } from "@commissary/agents/management";
 
@@ -79,6 +81,7 @@ const view = (org: OrgRecord): OrgView => ({
   name: org.name,
   created_at: new Date(org.createdAt).toISOString(),
   usage_retention_days: org.usageRetentionDays,
+  run_retention_days: org.runRetentionDays,
   ...(org.suspendedAt === undefined ? {} : { suspended: true }),
 });
 
@@ -363,19 +366,28 @@ const addressedOrg = Effect.gen(function* () {
 
 const own = addressedOrg.pipe(Effect.map((org) => jsonReply(200, view(org))));
 
+/** `PATCH /org`'s body (`UpdateOrgSettings`): the retention periods, at least one, and nothing else; `400` otherwise. */
+const settingsBody = bodyJson.pipe(
+  Effect.flatMap((json) =>
+    Schema.decodeUnknownEffect(UpdateOrgSettings)(json, { onExcessProperty: "error" }).pipe(
+      Effect.mapError(() => replyError(400, "invalid body")),
+    ),
+  ),
+  Effect.filterOrFail(
+    (settings) => Object.keys(settings).length > 0,
+    () => replyError(400, "invalid body"),
+  ),
+);
+
 const updateSettings = Effect.gen(function* () {
   const identity = yield* AccessPrincipal;
-  const body = yield* bodyObject;
-  const days = body["usage_retention_days"];
+  const { usage_retention_days: usageDays, run_retention_days: runDays } = yield* settingsBody;
 
-  if (
-    Object.keys(body).some((key) => key !== "usage_retention_days") ||
-    (days !== null && typeof days !== "number")
-  )
-    return yield* replyError(400, "invalid body");
-
-  const result = yield* registry("setUsageRetention", (stub) =>
-    stub.setUsageRetention(identity.org, days),
+  const result = yield* registry("setRetention", (stub) =>
+    stub.setRetention(identity.org, {
+      ...(usageDays === undefined ? {} : { usageDays }),
+      ...(runDays === undefined ? {} : { runDays }),
+    }),
   );
 
   if (!result.ok) return yield* refused(result);
@@ -594,8 +606,10 @@ const deleteAccount = Effect.gen(function* () {
         try: async () => await controlPlaneOf(state, org.id).leaveOrg(email),
         catch: (cause) => new DeletionThrew({ cause }),
       }).pipe(Effect.catch(planeFailed("leaveOrg", org.id)));
-      // Their private agents' schedules went with them: their objects are deleted now.
+      // Their private agents' schedules and runs, and the runs they started, went with them: their objects are deleted
+      // now (#228).
       yield* sweepRetiredSchedules(yield* AgentsEnv, org.id);
+      yield* sweepDeletedRuns(yield* AgentsEnv, org.id);
       yield* syncOrgIndex(org.id);
       left.push(org.slug);
     }

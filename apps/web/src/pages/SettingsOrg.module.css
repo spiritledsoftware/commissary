@@ -77,3 +77,14 @@
 .body strong {
   color: var(--text);
 }
+
+/* Each retention period's heading within the Retention section: usage records, agent runs. */
+.subheading {
+  margin-bottom: var(--space-2);
+  font-size: var(--text-md);
+  font-weight: 750;
+}
+
+.subheading:not(:first-child) {
+  margin-top: var(--space-6);
+}

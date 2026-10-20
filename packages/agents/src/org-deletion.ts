@@ -26,46 +26,115 @@ import {
 const PAGE = 20;
 
 /**
+ * One kind of object the ControlPlane lists for deletion: the next page of their ids, deleting one object (its own
+ * Durable Object's `purge`), and forgetting the ids of those deleted.
+ */
+export interface ObjectSweep {
+  readonly page: (limit: number) => Promise<ReadonlyArray<string>>;
+  readonly purge: (id: string) => Promise<void>;
+  readonly forget: (ids: ReadonlyArray<string>) => Promise<void>;
+}
+
+/** What a sweep did: its calls, the objects it deleted, and whether none is left (`complete`). */
+export interface Swept {
+  readonly calls: number;
+  readonly purged: number;
+  readonly complete: boolean;
+  /** The first failure of an object that could not be deleted (it stays listed), for the caller's log. */
+  readonly failure?: string;
+}
+
+/**
+ * Deletes the objects `sweep` lists, a page at a time, while `budget` leaves room for a page (one call for the page,
+ * one per object, one to forget them), at most `pages` pages. Each object is deleted on its own: those deleted are
+ * forgotten, one that failed stays listed, and the sweep stops after its page (the next sweep finds it first), so a
+ * failing object never keeps the others from going.
+ */
+export const sweepObjects = async (
+  sweep: ObjectSweep,
+  budget: number,
+  pages = Number.POSITIVE_INFINITY,
+): Promise<Swept> => {
+  let calls = 0;
+  let purged = 0;
+
+  for (let page = 0; page < pages; page += 1) {
+    if (budget - calls < PAGE + 2) return { calls, purged, complete: false };
+    const ids = await sweep.page(PAGE);
+
+    calls += 1;
+
+    if (ids.length === 0) return { calls, purged, complete: true };
+
+    const results = await Promise.allSettled(ids.map(async (id) => await sweep.purge(id)));
+    const gone = ids.filter((_id, index) => results[index]?.status === "fulfilled");
+
+    calls += ids.length;
+
+    if (gone.length > 0) {
+      await sweep.forget(gone);
+      calls += 1;
+      purged += gone.length;
+    }
+
+    const failed = results.find((result) => result.status === "rejected");
+
+    if (failed !== undefined)
+      return { calls, purged, complete: false, failure: String(failed.reason) };
+  }
+
+  return { calls, purged, complete: false };
+};
+
+/**
  * Deletes the org's schedules' and runs' objects, a page at a time within `budget` (one ControlPlane call and one per
- * object).
+ * object). An object that could not be deleted stops the step, incomplete, and the next attempt tries it again.
  */
 export const deleteOrgRuns =
   (env: Pick<AgentsBindings, "CONTROL_PLANE" | "AGENT_RUN" | "AGENT_SCHEDULE">): OrgDeletionStep =>
   async (org, budget) => {
-    let calls = 0;
-
     const part = () => {
       const stub: AgentsControlPlaneStub = controlPlaneOf(env, org);
 
       return stub.agents();
     };
 
-    for (;;) {
-      if (budget - calls < PAGE + 2) return { complete: false, calls, part: "schedules" };
-      const ids = await part().scheduleObjectsPage(PAGE);
+    const schedules = await sweepObjects(
+      {
+        page: async (limit) => await part().scheduleObjectsPage(limit),
+        purge: async (id) => await agentScheduleOf(env, org, id).purge(),
+        forget: async (ids) => await part().forgetScheduleObjects(ids),
+      },
+      budget,
+    );
 
-      calls += 1;
+    if (!schedules.complete) return incomplete(org, schedules, schedules.calls, "schedules");
 
-      if (ids.length === 0) break;
+    const runs = await sweepObjects(
+      {
+        page: async (limit) => (await part().runsPage(limit)).ids,
+        purge: async (id) => await agentRunOf(env, org, id).purge(),
+        forget: async (ids) => await part().forgetRuns(ids),
+      },
+      budget - schedules.calls,
+    );
 
-      await Promise.all(ids.map(async (id) => await agentScheduleOf(env, org, id).purge()));
-      await part().forgetScheduleObjects(ids);
-      calls += ids.length + 1;
-    }
+    const calls = schedules.calls + runs.calls;
 
-    for (;;) {
-      if (budget - calls < PAGE + 2) return { complete: false, calls, part: "runs" };
-      const { ids } = await part().runsPage(PAGE);
-
-      calls += 1;
-
-      if (ids.length === 0) return { complete: true, calls };
-
-      await Promise.all(ids.map(async (id) => await agentRunOf(env, org, id).purge()));
-      await part().forgetRuns(ids);
-      calls += ids.length + 1;
-    }
+    return runs.complete ? { complete: true, calls } : incomplete(org, runs, calls, "runs");
   };
+
+/** The step stopped at `part`: out of budget, or an object that failed (logged). */
+const incomplete = (org: OrgId, swept: Swept, calls: number, part: string) => {
+  if (swept.failure !== undefined)
+    Effect.runSync(
+      Effect.logWarning(`agent ${part}: object not deleted`).pipe(
+        Effect.annotateLogs({ org, detail: swept.failure }),
+      ),
+    );
+
+  return { complete: false as const, calls, part };
+};
 
 /** Sweeps per call at most: a member's or an agent's schedules are few, and the next sweep finds the rest. */
 const SWEEP_PAGES = 3;
@@ -82,14 +151,19 @@ export const sweepRetiredSchedules = (
   Effect.tryPromise(async () => {
     const stub: AgentsControlPlaneStub = controlPlaneOf(env, org);
 
-    for (let page = 0; page < SWEEP_PAGES; page += 1) {
-      const ids = await stub.agents().retiredSchedules(PAGE);
-
-      if (ids.length === 0) return;
-      await Promise.all(ids.map(async (id) => await agentScheduleOf(env, org, id).purge()));
-      await stub.agents().forgetScheduleObjects(ids);
-    }
+    return await sweepObjects(
+      {
+        page: async (limit) => await stub.agents().retiredSchedules(limit),
+        purge: async (id) => await agentScheduleOf(env, org, id).purge(),
+        forget: async (ids) => await stub.agents().forgetScheduleObjects(ids),
+      },
+      Number.POSITIVE_INFINITY,
+      SWEEP_PAGES,
+    );
   }).pipe(
+    Effect.flatMap((swept) =>
+      swept.failure === undefined ? Effect.void : Effect.fail(new Error(swept.failure)),
+    ),
     Effect.catch((error) =>
       Effect.logWarning("agent schedules: sweep failed").pipe(
         Effect.annotateLogs({ org, detail: String(error) }),

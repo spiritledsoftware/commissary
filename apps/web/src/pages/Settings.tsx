@@ -39,7 +39,7 @@ const JUMPS: ReadonlyArray<readonly [JumpId, string]> = [
   ["providers", "Providers"],
   ["catalogs", "Model catalog"],
   ["refresh", "Account refresh"],
-  ["retention", "Usage records"],
+  ["retention", "Retention"],
   ["danger", "Danger zone"],
 ];
 
@@ -324,7 +324,7 @@ const Body = ({
         {({ field }) => field("oauth.auth-auto-refresh-workers")}
       </SettingsSection>
 
-      <PlainSection id="retention" title="Usage records">
+      <PlainSection id="retention" title="Retention">
         <RetentionBody />
       </PlainSection>
 
