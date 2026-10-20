@@ -47,7 +47,7 @@ class Expiring<V> {
   }
 }
 
-/** Orgs' plans as the rate ceiling reads them. */
+/** Orgs' plans as the rate ceiling reads them: Free's while a Pay-as-you-go org is past due. */
 export const plans = new Expiring<Plan>();
 
 /** What a plan-limit refusal needs besides the time: the limit and the link to the billing page. */
@@ -56,6 +56,8 @@ export interface CachedRefusal {
   /** When the month ends (epoch ms): the refusal is good until then at most. */
   readonly resetsAt: number;
   readonly page: string;
+  /** A Pay-as-you-go org held to Free's limits until a payment succeeds. */
+  readonly pastDue: boolean;
 }
 
 /** Orgs refused by their plan limit, and where their billing page is (looked up once per refusal, not per request). */

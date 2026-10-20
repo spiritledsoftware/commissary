@@ -360,7 +360,8 @@ stays with that Worker.
   the ControlPlane's org-wide tables, `withPart`), `@commissary/models/testing` (the pipeline harness, the recording
   `HttpClient`, the ControlPlane and usage helpers, and the constants and modules the Worker's tests seed Models
   with) or `@commissary/billing/testing` (an org's plan and month's count set and read through the part, the free
-  usage and ceiling constants, `resetBillingCaches`). There is no test-utils package. Lint allows `@commissary/*/testing`
+  usage and ceiling constants, `resetBillingCaches`, `startPayAsYouGo`, a billing provider that answers from memory
+  (`fakeBillingProvider`) and `BillingProviders` to provide it, and the test Worker's Polar settings `TEST_POLAR`). There is no test-utils package. Lint allows `@commissary/*/testing`
   imports only in `test/` folders.
 - **Fixtures** sit in the `test/fixtures/` of the package whose tests read them (below). A dependant reads them through
   `./testing`, never by a relative path into another package.

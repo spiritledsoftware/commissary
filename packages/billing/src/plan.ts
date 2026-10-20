@@ -12,11 +12,19 @@ export type Plan = (typeof PLANS)[number];
 export const DEFAULT_PLAN: Plan = "free";
 
 /**
+ * Whether a Pay-as-you-go org's payments go through: `past_due` from Polar marking its subscription past due until a
+ * payment succeeds, while the org keeps Pay as you go but is held to Free's limits (ADR 0042). A Free org is `ok`.
+ */
+export const PAYMENT_STATES = ["ok", "past_due"] as const;
+
+export type PaymentState = (typeof PAYMENT_STATES)[number];
+
+/**
  * What a plan counts per org per calendar month in UTC: requests and tool calls together, browser hours and computer
  * hours. `requests` is counted since #236; the other units are counted when their areas exist (#241) and read 0 until
  * then.
  */
-const UNITS = ["requests", "browserHours", "computerHours"] as const;
+export const UNITS = ["requests", "browserHours", "computerHours"] as const;
 
 export type Unit = (typeof UNITS)[number];
 
@@ -40,3 +48,5 @@ export const REQUEST_RATE_CEILING: Readonly<Record<Plan, number>> = {
 export const RATE_LIMIT_PERIOD_SECONDS = 60;
 
 export const isPlan = (value: string): value is Plan => PLANS.some((plan) => plan === value);
+
+export const isUnit = (value: string): value is Unit => UNITS.some((unit) => unit === value);

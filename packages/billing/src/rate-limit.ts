@@ -20,8 +20,8 @@ import { DEFAULT_PLAN, type Plan, RATE_LIMIT_PERIOD_SECONDS } from "./plan.ts";
 export const RATE_LIMITED = "Rate limit exceeded";
 
 /**
- * The org's plan, cached per isolate for `BILLING_TTL_MS` (a plan change applies within that time); Free's (logged, not
- * cached) when it cannot be read.
+ * The plan whose ceiling applies to the org (its plan, but Free's while it is past due), cached per isolate for
+ * `BILLING_TTL_MS` (a plan change applies within that time); Free's (logged, not cached) when it cannot be read.
  */
 const planOf = (org: OrgId): Effect.Effect<Plan, never, BillingEnv> =>
   Effect.gen(function* () {
@@ -31,7 +31,9 @@ const planOf = (org: OrgId): Effect.Effect<Plan, never, BillingEnv> =>
 
     if (cached !== undefined) return cached;
 
-    const plan = yield* Effect.tryPromise(async () => await billingPartOf(env, org).plan()).pipe(
+    const plan = yield* Effect.tryPromise(
+      async () => await billingPartOf(env, org).limitsPlan(),
+    ).pipe(
       Effect.tap((read) => Effect.sync(() => plans.set(org, read, now + BILLING_TTL_MS))),
       Effect.catch((error) =>
         Effect.logWarning(`plan not read for the rate limit: ${error.message}`).pipe(

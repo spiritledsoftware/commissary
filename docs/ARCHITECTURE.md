@@ -110,14 +110,19 @@ to `packages/billing/src/`), Tools' as `tools/...` (relative to `packages/tools/
     test/                     Node.js tests (test/unit/) and workerd tests against a test-only ControlPlane
                               (test/worker.ts), fixtures generated from the Go code; test/testing.ts is ./testing
   packages/billing/           @commissary/billing: Commissary Cloud's billing area (plans, free usage, plan limits, the
-                              request-rate ceiling per plan; ADR 0042); no root export, the Workers import it only
+                              request-rate ceiling per plan, Pay as you go through Polar; ADR 0042); no root export, the Workers import it only
                               through ./api, ./management and ./state (lint rule boundaries/billing-imports); does
                               nothing on a self-hosted Commissary
     src/api.ts                for the API Worker and the areas that count: limitClientRate, countRequest,
-                              uncountRequest, PlanLimitReached, BillingEnv
-    src/management.ts         for the app Worker: the GET /billing route, its org-deletion step
+                              uncountRequest, PlanLimitReached, BillingEnv, its cron task (billing-meter-events)
+    src/management.ts         for the app Worker: the /billing routes and their role-table entries, Polar's webhook
+                              route (/webhooks/polar), its org-deletion step
     src/state.ts              for the state Worker: BillingPart, its part of the ControlPlane
-    src/part.ts, store.ts     the Billing part (plan, free-usage counters in SQLite)
+    src/part.ts, store.ts     the Billing part (plan, free-usage counters, Polar account and meter batches in SQLite)
+    src/provider.ts, providers.ts, polar.ts
+                              the billing provider adapter, which one an invocation uses, and Polar's
+    src/send-usage.ts, scheduled-tasks.ts, webhook.ts, org-deletion.ts
+                              sending usage above free usage, the cron task, Polar's webhooks, the deletion step
     src/plan.ts, month.ts     the constants (plans, free usage, ceilings) and the calendar month in UTC
     src/meter.ts              counting a request against free usage and the plan limit
     src/rate-limit.ts         the per-plan request-rate ceiling
@@ -312,7 +317,7 @@ client -> (Cloudflare Access bypass on a single host) -> API Worker
   dev bypass, hosted mode), `StateEnv` (`state/env.ts`: the Durable Object namespaces, typed through
   their classes; the classes read `StateObjectEnv`, the bindings plus platform admins, mode and secrets keys), `ModelsEnv` (`models/env.ts`: `CACHE`, `USAGE`, `SESSION_STATE`, `AUTH_INDEX_KEY`,
   `META_MINT_URL`, and `CONTROL_PLANE` typed as objects with `models()`, the Models part's methods Models calls); `BillingEnv` (`billing/env.ts`: `CONTROL_PLANE` typed with `billing()`, `PLATFORM`, `COMMISSARY_MODE`, the two rate-limit
-  bindings, `APP_DOMAIN`); `core` reads none. Code that stays in the
+  bindings, `APP_DOMAIN`, Polar's settings); `core` reads none. Code that stays in the
   Worker reads `AppEnv` (`src/worker-env.ts`). `requestContext` provides each from the invocation's `env`, plus auth's
   ports over it: `AuthDirectory` (`state/auth-directory.ts`, the Durable Object stubs) and `SignInSessions`
   (`src/hosted/sign-in.ts`, the auth Worker's RPC); the global
@@ -2207,7 +2212,8 @@ ADR 0027: deleting something deletes it at once, and Commissary keeps no content
 - **Org deletion** (`deleteOrg`, called by `DELETE /org` and by account deletion, app-only) runs, in this order: the
   org-deletion steps of the areas the Worker mounts, which it takes as input (`OrgDeletionStep` of `@commissary/core`;
   Models' `deleteOrgModels`: the org's usage rows in D1, `deleteOrgUsage`, batched, tool calls' included, then its `org.<id>.…` keys in the
-  `CACHE` KV namespace; Billing's and Tools' steps have nothing outside the ControlPlane to delete yet), the
+  `CACHE` KV namespace; Billing's sends the org's unsent usage to Polar and cancels its subscription; Tools' has
+  nothing outside the ControlPlane to delete yet), the
   `SessionState` instances it registered, its ControlPlane's whole storage (`ControlPlane.wipeOrg`: the Models, Billing
   and Tools parts drop their tables, then the rest of the SQL
   tables, the key-value store and the alarm go) and last its registry entry, which frees the slug. The registry entry goes last, so a deletion that stops half way
@@ -2900,25 +2906,29 @@ is the Access one, unchanged, and there is no auth Worker. User docs: `docs/ACCE
 
 ## Billing (`billing/`, `models/handlers/metering.ts`, `apps/api/src/http/gate.ts`, `billing/routes.ts`)
 
-Workers addition, no Go counterpart; ADR 0042, #236. Commissary Cloud's plans: every org holds one, `free` or `payg`,
-and has a month's **free usage** counted in its ControlPlane. Polar, the billing cap, notices and the other units come
-later (#237, #238, #241). **A self-hosted Commissary has none of it**: the package checks `isHosted` before it counts,
-refuses or reads anything, and its management route answers 404.
+Workers addition, no Go counterpart; ADR 0042, #236, #237. Commissary Cloud's plans: every org holds one, `free` or
+`payg`, and has a month's **free usage** counted in its ControlPlane; Pay as you go is billed through Polar. The billing
+cap, notices and the other units come later (#238, #241). **A self-hosted Commissary has none of it**: the package checks
+`isHosted` before it counts, refuses or reads anything, and its routes answer 404.
 
 - **Seam** (`codebase-design`): Billing is an area package (`packages/billing`, entries `./api`, `./management`,
   `./state`, `./testing`, lint rule `boundaries/billing-imports`) that imports no other area. What callers see is small:
-  `countRequest` / `uncountRequest` (Models), `limitClientRate` (the API Worker's gate), the `GET /billing` route (the app
-  Worker) and `BillingPart` (the state Worker). Models imports `@commissary/billing/api` (the lint rule lets another
+  `countRequest` / `uncountRequest` (Models), `limitClientRate` and the cron task (the API Worker), the `/billing`
+  routes, their role-table entries, Polar's webhook route and the org-deletion step (the app Worker) and `BillingPart`
+  (the state Worker). Models imports `@commissary/billing/api` (the lint rule lets another
   package's sources import only `./api`); Billing imports `@commissary/auth` (`isHosted`), `@commissary/state` (stubs,
   `ControlPlanePart`), `@commissary/core` and `@commissary/contract`.
 - **The part** (`billing/part.ts`, `store.ts`): tables `billing_plan` (one row; none means `free`, so an org that existed
   before plans needs no backfill and nothing of past usage is counted) and `billing_usage` (`month_start`, `unit`,
   `amount`; a row appears with the month's first use, so a new month starts at zero by itself, like the spend counters of
   `state/spend/store.ts`, and nothing is derived from the D1 usage records). `admit(now)` is one synchronous step of the
-  object: a Free org with `requests` at the free usage is refused (and not counted), anything else is counted, on either
-  plan; `refund(monthStart)` takes a count back. `usage(now)` reads the plan and the month. Hours of the other two units
-  are stored as `REAL` and read 0 until #241 counts them. `setPlan` stores the plan (switching it is #237's; tests set
-  it directly). `wipe()` drops both tables.
+  object: a Free org (or a Pay-as-you-go one that is past due, `limitsPlan()`) with `requests` at the free usage is
+  refused (and not counted), anything else is counted, on either plan; `refund(monthStart)` takes a count back. `usage(now)` reads the plan and the month. Hours of the other two units
+  are stored as `REAL` and read 0 until #241 counts them. `setPlan` stores the plan directly (tests; Polar's webhooks go
+  through `applySubscription`). Three tables serve Polar (#237): `billing_account` (one row: the Polar customer, the
+  current subscription, the payment state `ok`/`past_due`, and Polar's `modified_at` of the last change applied),
+  `billing_meter_sent` (what was sent of each unit and month) and `billing_meter_batch` (the one batch on its way).
+  `wipe()` drops all five.
 - **Constants** (`billing/plan.ts`, ADR 0042): free usage `25,000` requests and tool calls, 1 browser hour, 0 computer
   hours; request-rate ceilings 60 a minute on Free and 600 on Pay as you go. The month is the calendar month in UTC
   (`billing/month.ts`); the Worker side passes `Clock.currentTimeMillis` to the object, so tests drive it with `TestClock`.
@@ -2942,8 +2952,9 @@ refuses or reads anything, and its management route answers 404.
   registry lookup of the org's slug for the link, which the client API's key (an org id) does not carry, runs once per
   refusal), so a client that retries against the limit does not reach the ControlPlane.
 - **Request-rate ceiling** (`billing/rate-limit.ts`): two Workers rate-limiting bindings on the API Worker,
-  `FREE_RATE_LIMIT` (60 a minute) and `PAYG_RATE_LIMIT` (600), keyed by org id; the org's plan (a `plan()` call to its
-  Billing part, cached per isolate for 30 seconds like `@commissary/auth`'s standing) picks one. The API Worker's
+  `FREE_RATE_LIMIT` (60 a minute) and `PAYG_RATE_LIMIT` (600), keyed by org id; the plan whose limits apply (a
+  `limitsPlan()` call to its Billing part: Free's while a Pay-as-you-go org is past due; cached per isolate for 30
+  seconds like `@commissary/auth`'s standing) picks one. The API Worker's
   client gate calls `limitClientRate` after authentication and the standing checks (it left `@commissary/auth`'s hosted
   gate, which no longer knows plans), so every client-facing surface behind that gate is covered, and the MCP endpoint
   (#197) and webhook triggers (#231) join it by sitting behind the gate or calling the same function. The management
@@ -2951,10 +2962,87 @@ refuses or reads anything, and its management route answers 404.
   request through (logged); an org whose plan cannot be read gets Free's ceiling. The ceilings are constants; only the
   namespaces are deployment settings (`ORG_RATE_LIMIT_NAMESPACE_ID`, `ORG_RATE_LIMIT_PAYG_NAMESPACE_ID`, `docs/DEPLOY.md`).
 - **Management API** (`billing/routes.ts`, `@commissary/contract/billing`): `GET /v9/management/billing` answers the plan,
+  the payment state (`payment`: `ok` or `past_due`), whether the org's Polar customer has a card on file (`card_on_file`:
+  asked of Polar on each read; `false` before the first checkout or without Polar, `null` when Polar cannot be asked),
   the month's start and end and, for each unit, `used` and the `free` usage; any org admin may read it (the role table's
-  default; `docs/ACCESS.md`). Units not counted yet read 0.
-- **Org deletion**: Billing's `OrgDeletionStep` has nothing outside the ControlPlane to delete yet (#237 cancels the
-  Polar subscription there); the part's tables go with `wipeOrg`.
+  default; `docs/ACCESS.md`). Units not counted yet read 0. `POST /billing/checkout`, `POST /billing/portal` and
+  `POST /billing/plan {"plan":"free"}` are for org owners (Billing's `accessRules`, which the app Worker's role table
+  lists) and exist only with a billing provider (see below), else they answer 404 like an unknown path.
+- **Pay as you go through Polar** (`billing/provider.ts`, `providers.ts`, `polar.ts`, #237). Polar is the merchant of
+  record (ADR 0042) behind a small adapter, `BillingProvider` (create customer, start checkout, portal link, payment
+  method on file, send meter events, cancel subscription, verify and read a webhook), so Stripe direct stays possible.
+  `BillingProviders`, a `Context.Reference`, picks the provider of an invocation from its bindings: Polar when the stage
+  is Commissary Cloud and has `POLAR_ACCESS_TOKEN` and `POLAR_PRODUCT_ID`, none otherwise; tests provide a fake
+  (`@commissary/billing/testing` `fakeBillingProvider`). Only the app Worker takes webhooks, so only it is given
+  `POLAR_WEBHOOK_SECRET`; without it the provider has no webhook check and `POST /webhooks/polar` does not exist (the
+  API Worker, which only sends usage, does without it). A stage still sets all three or none (`infra/settings.ts`). Polar's REST API is called with `fetch` (no
+  SDK), on `https://api.polar.sh` where `POLAR_SERVER=production` (the `cloud` stage) and `https://sandbox-api.polar.sh`
+  elsewhere. Polar's host is fixed by the code, not supplied by anyone, so these calls do not go through the outbound
+  guard.
+  - **Customer**: each org is one Polar customer, created by its first `POST /billing/checkout` (`external_id` the org
+    id, email the owner who started it, name the org's) and recorded in `billing_account`. Polar requires customers'
+    emails to be unique, so a person can be the billing email of one org: a second org's checkout by them answers
+    `409 billing_email_taken`. This is a known limit: someone who pays for several orgs needs another email for each
+    (Polar's team customers would lift it, at the cost of a Polar member per org member who may open the portal). Polar's customer portal (`POST /billing/portal`, a customer session) handles invoices,
+    receipts, the payment method and a tax ID. The checkout's success and return URLs are the org's billing page on the
+    host the request came to (`/o/<slug>/billing`).
+  - **Product**: one recurring Pay-as-you-go product with three metered prices, one per unit, whose meters sum
+    `metadata.units` of the events named `commissary_requests`, `commissary_browser_hours` and
+    `commissary_computer_hours` (`polar.ts` `METER_EVENT_NAMES`), at ADR 0042's rates, with no minimum. Its id is a
+    deployment setting (`POLAR_PRODUCT_ID`); the meters and prices are set up in Polar and the code needs no id of
+    theirs (`docs/DEPLOY.md` "Polar"). **Whether Polar accepts a $0 fixed price beside the metered prices has not been
+    tested in Polar's sandbox yet** (it needs a Polar account); until it is, the product has only metered prices, the
+    fallback ADR 0042 names. To be checked in the sandbox: #274.
+  - **Free usage is excluded by sending only what is above it**: for each month and unit, the usage above free usage
+    minus what was already sent (`billing_meter_sent`). Polar bills every unit it receives, so its prices need no free
+    tier or credits benefit, and an org that never goes over free usage sends nothing.
+  - **Webhooks** (`billing/webhook.ts`): `POST /webhooks/polar` on the app host, public (the `public` zone; the
+    signature is the credential), mounted by the app Worker outside the Access gate. Standard Webhooks signatures
+    (`webhook-id`, `webhook-timestamp` within 5 minutes, `webhook-signature` `v1,<base64 HMAC-SHA256>` keyed by
+    `POLAR_WEBHOOK_SECRET`'s bytes, compared with `crypto.subtle.verify`); unsigned or wrongly signed: `401`. The
+    body is parsed only once its signature is verified. Every
+    `subscription.*` event of the Pay-as-you-go product is read from the subscription it carries: `active`/`trialing`
+    → Pay as you go, payments `ok` (upgrades take effect at once); `past_due` → Pay as you go flagged `past_due`, held to
+    Free's limits until a payment succeeds; `canceled`, `unpaid`, `paused`, or `active` set to cancel at the period's end
+    → Free. The org is the customer's `external_id`, confirmed by the Platform registry (an org that no longer exists is
+    acknowledged and ignored). `applySubscription` ignores a change older than the last one applied (Polar's
+    `modified_at`), the end of a subscription other than the current one, and any change but becoming active again
+    about the subscription that ended last (`billing_account.ended_subscription_id`: one cancelled at the end of its
+    period still reports its last invoice, `past_due` if unpaid, after the org went to Free), so Polar's unordered,
+    repeated deliveries come to the same state; the handler answers `200` once the part stored it, `503` when it cannot (Polar delivers
+    again). Nothing is deleted or suspended for non-payment: a revoked org is on Free with its data.
+  - **Plan changes and caches**: the code that switches a plan (the webhook, `POST /billing/plan`) calls
+    `forgetBilling(org)`, so the isolate that made the change sees it at once; every other isolate (the API Worker's
+    rate ceiling and plan-limit refusals) sees it within the 30 seconds it caches billing (`billing/cache.ts`). This is
+    what ADR 0042's "upgrading takes effect at once" means in practice.
+  - **Switching to Free** (`POST /billing/plan`): sends the usage not sent yet, cancels the subscription in Polar at the
+    end of its period (`PATCH /v1/subscriptions/{id}` with `cancel_at_period_end`), then puts the org on Free at once
+    (`endSubscription`, which also makes later webhooks about the old subscription change nothing but its becoming
+    active again). Cancelling at the period's end, not revoking at once, is what makes the usage already sent appear on
+    the period's invoice under ADR 0042, whatever Polar does with metered usage when a subscription is revoked. A 403
+    from Polar counts as already cancelled only when Polar says so (`AlreadyCanceledSubscription`,
+    `InactiveSubscription`); any other (a token without the scope) is a failure. A failure before the last step answers
+    `502` and changes nothing. Upgrading back goes through checkout.
+  - **Leaving Pay as you go** (switching to Free, Polar ending the subscription, org deletion): what the org owes until
+    then, above free usage and unsent, becomes its last batch, which the cron still sends (none after a switch to Free,
+    which sends it first); after that an org on Free sends nothing. Usage on Free is never billed: going back to Pay as
+    you go counts what came before as sent.
+  - **Meter events** (`billing/scheduled-tasks.ts`, `send-usage.ts`): the API Worker's cron runner runs
+    `billing-meter-events` for every org (previews have no crons). An org with a Polar customer gets a batch from its
+    part (`meterBatch`): the one on its way, or a new one with what is above free usage and unsent, one event per unit
+    and month, each with an `external_id` of `<batch uuid>:<month start>:<unit>`. It goes to Polar's batch ingest and,
+    once Polar took it, is recorded as sent (`meterBatchSent`); a batch that failed is sent again, same ids, so Polar's
+    deduplication keeps a retried batch from counting twice. After each batch the task pauses 120 ms, so the runner,
+    which runs orgs one after another, stays under Polar's 500 requests a minute. Polar files events into the period it receives them (ADR 0042), so the last hours of a month can
+    land on the next invoice.
+- **Org deletion** (`billing/org-deletion.ts`): with a billing provider, Billing's `OrgDeletionStep` sends the org's
+  unsent usage, then cancels its subscription at the end of its period (as switching to Free does, so the usage sent is
+  invoiced); deletion does not wait for payment. A failure that may pass (the part cannot be reached; Polar rate limits,
+  answers 5xx or does not answer) answers `complete: false` and the step runs again with the next deletion request
+  (both calls are safe to repeat). A refusal from Polar that trying again cannot change (a 4xx other than 429: the
+  customer or subscription was deleted in Polar by hand, a token without a scope) is logged with the org's id and the
+  step answers `complete: true`, so the org can still be deleted; what is left in Polar is for a person to settle. The
+  step runs in the request's services (its logger and clock). The part's tables go with `wipeOrg`.
 
 ## Provider OAuth logins (`models/oauth/`, `models/management/oauth-routes.ts`)
 

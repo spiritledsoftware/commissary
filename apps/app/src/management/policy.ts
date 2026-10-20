@@ -12,11 +12,13 @@
  *   (`management/api-key-routes.ts`), the Spend limits that bind them and those on their own keys
  *   (`management/spend-routes.ts`), and the areas' routes their entries name (Models: reading usage and their own
  *   credentials).
+ * - **owner**: Commissary Cloud's billing writes (checkout, portal, switching plans; Billing's entries).
  * - **admin**: everything else of the management API. Some routes need more and say so in their handler: changing a
  *   role (org owner), downloading a credential or giving a service token a role above member (ADR 0006's rule per
  *   org, `@commissary/auth` `holdsSensitivePowers`).
  */
 import { type AccessRule, type RouteAccess, ruleAccess } from "@commissary/auth";
+import { accessRules as billingAccessRules } from "@commissary/billing/management";
 import { accessRules as modelsAccessRules } from "@commissary/models/management";
 import { accessRules as toolsAccessRules } from "@commissary/tools/management";
 import {
@@ -49,6 +51,7 @@ const RULES: ReadonlyArray<AccessRule> = [
   { path: SPEND, subpaths: true, role: "member" },
   ...modelsAccessRules,
   ...toolsAccessRules,
+  ...billingAccessRules,
 ];
 
 const ME = `${MANAGEMENT_PREFIX}/me`;

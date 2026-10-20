@@ -1,6 +1,7 @@
-// `GET /v9/management/billing` on Commissary Cloud (packages/billing/src/routes.ts, @commissary/contract/billing): a new
+// `/v9/management/billing` on Commissary Cloud (packages/billing/src/routes.ts, @commissary/contract/billing): a new
 // org is on Free with nothing used of its free usage; the plan and the month's count follow what Billing stores; any org
-// admin may read it and a plain member may not. A self-hosted Commissary answers 404 (test/billing-self-hosted.test.ts).
+// admin may read it and a plain member may not; checkout, the portal and switching plans are for org owners. Polar's
+// webhook route is public on the app host. A self-hosted Commissary answers 404 (test/billing-self-hosted.test.ts).
 import { env } from "cloudflare:workers";
 import { Schema } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -83,5 +84,50 @@ describe("billing", () => {
 
     expect((await billing(member, slug)).status).toBe(403);
     expect((await billing(owner, slug)).status).toBe(200);
+  });
+
+  it("keeps checkout, the portal and switching plans for org owners: an org admin gets 403", async () => {
+    const owner = await signIn({ email: "owner-writes@example.com" });
+    const { slug } = await personalOrg(owner);
+
+    const added = await call(`/v9/management/orgs/${slug}/members`, {
+      method: "POST",
+      headers: panelHeaders(owner, { "content-type": "application/json" }),
+      body: JSON.stringify({ email: "admin-writes@example.com", role: "admin" }),
+    });
+
+    expect(added.status).toBe(201);
+
+    const admin = await signIn({ email: "admin-writes@example.com" });
+
+    for (const path of ["checkout", "portal", "plan"]) {
+      const response = await call(`/v9/management/orgs/${slug}/billing/${path}`, {
+        method: "POST",
+        headers: panelHeaders(admin, { "content-type": "application/json" }),
+        body: JSON.stringify({ plan: "free" }),
+      });
+
+      expect(response.status).toBe(403);
+    }
+
+    // The owner gets past the gate: an org on Free switching to Free changes nothing.
+    const switched = await call(`/v9/management/orgs/${slug}/billing/plan`, {
+      method: "POST",
+      headers: panelHeaders(owner, { "content-type": "application/json" }),
+      body: JSON.stringify({ plan: "free" }),
+    });
+
+    expect(switched.status).toBe(200);
+    expect((await billing(admin, slug)).status).toBe(200);
+  });
+
+  it("takes Polar's webhooks on the app host without a session, and refuses an unsigned one", async () => {
+    const response = await call("/webhooks/polar", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ type: "subscription.active", data: {} }),
+    });
+
+    expect(response.status).toBe(401);
   });
 });

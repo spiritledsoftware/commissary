@@ -1,26 +1,59 @@
 /**
- * `/v9/management/billing` (`BillingGroup` in @commissary/contract/billing): the org's plan and this month's usage
- * against free usage, in each unit. Workers addition, no Go counterpart.
+ * `/v9/management/billing` (`BillingGroup` in @commissary/contract/billing). Workers addition, no Go counterpart.
  *
- * Commissary Cloud only: on a self-hosted Commissary the route answers like a path the router does not know, so nothing
- * of Billing is reachable there. Any org admin may read it (the role table's default for a route without an entry,
- * `apps/app/src/management/policy.ts`). Units not counted yet read 0.
+ * - `GET /billing`: the org's plan, its payment state, whether a card is on file, and this month's usage against free
+ *   usage in each unit (units not counted yet read 0). Any org admin may read it (the role table's default for a route
+ *   without an entry, `apps/app/src/management/policy.ts`).
+ * - `POST /billing/checkout`, `POST /billing/portal`, `POST /billing/plan {plan: "free"}` (#237): Pay as you go through
+ *   the billing provider (Polar, `polar.ts`); org owners only ({@link accessRules}). Without the provider's settings
+ *   they answer 404, like a path the router does not know.
+ *
+ * Commissary Cloud only: on a self-hosted Commissary every route answers 404, so nothing of Billing is reachable
+ * there. A plan this isolate switches is forgotten by its caches at once (`forgetBilling`); other isolates (the API
+ * Worker's) see it within `BILLING_TTL_MS`.
  */
-import { Clock, Effect } from "effect";
+import { Clock, Effect, Option, Schema } from "effect";
 import { HttpRouter, HttpServerError, HttpServerRequest } from "effect/http";
-import { isHosted } from "@commissary/auth";
-import type { BillingView } from "@commissary/contract/billing";
-import { handled, jsonReply } from "@commissary/core";
-import { BillingEnv, billingControlPlane } from "./env.ts";
+import { type AccessRule, AccessPrincipal, isHosted } from "@commissary/auth";
+import { type BillingView, SwitchBillingPlan } from "@commissary/contract/billing";
+import {
+  CurrentOrg,
+  handled,
+  jsonReply,
+  type OrgId,
+  type Reply,
+  replyError,
+} from "@commissary/core";
+import { bodyJson, platformOf } from "@commissary/state";
+import { forgetBilling } from "./cache.ts";
+import {
+  type BillingBindings,
+  BillingEnv,
+  type BillingPartUnavailable,
+  billingControlPlane,
+  callPart,
+} from "./env.ts";
 import { FREE_USAGE } from "./plan.ts";
+import type { BillingProvider, BillingProviderError } from "./provider.ts";
+import { BillingProviders } from "./providers.ts";
+import { sendUsage } from "./send-usage.ts";
 import type { BillingUsage } from "./store.ts";
 
 const BASE = "/v9/management";
 
+/** The billing routes only org owners may call (ADR 0042: owners switch plans and change the payment method). */
+export const accessRules: ReadonlyArray<AccessRule> = [
+  { path: `${BASE}/billing/checkout`, role: "owner" },
+  { path: `${BASE}/billing/portal`, role: "owner" },
+  { path: `${BASE}/billing/plan`, role: "owner" },
+];
+
 const iso = (ms: number): string => new Date(ms).toISOString();
 
-const billingView = (billing: BillingUsage): BillingView => ({
+const billingView = (billing: BillingUsage, cardOnFile: boolean | null): BillingView => ({
   plan: billing.plan,
+  payment: billing.payment,
+  card_on_file: cardOnFile,
   month_start: iso(billing.monthStart),
   resets_at: iso(billing.monthEnd),
   usage: {
@@ -30,15 +63,38 @@ const billingView = (billing: BillingUsage): BillingView => ({
   },
 });
 
-const overview = Effect.gen(function* () {
-  const now = yield* Clock.currentTimeMillis;
-  const billing = yield* billingControlPlane("billing", (stub) => stub.billing().usage(now));
+/** The billing provider of the invocation, `undefined` without one. */
+const invocationProvider = Effect.flatMap(BillingEnv, (env) =>
+  Effect.map(BillingProviders, (pick) => pick(env)),
+);
 
-  return jsonReply(200, billingView(billing));
+const usageNow = Effect.gen(function* () {
+  const now = yield* Clock.currentTimeMillis;
+
+  return yield* billingControlPlane("billing", (stub) => stub.billing().usage(now));
+});
+
+/** Whether the org's customer has a card on file: `false` without one, `null` when the provider cannot say. */
+const cardOnFile = (provider: BillingProvider | undefined, billing: BillingUsage) =>
+  provider === undefined || billing.customerId === null
+    ? Effect.succeed(false)
+    : provider
+        .hasPaymentMethod(billing.customerId)
+        .pipe(
+          Effect.catch((error) =>
+            Effect.logWarning(`card on file not read: ${error.message}`).pipe(Effect.as(null)),
+          ),
+        );
+
+const overview = Effect.gen(function* () {
+  const billing = yield* usageNow;
+  const provider = yield* invocationProvider;
+
+  return jsonReply(200, billingView(billing, yield* cardOnFile(provider, billing)));
 });
 
 /** Answers like a path the router does not know (`apps/app/src/http/not-found.ts` turns that into the plain 404). */
-const routeNotFound = Effect.gen(function* () {
+export const routeNotFound = Effect.gen(function* () {
   const request = yield* HttpServerRequest.HttpServerRequest;
 
   return yield* new HttpServerError.HttpServerError({
@@ -52,6 +108,212 @@ const hostedOnly = <A, E, R>(handler: Effect.Effect<A, E, R>) =>
     return isHosted(yield* BillingEnv) ? yield* handler : yield* routeNotFound;
   });
 
+/** Runs `handler` with the billing provider; without one the route does not exist. */
+const withProvider = <A, E, R>(handler: (provider: BillingProvider) => Effect.Effect<A, E, R>) =>
+  Effect.gen(function* () {
+    const provider = yield* invocationProvider;
+
+    return provider === undefined ? yield* routeNotFound : yield* handler(provider);
+  });
+
+/** A provider failure as a reply: logged, never with its details. */
+const providerUnavailable = (error: BillingProviderError): Effect.Effect<never, Reply> =>
+  Effect.logError(error.message).pipe(
+    Effect.andThen(
+      Effect.fail(
+        replyError(502, "billing_unavailable", {
+          message: "the billing provider could not be reached; try again",
+        }),
+      ),
+    ),
+  );
+
+/** A Billing part that cannot be reached, as a reply. */
+const partUnavailable = (error: BillingPartUnavailable): Effect.Effect<never, Reply> =>
+  Effect.logError(error.message).pipe(
+    Effect.andThen(
+      Effect.fail(
+        replyError(502, "billing_state_unavailable", {
+          message: "the org's billing state could not be reached; try again",
+        }),
+      ),
+    ),
+  );
+
+/** The origin of an absolute URL, `""` for anything else. */
+const originOf = (url: string): string => {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return "";
+  }
+};
+
+/** The org's panel billing page on the host the request came to, where Polar sends the owner back. */
+const billingPage = (env: BillingBindings, org: OrgId) =>
+  Effect.gen(function* () {
+    const origin = originOf((yield* HttpServerRequest.HttpServerRequest).originalUrl);
+
+    // Polar sends the owner back to an absolute URL on this host.
+    if (origin === "" || origin === "null")
+      return yield* replyError(400, "request_origin_unknown", {
+        message: "the request's origin could not be read",
+      });
+
+    const record = yield* Effect.tryPromise(async () => await platformOf(env).getOrgById(org)).pipe(
+      Effect.tapError((cause) =>
+        Effect.logError(
+          `billing: the platform registry could not be read: ${cause.cause instanceof Error ? cause.cause.message : "unknown error"}`,
+        ),
+      ),
+      Effect.mapError(() =>
+        replyError(502, "registry_unavailable", {
+          message: "the org's record could not be read; try again",
+        }),
+      ),
+    );
+
+    if (record === undefined)
+      return yield* replyError(502, "org_not_registered", {
+        message: "the org was not found in the platform registry",
+      });
+
+    return { url: `${origin}/o/${encodeURIComponent(record.slug)}/billing`, name: record.name };
+  });
+
+const checkout = (provider: BillingProvider) =>
+  Effect.gen(function* () {
+    const env = yield* BillingEnv;
+    const org = yield* CurrentOrg;
+    const identity = yield* AccessPrincipal;
+
+    // The customer's billing email is the owner's: a person, not a token.
+    if (identity.principal.kind !== "user")
+      return yield* replyError(403, "person_required", {
+        message: "only a person can start a checkout, not a token",
+      });
+
+    const email = identity.principal.email;
+    const billing = yield* usageNow;
+
+    if (billing.plan === "payg")
+      return yield* replyError(409, "already_on_payg", {
+        message: "the org is on Pay as you go; manage its payment method in the portal",
+      });
+
+    const page = yield* billingPage(env, org);
+
+    const customerId =
+      billing.customerId ??
+      (yield* provider
+        .createCustomer({ org, name: page.name, email })
+        .pipe(
+          Effect.tap((created) =>
+            callPart(env, org, "customer", (part) => part.setCustomer(created)),
+          ),
+        ));
+
+    const url = yield* provider.startCheckout({
+      customerId,
+      org,
+      successUrl: page.url,
+      returnUrl: page.url,
+    });
+
+    return jsonReply(200, { url });
+  }).pipe(
+    Effect.catchTag("BillingProviderError", (error) =>
+      error.reason === "email_taken"
+        ? Effect.fail(
+            replyError(409, "billing_email_taken", {
+              message: "your email is already the billing email of another org on Commissary Cloud",
+            }),
+          )
+        : providerUnavailable(error),
+    ),
+    Effect.catchTag("BillingPartUnavailable", partUnavailable),
+  );
+
+const portal = (provider: BillingProvider) =>
+  Effect.gen(function* () {
+    const env = yield* BillingEnv;
+    const org = yield* CurrentOrg;
+    const billing = yield* usageNow;
+
+    if (billing.customerId === null)
+      return yield* replyError(409, "no_billing_account", {
+        message: "the org has no billing account yet: upgrade to Pay as you go first",
+      });
+
+    const page = yield* billingPage(env, org);
+    const url = yield* provider.portalUrl({ customerId: billing.customerId, returnUrl: page.url });
+
+    return jsonReply(200, { url });
+  }).pipe(Effect.catchTag("BillingProviderError", providerUnavailable));
+
+/**
+ * Back to Free at once: sends the usage not sent yet (the open month's is still invoiced), cancels the subscription,
+ * then puts the org on Free. A failure before the last step changes nothing.
+ */
+const switchPlan = (provider: BillingProvider) =>
+  Effect.gen(function* () {
+    const env = yield* BillingEnv;
+    const org = yield* CurrentOrg;
+
+    const body = yield* bodyJson.pipe(
+      Effect.flatMap((value) =>
+        Option.match(
+          Schema.decodeUnknownOption(SwitchBillingPlan, { onExcessProperty: "error" })(value),
+          {
+            onNone: () =>
+              Effect.fail(
+                replyError(400, "invalid body", {
+                  message: 'expected {"plan": "free"}; upgrade through POST /billing/checkout',
+                }),
+              ),
+            onSome: Effect.succeed,
+          },
+        ),
+      ),
+    );
+
+    const billing = yield* usageNow;
+
+    if (billing.plan !== body.plan) {
+      yield* sendUsage(env, provider, org);
+
+      if (billing.subscriptionId !== null)
+        yield* provider.cancelSubscription(billing.subscriptionId);
+
+      const now = yield* Clock.currentTimeMillis;
+
+      yield* callPart(env, org, "end subscription", (part) => part.endSubscription(now));
+      forgetBilling(org);
+    }
+
+    const after = yield* usageNow;
+
+    return jsonReply(200, billingView(after, yield* cardOnFile(provider, after)));
+  }).pipe(
+    Effect.catchTag("BillingProviderError", providerUnavailable),
+    Effect.catchTag("BillingPartUnavailable", partUnavailable),
+  );
+
 export const BillingRoutes = HttpRouter.addAll([
   HttpRouter.route("GET", `${BASE}/billing`, hostedOnly(handled(overview))),
+  HttpRouter.route(
+    "POST",
+    `${BASE}/billing/checkout`,
+    hostedOnly(withProvider((provider) => handled(checkout(provider)))),
+  ),
+  HttpRouter.route(
+    "POST",
+    `${BASE}/billing/portal`,
+    hostedOnly(withProvider((provider) => handled(portal(provider)))),
+  ),
+  HttpRouter.route(
+    "POST",
+    `${BASE}/billing/plan`,
+    hostedOnly(withProvider((provider) => handled(switchPlan(provider)))),
+  ),
 ]);

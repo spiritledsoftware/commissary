@@ -45,6 +45,16 @@ interface __BaseEnv_Env {
    */
   COMMISSARY_MODE?: string;
   /**
+   * Hosted: Pay as you go through Polar (#237, `@commissary/billing`'s `polar.ts`): an organization access token
+   * (secret), the webhook secret (secret), the Pay-as-you-go product and which Polar (`production` on the `cloud`
+   * stage, `sandbox` elsewhere). Unset (a self-hosted Commissary, a stage without them): nothing is billed and the
+   * billing routes answer 404.
+   */
+  POLAR_ACCESS_TOKEN?: string;
+  POLAR_WEBHOOK_SECRET?: string;
+  POLAR_PRODUCT_ID?: string;
+  POLAR_SERVER?: string;
+  /**
    * Hosted: the auth Worker (ADR 0030, apps/auth), which holds Better Auth and its `SignIn` database: who a session
    * belongs to, ending sessions, deleting a sign-in account (src/hosted/sign-in.ts). A service binding, Cloud only.
    */

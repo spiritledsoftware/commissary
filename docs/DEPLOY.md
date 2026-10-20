@@ -195,7 +195,7 @@ differs**: the areas, toolkits and settings are the same.
 
 - Sign-up and sign-in through Commissary itself (ADR 0026, ADR 0030). A self-hosted Commissary signs people in through
   Cloudflare Access.
-- Plans, billing, ceilings and unbilled orgs (ADR 0042).
+- Plans, billing (Pay as you go through Polar, [Polar](#polar)), ceilings and unbilled orgs (ADR 0042).
 - The per-org request rate limit.
 - Commissary-owned OAuth apps for catalog toolkits (ADR 0036). A self-hosted Commissary uses its own apps.
 - Suspending people, and owned-org limits.
@@ -227,6 +227,8 @@ Commissary has neither the auth Worker nor the `SignIn` database.
 | `OWNED_ORG_LIMIT`                                          | variable    | orgs a person may own unless a platform admin raises it (default 3)     |
 | `ORG_RATE_LIMIT_NAMESPACE_ID`                              | variable    | the Free plan's Workers rate-limit namespace, a positive integer (7201) |
 | `ORG_RATE_LIMIT_PAYG_NAMESPACE_ID`                         | variable    | Pay as you go's, another one (default: the Free plan's plus one)        |
+| `POLAR_ACCESS_TOKEN`, `POLAR_WEBHOOK_SECRET`               | secret      | Pay as you go through Polar ([Polar](#polar)); optional, with the next  |
+| `POLAR_PRODUCT_ID`                                         | variable    | the Pay-as-you-go product in Polar; all three or none                   |
 
 The request-rate ceilings of the client API are per org and per plan: 60 a minute on Free and 600 on Pay as you go
 (ADR 0042). They are constants in the code (`packages/billing/src/plan.ts`), not settings, and each plan has a Workers
@@ -276,6 +278,48 @@ workers.dev subdomain (prod and `cloud` scope theirs to their base domain). Prev
 with each other, and with production when the environments set the same `ORG_RATE_LIMIT_NAMESPACE_ID` (or
 `ORG_RATE_LIMIT_PAYG_NAMESPACE_ID`, one above it unless set): the org `global` exists on every stage under the same id,
 so give `preview` its own namespaces.
+
+### Polar
+
+Commissary Cloud bills Pay as you go through [Polar](https://polar.sh), its merchant of record (ADR 0042;
+docs/ARCHITECTURE.md "Billing"). Polar is optional for a stage: without its three settings nothing is billed, the
+checkout, portal and plan routes and the webhook answer 404, and every org stays on its plan (Free unless set
+otherwise); the rest of Commissary Cloud, plan limits included, works as before. A self-hosted Commissary never bills.
+The deploy refuses a stage that sets only some of the three.
+
+| Stage                      | Polar                                | Settings from                            |
+| -------------------------- | ------------------------------------ | ---------------------------------------- |
+| `cloud`                    | production (`api.polar.sh`)          | `.env.cloud`, GitHub environment `cloud` |
+| `pr-<n>` (`cloud-preview`) | the sandbox (`sandbox-api.polar.sh`) | `.env`, GitHub environment `preview`     |
+| any other Cloud stage      | the sandbox                          | its environment                          |
+| `prod`, self-hosted        | none                                 | (ignored)                                |
+
+Set up each Polar organization (production for `cloud`, a sandbox one for previews) once:
+
+1. **Meters.** Three meters, each filtering events by name and summing the `units` metadata property:
+   `commissary_requests` (requests and tool calls), `commissary_browser_hours`, `commissary_computer_hours`.
+2. **Product.** One recurring (monthly) product, "Pay as you go", with a metered price on each meter at ADR 0042's
+   rates and no minimum: $0.000005 per request (that is, $0.50 per 100,000), $0.15 per browser hour, $0.15 per
+   computer hour. Commissary sends only the usage above free usage, so the prices have no free tier and no credits
+   benefit. Whether Polar accepts a $0 fixed price beside the metered prices is still to be tested in the sandbox;
+   until then the product has only the metered prices (to be checked in the sandbox: #274). Its id
+   is `POLAR_PRODUCT_ID`.
+3. **Access token.** An organization access token with the scopes `customers:read`, `customers:write`,
+   `customer_sessions:write`, `checkouts:write`, `events:write`, `subscriptions:write` and `payment_methods:read`
+   (whichever of these Polar offers): `POLAR_ACCESS_TOKEN`.
+4. **Webhook.** An endpoint at `https://<app host>/webhooks/polar` (a preview's: its app Worker's workers.dev URL,
+   in the pull request comment) with the `subscription.*` events (created, active, updated, canceled, uncanceled,
+   past_due, revoked); its secret is `POLAR_WEBHOOK_SECRET`, which the deploy binds on the app Worker only (the one
+   that takes webhooks). A preview needs its own endpoint in the sandbox.
+5. **Customer portal.** Let customers update their payment method and tax ID and see invoices; Commissary sends
+   owners there (`POST /billing/portal`).
+6. **Settings.** `.env.cloud` (production) and `.env` (sandbox, for previews); `pnpm ci:setup` writes them into the
+   GitHub environments (`POLAR_PRODUCT_ID` as a variable, the token and the webhook secret as secrets).
+
+The API Worker's cron (every three hours) sends each org's usage above free usage to Polar; previews have no cron, so
+a preview tests checkout, the portal and webhooks but sends no usage. Polar allows 500 requests a minute; the cron
+sends at most one batch per 120 ms. Each org is one Polar customer, billed to the owner who first started a checkout,
+and Polar requires customers' emails to be unique: one person can be the billing email of one org only.
 
 ### The Commissary Cloud stage
 

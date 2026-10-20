@@ -1,9 +1,9 @@
 /**
  * `@commissary/billing/api`, Billing's entry for the Workers that serve the client API and for the areas that count
  * what the plans count (#134 "The area package convention"): the request-rate ceiling per plan, counting a request
- * against free usage and its plan limit, and its view of `env`. Everything here does nothing on a self-hosted
- * Commissary. The apps import Billing only through this entry, `./management`, `./state` and (in tests) `./testing`
- * (the lint rule `boundaries/billing-imports`).
+ * against free usage and its plan limit, its cron task (sending usage to the billing provider) and its view of `env`.
+ * Everything here does nothing on a self-hosted Commissary. The apps import Billing only through this entry,
+ * `./management`, `./state` and (in tests) `./testing` (the lint rule `boundaries/billing-imports`).
  */
 export {
   type BillingBindings,
@@ -21,5 +21,7 @@ export {
 } from "./meter.ts";
 
 export { limitClientRate, RATE_LIMITED } from "./rate-limit.ts";
+
+export { scheduledTasks } from "./scheduled-tasks.ts";
 
 export { RATE_LIMIT_PERIOD_SECONDS, REQUEST_RATE_CEILING } from "./plan.ts";

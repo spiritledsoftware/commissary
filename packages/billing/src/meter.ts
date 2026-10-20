@@ -2,10 +2,11 @@
  * Counting requests against free usage, and the plan limit (ADR 0042): Models calls {@link countRequest} when it starts
  * serving a client API request. On Commissary Cloud it counts the request in the org's Billing part and, for a Free org
  * whose requests and tool calls of the month are used up, refuses it with {@link PlanLimitReached} (`429
- * plan_limit_reached`, `Retry-After` until the first of the next month UTC); work in flight finishes. On a self-hosted
- * Commissary it does nothing. A request the plan refuses is not counted, and one that did no work (no upstream attempt:
- * a spend limit, an unknown model, no credential) is taken back ({@link uncountRequest}). New in the Workers port, no
- * Go counterpart.
+ * plan_limit_reached`, `Retry-After` until the first of the next month UTC), and so for a Pay-as-you-go org whose
+ * payment failed (Polar marked its subscription past due), which is held to Free's limits until a payment succeeds;
+ * work in flight finishes. On a self-hosted Commissary it does nothing. A request the plan refuses is not counted, and
+ * one that did no work (no upstream attempt: a spend limit, an unknown model, no credential) is taken back
+ * ({@link uncountRequest}). New in the Workers port, no Go counterpart.
  *
  * The count is one atomic step of the org's ControlPlane (`BillingStore.admit`), so concurrent requests cannot pass the
  * limit together beyond what is in flight. An org the plan refused stays refused in the isolate for a short while
@@ -65,8 +66,12 @@ const groups = new Intl.NumberFormat("en-US");
 const refused = (refusal: CachedRefusal, now: number): PlanLimitReached => {
   const resetsAt = new Date(refusal.resetsAt).toISOString();
 
+  const held = refusal.pastDue
+    ? "A payment failed: Pay as you go is held to the Free plan's limits until a payment succeeds, and the"
+    : "The";
+
   return new PlanLimitReached({
-    message: `The Free plan's ${groups.format(refusal.allowed)} requests and tool calls a month are used up; free usage starts over at ${resetsAt}. Plan and usage: ${refusal.page}`,
+    message: `${held} Free plan's ${groups.format(refusal.allowed)} requests and tool calls a month are used up; free usage starts over at ${resetsAt}. Plan and usage: ${refusal.page}`,
     allowed: refusal.allowed,
     retryAfterSeconds: Math.max(1, Math.ceil((refusal.resetsAt - now) / 1000)),
     resetsAt,
@@ -107,7 +112,13 @@ export const countRequest: Effect.Effect<
 
   const { limit } = admission;
   const page = yield* billingPage(env, org);
-  const refusal = { allowed: limit.allowed, resetsAt: limit.resetsAt, page };
+
+  const refusal = {
+    allowed: limit.allowed,
+    resetsAt: limit.resetsAt,
+    page,
+    pastDue: limit.pastDue,
+  };
 
   refusals.set(org, refusal, Math.min(limit.resetsAt, now + BILLING_TTL_MS));
 

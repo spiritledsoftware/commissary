@@ -163,6 +163,29 @@ describe("countRequest", () => {
     }),
   );
 
+  it.effect("holds a past-due Pay as you go org to Free's stop, and says why", () =>
+    Effect.gen(function* () {
+      const org = newOrgId();
+
+      yield* Effect.promise(async () => {
+        await env.CONTROL_PLANE.getByName(org).billing().applySubscription({
+          status: "past_due",
+          subscriptionId: "sub_1",
+          customerId: "cus_1",
+          changedAt: MID_MARCH,
+        });
+      });
+      yield* Effect.promise(() => seedRequestsUsed(env, org, MID_MARCH, FREE_USAGE.requests));
+      yield* TestClock.setTime(MID_MARCH);
+
+      const refused = yield* Effect.flip(asOrg(org, countRequest));
+
+      assert.instanceOf(refused, PlanLimitReached);
+      assert.include(refused.message, "until a payment succeeds");
+      resetBillingCaches();
+    }),
+  );
+
   it.effect("counts nothing and refuses nothing on a self-hosted Commissary", () =>
     Effect.gen(function* () {
       const org = newOrgId();

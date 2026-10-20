@@ -12,7 +12,7 @@ import {
   type RateLimiter,
   REQUEST_RATE_CEILING,
 } from "../src/api.ts";
-import { setPlan } from "./testing.ts";
+import { resetBillingCaches, setPlan } from "./testing.ts";
 
 /** A limiter that lets `allowed` requests through and records the keys it was asked about. */
 const limiter = (allowed: number) => {
@@ -69,6 +69,43 @@ describe("limitClientRate", () => {
       // The Pay as you go binding is not the Free one's: its third request is the one it refuses.
       assert.strictEqual((yield* Effect.flip(run(paying)))._tag, "RateLimitedError");
     }),
+  );
+
+  it.effect(
+    "counts a past-due Pay as you go org on the Free binding until a payment succeeds",
+    () =>
+      Effect.gen(function* () {
+        const org = newOrgId();
+        const onFree = limiter(10);
+        const onPayg = limiter(10);
+        const part = env.CONTROL_PLANE.getByName(org).billing();
+
+        const change = (status: "active" | "past_due", changedAt: number) =>
+          Effect.promise(async () => {
+            await part.applySubscription({
+              status,
+              subscriptionId: "sub_1",
+              customerId: "cus_1",
+              changedAt,
+            });
+            resetBillingCaches();
+          });
+
+        const run = limitClientRate(org).pipe(
+          Effect.provideService(
+            BillingEnv,
+            bindings({ FREE_RATE_LIMIT: onFree.limit, PAYG_RATE_LIMIT: onPayg.limit }),
+          ),
+        );
+
+        yield* change("past_due", 1);
+        yield* run;
+        assert.deepStrictEqual([onFree.keys.length, onPayg.keys.length], [1, 0]);
+
+        yield* change("active", 2);
+        yield* run;
+        assert.deepStrictEqual([onFree.keys.length, onPayg.keys.length], [1, 1]);
+      }),
   );
 
   it.effect("reads an org's plan once for a short while, then asks again", () =>
