@@ -13,7 +13,8 @@
  */
 import type { ToolClass } from "@commissary/contract/tools";
 import { fullToolName } from "./names.ts";
-import type { StoredTool, Toolkit, ToolOverride } from "./store.ts";
+import type { StoredTool, ToolOverride } from "./store.ts";
+import type { Toolkit } from "./toolkit.ts";
 
 /** What {@link resolveTools} looks at. */
 export interface ToolSet {

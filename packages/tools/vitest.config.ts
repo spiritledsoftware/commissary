@@ -1,7 +1,8 @@
 // Tools' tests, two projects like Models': `tools-unit` runs the pure tests (`test/unit/`) in Node.js; `tools` runs the rest
 // in workerd (@cloudflare/vitest-plugin) against the test Worker (test/worker.ts), whose ControlPlane is the org-wide
-// base composed with the Tools part only. Compatibility settings as the deployed Worker's (alchemy.run.ts); the bindings
-// are the ones test/env.d.ts declares, with the Worker tests' fixed keys.
+// base composed with the Tools part only (two more have a fake browser behind the browser toolkit, #212: the test Worker
+// hands their Tools part a fake `browser` binding, so the config binds none). Compatibility settings as the deployed
+// Worker's (alchemy.run.ts); the bindings are the ones test/env.d.ts declares, with the Worker tests' fixed keys.
 import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import { defineConfig } from "vitest/config";
 import { nodePackageTests } from "../../tools/vitest/node-package.ts";
@@ -26,6 +27,14 @@ export default defineConfig({
               compatibilityFlags: ["nodejs_compat", "global_fetch_strictly_public"],
               durableObjects: {
                 CONTROL_PLANE: { className: "ControlPlane", useSQLite: true },
+                // The ControlPlane with a fake `browser` binding, and with a fake second browser provider (#212).
+                BROWSER_CONTROL_PLANE: { className: "BrowserControlPlane", useSQLite: true },
+                OTHER_BROWSER_CONTROL_PLANE: {
+                  className: "OtherBrowserControlPlane",
+                  useSQLite: true,
+                },
+                // One that gains the binding when a test says so, and restarts it (#212).
+                UPGRADED_CONTROL_PLANE: { className: "UpgradedControlPlane", useSQLite: true },
                 SESSION_STATE: { className: "SessionState", useSQLite: true },
                 PLATFORM: { className: "Platform", useSQLite: true },
               },

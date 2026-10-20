@@ -63,7 +63,7 @@ the auth Worker ([Commissary Cloud](#commissary-cloud)):
 1. **`State`** (`apps/state`) defines the Durable Objects `ControlPlane`, `SessionState` and `Platform`: every org's
    state and the Platform registry. It has no routes, no domain and no `workers.dev` URL, and binds only what those
    classes read: the secrets keys, the `auth_index` key, `META_MINT_URL`, `OWN_HOSTS`, the platform admins, the mode and the Access
-   settings that mark a deployed stage.
+   settings that mark a deployed stage, and Browser Run unless `COMMISSARY_BROWSER=off` ([Optional pieces](#optional-pieces)).
 2. **`Commissary`** (`apps/app`), the app Worker: the control panel (with Commissary Cloud's sign-in page) and the
    management API, on the stage's
    domain (the app host) or `workers.dev` URL, behind Access on a self-hosted stage. It answers the client API paths
@@ -175,9 +175,18 @@ A self-hosted Commissary needs Workers Paid (Workers Free isn't supported, ADR 0
 depend on an extra binding the deployment chooses. `GET /v9/management/me` reports whether each is present in its
 `deployment` object (`browser`, `computer`); the panel decides what to show from it.
 
-| Piece                                                                                                | Deploy setting | Binding | What its absence removes | Cost |
-| ---------------------------------------------------------------------------------------------------- | -------------- | ------- | ------------------------ | ---- |
-| None are available yet. The browser toolkit (#212) and the sandbox's computer (#223) add their rows. |                |         |                          |      |
+| Piece                                | Deploy setting                                | Binding                                                                             | What its absence removes                                                                                                                        | Cost                                                                                                                      |
+| ------------------------------------ | --------------------------------------------- | ----------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| The browser toolkit (ADR 0039, #212) | `COMMISSARY_BROWSER`: `on` (default) or `off` | Browser Run (`browser`, as `BROWSER`) on the `State` and app (`Commissary`) Workers | The whole toolkit: it is not on the MCP endpoint, in toolkit lists or in tool grants, and `deployment.browser` is `false`. Nothing else changes | Browser Run includes 10 browser hours a month on Workers Paid, then $0.09 an hour, on the deployment's Cloudflare account |
+
+The sandbox's computer (#223) adds its row.
+
+**The browser.** Browser Run needs no account setup beyond Workers Paid (on Workers Free it is capped at 10 minutes a day,
+too little to be useful) and no API token: the deploy binds it, and the toolkit calls its Quick Actions through the
+binding. Commissary Cloud, `prod` and previews keep the default, `on`. A self-hosted Commissary has the toolkit only with
+the binding; set `COMMISSARY_BROWSER=off` to deploy without it (no other change). `alchemy dev` never binds it, since
+Browser Run's Quick Actions have no local emulation. Browser time lands on the deployment's account, whoever's org used
+it; an org reaches the toolkit only once an org admin grants it (there is no default grant).
 
 ## Commissary Cloud only
 

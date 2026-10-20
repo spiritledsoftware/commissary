@@ -62,8 +62,19 @@ not in the Workers' `Env`. One Models reads also goes into `ModelsBindings` (`pa
 and the Models test Worker's bindings (`packages/models/vitest.config.ts`; its `test/env.d.ts` follows `ModelsBindings`,
 `StateObjectEnv` and `AuthBindings`); one Billing reads, into `BillingBindings` (`packages/billing/src/env.ts`) and the
 Billing test Worker's (`packages/billing/vitest.config.ts`, `test/env.d.ts`), and in each Worker that serves a surface
-Billing guards (`apps/api` today) in its `src/env.d.ts` and `vitest.config.ts`. Tools reads only `CONTROL_PLANE` (`ToolsBindings`, `packages/tools/src/env.ts`); one it comes to read goes there and
-into `packages/tools/vitest.config.ts` the same way.
+Billing guards (`apps/api` today) in its `src/env.d.ts` and `vitest.config.ts`. Tools reads `CONTROL_PLANE`, `PLATFORM`,
+`APP_DOMAIN` and `USAGE` (`ToolsBindings`, `packages/tools/src/env.ts`); one it comes to read goes there and
+into `packages/tools/vitest.config.ts` the same way. Its ControlPlane part reads the optional `BROWSER` (Browser Run,
+#212) from the state Worker's env (`ToolsPartEnv`, which `apps/state/src/env.d.ts` includes), as the Models part reads
+`ModelsPartEnv`; the app Worker binds it too, for `/me` only (`AppBindings`). No test config binds it: the Tools test
+Worker hands its part a fake (`packages/tools/test/worker.ts`), and an app test that needs it passes one
+(`fakeBrowserRun`).
+
+**Known limitation: `alchemy dev` has no browser.** Browser Run's `quickAction()` has no local emulation
+(its remote mode would need a Cloudflare login), so `alchemy.run.ts` binds `BROWSER` on deployed stages only, whatever
+`COMMISSARY_BROWSER` says: under `pnpm dev` and `pnpm smoke` there is no browser toolkit, and `/me` reports no browser
+binding. Its behaviour is covered by the Tools tests over a fake binding; trying it for real takes a deployed stage (a
+PR preview).
 
 `tools/workers/worker-configuration.d.ts` holds the Workers runtime types for the compatibility date and flags in
 `alchemy.run.ts`, shared by every program that runs in workerd (`apps/app`, `apps/api`, `packages/state`, `packages/models`, `packages/billing`, `packages/tools`; each declares its own
@@ -179,10 +190,11 @@ may have stored its writes before, so it may run twice. Only chains are retried:
   role-table entries, its section of the org export), the ControlPlane part, its cron task (refreshing tool lists) and
   its org-deletion step. Three entry points like Models': `./api` (the API Worker's: cron tasks, `ToolsEnv`),
   `./management` (the app Worker's) and `./state` (the state Worker's: `ToolsPart`); `./testing` serves fake MCP
-  servers to the Worker's tests (`fakeMcpServer`, `serveFakeMcpServers`) and holds Tools' usage writer
-  (`insertToolCallRecord`), with which other tests seed tool calls' records. It reads its bindings through `ToolsEnv`
-  (`CONTROL_PLANE`, `PLATFORM`, `APP_DOMAIN` and `USAGE`, the usage database its tool calls' records go into) and may
-  import `@commissary/state`, `auth`, `contract`, `core`, `effect` and the runtime
+  servers to the Worker's tests (`fakeMcpServer`, `serveFakeMcpServers`) and a fake Browser Run binding
+  (`fakeBrowserRun`), and holds Tools' usage writer (`insertToolCallRecord`), with which other tests seed tool calls'
+  records. `browser` holds the browser toolkit (#212). It reads its bindings through `ToolsEnv` (`CONTROL_PLANE`,
+  `PLATFORM`, `APP_DOMAIN` and `USAGE`, the usage database its tool calls' records go into) and may import
+  `@commissary/state`, `auth`, `contract`, `core`, `effect` and the runtime
   modules `tools/oxlint/boundaries` lists: nothing from `apps/` or Models.
 - `apps/web` (`@commissary/web`): the control panel (below).
 - `packages/auth` (`@commissary/auth`): request-side authentication (#132). The principal and `AccessPrincipal`, roles,
@@ -324,7 +336,8 @@ stays with that Worker.
   (`withPart(stub.models(), …)` from `@commissary/state/testing`); a pipelined call (`stub.models().x()`) leaves one
   held until the test ends, and the eviction never finishes. `@commissary/tools` has two projects the same way:
   `tools-unit` (`test/unit/`, Node.js) and `tools` (workerd, `packages/tools/test/worker.ts`: state's base composed
-  with the Tools part only); its MCP servers are fakes the tests serve by replacing the isolate's `fetch`, which the
+  with the Tools part only, and three more ControlPlanes whose browser toolkit runs on a fake Browser Run binding or a
+  fake second browser provider, or that gains the fake binding when a test restarts it); its MCP servers are fakes the tests serve by replacing the isolate's `fetch`, which the
   ControlPlane in the same isolate calls (`serveFakeMcpServers`, also what the Worker's tests use through `@commissary/tools/testing`).
 - **Package config.** A workerd package's `vitest.config.ts` uses `cloudflareTest` with its test Worker, the deployed
   Worker's compatibility settings and the bindings its env view names; its tsconfig adds the shared Workers runtime

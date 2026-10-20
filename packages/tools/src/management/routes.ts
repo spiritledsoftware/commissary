@@ -50,6 +50,7 @@ const STATUS: Readonly<Record<ToolsErrorCode, number>> = {
   private_toolkits_unavailable: 403,
   no_credential: 409,
   tool_list_failed: 502,
+  built_in: 403,
 };
 
 const orRefuse = <A>(result: ToolsResult<A>): Effect.Effect<A, Reply> =>

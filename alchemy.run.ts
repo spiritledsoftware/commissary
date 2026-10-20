@@ -185,6 +185,12 @@ export default Alchemy.Stack(
       ...(previousSecretsKey === undefined ? {} : { SECRETS_KEY_PREVIOUS: previousSecretsKey }),
     };
 
+    // Browser Run (ADR 0039, ADR 0043, #212), unless `COMMISSARY_BROWSER=off`: the state Worker's ControlPlane runs the
+    // browser toolkit on it (the Tools part's built-in toolkit), and the app Worker reads its presence for `/me`'s
+    // `deployment.browser`. A deploy without it has no browser toolkit and nothing else changes. Never under `alchemy
+    // dev`: `quickAction()` has no local emulation (Browser Run's docs), and its remote mode needs a Cloudflare login.
+    const browserEnv = settings.browser && !dev ? { BROWSER: Cloudflare.Browser("BROWSER") } : {};
+
     // The state Worker (apps/state, ADR 0030): defines ControlPlane, SessionState and Platform, and binds only what
     // their classes read (apps/state/src/env.d.ts). No routes, no domain, no workers.dev URL: the other Workers reach
     // it through their Durable Object bindings. A deploy restarts the Durable Objects a Worker defines, and Alchemy
@@ -212,6 +218,7 @@ export default Alchemy.Stack(
         ...(hosted === undefined ? {} : { COMMISSARY_MODE: "cloud" }),
         ...stateSettings,
         ...secretsKeyBindings,
+        ...browserEnv,
       },
     });
 
@@ -294,6 +301,7 @@ export default Alchemy.Stack(
           ...stateBindings,
           ...stateSettings,
           ACCESS_DEV_BYPASS: dev && hosted === undefined ? settings.devBypass : "",
+          ...browserEnv,
           // Where the panel tells clients to send API keys (`GET /me` `api_url`).
           ...(apiDomain === undefined ? {} : { API_DOMAIN: apiDomain }),
           ...(hosted === undefined || auth === undefined

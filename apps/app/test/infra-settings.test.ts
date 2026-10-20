@@ -641,3 +641,28 @@ describe("Managed OAuth settings (ADR 0045)", () => {
     }),
   );
 });
+
+describe("the browser (COMMISSARY_BROWSER, ADR 0043)", () => {
+  it.effect(
+    "is on by default, also when CI passes the unset variable as empty, and off when set off",
+    () =>
+      Effect.gen(function* () {
+        for (const variables of [{}, { COMMISSARY_BROWSER: "" }, { COMMISSARY_BROWSER: "on" }])
+          assert.strictEqual((yield* read({ ...selfHosted, ...variables })).settings.browser, true);
+
+        assert.strictEqual(
+          (yield* read({ ...selfHosted, COMMISSARY_BROWSER: " off " })).settings.browser,
+          false,
+        );
+      }),
+  );
+
+  it.effect("refuses any other value", () =>
+    Effect.gen(function* () {
+      assert.include(
+        yield* refusal({ ...selfHosted, COMMISSARY_BROWSER: "yes" }),
+        'COMMISSARY_BROWSER must be on or off, not "yes"',
+      );
+    }),
+  );
+});

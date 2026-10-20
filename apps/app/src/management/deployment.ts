@@ -3,15 +3,15 @@
  * Workers addition, no Go counterpart.
  *
  * A piece is present exactly when its binding is, read from `env` at request time, never from a separate variable.
- * The two checks below are where a piece's binding is wired in. Neither binding exists yet, so both are `false`; #212
- * (the browser) and #223 (the computer) wire theirs in here.
+ * The two checks below are where a piece's binding is wired in: the browser's (#212, bound unless
+ * `COMMISSARY_BROWSER=off`) is; the computer's does not exist yet, so it is `false` until #223 wires it in here.
  */
 import { isHosted } from "@commissary/auth";
 import type { Deployment } from "@commissary/contract/orgs";
 import type { AppBindings } from "../worker-env.ts";
 
-/** Browser Run binding (#212). */
-export const hasBrowserBinding = (_env: AppBindings): boolean => false;
+/** Browser Run binding (#212): the app Worker is bound with it exactly when the state Worker, which runs the toolkit, is. */
+export const hasBrowserBinding = (env: AppBindings): boolean => env.BROWSER !== undefined;
 
 /** The sandbox's container binding (#223). */
 export const hasComputerBinding = (_env: AppBindings): boolean => false;

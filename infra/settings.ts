@@ -142,6 +142,11 @@ export interface Settings {
    * data keys again. Unset once every org started under the new key.
    */
   readonly secretsKeyPreviousGeneration: number | undefined;
+  /**
+   * `COMMISSARY_BROWSER` (ADR 0043, default on): the State and app Workers bind Browser Run (`BROWSER`), and the
+   * browser toolkit exists (#212). Never bound under `alchemy dev`, where `quickAction()` has no local emulation.
+   */
+  readonly browser: boolean;
 }
 
 const text = (name: string, fallback = "") =>
@@ -276,6 +281,23 @@ const commissaryMode = Effect.gen(function* () {
     new Error(
       `Invalid deploy settings:\n- COMMISSARY_MODE must be self-hosted or cloud, not "${mode}"`,
     ),
+  );
+});
+
+/**
+ * `COMMISSARY_BROWSER` (ADR 0043): whether the deployment binds Browser Run (`browser`), which the browser toolkit runs
+ * on (#212). `on` (or unset) by default, as Browser Run includes 10 hours a month on Workers Paid; `off` deploys no
+ * binding and no browser toolkit.
+ */
+const browserSetting = Effect.gen(function* () {
+  const value = (yield* text("COMMISSARY_BROWSER")).trim().toLowerCase();
+
+  if (value === "" || value === "on") return true;
+
+  if (value === "off") return false;
+
+  return yield* Effect.die(
+    new Error(`Invalid deploy settings:\n- COMMISSARY_BROWSER must be on or off, not "${value}"`),
   );
 });
 
@@ -448,6 +470,7 @@ export const readSettings = (dev: boolean, stage: string) =>
       devBypass: (yield* text("ACCESS_DEV_BYPASS", "dev@example.com")).trim(),
       secretsKeyGeneration: secretsKey.current,
       secretsKeyPreviousGeneration: secretsKey.previous,
+      browser: yield* browserSetting,
     };
 
     if (dev) return settings;

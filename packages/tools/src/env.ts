@@ -3,7 +3,8 @@
  * typed as objects with the Tools part ({@link ToolsControlPlane}), so callers write `stub.tools().x(…)`, and, for the
  * MCP endpoint's connect links, the Platform registry and the app host, and the usage database its tool calls' records
  * go into (#199, `USAGE`, the D1 database Models' records go into too). Its state is the ControlPlane's, and it reaches
- * MCP servers through the global `fetch` behind the outbound guard.
+ * MCP servers through the global `fetch` behind the outbound guard. Its ControlPlane part reads one binding of the
+ * state Worker's apart from these: Browser Run's optional `BROWSER` (#212, `ToolsPartEnv`, `toolkits/built-in.ts`).
  */
 import { Context, Effect } from "effect";
 import { CurrentOrg, type Reply } from "@commissary/core";

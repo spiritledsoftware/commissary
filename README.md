@@ -204,6 +204,7 @@ model aliases, retries, …) are edited in the control panel and stored in the W
 | `ACCESS_AUD`                     |                | Use an Access application you manage yourself instead of creating one                                                            |
 | `COMMISSARY_CPU_MS`              | `300000`       | CPU limit per request in ms; lower it on plans with smaller limits                                                               |
 | `COMMISSARY_MODE`                |                | `cloud` for Commissary Cloud (own sign-in, no Access; its settings: [DEPLOY.md](docs/DEPLOY.md#commissary-cloud))                |
+| `COMMISSARY_BROWSER`             | `on`           | `off` deploys no Browser Run binding and no browser toolkit ([DEPLOY.md](docs/DEPLOY.md#optional-pieces))                        |
 
 [ACCESS.md](docs/ACCESS.md) explains what each Access setting creates, how the Worker validates requests, and how to
 extend the policies (IdP groups, device posture).

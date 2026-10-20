@@ -17,6 +17,7 @@ import {
   token,
 } from "./support/management.ts";
 import { FULL_ACCESS } from "@commissary/models/testing";
+import { fakeBrowserRun } from "@commissary/tools/testing";
 
 const registry = isolatedPlatform();
 
@@ -26,7 +27,7 @@ afterAll(harness.dispose);
 
 const CAROL = "carol@example.com";
 
-/** A self-hosted Commissary without the browser or the computer bound (neither binding exists yet, #212, #223). */
+/** A self-hosted Commissary without the browser or the computer bound (the test Worker binds neither, #212, #223). */
 const SELF_HOSTED = { hosted: false, browser: false, computer: false };
 
 /** An admin of `global` through her membership there (`seedCarol`), and of no other org. */
@@ -416,6 +417,18 @@ describe("GET /me", () => {
 
     expect(body["deployment"]).toEqual(SELF_HOSTED);
     expect(body).not.toHaveProperty("hosted");
+  });
+
+  it("reports the browser when the deployment has a Browser Run binding (#212)", async () => {
+    const withBrowser = makeHarness(undefined, { ...registry.bindings, BROWSER: fakeBrowserRun() });
+
+    try {
+      const body = (await withBrowser.json("/v9/management/me")).body as Record<string, unknown>;
+
+      expect(body["deployment"]).toEqual({ ...SELF_HOSTED, browser: true });
+    } finally {
+      await withBrowser.dispose();
+    }
   });
 
   it("tells a platform admin it is one and lists every org", async () => {

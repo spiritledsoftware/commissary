@@ -67,6 +67,9 @@ const worker = (bindings: Record<string, string>) =>
         binding: "ASSETS",
         routerConfig: { invoke_user_worker_ahead_of_assets: true },
       },
+      // No `BROWSER` (Browser Run, #212): the tests run a deployment without the browser (`COMMISSARY_BROWSER=off`), and
+      // the one that needs it passes a fake (`@commissary/tools/testing`'s `fakeBrowserRun`); Browser Run's Quick
+      // Actions have no local emulation.
       bindings,
     },
   });
