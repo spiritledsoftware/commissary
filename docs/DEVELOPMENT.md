@@ -70,6 +70,11 @@ into `packages/tools/vitest.config.ts` the same way. Its ControlPlane part reads
 Worker hands its part a fake (`packages/tools/test/worker.ts`), and an app test that needs it passes one
 (`fakeBrowserRun`).
 
+Under `pnpm dev` with `COMMISSARY_MODE=cloud`, Commissary Cloud's OAuth server for MCP clients (#200) is on, with its KV
+namespace emulated: its issuer is the app Worker (`http://localhost:1337`) and its resource the API Worker's `/mcp`
+(`http://localhost:1339/mcp`), so an MCP client on the same machine can sign in against them (the consent page's
+`__Host-` cookie is `Secure`, which browsers accept on `localhost`).
+
 **Known limitation: `alchemy dev` has no browser.** Browser Run's `quickAction()` has no local emulation
 (its remote mode would need a Cloudflare login), so `alchemy.run.ts` binds `BROWSER` on deployed stages only, whatever
 `COMMISSARY_BROWSER` says: under `pnpm dev` and `pnpm smoke` there is no browser toolkit, and `/me` reports no browser
@@ -322,10 +327,13 @@ stays with that Worker.
   handler and the state Worker's Durable Objects so they run in one isolate with no auxiliary Worker (#135); the auth
   Worker's (`apps/auth/test/worker.ts`, one project, `hosted`) likewise. The app Worker's Cloud tests bind a fake of the
   auth Worker (`FakeSignIn`, reached over RPC through `ctx.exports`), whose sessions they start themselves; Better
-  Auth's own flows are tested in `apps/auth`. A test
-  that goes through the client API's router or `fetch` is the API Worker's; one that needs an org, member or API key
-  there sets it up straight through the Durable Objects (`apps/api/test/support/client.ts`), since the management
-  routes that make them are the app Worker's. So do
+  Auth's own flows are tested in `apps/auth`. A request to the app's test Worker with the header `x-test-api-worker`
+  goes to the API Worker's handler (`@commissary/api`, a dev dependency of the app) with the same bindings, as zone
+  routes send the client API there on a stage with one host: the one test that follows an MCP client from the app host's
+  OAuth server to `/mcp` (`test/hosted/mcp-oauth.test.ts`, #200) uses it. A test that goes through the client API's
+  router or `fetch` is the API Worker's; one that needs an org, member or API key there sets it up straight through the
+  Durable Objects (`apps/api/test/support/client.ts`), since the management routes that make them are the app Worker's.
+  So do
   `@commissary/state`'s (one project, `state`: a test Worker of its own, `packages/state/test/worker.ts`, exports the
   ControlPlane's base composed with two dummy area parts, the Platform registry and SessionState, on real SQLite
   storage; its bindings are declared in `test/env.d.ts`); `@commissary/models` has two projects (#135): `models-unit`

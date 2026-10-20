@@ -199,6 +199,8 @@ differs**: the areas, toolkits and settings are the same.
 - The per-org request rate limit.
 - Commissary-owned OAuth apps for catalog toolkits (ADR 0036). A self-hosted Commissary uses its own apps.
 - Suspending people, and owned-org limits.
+- Commissary's own OAuth sign-in for MCP clients (#200), with its KV namespace `OAuth`. A self-hosted Commissary signs
+  its MCP clients in through Access (ADR 0045).
 
 ## Commissary Cloud
 
@@ -249,7 +251,10 @@ set. Replacing it signs everyone out.
    Turnstile secret as secrets), and `COMMISSARY_MODE=cloud` into `production` when `.env` sets it. Set them by hand in
    the GitHub environments otherwise.
 4. **Deploy.** The deploy creates the `SignIn` database and applies its migrations, and the auth Worker on the auth
-   host. The Platform registry and each ControlPlane add their new tables and columns on first use.
+   host. It also creates the KV namespace `OAuth` of the OAuth server for MCP clients and binds it to the app and API
+   Workers (`OAUTH_KV`, with `MCP_OAUTH_ISSUER` = the app host and `MCP_OAUTH_RESOURCE` = `/mcp` on the API host, or on
+   the app host without one); nothing to set. A Cloud preview gets none (its MCP clients use API keys). The Platform
+   registry and each ControlPlane add their new tables and columns on first use.
 
 **Moving sign-in to the auth host** (the first deploy of a Commissary Cloud stage with the auth Worker): sign-in starts
 fresh. The people, sessions and linked accounts Better Auth kept in the usage database (the `auth_*` tables of
