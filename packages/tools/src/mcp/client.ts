@@ -30,7 +30,8 @@ import {
   type HttpClientResponse,
 } from "effect/http";
 import { OUTBOUND_REFUSED_MESSAGE, outboundRefusalOf } from "@commissary/core";
-import type { UpstreamSecret } from "../toolkits/secret.ts";
+import { signingClient } from "../signing/sign.ts";
+import { signsEachRequest, type UpstreamSecret } from "../toolkits/secret.ts";
 import { encodeHeaderValue } from "./header-value.ts";
 import { isJsonObject } from "../http/shared.ts";
 
@@ -129,11 +130,14 @@ const tooLarge = new McpError({
   message: "the MCP server's answer is too large",
 });
 
-/** `request` signed in with `secret`. */
+/** `request` signed in with `secret` (one signed per request, by the client {@link post} sends through). */
 const authorize = (
   request: HttpClientRequest.HttpClientRequest,
   secret: UpstreamSecret,
 ): HttpClientRequest.HttpClientRequest => {
+  // Signed as each request is sent (`signingClient`).
+  if (signsEachRequest(secret)) return request;
+
   switch (secret.kind) {
     case "none":
       return request;
@@ -149,6 +153,14 @@ const authorize = (
         "authorization",
         `Basic ${Buffer.from(`${secret.username}:${secret.password}`, "utf8").toString("base64")}`,
       );
+    case "compound": {
+      let signed = HttpClientRequest.setHeaders(request, Object.fromEntries(secret.headers));
+
+      for (const [name, value] of secret.query)
+        signed = HttpClientRequest.appendUrlParam(signed, name, value);
+
+      return signed;
+    }
   }
 };
 
@@ -272,7 +284,7 @@ const post = Effect.fnUntraced(function* (
   message: RpcMessage,
   extraHeaders: Readonly<Record<string, string>> = {},
 ): Effect.fn.Return<Answer, McpError, HttpClient.HttpClient> {
-  const client = yield* HttpClient.HttpClient;
+  const client = signingClient(yield* HttpClient.HttpClient, secret);
 
   const headers = {
     accept: "application/json, text/event-stream",
@@ -410,7 +422,7 @@ const endSession = Effect.fnUntraced(function* (
   secret: UpstreamSecret,
   session: Session,
 ) {
-  const client = yield* HttpClient.HttpClient;
+  const client = signingClient(yield* HttpClient.HttpClient, secret);
 
   const request = authorize(
     HttpClientRequest.delete(source).pipe(

@@ -56,6 +56,8 @@ export interface Answer {
   readonly status: number;
   /** The body, when it is a JSON object. */
   readonly json: Schema.JsonObject | undefined;
+  /** The body as text (an OAuth 1.0a token endpoint's is form-encoded). */
+  readonly text: string;
   /** A header (lowercase name). */
   readonly header: (name: string) => string | undefined;
 }
@@ -100,6 +102,7 @@ export const send = (
     return {
       status: response.status,
       json: Option.getOrUndefined(decodeObject(text)),
+      text,
       header: (name: string) => response.headers[name],
     } satisfies Answer;
   }).pipe(

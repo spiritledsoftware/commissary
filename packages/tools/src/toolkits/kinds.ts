@@ -262,7 +262,14 @@ const openapi: KindDriver = {
       const operation = tool.tool?.operation;
 
       if (operation === undefined) return yield* failed("the tool has no operation to call");
-      const request = operationCall(operation, toolkit.baseUrl, args);
+
+      // A compound credential's template may name the base URL (#206), which then wins over the toolkit's.
+      const baseUrl =
+        secret.kind === "compound" && secret.baseUrl !== undefined
+          ? secret.baseUrl
+          : toolkit.baseUrl;
+
+      const request = operationCall(operation, baseUrl, args);
 
       if (Result.isFailure(request)) return yield* failed(request.failure);
 

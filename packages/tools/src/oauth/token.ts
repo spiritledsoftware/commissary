@@ -9,7 +9,7 @@
  */
 import { Effect, Option, Schema } from "effect";
 import { type HttpClient, HttpClientRequest } from "effect/http";
-import { invalidAnswer, OAuthError, send } from "./http.ts";
+import { type Answer, invalidAnswer, OAuthError, send } from "./http.ts";
 
 /** How a client authenticates at the token endpoint. */
 export type ClientAuth = "none" | "client_secret_basic" | "client_secret_post";
@@ -29,6 +29,8 @@ export interface TokenSet {
   /** Epoch ms; undefined when the endpoint said nothing (`expires_in`). */
   readonly expiresAt: number | undefined;
   readonly scope: string | undefined;
+  /** What an RFC 8693 token exchange says it issued (§2.2.1). */
+  readonly issuedTokenType?: string | undefined;
 }
 
 const TokenResponse = Schema.Struct({
@@ -37,6 +39,8 @@ const TokenResponse = Schema.Struct({
   expires_in: Schema.optionalKey(Schema.Union([Schema.Finite, Schema.NumberFromString])),
   refresh_token: Schema.optionalKey(Schema.String),
   scope: Schema.optionalKey(Schema.String),
+  /** What an RFC 8693 token exchange issued (§2.2.1). */
+  issued_token_type: Schema.optionalKey(Schema.String),
 });
 
 /**
@@ -54,6 +58,10 @@ const decodeError = Schema.decodeUnknownOption(ErrorResponse);
 /** `application/x-www-form-urlencoded` encoding of one value (RFC 6749 Appendix B). */
 const formEncode = (value: string): string => encodeURIComponent(value).replace(/%20/g, "+");
 
+/** The `Authorization` header of HTTP Basic client authentication, each part form-encoded (RFC 6749 §2.3.1). */
+export const basicAuthorization = (clientId: string, secret: string): string =>
+  `Basic ${btoa(`${formEncode(clientId)}:${formEncode(secret)}`)}`;
+
 /** `params` with the client's authentication, as the request carries it. */
 const authenticated = (
   request: HttpClientRequest.HttpClientRequest,
@@ -64,10 +72,7 @@ const authenticated = (
 
   if (client.auth === "client_secret_basic" && secret !== "")
     return request.pipe(
-      HttpClientRequest.setHeader(
-        "authorization",
-        `Basic ${btoa(`${formEncode(client.clientId)}:${formEncode(secret)}`)}`,
-      ),
+      HttpClientRequest.setHeader("authorization", basicAuthorization(client.clientId, secret)),
       HttpClientRequest.bodyUrlParams(params),
     );
 
@@ -79,20 +84,32 @@ const authenticated = (
 };
 
 /** One request to the token endpoint of `client`: the tokens it issued, or why not. */
-export const requestToken = Effect.fnUntraced(function* (
+export const requestToken = (
   client: TokenClient,
   params: Readonly<Record<string, string>>,
   now: number,
-): Effect.fn.Return<TokenSet, OAuthError, HttpClient.HttpClient> {
-  const answer = yield* send(
-    authenticated(
-      HttpClientRequest.post(client.tokenEndpoint).pipe(HttpClientRequest.acceptJson),
-      client,
-      params,
+): Effect.Effect<TokenSet, OAuthError, HttpClient.HttpClient> =>
+  Effect.flatMap(
+    send(
+      authenticated(
+        HttpClientRequest.post(client.tokenEndpoint).pipe(HttpClientRequest.acceptJson),
+        client,
+        params,
+      ),
+      "token_endpoint",
     ),
-    "token_endpoint",
+    (answer) => tokenAnswer(answer, now),
   );
 
+/**
+ * The tokens a token endpoint's `answer` issued, or why not. `tokenTypes` are the token types taken besides `bearer`
+ * (RFC 8693's `N_A`, for a token that is not an OAuth access token but is sent as one).
+ */
+export const tokenAnswer = Effect.fnUntraced(function* (
+  answer: Answer,
+  now: number,
+  tokenTypes: ReadonlyArray<string> = [],
+): Effect.fn.Return<TokenSet, OAuthError> {
   if (answer.status === 400 || answer.status === 401) {
     const refused = Option.getOrUndefined(decodeError(answer.json));
 
@@ -116,7 +133,11 @@ export const requestToken = Effect.fnUntraced(function* (
   if (tokens === undefined)
     return yield* invalidAnswer("the token endpoint issued no access token");
 
-  if (tokens.token_type !== undefined && tokens.token_type.toLowerCase() !== "bearer")
+  if (
+    tokens.token_type !== undefined &&
+    tokens.token_type.toLowerCase() !== "bearer" &&
+    !tokenTypes.includes(tokens.token_type)
+  )
     return yield* invalidAnswer("the token endpoint issued a token that is not a bearer token");
 
   return {
@@ -130,6 +151,7 @@ export const requestToken = Effect.fnUntraced(function* (
         ? undefined
         : now + tokens.expires_in * 1000,
     scope: tokens.scope,
+    issuedTokenType: tokens.issued_token_type,
   };
 });
 
