@@ -63,6 +63,7 @@ const send = async (
   path: string,
   message: Record<string, unknown>,
   headers: Record<string, string> = {},
+  environment: typeof accessEnv = accessEnv,
 ): Promise<Answer> => {
   const url = `${HOST}${path}`;
 
@@ -76,7 +77,7 @@ const send = async (
       },
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, ...message }),
     }),
-    requestContext(accessEnv, ctx, url),
+    requestContext(environment, ctx, url),
   );
 
   const text = await response.text();
@@ -280,6 +281,33 @@ describe("the MCP endpoint on the app host of a self-hosted Commissary", () => {
     expect((await send("/o/no-such-org/mcp", LIST, await signedIn(a.alice.email))).status).toBe(
       403,
     );
+  });
+
+  it("refuses an address whose org is no slug with 403, platform admins and management keys too", async () => {
+    const { plane, alice } = await toolkitsOrg();
+    const root = `root-${crypto.randomUUID().slice(0, 8)}@example.com`;
+    const withAdmin = { ...accessEnv, PLATFORM_ADMIN_EMAILS: root };
+
+    const issued = await plane.createManagementKey(
+      { name: "script", role: "admin", createdBy: "test" },
+      Date.now(),
+    );
+
+    if (!issued.ok) throw new Error(issued.message);
+
+    for (const at of ["/o/-bad-/mcp", "/o/-bad-/mcp/", "/O/Not_A_Slug/mcp"]) {
+      for (const email of [alice.email, root]) {
+        const refused = await send(at, LIST, await signedIn(email), withAdmin);
+
+        expect(refused.status, `${email} ${at}`).toBe(403);
+        expect(refused.body).toEqual({ error: "Forbidden" });
+      }
+
+      const keyed = await send(at, LIST, { authorization: `Bearer ${issued.value.key}` });
+
+      expect(keyed.status, at).toBe(401);
+      expect(keyed.body).toEqual({ error: "Sign in through Access" });
+    }
   });
 
   it("serves an Access service token as its registered role's principal", async () => {

@@ -185,6 +185,7 @@ describe("authentication", () => {
       ["GET", "/mcp"],
       ["POST", "/mcp"],
       ["POST", `/o/${org}/mcp`],
+      ["POST", "/o/-bad-/mcp"],
     ] as const) {
       const response = await call(path, {
         method,

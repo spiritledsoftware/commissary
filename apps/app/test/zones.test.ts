@@ -6,6 +6,7 @@ import {
   isPanelPagePath,
   LEGACY_PANEL_PATH,
   mcpAddress,
+  mcpOrgSlug,
 } from "../src/management/zones.ts";
 
 describe("access classification of the panel page", () => {
@@ -43,14 +44,25 @@ describe("access classification of the panel page", () => {
       expect(isPanelPagePath(path), path).toBe(false);
     }
 
-    expect(mcpAddress("https://x.test/mcp")).toEqual({ slug: undefined });
-    expect(mcpAddress("https://x.test/O/Acme/mcp/")).toEqual({ slug: "acme" });
+    expect(mcpAddress("https://x.test/mcp")).toEqual({ segment: undefined });
+    expect(mcpAddress("https://x.test/O/Acme/mcp/")).toEqual({ segment: "acme" });
 
     for (const path of ["/mcp/x", "/mcpx"])
       expect(classifyPath(`https://x.test${path}`), path).toBe("protected");
 
-    for (const path of ["/o/acme/mcp/x", "/o/acme/mcpx", "/o/acme/x/mcp", "/o/-bad-/mcp"])
+    for (const path of ["/o/acme/mcp/x", "/o/acme/mcpx", "/o/acme/x/mcp", "/o/mcp"])
       expect(mcpAddress(`https://x.test${path}`), path).toBeUndefined();
+  });
+
+  it("classifies /o/<any segment>/mcp as the MCP endpoint, whose gate refuses one that is no slug", () => {
+    for (const path of ["/o/-bad-/mcp", "/o/-bad-/mcp/", "/o/Not_A_Slug/mcp", "/o/%2Dbad%2D/mcp"])
+      expect(classifyPath(`https://x.test${path}`), path).toBe("mcp");
+
+    expect(mcpOrgSlug({ segment: undefined })).toEqual({ slug: undefined });
+    expect(mcpOrgSlug({ segment: "acme" })).toEqual({ slug: "acme" });
+
+    for (const segment of ["-bad-", "not_a_slug", "a".repeat(64)])
+      expect(mcpOrgSlug({ segment }), segment).toBe("invalid");
   });
 
   it("names the pages a cross-site navigation may open (not the API, not the bundle)", () => {

@@ -367,7 +367,7 @@ characters; a missing key is refused everywhere.
 7. **The app host's `/mcp`** (ADR 0045, self-hosted only): the app Worker verifies the Access JWT as for the panel (an MCP
    client signed in through Managed OAuth, a `cloudflared` token, a person's browser session, or a service token) and
    needs any role in the org. `/mcp` is for `global`, like the panel's unaddressed URLs, and `/o/<slug>/mcp` for the org
-   with that slug, so a member of another org adds its slug; a principal with no role in the org it addresses gets 403.
+   with that slug, so a member of another org adds its slug; a principal with no role in the org it addresses gets 403, and so does everybody, platform admins too, at an address whose org is no slug (`/o/-bad-/mcp`).
    API keys are not read there, nor is `access_clients` (it governs the client API), and a management key is refused
    (401): it is for the management API, not the MCP endpoint. A person is served as their member, with their whole
    reach narrowed by `?toolkits=`, and a service token as its registered role's principal; no tool scope applies.

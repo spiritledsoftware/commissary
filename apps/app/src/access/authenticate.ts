@@ -15,10 +15,10 @@ import {
   presentedManagementKey,
   type SignInSessions,
 } from "@commissary/auth";
-import { type CurrentOrg, UnauthorizedError } from "@commissary/core";
+import { type CurrentOrg, ForbiddenError, UnauthorizedError } from "@commissary/core";
 import { Effect } from "effect";
 import { routeAccess } from "../management/policy.ts";
-import { mcpAddress, scopedUrl } from "../management/zones.ts";
+import { mcpAddress, mcpOrgSlug, scopedUrl } from "../management/zones.ts";
 
 /**
  * Authenticates a management request (`method` decides, with the path, the role it needs). `headers` must expose
@@ -45,7 +45,8 @@ export const MCP_SIGN_IN = "Sign in through Access";
  * Authenticates a request of the MCP endpoint on the app host (ADR 0045): the person or service token Access signed in
  * (`Cf-Access-Jwt-Assertion`, as for the panel), with any role in the org its address names (`/o/<slug>/mcp`; `/mcp`
  * is `global`). A management key is refused before anything else: it is for scripts on the management API, never for an
- * MCP client, which sends an API key to the API host instead.
+ * MCP client, which sends an API key to the API host instead. An address whose org is no slug (`/o/-bad-/mcp`) is
+ * refused `403` for everybody, platform admins too, as an org one may not use is.
  */
 export const authenticateMcp = (
   headers: Readonly<Record<string, string | undefined>>,
@@ -56,9 +57,17 @@ export const authenticateMcp = (
   AccessError,
   AuthConfig | AuthDirectory | CurrentOrg | AccessJwks | SignInSessions
 > =>
-  presentedManagementKey(headers) === undefined
-    ? authenticateManagement(headers, requestUrl, {
-        needs: routeAccess(method, requestUrl, "mcp"),
-        slug: mcpAddress(requestUrl)?.slug,
-      })
-    : Effect.fail(new UnauthorizedError({ message: MCP_SIGN_IN }));
+  Effect.gen(function* () {
+    if (presentedManagementKey(headers) !== undefined)
+      return yield* new UnauthorizedError({ message: MCP_SIGN_IN });
+
+    const address = mcpAddress(requestUrl);
+    const org = address === undefined ? "invalid" : mcpOrgSlug(address);
+
+    if (org === "invalid") return yield* new ForbiddenError({ message: "Forbidden" });
+
+    return yield* authenticateManagement(headers, requestUrl, {
+      needs: routeAccess(method, requestUrl, "mcp"),
+      slug: org.slug,
+    });
+  });

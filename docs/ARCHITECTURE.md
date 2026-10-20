@@ -3038,7 +3038,7 @@ behind the outbound guard.
   `apps/app/src/http/mcp.ts`), in a zone of their own (`management/zones.ts` `mcp`, classified before the panel pages),
   for MCP clients that Access signs in: through Managed OAuth when it is on, else with a `cloudflared` token or a
   service token. Its Access gate verifies the `Cf-Access-Jwt-Assertion` as for the panel (a person, or a service token
-  as its registered role's principal), needs any role in the org the path addresses (`403` otherwise), and applies the
+  as its registered role's principal), needs any role in the org the path addresses (`403` otherwise; every `/o/<segment>/mcp` is this zone, and one whose segment is no slug is `403` for everybody), and applies the
   management zone's cross-site checks (no foreign `Origin` or cross-site fetch, JSON bodies); API keys and
   `access_clients` play no part there, and a management key is refused before the management gate would take it
   (`access/authenticate.ts` `authenticateMcp`): every `401` says `Sign in through Access` with
