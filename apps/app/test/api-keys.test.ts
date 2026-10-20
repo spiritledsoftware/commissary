@@ -8,7 +8,10 @@ import { afterAll, describe, expect, it } from "vitest";
 import { parseApiKey } from "@commissary/auth";
 import { GLOBAL_ORG, OrgId } from "@commissary/core";
 import { controlPlaneOf, type ControlPlaneStub, MAX_KEYS_PER_MEMBER } from "@commissary/state";
+import { fakeMcpServer, serveFakeMcpServers } from "@commissary/tools/testing";
 import { ADMIN, isolatedPlatform, jsonInit, makeHarness, token } from "./support/management.ts";
+
+serveFakeMcpServers();
 
 const registry = isolatedPlatform();
 
@@ -332,6 +335,139 @@ describe("issuing keys", () => {
     const names = (await stub.listApiKeys(alice.id, Date.now())).map((listed) => listed.name);
 
     expect(names).toEqual([kept]);
+  });
+});
+
+describe("a key's tool scope", () => {
+  /** An org whose members are all granted a toolkit with a write and a read tool, and that toolkit's id. */
+  const toolkitOrg = async (prefix: string) => {
+    const staff = await staffedOrg(prefix);
+
+    const upstream = fakeMcpServer(
+      `https://mcp-${crypto.randomUUID().slice(0, 8)}.example.com/mcp`,
+      {
+        tools: [
+          { name: "create_issue" },
+          { name: "list_issues", annotations: { readOnlyHint: true } },
+        ],
+      },
+    );
+
+    const added = await send(staff.slug, "/toolkits", staff.admin, "POST", {
+      source: upstream.url,
+      name: "github",
+      accepts: "shared",
+      credential: { kind: "none", subject: { kind: "everyone" } },
+    });
+
+    expect(added.status).toBe(201);
+
+    return { ...staff, toolkit: (added.body as { id: string }).id };
+  };
+
+  it("lists what the member may use, by toolkit, for the scope to pick from", async () => {
+    const { slug, alice, toolkit } = await toolkitOrg("scope-usable");
+    const usable = await send(slug, "/tools", alice);
+
+    expect(usable).toMatchObject({
+      status: 200,
+      body: {
+        toolkits: [
+          {
+            id: toolkit,
+            name: "github",
+            tools: [
+              { id: `${toolkit}:create_issue`, name: "github_create_issue", tool_class: "write" },
+              { id: `${toolkit}:list_issues`, name: "github_list_issues", tool_class: "read" },
+            ],
+          },
+        ],
+      },
+    });
+  });
+
+  it("is set when the key is created and changed by its member, with the tool count it gives", async () => {
+    const { slug, alice, bob, toolkit } = await toolkitOrg("scope-set");
+    const read = [{ toolkit, tools: { kind: "read" } }];
+
+    const created = await send(slug, "/api-keys", alice, "POST", {
+      name: "reader",
+      tool_scope: read,
+    });
+
+    expect(created.status).toBe(201);
+    expect(created.body).toMatchObject({ name: "reader", tool_scope: read, tool_count: 1 });
+    const { id } = created.body as { id: string };
+
+    const unscoped = await createKey(slug, alice, "everything");
+
+    expect(unscoped).toMatchObject({ tool_count: 2 });
+    expect(unscoped).not.toHaveProperty("tool_scope");
+
+    // A named tool its toolkit no longer lists shows as missing.
+    const named = [
+      {
+        toolkit,
+        tools: { kind: "named", ids: [`${toolkit}:create_issue`, ` ${toolkit}:gone`] },
+      },
+    ];
+
+    const changed = await send(slug, `/api-keys/${id}`, alice, "PATCH", { tool_scope: named });
+
+    expect(changed).toMatchObject({
+      status: 200,
+      body: {
+        id,
+        tool_scope: [
+          {
+            toolkit,
+            tools: { kind: "named", ids: [`${toolkit}:create_issue`, `${toolkit}:gone`] },
+          },
+        ],
+        tool_count: 1,
+        tool_scope_missing: [`${toolkit}:gone`],
+      },
+    });
+
+    const listed = (await send(slug, "/api-keys", alice)).body as {
+      keys: ReadonlyArray<KeyBody & { tool_count?: number }>;
+    };
+
+    expect(listed.keys.map((key) => [key.name, key.tool_count])).toEqual([
+      ["everything", 2],
+      ["reader", 1],
+    ]);
+
+    const cleared = await send(slug, `/api-keys/${id}`, alice, "PATCH", { tool_scope: null });
+
+    expect(cleared.body).toMatchObject({ id, tool_count: 2 });
+    expect(cleared.body).not.toHaveProperty("tool_scope");
+
+    // Another member's key answers as unknown; an empty scope gives nothing.
+    expect(errorOf(await send(slug, `/api-keys/${id}`, bob, "PATCH", { tool_scope: [] }))).toBe(
+      "api_key_not_found",
+    );
+    expect(
+      (await send(slug, `/api-keys/${id}`, alice, "PATCH", { tool_scope: [] })).body,
+    ).toMatchObject({ tool_scope: [], tool_count: 0 });
+  });
+
+  it("refuses a scope that names a toolkit twice or a tool of another toolkit", async () => {
+    const { slug, alice, toolkit } = await toolkitOrg("scope-invalid");
+
+    for (const tool_scope of [
+      [
+        { toolkit, tools: { kind: "all" } },
+        { toolkit, tools: { kind: "read" } },
+      ],
+      [{ toolkit, tools: { kind: "named", ids: ["tk_other:create_issue"] } }],
+      [{ toolkit, tools: { kind: "named", ids: [] } }],
+    ]) {
+      const refused = await send(slug, "/api-keys", alice, "POST", { name: "bad", tool_scope });
+
+      expect(refused.status).toBe(422);
+      expect(errorOf(refused)).toBe("invalid_tool_scope");
+    }
   });
 });
 

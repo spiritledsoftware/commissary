@@ -314,8 +314,35 @@ const idParam = { params: { id: Schema.String } };
 
 const slotParams = { params: { id: Schema.String, slot: CredentialSlot } };
 
+/** A tool the caller may use (#200): its stable id, the full name clients call it by, and its class. */
+export const UsableTool = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String,
+  tool_class: ToolClass,
+});
+
+export type UsableTool = typeof UsableTool.Type;
+
+/** A toolkit of which the caller may use some tools, with those tools sorted by full name. */
+export const UsableToolkit = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String,
+  tools: Schema.Array(UsableTool),
+});
+
+export type UsableToolkit = typeof UsableToolkit.Type;
+
+/**
+ * `GET /tools`: what the caller may use on the MCP endpoint, by toolkit sorted by name (the tool list a key without a
+ * tool scope gets): what the panel's tool scope editor and the consent page of an MCP client's sign-in pick from.
+ */
+export const UsableTools = Schema.Struct({ toolkits: Schema.Array(UsableToolkit) });
+
+export type UsableTools = typeof UsableTools.Type;
+
 export class ToolsGroup extends HttpApiGroup.make("tools").add(
   HttpApiEndpoint.get("list", "/toolkits", { success: ToolkitsList, error: managementErrors }),
+  HttpApiEndpoint.get("usable", "/tools", { success: UsableTools, error: managementErrors }),
   /**
    * `422 invalid` (name, accepts, credential; a source naming a user or password, with `path: "source"`),
    * `422 not_accepted` (a credential the toolkit does not take), `422` with

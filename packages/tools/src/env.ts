@@ -24,6 +24,8 @@ type ToolsPartMethod =
   | "listTools"
   | "servedTools"
   | "clientTools"
+  | "usableTools"
+  | "keyToolSummaries"
   | "callTool"
   | "setOverride"
   | "listGrants"

@@ -46,6 +46,7 @@ import {
   type ApiKeyResult,
   ApiKeyStore,
 } from "./api-keys/store.ts";
+import type { ToolScope } from "@commissary/contract/api-keys";
 import type { StateObjectEnv } from "./env.ts";
 import {
   type NewSpendLimit,
@@ -87,6 +88,8 @@ export interface OrgCore {
   privateToolkits(): boolean;
   /** Every member's live API keys at `now` (epoch ms). */
   apiKeys(now: number): ReadonlyArray<ApiKeyRecord>;
+  /** One API key by id, with its tool scope (#200), while it is stored; the MCP endpoint narrows to its scope. */
+  apiKey(id: string): ApiKeyRecord | undefined;
   /**
    * The org's Spend limits (ADR 0024): one service per object, which model attempts and tool calls are checked and
    * charged through (`ledger()`), and whose limits on a part's shared credentials the part forgets when they go.
@@ -244,6 +247,7 @@ export class OrgControlPlane<P extends ControlPlaneParts> extends DurableObject<
       privateCredentials: () => this.#members.privateCredentials(),
       privateToolkits: () => this.#members.privateToolkits(),
       apiKeys: (now) => this.#apiKeys.list(undefined, now),
+      apiKey: (id) => this.#apiKeys.get(id),
       spend: this.#spend,
       wakeUpChanged: async (at) => {
         this.#wakeUps.set(name, at);
@@ -521,9 +525,17 @@ export class OrgControlPlane<P extends ControlPlaneParts> extends DurableObject<
     }));
   }
 
-  /** Issues a key to a member of the org; the answer carries the whole key, shown this once. `now`: epoch ms. */
+  /**
+   * Issues a key to a member of the org, with a tool scope if given (#200); the answer carries the whole key, shown
+   * this once. `now`: epoch ms.
+   */
   createApiKey(
-    input: { readonly memberId: string; readonly name: string; readonly expiresAt?: number },
+    input: {
+      readonly memberId: string;
+      readonly name: string;
+      readonly expiresAt?: number;
+      readonly toolScope?: ToolScope | undefined;
+    },
     now: number,
   ): ApiKeyResult<{ readonly record: ApiKeyRecord; readonly key: string }> | MemberNotFound {
     this.#seedPlatformAdmins();
@@ -532,6 +544,18 @@ export class OrgControlPlane<P extends ControlPlaneParts> extends DurableObject<
       return { ok: false, error: "member_not_found", message: "no member has this id" };
 
     return this.#apiKeys.create(input, now);
+  }
+
+  /** Sets the tool scope of a key of `memberId` (`null`: every tool of its member; `ApiKeyStore.setToolScope`). */
+  setApiKeyToolScope(
+    id: string,
+    scope: ToolScope | null,
+    memberId: string,
+    now: number,
+  ): ApiKeyResult<ApiKeyRecord> {
+    this.#seedPlatformAdmins();
+
+    return this.#apiKeys.setToolScope(id, scope, memberId, now);
   }
 
   /** Deletes the keys that have expired at `now` in every member's name (the cron sweep); answers how many. */

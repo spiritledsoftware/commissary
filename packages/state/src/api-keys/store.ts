@@ -8,6 +8,8 @@
  *   at once, an expired key is deleted by the next listing, issue or presentation of it, and by the cron sweep. The
  *   `revoked_at` column of the first version stays in the table, never written; rows a previous version revoked are
  *   deleted when the ControlPlane starts.
+ *   A key may carry a tool scope (`tool_scope`, JSON; #200): the toolkits and tools it may use within its member's
+ *   reach, which the Tools part reads on every MCP request (`OrgCore.apiKey`). NULL: every tool of its member.
  * - **api_key_settings**: one row of org-wide state: whether the org still accepts Access sign-ins (the clients of
  *   the time before API keys) on the client API. On for `global`, where clients signed in through Access before,
  *   off for every other org.
@@ -16,6 +18,8 @@
  * milliseconds), so the Worker's `Clock` drives them.
  */
 import { type ApiKeyRejection, isKeyId, mintApiKey } from "@commissary/auth";
+import { Option, Schema } from "effect";
+import { ToolScope } from "@commissary/contract/api-keys";
 import { GLOBAL_ORG, type OrgId } from "@commissary/core";
 import { cleanName, MAX_NAME_LENGTH } from "../platform/registry-store.ts";
 
@@ -30,11 +34,14 @@ export interface ApiKeyRecord {
   readonly lastUsedAt?: number;
   readonly expiresAt?: number;
   readonly revokedAt?: number;
+  /** The tools it may use within its member's reach (#200); absent: every tool its member may use. */
+  readonly toolScope?: ToolScope;
 }
 
 export type ApiKeyErrorCode =
   | "invalid_name"
   | "invalid_expiry"
+  | "invalid_tool_scope"
   | "too_many_keys"
   | "api_key_not_found";
 
@@ -84,6 +91,7 @@ const SCHEMA = [
 
 interface KeyRow {
   id: string;
+  tool_scope: string | null;
   member_id: string;
   name: string;
   hash: string;
@@ -105,14 +113,61 @@ interface CountRow {
   [column: string]: SqlStorageValue;
 }
 
-const COLUMNS = `id, member_id, name, hash, prefix, created_at, last_used_at, expires_at, revoked_at`;
+const COLUMNS = `id, member_id, name, hash, prefix, created_at, last_used_at, expires_at, revoked_at, tool_scope`;
 
 const HASH = /^[0-9a-f]{64}$/;
+
+/** The most toolkits one tool scope names. */
+export const MAX_SCOPE_TOOLKITS = 100;
+
+/** The most tools one toolkit of a tool scope names. */
+export const MAX_SCOPE_TOOLS = 500;
+
+/**
+ * `scope` as stored: each named id trimmed and once, in order; `undefined` when it is not one a key may carry (a toolkit
+ * named twice or with an empty id, too many toolkits or tools, a named id of another toolkit, no named id at all).
+ */
+export const normalizedToolScope = (scope: ToolScope): ToolScope | undefined => {
+  if (scope.length > MAX_SCOPE_TOOLKITS) return undefined;
+  const toolkits = new Set<string>();
+  const normalized: Array<ToolScope[number]> = [];
+
+  for (const entry of scope) {
+    const toolkit = entry.toolkit.trim();
+
+    if (toolkit === "" || toolkits.has(toolkit)) return undefined;
+    toolkits.add(toolkit);
+
+    if (entry.tools.kind !== "named") {
+      normalized.push({ toolkit, tools: entry.tools });
+      continue;
+    }
+
+    const ids = [...new Set(entry.tools.ids.map((id) => id.trim()))];
+
+    if (
+      ids.length === 0 ||
+      ids.length > MAX_SCOPE_TOOLS ||
+      ids.some((id) => !id.startsWith(`${toolkit}:`) || id.length === toolkit.length + 1)
+    )
+      return undefined;
+    normalized.push({ toolkit, tools: { kind: "named", ids } });
+  }
+
+  return normalized;
+};
+
+const decodeStoredToolScope = Schema.decodeUnknownOption(Schema.fromJsonString(ToolScope));
+
+/** A stored tool scope; one that does not parse (never written so) gives nothing rather than everything. */
+const storedToolScope = (text: string): ToolScope =>
+  Option.getOrElse(decodeStoredToolScope(text), (): ToolScope => []);
 
 const MESSAGES = {
   invalidName: `a name is 1 to ${MAX_NAME_LENGTH} characters without control characters`,
   invalidExpiry: "a key expires at a time in the future",
   tooManyKeys: `a member holds at most ${MAX_KEYS_PER_MEMBER} API keys`,
+  invalidToolScope: `a tool scope names each toolkit once, at most ${MAX_SCOPE_TOOLKITS} of them, and a named tool by the stable id of a tool of its toolkit (at most ${MAX_SCOPE_TOOLS} per toolkit)`,
   notFound: "no API key has this id",
 } as const;
 
@@ -140,6 +195,7 @@ const record = (row: KeyRow): ApiKeyRecord => ({
   ...(row.last_used_at === null ? {} : { lastUsedAt: row.last_used_at }),
   ...(row.expires_at === null ? {} : { expiresAt: row.expires_at }),
   ...(row.revoked_at === null ? {} : { revokedAt: row.revoked_at }),
+  ...(row.tool_scope === null ? {} : { toolScope: storedToolScope(row.tool_scope) }),
 });
 
 export class ApiKeyStore {
@@ -162,6 +218,16 @@ export class ApiKeyStore {
     this.#removed = removed;
 
     for (const statement of SCHEMA) sql.exec(statement);
+
+    // Tool scopes (#200) came after the table: a ControlPlane from before them gains the column, its keys unscoped.
+    const columns = new Set(
+      sql
+        .exec<{ name: string }>("PRAGMA table_info(api_keys)")
+        .toArray()
+        .map((column) => column.name),
+    );
+
+    if (!columns.has("tool_scope")) sql.exec(`ALTER TABLE api_keys ADD COLUMN tool_scope TEXT`);
 
     // A key the first version revoked was kept marked; none is kept any more.
     sql.exec(`DELETE FROM api_keys WHERE revoked_at IS NOT NULL`);
@@ -215,12 +281,23 @@ export class ApiKeyStore {
    * stored: the member sees it this once.
    */
   create(
-    input: { readonly memberId: string; readonly name: string; readonly expiresAt?: number },
+    input: {
+      readonly memberId: string;
+      readonly name: string;
+      readonly expiresAt?: number;
+      readonly toolScope?: ToolScope | undefined;
+    },
     now: number,
   ): ApiKeyResult<{ readonly record: ApiKeyRecord; readonly key: string }> {
     const name = cleanName(input.name);
 
     if (name === undefined) return refuse("invalid_name", MESSAGES.invalidName);
+
+    const toolScope =
+      input.toolScope === undefined ? undefined : normalizedToolScope(input.toolScope);
+
+    if (input.toolScope !== undefined && toolScope === undefined)
+      return refuse("invalid_tool_scope", MESSAGES.invalidToolScope);
 
     if (
       input.expiresAt !== undefined &&
@@ -241,8 +318,8 @@ export class ApiKeyStore {
     while (this.#row(minted.keyId) !== undefined) minted = mintApiKey(this.#org);
 
     this.#sql.exec(
-      `INSERT INTO api_keys (id, member_id, name, hash, prefix, created_at, expires_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO api_keys (id, member_id, name, hash, prefix, created_at, expires_at, tool_scope)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       minted.keyId,
       input.memberId,
       name,
@@ -250,6 +327,7 @@ export class ApiKeyStore {
       minted.prefix,
       now,
       input.expiresAt ?? null,
+      toolScope === undefined ? null : JSON.stringify(toolScope),
     );
 
     const created = this.get(minted.keyId);
@@ -275,6 +353,39 @@ export class ApiKeyStore {
     this.#removed([id]);
 
     return { ok: true, value: { ...record(row), revokedAt: now } };
+  }
+
+  /**
+   * Sets the tool scope of a live key of `memberId` (`null`: every tool of its member), at once: the Tools part reads it
+   * on every request. Another member's key, or one expired at `now`, answers as unknown.
+   */
+  setToolScope(
+    id: string,
+    scope: ToolScope | null,
+    memberId: string,
+    now: number,
+  ): ApiKeyResult<ApiKeyRecord> {
+    this.purgeExpired(now);
+    const row = this.#row(id);
+
+    if (row === undefined || row.member_id !== memberId)
+      return refuse("api_key_not_found", MESSAGES.notFound);
+
+    const toolScope = scope === null ? null : normalizedToolScope(scope);
+
+    if (toolScope === undefined) return refuse("invalid_tool_scope", MESSAGES.invalidToolScope);
+
+    this.#sql.exec(
+      `UPDATE api_keys SET tool_scope = ? WHERE id = ?`,
+      toolScope === null ? null : JSON.stringify(toolScope),
+      id,
+    );
+
+    const updated = this.get(id);
+
+    if (updated === undefined) throw new Error("the API key just written is missing");
+
+    return { ok: true, value: updated };
   }
 
   /** Deletes every key that has expired at `now`, whoever's; answers how many. */

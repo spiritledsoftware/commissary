@@ -9,6 +9,8 @@ export { accessRules } from "./management/access-rules.ts";
 
 export { exportSection } from "./management/export-view.ts";
 
+export { type KeyToolSummary, keyToolSummaries } from "./management/key-tools.ts";
+
 export { ManagementRoutes } from "./management/routes.ts";
 
 export { mcpRoutesAt } from "./mcp/endpoint.ts";
