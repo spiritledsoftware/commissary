@@ -222,6 +222,7 @@ const builtInToolkit = (
     inputSchema: tool.inputSchema,
     annotations: tool.annotations,
     operation: undefined,
+    graphql: undefined,
     // Before any tool of a stored toolkit: a built-in tool keeps its full name against them.
     firstSeen: 0,
     position,

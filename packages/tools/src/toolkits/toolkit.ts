@@ -11,7 +11,10 @@ import type { StoredApprovalRules } from "../approvals/rules.ts";
 interface ToolkitFields {
   readonly id: string;
   readonly name: string;
-  /** The MCP server's URL, or the OpenAPI document's (empty for an uploaded one); a built-in toolkit's provider. */
+  /**
+   * The MCP server's URL, the OpenAPI document's (empty for an uploaded one) or the GraphQL endpoint's; a built-in
+   * toolkit's provider.
+   */
   readonly source: string;
   /** The member of a private toolkit; undefined for an org toolkit. */
   readonly owner: string | undefined;
@@ -34,10 +37,18 @@ interface ToolkitFields {
   readonly baseUrl: string | undefined;
 }
 
-/** A toolkit of the org's `toolkits` table: an MCP server's or an OpenAPI document's (ADR 0036, #203). */
+/**
+ * A toolkit of the org's `toolkits` table: an MCP server's, an OpenAPI document's (ADR 0036, #203) or a GraphQL
+ * endpoint's (#204).
+ */
 export interface StoredToolkit extends ToolkitFields {
-  readonly kind: "mcp" | "openapi";
+  readonly kind: "mcp" | "openapi" | "graphql";
   readonly builtIn: false;
+  /**
+   * It is built from an uploaded document the part keeps (an OpenAPI document, a GraphQL schema's SDL), not from its
+   * source: set when it is added with one, or when a GraphQL toolkit's first schema is uploaded.
+   */
+  readonly uploaded: boolean;
 }
 
 /**

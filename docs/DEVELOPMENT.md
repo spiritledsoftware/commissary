@@ -201,19 +201,20 @@ may have stored its writes before, so it may run twice. Only chains are retried:
   workerd against `packages/billing/test/worker.ts`, a test-only ControlPlane (state's base composed with its part).
 - `packages/tools` (`@commissary/tools`): the Tools area (#196): toolkits built from remote MCP servers, their
   credentials, tool lists and prices. `toolkits` (names, the store, resolving the tools a caller sees, credential
-  secrets, prices), `usage` (the usage record of a tool call),
-  `mcp` (a minimal Streamable HTTP MCP client, behind the outbound guard), `openapi` (OpenAPI documents read into tool
-  lists, and the requests their tools make), `http` (the HTTP-call path API-calling kinds share), `management` (its management routes,
-  role-table entries, its section of the org export), the ControlPlane part, its cron task (refreshing tool lists) and
-  its org-deletion step. Three entry points like Models': `./api` (the API Worker's: cron tasks, `ToolsEnv`),
+  secrets, prices, the bounds of input schemas derived from documents), `usage` (the usage record of a tool call), `mcp`
+  (a minimal Streamable HTTP MCP client, behind the outbound guard), `openapi` (OpenAPI documents read into tool lists,
+  and the requests their tools make), `graphql` (GraphQL schemas, introspected or uploaded, read into tool lists, and
+  the requests their tools make), `http` (the HTTP-call path API-calling kinds share), `management` (its management
+  routes, role-table entries, its section of the org export), the ControlPlane part, its cron task (refreshing tool
+  lists) and its org-deletion step. Three entry points like Models': `./api` (the API Worker's: cron tasks, `ToolsEnv`),
   `./management` (the app Worker's) and `./state` (the state Worker's: `ToolsPart` and the browser sessions' Durable
-  Object, `BrowserSession`, and the sandbox's `SandboxSession`, `SandboxEgress` and `WorkspaceServiceProxy`); `./testing` serves fake MCP servers to the Worker's tests (`fakeMcpServer`,
-  `serveFakeMcpServers`), a fake Browser Run binding (`fakeBrowserRun`) and the browser sessions' object over a fake
-  provider's browsers (`FakeBrowserSession`, `browserSessionStub`), and holds Tools' usage writer
-  (`insertToolCallRecord`), with which other tests seed tool calls' records. `browser` holds the browser toolkit
-  (#212) and its sessions (#213), `sandbox` the sandbox toolkit (#222). It reads its bindings through `ToolsEnv` (`CONTROL_PLANE`,
-  `PLATFORM`, `APP_DOMAIN` and `USAGE`, the usage database its tool calls' records go into) and may import
-  `@commissary/state`, `auth`, `contract`, `core`, `effect` and the runtime
+  Object, `BrowserSession`, and the sandbox's `SandboxSession`, `SandboxEgress` and `WorkspaceServiceProxy`);
+  `./testing` serves fake MCP servers to the Worker's tests (`fakeMcpServer`, `serveFakeMcpServers`), a fake Browser Run
+  binding (`fakeBrowserRun`) and the browser sessions' object over a fake provider's browsers (`FakeBrowserSession`,
+  `browserSessionStub`), and holds Tools' usage writer (`insertToolCallRecord`), with which other tests seed tool calls'
+  records. `browser` holds the browser toolkit (#212) and its sessions (#213), `sandbox` the sandbox toolkit (#222). It
+  reads its bindings through `ToolsEnv` (`CONTROL_PLANE`, `PLATFORM`, `APP_DOMAIN` and `USAGE`, the usage database its
+  tool calls' records go into) and may import `@commissary/state`, `auth`, `contract`, `core`, `effect` and the runtime
   modules `tools/oxlint/boundaries` lists: nothing from `apps/` or Models.
 - `packages/agents` (`@commissary/agents`): the Agents area (#226, ADR 0040): hosted agent definitions, private and
   shared, the grants on shared agents and their watchers; runs come later (#227). `agents` (the store, the checks of a
@@ -375,8 +376,9 @@ stays with that Worker.
   replacing the isolate's `fetch`, which the ControlPlane in the same isolate calls: one routing `fetch` hands each
   request to the fake of its origin (`test/support/fake-fetch.ts`, `serveFakeServers`; the Worker's tests install it as
   `serveFakeMcpServers` from `@commissary/tools/testing`), fake MCP servers (`fakeMcpServer`) and fake HTTP servers for
-  OpenAPI toolkits' documents and calls (`test/support/http-server.ts`, `fakeHttpServer`, which records each request
-  with its body). `@commissary/agents` has one workerd project (`agents`): its test Worker,
+  OpenAPI toolkits' documents and calls and GraphQL toolkits' endpoints (`test/support/http-server.ts`,
+  `fakeHttpServer`, which records each request with its body; a fake GraphQL endpoint runs the introspection query it
+  is sent with graphql-js's `graphqlSync`). `@commissary/agents` has one workerd project (`agents`): its test Worker,
   `packages/agents/test/worker.ts`, is a test-only ControlPlane (state's base composed with the Agents part only) with
   the Platform registry and SessionState, on real SQLite storage, and `LOADER` bound; the part takes what the routes
   found of Models and Tools as data, so no other area runs there (the app Worker's tests check the routes with both).

@@ -1,14 +1,16 @@
 /**
  * `/v9/management/toolkits` (`ToolsGroup` in `@commissary/contract/tools`): toolkits built from remote MCP servers,
- * their credentials, their tool lists and the overrides on their tools (#196, ADR 0036, ADR 0037, ADR 0038). The app
- * Worker's `management/routes.ts` mounts them next to its own and Models'.
+ * OpenAPI documents and GraphQL endpoints, their credentials, their tool lists and the overrides on their tools (#196,
+ * ADR 0036, ADR 0037, ADR 0038). The app Worker's `management/routes.ts` mounts them next to its own and Models'.
  *
  * Every member of the org may use them (`access-rules.ts`); the Tools part decides what the caller reaches from the
  * viewer each route hands it: an org admin manages org toolkits, a member their private ones and their private
  * credentials. A toolkit's source, and an OpenAPI toolkit's base URL, pass the outbound guard when they are saved (ADR
  * 0044), and the part builds tool lists with the request's guard policy. An OpenAPI toolkit's document may be uploaded
- * instead of given by URL (#203), at most {@link MAX_DOCUMENT_BYTES}; its managers read it back. Edits of a toolkit or
- * an override name its revision in `If-Match`.
+ * instead of given by URL (#203), at most {@link MAX_DOCUMENT_BYTES}, and a GraphQL toolkit's schema as SDL instead of
+ * introspected (#204), at most {@link MAX_SDL_BYTES}, also as a first upload on an introspected one; their managers
+ * read it back. Edits of a toolkit or an override name its revision in
+ * `If-Match`.
  *
  * `GET /v9/management/tools`: the tools the caller may use, by toolkit (#200): what a key's tool scope picks from.
  *
@@ -48,6 +50,7 @@ import {
 import { bodyJson } from "@commissary/state";
 import type { ToolsErrorCode, ToolsResult } from "../control-plane-part.ts";
 import { toolsControlPlane, ToolsEnv } from "../env.ts";
+import { MAX_SDL_BYTES } from "../graphql/schema.ts";
 import { MAX_DOCUMENT_BYTES } from "../http/call.ts";
 import { signInUrls } from "../oauth/urls.ts";
 import { defaultToolkitName } from "../toolkits/names.ts";
@@ -65,6 +68,7 @@ const STATUS: Readonly<Record<ToolsErrorCode, number>> = {
   private_toolkits_unavailable: 403,
   no_credential: 409,
   tool_list_failed: 502,
+  body_too_large: 413,
   built_in: 403,
   outbound_refused: 422,
   sign_in_failed: 502,
@@ -77,7 +81,10 @@ const orRefuse = <A>(result: ToolsResult<A>): Effect.Effect<A, Reply> => {
   return Effect.fail(
     result.error === "outbound_refused"
       ? replyError(422, result.message, { path: result.path ?? "" })
-      : replyError(STATUS[result.error], result.error, { message: result.message }),
+      : replyError(STATUS[result.error], result.error, {
+          message: result.message,
+          ...(result.path === undefined ? {} : { path: result.path }),
+        }),
   );
 };
 
@@ -103,11 +110,17 @@ const decodeWithDocument = <S extends Schema.Top & { readonly DecodingServices: 
     ),
   );
 
-/** An uploaded document within {@link MAX_DOCUMENT_BYTES}; `413 body_too_large` otherwise. */
-const checkedDocument = Effect.fnUntraced(function* (document: string) {
-  if (new TextEncoder().encode(document).byteLength > MAX_DOCUMENT_BYTES)
+/**
+ * An uploaded document within `limit` ({@link MAX_DOCUMENT_BYTES}; a GraphQL schema's SDL, {@link MAX_SDL_BYTES}),
+ * `413 body_too_large` otherwise.
+ */
+const checkedDocument = Effect.fnUntraced(function* (
+  document: string,
+  limit: number = MAX_DOCUMENT_BYTES,
+) {
+  if (new TextEncoder().encode(document).byteLength > limit)
     return yield* replyError(413, "body_too_large", {
-      message: `the document is larger than ${MAX_DOCUMENT_BYTES} bytes`,
+      message: `the document is larger than ${limit} bytes`,
       path: "document",
     });
 
@@ -195,6 +208,18 @@ const add = Effect.gen(function* () {
   if (kind === "mcp" && input.source === undefined)
     return yield* invalid("an MCP toolkit names its server's URL", "source");
 
+  if (kind === "graphql" && input.base_url !== undefined)
+    return yield* invalid(
+      "a GraphQL toolkit takes no base URL: its source is its endpoint",
+      "base_url",
+    );
+
+  if (kind === "graphql" && input.source === undefined)
+    return yield* invalid("a GraphQL toolkit names its endpoint's URL", "source");
+
+  if (kind === "graphql" && input.document?.trim() === "")
+    return yield* invalid("an uploaded GraphQL schema is not empty", "document");
+
   if (kind === "openapi" && (input.source === undefined) === (input.document === undefined))
     return yield* invalid(
       "an OpenAPI toolkit gives either its document's URL (source) or the document",
@@ -207,7 +232,12 @@ const add = Effect.gen(function* () {
     input.base_url === undefined ? undefined : yield* checkedSource(input.base_url, "base_url");
 
   const document =
-    input.document === undefined ? undefined : yield* checkedDocument(input.document);
+    input.document === undefined
+      ? undefined
+      : yield* checkedDocument(
+          input.document,
+          kind === "graphql" ? MAX_SDL_BYTES : MAX_DOCUMENT_BYTES,
+        );
 
   const credential =
     input.credential === undefined
@@ -229,7 +259,7 @@ const add = Effect.gen(function* () {
         // An OpenAPI toolkit's default comes from its document, which the part reads.
         name:
           input.name ??
-          (kind === "mcp" && source !== undefined ? defaultToolkitName(source) : undefined),
+          (kind !== "openapi" && source !== undefined ? defaultToolkitName(source) : undefined),
         private: isPrivate,
         accepts: input.accepts ?? (isPrivate ? "private" : "shared"),
         credential,
