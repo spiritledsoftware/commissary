@@ -31,6 +31,7 @@ import { peopleRoutes } from "./people-routes.ts";
 import { managementKeyRoutes } from "./management-key-routes.ts";
 import { ssoRoutes } from "./sso-routes.ts";
 import { apiKeyRoutes } from "./api-key-routes.ts";
+import { spendRoutes } from "./spend-routes.ts";
 import {
   LEGACY_PANEL_REDIRECT,
   PANEL_PAGE_PATHS,
@@ -44,6 +45,7 @@ const OrgWideRoutes = HttpRouter.addAll([
   ...peopleRoutes,
   ...memberRoutes,
   ...apiKeyRoutes,
+  ...spendRoutes,
   ...managementKeyRoutes,
   ...ssoRoutes,
   HttpRouter.route("GET", LEGACY_PANEL_PATH, LEGACY_PANEL_REDIRECT),

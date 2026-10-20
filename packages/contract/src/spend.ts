@@ -1,5 +1,5 @@
 /**
- * Spend limits (`/v9/management/spend`, `packages/models/src/management/spend-routes.ts`; the rules live in
+ * Spend limits (`/v9/management/spend`, `apps/app/src/management/spend-routes.ts`; the rules live in
  * `packages/state/src/spend/`): what a member, team, the org, a shared credential (a Models credential, or an org
  * toolkit's) or an API key may spend in a day, week or month of the org's time zone; model attempts and priced tool
  * calls (#199) count toward the same limits. Workers addition, no Go counterpart. Shared with the browser: imports `effect` and

@@ -107,16 +107,7 @@ import {
   outboundPolicy,
 } from "@commissary/core";
 import { QuotaReportStore } from "./quota/store.ts";
-import type {
-  NewSpendLimit,
-  SpendCredential,
-  SpendEntry,
-  SpendOverview,
-  SpendResult,
-  SpendService,
-  SpendServiceResult,
-  SpendSettings,
-} from "@commissary/state/spend";
+import type { SpendCredential, SpendService } from "@commissary/state/spend";
 import {
   type ControlPlanePart,
   type LeaseSource,
@@ -352,7 +343,7 @@ export class ModelsPart extends RpcTarget implements ControlPlanePart {
   readonly #privateKeys: PrivateKeyStore;
   /**
    * The org's Spend limits (issue #71), the org-wide base's (`core.spend`, which tool calls are charged through too):
-   * what the management API does with them and the ledger the pool checks.
+   * the ledger the pool checks and charges, and the credentials' limits to forget when one goes.
    */
   readonly #spend: SpendService;
   /** The org this object serves, from its name. */
@@ -609,53 +600,6 @@ export class ModelsPart extends RpcTarget implements ControlPlanePart {
    */
   importConfig(text: string, by: string, basedOn?: number): ImportResult {
     return this.#config.importDocument(text, by, basedOn);
-  }
-
-  // --- Spend limits (issue #71, `@commissary/state/spend`) -------------------------------------------------------------------
-
-  /** The limits `viewer` sees with their Spend so far, and the org's calendar. */
-  spendOverview(viewer: Viewer): SpendOverview {
-    this.#core.seedPlatformAdmins();
-
-    return this.#spend.overview(viewer);
-  }
-
-  createSpendLimit(
-    viewer: Viewer,
-    input: NewSpendLimit,
-    by: string,
-  ): SpendServiceResult<SpendEntry> {
-    this.#core.seedPlatformAdmins();
-
-    return this.#spend.create(viewer, input, by);
-  }
-
-  updateSpendLimit(
-    viewer: Viewer,
-    id: string,
-    revision: number,
-    amountMicros: number,
-    by: string,
-  ): SpendServiceResult<SpendEntry> {
-    this.#core.seedPlatformAdmins();
-
-    return this.#spend.update(viewer, id, revision, amountMicros, by);
-  }
-
-  removeSpendLimit(viewer: Viewer, id: string, revision: number): SpendServiceResult<SpendEntry> {
-    this.#core.seedPlatformAdmins();
-
-    return this.#spend.remove(viewer, id, revision);
-  }
-
-  /** Sets the org's time zone and first day of the week; counters of periods that begin differently start over. */
-  setSpendSettings(settings: {
-    readonly timeZone?: string | undefined;
-    readonly weekStart?: string | undefined;
-  }): SpendResult<SpendSettings> {
-    this.#core.seedPlatformAdmins();
-
-    return this.#spend.setSettings(settings);
   }
 
   // --- grants (ADR 0023, `grants/store.ts`) -----------------------------------------------------------------------

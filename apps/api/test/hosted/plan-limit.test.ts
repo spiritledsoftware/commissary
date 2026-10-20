@@ -132,12 +132,10 @@ describe("counting requests", () => {
   it("does not count a request a spend limit refuses", async () => {
     const { org, key, member } = await configuredOrg("spend@example.com");
 
-    const limited = await withModelsPart(env.CONTROL_PLANE.getByName(org), (part) =>
-      part.createSpendLimit(
-        { member, admin: true },
-        { kind: "org", subject: "", period: "day", amountMicros: 0 },
-        "test@example.com",
-      ),
+    const limited = await env.CONTROL_PLANE.getByName(org).createSpendLimit(
+      { member, admin: true },
+      { kind: "org", subject: "", period: "day", amountMicros: 0 },
+      "test@example.com",
     );
 
     expect(limited.ok).toBe(true);

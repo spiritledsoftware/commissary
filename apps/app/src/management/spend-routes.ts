@@ -1,6 +1,7 @@
 /**
  * `/v9/management/spend` (`SpendGroup` in @commissary/contract/spend): Spend limits and the org's calendar (issue #71).
- * Workers addition, no Go counterpart.
+ * Workers addition, no Go counterpart. The limits are the ControlPlane's org-wide base's (`@commissary/state/spend`):
+ * model attempts and tool calls count toward them (#199), so their routes are the app Worker's, like the API keys'.
  *
  * Any member of the org may use `GET /spend` and the limit routes (`policy.ts`); the ControlPlane's
  * `SpendService` decides what the caller sees and writes: an org admin (or a platform admin) every limit, a plain
@@ -9,7 +10,7 @@
  */
 import { Effect, Schema } from "effect";
 import { HttpRouter, type HttpServerResponse } from "effect/http";
-import { AccessPrincipal } from "@commissary/auth";
+import { AccessPrincipal, currentViewer } from "@commissary/auth";
 import type {
   SpendEntry,
   SpendServiceErrorCode,
@@ -22,9 +23,7 @@ import {
   UpdateSpendSettings,
 } from "@commissary/contract/spend";
 import { handled, ifMatch, jsonReply, type Reply, replyError } from "@commissary/core";
-import { bodyJson } from "@commissary/state";
-import { currentViewer } from "@commissary/auth";
-import { modelsControlPlane } from "../env.ts";
+import { bodyJson, controlPlane } from "@commissary/state";
 
 const BASE = "/v9/management";
 
@@ -82,9 +81,7 @@ const idParam = Effect.gen(function* () {
 const overview = Effect.gen(function* () {
   const viewer = yield* currentViewer;
 
-  const spend = yield* modelsControlPlane("spendOverview", (stub) =>
-    stub.models().spendOverview(viewer),
-  );
+  const spend = yield* controlPlane("spendOverview", (stub) => stub.spendOverview(viewer));
 
   return jsonReply(200, {
     time_zone: spend.settings.timeZone,
@@ -99,8 +96,8 @@ const create = Effect.gen(function* () {
   const { principalId } = yield* AccessPrincipal;
   const input = yield* decode(CreateSpendLimit);
 
-  const result = yield* modelsControlPlane("createSpendLimit", (stub) =>
-    stub.models().createSpendLimit(
+  const result = yield* controlPlane("createSpendLimit", (stub) =>
+    stub.createSpendLimit(
       viewer,
       {
         kind: input.kind,
@@ -122,8 +119,8 @@ const update = Effect.gen(function* () {
   const revision = yield* ifMatch;
   const input = yield* decode(UpdateSpendLimit);
 
-  const result = yield* modelsControlPlane("updateSpendLimit", (stub) =>
-    stub.models().updateSpendLimit(viewer, id, revision, input.amount_micros, principalId),
+  const result = yield* controlPlane("updateSpendLimit", (stub) =>
+    stub.updateSpendLimit(viewer, id, revision, input.amount_micros, principalId),
   );
 
   return jsonReply(200, view(yield* orRefuse(result)));
@@ -134,8 +131,8 @@ const remove = Effect.gen(function* () {
   const id = yield* idParam;
   const revision = yield* ifMatch;
 
-  const result = yield* modelsControlPlane("removeSpendLimit", (stub) =>
-    stub.models().removeSpendLimit(viewer, id, revision),
+  const result = yield* controlPlane("removeSpendLimit", (stub) =>
+    stub.removeSpendLimit(viewer, id, revision),
   );
 
   return jsonReply(200, view(yield* orRefuse(result)));
@@ -144,8 +141,8 @@ const remove = Effect.gen(function* () {
 const settings = Effect.gen(function* () {
   const input = yield* decode(UpdateSpendSettings);
 
-  const result = yield* modelsControlPlane("setSpendSettings", (stub) =>
-    stub.models().setSpendSettings({
+  const result = yield* controlPlane("setSpendSettings", (stub) =>
+    stub.setSpendSettings({
       ...(input.time_zone === undefined ? {} : { timeZone: input.time_zone }),
       ...(input.week_start === undefined ? {} : { weekStart: input.week_start }),
     }),

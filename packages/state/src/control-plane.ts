@@ -7,6 +7,7 @@ import type {
   MembershipIndex,
   PrincipalRef,
   SsoAdmission,
+  Viewer,
 } from "@commissary/auth";
 import { type Actor, isHosted, platformAdminLists } from "@commissary/auth";
 import { emailDomain, type IdpSettings } from "@commissary/auth/sso";
@@ -46,8 +47,16 @@ import {
   ApiKeyStore,
 } from "./api-keys/store.ts";
 import type { StateObjectEnv } from "./env.ts";
-import { type SpendCredential, SpendService } from "./spend/service.ts";
-import { SpendStore } from "./spend/store.ts";
+import {
+  type NewSpendLimit,
+  type SpendCredential,
+  type SpendEntry,
+  type SpendOverview,
+  SpendService,
+  type SpendServiceResult,
+} from "./spend/service.ts";
+import { type SpendResult, SpendStore } from "./spend/store.ts";
+import type { SpendSettings } from "./spend/model.ts";
 
 /**
  * The org-wide ControlPlane as an area's part sees it from inside the Durable Object (#134 "How an area's ControlPlane
@@ -448,6 +457,55 @@ export class OrgControlPlane<P extends ControlPlaneParts> extends DurableObject<
     await this.ctx.storage.deleteAlarm();
     await this.ctx.storage.deleteAll();
     await this.ctx.storage.sync();
+  }
+
+  // --- Spend limits (ADR 0024, issue #71, `spend/`) ---------------------------------------------------------------
+  // The org-wide base's since tool calls count toward them too (#199); the parts name the shared credentials a limit
+  // may name (`ControlPlanePart.spendCredentials`).
+
+  /** The limits `viewer` sees with their Spend so far, and the org's calendar. */
+  spendOverview(viewer: Viewer): SpendOverview {
+    this.#seedPlatformAdmins();
+
+    return this.#spend.overview(viewer);
+  }
+
+  createSpendLimit(
+    viewer: Viewer,
+    input: NewSpendLimit,
+    by: string,
+  ): SpendServiceResult<SpendEntry> {
+    this.#seedPlatformAdmins();
+
+    return this.#spend.create(viewer, input, by);
+  }
+
+  updateSpendLimit(
+    viewer: Viewer,
+    id: string,
+    revision: number,
+    amountMicros: number,
+    by: string,
+  ): SpendServiceResult<SpendEntry> {
+    this.#seedPlatformAdmins();
+
+    return this.#spend.update(viewer, id, revision, amountMicros, by);
+  }
+
+  removeSpendLimit(viewer: Viewer, id: string, revision: number): SpendServiceResult<SpendEntry> {
+    this.#seedPlatformAdmins();
+
+    return this.#spend.remove(viewer, id, revision);
+  }
+
+  /** Sets the org's time zone and first day of the week; counters of periods that begin differently start over. */
+  setSpendSettings(settings: {
+    readonly timeZone?: string | undefined;
+    readonly weekStart?: string | undefined;
+  }): SpendResult<SpendSettings> {
+    this.#seedPlatformAdmins();
+
+    return this.#spend.setSettings(settings);
   }
 
   // --- API keys (ADR 0022, `api-keys/store.ts`) -----------------------------------------------------------------

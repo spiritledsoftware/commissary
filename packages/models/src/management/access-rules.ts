@@ -11,12 +11,6 @@ const CREDENTIAL = `${MANAGEMENT}/credentials`;
 
 const PROVIDER_KEYS = `${MANAGEMENT}/provider-keys`;
 
-/**
- * Spend limits (`spend-routes.ts`): a plain member reads the limits that bind them and limits their own API keys, so
- * those routes are for members; the calendar (`/spend/settings`) stays for org admins.
- */
-const SPEND = `${MANAGEMENT}/spend`;
-
 /** A route a plain member may use with `methods`. */
 const member = (methods: ReadonlyArray<string>, path: string): AccessRule => ({
   path,
@@ -24,10 +18,7 @@ const member = (methods: ReadonlyArray<string>, path: string): AccessRule => ({
   role: "member",
 });
 
-/** The table takes the first entry that matches, so the spend calendar comes before the rest of `/spend`. */
 export const accessRules: ReadonlyArray<AccessRule> = [
-  { path: `${SPEND}/settings`, role: "admin" },
-  { path: SPEND, subpaths: true, role: "member" },
   // Reading usage (a plain member sees only their own requests, `usage-routes.ts`) and the models the caller may use
   // (ADR 0023): the registry as their own grants leave it.
   member(["GET", "HEAD"], `${MANAGEMENT}/observability/usage/records`),

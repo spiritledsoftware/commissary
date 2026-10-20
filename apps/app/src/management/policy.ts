@@ -9,8 +9,9 @@
  *   without an org (they redirect to an org of the caller or show the org chooser), its bundle files and the old
  *   panel's address.
  * - **member**: any role in the org: the client API, the panel's pages of the org, their own API keys
- *   (`management/api-key-routes.ts`) and the areas' routes their entries name (Models: reading usage, their own
- *   credentials and spend limits).
+ *   (`management/api-key-routes.ts`), the Spend limits that bind them and those on their own keys
+ *   (`management/spend-routes.ts`), and the areas' routes their entries name (Models: reading usage and their own
+ *   credentials).
  * - **admin**: everything else of the management API. Some routes need more and say so in their handler: changing a
  *   role (org owner), downloading a credential or giving a service token a role above member (ADR 0006's rule per
  *   org, `@commissary/auth` `holdsSensitivePowers`).
@@ -32,11 +33,20 @@ import {
 const API_KEYS = `${MANAGEMENT_PREFIX}/api-keys`;
 
 /**
- * The routes below `admin`, first match wins: the Worker's own (a member's API keys), then each area's, listed
- * explicitly (#134 "The area package convention").
+ * Spend limits (`management/spend-routes.ts`): a plain member reads the limits that bind them and limits their own API
+ * keys, so those routes are for members (the ControlPlane's `SpendService` decides what each may see and write); the
+ * calendar (`/spend/settings`) stays for org admins.
+ */
+const SPEND = `${MANAGEMENT_PREFIX}/spend`;
+
+/**
+ * The routes below `admin`, first match wins: the Worker's own (a member's API keys, Spend limits; the calendar comes
+ * before the rest of `/spend`), then each area's, listed explicitly (#134 "The area package convention").
  */
 const RULES: ReadonlyArray<AccessRule> = [
   { path: API_KEYS, subpaths: true, role: "member" },
+  { path: `${SPEND}/settings`, role: "admin" },
+  { path: SPEND, subpaths: true, role: "member" },
   ...modelsAccessRules,
   ...toolsAccessRules,
 ];

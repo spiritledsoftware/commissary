@@ -273,9 +273,11 @@ describe("a priced tool call", () => {
     subject: string,
     amountMicros: number,
   ) => {
-    const made = await planeOf(org)
-      .models()
-      .createSpendLimit(viewer(admin, true), { kind, subject, period: "day", amountMicros }, "t");
+    const made = await planeOf(org).createSpendLimit(
+      viewer(admin, true),
+      { kind, subject, period: "day", amountMicros },
+      "t",
+    );
 
     if (!made.ok) throw new Error(`${made.error}: ${made.message}`);
 
@@ -308,7 +310,7 @@ describe("a priced tool call", () => {
     ]);
     expect((await toolRows(org)).every((row) => row["unpriced"] === 0)).toBe(true);
 
-    const overview = await planeOf(org).models().spendOverview(viewer(admin, true));
+    const overview = await planeOf(org).spendOverview(viewer(admin, true));
 
     expect(
       Object.fromEntries(overview.entries.map((entry) => [entry.kind, entry.spentMicros])),

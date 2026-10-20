@@ -36,7 +36,6 @@ import { quotaCheckHandler, quotaSweepHandler } from "./quota-routes.ts";
 import { claimResetGrantHandler, resetGrantsHandler } from "./reset-grant-routes.ts";
 import { routingModelsHandler } from "./routing-models.ts";
 import { settingsRoutes } from "./settings-routes.ts";
-import { spendRoutes } from "./spend-routes.ts";
 import { usageRoutes } from "./usage-routes.ts";
 
 const BASE = "/v9/management";
@@ -71,7 +70,6 @@ export const ManagementRoutes = HttpRouter.addAll(
       ...oauthRoutes,
       ...priceRoutes,
       ...grantRoutes,
-      ...spendRoutes,
       HttpRouter.route("GET", `${BASE}/credentials/models`, bound(credentialModelsHandler)),
       HttpRouter.route("POST", `${BASE}/credentials/batch`, credentialsBatchHandler),
       HttpRouter.route("POST", `${BASE}/credentials/quota`, bound(quotaCheckHandler)),

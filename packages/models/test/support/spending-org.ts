@@ -45,13 +45,11 @@ export const spendingOrg = async () => {
   };
 
   const limit = async (kind: "member" | "key" | "org", subject: string) => {
-    const made = await stub
-      .models()
-      .createSpendLimit(
-        viewer,
-        { kind, subject, period: "day", amountMicros: 100 * USD },
-        "test@example.com",
-      );
+    const made = await stub.createSpendLimit(
+      viewer,
+      { kind, subject, period: "day", amountMicros: 100 * USD },
+      "test@example.com",
+    );
 
     if (!made.ok) throw new Error(`${made.error}: ${made.message}`);
   };
