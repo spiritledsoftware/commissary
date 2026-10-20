@@ -14,14 +14,18 @@ import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";
 import * as Output from "alchemy/Output";
-import { type AccessWiring, provisionAccess, provisionClientApiBypass } from "./infra/access.ts";
+import {
+  type AccessWiring,
+  provisionAccess,
+  provisionClientApiBypass,
+  zoneRoutedPrefixes,
+} from "./infra/access.ts";
 import { BUNDLE_ALIASES } from "./infra/bundle.ts";
 import { previewAppName, previewOrigin } from "./infra/preview-origin.ts";
 import { readSettings } from "./infra/settings.ts";
 import { RATE_LIMIT_PERIOD_SECONDS, REQUEST_RATE_CEILING } from "@commissary/billing/plan";
 import { DEV_AUTH_INDEX_KEY } from "@commissary/models/auth-index-key";
 import { DEV_SECRETS_KEY, secretsKeyResourceId } from "./packages/state/src/secrets/key.ts";
-import { CLIENT_API_PREFIXES } from "./packages/core/src/http/client-api.ts";
 
 /**
  * Runtime compatibility of the Workers; keep in sync with apps/app/vitest.config.ts, apps/api/vitest.config.ts,
@@ -315,9 +319,10 @@ export default Alchemy.Stack(
       });
 
     // The API Worker (apps/api): the client API and the cron jobs. Its own workers.dev URL on a preview, the API host on a
-    // stage that has one, else zone routes for the client API paths on the app host (`CLIENT_API_PREFIXES`: a route
-    // pattern matches every path that starts with it, as the Workers match them, so `/v1*` covers `/v1beta`). Under
-    // `alchemy dev` it serves its own port. `app` is the app Worker, deployed first except on a preview.
+    // stage that has one, else zone routes for the client API paths on the app host (`zoneRoutedPrefixes`: a route
+    // pattern matches every path that starts with it, as the Workers match them, so `/v1*` covers `/v1beta`; on a
+    // self-hosted stage not `/mcp`, which the app Worker serves behind Access, ADR 0045). Under `alchemy dev` it serves
+    // its own port. `app` is the app Worker, deployed first except on a preview.
     const apiWorker = (app: Effect.Success<ReturnType<typeof appWorker>> | undefined) =>
       Cloudflare.Worker("Api", {
         main: dev ? "./apps/api/src/dev.ts" : "./apps/api/src/index.ts",
@@ -328,7 +333,7 @@ export default Alchemy.Stack(
         ...(dev || settings.preview || split
           ? {}
           : {
-              routes: CLIENT_API_PREFIXES.map((prefix) => ({
+              routes: zoneRoutedPrefixes(hosted !== undefined).map((prefix) => ({
                 pattern: `${settings.appDomain}${prefix}*`,
               })),
             }),
@@ -411,6 +416,9 @@ export default Alchemy.Stack(
     // so it is applied only after the API Worker and its routes: the client API must not leave Access while a Worker
     // that only reads the Access edge's `Cf-Access-Jwt-Assertion` still serves it. An API host needs none (Access
     // covers the app host only), nor does a preview, whose API Worker's workers.dev URL is not enrolled in Access.
+    // `/mcp` stays behind Access (ADR 0045): when an earlier deploy bypassed it, the zone route that sent it to the API
+    // Worker is gone before Access covers it again, and meanwhile the app Worker, which verifies the Access JWT itself,
+    // refuses a request without one.
     if (!dev && hosted === undefined && !split && !settings.preview)
       yield* provisionClientApiBypass(
         settings,

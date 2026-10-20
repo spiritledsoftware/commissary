@@ -58,12 +58,14 @@ const signInRedirect = (
 };
 
 /**
- * Global middleware: requests of the management zone (`management/zones.ts`: the management API and the panel) must
+ * Global middleware: requests of the management zone (`management/zones.ts`: the management API and the panel) and,
+ * on a self-hosted Commissary, of the MCP endpoint (`/mcp`, ADR 0045: Access signs MCP clients in) must
  * carry a credential `@commissary/auth` accepts (`authenticate.ts`): an Access JWT, a Commissary Cloud session or a
  * management key, and come from a member of the request's org with the role the route needs (`management/policy.ts`,
  * ADR 0022): a platform admin (`PLATFORM_ADMIN_*`) is an owner of every org, anyone else has the role their membership
  * gives them. Cross-site requests and cross-origin WebSocket upgrades are refused first (`csrf.ts`). A client API path
- * is refused with a 404 that says where the client API is (`http/hosts.ts`): the API Worker serves it (ADR 0030).
+ * is refused with a 404 that says where the client API is (`http/hosts.ts`): the API Worker serves it (ADR 0030), and so
+ * is `/mcp` on Commissary Cloud.
  * Everything else (`/healthz`, unknown paths) is passed through untouched. On success the principal is available to
  * handlers as `AccessPrincipal`, and `CurrentOrg` is the org of the request: the org addressed by an org-scoped
  * management URL (`management/org-address.ts`), unchanged otherwise.
@@ -85,7 +87,9 @@ export const AccessGate = HttpRouter.middleware<{ provides: AccessPrincipal }>()
           return yield* Effect.provideService(app, AccessPrincipal, PUBLIC_ROUTE_IDENTITY);
         }
 
-        if (zone === "protected")
+        // Commissary Cloud serves the MCP endpoint on the API host only: its MCP clients sign in through its own OAuth
+        // server (ADR 0036), not here (ADR 0045).
+        if (zone === "protected" || (zone === "mcp" && hosted))
           return HttpServerResponse.setHeader(
             errorResponse(404, clientApiElsewhere(yield* AppEnv)),
             "cache-control",
@@ -102,7 +106,7 @@ export const AccessGate = HttpRouter.middleware<{ provides: AccessPrincipal }>()
         if (rejection !== undefined) return errorResponse(rejection.status, rejection.message);
 
         const authenticated = yield* Effect.result(
-          authenticateRequest(request.headers, request.originalUrl, request.method).pipe(
+          authenticateRequest(request.headers, request.originalUrl, request.method, zone).pipe(
             Effect.provideService(AccessJwks, jwks),
           ),
         );
@@ -110,7 +114,12 @@ export const AccessGate = HttpRouter.middleware<{ provides: AccessPrincipal }>()
         if (Result.isFailure(authenticated)) {
           const page = hosted ? signInRedirect(request, authenticated.failure) : undefined;
 
-          return page ?? (yield* accessErrorResponse(authenticated.failure));
+          const refusal = page ?? (yield* accessErrorResponse(authenticated.failure));
+
+          // The MCP authorization spec's challenge, as on the API Worker; Access answers its own (Managed OAuth) first.
+          return zone === "mcp" && refusal.status === 401
+            ? HttpServerResponse.setHeader(refusal, "www-authenticate", "Bearer")
+            : refusal;
         }
 
         return yield* app.pipe(

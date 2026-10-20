@@ -114,6 +114,17 @@ export interface Settings {
   readonly sessionDuration: string;
   /** Optional header Access reads a JSON service token from (single-header mode), e.g. `x-api-key`. */
   readonly serviceTokenHeader: string;
+  /**
+   * Managed OAuth of the stack's Access application (ADR 0045), which signs MCP clients in to the app host's `/mcp`: the
+   * redirect URIs a dynamically registered client may use (`ACCESS_OAUTH_REDIRECT_URIS`, by default
+   * {@link DEFAULT_OAUTH_REDIRECT_URIS}), and whether any client redirecting to `localhost` or `127.0.0.1` may
+   * (`ACCESS_OAUTH_LOOPBACK_CLIENTS`, by default on: Claude Code, Codex, Cursor's desktop app). Ignored with `ACCESS_AUD`
+   * (docs/DEPLOY.md gives the dashboard steps) and on Commissary Cloud.
+   */
+  readonly managedOAuth: {
+    readonly redirectUris: ReadonlyArray<string>;
+    readonly loopbackClients: boolean;
+  };
   readonly metaMintUrl: string;
   readonly cpuMs: number;
   /** Local development identity (`alchemy dev` only). */
@@ -172,6 +183,34 @@ const secretsKeyGenerations = Effect.gen(function* () {
 });
 
 const TOKEN_NAME = /^[a-z0-9][a-z0-9-]{0,40}$/;
+
+/**
+ * The redirect URIs Managed OAuth allows by default: the hosted clients of docs/CLIENTS.md that sign in from a web
+ * origin (Claude's apps, Cursor's web and agents). Clients on the person's machine redirect to a loopback address, which
+ * `ACCESS_OAUTH_LOOPBACK_CLIENTS` allows.
+ */
+export const DEFAULT_OAUTH_REDIRECT_URIS: ReadonlyArray<string> = [
+  "https://claude.ai/api/mcp/auth_callback",
+  "https://www.cursor.com/agents/mcp/oauth/callback",
+];
+
+/**
+ * Why `uri` cannot be a redirect URI Managed OAuth allows, `undefined` when it can: an absolute URL, `https:` (a
+ * path may end in `/*`) or a client's own scheme, never `http:` (loopback clients have their own setting).
+ */
+const notARedirectUri = (uri: string): string | undefined => {
+  let parsed: URL;
+
+  try {
+    parsed = new URL(uri);
+  } catch {
+    return `ACCESS_OAUTH_REDIRECT_URIS: "${uri}" is not an absolute URL`;
+  }
+
+  return parsed.protocol === "http:"
+    ? `ACCESS_OAUTH_REDIRECT_URIS: "${uri}" must be https (ACCESS_OAUTH_LOOPBACK_CLIENTS allows clients on localhost)`
+    : undefined;
+};
 
 /** A hostname as a custom domain takes it: lowercase labels, at least two, no scheme, port or path. */
 const HOSTNAME =
@@ -349,6 +388,12 @@ export const readSettings = (dev: boolean, stage: string) =>
         ? yield* hostedSettings(dev, stage, preview, { baseDomain, appDomain, apiDomain })
         : undefined;
 
+    const oauthRedirectUris = yield* list("ACCESS_OAUTH_REDIRECT_URIS");
+
+    const oauthLoopbackClients = (yield* text("ACCESS_OAUTH_LOOPBACK_CLIENTS"))
+      .trim()
+      .toLowerCase();
+
     const settings: Settings = {
       hosted: hosted?.hosted,
       preview,
@@ -365,6 +410,11 @@ export const readSettings = (dev: boolean, stage: string) =>
       adminServiceTokens: yield* list("PLATFORM_ADMIN_SERVICE_TOKENS"),
       sessionDuration: (yield* text("ACCESS_SESSION_DURATION", "24h")).trim(),
       serviceTokenHeader: (yield* text("ACCESS_SERVICE_TOKEN_HEADER")).trim(),
+      managedOAuth: {
+        redirectUris:
+          oauthRedirectUris.length === 0 ? DEFAULT_OAUTH_REDIRECT_URIS : oauthRedirectUris,
+        loopbackClients: oauthLoopbackClients !== "false",
+      },
       metaMintUrl: (yield* text("META_MINT_URL")).trim(),
       cpuMs: yield* Config.Number("COMMISSARY_CPU_MS").pipe(Config.withDefault(300_000)),
       devBypass: (yield* text("ACCESS_DEV_BYPASS", "dev@example.com")).trim(),
@@ -428,6 +478,21 @@ export const readSettings = (dev: boolean, stage: string) =>
     if (settings.teamDomain === "")
       problems.push("ACCESS_TEAM_DOMAIN is required (your Zero Trust team name)");
 
+    if (
+      oauthLoopbackClients !== "" &&
+      oauthLoopbackClients !== "true" &&
+      oauthLoopbackClients !== "false"
+    )
+      problems.push(
+        `ACCESS_OAUTH_LOOPBACK_CLIENTS must be true or false, not "${oauthLoopbackClients}"`,
+      );
+
+    for (const uri of oauthRedirectUris) {
+      const problem = notARedirectUri(uri);
+
+      if (problem !== undefined) problems.push(problem);
+    }
+
     if (settings.existingAud === "") {
       if (
         settings.allowEmails.length === 0 &&
@@ -444,10 +509,16 @@ export const readSettings = (dev: boolean, stage: string) =>
         if (!TOKEN_NAME.test(name))
           problems.push(`ACCESS_SERVICE_TOKENS: "${name}" must match ${TOKEN_NAME.source}`);
       }
-    } else if (settings.serviceTokens.length > 0 || settings.allowServiceTokenIds.length > 0) {
-      problems.push(
-        "ACCESS_SERVICE_TOKENS and ACCESS_ALLOW_SERVICE_TOKEN_IDS need a stack-managed Access application: unset ACCESS_AUD",
-      );
+    } else {
+      if (settings.serviceTokens.length > 0 || settings.allowServiceTokenIds.length > 0)
+        problems.push(
+          "ACCESS_SERVICE_TOKENS and ACCESS_ALLOW_SERVICE_TOKEN_IDS need a stack-managed Access application: unset ACCESS_AUD",
+        );
+
+      if (oauthRedirectUris.length > 0 || oauthLoopbackClients !== "")
+        problems.push(
+          "ACCESS_OAUTH_REDIRECT_URIS and ACCESS_OAUTH_LOOPBACK_CLIENTS need a stack-managed Access application: unset ACCESS_AUD, or set Managed OAuth on your application (docs/DEPLOY.md)",
+        );
     }
 
     if (problems.length > 0) {

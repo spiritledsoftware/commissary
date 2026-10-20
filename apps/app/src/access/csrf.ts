@@ -29,7 +29,7 @@ const managementBodyTypes = (method: string, path: string): ReadonlyArray<string
 };
 
 /**
- * Checks a request of the protected (`/v1*`, ...) or the management zone before authentication; `undefined` when it
+ * Checks a request of the protected (`/v1*`, ...), the MCP or the management zone before authentication; `undefined` when it
  * may proceed. A management path is a panel page when a browser may open it from another site (`isPanelPagePath`: the
  * panel's pages, also an org's, and `/management.html`; never `/v9/management*`).
  */
@@ -40,6 +40,11 @@ export const crossSiteRejection = (
   zone: Exclude<AccessZone, "public">,
 ): CrossSiteRejection | undefined => {
   if (zone === "protected") return rejectCrossSite(method, headers, requestUrl, undefined);
+
+  // The MCP endpoint behind Access (ADR 0045) takes the Access session cookie too, so it is guarded like a management
+  // write: no foreign `Origin` (also the transport's DNS-rebinding rule), no cross-site fetch, JSON bodies only.
+  if (zone === "mcp")
+    return rejectCrossSite(method, headers, requestUrl, { panelPage: false, bodyTypes: [] });
   const path = normalizedPath(requestUrl) ?? "";
 
   return rejectCrossSite(method, headers, requestUrl, {

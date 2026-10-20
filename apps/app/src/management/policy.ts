@@ -61,7 +61,8 @@ export const routeAccess = (
   requestUrl: string,
   zone: Exclude<AccessZone, "public">,
 ): RouteAccess => {
-  if (zone === "protected") return "member";
+  // The client API and the MCP endpoint (ADR 0045): any role in the org, as on the API Worker.
+  if (zone === "protected" || zone === "mcp") return "member";
   const path = normalizedPath(requestUrl);
 
   if (path === undefined) return "admin";

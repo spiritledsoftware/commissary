@@ -13,6 +13,9 @@
 #   `global` keeps Access sign-ins for clients on by default. The JWT is the `CF_Authorization` cookie Access sets for
 #   the service token, which is issued for the main application, like a `cloudflared access login` token;
 # - the control panel without credentials is stopped by Access (anything but 200);
+# - the app host's MCP endpoint is the app Worker's, behind Access (ADR 0045): through Access with the service token it
+#   answers a GET 405 (no stream), or 403 `Forbidden` where the token holds no role in `global`; the API Worker would
+#   answer 401 `Missing API key` (on one host, a `/mcp*` zone route or bypass left over);
 # - when the client API has a host of its own (an API host, or a preview's API Worker workers.dev URL): /healthz answers
 #   200 there, the client API answers 404 on the app host (through Access, from the app Worker) and the management API
 #   404 there (from the API Worker).
@@ -68,6 +71,7 @@ ok() { [ "$1" = 200 ]; }
 worker_401() { [ "$1" = 401 ] && grep -q '"Missing API key"' "$body"; }
 worker_404() { [ "$1" = 404 ] && grep -q '"Not found: ' "$body"; }
 not_ok() { [ "$1" != 200 ] && [ "$1" != 000 ]; }
+app_mcp() { [ "$1" = 405 ] || { [ "$1" = 403 ] && grep -q '"Forbidden"' "$body"; }; }
 
 expect "$base" /healthz token "200 through Access" ok
 expect "$base" /v9/management/me token "200 through Access" ok
@@ -83,6 +87,7 @@ expect "$api" /v1/models cloudflared "200 with cf-access-token and a dummy key" 
 expect "$api" /v1/models none "401 Missing API key from the Worker" worker_401
 expect "$api" /v1beta/models none "401 Missing API key from the Worker" worker_401
 expect "$base" / none "no 200 without Access" not_ok
+expect "$base" /mcp token "405 (or 403) from the app Worker's MCP endpoint behind Access" app_mcp
 
 if [ "$api" != "$base" ]; then
   expect "$api" /healthz none "200 without Access" ok

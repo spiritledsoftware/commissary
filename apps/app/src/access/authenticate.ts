@@ -19,19 +19,21 @@ import { routeAccess } from "../management/policy.ts";
 import { scopedUrl } from "../management/zones.ts";
 
 /**
- * Authenticates a management request (`method` decides, with the path, the role it needs). `headers` must expose
- * lowercased header names; `requestUrl` is the full URL as the client sent it.
+ * Authenticates a request of the management zone, or of the MCP endpoint a self-hosted Commissary serves behind Access
+ * (`zone` "mcp", ADR 0045; any role in the org, like the client API). `method` decides, with the path, the role it
+ * needs. `headers` must expose lowercased header names; `requestUrl` is the full URL as the client sent it.
  */
 export const authenticateRequest = (
   headers: Readonly<Record<string, string | undefined>>,
   requestUrl: string,
   method = "GET",
+  zone: "management" | "mcp" = "management",
 ): Effect.Effect<
   AccessIdentity,
   AccessError,
   AuthConfig | AuthDirectory | CurrentOrg | AccessJwks | SignInSessions
 > =>
   authenticateManagement(headers, requestUrl, {
-    needs: routeAccess(method, requestUrl, "management"),
+    needs: routeAccess(method, requestUrl, zone),
     slug: scopedUrl(requestUrl)?.slug,
   });

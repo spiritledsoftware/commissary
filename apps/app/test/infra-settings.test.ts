@@ -471,3 +471,85 @@ describe("base domain and app host", () => {
     }),
   );
 });
+
+describe("Managed OAuth settings (ADR 0045)", () => {
+  it.effect(
+    "default to the hosted clients' redirect URIs and loopback clients, also when CI passes them empty",
+    () =>
+      Effect.gen(function* () {
+        for (const variables of [
+          selfHosted,
+          { ...selfHosted, ACCESS_OAUTH_REDIRECT_URIS: "", ACCESS_OAUTH_LOOPBACK_CLIENTS: "" },
+        ])
+          assert.deepStrictEqual(
+            (yield* read(variables, { stage: "prod" })).settings.managedOAuth,
+            {
+              redirectUris: [
+                "https://claude.ai/api/mcp/auth_callback",
+                "https://www.cursor.com/agents/mcp/oauth/callback",
+              ],
+              loopbackClients: true,
+            },
+          );
+      }),
+  );
+
+  it.effect(
+    "read the redirect URIs in place of the defaults, and loopback clients turned off",
+    () =>
+      Effect.gen(function* () {
+        const { settings } = yield* read(
+          {
+            ...selfHosted,
+            ACCESS_OAUTH_REDIRECT_URIS: "https://chat.example.com/oauth/*, myclient://callback",
+            ACCESS_OAUTH_LOOPBACK_CLIENTS: " FALSE ",
+          },
+          { stage: "prod" },
+        );
+
+        assert.deepStrictEqual(settings.managedOAuth, {
+          redirectUris: ["https://chat.example.com/oauth/*", "myclient://callback"],
+          loopbackClients: false,
+        });
+      }),
+  );
+
+  it.effect(
+    "refuse an http or relative redirect URI and a loopback setting other than true or false",
+    () =>
+      Effect.gen(function* () {
+        for (const [variables, message] of [
+          [
+            { ACCESS_OAUTH_REDIRECT_URIS: "http://chat.example.com/cb" },
+            'ACCESS_OAUTH_REDIRECT_URIS: "http://chat.example.com/cb" must be https',
+          ],
+          [
+            { ACCESS_OAUTH_REDIRECT_URIS: "/callback" },
+            'ACCESS_OAUTH_REDIRECT_URIS: "/callback" is not an absolute URL',
+          ],
+          [
+            { ACCESS_OAUTH_LOOPBACK_CLIENTS: "yes" },
+            'ACCESS_OAUTH_LOOPBACK_CLIENTS must be true or false, not "yes"',
+          ],
+        ] as const)
+          assert.include(yield* refusal({ ...selfHosted, ...variables }), message);
+      }),
+  );
+
+  it.effect("refuse them with an Access application managed outside the stack", () =>
+    Effect.gen(function* () {
+      const external = { ...selfHosted, ACCESS_AUD: "aud", ACCESS_ALLOW_EMAILS: "" };
+
+      assert.strictEqual(yield* refusal(external), "accepted");
+
+      for (const variables of [
+        { ACCESS_OAUTH_REDIRECT_URIS: "https://chat.example.com/cb" },
+        { ACCESS_OAUTH_LOOPBACK_CLIENTS: "false" },
+      ])
+        assert.include(
+          yield* refusal({ ...external, ...variables }),
+          "ACCESS_OAUTH_REDIRECT_URIS and ACCESS_OAUTH_LOOPBACK_CLIENTS need a stack-managed Access application",
+        );
+    }),
+  );
+});

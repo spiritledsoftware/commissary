@@ -3,8 +3,10 @@
 Cloudflare Access signs people in for the control panel and the management API (ADR 0022): it authenticates the caller
 (identity provider login or a service token), then forwards the request with a signed `Cf-Access-Jwt-Assertion` header
 that the Worker verifies. The Worker never sees their passwords. Clients of the client API (`/v1*`, `/openai/v1*`,
-`/backend-api/codex*`, the unprefixed aliases and the MCP endpoint `/mcp`) are not behind Access: they send an **API
-key** Commissary issued to a member, which the Worker checks itself (§4, "API keys" below, [CLIENTS.md](CLIENTS.md)).
+`/backend-api/codex*`, the unprefixed aliases, and the MCP endpoint `/mcp` on the API host) are not behind Access: they
+send an **API key** Commissary issued to a member, which the Worker checks itself (§4, "API keys" below,
+[CLIENTS.md](CLIENTS.md)). MCP clients may also sign in through Access instead, at the app host's `/mcp`, with Access's
+**Managed OAuth** ("MCP clients through Access" below, ADR 0045).
 Scripts on the management API may send a **management key** instead of an Access service token ("Management keys"
 below).
 
@@ -16,24 +18,45 @@ and signs people in itself: see [Commissary Cloud](#commissary-cloud) at the end
 `pnpm run deploy` (`alchemy.run.ts`, `infra/access.ts`) provisions Access together with the Worker, from the
 settings in `.env` (template: `.env.example`):
 
-| Setting                                                  | Creates / sets                                                                                                                        |
-| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `COMMISSARY_APP_DOMAIN`, by default `COMMISSARY_DOMAIN`  | A **self-hosted application** on the app host (empty path: the whole hostname), and the app Worker's custom domain                    |
-| `COMMISSARY_API_DOMAIN` (optional)                       | The API Worker's custom domain, the API host, which serves the client API and has no Access application (below)                       |
-| (without `COMMISSARY_API_DOMAIN`)                        | Zone routes of the client API paths to the API Worker, and a second application on them with a **Bypass** policy for everyone (below) |
-| `ACCESS_ALLOW_EMAILS`, `ACCESS_ALLOW_EMAIL_DOMAINS`      | A reusable **Allow** policy (interactive login with your identity providers)                                                          |
-| `ACCESS_SERVICE_TOKENS` (names)                          | One **service token** per name and a **Service Auth** policy that admits exactly those tokens                                         |
-| `ACCESS_ALLOW_SERVICE_TOKEN_IDS`                         | Adds service tokens managed elsewhere (by token ID, e.g. CI's) to the **Service Auth** policy                                         |
-| `ACCESS_SESSION_DURATION`                                | Session duration of the application (default `24h`)                                                                                   |
-| `ACCESS_SERVICE_TOKEN_HEADER`                            | Optional single-header service tokens (section 5)                                                                                     |
-| `ACCESS_TEAM_DOMAIN`                                     | Worker variable (issuer and JWKS host); your Zero Trust team name                                                                     |
-| `PLATFORM_ADMIN_EMAILS`, `PLATFORM_ADMIN_SERVICE_TOKENS` | Worker variables: platform admins (token names from `ACCESS_SERVICE_TOKENS` are replaced by their Client IDs)                         |
+| Setting                                                       | Creates / sets                                                                                                                        |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `COMMISSARY_APP_DOMAIN`, by default `COMMISSARY_DOMAIN`       | A **self-hosted application** on the app host (empty path: the whole hostname), and the app Worker's custom domain                    |
+| `COMMISSARY_API_DOMAIN` (optional)                            | The API Worker's custom domain, the API host, which serves the client API and has no Access application (below)                       |
+| (without `COMMISSARY_API_DOMAIN`)                             | Zone routes of the client API paths to the API Worker, and a second application on them with a **Bypass** policy for everyone (below) |
+| `ACCESS_ALLOW_EMAILS`, `ACCESS_ALLOW_EMAIL_DOMAINS`           | A reusable **Allow** policy (interactive login with your identity providers)                                                          |
+| `ACCESS_SERVICE_TOKENS` (names)                               | One **service token** per name and a **Service Auth** policy that admits exactly those tokens                                         |
+| `ACCESS_ALLOW_SERVICE_TOKEN_IDS`                              | Adds service tokens managed elsewhere (by token ID, e.g. CI's) to the **Service Auth** policy                                         |
+| `ACCESS_SESSION_DURATION`                                     | Session duration of the application (default `24h`)                                                                                   |
+| `ACCESS_SERVICE_TOKEN_HEADER`                                 | Optional single-header service tokens (section 5)                                                                                     |
+| `ACCESS_OAUTH_REDIRECT_URIS`, `ACCESS_OAUTH_LOOPBACK_CLIENTS` | **Managed OAuth** on the application, for MCP clients: the redirect URIs it allows and whether loopback clients may register (below)  |
+| `ACCESS_TEAM_DOMAIN`                                          | Worker variable (issuer and JWKS host); your Zero Trust team name                                                                     |
+| `PLATFORM_ADMIN_EMAILS`, `PLATFORM_ADMIN_SERVICE_TOKENS`      | Worker variables: platform admins (token names from `ACCESS_SERVICE_TOKENS` are replaced by their Client IDs)                         |
 
 The application's **AUD tag** is passed to the Worker as `ACCESS_AUD` automatically. The deploy also sets the application's
 cookie to **SameSite=Lax** and **HTTP Only**, so the `CF_Authorization` session cookie is not sent with cross-site
 subrequests (the first line of defence against cross-site request forgery on the panel; see "Browser sessions" below). The
 Alchemy application resource does not manage these fields and its updates are PUT-style, so a follow-up step re-applies them
 after every change of the application: do not edit them in the dashboard.
+
+**MCP clients through Access** (ADR 0045). The deploy turns on the application's **Managed OAuth**: Access acts as the
+OAuth server of MCP clients (discovery, dynamic client registration and PKCE), and a signed-in client's requests reach
+the app Worker with the person's `Cf-Access-Jwt-Assertion`, as the panel's do. The app Worker serves the MCP endpoint
+`/mcp` on the app host for them (§4). Settings, re-applied after every change of the application like the cookie's:
+
+- `ACCESS_OAUTH_REDIRECT_URIS`: the redirect URIs a dynamically registered client may use, comma separated, `https:` (a
+  path may end in `/*`) or a client's own scheme matched exactly. Default: the hosted clients of
+  [CLIENTS.md](CLIENTS.md), `https://claude.ai/api/mcp/auth_callback` (Claude's apps) and
+  `https://www.cursor.com/agents/mcp/oauth/callback` (Cursor's web and agents). Setting it replaces the defaults.
+- `ACCESS_OAUTH_LOOPBACK_CLIENTS`: `true` (default) lets any client that redirects to `localhost` or `127.0.0.1`
+  register (Claude Code, Codex, Cursor's desktop app, pi); `false` allows only the URIs above.
+
+Access's tokens last 15 minutes and are refreshed after Access checks its policy again, so removing someone from the
+Allow policy cuts their MCP clients off at the next refresh; revoking their Access session does at once. Managed OAuth is
+in open beta, and Access documents dynamic client registration but not Client ID Metadata Documents (CIMD): a client
+that only registers through CIMD cannot sign in this way and uses an API key on the API host. The deploy fails if
+Cloudflare answers with Managed OAuth off. With Managed OAuth on, Access answers a non-browser client without a sign-in
+with `401` and a `WWW-Authenticate` header pointing at its OAuth metadata, where it used to redirect to its login page;
+browsers still get the login page, and service tokens work as before.
 
 **The client API leaves Access.** The client API is the API Worker's (ADR 0030), which no Access application protects;
 the app Worker serves everything else (the panel, the management API, the OAuth callbacks), each with a `404` naming
@@ -43,10 +66,12 @@ client that signs in through Access sends the token of the app host's applicatio
 (`cloudflared access token -app=https://<app host>`) in `cf-access-token` to the API host; the API Worker checks it
 against `ACCESS_AUD` itself. Without an API host, zone routes send the client API paths of the app host to the API
 Worker, and the bypass application (`infra/access.ts` `provisionClientApiBypass`) covers `/v1`, `/v1beta`,
-`/v1internal`, `/openai/v1`, `/backend-api/codex`, `/chat/completions`, `/completions`, `/responses` and `/mcp` with
-their sub-paths. Access applies the most specific application to a request, so these paths reach the API Worker without
-a sign-in while every other path stays behind the main application. The API Worker is then the only gate of the client
-API: it answers `401` to a request without a valid API key (§4).
+`/v1internal`, `/openai/v1`, `/backend-api/codex`, `/chat/completions`, `/completions` and `/responses` with their
+sub-paths. Access applies the most specific application to a request, so these paths reach the API Worker without a
+sign-in while every other path stays behind the main application. The API Worker is then the only gate of the client
+API: it answers `401` to a request without a valid API key (§4). `/mcp` gets neither a zone route nor the bypass: on the
+app host it is the app Worker's MCP endpoint behind Access, for MCP clients Access signs in (ADR 0045), so a stage with
+one host has no MCP endpoint for API keys; give it an API host for those.
 
 The production Workers have no `workers.dev` or preview URLs, so the custom domains are the only way in. Pull-request
 preview stages (`pr-<number>`, see [DEPLOY.md](DEPLOY.md)) instead serve their app Worker's `workers.dev` URL behind
@@ -65,17 +90,19 @@ Access, with no bypass application. Service token credentials:
 **Bring your own application.** Set `ACCESS_AUD` to the AUD tag(s) of an Access application you manage yourself (dashboard
 or other tooling) and the deploy creates no Access resources; `ACCESS_ALLOW_*`/`ACCESS_SERVICE_TOKENS` must then be empty.
 The application must cover the Worker's whole hostname, with an Allow policy for people and a Service Auth policy for tokens
-(an Allow policy does not match service tokens). Set SameSite=Lax on its cookie yourself, and add the bypass application for
-the client API paths above (a self-hosted application on `<host>/v1`, `<host>/v1beta`, ... with a Bypass policy that includes
-everyone); without it clients need Access in front of their API key.
+(an Allow policy does not match service tokens). Set SameSite=Lax on its cookie yourself, turn on Managed OAuth for MCP
+clients ([DEPLOY.md](DEPLOY.md#your-own-access-application-and-mcp-clients)), and add the bypass application for the
+client API paths above (a self-hosted application on `<host>/v1`, `<host>/v1beta`, ... with a Bypass policy that
+includes everyone; not `/mcp`); without it clients need Access in front of their API key.
 
 ## 2. Policies
 
-| Who                                 | Policy action    | Selector                   | Notes                                                  |
-| ----------------------------------- | ---------------- | -------------------------- | ------------------------------------------------------ |
-| People using the panel / browsers   | **Allow**        | Emails, email domain       | Interactive login                                      |
-| Management automation (scripts, CI) | **Service Auth** | The stack's service tokens | Non-interactive; an Allow policy does not match tokens |
-| Clients of the client API           | **Bypass**       | Everyone                   | The Worker checks their API key instead                |
+| Who                                  | Policy action                | Selector                   | Notes                                                  |
+| ------------------------------------ | ---------------------------- | -------------------------- | ------------------------------------------------------ |
+| People using the panel / browsers    | **Allow**                    | Emails, email domain       | Interactive login                                      |
+| Management automation (scripts, CI)  | **Service Auth**             | The stack's service tokens | Non-interactive; an Allow policy does not match tokens |
+| Clients of the client API            | **Bypass**                   | Everyone                   | The Worker checks their API key instead                |
+| MCP clients on the app host's `/mcp` | **Allow** / **Service Auth** | As the panel's             | Signed in through Managed OAuth, or a service token    |
 
 Need IdP groups, device posture or other rules? Extend the policies in `infra/access.ts` (Alchemy's
 `Cloudflare.Access.Policy` accepts every Cloudflare rule shape).
@@ -297,7 +324,9 @@ characters; a missing key is refused everywhere.
 
 1. The path is classified (`apps/app/src/management/zones.ts`): `/v1*` (incl. `/v1beta`, `/v1internal`), `/openai/v1*`,
    `/backend-api/codex*`, the unprefixed aliases `/chat/completions`, `/completions`, `/responses` and the MCP endpoint
-   `/mcp` are the client API and need a principal; `/v9/management*` (also `/v9/management/orgs/<slug>/...`), the
+   `/mcp` are the client API and need a principal (the app Worker answers them `404`, naming the API Worker's address,
+   except the MCP endpoint `/mcp` itself on a self-hosted Commissary, which it serves behind Access: below);
+   `/v9/management*` (also `/v9/management/orgs/<slug>/...`), the
    control panel (`/`, `/accounts`, `/keys`, `/models`, `/usage`, `/members`, `/api-keys`, `/limits`, `/settings` with
    their sub-paths, the same pages under `/o/<slug>/`, `/assets/*`) and `/management.html` (the upstream panel's old
    address, a redirect to `/`) form the management zone; everything else (`/healthz`, the OAuth browser callbacks
@@ -322,6 +351,13 @@ characters; a missing key is refused everywhere.
 6. A missing header answers 401 `Missing API key`; an invalid token 401 `Invalid API key` (Go wording, so existing clients
    show familiar errors). On a client API route of an org that takes API keys only, an Access sign-in alone answers 401
    `Missing API key` too (`Invalid API key` when another credential came with it).
+7. **The app host's `/mcp`** (ADR 0045, self-hosted only): the app Worker verifies the Access JWT as for the panel (an MCP
+   client signed in through Managed OAuth, a person's browser session, or a service token) and needs any role in the
+   org; an unaddressed request is for `global`, like the panel's unaddressed URLs, so a member of another org uses an
+   API key on the API host. API keys are not read there, nor is `access_clients` (it governs the client API). A person
+   is served as their member, with their whole reach narrowed by `?toolkits=`, and a service token as its registered
+   role's principal; no tool scope applies. A refusal's `401` carries `WWW-Authenticate: Bearer`, though Access
+   answers a client without a sign-in before the Worker does. On Commissary Cloud the app Worker answers `/mcp` `404`.
 
 Outside the client API the Worker trusts only the signed JWT, so requests that skip Access (e.g. a `workers.dev` URL enabled
 by hand) are rejected.
@@ -341,6 +377,9 @@ admin's session. Before authentication the gate (`packages/auth/src/csrf.ts`) re
   `/v9/management*` request are refused (OAuth providers redirect to the public callback paths, never there);
 - WebSocket upgrades (`GET /v1/responses`, `/backend-api/codex/responses`) whose `Origin` is not the Worker's own host
   (403 `Cross-origin WebSocket rejected`).
+
+The app host's `/mcp` is checked like a management request that is no panel page: a foreign `Origin` or a cross-site
+`Sec-Fetch-Site` is refused whatever the method, and a `POST` must carry JSON (415 otherwise).
 
 Management writes must also carry `Content-Type: application/json` (`multipart/form-data` for `POST /credentials`,
 `application/yaml`/`text/yaml` for `POST /settings/import`) or have no body; other types answer 415. The management zone never sends

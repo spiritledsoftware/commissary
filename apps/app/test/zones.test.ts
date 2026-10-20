@@ -24,6 +24,14 @@ describe("access classification of the panel page", () => {
       expect(classifyPath(`https://x.test${path}`)).toBe("protected");
   });
 
+  it("puts the MCP endpoint, however spelt, in a zone of its own, and the paths under it in the client API's", () => {
+    for (const path of ["/mcp", "/mcp/", "//MCP", "/%6dcp?toolkits=a"])
+      expect(classifyPath(`https://x.test${path}`), path).toBe("mcp");
+
+    for (const path of ["/mcp/x", "/mcpx"])
+      expect(classifyPath(`https://x.test${path}`), path).toBe("protected");
+  });
+
   it("names the pages a cross-site navigation may open (not the API, not the bundle)", () => {
     for (const path of ["/", "/accounts", "/accounts/connect", "/settings", LEGACY_PANEL_PATH])
       expect(isPanelPagePath(path), path).toBe(true);

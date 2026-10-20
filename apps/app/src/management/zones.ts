@@ -3,7 +3,7 @@
 // (ADR 0021), which are new in the Workers port. The Access gate (`access/middleware.ts`) classifies each request here
 // and passes what `@commissary/auth` needs of it (the org a URL addresses, the role it needs: `policy.ts`).
 import { Schema } from "effect";
-import { isClientApiPath, normalizedPath, OrgSlug } from "@commissary/core";
+import { isClientApiPath, MCP_PATH, normalizedPath, OrgSlug } from "@commissary/core";
 
 export { normalizedPath };
 
@@ -178,9 +178,11 @@ export const isPanelAssetPath = (requestUrl: string): boolean => {
 /**
  * `management`: the management API and the panel, which need a caller (an Access sign-in, a Commissary Cloud session
  * or a management key). `protected`: the client API (`@commissary/core`'s `isClientApiPath`), which the API Worker
- * serves and this Worker refuses (`access/middleware.ts`). `public`: everything else.
+ * serves and this Worker refuses (`access/middleware.ts`). `mcp`: the MCP endpoint (`/mcp`), which a self-hosted
+ * Commissary also serves here, behind Access, to MCP clients Access signs in (ADR 0045), and Commissary Cloud refuses
+ * like the rest of the client API. `public`: everything else.
  */
-export type AccessZone = "public" | "protected" | "management";
+export type AccessZone = "public" | "protected" | "management" | "mcp";
 
 /**
  * Classifies a request URL. Matching is deliberately a superset of what the router matches (percent-decoding,
@@ -194,6 +196,8 @@ export const classifyPath = (requestUrl: string): AccessZone => {
 
   if (path.startsWith(MANAGEMENT_PREFIX) || path.startsWith(LEGACY_PANEL_PATH) || isPanelPath(path))
     return "management";
+
+  if (path === MCP_PATH || path === `${MCP_PATH}/`) return "mcp";
 
   return isClientApiPath(path) ? "protected" : "public";
 };

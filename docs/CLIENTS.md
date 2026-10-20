@@ -13,7 +13,7 @@ export COMMISSARY_API_KEY='cms_…'
 Send the key wherever the client sends a provider key: `Authorization: Bearer <key>` (OpenAI, Codex, Claude Code's auth
 token, MCP clients), `x-api-key` (Anthropic), `x-goog-api-key` or `?key=` (Gemini). The client API (`/v1*`,
 `/openai/v1*`, `/backend-api/codex*`, the unprefixed `/chat/completions`, `/completions`, `/responses`, and the MCP
-endpoint `/mcp`) is not behind Cloudflare Access, so no Access headers are needed. A missing key answers
+endpoint `/mcp` on the API host) is not behind Cloudflare Access, so no Access headers are needed. A missing key answers
 `401 {"error":"Missing API key"}`; a wrong, revoked or expired key `401 {"error":"Invalid API key"}`. Revoking a key in
 the panel takes effect within 30 seconds. List the model ids you can use with `GET /v1/models`.
 
@@ -159,57 +159,102 @@ const ai = new GoogleGenAI({
 
 ## MCP clients (tools)
 
-Commissary's MCP endpoint, `https://commissary.example.com/mcp` (on the API host when the deployment has one), serves
-the tools of the toolkits you may use as one MCP server (Streamable HTTP; clients of the 2026-07-28 revision and of the
-2025 handshake alike). Its tools are named `<toolkit>_<tool>`: every tool of your own private toolkits, and of the org's
-toolkits that take your own credential. A toolkit's shared credential needs a grant from an org admin (not there yet),
-so its tools are not listed. Narrow the list to some toolkits with `?toolkits=`, by the names the panel shows:
-`https://commissary.example.com/mcp?toolkits=github,linear` (an unknown name narrows to nothing; a tool left out
-answers as an unknown tool).
+Commissary's MCP endpoint serves the tools of the toolkits you may use as one MCP server (Streamable HTTP; clients of
+the 2026-07-28 revision and of the 2025 handshake alike). Its tools are named `<toolkit>_<tool>`: every tool of your own
+private toolkits, and of the org's toolkits that take your own credential. A toolkit's shared credential needs a grant
+from an org admin (not there yet), so its tools are not listed. Narrow the list to some toolkits with `?toolkits=`, by
+the names the panel shows: `…/mcp?toolkits=github,linear` (an unknown name narrows to nothing; a tool left out answers
+as an unknown tool). When a tool needs your own credential for its toolkit and you have not connected one, the call
+answers with a link to the panel's connect page instead: a client of the 2026-07-28 revision that supports URL
+elicitation offers to open it, any other client shows it in the tool's result. Connect, then call the tool again.
 
-The endpoint takes the same API key as the rest of the client API, as a static bearer header. Without a valid key it
-answers `401` with `WWW-Authenticate: Bearer`; it offers no OAuth sign-in for MCP clients yet, so a client that starts
-one has no key configured. When a tool needs your own credential for its toolkit and you have not connected
-one, the call answers with a link to the panel's connect page instead: a client of the 2026-07-28 revision that
-supports URL elicitation offers to open it, any other client shows it in the tool's result. Connect, then call the tool
-again.
+A self-hosted Commissary serves the endpoint at two addresses (ADR 0045):
+
+- **Signed in through Access**, for clients a person uses: `https://commissary.example.com/mcp` on the **app host** (the
+  panel's address). The client signs in through Cloudflare Access's OAuth (Managed OAuth): it opens your browser on
+  the Access login, then acts as you, with every tool you may use in the org `global` (the first org; a member of
+  another org uses an API key). Nothing to copy or rotate; your Access session's policy is checked again every 15
+  minutes, and removing you from Access cuts the client off. Usage shows you, not the client, and there is no tool
+  scope: for a narrower client, use a key. Access service tokens (`CF-Access-Client-Id`/`-Secret` headers) work there
+  too, as the token's role in the org. A client that registers only through Client ID Metadata Documents (CIMD), which
+  Access does not document yet, cannot sign in this way: give it a key.
+- **With an API key**, for headless clients and scripts: `https://api.example.com/mcp` on the **API host**, with the same
+  key as the rest of the client API as a static bearer header. Without a valid key it answers `401` with
+  `WWW-Authenticate: Bearer`; it offers no OAuth sign-in, so a client that starts one has no key configured. A
+  deployment with one host (no API host) has no API-key MCP endpoint: its `/mcp` is the one behind Access.
+
+On Commissary Cloud the endpoint is on the API host only, with API keys.
+
+### Signed in through Access (app host)
+
+**Claude** (claude.ai, Desktop): **Settings** > **Connectors** > **Add custom connector**, URL
+`https://commissary.example.com/mcp`, then **Connect** and sign in through Access. Claude's callback
+(`https://claude.ai/api/mcp/auth_callback`) is one the deploy allows by default.
 
 **Claude Code**:
 
 ```bash
-claude mcp add --transport http commissary https://commissary.example.com/mcp \
+claude mcp add --transport http commissary https://commissary.example.com/mcp
+```
+
+Then `/mcp` in Claude Code and **Authenticate**: it opens the Access login in your browser and listens on `localhost`.
+
+**Cursor** (`~/.cursor/mcp.json`, or `.cursor/mcp.json` in a project): add the server without headers, then **Connect**
+in Cursor's MCP settings to sign in.
+
+```json
+{ "mcpServers": { "commissary": { "url": "https://commissary.example.com/mcp" } } }
+```
+
+**Codex** (`~/.codex/config.toml`), then `codex mcp login commissary` to sign in (Codex listens on `127.0.0.1`):
+
+```toml
+[mcp_servers.commissary]
+url = "https://commissary.example.com/mcp"
+```
+
+Loopback clients (Claude Code, Codex, Cursor's desktop app, pi) need `ACCESS_OAUTH_LOOPBACK_CLIENTS` on, the default; a
+hosted client whose callback is not in `ACCESS_OAUTH_REDIRECT_URIS` is refused by Access
+([ACCESS.md](ACCESS.md#1-what-the-deploy-creates)).
+
+### With an API key (API host)
+
+**Claude Code**:
+
+```bash
+claude mcp add --transport http commissary https://api.example.com/mcp \
   --header "Authorization: Bearer $COMMISSARY_API_KEY"
 ```
 
-**Cursor** (`~/.cursor/mcp.json`, or `.cursor/mcp.json` in a project):
+**Cursor**:
 
 ```json
 {
   "mcpServers": {
     "commissary": {
-      "url": "https://commissary.example.com/mcp",
+      "url": "https://api.example.com/mcp",
       "headers": { "Authorization": "Bearer ${env:COMMISSARY_API_KEY}" }
     }
   }
 }
 ```
 
-**Codex** (`~/.codex/config.toml`; Codex sends the variable's value as the bearer token):
+**Codex** (Codex sends the variable's value as the bearer token):
 
 ```toml
 [mcp_servers.commissary]
-url = "https://commissary.example.com/mcp"
+url = "https://api.example.com/mcp"
 bearer_token_env_var = "COMMISSARY_API_KEY"
 ```
 
-**pi** (`~/.pi/agent/mcp.json`, or `pi mcp add commissary --url https://commissary.example.com/mcp
+**pi** (`~/.pi/agent/mcp.json`, or `pi mcp add commissary --url https://api.example.com/mcp
 --bearer-token-env-var COMMISSARY_API_KEY`):
 
 ```json
 {
   "mcpServers": {
     "commissary": {
-      "url": "https://commissary.example.com/mcp",
+      "url": "https://api.example.com/mcp",
       "headers": { "Authorization": "Bearer ${COMMISSARY_API_KEY}" }
     }
   }
