@@ -38,13 +38,15 @@ export type OrgList = typeof OrgList.Type;
 /**
  * `POST /orgs`: 1-63 lowercase letters, digits and inner hyphens; a display name of up to 100 characters.
  * `private_credentials` chooses whether members may connect private credentials in the new org, `private_toolkits`
- * whether they may add private toolkits (default: no for both).
+ * whether they may add private toolkits, `private_agents` whether they may create private agents (#226; default: no for
+ * all three).
  */
 export const CreateOrg = Schema.Struct({
   slug: Schema.String,
   name: Schema.String,
   private_credentials: Schema.optionalKey(Schema.Boolean),
   private_toolkits: Schema.optionalKey(Schema.Boolean),
+  private_agents: Schema.optionalKey(Schema.Boolean),
 });
 
 export type CreateOrg = typeof CreateOrg.Type;
@@ -123,12 +125,14 @@ export type MyOrg = typeof MyOrg.Type;
 /**
  * Which optional pieces a deployment has (ADR 0043), on every deployment. `hosted`: Commissary Cloud (ADR 0026).
  * `browser`: the deployment has a Browser Run binding (the browser toolkit exists). `computer`: it has the sandbox's
- * container binding (the sandbox's computer exists). The panel decides what to show from it.
+ * container binding (the sandbox's computer exists). `agents`: it has the Dynamic Workers binding (`LOADER`), so the
+ * Agents area exists (#226); without it the Agents routes answer 404. The panel decides what to show from it.
  */
 export const Deployment = Schema.Struct({
   hosted: Schema.Boolean,
   browser: Schema.Boolean,
   computer: Schema.Boolean,
+  agents: Schema.Boolean,
 });
 
 export type Deployment = typeof Deployment.Type;

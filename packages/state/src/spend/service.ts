@@ -46,6 +46,15 @@ export interface SpendDirectory {
   }>;
   /** The shared credentials of every area (a private credential has no limit of its own). */
   credentials(): ReadonlyArray<SpendCredential>;
+  /** The shared agents (#226; a private agent counts toward its member's limits). */
+  agents(): ReadonlyArray<SpendAgent>;
+}
+
+/** A shared agent a limit may name, as the Agents part describes it (`ControlPlanePart.spendAgents`). */
+export interface SpendAgent {
+  readonly id: string;
+  /** Its name. */
+  readonly label: string;
 }
 
 /** A shared credential a limit may name, as an area's part describes it (`ControlPlanePart.spendCredentials`). */
@@ -121,6 +130,7 @@ const KIND_ORDER: Readonly<Record<SubjectKind, number>> = {
   key: 3,
   credential: 4,
   toolkit_credential: 5,
+  agent: 6,
 };
 
 export class SpendService {
@@ -220,6 +230,9 @@ export class SpendService {
     } else if (input.kind === "team") {
       if (!this.#directory.teams().some((team) => team.id === subject))
         return refuse("subject_not_found", "no team has this id");
+    } else if (input.kind === "agent") {
+      if (!this.#directory.agents().some((agent) => agent.id === subject))
+        return refuse("subject_not_found", "no shared agent has this id");
     } else if (input.kind === "key") {
       const key = keys.get(subject);
 
@@ -365,6 +378,7 @@ export class SpendService {
         return member !== undefined && keys.get(limit.subject)?.memberId === member;
       case "credential":
       case "toolkit_credential":
+      case "agent":
         return false;
     }
   }
@@ -377,6 +391,14 @@ export class SpendService {
     const keys = new Map(
       this.#directory.keys().map((key) => [key.id, `${key.name} (${key.prefix})`]),
     );
+
+    let agents: ReadonlyMap<string, string> | undefined;
+
+    const agentLabel = (id: string) => {
+      agents ??= new Map(this.#directory.agents().map((agent) => [agent.id, agent.label]));
+
+      return agents.get(id);
+    };
 
     // Only credential and toolkit limits need the credentials (and a Models credential's keyed `auth_index`).
     let credentials: ReadonlyMap<string, SpendCredential> | undefined;
@@ -402,6 +424,8 @@ export class SpendService {
             return teams.get(limit.subject);
           case "key":
             return keys.get(limit.subject);
+          case "agent":
+            return agentLabel(limit.subject);
           case "credential":
           case "toolkit_credential":
             return credentialOf(limit.kind, limit.subject)?.label;

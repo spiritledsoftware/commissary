@@ -145,4 +145,9 @@ export class BillingPart extends RpcTarget implements ControlPlanePart {
   spendCredentials(): readonly [] {
     return [];
   }
+
+  /** Nor agents. */
+  spendAgents(): readonly [] {
+    return [];
+  }
 }

@@ -14,7 +14,8 @@
  * `/management.html`; here that path redirects to `/`). The upstream panel's `X-CPA-Version` and
  * `X-CPA-Support-Plugin` response headers are not sent. The org's members, teams and service tokens (`/members`,
  * `/membership`, `/teams`, `/service-tokens`) are in `member-routes.ts`; Commissary Cloud's per-org single sign-on
- * (`/sso*`) in `sso-routes.ts`; Commissary Cloud's billing (`/billing`) is `@commissary/billing`'s.
+ * (`/sso*`) in `sso-routes.ts`; Commissary Cloud's billing (`/billing`) is `@commissary/billing`'s; the hosted agents
+ * (`/agents`, `/grants/agents`) are `@commissary/agents`', mounted in `agent-routes.ts`.
  */
 import { Layer } from "effect";
 import { HttpRouter } from "effect/http";
@@ -25,6 +26,7 @@ import {
 } from "@commissary/models/management";
 import { BillingRoutes } from "@commissary/billing/management";
 import { ManagementRoutes as ToolsManagementRoutes } from "@commissary/tools/management";
+import { AgentRoutes } from "./agent-routes.ts";
 import { memberRoutes } from "./member-routes.ts";
 import { orgRoutes } from "./org-routes.ts";
 import { peopleRoutes } from "./people-routes.ts";
@@ -56,14 +58,16 @@ const OrgWideRoutes = HttpRouter.addAll([
 ]);
 
 /**
- * All management routes: the Worker's own and each area's (Models', Billing's, Tools'). Models' need `ModelRegistry`,
- * the `CatalogStore` and an `HttpClient`; Billing's and Tools' nothing more.
+ * All management routes: the Worker's own and each area's (Models', Billing's, Tools', Agents'). Models' need
+ * `ModelRegistry`, the `CatalogStore` and an `HttpClient`; Agents' the same `ModelRegistry`; Billing's and Tools'
+ * nothing more.
  */
 export const ManagementRoutes = Layer.mergeAll(
   OrgWideRoutes,
   ModelsManagementRoutes,
   BillingRoutes,
   ToolsManagementRoutes,
+  AgentRoutes,
 );
 
 /** Production wiring: each area's services. Wrap with `withAccess(...)`. */

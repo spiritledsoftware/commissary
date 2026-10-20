@@ -12,6 +12,7 @@
   "dependencies": {
     "@better-auth/core": "1.7.7",
     "@better-auth/sso": "1.7.7",
+    "@commissary/agents": "workspace:*",
     "@commissary/auth": "workspace:*",
     "@commissary/billing": "workspace:*",
     "@commissary/contract": "workspace:*",

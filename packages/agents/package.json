@@ -1,0 +1,32 @@
+{
+  "name": "@commissary/agents",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The Agents area: hosted agent definitions, private and shared, the grants on shared agents, their watchers, its management routes and its ControlPlane part (runs come later); tested in workerd",
+  "license": "FSL-1.1-ALv2",
+  "type": "module",
+  "exports": {
+    "./api": "./src/api.ts",
+    "./management": "./src/management.ts",
+    "./state": "./src/state.ts",
+    "./testing": "./test/testing.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc"
+  },
+  "dependencies": {
+    "@commissary/auth": "workspace:*",
+    "@commissary/contract": "workspace:*",
+    "@commissary/core": "workspace:*",
+    "@commissary/state": "workspace:*",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "1.4.2",
+    "@effect/vitest": "catalog:",
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

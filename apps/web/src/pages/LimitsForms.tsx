@@ -180,6 +180,8 @@ const useSubjects = (): Readonly<Record<SpendSubjectKind, ReadonlyArray<Subject>
       : [],
     // The form does not offer toolkit limits yet (#209).
     toolkit_credential: [],
+    // Nor agent limits: the panel has no agents yet (#226 adds the API).
+    agent: [],
   };
 };
 

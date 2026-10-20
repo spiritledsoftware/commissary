@@ -783,6 +783,11 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   /** Read on every use: nothing to forget. */
   privateCredentialsChanged(): void {}
 
+  /** Tools holds no agents: no Spend limit names one of its. */
+  spendAgents(): readonly [] {
+    return [];
+  }
+
   /**
    * The org toolkits' shared credentials, by their toolkit (a toolkit holds at most one): what a toolkit's Spend limit
    * names (#199). Its tool calls on the shared credential count toward it.

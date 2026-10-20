@@ -505,6 +505,11 @@ export class ModelsPart extends RpcTarget implements ControlPlanePart {
   /** The base forgets a deleted key's Spend limits and counters. */
   apiKeysDeleted(): void {}
 
+  /** Models holds no agents: no Spend limit names one of its. */
+  spendAgents(): readonly [] {
+    return [];
+  }
+
   /** The shared credentials, named by their keyed `auth_index`: what a credential's Spend limit names. */
   spendCredentials(): ReadonlyArray<SpendCredential> {
     return this.#pool.entries().flatMap(({ credential }) =>

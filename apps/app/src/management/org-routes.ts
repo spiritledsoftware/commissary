@@ -51,6 +51,11 @@ import {
   exportSection as toolsExportSection,
   orgDeletionStep as toolsOrgDeletionStep,
 } from "@commissary/tools/management";
+import { AgentsEnv } from "@commissary/agents/api";
+import {
+  exportSection as agentsExportSection,
+  orgDeletionStep as agentsOrgDeletionStep,
+} from "@commissary/agents/management";
 
 const BASE = "/v9/management";
 
@@ -144,7 +149,7 @@ const me = Effect.gen(function* () {
     platform_admin: identity.platformAdmin,
     role: identity.role ?? null,
     orgs: orgs.map((org) => ({ slug: org.slug, name: org.name })),
-    deployment: deploymentOf(yield* AuthConfig, yield* AppEnv),
+    deployment: deploymentOf(yield* AuthConfig, yield* AppEnv, yield* AgentsEnv),
     ...(settings === undefined
       ? {}
       : {
@@ -223,12 +228,14 @@ const create = Effect.gen(function* () {
   const {
     private_credentials: privateCredentials,
     private_toolkits: privateToolkits,
+    private_agents: privateAgents,
     ...named
   } = body;
 
   if (
     (privateCredentials !== undefined && typeof privateCredentials !== "boolean") ||
-    (privateToolkits !== undefined && typeof privateToolkits !== "boolean")
+    (privateToolkits !== undefined && typeof privateToolkits !== "boolean") ||
+    (privateAgents !== undefined && typeof privateAgents !== "boolean")
   )
     return yield* replyError(400, "invalid body");
   const { slug, name } = yield* stringFields(named, ["slug", "name"]);
@@ -238,16 +245,18 @@ const create = Effect.gen(function* () {
   const id = newOrgId();
   const env = yield* StateEnv;
 
-  // The creator chooses whether members of the new org may connect private credentials and add private toolkits (off
-  // unless asked). The org's ControlPlane takes the choice before the org exists in the registry: a failure here creates
-  // nothing (a retry is safe), and an org that does exist never has a different setting than the one chosen. A refused
-  // registry write leaves the unreachable ControlPlane of an id nobody holds, which has no slug and is never addressed.
-  if (privateCredentials === true || privateToolkits === true) {
+  // The creator chooses whether members of the new org may connect private credentials, add private toolkits and create
+  // private agents (off unless asked). The org's ControlPlane takes the choice before the org exists in the registry: a
+  // failure here creates nothing (a retry is safe), and an org that does exist never has a different setting than the
+  // one chosen. A refused registry write leaves the unreachable ControlPlane of an id nobody holds, which has no slug
+  // and is never addressed.
+  if (privateCredentials === true || privateToolkits === true || privateAgents === true) {
     yield* Effect.tryPromise({
       try: async () =>
         await controlPlaneOf(env, id).setMembershipSettings({
           ...(privateCredentials === true ? { privateCredentials: true } : {}),
           ...(privateToolkits === true ? { privateToolkits: true } : {}),
+          ...(privateAgents === true ? { privateAgents: true } : {}),
         }),
       catch: () => replyError(502, "control plane unavailable"),
     });
@@ -382,6 +391,7 @@ const exportOrg = Effect.gen(function* () {
   // Each area's section goes through its own view of the ControlPlane.
   const models = yield* modelsExportSection({ members: byId, teams: teamNames });
   const tools = yield* toolsExportSection;
+  const agents = yield* agentsExportSection;
   const tokens = yield* controlPlane("listServiceTokens", (stub) => stub.listServiceTokens());
   const iso = (at: number) => new Date(at).toISOString();
 
@@ -390,6 +400,7 @@ const exportOrg = Effect.gen(function* () {
     org: view(org),
     ...models,
     ...tools,
+    ...agents,
     members: members.map((member) => ({
       email: member.email,
       role: member.role,
@@ -444,6 +455,7 @@ const areaDeletionSteps = Effect.all([
   modelsOrgDeletionStep,
   billingOrgDeletionStep,
   toolsOrgDeletionStep,
+  agentsOrgDeletionStep,
 ]);
 
 const deleteOrgRoute = Effect.gen(function* () {

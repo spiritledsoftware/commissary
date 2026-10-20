@@ -189,6 +189,9 @@ the Worker asks on every request: a removed member, or a member whose role was l
 | Add, edit and remove org toolkits, their shared credentials, tool overrides and approval rules   |                   |     ✓     |              ✓               |       ✓        |
 | See and decide the pending approvals of tool calls they are an approver of (`/approvals`)        |         ✓         |     ✓     |              ✓               |       ✓        |
 | Read and replace an org OpenAPI toolkit's uploaded document (`/toolkits/:id/document`)           |                   |     ✓     |              ✓               |       ✓        |
+| Read the agents they may use; create and manage their own private agents (`/agents`)             |         ✓         |     ✓     |              ✓               |       ✓        |
+| Create, edit and remove shared agents; disable or remove a member's private agent                |                   |     ✓     |              ✓               |       ✓        |
+| Read, add, edit and remove agent grants (`/grants/agents`)                                       |                   |     ✓     |              ✓               |       ✓        |
 | Read the Spend limits that bind them and limit their own API keys (`/spend`, `/spend/limits`)    |         ✓         |     ✓     |              ✓               |       ✓        |
 | Set any Spend limit and the org's calendar (`/spend/limits`, `/spend/settings`)                  |                   |     ✓     |              ✓               |       ✓        |
 | Read the org's plan, usage, bill, billing cap and notices (Commissary Cloud, `GET /billing`)     |                   |     ✓     |              ✓               |       ✓        |
@@ -199,6 +202,7 @@ the Worker asks on every request: a removed member, or a member whose role was l
 | Turn auto-join, or Access sign-ins for clients in `global`, on or off (`PATCH /membership`)      |                   |           |              ✓               |       ✓        |
 | Allow or stop private credentials (`PATCH /membership`, `private_credentials`)                   |                   |     ✓     |              ✓               |       ✓        |
 | Allow or stop private toolkits (`PATCH /membership`, `private_toolkits`)                         |                   |     ✓     |              ✓               |       ✓        |
+| Allow or stop private agents (`PATCH /membership`, `private_agents`)                             |                   |     ✓     |              ✓               |       ✓        |
 | Give a service token a role above plain member; download a credential                            |                   |           | owner **service token** only |       ✓        |
 | List, create and rename orgs                                                                     |                   |           |                              |       ✓        |
 | Read the org and its retention period (`GET /org`)                                               |                   |     ✓     |              ✓               |       ✓        |
@@ -267,6 +271,21 @@ the Worker asks on every request: a removed member, or a member whose role was l
   document (`GET` and `PUT /toolkits/:id/document`) is its managers' alone: an org admin's for an org toolkit (`403
   forbidden` for a member, who sees its tools), its owner's for a private one. The org export says a toolkit is built
   from an uploaded document (`uploaded: true`) without holding it.
+- **Agents** (`/agents`, `/grants/agents`, #226, ADR 0040): a hosted agent is one member's (private) or the org's
+  (shared). Every member creates and manages their own private agents, which only they see in full; a plain member's
+  agents are always private. An org admin sees that another member's private agent exists (name and owner) and may
+  disable or remove it, and reaches nothing else about it. Shared agents, and the agent grants that say who may use one
+  (`/grants/agents`, beside `/grants` and `/grants/tools`), are for org admins (`403 forbidden`): creating one names its
+  first grant (`subject`), and there is no default grant. A shared agent may name only the org's models (its shared
+  credentials) and toolkits, a private one only the models its member may use and the toolkits they can see (tools
+  outside their grants are narrowed at run time; `422 unknown_model`, `422 unknown_toolkit`). Names are unique across
+  private and shared agents, as a name is the agents toolkit's argument: a deliberate choice, by which `409 name_taken`
+  can reveal a name used by an agent the caller cannot see.
+  `private_agents` of `/membership` is the org setting for private agents, with `private_toolkits`' defaults (on for
+  `global`, and for a new org only when `POST /orgs` asks; an org from before it takes its `private_toolkits`, `global` on): with it off,
+  creating one answers `403 private_agents_unavailable` and the private agents are kept but not usable until it is on
+  again. `GET /agents/mine` lists what the caller may use. Without the deployment's Dynamic Workers binding the Agents
+  routes answer `404`.
 - **Approvals** (`/approvals`, the panel's Approvals page, #201, ADR 0038): an approval rule on a toolkit makes calls
   of its write tools, or of tools marked one by one, wait for their approver. An org admin sets rules on org toolkits,
   a member on their own private toolkits (`PATCH /toolkits/:id`, `approval_rules`). The approver is the caller (the

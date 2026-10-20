@@ -127,6 +127,27 @@ export class RegistrySnapshot {
     return view;
   };
 
+  #shared: RegistrySnapshot | undefined;
+
+  /**
+   * The registry of the org's shared credentials alone, whatever the grants: the models an org admin may choose for a
+   * shared agent, whose reach is what its definition names (#226, ADR 0040). The snapshot itself when no credential is
+   * private, else built once per snapshot.
+   */
+  shared = (): RegistrySnapshot => {
+    if (!this.sources.some((source) => source.owner !== undefined)) return this;
+
+    this.#shared ??= buildSnapshot({
+      sources: this.sources.filter((source) => source.owner === undefined),
+      config: this.config,
+      catalogs: this.catalogs,
+      now: this.now,
+      configVersion: this.configVersion,
+    });
+
+    return this.#shared;
+  };
+
   /** Models with at least one usable credential, sorted by id (`GetAvailableModelInfos`). */
   availableModels = (): ModelInfo[] => this.index.availableModels(this.now);
 

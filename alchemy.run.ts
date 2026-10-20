@@ -26,9 +26,10 @@ import { DEV_SECRETS_KEY, secretsKeyResourceId } from "./packages/state/src/secr
 /**
  * Runtime compatibility of the Workers; keep in sync with apps/app/vitest.config.ts, apps/api/vitest.config.ts,
  * apps/auth/vitest.config.ts, packages/state/vitest.config.ts, packages/models/vitest.config.ts,
- * packages/billing/vitest.config.ts, packages/tools/vitest.config.ts and tools/workers/worker-configuration.d.ts. `global_fetch_strictly_public` sends
- * a fetch to a hostname in the deployment's own zone through the internet, not straight to its origin (ADR 0044,
- * docs/ARCHITECTURE.md "Outbound guard").
+ * packages/billing/vitest.config.ts, packages/tools/vitest.config.ts, packages/agents/vitest.config.ts and
+ * tools/workers/worker-configuration.d.ts. `global_fetch_strictly_public` sends a fetch to a hostname in the
+ * deployment's own zone through the internet, not straight to its origin (ADR 0044, docs/ARCHITECTURE.md "Outbound
+ * guard").
  */
 export const COMPATIBILITY = {
   date: "2026-08-01",
@@ -348,6 +349,9 @@ export default Alchemy.Stack(
           ...stateSettings,
           ACCESS_DEV_BYPASS: dev && hosted === undefined ? settings.devBypass : "",
           ...browserEnv,
+          // Dynamic Workers (ADR 0043, Workers Paid, on every deployment): the Agents area exists where they do (#226);
+          // only its presence is read here, for the Agents routes and `/me`'s `deployment.agents`.
+          LOADER: Cloudflare.WorkerLoader("LOADER"),
           // Where the panel tells clients to send API keys (`GET /me` `api_url`).
           ...(apiDomain === undefined ? {} : { API_DOMAIN: apiDomain }),
           ...(hosted === undefined || auth === undefined

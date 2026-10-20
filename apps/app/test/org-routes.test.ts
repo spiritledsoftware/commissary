@@ -28,7 +28,7 @@ afterAll(harness.dispose);
 const CAROL = "carol@example.com";
 
 /** A self-hosted Commissary without the browser or the computer bound (the test Worker binds neither, #212, #223). */
-const SELF_HOSTED = { hosted: false, browser: false, computer: false };
+const SELF_HOSTED = { hosted: false, browser: false, computer: false, agents: true };
 
 /** An admin of `global` through her membership there (`seedCarol`), and of no other org. */
 const asCarol = async () => ({ auth: await token(CAROL) });
