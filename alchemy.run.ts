@@ -180,6 +180,24 @@ export default Alchemy.Stack(
     // API host has no Access application: clients authenticate there with API keys.
     const split = settings.apiDomain !== "";
 
+    // Commissary Cloud's OAuth server for MCP clients (#200, packages/tools/src/oauth/), on the app and the API Worker:
+    // the KV namespace `@cloudflare/workers-oauth-provider` keeps clients, grants, tokens and consents in, the issuer
+    // (the app host) and the resource (`/mcp` where the API Worker answers it: the API host, else the app host's zone
+    // route). Not on a preview, whose hosts are workers.dev URLs, nor on a self-hosted stage (Access signs its MCP
+    // clients in, ADR 0045).
+    const mcpOAuthEnv =
+      hosted === undefined || settings.preview
+        ? {}
+        : {
+            OAUTH_KV: yield* Cloudflare.KV.Namespace("OAuth"),
+            MCP_OAUTH_ISSUER: dev
+              ? `http://localhost:${DEV_PORTS.app}`
+              : `https://${settings.appDomain}`,
+            MCP_OAUTH_RESOURCE: dev
+              ? `http://localhost:${DEV_PORTS.api}/mcp`
+              : `https://${split ? settings.apiDomain : settings.appDomain}/mcp`,
+          };
+
     // What the state Worker's classes read besides their namespaces and the mode (`StateObjectEnv`, `ModelsPartEnv`).
     // The app and the API Worker's own code read all of it too, except the secrets keys.
     const stateSettings = {
@@ -329,6 +347,7 @@ export default Alchemy.Stack(
                 OWNED_ORG_LIMIT: hosted.ownedOrgLimit,
                 ...polarEnv,
                 ...polarWebhookEnv,
+                ...mcpOAuthEnv,
                 AUTH: auth,
                 // Where the sign-in page sends its requests and the orgs' identity providers send people back.
                 AUTH_ORIGIN: Output.asOutput(auth.url).pipe(
@@ -379,6 +398,7 @@ export default Alchemy.Stack(
             : {}),
           ...(split && app !== undefined ? { API_DOMAIN: settings.apiDomain } : {}),
           ...hostedApiEnv,
+          ...mcpOAuthEnv,
         },
       });
 

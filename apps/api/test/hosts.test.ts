@@ -45,6 +45,7 @@ describe("host routing", () => {
         "/responses",
         "/mcp",
         "/healthz",
+        "/.well-known/oauth-protected-resource/mcp",
         "//V1/models",
         "/%76%31/models",
       ])
@@ -93,7 +94,12 @@ describe("an API Worker with an API host", () => {
     expect(models.status).toBe(200);
     expect((await send("http://localhost/healthz", hosts)).status).toBe(200);
 
-    for (const path of ["/", "/v9/management/me"]) {
+    // The MCP endpoint's OAuth metadata goes on to the router, which knows it only on Commissary Cloud (#200).
+    expect(
+      (await send("http://localhost/.well-known/oauth-protected-resource/mcp", hosts)).status,
+    ).toBe(404);
+
+    for (const path of ["/", "/v9/management/me", "/.well-known/oauth-authorization-server"]) {
       const response = await send(`http://localhost${path}`, hosts);
 
       expect(response.status, path).toBe(404);

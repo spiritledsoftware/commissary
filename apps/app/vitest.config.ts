@@ -45,6 +45,10 @@ const HOSTED_BINDINGS = {
   POLAR_WEBHOOK_SECRET: "polar_whs_test-secret",
   POLAR_PRODUCT_ID: "prod_payg",
   POLAR_SERVER: "sandbox",
+  // The OAuth server for MCP clients (#200), on the test host, as on a stage with one host (the API Worker answers
+  // `/mcp` there: test/worker.ts sends it to the API Worker's handler).
+  MCP_OAUTH_ISSUER: "https://commissary.test",
+  MCP_OAUTH_RESOURCE: "https://commissary.test/mcp",
 };
 
 // The test Worker mirrors the deployed ones declared in alchemy.run.ts (compatibility settings and binding names); there
@@ -64,7 +68,9 @@ const worker = (bindings: Record<string, string>) =>
         SESSION_STATE: { className: "SessionState", useSQLite: true },
         PLATFORM: { className: "Platform", useSQLite: true },
       },
-      kvNamespaces: ["CACHE"],
+      // `OAUTH_KV` everywhere: the cross-org suite (self-hosted) stores OAuth grants in it too; the OAuth server is on
+      // only with the hosted bindings.
+      kvNamespaces: ["CACHE", "OAUTH_KV"],
       d1Databases: ["USAGE"],
       assets: {
         // The control panel's build (`pnpm build`), as deployed. No test reads it (a missing folder serves nothing): the

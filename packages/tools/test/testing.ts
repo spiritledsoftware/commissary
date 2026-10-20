@@ -18,3 +18,6 @@ export {
 export { insertToolCallRecord, type ToolCallRecord } from "../src/usage/record.ts";
 
 export { type FakeBrowserRun, fakeBrowserRun } from "./support/fake-browser.ts";
+
+/** Commissary Cloud's OAuth grants for MCP clients as a store of org data (#200), for the cross-org suite. */
+export { signInGrants } from "./support/sign-in-grants.ts";

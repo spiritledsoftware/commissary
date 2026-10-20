@@ -3,11 +3,13 @@ import { HttpRouter } from "effect/http";
 import { AccessLayer, withAccess } from "../access/layer.ts";
 import { orgAddressing } from "../management/org-address.ts";
 import { HostedRoutes } from "../hosted/routes.ts";
+import { McpOAuthServerRoutes } from "../hosted/mcp-oauth.ts";
 import { ManagementRoutesLive } from "../management/routes.ts";
 import { BillingWebhookRoutes } from "@commissary/billing/management";
 import { WorkersLoggerLayer } from "@commissary/core";
 import { TraceLayer } from "@commissary/models/api";
 import { OAuthCallbackRoutes } from "@commissary/models/management";
+import { ProtectedResourceMetadataRoutes } from "@commissary/tools/management";
 import { AppMcpRoutes } from "./mcp.ts";
 import { RootRoutes } from "./routes.ts";
 
@@ -24,6 +26,10 @@ export const AppLayer = Layer.mergeAll(
   HostedRoutes,
   // Polar's webhooks (Commissary Cloud with Polar's settings, #237): public, the signature is the credential.
   BillingWebhookRoutes,
+  // Commissary Cloud's OAuth server for MCP clients (#200): its public endpoints, and the MCP endpoint's metadata on a
+  // stage with one host; unknown paths elsewhere.
+  McpOAuthServerRoutes,
+  ProtectedResourceMetadataRoutes,
   AccessLayer,
   withAccess(ManagementRoutesLive),
   // The MCP endpoint behind Access, for MCP clients Access signs in (ADR 0045); the Access gate refuses it on

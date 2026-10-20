@@ -339,6 +339,9 @@ importers:
       '@cloudflare/vitest-plugin':
         specifier: 1.4.2
         version: 1.4.2(@cloudflare/workers-types@5.20261014.1)(@types/node@26.6.5)(vitest@5.0.3(@types/node@26.6.5)(vite@8.3.4(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.6.1)(yaml@2.9.1)))
+      '@commissary/api':
+        specifier: workspace:*
+        version: link:../api
       '@effect/vitest':
         specifier: 'catalog:'
         version: 4.0.4(effect@4.0.4)(vitest@5.0.3(@types/node@26.6.5)(vite@8.3.4(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.6.1)(yaml@2.9.1)))
@@ -666,6 +669,9 @@ importers:
 
   packages/tools:
     dependencies:
+      '@cloudflare/workers-oauth-provider':
+        specifier: 1.2.3
+        version: 1.2.3
       '@commissary/auth':
         specifier: workspace:*
         version: link:../auth
@@ -947,6 +953,9 @@ packages:
     engines: {node: '>=16'}
     cpu: [x64]
     os: [win32]
+
+  '@cloudflare/workers-oauth-provider@1.2.3':
+    resolution: {integrity: sha512-40eGeA3DnTOEl2ijHYY5Z9yNIf0fdjgomoaA6GHPo4FyKQw0oXPuy4GVjTE/uNfS/MoFAvzsuVBRwTPKUki4hA==}
 
   '@cloudflare/workers-types@5.20261014.1':
     resolution: {integrity: sha512-eGvDG17vu/BmQPOGWFgG1M7iPnW3c17Ykf2qi80JBkPI9f/GYl+5IC2XnZfrwf/CQXZICFgyX/l0+pc1bLbp+g==}
@@ -3773,6 +3782,8 @@ snapshots:
 
   '@cloudflare/workerd-windows-64@1.20261012.1':
     optional: true
+
+  '@cloudflare/workers-oauth-provider@1.2.3': {}
 
   '@cloudflare/workers-types@5.20261014.1': {}
 
