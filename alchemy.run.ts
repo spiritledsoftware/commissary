@@ -1,7 +1,8 @@
 /**
  * Infrastructure of the Workers port, deployed with Alchemy (`pnpm deploy`, `pnpm dev`, `pnpm destroy`): the Workers of
  * ADR 0030, the state Worker, which defines the Durable Objects, the app Worker (panel, management API) with its static
- * assets, and the API Worker (the client API) with its cron trigger, which both bind the objects by script name; the KV
+ * assets, and the API Worker (the client API) with its cron trigger, which both bind the objects by script name (but
+ * one: the API Worker defines the agent runs' `AgentRun`, which the app Worker binds by its script name); the KV
  * namespace, the D1 usage database (migrations applied on every deploy), the `auth_index` HMAC key and the Cloudflare
  * Access application, policies and service tokens in front of the app (and of the client API on a stage with one host,
  * except that clients send API keys there). Commissary Cloud (`COMMISSARY_MODE=cloud`, ADR 0026) creates no Access
@@ -326,6 +327,7 @@ export default Alchemy.Stack(
     const appWorker = (
       apiDomain: string | Output.Output<string> | undefined,
       auth: Effect.Success<ReturnType<typeof authWorker>> | undefined,
+      api: Effect.Success<ReturnType<typeof apiWorker>>,
     ) =>
       Cloudflare.Worker("Commissary", {
         main: dev ? "./apps/app/src/dev.ts" : "./apps/app/src/index.ts",
@@ -352,6 +354,9 @@ export default Alchemy.Stack(
           // Dynamic Workers (ADR 0043, Workers Paid, on every deployment): the Agents area exists where they do (#226);
           // only its presence is read here, for the Agents routes and `/me`'s `deployment.agents`.
           LOADER: Cloudflare.WorkerLoader("LOADER"),
+          // The agent runs (#227): the API Worker's class (ADR 0030's amendment), bound by its script name, which also
+          // makes this Worker deploy after it on every stage.
+          AGENT_RUN: Cloudflare.DurableObject("AgentRun", { scriptName: api.workerName }),
           // Where the panel tells clients to send API keys (`GET /me` `api_url`).
           ...(apiDomain === undefined ? {} : { API_DOMAIN: apiDomain }),
           ...(hosted === undefined || auth === undefined
@@ -379,8 +384,14 @@ export default Alchemy.Stack(
     // stage that has one, else zone routes for the client API paths on the app host (`zoneRoutedPrefixes`: a route
     // pattern matches every path that starts with it, as the Workers match them, so `/v1*` covers `/v1beta`; on a
     // self-hosted stage not `/mcp`, which the app Worker serves behind Access, ADR 0045). Under `alchemy dev` it serves
-    // its own port. `app` is the app Worker, deployed first except on a preview.
-    const apiWorker = (app: Effect.Success<ReturnType<typeof appWorker>> | undefined) =>
+    // its own port. It deploys before the app Worker (and the auth Worker) on every stage: the app Worker binds its
+    // `AgentRun` (#227).
+    //
+    // The agent runs' objects live here, not in the state Worker (ADR 0030's amendment): a run reaches the client API
+    // and the MCP endpoint through this Worker's own run gateway over `ctx.exports` (apps/api/src/http/run-gateway.ts,
+    // the trust boundary of a run's principal), where a state Worker's object would need a service binding to this
+    // Worker, which binds the state Worker's objects: a cycle no fresh stage could deploy. No Worker binds the gateway.
+    const apiWorker = () =>
       Cloudflare.Worker("Api", {
         main: dev ? "./apps/api/src/dev.ts" : "./apps/api/src/index.ts",
         compatibility: COMPATIBILITY,
@@ -404,25 +415,23 @@ export default Alchemy.Stack(
           ...stateSettings,
           ACCESS_DEV_BYPASS: dev && hosted === undefined ? settings.devBypass : "",
           // The app host on every deployed stage, split or not: the panel's links (MCP connect pages, the billing page)
-          // point there. Derived from the app Worker's output, so the API host is attached only once the app Worker no
-          // longer has it (it was the app's alias before the API Worker existed; Alchemy refuses a hostname another
-          // Worker holds). A preview and `alchemy dev` bind none, and the links name their pages in words.
-          ...(!dev && app !== undefined
-            ? { APP_DOMAIN: Output.asOutput(app.url).pipe(Output.map(() => settings.appDomain)) }
-            : {}),
-          ...(split && app !== undefined ? { API_DOMAIN: settings.apiDomain } : {}),
+          // point there. A preview and `alchemy dev` bind none, and the links name their pages in words.
+          ...(!dev && !settings.preview ? { APP_DOMAIN: settings.appDomain } : {}),
+          ...(split ? { API_DOMAIN: settings.apiDomain } : {}),
+          // The agent runs (#227, `@commissary/agents/api`'s `AgentRun`), one object per run, defined here.
+          AGENT_RUN: Cloudflare.DurableObject("AgentRun"),
           ...hostedApiEnv,
           ...mcpOAuthEnv,
         },
       });
 
-    // The order: the state Worker first (above); the auth Worker before the app Worker, which binds it; the app Worker
-    // before the API Worker, which takes the API host from it. On a preview the API Worker comes first: the app names
-    // its workers.dev host, and on Commissary Cloud the auth Worker derives the app's origin from its URL.
-    const { worker, api, auth } = settings.preview
-      ? yield* Effect.gen(function* () {
-          const client = yield* apiWorker(undefined);
+    // The order, on every stage: the state Worker first (above); then the API Worker, whose `AgentRun` the app Worker
+    // binds; the auth Worker before the app Worker, which binds it. On a preview the app names the API Worker's
+    // workers.dev host, and on Commissary Cloud the auth Worker derives the app's origin from its URL.
+    const client = yield* apiWorker();
 
+    const { worker, auth } = settings.preview
+      ? yield* Effect.gen(function* () {
           // A preview always serves its workers.dev URL (`workersDev` above).
           const previewHost = Output.asOutput(client.url).pipe(
             Output.map((url) => {
@@ -446,9 +455,8 @@ export default Alchemy.Stack(
                 });
 
           return {
-            api: client,
             auth: signInWorker,
-            worker: yield* appWorker(previewHost, signInWorker),
+            worker: yield* appWorker(previewHost, signInWorker, client),
           };
         })
       : yield* Effect.gen(function* () {
@@ -464,10 +472,16 @@ export default Alchemy.Stack(
                       },
                 );
 
-          const app = yield* appWorker(split ? settings.apiDomain : undefined, signInWorker);
+          const app = yield* appWorker(
+            split ? settings.apiDomain : undefined,
+            signInWorker,
+            client,
+          );
 
-          return { worker: app, auth: signInWorker, api: yield* apiWorker(app) };
+          return { worker: app, auth: signInWorker };
         });
+
+    const api = client;
 
     // On a stage with one host, the Access application of the app host covers the client API paths the zone routes send
     // to the API Worker; they leave Access (clients send API keys there, ADR 0022). Derived from the API Worker's output,

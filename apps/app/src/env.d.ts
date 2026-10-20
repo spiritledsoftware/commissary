@@ -80,6 +80,11 @@ interface __BaseEnv_Env {
    */
   LOADER?: WorkerLoader | undefined;
   /**
+   * The agent runs (#227): the API Worker's class (`AgentRun`, apps/api/src/http/run-gateway.ts; ADR 0030's amendment), bound
+   * by the API Worker's script name, on every deployment; the Agents routes start and reach runs through it.
+   */
+  AGENT_RUN: DurableObjectNamespace<import("@commissary/agents/api").AgentRunObject>;
+  /**
    * Commissary Cloud's OAuth server for MCP clients (#200, src/hosted/mcp-oauth.ts, `@commissary/tools`' `oauth/`): the
    * KV namespace `@cloudflare/workers-oauth-provider` keeps clients, grants, tokens and consents in; bound on the
    * `cloud` stage only (and under `alchemy dev`), never on a self-hosted stage or a preview.

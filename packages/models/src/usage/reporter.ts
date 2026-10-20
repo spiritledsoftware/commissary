@@ -11,6 +11,7 @@ import { failureDetail, type UsageFailure } from "./failure.ts";
 import { mergeStreamUsageDetail } from "./parsers.ts";
 import type { UsageDetail, UsageRecord } from "./record.ts";
 import { emptyUsageDetail, hasNonZeroTokenUsage } from "./record.ts";
+import type { UsageRun } from "@commissary/auth";
 import type { OrgId } from "@commissary/core";
 
 export interface UsageReporterInit {
@@ -28,6 +29,8 @@ export interface UsageReporterInit {
   readonly memberId?: string;
   /** The credential is private (ADR 0023): the record is its owner's alone to read. */
   readonly private?: boolean;
+  /** The agent run the request is of (#227, usage `agent_id`, `run_id`, `starter`). */
+  readonly run?: UsageRun;
   readonly authId: string;
   readonly authType: string;
   readonly source: string;
@@ -135,6 +138,7 @@ export class UsageReporter {
       orgId: init.orgId,
       ...(init.memberId === undefined ? {} : { memberId: init.memberId }),
       ...(init.private === true ? { private: true } : {}),
+      ...(init.run === undefined ? {} : { run: init.run }),
       authId: init.authId,
       authType: init.authType,
       source: init.source,
@@ -209,6 +213,7 @@ export class UsageReporter {
       orgId: init.orgId,
       ...(init.memberId === undefined ? {} : { memberId: init.memberId }),
       ...(init.private === true ? { private: true } : {}),
+      ...(init.run === undefined ? {} : { run: init.run }),
       authId: init.authId,
       authType: init.authType,
       source: init.source,

@@ -448,6 +448,19 @@ export interface ClientTool {
   readonly toolClass: ToolClass;
 }
 
+/**
+ * A hosted agent's run calling the MCP endpoint (#227, ADR 0040): its definition's tool scope, which narrows what it
+ * reaches as an API key's does, and whether it acts as the shared agent itself (`asAgent`), whose reach is its
+ * definition: every org toolkit with a shared credential, whatever the tool grants. A private agent's run acts as its
+ * member (the viewer), with their reach. Its starter (`starterMember`) is the caller of its approvals (ADR 0040): under
+ * a rule of the caller they decide, and under the others they do not.
+ */
+export interface RunToolReach {
+  readonly toolScope: ToolScope;
+  readonly asAgent: boolean;
+  readonly starterMember: string;
+}
+
 /** A call of Commissary's MCP endpoint (#197): the tool's full name, its arguments, and the toolkits it narrows to. */
 export interface ToolCall {
   readonly name: string;
@@ -459,6 +472,8 @@ export interface ToolCall {
    * toward its Spend limits (#199).
    */
   readonly apiKeyId?: string | undefined;
+  /** An agent run's reach (#227): its definition's tool scope in place of a key's. */
+  readonly run?: RunToolReach | undefined;
   /** The caller's principal, which names a caller without a member in a pending approval (#201). */
   readonly principalId?: string | undefined;
   /**
@@ -2356,10 +2371,11 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
    * tool of an org toolkit that takes private credentials, as themselves, while the org lets members hold private
    * credentials; and the tools of org toolkits' shared credentials their tool grants give (#198). There is no default
    * tool grant. A request with an API key (`apiKeyId`) gets what both the member's reach and the key's tool scope allow
-   * (#200), read from the key on every request, so a change to the scope applies at once.
+   * (#200), read from the key on every request, so a change to the scope applies at once. An agent run (`run`, #227)
+   * gets what its definition's tool scope allows, as its member or as the shared agent ({@link RunToolReach}).
    */
-  clientTools(viewer: Viewer, apiKeyId?: string): ReadonlyArray<ClientTool> {
-    return this.#reachable(viewer, this.#keyScope(apiKeyId)).map(({ tool }) => ({
+  clientTools(viewer: Viewer, apiKeyId?: string, run?: RunToolReach): ReadonlyArray<ClientTool> {
+    return this.#callerReach(viewer, apiKeyId, run).map(({ tool }) => ({
       name: tool.name,
       toolkit: tool.toolkit.name,
       ...(tool.description === undefined ? {} : { description: tool.description }),
@@ -2424,7 +2440,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     call: ToolCall,
     policy: OutboundPolicy,
   ): Promise<ToolCallOutcome> {
-    const reached = this.#reachable(viewer, this.#keyScope(call.apiKeyId)).find(
+    const reached = this.#callerReach(viewer, call.apiKeyId, call.run).find(
       ({ tool }) =>
         tool.name === call.name &&
         (call.toolkits === undefined || call.toolkits.includes(tool.toolkit.name)),
@@ -2709,11 +2725,14 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     if (approver === undefined) return { kind: "go", approval: "none" };
     const now = this.#now();
 
+    // A run's approvals are its starter's (a shared agent's run has no member of its own).
+    const callerMember = viewer.member ?? call.run?.starterMember;
+
     const key: ApprovalKey = {
       toolkitId: tool.toolkit.id,
       upstreamName: tool.upstreamName,
       argsHash: argumentsHash(call.arguments),
-      callerMember: viewer.member,
+      callerMember,
       callerPrincipal: call.principalId ?? "",
     };
 
@@ -2734,7 +2753,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       return { kind: "approve", requestState: state };
     }
 
-    if (approver.kind === "caller" && viewer.member === undefined)
+    if (approver.kind === "caller" && callerMember === undefined)
       return { kind: "not_approved", reason: "no_approver" };
 
     const kept = this.#approvals.unsettled(key, now);
@@ -2783,13 +2802,27 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     this.#approvals.delete(orphaned.map((approval) => approval.id));
   }
 
+  /** What a caller of the MCP endpoint reaches: an agent run by its definition, anyone else by their key's scope. */
+  #callerReach(
+    viewer: Viewer,
+    apiKeyId: string | undefined,
+    run: RunToolReach | undefined,
+  ): ReadonlyArray<ReachableTool> {
+    if (run === undefined) return this.#reachable(viewer, this.#keyScope(apiKeyId));
+
+    return run.asAgent
+      ? this.#reachable({ admin: false }, run.toolScope, true)
+      : this.#reachable(viewer, run.toolScope);
+  }
+
   /**
    * The served tools `viewer` reaches ({@link clientTools}), sorted by full name, and how. A private toolkit counts
    * only while the org lets members add them: otherwise it is kept, but not served, and does not shadow an org toolkit
-   * of its name. `scope` (an API key's tool scope, #200) narrows them further; `undefined`: no narrowing.
+   * of its name. `scope` (an API key's tool scope, #200) narrows them further; `undefined`: no narrowing. `asAgent` (a
+   * shared agent's run, #227): every tool of an org toolkit's shared credential, whatever the grants, as no member.
    */
-  #reachable(viewer: Viewer, scope?: ToolScope): ReadonlyArray<ReachableTool> {
-    const member = viewer.member;
+  #reachable(viewer: Viewer, scope?: ToolScope, asAgent = false): ReadonlyArray<ReachableTool> {
+    const member = asAgent ? undefined : viewer.member;
 
     // A built-in toolkit's shared credential is Commissary's own binding, always there.
     const shared = new Set([
@@ -2817,7 +2850,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
           tool.toolkit.owner === undefined &&
           accepts(tool.toolkit, "shared") &&
           shared.has(tool.toolkit.id) &&
-          granted(grantable(tool)),
+          (asAgent || granted(grantable(tool))),
       }))
       .filter(
         (reachable) =>

@@ -14,7 +14,7 @@
  */
 import type { Config } from "../config/schema.ts";
 import { sessionAffinityTtlMs } from "../config/accessors.ts";
-import type { Reach } from "../grants/reach.ts";
+import { ALLOW_ALL, type Reach } from "../grants/reach.ts";
 import type { JsonObject } from "@commissary/json";
 import { resetCooldownState } from "./cooldown-reset.ts";
 import { type StoredCredential, deriveFileCredential, sanitizeAliases } from "./derive.ts";
@@ -278,6 +278,17 @@ export class CredentialPool {
     );
   }
 
+  /**
+   * The reach of a request: a shared agent's run reaches every shared credential (its reach is its definition, which
+   * names its model: the client API refuses any other, ADR 0040); anyone else, what the grants give their member.
+   */
+  #callerReach(caller: {
+    readonly memberId?: string | undefined;
+    readonly agentId?: string | undefined;
+  }): Reach {
+    return caller.agentId === undefined ? this.#reach(caller.memberId) : ALLOW_ALL;
+  }
+
   pick(request: PickRequest): PickResult {
     const view = this.#current();
     const now = this.#now();
@@ -298,7 +309,7 @@ export class CredentialPool {
       request,
       settings: view.settings,
       runtime: { rotation: this.#rotation, affinity: this.#affinity, lcp: this.#lcp },
-      reach: this.#reach(request.memberId),
+      reach: this.#callerReach(request),
       now,
       ...(gate === undefined ? {} : { spend: gate }),
     });
@@ -484,7 +495,7 @@ export class CredentialPool {
       credentials: entries,
       query,
       routing: { ...view.settings, knownPrefixes: knownPrefixes(entries) },
-      reach: this.#reach(query.memberId),
+      reach: this.#callerReach(query),
       coolingDisabled: (credential) => coolingDisabledFor(credential, view.cooldown),
       now,
       spend: this.#spend?.gate({ memberId: query.memberId }, now),

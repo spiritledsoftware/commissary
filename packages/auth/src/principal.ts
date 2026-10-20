@@ -1,14 +1,43 @@
 // Mirrors CallerScope in sdk/cliproxy/session/identity.go (sha256 of a versioned prefix + caller credential).
 // The Go `userApiKey` is replaced by the Cloudflare Access principal.
 import { Context, Effect } from "effect";
+import type { ToolScope } from "@commissary/contract/api-keys";
 import type { OrgRole } from "@commissary/contract/members";
 import { GLOBAL_ORG, type OrgId } from "@commissary/core";
 
 /**
+ * Who started an agent run (GLOSSARY "Starter"): a member, for now. Child runs (#229) and runs no one started (#231) come
+ * later.
+ */
+export interface RunStarter {
+  readonly kind: "member";
+  readonly id: string;
+}
+
+/**
+ * Whom an agent run acts as (ADR 0040): a private agent's run acts as its member (their reach, private credentials and
+ * spend limits), a shared agent's run as the agent itself (its reach is its definition).
+ */
+export type RunActsAs =
+  | { readonly kind: "member"; readonly memberId: string; readonly email: string }
+  | { readonly kind: "agent" };
+
+/**
+ * What an agent run's definition names, which narrows what it reaches: its one model, as clients name it (any other
+ * answers like an unknown one), and its tool scope.
+ */
+export interface RunReach {
+  readonly model: string;
+  readonly toolScope: ToolScope;
+}
+
+/**
  * The authenticated caller: a person (an Access user, or on Commissary Cloud a person signed in with Better Auth: their
  * verified email), an Access service token (client id), an API key a member presented on a client API route (ADR 0022,
- * `api-key.ts`; never on a management route), or a management key a script presented on the management API (ADR
- * 0026, `management-key.ts`; never on a client API route).
+ * `api-key.ts`; never on a management route), a management key a script presented on the management API (ADR
+ * 0026, `management-key.ts`; never on a client API route), or a hosted agent's run (#227) calling the client API from
+ * its Durable Object. A run principal is never read from a request: the API Worker's run gateway alone presents it,
+ * resolved from the org's ControlPlane (docs/ARCHITECTURE.md, "Agents").
  */
 export type Principal =
   | { readonly kind: "user"; readonly email: string; readonly sub: string }
@@ -26,17 +55,30 @@ export type Principal =
       readonly name: string;
       /** The person who issued it, when a person did: their suspension refuses it on Commissary Cloud. */
       readonly ownerEmail?: string;
+    }
+  | {
+      readonly kind: "run";
+      readonly runId: string;
+      readonly agentId: string;
+      readonly starter: RunStarter;
+      /** The starter's email: on Commissary Cloud their standing is checked on every request of the run. */
+      readonly starterEmail: string;
+      readonly actsAs: RunActsAs;
+      readonly reach: RunReach;
     };
 
-/** A principal that is a member of an org, or may become one: anything but a management key, which belongs to its org. */
-export type AdmissiblePrincipal = Exclude<Principal, { readonly kind: "mkey" }>;
+/**
+ * A principal that is a member of an org, or may become one: anything but a management key, which belongs to its org,
+ * and an agent run, which its org's ControlPlane resolves.
+ */
+export type AdmissiblePrincipal = Exclude<Principal, { readonly kind: "mkey" | "run" }>;
 
 /** A verified principal plus the identifiers derived from it. */
 export interface AccessIdentity {
   readonly principal: Principal;
   /**
    * Stable text identity for usage records and audit: `user:<lowercased email>`, `service:<common_name>`,
-   * `key:<key id>` or `mkey:<key id>`.
+   * `key:<key id>`, `mkey:<key id>` or `run:<run id>`.
    */
   readonly principalId: string;
   /**
@@ -77,6 +119,8 @@ export const principalId = (principal: Principal): string => {
       return `key:${principal.keyId}`;
     case "mkey":
       return `mkey:${principal.keyId}`;
+    case "run":
+      return `run:${principal.runId}`;
   }
 };
 
@@ -106,6 +150,55 @@ export const callerScope = (value: string, org: OrgId): Effect.Effect<string> =>
     ),
   );
 };
+
+/** An agent run's principal (#227). */
+export type RunPrincipal = Extract<Principal, { readonly kind: "run" }>;
+
+/**
+ * Whether `principal` is a shared agent's run, which acts as the agent itself (ADR 0040): its reach is its definition,
+ * the org's shared credentials and toolkits whatever the grants, with no member behind it.
+ */
+export const isSharedAgentRun = (
+  principal: Principal,
+): principal is RunPrincipal & { readonly actsAs: { readonly kind: "agent" } } =>
+  principal.kind === "run" && principal.actsAs.kind === "agent";
+
+/** What a usage record says of the agent run it comes from (#227): its agent, the run and its starter, as text. */
+export interface UsageRun {
+  readonly agentId: string;
+  readonly runId: string;
+  /** `member:<member id>`. */
+  readonly starter?: string;
+}
+
+/** The agent run `principal` is, as usage records name it; `undefined` for any other principal. */
+export const usageRunOf = (principal: Principal): UsageRun | undefined =>
+  principal.kind === "run"
+    ? {
+        agentId: principal.agentId,
+        runId: principal.runId,
+        starter: `${principal.starter.kind}:${principal.starter.id}`,
+      }
+    : undefined;
+
+/**
+ * The identity of an agent run in `org` (#227): its own principal (`run:<run id>`), whose usage and session state are
+ * its own, acting as its member's for a private agent (`memberId`, so their reach, private credentials and spend
+ * limits apply) and as no member for a shared agent. A run holds no role: it is never an org admin.
+ */
+export const runIdentity = (principal: RunPrincipal, org: OrgId): Effect.Effect<AccessIdentity> =>
+  Effect.gen(function* () {
+    const id = principalId(principal);
+
+    return {
+      principal,
+      principalId: id,
+      callerScope: yield* callerScope(id, org),
+      org,
+      platformAdmin: false,
+      ...(principal.actsAs.kind === "member" ? { memberId: principal.actsAs.memberId } : {}),
+    };
+  });
 
 /**
  * The identity of `principal` in `org`; `platformAdmin` when it is on the platform admin lists (an owner of every org),

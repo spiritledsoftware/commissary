@@ -4,7 +4,7 @@
 // through every query the management API exposes, the ControlPlane addressed by key prefix and by slug, and Tools'
 // toolkits by name and by id, their tool grants, the upstream MCP sessions their calls keep, the pending approvals
 // of their calls, Commissary Cloud's OAuth grants for MCP clients, the browser sessions, the sessions of the built-in
-// sandbox toolkit with its network ceiling, and the hosted agents.
+// sandbox toolkit with its network ceiling, the hosted agents, their runs and the runs' own objects.
 // Each store is one `storeCase` in `STORES`: a new store (tool calls, approvals, runs, profiles) adds one line there
 // (docs/DEVELOPMENT.md, "Tests").
 import { env } from "cloudflare:workers";
@@ -294,6 +294,17 @@ const agentName = (name: string) => name.replaceAll("-", "_");
 
 /** The suite's member in `org`, as the Tools part sees them. */
 const isoViewer = (org: IsolationOrg) => ({ member: memberIds.get(org.slug), admin: false });
+
+/** The agent runs each case name's writes started, in every org (the agent runs' objects' case). */
+const runsByName = new Map<string, string[]>();
+
+const runsOf = (name: string): string[] => {
+  const known = runsByName.get(name) ?? [];
+
+  runsByName.set(name, known);
+
+  return known;
+};
 
 /** The upstream session a call of the tool of `name` is in, through `org`'s Tools part; none without the toolkit. */
 const sessionOf = async (org: IsolationOrg, name: string): Promise<string | undefined> => {
@@ -1019,6 +1030,72 @@ const STORES: ReadonlyArray<StoreCase> = [
       ).agents;
 
       return agents.find((agent) => agent.name === agentName(name))?.description;
+    },
+  }),
+  // The org's index of agent runs (#227), in its ControlPlane: each org's member starts a run, with the same idempotency
+  // key, of a shared agent named after the org's value; each lists its own run only. Written and read on the part (the
+  // run's object, named by its org and id, is the management routes' to start: `agent-runs.test.ts`).
+  storeCase("controlplane: agent runs", {
+    value: (index) => `run_value_${index}`,
+    write: async (org, name, value) => {
+      const agents = env.CONTROL_PLANE.getByName(org.id).agents();
+
+      const created = await agents.createAgent(
+        { ...isoViewer(org), admin: true },
+        { ...agentBody(value, "shared-model"), subject: { kind: "everyone" } },
+        { modelServed: true },
+        "iso",
+      );
+
+      if (!created.ok) throw new Error(created.message);
+      const started = await agents.startRun(isoViewer(org), created.value.id, "chat", name);
+
+      expect(started.ok).toBe(true);
+    },
+    read: async (org) =>
+      (await env.CONTROL_PLANE.getByName(org.id).agents().listRuns(isoViewer(org))).runs.find(
+        (run) => run.agent.name?.startsWith("run_value_") === true,
+      )?.agent.name,
+  }),
+  // The agent runs' own objects (#227), named by org and run, which hold each run's transcript and turns: each org's
+  // member starts a run whose first input is the org's value; each org's objects show its own run's input, and the
+  // runs the other orgs started find nothing under this org's name.
+  storeCase("agent runs' objects", {
+    value: (index) => `run_input_${index}`,
+    write: async (org, name, value) => {
+      const agents = env.CONTROL_PLANE.getByName(org.id).agents();
+
+      const created = await agents.createAgent(
+        { ...isoViewer(org), admin: true },
+        {
+          ...agentBody(`obj_${name.replaceAll("-", "_")}`, "shared-model"),
+          subject: { kind: "everyone" },
+        },
+        { modelServed: true },
+        "iso",
+      );
+
+      if (!created.ok) throw new Error(created.message);
+      const started = await agents.startRun(isoViewer(org), created.value.id, "chat", name);
+
+      if (!started.ok) throw new Error(started.message);
+      runsOf(name).push(started.value.run.id);
+
+      const first = await env.AGENT_RUN.getByName(`${org.id}:${started.value.run.id}`).start(
+        { org: org.id, id: started.value.run.id },
+        value,
+      );
+
+      expect(first.ok).toBe(true);
+    },
+    read: async (org, name) => {
+      for (const run of runsOf(name)) {
+        const shown = await env.AGENT_RUN.getByName(`${org.id}:${run}`).show();
+
+        if (shown.ok) return shown.value.turns[0]?.input;
+      }
+
+      return undefined;
     },
   }),
   // The browser toolkit's sessions (#213): each org opens a session of the same id, as the same member and API key, at

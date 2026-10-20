@@ -105,6 +105,7 @@ export const makeControlPlanePicker = (api: (env: ModelsBindings, org: OrgId) =>
           ...(request.pinnedId === undefined ? {} : { pinnedAuthId: request.pinnedId }),
           ...(request.memberId === undefined ? {} : { memberId: request.memberId }),
           ...(request.apiKeyId === undefined ? {} : { apiKeyId: request.apiKeyId }),
+          ...(request.agentId === undefined ? {} : { agentId: request.agentId }),
           ...(request.disallowFreeAuth === true ? { disallowFreeCodex: true } : {}),
           ...(request.preferWebsockets === true ? { preferWebsockets: true } : {}),
           ...(request.ignoreCooldown === true ? { ignoreCooldown: true } : {}),

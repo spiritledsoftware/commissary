@@ -2,13 +2,14 @@
  * What `@commissary/agents` reads from a Worker's env (#134 "How packages get their bindings"): the org's ControlPlane,
  * typed as objects with the Agents part ({@link AgentsControlPlane}), so callers write `stub.agents().x(…)`, and the
  * deployment's Dynamic Workers binding (`LOADER`), whose presence is the Agents area's (#226): without it the area is
- * absent. Its state is the ControlPlane's. Runs (#227) will execute on Dynamic Workers; until then only the binding's
- * presence is read.
+ * absent. Its state is the ControlPlane's, and each run's its own Durable Object's (`AGENT_RUN`, #227), which the API
+ * Worker defines and the app Worker binds by its script name.
  */
 import { Context, Effect } from "effect";
-import { CurrentOrg, type Reply } from "@commissary/core";
+import { CurrentOrg, type OrgId, type Reply } from "@commissary/core";
 import { callControlPlane, controlPlaneOf } from "@commissary/state";
 import type { AgentsPart } from "./control-plane-part.ts";
+import type { AgentRunObject } from "./runs/run-object.ts";
 
 /** The methods of the Agents part callers reach. */
 type AgentsPartMethod =
@@ -21,7 +22,16 @@ type AgentsPartMethod =
   | "agentWatchers"
   | "listGrants"
   | "writeGrant"
-  | "exportAgents";
+  | "exportAgents"
+  | "startRun"
+  | "getRun"
+  | "listRuns"
+  | "beginTurn"
+  | "turnContext"
+  | "abandonRun"
+  | "runsPage"
+  | "forgetRuns"
+  | "runStateChanged";
 
 /** The Agents part of an org's ControlPlane (`AgentsPart`) as Agents sees it: the methods it calls. */
 export type AgentsControlPlanePart = Pick<AgentsPart, AgentsPartMethod> & Rpc.RpcTargetBranded;
@@ -41,7 +51,22 @@ export interface AgentsBindings {
    * ({@link agentsPresent}). Only its presence is read here.
    */
   readonly LOADER?: WorkerLoader | undefined;
+  /**
+   * The agent runs (#227), one object per run ({@link agentRunOf}): the API Worker's class (ADR 0030's amendment),
+   * which the app Worker binds by the API Worker's script name.
+   */
+  readonly AGENT_RUN: DurableObjectNamespace<AgentRunObject>;
 }
+
+/** The name of the run `run` of `org`'s object: both, so a run id never reaches another org's run. */
+export const agentRunName = (org: OrgId, run: string): string => `${org}:${run}`;
+
+/** The object of the run `run` of `org` ({@link agentRunName}). */
+export const agentRunOf = (
+  env: Pick<AgentsBindings, "AGENT_RUN">,
+  org: OrgId,
+  run: string,
+): DurableObjectStub<AgentRunObject> => env.AGENT_RUN.getByName(agentRunName(org, run));
 
 /**
  * The Agents bindings of the current Worker invocation. Provided per request through the `Context` handed to the web

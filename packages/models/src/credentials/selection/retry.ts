@@ -47,6 +47,8 @@ export const RetryQuery = Schema.Struct({
   pinnedAuthId: optional(Schema.String),
   /** The member the request is for: private credentials of others do not keep a retry alive. */
   memberId: optional(Schema.String),
+  /** A shared agent's run (#227): the agent it acts as, reaching every shared credential whatever the grants. */
+  agentId: optional(Schema.String),
   requireAuthKind: optional(AuthKind),
   disallowFreeCodex: optional(Schema.Boolean),
 });

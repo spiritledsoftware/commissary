@@ -116,6 +116,14 @@ export interface UsageRow {
   response_bytes: number | null;
   /** How an approval rule decided a tool call (#201); `null` on a record from before approvals. */
   approval: ToolCallApproval | null;
+  /**
+   * The agent run a record comes from (`migrations/usage/0011_usage_agent_runs.sql`, #227): its agent, the run and its
+   * starter (`member:<id>`; child runs, #229, and runs no one started, #231, will add theirs); `null` on any other
+   * record.
+   */
+  agent_id: string | null;
+  run_id: string | null;
+  starter: string | null;
 }
 
 /** The columns of a model attempt's row (Models writes those); a tool call's are Tools'. */
@@ -185,6 +193,9 @@ const INSERT_COLUMNS = [
   "acct_unclassified_tokens",
   "cost_micros",
   "unpriced",
+  "agent_id",
+  "run_id",
+  "starter",
 ] as const satisfies ReadonlyArray<Column>;
 
 const INSERT_SQL = `INSERT OR IGNORE INTO usage_records (${INSERT_COLUMNS.join(", ")}) VALUES (${INSERT_COLUMNS.map(
@@ -254,6 +265,9 @@ export const recordToRow = (record: UsageRecord): ModelColumns => {
     acct_unclassified_tokens: breakdown.unclassifiedTokens,
     cost_micros: record.cost?.micros ?? null,
     unpriced: record.cost?.unpriced === true ? 1 : 0,
+    agent_id: record.run?.agentId ?? null,
+    run_id: record.run?.runId ?? null,
+    starter: record.run === undefined ? null : (record.run.starter ?? ""),
   };
 };
 

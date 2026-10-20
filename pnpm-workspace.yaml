@@ -22,6 +22,10 @@ allowBuilds:
   # Native compressors just-bash may use in Node.js (optional); the sandbox's shell runs in a Dynamic Worker without them.
   "@mongodb-js/zstd": false
   node-liblzma: false
+  # pi-ai's provider SDKs (@commissary/agents' runs, #227) that the runs never load: they reach models through the
+  # client API with pi-ai's OpenAI-compatible API only.
+  "@google/genai": false
+  protobufjs: false
 
 # samlify (through Better Auth's SSO plugin) pulls three copies of xpath; one keeps the Worker's bundle smaller.
 overrides:
