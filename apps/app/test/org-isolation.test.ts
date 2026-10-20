@@ -3,8 +3,8 @@
 // the others: KV, the signature and Antigravity state, the per-isolate caches, SessionState, the D1 usage records
 // through every query the management API exposes, the ControlPlane addressed by key prefix and by slug, and Tools'
 // toolkits by name and by id, their tool grants, the upstream MCP sessions their calls keep, the pending approvals
-// of their calls, Commissary Cloud's OAuth grants for MCP clients, the browser sessions and the sessions of the built-in
-// sandbox toolkit with its network ceiling.
+// of their calls, Commissary Cloud's OAuth grants for MCP clients, the browser sessions, the sessions of the built-in
+// sandbox toolkit with its network ceiling, and the hosted agents.
 // Each store is one `storeCase` in `STORES`: a new store (tool calls, approvals, runs, profiles) adds one line there
 // (docs/DEVELOPMENT.md, "Tests").
 import { env } from "cloudflare:workers";
@@ -64,6 +64,7 @@ import {
   serveFakeMcpServers,
   signInGrants,
 } from "@commissary/tools/testing";
+import { agentBody } from "@commissary/agents/testing";
 
 serveFakeMcpServers();
 
@@ -287,6 +288,9 @@ const oauthToolkitOf = async (org: IsolationOrg, name: string) =>
 const sessionValues = new Map<string, string>();
 
 const OUTBOUND = { ownHosts: [], localDevelopment: false };
+
+/** A hosted agent's name for the suite's `name` (agent names take `[a-z0-9_]`). */
+const agentName = (name: string) => name.replaceAll("-", "_");
 
 /** The suite's member in `org`, as the Tools part sees them. */
 const isoViewer = (org: IsolationOrg) => ({ member: memberIds.get(org.slug), admin: false });
@@ -983,6 +987,38 @@ const STORES: ReadonlyArray<StoreCase> = [
           privateCredentials: false,
           privateToolkits: false,
         });
+    },
+  }),
+  // The Agents part's hosted agents (#226): each org saves a shared agent of the same name, its value as the agent's
+  // description, and lists its own only. Written on the part (the model it names is taken as served, a check of the
+  // routes'), read through the management API.
+  storeCase("controlplane: agents", {
+    write: async (org, name, value) => {
+      const created = await env.CONTROL_PLANE.getByName(org.id)
+        .agents()
+        .createAgent(
+          { ...isoViewer(org), admin: true },
+          {
+            ...agentBody(agentName(name), "shared-model"),
+            description: value,
+            subject: { kind: "everyone" },
+          },
+          { modelServed: true },
+          "iso",
+        );
+
+      expect(created.ok).toBe(true);
+    },
+    read: async (org, name) => {
+      const listed = await managed(org, "/agents");
+
+      expect(listed.status).toBe(200);
+
+      const agents = (
+        listed.body as { agents: ReadonlyArray<{ name: string; description: string }> }
+      ).agents;
+
+      return agents.find((agent) => agent.name === agentName(name))?.description;
     },
   }),
   // The browser toolkit's sessions (#213): each org opens a session of the same id, as the same member and API key, at

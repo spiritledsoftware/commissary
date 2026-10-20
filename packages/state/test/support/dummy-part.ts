@@ -152,6 +152,10 @@ export class DummyPart extends RpcTarget implements ControlPlanePart {
     return [];
   }
 
+  spendAgents(): readonly [] {
+    return [];
+  }
+
   /**
    * Charges `micros` to the Spend limits of a call by `caller` on a shared credential, through the base's one ledger
    * (`core.spend`), as an area's part charges its traffic.

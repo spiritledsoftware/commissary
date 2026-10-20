@@ -3,7 +3,8 @@
  * API routes, its entries of the role table, its org-deletion step, its section of the org export, the callback of
  * toolkits' OAuth sign-ins (#202), and the MCP endpoint
  * at a path of the app Worker's choosing, which a self-hosted Commissary serves on the app host behind Access (#251,
- * ADR 0045). The apps import
+ * ADR 0045), and the toolkits a hosted agent may name, which the app Worker hands to the Agents area's routes (#226).
+ * The apps import
  * Tools only through this entry, `./api` and `./state` (the lint rule `boundaries/tools-imports`).
  */
 export { accessRules } from "./management/access-rules.ts";
@@ -21,6 +22,8 @@ export { SignInCallbackRoutes, signInCallbackRejected } from "./oauth/public-rou
 export { SIGN_IN_CALLBACK_PATH, signInCallbackOrg } from "./oauth/urls.ts";
 
 export { orgDeletionStep } from "./org-deletion.ts";
+
+export { toolkitIds } from "./management/toolkit-ids.ts";
 
 export {
   AUTHORIZATION_SERVER_METADATA_PATH,

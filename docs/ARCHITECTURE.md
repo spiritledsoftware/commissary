@@ -28,8 +28,8 @@ such as `src/...` and `test/...` in the rest of this document are relative to `a
 cited as `translation/...` (relative to `packages/translation/src/`), core's as `core/...` (relative to
 `packages/core/src/`), auth's as `auth/...` (relative to `packages/auth/src/`), state's as `state/...` (relative to
 `packages/state/src/`), Models' as `models/...` (relative to `packages/models/src/`), Billing's as `billing/...` (relative
-to `packages/billing/src/`), Tools' as `tools/...` (relative to `packages/tools/src/`) and the JSON path engine as
-`packages/json`.
+to `packages/billing/src/`), Tools' as `tools/...` (relative to `packages/tools/src/`), Agents' as `agents/...` (relative
+to `packages/agents/src/`) and the JSON path engine as `packages/json`.
 
 ```
 .                             workspace root and deploy root (Alchemy, no Wrangler config); turbo.json
@@ -75,8 +75,8 @@ to `packages/billing/src/`), Tools' as `tools/...` (relative to `packages/tools/
   apps/state/                 @commissary/state-worker: the state Worker, no routes (ADR 0030)
     src/index.ts              exports ControlPlane, SessionState, Platform and BrowserSession; answers every request 404
     src/dev.ts                its `alchemy dev` entry: index.ts plus the dev-only DevStateBridge entrypoint
-    src/control-plane.ts      the ControlPlane Durable Object: @commissary/state's base composed with the Models and
-                              Billing and Tools parts
+    src/control-plane.ts      the ControlPlane Durable Object: @commissary/state's base composed with the Models,
+                              Billing, Tools and Agents parts
     src/env.d.ts              what the classes read: the state Worker's bindings
   apps/web/                   @commissary/web: control panel served at / (React, Effect Atom, TanStack Router; built
                               into apps/web/dist, the Worker's assets), its tests in Node.js
@@ -157,6 +157,18 @@ to `packages/billing/src/`), Tools' as `tools/...` (relative to `packages/tools/
                               (test/worker.ts), fake MCP servers, a fake Browser Run binding, a fake browser
                               provider's sessions (test/support/fake-sessions.ts) and a fake second sandbox
                               provider; test/fixtures/ has the snapshot masking's golden fixtures; test/testing.ts is
+                              ./testing
+  packages/agents/            @commissary/agents: the Agents area (#226, ADR 0040): hosted agent definitions; like
+                              Tools, the Workers import it only through ./api, ./management and ./state (lint rule
+                              boundaries/agents-imports)
+    src/api.ts                for the API Worker: AgentsEnv and the area's presence (the agents toolkit comes later)
+    src/management.ts         for the app Worker: management routes (with AgentReferences, the seam to Models and
+                              Tools), role-table entries, org-deletion step, its section of the org export
+    src/state.ts              for the state Worker: AgentsPart, its part of the ControlPlane
+    src/control-plane-part.ts the ControlPlane's Agents part (agents, their watchers, agent grants)
+    src/agents/               storage and the checks of a definition's texts
+    src/management/           Agents' /v9/management routes (agents, agent grants), the reference check
+    test/                     workerd tests against a test-only ControlPlane (test/worker.ts); test/testing.ts is
                               ./testing
   packages/contract/          @commissary/contract: the management API's Effect HttpApi schemas and addressing (browser-safe)
   packages/core/              @commissary/core: the foundation without bindings (org model, shared errors, hashing,
@@ -2228,8 +2240,8 @@ ADR 0027: deleting something deletes it at once, and Commissary keeps no content
 - **Retention** per org, `usage_retention_days` in the Platform registry (see "Usage accounting"). **Usage failures** keep
   status, type and code, not the body (same section).
 - **Member removal** deletes the member's private data in the ControlPlane (`#deleteMemberData`: their API keys in the
-  base, then the Models and Tools parts' `memberLeft`: Tools deletes their private toolkits and their private credentials
-  on org toolkits), and their Spend limits and counters; **API keys** are deleted when revoked or expired ("API keys"), and `ApiKeyStore` reports every key it
+  base, then the Models, Tools and Agents parts' `memberLeft`: Tools deletes their private toolkits and their private
+  credentials on org toolkits, Agents their private agents and the agent grants and watchers that named them), and their Spend limits and counters; **API keys** are deleted when revoked or expired ("API keys"), and `ApiKeyStore` reports every key it
   deletes so the key's Spend limits and counters go with it.
 - **Org deletion** (`deleteOrg`, called by `DELETE /org` and by account deletion, app-only) runs, in this order: the
   org-deletion steps of the areas the Worker mounts, which it takes as input (`OrgDeletionStep` of `@commissary/core`;
@@ -2545,8 +2557,10 @@ error codes are in `docs/ACCESS.md` "Members, roles and teams".
   the one chosen); `GET`/`PATCH /membership`, `/me` and the panel read it; an org
   admin changes it, and a change makes the credential pool derive again) and the org setting `private_toolkits`
   (members may add private toolkits, #198: the same defaults and the same `POST /orgs` choice; an org from before it
-  takes its `private_credentials` value; the Tools part reads it on every use, _Tools_). Members are not config
-  entries: a config import replaces every entry and must not remove people. Every write takes the actor's role and
+  takes its `private_credentials` value; the Tools part reads it on every use, _Tools_) and the org setting
+  `private_agents` (members may create private agents, #226: the same defaults and the same `POST /orgs` choice; an
+  org from before it takes its `private_toolkits` value, as ADR 0040 has private agents follow private toolkits, and
+  `global` has it on; _Agents_). Members are not config entries: a config import replaces every entry and must not remove people. Every write takes the actor's role and
   checks it against the target in the same Durable Object call (`auth/roles.ts`: `mayManageMember`, `mayChangeRoles`,
   `mayGrantTokenRole`, `holdsSensitivePowers`), so check and write cannot interleave with another request; refusals are
   data (`{ok: false, error, message}`) that `member-routes.ts` maps to statuses.
@@ -2707,15 +2721,16 @@ call's price (_Tools_); the Worker prices each attempt, the ControlPlane prices 
   (`stub.createSpendLimit(…)`), and their routes are the app Worker's (`src/management/spend-routes.ts`, their role
   entries in `management/policy.ts`), like the API keys'. Each part's contribution stays a hook: it names the
   credentials a limit may cover (`ControlPlanePart.spendCredentials`: Models' shared credentials by `auth_index`,
-  Tools' org toolkits with a shared credential), so the routes resolve and label a `credential` or
-  `toolkit_credential` subject without the base knowing either area. The base forgets the limits of a member, team or
+  Tools' org toolkits with a shared credential) and the shared agents (`ControlPlanePart.spendAgents`, Agents' part,
+  #226), so the routes resolve and label a `credential`, `toolkit_credential` or `agent` subject without the base
+  knowing any area. The base forgets the limits of a member, team or
   API key it removes; a part forgets those of the credentials it removes (`spend.forget`). The refusal's wording is
   one for both areas (`spendRefusalMessage`).
 
 - **Entries** (`spend/store.ts` `SpendStore`, in each org's ControlPlane, SQLite tables `spend_limits`, `spend_counters`
   and `spend_settings`, `CREATE IF NOT EXISTS`, so there is no D1 migration and a ControlPlane that predates the feature
   upgrades in place with no limits): a subject (`member`, `team`, `org`, `credential` (a shared one, named by its
-  `auth_index`), `key` (an API key id) or `toolkit_credential` (an org toolkit's shared credential, named by the toolkit's id; #199)), a period and an amount in micro-USD, written by an org admin or, on their own
+  `auth_index`), `key` (an API key id), `toolkit_credential` (an org toolkit's shared credential, named by the toolkit's id; #199) or `agent` (a shared hosted agent, by id; #226: written now, counted against runs' usage with #228)), a period and an amount in micro-USD, written by an org admin or, on their own
   API key, by a member. Each limit has a revision and `updated_at/by`; an edit or delete names the revision in `If-Match`
   (`409 conflict` when stale). There is one limit per subject, period and writer, and the limits on one subject and period
   are enforced together, so the smaller amount binds. A member may not write a limit above an admin's on the same key and
@@ -3890,3 +3905,61 @@ state Worker defines and always binds the browser sessions' Durable Object (#213
   toolkits the caller reaches with their credentials' kinds, their overrides and their approval
   rules, never a secret, and for an org admin each org toolkit's tool grants (subjects by email or team name, as
   Models' grants; tools `all`, `read` or the named tools' upstream names; `updated_at`).
+
+## Agents (`agents/`, `agents/management/routes.ts`, `src/management/agent-routes.ts`)
+
+The Agents area (ADR 0040) holds **hosted agents**: an agent's definition saved in Commissary (name, description,
+instructions, one model with an optional thinking level, a tool scope) that later runs on Dynamic Workers (#227) and is
+called as a tool of the agents toolkit (#229). This version (#226) saves definitions, private and shared, the grants on
+shared agents and their watchers; nothing runs yet. The package (`@commissary/agents`) is shaped like Tools: entry
+points `./api`, `./management`, `./state` and `./testing`, a lint boundary (`boundaries/agents-imports`) and a
+ControlPlane part, `AgentsPart`, reached as `stub.agents().x(…)`. Its state is the ControlPlane's (`AGENTS_TABLES`:
+`agents` and `agent_grants`, dropped by `wipe()`); its view of `env` (`AgentsBindings`) is the ControlPlane namespace and
+the deployment's Dynamic Workers binding `LOADER`.
+
+- **Presence** (ADR 0043): the area exists exactly when `LOADER` is bound (`agentsPresent`), on the app Worker for now
+  (runs will bind it where they execute). Without it every Agents route answers `404 not_found` and `/me` says
+  `deployment.agents: false`; the definitions are kept. Every deployment binds it (`alchemy.run.ts`), and the app's tests
+  bind it too (`workerLoaders` in `vitest.config.ts`), but for one harness that passes `LOADER: undefined`.
+- **Definitions** (`CreateAgent`, `UpdateAgent` in `@commissary/contract/agents`; `agents/agents/definition.ts`): a
+  name of 1 to 64 of `[a-z0-9_]`, unique in the org across private and shared agents (it is the agents toolkit's
+  `agent` argument, so one name must mean one agent whoever calls; a deliberate choice: `409 name_taken` can reveal a
+  name used by an agent the caller cannot see), a description of at most 1,000 characters, instructions of at most 65,536, a model as clients name
+  it, a thinking level, and a tool scope as an API key's (`ToolScope`), whose agents toolkit entry may also name agents
+  by id (`agents`). There are no versions: an edit replaces what it names. Edits and removals name the agent's revision
+  in `If-Match` (`409 conflict`).
+- **Private and shared**: a private agent is one member's; a plain member's agents are always private, and an org admin
+  creates a private one by saying so. Private agents follow the org setting `membership.private_agents` as private
+  toolkits follow `private_toolkits` (`403 private_agents_unavailable` when off; turning it off keeps them but none is
+  usable). Only its member sees and edits it in full; an org admin sees that it exists (`others`, as for private
+  toolkits) and may disable or remove it. A shared agent is an org admin's to create and edit; it names who may use it
+  on creation (`subject`, written at once as its grant: there is no default grant), and further grants are
+  `/grants/agents`, one per subject and agent, for org admins only. `GET /agents/mine` lists what the caller may use:
+  their private agents (while the setting is on) and the enabled shared agents a grant gives them.
+- **Watchers** (GLOSSARY "Watcher"): a shared agent names members and teams who watch it (the creating admin by default);
+  once none is left (a member who leaves, a deleted team), its org admins watch it (`admins_watch`). They act in runs
+  (steering, approvals, handoffs) with #232; `agentWatchers` already resolves them to members.
+- **What a definition names** (the seam): the model and the toolkits must exist where the agent runs: in the org (its
+  shared credentials, its toolkits) for a shared agent; for a private agent, the models its member may use and the
+  toolkits the member can see (the org's and their private ones), tools outside their grants being narrowed at run time
+  (#227) (`422 unknown_model`, `422 unknown_toolkit`, with `path`). Agents imports neither Models nor Tools: its
+  routes take an `AgentReferences` (`agents/management/references.ts`), which the app Worker fills
+  (`src/management/agent-routes.ts`) from Models' `servedModelCheck` (over the isolate's `ModelRegistry`, aliases and
+  prefixes applied, `RegistrySnapshot.shared()` or `visibleTo(member)`) and Tools' `toolkitIds` (over the Tools part's
+  toolkit list). The routes run the checks and hand what they found to the part as data (`ReferenceCheck`), so the part
+  decides the order of refusals (permission, setting, references, the rest) and Agents' own tests need no Models or
+  Tools. The agents a tool scope names are Agents' own: a private agent's must be usable by its member, a shared agent's
+  shared (`422 unknown_agent`). A model or toolkit removed later stays named, as in an API key's scope; runs will refuse
+  it (#227).
+- **Tool scope entry for agents**: an API key's tool scope (`ToolScopeEntry.agents`, on the entry of toolkit `agents`
+  only, `AGENTS_TOOLKIT`) may name agents by id, which the agents toolkit will honour (#229); the base stores and
+  normalizes it like the rest of the scope.
+- **Spend limits**: a shared agent is a Spend subject (`agent`, `/spend/limits`), listed by the part's `spendAgents`
+  hook; removing the agent deletes its limits (`spend.forget`). Runs' usage will count against them (#228).
+- **Members and orgs**: a member who leaves takes their private agents and leaves the grants and watcher lists that named
+  them (`memberLeft`); a deleted team leaves the grants and watcher lists (`teamDeleted`); org deletion drops the tables
+  (`wipe()`), and Agents' org-deletion step has nothing outside the ControlPlane to delete. The org export lists the
+  agents the caller manages, a shared agent with its watchers and grants (members by email, teams by name). The
+  cross-org suite checks that one org's agents are not listed in another (`controlplane: agents`).
+- **The sandbox** a definition may name (`sandbox`) is not part of this version: it comes with the sandbox toolkit
+  (#230).

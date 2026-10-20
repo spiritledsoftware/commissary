@@ -235,7 +235,12 @@ describe("the optional pieces of the deployment", () => {
     for (const email of [ROOT, "ada@example.com"]) {
       const body = await me(await signIn({ email }));
 
-      expect(body.deployment).toEqual({ hosted: true, browser: false, computer: false });
+      expect(body.deployment).toEqual({
+        hosted: true,
+        browser: false,
+        computer: false,
+        agents: true,
+      });
       expect(body).not.toHaveProperty("hosted");
     }
   });

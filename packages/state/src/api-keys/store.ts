@@ -19,7 +19,7 @@
  */
 import { type ApiKeyRejection, isKeyId, mintApiKey } from "@commissary/auth";
 import { Option, Schema } from "effect";
-import { ToolScope } from "@commissary/contract/api-keys";
+import { AGENTS_TOOLKIT, ToolScope } from "@commissary/contract/api-keys";
 import { GLOBAL_ORG, type OrgId } from "@commissary/core";
 import { cleanName, MAX_NAME_LENGTH } from "../platform/registry-store.ts";
 
@@ -124,8 +124,30 @@ export const MAX_SCOPE_TOOLKITS = 100;
 export const MAX_SCOPE_TOOLS = 500;
 
 /**
- * `scope` as stored: each named id trimmed and once, in order; `undefined` when it is not one a key may carry (a toolkit
- * named twice or with an empty id, too many toolkits or tools, a named id of another toolkit, no named id at all).
+ * The agents an entry of the agents toolkit names (#226), each trimmed and once, in order; `undefined` when there are
+ * none to keep (no `agents`), `false` when they cannot be kept: `agents` on another toolkit's entry, an empty list or
+ * id, or more than {@link MAX_SCOPE_TOOLS}.
+ */
+const scopeAgents = (
+  toolkit: string,
+  agents: ReadonlyArray<string> | undefined,
+): ReadonlyArray<string> | undefined | false => {
+  if (agents === undefined) return undefined;
+
+  const ids = [...new Set(agents.map((id) => id.trim()))];
+
+  return toolkit !== AGENTS_TOOLKIT ||
+    ids.length === 0 ||
+    ids.length > MAX_SCOPE_TOOLS ||
+    ids.includes("")
+    ? false
+    : ids;
+};
+
+/**
+ * `scope` as stored: each named id trimmed and once, in order; `undefined` when it is not one a key may carry (a
+ * toolkit named twice or with an empty id, too many toolkits or tools, a named id of another toolkit, no named id at
+ * all, agents named on an entry other than the agents toolkit's).
  */
 export const normalizedToolScope = (scope: ToolScope): ToolScope | undefined => {
   if (scope.length > MAX_SCOPE_TOOLKITS) return undefined;
@@ -137,9 +159,14 @@ export const normalizedToolScope = (scope: ToolScope): ToolScope | undefined => 
 
     if (toolkit === "" || toolkits.has(toolkit)) return undefined;
     toolkits.add(toolkit);
+    const agents = scopeAgents(toolkit, entry.agents);
+
+    if (agents === false) return undefined;
+
+    const named = agents === undefined ? {} : { agents };
 
     if (entry.tools.kind !== "named") {
-      normalized.push({ toolkit, tools: entry.tools });
+      normalized.push({ toolkit, tools: entry.tools, ...named });
       continue;
     }
 
@@ -151,7 +178,7 @@ export const normalizedToolScope = (scope: ToolScope): ToolScope | undefined => 
       ids.some((id) => !id.startsWith(`${toolkit}:`) || id.length === toolkit.length + 1)
     )
       return undefined;
-    normalized.push({ toolkit, tools: { kind: "named", ids } });
+    normalized.push({ toolkit, tools: { kind: "named", ids }, ...named });
   }
 
   return normalized;
@@ -167,7 +194,7 @@ const MESSAGES = {
   invalidName: `a name is 1 to ${MAX_NAME_LENGTH} characters without control characters`,
   invalidExpiry: "a key expires at a time in the future",
   tooManyKeys: `a member holds at most ${MAX_KEYS_PER_MEMBER} API keys`,
-  invalidToolScope: `a tool scope names each toolkit once, at most ${MAX_SCOPE_TOOLKITS} of them, and a named tool by the stable id of a tool of its toolkit (at most ${MAX_SCOPE_TOOLS} per toolkit)`,
+  invalidToolScope: `a tool scope names each toolkit once, at most ${MAX_SCOPE_TOOLKITS} of them, and a named tool by the stable id of a tool of its toolkit (at most ${MAX_SCOPE_TOOLS} per toolkit), and agents only on the agents toolkit's entry`,
   notFound: "no API key has this id",
 } as const;
 

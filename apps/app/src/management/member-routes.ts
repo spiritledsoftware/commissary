@@ -198,6 +198,7 @@ const settingsView = (settings: MembershipSettingsWire, org: OrgId): MembershipS
   auto_join: settings.autoJoin,
   private_credentials: settings.privateCredentials,
   private_toolkits: settings.privateToolkits,
+  private_agents: settings.privateAgents,
   ...(org === GLOBAL_ORG ? { access_clients: settings.accessClients } : {}),
 });
 
@@ -216,6 +217,7 @@ const updateMembershipSettings = Effect.gen(function* () {
     input.auto_join === undefined &&
     input.private_credentials === undefined &&
     input.private_toolkits === undefined &&
+    input.private_agents === undefined &&
     input.access_clients === undefined
   )
     return yield* replyError(400, "invalid body");
@@ -241,6 +243,7 @@ const updateMembershipSettings = Effect.gen(function* () {
         ? {}
         : { privateCredentials: input.private_credentials }),
       ...(input.private_toolkits === undefined ? {} : { privateToolkits: input.private_toolkits }),
+      ...(input.private_agents === undefined ? {} : { privateAgents: input.private_agents }),
       ...(input.access_clients === undefined ? {} : { accessClients: input.access_clients }),
     }),
   );

@@ -76,7 +76,8 @@ const worker = (bindings: Record<string, string>) =>
       // only with the hosted bindings.
       kvNamespaces: ["CACHE", "OAUTH_KV"],
       d1Databases: ["USAGE"],
-      // Dynamic Workers, where a sandbox session's just-bash runs (ADR 0043: every deployment has them).
+      // Dynamic Workers (ADR 0043: every deployment has them): where a sandbox session's just-bash runs, and whose
+      // presence is the Agents area's (#226).
       workerLoaders: { LOADER: {} },
       assets: {
         // The control panel's build (`pnpm build`), as deployed. No test reads it (a missing folder serves nothing): the

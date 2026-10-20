@@ -30,13 +30,17 @@ export const SUBJECT_KINDS: ReadonlyArray<{
   { id: "key", label: "API key" },
 ];
 
-/** A toolkit's shared credential (#199): listed, not offered in the form yet (the panel's toolkits are #209's). */
-const TOOLKIT_LABEL = "Toolkit credential";
+/**
+ * The kinds listed, not offered in the form yet: a toolkit's shared credential (#199; the panel's toolkits are #209's)
+ * and a shared hosted agent (#226; the panel's agents come later).
+ */
+const LISTED_ONLY: Partial<Record<SpendSubjectKind, string>> = {
+  toolkit_credential: "Toolkit credential",
+  agent: "Agent",
+};
 
 export const kindLabel = (kind: SpendSubjectKind): string =>
-  kind === "toolkit_credential"
-    ? TOOLKIT_LABEL
-    : (SUBJECT_KINDS.find((candidate) => candidate.id === kind)?.label ?? kind);
+  LISTED_ONLY[kind] ?? SUBJECT_KINDS.find((candidate) => candidate.id === kind)?.label ?? kind;
 
 export const WEEK_STARTS: ReadonlyArray<{ readonly id: SpendWeekStart; readonly label: string }> = [
   { id: "monday", label: "Monday" },
@@ -55,11 +59,15 @@ const KIND_RANK: Readonly<Record<SpendSubjectKind, number>> = {
   key: 3,
   credential: 4,
   toolkit_credential: 5,
+  agent: 6,
 };
 
 const PERIOD_RANK: Readonly<Record<SpendPeriod, number>> = { day: 0, week: 1, month: 2 };
 
-/** The org's limits first, then teams, members, keys and shared credentials; by name, then the shorter period first. */
+/**
+ * The org's limits first, then teams, members, keys, shared credentials and agents; by name, then the shorter period
+ * first.
+ */
 export const sortLimits = (limits: ReadonlyArray<SpendLimitView>): ReadonlyArray<SpendLimitView> =>
   limits.toSorted(
     (a, b) =>

@@ -7,6 +7,7 @@
  * Workers, which every deployment has, #222).
  */
 import { composeControlPlane } from "@commissary/state";
+import { AgentsPart } from "@commissary/agents/state";
 import { BillingPart } from "@commissary/billing/state";
 import { ModelsPart, type ModelsPartEnv } from "@commissary/models/state";
 import { builtInProviders, ToolsPart, type ToolsPartEnv } from "@commissary/tools/state";
@@ -19,4 +20,6 @@ export class ControlPlane extends composeControlPlane({
   billing: (ctx) => new BillingPart(ctx),
   tools: (ctx, env: PartsEnv, core) =>
     new ToolsPart(ctx, core, builtInProviders(env), env.OWN_HOSTS),
+  // The Agents part (#226), reached as `stub.agents().x(…)`: hosted agent definitions and their grants.
+  agents: (ctx, _env, core) => new AgentsPart(ctx, core),
 }) {}

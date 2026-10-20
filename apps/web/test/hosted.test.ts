@@ -15,9 +15,9 @@ import {
 import { issuableRoles, issuerText } from "../src/lib/management-keys.ts";
 import { callerOf } from "../src/lib/role.ts";
 
-const SELF_HOSTED = { hosted: false, browser: false, computer: false };
+const SELF_HOSTED = { hosted: false, browser: false, computer: false, agents: false };
 
-const HOSTED = { hosted: true, browser: false, computer: false };
+const HOSTED = { hosted: true, browser: false, computer: false, agents: false };
 
 describe("creating orgs", () => {
   it("is for platform admins, and for everyone on Commissary Cloud", () => {

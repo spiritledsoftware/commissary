@@ -15,6 +15,7 @@ const SUBJECT: Readonly<Record<SubjectKind, string>> = {
   org: "your org",
   credential: "this credential",
   toolkit_credential: "this toolkit's shared credential",
+  agent: "this agent",
 };
 
 /** "The daily Spend limit of this API key is reached; it resets at <ISO time>". */

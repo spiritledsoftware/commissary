@@ -50,6 +50,7 @@ import type { ToolScope } from "@commissary/contract/api-keys";
 import type { StateObjectEnv } from "./env.ts";
 import {
   type NewSpendLimit,
+  type SpendAgent,
   type SpendCredential,
   type SpendEntry,
   type SpendOverview,
@@ -86,6 +87,8 @@ export interface OrgCore {
   privateCredentials(): boolean;
   /** Whether the org lets members add private toolkits (a membership setting); read on every use. */
   privateToolkits(): boolean;
+  /** Whether the org lets members create private agents (a membership setting, #226); read on every use. */
+  privateAgents(): boolean;
   /** Every member's live API keys at `now` (epoch ms). */
   apiKeys(now: number): ReadonlyArray<ApiKeyRecord>;
   /** One API key by id, with its tool scope (#200), while it is stored; the MCP endpoint narrows to its scope. */
@@ -128,6 +131,8 @@ export interface ControlPlanePart {
   privateCredentialsChanged(): void;
   /** The part's shared credentials a Spend limit may name (none for a part without credentials). */
   spendCredentials(): ReadonlyArray<SpendCredential>;
+  /** The part's shared agents a Spend limit may name (#226; none for a part without agents). */
+  spendAgents(): ReadonlyArray<SpendAgent>;
 }
 
 /** The areas' parts of a ControlPlane, by name. */
@@ -209,6 +214,7 @@ export class OrgControlPlane<P extends ControlPlaneParts> extends DurableObject<
       teamsOf: (memberId) => this.#members.member(memberId)?.teams ?? [],
       keys: () => this.#apiKeys.list(undefined, Date.now()),
       credentials: () => this.#partList().flatMap((part) => part.spendCredentials()),
+      agents: () => this.#partList().flatMap((part) => part.spendAgents()),
     });
 
     const built: Partial<Record<string, ControlPlanePart>> = {};
@@ -246,6 +252,7 @@ export class OrgControlPlane<P extends ControlPlaneParts> extends DurableObject<
       teamIdsOf: (member) => this.#members.teamIdsOf(member),
       privateCredentials: () => this.#members.privateCredentials(),
       privateToolkits: () => this.#members.privateToolkits(),
+      privateAgents: () => this.#members.privateAgents(),
       apiKeys: (now) => this.#apiKeys.list(undefined, now),
       apiKey: (id) => this.#apiKeys.get(id),
       spend: this.#spend,
@@ -399,6 +406,7 @@ export class OrgControlPlane<P extends ControlPlaneParts> extends DurableObject<
       autoJoin: this.#members.autoJoin(),
       privateCredentials: this.#members.privateCredentials(),
       privateToolkits: this.#members.privateToolkits(),
+      privateAgents: this.#members.privateAgents(),
       accessClients: this.#apiKeys.accessClients(),
     };
   }
@@ -406,7 +414,7 @@ export class OrgControlPlane<P extends ControlPlaneParts> extends DurableObject<
   /**
    * Changes the settings named; the others keep their value. `privateCredentials` turns every private credential off
    * or on again at once; `privateToolkits` stops serving every private toolkit (kept, not deleted) or serves them again,
-   * which the Tools part reads on every use.
+   * which the Tools part reads on every use; `privateAgents` does the same for private agents (the Agents part).
    */
   setMembershipSettings(settings: Partial<MembershipSettingsWire>): MembershipSettingsWire {
     this.#seedPlatformAdmins();
@@ -424,6 +432,9 @@ export class OrgControlPlane<P extends ControlPlaneParts> extends DurableObject<
 
     if (settings.privateToolkits !== undefined)
       this.#members.setPrivateToolkits(settings.privateToolkits);
+
+    if (settings.privateAgents !== undefined)
+      this.#members.setPrivateAgents(settings.privateAgents);
 
     if (settings.accessClients !== undefined)
       this.#apiKeys.setAccessClients(settings.accessClients);

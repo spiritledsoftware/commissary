@@ -1,6 +1,7 @@
 /**
  * The Worker's bindings as its code reads them (#134 "How packages get their bindings"): every package reads only
- * its own view ({@link AuthConfig}, {@link StateEnv}, {@link ModelsEnv}, {@link BillingEnv}; `core` reads none), and the
+ * its own view ({@link AuthConfig}, {@link StateEnv}, {@link ModelsEnv}, {@link BillingEnv}, {@link ToolsEnv},
+ * {@link AgentsEnv}; `core` reads none), and the
  * code that stays in the Worker reads {@link AppEnv}. The request context provides each of them from the invocation's
  * `env`, which satisfies every view (`WorkerBindings`), and the ports `@commissary/auth` reaches state and Better
  * Auth's sessions through (`AuthDirectory`, `SignInSessions`).
@@ -17,6 +18,7 @@ import { type BillingBindings, BillingEnv } from "@commissary/billing/api";
 import { signInSessions } from "./hosted/sign-in.ts";
 import { type ModelsBindings, ModelsEnv } from "@commissary/models/api";
 import { type ToolsBindings, ToolsEnv } from "@commissary/tools/api";
+import { type AgentsBindings, AgentsEnv } from "@commissary/agents/api";
 import {
   CurrentOrg,
   CurrentOutboundPolicy,
@@ -72,6 +74,7 @@ export type WorkerBindings = AuthBindings &
   ModelsBindings &
   BillingBindings &
   ToolsBindings &
+  AgentsBindings &
   AppBindings;
 
 /** The services {@link envContext} provides. */
@@ -81,6 +84,7 @@ export type EnvServices =
   | ModelsEnv
   | BillingEnv
   | ToolsEnv
+  | AgentsEnv
   | AppEnv
   | AuthDirectory
   | SignInSessions;
@@ -98,6 +102,7 @@ export const envContext = (env: WorkerBindings): Context.Context<EnvServices> =>
     Context.add(ModelsEnv, env),
     Context.add(BillingEnv, env),
     Context.add(ToolsEnv, env),
+    Context.add(AgentsEnv, env),
     Context.add(AppEnv, env),
     Context.add(AuthDirectory, directory),
     Context.add(SignInSessions, signInSessions(env)),

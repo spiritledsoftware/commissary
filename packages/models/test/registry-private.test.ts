@@ -1,5 +1,5 @@
 // A private credential's models are listed to its owner alone (ADR 0023): `visibleTo` is the registry as one caller may
-// list it, while the snapshot itself still resolves the model for routing.
+// list it, while the snapshot itself still resolves the model for routing; `shared` is the shared credentials alone.
 import { describe, expect, it } from "vitest";
 import { buildSnapshot } from "../src/registry/service.ts";
 import type { ModelSource } from "../src/registry/source.ts";
@@ -53,5 +53,45 @@ describe("RegistrySnapshot.visibleTo", () => {
     expect(model).toBeDefined();
     expect(registry.providersForModel(model!.id)).toEqual(["codex"]);
     expect(registry.visibleTo("mem-b").providersForModel(model!.id)).toEqual([]);
+  });
+});
+
+// The registry of the shared credentials alone (#226): what an org admin may name as a shared agent's model.
+describe("RegistrySnapshot.shared", () => {
+  const sharedClaude = () =>
+    source("shared.json", "claude", {
+      modelAliases: [{ name: "claude-sonnet-4-6", alias: "team-sonnet" }],
+    });
+
+  it("serves the shared credentials' models, aliases applied, and no private credential's", () => {
+    const registry = snapshot([sharedClaude(), owned("alice.json", "mem-a")]);
+    const codex = registry.index.modelsForClient("alice.json").map((model) => model.id);
+    const shared = registry.shared();
+
+    expect(codex.length).toBeGreaterThan(0);
+    expect(shared.providersForModel("team-sonnet")).toEqual(["claude"]);
+    expect(shared.providersForModel("claude-sonnet-4-6")).toEqual([]);
+
+    for (const id of codex) expect(shared.providersForModel(id)).toEqual([]);
+    expect(registry.shared()).toBe(shared);
+  });
+
+  it("ignores the grants: a shared credential granted to nobody still counts", () => {
+    const registry = buildSnapshot({
+      sources: [sharedClaude(), owned("alice.json", "mem-a")],
+      config: configOf(""),
+      catalogs,
+      now: NOW,
+      grants: { version: 1, grants: [], teams: [] },
+    });
+
+    expect(registry.visibleTo("mem-b").providersForModel("team-sonnet")).toEqual([]);
+    expect(registry.shared().providersForModel("team-sonnet")).toEqual(["claude"]);
+  });
+
+  it("is the snapshot itself when no credential is private", () => {
+    const registry = snapshot([sharedClaude()]);
+
+    expect(registry.shared()).toBe(registry);
   });
 });

@@ -11,7 +11,7 @@
  * - **member**: any role in the org: the client API, the panel's pages of the org, their own API keys
  *   (`management/api-key-routes.ts`), the Spend limits that bind them and those on their own keys
  *   (`management/spend-routes.ts`), and the areas' routes their entries name (Models: reading usage and their own
- *   credentials).
+ *   credentials; Agents: their private agents and the agents they may use).
  * - **owner**: Commissary Cloud's billing writes (checkout, portal, switching plans; Billing's entries).
  * - **admin**: everything else of the management API. Some routes need more and say so in their handler: changing a
  *   role (org owner), downloading a credential or giving a service token a role above member (ADR 0006's rule per
@@ -21,6 +21,7 @@ import { type AccessRule, type RouteAccess, ruleAccess } from "@commissary/auth"
 import { accessRules as billingAccessRules } from "@commissary/billing/management";
 import { accessRules as modelsAccessRules } from "@commissary/models/management";
 import { accessRules as toolsAccessRules } from "@commissary/tools/management";
+import { accessRules as agentsAccessRules } from "@commissary/agents/management";
 import {
   type AccessZone,
   isPanelPagePath,
@@ -56,6 +57,7 @@ const RULES: ReadonlyArray<AccessRule> = [
   { path: SPEND, subpaths: true, role: "member" },
   ...modelsAccessRules,
   ...toolsAccessRules,
+  ...agentsAccessRules,
   ...billingAccessRules,
 ];
 
