@@ -80,7 +80,9 @@ client that signs in through Access sends the token of the app host's applicatio
 against `ACCESS_AUD` itself. Without an API host, zone routes send the client API paths of the app host to the API
 Worker, and the bypass application (`infra/access.ts` `provisionClientApiBypass`) covers `/v1`, `/v1beta`,
 `/v1internal`, `/openai/v1`, `/backend-api/codex`, `/chat/completions`, `/completions` and `/responses` with their
-sub-paths. Access applies the most specific application to a request, so these paths reach the API Worker without a
+sub-paths, and `/oauth/toolkits/client.json`, Commissary's Client ID Metadata Document for toolkits' OAuth sign-ins
+(#202), which an MCP server's authorization server fetches without signing in and which needs no key. Access applies
+the most specific application to a request, so these paths reach the API Worker without a
 sign-in while every other path stays behind the main application. The API Worker is then the only gate of the client
 API: it answers `401` to a request without a valid API key (§4). `/mcp` gets neither a zone route nor the bypass: on the
 app host it is the app Worker's MCP endpoint behind Access, for MCP clients Access signs in (ADR 0045), so a stage with
@@ -105,8 +107,10 @@ or other tooling) and the deploy creates no Access resources; `ACCESS_ALLOW_*`/`
 The application must cover the Worker's whole hostname, with an Allow policy for people and a Service Auth policy for tokens
 (an Allow policy does not match service tokens). Set SameSite=Lax on its cookie yourself, turn on Managed OAuth for MCP
 clients ([DEPLOY.md](DEPLOY.md#your-own-access-application-and-mcp-clients)), and add the bypass application for the
-client API paths above (a self-hosted application on `<host>/v1`, `<host>/v1beta`, ... with a Bypass policy that
-includes everyone; not `/mcp`); without it clients need Access in front of their API key.
+client API paths above (a self-hosted application on `<host>/v1`, `<host>/v1beta`, ... and
+`<host>/oauth/toolkits/client.json`, with a Bypass policy that includes everyone; not `/mcp`); without it clients need
+Access in front of their API key, and authorization servers cannot fetch the CIMD document, so toolkits' OAuth sign-ins
+fail at the servers that take one (give those toolkits an OAuth app).
 
 ## 2. Policies
 
@@ -355,15 +359,20 @@ characters; a missing key is refused everywhere.
 ## 4. How the Worker validates requests
 
 1. The path is classified (`apps/app/src/management/zones.ts`): `/v1*` (incl. `/v1beta`, `/v1internal`), `/openai/v1*`,
-   `/backend-api/codex*`, the unprefixed aliases `/chat/completions`, `/completions`, `/responses` and the MCP endpoint
-   `/mcp` are the client API and need a principal (the app Worker answers them `404`, naming the API Worker's address,
-   except the MCP endpoint `/mcp` itself on a self-hosted Commissary, which it serves behind Access: below);
+   `/backend-api/codex*`, the unprefixed aliases `/chat/completions`, `/completions`, `/responses`, the MCP endpoint
+   `/mcp` and toolkits' CIMD document `/oauth/toolkits/client.json` are the client API and need a principal, all but
+   the CIMD document, which the API Worker serves to anyone (the app Worker answers them `404`, naming the API Worker's
+   address, except the MCP endpoint `/mcp` itself on a self-hosted Commissary, which it serves behind Access: below);
    `/v9/management*` (also `/v9/management/orgs/<slug>/...`), the
    control panel (`/`, `/accounts`, `/keys`, `/models`, `/usage`, `/members`, `/api-keys`, `/limits`, `/settings` with
    their sub-paths, the same pages under `/o/<slug>/`, `/assets/*`) and `/management.html` (the upstream panel's old
    address, a redirect to `/`) form the management zone; everything else (`/healthz`, the OAuth browser callbacks
    `/anthropic/callback`, `/codex/callback`, `/antigravity/callback`, `/callback`, `/devin/callback`) is public to the
-   Worker. Matching is case-, slash- and percent-encoding-insensitive, so odd spellings cannot dodge the gate.
+   Worker. Toolkits' OAuth callback `/oauth/toolkits/callback` (#202) is neither: the gate signs its caller in as a
+   member of the org the sign-in's state names (an Access sign-in, a Commissary Cloud session), answers anyone it cannot
+   (nobody signed in, a management key, a service token, someone outside the org) with the page of an invalid sign-in,
+   and the ControlPlane finishes the sign-in only for the member who started it. Matching is case-, slash- and
+   percent-encoding-insensitive, so odd spellings cannot dodge the gate.
 2. On a client API route, an API key wins (`packages/auth/src/api-key.ts`): the first credential starting with `cms_` in
    `Authorization: Bearer`, `x-goog-api-key`, `x-api-key`, `?key=` or `?auth_token=` (the Go server's order) is checked
    against its org's ControlPlane ("API keys" above), and the request runs as its member in its org. A malformed, unknown,

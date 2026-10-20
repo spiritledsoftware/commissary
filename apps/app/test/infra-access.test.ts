@@ -14,6 +14,8 @@ describe("client API paths of a stage with one host", () => {
     assert.include(zoneRoutedPrefixes({ hosted: true }), "/mcp");
     assert.notInclude(zoneRoutedPrefixes({ hosted: false }), "/mcp");
     assert.include(zoneRoutedPrefixes({ hosted: false }), "/v1");
+    assert.include(zoneRoutedPrefixes({ hosted: false }), "/oauth/toolkits/client.json");
+    assert.include(zoneRoutedPrefixes({ hosted: true }), "/oauth/toolkits/client.json");
   });
 
   it("let the self-hosted client API through Access, but not /mcp, which stays behind it", () => {
@@ -29,6 +31,8 @@ describe("client API paths of a stage with one host", () => {
       "/chat/completions",
       "/completions",
       "/responses",
+      // Commissary's CIMD document of toolkits' OAuth sign-ins (#202), which authorization servers fetch unsigned.
+      "/oauth/toolkits/client.json",
     ]);
   });
 });

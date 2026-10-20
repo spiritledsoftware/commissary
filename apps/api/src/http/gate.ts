@@ -32,14 +32,18 @@ import {
   isMcpPath,
   isSystemOnePath,
   normalizedPath,
+  TOOLKIT_OAUTH_CLIENT_PATH,
 } from "@commissary/core";
 import { CorsLayer } from "./cors.ts";
 
-/** Whether a request URL is open to anyone: any path but the client API (a URL that cannot be parsed is not). */
+/**
+ * Whether a request URL is open to anyone: any path but the client API (a URL that cannot be parsed is not), and
+ * Commissary's CIMD document of toolkits' OAuth sign-ins (#202), which an authorization server fetches without a key.
+ */
 const isPublic = (requestUrl: string): boolean => {
   const path = normalizedPath(requestUrl);
 
-  return path !== undefined && !isClientApiPath(path);
+  return path !== undefined && (!isClientApiPath(path) || path === TOOLKIT_OAUTH_CLIENT_PATH);
 };
 
 /** Global middleware: authenticates every client API request (see the module comment). */

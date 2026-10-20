@@ -16,5 +16,6 @@ type PartsEnv = ModelsPartEnv & ToolsPartEnv;
 export class ControlPlane extends composeControlPlane({
   models: (ctx, env: PartsEnv, core) => new ModelsPart(ctx, env, core),
   billing: (ctx) => new BillingPart(ctx),
-  tools: (ctx, env: PartsEnv, core) => new ToolsPart(ctx, core, builtInProviders(env)),
+  tools: (ctx, env: PartsEnv, core) =>
+    new ToolsPart(ctx, core, builtInProviders(env), env.OWN_HOSTS),
 }) {}

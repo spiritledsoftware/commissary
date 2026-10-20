@@ -1,11 +1,13 @@
 /**
  * What `@commissary/tools` reads from a Worker's env (#134 "How packages get their bindings"): the org's ControlPlane,
  * typed as objects with the Tools part ({@link ToolsControlPlane}), so callers write `stub.tools().x(…)`, and, for the
- * MCP endpoint's connect links, the Platform registry and the app host, and the usage database its tool calls' records
- * go into (#199, `USAGE`, the D1 database Models' records go into too), and on Commissary Cloud its OAuth server for MCP
- * clients (#200: `OAUTH_KV`, `MCP_OAUTH_ISSUER`, `MCP_OAUTH_RESOURCE`). Its state is the ControlPlane's, and it reaches
- * MCP servers through the global `fetch` behind the outbound guard. Its ControlPlane part reads one binding of the
- * state Worker's apart from these: Browser Run's optional `BROWSER` (#212, `ToolsPartEnv`, `toolkits/built-in.ts`).
+ * MCP endpoint's connect links, the Platform registry and the app host, the API host, where toolkit sign-ins name
+ * Commissary's CIMD document (#202), the usage database its tool calls' records go into (#199, `USAGE`, the D1
+ * database Models' records go into too), and on Commissary Cloud its OAuth server for MCP clients (#200: `OAUTH_KV`,
+ * `MCP_OAUTH_ISSUER`, `MCP_OAUTH_RESOURCE`). Its state is the ControlPlane's, and it reaches MCP servers through the
+ * global `fetch` behind the outbound guard. Its ControlPlane part reads two values of the state Worker's apart from these
+ * (`ToolsPartEnv`, `toolkits/built-in.ts`): Browser Run's optional `BROWSER` (#212) and `OWN_HOSTS`, which its alarm's
+ * token refreshes refuse (#202).
  */
 import { Context, Effect } from "effect";
 import { CurrentOrg, type Reply } from "@commissary/core";
@@ -36,7 +38,12 @@ type ToolsPartMethod =
   | "listApprovals"
   | "getApproval"
   | "decideApproval"
-  | "exportToolkits";
+  | "exportToolkits"
+  | "setOAuthApp"
+  | "clearOAuthApp"
+  | "startSignIn"
+  | "signInStatus"
+  | "completeSignIn";
 
 /** The Tools part of an org's ControlPlane (`ToolsPart`) as Tools sees it: the methods it calls. */
 export type ToolsControlPlanePart = Pick<ToolsPart, ToolsPartMethod> & Rpc.RpcTargetBranded;
@@ -55,9 +62,15 @@ export interface ToolsBindings {
   readonly PLATFORM: StateBindings["PLATFORM"];
   /**
    * The app host (ADR 0028), where the panel's connect page is (`panelPageUrl`), bound on the API Worker on every
-   * deployed stage, one host or split. Unset (a preview, `alchemy dev`), a connect link names the page in words.
+   * deployed stage, one host or split, and where the callback Commissary's CIMD document names is (#202). Unset (a
+   * preview, `alchemy dev`), a connect link names the page in words, and the API Worker serves no CIMD document.
    */
   readonly APP_DOMAIN?: string | undefined;
+  /**
+   * The API host, where the app Worker's toolkit sign-ins name Commissary's CIMD document (#202); unset on a stage with
+   * one host, whose zone route sends the document's path on the app host to the API Worker.
+   */
+  readonly API_DOMAIN?: string | undefined;
   /** Usage records (D1, `migrations/usage/`): one per tool call (#199), beside Models' model attempts. */
   readonly USAGE: D1Database;
   /** `cloud` on Commissary Cloud (ADR 0026), the only deployment with an OAuth server for MCP clients (#200). */

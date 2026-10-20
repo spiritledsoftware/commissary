@@ -303,8 +303,9 @@ A pending connect attempt, which expires if it is not completed.
 _Avoid_: OAuth session, auth session
 
 **Token refresh**:
-Renewing an account's provider tokens before they expire, or after the provider rejects them.
-_Avoid_: refresh (on its own)
+Renewing an account's provider tokens, or a toolkit credential's OAuth tokens, before they expire, or after the
+provider or the toolkit's source rejects them.
+_Avoid_: refresh (on its own), renewal
 
 ### Models
 
@@ -711,6 +712,19 @@ _Avoid_: reviewer
 **Pending approval**:
 A tool call held for its approver, with its arguments, until it is approved, denied or expires.
 _Avoid_: approval request, ticket
+
+**OAuth app**:
+An OAuth client that an org admin (or, on a private toolkit, its member) registered with a toolkit's service and gave
+the toolkit, for a service that does not let Commissary register itself. Toolkit sign-ins use it in place of Commissary's
+own client.
+_Avoid_: OAuth client (on its own), integration, connected app
+
+**Toolkit sign-in**:
+Connecting a toolkit's shared or private credential by signing in to its service with OAuth, in a browser; like a login
+session, it is pending until the member who started it comes back from the service, and expires if they do not. A
+credential whose token refresh fails for good needs sign-in: it is not used until someone signs in to it again, which
+re-authorizes it.
+_Avoid_: OAuth session, OAuth flow, login (for a toolkit), renewal
 
 **Browser toolkit**:
 The toolkit that Commissary provides itself: a hosted browser, from a browser provider, that clients and hosted agents

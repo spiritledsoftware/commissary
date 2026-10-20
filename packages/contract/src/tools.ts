@@ -14,6 +14,14 @@
  * Prices (#199, ADR 0038): an org admin may price a call of an org toolkit's tools, in micro-USD (1 USD = 1,000,000),
  * on the toolkit (`PATCH /toolkits/:id`, `price_micros`) and per tool in its override, which wins (`0` makes one tool of
  * a priced toolkit free). A tool without a price costs nothing. A private toolkit takes no price (`422 invalid`).
+ *
+ * OAuth 2 (#202): a credential may be an OAuth 2 client credentials grant (shared only), connected like any other, or
+ * the tokens of an authorization code sign-in, started with `signIn` (the browser opens its `url`, comes back to
+ * `https://<app host>/oauth/toolkits/callback`, and the panel polls `signInStatus`). The sign-in's client is the
+ * toolkit's own OAuth app when its managers set one (`setOAuthApp`), else Commissary through its Client ID Metadata
+ * Document or dynamic registration. Commissary refreshes the tokens; a credential whose token refresh fails for good
+ * shows `needs_sign_in`.
+ * Every URL entered here passes the outbound guard (`422` with the guard's message as `error` and the field as `path`).
  */
 import { Schema, Tuple } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
@@ -53,8 +61,10 @@ export const CredentialSlot = Schema.Literals(["shared", "private"]);
 export type CredentialSlot = typeof CredentialSlot.Type;
 
 /**
- * A toolkit's sign-in at its source, a static secret: none (a source that needs no sign-in), a bearer token, an API key
- * in a named header or query parameter, or basic auth. It is sealed when stored and never answered.
+ * A toolkit's sign-in at its source, as it is connected: none (a source that needs no sign-in), a bearer token, an API
+ * key in a named header or query parameter, basic auth, or an OAuth 2 client credentials grant (#202; a shared
+ * credential only), whose tokens Commissary mints and refreshes itself. It is sealed when stored and never answered. An
+ * OAuth 2 authorization code sign-in is not connected this way but signed in to (`signIn`).
  */
 export const ToolkitSecret = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("none") }),
@@ -65,6 +75,18 @@ export const ToolkitSecret = Schema.Union([
     kind: Schema.Literal("basic"),
     username: Schema.String,
     password: Schema.String,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("client_credentials"),
+    client_id: Schema.String,
+    client_secret: Schema.String,
+    /**
+     * The token endpoint, a public `https:` address (the outbound guard, ADR 0044); absent: the one the MCP server's
+     * authorization server names (RFC 9728, RFC 8414).
+     */
+    token_url: optional(Schema.String),
+    /** The scopes asked for, space separated. */
+    scope: optional(Schema.String),
   }),
 ]);
 
@@ -83,11 +105,37 @@ export const ConnectCredential = ToolkitSecret.mapMembers(
 
 export type ConnectCredential = typeof ConnectCredential.Type;
 
+/**
+ * How an `oauth` sign-in's client was registered (#202): Commissary's CIMD document (`cimd`), dynamic client
+ * registration (`dcr`), or the toolkit's OAuth app (`app`).
+ */
+export const ClientVia = Schema.Literals(["cimd", "dcr", "app"]);
+
+export type ClientVia = typeof ClientVia.Type;
+
 /** A connected credential, without its secret. Times are ISO. */
 export const ToolkitCredentialView = Schema.Struct({
-  kind: Schema.Literals(["none", "bearer", "header", "query", "basic"]),
+  /** `oauth`: an OAuth 2 authorization code sign-in (#202). */
+  kind: Schema.Literals([
+    "none",
+    "bearer",
+    "header",
+    "query",
+    "basic",
+    "client_credentials",
+    "oauth",
+  ]),
   /** The header or query parameter a `header` or `query` key goes in. */
   name: optional(Schema.String),
+  /** How an `oauth` sign-in's client was registered ({@link ClientVia}). */
+  via: optional(ClientVia),
+  /** When its access token expires (ISO), for `oauth` and `client_credentials`; Commissary refreshes it before. */
+  expires_at: optional(Schema.String),
+  /**
+   * Its token refresh failed for good (the refresh token was refused, or there is none): it is not used until someone
+   * signs in again (`signIn`), or connects it again for `client_credentials`.
+   */
+  needs_sign_in: optional(Schema.Boolean),
   connected_at: Schema.String,
   connected_by: Schema.String,
   /**
@@ -114,6 +162,68 @@ export const ToolListStatus = Schema.Struct({
 });
 
 export type ToolListStatus = typeof ToolListStatus.Type;
+
+/**
+ * A toolkit's own OAuth app (#202), for a service that offers neither a CIMD document nor dynamic client registration
+ * (Slack, HubSpot, GitHub, Google): its client, its endpoints and the scopes a sign-in asks for. Both URLs are public
+ * `https:` addresses (the outbound guard, ADR 0044). The secret is sealed and never answered.
+ */
+export const SetOAuthApp = Schema.Struct({
+  client_id: Schema.String,
+  /** Absent: a public client, which signs in with PKCE only. */
+  client_secret: optional(Schema.String),
+  authorize_url: Schema.String,
+  token_url: Schema.String,
+  scopes: optional(Schema.Array(Schema.String)),
+  /**
+   * The authorization server's issuer identifier (RFC 9207): when set, a sign-in's answer must name it (`iss`), and one
+   * that names another is refused. Absent: the answer's `iss` is not checked.
+   */
+  issuer: optional(Schema.String),
+});
+
+export type SetOAuthApp = typeof SetOAuthApp.Type;
+
+/** A toolkit's OAuth app without its secret. */
+export const OAuthAppView = Schema.Struct({
+  client_id: Schema.String,
+  /** Whether a client secret is set. */
+  client_secret: Schema.Boolean,
+  authorize_url: Schema.String,
+  token_url: Schema.String,
+  scopes: Schema.Array(Schema.String),
+  issuer: optional(Schema.String),
+  updated_at: Schema.String,
+  updated_by: Schema.String,
+});
+
+export type OAuthAppView = typeof OAuthAppView.Type;
+
+/**
+ * Starts an OAuth 2 authorization code sign-in (#202) for the toolkit's shared credential, naming who may use it
+ * (`subject`, as `ConnectCredential` does), or the caller's private one (no subject).
+ */
+export const StartSignIn = Schema.Struct({ subject: optional(GrantSubject) });
+
+export type StartSignIn = typeof StartSignIn.Type;
+
+/** A sign-in started: open `url` in a browser, then poll its `state` until it is done. */
+export const SignInStarted = Schema.Struct({
+  state: Schema.String,
+  url: Schema.String,
+  /** When the sign-in ends unless it is done (ISO). */
+  expires_at: Schema.String,
+});
+
+export type SignInStarted = typeof SignInStarted.Type;
+
+/** Where a sign-in stands: waiting for the browser, done (`ok`), or failed, with why. */
+export const SignInStatus = Schema.Struct({
+  status: Schema.Literals(["wait", "ok", "error"]),
+  message: optional(Schema.String),
+});
+
+export type SignInStatus = typeof SignInStatus.Type;
 
 export const ToolkitOwner = Schema.Struct({
   member_id: Schema.String,
@@ -157,6 +267,8 @@ export const ToolkitView = Schema.Struct({
     private_count: optional(Schema.Int),
   }),
   tool_list: ToolListStatus,
+  /** Its managers: the OAuth app an `oauth` sign-in uses, when one is set (#202). */
+  oauth_app: optional(OAuthAppView),
   /** What a call of its tools costs in micro-USD, unless a tool's override prices it; absent: free. */
   price_micros: optional(Schema.Number),
   /**
@@ -456,6 +568,41 @@ export class ToolsGroup extends HttpApiGroup.make("tools").add(
   HttpApiEndpoint.get("document", "/toolkits/:id/document", {
     ...idParam,
     success: ToolkitDocument,
+    error: managementErrors,
+  }),
+  /**
+   * Start an OAuth 2 authorization code sign-in with PKCE (#202) for the shared credential (org admins; `subject` as for
+   * `connect`) or the caller's private one. The client is the toolkit's OAuth app when it has one, else Commissary,
+   * registered with the MCP server's authorization server through its CIMD document or dynamic client registration.
+   * `422` with the outbound guard's message as `error` and the refused URL's field as `path`; `502 sign_in_failed` when
+   * the server's metadata cannot be read or names no way to register.
+   */
+  HttpApiEndpoint.post("signIn", "/toolkits/:id/credentials/:slot/sign-in", {
+    ...slotParams,
+    payload: StartSignIn,
+    success: SignInStarted.pipe(HttpApiSchema.status(201)),
+    error: managementErrors,
+  }),
+  /** Where a sign-in the caller started stands; an unknown or expired state is `404`. */
+  HttpApiEndpoint.get("signInStatus", "/toolkits/:id/sign-in", {
+    ...idParam,
+    query: { state: Schema.String },
+    success: SignInStatus,
+    error: managementErrors,
+  }),
+  /**
+   * Set the toolkit's OAuth app (its managers); `422` with the outbound guard's message as `error` and `path`
+   * (`authorize_url`, `token_url`) for a URL it refuses, `422 invalid` otherwise.
+   */
+  HttpApiEndpoint.put("setOAuthApp", "/toolkits/:id/oauth-app", {
+    ...idParam,
+    payload: SetOAuthApp,
+    success: ToolkitView,
+    error: managementErrors,
+  }),
+  HttpApiEndpoint.delete("clearOAuthApp", "/toolkits/:id/oauth-app", {
+    ...idParam,
+    success: ToolkitView,
     error: managementErrors,
   }),
   /** Build the tool list now; `502 tool_list_failed` when the source cannot be listed. */

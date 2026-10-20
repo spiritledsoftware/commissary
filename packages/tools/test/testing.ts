@@ -1,6 +1,7 @@
 // `@commissary/tools/testing`: what the Worker's tests need of Tools (docs/DEVELOPMENT.md, "Tests"). Test files only.
-// The Worker's tests go through its router; they serve fake MCP servers to it with these helpers, bind a fake Browser
-// Run binding (`BROWSER`, #212), and seed tool calls' usage records with Tools' own writer.
+// The Worker's tests go through its router; they serve fake MCP servers (and the authorization servers of their OAuth
+// sign-ins, #202) to it with these helpers, bind a fake Browser Run binding (`BROWSER`, #212), and seed tool calls'
+// usage records with Tools' own writer.
 
 export {
   type FakeMcpOptions,
@@ -9,7 +10,15 @@ export {
   fakeMcpServer,
   type RecordedMcpRequest,
   serveFakeMcpServers,
+  serveOrigin,
 } from "./support/mcp-server.ts";
+
+export {
+  bearerOf,
+  type FakeAuthServer,
+  type FakeAuthServerOptions,
+  fakeAuthServer,
+} from "./support/oauth-server.ts";
 
 /**
  * Tools' writer of a tool call's usage record: tests that read usage records seed tool calls through it, so what they

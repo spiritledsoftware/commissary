@@ -13,7 +13,13 @@ import { describe, expect, it } from "vitest";
 import type { ToolScope } from "@commissary/contract/api-keys";
 import { newOrgId, type OrgId } from "@commissary/core";
 import { controlPlaneOf, platformOf } from "@commissary/state";
-import { fakeMcpServer, type FakeMcpOptions, serveFakeMcpServers } from "@commissary/tools/testing";
+import {
+  bearerOf,
+  fakeAuthServer,
+  fakeMcpServer,
+  type FakeMcpOptions,
+  serveFakeMcpServers,
+} from "@commissary/tools/testing";
 import worker from "../src/index.ts";
 import { addMember, issueKey, type TestMember } from "./support/client.ts";
 
@@ -1124,6 +1130,136 @@ describe("a call that needs a private credential the member has not connected", 
     expect(answer).toMatchObject({ resultType: "complete", isError: true });
     expect(JSON.stringify(answer?.["content"])).toContain("the toolkit's page in the panel");
     expect(JSON.stringify(answer?.["content"])).not.toContain("http");
+  });
+});
+
+/**
+ * An org toolkit `crm` of an MCP server behind a fake OAuth 2 authorization server (#202), with its shared credential
+ * signed in to by the org admin for everyone, and alice's private one signed in to by alice; then the authorization
+ * server forgets every token, so the next call's token refresh is refused and the credential needs sign-in again.
+ */
+const signedOutOrg = async (prefix: string) => {
+  const staff = await staffedOrg(prefix);
+
+  const auth = fakeAuthServer(`https://auth-${crypto.randomUUID().slice(0, 8)}.example.com`, {
+    registration: true,
+  });
+
+  const crm = upstream({
+    tools: [{ name: "find_contact", annotations: { readOnlyHint: true } }],
+    authorized: bearerOf(auth),
+    resourceMetadata: { authorization_servers: [auth.issuer] },
+  });
+
+  const crmId = await addToolkit(staff.org, staff.admin, true, {
+    source: crm.url,
+    name: "crm",
+    private: false,
+    accepts: "both",
+  });
+
+  const signIn = async (member: TestMember, admin: boolean, slot: "shared" | "private") => {
+    const started = await toolsOf(staff.org).startSignIn(
+      viewer(member, admin),
+      crmId,
+      slot,
+      slot === "shared" ? { subject: { kind: "everyone" } } : {},
+      "test",
+      POLICY,
+      { callback: "https://app.example.com/oauth/toolkits/callback", clientId: undefined },
+    );
+
+    if (!started.ok) throw new Error(started.message);
+    const back = await auth.authorize(started.value.url);
+
+    const done = await toolsOf(staff.org).completeSignIn(
+      {
+        state: back.searchParams.get("state") ?? "",
+        code: back.searchParams.get("code") ?? "",
+        error: "",
+        iss: undefined,
+        member: member.id,
+      },
+      POLICY,
+    );
+
+    expect(done).toEqual({ outcome: "completed" });
+  };
+
+  await signIn(staff.admin, true, "shared");
+  await signIn(staff.alice, false, "private");
+  auth.accessTokens.clear();
+  auth.revokeRefreshTokens();
+
+  return {
+    ...staff,
+    crm,
+    crmId,
+    link: `https://app.example.com/o/${staff.slug}/tools/${crmId}/connect`,
+  };
+};
+
+describe("a call on an OAuth credential that needs sign-in again", () => {
+  it("tells a member of the shared one that an org admin signs in again, with the link, and elicits nothing", async () => {
+    const { org, bob, link } = await signedOutOrg("mcp-signin-shared");
+    const client = await clientOf(org, bob, APP_HOST);
+
+    for (const id of [1, 2]) {
+      const call = modern(
+        id,
+        "tools/call",
+        { name: "crm_find_contact", arguments: {} },
+        { elicitation: { url: {} } },
+      );
+
+      const answer = resultOf(await client.send(call.body, call.headers));
+      const text = JSON.stringify(answer?.["content"]);
+
+      expect(answer).toMatchObject({ resultType: "complete", isError: true });
+      expect(text).toContain("An org admin must sign in to it again");
+      expect(text).toContain(link);
+    }
+  });
+
+  it("elicits signing in again from the member of a private one, or gives them the link", async () => {
+    const { org, alice, link } = await signedOutOrg("mcp-signin-private");
+    const client = await clientOf(org, alice, APP_HOST);
+
+    const call = modern(
+      1,
+      "tools/call",
+      { name: "crm_find_contact", arguments: {} },
+      { elicitation: { url: {} } },
+    );
+
+    expect(resultOf(await client.send(call.body, call.headers))).toEqual({
+      resultType: "input_required",
+      inputRequests: {
+        connect_crm: {
+          method: "elicitation/create",
+          params: {
+            mode: "url",
+            url: link,
+            message: "Sign in to the toolkit crm again to use crm_find_contact.",
+          },
+        },
+      },
+      _meta: expect.any(Object),
+    });
+
+    // A client without URL elicitation gets the link as a tool error.
+    const legacy = resultOf(
+      await client.send({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: { name: "crm_find_contact", arguments: {} },
+      }),
+    );
+
+    expect(legacy?.["isError"]).toBe(true);
+    expect(JSON.stringify(legacy?.["content"])).toContain("sign in to the toolkit crm again");
+    expect(JSON.stringify(legacy?.["content"])).toContain(link);
   });
 });
 

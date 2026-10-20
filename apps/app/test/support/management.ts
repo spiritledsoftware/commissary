@@ -18,6 +18,7 @@ import {
 } from "@commissary/auth/testing";
 import { requestContext } from "../../src/worker-env.ts";
 import { OAuthCallbackRoutes } from "@commissary/models/management";
+import { SignInCallbackRoutes } from "@commissary/tools/management";
 import { managementServicesWith, type MockHandler, mockHttp } from "@commissary/models/testing";
 
 // The ControlPlane helpers of Models' tests (the stub of an org, a pristine Models part, an auth file, a JSON body).
@@ -87,7 +88,13 @@ export const makeHarness = (
   const routes = ManagementRoutes.pipe(Layer.provide(managementServicesWith(outbound.layer)));
 
   const web = HttpRouter.toWebHandler(
-    Layer.mergeAll(RootRoutes, OAuthCallbackRoutes, access, makeWithAccess(access)(routes)),
+    Layer.mergeAll(
+      RootRoutes,
+      OAuthCallbackRoutes,
+      access,
+      makeWithAccess(access)(routes),
+      makeWithAccess(access)(SignInCallbackRoutes),
+    ),
     { disableLogger: true, middleware: orgAddressing },
   );
 

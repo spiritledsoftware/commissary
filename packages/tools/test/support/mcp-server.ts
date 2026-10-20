@@ -43,6 +43,10 @@ export interface FakeMcpOptions {
   readonly authorized?: (request: Request) => boolean;
   /** Speaks only the stateless 2026-07-28 revision: `initialize` is refused (`FakeMcpServer.stateless` switches). */
   readonly stateless?: boolean;
+  /** The `WWW-Authenticate` header of a refusal (`401`), e.g. a `Bearer` challenge naming `resource_metadata`. */
+  readonly challenge?: string;
+  /** The protected resource metadata (RFC 9728) served at the path-inserted well-known URI of the server's URL. */
+  readonly resourceMetadata?: Record<string, unknown>;
   /** Answers with SSE streams instead of JSON. */
   readonly sse?: boolean;
   /** Tools per page of `tools/list`; all on one page by default. */
@@ -69,6 +73,14 @@ interface RpcResult {
 
 const rpcError = (id: RequestId, code: number, message: string) =>
   Response.json({ jsonrpc: "2.0", id, error: { code, message } });
+
+/** Serves `handler` at `origin`: a fake other than an MCP server (an authorization server, a CIMD document's host). */
+export const serveOrigin = (
+  origin: string,
+  handler: (request: Request) => Response | Promise<Response>,
+): void => {
+  routeFakeServer(new URL(origin).origin, async (request) => await handler(request));
+};
 
 /** A fake MCP server at `url` (a unique origin per test keeps tests apart). */
 export const fakeMcpServer = (url: string, options: FakeMcpOptions = {}): FakeMcpServer => {
@@ -116,11 +128,22 @@ export const fakeMcpServer = (url: string, options: FakeMcpOptions = {}): FakeMc
       ...(body?.params === undefined ? {} : { params: body.params }),
     });
 
-    if (new URL(request.url).pathname !== new URL(url).pathname)
-      return new Response("not found", { status: 404 });
+    const path = new URL(request.url).pathname;
+
+    if (
+      options.resourceMetadata !== undefined &&
+      request.method === "GET" &&
+      path === `/.well-known/oauth-protected-resource${new URL(url).pathname}`
+    )
+      return Response.json(options.resourceMetadata);
+
+    if (path !== new URL(url).pathname) return new Response("not found", { status: 404 });
 
     if (options.authorized !== undefined && !options.authorized(request))
-      return new Response("unauthorized", { status: 401 });
+      return new Response("unauthorized", {
+        status: 401,
+        headers: options.challenge === undefined ? {} : { "www-authenticate": options.challenge },
+      });
 
     if (request.method === "DELETE") return new Response(null, { status: 200 });
 

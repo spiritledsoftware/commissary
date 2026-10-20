@@ -27,6 +27,8 @@ import type { BuiltInToolkit } from "./toolkit.ts";
 export interface ToolsPartEnv {
   /** Browser Run (#212); absent on a deployment with `COMMISSARY_BROWSER=off`, which has no browser toolkit. */
   readonly BROWSER?: BrowserRunBinding | undefined;
+  /** The deployment's own hosts, which the part's own requests (its alarm's token refreshes, #202) refuse. */
+  readonly OWN_HOSTS?: string | undefined;
 }
 
 /** The services the built-in toolkits run on; one that is missing takes its toolkit with it. */

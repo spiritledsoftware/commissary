@@ -294,6 +294,16 @@ const toolResult = Effect.fnUntraced(function* (
 
   const link = yield* connectLink(outcome.toolkit.id);
   const key = `connect_${outcome.toolkit.name}`;
+  const toolkit = outcome.toolkit.name;
+
+  // The toolkit's shared sign-in is an org admin's to redo: the member is told, not asked.
+  if (outcome.reason === "sign_in" && outcome.slot === "shared")
+    return toolError(
+      `${name} cannot be called: the toolkit ${toolkit}'s sign-in expired. An org admin must sign in to it again ` +
+        `at ${link}.`,
+    );
+
+  const again = outcome.reason === "sign_in";
 
   if (link !== CONNECT_PAGE && elicitsUrls(context.era) && !declined(request.params, key))
     return {
@@ -304,15 +314,20 @@ const toolResult = Effect.fnUntraced(function* (
           params: {
             mode: "url",
             url: link,
-            message: `Connect your own credential for the toolkit ${outcome.toolkit.name} to use ${name}.`,
+            message: again
+              ? `Sign in to the toolkit ${toolkit} again to use ${name}.`
+              : `Connect your own credential for the toolkit ${toolkit} to use ${name}.`,
           },
         },
       },
     };
 
   return toolError(
-    `${name} needs your own credential for the toolkit ${outcome.toolkit.name}, which you have not ` +
-      `connected. Connect it at ${link}, then call the tool again.`,
+    again
+      ? `${name} needs you to sign in to the toolkit ${toolkit} again: your sign-in expired. Sign in at ${link}, ` +
+          `then call the tool again.`
+      : `${name} needs your own credential for the toolkit ${toolkit}, which you have not ` +
+          `connected. Connect it at ${link}, then call the tool again.`,
   );
 });
 
