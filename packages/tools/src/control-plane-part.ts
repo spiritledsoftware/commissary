@@ -754,7 +754,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
   /**
    * The tools of a toolkit, with their flags: an org toolkit's among the org's toolkits, a private toolkit's among the
-   * org's and its owner's.
+   * org's and its owner's (none while the org does not serve private toolkits).
    */
   listTools(viewer: Scope, id: string): ToolsResult<ToolsList> {
     const toolkit = this.#store.toolkit(id);
@@ -763,7 +763,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     const access = reach(toolkit, viewer);
 
     if (access === "none" || access === "limited") return NOT_FOUND;
-    const resolution = this.#resolve(toolkit.owner);
+    const resolution = this.#resolve(this.#servedMember(toolkit.owner));
 
     return ok({
       toolkit_id: id,
@@ -948,7 +948,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
   /**
    * Creates, replaces or deletes (`value: null`) one tool grant at the revision it is based on (0 to create). A grant
-   * names a member or team the org has and one of its org toolkits; one per subject and toolkit.
+   * names a member or team the org has and one of its org toolkits; one per subject, toolkit and selection.
    */
   writeGrant(
     change: ToolGrantChange,

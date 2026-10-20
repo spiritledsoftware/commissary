@@ -3085,7 +3085,9 @@ behind the outbound guard.
     kept session lost it (a 2025 session it ended, or an upstream that changed eras): it gets a new handshake and the
     call once again. Any failed call deletes the session it was made in (unless the credential changed meanwhile, or
     another call already replaced it), so the next call starts afresh; connecting or removing the credential, removing
-    the toolkit and the member's leaving delete it too.
+    the toolkit and the member's leaving delete it too. Every caller without a member (service tokens, org API keys)
+    is one caller, so they share one upstream session per credential: accepted for now, as all of them act for the
+    org; keying their sessions by principal is a possible follow-up.
 - **Members and orgs**: a member who leaves takes their private toolkits, their private credentials on org toolkits,
   the upstream sessions of those and the tool grants that named them (`memberLeft`); a deleted team takes its tool
   grants (`teamDeleted`), and a removed toolkit its own (`tool_grants` is keyed by `toolkit_id` like the other
