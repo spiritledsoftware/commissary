@@ -211,6 +211,10 @@ jobs:
       PLATFORM_ADMIN_EMAILS: ${{ vars.PLATFORM_ADMIN_EMAILS }}
       ACCESS_ALLOW_SERVICE_TOKEN_IDS: ${{ vars.ACCESS_ALLOW_SERVICE_TOKEN_IDS }}
       ACCESS_SESSION_DURATION: ${{ vars.ACCESS_SESSION_DURATION }}
+      # Managed OAuth for MCP clients on the app host's /mcp (ADR 0045, docs/ACCESS.md); off unless set to true.
+      ACCESS_MANAGED_OAUTH: ${{ vars.ACCESS_MANAGED_OAUTH }}
+      ACCESS_OAUTH_REDIRECT_URIS: ${{ vars.ACCESS_OAUTH_REDIRECT_URIS }}
+      ACCESS_OAUTH_LOOPBACK_CLIENTS: ${{ vars.ACCESS_OAUTH_LOOPBACK_CLIENTS }}
       # Rotation of the secrets key (docs/DEPLOY.md); unset means generation 1 and no rotation.
       SECRETS_KEY_GENERATION: ${{ vars.SECRETS_KEY_GENERATION }}
       SECRETS_KEY_PREVIOUS_GENERATION: ${{ vars.SECRETS_KEY_PREVIOUS_GENERATION }}

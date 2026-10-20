@@ -14,12 +14,8 @@ import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";
 import * as Output from "alchemy/Output";
-import {
-  type AccessWiring,
-  provisionAccess,
-  provisionClientApiBypass,
-  zoneRoutedPrefixes,
-} from "./infra/access.ts";
+import { type AccessWiring, provisionAccess, provisionClientApiBypass } from "./infra/access.ts";
+import { zoneRoutedPrefixes } from "./infra/access-config.ts";
 import { BUNDLE_ALIASES } from "./infra/bundle.ts";
 import { previewAppName, previewOrigin } from "./infra/preview-origin.ts";
 import { readSettings } from "./infra/settings.ts";
@@ -333,7 +329,7 @@ export default Alchemy.Stack(
         ...(dev || settings.preview || split
           ? {}
           : {
-              routes: zoneRoutedPrefixes(hosted !== undefined).map((prefix) => ({
+              routes: zoneRoutedPrefixes({ hosted: hosted !== undefined }).map((prefix) => ({
                 pattern: `${settings.appDomain}${prefix}*`,
               })),
             }),
