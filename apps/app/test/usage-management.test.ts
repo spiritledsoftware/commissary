@@ -1,7 +1,9 @@
 // /v9/management/observability/usage/*: queue, records and summary (D1).
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { makeHarness, resetControlPlane, token } from "./support/management.ts";
+import { GLOBAL_ORG } from "@commissary/core";
 import { insertUsageRecord, resetUsageDb, sampleRecord } from "@commissary/models/testing";
+import { insertToolCallRecord } from "@commissary/tools/testing";
 
 const harness = makeHarness();
 
@@ -153,18 +155,24 @@ describe("GET /records and /summary", () => {
 });
 
 describe("tool calls (#199)", () => {
-  /** A tool call's record of the `global` org, as Tools writes it (`packages/tools/src/usage/record.ts`). */
-  const seedToolCall = async () => {
-    await db
-      .prepare(
-        `INSERT INTO usage_records (request_id, requested_at, latency_ms, provider, executor_type, model, alias,
-           endpoint, principal_id, org_id, private, auth_id, auth_type, source, failed, cost_micros, unpriced, area,
-           toolkit_id, tool_id, tool_outcome, request_bytes, response_bytes)
-         VALUES ('t1', 1700000003000, 9, '', '', '', '', 'POST /mcp', 'user:a', 'global', 0, '', 'shared', '', 1,
-           0, 0, 'tools', 'tk_a', 'tk_a:search', 'tool_error', 10, 20)`,
-      )
-      .run();
-  };
+  /** A tool call's record of the `global` org, written by Tools' own writer. */
+  const seedToolCall = () =>
+    insertToolCallRecord(db, {
+      requestId: "t1",
+      orgId: GLOBAL_ORG,
+      principalId: "user:a",
+      memberId: undefined,
+      toolkitId: "tk_a",
+      toolId: "tk_a:search",
+      credential: "shared",
+      private: false,
+      outcome: "tool_error",
+      requestedAt: 1_700_000_003_000,
+      latencyMs: 9,
+      requestBytes: 10,
+      responseBytes: 20,
+      costMicros: 0,
+    });
 
   type Records = { readonly records: ReadonlyArray<Record<string, unknown>> };
 

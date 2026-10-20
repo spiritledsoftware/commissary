@@ -101,7 +101,13 @@ export { ModelRegistry } from "../src/registry/service.ts";
 
 export { MODELS_DEV_URL } from "../src/registry/refresh.ts";
 
-export { GROUP_BY, insertUsageRecord, listUsageRecords, summarizeUsage } from "../src/usage/d1.ts";
+export {
+  GROUP_BY,
+  insertUsageRecord,
+  listUsageRecords,
+  rowToPayload,
+  summarizeUsage,
+} from "../src/usage/d1.ts";
 
 export {
   antigravityStateFor,

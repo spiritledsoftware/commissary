@@ -38,6 +38,7 @@ import hostedAuthMigration from "../../../migrations/usage/0008_hosted_auth.sql?
 import dropHostedAuthMigration from "../../../migrations/usage/0009_drop_hosted_auth.sql?raw";
 import toolCallsMigration from "../../../migrations/usage/0010_usage_tool_calls.sql?raw";
 import { platformOf } from "@commissary/state";
+import { insertToolCallRecord } from "@commissary/tools/testing";
 import { envContext } from "./support/context.ts";
 
 /** The D1 sink without pricing: records are stored as they are published. */
@@ -1065,8 +1066,8 @@ describe("usage session identity and base URL", () => {
 describe("tool calls (#199)", () => {
   const acme = OrgId.make("acme-tools");
 
-  /** A tool call's record as Tools writes it (`packages/tools/src/usage/record.ts`). */
-  const insertToolCall = async (fields: {
+  /** A tool call's record, written by Tools' own writer (what the reads below must understand). */
+  const insertToolCall = (fields: {
     readonly requestId: string;
     readonly requestedAt: number;
     readonly toolkit?: string;
@@ -1078,25 +1079,22 @@ describe("tool calls (#199)", () => {
   }) => {
     const toolkit = fields.toolkit ?? "tk_a";
 
-    await db
-      .prepare(
-        `INSERT INTO usage_records (request_id, requested_at, latency_ms, provider, executor_type, model, alias,
-           endpoint, principal_id, org_id, member_id, private, auth_id, auth_type, source, failed, cost_micros,
-           unpriced, area, toolkit_id, tool_id, tool_outcome, request_bytes, response_bytes)
-         VALUES (?, ?, 7, '', '', '', '', 'POST /mcp', 'key:k1', ?, ?, ?, '', 'shared', '', 0, ?, 0, 'tools', ?, ?,
-           'success', 12, 34)`,
-      )
-      .bind(
-        fields.requestId,
-        fields.requestedAt,
-        fields.org ?? acme,
-        fields.memberId ?? null,
-        fields.private === true ? 1 : 0,
-        fields.costMicros ?? 0,
-        toolkit,
-        `${toolkit}:${fields.tool ?? "search"}`,
-      )
-      .run();
+    return insertToolCallRecord(db, {
+      requestId: fields.requestId,
+      orgId: fields.org ?? acme,
+      principalId: "key:k1",
+      memberId: fields.memberId,
+      toolkitId: toolkit,
+      toolId: `${toolkit}:${fields.tool ?? "search"}`,
+      credential: fields.private === true ? "private" : "shared",
+      private: fields.private === true,
+      outcome: "success",
+      requestedAt: fields.requestedAt,
+      latencyMs: 7,
+      requestBytes: 12,
+      responseBytes: 34,
+      costMicros: fields.costMicros ?? 0,
+    });
   };
 
   /** Two model attempts and three tool calls of `acme`. */
@@ -1182,7 +1180,8 @@ describe("tool calls (#199)", () => {
       failed: false,
     });
 
-    const byTool = await summarizeUsage(db, acme, { groupBy: "tool", area: "tools" }, authIndexOf);
+    // Grouping by tool reads tool calls, by area both areas, unless the filter names an area.
+    const byTool = await summarizeUsage(db, acme, { groupBy: "tool" }, authIndexOf);
 
     expect(byTool.totals).toMatchObject({ requests: 3, cost_micros: 6_000, total_tokens: 0 });
     expect(byTool.groups.map((group) => [group.key, group.requests, group.cost_micros])).toEqual([
@@ -1191,7 +1190,7 @@ describe("tool calls (#199)", () => {
       ["tk_b:ping", 1, 0],
     ]);
 
-    const byArea = await summarizeUsage(db, acme, { groupBy: "area", area: "all" }, authIndexOf);
+    const byArea = await summarizeUsage(db, acme, { groupBy: "area" }, authIndexOf);
 
     expect(Object.fromEntries(byArea.groups.map((group) => [group.key, group.requests]))).toEqual({
       models: 2,
@@ -1201,7 +1200,7 @@ describe("tool calls (#199)", () => {
     const byToolkit = await summarizeUsageSeries(
       db,
       acme,
-      { since: 0, until: 10_000, bucket: "hour", groupBy: "toolkit", area: "tools" },
+      { since: 0, until: 10_000, bucket: "hour", groupBy: "toolkit" },
       authIndexOf,
     );
 
@@ -1209,6 +1208,26 @@ describe("tool calls (#199)", () => {
       ["tk_a", 2],
       ["tk_b", 1],
     ]);
+    expect(
+      (await summarizeUsage(db, acme, { groupBy: "area", area: "models" }, authIndexOf)).groups,
+    ).toEqual([expect.objectContaining({ key: "models", requests: 2 })]);
+
+    // A tool call has no credential of Models': grouped by account, its key is empty, not an index of nothing.
+    const byAuth = await summarizeUsage(db, acme, { groupBy: "auth", area: "all" }, authIndexOf);
+
+    expect(byAuth.groups.find((group) => group.key === "")).toMatchObject({ requests: 3 });
+    expect(byAuth.groups.filter((group) => group.key !== "")).toEqual([
+      expect.objectContaining({ key: authIndexOf(sampleRecord().authId), requests: 2 }),
+    ]);
+
+    const authSeries = await summarizeUsageSeries(
+      db,
+      acme,
+      { since: 0, until: 10_000, bucket: "hour", groupBy: "auth", area: "tools" },
+      authIndexOf,
+    );
+
+    expect(authSeries.map((series) => series.key)).toEqual([""]);
   });
 
   it("keep a private call to its member, out of every org-wide read", async () => {

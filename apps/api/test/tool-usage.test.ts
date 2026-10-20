@@ -6,7 +6,12 @@ import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test"
 import { env } from "cloudflare:workers";
 import { beforeAll, describe, expect, it } from "vitest";
 import { newOrgId, type OrgId } from "@commissary/core";
-import { resetUsageDb } from "@commissary/models/testing";
+import {
+  authIndexOf,
+  listUsageRecords,
+  resetUsageDb,
+  rowToPayload,
+} from "@commissary/models/testing";
 import { controlPlaneOf, platformOf } from "@commissary/state";
 import { fakeMcpServer, type FakeMcpOptions, serveFakeMcpServers } from "@commissary/tools/testing";
 import worker from "../src/index.ts";
@@ -199,6 +204,40 @@ describe("a tool call's usage record", () => {
     expect(JSON.stringify(everything.results)).not.toContain(marker);
   });
 
+  it("reads back through the usage records' reader as the management API answers it", async () => {
+    // The records route (`GET /v9/management/observability/usage/records?area=tools`) is the app Worker's, whose tests
+    // cannot serve `/mcp`: this reads the call `/mcp` recorded with the functions that route answers with.
+    const server = upstream({ tools: [{ name: "lookup" }] });
+    const { org, admin, alice } = await staffedOrg("read-back");
+    const toolkit = await orgToolkit(org, admin, "kit", server.url);
+    const client = await clientOf(org, alice);
+
+    await client.call("kit_lookup", { q: "x" });
+
+    const page = await listUsageRecords(env.USAGE, org, { area: "tools" }, authIndexOf);
+
+    expect(page.rows.map((row) => rowToPayload(row, authIndexOf))).toEqual([
+      expect.objectContaining({
+        area: "tools",
+        toolkit_id: toolkit.id,
+        tool_id: `${toolkit.id}:lookup`,
+        outcome: "success",
+        credential: "shared",
+        request_bytes: JSON.stringify({ q: "x" }).length,
+        response_bytes: expect.any(Number),
+        api_key: `key:${client.keyId}`,
+        member_id: alice.id,
+        auth_index: "",
+        failed: false,
+        fail: { status_code: 200 },
+        cost_micros: 0,
+        unpriced: false,
+      }),
+    ]);
+    // Model attempts' reads leave it out.
+    expect((await listUsageRecords(env.USAGE, org, {}, authIndexOf)).rows).toEqual([]);
+  });
+
   it("is written when the member must connect their own credential, and marked private on a private toolkit", async () => {
     const server = upstream({ tools: [{ name: "t" }] });
     const { org, admin, alice } = await staffedOrg("private");
@@ -247,15 +286,40 @@ describe("a tool call's usage record", () => {
 });
 
 describe("a priced tool call", () => {
-  /** An org whose toolkit `paid` costs 1,000 micro-USD a call, its `premium` tool 5,000, its `free` tool nothing. */
-  const pricedOrg = async (prefix: string) => {
+  /**
+   * An org whose toolkit `paid` costs 1,000 micro-USD a call, its `premium` tool 5,000, its `free` tool nothing; its
+   * `down` tool fails upstream (503), its `broken` tool answers an `isError` result. `accepts` `both` with a shared
+   * credential for the admin alone serves the other members on their own credential.
+   */
+  const pricedOrg = async (prefix: string, accepts: "shared" | "both" = "shared") => {
     const staff = await staffedOrg(prefix);
 
     const server = upstream({
-      tools: [{ name: "search" }, { name: "premium" }, { name: "free" }],
+      tools: [
+        { name: "search" },
+        { name: "premium" },
+        { name: "free" },
+        { name: "down" },
+        { name: "broken" },
+      ],
+      call: (name) => {
+        if (name === "down") return new Response("unavailable", { status: 503 });
+
+        if (name === "broken") return { content: [{ type: "text", text: "no" }], isError: true };
+
+        return { content: [{ type: "text", text: "ok" }] };
+      },
     });
 
-    const toolkit = await orgToolkit(staff.org, staff.admin, "paid", server.url);
+    const toolkit = await orgToolkit(
+      staff.org,
+      staff.admin,
+      "paid",
+      server.url,
+      accepts,
+      accepts === "both" ? { kind: "member", id: staff.admin.id } : { kind: "everyone" },
+    );
+
     const tools = planeOf(staff.org).tools();
     const admin = viewer(staff.admin, true);
 
@@ -343,6 +407,66 @@ describe("a priced tool call", () => {
     expect(await toolRows(org)).toMatchObject([
       { tool_outcome: "refused", cost_micros: 0, failed: 1 },
       { tool_outcome: "success", cost_micros: 0, failed: 0 },
+    ]);
+  });
+
+  it("charges a call the upstream answered with an isError result, and not one that failed upstream", async () => {
+    const { org, admin, alice, toolkit } = await pricedOrg("failures");
+
+    await limit(org, admin, "member", alice.id, 1_000_000);
+    const client = await clientOf(org, alice);
+
+    const spent = async () =>
+      (await planeOf(org).spendOverview(viewer(admin, true))).entries.find(
+        (entry) => entry.kind === "member",
+      )?.spentMicros;
+
+    await client.call("paid_down");
+    expect(await spent()).toBe(0);
+
+    await client.call("paid_broken");
+    expect(await spent()).toBe(1_000);
+
+    expect(
+      (await toolRows(org)).map((row) => [row.tool_id, row.tool_outcome, row["cost_micros"]]),
+    ).toEqual([
+      [`${toolkit.id}:down`, "upstream_failure", 0],
+      [`${toolkit.id}:broken`, "tool_error", 1_000],
+    ]);
+  });
+
+  it("on the member's private credential counts toward their API key's limits only, in a private record", async () => {
+    const { org, admin, alice, toolkit } = await pricedOrg("private-spend", "both");
+
+    const connected = await planeOf(org)
+      .tools()
+      .connectCredential(
+        viewer(alice),
+        toolkit.id,
+        "private",
+        { kind: "bearer", token: "alice-token" },
+        "test",
+        POLICY,
+      );
+
+    if (!connected.ok) throw new Error(connected.message);
+    const client = await clientOf(org, alice);
+    const roomy = 1_000_000;
+
+    await limit(org, admin, "member", alice.id, roomy);
+    await limit(org, admin, "org", "", roomy);
+    await limit(org, admin, "toolkit_credential", toolkit.id, roomy);
+    await limit(org, admin, "key", client.keyId, roomy);
+
+    await client.call("paid_search");
+
+    const overview = await planeOf(org).spendOverview(viewer(admin, true));
+
+    expect(
+      Object.fromEntries(overview.entries.map((entry) => [entry.kind, entry.spentMicros])),
+    ).toEqual({ member: 0, org: 0, toolkit_credential: 0, key: 1_000 });
+    expect(await toolRows(org)).toMatchObject([
+      { auth_type: "private", private: 1, cost_micros: 1_000, tool_outcome: "success" },
     ]);
   });
 
