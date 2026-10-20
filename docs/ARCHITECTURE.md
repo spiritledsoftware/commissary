@@ -3152,18 +3152,20 @@ server can still be imported through management.
 ## Tools (`tools/`, `tools/management/routes.ts`, `tools/mcp/endpoint.ts`)
 
 The Tools area (ADR 0036, ADR 0037, ADR 0038) turns outside sources into **toolkits** and serves them on Commissary's
-own MCP endpoint. This version builds one kind, the remote MCP server (Streamable HTTP); OpenAPI, GraphQL and Discovery
+own MCP endpoint. This version builds two kinds, the remote MCP server (Streamable HTTP) and the OpenAPI document (#203,
+_OpenAPI toolkits_ below), each through its driver (`tools/toolkits/kinds.ts`: how its list is built, whether that
+needs a credential, how a call reaches the upstream, whether calls keep an upstream session); GraphQL and Discovery
 toolkits, OAuth sign-in, the toolkit catalog and the panel's toolkit pages come later (#200 to #209); grants (#198),
 prices, usage records and Spend limits of tool calls (#199), and approval rules with pending approvals (#201) are
-here. The package
-(`@commissary/tools`) is shaped like Models: entry points `./api` (the MCP endpoint's routes, the cron task),
-`./management`, `./state` and `./testing`, a lint boundary (`boundaries/tools-imports`) and a ControlPlane part,
-`ToolsPart`, reached as `stub.tools().x(…)`. Its one binding of its own is the usage database; its state is the ControlPlane's
-(`TOOLS_TABLES`: `toolkits`, `toolkit_credentials`, `toolkit_tools`, `tool_overrides`, `toolkit_sessions`,
-`tool_grants`, `tool_approvals`, `built_in_toolkits`, dropped by `wipe()`), its view of `env` (`ToolsBindings`) adds the Platform registry and the app
-host for the endpoint's connect links, and `USAGE`, the D1 database its tool calls' records go into (Models' records
-go there too), and it reaches MCP servers from the ControlPlane through the global `fetch`
-behind the outbound guard. The part's one binding is optional: Browser Run's `BROWSER` on the state Worker
+here. The package (`@commissary/tools`) is shaped like Models: entry points `./api` (the MCP endpoint's routes, the
+cron task), `./management`, `./state` and `./testing`, a lint boundary (`boundaries/tools-imports`) and a ControlPlane
+part, `ToolsPart`, reached as `stub.tools().x(…)`. Its one binding of its own is the usage database; its state is the
+ControlPlane's (`TOOLS_TABLES`: `toolkits`, `toolkit_credentials`, `toolkit_tools`, `tool_overrides`,
+`toolkit_sessions`, `tool_grants`, `tool_approvals`, `built_in_toolkits`, `toolkit_documents`, dropped by `wipe()`),
+its view of `env` (`ToolsBindings`) adds the Platform registry and the app host for the endpoint's connect links, and
+`USAGE`, the D1 database its tool calls' records go into (Models' records go there too), and it reaches MCP servers and
+HTTP APIs from the ControlPlane through the global `fetch` behind the outbound guard. The part's one binding is
+optional: Browser Run's `BROWSER` on the state Worker
 (`ToolsPartEnv`, `builtInProviders`), which the browser toolkit runs on (_Built-in toolkits_ below).
 
 - **What Tools shares with Models**: the ownership rules (`Scope`, `FULL_ACCESS`, `accessTo`: who reaches a shared or a
@@ -3226,6 +3228,61 @@ behind the outbound guard. The part's one binding is optional: Browser Run's `BR
   A failed build keeps the last list and records why (`tool_list.error`). A tool that disappears upstream drops out; one
   already known keeps the build that first listed it (`first_seen`, a counter across builds, not a time). Each tool
   keeps its upstream name, description, input schema and annotations.
+- **OpenAPI toolkits** (`tools/openapi/`, `tools/http/call.ts`, #203): kind `openapi`, from an OpenAPI document given by
+  URL (`source`) or uploaded (`document` on `POST /toolkits`; `PUT /toolkits/:id/document` replaces it, at its revision,
+  and `GET` reads it back, both for the toolkit's managers only: a document may describe more of an API than its tools
+  show). OpenAPI 3.0 and Swagger 2.0 documents are brought to 3.1 by Scalar's upgrader (`@scalar/openapi-upgrader`,
+  MIT, plain JavaScript that runs in the Workers runtime; it also turns 3.0's `nullable` into type arrays and Swagger's
+  body and form parameters into a request body); 3.2 is read as 3.1. YAML is read by js-yaml with its core schema
+  (plain JSON values), and its aliases may expand to at most 2,000,000 values (js-yaml shares an alias's value, so a
+  "billion laughs" document is small in memory but not to walk). **Sizes**: a document is at most 8 MiB in JSON and 4
+  MiB in YAML (a fetch reads at most 8 MiB; a larger YAML one is refused once it is known not to be JSON; the upload
+  route reads a body of up to twice 8 MiB, a JSON string escaping the document's quotes and newlines). The limits come
+  from the least Node.js heap that parses a synthetic Swagger 2.0 document, upgrades it and builds its tools (beyond
+  about 26 MB for Node.js itself): JSON of 4.65, 9.32 and 13.98 MB needs about 25, 52 and 80 MB (5.5 times the text),
+  js-yaml's YAML of 4.18, 8.37 and 12.56 MB about 35, 76 and 113 MB (9 times); the `yaml` package's document model
+  needed 155 MB for the 4.18 MB YAML (37 times), more than the ControlPlane's 128 MB isolate, which is why js-yaml
+  reads YAML. At the limits a build holds at most about 46 MB, under half the isolate. The number of operations is not
+  limited (ADR 0037: no hard cap on a toolkit's tools). The document is read when the toolkit is added, needing no
+  credential (none is sent to the document's host); a URL is fetched again on refresh and by the cron task, an uploaded
+  document is read again only when it is replaced (an on-demand refresh rebuilds from the kept copy; the cron skips
+  it). An uploaded document is kept in the ControlPlane, in 1 MiB chunks (`toolkit_documents`), so a document of
+  several MB never meets SQLite's 2 MB limit on one value; a fetched one is not kept. The org's export says a toolkit is
+  `uploaded` but does not hold its document, which its managers download on its own route. R2 was the other place to
+  keep documents: it would need R2 enabled on the Cloudflare account (a setup step for every deployment) and a shared
+  bucket keyed by org, where the ControlPlane's rows are the org's by construction. Each operation is one tool: its
+  upstream name is its `operationId`, or the method and path (`GET /pets/{petId}`); its input schema joins the path,
+  query, header and cookie parameters by name (a name two locations share takes the location as a prefix, `query_id`;
+  names are made ones model APIs take, `[A-Za-z0-9_.-]`, at most 64) and the request body as `body` (JSON preferred,
+  then form, multipart, text), local `$ref`s resolved (a recursive one ends in `{}`; keywords beside a `$ref`, a
+  description most often, apply too), keywords that only document dropped and a request body's read-only properties
+  left out, cut at a shallower depth until it fits 16 KiB; its description is the summary and the description, at most
+  2,048 characters. `GET` and `HEAD` are `read`, every other method `write`. A `deprecated` operation is listed,
+  flagged `deprecated` and hidden by default; an override with `hidden: false` shows it (`tool_overrides.shown`, in the
+  export as `shown: true`; on any other tool `hidden: false` sets nothing). What a call needs (method, path, server,
+  parameters with their style, body media type, security alternatives) is stored with the tool
+  (`toolkit_tools.operation`), so a call never reads the document. **Calls** go to the toolkit's `base_url` (its
+  managers', `PATCH /toolkits/:id`; `null` clears it) or else the server the document names for the operation
+  (variables at their defaults, relative ones against the document's URL; an uploaded document's relative server needs
+  a base URL). A build checks each distinct server the operations name against the outbound guard: while the toolkit
+  has no base URL, operations that name none, or one the guard refuses, are counted in `tool_list.error` ("set the
+  toolkit's base URL"; the tools are listed all the same), and setting or clearing the base URL updates it. The
+  credential goes where the document's security schemes say: an API key in a header, the query or a cookie, HTTP
+  bearer and basic, OAuth 2 and OpenID Connect as a bearer token (a bearer token; #202's sign-in tokens will use this
+  path); the first alternative the credential fits, one of its own kind first (a `header` key named as the scheme's
+  header, a `bearer` token for a bearer scheme), then any token for a scheme of one value; an operation with
+  `security: []` gets none; a document whose schemes fit none of its credential, or that defines none, gets the
+  credential as it was connected. A document that defines schemes but requires none takes each as an alternative. Form
+  bodies nest in brackets (`metadata[key]`, `items[0][price]`), as Stripe reads them. **The shared HTTP-call module**
+  (`http/call.ts`, which GraphQL #204 and Discovery #205 reuse) applies the credential, sends every request through the
+  outbound guard (documents, base URLs and calls; a document fetch lets the guard follow redirects, a call follows only
+  same-origin ones, through the guard's `executeSameOriginRedirects`, so a key never reaches another origin, and a
+  redirect elsewhere is the answer, naming only the origin and path it leads to), and shapes the answer: JSON
+  pretty-printed as text, other text as it is, binary described, at most 64 KiB with a note saying it was cut, and a
+  `4xx`/`5xx` an `isError` result with the status and the body. A call takes at most 240 seconds, as an MCP tool call
+  does (`TOOL_CALL_TIMEOUT`); a document fetch has the build's budget (60 seconds, a cron build's 20
+  seconds). A missing required argument or no server to call fails the call before anything is sent. A document URL or
+  base URL the guard refuses is refused on save (`422`, `path: "source"` or `"base_url"`).
 - **Names** (`tools/toolkits/names.ts`, ADR 0037): a full name is `<toolkit>_<tool>` in `[a-z0-9_]` (the upstream name
   lowercased, every other character `_`); above 46 characters it is cut to 41 and ends in `_` and the first four hex
   characters of the SHA-256 of the whole name, flagged `shortened`. A toolkit's name is lowercase words of `[a-z0-9]`
@@ -3247,8 +3304,8 @@ behind the outbound guard. The part's one binding is optional: Browser Run's `BR
   back and a write based on the override before the clear is refused. Overrides are keyed by stable id, so they survive
   renames of the toolkit and refreshes; an override of a tool its source no longer lists is shown flagged `missing`,
   and clearing it answers `{ id, removed: true }`, as the tool then leaves the list.
-- **Tool class** (ADR 0038): `read` when the tool's annotations say `readOnlyHint: true`, else `write`; an override's
-  class wins.
+- **Tool class** (ADR 0038): an MCP tool is `read` when its annotations say `readOnlyHint: true`, an OpenAPI tool when
+  its method is `GET` or `HEAD`, else `write`; an override's class wins.
 - **Prices** (`tools/toolkits/price.ts`, #199, ADR 0038): an org admin prices a call of an org toolkit's tools in
   micro-USD, on the toolkit (`PATCH /toolkits/:id` `price_micros`; `null` clears it) or per tool in its override
   (`price_micros`, which wins, so `0` makes one tool of a priced toolkit free; the override is written whole, so one

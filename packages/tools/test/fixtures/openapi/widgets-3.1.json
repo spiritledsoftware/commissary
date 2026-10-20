@@ -1,0 +1,103 @@
+{
+  "openapi": "3.1.0",
+  "info": { "title": "Widgets API", "version": "2" },
+  "servers": [{ "url": "https://{region}.widgets.example.com/api", "variables": { "region": { "default": "eu" } } }],
+  "components": {
+    "securitySchemes": {
+      "bearer": { "type": "http", "scheme": "bearer" },
+      "basic": { "type": "http", "scheme": "basic" },
+      "query_key": { "type": "apiKey", "in": "query", "name": "key" },
+      "cookie_key": { "type": "apiKey", "in": "cookie", "name": "sid" },
+      "oauth": { "type": "oauth2", "flows": { "clientCredentials": { "tokenUrl": "https://auth.widgets.example.com/token", "scopes": {} } } }
+    },
+    "schemas": {
+      "Trace": { "type": "string", "description": "A trace id", "pattern": "^[a-f0-9]{16}$" },
+      "Widget": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "description": "What it is called" },
+          "size": { "type": ["integer", "null"] },
+          "metadata": { "type": "object", "additionalProperties": { "type": "string" } }
+        },
+        "required": ["name"]
+      }
+    }
+  },
+  "security": [{ "bearer": [] }],
+  "paths": {
+    "/widgets": {
+      "get": {
+        "operationId": "listWidgets",
+        "parameters": [
+          { "name": "filter[name]", "in": "query", "schema": { "type": "string" } },
+          { "name": "page", "in": "query", "style": "deepObject", "schema": { "type": "object", "properties": { "size": { "type": "integer" } } } }
+        ],
+        "responses": { "200": { "description": "ok" } }
+      },
+      "post": {
+        "operationId": "createWidget",
+        "security": [{ "basic": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/x-www-form-urlencoded": { "schema": { "$ref": "#/components/schemas/Widget" } },
+            "application/xml": { "schema": { "$ref": "#/components/schemas/Widget" } }
+          }
+        },
+        "responses": { "200": { "description": "ok" } }
+      }
+    },
+    "/widgets/{id}": {
+      "get": {
+        "operationId": "getWidget",
+        "security": [{ "query_key": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "id", "in": "query", "schema": { "type": "string" }, "description": "Another id" }
+        ],
+        "responses": { "200": { "description": "ok" } }
+      },
+      "put": {
+        "operationId": "replaceWidget",
+        "security": [{ "oauth": [] }],
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "requestBody": { "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Widget" } } } },
+        "responses": { "200": { "description": "ok" } }
+      }
+    },
+    "/widgets/{id}/archive": {
+      "post": {
+        "operationId": "archiveWidget",
+        "security": [{ "cookie_key": [] }],
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "204": { "description": "archived" } }
+      }
+    },
+    "/widgets/{id}/history": {
+      "get": {
+        "summary": "A widget's history",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "X-Trace", "in": "header", "schema": { "$ref": "#/components/schemas/Trace", "description": "Follows the request" } },
+          { "name": "session", "in": "cookie", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "ok" } }
+      }
+    },
+    "/widgets/{id}/legacy": {
+      "delete": {
+        "operationId": "legacyDelete",
+        "deprecated": true,
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "204": { "description": "gone" } }
+      }
+    },
+    "/status": {
+      "head": {
+        "operationId": "status",
+        "security": [],
+        "responses": { "200": { "description": "up" } }
+      }
+    }
+  }
+}

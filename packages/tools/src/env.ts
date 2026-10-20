@@ -17,6 +17,8 @@ type ToolsPartMethod =
   | "listToolkits"
   | "addToolkit"
   | "updateToolkit"
+  | "replaceDocument"
+  | "toolkitDocument"
   | "removeToolkit"
   | "connectCredential"
   | "disconnectCredential"

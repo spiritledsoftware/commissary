@@ -73,6 +73,7 @@ const browserToolkit = (provider: BrowserProvider): BuiltIn => ({
     priceMicros: undefined,
     // The org's rules, if it set any, are the part's to add (`ToolkitStore.builtInSettings`).
     approvalRules: undefined,
+    baseUrl: undefined,
     builtIn: true,
   },
   tools: BROWSER_TOOLS.map((tool, position) => ({
@@ -81,6 +82,7 @@ const browserToolkit = (provider: BrowserProvider): BuiltIn => ({
     description: tool.description,
     inputSchema: tool.inputSchema,
     annotations: tool.annotations,
+    operation: undefined,
     // Before any tool of a stored toolkit: a built-in tool keeps its full name against them.
     firstSeen: 0,
     position,

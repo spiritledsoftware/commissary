@@ -323,7 +323,14 @@ describe("a priced tool call", () => {
     const tools = planeOf(staff.org).tools();
     const admin = viewer(staff.admin, true);
 
-    await tools.updateToolkit(admin, toolkit.id, toolkit.revision, { price_micros: 1_000 }, "t");
+    await tools.updateToolkit(
+      admin,
+      toolkit.id,
+      toolkit.revision,
+      { price_micros: 1_000 },
+      "t",
+      POLICY,
+    );
     await tools.setOverride(admin, toolkit.id, 0, { tool: "premium", price_micros: 5_000 }, "t");
     await tools.setOverride(admin, toolkit.id, 0, { tool: "free", price_micros: 0 }, "t");
 

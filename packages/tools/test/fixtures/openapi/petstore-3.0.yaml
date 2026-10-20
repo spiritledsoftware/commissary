@@ -1,0 +1,122 @@
+# A small OpenAPI 3.0 document (#203's tests): $refs (a parameter, a request body, recursive schemas), an operation
+# without an operationId, a deprecated one, and parameters of every location.
+openapi: 3.0.3
+info:
+  title: Petstore
+  version: "1.0"
+servers:
+  - url: https://petstore.example.com/v1
+components:
+  securitySchemes:
+    api_key:
+      type: apiKey
+      in: header
+      name: X-API-Key
+  parameters:
+    PetId:
+      name: petId
+      in: path
+      required: true
+      description: The pet's id
+      schema:
+        type: integer
+  requestBodies:
+    PetBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Pet"
+  schemas:
+    Pet:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        name:
+          type: string
+          example: Rex
+        tag:
+          type: string
+          nullable: true
+        owner:
+          $ref: "#/components/schemas/Owner"
+    Owner:
+      type: object
+      properties:
+        name:
+          type: string
+        pets:
+          type: array
+          items:
+            $ref: "#/components/schemas/Pet"
+security:
+  - api_key: []
+paths:
+  /pets:
+    get:
+      operationId: listPets
+      summary: List pets
+      description: Every pet in the store.
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            maximum: 100
+        - name: tags
+          in: query
+          style: form
+          explode: false
+          schema:
+            type: array
+            items:
+              type: string
+        - name: X-Request-Id
+          in: header
+          schema:
+            type: string
+        - name: Accept
+          in: header
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The pets
+    post:
+      operationId: createPet
+      summary: Create a pet
+      requestBody:
+        $ref: "#/components/requestBodies/PetBody"
+      responses:
+        "201":
+          description: Created
+  /pets/{petId}:
+    parameters:
+      - $ref: "#/components/parameters/PetId"
+    get:
+      operationId: showPetById
+      responses:
+        "200":
+          description: The pet
+    delete:
+      summary: Delete a pet
+      responses:
+        "204":
+          description: Deleted
+    patch:
+      operationId: updatePet
+      deprecated: true
+      parameters:
+        - name: session
+          in: cookie
+          required: true
+          schema:
+            type: string
+      requestBody:
+        $ref: "#/components/requestBodies/PetBody"
+      responses:
+        "200":
+          description: Updated

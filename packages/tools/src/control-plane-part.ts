@@ -21,6 +21,7 @@ import type {
   RemovedToolOverride,
   SetToolOverride,
   ToolkitCredentialView,
+  ToolkitDocument,
   ToolkitKind,
   ToolkitSecret,
   ToolkitsList,
@@ -32,11 +33,7 @@ import type {
   UsableTools,
 } from "@commissary/contract/tools";
 import type { ToolCallApproval } from "@commissary/contract/usage";
-import {
-  CurrentOutboundPolicy,
-  OutboundHttpClientLive,
-  type OutboundPolicy,
-} from "@commissary/core";
+import type { OutboundPolicy } from "@commissary/core";
 import type { ControlPlanePart, OrgCore } from "@commissary/state";
 import type { ChargedCredential, Refusal, SpendCredential } from "@commissary/state/spend";
 import { argumentsHash, canonicalJson } from "./approvals/hash.ts";
@@ -60,8 +57,21 @@ import {
 } from "./grants/grant.ts";
 import { type GrantableTool, grantedTools, inToolScope } from "./grants/reach.ts";
 import { cleanToolGrant, ToolGrantStore } from "./grants/store.ts";
-import { callUpstreamTool, LISTING_TIMEOUT, listUpstreamTools } from "./mcp/client.ts";
-import { isToolkitName, isToolName, fullToolName, MAX_FULL_NAME } from "./toolkits/names.ts";
+import { LISTING_TIMEOUT } from "./mcp/client.ts";
+import {
+  KIND_DRIVERS,
+  type KindDriver,
+  type KindFailure,
+  type Listing,
+  type ListInput,
+} from "./toolkits/kinds.ts";
+import {
+  defaultToolkitName,
+  isToolkitName,
+  isToolName,
+  fullToolName,
+  MAX_FULL_NAME,
+} from "./toolkits/names.ts";
 import {
   isServed,
   type Resolution,
@@ -156,9 +166,16 @@ const maskedSource = (source: string): string => {
 
 /** A new toolkit as the routes hand it over. */
 export interface AddToolkitInput {
-  /** The source, already checked by the outbound guard. */
+  /** Default `mcp`. */
+  readonly kind?: StoredToolkit["kind"] | undefined;
+  /** The source, already checked by the outbound guard; empty for an uploaded OpenAPI document. */
   readonly source: string;
-  readonly name: string;
+  /** An OpenAPI toolkit's uploaded document. */
+  readonly document?: string | undefined;
+  /** An OpenAPI toolkit's base URL, already checked by the outbound guard. */
+  readonly baseUrl?: string | undefined;
+  /** Undefined: an OpenAPI toolkit's default, from its document ({@link openApiName}). */
+  readonly name: string | undefined;
   readonly private: boolean;
   readonly accepts: CredentialsAccepted;
   /** Connected at once; an org toolkit's shared credential names who may use it (`subject`). */
@@ -177,7 +194,11 @@ export interface RefreshSummary {
 export interface ToolkitExport {
   readonly name: string;
   readonly kind: ToolkitKind;
+  /** Empty for an uploaded OpenAPI document, which the export does not hold (`uploaded`). */
   readonly source: string;
+  readonly base_url?: string;
+  /** An OpenAPI toolkit built from an uploaded document: its managers download it on its own route. */
+  readonly uploaded?: true;
   readonly private: boolean;
   readonly accepts: CredentialsAccepted;
   /** Micro-USD per call of an org toolkit's tools (#199). */
@@ -194,6 +215,8 @@ export interface ToolkitExport {
     readonly description?: string;
     readonly class?: "read" | "write";
     readonly price_micros?: number;
+    /** A tool its source hides by default (a deprecated OpenAPI operation), shown. */
+    readonly shown?: true;
   }>;
   /** An org toolkit's tool grants, in an org admin's export only. */
   readonly grants?: ReadonlyArray<ExportedToolGrant>;
@@ -370,6 +393,17 @@ const accepts = (toolkit: Pick<Toolkit, "owner" | "accepts">, slot: CredentialSl
   toolkit.owner === undefined
     ? toolkit.accepts === "both" || toolkit.accepts === slot
     : slot === "private";
+
+/** Whether a toolkit is built from an uploaded OpenAPI document (it has no source URL to fetch). */
+const uploaded = (toolkit: Pick<Toolkit, "kind" | "source">): boolean =>
+  toolkit.kind === "openapi" && toolkit.source === "";
+
+/** A new toolkit's name when its source names none: the slug of its source's host. */
+const fallbackName = (source: string): string =>
+  source === "" ? "toolkit" : defaultToolkitName(new URL(source));
+
+/** The credential of a build that lists without one (an OpenAPI document's). */
+const NO_SECRET: ToolkitSecret = { kind: "none" };
 
 /**
  * The Tools part of an org's ControlPlane (#196): the single writer for the org's toolkits, their credentials (sealed
@@ -553,9 +587,13 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     if (input.private && input.accepts !== "private")
       return refuse("invalid", "a private toolkit takes its owner's credential only");
 
-    const refused = this.#nameRefusal(input.name, owner, undefined);
+    const kind = input.kind ?? "mcp";
 
-    if (refused !== undefined) return refused;
+    if (input.name !== undefined) {
+      const refused = this.#nameRefusal(input.name, owner, undefined);
+
+      if (refused !== undefined) return refused;
+    }
 
     const id = freshToolkitId();
     let grant: ToolGrantValue | undefined;
@@ -576,14 +614,39 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       grant = granted.value;
     }
 
+    const driver = KIND_DRIVERS[kind];
+
+    // A source read without a credential (an OpenAPI document) is read before the toolkit is added: it names the
+    // toolkit by default. One that cannot be read does not keep the toolkit from being added, as a list that cannot be
+    // built does not.
+    const listing = driver.listsWithCredential
+      ? undefined
+      : await this.#listing(driver, {
+          toolkit: { source: input.source, baseUrl: input.baseUrl },
+          secret: NO_SECRET,
+          document: input.document,
+          timeout: LISTING_TIMEOUT,
+          policy,
+        });
+
+    const listedName =
+      listing !== undefined && Result.isSuccess(listing) ? listing.success.name : undefined;
+
+    const name = input.name ?? listedName ?? fallbackName(input.source);
+
+    // Checked again: another toolkit may have taken the name while the document was read.
+    const refused = this.#nameRefusal(name, owner, undefined);
+
+    if (refused !== undefined) return refused;
     const now = this.#now();
 
     const connected = this.#core.transaction(() => {
       this.#store.insertToolkit({
         id,
-        kind: "mcp",
-        name: input.name,
+        kind,
+        name,
         source: input.source,
+        baseUrl: kind === "openapi" ? input.baseUrl : undefined,
         owner,
         accepts: input.accepts,
         revision: 1,
@@ -593,13 +656,19 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
         updatedBy: by,
       });
 
+      if (input.document !== undefined && input.source === "")
+        this.#store.putDocument(id, input.document);
+
+      if (listing !== undefined) this.#storeListing(id, listing);
+
       if (input.credential !== undefined)
         this.#store.putCredential(id, owner, secretOf(input.credential), by, now);
 
       return grant === undefined ? undefined : this.#grantOnConnect(grant, by, now);
     });
 
-    if (input.credential !== undefined) await this.#buildFor(id, viewer.member, policy);
+    if (driver.listsWithCredential && input.credential !== undefined)
+      await this.#buildFor(id, viewer.member, policy);
 
     return withGrant(this.#viewOf(id, viewer), connected);
   }
@@ -615,6 +684,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     revision: number,
     change: UpdateToolkit,
     by: string,
+    policy: OutboundPolicy,
   ): ToolsResult<ToolkitView> {
     const managed = this.#managed(id, viewer);
 
@@ -637,6 +707,9 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
     if (!rules.ok) return rules;
 
+    if (change.base_url !== undefined && current.kind !== "openapi")
+      return refuse("invalid", "only an OpenAPI toolkit takes a base URL");
+
     const name = change.name ?? current.name;
 
     if (name !== current.name) {
@@ -645,17 +718,25 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       if (refused !== undefined) return refused;
     }
 
-    this.#store.updateToolkit(
-      id,
-      {
-        name,
-        accepts: change.accepts ?? current.accepts,
-        priceMicros: price.value,
-        approvalRules: rules.value,
-      },
-      by,
-      this.#now(),
-    );
+    const baseUrl =
+      change.base_url === undefined ? current.baseUrl : (change.base_url ?? undefined);
+
+    this.#core.transaction(() => {
+      this.#store.updateToolkit(
+        id,
+        {
+          name,
+          accepts: change.accepts ?? current.accepts,
+          priceMicros: price.value,
+          approvalRules: rules.value,
+          baseUrl,
+        },
+        by,
+        this.#now(),
+      );
+
+      if (baseUrl !== current.baseUrl) this.#rewarn(current, baseUrl, policy);
+    });
     this.#dropOrphanedApprovals(id);
 
     return this.#viewOf(id, viewer);
@@ -715,6 +796,73 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     }
 
     return ok(noRules(cleaned) ? undefined : cleaned);
+  }
+
+  /**
+   * Replaces an uploaded OpenAPI document (managers) and builds its tool list from it. A document that cannot be read
+   * replaces nothing.
+   */
+  async replaceDocument(
+    viewer: Viewer,
+    id: string,
+    revision: number,
+    document: string,
+    by: string,
+    policy: OutboundPolicy,
+  ): Promise<ToolsResult<ToolkitView>> {
+    const toolkit = this.#managed(id, viewer);
+
+    if (!toolkit.ok) return toolkit;
+    const current = toolkit.value;
+
+    if (current.revision !== revision)
+      return refuse("conflict", `the toolkit is at revision ${current.revision}, not ${revision}`);
+
+    if (!uploaded(current))
+      return refuse("invalid", "the toolkit is not built from an uploaded OpenAPI document");
+
+    const listing = await this.#listing(KIND_DRIVERS.openapi, {
+      toolkit: current,
+      secret: NO_SECRET,
+      document,
+      timeout: LISTING_TIMEOUT,
+      policy,
+    });
+
+    if (Result.isFailure(listing)) return refuse("invalid", listing.failure.message);
+
+    // The document was read with nothing awaited after the revision was checked: no other edit came in between.
+    const now = this.#now();
+
+    this.#core.transaction(() => {
+      this.#store.putDocument(id, document);
+      this.#store.touchToolkit(id, by, now);
+      this.#storeListing(id, listing);
+    });
+
+    return this.#viewOf(id, viewer);
+  }
+
+  /**
+   * An OpenAPI toolkit's uploaded document, for its managers only: a document may describe more of an API than its
+   * tools show (a member who reads the toolkit sees its tool list).
+   */
+  toolkitDocument(viewer: Scope, id: string): ToolsResult<ToolkitDocument> {
+    const toolkit = this.#store.toolkit(id);
+
+    if (toolkit === undefined) return NOT_FOUND;
+    const access = reach(toolkit, viewer);
+
+    if (access === "none" || access === "limited") return NOT_FOUND;
+
+    if (access === "read")
+      return refuse("forbidden", "only an org admin reads an org toolkit's document");
+
+    const document = uploaded(toolkit) ? this.#store.document(id) : undefined;
+
+    return document === undefined
+      ? refuse("not_found", "the toolkit has no uploaded document")
+      : ok({ document });
   }
 
   /** Removes a toolkit with all it holds; an org admin may remove a member's private toolkit too. */
@@ -970,12 +1118,20 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
   /**
    * Cron task `tool-list-refresh`: rebuilds every toolkit's list with its shared credential, or a private toolkit's with
-   * its owner's. An org toolkit with private credentials only waits for a member to refresh it.
+   * its owner's. An org toolkit with private credentials only waits for a member to refresh it. An OpenAPI toolkit's
+   * document is fetched again (no credential needed); an uploaded one is skipped.
    */
   async refreshToolLists(policy: OutboundPolicy): Promise<RefreshSummary> {
     const toolkits = this.#store.toolkits();
 
-    const due = toolkits.filter((toolkit) => this.#secretFor(toolkit, toolkit.owner) !== undefined);
+    const due = toolkits.filter((toolkit) => {
+      const driver = KIND_DRIVERS[toolkit.kind];
+
+      return (
+        driver.refreshed(toolkit) &&
+        (!driver.listsWithCredential || this.#secretFor(toolkit, toolkit.owner) !== undefined)
+      );
+    });
 
     // A few builds at once, each on a shorter budget than an interactive refresh, so one slow server does not hold the
     // others or the cron invocation.
@@ -1019,7 +1175,10 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     return this.#store.secret(toolkit.id, member);
   }
 
-  /** Builds the tool list of the toolkit `id` from its MCP server and stores it, or records why it failed. */
+  /**
+   * Builds the tool list of the toolkit `id` as its kind does ({@link KIND_DRIVERS}: from its MCP server with a
+   * credential, from its OpenAPI document without) and stores it, or records why it failed.
+   */
   async #buildFor(
     id: string,
     member: string | undefined,
@@ -1029,34 +1188,63 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     const toolkit = this.#store.toolkit(id);
 
     if (toolkit === undefined) return NOT_FOUND;
-    const secret = this.#secretFor(toolkit, member);
+    const driver = KIND_DRIVERS[toolkit.kind];
+    const secret = driver.listsWithCredential ? this.#secretFor(toolkit, member) : NO_SECRET;
 
     if (secret === undefined)
       return refuse("no_credential", "the toolkit has no credential to list its tools with");
 
-    const listed = await Effect.runPromise(
-      listUpstreamTools(toolkit.source, secret, timeout).pipe(
-        Effect.provide(OutboundHttpClientLive),
-        Effect.provideService(CurrentOutboundPolicy, policy),
-        Effect.result,
-      ),
-    );
-
-    // The toolkit may have gone while its server answered.
-    if (this.#store.toolkit(id) === undefined) return NOT_FOUND;
-
-    if (Result.isFailure(listed)) {
-      this.#store.setListStatus(id, { error: listed.failure.message });
-
-      return refuse("tool_list_failed", listed.failure.message);
-    }
-
-    this.#core.transaction(() => {
-      this.#store.replaceTools(id, listed.success);
-      this.#store.setListStatus(id, { builtAt: this.#now() });
+    const listing = await this.#listing(driver, {
+      toolkit,
+      secret,
+      document: uploaded(toolkit) ? this.#store.document(id) : undefined,
+      timeout,
+      policy,
     });
 
-    return ok(true);
+    // The toolkit may have gone while its source answered.
+    if (this.#store.toolkit(id) === undefined) return NOT_FOUND;
+    this.#core.transaction(() => this.#storeListing(id, listing));
+
+    return Result.isSuccess(listing)
+      ? ok(true)
+      : refuse("tool_list_failed", listing.failure.message);
+  }
+
+  /** A build of a tool list by `driver`, run. */
+  #listing(driver: KindDriver, input: ListInput): Promise<Result.Result<Listing, KindFailure>> {
+    return Effect.runPromise(Effect.result(driver.list(input)));
+  }
+
+  /**
+   * Stores a built tool list, with its warning as the list's error (cleared when it has none), or records why the build
+   * failed (the last good list stays).
+   */
+  #storeListing(id: string, listing: Result.Result<Listing, KindFailure>): void {
+    if (Result.isFailure(listing)) {
+      this.#store.setListStatus(id, { error: listing.failure.message });
+
+      return;
+    }
+
+    this.#store.replaceTools(id, listing.success.tools);
+    this.#store.setListStatus(id, { builtAt: this.#now(), warning: listing.success.warning });
+  }
+
+  /**
+   * Updates the warning of `toolkit`'s list for its new base URL, unless its list's error is not the old base URL's
+   * warning (a failed build's, which stays until the next build).
+   */
+  #rewarn(toolkit: StoredToolkit, baseUrl: string | undefined, policy: OutboundPolicy): void {
+    const warn = KIND_DRIVERS[toolkit.kind].warning;
+
+    if (warn === undefined) return;
+    const tools = this.#store.tools(toolkit.id);
+
+    if (toolkit.listError !== undefined && toolkit.listError !== warn(toolkit, tools, policy))
+      return;
+
+    this.#store.setListError(toolkit.id, warn({ baseUrl }, tools, policy));
   }
 
   /**
@@ -1108,9 +1296,9 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   /**
    * Calls a tool `viewer` reaches ({@link clientTools}) by its full name, on the upstream tool of its upstream name.
    * The member's private credential wins over the shared one, which needs a grant (#198); without either the member
-   * is asked to connect theirs. The upstream session the call opens is kept for the next call on that credential, at
-   * most seven days; a call that fails in a kept session drops it, so the next call opens a new one. A failure is
-   * logged with the toolkit and the reason only.
+   * is asked to connect theirs. Each toolkit kind reaches its upstream its own way ({@link KIND_DRIVERS}: an MCP
+   * toolkit in an upstream session, an OpenAPI toolkit with one HTTP request); a failure is logged with the toolkit and
+   * the reason only.
    *
    * A priced call (#199) is checked against the Spend limits it would count toward before the upstream is reached, and
    * refused when one has no room; a free call goes ahead whatever the limits. It is charged once the upstream answered
@@ -1188,9 +1376,9 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
         ? granted
           ? { builtIn }
           : undefined
-        : secret === undefined
+        : secret === undefined || toolkit.builtIn
           ? undefined
-          : { secret };
+          : { secret, stored: toolkit };
 
     const usage = (
       credential: CredentialSlot | undefined,
@@ -1273,29 +1461,62 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       return { outcome: "result", result, usage: usage(slot, price, approved) };
     }
 
+    const called = await this.#callUpstream(serving.stored, {
+      tool,
+      owner,
+      caller: viewer.member ?? "",
+      secret: serving.secret,
+      args: call.arguments,
+      policy,
+    });
+
+    if (Result.isFailure(called))
+      return {
+        outcome: "failed",
+        message: called.failure.message,
+        usage: usage(slot, 0, approved),
+      };
+
+    if (price > 0) ledger.charge(ledger.scopes(spender, charged), price, this.#now());
+
+    return { outcome: "result", result: called.success, usage: usage(slot, price, approved) };
+  }
+
+  /**
+   * A call of a stored toolkit's tool, by its kind's driver. A kind that keeps upstream sessions (MCP, #197) calls in
+   * the one kept for `caller` on the credential, at most seven days: the session a call opens is kept for the next, and
+   * one a call failed in is dropped, so the next opens anew.
+   */
+  async #callUpstream(
+    toolkit: StoredToolkit,
+    call: {
+      readonly tool: ResolvedTool;
+      readonly owner: string | undefined;
+      readonly caller: string;
+      readonly secret: ToolkitSecret;
+      readonly args: Schema.JsonObject | undefined;
+      readonly policy: OutboundPolicy;
+    },
+  ): Promise<Result.Result<Schema.JsonObject, KindFailure>> {
+    const { owner, caller } = call;
+    const driver = KIND_DRIVERS[toolkit.kind];
     const connectedAt = this.#store.credential(toolkit.id, owner)?.connectedAt;
+
     // Sessions are the calling member's, also on the shared credential: an upstream's session state never carries over.
-    const caller = viewer.member ?? "";
-    const known = this.#store.session(toolkit.id, owner, caller, this.#now());
+    const known = driver.keepsSessions
+      ? this.#store.session(toolkit.id, owner, caller, this.#now())
+      : undefined;
 
     const called = await Effect.runPromise(
-      callUpstreamTool(toolkit.source, serving.secret, known, {
-        name: tool.upstreamName,
-        arguments: call.arguments,
-        inputSchema: tool.tool?.inputSchema,
-      }).pipe(
-        Effect.tapError((error) =>
-          Effect.logWarning("upstream tool call failed").pipe(
-            Effect.annotateLogs({
-              toolkit: toolkit.id,
-              reason: error.reason,
-              ...(error.status === undefined ? {} : { status: error.status }),
-            }),
-          ),
-        ),
-        Effect.provide(OutboundHttpClientLive),
-        Effect.provideService(CurrentOutboundPolicy, policy),
-        Effect.result,
+      Effect.result(
+        driver.call({
+          toolkit,
+          tool: call.tool,
+          secret: call.secret,
+          args: call.args,
+          policy: call.policy,
+          session: known,
+        }),
       ),
     );
 
@@ -1311,23 +1532,17 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
           this.#store.deleteSession(toolkit.id, owner, caller);
       }
 
-      return {
-        outcome: "failed",
-        message: called.failure.message,
-        usage: usage(slot, 0, approved),
-      };
+      return Result.fail(called.failure);
     }
 
     const { result, session } = called.success;
 
-    if (price > 0) ledger.charge(ledger.scopes(spender, charged), price, this.#now());
-
-    if (session !== known && sameCredential) {
+    if (session !== undefined && session !== known && sameCredential) {
       this.#store.putSession(toolkit.id, owner, caller, session, this.#now());
       await this.#core.wakeUpChanged(this.#nextWakeUp(this.#now()));
     }
 
-    return { outcome: "result", result, usage: usage(slot, price, approved) };
+    return Result.succeed(result);
   }
 
   /**
@@ -1798,9 +2013,9 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
         `the override is at revision ${current?.revision ?? 0}, not ${revision}`,
       );
 
-    const known = this.#tools(id).some((listed) => listed.upstreamName === tool);
+    const listed = this.#tools(id).find((candidate) => candidate.upstreamName === tool);
 
-    if (!known && current === undefined)
+    if (listed === undefined && current === undefined)
       return refuse("not_found", "the toolkit's tool list has no such tool");
 
     const name = input.name ?? undefined;
@@ -1832,16 +2047,21 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
     if (!price.ok) return price;
 
+    // `hidden: false` sets something only on a tool its source hides by default (a deprecated operation): it shows it.
+    const deprecated = listed?.operation?.deprecated === true;
+
     const value = {
       hidden: input.hidden ?? false,
       name,
       description: input.description ?? undefined,
       toolClass: input.class ?? undefined,
       priceMicros: price.value,
+      shown: deprecated && input.hidden === false,
     };
 
     const empty =
       !value.hidden &&
+      !value.shown &&
       value.name === undefined &&
       value.description === undefined &&
       value.toolClass === undefined &&
@@ -1913,6 +2133,8 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
           name: toolkit.name,
           kind: toolkit.kind,
           source: toolkit.source,
+          ...(toolkit.baseUrl === undefined ? {} : { base_url: toolkit.baseUrl }),
+          ...(uploaded(toolkit) ? { uploaded: true as const } : {}),
           private: toolkit.owner !== undefined,
           accepts: toolkit.accepts,
           ...(toolkit.priceMicros === undefined ? {} : { price_micros: toolkit.priceMicros }),
@@ -1924,6 +2146,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
             ...(override.description === undefined ? {} : { description: override.description }),
             ...(override.toolClass === undefined ? {} : { class: override.toolClass }),
             ...(override.priceMicros === undefined ? {} : { price_micros: override.priceMicros }),
+            ...(override.shown ? { shown: true as const } : {}),
           })),
           ...(admin && toolkit.owner === undefined
             ? {
@@ -2056,6 +2279,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
             accepts: toolkit.accepts,
             priceMicros: toolkit.priceMicros,
             approvalRules: toolkit.approvalRules,
+            baseUrl: toolkit.baseUrl,
           },
           COMMISSARY,
           this.#now(),
@@ -2191,13 +2415,16 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     const admin = isFullAccess(viewer) || viewer.admin;
 
     const privateCount = credentials.filter((credential) => credential.owner !== undefined).length;
+    // A member who only reads an org toolkit does not see what its source's (or base URL's) query carries.
+    const shown = (url: string) => (reach(toolkit, viewer) === "read" ? maskedSource(url) : url);
 
     return {
       id: toolkit.id,
       kind: toolkit.kind,
       name: toolkit.name,
-      // A member who only reads an org toolkit does not see what its source's query carries.
-      source: reach(toolkit, viewer) === "read" ? maskedSource(toolkit.source) : toolkit.source,
+      source: shown(toolkit.source),
+      ...(toolkit.baseUrl === undefined ? {} : { base_url: shown(toolkit.baseUrl) }),
+      ...(uploaded(toolkit) ? { uploaded: true } : {}),
       private: toolkit.owner !== undefined,
       accepts: toolkit.accepts,
       revision: toolkit.revision,
@@ -2289,6 +2516,7 @@ const toolView = (tool: ResolvedTool): ToolView => {
       hidden: tool.hidden,
       clash: tool.clash,
       missing: tool.missing,
+      ...(tool.deprecated ? { deprecated: true } : {}),
     },
     ...(override === undefined
       ? {}

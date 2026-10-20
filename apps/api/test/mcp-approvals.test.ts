@@ -77,6 +77,7 @@ const kitOrg = async (prefix: string, rules: (staff: { bob: TestMember }) => App
     added.value.revision,
     { approval_rules: rules({ bob }) },
     "test",
+    POLICY,
   );
 
   if (!updated.ok) throw new Error(updated.message);

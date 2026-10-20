@@ -8,9 +8,11 @@ packages:
 # `effect` in one bundle break its services).
 catalog:
   "@effect/vitest": 4.0.4
+  "@types/js-yaml": 4.0.9
   "@types/node": ^26.6.5
   effect: 4.0.4
   jose: ^6.2.12
+  js-yaml: 4.3.2
   typescript: 7.0.2
   vitest: 5.0.3
 

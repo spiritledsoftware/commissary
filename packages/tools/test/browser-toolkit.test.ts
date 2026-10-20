@@ -197,7 +197,9 @@ describe("the browser toolkit", () => {
     const stub = withBrowser();
     const tools = stub.tools();
 
-    expect(await tools.updateToolkit(ADMIN, "browser", 1, { name: "web" }, "test")).toMatchObject({
+    expect(
+      await tools.updateToolkit(ADMIN, "browser", 1, { name: "web" }, "test", POLICY),
+    ).toMatchObject({
       ok: false,
       error: "built_in",
     });
@@ -266,6 +268,7 @@ describe("the browser toolkit", () => {
         1,
         { approval_rules: { tools: [{ id: "browser:screenshot" }] } },
         "test",
+        POLICY,
       ),
     ).toMatchObject({
       ok: true,
@@ -276,13 +279,20 @@ describe("the browser toolkit", () => {
     });
     // A stale revision, or anything but its rules, is refused.
     expect(
-      await tools.updateToolkit(ADMIN, "browser", 1, { approval_rules: null }, "test"),
+      await tools.updateToolkit(ADMIN, "browser", 1, { approval_rules: null }, "test", POLICY),
     ).toMatchObject({ ok: false, error: "conflict" });
     expect(
-      await tools.updateToolkit(ADMIN, "browser", 2, { name: "web", approval_rules: null }, "test"),
+      await tools.updateToolkit(
+        ADMIN,
+        "browser",
+        2,
+        { name: "web", approval_rules: null },
+        "test",
+        POLICY,
+      ),
     ).toMatchObject({ ok: false, error: "built_in" });
     expect(
-      await tools.updateToolkit(ALICE, "browser", 2, { approval_rules: null }, "test"),
+      await tools.updateToolkit(ALICE, "browser", 2, { approval_rules: null }, "test", POLICY),
     ).toMatchObject({ ok: false, error: "forbidden" });
 
     expect(
@@ -300,7 +310,7 @@ describe("the browser toolkit", () => {
     expect(await call(stub, ALICE, "browser_links")).toMatchObject({ content: expect.any(Array) });
 
     // Cleared, the call goes to the provider.
-    await tools.updateToolkit(ADMIN, "browser", 2, { approval_rules: null }, "test");
+    await tools.updateToolkit(ADMIN, "browser", 2, { approval_rules: null }, "test", POLICY);
     expect(await call(stub, ALICE, "browser_screenshot")).toMatchObject({
       content: expect.any(Array),
     });

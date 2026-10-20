@@ -401,7 +401,7 @@ describe("overrides", () => {
 
     const renamed = await stub
       .tools()
-      .updateToolkit(ADMIN, toolkit.id, toolkit.revision, { name: "web" }, "test");
+      .updateToolkit(ADMIN, toolkit.id, toolkit.revision, { name: "web" }, "test", POLICY);
 
     expect(renamed).toMatchObject({
       ok: true,
@@ -496,7 +496,7 @@ describe("prices (#199)", () => {
 
     const priced = await stub
       .tools()
-      .updateToolkit(ADMIN, toolkit.id, toolkit.revision, { price_micros: 2_000 }, "test");
+      .updateToolkit(ADMIN, toolkit.id, toolkit.revision, { price_micros: 2_000 }, "test", POLICY);
 
     expect(priced).toMatchObject({ ok: true, value: { price_micros: 2_000 } });
     await stub
@@ -517,7 +517,9 @@ describe("prices (#199)", () => {
     const revision = priced.ok ? priced.value.revision : 0;
 
     expect(
-      await stub.tools().updateToolkit(ADMIN, toolkit.id, revision, { price_micros: null }, "test"),
+      await stub
+        .tools()
+        .updateToolkit(ADMIN, toolkit.id, revision, { price_micros: null }, "test", POLICY),
     ).toMatchObject({ ok: true, value: { revision: revision + 1 } });
     expect(
       (await toolsOf(stub, ADMIN, toolkit.id)).map((tool) => [
@@ -538,12 +540,14 @@ describe("prices (#199)", () => {
     const personal = await add(stub, ALICE, privateToolkit(server.url, "mine"));
 
     expect(
-      await stub.tools().updateToolkit(ALICE, shared.id, shared.revision, { price_micros: 1 }, "t"),
+      await stub
+        .tools()
+        .updateToolkit(ALICE, shared.id, shared.revision, { price_micros: 1 }, "t", POLICY),
     ).toMatchObject({ ok: false, error: "forbidden" });
     expect(
       await stub
         .tools()
-        .updateToolkit(ALICE, personal.id, personal.revision, { price_micros: 1 }, "t"),
+        .updateToolkit(ALICE, personal.id, personal.revision, { price_micros: 1 }, "t", POLICY),
     ).toMatchObject({ ok: false, error: "invalid" });
     expect(
       await stub.tools().setOverride(ALICE, personal.id, 0, { tool: "t", price_micros: 1 }, "t"),
@@ -553,7 +557,7 @@ describe("prices (#199)", () => {
       expect(
         await stub
           .tools()
-          .updateToolkit(ADMIN, shared.id, shared.revision, { price_micros: price }, "t"),
+          .updateToolkit(ADMIN, shared.id, shared.revision, { price_micros: price }, "t", POLICY),
       ).toMatchObject({ ok: false, error: "invalid" });
   });
 
@@ -598,7 +602,9 @@ describe("prices (#199)", () => {
     const stub = await plane();
     const toolkit = await add(stub, ADMIN, orgToolkit(server.url, "kit"));
 
-    await stub.tools().updateToolkit(ADMIN, toolkit.id, toolkit.revision, { price_micros: 7 }, "t");
+    await stub
+      .tools()
+      .updateToolkit(ADMIN, toolkit.id, toolkit.revision, { price_micros: 7 }, "t", POLICY);
     await stub.tools().setOverride(ADMIN, toolkit.id, 0, { tool: "t", price_micros: 9 }, "t");
 
     expect(await stub.tools().exportToolkits(ADMIN)).toMatchObject([
@@ -718,7 +724,7 @@ describe("what an org toolkit accepts", () => {
 
     const narrowed = await stub
       .tools()
-      .updateToolkit(ADMIN, toolkit.id, toolkit.revision, { accepts: "shared" }, "test");
+      .updateToolkit(ADMIN, toolkit.id, toolkit.revision, { accepts: "shared" }, "test", POLICY);
 
     expect(narrowed).toMatchObject({
       ok: true,
@@ -731,7 +737,14 @@ describe("what an org toolkit accepts", () => {
 
     const onlyPrivate = await stub
       .tools()
-      .updateToolkit(ADMIN, toolkit.id, toolkit.revision + 1, { accepts: "private" }, "test");
+      .updateToolkit(
+        ADMIN,
+        toolkit.id,
+        toolkit.revision + 1,
+        { accepts: "private" },
+        "test",
+        POLICY,
+      );
 
     expect(onlyPrivate).toMatchObject({
       ok: true,

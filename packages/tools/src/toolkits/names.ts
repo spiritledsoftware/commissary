@@ -77,8 +77,12 @@ export const defaultToolkitName = (source: URL): string => {
   if (labels.length > 1 && SECOND_LEVEL.has(labels.at(-1) ?? "")) labels.pop();
 
   const named = labels.filter((label) => !GENERIC_LABELS.has(label));
-  const label = named.at(-1) ?? labels.at(-1) ?? "toolkit";
 
+  return toolkitNameOf(named.at(-1) ?? labels.at(-1) ?? "toolkit");
+};
+
+/** `label` (a host's label, an OpenAPI document's title) as a toolkit name: `Stripe API` → `stripe_api`. */
+export const toolkitNameOf = (label: string): string => {
   const slug = sanitizeName(label)
     .replace(/_+/g, "_")
     .replace(/^_|_$/g, "")

@@ -184,6 +184,7 @@ the Worker asks on every request: a removed member, or a member whose role was l
 | Read the org's toolkits and their tools; add and manage their own private toolkits (`/toolkits`) |         ✓         |     ✓     |              ✓               |       ✓        |
 | Add, edit and remove org toolkits, their shared credentials, tool overrides and approval rules   |                   |     ✓     |              ✓               |       ✓        |
 | See and decide the pending approvals of tool calls they are an approver of (`/approvals`)        |         ✓         |     ✓     |              ✓               |       ✓        |
+| Read and replace an org OpenAPI toolkit's uploaded document (`/toolkits/:id/document`)           |                   |     ✓     |              ✓               |       ✓        |
 | Read the Spend limits that bind them and limit their own API keys (`/spend`, `/spend/limits`)    |         ✓         |     ✓     |              ✓               |       ✓        |
 | Set any Spend limit and the org's calendar (`/spend/limits`, `/spend/settings`)                  |                   |     ✓     |              ✓               |       ✓        |
 | Read the org's plan and this month's usage against free usage (Commissary Cloud, `/billing`)     |                   |     ✓     |              ✓               |       ✓        |
@@ -241,8 +242,8 @@ the Worker asks on every request: a removed member, or a member whose role was l
   `/membership` is the org setting: on for `global` and for a new org only when `POST /orgs` asks; turning it off disables
   every private credential of the org (kept, not deleted) and refuses new ones (`403`) until it is turned on again. Everything
   that existed before is shared.
-- **Toolkits** (`/toolkits`, #196): a toolkit built from a remote MCP server belongs to the org (managed by org admins,
-  its credentials shared) or to one member (private, their own credentials). Every member reads the org's toolkits and
+- **Toolkits** (`/toolkits`, #196, #203): a toolkit built from a remote MCP server or an OpenAPI document belongs to the
+  org (managed by org admins, its credentials shared) or to one member (private, their own credentials). Every member reads the org's toolkits and
   their tools, and may refresh an org toolkit's tool list when it has no shared credential; adding, editing and removing
   an org toolkit, its shared credentials and its tool overrides are for org admins (`403 forbidden`). A private toolkit is
   its owner's: an org admin sees that it exists and may remove it, and reaches nothing else about it (`404`); a private
@@ -257,7 +258,10 @@ the Worker asks on every request: a removed member, or a member whose role was l
   masked (names kept, a parameter without a value masked whole) and its host and path as they are; org admins and the org
   export see the whole URL, so a key goes in a credential (sealed; a `query` one for the query), never in the source's path
   or query. An org toolkit that stops accepting shared or private credentials keeps the ones connected, inactive, until it
-  accepts them again.
+  accepts them again. An OpenAPI toolkit's base URL is masked for a plain member as its source is; its uploaded
+  document (`GET` and `PUT /toolkits/:id/document`) is its managers' alone: an org admin's for an org toolkit (`403
+  forbidden` for a member, who sees its tools), its owner's for a private one. The org export says a toolkit is built
+  from an uploaded document (`uploaded: true`) without holding it.
 - **Approvals** (`/approvals`, the panel's Approvals page, #201, ADR 0038): an approval rule on a toolkit makes calls
   of its write tools, or of tools marked one by one, wait for their approver. An org admin sets rules on org toolkits,
   a member on their own private toolkits (`PATCH /toolkits/:id`, `approval_rules`). The approver is the caller (the

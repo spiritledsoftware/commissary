@@ -1,8 +1,8 @@
 /**
  * Toolkits (`/v9/management/toolkits`, `packages/tools/src/management/routes.ts`; ADR 0036, ADR 0037, ADR 0038): the
- * org's and the caller's private toolkits built from remote MCP servers, their credentials, their tool lists and the
- * overrides on their tools. Shared with the browser: imports `effect`, `./approvals.ts`, `./errors.ts` and `./grants.ts`
- * only.
+ * org's and the caller's private toolkits built from remote MCP servers or OpenAPI documents, their credentials, their
+ * tool lists and the overrides on their tools. Shared with the browser: imports `effect`, `./approvals.ts`, `./errors.ts`
+ * and `./grants.ts` only.
  *
  * An org admin adds and manages org toolkits; any member adds private toolkits, which only they see in full (an org
  * admin sees that one exists, and may remove it). A toolkit holds at most one shared credential and one private
@@ -24,12 +24,18 @@ import { GrantSubject } from "./grants.ts";
 const optional = Schema.optionalKey;
 
 /**
- * What a toolkit is built from: a remote MCP server (Streamable HTTP), or, for a toolkit Commissary provides itself
- * (`built_in`), the kind of service behind it: `browser`, the browser toolkit (ADR 0039).
+ * What a toolkit is built from: a remote MCP server (Streamable HTTP), an OpenAPI document (3.0, 3.1 or 3.2, or Swagger
+ * 2.0, given by URL or uploaded, #203), or, for a toolkit Commissary provides itself (`built_in`), the kind of service
+ * behind it: `browser`, the browser toolkit (ADR 0039).
  */
-export const ToolkitKind = Schema.Literals(["mcp", "browser"]);
+export const ToolkitKind = Schema.Literals(["mcp", "openapi", "browser"]);
 
 export type ToolkitKind = typeof ToolkitKind.Type;
+
+/** The kinds of toolkit an org adds: a built-in toolkit is never added. */
+export const AddedToolkitKind = Schema.Literals(["mcp", "openapi"]);
+
+export type AddedToolkitKind = typeof AddedToolkitKind.Type;
 
 /** Which credentials an org toolkit accepts; a private toolkit takes its owner's only (`private`). */
 export const CredentialsAccepted = Schema.Literals(["shared", "private", "both"]);
@@ -97,7 +103,11 @@ export type ToolkitCredentialView = typeof ToolkitCredentialView.Type;
 export const ToolListStatus = Schema.Struct({
   /** When the list was last built (ISO); absent: never. */
   built_at: optional(Schema.String),
-  /** Why the last build failed; absent when it succeeded. */
+  /**
+   * Why the last build failed (the list before it stays), or what keeps some of its tools from being called as they
+   * are (an OpenAPI toolkit's operations that name no server the outbound guard allows, while it has no base URL);
+   * absent otherwise.
+   */
   error: optional(Schema.String),
   /** Tools in the list. */
   tools: Schema.Int,
@@ -115,11 +125,16 @@ export const ToolkitView = Schema.Struct({
   kind: ToolkitKind,
   name: Schema.String,
   /**
-   * The MCP server's URL. A member who only reads an org toolkit sees its query parameters' values masked (`***`), their
-   * names kept; managers and the org export get it whole. A key belongs in a `query` credential, not in the source. A
-   * browser toolkit's is its browser provider (`browser-run`).
+   * The MCP server's URL, or the OpenAPI document's (empty for an uploaded document). A member who only reads an org
+   * toolkit sees its query parameters' values masked (`***`), their names kept; managers and the org export get it
+   * whole. A key belongs in a `query` credential, not in the source. A browser toolkit's is its browser provider
+   * (`browser-run`).
    */
   source: Schema.String,
+  /** An OpenAPI toolkit's base URL, set in place of its document's servers; masked like `source` for readers. */
+  base_url: optional(Schema.String),
+  /** An OpenAPI toolkit built from an uploaded document (`PUT /toolkits/:id/document` replaces it). */
+  uploaded: optional(Schema.Boolean),
   /**
    * A toolkit Commissary provides itself (the browser toolkit, `id` and `name` `browser`): present while the deployment
    * has what it runs on, reached under tool grants (no default grant), its tools' overrides as any toolkit's; it cannot
@@ -197,9 +212,24 @@ export const ToolkitsList = Schema.Struct({
 export type ToolkitsList = typeof ToolkitsList.Type;
 
 export const AddToolkit = Schema.Struct({
-  /** The MCP server's URL: a public `https:` address (the outbound guard, ADR 0044). */
-  source: Schema.String,
-  /** Defaults to the slug of the source's host. */
+  /** Default `mcp`. */
+  kind: optional(AddedToolkitKind),
+  /**
+   * The MCP server's URL, or the OpenAPI document's: a public `https:` address (the outbound guard, ADR 0044). An
+   * OpenAPI toolkit gives either this or `document`.
+   */
+  source: optional(Schema.String),
+  /** An OpenAPI toolkit's document, uploaded: its JSON or YAML text. */
+  document: optional(Schema.String),
+  /**
+   * An OpenAPI toolkit's base URL, which calls go to in place of the servers its document names: a public `https:`
+   * address (the outbound guard).
+   */
+  base_url: optional(Schema.String),
+  /**
+   * Defaults to the slug of the source's host; for an OpenAPI toolkit, of its document's first server, else of its
+   * title.
+   */
   name: optional(Schema.String),
   /** A private toolkit of the caller; a plain member's toolkit is always private. */
   private: optional(Schema.Boolean),
@@ -225,6 +255,8 @@ export const UpdateToolkit = Schema.Struct({
    * them. An approver left out is the caller.
    */
   approval_rules: optional(Schema.NullOr(ApprovalRules)),
+  /** OpenAPI toolkits only: the base URL calls go to (the outbound guard); `null` returns to the document's servers. */
+  base_url: optional(Schema.NullOr(Schema.String)),
 });
 
 export type UpdateToolkit = typeof UpdateToolkit.Type;
@@ -266,6 +298,10 @@ export const ToolView = Schema.Struct({
     clash: Schema.Boolean,
     /** An override of a tool its source no longer lists. */
     missing: Schema.Boolean,
+    /**
+     * A deprecated OpenAPI operation: hidden unless its override says `hidden: false` (#203); `hidden` tells which.
+     */
+    deprecated: optional(Schema.Boolean),
   }),
   override: optional(ToolOverrideView),
 });
@@ -283,6 +319,7 @@ export type ToolsList = typeof ToolsList.Type;
 /** The whole override of one tool (named by its upstream name); one with nothing set clears it. */
 export const SetToolOverride = Schema.Struct({
   tool: Schema.String,
+  /** `false` shows a tool its source hides by default (a deprecated OpenAPI operation); elsewhere it sets nothing. */
   hidden: optional(Schema.Boolean),
   name: optional(Schema.NullOr(Schema.String)),
   description: optional(Schema.NullOr(Schema.String)),
@@ -294,6 +331,11 @@ export const SetToolOverride = Schema.Struct({
 export type SetToolOverride = typeof SetToolOverride.Type;
 
 export const RemovedToolkit = Schema.Struct({ id: Schema.String });
+
+/** An OpenAPI toolkit's uploaded document: its JSON or YAML text. */
+export const ToolkitDocument = Schema.Struct({ document: Schema.String });
+
+export type ToolkitDocument = typeof ToolkitDocument.Type;
 
 /**
  * The answer to clearing the override of a tool its source no longer lists: the tool left the list. The override
@@ -393,6 +435,27 @@ export class ToolsGroup extends HttpApiGroup.make("tools").add(
   HttpApiEndpoint.delete("disconnect", "/toolkits/:id/credentials/:slot", {
     ...slotParams,
     success: ToolkitView,
+    error: managementErrors,
+  }),
+  /**
+   * Replace an uploaded OpenAPI document (managers; `409 conflict` on a stale revision, `422 invalid` for a toolkit not
+   * built from an uploaded document, `413 body_too_large` above 8 MiB) and build its tool list again; a document that
+   * cannot be read does not replace the one before (`422 invalid`).
+   */
+  HttpApiEndpoint.put("replaceDocument", "/toolkits/:id/document", {
+    ...idParam,
+    ...IfMatch,
+    payload: ToolkitDocument,
+    success: ToolkitView,
+    error: managementErrors,
+  }),
+  /**
+   * An OpenAPI toolkit's uploaded document, for its managers (an org admin an org toolkit's, `403 forbidden` for a member
+   * who reads it; a member their private toolkit's); `404` for one with none.
+   */
+  HttpApiEndpoint.get("document", "/toolkits/:id/document", {
+    ...idParam,
+    success: ToolkitDocument,
     error: managementErrors,
   }),
   /** Build the tool list now; `502 tool_list_failed` when the source cannot be listed. */
