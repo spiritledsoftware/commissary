@@ -13,10 +13,14 @@
  *   file without one (the cron rebuilds only an introspected list); a call is one `POST` to the endpoint, and checks a
  *   caller's selection against the schema the list was built from ({@link Listing.schema}). Introspection asks for
  *   `@oneOf` input objects, and again without when the endpoint refuses that ({@link introspect}).
+ * - **Discovery** (#205): a Google Discovery document, read as an OpenAPI one is ({@link documentText}); its methods
+ *   become OpenAPI operations (`discovery/tools.ts`), called as OpenAPI tools are. A `rootUrl` the outbound guard
+ *   refuses fails the build, and a save with it is refused ({@link KindFailure.field}).
  */
 import type { GraphQLSchema } from "graphql";
 import { type Duration, Effect, Result, Schema } from "effect";
-import { checkOutboundUrl, type OutboundPolicy } from "@commissary/core";
+import { checkOutboundUrl, OUTBOUND_REFUSED_MESSAGE, type OutboundPolicy } from "@commissary/core";
+import { discoveryToolList } from "../discovery/tools.ts";
 import { graphQLAnswer, graphQLCall } from "../graphql/request.ts";
 import {
   graphQLToolList,
@@ -50,6 +54,11 @@ export class KindFailure extends Schema.TaggedError<KindFailure>()("KindFailure"
   message: Schema.String,
   /** The upstream refused the credential's token itself (`401`), which a refreshed one may pass (#202). */
   unauthorized: Schema.optionalKey(Schema.Boolean),
+  /**
+   * The field of the source whose URL the outbound guard refused (a Discovery document's `rootUrl`, #205): a save of
+   * the source is refused with the guard's message and this path, as a URL typed in is.
+   */
+  field: Schema.optionalKey(Schema.String),
 }) {}
 
 /** What a build of a toolkit's list reads. */
@@ -204,25 +213,39 @@ const openApiName = (list: OpenApiToolList, source: string): string => {
   return source === "" ? "toolkit" : defaultToolkitName(new URL(source));
 };
 
+/**
+ * The text of the document a toolkit is built from without a credential (an OpenAPI or Discovery document): the
+ * uploaded one, else the one its source serves, fetched through the outbound guard.
+ */
+const documentText = ({
+  toolkit,
+  document,
+  timeout,
+  policy,
+}: Pick<ListInput, "toolkit" | "document" | "timeout" | "policy">): Effect.Effect<
+  string,
+  KindFailure
+> => {
+  if (document !== undefined) return Effect.succeed(document);
+
+  if (toolkit.source === "") return Effect.fail(failed("the toolkit has no document"));
+
+  return fetchDocument(toolkit.source, timeout).pipe(
+    Effect.mapError((error) => failed(error.message)),
+    withOutboundGuard(policy),
+  );
+};
+
 const openapi: KindDriver = {
   listsWithCredential: () => false,
   // An uploaded document changes only when it is replaced.
   refreshed: ({ uploaded }) => !uploaded,
   keepsSessions: false,
-  list: ({ toolkit, document, timeout, policy }) =>
+  list: (input) =>
     Effect.gen(function* () {
+      const { toolkit, policy } = input;
       const source = toolkit.source;
-      let text = document;
-
-      if (text === undefined) {
-        if (source === "") return yield* failed("the toolkit has no document");
-
-        text = yield* fetchDocument(source, timeout).pipe(
-          Effect.mapError((error) => failed(error.message)),
-          withOutboundGuard(policy),
-        );
-      }
-
+      const text = yield* documentText(input);
       const list = openApiToolList(text, source === "" ? undefined : source);
 
       if (Result.isFailure(list)) return yield* failed(list.failure);
@@ -352,9 +375,35 @@ const graphql: KindDriver = {
     }),
 };
 
+/** A Discovery toolkit's default name: its API's name (`gmail`), else its rootUrl's host's. */
+const discoveryName = (name: string | undefined, rootUrl: string): string =>
+  name === undefined ? defaultToolkitName(new URL(rootUrl)) : toolkitNameOf(name);
+
+const discovery: KindDriver = {
+  listsWithCredential: () => false,
+  // An uploaded document changes only when it is replaced.
+  refreshed: ({ uploaded }) => !uploaded,
+  keepsSessions: false,
+  list: (input) =>
+    Effect.gen(function* () {
+      const list = discoveryToolList(yield* documentText(input));
+
+      if (Result.isFailure(list)) return yield* failed(list.failure);
+      const rootUrl = list.success.rootUrl;
+
+      if (Result.isFailure(checkOutboundUrl(rootUrl, input.policy)))
+        return yield* new KindFailure({ message: OUTBOUND_REFUSED_MESSAGE, field: "rootUrl" });
+
+      return { tools: list.success.tools, name: discoveryName(list.success.name, rootUrl) };
+    }),
+  // A Discovery tool's operation is an OpenAPI one, and a Discovery toolkit has no base URL.
+  call: (input) => openapi.call(input),
+};
+
 /** The driver of each kind of stored toolkit. */
 export const KIND_DRIVERS: Readonly<Record<StoredToolkit["kind"], KindDriver>> = {
   mcp,
   openapi,
   graphql,
+  discovery,
 };

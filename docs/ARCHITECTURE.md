@@ -1261,6 +1261,8 @@ Every URL an org or member supplies passes one **outbound guard** before Commiss
 - the `models.catalog` source, fetched by the cron and the panel's catalog refresh;
 - Commissary Cloud's SSO: an org's OIDC issuer (its discovery document), the JWKS endpoint and the SAML sign-in URL;
 - a toolkit's source, the MCP server's URL, on save and on every fetch (see "Tools");
+- a Discovery toolkit's `rootUrl`, which its calls go under, on save (adding the toolkit, replacing its uploaded
+  document) and on every build, besides every call (see "Tools", Discovery toolkits);
 - Commissary Cloud's OAuth server for MCP clients: a client's Client ID Metadata Document (CIMD) and the JWKS it names,
   which `@cloudflare/workers-oauth-provider` fetches itself with the global `fetch`. Every call of the library that may
   fetch runs inside `withOutboundGuard(policy, run)` (`core/outbound/global-fetch.ts`): while `run` is pending, the
@@ -3232,10 +3234,10 @@ server can still be imported through management.
 ## Tools (`tools/`, `tools/management/routes.ts`, `tools/mcp/endpoint.ts`)
 
 The Tools area (ADR 0036, ADR 0037, ADR 0038) turns outside sources into **toolkits** and serves them on Commissary's
-own MCP endpoint. This version builds three kinds, the remote MCP server (Streamable HTTP), the OpenAPI document (#203,
-_OpenAPI toolkits_ below) and the GraphQL endpoint (#204, _GraphQL toolkits_ below), each through its driver
-(`tools/toolkits/kinds.ts`: how its list is built, whether that needs a credential, how a call reaches the upstream,
-whether calls keep an upstream session); Discovery toolkits, the toolkit catalog and the panel's toolkit pages come
+own MCP endpoint. This version builds four kinds, the remote MCP server (Streamable HTTP), the OpenAPI document (#203,
+_OpenAPI toolkits_ below), the GraphQL endpoint (#204, _GraphQL toolkits_ below) and the Google Discovery document
+(#205, _Discovery toolkits_ below), each through its driver (`tools/toolkits/kinds.ts`: how its list is built, whether
+that needs a credential, how a call reaches the upstream, whether calls keep an upstream session); the toolkit catalog and the panel's toolkit pages come
 later (#200 to #209); grants (#198), prices, usage records and Spend limits of tool calls (#199), approval rules with
 pending approvals (#201) and OAuth 2 sign-in to toolkits (#202, around the drivers: a driver gets a credential's secret
 already signed in) are here. The package (`@commissary/tools`) is shaped like Models: entry points `./api` (the MCP
@@ -3523,6 +3525,41 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
   for GitHub's, 26 MB for the schema of an 8.9 MB introspection answer); the part keeps the last one built in memory
   (`SchemaCache`, one toolkit's, for the list built at the time), so a run of such calls on one toolkit builds it
   once, and forgets it when the toolkit's list is stored again or the toolkit is removed.
+- **Discovery toolkits** (`tools/discovery/tools.ts`, #205): kind `discovery`, from a Google Discovery document (the
+  REST description Google's APIs publish, `https://gmail.googleapis.com/$discovery/rest?version=v1`) given by URL or
+  uploaded (JSON), kept, fetched again and replaced as an OpenAPI document is, within the same 8 MiB. Each method,
+  those of nested resources included, is made into an OpenAPI operation and built by the OpenAPI toolkits' code
+  (`openapi/tools.ts`), so its tool follows their rules: its upstream name is the method's `id`
+  (`gmail.users.messages.list`, so most full names are long and many are shortened, ADR 0037); its input schema joins
+  the method's path and query parameters (a `repeated` one an array) and its request body as `body`, the `$ref`s to
+  the document's `schemas` resolved, with Discovery's keywords made JSON Schema's (a property's `required: true` its
+  object's `required`, `type: "any"` no type, the strings of `default`, `minimum` and `maximum` the values their type
+  reads; `id`, `annotations` and the like dropped); its description is the method's; `GET` is `read`, every other
+  method `write`; a `deprecated` method is hidden by default. The document's global parameters (`alt`, `fields`,
+  `key`, ...) are not offered. A method whose only input is a media upload (`supportsMediaUpload` without a request
+  body) is not listed; one that takes a JSON body besides is, as a JSON call (Commissary does not use the upload
+  protocol), and a media download answered by the plain request (`files.export`) is listed, its answer shaped as any
+  (text shown, binary described). Batch requests are not offered. **Calls** go through the shared HTTP-call module to
+  the method's `path` under `rootUrl` and `servicePath`, a `{+name}` parameter expanded with its reserved characters
+  kept (RFC 6570; such a path's `flatPath` names other parameters than the method's, so `path` is used throughout). A
+  path argument never leaves the method's path: one that is or holds a `.` or `..` segment (`%2e` counts as a dot, as
+  URLs read it) is refused, as an OpenAPI path argument that is `.` or `..` is, and a `{+name}` one must match the
+  parameter's `pattern` (`^projects/[^/]+$`); otherwise a caller could reach another endpoint with the toolkit's
+  credential, past that endpoint's tool's grants and approval rules. A
+  Discovery toolkit takes no base URL (`422 invalid`, `path: "base_url"`). The credential is an API key, which goes in
+  the `key` query parameter whatever its connected name, or an OAuth 2 token (a bearer token, or #202's sign-in, for
+  which Google needs the toolkit's own OAuth app, ADR 0036) as a bearer token. The OAuth 2 scopes the methods name are
+  kept with each tool and reported on the toolkit (`scopes`, sorted, each once), so an admin knows what its OAuth app
+  must ask for; a sign-in through a toolkit's OAuth app that sets no scopes asks for these (on any toolkit whose tools
+  name scopes). The default name is the API's (`gmail`), as Google's hosts name the service poorly
+  (`www.googleapis.com`). **The outbound guard** checks the document's URL on save and on every fetch, as for OpenAPI,
+  and the `rootUrl` on every build: a build from a document whose `rootUrl` it refuses fails, and adding a toolkit with
+  it, or replacing an uploaded document with it, is refused as a URL typed in is (`422` with the guard's message as
+  `error` and `path: "rootUrl"`, nothing saved), where an OpenAPI document's unreachable servers only warn, since a
+  Discovery toolkit has no base URL to set instead. **Sizes**: the largest Discovery documents Google publishes,
+  Compute Engine's (6.4 MB for `v1` with 1,018 methods, 7.6 MB for `alpha` with 1,212), build in about 13 and 15 MB of
+  Node.js heap beyond what Node.js itself takes (the least `--max-old-space-size` that parses the document and builds
+  its tools), well within the ControlPlane's 128 MB isolate.
 - **Names** (`tools/toolkits/names.ts`, ADR 0037): a full name is `<toolkit>_<tool>` in `[a-z0-9_]` (the upstream name
   lowercased, every other character `_`); above 46 characters it is cut to 41 and ends in `_` and the first four hex
   characters of the SHA-256 of the whole name, flagged `shortened`. A toolkit's name is lowercase words of `[a-z0-9]`

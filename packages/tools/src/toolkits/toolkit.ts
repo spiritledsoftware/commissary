@@ -12,8 +12,8 @@ interface ToolkitFields {
   readonly id: string;
   readonly name: string;
   /**
-   * The MCP server's URL, the OpenAPI document's (empty for an uploaded one) or the GraphQL endpoint's; a built-in
-   * toolkit's provider.
+   * The MCP server's URL, the OpenAPI or Discovery document's (empty for an uploaded one) or the GraphQL endpoint's; a
+   * built-in toolkit's provider.
    */
   readonly source: string;
   /** The member of a private toolkit; undefined for an org toolkit. */
@@ -38,15 +38,15 @@ interface ToolkitFields {
 }
 
 /**
- * A toolkit of the org's `toolkits` table: an MCP server's, an OpenAPI document's (ADR 0036, #203) or a GraphQL
- * endpoint's (#204).
+ * A toolkit of the org's `toolkits` table: an MCP server's, an OpenAPI document's (ADR 0036, #203), a GraphQL
+ * endpoint's (#204) or a Google Discovery document's (#205).
  */
 export interface StoredToolkit extends ToolkitFields {
-  readonly kind: "mcp" | "openapi" | "graphql";
+  readonly kind: "mcp" | "openapi" | "graphql" | "discovery";
   readonly builtIn: false;
   /**
-   * It is built from an uploaded document the part keeps (an OpenAPI document, a GraphQL schema's SDL), not from its
-   * source: set when it is added with one, or when a GraphQL toolkit's first schema is uploaded.
+   * It is built from an uploaded document the part keeps (an OpenAPI or Discovery document, a GraphQL schema's SDL),
+   * not from its source: set when it is added with one, or when a GraphQL toolkit's first schema is uploaded.
    */
   readonly uploaded: boolean;
 }

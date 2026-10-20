@@ -313,9 +313,9 @@ const maskedSource = (source: string): string => {
 export interface AddToolkitInput {
   /** Default `mcp`. */
   readonly kind?: StoredToolkit["kind"] | undefined;
-  /** The source, already checked by the outbound guard; empty for an uploaded OpenAPI document. */
+  /** The source, already checked by the outbound guard; empty for an uploaded OpenAPI or Discovery document. */
   readonly source: string;
-  /** An OpenAPI toolkit's uploaded document, or a GraphQL toolkit's uploaded schema (SDL). */
+  /** An OpenAPI or Discovery toolkit's uploaded document, or a GraphQL toolkit's uploaded schema (SDL). */
   readonly document?: string | undefined;
   /** An OpenAPI toolkit's base URL, already checked by the outbound guard. */
   readonly baseUrl?: string | undefined;
@@ -339,12 +339,12 @@ export interface RefreshSummary {
 export interface ToolkitExport {
   readonly name: string;
   readonly kind: ToolkitKind;
-  /** Empty for an uploaded OpenAPI document, which the export does not hold (`uploaded`). */
+  /** Empty for an uploaded OpenAPI or Discovery document, which the export does not hold (`uploaded`). */
   readonly source: string;
   readonly base_url?: string;
   /**
-   * An OpenAPI toolkit built from an uploaded document, or a GraphQL toolkit from an uploaded schema: its managers
-   * download it on its own route.
+   * An OpenAPI or Discovery toolkit built from an uploaded document, or a GraphQL toolkit from an uploaded schema: its
+   * managers download it on its own route.
    */
   readonly uploaded?: true;
   readonly private: boolean;
@@ -558,9 +558,23 @@ const fallbackName = (source: string): string =>
 const NO_SECRET: UpstreamSecret = { kind: "none" };
 
 /**
- * Whether `toolkit` is built from an uploaded document the part keeps (an OpenAPI document, a GraphQL schema's SDL).
+ * Whether `toolkit` is built from an uploaded document the part keeps (an OpenAPI or Discovery document, a GraphQL
+ * schema's SDL).
  */
 const uploaded = (toolkit: Toolkit): boolean => !toolkit.builtIn && toolkit.uploaded;
+
+/** The OAuth 2 scopes `tools` name (a Discovery toolkit's methods'), sorted, each once. */
+const scopesOf = (tools: ReadonlyArray<StoredTool>): ReadonlyArray<string> =>
+  [...new Set(tools.flatMap((tool) => tool.operation?.scopes ?? []))].sort();
+
+/**
+ * A build's failure that refuses the save of its source: a URL in the source the outbound guard refuses (a Discovery
+ * document's `rootUrl`), answered as a URL typed in is (`outbound_refused` with the field as `path`).
+ */
+const sourceRefusal = (failure: KindFailure): ToolsRefusal | undefined =>
+  failure.field === undefined
+    ? undefined
+    : { ok: false, error: "outbound_refused", message: failure.message, path: failure.field };
 
 /**
  * The Tools part of an org's ControlPlane (#196): the single writer for the org's toolkits, their credentials (sealed
@@ -909,6 +923,14 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
           policy,
         });
 
+    // A URL in the source the outbound guard refuses (a Discovery document's rootUrl) refuses the save (ADR 0044).
+    const sourceRefused =
+      listing !== undefined && Result.isFailure(listing)
+        ? sourceRefusal(listing.failure)
+        : undefined;
+
+    if (sourceRefused !== undefined) return sourceRefused;
+
     const listedName =
       listing !== undefined && Result.isSuccess(listing) ? listing.success.name : undefined;
 
@@ -1100,10 +1122,11 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   }
 
   /**
-   * Replaces an uploaded document (managers): an OpenAPI document, a GraphQL schema's SDL (#204), and builds its tool
-   * list from it. A GraphQL toolkit built from introspection takes a first SDL file too (an endpoint that stopped
-   * answering introspection), and is built from uploaded files from then on: the cron task leaves it alone, and a build
-   * needs no credential. A document that cannot be read replaces nothing.
+   * Replaces an uploaded document (managers): an OpenAPI or Discovery document, a GraphQL schema's SDL (#204), and
+   * builds its tool list from it. A GraphQL toolkit built from introspection takes a first SDL file too (an endpoint
+   * that stopped answering introspection), and is built from uploaded files from then on: the cron task leaves it
+   * alone, and a build needs no credential. A document that cannot be read replaces nothing, nor does a Discovery
+   * document whose rootUrl the outbound guard refuses (`outbound_refused`).
    */
   async replaceDocument(
     viewer: Viewer,
@@ -1138,7 +1161,8 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       policy,
     });
 
-    if (Result.isFailure(listing)) return refuse("invalid", listing.failure.message);
+    if (Result.isFailure(listing))
+      return sourceRefusal(listing.failure) ?? refuse("invalid", listing.failure.message);
 
     // The document was read with nothing awaited after the revision was checked: no other edit came in between.
     const now = this.#now();
@@ -1153,8 +1177,8 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   }
 
   /**
-   * A toolkit's uploaded document (an OpenAPI document, a GraphQL schema's SDL), for its managers only: a document may
-   * describe more of an API than its tools show (a member who reads the toolkit sees its tool list).
+   * A toolkit's uploaded document (an OpenAPI or Discovery document, a GraphQL schema's SDL), for its managers only: a
+   * document may describe more of an API than its tools show (a member who reads the toolkit sees its tool list).
    */
   toolkitDocument(viewer: Scope, id: string): ToolsResult<ToolkitDocument> {
     const toolkit = this.#store.toolkit(id);
@@ -1328,7 +1352,8 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   /**
    * Starts an OAuth 2 authorization code sign-in with PKCE for the toolkit's shared credential (org admins, naming its
    * `subject` as connecting one does) or the caller's private one, with the toolkit's OAuth app or Commissary as the
-   * MCP server's client (`prepareSignIn`). Answers the URL the browser opens; the callback finishes it
+   * MCP server's client (`prepareSignIn`). An OAuth app that sets no scopes asks for those the toolkit's tools name (a
+   * Discovery toolkit's methods', #205). Answers the URL the browser opens; the callback finishes it
    * ({@link completeSignIn}).
    */
   async startSignIn(
@@ -1353,12 +1378,17 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     const grant = this.#connectGrant(id, slot, input.subject);
 
     if (!grant.ok) return grant;
+    const app = this.#oauth.app(id);
 
     const prepared = await this.#outboundRun(
       prepareSignIn({
         toolkitId: id,
         source: toolkit.source,
-        app: this.#oauth.app(id),
+        // An OAuth app that sets no scopes asks for the ones the toolkit's tools name (a Discovery toolkit's, #205).
+        app:
+          app === undefined || app.scopes.length > 0
+            ? app
+            : { ...app, scopes: scopesOf(this.#store.tools(id)) },
         registered: this.#oauth.client(id),
         urls,
       }),
@@ -3209,11 +3239,14 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       : ok(this.#view(toolkit, viewer, this.#resolve(this.#servedMember(this.#memberOf(viewer)))));
   }
 
-  #listStatus(toolkit: Toolkit): ToolsList["tool_list"] {
+  #listStatus(
+    toolkit: Toolkit,
+    tools: ReadonlyArray<StoredTool> = this.#tools(toolkit.id),
+  ): ToolsList["tool_list"] {
     return {
       ...(toolkit.listBuiltAt === undefined ? {} : { built_at: iso(toolkit.listBuiltAt) }),
       ...(toolkit.listError === undefined ? {} : { error: toolkit.listError }),
-      tools: this.#tools(toolkit.id).length,
+      tools: tools.length,
     };
   }
 
@@ -3253,6 +3286,8 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     // A member who only reads an org toolkit does not see what its source's (or base URL's) query carries.
     const shown = (url: string) => (reach(toolkit, viewer) === "read" ? maskedSource(url) : url);
     const app = reach(toolkit, viewer) === "full" ? this.#appView(toolkit.id) : undefined;
+    const tools = this.#tools(toolkit.id);
+    const scopes = scopesOf(tools);
 
     return {
       id: toolkit.id,
@@ -3261,6 +3296,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       source: shown(toolkit.source),
       ...(toolkit.baseUrl === undefined ? {} : { base_url: shown(toolkit.baseUrl) }),
       ...(uploaded(toolkit) ? { uploaded: true } : {}),
+      ...(scopes.length === 0 ? {} : { scopes }),
       private: toolkit.owner !== undefined,
       accepts: toolkit.accepts,
       revision: toolkit.revision,
@@ -3272,7 +3308,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
         ...(mine === undefined ? {} : { mine: this.#credentialView(toolkit, mine) }),
         ...(admin && toolkit.owner === undefined ? { private_count: privateCount } : {}),
       },
-      tool_list: this.#listStatus(toolkit),
+      tool_list: this.#listStatus(toolkit, tools),
       ...(app === undefined ? {} : { oauth_app: app }),
       ...(toolkit.priceMicros === undefined ? {} : { price_micros: toolkit.priceMicros }),
       ...(resolution.renameSuggested.has(toolkit.id) ? { rename_suggested: true } : {}),

@@ -188,7 +188,7 @@ the Worker asks on every request: a removed member, or a member whose role was l
 | Read the org's toolkits and their tools; add and manage their own private toolkits (`/toolkits`) |         ✓         |     ✓     |              ✓               |       ✓        |
 | Add, edit and remove org toolkits, their shared credentials, tool overrides and approval rules   |                   |     ✓     |              ✓               |       ✓        |
 | See and decide the pending approvals of tool calls they are an approver of (`/approvals`)        |         ✓         |     ✓     |              ✓               |       ✓        |
-| Read and replace an org OpenAPI toolkit's uploaded document (`/toolkits/:id/document`)           |                   |     ✓     |              ✓               |       ✓        |
+| Read and replace an org toolkit's uploaded document (`/toolkits/:id/document`)                   |                   |     ✓     |              ✓               |       ✓        |
 | Read the agents they may use; create and manage their own private agents (`/agents`)             |         ✓         |     ✓     |              ✓               |       ✓        |
 | Create, edit and remove shared agents; disable or remove a member's private agent                |                   |     ✓     |              ✓               |       ✓        |
 | Read, add, edit and remove agent grants (`/grants/agents`)                                       |                   |     ✓     |              ✓               |       ✓        |
@@ -251,8 +251,8 @@ the Worker asks on every request: a removed member, or a member whose role was l
   `/membership` is the org setting: on for `global` and for a new org only when `POST /orgs` asks; turning it off disables
   every private credential of the org (kept, not deleted) and refuses new ones (`403`) until it is turned on again. Everything
   that existed before is shared.
-- **Toolkits** (`/toolkits`, #196, #203): a toolkit built from a remote MCP server or an OpenAPI document belongs to the
-  org (managed by org admins, its credentials shared) or to one member (private, their own credentials). Every member reads the org's toolkits and
+- **Toolkits** (`/toolkits`, #196, #203, #205): a toolkit built from a remote MCP server, an OpenAPI document or a
+  Google Discovery document belongs to the org (managed by org admins, its credentials shared) or to one member (private, their own credentials). Every member reads the org's toolkits and
   their tools, and may refresh an org toolkit's tool list when it has no shared credential; adding, editing and removing
   an org toolkit, its shared credentials and its tool overrides are for org admins (`403 forbidden`). A private toolkit is
   its owner's: an org admin sees that it exists and may remove it, and reaches nothing else about it (`404`); a private
@@ -267,9 +267,9 @@ the Worker asks on every request: a removed member, or a member whose role was l
   masked (names kept, a parameter without a value masked whole) and its host and path as they are; org admins and the org
   export see the whole URL, so a key goes in a credential (sealed; a `query` one for the query), never in the source's path
   or query. An org toolkit that stops accepting shared or private credentials keeps the ones connected, inactive, until it
-  accepts them again. An OpenAPI toolkit's base URL is masked for a plain member as its source is; its uploaded
-  document (`GET` and `PUT /toolkits/:id/document`) is its managers' alone: an org admin's for an org toolkit (`403
-  forbidden` for a member, who sees its tools), its owner's for a private one. The org export says a toolkit is built
+  accepts them again. An OpenAPI toolkit's base URL is masked for a plain member as its source is; its (or a Discovery
+  toolkit's) uploaded document (`GET` and `PUT /toolkits/:id/document`) is its managers' alone: an org admin's for an
+  org toolkit (`403 forbidden` for a member, who sees its tools), its owner's for a private one. The org export says a toolkit is built
   from an uploaded document (`uploaded: true`) without holding it.
 - **Agents** (`/agents`, `/grants/agents`, #226, ADR 0040): a hosted agent is one member's (private) or the org's
   (shared). Every member creates and manages their own private agents, which only they see in full; a plain member's

@@ -3,6 +3,11 @@
  * URL or else the server its document names, with each argument serialised where its parameter goes (OpenAPI's
  * `style` and `explode`, their defaults per location) and the body in the operation's media type. A form body's nested
  * objects and arrays use brackets (`metadata[key]`, `items[0][price]`), as Stripe and most form APIs read them.
+ *
+ * A path argument never leaves the operation's path: one that would make a `.` or `..` segment (`%2e` included, which
+ * URLs read as a dot) is refused, as is a reserved one (a Discovery method's `{+name}`, #205) that does not match its
+ * parameter's pattern. Otherwise a caller could reach another endpoint of the API with the toolkit's credential, past
+ * the grants and approval rules of the tool that endpoint is.
  */
 import { Predicate, Result, type Schema } from "effect";
 import type { HttpCall, HttpCallBody } from "../http/call.ts";
@@ -86,9 +91,43 @@ const simple = (value: Schema.Json, explode: boolean, encode: (part: string) => 
   return encode(text(value));
 };
 
+/** RFC 6570's reserved expansion of `part`: its reserved and unreserved characters, and `%XX` escapes, kept. */
+const encodeReserved = (part: string): string =>
+  part.replace(/%(?![0-9A-Fa-f]{2})|[^A-Za-z0-9\-._~:/?#[\]@!$&'()*+,;=%]/gu, encodeURIComponent);
+
+/** A path segment URLs read as `.` or `..` (and climb out of the path with): `%2e` is a dot to them. */
+const DOT_SEGMENT = /^(?:\.|%2e){1,2}$/i;
+
+/** `pattern` (a Discovery parameter's) as a regular expression; undefined when JavaScript does not read it. */
+const patternOf = (pattern: string): RegExp | undefined => {
+  try {
+    return new RegExp(pattern, "u");
+  } catch {
+    return undefined;
+  }
+};
+
+/** Why the path argument `value` of `parameter`, serialised as `segment`, cannot go in the path, if it cannot. */
+const pathRefusal = (
+  parameter: OperationParameter,
+  value: Schema.Json,
+  segment: string,
+): string | undefined => {
+  if (segment.split("/").some((part) => DOT_SEGMENT.test(part)))
+    return `the argument ${parameter.argument} cannot be or hold a . or .. path segment`;
+
+  const pattern = parameter.pattern === undefined ? undefined : patternOf(parameter.pattern);
+
+  return pattern === undefined || pattern.test(text(value))
+    ? undefined
+    : `the argument ${parameter.argument} does not match ${parameter.pattern}`;
+};
+
 /** A path parameter's segment, by its style (`simple`, `label` or `matrix`). */
 const pathSegment = (parameter: OperationParameter, value: Schema.Json): string => {
   const explode = parameter.explode ?? false;
+
+  if (parameter.allowReserved === true) return simple(value, explode, encodeReserved);
 
   if (parameter.style === "label") return `.${simple(value, explode, encodeURIComponent)}`;
 
@@ -173,9 +212,16 @@ export const operationCall = (
     }
 
     switch (parameter.in) {
-      case "path":
-        path = path.replaceAll(`{${parameter.name}}`, pathSegment(parameter, value));
+      case "path": {
+        const segment = pathSegment(parameter, value);
+        const refused = pathRefusal(parameter, value, segment);
+
+        if (refused !== undefined) return Result.fail(refused);
+
+        path = path.replaceAll(`{${parameter.name}}`, segment);
         break;
+      }
+
       case "query":
         query.push(...queryPairs(parameter.name, value, parameter.style, parameter.explode));
         break;
