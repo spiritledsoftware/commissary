@@ -4,9 +4,14 @@
  * them apart: what only a stored toolkit has (a source to build its list from, a credential to connect, a row to edit
  * or remove) is reached through the {@link StoredToolkit} the part's resolver answers.
  */
-import type { CredentialSettings, CredentialsAccepted } from "@commissary/contract/tools";
+import type {
+  CredentialSettings,
+  CredentialsAccepted,
+  ToolkitCatalogLink,
+} from "@commissary/contract/tools";
 import type { SandboxAllowance } from "../sandbox/network.ts";
 import type { StoredApprovalRules } from "../approvals/rules.ts";
+import type { JsonPatchOperation } from "../openapi/patch.ts";
 
 /** What every toolkit has, stored or built in. */
 interface ToolkitFields {
@@ -52,6 +57,13 @@ export interface StoredToolkit extends ToolkitFields {
   readonly uploaded: boolean;
   /** The settings of its credential types (#206); undefined: none. */
   readonly credentialSettings: CredentialSettings | undefined;
+  /** The toolkit catalog's service and source it was added from (#207); undefined: added by URL or document. */
+  readonly catalog: ToolkitCatalogLink | undefined;
+  /**
+   * The toolkit catalog's fixes to an OpenAPI toolkit's document (integrations.sh's `specOverrides`, #207), applied
+   * each time its list is built from it; undefined: none.
+   */
+  readonly specPatch: ReadonlyArray<JsonPatchOperation> | undefined;
 }
 
 /**

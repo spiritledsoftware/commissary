@@ -9,6 +9,8 @@
     "./api": "./src/api.ts",
     "./management": "./src/management.ts",
     "./state": "./src/state.ts",
+    "./integrations-sh": "./src/catalog/integrations-sh.ts",
+    "./integrations-sh-credentials": "./src/catalog/credentials.ts",
     "./testing": "./test/testing.ts"
   },
   "scripts": {

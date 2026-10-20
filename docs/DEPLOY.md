@@ -278,7 +278,8 @@ differs**: the areas, toolkits and settings are the same.
   Cloudflare Access.
 - Plans, billing (Pay as you go through Polar, [Polar](#polar)), ceilings and unbilled orgs (ADR 0042).
 - The per-org request rate limit.
-- Commissary-owned OAuth apps for catalog toolkits (ADR 0036). A self-hosted Commissary uses its own apps.
+- Commissary-owned OAuth apps for catalog toolkits (ADR 0036, #207, [Managed OAuth apps](#managed-oauth-apps)). A
+  self-hosted Commissary uses its own apps.
 - Suspending people, and owned-org limits.
 - Commissary's own OAuth sign-in for MCP clients (#200), with its KV namespace `OAuth`. A self-hosted Commissary signs
   its MCP clients in through Access (ADR 0045).
@@ -408,6 +409,26 @@ The API Worker's cron (every three hours) sends each org's usage above free usag
 a preview tests checkout, the portal and webhooks but sends no usage. Polar allows 500 requests a minute; the cron
 sends at most one batch per 120 ms. Each org is one Polar customer, billed to the owner who first started a checkout,
 and Polar requires customers' emails to be unique: one person can be the billing email of one org only.
+
+### Managed OAuth apps
+
+A toolkit added from the toolkit catalog (#207) signs in on Commissary Cloud with Commissary Cloud's own OAuth app with
+the service, unless the org gives the toolkit an app of its own (docs/ARCHITECTURE.md, "Toolkit catalog"). Each app is
+an entry of `managed_apps` in `packages/tools/src/catalog/additions.json` (client id, endpoints, scopes) naming the
+Worker binding that holds its client secret, `TOOLKIT_OAUTH_<NAME>`. Every one is optional: an app whose secret is not
+bound is not offered, and its toolkits sign in as on a self-hosted Commissary (the org's app, Commissary's CIMD
+document, dynamic registration). A self-hosted stage never uses them, bound or not.
+
+None ships yet, so a deploy binds none and needs nothing. Adding the first one takes, besides its entry: registering the
+app with the service (callback `https://<app host>/oauth/toolkits/callback`), its secret in the `cloud` GitHub
+environment and `.env.cloud`, and its binding on the `State` Worker only (whose Tools part signs in and refreshes tokens
+with it), in its `env` in `alchemy.run.ts` on a Commissary Cloud stage only. The app Worker binds none: it asks the
+org's ControlPlane whether a service has an app, for the catalog's views.
+
+The secrets are the one exception to declaring each binding in the Worker's `env.d.ts` and its package's view
+(AGENTS.md): their names come from the additions, and the part reads each one by the name its entry gives (a non-empty
+string, or the app is not offered). Keep that in mind when looking for a binding in `apps/state/src/env.d.ts`: a
+`TOOLKIT_OAUTH_*` one is not there.
 
 ### The Commissary Cloud stage
 

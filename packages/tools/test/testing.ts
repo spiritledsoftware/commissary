@@ -44,3 +44,5 @@ export { BrowserCrawlStore } from "../src/browser/crawls.ts";
 
 /** How the Tools part reaches an org's browser session by its id: the cross-org suite reaches them the same way. */
 export { browserSessionStub } from "../src/browser/session-object.ts";
+
+export { useToolkitCatalogRegistry } from "./support/catalog.ts";

@@ -132,7 +132,8 @@ to `packages/agents/src/`) and the JSON path engine as `packages/json`.
     test/                     workerd tests against a test-only ControlPlane (test/worker.ts); test/testing.ts is ./testing
   packages/tools/             @commissary/tools: the Tools area (#196); like Models, the Workers import it only
                               through ./api, ./management and ./state (lint rule boundaries/tools-imports)
-    src/api.ts                for the API Worker: the MCP endpoint (/mcp), its cron task (tool-list-refresh), ToolsEnv
+    src/api.ts                for the API Worker: the MCP endpoint (/mcp), its cron tasks (tool-list-refresh,
+                              toolkit-catalog-refresh), ToolsEnv
     src/management.ts         for the app Worker: management routes, role-table entries, org-deletion step, its section
                               of the org export
     src/state.ts              for the state Worker: ToolsPart, its part of the ControlPlane, the built-in toolkits'
@@ -144,6 +145,13 @@ to `packages/agents/src/`) and the JSON path engine as `packages/json`.
                               grants, the endpoint's list and calls, upstream sessions, browser profiles and their
                               grants)
     src/toolkits/             storage, names, the flat list of unique full names, static secrets, built-in toolkits
+    src/catalog/              the toolkit catalog (#207): integrations.sh's trimmed registry (the bundled snapshot
+                              integrations-sh.json and its trim, ./integrations-sh for `pnpm toolkits:sync`), the
+                              sources' credentials from integrations.sh's v3 documents (integrations-sh-credentials.json,
+                              ./integrations-sh-credentials), the catalog additions, the catalog's services and search,
+                              its KV keys (stored.ts, all the cron refresh reads), the isolate's catalog and the cron
+                              refresh, the live detect/discover lookups and their throttle, and Commissary Cloud's
+                              managed OAuth apps
     src/browser/              the browser toolkit: its Quick Action tools (#212), its crawl tools and the log of who
                               started each crawl (#270), the browser-provider interface and its Browser Run adapters
                               (the binding's, the crawl REST API's); its session tools, what they do in a browser (masking
@@ -941,7 +949,8 @@ evaluated per isolate and cached for 5 s (`ModelRegistry.snapshot`, `RegistrySna
     URL. `models.codex-catalog` and `models.devin-catalog` are accepted and no longer have an effect (listed under
     _Not applied_).
   - _One refresh at a time_: a download takes the **catalog refresh lease** in the Platform registry
-    (`takeLease("catalog_refresh", …)` / `releaseLease(token)`: the general-purpose lease store `state/lease.ts`, as
+    (`withPlatformLease`, `state/platform/refresh-lease.ts`, which the toolkit catalog's refresh uses too:
+    `takeLease("catalog_refresh", …)` / `releaseLease(token)` of the general-purpose lease store `state/lease.ts`, as
     the quota sweep's, table `catalog_refresh_lease`, atomic on the object's clock, 2 min expiry, given back with its token; the refresh is bounded
     by its 30 s timeout so it is not renewed). The cron task and the panel therefore never download at once, in whichever
     isolates they run; the second gets `running` without a request being made. The invocation is held open with
@@ -3296,13 +3305,13 @@ The Tools area (ADR 0036, ADR 0037, ADR 0038) turns outside sources into **toolk
 own MCP endpoint. This version builds four kinds, the remote MCP server (Streamable HTTP), the OpenAPI document (#203,
 _OpenAPI toolkits_ below), the GraphQL endpoint (#204, _GraphQL toolkits_ below) and the Google Discovery document
 (#205, _Discovery toolkits_ below), each through its driver (`tools/toolkits/kinds.ts`: how its list is built, whether
-that needs a credential, how a call reaches the upstream, whether calls keep an upstream session); the toolkit catalog and the panel's toolkit pages come
-later (#200 to #209); grants (#198), prices, usage records and Spend limits of tool calls (#199), approval rules with
+that needs a credential, how a call reaches the upstream, whether calls keep an upstream session), and offers the
+toolkit catalog to add them from (#207, _Toolkit catalog_ below); the panel's toolkit pages come later (#208, #209); grants (#198), prices, usage records and Spend limits of tool calls (#199), approval rules with
 pending approvals (#201) and OAuth 2 sign-in to toolkits (#202, around the drivers: a driver gets a credential's secret
 already signed in) are here. The package (`@commissary/tools`) is shaped like Models: entry points `./api` (the MCP
 endpoint's routes, Commissary's CIMD document, the cron task), `./management`, `./state` and `./testing`, a lint
 boundary (`boundaries/tools-imports`) and a ControlPlane part, `ToolsPart`, reached as `stub.tools().x(…)`. Its one
-binding of its own is the usage database; its state is the ControlPlane's (`TOOLS_TABLES`: `toolkits`,
+binding of its own is the usage database (and `CACHE`, the deployment's KV namespace, for the toolkit catalog); its state is the ControlPlane's (`TOOLS_TABLES`: `toolkits`,
 `toolkit_credentials`, `toolkit_tools`, `tool_overrides`, `toolkit_sessions`, `tool_grants`, `tool_approvals`,
 `built_in_toolkits`, `toolkit_documents`, `toolkit_schemas`, and OAuth's `toolkit_oauth_apps`, `toolkit_oauth_clients`
 and `toolkit_sign_ins`, the sandbox's `sandbox_sessions` and the browser crawls' `browser_crawls`, dropped by `wipe()`). Its view of `env` (`ToolsBindings`)
@@ -3314,7 +3323,8 @@ optional Browser Run binding `BROWSER` (`builtInProviders`), which the browser t
 account and API token of its crawls (`BROWSER_RUN_ACCOUNT_ID`, `BROWSER_RUN_API_TOKEN`, #270) and their cap on pages
 (`COMMISSARY_CRAWL_MAX_PAGES`), the Worker Loader
 `LOADER` with the `SandboxSession` namespace `SANDBOX_SESSION`, always there, which the sandbox toolkit runs on
-(_Built-in toolkits_ below), and `OWN_HOSTS`, which its alarm's token refreshes refuse. Beside it the state Worker
+(_Built-in toolkits_ below), `OWN_HOSTS`, which its alarm's token refreshes refuse, and `COMMISSARY_MODE` with the
+managed OAuth apps' secrets (_Toolkit catalog_ below). Beside it the state Worker
 defines and always binds the browser sessions' Durable Object (#213: `BrowserSession`, whose namespace
 `BROWSER_SESSIONS` the part reads too), which reads `BROWSER` through its own view (`BrowserSessionEnv`).
 
@@ -3666,11 +3676,115 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
   Compute Engine's (6.4 MB for `v1` with 1,018 methods, 7.6 MB for `alpha` with 1,212), build in about 13 and 15 MB of
   Node.js heap beyond what Node.js itself takes (the least `--max-old-space-size` that parses the document and builds
   its tools), well within the ControlPlane's 128 MB isolate.
+- **Toolkit catalog** (`tools/catalog/`, `tools/management/catalog-routes.ts`, #207, ADR 0036): the services an org's
+  members add toolkits from, the same for every org, built from [integrations.sh](https://integrations.sh) (MIT,
+  UsefulSoftwareCo; NOTICE) and Commissary's own additions.
+  - _integrations.sh's data_: its one bulk export is the index `https://integrations.sh/api.json` (`{ version: 1,
+    generatedAt, data }`, ≈2.8 MB, one record per _surface_ of a service): `kind` (`mcp`, `openapi`, `graphql`, `cli`),
+    `slug` (the surface's stable id), `name`, `description`, `icon`, `domain` (the service), `categories`, `feeds` (where
+    it learned of it: curated, the Claude and OpenAI connector directories, APIs.guru, discovered, …), `connectUrl` (what
+    a client connects to: the MCP server's URL, the OpenAPI document's, the GraphQL endpoint; none for a REST API without
+    a document), `auth` on curated records only (`kind`: `none`, `oauth`, `api_key`, `token`, `mixed`, and the header a
+    key goes in, `Authorization: Bearer {token}`), `scopes`, `standalone` (a product of its own on a shared domain:
+    Outlook Mail on `graph.microsoft.com`) and `popularity`. Per domain it serves the richer discovery model v3
+    (`/api/<domain>/surface`): a registry of credentials by id (`type`: `api_key`, `basic`, `bearer`, `oauth2`,
+    `oauth2_cc`, `oauth1`, `jwt`, `app`, `two_step`, `signature`, `aws_sigv4`, `tba`, `compound`, `custom`, with how to
+    get one) and surfaces (`http` with its `spec`, `graphql`, `mcp`, `cli`), each with its `basis` (detected,
+    discovered or declared by the owner's `/.well-known/integrations.json`) and its `auth`: any one of several entries,
+    each entry the credentials used together with where each goes (`http`: a header, the query, the body; `spec`: a
+    security scheme of the document; `well-known`/`metadata`: OAuth discovered from the server). `detect`
+    (`/api/<domain>/detect`, seconds) probes the domain's well-known manifests (`integrations.json`, API catalog,
+    OpenAPI, MCP server card, OAuth protected resource metadata); `discover` (`/api/<domain>/discover`, up to a minute,
+    3 a minute) has an agent read the service's docs, and answers v3.
+  - _The registry_ (`catalog/integrations-sh.ts`): the index trimmed to what Commissary can build, MCP servers, OpenAPI
+    documents and GraphQL endpoints with a public `https:` locator (no CLI, no stdio command, no placeholder host), and
+    the fields it reads, sorted (≈3,700 sources); an icon is kept only at an `https:` URL (the panel shows it as an
+    image the browser loads; an icon proxy, if one comes, fetches it through the outbound guard). The snapshot ships as
+    `catalog/integrations-sh.json` (`pnpm toolkits:sync`), read through the same trim as a refreshed copy, so a snapshot
+    that does not decode fails loudly rather than being cast; the cron task `toolkit-catalog-refresh` (deployment-wide,
+    every 3 hours with the others) and `POST /toolkit-catalog/refresh` (org admins) fetch the index again through the
+    outbound guard (30 s, at most 8 MiB), trim it and keep it in KV `CACHE` (`DeploymentKv`,
+    `toolkit-catalog/integrations-sh.json`, `catalog/stored.ts`), one at a time under the Platform registry's lease
+    `toolkit_catalog_refresh` (`withPlatformLease`, `@commissary/state`, which the model catalog's refresh takes its
+    lease with too). A fetch that fails, a document that is not the index or keeps fewer than 1,000 sources, or a KV
+    write that fails keeps what is stored (a `200` with `status: "failed"` and a fixed message, at most 200 characters,
+    for the panel); each attempt is recorded (`toolkit-catalog/refresh-status.json`), and `GET /toolkit-catalog/status`
+    tells which copy is in use, when it was last confirmed current and how the last attempt went. A catalog request never
+    fetches. Each isolate builds the catalog once from the stored text (re-read every minute, sooner after a refresh in
+    the same isolate; the snapshot while nothing is stored or the text does not read). The refresh imports neither the
+    snapshot nor the catalog (`stored.ts` holds the KV keys and the isolate's catalog generation), so the API Worker,
+    which runs the cron task, does not bundle them; the app Worker does (≈1.6 MB of its bundle, ≈340 KiB gzipped).
+  - _Services_ (`catalog/catalog.ts`): a domain's sources make one service, a `standalone` product its own. A service's
+    id is its catalog slug, the default name of a toolkit added from it: the domain's own label as a toolkit's default
+    name reads a host (`linear.app` → `linear`), a standalone product's name (`outlook_mail`); of services whose slugs
+    clash, the one with the shortest domain keeps it and the others take their whole domain's (`linear_com`). Listing
+    puts the additions' featured services first, in their order, then by popularity; `q` matches every word in a
+    service's slug, name, domain, description and categories, `kind` keeps those with a source of that kind.
+  - _Credentials_: a source's ways to sign in are toolkit credential kinds, any one of them (`credentials`): from the
+    index, `oauth` is a sign-in, `api_key` and `token` a key in the header its pattern names, with what comes before the
+    placeholder as prefix (`Authorization: Bearer {token}` is `bearer`, `Authorization: Basic …` `basic`), `mixed` a
+    sign-in or that key, `none` none; from v3, `api_key` is a `header` or `query` key, `oauth2` a sign-in
+    (`oauth`), `oauth2_cc` a client credentials grant, `two_step` a token exchange, and `basic`, `bearer`, `oauth1`,
+    `tba`, `jwt`, `app`, `aws_sigv4`, `compound` the kinds of the same names (#206); `signature` and `custom`, and an
+    entry that needs several credentials at once, have no kind and are left out. An OpenAPI document says how to sign in
+    itself, so its source may list none. The index notes how to sign in on curated records only, so `pnpm toolkits:sync`
+    also reads each kept domain's v3 document (`/api/<domain>/surface`: integrations.sh does not rate-limit it; four at
+    a time, retried, cached under `node_modules/.cache/integrations-sh/` so a stopped run resumes) and matches each
+    source to the surface of its kind at its URL (or a `specAlternates` twin); what that surface says ships as
+    `catalog/integrations-sh-credentials.json` by the index's slug (≈1,900 of ≈3,700 sources) and wins over the index's
+    note. The cron refresh does not fetch the documents (one request per domain): a source it adds has the index's note
+    until the next sync.
+  - _Document fixes_: integrations.sh records RFC 6902 JSON Patch fixes for some OpenAPI documents (`specOverrides`: a
+    wrong authorization URL, cookie schemes beside the real key); the registry keeps them, a toolkit added from such a
+    source keeps them (`spec_patch`), and each build of its list applies them to the document as it is, before it is
+    brought to OpenAPI 3.1 (`openapi/patch.ts`). Fixes that no longer apply (the document changed) leave it as it is,
+    and the list says so in its error.
+  - _The additions_ (`catalog/additions.json`, `additions.ts`; by hand): `featured`; `services`, filling what the
+    registry lacks (Google's Discovery documents for Gmail, Calendar, Drive, Docs, Sheets, Slides, Tasks, People and
+    YouTube; the registry wins where it has the same source); `corrections`, which unlike model catalog additions win
+    over the registry (a wrong URL, kind or auth method, missing credential settings), each with its `reason` and where
+    it was offered upstream (`upstream`, an integrations.sh issue or pull request), since integrations.sh reads much of
+    it from docs with an agent; `managed_apps`; and `tool_overrides` by `<service>/<source>` and upstream tool name
+    (hidden, renamed, described, classed), which a toolkit added from that source gets as overrides by `catalog` (an
+    org admin changes or clears them as any other; until the list is built they show as `missing`).
+  - _Adding from the catalog_: `POST /toolkits` with `catalog: { service, source }` takes the source's kind, URL and
+    credential settings and the service's slug as the name, for what the body leaves out (a `kind` or `source` given
+    must be the source's: `422 invalid`, as an unknown service or source is, with `path: "catalog"`); the source passes
+    the outbound guard on save as any source does. A plain member adds a private toolkit this way, as by URL. The
+    toolkit keeps the link (`catalog` in its view, the `catalog` column) and the source's way to sign in it was added
+    with (`catalog.credential`: `catalog.credential` in the body names its kind, by default the kind of the credential
+    connected with it): a `header` or `query` key connected without a `name`, then or later, goes where it says, with
+    the header's prefix (`Token`) before it unless it has it; on a toolkit whose source does not say, a key without a
+    `name` is `422 invalid` (`path: "name"`).
+  - _Managed OAuth apps_ (`catalog/managed-apps.ts`): on Commissary Cloud (`COMMISSARY_MODE=cloud`) a toolkit added from a
+    service's entry signs in with Commissary Cloud's own OAuth app with that service (`managed_apps` in the additions:
+    client id, endpoints, scopes, and the name of the Worker binding with its secret, `TOOLKIT_OAUTH_<NAME>`), unless
+    the org gives the toolkit an OAuth app of its own, which wins (`managed_oauth_app: true` in the views says so; the
+    secret is never shown). An app whose secret the deployment does not bind is not offered, so each is optional, and
+    a self-hosted Commissary never has one: its toolkits sign in through the org's OAuth app or as Commissary (CIMD,
+    dynamic registration). Only the state Worker binds and reads the secrets (`managedAppsOf(env)`, read by the names
+    the additions give: the one exception to declaring each binding, AGENTS.md); the app Worker asks the org's
+    ControlPlane whether a service has an app (`hasManagedApp`), for the catalog's views. None ships yet (DEPLOY.md,
+    "Managed OAuth apps").
+  - _Domains_ (`catalog/lookup.ts`): `GET /toolkit-catalog/domains/:domain` answers the catalog's service of the domain
+    or of the nearest domain above it (`mcp.linear.app` → `linear`), else integrations.sh's `detect`;
+    `POST …/discover` asks `discover` (`429 lookup_rate_limited` when integrations.sh asks to wait, `502 lookup_failed`
+    when it cannot be read). The org's ControlPlane throttles them (`catalog/lookup-throttle.ts`, `takeCatalogLookup`):
+    one `discover` a minute for the whole org (integrations.sh allows three a minute for everyone), ten `detect`s a
+    minute for each member, each in a fixed window kept in the object's memory; past it, `429 lookup_rate_limited`
+    saying how long to wait, without asking. A domain the catalog has is never counted. The domain passes the outbound guard as `https://<domain>/` before anything is asked
+    (`422` with the guard's message as `error` and `path: "domain"`), every source URL of the answer passes it too (one
+    it refuses is left out and named in `refused`), and the requests to integrations.sh go through the guarded client.
+    The answer fills one toolkit (a service with the domain's slug) and is never kept: the catalog does not change.
+    Adding a domain the catalog lacks is that lookup: the client (the panel's toolkit pages, #208) copies a source of
+    the answer into `POST /toolkits` (by `source`, `kind` and `name`, without `catalog`), where it passes the outbound
+    guard again.
 - **Names** (`tools/toolkits/names.ts`, ADR 0037): a full name is `<toolkit>_<tool>` in `[a-z0-9_]` (the upstream name
   lowercased, every other character `_`); above 46 characters it is cut to 41 and ends in `_` and the first four hex
   characters of the SHA-256 of the whole name, flagged `shortened`. A toolkit's name is lowercase words of `[a-z0-9]`
   joined by single underscores, at most 32 characters (a decision of #196, so a full name keeps room for the tool's);
-  the default is the slug of the source's host (`mcp.linear.app` → `linear`) until the catalog's slug (#207). Org toolkit
+  the default is the slug of the source's host (`mcp.linear.app` → `linear`), or the catalog service's slug for a toolkit
+  added from the toolkit catalog (#207, which picks slugs the same way). Org toolkit
   names are unique in the org; a private toolkit's must not clash with an org toolkit or its owner's other private
   toolkits, while an org toolkit may take a name a member uses privately.
 - **The flat list** (`tools/toolkits/resolve.ts`): who looks decides the set, the org's toolkits for the org's names, or

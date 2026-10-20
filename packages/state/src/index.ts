@@ -2,7 +2,7 @@
  * `@commissary/state`: the org-wide state on Durable Objects (#134). The ControlPlane's org-wide base and its stores
  * (members, teams, service tokens, the membership index and its settings, API keys, management keys, single sign-on,
  * `SessionState` instances, the org's data key in `secrets/`) and the helper that composes it with the areas' parts
- * (`composeControlPlane`); the Platform registry and the general-purpose lease store; `SessionState` (the class, its
+ * (`composeControlPlane`); the Platform registry, the general-purpose lease store and the refreshes' lease on it (`withPlatformLease`); `SessionState` (the class, its
  * client, protocol and engine); the stub helpers (`controlPlaneOf`, `platformOf`, `currentControlPlane`, the
  * management routes' `controlPlane`); the retry of a caller's calls on a code-update reset (`retryOnCodeUpdate`); and
  * the one `AuthDirectory` adapter. It reads its bindings through `StateEnv` and its classes' settings from
@@ -32,6 +32,8 @@ export * from "./members/store.ts";
 export * from "./org.ts";
 
 export * from "./platform/platform.ts";
+
+export * from "./platform/refresh-lease.ts";
 
 export * from "./platform/registry.ts";
 

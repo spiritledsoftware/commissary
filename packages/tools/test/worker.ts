@@ -14,7 +14,8 @@
 // session objects are the deployed class with a fake computer in its place (`FakeComputerSandboxSession`), which a
 // session uses only when it opened with the computer, as deployed. `CrawlControlPlane` has its built-in toolkits from a
 // deployment's bindings with a fake Browser Run binding and the account and API token of Browser Run's crawls (#270),
-// whose REST API a test serves through the global `fetch` (`fake-crawl.ts`, `fake-fetch.ts`).
+// whose REST API a test serves through the global `fetch` (`fake-crawl.ts`, `fake-fetch.ts`). `CloudControlPlane` is
+// Commissary Cloud's, with a managed OAuth app for the toolkit catalog service `acme` (#207, `support/managed-apps.ts`).
 import { env } from "cloudflare:workers";
 import type { Clock } from "effect";
 import { COMPUTER_MARKER } from "@commissary/core";
@@ -29,6 +30,7 @@ import { FakeComputerSandboxSession } from "./support/fake-computer.ts";
 import { CRAWL_ACCOUNT, CRAWL_MAX_PAGES, CRAWL_TOKEN } from "./support/fake-crawl.ts";
 import { FakeBrowserSession } from "./support/fake-session-object.ts";
 import { fakeSandboxProvider } from "./support/fake-sandbox.ts";
+import { cloudManagedApps } from "./support/managed-apps.ts";
 
 export { Platform, SessionState } from "@commissary/state";
 
@@ -79,6 +81,11 @@ export class SandboxSession extends FakeComputerSandboxSession {}
 
 export class ControlPlane extends composeControlPlane({
   tools: (ctx, _env, core) => new ToolsPart(ctx, core),
+}) {}
+
+/** Commissary Cloud's ControlPlane, with a managed OAuth app for the catalog service `acme` (#207). */
+export class CloudControlPlane extends composeControlPlane({
+  tools: (ctx, _env, core) => new ToolsPart(ctx, core, {}, undefined, cloudManagedApps),
 }) {}
 
 export class BrowserControlPlane extends composeControlPlane({

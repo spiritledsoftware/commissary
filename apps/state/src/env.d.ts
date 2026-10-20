@@ -12,6 +12,12 @@ type __StateObjectSettings = Omit<
   import("@commissary/tools/state").BrowserSessionEnv;
 
 interface __StateWorkerEnv extends __StateObjectSettings {
+  /**
+   * `cloud` on Commissary Cloud (ADR 0026). The Tools part reads it (`ToolsPartEnv`): only there do toolkits from the
+   * catalog sign in with Commissary Cloud's managed OAuth apps (#207), whose client secrets are this Worker's bindings
+   * the catalog additions name (`TOOLKIT_OAUTH_*`), read by name and not declared here (docs/DEPLOY.md).
+   */
+  COMMISSARY_MODE?: string;
   CONTROL_PLANE: DurableObjectNamespace<import("./index.ts").ControlPlane>;
   SESSION_STATE: DurableObjectNamespace<import("./index.ts").SessionState>;
   /** The Platform registry: one object per deployment (`platformOf`, `@commissary/state`). */

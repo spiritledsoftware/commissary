@@ -21,6 +21,7 @@ import type {
   CredentialsAccepted,
   SandboxNetwork,
   ToolClass,
+  ToolkitCatalogLink,
 } from "@commissary/contract/tools";
 import { NO_NETWORK, type SandboxAllowance } from "../sandbox/network.ts";
 import type { Sealer } from "@commissary/state";
@@ -28,6 +29,7 @@ import type { Schema } from "effect";
 import type { StoredApprovalRules } from "../approvals/rules.ts";
 import type { GraphQLOperation } from "../graphql/schema.ts";
 import type { UpstreamSession, UpstreamTool } from "../mcp/client.ts";
+import type { JsonPatchOperation } from "../openapi/patch.ts";
 import type { OpenApiOperation } from "../openapi/tools.ts";
 import type { StoredToolkit } from "./toolkit.ts";
 import { freshId } from "../ids.ts";
@@ -76,7 +78,8 @@ const SCHEMA = [
      id TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL, source TEXT NOT NULL, owner TEXT NOT NULL,
      accepts TEXT NOT NULL, revision INTEGER NOT NULL, created_at INTEGER NOT NULL, created_by TEXT NOT NULL,
      updated_at INTEGER NOT NULL, updated_by TEXT NOT NULL, list_built_at INTEGER, list_error TEXT, price_micros INTEGER,
-     approval_rules TEXT, base_url TEXT, uploaded INTEGER, credential_settings TEXT
+     approval_rules TEXT, base_url TEXT, uploaded INTEGER, credential_settings TEXT, catalog TEXT,
+     spec_patch TEXT
    )`,
   `CREATE TABLE IF NOT EXISTS toolkit_credentials (
      toolkit_id TEXT NOT NULL, owner TEXT NOT NULL, kind TEXT NOT NULL, param TEXT NOT NULL, secret TEXT NOT NULL,
@@ -124,6 +127,9 @@ const ADDED_COLUMNS: ReadonlyArray<readonly [table: string, column: string, type
   ["toolkit_tools", "graphql", "TEXT"],
   // The credential types of #206: a toolkit from before has no settings.
   ["toolkits", "credential_settings", "TEXT"],
+  // The toolkit catalog (#207): a toolkit from before was not added from it.
+  ["toolkits", "catalog", "TEXT"],
+  ["toolkits", "spec_patch", "TEXT"],
 ];
 
 /** A credential without its secret. */
@@ -219,6 +225,8 @@ interface ToolkitRow {
   base_url: string | null;
   uploaded: number | null;
   credential_settings: string | null;
+  catalog: string | null;
+  spec_patch: string | null;
 }
 
 interface CredentialRow {
@@ -286,6 +294,14 @@ const parseSettings = (text: string | null): CredentialSettings | undefined =>
   // SAFETY: the column holds the JSON of decoded `CredentialSettings` this store wrote.
   text === null ? undefined : (JSON.parse(text) as CredentialSettings);
 
+const parseCatalog = (text: string | null): ToolkitCatalogLink | undefined =>
+  // SAFETY: the column holds the JSON of a `ToolkitCatalogLink` this store wrote.
+  text === null ? undefined : (JSON.parse(text) as ToolkitCatalogLink);
+
+const parsePatch = (text: string | null): ReadonlyArray<JsonPatchOperation> | undefined =>
+  // SAFETY: the column holds the JSON of decoded `JsonPatchOperation`s this store wrote.
+  text === null ? undefined : (JSON.parse(text) as ReadonlyArray<JsonPatchOperation>);
+
 const parseNetwork = (text: string | null): SandboxNetwork | undefined =>
   // SAFETY: the column holds the JSON of a decoded, normalized `SandboxNetwork` this store wrote.
   text === null ? undefined : (JSON.parse(text) as SandboxNetwork);
@@ -321,6 +337,8 @@ const toolkitOf = (row: ToolkitRow): StoredToolkit => ({
   priceMicros: orUndefined(row.price_micros),
   approvalRules: parseRules(row.approval_rules),
   credentialSettings: parseSettings(row.credential_settings),
+  catalog: parseCatalog(row.catalog),
+  specPatch: parsePatch(row.spec_patch),
 });
 
 const credentialOf = (row: CredentialRow): ToolkitCredential => ({
@@ -509,8 +527,8 @@ export class ToolkitStore {
   ): void {
     this.#sql.exec(
       `INSERT INTO toolkits (id, kind, name, source, owner, accepts, revision, created_at, created_by, updated_at,
-         updated_by, list_built_at, list_error, base_url, uploaded, credential_settings)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?)`,
+         updated_by, list_built_at, list_error, base_url, uploaded, credential_settings, catalog, spec_patch)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?)`,
       toolkit.id,
       toolkit.kind,
       toolkit.name,
@@ -525,6 +543,18 @@ export class ToolkitStore {
       toolkit.baseUrl ?? null,
       toolkit.uploaded ? 1 : null,
       settingsText(toolkit.credentialSettings),
+      toolkit.catalog === undefined
+        ? null
+        : JSON.stringify({
+            service: toolkit.catalog.service,
+            source: toolkit.catalog.source,
+            ...(toolkit.catalog.credential === undefined
+              ? {}
+              : { credential: toolkit.catalog.credential }),
+          }),
+      toolkit.specPatch === undefined || toolkit.specPatch.length === 0
+        ? null
+        : JSON.stringify(toolkit.specPatch),
     );
   }
 

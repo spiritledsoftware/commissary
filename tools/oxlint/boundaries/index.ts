@@ -213,11 +213,16 @@ const isTestFile = (filename: string): boolean => {
 };
 
 /**
- * The helpers that wrap Workers KV (`packages/core/src/kv.ts`, `packages/models/src/kv.ts`): the only source files that
- * may read a `CACHE` binding or take a `KVNamespace`.
+ * The helpers that wrap Workers KV (`packages/core/src/kv.ts`, `packages/models/src/kv.ts`, `packages/tools/src/kv.ts`):
+ * the only source files that may read a `CACHE` binding or take a `KVNamespace`.
  */
-const isKvHelper = (relative: string): boolean =>
-  relative === "packages/core/src/kv.ts" || relative === "packages/models/src/kv.ts";
+const KV_HELPERS: ReadonlySet<string> = new Set([
+  "packages/core/src/kv.ts",
+  "packages/models/src/kv.ts",
+  "packages/tools/src/kv.ts",
+]);
+
+const isKvHelper = (relative: string): boolean => KV_HELPERS.has(relative);
 
 /** The declarations of the bindings (`env.ts`, `env.d.ts`): they may name the `KVNamespace` type, nothing more. */
 const isEnvDeclaration = (relative: string): boolean => /(^|\/)env(\.d)?\.ts$/.test(relative);

@@ -28,7 +28,8 @@ import {
   visit,
 } from "../toolkits/input-schema.ts";
 import type { ListedTool } from "../toolkits/store.ts";
-import { type DocumentObject, parseOpenApiDocument } from "./document.ts";
+import { type DocumentObject, readOpenApiDocument, upgradedOpenApiDocument } from "./document.ts";
+import { applyJsonPatch, type JsonPatchOperation } from "./patch.ts";
 
 const LOCATIONS = ["path", "query", "header", "cookie"] as const;
 
@@ -88,6 +89,8 @@ export interface OpenApiToolList {
   /** The first server the document names, absolute. */
   readonly server: string | undefined;
   readonly tools: ReadonlyArray<ListedTool>;
+  /** Why the catalog's fixes to the document were not applied (they no longer apply to it). */
+  readonly unpatched?: string;
 }
 
 /** A node of the document: a JSON object. */
@@ -260,7 +263,7 @@ const resolveSchema = (
         : resolveSchema(walk, value, depth + 1, refs, writing);
     else if (value !== undefined)
       // SAFETY: a parsed document holds JSON values only (JSON.parse, or YAML's core schema), and none is changed.
-      out[key] = value as Schema.Json;
+      out[key] = value;
   }
 
   const required = out["required"];
@@ -624,9 +627,32 @@ export const openApiTools = (
   });
 };
 
-/** The tools of the OpenAPI document `text` (JSON or YAML) from `documentUrl` (undefined: uploaded), or why none. */
+/**
+ * The tools of the OpenAPI document `text` (JSON or YAML) from `documentUrl` (undefined: uploaded), or why none; with
+ * `patch` (the toolkit catalog's fixes to the document, #207) applied to the document as it is, before it is upgraded.
+ * A patch that no longer applies (the document changed) leaves the document as it is, and the list says why
+ * (`unpatched`).
+ */
 export const openApiToolList = (
   text: string,
   documentUrl: string | undefined,
+  patch: ReadonlyArray<JsonPatchOperation> = [],
 ): Result.Result<OpenApiToolList, string> =>
-  Result.flatMap(parseOpenApiDocument(text), (document) => openApiTools(document, documentUrl));
+  Result.flatMap(readOpenApiDocument(text), (read) => {
+    const patched = patch.length === 0 ? undefined : applyJsonPatch(read, patch);
+
+    const unpatched =
+      patched !== undefined && Result.isFailure(patched) ? patched.failure : undefined;
+
+    const document =
+      (patched !== undefined && Result.isSuccess(patched)
+        ? asObject(patched.success)
+        : undefined) ?? read;
+
+    return Result.map(
+      Result.flatMap(upgradedOpenApiDocument(document), (upgraded) =>
+        openApiTools(upgraded, documentUrl),
+      ),
+      (list) => (unpatched === undefined ? list : { ...list, unpatched }),
+    );
+  });

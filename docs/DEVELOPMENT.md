@@ -39,6 +39,7 @@ caches each task: run again with no change, a task replays its logs (and `build`
 | `pnpm logs`                         | `alchemy logs` (`--tail`)                                                                                                                                                                                                                                                   |
 | `pnpm ci:setup`                     | Deploy `stacks/github.ts`: CI's Cloudflare token, check service token and GitHub environments (`docs/DEPLOY.md`)                                                                                                                                                            |
 | `pnpm catalog:sync`                 | Regenerate the bundled models.dev snapshot `packages/models/src/registry/catalog/models-dev.json` (`tools/sync-models-dev-catalog.ts [url\|file]`); the catalog additions are edited by hand                                                                                |
+| `pnpm toolkits:sync`                | Regenerate the bundled integrations.sh snapshot and its credentials in `packages/tools/src/catalog/` (`tools/sync-integrations-sh-catalog.ts [url\|file] [--fresh] [--no-credentials]`); the toolkit catalog additions are edited by hand                                   |
 
 ## Infrastructure
 
@@ -215,9 +216,11 @@ may have stored its writes before, so it may run twice. Only chains are retried:
   `./testing` serves fake MCP servers to the Worker's tests (`fakeMcpServer`, `serveFakeMcpServers`), a fake Browser Run
   binding (`fakeBrowserRun`) and the browser sessions' object over a fake provider's browsers (`FakeBrowserSession`,
   `browserSessionStub`), and holds Tools' usage writer (`insertToolCallRecord`), with which other tests seed tool calls'
-  records. `browser` holds the browser toolkit (#212) and its sessions (#213), `sandbox` the sandbox toolkit (#222). It
-  reads its bindings through `ToolsEnv` (`CONTROL_PLANE`, `PLATFORM`, `APP_DOMAIN` and `USAGE`, the usage database its
-  tool calls' records go into) and may import `@commissary/state`, `auth`, `contract`, `core`, `effect` and the runtime
+  records. `browser` holds the browser toolkit (#212) and its sessions (#213), `sandbox` the sandbox toolkit (#222),
+  `catalog` the toolkit catalog (#207); one more export serves Node.js code, `./integrations-sh` (the integrations.sh
+  trim, for `tools/sync-integrations-sh-catalog.ts`). It reads its bindings through `ToolsEnv` (`CONTROL_PLANE`,
+  `PLATFORM`, `APP_DOMAIN`, `USAGE`, the usage database its tool calls' records go into, and `CACHE`, where the toolkit
+  catalog's refreshed registry is kept) and may import `@commissary/state`, `auth`, `contract`, `core`, `effect` and the runtime
   modules `tools/oxlint/boundaries` lists: nothing from `apps/` or Models.
 - `packages/agents` (`@commissary/agents`): the Agents area (#226, ADR 0040): hosted agent definitions, private and
   shared, the grants on shared agents and their watchers; runs come later (#227). `agents` (the store, the checks of a
@@ -322,6 +325,29 @@ and `/models` endpoints"). Three things are checked in under `packages/models/sr
 
 `packages/models/test/unit/catalog-build.test.ts` checks the trim, the build, the additions' rules and that every id the Go server served is
 still served.
+
+## Toolkit catalog
+
+The toolkit catalog (#207; `docs/ARCHITECTURE.md`, "Toolkit catalog") comes from integrations.sh plus the toolkit catalog
+additions. Three files are checked in under `packages/tools/src/catalog/`:
+
+- `integrations-sh.json`: integrations.sh's index (`https://integrations.sh/api.json`) trimmed to the MCP servers, OpenAPI
+  documents and GraphQL endpoints Commissary can build, the snapshot a fresh deploy starts from. `pnpm toolkits:sync`
+  regenerates it (or from a URL or saved file given as argument); syncing a trimmed file rewrites it unchanged. A deployed
+  Worker refreshes its own copy every 3 hours. The formatter leaves it alone (`.oxfmtrc.jsonc`).
+- `integrations-sh-credentials.json`: how each of those sources signs in, by its slug, from its domain's v3 document
+  (`https://integrations.sh/api/<domain>/surface`), which the same command fetches for every kept domain (≈2,000; four at
+  a time, retried on `429` and `5xx`, a few minutes). The documents are cached under `node_modules/.cache/integrations-sh/`,
+  so a run that stops resumes; `--fresh` fetches them all again, `--no-credentials` skips them (the snapshot only). A
+  domain whose document cannot be fetched keeps what the file had for it. One source per line; the formatter leaves it
+  alone too.
+- `additions.json`: featured services, what integrations.sh lacks (Google's Discovery documents), corrections, managed
+  OAuth apps and tool overrides. Edited by hand; the format and precedence are in the header of
+  `packages/tools/src/catalog/additions.ts`. Unlike a model catalog addition, a correction wins over integrations.sh: give
+  its `reason`, and offer it upstream (an issue or pull request of `UsefulSoftwareCo/integrations`) named in `upstream`.
+
+`packages/tools/test/unit/toolkit-catalog.test.ts` checks the trim, the services, search, the credential mapping, the
+additions' rules and that everything the bundled additions name exists in the bundled catalog.
 
 ## Control panel (`apps/web`)
 
@@ -509,7 +535,7 @@ permissions they need, and deploy jobs use no dependency cache.
   lists; the apps import it only as `@commissary/<area>/api`, `/management` and `/state` (their tests also `/testing`),
   never its other exports or one of its files by a relative path. `boundaries/org-scoped-kv` (ADR 0044, #250) keeps org data out of raw KV: a source file of a package or an app
   (not `test/`) may not read the `CACHE` binding, name the `KVNamespace` type or use the Cache API, except the helpers
-  (`packages/core/src/kv.ts`, `packages/models/src/kv.ts`; the `env.ts` and `env.d.ts` declarations may name the type).
+  (`packages/core/src/kv.ts`, `packages/models/src/kv.ts`, `packages/tools/src/kv.ts`; the `env.ts` and `env.d.ts` declarations may name the type).
   Org data in KV goes through an `OrgKv` (`orgKvOf(env, org)`), deployment-wide names through a `DeploymentKv`
   (`deploymentKvOf(env)`, names from `deploymentKey`); a new area that adds a binding of its own adds its helper file
   to the rule's list. Per-isolate caches of org data are an `OrgCache` by convention, which lint does not check.

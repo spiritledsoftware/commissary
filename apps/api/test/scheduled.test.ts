@@ -147,6 +147,8 @@ describe("scheduled dispatch", () => {
       "devin-user-status": "org",
       "credential-refresh-sweep": "org",
       "quota-check": "org",
+      "tool-list-refresh": "org",
+      "toolkit-catalog-refresh": "deployment",
     });
   });
 });

@@ -13,6 +13,10 @@
  * read it back. Edits of a toolkit or an override name its revision in
  * `If-Match`.
  *
+ * A toolkit may be added from the toolkit catalog (#207, `catalog` in the body): the catalog's source fills its kind,
+ * source, name and credential settings, and the additions' overrides of its tools come with it.
+ * `/v9/management/toolkit-catalog` itself: `catalog-routes.ts`.
+ *
  * `GET /v9/management/tools`: the tools the caller may use, by toolkit (#200): what a key's tool scope picks from.
  *
  * `/v9/management/grants/tools` (`ToolGrantsGroup` in `@commissary/contract/grants`): the tool grants (#198, ADR 0038),
@@ -61,6 +65,9 @@ import {
   replyError,
 } from "@commissary/core";
 import { bodyJson } from "@commissary/state";
+import { bundledAdditions, toolOverridesOf } from "../catalog/additions.ts";
+import { credentialsOf } from "../catalog/catalog.ts";
+import { currentCatalog } from "../catalog/store.ts";
 import type { ToolsErrorCode, ToolsResult } from "../control-plane-part.ts";
 import { toolsControlPlane, ToolsEnv } from "../env.ts";
 import { MAX_SDL_BYTES } from "../graphql/schema.ts";
@@ -68,6 +75,7 @@ import { MAX_DOCUMENT_BYTES } from "../http/call.ts";
 import { signInUrls } from "../oauth/urls.ts";
 import { templateAs } from "../signing/template.ts";
 import { defaultToolkitName } from "../toolkits/names.ts";
+import { catalogHandlers as catalogRoute } from "./catalog-routes.ts";
 
 const BASE = "/v9/management";
 
@@ -238,10 +246,68 @@ const list = Effect.gen(function* () {
   );
 });
 
+/**
+ * A toolkit added from the toolkit catalog (#207): its source's kind, URL and credential settings, and its service's
+ * slug as its name, fill what `input` leaves out; a kind or source given must be the source's. With the catalog link
+ * (and the source's way to sign in the toolkit keeps: where a key goes), the additions' overrides of its tools and the
+ * registry's fixes to its OpenAPI document for the part.
+ */
+const fromCatalog = Effect.fnUntraced(function* (input: AddToolkit) {
+  const link = input.catalog;
+
+  if (link === undefined)
+    return { input, catalog: undefined, toolOverrides: undefined, specPatch: undefined };
+  const service = (yield* currentCatalog).service(link.service);
+  const source = service?.sources.find((candidate) => candidate.id === link.source);
+
+  if (service === undefined || source === undefined)
+    return yield* invalid("the toolkit catalog has no such service or source", "catalog");
+
+  if (input.kind !== undefined && input.kind !== source.kind)
+    return yield* invalid(`the catalog's source is a ${source.kind} toolkit's`, "kind");
+
+  if (input.source !== undefined && input.source.trim() !== source.url)
+    return yield* invalid(`the catalog's source is ${source.url}`, "source");
+
+  if (input.document !== undefined)
+    return yield* invalid("a toolkit from the catalog is built from its source", "document");
+
+  // The source's way to sign in the toolkit keeps: the one asked for, else the one of the credential connected now.
+  const kind = link.credential ?? input.credential?.kind;
+  const credential = credentialsOf(source.auth).find((candidate) => candidate.kind === kind);
+
+  if (link.credential !== undefined && credential === undefined)
+    return yield* invalid(
+      `the catalog's source does not take a ${link.credential} credential`,
+      "catalog.credential",
+    );
+
+  return {
+    input: {
+      ...input,
+      kind: source.kind,
+      source: source.url,
+      name: input.name ?? service.id,
+      credential_settings: input.credential_settings ?? source.credentialSettings,
+    },
+    catalog: {
+      service: service.id,
+      source: source.id,
+      ...(credential === undefined ? {} : { credential }),
+    },
+    toolOverrides: toolOverridesOf(bundledAdditions(), service.id, source.id),
+    specPatch: source.specPatch,
+  };
+});
+
 const add = Effect.gen(function* () {
   const viewer = yield* currentViewer;
   const { principalId } = yield* AccessPrincipal;
-  const input = yield* decodeWithDocument(AddToolkit);
+
+  const { input, catalog, toolOverrides, specPatch } = yield* fromCatalog(
+    yield* decodeWithDocument(AddToolkit),
+  );
+
   const kind = input.kind ?? "mcp";
 
   if (kind === "mcp" && (input.document !== undefined || input.base_url !== undefined))
@@ -325,6 +391,9 @@ const add = Effect.gen(function* () {
         accepts: input.accepts ?? (isPrivate ? "private" : "shared"),
         credential,
         credentialSettings,
+        catalog,
+        toolOverrides,
+        specPatch,
       },
       principalId,
       policy,
@@ -751,4 +820,10 @@ export const ManagementRoutes = HttpRouter.addAll([
   route("GET", "/approvals", listApprovals),
   route("GET", "/approvals/:id", getApproval),
   route("POST", "/approvals/:id/decision", decideApproval),
+  route("GET", "/toolkit-catalog", catalogRoute.list),
+  route("GET", "/toolkit-catalog/services/:id", catalogRoute.service),
+  route("GET", "/toolkit-catalog/domains/:domain", catalogRoute.lookup),
+  route("POST", "/toolkit-catalog/domains/:domain/discover", catalogRoute.discover),
+  route("GET", "/toolkit-catalog/status", catalogRoute.status),
+  route("POST", "/toolkit-catalog/refresh", catalogRoute.refresh),
 ]);

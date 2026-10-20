@@ -1,0 +1,186 @@
+{
+  "$comment": "Toolkit catalog additions (ADR 0036, #207): maintained by hand; see additions.ts for the fields. A correction wins over integrations.sh and is offered upstream too (its `upstream`). Managed OAuth apps hold the client id only: the secret is the binding they name.",
+  "featured": [
+    "github",
+    "linear",
+    "notion",
+    "slack",
+    "atlassian",
+    "sentry",
+    "stripe",
+    "figma",
+    "vercel",
+    "hubspot",
+    "gmail",
+    "google_calendar",
+    "google_drive",
+    "deepwiki"
+  ],
+  "services": [
+    {
+      "id": "gmail",
+      "name": "Gmail",
+      "domain": "gmail.googleapis.com",
+      "sources": [
+        {
+          "id": "gmail-discovery",
+          "kind": "discovery",
+          "name": "Gmail API",
+          "url": "https://gmail.googleapis.com/$discovery/rest?version=v1",
+          "auth": [
+            {
+              "type": "oauth2"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "google_calendar",
+      "name": "Google Calendar",
+      "domain": "calendar.googleapis.com",
+      "sources": [
+        {
+          "id": "google-calendar-discovery",
+          "kind": "discovery",
+          "name": "Google Calendar API",
+          "url": "https://calendar-json.googleapis.com/$discovery/rest?version=v3",
+          "auth": [
+            {
+              "type": "oauth2"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "google_drive",
+      "name": "Google Drive",
+      "domain": "drive.googleapis.com",
+      "sources": [
+        {
+          "id": "google-drive-discovery",
+          "kind": "discovery",
+          "name": "Google Drive API",
+          "url": "https://www.googleapis.com/discovery/v1/apis/drive/v3/rest",
+          "auth": [
+            {
+              "type": "oauth2"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "google_docs",
+      "name": "Google Docs",
+      "domain": "docs.googleapis.com",
+      "sources": [
+        {
+          "id": "google-docs-discovery",
+          "kind": "discovery",
+          "name": "Google Docs API",
+          "url": "https://docs.googleapis.com/$discovery/rest?version=v1",
+          "auth": [
+            {
+              "type": "oauth2"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "google_sheets",
+      "name": "Google Sheets",
+      "domain": "sheets.googleapis.com",
+      "sources": [
+        {
+          "id": "google-sheets-discovery",
+          "kind": "discovery",
+          "name": "Google Sheets API",
+          "url": "https://sheets.googleapis.com/$discovery/rest?version=v4",
+          "auth": [
+            {
+              "type": "oauth2"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "google_slides",
+      "name": "Google Slides",
+      "domain": "slides.googleapis.com",
+      "sources": [
+        {
+          "id": "google-slides-discovery",
+          "kind": "discovery",
+          "name": "Google Slides API",
+          "url": "https://slides.googleapis.com/$discovery/rest?version=v1",
+          "auth": [
+            {
+              "type": "oauth2"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "google_tasks",
+      "name": "Google Tasks",
+      "domain": "tasks.googleapis.com",
+      "sources": [
+        {
+          "id": "google-tasks-discovery",
+          "kind": "discovery",
+          "name": "Google Tasks API",
+          "url": "https://tasks.googleapis.com/$discovery/rest?version=v1",
+          "auth": [
+            {
+              "type": "oauth2"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "google_people",
+      "name": "Google People",
+      "domain": "people.googleapis.com",
+      "sources": [
+        {
+          "id": "google-people-discovery",
+          "kind": "discovery",
+          "name": "People API",
+          "url": "https://people.googleapis.com/$discovery/rest?version=v1",
+          "auth": [
+            {
+              "type": "oauth2"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "youtube_data",
+      "name": "YouTube Data",
+      "domain": "youtube.googleapis.com",
+      "sources": [
+        {
+          "id": "youtube-data-discovery",
+          "kind": "discovery",
+          "name": "YouTube Data API",
+          "url": "https://youtube.googleapis.com/$discovery/rest?version=v3",
+          "auth": [
+            {
+              "type": "oauth2"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "corrections": [],
+  "managed_apps": {},
+  "tool_overrides": {}
+}

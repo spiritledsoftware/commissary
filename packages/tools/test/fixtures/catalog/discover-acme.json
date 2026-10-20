@@ -1,0 +1,136 @@
+{
+  "version": 3,
+  "domain": "acme.example",
+  "summary": "Acme exposes a REST API with an OpenAPI document, a GraphQL API and a remote MCP server.",
+  "description": "Acme makes anvils.",
+  "discoveredAt": "2026-10-20T12:00:00.000Z",
+  "credentials": {
+    "acme_key": {
+      "type": "api_key",
+      "label": "Acme API key",
+      "setup": "Create a key in Settings."
+    },
+    "acme_token": { "type": "bearer", "label": "Acme personal token", "setup": "Settings." },
+    "acme_oauth": { "type": "oauth2", "label": "Acme OAuth app", "setup": "Register an app." },
+    "acme_aws": { "type": "aws_sigv4", "label": "AWS keys", "setup": "IAM." },
+    "acme_signed": { "type": "signature", "label": "Request signing", "setup": "Sign each request." },
+    "acme_app_id": { "type": "api_key", "label": "App id", "setup": "Settings." }
+  },
+  "surfaces": [
+    {
+      "type": "http",
+      "spec": "https://acme.example/openapi.json",
+      "url": "https://api.acme.example",
+      "slug": "acme-rest",
+      "name": "Acme REST API",
+      "basis": { "via": "discovered", "evidence": ["https://acme.example/docs"] },
+      "auth": {
+        "status": "required",
+        "entries": [
+          {
+            "use": [
+              {
+                "id": "acme_key",
+                "mechanics": { "source": "http", "in": "header", "headerName": "X-Acme-Key" }
+              }
+            ],
+            "basis": { "via": "discovered", "evidence": [] }
+          },
+          {
+            "use": [
+              {
+                "id": "acme_key",
+                "mechanics": { "source": "http", "in": "query", "paramName": "api_key" }
+              }
+            ],
+            "basis": { "via": "discovered", "evidence": [] }
+          },
+          {
+            "use": [
+              {
+                "id": "acme_token",
+                "mechanics": {
+                  "source": "http",
+                  "in": "header",
+                  "headerName": "Authorization",
+                  "scheme": "Bearer"
+                }
+              }
+            ],
+            "basis": { "via": "discovered", "evidence": [] }
+          },
+          {
+            "use": [{ "id": "acme_signed", "mechanics": { "source": "unknown" } }],
+            "basis": { "via": "discovered", "evidence": [] }
+          },
+          {
+            "use": [
+              { "id": "acme_app_id", "mechanics": { "source": "http", "headerName": "X-App" } },
+              { "id": "acme_key", "mechanics": { "source": "http", "headerName": "X-Key" } }
+            ],
+            "basis": { "via": "discovered", "evidence": [] }
+          }
+        ]
+      }
+    },
+    {
+      "type": "http",
+      "url": "https://api.acme.example/v0",
+      "slug": "acme-specless",
+      "name": "Acme legacy API",
+      "basis": { "via": "discovered", "evidence": [] },
+      "auth": { "status": "unknown" }
+    },
+    {
+      "type": "graphql",
+      "url": "https://api.acme.example/graphql",
+      "spec": "introspection",
+      "slug": "acme-graphql",
+      "name": "Acme GraphQL API",
+      "basis": { "via": "discovered", "evidence": [] },
+      "auth": {
+        "status": "required",
+        "entries": [
+          {
+            "use": [{ "id": "acme_aws", "mechanics": { "source": "http" } }],
+            "basis": { "via": "discovered", "evidence": [] }
+          }
+        ]
+      }
+    },
+    {
+      "type": "mcp",
+      "url": "https://mcp.acme.example/mcp",
+      "transports": ["streamable-http"],
+      "slug": "acme-mcp",
+      "name": "Acme MCP server",
+      "basis": { "via": "detected", "signal": "mcp:initialize" },
+      "auth": {
+        "status": "required",
+        "entries": [
+          {
+            "use": [{ "id": "acme_oauth", "mechanics": { "source": "well-known" } }],
+            "basis": { "via": "detected", "signal": "oauth-protected-resource" }
+          }
+        ]
+      }
+    },
+    {
+      "type": "mcp",
+      "url": "https://10.0.0.5/mcp",
+      "slug": "acme-internal",
+      "name": "Acme internal MCP server",
+      "basis": { "via": "discovered", "evidence": [] },
+      "auth": { "status": "none", "basis": { "via": "discovered", "evidence": [] } }
+    },
+    {
+      "type": "cli",
+      "command": "acme",
+      "slug": "acme-cli",
+      "name": "acme CLI",
+      "basis": { "via": "discovered", "evidence": [] },
+      "auth": { "status": "unknown" }
+    }
+  ],
+  "usedLlm": true
+}

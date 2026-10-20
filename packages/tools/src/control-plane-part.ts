@@ -20,6 +20,7 @@ import type {
 } from "@commissary/contract/browser-profiles";
 import type { GrantSubject, ToolGrant, ToolGrants } from "@commissary/contract/grants";
 import type {
+  CatalogCredential,
   ConnectCredential,
   ConnectedGrant,
   CredentialSettings,
@@ -36,6 +37,7 @@ import type {
   RemovedToolOverride,
   SandboxNetwork,
   SetToolOverride,
+  ToolkitCatalogLink,
   ToolkitCredentialView,
   ToolkitDocument,
   ToolkitKind,
@@ -117,6 +119,15 @@ import {
   OAuthStore,
 } from "./oauth/store.ts";
 import type { OAuth1Keys } from "./signing/oauth1.ts";
+import { CATALOG_AUTHOR, type CatalogToolOverride } from "./catalog/additions.ts";
+import type { JsonPatchOperation } from "./openapi/patch.ts";
+import {
+  DETECTS_PER_WINDOW,
+  DISCOVERS_PER_WINDOW,
+  type LookupTaken,
+  LookupThrottle,
+} from "./catalog/lookup-throttle.ts";
+import { type ManagedApps, NO_MANAGED_APPS } from "./catalog/managed-apps.ts";
 import { refusedForGood } from "./oauth/token.ts";
 import { MAX_SDL_BYTES, SchemaCache } from "./graphql/schema.ts";
 import {
@@ -406,6 +417,12 @@ export interface AddToolkitInput {
   readonly credential?: ConnectCredential | undefined;
   /** The settings of its credential types (#206), their URLs already checked by the outbound guard. */
   readonly credentialSettings?: CredentialSettings | undefined;
+  /** The toolkit catalog's service and source it is added from (#207). */
+  readonly catalog?: ToolkitCatalogLink | undefined;
+  /** The catalog additions' overrides of its tools (#207), by upstream name: stored with it, by `catalog`. */
+  readonly toolOverrides?: Readonly<Record<string, CatalogToolOverride>> | undefined;
+  /** The catalog's fixes to an OpenAPI toolkit's document (#207), applied each time its list is built. */
+  readonly specPatch?: ReadonlyArray<JsonPatchOperation> | undefined;
 }
 
 /** What the cron task's refresh did. */
@@ -652,11 +669,41 @@ const PROFILE_NOT_FOUND = refuse("not_found", "browser profile not found");
 /** Whether `scope` acts as an org admin: an admin member, or the system (full access). */
 const isOrgAdmin = (scope: Scope): boolean => isFullAccess(scope) || scope.admin;
 
-/** A credential's secret, without the subject it was connected for. */
-const secretOf = (credential: ConnectCredential): ToolkitSecret => {
+/**
+ * A credential's secret, without the subject it was connected for. A key in a header or the query that names no header
+ * or parameter goes where the toolkit's catalog source says (`placement`, #207); a key in the header the source names
+ * gets its prefix (`Token`) unless it has it. One that names none, on a toolkit whose source does not say, is refused
+ * at `path`.
+ */
+const secretOf = (
+  credential: ConnectCredential,
+  placement: CatalogCredential | undefined,
+  path: string,
+): ToolsResult<ToolkitSecret> => {
   const { subject: _subject, ...secret } = credential;
 
-  return secret;
+  if (secret.kind !== "header" && secret.kind !== "query") return ok(secret);
+  const placed = placement?.kind === secret.kind ? placement : undefined;
+  const name = secret.name ?? placed?.name;
+
+  if (name === undefined)
+    return refuse(
+      "invalid",
+      `a ${secret.kind} key names its ${secret.kind === "header" ? "header" : "query parameter"}`,
+      path,
+    );
+
+  const prefix =
+    secret.kind === "header" && placed?.name?.toLowerCase() === name.toLowerCase()
+      ? placed.prefix
+      : undefined;
+
+  const value =
+    prefix === undefined || secret.value.toLowerCase().startsWith(`${prefix.toLowerCase()} `)
+      ? secret.value
+      : `${prefix} ${secret.value}`;
+
+  return ok({ kind: secret.kind, name, value });
 };
 
 /** An OAuth 1.0a consumer's keys: the toolkit's OAuth app, signing as its credential settings say (#206). */
@@ -766,15 +813,23 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   /** The org's open browser sessions (#214), and their objects, which the org's deletion deletes. */
   readonly #browserSessionLog: BrowserSessionStore;
   readonly #browserSessions: BrowserSessions | undefined;
+  /** Commissary Cloud's managed OAuth apps (#207), which toolkits added from the catalog sign in with by default. */
+  readonly #managedApps: ManagedApps;
+  /** The org's lookups at integrations.sh of domains the toolkit catalog lacks (#207), counted to throttle them. */
+  readonly #lookups = new LookupThrottle();
   /** What the part reads the time from: the live clock, or a test's (`useClock`). */
   #clock: Clock.Clock = Clock.Clock.defaultValue();
 
-  /** `ownHosts`: the deployment's own hosts (`OWN_HOSTS`), which the part's own requests refuse. */
+  /**
+   * `ownHosts`: the deployment's own hosts (`OWN_HOSTS`), which the part's own requests refuse; `managedApps`: the
+   * managed OAuth apps the deployment has (`managedAppsOf(env)`, `catalog/managed-apps.ts`; none on a self-hosted one).
+   */
   constructor(
     ctx: DurableObjectState,
     core: OrgCore,
     providers: BuiltInProviders = {},
     ownHosts?: string,
+    managedApps: ManagedApps = NO_MANAGED_APPS,
   ) {
     super();
     this.#ctx = ctx;
@@ -792,6 +847,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     this.#browserCrawls = providers.browser?.crawls;
     this.#browserSessionLog = new BrowserSessionStore(ctx.storage.sql);
     this.#browserSessions = providers.browserSessions;
+    this.#managedApps = managedApps;
     this.#yieldBuiltInNames();
   }
 
@@ -1073,6 +1129,26 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   }
 
   /**
+   * Whether a toolkit added from catalog service `service` would sign in with Commissary Cloud's managed OAuth app with
+   * it (#207): the deployment has the app, its secret bound here. The app Worker asks, for the catalog's views; it never
+   * reads a secret itself.
+   */
+  hasManagedApp(service: string): boolean {
+    return this.#managedApps.has(service);
+  }
+
+  /**
+   * Counts a lookup at integrations.sh of a domain the toolkit catalog lacks (#207), unless the org asked too often
+   * lately (`catalog/lookup-throttle.ts`): a `discover` once a minute for the org, a `detect` ten times a minute for
+   * each member.
+   */
+  takeCatalogLookup(viewer: Viewer, via: "detect" | "discover"): LookupTaken {
+    return via === "discover"
+      ? this.#lookups.take("discover", DISCOVERS_PER_WINDOW, this.#now())
+      : this.#lookups.take(`detect:${viewer.member ?? ""}`, DETECTS_PER_WINDOW, this.#now());
+  }
+
+  /**
    * Adds an org toolkit (org admins) or a private toolkit of the caller, with its credential if given, and builds its
    * tool list when it has one. A list that cannot be built does not undo the add.
    */
@@ -1117,16 +1193,21 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
     const id = freshToolkitId();
     let grant: ToolGrantValue | undefined;
+    let secret: ToolkitSecret | undefined;
 
     if (input.credential !== undefined) {
       const slot: CredentialSlot = input.private ? "private" : "shared";
+      const placed = secretOf(input.credential, input.catalog?.credential, "credential.name");
+
+      if (!placed.ok) return placed;
+      secret = placed.value;
 
       const credentialRefusal =
         this.#credentialRefusal(
           { owner, accepts: input.accepts, credentialSettings: settings },
           slot,
-          secretOf(input.credential),
-        ) ?? (await keyRefused(secretOf(input.credential), settings));
+          secret,
+        ) ?? (await keyRefused(secret, settings));
 
       if (credentialRefusal !== undefined) return credentialRefusal;
       const granted = this.#connectGrant(id, slot, input.credential.subject);
@@ -1136,6 +1217,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     }
 
     const driver = KIND_DRIVERS[kind];
+    const specPatch = kind === "openapi" ? input.specPatch : undefined;
 
     const listSource = { uploaded: input.document !== undefined };
 
@@ -1145,7 +1227,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     const listing = driver.listsWithCredential(listSource)
       ? undefined
       : await this.#listing(driver, {
-          toolkit: { source: input.source, baseUrl: input.baseUrl },
+          toolkit: { source: input.source, baseUrl: input.baseUrl, specPatch },
           secret: NO_SECRET,
           document: input.document,
           timeout: LISTING_TIMEOUT,
@@ -1180,6 +1262,8 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
         baseUrl: kind === "openapi" ? input.baseUrl : undefined,
         uploaded: listSource.uploaded,
         credentialSettings: settings,
+        catalog: input.catalog,
+        specPatch,
         owner,
         accepts: input.accepts,
         revision: 1,
@@ -1191,10 +1275,11 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
       if (input.document !== undefined) this.#store.putDocument(id, input.document);
 
+      this.#putCatalogOverrides(id, input.toolOverrides ?? {}, now);
+
       if (listing !== undefined) this.#storeListing(id, listing);
 
-      if (input.credential !== undefined)
-        this.#store.putCredential(id, owner, secretOf(input.credential), by, now);
+      if (secret !== undefined) this.#store.putCredential(id, owner, secret, by, now);
 
       return grant === undefined ? undefined : this.#grantOnConnect(grant, by, now);
     });
@@ -1529,7 +1614,10 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
     if (!target.ok) return target;
     const { toolkit, owner } = target.value;
-    const secret = secretOf(credential);
+    const placed = secretOf(credential, toolkit.catalog?.credential, "name");
+
+    if (!placed.ok) return placed;
+    const secret = placed.value;
 
     const refused =
       this.#credentialRefusal(toolkit, slot, secret) ??
@@ -1666,7 +1754,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     const grant = this.#connectGrant(id, slot, input.subject);
 
     if (!grant.ok) return grant;
-    const app = this.#oauth.app(id);
+    const app = this.#appFor(id);
 
     if (app?.requestTokenUrl !== undefined)
       return await this.#startOAuth1SignIn(
@@ -1936,7 +2024,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     const verifier = callback.oauthVerifier ?? "";
 
     if (verifier === "" || callback.oauthToken !== flow.token) return "the service did not sign in";
-    const app = this.#oauth.app(toolkitId);
+    const app = this.#appFor(toolkitId);
     const toolkit = this.#store.toolkit(toolkitId);
 
     if (
@@ -2375,7 +2463,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   ): { readonly secret: string | undefined } | undefined {
     if (via === "cimd") return { secret: undefined };
 
-    const client = via === "app" ? this.#oauth.app(toolkitId) : this.#oauth.client(toolkitId);
+    const client = via === "app" ? this.#appFor(toolkitId) : this.#oauth.client(toolkitId);
 
     return client === undefined || client.clientId !== clientId
       ? undefined
@@ -4284,6 +4372,21 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       },
       tool_list: this.#listStatus(toolkit, tools),
       ...(app === undefined ? {} : { oauth_app: app }),
+      ...(toolkit.builtIn || toolkit.catalog === undefined
+        ? {}
+        : {
+            catalog: {
+              service: toolkit.catalog.service,
+              source: toolkit.catalog.source,
+              ...(toolkit.catalog.credential === undefined
+                ? {}
+                : { credential: toolkit.catalog.credential }),
+            },
+            ...(this.#managedApps.has(toolkit.catalog.service) &&
+            this.#oauth.app(toolkit.id) === undefined
+              ? { managed_oauth_app: true }
+              : {}),
+          }),
       // What a member connecting their own credential must know (a compound template's fields); nothing secret.
       ...settingsField(toolkit),
       ...(toolkit.priceMicros === undefined ? {} : { price_micros: toolkit.priceMicros }),
@@ -4315,6 +4418,53 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
         return this.#core.team(approver.id) === undefined;
       case "members":
         return approver.ids.every((id) => this.#core.member(id) === undefined);
+    }
+  }
+
+  /**
+   * The OAuth app a toolkit's sign-ins and token refreshes use: the org's, else, for a toolkit added from the catalog,
+   * Commissary Cloud's managed app with its service (#207), when the deployment has it.
+   */
+  #appFor(id: string): OAuthApp | undefined {
+    return this.#oauth.app(id) ?? this.#managedApp(id);
+  }
+
+  /** The managed OAuth app of the catalog service a toolkit was added from (#207), when the deployment has it. */
+  #managedApp(id: string): OAuthApp | undefined {
+    const catalog = this.#store.toolkit(id)?.catalog;
+
+    return catalog === undefined ? undefined : this.#managedApps.app(catalog.service, id);
+  }
+
+  /**
+   * Stores the catalog additions' overrides of a new toolkit's tools (#207), as overrides by `catalog` an org admin may
+   * change or clear later; a name that is not a tool name is left out (the rest of its override stays).
+   */
+  #putCatalogOverrides(
+    id: string,
+    overrides: Readonly<Record<string, CatalogToolOverride>>,
+    now: number,
+  ): void {
+    for (const [tool, override] of Object.entries(overrides)) {
+      const name =
+        override.name !== undefined && isToolName(override.name) ? override.name : undefined;
+
+      const value = {
+        hidden: override.hidden ?? false,
+        name,
+        description: override.description,
+        toolClass: override.class,
+        priceMicros: undefined,
+        shown: false,
+      };
+
+      if (
+        value.hidden ||
+        name !== undefined ||
+        value.description !== undefined ||
+        value.toolClass !== undefined
+      )
+        this.#store.putOverride(id, tool, value, 1, CATALOG_AUTHOR, now);
     }
   }
 

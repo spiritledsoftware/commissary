@@ -4,13 +4,19 @@
  * ControlPlane part works", #148). Today that is the Models part, Billing's and Tools', reached as `stub.models().x(…)`,
  * `stub.billing().x(…)` and `stub.tools().x(…)`. The Tools part gets the built-in toolkits the env's bindings give (the
  * browser toolkit with a `browser` binding, #212; the sandbox toolkit on the `SandboxSession` objects and Dynamic
- * Workers, which every deployment has, #222).
+ * Workers, which every deployment has, #222) and, on Commissary Cloud, the managed OAuth apps whose secrets the env
+ * binds (#207).
  */
 import { composeControlPlane } from "@commissary/state";
 import { AgentsPart } from "@commissary/agents/state";
 import { BillingPart } from "@commissary/billing/state";
 import { ModelsPart, type ModelsPartEnv } from "@commissary/models/state";
-import { builtInProviders, ToolsPart, type ToolsPartEnv } from "@commissary/tools/state";
+import {
+  builtInProviders,
+  managedAppsOf,
+  ToolsPart,
+  type ToolsPartEnv,
+} from "@commissary/tools/state";
 
 /** What the parts read from the state Worker's env. */
 type PartsEnv = ModelsPartEnv & ToolsPartEnv;
@@ -19,7 +25,7 @@ export class ControlPlane extends composeControlPlane({
   models: (ctx, env: PartsEnv, core) => new ModelsPart(ctx, env, core),
   billing: (ctx) => new BillingPart(ctx),
   tools: (ctx, env: PartsEnv, core) =>
-    new ToolsPart(ctx, core, builtInProviders(env), env.OWN_HOSTS),
+    new ToolsPart(ctx, core, builtInProviders(env), env.OWN_HOSTS, managedAppsOf(env)),
   // The Agents part (#226), reached as `stub.agents().x(…)`: hosted agent definitions and their grants.
   agents: (ctx, _env, core) => new AgentsPart(ctx, core),
 }) {}

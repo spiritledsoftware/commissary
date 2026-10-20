@@ -716,6 +716,40 @@ describe("management contract", () => {
     );
   });
 
+  describe("toolkit catalog", () => {
+    it.effect(
+      "a page, a service and a domain decode; an unknown service is a ManagementError",
+      () =>
+        Effect.gen(function* () {
+          const api = yield* client;
+          const page = yield* api.toolkitCatalog.list({ query: { q: "linear", limit: 5 } });
+
+          assert.isAtMost(page.services.length, 5);
+          assert.include(
+            page.services.map((service) => service.id),
+            "linear",
+          );
+
+          const linear = yield* api.toolkitCatalog.service({ params: { id: "linear" } });
+
+          assert.strictEqual(linear.domain, "linear.app");
+          assert.isNotEmpty(linear.sources);
+
+          const lookup = yield* api.toolkitCatalog.lookup({ params: { domain: "linear.app" } });
+
+          assert.strictEqual(lookup.via, "catalog");
+          assert.strictEqual(lookup.service.id, "linear");
+
+          const missing = yield* Effect.flip(
+            api.toolkitCatalog.service({ params: { id: "nowhere" } }),
+          );
+
+          assert.instanceOf(missing, ManagementError);
+          assert.strictEqual(missing.error, "not_found");
+        }).pipe(through(harness)),
+    );
+  });
+
   describe("routing", () => {
     const aliases = [{ name: "claude-sonnet-4-6", alias: "s46" }];
 

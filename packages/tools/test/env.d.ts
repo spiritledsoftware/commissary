@@ -5,6 +5,8 @@ interface __ToolsTestEnv extends Omit<
   keyof import("@commissary/state").StateBindings
 > {
   CONTROL_PLANE: DurableObjectNamespace<import("./worker.ts").ControlPlane>;
+  /** Commissary Cloud's ControlPlane, with a managed OAuth app (#207). */
+  CLOUD_CONTROL_PLANE: DurableObjectNamespace<import("./worker.ts").CloudControlPlane>;
   /** A deployment with a (fake) `browser` binding, and one with a fake second browser provider (#212). */
   BROWSER_CONTROL_PLANE: DurableObjectNamespace<import("./worker.ts").BrowserControlPlane>;
   OTHER_BROWSER_CONTROL_PLANE: DurableObjectNamespace<
@@ -37,6 +39,8 @@ interface __ToolsTestEnv extends Omit<
   USAGE: D1Database;
   /** The OAuth server's store for MCP clients (#200, `ToolsBindings`); the stage stays self-hosted without the rest. */
   OAUTH_KV: KVNamespace;
+  /** The deployment's KV namespace, where the toolkit catalog's refreshed registry is kept (#207, `ToolsBindings`). */
+  CACHE: KVNamespace;
 }
 
 declare namespace Cloudflare {
@@ -44,6 +48,7 @@ declare namespace Cloudflare {
     mainModule: typeof import("./worker.ts");
     durableNamespaces:
       | "ControlPlane"
+      | "CloudControlPlane"
       | "BrowserControlPlane"
       | "OtherBrowserControlPlane"
       | "UpgradedControlPlane"

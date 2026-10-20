@@ -6,6 +6,8 @@
  * overrides are for org admins. The pending approvals of tool calls (#201) are for members too: the part shows each to
  * its eligible approvers and its caller only. So are the browser profiles (#215): a member manages their private ones,
  * an org admin the shared ones; the grants on shared profiles (`/grants/profiles`) keep the table's default, org admins.
+ * The toolkit catalog (#207) is read and searched by members, who add toolkits from it, and so are its live lookups;
+ * refreshing it, which is the deployment's, is for org admins (as the model catalog's refresh is).
  */
 import type { AccessRule } from "@commissary/auth";
 
@@ -13,6 +15,9 @@ export const accessRules: ReadonlyArray<AccessRule> = [
   { path: "/v9/management/toolkits", subpaths: true, role: "member" },
   { path: "/v9/management/approvals", subpaths: true, role: "member" },
   { path: "/v9/management/browser-profiles", subpaths: true, role: "member" },
+  // Before the catalog's member entry, which would cover it.
+  { path: "/v9/management/toolkit-catalog/refresh", role: "admin" },
+  { path: "/v9/management/toolkit-catalog", subpaths: true, role: "member" },
   // What the caller may use (#200): every member reads their own.
   { path: "/v9/management/tools", role: "member" },
 ];

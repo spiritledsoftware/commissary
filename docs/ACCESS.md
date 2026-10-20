@@ -191,6 +191,8 @@ the Worker asks on every request: a removed member, or a member whose role was l
 | Add, edit and remove org toolkits, their shared credentials, tool overrides and approval rules   |                   |     ✓     |              ✓               |       ✓        |
 | See and decide the pending approvals of tool calls they are an approver of (`/approvals`)        |         ✓         |     ✓     |              ✓               |       ✓        |
 | Read and replace an org toolkit's uploaded document (`/toolkits/:id/document`)                   |                   |     ✓     |              ✓               |       ✓        |
+| Read and search the toolkit catalog; look a domain up (`/toolkit-catalog`, its `domains/`)       |         ✓         |     ✓     |              ✓               |       ✓        |
+| Refresh the toolkit catalog now (`POST /toolkit-catalog/refresh`)                                |                   |     ✓     |              ✓               |       ✓        |
 | Read the agents they may use; create and manage their own private agents (`/agents`)             |         ✓         |     ✓     |              ✓               |       ✓        |
 | Create, edit and remove shared agents; disable or remove a member's private agent                |                   |     ✓     |              ✓               |       ✓        |
 | Read, add, edit and remove agent grants (`/grants/agents`)                                       |                   |     ✓     |              ✓               |       ✓        |
@@ -276,6 +278,10 @@ the Worker asks on every request: a removed member, or a member whose role was l
   toolkit's) uploaded document (`GET` and `PUT /toolkits/:id/document`) is its managers' alone: an org admin's for an
   org toolkit (`403 forbidden` for a member, who sees its tools), its owner's for a private one. The org export says a toolkit is built
   from an uploaded document (`uploaded: true`) without holding it.
+- **Toolkit catalog** (`/toolkit-catalog`, #207): the deployment's, the same for every org. Every member reads and
+  searches it and looks domains up (integrations.sh's `detect` and `discover`, which change nothing), as they add
+  toolkits from it (`POST /toolkits` with `catalog`, under the toolkit rules above); refreshing it now is for org admins
+  (`403` for a member), as the model catalog's refresh is.
 - **Agents** (`/agents`, `/grants/agents`, #226, ADR 0040): a hosted agent is one member's (private) or the org's
   (shared). Every member creates and manages their own private agents, which only they see in full; a plain member's
   agents are always private. An org admin sees that another member's private agent exists (name and owner) and may
