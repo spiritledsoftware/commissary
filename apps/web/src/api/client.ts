@@ -181,6 +181,26 @@ export const createApiKeyAtom = ManagementClient.mutation("apiKeys", "create");
 
 export const revokeApiKeyAtom = ManagementClient.mutation("apiKeys", "revoke");
 
+/** Changes the tool scope of one of the caller's own keys (#200; call with `reactivityKeys: API_KEYS`). */
+export const updateApiKeyAtom = ManagementClient.mutation("apiKeys", "update");
+
+/**
+ * The tools the caller may use on the MCP endpoint, by toolkit (#200): what the tool scope editor of a key and the
+ * consent page of an MCP client's sign-in pick from.
+ */
+export const usableToolsAtom = ManagementClient.query("tools", "usable", {
+  reactivityKeys: API_KEYS,
+  timeToLive: KEEP,
+});
+
+// The consent page of an MCP client's sign-in on Commissary Cloud (#200, `/authorize`): it begins the sign-in with the
+// client's query, then approves it (an API key of the caller, call with `reactivityKeys: API_KEYS`) or denies it.
+export const beginMcpSignInAtom = ManagementClient.mutation("mcpSignIns", "begin");
+
+export const approveMcpSignInAtom = ManagementClient.mutation("mcpSignIns", "approve");
+
+export const denyMcpSignInAtom = ManagementClient.mutation("mcpSignIns", "deny");
+
 /** The Limits page refetches after a mutation tagged with this key. */
 export const SPEND = ["spend"] as const;
 

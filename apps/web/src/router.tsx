@@ -6,6 +6,7 @@ import { AccountPage } from "./pages/Account.tsx";
 import { AccountsPage } from "./pages/Accounts.tsx";
 import { ApprovalPage } from "./pages/Approval.tsx";
 import { ApprovalsPage } from "./pages/Approvals.tsx";
+import { AuthorizePage } from "./pages/Authorize.tsx";
 import { ConnectPage } from "./pages/Connect.tsx";
 import { GrantsPage } from "./pages/Grants.tsx";
 import { KeyGroupPage, NewKeyGroupPage, OwnKeyGroupPage } from "./pages/KeyGroup.tsx";
@@ -90,6 +91,8 @@ const routeTree = rootRoute.addChildren([
     path: "/approvals/$approvalId",
     component: ApprovalPage,
   }),
+  // Commissary Cloud's consent page of an MCP client's sign-in (#200); the Worker serves it there only.
+  createRoute({ getParentRoute: () => rootRoute, path: "/authorize", component: AuthorizePage }),
   createRoute({
     getParentRoute: () => rootRoute,
     path: "/management-keys",
