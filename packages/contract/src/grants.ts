@@ -173,15 +173,16 @@ export class GrantsGroup extends HttpApiGroup.make("grants").add(
 ) {}
 
 /**
- * Tool grants (`/v9/management/grants/tools`, `packages/tools/src/management/grant-routes.ts`; ADR 0038): which tools
- * of which org toolkits' shared credentials a member, a team or everyone may use. Kept by the Tools area beside the
+ * Tool grants (`/v9/management/grants/tools`, `packages/tools/src/management/routes.ts`; ADR 0038): which tools of
+ * which org toolkits' shared credentials a member, a team or everyone may use. Kept by the Tools area beside the
  * model grants above, with the same subjects; there is no default tool grant. Org admins only.
  */
 export class ToolGrantsGroup extends HttpApiGroup.make("toolGrants").add(
   HttpApiEndpoint.get("list", "/grants/tools", { success: ToolGrants, error: managementErrors }),
   /**
-   * Add a tool grant: `409 conflict` when the subject has one on the toolkit (edit that one), `422 invalid` for an empty
-   * or foreign named tool, an unknown member, team or toolkit, or a private toolkit.
+   * Add a tool grant: `409 conflict` when the subject has that selection on the toolkit already (edit that one; a
+   * subject may hold several selections of a toolkit, read tools and some named ones say), `422 invalid` for an empty or
+   * foreign named tool, an unknown member, team or toolkit, or a private toolkit.
    */
   HttpApiEndpoint.post("create", "/grants/tools", {
     payload: ToolGrantBody,

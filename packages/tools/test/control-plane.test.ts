@@ -737,8 +737,8 @@ describe("what goes", () => {
     await runInDurableObject(stub, async (_instance, state) => {
       const store = storeOf(state.storage.sql);
 
-      expect(store.session(toolkit.id, ALICE.member, expiry - 1)).toBeDefined();
-      expect(store.session(toolkit.id, ALICE.member, expiry)).toBeUndefined();
+      expect(store.session(toolkit.id, ALICE.member, ALICE.member, expiry - 1)).toBeDefined();
+      expect(store.session(toolkit.id, ALICE.member, ALICE.member, expiry)).toBeUndefined();
       expect(store.pruneSessions(expiry - 1)).toBe(expiry);
       expect(await state.storage.getAlarm()).toBe(expiry);
     });

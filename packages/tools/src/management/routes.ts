@@ -232,16 +232,19 @@ const listGrants = Effect.gen(function* () {
 });
 
 /** Writes one tool grant (`value` `null` deletes it) and answers its id and new revision. */
-const writeGrant = (id: string | undefined, revision: number, value: ToolGrantBody | null) =>
-  Effect.gen(function* () {
-    const { principalId } = yield* AccessPrincipal;
+const writeGrant = Effect.fnUntraced(function* (
+  id: string | undefined,
+  revision: number,
+  value: ToolGrantBody | null,
+) {
+  const { principalId } = yield* AccessPrincipal;
 
-    const result = yield* toolsControlPlane("writeGrant", (stub) =>
-      stub.tools().writeGrant({ id, revision, value }, principalId),
-    );
+  const result = yield* toolsControlPlane("writeGrant", (stub) =>
+    stub.tools().writeGrant({ id, revision, value }, principalId),
+  );
 
-    return jsonReply(200, { status: "ok", ...(yield* orRefuse(result)) });
-  });
+  return jsonReply(200, { status: "ok", ...(yield* orRefuse(result)) });
+});
 
 const createGrant = Effect.gen(function* () {
   return yield* writeGrant(undefined, 0, yield* decode(ToolGrantBody));

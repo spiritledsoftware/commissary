@@ -2,8 +2,10 @@
  * Tool grant storage in the org's ControlPlane SQLite (ADR 0038): the `tool_grants` table, one of the Tools part's
  * tables (`TOOLS_TABLES`), keyed by `toolkit_id` like the others, so a removed toolkit takes its grants with it.
  *
- * One grant per subject and toolkit; each is a config entry in the sense of ADR 0025: a write names the revision it is
- * based on (0 to create), and a stale one is a `conflict`. Nothing is seeded: there is no default tool grant.
+ * One grant per subject, toolkit and selection (like model grants, one per subject and scope), so a subject may hold a
+ * toolkit's read tools and some named ones, and gets their union. Each is a config entry in the sense of ADR 0025: a
+ * write names the revision it is based on (0 to create), and a stale one is a `conflict`. Nothing is seeded: there is no
+ * default tool grant. A row of a kind this version does not know gives nothing: it is left out.
  */
 import type { GrantSubject, ToolSelection } from "@commissary/contract/grants";
 import type { ToolGrantChange, ToolGrantEntry, ToolGrantValue } from "./grant.ts";
@@ -54,32 +56,49 @@ class Refusal extends Error {
   }
 }
 
-const subjectOf = (row: GrantRow): GrantSubject =>
-  row.subject_kind === "member" || row.subject_kind === "team"
-    ? { kind: row.subject_kind, id: row.subject_id }
-    : { kind: "everyone" };
+const subjectOf = (row: GrantRow): GrantSubject | undefined => {
+  switch (row.subject_kind) {
+    case "everyone":
+      return { kind: "everyone" };
+    case "member":
+    case "team":
+      return { kind: row.subject_kind, id: row.subject_id };
+    default:
+      return undefined;
+  }
+};
 
-const toolsOf = (row: GrantRow): ToolSelection => {
+const toolsOf = (row: GrantRow): ToolSelection | undefined => {
   switch (row.tools_kind) {
+    case "all":
+      return { kind: "all" };
     case "read":
       return { kind: "read" };
     case "named":
       // SAFETY: `tool_ids` holds the JSON array of strings this store wrote.
       return { kind: "named", ids: JSON.parse(row.tool_ids) as ReadonlyArray<string> };
     default:
-      return { kind: "all" };
+      return undefined;
   }
 };
 
-const entryOf = (row: GrantRow): ToolGrantEntry => ({
-  id: row.id,
-  subject: subjectOf(row),
-  toolkit: row.toolkit_id,
-  tools: toolsOf(row),
-  revision: row.revision,
-  updatedAt: row.updated_at,
-  updatedBy: row.updated_by,
-});
+/** The grant a row holds; none for a kind this version does not know (it gives nothing, never everyone or all). */
+const entryOf = (row: GrantRow): ToolGrantEntry | undefined => {
+  const subject = subjectOf(row);
+  const tools = toolsOf(row);
+
+  return subject === undefined || tools === undefined
+    ? undefined
+    : {
+        id: row.id,
+        subject,
+        toolkit: row.toolkit_id,
+        tools,
+        revision: row.revision,
+        updatedAt: row.updated_at,
+        updatedBy: row.updated_by,
+      };
+};
 
 const subjectColumns = (subject: GrantSubject): readonly [string, string] =>
   subject.kind === "everyone" ? ["everyone", ""] : [subject.kind, subject.id];
@@ -100,7 +119,8 @@ export const cleanToolGrant = (value: ToolGrantValue): ToolGrantValue | ToolGran
 
   if (value.tools.kind !== "named") return { subject, toolkit, tools: value.tools };
 
-  const ids = [...new Set(value.tools.ids.map((id) => id.trim()))];
+  // Sorted, so one set of tools is one selection whatever order it was written in.
+  const ids = [...new Set(value.tools.ids.map((id) => id.trim()))].toSorted();
 
   if (ids.length === 0 || ids.includes(""))
     return refuse("invalid", "a grant of named tools names at least one tool by its stable id");
@@ -117,6 +137,10 @@ export const cleanToolGrant = (value: ToolGrantValue): ToolGrantValue | ToolGran
 
   return { subject, toolkit, tools: { kind: "named", ids } };
 };
+
+/** The `tool_ids` column of a selection: its named ids (sorted once cleaned), as JSON. */
+const idsColumn = (tools: ToolSelection): string =>
+  JSON.stringify(tools.kind === "named" ? tools.ids : []);
 
 const freshGrantId = (): string => `tg_${crypto.randomUUID().replaceAll("-", "").slice(0, 24)}`;
 
@@ -135,29 +159,45 @@ export class ToolGrantStore {
     return this.#sql
       .exec<GrantRow>(`SELECT * FROM tool_grants ORDER BY subject_kind, subject_id, toolkit_id, id`)
       .toArray()
-      .map(entryOf);
+      .flatMap((row) => entryOf(row) ?? []);
   }
 
-  /** The grant `subject` holds on `toolkit`, if any. */
-  held(subject: GrantSubject, toolkit: string): ToolGrantEntry | undefined {
+  /** The first grant (by id) `subject` holds on `toolkit`, if any. */
+  heldOn(subject: GrantSubject, toolkit: string): ToolGrantEntry | undefined {
     const [kind, id] = subjectColumns(subject);
 
-    const row = this.#sql
+    return this.#sql
       .exec<GrantRow>(
-        `SELECT * FROM tool_grants WHERE subject_kind = ? AND subject_id = ? AND toolkit_id = ?`,
+        `SELECT * FROM tool_grants WHERE subject_kind = ? AND subject_id = ? AND toolkit_id = ? ORDER BY id`,
         kind,
         id,
         toolkit,
       )
-      .toArray()[0];
+      .toArray()
+      .flatMap((row) => entryOf(row) ?? [])[0];
+  }
 
-    return row === undefined ? undefined : entryOf(row);
+  /** The id of the grant of `value`'s subject, toolkit and selection, if one exists. */
+  #same(value: ToolGrantValue): string | undefined {
+    const [kind, id] = subjectColumns(value.subject);
+
+    return this.#sql
+      .exec<{ id: string }>(
+        `SELECT id FROM tool_grants WHERE subject_kind = ? AND subject_id = ? AND toolkit_id = ? AND tools_kind = ?
+           AND tool_ids = ?`,
+        kind,
+        id,
+        value.toolkit,
+        value.tools.kind,
+        idsColumn(value.tools),
+      )
+      .toArray()[0]?.id;
   }
 
   /**
    * Creates, replaces or deletes (`value: null`) one grant, its value already cleaned ({@link cleanToolGrant}) and
-   * checked. It names the revision it is based on (0 to create); a second grant of a subject on a toolkit is a
-   * `conflict` (edit that one).
+   * checked. It names the revision it is based on (0 to create); a second grant of a subject, toolkit and selection is
+   * a `conflict` (edit that one).
    */
   write(change: ToolGrantChange, by: string, now: number): ToolGrantWritten {
     try {
@@ -196,11 +236,11 @@ export class ToolGrantStore {
         }
 
         const value = change.value;
-        const taken = this.held(value.subject, value.toolkit);
+        const taken = this.#same(value);
 
-        if (taken !== undefined && taken.id !== existing?.id)
+        if (taken !== undefined && taken !== existing?.id)
           throw new Refusal(
-            refuse("conflict", `the subject has a grant on that toolkit: ${taken.id}`),
+            refuse("conflict", `the subject has that grant on the toolkit already: ${taken}`),
           );
 
         const id = existing?.id ?? freshGrantId();
@@ -237,7 +277,7 @@ export class ToolGrantStore {
       subjectId,
       value.toolkit,
       value.tools.kind,
-      JSON.stringify(value.tools.kind === "named" ? value.tools.ids : []),
+      idsColumn(value.tools),
       revision,
       now,
       by,

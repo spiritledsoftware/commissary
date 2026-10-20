@@ -516,7 +516,7 @@ describe("a private credential on an org toolkit", () => {
 });
 
 describe("the org export", () => {
-  it("holds the toolkits the caller reaches, with what kind of credential they have and never a secret", async () => {
+  it("holds the toolkits the caller reaches, with what kind of credential they have, their grants and never a secret", async () => {
     const server = fakeMcpServer(`${origin()}/mcp`, { tools: [{ name: "t" }] });
     const org = await newOrg();
 
@@ -542,6 +542,16 @@ describe("the org export", () => {
       revised(0),
     );
 
+    expect(
+      (
+        await send(org, "/grants/tools", org.admin, "POST", {
+          subject: { kind: "member", id: org.alice.id },
+          toolkit: toolkit.id,
+          tools: { kind: "named", ids: [`${toolkit.id}:t`] },
+        })
+      ).status,
+    ).toBe(200);
+
     const exported = await send(org, "/export", org.platform);
 
     expect(exported.status).toBe(200);
@@ -554,6 +564,15 @@ describe("the org export", () => {
         accepts: "shared",
         credentials: [{ slot: "shared", kind: "header", name: "X-Api-Key" }],
         overrides: [{ tool: "t", hidden: true }],
+        // Subjects by what a person reads, tools by upstream name.
+        grants: [
+          { subject: { kind: "everyone" }, tools: { kind: "all" }, updated_at: expect.any(String) },
+          {
+            subject: { kind: "member", email: `alice-${org.slug}@example.com` },
+            tools: { kind: "named", tools: ["t"] },
+            updated_at: expect.any(String),
+          },
+        ],
       },
     ]);
     expect(JSON.stringify(exported.body)).not.toContain("export-secret");

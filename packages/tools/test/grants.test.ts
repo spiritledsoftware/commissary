@@ -43,9 +43,9 @@ const org = async () => {
 
 type Org = Awaited<ReturnType<typeof org>>;
 
-type Viewer = Org["alice"];
+type Viewer = { readonly member: string | undefined; readonly admin: boolean };
 
-const memberOf = (viewer: Viewer): GrantSubject => ({ kind: "member", id: viewer.member });
+const memberOf = (viewer: Org["alice"]): GrantSubject => ({ kind: "member", id: viewer.member });
 
 /** A fake server at an origin of its own, whose calls answer `<token>:<tool>` (the token of the credential called with). */
 const server = (tools: ReadonlyArray<{ name: string; annotations?: Record<string, unknown> }>) =>
@@ -210,6 +210,44 @@ describe("tool grants", () => {
     expect(await listed(plane, plane.alice)).toEqual(["github_list_issues"]);
   });
 
+  it("of one subject on one toolkit add up: its read tools and a named write tool", async () => {
+    const plane = await org();
+    const github = await sharedToolkit(plane, "github", memberOf(plane.admin));
+    const alice = memberOf(plane.alice);
+
+    await grant(plane, { subject: alice, toolkit: github.id, tools: { kind: "read" } });
+
+    await grant(plane, {
+      subject: alice,
+      toolkit: github.id,
+      tools: { kind: "named", ids: [`${github.id}:create_issue`] },
+    });
+
+    expect(await listed(plane, plane.alice)).toEqual(["github_create_issue", "github_list_issues"]);
+    expect(await call(plane, plane.alice, "github_create_issue")).toBe(
+      "Bearer github-shared:create_issue",
+    );
+    expect(await call(plane, plane.alice, "github_delete_repo")).toBe("unknown");
+  });
+
+  it("for everyone reach a caller without a member (a service token), and no other grant does", async () => {
+    const plane = await org();
+    const github = await sharedToolkit(plane, "github", memberOf(plane.admin));
+    const linear = await sharedToolkit(plane, "linear", memberOf(plane.admin));
+    const token = { member: undefined, admin: false };
+
+    await grant(plane, { subject: EVERYONE, toolkit: github.id, tools: { kind: "read" } });
+    await grant(plane, {
+      subject: memberOf(plane.bob),
+      toolkit: linear.id,
+      tools: { kind: "all" },
+    });
+
+    expect(await listed(plane, token)).toEqual(["github_list_issues"]);
+    expect(await call(plane, token, "github_list_issues")).toBe("Bearer github-shared:list_issues");
+    expect(await call(plane, token, "linear_create_issue")).toBe("unknown");
+  });
+
   it("of read tools follow a tool's class at once when it is reclassified", async () => {
     const plane = await org();
     const github = await sharedToolkit(plane, "github", memberOf(plane.admin));
@@ -236,7 +274,7 @@ describe("tool grants", () => {
     expect(await call(plane, plane.alice, "github_list_issues")).toBe("unknown");
   });
 
-  it("are written at their revision, one per subject and toolkit, naming what the org has", async () => {
+  it("are written at their revision, one per subject, toolkit and selection, naming what the org has", async () => {
     const plane = await org();
     const github = await sharedToolkit(plane, "github", memberOf(plane.admin));
     const body = { subject: EVERYONE, toolkit: github.id, tools: { kind: "all" as const } };
@@ -247,9 +285,24 @@ describe("tool grants", () => {
     const write = (revision: number, value: ToolGrantBody | null, id?: string) =>
       plane.tools.writeGrant({ ...(id === undefined ? {} : { id }), revision, value }, "test");
 
-    // A second grant of the subject on the toolkit, and a stale revision.
+    // A second grant of the subject's selection on the toolkit, and a stale revision.
     expect(await write(0, body)).toMatchObject({ ok: false, error: "conflict" });
     expect(await write(0, body, created.id)).toMatchObject({ ok: false, error: "conflict" });
+
+    // Named tools are one selection whatever order they are written in.
+    const named = (ids: ReadonlyArray<string>) => ({
+      ...body,
+      tools: { kind: "named" as const, ids: ids.map((tool) => `${github.id}:${tool}`) },
+    });
+
+    const pair = await write(0, named(["delete_repo", "create_issue"]));
+
+    if (!pair.ok) throw new Error(pair.message);
+    expect(await write(0, named(["create_issue", "delete_repo"]))).toMatchObject({
+      ok: false,
+      error: "conflict",
+    });
+    await write(1, null, pair.value.id);
 
     const replaced = await write(1, { ...body, tools: { kind: "read" } }, created.id);
 
@@ -388,15 +441,13 @@ describe("connecting a toolkit's shared credential", () => {
       private_count: 0,
     });
 
-    expect(
-      (
-        await connect({
-          kind: "bearer",
-          token: "github-shared",
-          subject: { kind: "member", id: plane.alice.member },
-        })
-      ).ok,
-    ).toBe(true);
+    const first = await connect({
+      kind: "bearer",
+      token: "github-shared",
+      subject: { kind: "member", id: plane.alice.member },
+    });
+
+    if (!first.ok) throw new Error(first.message);
 
     expect((await plane.tools.listGrants()).grants).toEqual([
       expect.objectContaining({
@@ -406,26 +457,35 @@ describe("connecting a toolkit's shared credential", () => {
         revision: 1,
       }),
     ]);
+    const [held] = (await plane.tools.listGrants()).grants;
+
+    expect(first.value.grant).toEqual({ id: held?.id, created: true });
     expect(await listed(plane, plane.alice)).toHaveLength(3);
     expect(await listed(plane, plane.bob)).toEqual([]);
 
-    // Connecting again for a subject that has a grant on the toolkit keeps that grant as it is.
-    const [held] = (await plane.tools.listGrants()).grants;
+    // Connecting again for a subject that holds a grant on the toolkit adds nothing, and says which it kept.
 
     await plane.tools.writeGrant(
       { id: held?.id, revision: 1, value: { ...held!, tools: { kind: "read" } } },
       "test",
     );
 
-    await connect({
+    const rotated = await connect({
       kind: "bearer",
       token: "rotated",
       subject: { kind: "member", id: plane.alice.member },
     });
 
+    expect(rotated).toMatchObject({ ok: true, value: { grant: { id: held?.id, created: false } } });
     expect((await plane.tools.listGrants()).grants).toEqual([
       expect.objectContaining({ tools: { kind: "read" }, revision: 2 }),
     ]);
+
+    // A subject that holds none gets its grant: bob's reach changes.
+    const forBob = await connect({ kind: "bearer", token: "again", subject: memberOf(plane.bob) });
+
+    expect(forBob).toMatchObject({ ok: true, value: { grant: { created: true } } });
+    expect(await listed(plane, plane.bob)).toHaveLength(3);
   });
 
   it("takes no subject for a private credential", async () => {
@@ -554,13 +614,121 @@ describe("the private toolkits setting", () => {
     ]);
   });
 
-  it("starts as private credentials do: on for global, off for a new org", async () => {
-    const fresh = await env.CONTROL_PLANE.getByName(crypto.randomUUID()).membershipSettings();
+  it("is apart from private credentials: a private toolkit follows the one, an org toolkit's private credential the other", async () => {
+    const plane = await org();
+    const notes = server([{ name: "add_note" }]);
+    const github = server(GITHUB_TOOLS);
 
-    expect(fresh).toMatchObject({ privateCredentials: false, privateToolkits: false });
-    expect(await env.CONTROL_PLANE.getByName("global").membershipSettings()).toMatchObject({
-      privateCredentials: true,
-      privateToolkits: true,
+    const personal = await plane.tools.addToolkit(
+      plane.alice,
+      {
+        source: notes.url,
+        name: "notes",
+        private: true,
+        accepts: "private",
+        credential: { kind: "bearer", token: "alice-notes" },
+      },
+      "test",
+      POLICY,
+    );
+
+    const orgKit = await plane.tools.addToolkit(
+      plane.admin,
+      { source: github.url, name: "github", private: false, accepts: "private" },
+      "test",
+      POLICY,
+    );
+
+    if (!personal.ok || !orgKit.ok) throw new Error("add failed");
+
+    const connect = (toolkit: string) =>
+      plane.tools.connectCredential(
+        plane.alice,
+        toolkit,
+        "private",
+        { kind: "bearer", token: "alice-own" },
+        "test",
+        POLICY,
+      );
+
+    expect((await connect(orgKit.value.id)).ok).toBe(true);
+
+    // Private credentials off, private toolkits on: the private toolkit is served on its own credential, the org
+    // toolkit's private credential is neither connected nor used.
+    await plane.stub.setMembershipSettings({ privateCredentials: false });
+
+    expect(await listed(plane, plane.alice)).toEqual(["notes_add_note"]);
+    expect(await call(plane, plane.alice, "notes_add_note")).toBe("Bearer alice-notes:add_note");
+    expect(await call(plane, plane.alice, "github_create_issue")).toBe("unknown");
+    expect((await connect(personal.value.id)).ok).toBe(true);
+    expect(await connect(orgKit.value.id)).toMatchObject({
+      ok: false,
+      error: "private_credentials_unavailable",
     });
+
+    // Private toolkits off, private credentials on: the other way round.
+    await plane.stub.setMembershipSettings({ privateCredentials: true, privateToolkits: false });
+
+    expect(await listed(plane, plane.alice)).toEqual([
+      "github_create_issue",
+      "github_delete_repo",
+      "github_list_issues",
+    ]);
+    expect(await call(plane, plane.alice, "github_create_issue")).toBe(
+      "Bearer alice-own:create_issue",
+    );
+    expect(await call(plane, plane.alice, "notes_add_note")).toBe("unknown");
+    expect(await connect(personal.value.id)).toMatchObject({
+      ok: false,
+      error: "private_toolkits_unavailable",
+    });
+    expect((await connect(orgKit.value.id)).ok).toBe(true);
+
+    const [view] = (await plane.tools.listToolkits(plane.alice)).toolkits.filter(
+      (toolkit) => toolkit.private,
+    );
+
+    expect(view?.credentials.mine).toMatchObject({ active: false });
+  });
+});
+
+describe("an upstream session on a shared credential", () => {
+  it("is each member's own, so what a stateful upstream keeps never carries from one member to another", async () => {
+    const plane = await org();
+
+    const upstream = fakeMcpServer(
+      `https://mcp-${crypto.randomUUID().slice(0, 8)}.example.com/mcp`,
+      {
+        tools: [{ name: "whoami" }],
+        call: (_name, _args, request) => ({
+          content: [{ type: "text", text: request.headers.get("mcp-session-id") ?? "" }],
+        }),
+      },
+    );
+
+    const added = await plane.tools.addToolkit(
+      plane.admin,
+      {
+        source: upstream.url,
+        name: "stateful",
+        private: false,
+        accepts: "shared",
+        credential: { kind: "none", subject: EVERYONE },
+      },
+      "test",
+      POLICY,
+    );
+
+    if (!added.ok) throw new Error(added.message);
+
+    const alice = await call(plane, plane.alice, "stateful_whoami");
+    const bob = await call(plane, plane.bob, "stateful_whoami");
+
+    expect(alice).not.toBe("");
+    expect(bob).not.toBe("");
+    expect(bob).not.toBe(alice);
+    // Each member's next call goes on in their own session.
+    expect(await call(plane, plane.alice, "stateful_whoami")).toBe(alice);
+    expect(await call(plane, plane.bob, "stateful_whoami")).toBe(bob);
   });
 });

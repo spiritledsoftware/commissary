@@ -2475,11 +2475,11 @@ error codes are in `docs/ACCESS.md` "Members, roles and teams".
   the one chosen); `GET`/`PATCH /membership`, `/me` and the panel read it; an org
   admin changes it, and a change makes the credential pool derive again) and the org setting `private_toolkits`
   (members may add private toolkits, #198: the same defaults and the same `POST /orgs` choice; an org from before it
-  takes its `private_credentials` value; the Tools part reads it on every use, _Tools_). Members are not config entries: a config import replaces every entry and must not
-  remove people. Every write takes the actor's role and checks it against the target in the same Durable Object call
-  (`auth/roles.ts`: `mayManageMember`, `mayChangeRoles`, `mayGrantTokenRole`, `holdsSensitivePowers`), so check and write
-  cannot interleave with another request; refusals are data (`{ok: false, error, message}`) that `member-routes.ts` maps to
-  statuses.
+  takes its `private_credentials` value; the Tools part reads it on every use, _Tools_). Members are not config
+  entries: a config import replaces every entry and must not remove people. Every write takes the actor's role and
+  checks it against the target in the same Durable Object call (`auth/roles.ts`: `mayManageMember`, `mayChangeRoles`,
+  `mayGrantTokenRole`, `holdsSensitivePowers`), so check and write cannot interleave with another request; refusals are
+  data (`{ok: false, error, message}`) that `member-routes.ts` maps to statuses.
 - **Admission** (`auth/admission.ts`, called by the gates on every protected request through `AuthDirectory`): the org's ControlPlane
   answers the principal's role and member id (`admit`), joining a person as a plain member when auto-join is on; a
   platform admin is an owner without joining. The ControlPlane is asked on every request, so removing a member or lowering
@@ -2546,10 +2546,11 @@ the MCP endpoint reads it (_Tools_). A model grant never touches tool reach, nor
   table `tool_grants` beside its toolkits. A tool grant names a subject, one **org** toolkit (a private toolkit's tools
   are its owner's and take none) and its tools: `all`, `read` (by tool class, overrides included, so reclassifying a
   tool changes what such a grant gives at once) or `named` (stable ids `<toolkit id>:<upstream name>`, at least one,
-  each of that toolkit). One grant per subject and toolkit; each is a config entry with its own revision (`1` when
-  created, `+1` per write; `If-Match` on `PUT|DELETE`, a stale one `409 conflict`, a second grant of a subject on a
-  toolkit `409 conflict`, an unknown member, team or toolkit, a private toolkit, or an empty or foreign named tool
-  `422 invalid`). **No default grant** (unlike `DEFAULT_GRANT` for models, ADR 0038): connecting a toolkit's shared
+  each of that toolkit). One grant per subject, toolkit and selection: a subject may hold several on a toolkit (`read`
+  and a `named` one, say), and they add up. Each is a config entry with its own revision (`1` when created, `+1` per
+  write; `If-Match` on `PUT|DELETE`, a stale one `409 conflict`, a second grant of a subject on a toolkit with the
+  same selection `409 conflict`, an unknown member, team or toolkit, a private toolkit, or an empty or foreign named
+  tool `422 invalid`). **No default grant** (unlike `DEFAULT_GRANT` for models, ADR 0038): connecting a toolkit's shared
   credential names who may use it and writes that grant (_Tools_, "Credentials"). A named tool the toolkit's list no
   longer has is shown in the grant's `missing` and gives nothing until its source lists it again. Reach is computed on
   every list and call from the table and `core.teamIdsOf`, so a grant or team change applies at once.
@@ -2925,9 +2926,10 @@ toolkits, OAuth sign-in, the toolkit catalog, grants, prices and approval rules 
 (`@commissary/tools`) is shaped like Models: entry points `./api` (the MCP endpoint's routes, the cron task),
 `./management`, `./state` and `./testing`, a lint boundary (`boundaries/tools-imports`) and a ControlPlane part,
 `ToolsPart`, reached as `stub.tools().x(…)`. It needs no binding of its own: its state is the ControlPlane's
-(`TOOLS_TABLES`: `toolkits`, `toolkit_credentials`, `toolkit_tools`, `tool_overrides`, `toolkit_sessions`, `tool_grants`, dropped by
-`wipe()`), its view of `env` (`ToolsBindings`) adds only the Platform registry and the app host for the endpoint's
-connect links, and it reaches MCP servers from the ControlPlane through the global `fetch` behind the outbound guard.
+(`TOOLS_TABLES`: `toolkits`, `toolkit_credentials`, `toolkit_tools`, `tool_overrides`, `toolkit_sessions`,
+`tool_grants`, dropped by `wipe()`), its view of `env` (`ToolsBindings`) adds only the Platform registry and the app
+host for the endpoint's connect links, and it reaches MCP servers from the ControlPlane through the global `fetch`
+behind the outbound guard.
 
 - **What Tools shares with Models**: the ownership rules (`Scope`, `FULL_ACCESS`, `accessTo`: who reaches a shared or a
   private thing), which lived in `models/credentials/ownership.ts`. They moved into `@commissary/auth`
@@ -2943,12 +2945,13 @@ connect links, and it reaches MCP servers from the ControlPlane through the glob
   `global`, off for a new org unless `POST /orgs` chooses it (an org from before it takes its `private_credentials`
   value, so it keeps serving what it served); while it is off adding a private toolkit answers `403
   private_toolkits_unavailable`, and the private toolkits there are kept but not served (they leave the MCP endpoint's
-  list, and no longer shadow an org toolkit of their name) until it is on again. A private toolkit's credential is its
-  owner's private credential, so serving one also needs `private_credentials`. Reading an org toolkit is
-  for every member, managing it for org admins; a private toolkit is its owner's, and an org admin sees only that it
-  exists (`others`: owner and creation time, never its name or source) and may remove it, as with private credentials.
-  The source passes the outbound guard when it is saved (`422` with the guard's message as `error` and `path: "source"`, as for a provider's `base_url`) and names no user
-  or password (`422 invalid`, `path: "source"`); every build passes it again, each request and redirect included. A
+  list, and no longer shadow an org toolkit of their name) until it is on again. A private toolkit's own credential
+  follows `private_toolkits` too, not `private_credentials`, which governs members' private credentials on org
+  toolkits: the two settings are apart. Reading an org toolkit is for every member, managing it for org admins; a
+  private toolkit is its owner's, and an org admin sees only that it exists (`others`: owner and creation time, never
+  its name or source) and may remove it, as with private credentials. The source passes the outbound guard when it is
+  saved (`422` with the guard's message as `error` and `path: "source"`, as for a provider's `base_url`) and names no
+  user or password (`422 invalid`, `path: "source"`); every build passes it again, each request and redirect included. A
   member who only reads an org toolkit sees its source with the values of its query parameters masked (`***`, names
   kept; a parameter without a value is masked whole); org admins and the org export get the whole URL. The host and the
   path are shown as they are, so a key in the path (a Zapier-style `/s/<key>/mcp`) is visible to every member: a key
@@ -2961,14 +2964,16 @@ connect links, and it reaches MCP servers from the ControlPlane through the glob
   never answered; views show the kind and the header or parameter name. Connecting a shared credential (`PUT
   /toolkits/:id/credentials/shared`, or adding an org toolkit with one) names who may use it (`subject`, as a grant
   names it; `422 invalid` without one, or for a member or team the org does not have) and writes that subject's grant
-  of every tool of the toolkit in the same transaction, unless the subject holds a grant on the toolkit already, which
-  stays as it is (so rotating a key changes nobody's reach). A private credential names no subject (`422 invalid`). A
-  source that needs no sign-in takes a shared credential of kind `none`, so it follows grants like any shared
-  credential: nobody reaches it until someone is granted it. Private credentials follow
-  `membership.private_credentials` as in Models: while it is off a private credential cannot be connected (`403
-  private_credentials_unavailable`), shows `active: false` and is not used. Changing what an org toolkit accepts keeps
-  the credentials it no longer accepts: they show `active: false` and are not used until it accepts them again, and
-  only their holders remove them (a member's private credential stays theirs alone).
+  of every tool of the toolkit in the same transaction, unless the subject holds a grant on the toolkit already (any
+  selection), which stays as it is: rotating a key for a subject already granted changes nobody's reach, while naming
+  a subject without one adds its all-tools grant. The answer says which grant (`grant: { id, created }`). A private
+  credential names no subject (`422 invalid`). A source that needs no sign-in takes a shared credential of kind `none`,
+  so it follows grants like any shared credential: nobody reaches it until someone is granted it. Private credentials on
+  org toolkits follow `membership.private_credentials` as in Models: while it is off a private credential cannot be
+  connected (`403 private_credentials_unavailable`), shows `active: false` and is not used. A private toolkit's
+  credential follows `membership.private_toolkits` the same way (`403 private_toolkits_unavailable`). Changing what an
+  org toolkit accepts keeps the credentials it no longer accepts: they show `active: false` and are not used until it
+  accepts them again, and only their holders remove them (a member's private credential stays theirs alone).
 - **Tool lists** (`tools/mcp/client.ts`): one list per toolkit, from the server's `tools/list`, built with the shared
   credential or, if the toolkit has none, the private credential of the member who asks (a private toolkit's owner's).
   The client speaks the 2025 handshake (`initialize`, `notifications/initialized`, `tools/list` in the session of
@@ -3051,13 +3056,14 @@ connect links, and it reaches MCP servers from the ControlPlane through the glob
   - **Calls** (`ToolsPart.callTool`): the full name is resolved in the ControlPlane, where the secrets are, to its
     toolkit and upstream name, and called on the member's private credential when they reach the tool as themselves
     and hold one (it wins over a granted shared one; a call never uses another member's), else on the shared
-    credential a grant gives them; reaching it as themselves without either asks them to connect theirs. The upstream
-    sessions of the shared credential are the toolkit's, shared by the members granted it. The upstream result passes through as it is, `isError` included; an upstream or
-    transport failure is a tool result with `isError` and the client's short message (`McpError`: no URL, no body),
-    logged as a warning with the toolkit's id and the error's reason and status only. An upstream call
-    (`callUpstreamTool`, `mcp/client.ts`) speaks the era the upstream does, with the stateless revision's `Mcp-Name` and
-    the `Mcp-Param-*` headers its input schema's `x-mcp-header` asks for, within 240 seconds; an upstream that asks for
-    input (`InputRequiredResult`) is a failure, as Commissary relays none yet (#201).
+    credential a grant gives them; reaching it as themselves without either asks them to connect theirs. Upstream
+    sessions are the calling member's, on a shared credential too (_Upstream sessions_). The upstream result passes
+    through as it is, `isError` included; an upstream or transport failure is a tool result with `isError` and the
+    client's short message (`McpError`: no URL, no body), logged as a warning with the toolkit's id and the error's
+    reason and status only. An upstream call (`callUpstreamTool`, `mcp/client.ts`) speaks the era the upstream does,
+    with the stateless revision's `Mcp-Name` and the `Mcp-Param-*` headers its input schema's `x-mcp-header` asks for,
+    within 240 seconds; an upstream that asks for input (`InputRequiredResult`) is a failure, as Commissary relays none
+    yet (#201).
   - **Missing private credential** (ADR 0036): a tool that needs the member's private credential, without one, answers a
     link to the panel's connect page, `https://<app host>/o/<org slug>/tools/<toolkit id>/connect` (`panelPageUrl`,
     `@commissary/state`, as Billing's link to the billing page). The API Worker gets `APP_DOMAIN` on every deployed
@@ -3070,19 +3076,22 @@ connect links, and it reaches MCP servers from the ControlPlane through the glob
     elicitation, and every other client, get the link in a tool result with `isError`. **A 2025 client never gets an
     elicitation**: it would need the request's SSE stream and a session to send the request on and wait for the answer,
     which this endpoint keeps neither of, so it gets the tool result (#201 follows this choice).
-  - **Upstream sessions** (`toolkit_sessions`, ADR 0038): what a call learned of an upstream is kept per toolkit and
-    credential, for the next call on it: a 2025 server's revision and `Mcp-Session-Id`, or a stateless server's revision
-    (so its calls skip the handshake). A session is kept seven days from when it opened at most: past that the next call
-    opens a new one, and the part's alarm deletes it. A server that answers `400` or `404` in a kept session lost it (a
-    2025 session it ended, or an upstream that changed eras): it gets a new handshake and the call once again. Any
-    failed call deletes the session it was made in (unless the credential changed meanwhile, or another call already
-    replaced it), so the next call starts afresh; connecting or removing the credential, removing the toolkit and the
-    member's leaving delete it too.
+  - **Upstream sessions** (`toolkit_sessions`, ADR 0038): what a call learned of an upstream is kept per toolkit,
+    credential and calling member (a request without a member is one caller), for that caller's next call on it, so
+    members sharing a credential never share an upstream session's state (#198; sessions kept from before, per toolkit
+    and credential only, are dropped on upgrade): a 2025 server's revision and `Mcp-Session-Id`, or a stateless
+    server's revision (so its calls skip the handshake). A session is kept seven days from when it opened at most:
+    past that the next call opens a new one, and the part's alarm deletes it. A server that answers `400` or `404` in a
+    kept session lost it (a 2025 session it ended, or an upstream that changed eras): it gets a new handshake and the
+    call once again. Any failed call deletes the session it was made in (unless the credential changed meanwhile, or
+    another call already replaced it), so the next call starts afresh; connecting or removing the credential, removing
+    the toolkit and the member's leaving delete it too.
 - **Members and orgs**: a member who leaves takes their private toolkits, their private credentials on org toolkits,
   the upstream sessions of those and the tool grants that named them (`memberLeft`); a deleted team takes its tool
   grants (`teamDeleted`), and a removed toolkit its own (`tool_grants` is keyed by `toolkit_id` like the other
-  tables); org deletion drops the tables (`wipe()`), and Tools' org-deletion step has nothing else to delete. Tools keeps
-  nothing in KV or a per-isolate cache; the cross-org suite (`apps/app/test/org-isolation.test.ts`) checks that one
-  org's toolkits are neither listed nor reached by id from another, that its tool grants are its own, and that a call
-  goes on in its own org's upstream session. The
-  org export lists the toolkits the caller reaches with their credentials' kinds and their overrides, never a secret.
+  tables); org deletion drops the tables (`wipe()`), and Tools' org-deletion step has nothing else to delete. Tools
+  keeps nothing in KV or a per-isolate cache; the cross-org suite (`apps/app/test/org-isolation.test.ts`) checks that
+  one org's toolkits are neither listed nor reached by id from another, that its tool grants are its own, and that a
+  call goes on in its own org's upstream session. The org export lists the toolkits the caller reaches with their
+  credentials' kinds and their overrides, never a secret, and for an org admin each org toolkit's tool grants (subjects
+  by email or team name, as Models' grants; tools `all`, `read` or the named tools' upstream names; `updated_at`).
