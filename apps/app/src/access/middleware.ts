@@ -58,17 +58,16 @@ const signInRedirect = (
 };
 
 /**
- * Global middleware: requests of the management zone (`management/zones.ts`: the management API and the panel) and,
- * on a self-hosted Commissary, of the MCP endpoint (`/mcp`, ADR 0045: Access signs MCP clients in) must
+ * Global middleware: requests of the management zone (`management/zones.ts`: the management API and the panel) and, on
+ * a self-hosted Commissary, of the MCP endpoint (`/mcp`, `/o/<slug>/mcp`, ADR 0045: Access signs MCP clients in) must
  * carry a credential `@commissary/auth` accepts (`authenticate.ts`): an Access JWT, a Commissary Cloud session or a
  * management key, and come from a member of the request's org with the role the route needs (`management/policy.ts`,
  * ADR 0022): a platform admin (`PLATFORM_ADMIN_*`) is an owner of every org, anyone else has the role their membership
  * gives them. Cross-site requests and cross-origin WebSocket upgrades are refused first (`csrf.ts`). A client API path
- * is refused with a 404 that says where the client API is (`http/hosts.ts`): the API Worker serves it (ADR 0030), and so
- * is `/mcp` on Commissary Cloud.
- * Everything else (`/healthz`, unknown paths) is passed through untouched. On success the principal is available to
- * handlers as `AccessPrincipal`, and `CurrentOrg` is the org of the request: the org addressed by an org-scoped
- * management URL (`management/org-address.ts`), unchanged otherwise.
+ * is refused with a 404 that says where the client API is (`http/hosts.ts`): the API Worker serves it (ADR 0030), and
+ * so is `/mcp` on Commissary Cloud. Everything else (`/healthz`, unknown paths) is passed through untouched. On success
+ * the principal is available to handlers as `AccessPrincipal`, and `CurrentOrg` is the org of the request: the org
+ * addressed by an org-scoped management URL (`management/org-address.ts`), unchanged otherwise.
  */
 export const AccessGate = HttpRouter.middleware<{ provides: AccessPrincipal }>()(
   Effect.gen(function* () {

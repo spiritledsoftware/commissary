@@ -12,8 +12,9 @@ import { RootRoutes } from "./routes.ts";
 
 /**
  * All routes and global middleware of the app Worker: the panel, its sign-in, the management API and, on a self-hosted
- * Commissary, the MCP endpoint behind Access (ADR 0045). The client API is the API Worker's (apps/api, ADR 0030). Route layers whose handlers use `AccessPrincipal` are wrapped with
- * `withAccess(...)` (src/access/layer.ts); the management zone is authenticated by `AccessLayer` regardless.
+ * Commissary, the MCP endpoint behind Access (ADR 0045). The client API is the API Worker's (apps/api, ADR 0030). Route
+ * layers whose handlers use `AccessPrincipal` are wrapped with `withAccess(...)` (src/access/layer.ts); the management
+ * zone is authenticated by `AccessLayer` regardless.
  */
 export const AppLayer = Layer.mergeAll(
   RootRoutes,
@@ -22,8 +23,8 @@ export const AppLayer = Layer.mergeAll(
   HostedRoutes,
   AccessLayer,
   withAccess(ManagementRoutesLive),
-  // The MCP endpoint behind Access, for MCP clients Access signs in (ADR 0045); the Access gate refuses it on Commissary
-  // Cloud, whose MCP clients use the API host's.
+  // The MCP endpoint behind Access, for MCP clients Access signs in (ADR 0045); the Access gate refuses it on
+  // Commissary Cloud, whose MCP clients use the API host's.
   withAccess(AppMcpRoutes),
   // Request trace id header and structured request logs (packages/models/src/observability).
   TraceLayer,

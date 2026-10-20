@@ -29,9 +29,9 @@ const managementBodyTypes = (method: string, path: string): ReadonlyArray<string
 };
 
 /**
- * Checks a request of the protected (`/v1*`, ...), the MCP or the management zone before authentication; `undefined` when it
- * may proceed. A management path is a panel page when a browser may open it from another site (`isPanelPagePath`: the
- * panel's pages, also an org's, and `/management.html`; never `/v9/management*`).
+ * Checks a request of the protected (`/v1*`, ...), the MCP or the management zone before authentication; `undefined`
+ * when it may proceed. A management path is a panel page when a browser may open it from another site
+ * (`isPanelPagePath`: the panel's pages, also an org's, and `/management.html`; never `/v9/management*`).
  */
 export const crossSiteRejection = (
   method: string,

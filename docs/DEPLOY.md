@@ -376,7 +376,7 @@ the stack (`pnpm exec alchemy destroy --config stacks/github.ts --stage ci --pro
   it in open beta, and with it on Access answers every non-browser request to the app host without a sign-in `401`
   (with a `WWW-Authenticate` pointing at its OAuth metadata) instead of redirecting to its login page, which may break
   `cloudflared access login`/`token` for the management API until a stage confirms it does not (#267); browsers and
-  service tokens are unaffected. Set it to `true` (in CI: the environment's `ACCESS_MANAGED_OAUTH` variable) to turn
+  service tokens are unaffected. Set it to `true` (in CI: the production environment's `ACCESS_MANAGED_OAUTH` variable; previews do not get it yet) to turn
   it on; the deploy re-applies it after every change of the application like its cookie settings, fails if Cloudflare
   answers with Managed OAuth off, and `tools/check-deploy.sh` then checks that the app host's `/mcp` answers `401`
   with Access's `resource_metadata`. **On a stage with one host** the deploy

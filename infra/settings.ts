@@ -118,10 +118,10 @@ export interface Settings {
    * Managed OAuth of the stack's Access application (ADR 0045), which signs MCP clients in to the app host's `/mcp`:
    * whether it is on (`ACCESS_MANAGED_OAUTH`, off by default while it is in open beta and until a stage confirms that
    * `cloudflared access` clients keep working with it, #267), the redirect URIs a dynamically registered client may use
-   * (`ACCESS_OAUTH_REDIRECT_URIS`, by default {@link DEFAULT_OAUTH_REDIRECT_URIS}), and whether any client redirecting to
-   * `localhost` or `127.0.0.1` may (`ACCESS_OAUTH_LOOPBACK_CLIENTS`, by default on: Claude Code, Codex, Cursor's desktop
-   * app). The three are refused with `ACCESS_AUD` (docs/DEPLOY.md gives the dashboard steps) and on Commissary Cloud,
-   * and the last two while Managed OAuth is off.
+   * (`ACCESS_OAUTH_REDIRECT_URIS`, by default {@link DEFAULT_OAUTH_REDIRECT_URIS}), and whether any client redirecting
+   * to `localhost` or `127.0.0.1` may (`ACCESS_OAUTH_LOOPBACK_CLIENTS`, by default on: Claude Code, Codex, Cursor's
+   * desktop app). The three are refused with `ACCESS_AUD` (docs/DEPLOY.md gives the dashboard steps) and on Commissary
+   * Cloud, and the last two while Managed OAuth is off.
    */
   readonly managedOAuth: {
     readonly enabled: boolean;
@@ -189,8 +189,8 @@ const TOKEN_NAME = /^[a-z0-9][a-z0-9-]{0,40}$/;
 
 /**
  * The redirect URIs Managed OAuth allows by default: the hosted clients of docs/CLIENTS.md that sign in from a web
- * origin (Claude's apps, Cursor's web and agents). Clients on the person's machine redirect to a loopback address, which
- * `ACCESS_OAUTH_LOOPBACK_CLIENTS` allows.
+ * origin (Claude's apps, Cursor's web and agents). Clients on the person's machine redirect to a loopback address,
+ * which `ACCESS_OAUTH_LOOPBACK_CLIENTS` allows.
  */
 export const DEFAULT_OAUTH_REDIRECT_URIS: ReadonlyArray<string> = [
   "https://claude.ai/api/mcp/auth_callback",
@@ -518,6 +518,7 @@ export const readSettings = (dev: boolean, stage: string) =>
     ])
       if (problem !== undefined) problems.push(problem);
 
+    // Commissary Cloud refused them above, and ACCESS_AUD does below: each setting is refused once.
     if (
       settings.existingAud === "" &&
       !settings.managedOAuth.enabled &&

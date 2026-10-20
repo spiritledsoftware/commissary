@@ -205,7 +205,9 @@ export default Alchemy.Stack(
 
     const { variables: hostedVariables, secrets: hostedSecrets } = yield* hostedConfig;
 
-    // Managed OAuth (ADR 0045), written only when it is on, and then only what differs from the defaults ("" is skipped).
+    // Managed OAuth (ADR 0045), written only when it is on, and then only what differs from the defaults ("" is
+    // skipped). Production's only: a cloud-preview deploy, which uses Preview, would be refused it, and a preview's
+    // Access application has no domain; previews get it once #267 checks one.
     const { managedOAuth } = settings;
 
     const redirectUris = managedOAuth.redirectUris.join(",");
@@ -227,7 +229,6 @@ export default Alchemy.Stack(
       ACCESS_ALLOW_EMAIL_DOMAINS: settings.allowEmailDomains.join(","),
       PLATFORM_ADMIN_EMAILS: settings.adminEmails.join(","),
       ACCESS_SESSION_DURATION: settings.sessionDuration,
-      ...managedOAuthVariables,
       ACCESS_ALLOW_SERVICE_TOKEN_IDS: checkToken.serviceTokenId,
     } satisfies Record<string, string | Output.Output<string>>;
 
@@ -254,6 +255,7 @@ export default Alchemy.Stack(
               // The auth host of Commissary Cloud (ADR 0030), a subdomain of COMMISSARY_DOMAIN.
               COMMISSARY_AUTH_DOMAIN: settings.hosted?.authDomain ?? "",
               COMMISSARY_MODE: settings.hosted === undefined ? "" : "cloud",
+              ...managedOAuthVariables,
             }
           : variables;
 

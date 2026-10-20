@@ -23,9 +23,9 @@ export interface AccessWiring {
 
 /**
  * Re-applies the cookie and single-header settings the Alchemy `Access.Application` resource does not manage, and
- * Managed OAuth when it is on ({@link managedOAuth}), which the resource sets but this PUT would otherwise reset, keeping
- * the grant the application has. Cloudflare's update endpoint is PUT-style, so every update of the application by
- * Alchemy resets them; the application's `updatedAt` is part of the input so this runs again after each such update.
+ * Managed OAuth when it is on ({@link managedOAuth}), which the resource sets but this PUT would otherwise reset,
+ * keeping the grant the application has. Cloudflare's update endpoint is PUT-style, so every update of the application
+ * by Alchemy resets them; the application's `updatedAt` is part of the input so this runs again after each such update.
  * With Managed OAuth on it fails the deploy when Cloudflare answers with it off, so a stage never deploys with MCP
  * clients unable to sign in unnoticed.
  */
@@ -195,10 +195,11 @@ const WriteServiceTokens = Alchemy.Action(
 
 /**
  * Cloudflare Access for the Worker's custom domain: one self-hosted application covering the whole hostname (the client
- * API leaves it through {@link provisionClientApiBypass}), with Managed OAuth for MCP clients when `ACCESS_MANAGED_OAUTH`
- * is on ({@link managedOAuth}), an Allow policy for people, a Service Auth policy for the stack's service tokens (and `ACCESS_ALLOW_SERVICE_TOKEN_IDS`), and
- * the tokens themselves. With `ACCESS_AUD` set, an application managed elsewhere is used instead and nothing is
- * created. Preview stages get an application without a domain that the Worker enrolls into (see `application`).
+ * API leaves it through {@link provisionClientApiBypass}), with Managed OAuth for MCP clients when
+ * `ACCESS_MANAGED_OAUTH` is on ({@link managedOAuth}), an Allow policy for people, a Service Auth policy for the
+ * stack's service tokens (and `ACCESS_ALLOW_SERVICE_TOKEN_IDS`), and the tokens themselves. With `ACCESS_AUD` set, an
+ * application managed elsewhere is used instead and nothing is created. Preview stages get an application without a
+ * domain that the Worker enrolls into (see `application`).
  */
 export const provisionAccess = (settings: Settings) =>
   Effect.gen(function* () {

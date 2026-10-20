@@ -626,6 +626,18 @@ describe("Managed OAuth settings (ADR 0045)", () => {
         }),
         "ACCESS_MANAGED_OAUTH, ACCESS_OAUTH_LOOPBACK_CLIENTS: Commissary Cloud has no Access application",
       );
+
+      // Without the flag: the one refusal of Commissary Cloud, not also the one of Managed OAuth being off.
+      const refused = yield* refusal({
+        ...hosted,
+        ACCESS_OAUTH_REDIRECT_URIS: "https://a.example/cb",
+      });
+
+      assert.include(
+        refused,
+        "ACCESS_OAUTH_REDIRECT_URIS: Commissary Cloud has no Access application",
+      );
+      assert.notInclude(refused, "apply to Managed OAuth");
     }),
   );
 });

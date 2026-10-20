@@ -17,7 +17,8 @@
 #   answers a GET 405 (no stream), or 403 `Forbidden` where the token holds no role in `global`; the API Worker would
 #   answer 401 `Missing API key` (on one host, a `/mcp*` zone route or bypass left over);
 # - with Managed OAuth on (`ACCESS_MANAGED_OAUTH=true`), Access answers the app host's MCP endpoint for a non-browser
-#   client without a sign-in 401 with `resource_metadata` in `WWW-Authenticate`, where MCP clients find its OAuth server;
+#   client without a sign-in 401 with `resource_metadata` in `WWW-Authenticate`, where MCP clients find its OAuth
+#   server;
 # - when the client API has a host of its own (an API host, or a preview's API Worker workers.dev URL): /healthz answers
 #   200 there, the client API answers 404 on the app host (through Access, from the app Worker) and the management API
 #   404 there (from the API Worker).

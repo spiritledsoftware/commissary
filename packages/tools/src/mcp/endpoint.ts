@@ -1,12 +1,12 @@
 /**
  * Commissary's MCP endpoint (#197, ADR 0036, ADR 0037, ADR 0038, ADR 0045): Streamable HTTP, both protocol eras
- * (`protocol.ts`), mounted at a path the Worker chooses ({@link mcpRoutesAt}). The API Worker mounts it at `/mcp` on the
- * API host, behind its client gate, so a request comes with the member of its API key (`AccessPrincipal`) and their org
- * (`CurrentOrg`), and counts against the org's request-rate ceiling on Commissary Cloud. A self-hosted Commissary's app
- * Worker also mounts it on the app host, at `/mcp` (the org `global`) and `/o/<slug>/mcp`, behind its Access gate, so a
- * request comes with the person (or service token) Access signed in and the org its address names (#251). The member's tools and the calls are the org's ControlPlane's (`ToolsPart.clientTools`,
- * `ToolsPart.callTool`), where the credentials are; `?toolkits=a,b` narrows both to those toolkits, by the names the
- * member sees.
+ * (`protocol.ts`), mounted at a path the Worker chooses ({@link mcpRoutesAt}). The API Worker mounts it at `/mcp` on
+ * the API host, behind its client gate, so a request comes with the member of its API key (`AccessPrincipal`) and their
+ * org (`CurrentOrg`), and counts against the org's request-rate ceiling on Commissary Cloud. A self-hosted Commissary's
+ * app Worker also mounts it on the app host, at `/mcp` (the org `global`) and `/o/<slug>/mcp`, behind its Access gate,
+ * so a request comes with the person (or service token) Access signed in and the org its address names (#251). The
+ * member's tools and the calls are the org's ControlPlane's (`ToolsPart.clientTools`, `ToolsPart.callTool`), where the
+ * credentials are; `?toolkits=a,b` narrows both to those toolkits, by the names the member sees.
  *
  * `GET` and `DELETE` answer `405`, as the 2026-07-28 revision's backward compatibility asks of a server that opens no
  * stream and keeps no session (and as the 2025 revisions allow).
