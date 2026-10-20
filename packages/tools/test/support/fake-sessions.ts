@@ -3,11 +3,15 @@
 // Playwright does. Its snapshot copies input values as Playwright's does (a password field's included), and its
 // screenshot is the page's text with the masked fields painted over, so a test sees what masking left.
 //
-// The web: `/login` (a username field, a password field with a placeholder, a sign-in button that loads
-// `/welcome?user=<username>`), `/code` (a one-time code field, and a PIN field the browser gives no ref), any other
-// page (its heading and a link to `<url>/next`). `fakeBrowsers` lets a test refuse new browsers (an account at its
-// limit), end a browser as the provider would, drop the connections to one (which a later connection reaches again),
-// and see which browsers are open.
+// The web: `/login` (a username field, a password field with a placeholder, a sign-in button that sets the site's
+// `session` cookie, `secret-cookie-<username>`, and loads `/welcome?user=<username>`), `/account` (who the site's
+// `session` cookie signs in, or that none does), `/prefs` (the site's `theme` in local storage; `?theme=<theme>` sets
+// it first), `/code` (a one-time code field, and a PIN field the browser gives no ref), any other page (its heading and
+// a link to `<url>/next`). A browser keeps its cookies and local storage as a storage state (#215): opened from one, it
+// has them, and reads them back, the local storage of the sites its current connection visited (or loaded from the
+// state) only, as Playwright's `storageState()` over a connection to a running browser does. `fakeBrowsers` lets a test
+// refuse new browsers (an account at its limit), end a browser as the provider would, drop the connections to one
+// (which a later connection reaches again), and see which browsers are open.
 import { Effect } from "effect";
 import {
   BrowserGone,
@@ -16,7 +20,12 @@ import {
   type BrowserSessionProvider,
   type BrowserTab,
   type ProviderBrowser,
+  type StorageState,
 } from "../../src/browser/provider.ts";
+
+type FakeCookie = StorageState["cookies"][number];
+
+type FakeOrigins = StorageState["origins"];
 
 interface FakeElement {
   readonly role: string;
@@ -32,6 +41,8 @@ interface FakeElement {
   /** Not interactable: Playwright gives it no ref. */
   readonly noRef?: boolean;
   readonly options?: ReadonlyArray<string>;
+  /** Signs in as the page's username when clicked: sets the site's `session` cookie. */
+  readonly signsIn?: boolean;
 }
 
 interface FakePage {
@@ -43,8 +54,28 @@ interface FakePage {
 const field = (name: string, attributes: Record<string, string>, more: Partial<FakeElement> = {}) =>
   ({ role: "textbox", name, tag: "input", attributes, value: "", ...more }) satisfies FakeElement;
 
-/** The page at `url` of the fake web, freshly loaded. */
-const load = (url: string): FakePage => {
+/** The value of the cookie `name` of the site of `url` among `cookies`. */
+const cookieOf = (cookies: ReadonlyArray<FakeCookie>, url: string, name: string) => {
+  const { hostname } = new URL(url);
+
+  return cookies.find((cookie) => cookie.domain === hostname && cookie.name === name)?.value;
+};
+
+/** The value of the local storage entry `name` of the site of `url` among `origins`. */
+const storedOf = (origins: FakeOrigins, url: string, name: string) => {
+  const { origin } = new URL(url);
+
+  return origins
+    .find((each) => each.origin === origin)
+    ?.localStorage.find((entry) => entry.name === name)?.value;
+};
+
+/** The page at `url` of the fake web, freshly loaded in a browser with `cookies` and the local storage `origins`. */
+const load = (
+  url: string,
+  cookies: ReadonlyArray<FakeCookie> = [],
+  origins: FakeOrigins = [],
+): FakePage => {
   const { pathname, searchParams, origin } = new URL(url);
 
   switch (pathname) {
@@ -65,10 +96,44 @@ const load = (url: string): FakePage => {
             name: "Sign in",
             tag: "button",
             attributes: {},
+            signsIn: true,
             goes: (page) =>
               `${origin}/welcome?user=${encodeURIComponent(
                 page.elements.find((element) => element.attributes["name"] === "user")?.value ?? "",
               )}`,
+          },
+        ],
+      };
+    case "/account": {
+      const session = cookieOf(cookies, url, "session");
+
+      return {
+        url,
+        title: "Account",
+        elements: [
+          {
+            role: "heading",
+            name:
+              session === undefined
+                ? "Not signed in"
+                : `Signed in as ${session.replace(/^secret-cookie-/, "")}`,
+            tag: "h1",
+            attributes: {},
+          },
+        ],
+      };
+    }
+
+    case "/prefs":
+      return {
+        url,
+        title: "Preferences",
+        elements: [
+          {
+            role: "heading",
+            name: `Theme: ${storedOf(origins, url, "theme") ?? "none"}`,
+            tag: "h1",
+            attributes: {},
           },
         ],
       };
@@ -156,6 +221,11 @@ interface FakeBrowserState {
   ended: boolean;
   /** The connection now: a browser reached on an earlier one answers as gone. */
   connection: number;
+  /** Its cookies and local storage. */
+  cookies: Array<FakeCookie>;
+  origins: FakeOrigins;
+  /** The sites whose local storage its current connection knows: those it visited, or loaded from a state. */
+  seen: Set<string>;
 }
 
 const browsers = new Map<string, FakeBrowserState>();
@@ -176,7 +246,9 @@ export const fakeBrowsers = {
   drop: (id: string) => {
     const browser = browsers.get(id);
 
-    if (browser !== undefined) browser.connection++;
+    if (browser === undefined) return;
+    browser.connection++;
+    browser.seen = new Set();
   },
   /** Whether the browser `id` is still open at the provider. */
   isOpen: (id: string) => browsers.get(id)?.ended === false,
@@ -228,6 +300,68 @@ const renderSnapshot = (current: FakePage): string =>
 
 const gone = () => new BrowserGone();
 
+/** The site of `url`, for a page of the web (`about:blank` has none). */
+const siteOf = (url: string): string | undefined => {
+  const { origin } = new URL(url);
+
+  return origin === "null" ? undefined : origin;
+};
+
+/** Sets the site's local storage entry `theme`, as `/prefs?theme=<theme>` does. */
+const storeTheme = (browser: FakeBrowserState, url: string) => {
+  const { origin, pathname, searchParams } = new URL(url);
+  const theme = searchParams.get("theme");
+
+  if (pathname !== "/prefs" || theme === null) return;
+  const others = browser.origins.filter((each) => each.origin !== origin);
+  const entries = browser.origins.find((each) => each.origin === origin)?.localStorage ?? [];
+
+  browser.origins = [
+    ...others,
+    {
+      origin,
+      localStorage: [
+        ...entries.filter((entry) => entry.name !== "theme"),
+        { name: "theme", value: theme },
+      ],
+    },
+  ];
+};
+
+/**
+ * The browser's storage state as its current connection reads it: every cookie, and the local storage of the sites it
+ * visited, or loaded from a state, or that a tab shows.
+ */
+const storageOf = (browser: FakeBrowserState): StorageState => {
+  const showing = browser.tabs.flatMap((tab) => siteOf(page(tab).url) ?? []);
+  const known = new Set([...browser.seen, ...showing]);
+
+  return {
+    cookies: [...browser.cookies],
+    origins: browser.origins.filter((each) => known.has(each.origin)),
+  };
+};
+
+/** Sets the site's `session` cookie for the username typed on `current`, as its sign-in form does. */
+const signIn = (browser: FakeBrowserState, current: FakePage) => {
+  const user = current.elements.find((element) => element.attributes["name"] === "user")?.value;
+  const { hostname } = new URL(current.url);
+
+  browser.cookies = [
+    ...browser.cookies.filter((cookie) => cookie.domain !== hostname || cookie.name !== "session"),
+    {
+      name: "session",
+      value: `secret-cookie-${user ?? ""}`,
+      domain: hostname,
+      path: "/",
+      expires: -1,
+      httpOnly: true,
+      secure: true,
+      sameSite: "Lax",
+    },
+  ];
+};
+
 const fakeTab = (
   browser: FakeBrowserState,
   connection: number,
@@ -250,8 +384,12 @@ const fakeTab = (
     );
 
   const visit = (url: string) => {
+    const site = siteOf(url);
+
+    if (site !== undefined) browser.seen.add(site);
+    storeTheme(browser, url);
     state.history.splice(state.at + 1);
-    state.history.push(load(url));
+    state.history.push(load(url, browser.cookies, browser.origins));
     state.at = state.history.length - 1;
   };
 
@@ -282,6 +420,8 @@ const fakeTab = (
     click: (ref) =>
       Effect.flatMap(element(ref), (found) =>
         Effect.sync(() => {
+          if (found.signsIn === true) signIn(browser, page(state));
+
           if (found.goes !== undefined) visit(found.goes(page(state)));
         }),
       ),
@@ -346,13 +486,14 @@ const fakeBrowser = (browser: FakeBrowserState): ProviderBrowser => {
 
             return fakeTab(browser, connection, state);
           }),
+    storageState: () => (lost() ? Effect.fail(gone()) : Effect.sync(() => storageOf(browser))),
     close: () => Effect.sync(() => fakeBrowsers.end(browser.id)),
   };
 };
 
 /** The fake provider's sessions, over the module's fake web. */
 export const fakeSessionProvider = (): BrowserSessionProvider => ({
-  open: () =>
+  open: (loaded) =>
     Effect.suspend(() => {
       if (fakeBrowsers.refuseNew)
         return Effect.fail(
@@ -365,6 +506,9 @@ export const fakeSessionProvider = (): BrowserSessionProvider => ({
         tabs: [{ history: [load("about:blank")], at: 0 }],
         ended: false,
         connection: 0,
+        cookies: [...(loaded?.cookies ?? [])],
+        origins: [...(loaded?.origins ?? [])],
+        seen: new Set(loaded?.origins.map((each) => each.origin)),
       };
 
       browsers.set(id, state);

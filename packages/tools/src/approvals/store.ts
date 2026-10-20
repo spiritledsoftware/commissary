@@ -22,6 +22,7 @@ import type { Approver } from "@commissary/contract/approvals";
 import type { CredentialSlot } from "@commissary/contract/tools";
 import type { Sealer } from "@commissary/state";
 import { Schema } from "effect";
+import { freshId } from "../ids.ts";
 
 /** How long a pending approval waits, and an approved one lets its call through: one hour from the call (ADR 0038). */
 export const APPROVAL_LIFETIME_MS = 60 * 60 * 1000;
@@ -121,7 +122,7 @@ const argumentsContext = (id: string): string => `tool_approvals/${id}`;
 /** Where a form's `requestState` is sealed. */
 const formContext = (id: string): string => `tool_approvals/${id}/form`;
 
-const freshApprovalId = (): string => `ap_${crypto.randomUUID().replaceAll("-", "").slice(0, 24)}`;
+const freshApprovalId = (): string => freshId("ap");
 
 /** What a form's `requestState` seals: the form's row, the tool's stable id and the arguments' hash. */
 const FormBinding = Schema.Struct({

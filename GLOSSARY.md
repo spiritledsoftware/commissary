@@ -215,9 +215,9 @@ _Avoid_: personal account, own key
 
 **Grant**:
 Permission for a member, a team or everyone in an org to use certain shared credentials for certain upstream models, or
-a toolkit's shared credential for certain of its tools (all of them, its read tools, or named ones), or certain shared
-agents. A member's access is
-the union of the grants that name them; there is no deny. A new org starts with one grant that gives everyone every
+a toolkit's shared credential for certain of its tools (all of them, its read tools, or named ones), certain shared
+agents, or certain shared browser profiles (to open a browser session from; saving into one stays an org admin's). A
+member's access is the union of the grants that name them; there is no deny. A new org starts with one grant that gives everyone every
 model on every shared credential; a toolkit's shared credential goes to whoever the org admin picks when connecting it.
 _Avoid_: entitlement, ACL, access rule
 

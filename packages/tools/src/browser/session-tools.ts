@@ -4,11 +4,12 @@
  * are stateless). Modelled on Playwright MCP's tool set, as Commissary's own code: navigate, back and forward, an
  * accessibility snapshot whose element references the actions take, click, type, press a key, select an option, hover,
  * wait for text or a selector, a screenshot, tabs (list, open, switch) and close. No tool runs JavaScript in the page
- * or returns an element's value beyond what the (masked) snapshot shows.
+ * or returns an element's value beyond what the (masked) snapshot shows. A session may start from a browser profile
+ * (`open`'s `profile`, #215), which `profile_list` lists, and save into it when it closes (`close`'s `save`).
  *
  * Each tool is one record of {@link SESSION_TOOLS}: its description, the Effect schema of its arguments (also its
- * input schema) and its class. Snapshot, screenshot and the tab list read; the rest write (ADR 0038). The calls go to
- * the session's Durable Object (`session-object.ts`), which holds the browser.
+ * input schema) and its class. Snapshot, screenshot, the tab list and the profile list read; the rest write (ADR
+ * 0038). The calls go to the session's Durable Object (`session-object.ts`), which holds the browser.
  */
 import { Result, Schema } from "effect";
 
@@ -130,9 +131,18 @@ const WAIT_FOR = Schema.Struct({
 export const SESSION_TOOLS = {
   open: tool(
     "write",
-    "Open an interactive browser session, optionally at a page, and answer its id, which the other browser tools " +
+    "Open an interactive browser session, optionally at a page and from a browser profile (saved logins and site " +
+      "data: browser_profile_list lists the ones you may use), and answer its id, which the other browser tools " +
       `take. It closes after ${IDLE_TIME}, or with browser_close.`,
-    { url: optional(url) },
+    {
+      url: optional(url),
+      profile: optional(
+        Schema.String.check(Schema.isMinLength(1)).annotate({
+          description:
+            "The name of a browser profile to start from, as browser_profile_list lists it: the session starts with its logins.",
+        }),
+      ),
+    },
   ),
   navigate: tool("write", "Load a page in the session's current tab.", {
     ...SESSION,
@@ -206,7 +216,26 @@ export const SESSION_TOOLS = {
     ...SESSION,
     index: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   }),
-  close: tool("write", "Close the browser session.", SESSION),
+  close: tool(
+    "write",
+    "Close the browser session, optionally saving its logins and site data back into the browser profile it was " +
+      "opened from.",
+    {
+      ...SESSION,
+      save: optional(
+        Schema.Boolean.annotate({
+          description:
+            "Save the session's cookies and site storage into the profile it was opened from, replacing what it held. " +
+            "Only the member of a private profile, or an org admin for a shared one, may save; the session closes either way.",
+        }),
+      ),
+    },
+  ),
+  profile_list: tool(
+    "read",
+    "List the browser profiles you may open a session from (browser_open's profile), by name.",
+    {},
+  ),
 } as const;
 
 export type SessionToolName = keyof typeof SESSION_TOOLS;
@@ -223,8 +252,8 @@ type SessionRequest = {
   readonly [K in SessionToolName]: { readonly tool: K; readonly args: SessionToolArguments<K> };
 }[SessionToolName];
 
-/** A call in a session that is open: every tool but `open`. */
-export type SessionOperation = Exclude<SessionRequest, { readonly tool: "open" }>;
+/** A call in a session that is open: every tool but `open` and `profile_list`, which need none. */
+export type SessionOperation = Exclude<SessionRequest, { readonly tool: "open" | "profile_list" }>;
 
 export const isSessionTool = (name: string): name is SessionToolName =>
   Object.hasOwn(SESSION_TOOLS, name);

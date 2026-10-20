@@ -29,12 +29,14 @@ import type { GraphQLOperation } from "../graphql/schema.ts";
 import type { UpstreamSession, UpstreamTool } from "../mcp/client.ts";
 import type { OpenApiOperation } from "../openapi/tools.ts";
 import type { StoredToolkit } from "./toolkit.ts";
+import { freshId } from "../ids.ts";
 import { type ClientVia, OAUTH_TABLES } from "../oauth/store.ts";
 import type { StoredSecret } from "./secret.ts";
 
 /**
- * Every table of the Tools part (this store's, the tool grants', `grants/store.ts`, and the pending approvals',
- * `approvals/store.ts`), which the part's `wipe` drops. `built_in_toolkits` holds what an org says of a built-in toolkit
+ * Every table of the Tools part keyed by a toolkit (this store's, the tool grants', `grants/store.ts`, and the pending
+ * approvals', `approvals/store.ts`), which the part's `wipe` drops with the browser profiles' (`PROFILE_TABLES`,
+ * `browser/profiles.ts`, which outlive any toolkit and so are not in this list). `built_in_toolkits` holds what an org says of a built-in toolkit
  * beyond its grants and overrides, which has no `toolkits` row: its approval rules (#201), the sandbox toolkit's network
  * ceiling (#222), and their revision; `sandbox_sessions`, the org's open sandbox sessions (`sandbox/sessions.ts`)
  * (test/control-plane.test.ts checks the list). Each but `toolkits` is keyed by `toolkit_id`, so {@link
@@ -395,8 +397,7 @@ const secretContext = (toolkitId: string, owner: string): string =>
   `toolkit_credentials/${toolkitId}/${owner}`;
 
 /** A fresh toolkit id: no `:`, which separates it from the tool in a stable id. */
-export const freshToolkitId = (): string =>
-  `tk_${crypto.randomUUID().replaceAll("-", "").slice(0, 24)}`;
+export const freshToolkitId = (): string => freshId("tk");
 
 export class ToolkitStore {
   readonly #sql: SqlStorage;

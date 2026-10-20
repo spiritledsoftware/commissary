@@ -26,12 +26,15 @@ export interface ToolGrantEntry extends ToolGrantValue {
   readonly updatedBy: string;
 }
 
-/** A tool grant write: `value` `null` deletes it; no `id` creates one (`revision` 0). */
-export interface ToolGrantChange {
+/** A grant write (a tool grant's, a browser profile grant's): `value` `null` deletes it; no `id` creates one (`revision` 0). */
+export interface GrantChange<Value> {
   readonly id?: string | undefined;
   readonly revision: number;
-  readonly value: ToolGrantValue | null;
+  readonly value: Value | null;
 }
+
+/** A tool grant write. */
+export type ToolGrantChange = GrantChange<ToolGrantValue>;
 
 /** The grant connecting a toolkit's shared credential creates for the subject it names: every tool. */
 export const connectGrant = (subject: GrantSubject, toolkit: string): ToolGrantValue => ({

@@ -9,6 +9,15 @@ import type {
   ApproverView,
 } from "@commissary/contract/approvals";
 import type { ToolScope } from "@commissary/contract/api-keys";
+import type {
+  BrowserProfileGrants,
+  BrowserProfilesList,
+  BrowserProfileView,
+  CreateBrowserProfile,
+  LimitedBrowserProfileView,
+  RemovedBrowserProfile,
+  UpdateBrowserProfile,
+} from "@commissary/contract/browser-profiles";
 import type { GrantSubject, ToolGrant, ToolGrants } from "@commissary/contract/grants";
 import type {
   ConnectCredential,
@@ -63,6 +72,14 @@ import {
 } from "./approvals/rules.ts";
 import { type ApprovalKey, ApprovalStore, type StoredApproval } from "./approvals/store.ts";
 import {
+  freshProfileId,
+  PROFILE_TABLES,
+  type ProfileGrantChange,
+  ProfileStore,
+  type StoredProfile,
+} from "./browser/profiles.ts";
+import type { StorageState } from "./browser/provider.ts";
+import {
   connectGrant,
   type ToolGrantChange,
   type ToolGrantEntry,
@@ -70,6 +87,7 @@ import {
 } from "./grants/grant.ts";
 import { type GrantableTool, grantedTools, inToolScope } from "./grants/reach.ts";
 import { cleanToolGrant, ToolGrantStore } from "./grants/store.ts";
+import { namesHolder, trimmedSubject } from "./grants/subject.ts";
 import { LISTING_TIMEOUT } from "./mcp/client.ts";
 import {
   authorizationUrl,
@@ -147,6 +165,7 @@ import {
   type BuiltIn,
   type BuiltInProviders,
   builtInToolkits,
+  type CallerProfiles,
   COMMISSARY,
 } from "./toolkits/built-in.ts";
 import type { BuiltInToolkit, StoredToolkit, Toolkit } from "./toolkits/toolkit.ts";
@@ -587,6 +606,14 @@ interface ReachableTool {
   readonly granted: boolean;
 }
 
+/** A browser profile's name (#215): 1-64 of `[a-z0-9_-]`, what `browser_open` takes as it is. */
+const PROFILE_NAME = /^[a-z0-9_-]{1,64}$/;
+
+const PROFILE_NOT_FOUND = refuse("not_found", "browser profile not found");
+
+/** Whether `scope` acts as an org admin: an admin member, or the system (full access). */
+const isOrgAdmin = (scope: Scope): boolean => isFullAccess(scope) || scope.admin;
+
 /** A credential's secret, without the subject it was connected for. */
 const secretOf = (credential: ConnectCredential): ToolkitSecret => {
   const { subject: _subject, ...secret } = credential;
@@ -693,6 +720,8 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   /** The org's open sandbox sessions (#222), and the sandbox they are in. */
   readonly #sandboxSessions: SandboxSessionStore;
   readonly #sandbox: SandboxProvider | undefined;
+  /** The org's browser profiles (#215) and the grants on shared ones. */
+  readonly #profiles: ProfileStore;
   /** What the part reads the time from: the live clock, or a test's (`useClock`). */
   #clock: Clock.Clock = Clock.Clock.defaultValue();
 
@@ -714,6 +743,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     this.#outbound = outboundPolicy({ hosts: [ownHosts] });
     this.#sandboxSessions = new SandboxSessionStore(ctx.storage.sql);
     this.#sandbox = providers.sandbox;
+    this.#profiles = new ProfileStore(ctx.storage.sql, core.secrets);
     this.#yieldBuiltInNames();
   }
 
@@ -801,14 +831,15 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
   /** Deletes the part's tables: the org was deleted (`wipeOrg`). */
   wipe(): void {
-    for (const table of TOOLS_TABLES) this.#ctx.storage.sql.exec(`DROP TABLE IF EXISTS ${table}`);
+    for (const table of [...TOOLS_TABLES, ...PROFILE_TABLES])
+      this.#ctx.storage.sql.exec(`DROP TABLE IF EXISTS ${table}`);
     this.#schemas.forget();
   }
 
   /**
-   * Zero data retention (ADR 0027): a member's private toolkits and private credentials go with them, and so do the
-   * tool grants that named them and the pending approvals of their calls (#201). They leave every list of approvers.
-   * Their open sandbox sessions (#222) are deleted at once, with their files.
+   * Zero data retention (ADR 0027): a member's private toolkits, private credentials and private browser profiles go
+   * with them, and so do the tool and profile grants that named them and the pending approvals of their calls (#201).
+   * They leave every list of approvers. Their open sandbox sessions (#222) are deleted at once, with their files.
    */
   async memberLeft(member: string): Promise<void> {
     await this.#purgeSandboxSessions(this.#sandboxSessions.sessions({ member }));
@@ -817,6 +848,8 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       this.#store.deleteMember(member);
       this.#oauth.deleteMember(member);
       this.#grants.forget({ kind: "member", id: member });
+      this.#profiles.deleteOwner(member);
+      this.#profiles.forgetSubject({ kind: "member", id: member });
 
       this.#approvals.deleteMember(member, (approver) => withoutMember(approver, member));
 
@@ -877,9 +910,12 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     return sessions.length;
   }
 
-  /** The tool grants that named the team go with it. */
+  /** The tool and profile grants that named the team go with it. */
   teamDeleted(team: string): void {
-    this.#grants.forget({ kind: "team", id: team });
+    this.#core.transaction(() => {
+      this.#grants.forget({ kind: "team", id: team });
+      this.#profiles.forgetSubject({ kind: "team", id: team });
+    });
   }
 
   /** Read on every use (`core.teamIdsOf`): nothing to forget. */
@@ -933,7 +969,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       else if (access !== "none") toolkits.push(this.#view(toolkit, viewer, resolution));
     }
 
-    return isFullAccess(viewer) || viewer.admin ? { toolkits, others } : { toolkits };
+    return isOrgAdmin(viewer) ? { toolkits, others } : { toolkits };
   }
 
   /**
@@ -2571,6 +2607,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
           org: this.#core.org,
           member: viewer.member,
           principal: principalId,
+          profiles: this.#callerProfiles(viewer, principalId ?? viewer.member),
           sessions: {
             opened: (id) => {
               opened = true;
@@ -2927,6 +2964,307 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     });
   }
 
+  // --- browser profiles (#215, ADR 0039) -----------------------------------------------------------------------------
+
+  /**
+   * The browser profiles `viewer` manages: their own private profiles and, for an org admin, the shared ones and the
+   * other members' private ones as existence only (`others`: whose, without a name). A plain member reaches shared
+   * profiles through grants, on the MCP endpoint (`browser_profile_list`).
+   */
+  listProfiles(viewer: Scope): BrowserProfilesList {
+    const profiles: Array<BrowserProfileView> = [];
+    const others: Array<LimitedBrowserProfileView> = [];
+
+    for (const profile of this.#profiles.profiles()) {
+      const access = accessTo(profile.owner, viewer);
+
+      if (access === "full") profiles.push(profileView(profile));
+      else if (access === "limited") others.push(this.#limitedProfileView(profile));
+    }
+
+    return isOrgAdmin(viewer) ? { profiles, others } : { profiles };
+  }
+
+  /**
+   * Creates an empty browser profile: a private one of the caller (a plain member's always is, while the org allows
+   * private toolkits) or, for an org admin, a shared one, which no one may use until a profile grant says so.
+   */
+  createProfile(
+    viewer: Scope,
+    input: CreateBrowserProfile,
+    by: string,
+  ): ToolsResult<BrowserProfileView> {
+    const admin = isOrgAdmin(viewer);
+    const isPrivate = input.private === true || !admin;
+    const owner = isPrivate ? this.#memberOf(viewer) : undefined;
+
+    if (isPrivate && owner === undefined)
+      return refuse("forbidden", "only a member of the org can create a private browser profile");
+
+    if (isPrivate && !this.#core.privateToolkits())
+      return refuse(
+        "private_toolkits_unavailable",
+        "the org does not let members use private toolkits, nor private browser profiles",
+      );
+
+    const refused = this.#profileNameRefusal(input.name, owner, undefined);
+
+    if (refused !== undefined) return refused;
+    const now = this.#now();
+
+    const profile: StoredProfile = {
+      id: freshProfileId(),
+      name: input.name,
+      owner,
+      revision: 1,
+      createdAt: now,
+      createdBy: by,
+      updatedAt: now,
+      updatedBy: by,
+      savedAt: undefined,
+    };
+
+    this.#profiles.insert(profile);
+
+    return ok(profileView(profile));
+  }
+
+  /** Renames a browser profile at `revision`: its member's private one, or an org admin's shared one. */
+  updateProfile(
+    viewer: Scope,
+    id: string,
+    revision: number,
+    input: UpdateBrowserProfile,
+    by: string,
+  ): ToolsResult<BrowserProfileView> {
+    const profile = this.#profiles.profile(id);
+    const access = profile === undefined ? "none" : accessTo(profile.owner, viewer);
+
+    if (profile === undefined || access === "none") return PROFILE_NOT_FOUND;
+
+    if (access === "limited")
+      return refuse("forbidden", "an org admin may only remove another member's private profile");
+
+    if (profile.revision !== revision)
+      return refuse("conflict", "the browser profile changed since it was read: read it again");
+
+    const refused = this.#profileNameRefusal(input.name, profile.owner, id);
+
+    if (refused !== undefined) return refused;
+    const now = this.#now();
+
+    this.#profiles.rename(id, input.name, revision + 1, now, by);
+
+    return ok(
+      profileView({
+        ...profile,
+        name: input.name,
+        revision: revision + 1,
+        updatedAt: now,
+        updatedBy: by,
+      }),
+    );
+  }
+
+  /**
+   * Deletes a browser profile at once (ADR 0027) with its grants: its member's private one (an org admin may remove
+   * another member's too), or an org admin's shared one. A session open from it can no longer save into it.
+   */
+  removeProfile(viewer: Scope, id: string, revision: number): ToolsResult<RemovedBrowserProfile> {
+    const profile = this.#profiles.profile(id);
+
+    if (profile === undefined || accessTo(profile.owner, viewer) === "none")
+      return PROFILE_NOT_FOUND;
+
+    if (profile.revision !== revision)
+      return refuse("conflict", "the browser profile changed since it was read: read it again");
+
+    this.#core.transaction(() => this.#profiles.delete(id));
+
+    return ok({ id, removed: true });
+  }
+
+  /** Every profile grant of the org, by profile and subject (the routes are for org admins). */
+  listProfileGrants(): BrowserProfileGrants {
+    return {
+      grants: this.#profiles.grants().map((grant) => ({
+        id: grant.id,
+        subject: grant.subject,
+        profile: grant.profile,
+        revision: grant.revision,
+        updated_at: grant.updatedAt,
+        updated_by: grant.updatedBy,
+      })),
+    };
+  }
+
+  /** Writes one profile grant: one per subject and shared profile, each with its revision (ADR 0025). */
+  writeProfileGrant(
+    change: ProfileGrantChange,
+    by: string,
+  ): ToolsResult<{ readonly id: string; readonly revision: number }> {
+    const value =
+      change.value === null
+        ? null
+        : { subject: trimmedSubject(change.value.subject), profile: change.value.profile.trim() };
+
+    if (value !== null) {
+      const refusal = this.#subjectRefusal(value.subject);
+
+      if (refusal !== undefined) return refuse("invalid", refusal);
+
+      if (!this.#isSharedProfile(value.profile))
+        return refuse("invalid", "no shared browser profile has this id");
+    }
+
+    if (change.id === undefined && value === null)
+      return refuse("invalid", "a new grant names its subject and profile");
+
+    const written = this.#profiles.writeGrant({ ...change, value }, by, this.#now());
+
+    return written.ok ? ok({ id: written.id, revision: written.revision }) : written;
+  }
+
+  /**
+   * The browser profiles `viewer`'s browser session tools reach (#215): which they may open a session from, and whether
+   * they may save into one. `by` is who a save is recorded as, when the call names anyone.
+   */
+  #callerProfiles(viewer: Viewer, by: string | undefined): CallerProfiles {
+    return {
+      usable: (name) => {
+        const profile = this.#usableProfiles(viewer.member).find((each) => each.name === name);
+
+        return profile === undefined
+          ? undefined
+          : { id: profile.id, state: this.#profiles.state(profile.id) };
+      },
+      list: () =>
+        this.#usableProfiles(viewer.member).map((profile) => ({
+          name: profile.name,
+          private: profile.owner !== undefined,
+        })),
+      save: (id, state) => this.#saveProfile(viewer, id, state, by),
+    };
+  }
+
+  /**
+   * The browser profiles `member` may use, by name: their private profiles while the org allows private toolkits, and
+   * the shared profiles a grant gives them (everyone, them or one of their teams), but those that have the name of one
+   * of their private profiles, which wins for them (as a private toolkit does).
+   */
+  #usableProfiles(member: string | undefined): ReadonlyArray<StoredProfile> {
+    const teams = member === undefined ? [] : this.#core.teamIdsOf(member);
+
+    const granted = new Set(
+      this.#profiles
+        .grants()
+        .filter((grant) => namesHolder(grant.subject, { member, teams }))
+        .map((grant) => grant.profile),
+    );
+
+    const profiles = this.#profiles.profiles();
+
+    const own =
+      member === undefined || !this.#core.privateToolkits()
+        ? []
+        : profiles.filter((profile) => profile.owner === member);
+
+    const ownNames = new Set(own.map((profile) => profile.name));
+
+    const shared = profiles.filter(
+      (profile) =>
+        profile.owner === undefined && granted.has(profile.id) && !ownNames.has(profile.name),
+    );
+
+    return [...own, ...shared].toSorted((a, b) => (a.name < b.name ? -1 : 1));
+  }
+
+  /**
+   * Saves a session's `state` into the profile `id` for `viewer` (#215), replacing what it held (the later save wins):
+   * into their own private profile while the org allows private toolkits, into a shared one for an org admin. Answers
+   * why not otherwise.
+   */
+  async #saveProfile(
+    viewer: Viewer,
+    id: string,
+    state: StorageState,
+    by: string | undefined,
+  ): Promise<string | undefined> {
+    const profile = this.#profiles.profile(id);
+
+    if (profile === undefined) return "its browser profile no longer exists";
+
+    if (profile.owner === undefined && !isOrgAdmin(viewer))
+      return "only an org admin may save into a shared browser profile";
+
+    if (profile.owner !== undefined && profile.owner !== viewer.member)
+      return "only its member may save into a private browser profile";
+
+    if (profile.owner !== undefined && !this.#core.privateToolkits())
+      return "the org does not let members use private browser profiles";
+
+    try {
+      return this.#profiles.saveState(id, state, this.#now(), by)
+        ? undefined
+        : "its browser profile no longer exists";
+    } catch (error) {
+      await Effect.runPromise(
+        Effect.logWarning("browser profile not saved").pipe(
+          Effect.annotateLogs({ reason: error instanceof Error ? error.name : "unknown" }),
+        ),
+      );
+
+      return "the browser profile could not store it (it may be larger than storage takes)";
+    }
+  }
+
+  #isSharedProfile(id: string): boolean {
+    const profile = this.#profiles.profile(id);
+
+    return profile !== undefined && profile.owner === undefined;
+  }
+
+  /**
+   * Why `name` cannot be a browser profile's (`except`: the profile being renamed): shared profiles' names are unique
+   * among them; a private profile's among its member's and the shared ones, as toolkits' are.
+   */
+  #profileNameRefusal(
+    name: string,
+    owner: string | undefined,
+    except: string | undefined,
+  ): ToolsResult<never> | undefined {
+    if (!PROFILE_NAME.test(name))
+      return refuse(
+        "invalid",
+        "a browser profile's name is 1 to 64 lowercase letters, digits, hyphens and underscores",
+      );
+
+    const clash = this.#profiles
+      .profiles()
+      .some(
+        (other) =>
+          other.id !== except &&
+          other.name === name &&
+          (other.owner === undefined || (owner !== undefined && other.owner === owner)),
+      );
+
+    return clash ? refuse("name_taken", `a browser profile is already named ${name}`) : undefined;
+  }
+
+  #limitedProfileView(profile: StoredProfile): LimitedBrowserProfileView {
+    const owner = profile.owner ?? "";
+    const email = this.#core.member(owner)?.email;
+
+    return {
+      id: profile.id,
+      private: true,
+      limited: true,
+      owner: { member_id: owner, ...(email === undefined ? {} : { email }) },
+      created_at: iso(profile.createdAt),
+      revision: profile.revision,
+    };
+  }
+
   // --- tool grants (ADR 0038) -------------------------------------------------------------------------------------
 
   /**
@@ -3278,7 +3616,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
    * an org admin, each org toolkit's tool grants.
    */
   exportToolkits(viewer: Scope): ReadonlyArray<ToolkitExport> {
-    const admin = isFullAccess(viewer) || viewer.admin;
+    const admin = isOrgAdmin(viewer);
     const grants = admin ? this.#grants.entries() : [];
 
     return this.#toolkits().flatMap((toolkit) => {
@@ -3596,7 +3934,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
         ? undefined
         : credentials.find((credential) => credential.owner === member);
 
-    const admin = isFullAccess(viewer) || viewer.admin;
+    const admin = isOrgAdmin(viewer);
 
     const privateCount = credentials.filter((credential) => credential.owner !== undefined).length;
     // A member who only reads an org toolkit does not see what its source's (or base URL's) query carries.
@@ -3690,6 +4028,17 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     };
   }
 }
+
+/** A browser profile as its manager sees it. */
+const profileView = (profile: StoredProfile): BrowserProfileView => ({
+  id: profile.id,
+  name: profile.name,
+  private: profile.owner !== undefined,
+  saved_at: profile.savedAt === undefined ? null : iso(profile.savedAt),
+  revision: profile.revision,
+  created_at: iso(profile.createdAt),
+  updated_at: iso(profile.updatedAt),
+});
 
 /** Where an approval stands as the API says it: `used` once its approved call went through. */
 const approvalStatus = (approval: StoredApproval): ApprovalView["status"] =>

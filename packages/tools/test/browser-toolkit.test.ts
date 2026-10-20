@@ -46,9 +46,10 @@ const SESSION_TOOLS = [
   "tab_new",
   "tab_select",
   "close",
+  "profile_list",
 ];
 
-const SESSION_READS = ["snapshot", "take_screenshot", "tab_list"];
+const SESSION_READS = ["snapshot", "take_screenshot", "tab_list", "profile_list"];
 
 /** Every tool's full name, as a member's list sorts them. */
 const ALL_TOOLS = [...QUICK_ACTIONS, ...SESSION_TOOLS.map((name) => `browser_${name}`)].toSorted();

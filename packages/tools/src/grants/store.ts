@@ -8,7 +8,9 @@
  * default tool grant. A row of a kind this version does not know gives nothing: it is left out.
  */
 import type { GrantSubject, ToolSelection } from "@commissary/contract/grants";
+import { freshId } from "../ids.ts";
 import type { ToolGrantChange, ToolGrantEntry, ToolGrantValue } from "./grant.ts";
+import { subjectColumns, subjectOfColumns, trimmedSubject } from "./subject.ts";
 
 const SCHEMA = `CREATE TABLE IF NOT EXISTS tool_grants (
    id TEXT PRIMARY KEY, subject_kind TEXT NOT NULL, subject_id TEXT NOT NULL, toolkit_id TEXT NOT NULL,
@@ -56,17 +58,8 @@ class Refusal extends Error {
   }
 }
 
-const subjectOf = (row: GrantRow): GrantSubject | undefined => {
-  switch (row.subject_kind) {
-    case "everyone":
-      return { kind: "everyone" };
-    case "member":
-    case "team":
-      return { kind: row.subject_kind, id: row.subject_id };
-    default:
-      return undefined;
-  }
-};
+const subjectOf = (row: GrantRow): GrantSubject | undefined =>
+  subjectOfColumns(row.subject_kind, row.subject_id);
 
 const toolsOf = (row: GrantRow): ToolSelection | undefined => {
   switch (row.tools_kind) {
@@ -100,15 +93,9 @@ const entryOf = (row: GrantRow): ToolGrantEntry | undefined => {
       };
 };
 
-const subjectColumns = (subject: GrantSubject): readonly [string, string] =>
-  subject.kind === "everyone" ? ["everyone", ""] : [subject.kind, subject.id];
-
 /** `value` with its names trimmed and its named tools de-duplicated, or why it is refused. */
 export const cleanToolGrant = (value: ToolGrantValue): ToolGrantValue | ToolGrantRefused => {
-  const subject: GrantSubject =
-    value.subject.kind === "everyone"
-      ? value.subject
-      : { kind: value.subject.kind, id: value.subject.id.trim() };
+  const subject = trimmedSubject(value.subject);
 
   if (subject.kind !== "everyone" && subject.id === "")
     return refuse("invalid", `a grant for a ${subject.kind} names the ${subject.kind}`);
@@ -142,7 +129,7 @@ export const cleanToolGrant = (value: ToolGrantValue): ToolGrantValue | ToolGran
 const idsColumn = (tools: ToolSelection): string =>
   JSON.stringify(tools.kind === "named" ? tools.ids : []);
 
-const freshGrantId = (): string => `tg_${crypto.randomUUID().replaceAll("-", "").slice(0, 24)}`;
+const freshGrantId = (): string => freshId("tg");
 
 export class ToolGrantStore {
   readonly #sql: SqlStorage;

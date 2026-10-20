@@ -8,12 +8,10 @@ import type { ToolScope } from "@commissary/contract/api-keys";
 import type { ToolSelection } from "@commissary/contract/grants";
 import type { ToolClass } from "@commissary/contract/tools";
 import type { ToolGrantEntry } from "./grant.ts";
+import { type GrantHolder, namesHolder } from "./subject.ts";
 
 /** Who asks: the member of the request, if any, and the teams they belong to. */
-export interface ToolGrantHolder {
-  readonly member?: string | undefined;
-  readonly teams: ReadonlyArray<string>;
-}
+export type ToolGrantHolder = GrantHolder;
 
 /** A tool as a grant is asked about: its stable id's parts and its class. */
 export interface GrantableTool {
@@ -22,16 +20,8 @@ export interface GrantableTool {
   readonly toolClass: ToolClass;
 }
 
-const names = (grant: ToolGrantEntry, holder: ToolGrantHolder): boolean => {
-  switch (grant.subject.kind) {
-    case "everyone":
-      return true;
-    case "member":
-      return holder.member !== undefined && grant.subject.id === holder.member;
-    case "team":
-      return holder.teams.includes(grant.subject.id);
-  }
-};
+const names = (grant: ToolGrantEntry, holder: ToolGrantHolder): boolean =>
+  namesHolder(grant.subject, holder);
 
 /** Whether `selection` (all, read or named tools of `toolkit`) takes in `tool`. */
 const selects = (toolkit: string, selection: ToolSelection, tool: GrantableTool): boolean => {

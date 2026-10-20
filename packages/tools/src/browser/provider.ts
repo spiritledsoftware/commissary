@@ -300,12 +300,43 @@ export interface BrowserTab {
   readonly focus: () => Effect.Effect<void, BrowserFailure>;
 }
 
+/**
+ * A browser's logins and site data (#215, a browser profile's content): its cookies and the local storage of each origin,
+ * in Playwright's storage state's shape (`BrowserContext.storageState()`), which every provider's browsers are loaded
+ * from and read into. Only the session's code and the Tools part, which seals it, see it: never a tool result.
+ */
+export const StorageState = Schema.Struct({
+  cookies: Schema.Array(
+    Schema.Struct({
+      name: Schema.String,
+      value: Schema.String,
+      domain: Schema.String,
+      path: Schema.String,
+      /** Unix time in seconds; -1 for a session cookie. */
+      expires: Schema.Number,
+      httpOnly: Schema.Boolean,
+      secure: Schema.Boolean,
+      sameSite: Schema.Literals(["Strict", "Lax", "None"]),
+    }),
+  ),
+  origins: Schema.Array(
+    Schema.Struct({
+      origin: Schema.String,
+      localStorage: Schema.Array(Schema.Struct({ name: Schema.String, value: Schema.String })),
+    }),
+  ),
+});
+
+export type StorageState = typeof StorageState.Type;
+
 /** A browser of the provider's, reached: its tabs, in the order they were opened. */
 export interface ProviderBrowser {
   /** The provider's id of the browser, by which it is reached again. */
   readonly id: string;
   readonly tabs: () => Effect.Effect<ReadonlyArray<BrowserTab>, BrowserFailure>;
   readonly newTab: () => Effect.Effect<BrowserTab, BrowserFailure>;
+  /** Its cookies and site storage now: what saving into a browser profile keeps (#215). */
+  readonly storageState: () => Effect.Effect<StorageState, BrowserFailure>;
   /** Ends the browser at the provider; a browser already gone is no failure. */
   readonly close: () => Effect.Effect<void>;
 }
@@ -315,8 +346,10 @@ export interface ProviderBrowser {
  * calls and reached again by its id.
  */
 export interface BrowserSessionProvider {
-  /** Opens a new browser with one blank tab. */
-  readonly open: () => Effect.Effect<ProviderBrowser, BrowserProviderError | BrowserLimitReached>;
+  /** Opens a new browser with one blank tab, loaded with `state` (a browser profile's, #215) when given. */
+  readonly open: (
+    state?: StorageState,
+  ) => Effect.Effect<ProviderBrowser, BrowserProviderError | BrowserLimitReached>;
   /** Reaches the browser `id` again; {@link BrowserGone} when the provider no longer has it. */
   readonly connect: (id: string) => Effect.Effect<ProviderBrowser, BrowserFailure>;
 }

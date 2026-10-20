@@ -7,7 +7,10 @@
  * A session's browser is acquired once with a `keep_alive` of {@link KEEP_ALIVE_MS} and reached again by its session
  * id with `connect()` on later calls (Browser Run's session reuse); its tabs are the pages of the browser's default
  * context, which outlives a connection. Closing it sends CDP's `Browser.close`, as closing a connected browser only
- * disconnects.
+ * disconnects. A browser opened from a browser profile (#215) gets the profile's state in that default context
+ * ({@link loadState}), and a save reads it back with Playwright's `storageState()` ({@link stateOf}): every cookie, but
+ * the local storage of only the sites the current connection visited (or that a tab shows), as Playwright keeps a
+ * context's sites per connection.
  *
  * Failures: Browser Run's refusal of a new browser with 429 (the account's concurrent browsers, or new browsers per
  * second) is {@link BrowserLimitReached}; a session Browser Run no longer lists (closed on a release of its own, or
@@ -30,6 +33,7 @@ import {
   type BrowserSessionProvider,
   type BrowserTab,
   type ProviderBrowser,
+  type StorageState,
 } from "./provider.ts";
 
 /**
@@ -197,6 +201,56 @@ const end = (browser: Browser) =>
     Effect.andThen(Effect.tryPromise(() => browser.close()).pipe(Effect.ignore)),
   );
 
+/**
+ * Loads a browser profile's `state` into `context` (#215): its cookies, then each origin's local storage, set in a page
+ * of its own whose every request answers an empty document, so no request of it reaches a site, and closed afterwards:
+ * what Playwright's own `setStorageState` does, which its client does not offer for an existing context (a new context
+ * would not outlive the connection: Playwright creates it with `disposeOnDetach`). The script that sets the storage is
+ * Commissary's own, with the profile's entries as its argument; no caller's script runs in a page.
+ */
+const loadState = async (context: BrowserContext, state: StorageState): Promise<void> => {
+  if (state.cookies.length > 0) await context.addCookies(state.cookies);
+  const origins = state.origins.filter((origin) => origin.localStorage.length > 0);
+
+  if (origins.length === 0) return;
+  const page = await context.newPage();
+
+  try {
+    await page.route("**/*", (route) =>
+      route.fulfill({ status: 200, contentType: "text/html", body: "<html></html>" }),
+    );
+
+    for (const { origin, localStorage } of origins) {
+      await page.goto(origin);
+      // The entries as a JSON literal (valid JavaScript), so the script holds data only.
+      await page.evaluate(
+        `${JSON.stringify(localStorage)}.forEach((entry) => window.localStorage.setItem(entry.name, entry.value))`,
+      );
+    }
+  } finally {
+    await page.close();
+  }
+};
+
+/** The context's cookies and local storage, in the provider-neutral shape (Playwright's, without IndexedDB). */
+const stateOf = async (context: BrowserContext): Promise<StorageState> => {
+  const { cookies, origins } = await context.storageState();
+
+  return {
+    cookies: cookies.map(({ name, value, domain, path, expires, httpOnly, secure, sameSite }) => ({
+      name,
+      value,
+      domain,
+      path,
+      expires,
+      httpOnly,
+      secure,
+      sameSite,
+    })),
+    origins: origins.map(({ origin, localStorage }) => ({ origin, localStorage })),
+  };
+};
+
 const reached = (browser: Browser, id: string, context: BrowserContext): ProviderBrowser => ({
   id,
   tabs: () =>
@@ -205,10 +259,11 @@ const reached = (browser: Browser, id: string, context: BrowserContext): Provide
       : Effect.fail(new BrowserGone()),
   newTab: () =>
     attempt(browser, () => context.newPage()).pipe(Effect.map((page) => tab(browser, page))),
+  storageState: () => attempt(browser, () => stateOf(context)),
   close: () => end(browser).pipe(Effect.timeout(OPERATION_TIMEOUT), Effect.ignore),
 });
 
-/** Browser Run's session `id` reached over `browser`, with its default context. */
+/** Browser Run's session `id` reached over `browser`, with its default context, and that context (to load a profile). */
 const withContext = (browser: Browser, id: string) =>
   Effect.tryPromise({
     try: () => contextOf(browser),
@@ -216,7 +271,7 @@ const withContext = (browser: Browser, id: string) =>
       browser.isConnected()
         ? fail(firstLine(error instanceof Error ? error.message : String(error)))
         : new BrowserGone(),
-  }).pipe(Effect.map((context) => reached(browser, id, context)));
+  }).pipe(Effect.map((context) => ({ context, reached: reached(browser, id, context) })));
 
 /** `@cloudflare/playwright`'s functions over the binding. */
 type Playwright = typeof import("@cloudflare/playwright");
@@ -245,7 +300,7 @@ const LIMIT_MESSAGE =
 
 /** Browser Run's browsers behind the deployment's `browser` binding, as a {@link BrowserSessionProvider}. */
 export const browserRunSessions = (binding: BrowserRunSessionBinding): BrowserSessionProvider => ({
-  open: () =>
+  open: (state) =>
     bounded(
       Effect.gen(function* () {
         const pw = yield* playwright;
@@ -262,19 +317,35 @@ export const browserRunSessions = (binding: BrowserRunSessionBinding): BrowserSe
         });
 
         return yield* Effect.gen(function* () {
-          const browser = yield* Effect.tryPromise(() => pw.connect(binding, sessionId)).pipe(
-            Effect.flatMap((connected) => withContext(connected, sessionId)),
+          const connected = yield* Effect.tryPromise(() => pw.connect(binding, sessionId)).pipe(
+            Effect.mapError(unreachable),
           );
 
-          const tabs = yield* browser.tabs();
+          const { context, reached: browser } = yield* withContext(connected, sessionId).pipe(
+            Effect.mapError(unreachable),
+          );
 
-          if (tabs.length === 0) yield* browser.newTab();
+          // Playwright's message can quote the script, which holds the profile's entries: the caller gets a fixed
+          // message, and the log the error's name only.
+          if (state !== undefined)
+            yield* Effect.tryPromise({
+              try: () => loadState(context, state),
+              catch: (error) => (error instanceof Error ? error.name : "unknown"),
+            }).pipe(
+              Effect.catch((reason) =>
+                Effect.logWarning("browser profile not loaded").pipe(
+                  Effect.annotateLogs({ reason }),
+                  Effect.andThen(Effect.fail(fail("the browser profile could not be loaded"))),
+                ),
+              ),
+            );
+
+          const tabs = yield* browser.tabs().pipe(Effect.mapError(unreachable));
+
+          if (tabs.length === 0) yield* browser.newTab().pipe(Effect.mapError(unreachable));
 
           return browser;
-        }).pipe(
-          Effect.mapError(unreachable),
-          Effect.tapError(() => endById(pw, binding, sessionId)),
-        );
+        }).pipe(Effect.tapError(() => endById(pw, binding, sessionId)));
       }),
     ),
   connect: (id) =>
@@ -291,7 +362,7 @@ export const browserRunSessions = (binding: BrowserRunSessionBinding): BrowserSe
           ),
         );
 
-        return yield* withContext(browser, id);
+        return (yield* withContext(browser, id)).reached;
       }),
     ),
 });
