@@ -1,6 +1,7 @@
 // The org chooser: the panel's address without an org (`/`) when the caller manages several, or asked for it
 // (`/?choose`). Each org opens its panel (`/o/<slug>/`); a platform admin (or anyone, on Commissary Cloud, up to their
-// limit) also creates orgs here, and a platform admin of Commissary Cloud suspends them.
+// limit) also creates orgs here, and a platform admin of Commissary Cloud suspends them and sees and changes each org's
+// billing: its plan, whether it is unbilled, and the ceilings raised above its plan's (ADR 0042).
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/reactivity";
 import { type FormEvent, useId, useState } from "react";
@@ -21,6 +22,7 @@ import { orgPanelPath } from "../lib/org.ts";
 import { useAction } from "../lib/use-action.ts";
 import { usePageTitle } from "../lib/use-page-title.ts";
 import styles from "./Orgs.module.css";
+import { OrgBilling } from "./OrgsBilling.tsx";
 
 const NewOrg = ({ me }: { readonly me: Me }) => {
   const create = useAction(createOrgAtom);
@@ -120,39 +122,67 @@ const NewOrg = ({ me }: { readonly me: Me }) => {
   );
 };
 
-/** One org of the list, with (for a hosted platform admin) its suspension and the button that changes it. */
+/**
+ * One org of the list, with (for a hosted platform admin) its suspension and the button that changes it, and its
+ * billing behind a button.
+ */
 const OrgRow = ({
   slug,
   name,
   suspended,
   onSuspension,
+  billable,
 }: {
   readonly slug: string;
   readonly name: string;
   readonly suspended: boolean | undefined;
   /** Present for platform admins of Commissary Cloud. */
   readonly onSuspension: (() => void) | undefined;
-}) => (
-  <li className={styles["row"]}>
-    <a className={styles["org"]} href={orgPanelPath(slug)}>
-      <span className={styles["orgName"]}>
-        {name}
-        {suspended === true ? <span className={styles["state"]}>Suspended</span> : null}
-      </span>
-      <span className={styles["orgSlug"]}>/o/{slug}</span>
-    </a>
-    {onSuspension === undefined ? null : (
-      <button
-        type="button"
-        className={kit["secondary"]}
-        aria-label={`${suspended === true ? "Unsuspend" : "Suspend"} ${name}`}
-        onClick={onSuspension}
-      >
-        {suspended === true ? "Unsuspend" : "Suspend"}
-      </button>
-    )}
-  </li>
-);
+  /** A platform admin of Commissary Cloud: the org's billing opens below it. */
+  readonly billable: boolean;
+}) => {
+  const [open, setOpen] = useState(false);
+  const billingId = useId();
+
+  return (
+    <li className={styles["item"]}>
+      <div className={styles["row"]}>
+        <a className={styles["org"]} href={orgPanelPath(slug)}>
+          <span className={styles["orgName"]}>
+            {name}
+            {suspended === true ? <span className={styles["state"]}>Suspended</span> : null}
+          </span>
+          <span className={styles["orgSlug"]}>/o/{slug}</span>
+        </a>
+        {billable ? (
+          <button
+            type="button"
+            className={kit["secondary"]}
+            aria-label={`Billing of ${name}`}
+            aria-expanded={open}
+            aria-controls={billingId}
+            onClick={() => setOpen(!open)}
+          >
+            Billing
+          </button>
+        ) : null}
+        {onSuspension === undefined ? null : (
+          <button
+            type="button"
+            className={kit["secondary"]}
+            aria-label={`${suspended === true ? "Unsuspend" : "Suspend"} ${name}`}
+            onClick={onSuspension}
+          >
+            {suspended === true ? "Unsuspend" : "Suspend"}
+          </button>
+        )}
+      </div>
+      <div id={billingId} hidden={!open}>
+        {open ? <OrgBilling slug={slug} name={name} /> : null}
+      </div>
+    </li>
+  );
+};
 
 const OrgList = ({ me }: { readonly me: Me }) => {
   const suspendable = canSuspend(me);
@@ -215,6 +245,7 @@ const OrgList = ({ me }: { readonly me: Me }) => {
                   ? () => ask(org.slug, org.name, suspended)
                   : undefined
               }
+              billable={suspendable}
             />
           );
         })}

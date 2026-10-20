@@ -21,7 +21,11 @@ type BillingPartMethod =
   | "applySubscription"
   | "endSubscription"
   | "meterBatch"
-  | "meterBatchSent";
+  | "meterBatchSent"
+  | "setUnbilled"
+  | "raiseCeilings"
+  | "rateCeiling"
+  | "admitRate";
 
 /** The Billing part of an org's ControlPlane as Billing sees it: the methods it calls. */
 export type BillingControlPlanePart = Pick<BillingPart, BillingPartMethod> & Rpc.RpcTargetBranded;

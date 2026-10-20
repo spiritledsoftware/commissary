@@ -1,11 +1,12 @@
 /**
  * Billing (`/v9/management/billing`, `packages/billing/src/routes.ts`; the rules live in `packages/billing/`):
  * Commissary Cloud's plan of the org and what it used this calendar month (UTC) against free usage, in each unit
- * (ADR 0042), and Pay as you go through Polar (#237): checkout, the customer portal and switching back to Free; the
- * billing cap and the notices of plan limits and failed payments (#238). Cloud only: a self-hosted Commissary answers
- * 404, and so do the checkout, portal and plan routes on a Commissary Cloud stage without Polar's settings. Any org
- * admin may read the overview; the writes are for org owners. Workers addition, no Go counterpart. Shared with the
- * browser: imports `effect` and `./errors.ts` only.
+ * (ADR 0042), Pay as you go through Polar (#237): checkout, the customer portal and switching back to Free; the
+ * billing cap and the notices of plan limits and failed payments (#238); and what platform admins set for one org
+ * (#240): unbilled, and ceilings raised above the plan's. Cloud only: a self-hosted Commissary answers 404, and so do
+ * the checkout, portal and plan routes on a Commissary Cloud stage without Polar's settings. Any org admin may read the
+ * overview; the plan and cap writes are for org owners, the others for platform admins. Workers addition, no Go
+ * counterpart. Shared with the browser: imports `effect` and `./errors.ts` only.
  */
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
@@ -61,16 +62,43 @@ export const BillingNotice = Schema.Union([
 
 export type BillingNotice = typeof BillingNotice.Type;
 
+/** The most a platform admin may raise one of an org's ceilings to (`PATCH /billing/ceilings`). */
+export const MAX_RAISED_CEILING = 1_000_000;
+
 /**
- * `GET /billing`. `payment` is the payment state; `card_on_file` whether the org's Polar customer has a payment method
- * (`false` before its first checkout or without Polar, `null` when Polar could not be asked). `requests` counts
- * requests and tool calls together (tool calls are not counted yet); browser and computer hours read 0 until they are
- * counted. Times are ISO: when this month began and when the next one starts and the counters start over.
- * `billing_cap` is the most Pay as you go may bill the org a month, in dollars ($50 until an org owner sets it; `null`:
- * no cap; it applies on Pay as you go only); `bill` what the month's usage above free usage bills so far, in dollars.
+ * One ceiling of the org (ADR 0042 "Ceilings for fairness between orgs"): the value of the plan whose limits apply
+ * (Free's while a Pay-as-you-go org is past due), and what a platform admin raised it to for this org (`null`: the
+ * plan's applies; a raise at or below the plan's changes nothing).
+ */
+export const BillingCeiling = Schema.Struct({
+  plan: Schema.Finite,
+  raised: Schema.NullOr(Schema.Finite),
+});
+
+export type BillingCeiling = typeof BillingCeiling.Type;
+
+/** The org's ceilings: concurrent browser sessions, concurrent computers, and requests a minute. */
+export const BillingCeilings = Schema.Struct({
+  browser_sessions: BillingCeiling,
+  computers: BillingCeiling,
+  request_rate: BillingCeiling,
+});
+
+export type BillingCeilings = typeof BillingCeilings.Type;
+
+/**
+ * `GET /billing`. `unbilled`: a platform admin marked the org unbilled, so it is on Pay as you go with no card and no
+ * invoice (it cannot start a checkout, and no billing cap applies). `payment` is the payment state; `card_on_file`
+ * whether the org's Polar customer has a payment method (`false` before its first checkout or without Polar, `null`
+ * when Polar could not be asked). `requests` counts requests and tool calls together (tool calls are not counted yet);
+ * browser and computer hours read 0 until they are counted. Times are ISO: when this month began and when the next one
+ * starts and the counters start over. `billing_cap` is the most Pay as you go may bill the org a month, in dollars ($50
+ * until an org owner sets it; `null`: no cap; it applies on Pay as you go only); `bill` what the month's usage above
+ * free usage bills so far, in dollars. `ceilings` is for platform admins only.
  */
 export const BillingView = Schema.Struct({
   plan: BillingPlan,
+  unbilled: Schema.Boolean,
   payment: BillingPayment,
   card_on_file: Schema.NullOr(Schema.Boolean),
   month_start: Schema.String,
@@ -83,6 +111,7 @@ export const BillingView = Schema.Struct({
   billing_cap: Schema.NullOr(Schema.Number),
   bill: Schema.Number,
   notices: Schema.Array(BillingNotice),
+  ceilings: Schema.optionalKey(BillingCeilings),
 });
 
 export type BillingView = typeof BillingView.Type;
@@ -112,6 +141,25 @@ export const SetBillingCap = Schema.Struct({ billing_cap: Schema.NullOr(BillingC
 
 export type SetBillingCap = typeof SetBillingCap.Type;
 
+/** `PUT /billing/unbilled`: marks the org unbilled, or not (platform admins). */
+export const SetBillingUnbilled = Schema.Struct({ unbilled: Schema.Boolean });
+
+export type SetBillingUnbilled = typeof SetBillingUnbilled.Type;
+
+/** A raised ceiling: a whole number from 1 to {@link MAX_RAISED_CEILING}, or `null` for the plan's. */
+const RaisedCeiling = Schema.optionalKey(Schema.NullOr(Schema.Finite));
+
+/** `PATCH /billing/ceilings`: raises the given ceilings (platform admins); the others stay as they are. */
+export const RaiseBillingCeilings = Schema.Struct({
+  browser_sessions: RaisedCeiling,
+  computers: RaisedCeiling,
+  request_rate: RaisedCeiling,
+});
+
+export type RaiseBillingCeilings = typeof RaiseBillingCeilings.Type;
+
+const slugParam = { params: { slug: Schema.String } };
+
 export class BillingGroup extends HttpApiGroup.make("billing").add(
   HttpApiEndpoint.get("overview", "/billing", { success: BillingView, error: managementErrors }),
   /** Org owners: sets or removes the billing cap; it applies to the next request. */
@@ -137,6 +185,37 @@ export class BillingGroup extends HttpApiGroup.make("billing").add(
   /** Org owners: back to Free at once, cancelling the subscription after sending the usage not sent yet. */
   HttpApiEndpoint.post("plan", "/billing/plan", {
     payload: SwitchBillingPlan,
+    success: BillingView,
+    error: managementErrors,
+  }),
+  /**
+   * Platform admins, from the org list (`/orgs/<slug>/...` is the org's own address, so these reach `/billing`,
+   * `/billing/unbilled` and `/billing/ceilings` of the org the slug names, whichever org the panel shows): the org's
+   * billing, with its ceilings.
+   */
+  HttpApiEndpoint.get("ofOrg", "/orgs/:slug/billing", {
+    ...slugParam,
+    success: BillingView,
+    error: managementErrors,
+  }),
+  /**
+   * Platform admins: marks the org unbilled (Pay as you go with nothing sent to Polar) or not (back to the plan its
+   * subscription gives it, Free without one). `403 platform_admin_required` for anyone else.
+   */
+  HttpApiEndpoint.put("setUnbilled", "/orgs/:slug/billing/unbilled", {
+    ...slugParam,
+    payload: SetBillingUnbilled,
+    success: BillingView,
+    error: managementErrors,
+  }),
+  /**
+   * Platform admins: raises the org's ceilings above its plan's (`null` restores the plan's). `422 invalid_ceiling`
+   * for anything but a whole number from 1 to {@link MAX_RAISED_CEILING}; `403 platform_admin_required` for anyone
+   * else.
+   */
+  HttpApiEndpoint.patch("raiseCeilings", "/orgs/:slug/billing/ceilings", {
+    ...slugParam,
+    payload: RaiseBillingCeilings,
     success: BillingView,
     error: managementErrors,
   }),

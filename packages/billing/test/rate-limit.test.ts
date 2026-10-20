@@ -136,6 +136,48 @@ describe("limitClientRate", () => {
     }),
   );
 
+  it.effect(
+    "counts an org whose rate a platform admin raised to 1,200 in its ControlPlane, past 600, and the others on the binding",
+    () =>
+      Effect.gen(function* () {
+        const raised = newOrgId();
+        const other = newOrgId();
+        const onFree = limiter(0);
+        const onPayg = limiter(REQUEST_RATE_CEILING.payg);
+
+        yield* TestClock.setTime(Date.UTC(2026, 2, 15, 12));
+        yield* Effect.promise(async () => {
+          await setPlan(env, raised, "payg");
+          await setPlan(env, other, "payg");
+          await env.CONTROL_PLANE.getByName(raised).billing().raiseCeilings({ requestRate: 1200 });
+        });
+
+        const run = (org: typeof raised) =>
+          limitClientRate(org).pipe(
+            Effect.provideService(
+              BillingEnv,
+              bindings({ FREE_RATE_LIMIT: onFree.limit, PAYG_RATE_LIMIT: onPayg.limit }),
+            ),
+            Effect.as(true),
+            Effect.catchTag("RateLimitedError", () => Effect.succeed(false)),
+          );
+
+        const times = (count: number, org: typeof raised) =>
+          Effect.forEach(Array.from({ length: count }), () => run(org), { concurrency: 50 });
+
+        const admitted = yield* times(1201, raised);
+
+        assert.strictEqual(admitted.filter(Boolean).length, 1200);
+        // The raised org never reached the binding; the other Pay as you go org still stops at 600.
+        assert.deepStrictEqual(onPayg.keys, []);
+        assert.strictEqual((yield* times(601, other)).filter(Boolean).length, 600);
+
+        // A new minute starts the raised count over.
+        yield* TestClock.adjust("60 seconds");
+        assert.strictEqual(yield* run(raised), true);
+      }),
+  );
+
   it.effect("has no ceiling where no binding is declared, or on a self-hosted Commissary", () =>
     Effect.gen(function* () {
       const org = newOrgId();

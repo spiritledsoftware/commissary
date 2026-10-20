@@ -1,8 +1,8 @@
 // `/v9/management/billing` on Commissary Cloud (packages/billing/src/routes.ts, @commissary/contract/billing): a new
-// org is on Free with nothing used of its free usage; the plan and the month's count follow what Billing stores; any org
-// admin may read it and a plain member may not; checkout, the portal, switching plans and setting the billing cap are
-// for org owners. Polar's webhook route is public on the app host. A self-hosted Commissary answers 404
-// (test/billing-self-hosted.test.ts).
+// org is on Free with nothing used of its free usage; the plan and the month's count follow what Billing stores; any
+// org admin may read it and a plain member may not; checkout, the portal, switching plans and setting the billing cap
+// are for org owners; marking an org unbilled and raising its ceilings are for platform admins. Polar's webhook route
+// is public on the app host. A self-hosted Commissary answers 404 (test/billing-self-hosted.test.ts).
 import { env } from "cloudflare:workers";
 import { Schema } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -153,6 +153,59 @@ describe("billing", () => {
     expect(
       Schema.decodeUnknownSync(BillingView)(await (await billing(admin, slug)).json()).billing_cap,
     ).toBeNull();
+  });
+
+  it("lets platform admins mark an org unbilled and raise its ceilings; an org admin or owner gets 403", async () => {
+    const owner = await signIn({ email: "owner-unbilled@example.com" });
+    const { slug } = await personalOrg(owner);
+
+    const added = await call(`/v9/management/orgs/${slug}/members`, {
+      method: "POST",
+      headers: panelHeaders(owner, { "content-type": "application/json" }),
+      body: JSON.stringify({ email: "admin-unbilled@example.com", role: "admin" }),
+    });
+
+    expect(added.status).toBe(201);
+
+    const admin = await signIn({ email: "admin-unbilled@example.com" });
+    // A platform admin (PLATFORM_ADMIN_EMAILS of the hosted test Worker), not a member of the org.
+    const root = await signIn({ email: "root@example.com" });
+
+    const write = (
+      cookie: string,
+      method: string,
+      path: string,
+      body: Readonly<Record<string, boolean | number>>,
+    ) =>
+      call(`/v9/management/orgs/${slug}/billing/${path}`, {
+        method,
+        headers: panelHeaders(cookie, { "content-type": "application/json" }),
+        body: JSON.stringify(body),
+      });
+
+    for (const cookie of [admin, owner]) {
+      expect((await write(cookie, "PUT", "unbilled", { unbilled: true })).status).toBe(403);
+      expect((await write(cookie, "PATCH", "ceilings", { request_rate: 1200 })).status).toBe(403);
+    }
+
+    expect((await write(root, "PUT", "unbilled", { unbilled: true })).status).toBe(200);
+
+    const raised = await write(root, "PATCH", "ceilings", { request_rate: 1200 });
+
+    expect(raised.status).toBe(200);
+    expect(
+      Schema.decodeUnknownSync(BillingView)(await raised.json()).ceilings?.request_rate,
+    ).toEqual({
+      plan: 600,
+      raised: 1200,
+    });
+
+    // The org's owner sees it unbilled, without the ceilings.
+    const seen = Schema.decodeUnknownSync(BillingView)(await (await billing(owner, slug)).json());
+
+    expect(seen.plan).toBe("payg");
+    expect(seen.unbilled).toBe(true);
+    expect(seen.ceilings).toBeUndefined();
   });
 
   it("takes Polar's webhooks on the app host without a session, and refuses an unsigned one", async () => {

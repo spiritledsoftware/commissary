@@ -1,7 +1,7 @@
 /**
  * The notices `GET /billing` gives the panel for the org's owners and admins (ADR 0042 "Notices"; Commissary sends no
  * billing email): 80% and 100% of a unit's free usage where Free's limits apply, 80% and 100% of the billing cap on Pay
- * as you go, and a failed payment. Pure: computed from what the Billing part answers, without asking the billing
+ * as you go, and a failed payment; none for an unbilled org (#240), which is never billed. Pure: computed from what the Billing part answers, without asking the billing
  * provider anything. New in the Workers port, no Go counterpart.
  */
 import type { BillingNotice, BillingUnit } from "@commissary/contract/billing";
@@ -36,6 +36,9 @@ const capNotice = (billing: BillingUsage, cap: number): BillingNotice | undefine
  * (`POST /billing/portal`, org owners only) when an owner follows it.
  */
 export const billingNotices = (billing: BillingUsage): ReadonlyArray<BillingNotice> => {
+  // Unbilled: never billed, so no cap, free usage or payment applies to it.
+  if (billing.unbilled) return [];
+
   const notices: Array<BillingNotice> = [];
   const pastDue = billing.plan === "payg" && billing.payment === "past_due";
 

@@ -59,7 +59,12 @@
   gap: var(--space-2);
 }
 
-/* An org with its Suspend button beside it. */
+/* An org with its Billing and Suspend buttons beside it, and its billing below when open. */
+.item {
+  display: grid;
+  gap: var(--space-3);
+}
+
 .row {
   display: flex;
   align-items: center;
@@ -81,4 +86,50 @@
 .link {
   font-size: var(--text-sm);
   color: var(--text);
+}
+
+/* An org's billing, opened by a platform admin: ruled off on the left under its row, no box. */
+.billing {
+  display: grid;
+  gap: var(--space-3);
+  padding-left: var(--space-4);
+  border-left: 2px solid var(--rule);
+}
+
+.facts {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  font-size: var(--text-sm);
+}
+
+.facts > div {
+  display: flex;
+  gap: var(--space-4);
+  padding-bottom: var(--space-2);
+  border-bottom: 1px solid var(--hairline);
+}
+
+.facts dt {
+  flex: 0 0 14rem;
+  color: var(--quiet);
+}
+
+.facts dd {
+  margin: 0;
+}
+
+.ceilings {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: var(--space-3);
+}
+
+.ceilings > div {
+  flex: 1 1 10rem;
+}
+
+.ceilings > p {
+  flex-basis: 100%;
 }

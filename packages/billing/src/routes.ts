@@ -10,16 +10,29 @@
  *   owners only ({@link accessRules}). It needs no billing provider: Commissary enforces the cap itself.
  * - `POST /billing/checkout`, `POST /billing/portal`, `POST /billing/plan {plan: "free"}` (#237): Pay as you go through
  *   the billing provider (Polar, `polar.ts`); org owners only ({@link accessRules}). Without the provider's settings
- *   they answer 404, like a path the router does not know.
+ *   they answer 404, like a path the router does not know. An unbilled org's owners can neither start a checkout nor
+ *   switch to Free (`409 unbilled`).
+ * - `PUT /billing/unbilled {unbilled}`, `PATCH /billing/ceilings {browser_sessions?, computers?, request_rate?}`
+ *   (#240): platform admins only (their handlers ask, like the org list's routes, `apps/app/src/management/org-routes.ts`),
+ *   from the org list as `/orgs/<slug>/billing/...`; with or without a billing provider. `GET /billing` shows a
+ *   platform admin the org's ceilings too.
  *
  * Commissary Cloud only: on a self-hosted Commissary every route answers 404, so nothing of Billing is reachable
  * there. A plan this isolate switches is forgotten by its caches at once (`forgetBilling`); other isolates (the API
  * Worker's) see it within `BILLING_TTL_MS`.
  */
-import { Clock, Effect, Option, Schema } from "effect";
+import { Clock, Effect, Option, Record, Schema } from "effect";
 import { HttpRouter, HttpServerError, HttpServerRequest } from "effect/http";
 import { type AccessRule, AccessPrincipal, isHosted } from "@commissary/auth";
-import { BillingCap, type BillingView, SwitchBillingPlan } from "@commissary/contract/billing";
+import {
+  BillingCap,
+  type BillingCeilings,
+  type BillingView,
+  MAX_RAISED_CEILING,
+  RaiseBillingCeilings,
+  SetBillingUnbilled,
+  SwitchBillingPlan,
+} from "@commissary/contract/billing";
 import {
   CurrentOrg,
   handled,
@@ -38,7 +51,7 @@ import {
   callPart,
 } from "./env.ts";
 import { billingNotices } from "./notices.ts";
-import { FREE_USAGE } from "./plan.ts";
+import { type Ceiling, FREE_USAGE, PLAN_CEILINGS } from "./plan.ts";
 import type { BillingProvider, BillingProviderError } from "./provider.ts";
 import { BillingProviders } from "./providers.ts";
 import { sendUsage } from "./send-usage.ts";
@@ -59,8 +72,27 @@ export const accessRules: ReadonlyArray<AccessRule> = [
 
 const iso = (ms: number): string => new Date(ms).toISOString();
 
-const billingView = (billing: BillingUsage, cardOnFile: boolean | null): BillingView => ({
+/** The ceilings of the contract, with Billing's names. */
+const CEILING_FIELDS = {
+  browser_sessions: "browserSessions",
+  computers: "computers",
+  request_rate: "requestRate",
+} as const satisfies Record.ReadonlyRecord<keyof BillingCeilings, Ceiling>;
+
+/** Each ceiling: the value of the plan whose limits apply (Free's while past due), and the raise. */
+const ceilingsView = (billing: BillingUsage): BillingCeilings => {
+  const ofPlan = PLAN_CEILINGS[billing.limitsPlan];
+
+  return Record.map(CEILING_FIELDS, (name) => ({
+    plan: ofPlan[name],
+    raised: billing.raised[name],
+  }));
+};
+
+/** The org's billing, without its ceilings. */
+const billingSummary = (billing: BillingUsage, cardOnFile: boolean | null): BillingView => ({
   plan: billing.plan,
+  unbilled: billing.unbilled,
   payment: billing.payment,
   card_on_file: cardOnFile,
   month_start: iso(billing.monthStart),
@@ -74,6 +106,17 @@ const billingView = (billing: BillingUsage, cardOnFile: boolean | null): Billing
   bill: billing.bill,
   notices: billingNotices(billing),
 });
+
+/** The org's billing; with its ceilings for a platform admin (`withCeilings`). */
+const billingView = (
+  billing: BillingUsage,
+  cardOnFile: boolean | null,
+  withCeilings = false,
+): BillingView => {
+  const view = billingSummary(billing, cardOnFile);
+
+  return withCeilings ? { ...view, ceilings: ceilingsView(billing) } : view;
+};
 
 /** The billing provider of the invocation, `undefined` without one. */
 const invocationProvider = Effect.flatMap(BillingEnv, (env) =>
@@ -98,9 +141,19 @@ const cardOnFile = (provider: BillingProvider | undefined, billing: BillingUsage
           ),
         );
 
-/** What the billing routes answer of the org: {@link billingView} with whether a card is on file. */
+/** Whether the caller is a platform admin, who sees the org's ceilings. */
+const platformAdmin = Effect.map(AccessPrincipal, (identity) => identity.platformAdmin);
+
+/**
+ * What the billing routes answer of the org: {@link billingView} with whether a card is on file, and the ceilings for a
+ * platform admin.
+ */
 const viewReply = (provider: BillingProvider | undefined, billing: BillingUsage) =>
-  Effect.map(cardOnFile(provider, billing), (card) => jsonReply(200, billingView(billing, card)));
+  Effect.gen(function* () {
+    const card = yield* cardOnFile(provider, billing);
+
+    return jsonReply(200, billingView(billing, card, yield* platformAdmin));
+  });
 
 /** The request's JSON body decoded by `schema`, excess properties refused; `400 invalid body` saying `expected`. */
 const decodeBody = <S extends Schema.ConstraintDecoder<unknown>>(schema: S, expected: string) =>
@@ -207,6 +260,12 @@ const billingPage = (env: BillingBindings, org: OrgId) =>
     return { url: `${origin}/o/${encodeURIComponent(record.slug)}/billing`, name: record.name };
   });
 
+/** An unbilled org has no checkout and no plan to switch from: a platform admin decides its billing. */
+const unbilledRefusal = replyError(409, "unbilled", {
+  message:
+    "the org is unbilled: a platform admin put it on Pay as you go with no card and no invoice",
+});
+
 const checkout = (provider: BillingProvider) =>
   Effect.gen(function* () {
     const env = yield* BillingEnv;
@@ -221,6 +280,8 @@ const checkout = (provider: BillingProvider) =>
 
     const email = identity.principal.email;
     const billing = yield* usageNow;
+
+    if (billing.unbilled) return yield* unbilledRefusal;
 
     if (billing.plan === "payg")
       return yield* replyError(409, "already_on_payg", {
@@ -293,6 +354,8 @@ const switchPlan = (provider: BillingProvider) =>
 
     const billing = yield* usageNow;
 
+    if (billing.unbilled) return yield* unbilledRefusal;
+
     if (billing.plan !== body.plan) {
       yield* sendUsage(env, provider, org);
 
@@ -340,6 +403,75 @@ const setCap = Effect.gen(function* () {
   return yield* viewReply(yield* invocationProvider, yield* usageNow);
 }).pipe(Effect.catchTag("BillingPartUnavailable", partUnavailable));
 
+const requirePlatformAdmin = Effect.flatMap(platformAdmin, (admin) =>
+  admin
+    ? Effect.void
+    : Effect.fail(
+        replyError(403, "platform_admin_required", {
+          message: "only a platform admin can mark an org unbilled or raise its ceilings",
+        }),
+      ),
+);
+
+/** The org's billing after a platform admin's change, which this isolate forgets at once. */
+const changed = Effect.gen(function* () {
+  forgetBilling(yield* CurrentOrg);
+
+  return yield* viewReply(yield* invocationProvider, yield* usageNow);
+});
+
+const setUnbilled = Effect.gen(function* () {
+  yield* requirePlatformAdmin;
+
+  const body = yield* decodeBody(
+    SetBillingUnbilled,
+    'expected {"unbilled": true} or {"unbilled": false}',
+  );
+
+  yield* billingControlPlane("billing unbilled", (stub) =>
+    stub.billing().setUnbilled(body.unbilled),
+  );
+
+  return yield* changed;
+});
+
+const isRaise = (value: number): boolean =>
+  Number.isSafeInteger(value) && value >= 1 && value <= MAX_RAISED_CEILING;
+
+const raiseCeilings = Effect.gen(function* () {
+  yield* requirePlatformAdmin;
+
+  const body = yield* decodeBody(
+    RaiseBillingCeilings,
+    "expected browser_sessions, computers and/or request_rate, each a number or null",
+  );
+
+  const raised: { [name in Ceiling]?: number | null } = {};
+
+  for (const [field, name] of Record.toEntries(CEILING_FIELDS)) {
+    const value = body[field];
+
+    if (value === undefined) continue;
+
+    if (value !== null && !isRaise(value))
+      return yield* replyError(422, "invalid_ceiling", {
+        message:
+          `a raised ${field} is a whole number from 1 to ` +
+          `${MAX_RAISED_CEILING.toLocaleString("en-US")}, or null for the plan's`,
+      });
+    raised[name] = value;
+  }
+
+  if (Object.keys(raised).length === 0)
+    return yield* replyError(400, "invalid body", {
+      message: "expected browser_sessions, computers and/or request_rate",
+    });
+
+  yield* billingControlPlane("billing ceilings", (stub) => stub.billing().raiseCeilings(raised));
+
+  return yield* changed;
+});
+
 export const BillingRoutes = HttpRouter.addAll([
   HttpRouter.route("GET", `${BASE}/billing`, hostedOnly(handled(overview))),
   HttpRouter.route("PATCH", `${BASE}/billing`, hostedOnly(handled(setCap))),
@@ -358,4 +490,6 @@ export const BillingRoutes = HttpRouter.addAll([
     `${BASE}/billing/plan`,
     hostedOnly(withProvider((provider) => handled(switchPlan(provider)))),
   ),
+  HttpRouter.route("PUT", `${BASE}/billing/unbilled`, hostedOnly(handled(setUnbilled))),
+  HttpRouter.route("PATCH", `${BASE}/billing/ceilings`, hostedOnly(handled(raiseCeilings))),
 ]);

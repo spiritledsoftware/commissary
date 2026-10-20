@@ -641,6 +641,11 @@ The email Commissary Cloud bills a Pay-as-you-go org to: that of the org owner w
 one org.
 _Avoid_: payer, billing contact, owner (an org role)
 
+**Unbilled org**:
+An org a platform admin put on Pay as you go with no card and no invoice, for the operator's own orgs, design partners
+and support credit (ADR 0042). Nothing it uses is billed and no billing cap applies to it.
+_Avoid_: free org, comped, sponsored
+
 ### Tools
 
 **Toolkit**:
