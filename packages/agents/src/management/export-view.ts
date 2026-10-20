@@ -1,7 +1,8 @@
 /**
  * Agents' section of the export of an org (`GET /v9/management/export`, ADR 0027; the app Worker's `org-routes.ts`
  * builds the rest, #134 "The area package convention"): the agents the caller manages, each with its definition and,
- * for a shared agent, its watchers and grants (members by email, teams by name). Runs are not part of it (#227).
+ * for a shared agent, its watchers and grants (members by email, teams by name), and the metadata of its runs (#228:
+ * who started each, its trigger, its state and its times), never their transcripts.
  */
 import { Effect } from "effect";
 import { currentViewer } from "@commissary/auth";

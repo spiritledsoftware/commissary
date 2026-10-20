@@ -32,7 +32,7 @@ import {
   bodyJson,
 } from "@commissary/state";
 import { AgentsEnv } from "@commissary/agents/api";
-import { sweepRetiredSchedules } from "@commissary/agents/management";
+import { sweepDeletedRuns, sweepRetiredSchedules } from "@commissary/agents/management";
 import {
   CurrentOrg,
   GLOBAL_ORG,
@@ -192,8 +192,10 @@ const removeMember = Effect.gen(function* () {
   yield* orRefuse(result);
   // Their API keys went with them (ADR 0027); the Workers that cached one refuse it within the cache lifetime.
   yield* reindex;
-  // So did their private agents' schedules: their objects, which the ControlPlane cannot reach, are deleted now.
+  // So did their private agents' schedules and runs, and every run they started (#228): their objects, which the
+  // ControlPlane cannot reach, are deleted now.
   yield* sweepRetiredSchedules(yield* AgentsEnv, yield* CurrentOrg);
+  yield* sweepDeletedRuns(yield* AgentsEnv, yield* CurrentOrg);
 
   return jsonReply(200, { status: "ok" });
 });

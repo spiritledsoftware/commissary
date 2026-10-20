@@ -11,6 +11,7 @@ import {
   listUsageRecords,
   popUsageQueue,
   pruneUsageRecords,
+  recordPayload,
   recordToRow,
   resolveAuthIds,
   rowToPayload,
@@ -39,6 +40,7 @@ import dropHostedAuthMigration from "../../../migrations/usage/0009_drop_hosted_
 import toolCallsMigration from "../../../migrations/usage/0010_usage_tool_calls.sql?raw";
 import agentRunsMigration from "../../../migrations/usage/0011_usage_agent_runs.sql?raw";
 import browserTimeMigration from "../../../migrations/usage/0012_usage_browser_time.sql?raw";
+import privateAgentRunsMigration from "../../../migrations/usage/0013_usage_private_agent_runs.sql?raw";
 import { platformOf } from "@commissary/state";
 import { insertBrowserSessionRecord, insertToolCallRecord } from "@commissary/tools/testing";
 import { envContext } from "./support/context.ts";
@@ -503,6 +505,42 @@ describe("migration 0006 (usage private)", () => {
 
     expect(owned.find((record) => record.request_id === "mine")?.private).toBe(1);
     expect(owned.find((record) => record.request_id === "shared")?.private).toBe(0);
+  });
+});
+
+describe("migration 0013 (private agent runs)", () => {
+  it("makes the records #227 wrote of a private agent's run private, and leaves the others", async () => {
+    // As #227 wrote them: a private agent's run names the member it acts as, and nothing was private.
+    await insertUsageRecord(
+      db,
+      sampleRecord({
+        requestId: "private-run",
+        requestedAt: 1,
+        memberId: "mem-a",
+        run: { agentId: "ag_mine", runId: "ar_one", starter: "member:mem-a" },
+      }),
+    );
+    await insertUsageRecord(
+      db,
+      sampleRecord({
+        requestId: "shared-run",
+        requestedAt: 2,
+        run: { agentId: "ag_shared", runId: "ar_two", starter: "member:mem-a" },
+      }),
+    );
+    await insertUsageRecord(
+      db,
+      sampleRecord({ requestId: "member", requestedAt: 3, memberId: "mem-a" }),
+    );
+
+    for (const statement of statementsOf(privateAgentRunsMigration))
+      await db.prepare(statement).run();
+
+    expect((await rows()).map((row) => [row.request_id, row.private])).toEqual([
+      ["private-run", 1],
+      ["shared-run", 0],
+      ["member", 0],
+    ]);
   });
 });
 
@@ -1340,5 +1378,112 @@ describe("tool calls (#199)", () => {
 
     expect(await deleteOrgUsage(db, acme)).toMatchObject({ removed: 2, complete: true });
     expect((await rows()).map((row) => row.request_id)).toEqual(["other"]);
+  });
+});
+
+describe("agent runs (#228)", () => {
+  const acme = OrgId.make("acme-runs");
+  const shared = { agentId: "ag_shared", runId: "ar_one", starter: "member:alice" };
+  const own = { agentId: "ag_mine", runId: "ar_two", starter: "member:bob", private: true };
+
+  /** A shared agent's model attempt and tool call, a browser session of its run, and a private agent's attempt. */
+  const runs = async () => {
+    await insertUsageRecord(
+      db,
+      sampleRecord({ requestId: "m1", requestedAt: 1000, orgId: acme, run: shared }),
+    );
+    await insertToolCallRecord(db, {
+      requestId: "t1",
+      orgId: acme,
+      principalId: "run:ar_one",
+      memberId: undefined,
+      run: shared,
+      toolkitId: "tk_a",
+      toolId: "tk_a:search",
+      credential: "shared",
+      private: false,
+      outcome: "success",
+      requestedAt: 2000,
+      latencyMs: 7,
+      requestBytes: 1,
+      responseBytes: 2,
+      costMicros: 0,
+      approval: "none",
+    });
+    await insertBrowserSessionRecord(db, {
+      sessionId: `bs_${"1".repeat(32)}`,
+      orgId: acme,
+      principalId: "run:ar_one",
+      memberId: undefined,
+      run: shared,
+      toolkitId: "tk_browser",
+      openedAt: 3000,
+      browserMs: 60_000,
+      costMicros: 0,
+    });
+    await insertUsageRecord(
+      db,
+      sampleRecord({
+        requestId: "m2",
+        requestedAt: 4000,
+        orgId: acme,
+        memberId: "bob",
+        principalId: "run:ar_two",
+        run: own,
+      }),
+    );
+    await insertUsageRecord(db, sampleRecord({ requestId: "m3", requestedAt: 5000, orgId: acme }));
+  };
+
+  const ids = (page: { readonly rows: ReadonlyArray<UsageRow> }) =>
+    page.rows.map((row) => row.request_id);
+
+  it("name the agent, the run and the starter, and the reads filter by agent and run", async () => {
+    await runs();
+
+    expect(
+      ids(await listUsageRecords(db, acme, { area: "all", agent: "ag_shared" }, authIndexOf)),
+    ).toEqual([`bs_${"1".repeat(32)}`, "t1", "m1"]);
+    expect(ids(await listUsageRecords(db, acme, { run: "ar_one" }, authIndexOf))).toEqual(["m1"]);
+    expect(
+      (await summarizeUsage(db, acme, { groupBy: "area", agent: "ag_shared" }, authIndexOf)).groups,
+    ).toEqual([
+      expect.objectContaining({ key: "models", requests: 1 }),
+      expect.objectContaining({ key: "tools", requests: 1, browser_ms: 60_000 }),
+    ]);
+    expect(
+      (
+        await summarizeUsageSeries(
+          db,
+          acme,
+          { since: 0, until: 10_000, bucket: "hour", groupBy: "model", run: "ar_one" },
+          authIndexOf,
+        )
+      ).flatMap((series) => series.points.map((point) => point.requests)),
+    ).toEqual([1]);
+
+    // The records listing names them; the export queue's payload keeps the Go shape.
+    const [tool] = (await listUsageRecords(db, acme, { tool: "tk_a:search" }, authIndexOf)).rows;
+
+    expect(tool === undefined ? undefined : recordPayload(tool, authIndexOf)).toMatchObject({
+      agent_id: "ag_shared",
+      run_id: "ar_one",
+      starter: "member:alice",
+    });
+    expect(tool === undefined ? undefined : rowToPayload(tool, authIndexOf)).not.toHaveProperty(
+      "agent_id",
+    );
+  });
+
+  it("keep a private agent's run to its member, out of every org-wide read", async () => {
+    await runs();
+
+    expect(ids(await listUsageRecords(db, acme, {}, authIndexOf))).toEqual(["m3", "m1"]);
+    expect(ids(await listUsageRecords(db, acme, { privateOf: "bob" }, authIndexOf))).toEqual([
+      "m3",
+      "m2",
+      "m1",
+    ]);
+    expect(ids(await listUsageRecords(db, acme, { agent: "ag_mine" }, authIndexOf))).toEqual([]);
   });
 });

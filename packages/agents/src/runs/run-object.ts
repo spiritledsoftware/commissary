@@ -1,7 +1,7 @@
 /**
  * The agent run's Durable Object (#227, ADR 0040): one object per run, named by its org and id, holding the run's
- * pi-durable harness on its own SQLite (`pi.ts`, the only module that imports the pi packages, loaded on the first
- * event). The org's index of runs is the ControlPlane's (`store.ts`); this object holds the run itself: its transcript
+ * pi-durable harness on its own SQLite (`pi.ts`, the only module that imports the pi packages, imported statically:
+ * see there). The org's index of runs is the ControlPlane's (`store.ts`); this object holds the run itself: its transcript
  * and its turns.
  *
  * **Turns.** A turn is one input and the work up to its answer. A message to an idle run starts a turn, which reads the
@@ -57,6 +57,9 @@ export const HEARTBEAT_MS = 60_000;
 
 /** How long a cancel waits for the aborted turn to settle before it closes the harness. */
 const CANCEL_SETTLE_MS = 10_000;
+
+/** How long a purge waits for the harness to close before it deletes the run's storage (and again once it closed). */
+const PURGE_CLOSE_MS = 5_000;
 
 /** How many of the newest transcript entries `show` returns, and how many the recent activity covers. */
 const TRANSCRIPT_LIMIT = 200;
@@ -421,6 +424,11 @@ export abstract class AgentRunObject extends DurableObject<AgentRunEnv> {
   readonly #watched = new Set<string>();
   /** The claimants waiting on each running turn now (#229): its result is theirs when it finishes. */
   readonly #claiming = new Map<string, Set<Claimant>>();
+  /**
+   * The run was deleted (`purge`): this instance opens no harness and writes nothing any more, so nothing it still had
+   * running writes the run back. A later instance starts with empty storage, which answers like an unknown run.
+   */
+  #purged = false;
 
   constructor(ctx: DurableObjectState, env: AgentRunEnv, wiring: AgentRunWiring) {
     super(ctx, env);
@@ -437,6 +445,8 @@ export abstract class AgentRunObject extends DurableObject<AgentRunEnv> {
   }
 
   #meta(): StoredMeta | undefined {
+    if (this.#purged) return undefined;
+
     const stored = this.ctx.storage.kv.get(META);
 
     return stored === undefined ? undefined : Option.getOrUndefined(decodeMeta(stored));
@@ -493,6 +503,7 @@ export abstract class AgentRunObject extends DurableObject<AgentRunEnv> {
    * eviction keeps it: the turn ends with it (ADR 0040) when it settles.
    */
   #refused(message: string): void {
+    if (this.#purged) return;
     this.ctx.storage.kv.put(REFUSAL, message);
   }
 
@@ -524,6 +535,8 @@ export abstract class AgentRunObject extends DurableObject<AgentRunEnv> {
 
   /** The run's harness, opened on first use: its tools listed, and what the last process left running resumed. */
   #harness(meta: StoredMeta): Promise<PiRun> {
+    if (this.#purged) return Promise.reject(new Error("the run was deleted"));
+
     if (this.#pi !== undefined) return this.#pi;
 
     const opening = (async () => {
@@ -633,7 +646,7 @@ export abstract class AgentRunObject extends DurableObject<AgentRunEnv> {
   async #finish(meta: StoredMeta, id: string, settled: Settled): Promise<StoredTurn | undefined> {
     const turn = this.#turn(id);
 
-    if (turn === undefined || turn.status !== "running") return turn;
+    if (this.#purged || turn === undefined || turn.status !== "running") return turn;
     const refusal = this.ctx.storage.kv.get<string>(REFUSAL);
     const cancelled = this.ctx.storage.kv.get<boolean>(cancelKey(id)) === true;
 
@@ -792,6 +805,7 @@ export abstract class AgentRunObject extends DurableObject<AgentRunEnv> {
    */
   start(init: RunInit, input: string): Promise<RunsResult<Delivered>> {
     return this.#serial(async () => {
+      if (this.#purged) return RUN_NOT_FOUND;
       const name = this.ctx.id.name;
 
       if (
@@ -1183,13 +1197,44 @@ export abstract class AgentRunObject extends DurableObject<AgentRunEnv> {
 
   /**
    * Deletes the run: its harness closed, its alarm and all its storage (its transcript and turns) deleted. The org's
-   * deletion calls it for each of its runs (`org-deletion.ts`) before it forgets them.
+   * deletion calls it for each of its runs (`org-deletion.ts`) before it forgets them, and so do the sweeps of runs
+   * deleted with their agent or their member or past the org's retention period (#228, `retention.ts`). The run's own
+   * sandbox session, once runs have one (#230), goes here too.
    */
   async purge(): Promise<void> {
-    const meta = this.#meta();
+    const id = this.#meta()?.id;
+    const pi = this.#pi;
 
-    if (meta !== undefined) this.#drop(meta);
+    this.#purged = true;
     this.#pi = undefined;
+
+    if (pi !== undefined) {
+      // The harness closes first (its running turn aborted), so it writes nothing once the storage is gone; a close
+      // past the bound deletes the storage again when it ends, whatever it wrote meanwhile.
+      const closing = (async () => {
+        try {
+          await (await pi).close();
+        } catch (error) {
+          warn("agent run: harness not closed", id ?? "", String(error));
+        }
+      })();
+
+      const closed = await Promise.race([
+        closing.then(() => true),
+        new Promise<false>((resolve) => setTimeout(() => resolve(false), PURGE_CLOSE_MS)),
+      ]);
+
+      if (!closed) {
+        warn("agent run: harness still closing, deleting again once it closed", id ?? "");
+        this.ctx.waitUntil(closing.then(async () => await this.#wipe()));
+      }
+    }
+
+    await this.#wipe();
+  }
+
+  /** Deletes the run's alarm and all its storage. */
+  async #wipe(): Promise<void> {
     await this.ctx.storage.deleteAlarm();
     await this.ctx.storage.deleteAll();
   }

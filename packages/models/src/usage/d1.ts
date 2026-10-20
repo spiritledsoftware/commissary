@@ -119,7 +119,7 @@ export interface UsageRow {
   /**
    * The agent run a record comes from (`migrations/usage/0011_usage_agent_runs.sql`, #227): its agent, the run and its
    * starter (`member:<id>`, or `run:<id>` for a child run, #229), `null` for a run no one started (a shared agent's
-   * trigger, #231); `null` on any other record.
+   * trigger, #231); `null` on any other record. The reads filter by agent and run (#228, {@link UsageFilter.agent}).
    */
   agent_id: string | null;
   run_id: string | null;
@@ -239,7 +239,8 @@ export const recordToRow = (record: UsageRecord): ModelColumns => {
     principal_id: record.principalId,
     org_id: record.orgId,
     member_id: trimmedOrNull(record.memberId),
-    private: record.private === true ? 1 : 0,
+    // A private agent's run is its member's alone (#228, ADR 0040), as private-credential traffic is.
+    private: record.private === true || record.run?.private === true ? 1 : 0,
     auth_id: record.authId,
     auth_type: record.authType.trim() === "" ? "unknown" : record.authType.trim(),
     source: record.source,
@@ -412,6 +413,18 @@ export const rowToPayload = (row: UsageRow, authIndexOf: AuthIndexer) => {
   };
 };
 
+/**
+ * A record as the records listing answers it (`GET .../usage/records`): its export JSON ({@link rowToPayload}) and the
+ * agent run it comes from (#228): its agent, the run and its starter. The export queue keeps the Go shape: how it carries
+ * agent runs is not settled yet.
+ */
+export const recordPayload = (row: UsageRow, authIndexOf: AuthIndexer) => ({
+  ...rowToPayload(row, authIndexOf),
+  ...(row.agent_id === null ? {} : { agent_id: row.agent_id }),
+  ...(row.run_id === null ? {} : { run_id: row.run_id }),
+  ...(row.starter === null ? {} : { starter: row.starter }),
+});
+
 // ---------------------------------------------------------------------------------------------------------------
 // Queue (GET .../usage/queue)
 // ---------------------------------------------------------------------------------------------------------------
@@ -487,6 +500,10 @@ export interface UsageFilter {
   readonly toolkit?: string;
   /** A tool's stable id: its calls. */
   readonly tool?: string;
+  /** A hosted agent's id (#228): the records of its runs, in every area the filter reads. */
+  readonly agent?: string;
+  /** An agent run's id (#228): its records. */
+  readonly run?: string;
 }
 
 /** The area a filter reads: its own, or model attempts unless it names a toolkit or a tool. */
@@ -548,6 +565,10 @@ const filterClauses = (
   if (filter.toolkit !== undefined) add("toolkit_id = ?", filter.toolkit);
 
   if (filter.tool !== undefined) add("tool_id = ?", filter.tool);
+
+  if (filter.agent !== undefined) add("agent_id = ?", filter.agent);
+
+  if (filter.run !== undefined) add("run_id = ?", filter.run);
 
   // Private traffic is its owner's alone: never part of an org-wide read.
   if (filter.privateOf === undefined) clauses.push("private = 0");
@@ -997,6 +1018,10 @@ export interface UsageSeriesQuery {
   readonly area?: UsageAreaFilter;
   readonly toolkit?: string;
   readonly tool?: string;
+  /** See {@link UsageFilter.agent}. */
+  readonly agent?: string;
+  /** See {@link UsageFilter.run}. */
+  readonly run?: string;
 }
 
 const compareKeys = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
@@ -1039,6 +1064,8 @@ export const summarizeUsageSeries = async (
       ...(query.area === undefined ? {} : { area: query.area }),
       ...(query.toolkit === undefined ? {} : { toolkit: query.toolkit }),
       ...(query.tool === undefined ? {} : { tool: query.tool }),
+      ...(query.agent === undefined ? {} : { agent: query.agent }),
+      ...(query.run === undefined ? {} : { run: query.run }),
     },
     authIndexOf,
   );

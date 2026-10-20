@@ -112,7 +112,8 @@ const rowOf = (
   principal_id: record.principalId,
   org_id: record.orgId,
   member_id: record.memberId ?? null,
-  private: record.private ? 1 : 0,
+  // A private agent's run is its member's alone (#228, ADR 0040).
+  private: record.private || record.run?.private === true ? 1 : 0,
   auth_id: "",
   auth_type: record.credential ?? "",
   source: "",
@@ -173,8 +174,9 @@ export const writeToolCallRecord = (record: ToolCallRecord): Effect.Effect<void,
  * close that runs twice writes it once). It names the session's org, principal (`key:<key id>` for an API key, which
  * names the key) and member, the toolkit, its browser time from opening to closing and what that cost at the price per
  * browser hour, prorated; no tool (its calls keep their own records), no URL, no page content. The browser toolkit's
- * credential is its shared one (Commissary's own binding), so the record is org-wide. It names the browser profile the
- * session opened from (#215), if it opened from one.
+ * credential is its shared one (Commissary's own binding), so the record is org-wide, but for a private agent's run's
+ * (#228), which is its member's alone. It names the browser profile the session opened from (#215), if it opened from
+ * one, and the agent run that opened it (#228), if one did.
  */
 export interface BrowserSessionRecord {
   readonly sessionId: string;
@@ -189,6 +191,8 @@ export interface BrowserSessionRecord {
   readonly costMicros: number;
   /** The browser profile it opened from (#215); undefined when it opened from none. */
   readonly profileId?: string | undefined;
+  /** The agent run that opened it (#228): its agent, the run and its starter; a private agent's is its member's alone. */
+  readonly run?: UsageRun | undefined;
 }
 
 const sessionRowOf = (
@@ -205,7 +209,7 @@ const sessionRowOf = (
   principal_id: record.principalId,
   org_id: record.orgId,
   member_id: record.memberId ?? null,
-  private: 0,
+  private: record.run?.private === true ? 1 : 0,
   auth_id: "",
   auth_type: "shared",
   source: "",
@@ -219,9 +223,9 @@ const sessionRowOf = (
   request_bytes: null,
   response_bytes: null,
   approval: null,
-  agent_id: null,
-  run_id: null,
-  starter: null,
+  agent_id: record.run?.agentId ?? null,
+  run_id: record.run?.runId ?? null,
+  starter: record.run?.starter ?? null,
   browser_ms: record.browserMs,
   browser_profile_id: record.profileId ?? null,
 });

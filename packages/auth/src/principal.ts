@@ -170,12 +170,18 @@ export const isSharedAgentRun = (
 ): principal is RunPrincipal & { readonly actsAs: { readonly kind: "agent" } } =>
   principal.kind === "run" && principal.actsAs.kind === "agent";
 
-/** What a usage record says of the agent run it comes from (#227): its agent, the run and its starter, as text. */
+/**
+ * What a usage record says of the agent run it comes from (#227): its agent, the run and its starter, as text, and
+ * whether it is a private agent's run (#228), whose records are private: its member's alone, left out of org-wide
+ * reads (ADR 0040).
+ */
 export interface UsageRun {
   readonly agentId: string;
   readonly runId: string;
   /** `member:<member id>`, or `run:<run id>` for a child run (#229); none for a run no one started. */
   readonly starter?: string;
+  /** A private agent's run: its records are its member's alone. */
+  readonly private?: boolean;
 }
 
 /** The agent run `principal` is, as usage records name it; `undefined` for any other principal. */
@@ -187,6 +193,7 @@ export const usageRunOf = (principal: Principal): UsageRun | undefined =>
         ...(principal.starter === undefined
           ? {}
           : { starter: `${principal.starter.kind}:${principal.starter.id}` }),
+        ...(principal.actsAs.kind === "member" ? { private: true } : {}),
       }
     : undefined;
 

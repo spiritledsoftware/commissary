@@ -212,8 +212,8 @@ the Worker asks on every request: a removed member, or a member whose role was l
 | Allow or stop private agents (`PATCH /membership`, `private_agents`)                             |                   |     ✓     |              ✓               |       ✓        |
 | Give a service token a role above plain member; download a credential                            |                   |           | owner **service token** only |       ✓        |
 | List, create and rename orgs                                                                     |                   |           |                              |       ✓        |
-| Read the org and its retention period (`GET /org`)                                               |                   |     ✓     |              ✓               |       ✓        |
-| Set the usage retention period (`PATCH /org`); download the org's export (`GET /export`)         |                   |     ✓     |              ✓               |       ✓        |
+| Read the org and its retention periods (`GET /org`)                                              |                   |     ✓     |              ✓               |       ✓        |
+| Set the retention periods (`PATCH /org`); download the org's export (`GET /export`)              |                   |     ✓     |              ✓               |       ✓        |
 | Delete the org (`DELETE /org`, retyping its name; people only)                                   |                   |           |              ✓               |       ✓        |
 | Delete their own account (`DELETE /me`)                                                          |  ✓ (people only)  |     ✓     |              ✓               |       ✓        |
 
@@ -562,8 +562,17 @@ Commissary keeps as little as it can and deletes at once; there is no grace peri
 - **Usage records** keep an upstream failure's status, type and code but not its body, and are pruned after the org's
   **retention period** (`usage_retention_days`, in days; `null` keeps them). A new org starts at 90 days; `global` keeps records until an org admin sets a period. The cron
   task `usage-retention` applies each org's period.
+- **Agent runs** (#228) are kept for the org's **run retention period** after their last activity
+  (`run_retention_days`, in days; `null` keeps them; every org starts at 30 days, `global` included; set it in the
+  panel's Settings, Retention): the cron task `agent-run-retention` deletes the older ones with their transcripts, one
+  run at a time on its own last activity, never while a turn runs. Removing an agent deletes all its runs at once, and
+  so does removing a member for their private agents' runs and every run they started, each with the runs it started:
+  they are refused from then on, the removal deletes up to 60 runs' transcripts before it answers, and the cron task
+  deletes the rest at its next run (every 3 hours). Preview deployments run no cron tasks, so there the rest waits for
+  the next removal or the org's deletion.
 - **Removing a member** (`DELETE /members/<id>`) deletes their API keys, private accounts and provider key groups, the
-  OAuth logins they started in that org, and their Spend limits and counters and those of their API keys.
+  OAuth logins they started in that org, their private agents and agent runs, and their Spend limits and counters and
+  those of their API keys.
 - **API keys** are deleted when revoked and when they expire (an expired key is purged when keys are listed or created,
   when one is checked, and by the cron task `api-key-expiry`); a deleted key's Spend limits and counters go with it.
 - **Deleting an org** (`DELETE /org` with `{"name": "<the org's name>"}`; a person who is an org owner or a platform admin, never a service
@@ -587,7 +596,8 @@ Every proxied request produces one structured log line (Workers Logs) whose `pri
 `key:<key id>` for an API key, `mkey:<key id>` for a management key, `user:<email>` for people, `service:<client id>` for
 service tokens. Usage records in D1 store the same id. Emails are
 personal data: restrict who can read Workers Logs and the D1 database, and set the retention you need (each org's usage
-retention period, `PATCH /org` with `usage_retention_days`, and Workers Logs retention). Tokens, API keys, provider keys, JWTs, request bodies, headers and query strings are never
+retention period, `PATCH /org` with `usage_retention_days`, its agent runs' with `run_retention_days`, and Workers Logs
+retention). Tokens, API keys, provider keys, JWTs, request bodies, headers and query strings are never
 logged; scheduled-job failures are logged as a one-line summary with URL queries removed.
 
 ## 5. Optional: single-header service token

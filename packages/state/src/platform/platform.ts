@@ -15,6 +15,7 @@ import { type LeaseSource, LeaseStore, type TakeLease } from "../lease.ts";
 import {
   type OrgInput,
   type OrgPatch,
+  type RetentionPeriods,
   type OrgRecord,
   type OrgRemoval,
   type OrgWriteResult,
@@ -61,6 +62,14 @@ export class Platform extends DurableObject<StateObjectEnv> {
   /** Sets (or, with `null`, clears) how many days the org's usage records are kept (ADR 0027). */
   setUsageRetention(id: string, days: number | null): OrgWriteResult {
     return this.#store.setUsageRetention(id, days);
+  }
+
+  /**
+   * Sets (or, with `null`, clears) the org's retention periods that `periods` names: its usage records' and its agent
+   * runs' (#228, ADR 0040), both or neither.
+   */
+  setRetention(id: string, periods: RetentionPeriods): OrgWriteResult {
+    return this.#store.setRetention(id, periods);
   }
 
   /** Deletes the org and its index rows at once; `global` is refused (ADR 0027). */

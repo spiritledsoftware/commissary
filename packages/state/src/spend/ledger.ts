@@ -15,6 +15,8 @@
  *   without room refuses it (`refusal`). Several limits on one subject and period (an admin's and a member's) are enforced
  *   together, so the smaller amount binds.
  * - A scope is charged only while it has a limit: an org without limits stores no counters, and `gate` answers at once.
+ * - A shared agent's run (#228) acts as the agent: its traffic counts toward the agent's limits as a member's counts
+ *   toward theirs (shared credentials only, which are all a shared agent reaches), and the org's.
  */
 import { type Period, type PeriodBounds, periodBounds } from "./period.ts";
 import {
@@ -158,7 +160,7 @@ export class SpendLedger implements SpendPolicy {
     return caller.apiKeyId === undefined ? [] : [{ kind: "key", subject: caller.apiKeyId }];
   }
 
-  /** The member, their teams and the org: the limits that shared credentials answer to. */
+  /** The member, their teams, the org and a shared agent: the limits that shared credentials answer to. */
   #sharedScopes(caller: SpendCaller): ReadonlyArray<SpendScope> {
     return [
       ...(caller.memberId === undefined
@@ -171,6 +173,9 @@ export class SpendLedger implements SpendPolicy {
             })),
           ]),
       { kind: "org", subject: ORG_SUBJECT },
+      ...(caller.agentId === undefined
+        ? []
+        : [{ kind: "agent" as const, subject: caller.agentId }]),
     ];
   }
 

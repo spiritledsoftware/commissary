@@ -79,6 +79,8 @@ describe("the org list", () => {
           created_at: expect.stringMatching(/^\d{4}-\d\d-\d\dT/),
           // `global` keeps its history.
           usage_retention_days: null,
+          // Agent runs are kept 30 days after their last activity in every org (#228).
+          run_retention_days: 30,
         },
       ],
     });
@@ -108,6 +110,7 @@ describe("creating an org", () => {
       name: "Created Inc",
       created_at: expect.stringMatching(/^\d{4}-\d\d-\d\dT/),
       usage_retention_days: 90,
+      run_retention_days: 30,
     });
 
     expect((await orgs()).find((org) => org.slug === "created")?.id).toBe(
@@ -309,6 +312,29 @@ describe("the org's own record and its retention period", () => {
     expect((await harness.json("/v9/management/orgs/ret-bad/org")).body).toMatchObject({
       usage_retention_days: 90,
     });
+  });
+
+  it("sets and clears the agent runs' retention period beside the usage one (#228)", async () => {
+    await create({ slug: "ret-runs", name: "Runs" });
+    const prefix = "/v9/management/orgs/ret-runs";
+
+    expect(await retention(prefix, { run_retention_days: 7 })).toMatchObject({
+      status: 200,
+      body: { usage_retention_days: 90, run_retention_days: 7 },
+    });
+    expect(
+      await retention(prefix, { usage_retention_days: 10, run_retention_days: null }),
+    ).toMatchObject({ status: 200, body: { usage_retention_days: 10, run_retention_days: null } });
+    expect((await harness.json(`${prefix}/org`)).body).toMatchObject({
+      usage_retention_days: 10,
+      run_retention_days: null,
+    });
+
+    for (const days of [0, 3651, 1.5, "30"]) {
+      expect([400, 422]).toContain((await retention(prefix, { run_retention_days: days })).status);
+    }
+
+    expect((await harness.json(`${prefix}/org`)).body).toMatchObject({ run_retention_days: null });
   });
 
   it("refuses a body that names nothing to change or something else", async () => {
