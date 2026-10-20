@@ -1,9 +1,9 @@
 /**
  * The Billing part of an org's ControlPlane (#134 "How an area's ControlPlane part works", #148): the single writer for
- * the org's plan, its free-usage counters and its billing cap, and what Polar knows the org by and was sent of its
- * usage (`store.ts`). An `RpcTarget` the composed `ControlPlane` constructs once per object
- * (`new BillingPart(ctx)`); callers reach it as `stub.billing().x(…)`, one pipelined round trip. Methods exchange
- * plain data only. New in the Workers port, no Go counterpart.
+ * the org's plan, its free-usage counters and its billing cap, what Polar knows the org by and was sent of its usage,
+ * and what a platform admin set for it (unbilled, raised ceilings; `store.ts`). An `RpcTarget` the composed
+ * `ControlPlane` constructs once per object (`new BillingPart(ctx)`); callers reach it as `stub.billing().x(…)`, one
+ * pipelined round trip. Methods exchange plain data only. New in the Workers port, no Go counterpart.
  *
  * The part itself does not know the deployment's mode: on a self-hosted Commissary nothing calls it (`env.ts`,
  * `meter.ts`), so it stores nothing there.
@@ -13,12 +13,13 @@
  */
 import { RpcTarget } from "cloudflare:workers";
 import type { ControlPlanePart } from "@commissary/state";
-import type { Plan } from "./plan.ts";
+import type { Ceilings, Plan, RaisedCeilings } from "./plan.ts";
 import {
   type Admission,
   BillingStore,
   type BillingUsage,
   type MeterBatch,
+  type RateCeiling,
   type SubscriptionChange,
 } from "./store.ts";
 
@@ -48,6 +49,31 @@ export class BillingPart extends RpcTarget implements ControlPlanePart {
   /** An org owner set the billing cap: dollars a month, `null` for none. Applies to the next request. */
   setBillingCap(cap: number | null): void {
     this.#store.setBillingCap(cap);
+  }
+
+  /** A platform admin marks the org unbilled, or not (`BillingStore.setUnbilled`). */
+  setUnbilled(unbilled: boolean): void {
+    this.#store.setUnbilled(unbilled);
+  }
+
+  /** A platform admin raises the given ceilings for the org; `null` restores the plan's. */
+  raiseCeilings(raised: Partial<RaisedCeilings>): void {
+    this.#store.raiseCeilings(raised);
+  }
+
+  /** The ceilings that apply to the org: its plan's, raised where a platform admin raised them. */
+  ceilings(): Ceilings {
+    return this.#store.ceilings();
+  }
+
+  /** The org's request-rate ceiling: its plan's binding, or a raised one this part counts ({@link admitRate}). */
+  rateCeiling(): RateCeiling {
+    return this.#store.rateCeiling();
+  }
+
+  /** Counts a request at `now` against the org's raised request rate; answers whether it is within it. */
+  admitRate(now: number): boolean {
+    return this.#store.admitRate(now);
   }
 
   /** Records the org's Polar customer. */

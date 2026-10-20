@@ -193,6 +193,7 @@ the Worker asks on every request: a removed member, or a member whose role was l
 | Set any Spend limit and the org's calendar (`/spend/limits`, `/spend/settings`)                  |                   |     ✓     |              ✓               |       ✓        |
 | Read the org's plan, usage, bill, billing cap and notices (Commissary Cloud, `GET /billing`)     |                   |     ✓     |              ✓               |       ✓        |
 | Upgrade, open the billing portal, switch to Free, set the billing cap (Cloud, `/billing` writes) |                   |           |              ✓               |       ✓        |
+| Mark unbilled, raise ceilings (Commissary Cloud, `/billing/unbilled`, `/billing/ceilings`)       |                   |           |                              |       ✓        |
 | Create API keys for themselves; list and revoke their own (`/api-keys`)                          |         ✓         |     ✓     |              ✓               | if a member ¹  |
 | List and revoke every API key of the org                                                         |                   |     ✓     |              ✓               |       ✓        |
 | Turn auto-join, or Access sign-ins for clients in `global`, on or off (`PATCH /membership`)      |                   |           |              ✓               |       ✓        |
@@ -567,7 +568,8 @@ management keys work as above. What changes:
   seconds everywhere.
 - **Rate limit.** Each org's requests on the client API are counted by a Workers rate limit keyed by org, one per plan:
   60 a minute on Free and 600 on Pay as you go (constants, ADR 0042; the org's plan picks the binding). Past it requests
-  answer `429` with `Retry-After: 60`. The management API has none.
+  answer `429` with `Retry-After: 60`. An org whose rate a platform admin raised (below) is counted by its own
+  ControlPlane instead, at the raised rate. The management API has none.
 - **Plans and free usage** (ADR 0042). Every org holds a plan, `free` (every org starts on it) or `payg`, and gets the same
   free usage each calendar month (UTC) on either: 25,000 requests and tool calls, 1 browser hour, no computer hours.
   Each request to a model counts once when Commissary makes its first upstream attempt for it, whatever credential
@@ -593,6 +595,21 @@ management keys work as above. What changes:
   (no email): 80% and 100% of a unit's free usage where Free's limits apply, 80% and 100% of the cap on Pay as you go,
   and a failed payment; an owner follows that one to Polar's customer portal (`POST /billing/portal`), an admin who is
   not an owner is told to ask an owner.
+- **Unbilled orgs and raised ceilings** (ADR 0042, #240): **platform admins only** (anyone else, org owners included,
+  gets `403 platform_admin_required`), from the org chooser's **Billing** button or the API at the org's address.
+  `PUT /v9/management/orgs/<slug>/billing/unbilled {"unbilled": true}` marks the org unbilled, for the operator's own
+  orgs, design partners and support credit: it is on Pay as you go with no card and no invoice, nothing it uses is sent
+  to Polar (what it owed until then on a subscription still is), the billing cap does not apply, and its owners see it
+  unbilled and cannot start a checkout or switch to Free (`409 unbilled`). `{"unbilled": false}` returns it to Free, or
+  to Pay as you go while it still has a Polar subscription; what it used while unbilled is never billed. `PATCH
+  /v9/management/orgs/<slug>/billing/ceilings {"browser_sessions": 10, "computers": 6, "request_rate": 1200}` raises
+  that org's ceilings above its plan's (Free: 1 concurrent browser session, no computer, 60 requests a minute; Pay as
+  you go: 5, 3 and 600; a past-due Pay-as-you-go org is held to Free's): a whole number from 1 to 1,000,000 (`422
+  invalid_ceiling` otherwise), `null` for the plan's; a field left out stays as it is, and a raise never lowers a
+  ceiling. `GET /billing` shows a platform admin the org's ceilings (`ceilings`: for each, `plan`, the value of the plan
+  whose limits apply, and `raised`); everyone who may read it sees `unbilled`, and an unbilled org gets no billing
+  notices. Concurrent browser sessions and computers are enforced once those units exist (#241). A change applies at once in the isolate
+  that made it and within 30 seconds everywhere.
 - **Scripts** use management keys; credential downloads are for platform admins only (§4 "Management API security").
 - **Browser protections.** The cross-site checks of §4 apply unchanged, Better Auth checks the origin of its own
   requests, and the sign-in routes (`/api/auth/*`, `/api/sign-in-options`, `/sign-in`) exist only on Commissary Cloud.
@@ -643,7 +660,7 @@ changes them. A self-hosted Commissary has none of this: Access is where its ide
 | 403 `owner_required`                   | Adding or removing an org admin or owner, changing a role, or changing single sign-on needs an org owner |
 | 403 `service_token_owner_required`     | A service token role above member needs an owner service token of the org, or a platform admin           |
 | 409 `last_owner`                       | The change would leave an org with members but no owner: make someone else an owner first                |
-| 403 `platform_admin_required`          | Listing, creating or renaming orgs needs a platform admin                                                |
+| 403 `platform_admin_required`          | Listing, creating, renaming orgs, or setting one unbilled or its ceilings, needs a platform admin        |
 | 404 on `/o/<slug>/...`                 | No org has that slug (a platform admin sees 404; others 403)                                             |
 | 403 `private_credential`               | Download of a member's private credential by anyone but its owner                                        |
 | 403 `private_credentials_unavailable`  | Adding a private provider key group, or a private credential on an org toolkit, where the org forbids it |

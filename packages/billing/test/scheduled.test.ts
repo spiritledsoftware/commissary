@@ -95,6 +95,33 @@ describe("the meter-events task", () => {
     }),
   );
 
+  it.effect("sends nothing of an unbilled org but what it owed before it was marked", () =>
+    Effect.gen(function* () {
+      const org = yield* payingOrg;
+      const fake = fakeBillingProvider();
+
+      yield* seed(org, FREE_USAGE.requests + 10);
+      yield* Effect.promise(async () => await billingOf(org).setUnbilled(true));
+      yield* seed(org, FREE_USAGE.requests + 5_000);
+
+      yield* runTask(org, fake.provider);
+      yield* runTask(org, fake.provider);
+      assert.strictEqual(fake.total("requests"), 10);
+
+      // A new month while unbilled: nothing is sent at all.
+      yield* TestClock.setTime(Date.UTC(2026, 3, 15));
+      yield* Effect.promise(() =>
+        seedRequestsUsed(env, org, Date.UTC(2026, 3, 15), FREE_USAGE.requests + 7),
+      );
+      yield* runTask(org, fake.provider);
+      assert.strictEqual(fake.total("requests"), 10);
+      assert.lengthOf(
+        fake.calls.filter((made) => made.call === "sendMeterEvents"),
+        1,
+      );
+    }),
+  );
+
   it.effect("pauses after a batch it sent, so the runner stays under Polar's rate limit", () =>
     Effect.gen(function* () {
       const org = yield* payingOrg;

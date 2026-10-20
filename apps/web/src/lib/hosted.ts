@@ -1,5 +1,11 @@
-// What Commissary Cloud (ADR 0026) adds to the panel: who may create orgs and how many, how a refused create reads, and
-// the platform admin's people page (an owned-org limit and suspension). Pure: no DOM, tested in test/hosted.test.ts.
+// What Commissary Cloud (ADR 0026) adds to the panel: who may create orgs and how many, how a refused create reads, the
+// platform admin's people page (an owned-org limit and suspension) and an org's billing as platform admins set it on
+// the org list (unbilled, raised ceilings; ADR 0042). Pure: no DOM, tested in test/hosted.test.ts.
+import {
+  type BillingCeiling,
+  type BillingView,
+  MAX_RAISED_CEILING,
+} from "@commissary/contract/billing";
 import type { Me } from "@commissary/contract/orgs";
 import { asSentence } from "./failure.ts";
 
@@ -90,6 +96,65 @@ export const personProblem = (
       return `An org limit is a whole number from 0 to ${ORG_LIMIT_MAX}, or “default”.`;
     case "platform_admin_required":
       return "Only platform admins manage people.";
+    default:
+      return detail === undefined ? message : asSentence(detail);
+  }
+};
+
+// ---------------------------------------------------------------------------------------------------------------
+// Org billing
+
+const count = new Intl.NumberFormat("en-US");
+
+/** What the ceilings form takes, under its fields. */
+export const ceilingHint = (): string =>
+  `Raise a ceiling above the plan’s for this org: a whole number up to ${count.format(MAX_RAISED_CEILING)}. ` +
+  "Leave it empty for the plan’s.";
+
+/** The org's plan in words: an unbilled org is on Pay as you go with no card and no invoice. */
+export const planLabel = (billing: Pick<BillingView, "plan" | "unbilled">): string =>
+  billing.unbilled ? "Pay as you go, unbilled" : billing.plan === "payg" ? "Pay as you go" : "Free";
+
+export type CeilingInput =
+  | { readonly kind: "plan" }
+  | { readonly kind: "raised"; readonly value: number }
+  | { readonly kind: "invalid" };
+
+/** A typed ceiling: a whole number from 1 to `MAX_RAISED_CEILING`, or empty (or "plan") for the plan's. */
+export const parseCeiling = (text: string): CeilingInput => {
+  const trimmed = text.trim().toLowerCase();
+
+  if (trimmed === "" || trimmed === "plan") return { kind: "plan" };
+
+  if (!/^\d+$/.test(trimmed)) return { kind: "invalid" };
+  const value = Number(trimmed);
+
+  return value < 1 || value > MAX_RAISED_CEILING ? { kind: "invalid" } : { kind: "raised", value };
+};
+
+/** A ceiling as it applies: the plan's, or the raise with the plan's beside it (a raise never lowers it). */
+export const ceilingText = (ceiling: BillingCeiling): string => {
+  if (ceiling.raised === null) return `${count.format(ceiling.plan)} (the plan’s)`;
+
+  const applies = Math.max(ceiling.plan, ceiling.raised);
+  const plan = count.format(ceiling.plan);
+
+  return applies === ceiling.raised
+    ? `${count.format(applies)} (plan: ${plan})`
+    : `${count.format(applies)} (plan: ${plan}; raised to ${count.format(ceiling.raised)})`;
+};
+
+/** What a refused billing write says, by the server's error code. */
+export const billingProblem = (
+  error: string | undefined,
+  message: string,
+  detail?: string,
+): string => {
+  switch (error) {
+    case "invalid_ceiling":
+      return `A ceiling is a whole number from 1 to ${count.format(MAX_RAISED_CEILING)}, or empty for the plan’s.`;
+    case "platform_admin_required":
+      return "Only platform admins change an org’s billing.";
     default:
       return detail === undefined ? message : asSentence(detail);
   }

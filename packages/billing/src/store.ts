@@ -18,11 +18,16 @@
  *   the same events with the same ids, so a retried batch is not counted twice.
  * - **billing_cap** (#238): one row with the billing cap its org owners set, in dollars a month, `NULL` for none; no
  *   row means the default ($50, `bill.ts`).
+ * - **billing_overrides** (#240): one row with what a platform admin set for the org: whether it is unbilled (on Pay as
+ *   you go with nothing sent to Polar, whatever its subscription) and the ceilings raised above its plan's (`null`: the
+ *   plan's). No row: billed, the plan's ceilings.
  *
  * Every table is created `IF NOT EXISTS` in the constructor. All methods are synchronous, so a check and the count
  * that follows it are one step of the single-threaded object.
  */
 import {
+  type Ceiling,
+  type Ceilings,
   DEFAULT_PLAN,
   FREE_USAGE,
   isPlan,
@@ -30,6 +35,9 @@ import {
   type PaymentState,
   type Plan,
   type PlanLimitKind,
+  PLAN_CEILINGS,
+  type RaisedCeilings,
+  RATE_LIMIT_PERIOD_SECONDS,
   type Unit,
   type Usage,
 } from "./plan.ts";
@@ -43,6 +51,7 @@ export const BILLING_TABLES = [
   "billing_meter_sent",
   "billing_meter_batch",
   "billing_cap",
+  "billing_overrides",
 ] as const;
 
 const SCHEMA = [
@@ -80,6 +89,13 @@ const SCHEMA = [
     id INTEGER PRIMARY KEY CHECK (id = 1),
     cap REAL
   )`,
+  `CREATE TABLE IF NOT EXISTS billing_overrides (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    unbilled INTEGER NOT NULL,
+    browser_sessions INTEGER,
+    computers INTEGER,
+    request_rate INTEGER
+  )`,
 ];
 
 /** Below this, an amount of hours left to send is rounding, not usage. */
@@ -108,7 +124,14 @@ export type Admission =
 
 /** An org's plan and what it used in the month containing a time. */
 export interface BillingUsage {
+  /** The plan the org is on: Pay as you go while it is unbilled. */
   readonly plan: Plan;
+  /** A platform admin marked the org unbilled: Pay as you go with no card and no invoice (#240). */
+  readonly unbilled: boolean;
+  /** The plan whose limits apply, and so whose ceilings: Free's while a Pay-as-you-go org is past due. */
+  readonly limitsPlan: Plan;
+  /** The ceilings a platform admin raised for the org; `null`: the plan's. */
+  readonly raised: RaisedCeilings;
   /** `past_due` while Polar waits for a payment: the org is held to Free's limits. */
   readonly payment: PaymentState;
   /** The org's Polar customer, once an owner started a checkout. */
@@ -169,8 +192,38 @@ const NO_ACCOUNT: Account = {
   changedAt: 0,
 };
 
+/** What a platform admin set for the org (#240). */
+interface Overrides {
+  readonly unbilled: boolean;
+  readonly raised: RaisedCeilings;
+}
+
+const NO_OVERRIDES: Overrides = {
+  unbilled: false,
+  raised: { browserSessions: null, computers: null, requestRate: null },
+};
+
+/**
+ * The request-rate ceiling that applies to an org: its plan's (`plan`, the plan whose limits apply), counted by that
+ * plan's rate-limit binding, or one a platform admin raised above it (`raised`), counted by the org's Billing part
+ * ({@link BillingStore.admitRate}).
+ */
+export interface RateCeiling {
+  readonly plan: Plan;
+  readonly raised: number | null;
+}
+
+const RATE_WINDOW_MS = RATE_LIMIT_PERIOD_SECONDS * 1000;
+
 export class BillingStore {
   readonly #sql: SqlStorage;
+
+  /**
+   * The requests counted against a raised request rate in the current window (the minute starting at `start`, epoch
+   * ms). Kept in memory, not in storage: a ceiling for fairness, like the rate-limit bindings, not exact accounting;
+   * an object that restarts starts the minute over.
+   */
+  #rate = { start: 0, count: 0 };
 
   constructor(sql: SqlStorage) {
     this.#sql = sql;
@@ -178,12 +231,93 @@ export class BillingStore {
     for (const statement of SCHEMA) sql.exec(statement);
   }
 
+  /** The plan the org is on: Pay as you go while it is unbilled, else the one Polar or its owners chose. */
   plan(): Plan {
+    return this.unbilled() ? "payg" : this.#subscribedPlan();
+  }
+
+  /**
+   * Whether a platform admin marked the org unbilled (#240): it is on Pay as you go and is never billed, so the billing
+   * cap ({@link admit}) and the billing notices (`notices.ts`) skip it.
+   */
+  unbilled(): boolean {
+    return this.#overrides().unbilled;
+  }
+
+  /** The plan Polar's subscription or the org's owners put it on, whether or not it is unbilled. */
+  #subscribedPlan(): Plan {
     const row = this.#sql
       .exec<{ plan: string }>("SELECT plan FROM billing_plan WHERE id = 1")
       .toArray()[0];
 
     return row !== undefined && isPlan(row.plan) ? row.plan : DEFAULT_PLAN;
+  }
+
+  /**
+   * Marks the org unbilled or not (#240, ADR 0042 "Unbilled orgs"). Unbilled, it is on Pay as you go and nothing it
+   * uses is sent to Polar: what it owed until then on a subscription becomes the batch on its way (as when it leaves
+   * Pay as you go), and what it uses meanwhile is never billed. Unmarked, it is back on the plan its subscription gives
+   * it (Free without one), and what it used while unbilled is not billed either. Marking it as it is changes nothing.
+   */
+  setUnbilled(unbilled: boolean): void {
+    const overrides = this.#overrides();
+
+    if (overrides.unbilled === unbilled) return;
+
+    if (unbilled && this.#subscribedPlan() === "payg") this.#closeUsage();
+    else this.#writeOffUnsent();
+
+    this.#saveOverrides({ ...overrides, unbilled });
+  }
+
+  /** Raises the given ceilings for the org (`null`: back to the plan's); the others stay as they are. */
+  raiseCeilings(raised: Partial<RaisedCeilings>): void {
+    const overrides = this.#overrides();
+
+    this.#saveOverrides({ ...overrides, raised: { ...overrides.raised, ...raised } });
+  }
+
+  /**
+   * The ceilings that apply to the org: those of the plan whose limits apply ({@link limitsPlan}), each raised to what
+   * a platform admin set when that is higher (a raise never lowers a ceiling).
+   */
+  ceilings(): Ceilings {
+    const plan = PLAN_CEILINGS[this.limitsPlan()];
+    const { raised } = this.#overrides();
+
+    const ceiling = (name: Ceiling): number => Math.max(plan[name], raised[name] ?? 0);
+
+    return {
+      browserSessions: ceiling("browserSessions"),
+      computers: ceiling("computers"),
+      requestRate: ceiling("requestRate"),
+    };
+  }
+
+  /** The org's request-rate ceiling: its plan's, or the raised one when a platform admin set one above it. */
+  rateCeiling(): RateCeiling {
+    const plan = this.limitsPlan();
+    const rate = this.ceilings().requestRate;
+
+    return { plan, raised: rate > PLAN_CEILINGS[plan].requestRate ? rate : null };
+  }
+
+  /**
+   * Counts a request at `now` against the org's request-rate ceiling, in fixed one-minute windows; answers whether it
+   * is within it. The Worker asks only for an org whose ceiling was raised ({@link rateCeiling}); the others are
+   * counted by their plan's rate-limit binding. Only a later minute starts a new window: a request whose `now` is
+   * earlier (another isolate's clock behind) counts in the current one, so it cannot reset the count.
+   */
+  admitRate(now: number): boolean {
+    const start = Math.floor(now / RATE_WINDOW_MS) * RATE_WINDOW_MS;
+
+    if (start > this.#rate.start) this.#rate = { start, count: 0 };
+
+    if (this.#rate.count >= this.ceilings().requestRate) return false;
+
+    this.#rate.count += 1;
+
+    return true;
   }
 
   setPlan(plan: Plan): void {
@@ -214,7 +348,9 @@ export class BillingStore {
 
   /** The plan whose limits apply: Free's while a Pay-as-you-go org is past due. */
   limitsPlan(): Plan {
-    const plan = this.plan();
+    if (this.unbilled()) return "payg";
+
+    const plan = this.#subscribedPlan();
 
     return plan === "payg" && this.#account().payment === "past_due" ? "free" : plan;
   }
@@ -241,8 +377,13 @@ export class BillingStore {
     const account = this.#account();
     const used = this.used(month.start);
 
+    const overrides = this.#overrides();
+
     return {
-      plan: this.plan(),
+      plan: overrides.unbilled ? "payg" : this.#subscribedPlan(),
+      unbilled: overrides.unbilled,
+      limitsPlan: this.limitsPlan(),
+      raised: overrides.raised,
       payment: account.payment,
       customerId: account.customerId,
       subscriptionId: account.subscriptionId,
@@ -278,7 +419,8 @@ export class BillingStore {
         },
       };
 
-    const cap = limitsPlan === "payg" ? this.billingCap() : null;
+    // An unbilled org is never billed, so no billing cap applies to it.
+    const cap = limitsPlan === "payg" && !this.unbilled() ? this.billingCap() : null;
 
     if (cap !== null && capRefusesNextRequest(used, cap))
       return {
@@ -356,7 +498,7 @@ export class BillingStore {
       changedAt: change.changedAt,
     };
 
-    const before = this.plan();
+    const before = this.#subscribedPlan();
 
     const changed =
       plan !== before ||
@@ -456,6 +598,13 @@ export class BillingStore {
    * `until` (epoch ms; `undefined`: every month) since it was last sent; `null` without a customer or anything to send.
    */
   #newBatch(until: number | undefined): MeterBatch | null {
+    // Unbilled: what it used meanwhile is never billed, now or after it is unmarked.
+    if (this.unbilled()) {
+      this.#writeOffUnsent();
+
+      return null;
+    }
+
     const { customerId } = this.#account();
 
     if (customerId === null) return null;
@@ -557,6 +706,44 @@ export class BillingStore {
       payment: row.payment === "past_due" ? "past_due" : "ok",
       changedAt: row.changed_at,
     };
+  }
+
+  #overrides(): Overrides {
+    const row = this.#sql
+      .exec<{
+        unbilled: number;
+        browser_sessions: number | null;
+        computers: number | null;
+        request_rate: number | null;
+      }>(
+        "SELECT unbilled, browser_sessions, computers, request_rate FROM billing_overrides WHERE id = 1",
+      )
+      .toArray()[0];
+
+    if (row === undefined) return NO_OVERRIDES;
+
+    return {
+      unbilled: row.unbilled === 1,
+      raised: {
+        browserSessions: row.browser_sessions,
+        computers: row.computers,
+        requestRate: row.request_rate,
+      },
+    };
+  }
+
+  #saveOverrides(overrides: Overrides): void {
+    this.#sql.exec(
+      `INSERT INTO billing_overrides (id, unbilled, browser_sessions, computers, request_rate)
+       VALUES (1, ?, ?, ?, ?)
+       ON CONFLICT (id) DO UPDATE SET unbilled = excluded.unbilled,
+         browser_sessions = excluded.browser_sessions, computers = excluded.computers,
+         request_rate = excluded.request_rate`,
+      overrides.unbilled ? 1 : 0,
+      overrides.raised.browserSessions,
+      overrides.raised.computers,
+      overrides.raised.requestRate,
+    );
   }
 
   #saveAccount(account: Account): void {

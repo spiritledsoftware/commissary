@@ -9,6 +9,9 @@ import { FREE_USAGE } from "./testing.ts";
 /** An org's month: nothing used, on Free, payments ok, the default cap; `overrides` change any of it. */
 const month = (overrides: Partial<BillingUsage> = {}): BillingUsage => ({
   plan: "free",
+  unbilled: false,
+  limitsPlan: "free",
+  raised: { browserSessions: null, computers: null, requestRate: null },
   payment: "ok",
   customerId: null,
   subscriptionId: null,
@@ -75,6 +78,15 @@ describe("billing notices", () => {
 
     expect(capped(FREE_USAGE.requests - 1)).toEqual([]);
     expect(capped(FREE_USAGE.requests)).toEqual([{ kind: "billing_cap", percent: 100 }]);
+  });
+
+  it("tells an unbilled org nothing, past its cap or with a failed payment: it is never billed", () => {
+    const unbilled = { plan: "payg", unbilled: true, limitsPlan: "payg" } as const;
+
+    expect(billingNotices(month({ ...unbilled, used: requestsAbove(10_000_000) }))).toEqual([]);
+    expect(
+      billingNotices(month({ ...unbilled, payment: "past_due", used: requestsAbove(9_000_000) })),
+    ).toEqual([]);
   });
 
   it("tells of a failed payment first, and holds the org to Free's notices meanwhile", () => {

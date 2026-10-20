@@ -93,6 +93,26 @@ export const orgListAtom = ManagementClient.query("orgs", "list", {
 /** Suspends or unsuspends an org on Commissary Cloud (platform admins; call with `reactivityKeys: ORGS`). */
 export const updateOrgAtom = ManagementClient.mutation("orgs", "update");
 
+/** An org's billing refetches after a platform admin's change tagged with this key (`orgBillingKeys(slug)`). */
+export const orgBillingKeys = (slug: string) => ["org-billing", slug] as const;
+
+/**
+ * An org's billing with its ceilings, read from the org list by a platform admin of Commissary Cloud
+ * (`/orgs/<slug>/billing`, whichever org the panel shows).
+ */
+export const orgBillingAtom = Atom.family((slug: string) =>
+  ManagementClient.query("billing", "ofOrg", {
+    params: { slug },
+    reactivityKeys: orgBillingKeys(slug),
+    timeToLive: Duration.seconds(30),
+  }),
+);
+
+// Platform admins' billing writes for one org: call with `reactivityKeys: orgBillingKeys(slug)`.
+export const setOrgUnbilledAtom = ManagementClient.mutation("billing", "setUnbilled");
+
+export const raiseOrgCeilingsAtom = ManagementClient.mutation("billing", "raiseCeilings");
+
 /** Looks a person up (Commissary Cloud, platform admins). */
 export const getPersonAtom = ManagementClient.mutation("people", "get");
 

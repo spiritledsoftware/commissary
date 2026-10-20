@@ -26,12 +26,12 @@ const { handler } = HttpRouter.toWebHandler(BillingRoutes, { disableLogger: true
 
 const OWNER: Principal = { kind: "user", email: "owner@acme.test", sub: "owner" };
 
-const identity = (org: OrgId, principal: Principal): AccessIdentity => ({
+const identity = (org: OrgId, principal: Principal, platformAdmin: boolean): AccessIdentity => ({
   principal,
   principalId: "user:owner@acme.test",
   callerScope: "scope",
   org,
-  platformAdmin: false,
+  platformAdmin,
   role: "owner",
 });
 
@@ -44,6 +44,8 @@ interface Call {
   /** The billing provider; the default (Polar, from the bindings) when absent. */
   readonly provider?: BillingProvider | undefined;
   readonly principal?: Principal;
+  /** The caller is a platform admin (an owner of every org). */
+  readonly platformAdmin?: boolean;
 }
 
 const call = async (options: Call = {}): Promise<Response> => {
@@ -52,7 +54,10 @@ const call = async (options: Call = {}): Promise<Response> => {
 
   const base = Context.make(BillingEnv, bindings).pipe(
     Context.add(CurrentOrg, org),
-    Context.add(AccessPrincipal, identity(org, options.principal ?? OWNER)),
+    Context.add(
+      AccessPrincipal,
+      identity(org, options.principal ?? OWNER, options.platformAdmin ?? false),
+    ),
   );
 
   const context =
@@ -492,5 +497,212 @@ describe("without billing", () => {
         expect(
           (await call({ method: "POST", path, body: { plan: "free" }, bindings })).status,
         ).toBe(404);
+  });
+});
+
+describe("what platform admins set for an org", () => {
+  const admin = { platformAdmin: true, provider: undefined } as const;
+
+  it("marks an org unbilled, which puts it on Pay as you go, and unmarks it back to Free", async () => {
+    const org = newOrgId();
+
+    const marked = await call({
+      ...admin,
+      method: "PUT",
+      path: "/billing/unbilled",
+      body: { unbilled: true },
+      org,
+    });
+
+    expect(marked.status).toBe(200);
+    expect(await view(marked)).toEqual(expect.objectContaining({ plan: "payg", unbilled: true }));
+
+    // Its owners see it unbilled, without the ceilings.
+    const seen = await view(await call({ org, provider: undefined }));
+
+    expect(seen).toEqual(expect.objectContaining({ plan: "payg", unbilled: true }));
+    expect(seen.ceilings).toBeUndefined();
+
+    const unmarked = await call({
+      ...admin,
+      method: "PUT",
+      path: "/billing/unbilled",
+      body: { unbilled: false },
+      org,
+    });
+
+    expect(await view(unmarked)).toEqual(
+      expect.objectContaining({ plan: "free", unbilled: false }),
+    );
+  });
+
+  it("raises an org's ceilings above its plan's, and null restores the plan's", async () => {
+    const org = newOrgId();
+
+    await setPlan(env, org, "payg");
+
+    const before = await view(await call({ ...admin, org }));
+
+    expect(before.ceilings).toEqual({
+      browser_sessions: { plan: 5, raised: null },
+      computers: { plan: 3, raised: null },
+      request_rate: { plan: 600, raised: null },
+    });
+
+    const raised = await call({
+      ...admin,
+      method: "PATCH",
+      path: "/billing/ceilings",
+      body: { request_rate: 1200, browser_sessions: 10 },
+      org,
+    });
+
+    expect(raised.status).toBe(200);
+    expect((await view(raised)).ceilings).toEqual({
+      browser_sessions: { plan: 5, raised: 10 },
+      computers: { plan: 3, raised: null },
+      request_rate: { plan: 600, raised: 1200 },
+    });
+    expect(await env.CONTROL_PLANE.getByName(org).billing().ceilings()).toEqual({
+      browserSessions: 10,
+      computers: 3,
+      requestRate: 1200,
+    });
+
+    const restored = await call({
+      ...admin,
+      method: "PATCH",
+      path: "/billing/ceilings",
+      body: { request_rate: null },
+      org,
+    });
+
+    const { ceilings } = await view(restored);
+
+    expect(ceilings?.request_rate).toEqual({ plan: 600, raised: null });
+    expect(ceilings?.browser_sessions).toEqual({ plan: 5, raised: 10 });
+  });
+
+  it("shows Free's ceilings for a past-due Pay as you go org, which is held to Free's limits", async () => {
+    const org = newOrgId();
+
+    await env.CONTROL_PLANE.getByName(org).billing().applySubscription({
+      status: "past_due",
+      subscriptionId: "sub_1",
+      customerId: "cus_1",
+      changedAt: Date.now(),
+    });
+    await env.CONTROL_PLANE.getByName(org).billing().raiseCeilings({ requestRate: 1200 });
+
+    const shown = await view(await call({ ...admin, org }));
+
+    expect(shown.plan).toBe("payg");
+    expect(shown.payment).toBe("past_due");
+    expect(shown.ceilings).toEqual({
+      browser_sessions: { plan: 1, raised: null },
+      computers: { plan: 0, raised: null },
+      request_rate: { plan: 60, raised: 1200 },
+    });
+  });
+
+  it("takes whole numbers from 1 to 1,000,000 or null, and nothing else", async () => {
+    for (const request_rate of [0, -5, 1.5, 1_000_001])
+      expect(
+        (
+          await call({
+            ...admin,
+            method: "PATCH",
+            path: "/billing/ceilings",
+            body: { request_rate },
+          })
+        ).status,
+      ).toBe(422);
+
+    for (const body of [{}, { request_rate: "1200" }, { seats: 3 }])
+      expect(
+        (await call({ ...admin, method: "PATCH", path: "/billing/ceilings", body })).status,
+      ).toBe(400);
+
+    for (const body of [{}, { unbilled: "yes" }, { unbilled: true, plan: "payg" }])
+      expect(
+        (await call({ ...admin, method: "PUT", path: "/billing/unbilled", body })).status,
+      ).toBe(400);
+  });
+
+  it("is for platform admins: an org owner gets 403 and nothing changes", async () => {
+    const org = newOrgId();
+
+    const unbilled = await call({
+      method: "PUT",
+      path: "/billing/unbilled",
+      body: { unbilled: true },
+      org,
+      provider: undefined,
+    });
+
+    const ceilings = await call({
+      method: "PATCH",
+      path: "/billing/ceilings",
+      body: { request_rate: 1200 },
+      org,
+      provider: undefined,
+    });
+
+    expect([unbilled.status, ceilings.status]).toEqual([403, 403]);
+    expect(await unbilled.json()).toEqual(
+      expect.objectContaining({ error: "platform_admin_required" }),
+    );
+    expect(await env.CONTROL_PLANE.getByName(org).billing().usage(Date.now())).toEqual(
+      expect.objectContaining({ plan: "free", unbilled: false }),
+    );
+  });
+
+  it("keeps an unbilled org's owners from starting a checkout or switching to Free", async () => {
+    const { id } = await registeredOrg();
+    const fake = fakeBillingProvider();
+
+    await env.CONTROL_PLANE.getByName(id).billing().setUnbilled(true);
+
+    for (const path of ["/billing/checkout", "/billing/plan"]) {
+      const response = await call({
+        method: "POST",
+        path,
+        body: { plan: "free" },
+        org: id,
+        provider: fake.provider,
+      });
+
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual(expect.objectContaining({ error: "unbilled" }));
+    }
+
+    expect(fake.calls.map((made) => made.call)).toEqual([]);
+  });
+
+  it("answers 404 on a self-hosted Commissary", async () => {
+    const selfHosted = { ...env, COMMISSARY_MODE: undefined };
+
+    expect(
+      (
+        await call({
+          ...admin,
+          method: "PUT",
+          path: "/billing/unbilled",
+          body: { unbilled: true },
+          bindings: selfHosted,
+        })
+      ).status,
+    ).toBe(404);
+    expect(
+      (
+        await call({
+          ...admin,
+          method: "PATCH",
+          path: "/billing/ceilings",
+          body: { request_rate: 1200 },
+          bindings: selfHosted,
+        })
+      ).status,
+    ).toBe(404);
   });
 });

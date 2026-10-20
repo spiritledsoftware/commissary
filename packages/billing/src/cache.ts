@@ -1,14 +1,16 @@
 /**
  * What an isolate remembers of an org's billing for a short while, so the client API's hot path does not ask the org's
- * ControlPlane (or the Platform registry) on every request: the org's plan for the rate ceiling, and a refusal by the
- * plan limit. Like `@commissary/auth`'s standing: bounded, per isolate, trusted for {@link BILLING_TTL_MS}, so a plan
+ * ControlPlane (or the Platform registry) on every request: the org's request-rate ceiling, and a refusal by the plan
+ * limit. Like `@commissary/auth`'s standing: bounded, per isolate, trusted for {@link BILLING_TTL_MS}, so a plan
  * change reaches every isolate within that time; a refusal by the billing cap only for
  * {@link BILLING_CAP_REFUSAL_TTL_MS}, so an owner who raises or removes the cap sees use resume within seconds. Code
- * that switches a plan (Polar's webhook, `POST /billing/plan`, #237) or sets the billing cap (`PATCH /billing`, #238)
- * calls {@link forgetBilling} so the isolate that made the change sees it at once.
+ * that switches a plan (Polar's webhook, `POST /billing/plan`, #237), sets the billing cap (`PATCH /billing`, #238) or
+ * changes what a platform admin set (#240) calls {@link forgetBilling} so the isolate that made the change sees it at
+ * once.
  */
 import { makeOrgCache, type OrgId } from "@commissary/core";
-import type { Plan, PlanLimitKind } from "./plan.ts";
+import type { PlanLimitKind } from "./plan.ts";
+import type { RateCeiling } from "./store.ts";
 
 /** How long an isolate trusts what it knows of an org's billing without asking again. */
 export const BILLING_TTL_MS = 30_000;
@@ -55,8 +57,11 @@ class Expiring<V> {
   }
 }
 
-/** Orgs' plans as the rate ceiling reads them: Free's while a Pay-as-you-go org is past due. */
-export const plans = new Expiring<Plan>();
+/**
+ * Orgs' request-rate ceilings: the plan whose binding counts them (Free's while a Pay-as-you-go org is past due), or
+ * the rate a platform admin raised, which their ControlPlane counts.
+ */
+export const rateCeilings = new Expiring<RateCeiling>();
 
 /** What a plan-limit refusal needs besides the time: the limit and the link to the billing page. */
 export interface CachedRefusal {
@@ -76,12 +81,12 @@ export const refusals = new Expiring<CachedRefusal>();
 
 /** Forgets what this isolate knows of an org's billing, after its plan changed. */
 export const forgetBilling = (org: OrgId): void => {
-  plans.delete(org);
+  rateCeilings.delete(org);
   refusals.delete(org);
 };
 
 /** Empties the caches, for tests. */
 export const resetBillingCaches = (): void => {
-  plans.clear();
+  rateCeilings.clear();
   refusals.clear();
 };

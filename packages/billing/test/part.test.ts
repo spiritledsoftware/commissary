@@ -207,6 +207,19 @@ describe("the billing cap", () => {
     expect((await part.admit(MID_MARCH)).ok).toBe(true);
   });
 
+  it("does not apply to an unbilled org, which is served past $50", async () => {
+    const { org, part } = billingOf();
+
+    await part.setUnbilled(true);
+    await seedRequestsUsed(env, org, MID_MARCH, FREE_USAGE.requests + FIFTY_DOLLARS_OF_REQUESTS);
+
+    expect(await part.usage(MID_MARCH)).toEqual(
+      expect.objectContaining({ plan: "payg", unbilled: true, billingCap: 50, bill: 50 }),
+    );
+    expect((await part.admit(MID_MARCH)).ok).toBe(true);
+    expect((await part.admit(MID_MARCH)).ok).toBe(true);
+  });
+
   it("does not apply on Free, where free usage is the limit", async () => {
     const { org, part } = billingOf();
 
@@ -431,6 +444,152 @@ describe("meter batches", () => {
   });
 });
 
+describe("unbilled orgs", () => {
+  it("are on Pay as you go past free usage while marked, and back on Free when unmarked", async () => {
+    const { org, part } = billingOf();
+
+    await seedRequestsUsed(env, org, MID_MARCH, FREE_USAGE.requests);
+    expect((await part.admit(MID_MARCH)).ok).toBe(false);
+
+    await part.setUnbilled(true);
+
+    expect(await part.plan()).toBe("payg");
+    expect(await part.limitsPlan()).toBe("payg");
+    expect(await part.usage(MID_MARCH)).toEqual(
+      expect.objectContaining({ plan: "payg", unbilled: true }),
+    );
+    expect((await part.admit(MID_MARCH)).ok).toBe(true);
+
+    await part.setUnbilled(false);
+
+    expect(await part.usage(MID_MARCH)).toEqual(
+      expect.objectContaining({ plan: "free", unbilled: false }),
+    );
+    expect((await part.admit(MID_MARCH)).ok).toBe(false);
+  });
+
+  it("send nothing used while marked, before or after, and still send what was owed until then", async () => {
+    const { org, part } = billingOf();
+
+    await part.applySubscription(change("active", MID_MARCH));
+    await seedRequestsUsed(env, org, MID_MARCH, FREE_USAGE.requests + 40);
+    await part.setUnbilled(true);
+
+    // Used while unbilled: never sent.
+    await seedRequestsUsed(env, org, MID_MARCH, FREE_USAGE.requests + 90);
+
+    const owed = await part.meterBatch(MID_MARCH);
+
+    expect(owed?.events).toEqual([expect.objectContaining({ unit: "requests", amount: 40 })]);
+    await part.meterBatchSent(owed?.id ?? "");
+    expect(await part.meterBatch(MID_MARCH)).toBeNull();
+
+    await seedRequestsUsed(env, org, MID_MARCH, FREE_USAGE.requests + 95);
+    await part.setUnbilled(false);
+
+    // Its subscription is still active: it stays on Pay as you go and is billed again from here on.
+    expect(await part.plan()).toBe("payg");
+    expect(await part.meterBatch(MID_MARCH)).toBeNull();
+
+    await seedRequestsUsed(env, org, MID_MARCH, FREE_USAGE.requests + 98);
+    expect((await part.meterBatch(MID_MARCH))?.events).toEqual([
+      expect.objectContaining({ unit: "requests", amount: 3 }),
+    ]);
+  });
+
+  it("send nothing when the subscription ends while marked", async () => {
+    const { org, part } = billingOf();
+
+    await part.applySubscription(change("active", MID_MARCH));
+    await part.setUnbilled(true);
+    await seedRequestsUsed(env, org, MID_MARCH, FREE_USAGE.requests + 70);
+    await part.applySubscription(change("ended", MID_MARCH + 1));
+
+    expect(await part.plan()).toBe("payg");
+    expect(await part.meterBatch(MID_MARCH)).toBeNull();
+
+    await part.setUnbilled(false);
+    expect(await part.plan()).toBe("free");
+    expect(await part.meterBatch(MID_MARCH)).toBeNull();
+  });
+
+  it("are not held to Free's limits by a past-due subscription", async () => {
+    const { part } = billingOf();
+
+    await part.applySubscription(change("past_due", MID_MARCH));
+    expect(await part.limitsPlan()).toBe("free");
+
+    await part.setUnbilled(true);
+    expect(await part.limitsPlan()).toBe("payg");
+  });
+});
+
+describe("raised ceilings", () => {
+  it("are the plan's until a platform admin raises one, and the plan's again once it is null", async () => {
+    const { org, part } = billingOf();
+
+    expect(await part.ceilings()).toEqual({ browserSessions: 1, computers: 0, requestRate: 60 });
+
+    await setPlan(env, org, "payg");
+    expect(await part.ceilings()).toEqual({ browserSessions: 5, computers: 3, requestRate: 600 });
+
+    await part.raiseCeilings({ browserSessions: 20, requestRate: 1200 });
+    await part.raiseCeilings({ computers: 8 });
+    expect(await part.ceilings()).toEqual({ browserSessions: 20, computers: 8, requestRate: 1200 });
+    expect((await part.usage(MID_MARCH)).raised).toEqual({
+      browserSessions: 20,
+      computers: 8,
+      requestRate: 1200,
+    });
+
+    await part.raiseCeilings({ browserSessions: null, computers: null, requestRate: null });
+    expect(await part.ceilings()).toEqual({ browserSessions: 5, computers: 3, requestRate: 600 });
+  });
+
+  it("never lower the plan's", async () => {
+    const { org, part } = billingOf();
+
+    await part.raiseCeilings({ requestRate: 100 });
+    expect((await part.ceilings()).requestRate).toBe(100);
+    expect(await part.rateCeiling()).toEqual({ plan: "free", raised: 100 });
+
+    // On Pay as you go 100 is below the plan's 600: the plan's binding counts it again.
+    await setPlan(env, org, "payg");
+    expect((await part.ceilings()).requestRate).toBe(600);
+    expect(await part.rateCeiling()).toEqual({ plan: "payg", raised: null });
+  });
+
+  it("count a raised request rate in one-minute windows", async () => {
+    const { part } = billingOf();
+
+    await part.raiseCeilings({ requestRate: 70 });
+
+    const admitted = await Promise.all(
+      Array.from({ length: 71 }, async () => await part.admitRate(MID_MARCH)),
+    );
+
+    expect(admitted.filter(Boolean)).toHaveLength(70);
+    expect(await part.admitRate(MID_MARCH + 59_999)).toBe(false);
+    expect(await part.admitRate(MID_MARCH + 60_000)).toBe(true);
+  });
+
+  it("count a request from an earlier minute (a clock behind) in the current window, without starting over", async () => {
+    const { part } = billingOf();
+
+    await part.raiseCeilings({ requestRate: 70 });
+
+    for (let sent = 0; sent < 70; sent += 1) expect(await part.admitRate(MID_MARCH)).toBe(true);
+
+    // A minute earlier: refused, not the first request of a new window.
+    expect(await part.admitRate(MID_MARCH - 60_000)).toBe(false);
+    expect(await part.admitRate(MID_MARCH)).toBe(false);
+
+    // Back to a later minute after it: a new window.
+    expect(await part.admitRate(MID_MARCH + 60_000)).toBe(true);
+    expect(await part.admitRate(MID_MARCH)).toBe(true);
+  });
+});
+
 describe("org deletion", () => {
   it("drops the part's tables with the org's", async () => {
     const { org, part } = billingOf();
@@ -444,6 +603,7 @@ describe("org deletion", () => {
         "billing_meter_sent",
         "billing_meter_batch",
         "billing_cap",
+        "billing_overrides",
       ]),
     );
 

@@ -1,11 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
   atOrgLimit,
+  billingProblem,
   canCreateOrg,
   canSuspend,
+  ceilingHint,
+  ceilingText,
   emailProblem,
   orgCountText,
+  parseCeiling,
   parseOrgLimit,
+  planLabel,
 } from "../src/lib/hosted.ts";
 import { issuableRoles, issuerText } from "../src/lib/management-keys.ts";
 import { callerOf } from "../src/lib/role.ts";
@@ -52,6 +57,47 @@ describe("people", () => {
   it("checks an email", () => {
     expect(emailProblem("a@b.co")).toBeUndefined();
     expect(emailProblem("nope")).toBeDefined();
+  });
+});
+
+describe("org billing", () => {
+  it("names the plan, and an unbilled org as such", () => {
+    expect(planLabel({ plan: "free", unbilled: false })).toBe("Free");
+    expect(planLabel({ plan: "payg", unbilled: false })).toBe("Pay as you go");
+    expect(planLabel({ plan: "payg", unbilled: true })).toBe("Pay as you go, unbilled");
+  });
+
+  it("reads a raised ceiling: a whole number from 1 to 1,000,000, or empty or “plan” for the plan's", () => {
+    expect(parseCeiling("")).toEqual({ kind: "plan" });
+    expect(parseCeiling(" Plan ")).toEqual({ kind: "plan" });
+    expect(parseCeiling("1200")).toEqual({ kind: "raised", value: 1200 });
+    expect(parseCeiling("1000000")).toEqual({ kind: "raised", value: 1_000_000 });
+
+    for (const text of ["0", "-1", "1.5", "1000001", "lots"])
+      expect(parseCeiling(text)).toEqual({ kind: "invalid" });
+  });
+
+  it("shows a ceiling with what the plan gives when a platform admin raised it", () => {
+    expect(ceilingText({ plan: 600, raised: null })).toBe("600 (the plan’s)");
+    expect(ceilingText({ plan: 600, raised: 1200 })).toBe("1,200 (plan: 600)");
+    // A raise at or below the plan's changes nothing.
+    expect(ceilingText({ plan: 600, raised: 100 })).toBe("600 (plan: 600; raised to 100)");
+  });
+
+  it("tells what the ceilings form takes", () => {
+    expect(ceilingHint()).toBe(
+      "Raise a ceiling above the plan’s for this org: a whole number up to 1,000,000. Leave it empty for the plan’s.",
+    );
+  });
+
+  it("explains a refused billing write", () => {
+    expect(billingProblem("invalid_ceiling", "422")).toBe(
+      "A ceiling is a whole number from 1 to 1,000,000, or empty for the plan’s.",
+    );
+    expect(billingProblem("platform_admin_required", "403")).toBe(
+      "Only platform admins change an org’s billing.",
+    );
+    expect(billingProblem(undefined, "Failed")).toBe("Failed");
   });
 });
 

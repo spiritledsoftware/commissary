@@ -2999,7 +2999,8 @@ the package checks `isHosted` before it counts, refuses or reads anything, and i
   current subscription, the payment state `ok`/`past_due`, and Polar's `modified_at` of the last change applied),
   `billing_meter_sent` (what was sent of each unit and month) and `billing_meter_batch` (the one batch on its way).
   `billing_cap` (#238) holds the billing cap org owners set (`setBillingCap`, dollars a month or `NULL` for none; no
-  row: the default $50). `usage(now)` also answers the month's bill and the cap. `wipe()` drops all six.
+  row: the default $50). `usage(now)` also answers the month's bill and the cap. `billing_overrides` (#240) holds what
+  a platform admin set: unbilled, and raised ceilings. `wipe()` drops all seven.
 - **Constants** (`billing/plan.ts`, ADR 0042): free usage `25,000` requests and tool calls, 1 browser hour, 0 computer
   hours; request-rate ceilings 60 a minute on Free and 600 on Pay as you go; Pay as you go's rates above free usage,
   $0.50 per 100,000 requests and tool calls and $0.15 a browser or computer hour, and the default billing cap, $50 a
@@ -3048,6 +3049,10 @@ the package checks `isHosted` before it counts, refuses or reads anything, and i
   API has none. Like before, a deployment without the bindings has no ceiling and a failing binding lets the
   request through (logged); an org whose plan cannot be read gets Free's ceiling. The ceilings are constants; only the
   namespaces are deployment settings (`ORG_RATE_LIMIT_NAMESPACE_ID`, `ORG_RATE_LIMIT_PAYG_NAMESPACE_ID`, `docs/DEPLOY.md`).
+  Since the bindings' limits are fixed, an org whose rate a platform admin raised above its plan's is counted by its
+  Billing part instead (`rateCeiling()` says which, cached like the plan; `admitRate(now)`: fixed one-minute windows
+  counted in the object's memory, so a restart starts the minute over), one ControlPlane call per request for that org
+  only; a part that cannot be reached lets the request through (logged).
 - **Management API** (`billing/routes.ts`, `@commissary/contract/billing`): `GET /v9/management/billing` answers the plan,
   the payment state (`payment`: `ok` or `past_due`), whether the org's Polar customer has a card on file (`card_on_file`:
   asked of Polar on each read; `false` before the first checkout or without Polar, `null` when Polar cannot be asked),
@@ -3134,6 +3139,21 @@ the package checks `isHosted` before it counts, refuses or reads anything, and i
     deduplication keeps a retried batch from counting twice. After each batch the task pauses 120 ms, so the runner,
     which runs orgs one after another, stays under Polar's 500 requests a minute. Polar files events into the period it receives them (ADR 0042), so the last hours of a month can
     land on the next invoice.
+- **Unbilled orgs and raised ceilings** (#240, `billing/routes.ts` `PUT /billing/unbilled`, `PATCH /billing/ceilings`;
+  the org chooser's Billing button, `apps/web/src/pages/OrgsBilling.tsx`): platform admins only (the handlers ask,
+  `403 platform_admin_required`), reached from the org list at `/orgs/<slug>/billing/...`, with or without Polar.
+  `setUnbilled` makes `plan()` and `limitsPlan()` answer Pay as you go (past due or not) whatever the stored plan, which
+  Polar's webhooks keep updating underneath: unmarked, the org is back on that plan, Free without a subscription.
+  Marking it closes the usage it owed on a subscription into the batch on its way (as leaving Pay as you go does);
+  while it is unbilled every new batch writes its usage off instead of sending it, and unmarking writes off what is
+  left, so nothing used while unbilled is ever billed. Its owners get `409 unbilled` on checkout and on switching to
+  Free. The billing cap does not apply to an unbilled org (`admit` checks `unbilled()`), and it gets no billing
+  notices (`billingNotices` answers none). `raiseCeilings` stores, per ceiling, a raise over the plan's
+  (`null`: the plan's); `ceilings()` answers each as the larger of the plan's (`PLAN_CEILINGS`, of the plan whose
+  limits apply) and the raise, for #241's concurrency ceilings to read.
+  `GET /billing` adds `ceilings` for platform admins (each one's `plan` value, of the plan whose limits apply, and
+  `raised`; the maximum raise is `MAX_RAISED_CEILING` in `@commissary/contract/billing`); `unbilled` is for every
+  reader.
 - **Org deletion** (`billing/org-deletion.ts`): with a billing provider, Billing's `OrgDeletionStep` sends the org's
   unsent usage, then cancels its subscription at the end of its period (as switching to Free does, so the usage sent is
   invoiced); deletion does not wait for payment. A failure that may pass (the part cannot be reached; Polar rate limits,

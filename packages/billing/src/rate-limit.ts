@@ -6,48 +6,80 @@
  * eventually consistent: a ceiling against abuse, not exact accounting. It covers every client-facing surface (the
  * client API now; the MCP endpoint and webhook triggers when they exist); the management API has none.
  *
- * The org's plan is cached per isolate for a short while (`cache.ts`), so a request costs no ControlPlane call here.
- * A deployment without the binding has no ceiling; a failing binding lets the request through (logged), since refusing
- * every org would be worse; an org whose plan cannot be read gets Free's ceiling (logged).
+ * The bindings' limits are fixed, so an org whose rate a platform admin raised above its plan's (#240) is counted by
+ * its own ControlPlane instead (`BillingStore.admitRate`): one call per request for that org only; every other org
+ * keeps the bindings.
+ *
+ * The org's ceiling is cached per isolate for a short while (`cache.ts`), so a request on a binding costs no
+ * ControlPlane call here. A deployment without the bindings has no ceiling, raised or not; a failing binding or
+ * ControlPlane lets the request through (logged), since refusing every org would be worse; an org whose ceiling cannot
+ * be read gets Free's (logged).
  */
 import { Clock, Effect } from "effect";
 import { RateLimitedError, type OrgId } from "@commissary/core";
 import { isHosted } from "@commissary/auth";
-import { BILLING_TTL_MS, plans } from "./cache.ts";
-import { BillingEnv, billingPartOf } from "./env.ts";
-import { DEFAULT_PLAN, type Plan, RATE_LIMIT_PERIOD_SECONDS } from "./plan.ts";
+import { BILLING_TTL_MS, rateCeilings } from "./cache.ts";
+import { BillingEnv, billingPartOf, type RateLimiter } from "./env.ts";
+import { DEFAULT_PLAN, RATE_LIMIT_PERIOD_SECONDS } from "./plan.ts";
+import type { RateCeiling } from "./store.ts";
 
 export const RATE_LIMITED = "Rate limit exceeded";
 
 /**
- * The plan whose ceiling applies to the org (its plan, but Free's while it is past due), cached per isolate for
- * `BILLING_TTL_MS` (a plan change applies within that time); Free's (logged, not cached) when it cannot be read.
+ * The request-rate ceiling of the org (its plan's, Free's while it is past due, or a raised one), cached per isolate
+ * for `BILLING_TTL_MS` (a change applies within that time); Free's (logged, not cached) when it cannot be read.
  */
-const planOf = (org: OrgId): Effect.Effect<Plan, never, BillingEnv> =>
+const ceilingOf = (org: OrgId): Effect.Effect<RateCeiling, never, BillingEnv> =>
   Effect.gen(function* () {
     const env = yield* BillingEnv;
     const now = yield* Clock.currentTimeMillis;
-    const cached = plans.get(org, now);
+    const cached = rateCeilings.get(org, now);
 
     if (cached !== undefined) return cached;
 
-    const plan = yield* Effect.tryPromise(
-      async () => await billingPartOf(env, org).limitsPlan(),
+    const ceiling = yield* Effect.tryPromise(
+      async () => await billingPartOf(env, org).rateCeiling(),
     ).pipe(
-      Effect.tap((read) => Effect.sync(() => plans.set(org, read, now + BILLING_TTL_MS))),
+      Effect.tap((read) => Effect.sync(() => rateCeilings.set(org, read, now + BILLING_TTL_MS))),
       Effect.catch((error) =>
-        Effect.logWarning(`plan not read for the rate limit: ${error.message}`).pipe(
-          Effect.as(DEFAULT_PLAN),
+        Effect.logWarning(`rate ceiling not read: ${error.message}`).pipe(
+          Effect.as<RateCeiling>({ plan: DEFAULT_PLAN, raised: null }),
         ),
       ),
     );
 
-    return plan;
+    return ceiling;
   });
 
 /**
- * Counts a request of `org` against its plan's ceiling; over it, `429 Rate limit exceeded` with `Retry-After`. Does
- * nothing on a self-hosted Commissary.
+ * Whether the org's ControlPlane admits a request against its raised rate; through (logged) when it cannot be asked.
+ */
+const withinRaised = (org: OrgId): Effect.Effect<boolean, never, BillingEnv> =>
+  Effect.gen(function* () {
+    const env = yield* BillingEnv;
+    const now = yield* Clock.currentTimeMillis;
+
+    return yield* Effect.tryPromise(async () => await billingPartOf(env, org).admitRate(now)).pipe(
+      Effect.catch((error) =>
+        Effect.logWarning(`raised rate not checked: ${error.message}`).pipe(Effect.as(true)),
+      ),
+    );
+  });
+
+/** Whether the plan's binding admits a request of `org`; through when it is not bound, or fails (logged). */
+const onBinding = (limiter: RateLimiter | undefined, org: OrgId): Effect.Effect<boolean> =>
+  limiter === undefined
+    ? Effect.succeed(true)
+    : Effect.tryPromise(async () => await limiter.limit({ key: org })).pipe(
+        Effect.map((outcome) => outcome.success),
+        Effect.catch((error) =>
+          Effect.logWarning(`rate limit not checked: ${error.message}`).pipe(Effect.as(true)),
+        ),
+      );
+
+/**
+ * Counts a request of `org` against its ceiling (its plan's, or a raised one); over it, `429 Rate limit exceeded` with
+ * `Retry-After`. Does nothing on a self-hosted Commissary.
  */
 export const limitClientRate = (org: OrgId): Effect.Effect<void, RateLimitedError, BillingEnv> =>
   Effect.gen(function* () {
@@ -56,19 +88,14 @@ export const limitClientRate = (org: OrgId): Effect.Effect<void, RateLimitedErro
     if (!isHosted(env) || (env.FREE_RATE_LIMIT === undefined && env.PAYG_RATE_LIMIT === undefined))
       return;
 
-    const limiter = (yield* planOf(org)) === "payg" ? env.PAYG_RATE_LIMIT : env.FREE_RATE_LIMIT;
+    const ceiling = yield* ceilingOf(org);
 
-    if (limiter === undefined) return;
+    const success =
+      ceiling.raised === null
+        ? yield* onBinding(ceiling.plan === "payg" ? env.PAYG_RATE_LIMIT : env.FREE_RATE_LIMIT, org)
+        : yield* withinRaised(org);
 
-    const outcome = yield* Effect.tryPromise(async () => await limiter.limit({ key: org })).pipe(
-      Effect.catch((error) =>
-        Effect.logWarning(`rate limit not checked: ${error.message}`).pipe(
-          Effect.as({ success: true }),
-        ),
-      ),
-    );
-
-    if (!outcome.success)
+    if (!success)
       return yield* new RateLimitedError({
         message: RATE_LIMITED,
         retryAfterSeconds: RATE_LIMIT_PERIOD_SECONDS,

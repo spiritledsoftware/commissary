@@ -53,6 +53,26 @@ export const REQUEST_RATE_CEILING: Readonly<Record<Plan, number>> = {
   payg: 600,
 };
 
+/**
+ * The ceilings for fairness between orgs a plan sets (ADR 0042), each of which a platform admin may raise for one org
+ * (#240): concurrent browser sessions, concurrent computers (both enforced by #241) and the request rate a minute.
+ */
+export const CEILINGS = ["browserSessions", "computers", "requestRate"] as const;
+
+export type Ceiling = (typeof CEILINGS)[number];
+
+/** A value for each ceiling. */
+export type Ceilings = Readonly<Record<Ceiling, number>>;
+
+/** The ceilings a platform admin raised for one org; `null`: the plan's. */
+export type RaisedCeilings = Readonly<Record<Ceiling, number | null>>;
+
+/** Each plan's ceilings (ADR 0042 "Ceilings for fairness between orgs"). */
+export const PLAN_CEILINGS: Readonly<Record<Plan, Ceilings>> = {
+  free: { browserSessions: 1, computers: 0, requestRate: REQUEST_RATE_CEILING.free },
+  payg: { browserSessions: 5, computers: 3, requestRate: REQUEST_RATE_CEILING.payg },
+};
+
 /** The period the ceilings count in: the Workers rate-limiting binding allows 10 or 60 seconds. */
 export const RATE_LIMIT_PERIOD_SECONDS = 60;
 
