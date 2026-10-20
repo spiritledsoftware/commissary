@@ -25,6 +25,8 @@ export const OrgView = Schema.Struct({
   created_at: Schema.String,
   /** How many days the org's usage records are kept; `null`: forever (ADR 0027). */
   usage_retention_days: Schema.NullOr(Schema.Int),
+  /** How many days the org's agent runs are kept after their last activity (#228, ADR 0040); `null`: forever. */
+  run_retention_days: Schema.NullOr(Schema.Int),
   /** Commissary Cloud: a platform admin suspended it (refused everywhere, nothing deleted). Absent otherwise. */
   suspended: Schema.optionalKey(Schema.Boolean),
 });
@@ -64,11 +66,13 @@ export const UpdateOrg = Schema.Struct({
 export type UpdateOrg = typeof UpdateOrg.Type;
 
 /**
- * `PATCH /org`: the settings of the addressed org. `usage_retention_days`: whole days from 1 to 3650 that usage records
- * are kept, or `null` to keep them forever.
+ * `PATCH /org`: the settings of the addressed org, at least one. `usage_retention_days`: whole days from 1 to 3650 that
+ * usage records are kept, or `null` to keep them forever; `run_retention_days` (#228): the same for agent runs, counted
+ * from their last activity (30 by default).
  */
 export const UpdateOrgSettings = Schema.Struct({
   usage_retention_days: Schema.optionalKey(Schema.NullOr(Schema.Int)),
+  run_retention_days: Schema.optionalKey(Schema.NullOr(Schema.Int)),
 });
 
 export type UpdateOrgSettings = typeof UpdateOrgSettings.Type;
@@ -204,7 +208,8 @@ export class OrgsGroup extends HttpApiGroup.make("orgs").add(
   /** The org the request addresses (`global` for the unscoped route), with its settings. Org admins. */
   HttpApiEndpoint.get("org", "/org", { success: OrgView, error: managementErrors }),
   /**
-   * Changes the settings of the addressed org: its usage retention period. Org admins. `422 invalid_retention`.
+   * Changes the settings of the addressed org: its retention periods, of usage records and of agent runs. Org admins.
+   * `422 invalid_retention`.
    */
   HttpApiEndpoint.patch("updateSettings", "/org", {
     payload: UpdateOrgSettings,

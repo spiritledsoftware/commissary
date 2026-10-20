@@ -8,10 +8,11 @@
  * rows from what its ControlPlane says. The first start creates the org `global` (slug `default`), the deployment that
  * existed before orgs, so upgrading needs no settings and moves no data.
  *
- * An org also has its usage retention period here (`usage_retention_days`, ADR 0027), the one org setting the scheduled
- * usage job reads for every org at once: a number of days, or NULL for none (keep records forever). `global` starts
- * with none; an org created afterwards gets {@link DEFAULT_USAGE_RETENTION_DAYS}. Removing an org or a person deletes
- * their rows.
+ * An org also has its retention periods here (ADR 0027), the org settings the scheduled jobs read for every org at once:
+ * its usage records' (`usage_retention_days`), a number of days, or NULL for none (keep records forever), which
+ * `global` starts with none of and an org created afterwards with {@link DEFAULT_USAGE_RETENTION_DAYS}; and its agent
+ * runs' after their last activity (`run_retention_days`, #228, ADR 0040), {@link DEFAULT_RUN_RETENTION_DAYS} for every
+ * org until an org admin sets another, or none. Removing an org or a person deletes their rows.
  *
  * Commissary Cloud (ADR 0026) also keeps its people here: who signed up (and the Personal org they got), how many orgs
  * each may own, and who a platform admin suspended; orgs record who created them and whether they are suspended.
@@ -36,6 +37,8 @@ export interface OrgRecord {
   readonly createdAt: number;
   /** How many days the org's usage records are kept; `null`: forever (ADR 0027). */
   readonly usageRetentionDays: number | null;
+  /** How many days the org's agent runs are kept after their last activity (#228, ADR 0040); `null`: forever. */
+  readonly runRetentionDays: number | null;
   /** The (lowercased) email of the person who created it on Commissary Cloud; absent otherwise. */
   readonly createdBy?: string;
   /** Epoch milliseconds a platform admin suspended it; absent while it is not suspended. */
@@ -45,8 +48,11 @@ export interface OrgRecord {
 /** New orgs keep their usage records this long unless an admin chooses otherwise (ADR 0027). */
 export const DEFAULT_USAGE_RETENTION_DAYS = 90;
 
-/** The longest retention period an org can choose (ten years); longer is "none". */
-export const MAX_USAGE_RETENTION_DAYS = 3650;
+/** The longest retention period an org can choose (ten years), of usage records and of agent runs; longer is "none". */
+export const MAX_RETENTION_DAYS = 3650;
+
+/** Orgs keep their agent runs this long after their last activity unless an admin chooses otherwise (ADR 0040). */
+export const DEFAULT_RUN_RETENTION_DAYS = 30;
 
 /** `id`: the permanent id to create the org under (a caller that prepared the org's ControlPlane first); default: a fresh one. */
 export type OrgInput = {
@@ -61,6 +67,12 @@ export type OrgInput = {
 };
 
 export type OrgPatch = { readonly slug?: string; readonly name?: string };
+
+/** The retention periods a write changes (#228): in days, `null` for none; absent: unchanged. */
+export interface RetentionPeriods {
+  readonly usageDays?: number | null;
+  readonly runDays?: number | null;
+}
 
 /** Why an org write was refused; `message` is fixed text, safe to show. */
 export type OrgWriteResult =
@@ -158,6 +170,7 @@ interface OrgRow {
   name: string;
   created_at: number;
   usage_retention_days: number | null;
+  run_retention_days: number | null;
   created_by: string | null;
   suspended_at: number | null;
   [column: string]: SqlStorageValue;
@@ -172,12 +185,33 @@ interface PersonRow {
   [column: string]: SqlStorageValue;
 }
 
-const ORG_COLUMNS = "id, slug, name, created_at, usage_retention_days, created_by, suspended_at";
+const ORG_COLUMN_NAMES = [
+  "id",
+  "slug",
+  "name",
+  "created_at",
+  "usage_retention_days",
+  "run_retention_days",
+  "created_by",
+  "suspended_at",
+] as const;
+
+const ORG_COLUMNS = ORG_COLUMN_NAMES.join(", ");
+
+/** {@link ORG_COLUMNS} of the table `alias` names in a join. */
+const orgColumnsOf = (alias: string): string =>
+  ORG_COLUMN_NAMES.map((column) => `${alias}.${column}`).join(", ");
 
 const SLUG_PROBLEM =
   "an org slug is 1 to 63 lowercase letters, digits and inner hyphens (it appears in URLs)";
 
-const RETENTION_PROBLEM = `a usage retention period is a whole number of days from 1 to ${MAX_USAGE_RETENTION_DAYS}, or none`;
+const RETENTION_PROBLEM = `a usage retention period is a whole number of days from 1 to ${MAX_RETENTION_DAYS}, or none`;
+
+const RUN_RETENTION_PROBLEM = `an agent runs' retention period is a whole number of days from 1 to ${MAX_RETENTION_DAYS}, or none`;
+
+/** Whether `days` is a retention period an org may choose: whole days from 1 to the maximum, or none. */
+const validRetention = (days: number | null): boolean =>
+  days === null || (Number.isInteger(days) && days >= 1 && days <= MAX_RETENTION_DAYS);
 
 const NAME_PROBLEM = `an org name is 1 to ${MAX_NAME_LENGTH} characters without control characters`;
 
@@ -224,6 +258,12 @@ export class PlatformStore {
 
     if (!orgColumns.has("suspended_at"))
       sql.exec(`ALTER TABLE orgs ADD COLUMN suspended_at INTEGER`);
+
+    // Agent runs' retention (#228): every org, those from before included, starts with the default.
+    if (!orgColumns.has("run_retention_days"))
+      sql.exec(
+        `ALTER TABLE orgs ADD COLUMN run_retention_days INTEGER DEFAULT ${DEFAULT_RUN_RETENTION_DAYS}`,
+      );
     sql.exec(`CREATE INDEX IF NOT EXISTS orgs_by_creator ON orgs (created_by)`);
 
     sql.exec(
@@ -263,6 +303,7 @@ export class PlatformStore {
       name: row.name,
       createdAt: row.created_at,
       usageRetentionDays: row.usage_retention_days,
+      runRetentionDays: row.run_retention_days,
       ...(row.created_by === null ? {} : { createdBy: row.created_by }),
       ...(row.suspended_at === null ? {} : { suspendedAt: row.suspended_at }),
     };
@@ -369,21 +410,46 @@ export class PlatformStore {
   }
 
   /**
-   * Sets how long the usage records of org `id` are kept: whole days from 1 to {@link MAX_USAGE_RETENTION_DAYS}, or
-   * `null` for forever.
+   * Sets how long the usage records of org `id` are kept: whole days from 1 to {@link MAX_RETENTION_DAYS}, or
+   * `null` for forever ({@link setRetention}, kept for callers from before #228).
    */
   setUsageRetention(id: string, days: number | null): OrgWriteResult {
+    return this.setRetention(id, { usageDays: days });
+  }
+
+  /**
+   * Sets the retention periods of org `id` that `periods` names (#228): how long its usage records are kept, and its
+   * agent runs after their last activity; each whole days from 1 to {@link MAX_RETENTION_DAYS}, or `null` for
+   * forever. Nothing changes unless every one named is valid.
+   */
+  setRetention(id: string, periods: RetentionPeriods): OrgWriteResult {
     const current = this.orgById(id);
 
     if (current === undefined)
       return { ok: false, error: "not_found", message: "no org has this id" };
 
-    if (days !== null && (!Number.isInteger(days) || days < 1 || days > MAX_USAGE_RETENTION_DAYS))
+    const { usageDays, runDays } = periods;
+
+    if (usageDays !== undefined && !validRetention(usageDays))
       return { ok: false, error: "invalid_retention", message: RETENTION_PROBLEM };
 
-    this.#sql.exec(`UPDATE orgs SET usage_retention_days = ? WHERE id = ?`, days, id);
+    if (runDays !== undefined && !validRetention(runDays))
+      return { ok: false, error: "invalid_retention", message: RUN_RETENTION_PROBLEM };
 
-    return { ok: true, org: { ...current, usageRetentionDays: days } };
+    const next = {
+      ...current,
+      ...(usageDays === undefined ? {} : { usageRetentionDays: usageDays }),
+      ...(runDays === undefined ? {} : { runRetentionDays: runDays }),
+    };
+
+    this.#sql.exec(
+      `UPDATE orgs SET usage_retention_days = ?, run_retention_days = ? WHERE id = ?`,
+      next.usageRetentionDays,
+      next.runRetentionDays,
+      id,
+    );
+
+    return { ok: true, org: next };
   }
 
   /**
@@ -428,7 +494,7 @@ export class PlatformStore {
   orgsOfEmail(email: string): ReadonlyArray<OrgRecord> {
     return this.#sql
       .exec<OrgRow>(
-        `SELECT o.id, o.slug, o.name, o.created_at, o.usage_retention_days, o.created_by, o.suspended_at FROM orgs o
+        `SELECT ${orgColumnsOf("o")} FROM orgs o
          JOIN org_members m ON m.org_id = o.id WHERE m.email = ? ORDER BY o.id <> '${GLOBAL_ORG}', o.created_at, o.id`,
         normalizeEmail(email),
       )
@@ -440,7 +506,7 @@ export class PlatformStore {
   orgOfServiceToken(clientId: string): OrgRecord | undefined {
     const row = this.#sql
       .exec<OrgRow>(
-        `SELECT o.id, o.slug, o.name, o.created_at, o.usage_retention_days, o.created_by, o.suspended_at FROM orgs o
+        `SELECT ${orgColumnsOf("o")} FROM orgs o
          JOIN org_service_tokens t ON t.org_id = o.id WHERE t.client_id = ?`,
         clientId.trim(),
       )

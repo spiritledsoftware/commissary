@@ -164,17 +164,17 @@ describe("a turn", () => {
     });
   });
 
-  it("of a private agent stops at once when its member leaves the org", async () => {
+  it("of a private agent stops at once when its member leaves the org: the run goes with them (#228)", async () => {
     const o = await org();
     const agent = await created(o, o.alice, "helper");
     const { run } = await started(o, o.alice, agent.id);
 
     expect(await o.agents.beginTurn(run.id)).toMatchObject({ ok: true });
     expect((await o.stub.removeMember(o.alice.member, OWNER)).ok).toBe(true);
-    expect(await o.agents.turnContext(run.id)).toMatchObject({ ok: false, error: "run_ended" });
+    expect(await o.agents.turnContext(run.id)).toMatchObject({ ok: false, error: "not_found" });
   });
 
-  it("of a shared agent stops at once when its starter leaves the org", async () => {
+  it("of a shared agent stops at once when its starter leaves the org: the run goes with them (#228)", async () => {
     const o = await org();
     const agent = await created(o, o.admin, "support", { subject: { kind: "everyone" } });
     const { run } = await started(o, o.alice, agent.id);
@@ -184,10 +184,7 @@ describe("a turn", () => {
       value: { starterEmail: "alice@example.com" },
     });
     expect((await o.stub.removeMember(o.alice.member, OWNER)).ok).toBe(true);
-    expect(await o.agents.turnContext(run.id)).toMatchObject({
-      ok: false,
-      message: "the run's starter left the org",
-    });
+    expect(await o.agents.turnContext(run.id)).toMatchObject({ ok: false, error: "not_found" });
   });
 });
 

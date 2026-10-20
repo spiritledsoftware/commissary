@@ -93,8 +93,14 @@ export interface ChargedCredential {
   readonly kind?: CredentialKind | undefined;
 }
 
-/** Who a request is for, as the limits see it. */
+/**
+ * Who a request is for, as the limits see it. A hosted agent's run (#228, ADR 0040) has no API key: a private agent's
+ * run is its member's (`memberId`), and a shared agent's run is the agent's own (`agentId`, with no member), so it
+ * counts toward the agent's limit and the org's, never its starter's.
+ */
 export interface SpendCaller {
   readonly memberId?: string | undefined;
   readonly apiKeyId?: string | undefined;
+  /** A shared agent whose run this is: its own Spend limits apply, as a member's do to their traffic. */
+  readonly agentId?: string | undefined;
 }

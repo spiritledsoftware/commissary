@@ -324,8 +324,9 @@ to `packages/agents/src/`) and the JSON path engine as `packages/json`.
   (`ScheduledTask` of `@commissary/core`; Models' from `models/api.ts`): the model catalog refresh (the one
   models.dev document: every provider's models, OpenCode's included), Antigravity version and model entitlements, xAI client version, usage retention, the Devin user status, a
   safety sweep that re-arms credential refresh alarms, and the quota check of connected accounts; then Tools' tool list
-  refresh (`tools/scheduled-tasks.ts`, org-scoped: see "Tools"). A job is
-  deployment-wide (catalog, client versions, usage retention: once per run) or org-scoped (entitlements, Devin status,
+  refresh (`tools/scheduled-tasks.ts`, org-scoped: see "Tools"); then Agents' agent run retention
+  (`agents/runs/retention.ts`, deployment-wide: see "Agent runs"). A job is
+  deployment-wide (catalog, client versions, usage retention, agent run retention: once per run) or org-scoped (entitlements, Devin status,
   refresh sweep, quota check: once per org the Platform registry lists, `global` first, with `CurrentOrg` set, a failure in one org not
   stopping the next). When the registry cannot be read the org jobs run for `global` alone, so a registry outage does not
   stop the deployment's own jobs.
@@ -1898,6 +1899,13 @@ once; a 401 retry keeps the rejected attempt's failed record, a failed-over cred
   task). The deployment variable `USAGE_RETENTION_DAYS` (default 30) is gone: the period belongs to the org and an org admin
   sets it (`PATCH /org`). `usage-statistics-enabled` and `redis-usage-queue-retention-seconds` are not used:
   persistence is always on when the `USAGE` binding exists.
+- **Agent runs** (#228, ADR 0040; columns of migration `0011_usage_agent_runs.sql`, "Agent runs"): `records`, `summary`
+  and `series` take `agent` (a hosted agent's id) and `run` (a run's id) filters, in whichever area the read covers, so
+  a run's model attempts, tool calls and browser time read together with `area=all`. `records` names each record's
+  `agent_id`, `run_id` and `starter` (`member:<id>`); the queue keeps Go's export shape and names none. A private
+  agent's run's records are written `private` (`UsageRun.private`), so they are its member's alone, as
+  private-credential traffic is; a shared agent's are the org's. Migration `0013_usage_private_agent_runs.sql` marks
+  the records #227 wrote before that (a run's record that names a member, which only a private agent's run does).
 - **Failures without a body** (difference from Go): a failed attempt's usage record keeps the upstream status, error type
   and error code, and nothing of the response body (the `fail_body` column stays `NULL`; migration `0007` clears the
   bodies stored before it). Go's queue keeps the failure body for the management API.
@@ -2265,11 +2273,13 @@ served by Zen defines a model alias; Commissary does not map ids across provider
 
 ADR 0027: deleting something deletes it at once, and Commissary keeps no content it does not need. The pieces:
 
-- **Retention** per org, `usage_retention_days` in the Platform registry (see "Usage accounting"). **Usage failures** keep
-  status, type and code, not the body (same section).
+- **Retention** per org, `usage_retention_days` in the Platform registry (see "Usage accounting"), and
+  `run_retention_days` for agent runs (see "Agent runs"). **Usage failures** keep status, type and code, not the body
+  (same section).
 - **Member removal** deletes the member's private data in the ControlPlane (`#deleteMemberData`: their API keys in the
   base, then the Models, Tools and Agents parts' `memberLeft`: Tools deletes their private toolkits and their private
-  credentials on org toolkits, Agents their private agents and the agent grants and watchers that named them), and their Spend limits and counters; **API keys** are deleted when revoked or expired ("API keys"), and `ApiKeyStore` reports every key it
+  credentials on org toolkits, Agents their private agents and the agent grants and watchers that named them, and every
+  run they started or their private agents ran, whose objects the route then deletes, "Agent runs"), and their Spend limits and counters; **API keys** are deleted when revoked or expired ("API keys"), and `ApiKeyStore` reports every key it
   deletes so the key's Spend limits and counters go with it.
 - **Org deletion** (`deleteOrg`, called by `DELETE /org` and by account deletion, app-only) runs, in this order: the
   org-deletion steps of the areas the Worker mounts, which it takes as input (`OrgDeletionStep` of `@commissary/core`;
@@ -2558,8 +2568,8 @@ Routes of the addressed org (`/org`, `/export`) and the account route (`DELETE /
 
 | Route         | Who                                 | Does                                                                                                                        |
 | ------------- | ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `GET /org`    | org admin                           | the org (`OrgView`: id, slug, name, `usage_retention_days`)                                                                 |
-| `PATCH /org`  | org admin                           | `{usage_retention_days: <1..3650> \| null}`; `422` for any other number                                                     |
+| `GET /org`    | org admin                           | the org (`OrgView`: id, slug, name, `usage_retention_days`, `run_retention_days`)                                           |
+| `PATCH /org`  | org admin                           | `{usage_retention_days?, run_retention_days?: <1..3650> \| null}`, at least one; `422` for any other number                 |
 | `GET /export` | org admin                           | the org's settings, masked shared config, price overrides, credential summaries, grants, members, teams, tokens             |
 | `DELETE /org` | a person: org owner, platform admin | `{name}` retyped; deletes the org and everything it holds; `409 global_org`, `422 name_mismatch`, `503 deletion_incomplete` |
 | `DELETE /me`  | a person                            | `{email}` retyped; leaves every org, deletes the orgs the person is alone in; `409 sole_owner`, `422 email_mismatch`        |
@@ -2763,7 +2773,7 @@ ControlPlane prices each tool call and browser time, counts and decides.
 - **Entries** (`spend/store.ts` `SpendStore`, in each org's ControlPlane, SQLite tables `spend_limits`, `spend_counters`
   and `spend_settings`, `CREATE IF NOT EXISTS`, so there is no D1 migration and a ControlPlane that predates the feature
   upgrades in place with no limits): a subject (`member`, `team`, `org`, `credential` (a shared one, named by its
-  `auth_index`), `key` (an API key id), `toolkit_credential` (an org toolkit's shared credential, named by the toolkit's id; #199) or `agent` (a shared hosted agent, by id; #226: written now, counted against runs' usage with #228)), a period and an amount in micro-USD, written by an org admin or, on their own
+  `auth_index`), `key` (an API key id), `toolkit_credential` (an org toolkit's shared credential, named by the toolkit's id; #199) or `agent` (a shared hosted agent, by id; #226, its runs' usage counts toward it, #228)), a period and an amount in micro-USD, written by an org admin or, on their own
   API key, by a member. Each limit has a revision and `updated_at/by`; an edit or delete names the revision in `If-Match`
   (`409 conflict` when stale). There is one limit per subject, period and writer, and the limits on one subject and period
   are enforced together, so the smaller amount binds. A member may not write a limit above an admin's on the same key and
@@ -2819,7 +2829,10 @@ ControlPlane prices each tool call and browser time, counts and decides.
   attempt's usage records first, prices them (`UsageSink.cost`, the same price table the D1 sink writes with, so the
   stored record and the counter agree), reports `costMicros` with `report`, and the ControlPlane adds it to every
   counter the attempt belongs to (`SpendLedger.scopes`): the key's, and, for traffic served by a **shared** credential,
-  the member's, the member's teams', the org's and the credential's. Traffic served by a **private** credential is the
+  the member's, the member's teams', the org's and the credential's. A shared hosted agent's run (#228,
+  `SpendCaller.agentId`) has no key and no member: it is checked (at the pick and when a retry round is planned)
+  and charged as the agent, so the agent's limits and the org's apply (a refused run's turn ends with the refusal, "Agent runs"), never its starter's; a private agent's
+  run is its member's traffic. Traffic served by a **private** credential is the
   member's own account with the provider, so only the key's counters see it. An org admin who reads a key limit's `spent_micros` therefore sees a total that includes
   that key's private-credential Cost, but only the total: which credential or model it went to stays with the owner. An unpriced attempt costs 0 and is never
   capped. The attempt in flight when a limit is reached finishes, so Spend can pass a limit by the Cost of the requests
@@ -4494,9 +4507,10 @@ the deployment's Dynamic Workers binding `LOADER`.
   only, `AGENTS_TOOLKIT`) may name agents by id, which the agents toolkit honours (#229, below); the base stores and
   normalizes it like the rest of the scope.
 - **Spend limits**: a shared agent is a Spend subject (`agent`, `/spend/limits`), listed by the part's `spendAgents`
-  hook; removing the agent deletes its limits (`spend.forget`). Runs' usage will count against them (#228).
-- **Members and orgs**: a member who leaves takes their private agents and leaves the grants and watcher lists that named
-  them (`memberLeft`); a deleted team leaves the grants and watcher lists (`teamDeleted`); org deletion drops the tables
+  hook; removing the agent deletes its limits (`spend.forget`). Its runs' usage counts toward them (#228, "Agent
+  runs").
+- **Members and orgs**: a member who leaves takes their private agents, their runs and every run they started, and
+  leaves the grants and watcher lists that named them (`memberLeft`; the runs: "Agent runs"); a deleted team leaves the grants and watcher lists (`teamDeleted`); org deletion drops the tables
   (`wipe()`), after Agents' org-deletion step deleted each run's object (below). The org export lists the
   agents the caller manages, a shared agent with its watchers and grants (members by email, teams by name). The
   cross-org suite checks that one org's agents are not listed in another (`controlplane: agents`).
@@ -4565,18 +4579,52 @@ the deployment's Dynamic Workers binding `LOADER`.
   call's (`429 spend_limit_reached`, which the object turns into a `403` so the model client does not retry it) and a
   tool call's (a tool error whose `_meta` carries the refusal, `SPEND_REFUSAL_META`, given to runs only; the object
   then aborts the turn). The refusal is kept in the object's storage until the turn settles, so an eviction keeps it.
-  Shared agents' own Spend limits counting runs' usage come with #228.
+  A shared agent's run counts toward the agent's own Spend limits and the org's (#228, `SpendCaller.agentId`; the
+  pool's caller, `RunToolReach.usage` for tool calls and the browser session log's `agent` column for browser time
+  charged when an idle session closes), never its starter's; a private agent's run counts as its member's traffic. A
+  tool call from an API Worker that predates #228 sends no `usage`, so the agent's limits do not see it.
 - **Approvals**: the run's starter is the caller of its tool calls' approvals (ADR 0040; `RunToolReach.starterMember`;
   a child run's: the member who started the run at the head of its chain), for a shared agent's run too, which has no member of its own. Under a rule of the caller the starter decides (in the
   panel), and under a team's or members' rule they do not; the model gets the
   approval's link text and may call again once it is decided. Watchers answering approvals in runs come with #232.
 - **Usage records** (migration `usage/0011_usage_agent_runs.sql`): a model attempt or tool call of a run names the
   agent (`agent_id`), the run (`run_id`) and its starter (`starter`: `member:<id>`, or `run:<id>` for a child run); its principal is `run:<run id>`, and
-  `member_id` is the member a private agent's run acts as. Filtering the usage reads by them comes with #228.
+  `member_id` is the member a private agent's run acts as. A browser session a run opens names the run too
+  (`StoredSession.run`), so its browser time's records do. The usage reads filter by agent and run (#228, "Usage
+  accounting"), and a private agent's run's records are its member's alone.
 - **Org deletion** (`agents/org-deletion.ts`): the app Worker's step deletes each run's object (`purge`: its alarm and
   all its storage), twenty at a time within the deletion's budget, and forgets them in the index (`runsPage`,
-  `forgetRuns`), before `wipeOrg` drops the index. A member who leaves takes their private agents, whose runs stop at
-  once; their objects stay until the org is deleted (a sweep of ended runs comes with the runs' retention).
+  `forgetRuns`), before `wipeOrg` drops the index, the queue of deleted runs below included.
+- **Deletion** (#228, ADR 0027, `agents/runs/store.ts`, `agents/runs/retention.ts`): removing an agent deletes all its
+  runs, whoever started them; a member who leaves takes their private agents' runs and every run they started,
+  shared agents' included. Each goes with the child runs it started (`starter_kind` `run`) and theirs. A run leaves
+  the index at once (`RunStore.discard`, in the same transaction as the deletion): it then answers like an unknown run
+  and its principal is refused. Its object is the API Worker's, which the ControlPlane cannot reach, so its id waits in
+  `agent_run_purges` (`deletedRuns`) until a Worker deletes the object (`purge`) and forgets it (`forgetRuns`): the app
+  Worker's routes right after the deletion (`sweepDeletedRuns`: agent removal, member removal, account deletion; three
+  pages of twenty, best effort) and the cron task below for what they leave. Both, and the org's deletion, page with
+  one loop (`sweepObjects`, `agents/org-deletion.ts`): each object is deleted on its own (`Promise.allSettled`), those
+  deleted are forgotten, and one that fails stays queued and ends that sweep, so it never holds up the others. The
+  cross-org suite checks the queue (`controlplane: deleted agent runs`).
+- **Purge** (`AgentRunObject.purge`): the object closes its harness first, aborting a running turn, for at most 5 s,
+  then deletes its alarm and all its storage; a harness still closing then deletes the storage again once it closed
+  (`waitUntil`), and from the purge on the instance opens no harness and writes nothing (`#purged`), so nothing it had
+  running writes the run back. A later instance starts empty and answers like an unknown run. The run's sandbox
+  session (#230) and computer seconds (#224) join the purge once runs have them.
+- **Retention** (#228): each org keeps its agent runs `run_retention_days` after their last activity (a column of the
+  Platform registry's `orgs` table, `PATCH /org` and the panel's Settings, Retention; `null` keeps them; every org
+  starts at 30, `global` and those from before included). The last activity is the index's `updated_at`: the run's start
+  and every state its object reports (a turn starting, settling or ending the run; a message to an idle run starts a
+  turn, and one to a running turn joins it, which stays running until it settles). The API Worker's deployment-wide
+  cron task `agent-run-retention` (`pruneExpiredRuns`) deletes, per org, the runs idle longer (`expireRuns`, as a
+  deletion above) but never one the index holds as running, and each on its own last activity: a child run is not
+  pruned with its parent, unlike a deletion. It then deletes the objects of the org's deleted runs, ten pages at most
+  per org, within 400 calls per run of the task across all orgs (`RETENTION_BUDGET`; an invocation's subrequests are
+  limited), starting at an org that moves on every hour, so the orgs a spent budget left out come first later. One
+  org's failure does not stop the next. A run whose object never reports the end of its turn (the report failed) stays
+  `running` in the index and is kept until it reports again.
+- **Export**: the org export's agents section carries each agent's runs' metadata (`Runs.exported`): who started each
+  (a member by email, a run by id), its trigger, state and times, never a transcript.
 - **Management routes** (`agents/management/run-routes.ts`, `AgentRunsGroup` in `@commissary/contract/agent-runs`):
   `POST /agents/:id/runs` (start, as the asking member, trigger `chat`), `GET /agent-runs`, `GET /agent-runs/:run`,
   `POST /agent-runs/:run/messages`, `POST /agent-runs/:run/wait` (default 30 s) and `POST /agent-runs/:run/cancel`.
@@ -4588,12 +4636,15 @@ the deployment's Dynamic Workers binding `LOADER`.
   provider module (`@earendil-works/pi-ai/api/openai-completions`, not its lazy `import()` wrapper). A lazy import
   would be shared by the run objects of one isolate: when several start at once, all but one await the import another
   object began and resume in that object's I/O context, which workerd refuses ("Cannot perform I/O on behalf of a
-  different Durable Object"), failing the turn and leaving its harness open. So the API Worker's startup loads them. The
-  adapter gives pi-ai one OpenAI-compatible provider (`commissary`) whose `fetch` is the run gateway, and installs the
-  tools the MCP endpoint lists for the run (`@earendil-works/pi-mcp` over the same `fetch`). The cost, measured with
-  `wrangler deploy --dry-run` and `wrangler check startup` (median of nine) when the adapter was loaded lazily: the API
-  Worker is 3,041 KiB gzipped with a 68.8 ms startup, against 2,665 KiB and 64.4 ms with the pi packages stubbed out;
-  loaded at startup, the startup time includes them.
+  different Durable Object"), failing the turn and leaving its harness open (its deletion then never finished).
+  `agents/test/run-isolate.test.ts` starts an isolate's first runs at once and fails with pi-ai's lazy import. So both
+  Workers that bundle the Agents area (the API Worker, which runs the objects, and the app Worker, through
+  `@commissary/agents/api`) load the pi packages at startup. The adapter gives pi-ai one OpenAI-compatible provider
+  (`commissary`) whose `fetch` is the run gateway, and installs the tools the MCP endpoint lists for the run
+  (`@earendil-works/pi-mcp` over the same `fetch`). The cost, measured with `wrangler deploy --dry-run` and `wrangler
+  check startup` (median of nine) when the adapter was loaded lazily: the API Worker is 3,041 KiB gzipped with a 68.8
+  ms startup, against 2,665 KiB and 64.4 ms with the pi packages stubbed out; loaded at startup, the startup time
+  includes them.
 
 ### Triggers (#231)
 
@@ -4754,5 +4805,7 @@ the deployment's Dynamic Workers binding `LOADER`.
   an hour), ten tries in all (`MAX_DELIVERY_ATTEMPTS`, about three hours), after which it is dropped and logged; a parent
   claiming a result still to be delivered takes it from the deliveries. The panel's wait (`POST /agent-runs/:run/wait`)
   claims nothing, until watchers (#232) align the two.
-- **Deletion**: there is no deletion of a single run yet; when it comes (#228) a run's child runs go with it. Org
-  deletion deletes every run's object, child runs included (they are rows of the index like any run).
+- **Deletion** (#228, "Agent runs"): a run deleted with its agent or its member takes its child runs and theirs
+  (`RunStore.discard` follows `starter_kind` `run` down the tree), whatever agent they run, and the sweeps delete their
+  objects like any run's; a run pruned past the org's retention period goes alone, each child on its own last
+  activity. Org deletion deletes every run's object, child runs included (they are rows of the index like any run).

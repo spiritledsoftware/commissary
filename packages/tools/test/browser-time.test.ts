@@ -588,6 +588,86 @@ describe("a browser session", () => {
     });
 });
 
+describe("an agent run's browser session (#228)", () => {
+  const run = (usage: { readonly agentId: string; readonly private?: boolean }) => ({
+    toolScope: [{ toolkit: "browser", tools: { kind: "all" as const } }],
+    asAgent: usage.private !== true,
+    starterMember: "m_starter",
+    usage: { ...usage, runId: "ar_1", starter: "member:m_starter" },
+  });
+
+  /** A call of `tool` by an agent run: a shared agent's has no member, a private agent's acts as alice. */
+  const runCall = (
+    org: Org,
+    reach: ReturnType<typeof run>,
+    tool: string,
+    args: Schema.JsonObject = {},
+  ) =>
+    org.stub
+      .tools()
+      .callTool(
+        reach.asAgent ? { admin: false } : org.alice,
+        { name: tool, arguments: args, principalId: "run:ar_1", run: reach },
+        POLICY,
+      );
+
+  const opened = async (org: Org, reach: ReturnType<typeof run>) => {
+    const answer = await runCall(org, reach, "browser_open");
+
+    if (answer.outcome !== "result") throw new Error(`the call came to ${answer.outcome}`);
+    const id = /Browser session (bs_[0-9a-f]{32}) is open/.exec(textOf(answer.result))?.[1];
+
+    if (id === undefined) throw new Error(`no session opened: ${textOf(answer.result)}`);
+
+    return id;
+  };
+
+  it("names the run's agent, the run and its starter on its record, and logs a shared agent for its charges", async () => {
+    const org = await browserOrg(MICRO_PER_MS);
+    const reach = run({ agentId: "ag_shared" });
+
+    await org.limit("org", "", 10_000_000);
+    const id = await opened(org, reach);
+
+    expect(
+      await runInDurableObject(org.stub, (_instance, state) =>
+        state.storage.sql
+          .exec<{ agent: string | null }>(`SELECT agent FROM browser_sessions WHERE id = ?`, id)
+          .toArray(),
+      ),
+    ).toEqual([{ agent: "ag_shared" }]);
+
+    await org.advance(IDLE_TIMEOUT_MS);
+    await alarmOf(org, id);
+
+    expect(await sessionRecord(id)).toMatchObject({
+      principal_id: "run:ar_1",
+      member_id: null,
+      private: 0,
+      agent_id: "ag_shared",
+      run_id: "ar_1",
+      starter: "member:m_starter",
+      browser_ms: IDLE_TIMEOUT_MS,
+    });
+    expect(await org.spent()).toBe(IDLE_TIMEOUT_MS);
+  });
+
+  it("of a private agent writes a private record, its member's alone", async () => {
+    const org = await browserOrg(MICRO_PER_MS);
+    const reach = run({ agentId: "ag_mine", private: true });
+    const id = await opened(org, reach);
+
+    await runCall(org, reach, "browser_close", { sessionId: id });
+
+    expect(await sessionRecord(id)).toMatchObject({
+      member_id: org.alice.member,
+      private: 1,
+      agent_id: "ag_mine",
+      run_id: "ar_1",
+    });
+  });
+});
+
 describe("a session object", () => {
   it("answers a Tools part from before browser time the bare tool result it expects, and meters none of its calls", async () => {
     const org = await browserOrg(MICRO_PER_MS);

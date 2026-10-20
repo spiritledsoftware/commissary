@@ -1,6 +1,13 @@
 import { RpcTarget } from "cloudflare:workers";
 import { Clock, type Duration, Effect, Result, type Schema } from "effect";
-import { type Access, accessTo, isFullAccess, type Scope, type Viewer } from "@commissary/auth";
+import {
+  type Access,
+  accessTo,
+  isFullAccess,
+  type Scope,
+  type UsageRun,
+  type Viewer,
+} from "@commissary/auth";
 import type {
   ApprovalDecision,
   ApprovalsList,
@@ -531,6 +538,12 @@ export interface RunToolReach {
   readonly starterMember?: string | undefined;
   /** The run's agent (#229), which the agents toolkit does not offer it. */
   readonly agentId?: string | undefined;
+  /**
+   * The run as its usage records name it (#228): a shared agent's run counts toward the agent's own Spend limits, and
+   * the browser sessions it opens write records naming it. Absent from an API Worker from before #228, whose shared
+   * agents' runs count toward the org's limits only.
+   */
+  readonly usage?: UsageRun | undefined;
 }
 
 /** A call of Commissary's MCP endpoint (#197): the tool's full name, its arguments, and the toolkits it narrows to. */
@@ -579,6 +592,16 @@ export interface ClientToolsOptions {
   /** The endpoint's Worker makes the agents toolkit's calls ({@link ToolCall.agentsToolkit}): list its tools. */
   readonly agentsToolkit?: true | undefined;
 }
+
+/**
+ * Who `viewer`'s `call` is for, as the Spend limits see it: its member and API key, or a shared agent whose run makes it
+ * (#228), which counts toward the agent's own limits and has neither. A run has no API key, so no key limit applies.
+ */
+const spenderOf = (viewer: Viewer, call: ToolCall): SpendCaller => ({
+  memberId: viewer.member,
+  apiKeyId: call.apiKeyId,
+  agentId: call.run?.asAgent === true ? call.run.usage?.agentId : undefined,
+});
 
 /** How a client's caller answered an elicitation form (MCP `ElicitResult.action`). */
 export type FormAction = "accept" | "decline" | "cancel";
@@ -2867,7 +2890,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
     const price = tool.priceMicros ?? 0;
     const ledger = this.#core.spend.ledger();
-    const spender = { memberId: viewer.member, apiKeyId: call.apiKeyId };
+    const spender = spenderOf(viewer, call);
 
     // The toolkit's shared credential is a `toolkit_credential` limit's; a private one counts toward the API key's limits only.
     const charged: ChargedCredential = {
@@ -2958,7 +2981,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
         };
       }
 
-      const session = this.#builtInCall(builtIn, viewer, call, policy, now);
+      const session = this.#builtInCall(builtIn, viewer, call, spender, policy, now);
 
       const answer = await Effect.runPromise(
         builtIn.call(tool.upstreamName, call.arguments, session.call),
@@ -3016,6 +3039,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     builtIn: CalledBuiltIn,
     viewer: Viewer,
     call: ToolCall,
+    spender: SpendCaller,
     policy: OutboundPolicy,
     now: number,
   ): BuiltInCalling {
@@ -3030,6 +3054,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
         org: this.#core.org,
         member: viewer.member,
         principal: principalId,
+        ...(call.run?.usage === undefined ? {} : { run: call.run.usage }),
         profiles: this.#callerProfiles(viewer, principalId ?? viewer.member),
         // A browser session is logged while it is open, so the org's deletion deletes it (#214).
         browserSessions: {
@@ -3039,6 +3064,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
               toolkitId: builtIn.toolkit.id,
               member: viewer.member,
               principal: principalId ?? "",
+              agent: spender.agentId,
               openedAt: now,
             }),
           closed: (id) => this.#browserSessionLog.forget([id]),
@@ -3096,7 +3122,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
     if (typeof sessionId !== "string") return false;
     const now = this.#now();
-    const caller = this.#builtInCall(builtIn, viewer, call, policy, now);
+    const caller = this.#builtInCall(builtIn, viewer, call, spender, policy, now);
 
     const { result, browserTime } = await Effect.runPromise(
       builtIn.call(CLOSE_TOOL, { sessionId }, caller.call),
@@ -3113,7 +3139,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
    * Hears that the alarm of the logged browser session `sessionId` closed it after its idle minutes (#214): forgets it,
    * and charges `costMicros` of its browser time, the stretch since its last call, which no call charged, to the Spend
    * limits it counts toward, as its toolkit's shared credential served it: those of the member who opened it, their
-   * teams and the org, and of the API key it was opened with. The session's Durable Object calls it. A session the part
+   * teams and the org, and of the API key it was opened with, or of the shared agent whose run opened it (#228). The session's Durable Object calls it. A session the part
    * did not log (or forgot), or a cost that is not a whole number of micro-USD, 0 or more, charges nothing.
    */
   browserSessionClosed(sessionId: string, costMicros: number): void {
@@ -3133,7 +3159,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     };
 
     ledger.charge(
-      ledger.scopes({ memberId: session.member, apiKeyId }, charged),
+      ledger.scopes({ memberId: session.member, apiKeyId, agentId: session.agent }, charged),
       costMicros,
       this.#now(),
     );

@@ -326,4 +326,26 @@ describe("retry planning with Spend limits", () => {
 
     expect(plan).toEqual({ retry: false, retryAfterMs: 12 * 3_600_000 });
   });
+
+  it("does not retry a shared agent's run for shared credentials once the agent's limit is spent (#228)", async () => {
+    const book = new MemorySpendBook([limit("agent", "ag1", "day", 1 * USD)]);
+    const clock = new TestNow(at("2026-03-10T12:00:00Z"));
+    const h = await makePool(config("a"), { clock, spend: ledgerOf(book) });
+
+    const query = {
+      providers: request.providers,
+      model: "m",
+      round: 0,
+      requestRetry: 3,
+      status: 503,
+      maxWaitMs: 30_000,
+    };
+
+    expect(h.pool.planRetry({ ...query, agentId: "ag1" })).toMatchObject({ retry: true });
+    h.pool.report(picked(h.pool.pick({ ...request, agentId: "ag1" })).lease, success(1 * USD));
+
+    expect(h.pool.planRetry({ ...query, agentId: "ag1" })).toMatchObject({ retry: false });
+    // Another caller's retry is not held back by the agent's limit.
+    expect(h.pool.planRetry({ ...query, agentId: "ag2" })).toMatchObject({ retry: true });
+  });
 });

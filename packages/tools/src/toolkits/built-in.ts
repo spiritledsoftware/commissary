@@ -18,6 +18,7 @@
  * names that provider and whose credential is the org's key for it, calling the same tools through that provider's
  * adapter.
  */
+import type { UsageRun } from "@commissary/auth";
 import { type ComputerMarker, hasComputer, type OutboundPolicy } from "@commissary/core";
 import { Effect, Result, Schema } from "effect";
 import { AGENTS_TOOLKIT } from "@commissary/contract/api-keys";
@@ -195,6 +196,8 @@ export interface BuiltInCall {
   readonly org: string;
   readonly member: string | undefined;
   readonly principal: string | undefined;
+  /** The agent run making the call (#228), which a browser session's usage record names. */
+  readonly run?: UsageRun | undefined;
   readonly profiles: CallerProfiles;
   readonly sessions: SandboxSessionLog;
   /** The org's open browser sessions (#214), which the org's deletion deletes. */
@@ -404,7 +407,11 @@ const callSessionTool = (
       owner,
       source,
       url,
-      { ...metering, toolkitId: toolkit.id },
+      {
+        ...metering,
+        toolkitId: toolkit.id,
+        ...(caller.run === undefined ? {} : { run: caller.run }),
+      },
       profile,
     );
 

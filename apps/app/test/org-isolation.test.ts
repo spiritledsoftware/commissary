@@ -309,6 +309,9 @@ const runsOf = (name: string): string[] => {
   return known;
 };
 
+/** The value of each run the deleted runs' case started, by run id (its run is deleted with its agent). */
+const deletedRunValues = new Map<string, string>();
+
 /** The schedule triggers each case name's writes added, in every org (the schedules' objects' case). */
 const schedulesByName = new Map<string, string[]>();
 
@@ -1070,6 +1073,37 @@ const STORES: ReadonlyArray<StoreCase> = [
       (await env.CONTROL_PLANE.getByName(org.id).agents().listRuns(isoViewer(org))).runs.find(
         (run) => run.agent.name?.startsWith("run_value_") === true,
       )?.agent.name,
+  }),
+  // The queue of deleted agent runs whose objects are still to delete (#228), in the org's ControlPlane: each org deletes
+  // a shared agent with a run of its own; each org's queue holds its own run only. Written and read on the part (the
+  // sweep is `agent-runs.test.ts`').
+  storeCase("controlplane: deleted agent runs", {
+    write: async (org, name, value) => {
+      const agents = env.CONTROL_PLANE.getByName(org.id).agents();
+      const admin = { ...isoViewer(org), admin: true };
+
+      const created = await agents.createAgent(
+        admin,
+        { ...agentBody(`del_${agentName(name)}`, "shared-model"), subject: { kind: "everyone" } },
+        { modelServed: true },
+        "iso",
+      );
+
+      if (!created.ok) throw new Error(created.message);
+      const started = await agents.startRun(isoViewer(org), created.value.id, "chat", name);
+
+      if (!started.ok) throw new Error(started.message);
+      deletedRunValues.set(started.value.run.id, value);
+
+      const removed = await agents.removeAgent(admin, created.value.id, created.value.revision);
+
+      expect(removed.ok).toBe(true);
+    },
+    read: async (org) => {
+      const queued = await env.CONTROL_PLANE.getByName(org.id).agents().deletedRuns(100);
+
+      return queued.map((id) => deletedRunValues.get(id)).find((value) => value !== undefined);
+    },
   }),
   // The triggers configured on hosted agents (#231), in the org's ControlPlane: each org gives a shared agent of the same
   // name a webhook named after its value; each lists its own agent's trigger only. Written and read on the part (the

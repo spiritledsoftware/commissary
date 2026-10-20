@@ -11,6 +11,13 @@
  * empty id. A run a trigger configured on the agent started names it (`trigger_id`, added by #231 to the table #227
  * created), and one an API key started through the agents toolkit names the key (`api_key_id`, added by #229): an API
  * key sees only the runs it started.
+ *
+ * **Deleted runs** (#228, ADR 0027). A run deleted with its agent or its member leaves the index at once
+ * ({@link RunStore.discard}), with the child runs it started, and theirs (`starter_kind` `run`, #229); a run pruned past
+ * the org's retention period for agent runs leaves it alone, never while a turn runs (its child runs are pruned on
+ * their own last activity). From then on it answers like an unknown run, and its principal is refused. Its id waits
+ * in `agent_run_purges` until its object is deleted (`purge`), which the ControlPlane cannot reach: the app Worker's
+ * sweep after the deletion, the API Worker's cron task, or the org's deletion, which pages both tables.
  */
 import { Option, Schema } from "effect";
 import type { RunStarter } from "@commissary/auth";
@@ -26,7 +33,33 @@ const SCHEMA = [
      UNIQUE (agent_id, starter_kind, starter_id, idempotency_key)
    )`,
   `CREATE INDEX IF NOT EXISTS agent_runs_starter ON agent_runs (starter_kind, starter_id, updated_at)`,
+  // #228: runs deleted from the index whose objects are still to delete, and the lookups that delete runs.
+  `CREATE TABLE IF NOT EXISTS agent_run_purges (id TEXT PRIMARY KEY, queued_at INTEGER NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS agent_runs_agent ON agent_runs (agent_id)`,
+  `CREATE INDEX IF NOT EXISTS agent_runs_updated ON agent_runs (updated_at)`,
 ];
+
+/**
+ * Which runs a deletion takes (#228): those the member `member` started or those of the agents `agents`, each with the
+ * child runs it started, and theirs; or those whose last activity was before `idleBefore` (epoch ms) and that run no
+ * turn now, alone (retention: a child run goes on its own last activity, not its parent's).
+ */
+export type DiscardedRuns =
+  | { readonly member: string }
+  | { readonly agents: ReadonlyArray<string> }
+  | { readonly idleBefore: number };
+
+const discardedWhere = (
+  runs: DiscardedRuns,
+): { readonly where: string; readonly value: string | number } =>
+  "member" in runs
+    ? { where: "starter_kind = 'member' AND starter_id = ?", value: runs.member }
+    : "agents" in runs
+      ? {
+          where: "agent_id IN (SELECT value FROM json_each(?))",
+          value: JSON.stringify(runs.agents),
+        }
+      : { where: "updated_at < ? AND state <> 'running'", value: runs.idleBefore };
 
 /** The starter columns of a run no one started. */
 const NO_STARTER = { kind: "none", id: "" } as const;
@@ -72,7 +105,10 @@ export interface StoredRun {
   /** The definition its latest turn started with; none before its first turn. */
   readonly definition?: TurnDefinition | undefined;
   readonly createdAt: number;
-  /** Its last activity: when it was started, or its state last changed. */
+  /**
+   * Its last activity: when it was started, or its state last changed (a turn starting or settling, a message to an
+   * idle run starting one; a message to a running turn joins it, which is running until it settles).
+   */
   readonly updatedAt: number;
 }
 
@@ -171,6 +207,25 @@ export class RunStore {
     return row === undefined ? undefined : runOf(row);
   }
 
+  /**
+   * The runs of `agent`, oldest first, each with its starter as the index holds it: a member, a run (a child run, #229)
+   * or none (`none`); for the org export (#228).
+   */
+  ofAgent(agent: string): ReadonlyArray<{
+    readonly run: StoredRun;
+    readonly starterKind: string;
+    readonly starterId: string;
+  }> {
+    return this.#sql
+      .exec<RunRow>(`SELECT * FROM agent_runs WHERE agent_id = ? ORDER BY created_at, id`, agent)
+      .toArray()
+      .map((row) => ({
+        run: runOf(row),
+        starterKind: row.starter_kind,
+        starterId: row.starter_id,
+      }));
+  }
+
   /** The runs `starter` started, the latest activity first. */
   startedBy(starter: RunStarter): ReadonlyArray<StoredRun> {
     return this.#sql
@@ -242,17 +297,71 @@ export class RunStore {
   /** The ids of up to `limit` runs, oldest first: the org's deletion deletes their objects a page at a time. */
   ids(limit: number): ReadonlyArray<string> {
     return this.#sql
-      .exec<{ id: string }>(`SELECT id FROM agent_runs ORDER BY created_at, id LIMIT ?`, limit)
+      .exec<{ id: string }>(
+        `SELECT id FROM agent_runs ORDER BY created_at, id LIMIT ?`,
+        Math.max(0, limit),
+      )
       .toArray()
       .map((row) => row.id);
   }
 
+  /** How many runs the index holds. */
   count(): number {
     return this.#sql.exec<{ n: number }>(`SELECT COUNT(*) AS n FROM agent_runs`).one().n;
   }
 
+  /** How many deleted runs' objects are still to delete. */
+  queuedCount(): number {
+    return this.#sql.exec<{ n: number }>(`SELECT COUNT(*) AS n FROM agent_run_purges`).one().n;
+  }
+
+  /** Forgets the runs `ids`, whose objects were deleted, whether they were deleted from the index already or not. */
   delete(ids: ReadonlyArray<string>): void {
-    for (const id of ids) this.#sql.exec(`DELETE FROM agent_runs WHERE id = ?`, id);
+    for (const id of ids) {
+      this.#sql.exec(`DELETE FROM agent_runs WHERE id = ?`, id);
+      this.#sql.exec(`DELETE FROM agent_run_purges WHERE id = ?`, id);
+    }
+  }
+
+  /**
+   * Deletes `runs` from the index at once, a deletion's with the child runs each started and theirs, and queues their
+   * ids for their objects' deletion; answers how many runs it deleted.
+   */
+  discard(runs: DiscardedRuns, at: number): number {
+    const { where, value } = discardedWhere(runs);
+
+    // Retention prunes each run on its own last activity; a deletion takes the runs' child runs with them.
+    const children =
+      "idleBefore" in runs
+        ? ""
+        : `UNION SELECT r.id FROM agent_runs r JOIN doomed d ON r.starter_kind = 'run' AND r.starter_id = d.id`;
+
+    const before = this.count();
+
+    this.#sql.exec(
+      `INSERT OR IGNORE INTO agent_run_purges (id, queued_at)
+       WITH RECURSIVE doomed(id) AS (
+         SELECT id FROM agent_runs WHERE ${where}
+         ${children}
+       )
+       SELECT id, ? FROM doomed`,
+      value,
+      at,
+    );
+    this.#sql.exec(`DELETE FROM agent_runs WHERE id IN (SELECT id FROM agent_run_purges)`);
+
+    return before - this.count();
+  }
+
+  /** The ids of up to `limit` deleted runs whose objects are still to delete, the earliest deleted first. */
+  queued(limit: number): ReadonlyArray<string> {
+    return this.#sql
+      .exec<{ id: string }>(
+        `SELECT id FROM agent_run_purges ORDER BY queued_at, id LIMIT ?`,
+        Math.max(0, limit),
+      )
+      .toArray()
+      .map((row) => row.id);
   }
 
   /** Records the run's state as its object reported it, and the time as its last activity. */

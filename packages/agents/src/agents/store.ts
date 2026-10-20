@@ -16,6 +16,7 @@ import type { GrantSubject } from "@commissary/contract/grants";
 export const AGENTS_TABLES = [
   "agent_schedule_objects",
   "agent_triggers",
+  "agent_run_purges",
   "agent_runs",
   "agent_grants",
   "agents",
