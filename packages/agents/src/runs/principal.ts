@@ -31,6 +31,9 @@ export const runPrincipal = Effect.fnUntraced(function* (
     runId: run.runId,
     agentId: run.agentId,
     starter: run.starter,
+    // Absent from a ControlPlane deployed before child runs (#229): the starter, if any, is then a member.
+    starterMember:
+      run.starterMember ?? (run.starter?.kind === "member" ? run.starter.id : undefined),
     starterEmail: run.starterEmail,
     actsAs: run.actsAs,
     reach: { model: run.model, toolScope: run.toolScope },

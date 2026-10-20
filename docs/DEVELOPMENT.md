@@ -381,9 +381,13 @@ stays with that Worker.
   OAuth server to `/mcp` (`test/hosted/mcp-oauth.test.ts`, #200) uses it. The other flow that crosses both Workers is an
   agent run (#227): the app Worker's routes start it, and its object, the API Worker's `AgentRun`, calls the API
   Worker's run gateway over `ctx.exports`; so the app's test Worker also exports `@commissary/api`'s `AgentRun` and
-  `AgentRunGateway`, and the runs' end-to-end tests (`test/agent-runs.test.ts`) stay with the app Worker. What runs
-  without the client API (the index of runs, the turns' readings of the definition, the object's checks) is
-  `@commissary/agents`' own (`packages/agents/test/runs.test.ts`). The schedule triggers' objects (`AgentSchedule`, #231)
+  `AgentRunGateway`, and the runs' end-to-end tests (`test/agent-runs.test.ts`) stay with the app Worker. The agents
+  toolkit's MCP calls (#229) are tested there too, though `/mcp` is the API Worker's: they need the agents, grants and
+  API keys the app Worker's routes create, the API Worker's MCP endpoint (the file calls `@commissary/api`'s handler,
+  `api.fetch`, with the test Worker's bindings) and the runs' objects together. What runs without the client API (the
+  index of runs, the turns' readings of the definition, the object's checks, and the agents toolkit's starts, chains,
+  claims and deliveries) is `@commissary/agents`' own (`packages/agents/test/runs.test.ts`,
+  `packages/agents/test/toolkit-runs.test.ts`). The schedule triggers' objects (`AgentSchedule`, #231)
   are the API Worker's too, exported the same way for the triggers' routes (`test/agent-triggers.test.ts`); their ticks
   and the webhooks' checks (signatures' tolerance and deliveries' keys under `TestClock`) are Agents' own
   (`packages/agents/test/triggers.test.ts`), and webhook deliveries, a client

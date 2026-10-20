@@ -692,6 +692,17 @@ describe("the org export", () => {
         network: { kind: "none" },
         computer: false,
       },
+      // The built-in agents toolkit (#229): no credential, refuses grants.
+      {
+        name: "agents",
+        kind: "agents",
+        source: "commissary",
+        private: false,
+        accepts: "shared",
+        credentials: [{ slot: "shared", kind: "none" }],
+        overrides: [],
+        grants: [],
+      },
       {
         name: "kit",
         kind: "mcp",

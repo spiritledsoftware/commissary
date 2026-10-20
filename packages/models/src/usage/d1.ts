@@ -118,7 +118,7 @@ export interface UsageRow {
   approval: ToolCallApproval | null;
   /**
    * The agent run a record comes from (`migrations/usage/0011_usage_agent_runs.sql`, #227): its agent, the run and its
-   * starter (`member:<id>`; child runs, #229, will add theirs), `null` for a run no one started (a shared agent's
+   * starter (`member:<id>`, or `run:<id>` for a child run, #229), `null` for a run no one started (a shared agent's
    * trigger, #231); `null` on any other record.
    */
   agent_id: string | null;

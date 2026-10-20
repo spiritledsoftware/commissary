@@ -300,6 +300,7 @@ export default Alchemy.Stack(
           computer === undefined
             ? Cloudflare.DurableObject("SandboxSession")
             : Cloudflare.DurableObject("SandboxSession", { containers: [computer] }),
+        // Also the Agents area's presence (ADR 0043): the ControlPlane has the agents toolkit (#229) where it is bound.
         LOADER: Cloudflare.WorkerLoader("LOADER"),
         ...(hosted === undefined ? {} : { COMMISSARY_MODE: "cloud" }),
         ...stateSettings,
@@ -468,6 +469,9 @@ export default Alchemy.Stack(
           // The schedule triggers (#231, `@commissary/agents/api`'s `AgentScheduleObject`), one object per schedule,
           // whose alarm starts the runs above: here, as the state Worker's ControlPlane cannot reach them.
           AGENT_SCHEDULE: Cloudflare.DurableObject("AgentSchedule"),
+          // Dynamic Workers (ADR 0043): the Agents area's presence; the MCP endpoint serves the agents toolkit (#229)
+          // where it is bound, as the app Worker serves the area's routes.
+          LOADER: Cloudflare.WorkerLoader("LOADER"),
           ...hostedApiEnv,
           ...mcpOAuthEnv,
         },

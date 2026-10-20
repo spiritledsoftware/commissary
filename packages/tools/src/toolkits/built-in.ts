@@ -1,8 +1,9 @@
 /**
- * Built-in toolkits (ADR 0039, ADR 0041, #212, #213, #222, #270): the toolkits Commissary provides itself, the browser toolkit
- * and the sandbox toolkit. An org connects nothing for one: it exists exactly when the deployment has what it runs on (the
- * browser toolkit: a `browser` binding, so a browser provider; the sandbox toolkit: Dynamic Workers, which every
- * deployment has, ADR 0043), and is otherwise missing everywhere (the MCP endpoint, toolkit lists, grants).
+ * Built-in toolkits (ADR 0039, ADR 0040, ADR 0041, #212, #213, #222, #229, #270): the toolkits Commissary provides itself,
+ * the browser toolkit, the sandbox toolkit and the agents toolkit. An org connects nothing for one: it exists exactly
+ * when the deployment has what it runs on (the browser toolkit: a `browser` binding, so a browser provider; the sandbox
+ * toolkit: Dynamic Workers, which every deployment has, ADR 0043; the agents toolkit: the Agents area, which the state
+ * Worker composes into the ControlPlane), and is otherwise missing everywhere (the MCP endpoint, toolkit lists, grants).
  *
  * A built-in toolkit is not stored: the Tools part lists it beside the org's stored toolkits, as an org toolkit with a
  * fixed id (its name, which no stored toolkit's `tk_…` id can be) and a fixed tool list from code. Its shared credential
@@ -12,13 +13,15 @@
  * (and the sandbox toolkit's network ceiling). It cannot be renamed, edited otherwise, refreshed from a source, given a
  * credential or removed, and its name is taken: no other toolkit, org or private, may have it while it exists.
  *
- * Its kind is the kind of service behind it (`browser`, `sandbox`) and its source the provider (`browser-run`,
- * `cloudflare`): a later toolkit from another provider (ADR 0041) is a stored toolkit of the same kind, whose source
+ * Its kind is the kind of service behind it (`browser`, `sandbox`, `agents`) and its source the provider (`browser-run`,
+ * `cloudflare`; `commissary` for the agents toolkit, which runs Commissary's own hosted agents): a later toolkit from another provider (ADR 0041) is a stored toolkit of the same kind, whose source
  * names that provider and whose credential is the org's key for it, calling the same tools through that provider's
  * adapter.
  */
 import { type ComputerMarker, hasComputer, type OutboundPolicy } from "@commissary/core";
 import { Effect, Result, Schema } from "effect";
+import { AGENTS_TOOLKIT } from "@commissary/contract/api-keys";
+import { AGENTS_TOOL_LIST, type AgentDirectory } from "../agents/toolkit.ts";
 import { browserRun, type BrowserRunBinding } from "../browser/browser-run.ts";
 import { browserRunCrawls, crawlCredentialsOf } from "../browser/browser-run-crawls.ts";
 import {
@@ -108,6 +111,11 @@ export interface BuiltInProviders {
   /** The most pages one crawl of the browser provider's may take; unset, {@link DEFAULT_CRAWL_MAX_PAGES}. */
   readonly crawlMaxPages?: number | undefined;
   readonly sandbox?: SandboxProvider | undefined;
+  /**
+   * The agents a caller may run, from the Agents part of the same ControlPlane: given where the state Worker composes
+   * the Agents area (`apps/state/src/control-plane.ts`), and with it the agents toolkit (#229).
+   */
+  readonly agents?: AgentDirectory | undefined;
 }
 
 /**
@@ -220,8 +228,9 @@ export interface BuiltInAnswer extends Timed {
 export const browserTimeOf = (tool: string): BrowserTimeUse =>
   isSessionTool(tool) ? SESSION_TOOLS[tool].browserTime : isQuickAction(tool) ? "uses" : "none";
 
-/** A built-in toolkit with its tools, and how a tool of it is called. */
-export interface BuiltIn {
+/** A built-in toolkit whose calls the Tools part makes: the browser and sandbox toolkits. */
+export interface CalledBuiltIn {
+  readonly calledBy: "part";
   readonly toolkit: BuiltInToolkit;
   readonly tools: ReadonlyArray<StoredTool>;
   /** Calls the tool of upstream name `tool`; never fails (a failure is a tool result with `isError`). */
@@ -231,6 +240,19 @@ export interface BuiltIn {
     call: BuiltInCall,
   ) => Effect.Effect<BuiltInAnswer>;
 }
+
+/**
+ * A built-in toolkit whose calls the MCP endpoint's Worker makes (the agents toolkit, #229, `agents/toolkit.ts`): the
+ * part decides who reaches its tools and charges them, and answers the call `delegated`.
+ */
+export interface DelegatedBuiltIn {
+  readonly calledBy: "worker";
+  readonly toolkit: BuiltInToolkit;
+  readonly tools: ReadonlyArray<StoredTool>;
+}
+
+/** A built-in toolkit with its tools, and who makes its calls. */
+export type BuiltIn = CalledBuiltIn | DelegatedBuiltIn;
 
 /** A tool of a built-in toolkit as it lists it. */
 interface ListedTool {
@@ -447,7 +469,7 @@ const builtInToolkit = (
   kind: BuiltInToolkit["kind"],
   source: string,
   tools: ReadonlyArray<ListedTool>,
-): Omit<BuiltIn, "call"> => ({
+): Pick<BuiltIn, "toolkit" | "tools"> => ({
   toolkit: {
     id,
     kind,
@@ -497,7 +519,7 @@ const browserToolkit = (
   provider: BrowserProvider,
   sessions: BrowserSessions | undefined,
   maxPages: number,
-): BuiltIn => {
+): CalledBuiltIn => {
   const withSessions = sessions !== undefined && provider.sessions ? sessions : undefined;
   const { crawls } = provider;
 
@@ -508,6 +530,7 @@ const browserToolkit = (
   ];
 
   return {
+    calledBy: "part",
     ...builtInToolkit(BROWSER_TOOLKIT, "browser", provider.id, tools),
     call: (tool, args, caller) => {
       if (withSessions !== undefined && isSessionTool(tool))
@@ -529,7 +552,8 @@ const browserToolkit = (
   };
 };
 
-const sandboxToolkit = (provider: SandboxProvider): BuiltIn => ({
+const sandboxToolkit = (provider: SandboxProvider): CalledBuiltIn => ({
+  calledBy: "part",
   ...builtInToolkit(SANDBOX_TOOLKIT, "sandbox", provider.id, SANDBOX_TOOLS),
   call: (tool, args, { org, principal, sessions, policy, now, toolkit }) =>
     (principal === undefined
@@ -549,6 +573,12 @@ const sandboxToolkit = (provider: SandboxProvider): BuiltIn => ({
     ).pipe(Effect.map((result): BuiltInAnswer => ({ result }))),
 });
 
+/** The agents toolkit (#229): its tools from code, its calls made by the MCP endpoint's Worker. */
+const agentsToolkit = (): DelegatedBuiltIn => ({
+  calledBy: "worker",
+  ...builtInToolkit(AGENTS_TOOLKIT, "agents", COMMISSARY, AGENTS_TOOL_LIST),
+});
+
 /** The built-in toolkits `providers` give. */
 export const builtInToolkits = (providers: BuiltInProviders): ReadonlyArray<BuiltIn> => [
   ...(providers.browser === undefined
@@ -561,4 +591,5 @@ export const builtInToolkits = (providers: BuiltInProviders): ReadonlyArray<Buil
         ),
       ]),
   ...(providers.sandbox === undefined ? [] : [sandboxToolkit(providers.sandbox)]),
+  ...(providers.agents === undefined ? [] : [agentsToolkit()]),
 ];

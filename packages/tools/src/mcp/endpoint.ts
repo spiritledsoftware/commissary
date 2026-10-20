@@ -6,12 +6,14 @@
  * app Worker also mounts it on the app host, at `/mcp` (the org `global`) and `/o/<slug>/mcp`, behind its Access gate,
  * so a request comes with the person (or service token) Access signed in and the org its address names (#251). The
  * member's tools and the calls are the org's ControlPlane's (`ToolsPart.clientTools`, `ToolsPart.callTool`), where the
- * credentials are; `?toolkits=a,b` narrows both to those toolkits, by the names the member sees.
+ * credentials are; `?toolkits=a,b` narrows both to those toolkits, by the names the member sees. The agents toolkit's
+ * calls (#229) are the exception: the part decides who reaches them, and the Worker makes them
+ * ({@link AgentsToolkitPort}), where it provides the port.
  *
  * `GET` and `DELETE` answer `405`, as the 2026-07-28 revision's backward compatibility asks of a server that opens no
  * stream and keeps no session (and as the 2025 revisions allow).
  */
-import { Clock, Effect, Layer, type Schema } from "effect";
+import { Clock, Effect, Layer, Option, type Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import {
   type AccessIdentity,
@@ -39,6 +41,7 @@ import type {
   ToolCallOutcome,
 } from "../control-plane-part.ts";
 import { toolsControlPlane, ToolsEnv } from "../env.ts";
+import { AgentsToolkitPort } from "./agents-port.ts";
 import { writeToolCallRecord } from "../usage/record.ts";
 import {
   acceptedUnder,
@@ -107,7 +110,13 @@ const runToolReach = (identity: AccessIdentity): RunToolReach | undefined =>
     ? {
         toolScope: identity.principal.reach.toolScope,
         asAgent: isSharedAgentRun(identity.principal),
-        starterMember: identity.principal.starter?.id,
+        // A child run's (#229) is the member at the head of its chain; a principal without one names a member starter.
+        starterMember:
+          identity.principal.starterMember ??
+          (identity.principal.starter?.kind === "member"
+            ? identity.principal.starter.id
+            : undefined),
+        agentId: identity.principal.agentId,
       }
     : undefined;
 
@@ -126,11 +135,14 @@ const listTools = Effect.fnUntraced(function* (context: Served) {
   const viewer = viewerOf(identity);
   const apiKeyId = identity.principal.kind === "key" ? identity.principal.keyId : undefined;
   const run = runToolReach(identity);
+  const agents = Option.isSome(yield* Effect.serviceOption(AgentsToolkitPort));
 
   const tools = yield* toolsControlPlane("clientTools", (stub) =>
-    run === undefined
-      ? stub.tools().clientTools(viewer, apiKeyId)
-      : stub.tools().clientTools(viewer, apiKeyId, run),
+    agents
+      ? stub.tools().clientTools(viewer, apiKeyId, run, { agentsToolkit: true })
+      : run === undefined
+        ? stub.tools().clientTools(viewer, apiKeyId)
+        : stub.tools().clientTools(viewer, apiKeyId, run),
   );
 
   return {
@@ -235,8 +247,14 @@ export const refusedText = (
     ? `, and the browser session is closed: its browser time counts toward the limit.`
     : `.`);
 
-/** A call that ended: every outcome but an unknown tool and a form the caller is asked to answer first. */
-type EndedCall = Exclude<ToolCallOutcome, { outcome: "unknown" } | { outcome: "approve" }>;
+/**
+ * A call that ended: every outcome but an unknown tool, a form the caller is asked to answer first, and an agents
+ * toolkit's call before the Worker made it.
+ */
+type EndedCall = Exclude<
+  ToolCallOutcome,
+  { outcome: "unknown" } | { outcome: "approve" } | { outcome: "delegated" }
+>;
 
 /** What a call came to, as its usage record says it (#199, #201). */
 const recordedOutcome = (outcome: EndedCall) => {
@@ -395,6 +413,7 @@ const callTool = Effect.fnUntraced(function* (request: RpcRequest, context: Serv
   const policy = yield* CurrentOutboundPolicy;
   const org = yield* CurrentOrg;
   const requestedAt = yield* Clock.currentTimeMillis;
+  const agents = Option.getOrUndefined(yield* Effect.serviceOption(AgentsToolkitPort));
 
   const call: ToolCall = {
     name,
@@ -406,6 +425,7 @@ const callTool = Effect.fnUntraced(function* (request: RpcRequest, context: Serv
     // A 2025 client is never asked (see `toolResult`): it gets a pending approval's link.
     approvalForm: elicitsForms(context.era) ? approvalFormOf(request.params) : undefined,
     approvalOutcomes: true,
+    ...(agents === undefined ? {} : { agentsToolkit: true }),
   };
 
   const outcome = yield* toolsControlPlane("callTool", (stub) =>
@@ -419,14 +439,33 @@ const callTool = Effect.fnUntraced(function* (request: RpcRequest, context: Serv
   if (outcome.outcome === "approve")
     return resultAnswer(request.id, framed(context.era, approvalForm(name, outcome)));
 
+  // The agents toolkit's call (#229): the Worker makes it, and its answer is the call's result.
+  const ended: EndedCall =
+    outcome.outcome === "delegated"
+      ? {
+          outcome: "result",
+          result:
+            agents === undefined
+              ? toolError(`${name} cannot be called here.`)
+              : yield* agents.call({
+                  identity,
+                  org,
+                  tool: outcome.tool,
+                  arguments: outcome.arguments,
+                  scopeAgents: outcome.scopeAgents,
+                }),
+          usage: outcome.usage,
+        }
+      : outcome;
+
   // An agent run learns that a spend limit refused the call, and ends its turn with the refusal as the answer (#227).
   const value =
-    outcome.outcome === "refused" && call.run !== undefined
-      ? runRefusal(refusedText(name, outcome))
-      : yield* toolResult(outcome, name, request, context);
+    ended.outcome === "refused" && call.run !== undefined
+      ? runRefusal(refusedText(name, ended))
+      : yield* toolResult(ended, name, request, context);
 
   const answeredAt = yield* Clock.currentTimeMillis;
-  const { usage } = outcome;
+  const { usage } = ended;
 
   yield* writeToolCallRecord({
     requestId: crypto.randomUUID(),
@@ -438,7 +477,7 @@ const callTool = Effect.fnUntraced(function* (request: RpcRequest, context: Serv
     toolId: usage.toolId,
     credential: usage.credential,
     private: usage.private,
-    outcome: recordedOutcome(outcome),
+    outcome: recordedOutcome(ended),
     requestedAt,
     latencyMs: Math.max(0, answeredAt - requestedAt),
     requestBytes: jsonBytes(args),

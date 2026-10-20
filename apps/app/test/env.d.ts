@@ -15,5 +15,9 @@ declare namespace Cloudflare {
     >;
     SANDBOX_SESSION: DurableObjectNamespace<import("@commissary/state-worker").SandboxSession>;
     LOADER: WorkerLoader;
+    /** The ControlPlane without the Agents area (test/worker.ts): no agents toolkit (#229). */
+    CONTROL_PLANE_WITHOUT_AGENTS: DurableObjectNamespace<
+      import("./worker.ts").ControlPlaneWithoutAgents
+    >;
   }
 }

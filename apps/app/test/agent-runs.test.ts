@@ -4,14 +4,26 @@
 // run's principal, over the gateway. Only the upstreams are fakes: an OpenAI-compatible model upstream and an MCP
 // server, both behind the routing `fetch` of `serveFakeMcpServers`.
 //
+// The agents toolkit (#229) is the runs' client API: an MCP client with an API key calls it on the API Worker's MCP
+// endpoint (this file calls the API Worker's handler, `api.fetch`, directly, with the test Worker's bindings), and a
+// run calls it as any of its tools, starting child runs whose results come back to it.
+//
 // This file stays with the app Worker though it runs the API Worker's code too (AGENTS.md, docs/DEVELOPMENT.md
 // "Tests"): a run crosses both Workers, started by the app Worker's routes and served by the API Worker's gateway, so
-// the app's test Worker exports the API Worker's `AgentRun` and `AgentRunGateway` (test/worker.ts).
-import { abortAllDurableObjects, runDurableObjectAlarm } from "cloudflare:test";
+// the app's test Worker exports the API Worker's `AgentRun` and `AgentRunGateway` (test/worker.ts); and the agents
+// toolkit's calls need the agents, grants and API keys the app Worker's routes create, the API Worker's MCP endpoint and
+// the runs' objects together.
+import {
+  abortAllDurableObjects,
+  createExecutionContext,
+  runDurableObjectAlarm,
+} from "cloudflare:test";
 import { env, exports } from "cloudflare:workers";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { RunGateway } from "@commissary/agents/api";
+import { api } from "@commissary/api";
 import { agentBody } from "@commissary/agents/testing";
+import { FULL_ACCESS } from "@commissary/auth";
 import type { CreateAgent } from "@commissary/contract/agents";
 import type { OrgId } from "@commissary/core";
 import type { Json } from "@commissary/json";
@@ -111,10 +123,13 @@ const MODEL = "agent-model";
 /** Another model the org serves, outside every agent's definition. */
 const OTHER_MODEL = "other-model";
 
+/** A chat message's content: a string, or text parts (pi sends both). */
+type MessageContent = string | null | ReadonlyArray<{ readonly text?: string }>;
+
 interface ChatRequest {
   readonly model?: string;
   readonly stream?: boolean;
-  readonly messages?: ReadonlyArray<{ readonly role: string; readonly content?: unknown }>;
+  readonly messages?: ReadonlyArray<{ readonly role: string; readonly content?: MessageContent }>;
   readonly tools?: ReadonlyArray<{ readonly function: { readonly name: string } }>;
 }
 
@@ -184,6 +199,7 @@ const fakeUpstream = (script: (request: ChatRequest, index: number) => Reply) =>
   const origin = `https://llm-${crypto.randomUUID().slice(0, 8)}.example.com`;
   const requests: ChatRequest[] = [];
   const holds = new Map<number, Promise<void>>();
+  const holdsIf: Array<{ test: (request: ChatRequest) => boolean; until: Promise<void> }> = [];
 
   serveOrigin(origin, async (request) => {
     // SAFETY: the client API sends the upstream an OpenAI chat completion request.
@@ -193,6 +209,8 @@ const fakeUpstream = (script: (request: ChatRequest, index: number) => Reply) =>
     requests.push(body);
     await holds.get(index);
 
+    for (const hold of holdsIf) if (hold.test(body)) await hold.until;
+
     return answer(body, script(body, index));
   });
 
@@ -201,6 +219,9 @@ const fakeUpstream = (script: (request: ChatRequest, index: number) => Reply) =>
     requests,
     /** Holds the request at `index` (the first is 0) until `until` settles. */
     holdAt: (index: number, until: Promise<void>) => void holds.set(index, until),
+    /** Holds every request `test` picks until `until` settles. */
+    holdIf: (test: (request: ChatRequest) => boolean, until: Promise<void>) =>
+      void holdsIf.push({ test, until }),
     /** Settles once `count` requests arrived. */
     arrived: async (count: number) =>
       await vi.waitFor(() => expect(requests.length).toBeGreaterThanOrEqual(count), {
@@ -922,6 +943,427 @@ describe("deleting the org", () => {
         (await send(org, "/org", await token(ADMIN), "DELETE", { name: org.slug })).status,
       ).toBe(200);
       expect(await object().show()).toMatchObject({ ok: false, error: "not_found" });
+    },
+    RUN_TIMEOUT,
+  );
+});
+
+// --- the agents toolkit (#229) ----------------------------------------------------------------------------------------
+
+/** An API key of `who`'s, with `toolScope` if given. */
+const apiKey = async (org: Org, who: Person, toolScope?: Json) =>
+  ok<{ key: string }>(
+    await send(org, "/api-keys", who, "POST", {
+      name: `key-${crypto.randomUUID().slice(0, 8)}`,
+      ...(toolScope === undefined ? {} : { tool_scope: toolScope }),
+    }),
+    201,
+  ).key;
+
+/**
+ * One JSON-RPC request to the API Worker's MCP endpoint with the API key `key`, and its answer: through the API Worker's
+ * handler with this file's Platform registry, which knows the key's org.
+ */
+const mcp = async (key: string, method: string, params: Json = {}, bindings: Partial<Env> = {}) => {
+  const response = await api.fetch(
+    new Request("https://commissary.test/mcp", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+        authorization: `Bearer ${key}`,
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+    }),
+    { ...env, PLATFORM, ...bindings },
+    createExecutionContext(),
+  );
+
+  expect(response.status).toBe(200);
+
+  // SAFETY: the endpoint answers a JSON-RPC response.
+  return (await response.json()) as {
+    readonly result?: {
+      readonly tools?: ReadonlyArray<{ readonly name: string; readonly description?: string }>;
+      readonly content?: ReadonlyArray<{ readonly text?: string }>;
+      readonly isError?: boolean;
+    };
+    readonly error?: { readonly message: string };
+  };
+};
+
+/** The tools the key's client is listed. */
+const listedTools = async (key: string) => (await mcp(key, "tools/list")).result?.tools ?? [];
+
+/** A call of a tool of the agents toolkit with the key: its result's JSON, or its error's text (`error`). */
+const callAgents = async (key: string, name: string, args: Json) => {
+  const answer = await mcp(key, "tools/call", { name, arguments: args });
+
+  if (answer.error !== undefined) return { error: answer.error.message };
+  const text = answer.result?.content?.[0]?.text ?? "";
+
+  // SAFETY: a test's own reading of the toolkit's JSON answers, which the assertions check.
+  return answer.result?.isError === true
+    ? { error: text }
+    : (JSON.parse(text) as Record<string, Json>);
+};
+
+/** The marker of an agent's instructions, by which the fake upstream tells the agents apart. */
+const marked = (name: string) => `You are [agent:${name}]. Answer briefly.`;
+
+/** The text of a message's content: a string, or its text parts joined. */
+const contentText = (content: MessageContent | undefined): string =>
+  typeof content === "string" ? content : (content ?? []).map((part) => part.text ?? "").join("");
+
+/** The run id a start answered. */
+const runOf = (answer: Readonly<Record<string, Json>>): string => {
+  const { run } = answer;
+
+  if (typeof run !== "string") throw new Error(`no run in ${JSON.stringify(answer)}`);
+
+  return run;
+};
+
+/** The agent a model request is for: its instructions' marker. */
+const agentOf = (request: ChatRequest): string | undefined =>
+  /\[agent:([a-z0-9_]+)\]/u.exec(JSON.stringify(request.messages?.[0] ?? null))?.[1];
+
+/**
+ * A model for runs that start each other: an agent of `next` calls `agents_start` with the agent it names, then answers
+ * what the tool said; one that `next` does not name answers at once; a child's delivered result is relayed.
+ */
+const chainScript =
+  (next: Readonly<Record<string, string>>) =>
+  (request: ChatRequest): Reply => {
+    const agent = agentOf(request) ?? "";
+    const last = request.messages?.at(-1);
+    const text = contentText(last?.content);
+
+    if (last?.role === "tool") return { text: `${agent} saw: ${text}` };
+
+    if (text.startsWith("[agents]")) return { text: `${agent} relays: ${text}` };
+    const callee = next[agent];
+
+    return callee === undefined
+      ? { text: `${agent} answers` }
+      : { tool: "agents_start", args: { agent: callee, input: "go" } };
+  };
+
+/** The agents toolkit's whole entry of a tool scope. */
+const AGENTS_SCOPE = [{ toolkit: "agents", tools: { kind: "all" as const } }];
+
+const showRun = async (org: Org, who: Person, run: string) =>
+  ok<{
+    turns: ReadonlyArray<Turn & { input: string }>;
+    transcript: ReadonlyArray<{ text: string }>;
+  }>(await send(org, `/agent-runs/${run}`, who));
+
+describe("the agents toolkit", () => {
+  it(
+    "starts a run for an MCP client at once, and its wait answers the status past a timeout, then the answer",
+    async () => {
+      const upstream = fakeUpstream(() => ({ text: "Here is the draft." }));
+      const org = await newOrg(upstream);
+
+      await createAgent(org, org.alice, agentBody("writer", MODEL));
+      const key = await apiKey(org, org.alice);
+      const tools = await listedTools(key);
+
+      expect(tools.map((tool) => tool.name)).toEqual([
+        "agents_cancel",
+        "agents_message",
+        "agents_start",
+        "agents_status",
+        "agents_wait",
+      ]);
+      expect(tools.find((tool) => tool.name === "agents_start")?.description).toContain(
+        "- writer: The writer agent",
+      );
+
+      const held = deferred();
+
+      upstream.holdAt(0, held.promise);
+      const started = await callAgents(key, "agents_start", { agent: "writer", input: "a draft" });
+
+      expect(started).toMatchObject({ run: expect.any(String), turn: "turn_1", status: "running" });
+      const run = runOf(started);
+
+      await upstream.arrived(1);
+
+      const early = await callAgents(key, "agents_wait", { run, timeout: 0.2 });
+
+      expect(early).toMatchObject({
+        run,
+        status: "running",
+        finished: false,
+        turn: { id: "turn_1", status: "running" },
+      });
+      expect(early).toHaveProperty("latest_activity");
+
+      held.release();
+
+      expect(await callAgents(key, "agents_wait", { run, timeout: 60 })).toMatchObject({
+        run,
+        status: "idle",
+        finished: true,
+        turn: { id: "turn_1", status: "done", answer: "Here is the draft." },
+      });
+
+      // Claimed: nothing is left to claim, and the named turn still answers.
+      expect(await callAgents(key, "agents_wait", { run, timeout: 1 })).toMatchObject({
+        status: "idle",
+        result: expect.stringMatching(/^none/u),
+      });
+      expect(await callAgents(key, "agents_wait", { run, turn: "turn_1" })).toMatchObject({
+        turn: { status: "done" },
+      });
+
+      // The panel shows the run as the key's member started it, through the toolkit.
+      expect(
+        ok<Run & { trigger: string }>(await send(org, `/agent-runs/${run}`, org.alice)),
+      ).toMatchObject({
+        trigger: "mcp",
+        starter: { kind: "member", id: org.alice.id },
+      });
+    },
+    RUN_TIMEOUT,
+  );
+
+  it(
+    "steers a running turn with agents_message, and starts a new turn on an idle run",
+    async () => {
+      const upstream = fakeUpstream((request) => ({
+        text: `seen ${request.messages?.filter((message) => message.role === "user").length ?? 0}`,
+      }));
+
+      const org = await newOrg(upstream);
+
+      await createAgent(org, org.alice, agentBody("chatty", MODEL));
+      const key = await apiKey(org, org.alice);
+      const held = deferred();
+
+      upstream.holdAt(0, held.promise);
+
+      const run = runOf(await callAgents(key, "agents_start", { agent: "chatty", input: "first" }));
+
+      await upstream.arrived(1);
+
+      expect(await callAgents(key, "agents_message", { run, message: "also this" })).toEqual({
+        run,
+        turn: "turn_1",
+        disposition: "steering",
+      });
+
+      held.release();
+      expect(await callAgents(key, "agents_wait", { run, timeout: 60 })).toMatchObject({
+        turn: { id: "turn_1", answer: "seen 2" },
+      });
+
+      const next = await callAgents(key, "agents_message", { run, message: "and now?" });
+
+      expect(next).toMatchObject({ run, disposition: "turn" });
+      expect(next["turn"]).not.toBe("turn_1");
+      expect(await callAgents(key, "agents_wait", { run, timeout: 60 })).toMatchObject({
+        turn: { id: next["turn"], answer: "seen 3" },
+      });
+
+      // Cancelling a turn keeps the run.
+      expect(await callAgents(key, "agents_cancel", { run })).toEqual({ run, cancelled: false });
+    },
+    RUN_TIMEOUT,
+  );
+
+  it(
+    "shows a run to the API key that started it only: another key of the same member gets an unknown run",
+    async () => {
+      const upstream = fakeUpstream(() => ({ text: "mine" }));
+      const org = await newOrg(upstream);
+
+      await createAgent(org, org.alice, agentBody("private_one", MODEL));
+      const first = await apiKey(org, org.alice);
+      const second = await apiKey(org, org.alice);
+
+      const run = runOf(
+        await callAgents(first, "agents_start", { agent: "private_one", input: "hi" }),
+      );
+
+      expect(await callAgents(first, "agents_status", {})).toMatchObject({
+        runs: [{ run, agent: "private_one" }],
+      });
+      expect(await callAgents(first, "agents_status", { run })).toMatchObject({
+        run,
+        agent: "private_one",
+        turns: [{ id: "turn_1" }],
+      });
+
+      for (const tool of ["agents_status", "agents_wait", "agents_message", "agents_cancel"])
+        expect(await callAgents(second, tool, { run, message: "hijack" }), tool).toEqual({
+          error: `Unknown run ${run}. agents_status lists the runs you started.`,
+        });
+
+      expect(await callAgents(second, "agents_status", {})).toEqual({ runs: [] });
+      await callAgents(first, "agents_wait", { run, timeout: 60 });
+    },
+    RUN_TIMEOUT,
+  );
+
+  it(
+    "exists only where the Agents area is (LOADER): on the MCP endpoint and in the ControlPlane",
+    async () => {
+      const upstream = fakeUpstream(() => ({ text: "hi" }));
+      const org = await newOrg(upstream);
+
+      await createAgent(org, org.alice, agentBody("present", MODEL));
+      const key = await apiKey(org, org.alice);
+      const without = { LOADER: undefined };
+
+      expect((await listedTools(key)).map((tool) => tool.name)).toContain("agents_start");
+      expect(
+        (await mcp(key, "tools/list", {}, without)).result?.tools?.map((tool) => tool.name),
+      ).toEqual([]);
+      expect(
+        (await mcp(key, "tools/call", { name: "agents_status", arguments: {} }, without)).error
+          ?.message,
+      ).toBe("Unknown tool: agents_status");
+
+      // The state Worker's ControlPlane has the toolkit with its binding only.
+      const kinds = async (namespace: typeof env.CONTROL_PLANE) =>
+        (
+          await namespace
+            .getByName(crypto.randomUUID())
+            .tools()
+            .listToolkits(FULL_ACCESS, { agentsToolkit: true })
+        ).toolkits.map((toolkit) => toolkit.kind);
+
+      expect(await kinds(env.CONTROL_PLANE)).toContain("agents");
+      expect(await kinds(env.CONTROL_PLANE_WITHOUT_AGENTS)).not.toContain("agents");
+    },
+    RUN_TIMEOUT,
+  );
+
+  it(
+    "lets a read-only tool scope watch runs, but not start or steer them",
+    async () => {
+      const upstream = fakeUpstream(() => ({ text: "read" }));
+      const org = await newOrg(upstream);
+
+      await createAgent(org, org.alice, agentBody("watched", MODEL));
+      const reader = await apiKey(org, org.alice, [{ toolkit: "agents", tools: { kind: "read" } }]);
+
+      expect((await listedTools(reader)).map((tool) => tool.name)).toEqual([
+        "agents_status",
+        "agents_wait",
+      ]);
+      expect(await callAgents(reader, "agents_status", {})).toEqual({ runs: [] });
+      // Its wait goes through: a key sees only the runs it started, so another's run is unknown to it.
+      expect(await callAgents(reader, "agents_wait", { run: "ar_x", timeout: 0 })).toEqual({
+        error: "Unknown run ar_x. agents_status lists the runs you started.",
+      });
+      expect(await callAgents(reader, "agents_start", { agent: "watched", input: "hi" })).toEqual({
+        error: "Unknown tool: agents_start",
+      });
+      expect(await callAgents(reader, "agents_message", { run: "ar_x", message: "hi" })).toEqual({
+        error: "Unknown tool: agents_message",
+      });
+    },
+    RUN_TIMEOUT,
+  );
+
+  it(
+    "delivers a child run's result to the run that started it, which takes it as a new turn when idle",
+    async () => {
+      const upstream = fakeUpstream(chainScript({ lead: "helper" }));
+      const org = await newOrg(upstream);
+
+      const lead = await createAgent(
+        org,
+        org.alice,
+        agentBody("lead", MODEL, { instructions: marked("lead"), tool_scope: AGENTS_SCOPE }),
+      );
+
+      await createAgent(
+        org,
+        org.alice,
+        agentBody("helper", MODEL, { instructions: marked("helper") }),
+      );
+
+      // The child answers once its parent's turn is over: its result then starts a turn of the idle parent.
+      const parentDone = deferred();
+
+      upstream.holdIf((request) => agentOf(request) === "helper", parentDone.promise);
+      const started = await start(org, org.alice, lead.id, "delegate this");
+      const first = await waitFor(org, org.alice, started.run.id, started.turn.id);
+
+      expect(first.turn.status).toBe("done");
+      expect(first.turn.answer).toMatch(/^lead saw: .*"status": "running"/su);
+      parentDone.release();
+
+      await vi.waitFor(
+        async () =>
+          expect((await showRun(org, org.alice, started.run.id)).turns).toMatchObject([
+            { status: "done" },
+            { status: "done", answer: expect.stringMatching(/^lead relays: \[agents\] Run ar_/u) },
+          ]),
+        { timeout: 60_000 },
+      );
+
+      const { turns } = await showRun(org, org.alice, started.run.id);
+
+      expect(turns[1]?.input).toMatch(
+        /\(agent helper\), which you started, finished its turn turn_1\. Its answer:\n\nhelper answers$/u,
+      );
+
+      // The child acts as its own agent, and its records name the run that started it.
+      const child = /Run (ar_[0-9a-f]+)/u.exec(turns[1]?.input ?? "")?.[1] ?? "";
+      const records = await recordsOf(child, 1);
+
+      expect(records[0]).toMatchObject({
+        principal_id: `run:${child}`,
+        member_id: org.alice.id,
+        starter: `run:${started.run.id}`,
+      });
+    },
+    RUN_TIMEOUT,
+  );
+
+  it(
+    "refuses a fourth level of runs, and an agent already in the chain",
+    async () => {
+      const upstream = fakeUpstream(chainScript({ a: "b", b: "c", c: "d", loop: "loop" }));
+      const org = await newOrg(upstream);
+      const ids = new Map<string, string>();
+
+      for (const name of ["a", "b", "c", "d", "loop"])
+        ids.set(
+          name,
+          (
+            await createAgent(
+              org,
+              org.alice,
+              agentBody(name, MODEL, { instructions: marked(name), tool_scope: AGENTS_SCOPE }),
+            )
+          ).id,
+        );
+
+      const looping = await start(org, org.alice, ids.get("loop") ?? "", "go");
+
+      expect((await waitFor(org, org.alice, looping.run.id)).turn.answer).toContain(
+        "the agent loop already runs in this chain of runs",
+      );
+
+      const top = await start(org, org.alice, ids.get("a") ?? "", "go");
+
+      // c's refusal comes back up the chain: c's result to b, b's to a.
+      await vi.waitFor(
+        async () =>
+          expect(
+            (await showRun(org, org.alice, top.run.id)).transcript
+              .map((entry) => entry.text)
+              .join("\n"),
+          ).toContain("a chain of runs is at most 3 deep"),
+        { timeout: 60_000 },
+      );
+      expect(upstream.requests.some((request) => agentOf(request) === "d")).toBe(false);
     },
     RUN_TIMEOUT,
   );

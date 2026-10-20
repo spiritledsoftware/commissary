@@ -43,6 +43,8 @@ import {
   type RunsPage,
   type RunsResult,
   type StartedRunRecord,
+  type ToolkitCaller,
+  type ToolkitStartedRun,
 } from "./runs/runs.ts";
 import { RunStore } from "./runs/store.ts";
 import { TriggerStore } from "./triggers/store.ts";
@@ -528,6 +530,27 @@ export class AgentsPart extends RpcTarget implements ControlPlanePart {
       .map((member) => member.id);
   }
 
+  /**
+   * The agents a caller of the agents toolkit may run (#229), by name and description: those `member` may use, or, for
+   * a shared agent's run (`member` undefined), the org's enabled shared agents (a shared agent may name only shared
+   * agents, and naming none allows them all). The Tools part of the same ControlPlane reads it in place
+   * (`apps/state/src/control-plane.ts`), and narrows it by the caller's tool scope.
+   */
+  runnableAgents(
+    member: string | undefined,
+  ): ReadonlyArray<{ readonly id: string; readonly name: string; readonly description: string }> {
+    const agents =
+      member === undefined
+        ? this.#store.agents().filter((agent) => agent.owner === undefined && agent.enabled)
+        : this.#usable(member);
+
+    return agents.map((agent) => ({
+      id: agent.id,
+      name: agent.name,
+      description: agent.description,
+    }));
+  }
+
   // --- agent grants --------------------------------------------------------------------------------------------------
 
   /** Every agent grant of the org, by agent and subject (the routes are for org admins). */
@@ -630,6 +653,35 @@ export class AgentsPart extends RpcTarget implements ControlPlanePart {
   }
 
   /**
+   * Starts a run of the agent named `agentName` for a caller of the agents toolkit (#229): a member (through an API key,
+   * which the run records) or a run, which starts a child run. Its Durable Object is the caller's to start next. See
+   * `runs/runs.ts` (`startFromToolkit`).
+   */
+  startToolkitRun(
+    caller: ToolkitCaller,
+    agentName: string,
+    scopeAgents: ReadonlyArray<string> | undefined,
+    idempotencyKey: string | undefined,
+  ): RunsResult<ToolkitStartedRun> {
+    return this.#runs.startFromToolkit(caller, agentName, scopeAgents, idempotencyKey);
+  }
+
+  /** The run `runId` as the agents toolkit's `caller` sees it (#229); any other answers like an unknown run. */
+  getToolkitRun(caller: ToolkitCaller, runId: string): RunsResult<RunView> {
+    return this.#runs.ofToolkitCaller(caller, runId);
+  }
+
+  /** The runs the agents toolkit's `caller` sees (#229), the latest activity first. */
+  listToolkitRuns(caller: ToolkitCaller): RunsList {
+    return { runs: this.#runs.ofToolkitCallerAll(caller) };
+  }
+
+  /** Ends the run `runId` the agents toolkit's `caller` started, whose object could not be reached to start it. */
+  abandonToolkitRun(caller: ToolkitCaller, runId: string): void {
+    this.#runs.abandonFromToolkit(caller, runId);
+  }
+
+  /**
    * A new turn of the run `runId` starts (its object asks): its agent's definition as it stands now, recorded as the
    * turn's reach; or why the run cannot go on (`run_ended`). See `runs/runs.ts`.
    */
@@ -660,9 +712,12 @@ export class AgentsPart extends RpcTarget implements ControlPlanePart {
     this.#runs.forget(ids);
   }
 
-  /** The run's object reports its state (`running`, `idle`, `ended`), kept in the index as its last activity. */
-  runStateChanged(runId: string, state: RunState): void {
-    this.#runs.stateChanged(runId, state);
+  /**
+   * The run's object reports its state (`running`, `idle`, `ended`), kept in the index as its last activity. A run that
+   * ends ends its child runs in the index (#229): answers their ids, whose objects the run's object stops.
+   */
+  runStateChanged(runId: string, state: RunState): ReadonlyArray<string> {
+    return this.#runs.stateChanged(runId, state);
   }
 
   /** Ends the run `runId` a trigger started, whose object could not be reached to start it. */

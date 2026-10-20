@@ -3335,7 +3335,7 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
   behind them, so an RPC would add a round trip and a dependency between the areas' parts for nothing. Sealing is the
   org-wide base's already (`core.secrets`). Tools imports nothing of Models (its manifest does not name it, so the lint
   rule refuses it).
-- **Toolkits** (`tools/toolkits/store.ts`): a kind (`mcp`; `browser` and `sandbox` for the built-in toolkits, below), a source (the MCP server's URL), a name and which
+- **Toolkits** (`tools/toolkits/store.ts`): a kind (`mcp`; `browser`, `sandbox` and `agents` for the built-in toolkits, below), a source (the MCP server's URL), a name and which
   credentials it accepts (`shared`, `private` or `both`; a private toolkit takes its owner's only). An org admin adds
   org toolkits; any member adds private toolkits (a plain member's toolkit is always private) while the org setting
   `membership.private_toolkits` allows them (#198, ADR 0038). The setting mirrors `private_credentials`: on for
@@ -3992,8 +3992,12 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
 - **Who a call is**: on the app host a call is the member's Access principal (`user:<email>`), as a panel request is,
   so what records calls (usage, logs) shows the member, not the MCP client; Access's tokens carry no client. A static API
   key on the API host is the key and its member.
-- **Built-in toolkits** (`tools/toolkits/built-in.ts`, #212, #222, ADR 0039, ADR 0041): toolkits Commissary provides
-  itself, the **browser toolkit** and the **sandbox toolkit**. One exists exactly when the deployment has what it runs
+- **Built-in toolkits** (`tools/toolkits/built-in.ts`, #212, #222, #229, ADR 0039, ADR 0041): toolkits Commissary
+  provides itself, the **browser toolkit**, the **sandbox toolkit** and the **agents toolkit**. The agents toolkit
+  (kind `agents`, source `commissary`) is the exception to most of what follows: the state Worker gives it with the
+  Agents part where the Agents area is (`LOADER`), it takes no grant (who may run which agent comes from the agents),
+  the MCP endpoint's Worker makes its calls, and the part shows it only to callers that ask for it (_The agents toolkit
+  and child runs_ under Agents). One exists exactly when the deployment has what it runs
   on: the state Worker's composition hands the Tools part the providers its env's bindings give (`new ToolsPart(ctx,
   core, builtInProviders(env))`; a `browser` binding gives Browser Run, and the Worker Loader with the sessions'
   namespace, which every deployment has (ADR 0043), gives Cloudflare's sandbox). Without its binding
@@ -4413,10 +4417,11 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
 
 The Agents area (ADR 0040) holds **hosted agents**: an agent's definition saved in Commissary (name, description,
 instructions, one model with an optional thinking level, a tool scope), its **runs** (GLOSSARY "Agent run", "Turn") on
-pi-durable, and later its calls as a tool of the agents toolkit (#229). It saves definitions, private and shared, the
-grants on shared agents and their watchers (#226), runs them as their starter asks, one turn at a time (#227), and
-starts runs from the schedules and webhooks configured on them (#231); watchers acting in runs, sandboxes and the
-panel's chat come later (#230, #232 to #234). The package (`@commissary/agents`) is shaped like Tools: entry
+pi-durable, and its calls as tools of the agents toolkit (#229). It saves definitions, private and shared, the
+grants on shared agents and their watchers (#226), runs them as their starter asks, one turn at a time (#227),
+starts runs from the schedules and webhooks configured on them (#231), and serves them to clients and runs through the
+agents toolkit, whose calls from a run start child runs (#229); watchers acting in runs, sandboxes and the panel's chat
+come later (#230, #232 to #234). The package (`@commissary/agents`) is shaped like Tools: entry
 points `./api`, `./management`, `./state` and `./testing`, a lint boundary (`boundaries/agents-imports`) and a
 ControlPlane part, `AgentsPart`, reached as `stub.agents().x(…)`. Its state is the ControlPlane's (`AGENTS_TABLES`:
 `agents`, `agent_grants`, `agent_runs` and `agent_triggers`, dropped by `wipe()`); its view of `env` (`AgentsBindings`) is the ControlPlane namespace and
@@ -4458,7 +4463,7 @@ the deployment's Dynamic Workers binding `LOADER`.
   shared (`422 unknown_agent`). A model or toolkit removed later stays named, as in an API key's scope; a run's calls
   then fail as for an unknown model or toolkit.
 - **Tool scope entry for agents**: an API key's tool scope (`ToolScopeEntry.agents`, on the entry of toolkit `agents`
-  only, `AGENTS_TOOLKIT`) may name agents by id, which the agents toolkit will honour (#229); the base stores and
+  only, `AGENTS_TOOLKIT`) may name agents by id, which the agents toolkit honours (#229, below); the base stores and
   normalizes it like the rest of the scope.
 - **Spend limits**: a shared agent is a Spend subject (`agent`, `/spend/limits`), listed by the part's `spendAgents`
   hook; removing the agent deletes its limits (`spend.forget`). Runs' usage will count against them (#228).
@@ -4477,12 +4482,13 @@ the deployment's Dynamic Workers binding `LOADER`.
   It lives in the API Worker (class `AgentRun`, `apps/api/src/http/run-gateway.ts`, which wires Agents' class with its
   loopback, below; ADR 0030's amendment), and the app Worker binds it as `AGENT_RUN` by the API Worker's script name,
   which is why the API Worker deploys before the app Worker on every stage (`docs/DEPLOY.md`). Agents' tests wire the
-  class with a gateway that answers `503`. A start names the run (org and id), and the object takes it only when that
+  class with a gateway that answers `404` (a status the model client does not retry). A start names the run (org and id), and the object takes it only when that
   is its own name; under `alchemy dev` only, where the dev registry drops `ctx.id.name`, the dev entry lets it through.
 - **The org's index** (`agents/runs/store.ts`, table `agent_runs` of `AGENTS_TABLES`, dropped by `wipe()`): one row per
-  run with its agent, trigger kind (`chat`, `schedule` or `webhook`) and trigger (`trigger_id`, none for `chat`),
-  starter (a member, or none for a run no one started, below; two columns, so child runs need no migration),
-  idempotency key, state as its object last reported it
+  run with its agent, trigger kind (`chat`, `schedule`, `webhook`, or `mcp` for the agents toolkit's) and trigger
+  (`trigger_id`, none for `chat` and `mcp`), starter (a member, the run that started a child run, or none for a run no
+  one started, below; two columns), the API key a start through the agents toolkit came with (`api_key_id`, added in
+  place to an older table, as `trigger_id`), idempotency key, state as its object last reported it
   (`runStateChanged`; an ended run stays ended) and the definition its latest turn read (`turn_definition`). It lists a
   member's runs, finds the run an idempotency key already started and resolves a run's principal without reaching the
   run. The cross-org suite checks it (`controlplane: agent runs`) and the runs' objects (`agent runs' objects`).
@@ -4532,12 +4538,12 @@ the deployment's Dynamic Workers binding `LOADER`.
   tool call's (a tool error whose `_meta` carries the refusal, `SPEND_REFUSAL_META`, given to runs only; the object
   then aborts the turn). The refusal is kept in the object's storage until the turn settles, so an eviction keeps it.
   Shared agents' own Spend limits counting runs' usage come with #228.
-- **Approvals**: the run's starter is the caller of its tool calls' approvals (ADR 0040; `RunToolReach.starterMember`),
-  for a shared agent's run too, which has no member of its own. Under a rule of the caller the starter decides (in the
+- **Approvals**: the run's starter is the caller of its tool calls' approvals (ADR 0040; `RunToolReach.starterMember`;
+  a child run's: the member who started the run at the head of its chain), for a shared agent's run too, which has no member of its own. Under a rule of the caller the starter decides (in the
   panel), and under a team's or members' rule they do not; the model gets the
   approval's link text and may call again once it is decided. Watchers answering approvals in runs come with #232.
 - **Usage records** (migration `usage/0011_usage_agent_runs.sql`): a model attempt or tool call of a run names the
-  agent (`agent_id`), the run (`run_id`) and its starter (`starter`: `member:<id>`); its principal is `run:<run id>`, and
+  agent (`agent_id`), the run (`run_id`) and its starter (`starter`: `member:<id>`, or `run:<id>` for a child run); its principal is `run:<run id>`, and
   `member_id` is the member a private agent's run acts as. Filtering the usage reads by them comes with #228.
 - **Org deletion** (`agents/org-deletion.ts`): the app Worker's step deletes each run's object (`purge`: its alarm and
   all its storage), twenty at a time within the deletion's budget, and forgets them in the index (`runsPage`,
@@ -4547,13 +4553,19 @@ the deployment's Dynamic Workers binding `LOADER`.
   `POST /agents/:id/runs` (start, as the asking member, trigger `chat`), `GET /agent-runs`, `GET /agent-runs/:run`,
   `POST /agent-runs/:run/messages`, `POST /agent-runs/:run/wait` (default 30 s) and `POST /agent-runs/:run/cancel`.
   Only a run's starter sees it for now (watchers and org admins with #232); any other run answers like an unknown one,
-  so a shared agent's triggered runs, which no one started, are seen by no one until #232.
+  so a shared agent's triggered runs, which no one started, are seen by no one until #232, and a child run is seen
+  through the agents toolkit only, by the run that started it.
 - **pi packages**: `@earendil-works/*` 1.3.0, pinned exactly (their APIs are experimental), imported only by
-  `agents/runs/pi.ts`, an adapter the object loads with a dynamic `import()` on its first event. The adapter gives pi-ai
-  one OpenAI-compatible provider (`commissary`) whose `fetch` is the run gateway, and installs the tools the MCP
-  endpoint lists for the run (`@earendil-works/pi-mcp` over the same `fetch`). The cost, measured with `wrangler deploy
-  --dry-run` and `wrangler check startup` (median of nine): the API Worker is 3,041 KiB gzipped with a 68.8 ms startup,
-  against 2,665 KiB and 64.4 ms with the pi packages stubbed out.
+  `agents/runs/pi.ts`, an adapter the object imports statically, as the adapter imports pi-ai's OpenAI-compatible
+  provider module (`@earendil-works/pi-ai/api/openai-completions`, not its lazy `import()` wrapper). A lazy import
+  would be shared by the run objects of one isolate: when several start at once, all but one await the import another
+  object began and resume in that object's I/O context, which workerd refuses ("Cannot perform I/O on behalf of a
+  different Durable Object"), failing the turn and leaving its harness open. So the API Worker's startup loads them. The
+  adapter gives pi-ai one OpenAI-compatible provider (`commissary`) whose `fetch` is the run gateway, and installs the
+  tools the MCP endpoint lists for the run (`@earendil-works/pi-mcp` over the same `fetch`). The cost, measured with
+  `wrangler deploy --dry-run` and `wrangler check startup` (median of nine) when the adapter was loaded lazily: the API
+  Worker is 3,041 KiB gzipped with a 68.8 ms startup, against 2,665 KiB and 64.4 ms with the pi packages stubbed out;
+  loaded at startup, the startup time includes them.
 
 ### Triggers (#231)
 
@@ -4642,3 +4654,77 @@ the deployment's Dynamic Workers binding `LOADER`.
   schedule_not_armed`, to be armed by the next edit. A webhook's URL is on the API host (`API_DOMAIN`), else on the
   request's host (zone routes; under `alchemy dev` without an API host, the app's origin, which is fine for local
   development: nothing outside reaches it there).
+
+### The agents toolkit and child runs (#229)
+
+- **The toolkit** (`tools/agents/toolkit.ts`; the tools' names, classes and arguments in
+  `@commissary/contract/agents-toolkit`): a built-in toolkit (_Built-in toolkits_ under Tools) named `agents` (kind
+  `agents`, source `commissary`, credential kind `none`), whose tools have the shape of pi's subagent tools with the
+  agent as an argument: `agents_start` (write: `agent`, `input`; answers the run's id, its first turn's and its status
+  at once), `agents_message` (write: steers the running turn, or starts a turn on an idle run; answers the turn and
+  `disposition`, `steering` or `turn`), `agents_wait` (read: `run`, optional `turn` and `timeout` in seconds, 30 by
+  default and at most 300; below), `agents_status` (read: the caller's runs, or one run's state, turns and recent
+  activity) and `agents_cancel` (write: aborts the running turn; the run stays, and so do the child runs it started).
+  There is no delete tool. Starts and messages take an optional idempotency key (stored as `mcp:<api key>:<key>`, so
+  two keys never share one). Every answer is a tool result whose text is JSON; a refusal is a tool error, so a model can
+  correct itself.
+- **Where it exists**: where the Agents area is (`LOADER`, ADR 0043), as the rest of the area. The state Worker's
+  composition (`apps/state/src/control-plane.ts`) gives the Tools part the agents toolkit only with `LOADER` bound, and
+  then a reader of the Agents part of the same object (`AgentDirectory`, over the part's `runnableAgents`; Tools
+  imports nothing of Agents, and a part missing from the composition fails the call rather than hiding the toolkit).
+  Without it the toolkit is in no list, export or grant check, and its name is not reserved (a stored toolkit named
+  `agents` keeps its name). The MCP endpoint serves it only where its Worker provides `AgentsToolkitPort`: the API
+  Worker and the app Worker each do where `LOADER` is bound (the API Worker binds it for this alone), filling it from
+  Agents' `agentsToolkitCalls` (`agents/toolkit/calls.ts`). Where the ControlPlane has it, a stored toolkit named `agents` from
+  before is renamed once, as for the other built-in toolkits.
+- **Who reaches it** comes from the agents, never from tool grants (a grant naming the toolkit is refused): a caller
+  reaches its tools as soon as they may run an agent, and the toolkit is listed only then. A member may run their
+  private agents (while the org serves them) and the enabled shared agents a grant gives them (#226); a private agent's
+  run, any agent its member may use; a shared agent's run, the org's enabled shared agents; never a run's own agent,
+  which `agents_start`'s list leaves out (it would be a cycle, below). A tool scope's entry for the toolkit narrows that
+  to the agents it names (`ToolScopeEntry.agents`, read by `agentsInScope`; the entry alone: every agent within reach),
+  and its tool classes apply as to any toolkit's, so a read-only scope may watch runs (`agents_status`, `agents_wait`)
+  but not start or steer them. `agents_start`'s description lists the agents the caller may run, by name and
+  description, and is rebuilt on every list. Usage, Spend limits, tool overrides' prices and approval rules apply to its
+  calls as to any built-in toolkit's.
+- **Who makes its calls**: a run lives in the API Worker's `AgentRun` objects, which the state Worker cannot bind, so
+  the part only decides that the caller reaches the tool, charges it, and answers `delegated` (with the agents the
+  caller's scope names) to an endpoint that says it makes the calls (`ToolCall.agentsToolkit`; a `DelegatedBuiltIn`,
+  beside the browser and sandbox toolkits' `CalledBuiltIn`); the endpoint hands the call to its Worker's port.
+- **Deploys** (DEVELOPMENT.md, "State RPC: expand, then contract"): the part lists, calls and exports the toolkit, whose
+  kind an older Worker cannot decode, only to a caller that asks for it (`agentsToolkit` on `clientTools`, `callTool`,
+  `listToolkits`, `listTools` and `exportToolkits`, which the management routes and the endpoint pass); the panel's
+  scope editor and keys' tool counts, which show no kind, count it. The run's principal names its head member
+  (`starterMember`), which a ControlPlane from before child runs leaves out (the starter, a member, then stands in).
+- **Which runs a caller sees** (`ToolkitCaller`, `agents/runs/runs.ts`): an API key, the runs it started (the index
+  keeps the key, `api_key_id`; a second key of the same member gets an unknown run); a member signed in (a request
+  through Access, without a key), every run they started, through a key or not; a run, the
+  child runs it started. Any other run answers like an unknown one. In the panel (`/agent-runs`) only runs a member
+  started show, so a child run is seen through the agents toolkit only, by the run that started it, until #232.
+- **Child runs**: a run's `agents_start` starts a child run of the agent it names, acting as that agent (a private
+  agent's member, or the shared agent itself), started by the calling run (starter kind `run`) and trigger `mcp`. A
+  run may run only enabled agents: a disabled one answers like an unknown one, so nothing tells a run of an agent it
+  may not run. The chain of runs is at most three deep (`MAX_CHAIN`: a run, its child, its grandchild), an agent already
+  in the chain is refused (`a → b → a` as `a → a`), and a run has at most eight child runs running at once
+  (`MAX_ACTIVE_CHILDREN`: a child counts as running from its start until it reports a turn done); each is a tool
+  error. A child run's turns check, besides #227's checks, that the run that started it is still there and may still
+  run its agent; its tool calls' approvals are the member's at the head of its chain (a chain no one started, from a
+  shared agent's trigger, has none, as #231's runs). A child run of a run that ended is refused at its next request.
+- **Ending**: a run that ends (its object reports `ended`: its agent disabled or removed, its member or its starter gone)
+  ends its child runs and theirs in the index at once (`Runs.stateChanged`, so their next request through the
+  gateway is refused), and its object stops their objects (`AgentRunObject.stop`: the running turn aborted and recorded
+  as cancelled, the run ended), so whoever stops the head of a chain stops the tree. Cancelling a turn ends nothing.
+- **Claims and deliveries** (`agents/runs/run-object.ts`): `agents_wait` claims a turn's result for its caller (a
+  `Claimant`: `run:<id>`, `key:<id>` or `member:<id>`): the named turn's, or the oldest finished turn that caller has
+  not claimed yet, or else the running turn's once it finishes. On timeout it answers the running turn with its latest
+  activity and cancels nothing; with nothing left it says whether the results were claimed or delivered. A child run
+  hands each finished turn its parent did not claim to the parent: it delivers it as a message (`[agents] Run … (agent
+  …), which you started, finished its turn …` with the answer), which steers the parent's running turn or starts a
+  turn on an idle parent. The parent takes it only from its own child runs (the index says so) and each child turn once
+  (its idempotency key, `child:<run>:<turn>`); one it refuses for good (it ended) is dropped. A delivery that cannot
+  reach the parent is kept and tried again from the child's alarm, after 30 s and then twice as long each time (at most
+  an hour), ten tries in all (`MAX_DELIVERY_ATTEMPTS`, about three hours), after which it is dropped and logged; a parent
+  claiming a result still to be delivered takes it from the deliveries. The panel's wait (`POST /agent-runs/:run/wait`)
+  claims nothing, until watchers (#232) align the two.
+- **Deletion**: there is no deletion of a single run yet; when it comes (#228) a run's child runs go with it. Org
+  deletion deletes every run's object, child runs included (they are rows of the index like any run).

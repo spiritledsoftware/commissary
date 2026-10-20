@@ -662,7 +662,8 @@ _Avoid_: integration, connector, app, source, MCP server (for the toolkit itself
 **Toolkit kind**:
 What a toolkit is built from: a remote MCP server, an OpenAPI document, a GraphQL endpoint or a Google Discovery
 document; for a built-in toolkit, the service Commissary provides it on (`browser`: the browser toolkit, on a browser
-provider; `sandbox`: the sandbox toolkit, on a sandbox provider).
+provider; `sandbox`: the sandbox toolkit, on a sandbox provider; `agents`: the agents toolkit, on Commissary's own
+hosted agents).
 _Avoid_: source type, protocol
 
 **Tool list**:

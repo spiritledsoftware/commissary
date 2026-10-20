@@ -16,6 +16,8 @@
 // deployment's bindings with a fake Browser Run binding and the account and API token of Browser Run's crawls (#270),
 // whose REST API a test serves through the global `fetch` (`fake-crawl.ts`, `fake-fetch.ts`). `CloudControlPlane` is
 // Commissary Cloud's, with a managed OAuth app for the toolkit catalog service `acme` (#207, `support/managed-apps.ts`).
+// `AgentsControlPlane` has the agents toolkit (#229), as where the Agents area is, over a fake directory of the agents
+// each member may run.
 import { env } from "cloudflare:workers";
 import type { Clock } from "effect";
 import { COMPUTER_MARKER } from "@commissary/core";
@@ -24,7 +26,7 @@ import type { ToolsControlPlane } from "../src/env.ts";
 import { browserRun } from "../src/browser/browser-run.ts";
 import { type BrowserSessionEnv, browserSessions } from "../src/browser/session-object.ts";
 import type { BrowserSessionRecord } from "../src/usage/record.ts";
-import { builtInProviders, ToolsPart } from "../src/state.ts";
+import { builtInProviders, type RunnableAgent, ToolsPart } from "../src/state.ts";
 import { fakeBrowserRun, fakeOtherProvider } from "./support/fake-browser.ts";
 import { FakeComputerSandboxSession } from "./support/fake-computer.ts";
 import { CRAWL_ACCOUNT, CRAWL_MAX_PAGES, CRAWL_TOKEN } from "./support/fake-crawl.ts";
@@ -150,6 +152,29 @@ export class ComputerSandboxControlPlane extends composeControlPlane({
 
 export class OtherSandboxControlPlane extends composeControlPlane({
   tools: (ctx, _env, core) => new ToolsPart(ctx, core, { sandbox: fakeSandboxProvider() }),
+}) {}
+
+/**
+ * The agents a fake Agents area lets each member run (#229), by member id; `""` is a shared agent's run (as no
+ * member). Any other member may run none.
+ */
+export const FAKE_AGENTS = new Map<string, ReadonlyArray<RunnableAgent>>([
+  [
+    "m-alice",
+    [
+      { id: "ag_writer", name: "writer", description: "Writes drafts" },
+      { id: "ag_critic", name: "critic", description: "" },
+    ],
+  ],
+  ["", [{ id: "ag_support", name: "support", description: "Answers customers" }]],
+]);
+
+/** A deployment with the Agents area, whose agents {@link FAKE_AGENTS} answers: the agents toolkit (#229). */
+export class AgentsControlPlane extends composeControlPlane({
+  tools: (ctx, _env, core) =>
+    new ToolsPart(ctx, core, {
+      agents: { runnable: (member) => FAKE_AGENTS.get(member ?? "") ?? [] },
+    }),
 }) {}
 
 export default {

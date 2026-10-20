@@ -79,6 +79,11 @@ interface __ApiWorkerEnv {
    * `AgentScheduleObject`), one object per schedule, which the app Worker binds by this Worker's script name to arm.
    */
   AGENT_SCHEDULE: DurableObjectNamespace<import("@commissary/agents/api").AgentScheduleObject>;
+  /**
+   * Dynamic Workers (ADR 0043, every deployment): the Agents area's presence, read only as such here: the MCP endpoint
+   * serves the agents toolkit (#229) where it is bound.
+   */
+  LOADER?: WorkerLoader;
   // Not here on purpose: `DEV_STATE_BRIDGE`, bound under `alchemy dev` only (alchemy.run.ts) and typed by the dev entry
   // alone (`DevBridgedEnv`, src/dev.ts), so no deployed code can name it; the tests bind the objects instead.
 }

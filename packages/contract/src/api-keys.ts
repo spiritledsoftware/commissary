@@ -42,6 +42,13 @@ export const ToolScope = Schema.Array(ToolScopeEntry);
 
 export type ToolScope = typeof ToolScope.Type;
 
+/**
+ * The agents `scope` lets its holder run (#226, #229): the ids its entry for the agents toolkit names, or `undefined`
+ * when it names none (no scope, or an entry without `agents`): every agent within reach.
+ */
+export const agentsInScope = (scope: ToolScope | undefined): ReadonlyArray<string> | undefined =>
+  scope?.find((entry) => entry.toolkit === AGENTS_TOOLKIT)?.agents;
+
 /** A key as lists show it: never the key itself. Times are ISO. */
 export const ApiKeyView = Schema.Struct({
   id: Schema.String,

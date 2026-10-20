@@ -69,6 +69,8 @@ const worker = (bindings: Record<string, string>) =>
       modulesRules: [{ type: "Data", include: ["**/*.bin"] }],
       durableObjects: {
         CONTROL_PLANE: { className: "ControlPlane", useSQLite: true },
+        // The same class on a deployment without the Agents area (no `LOADER`, test/worker.ts): no agents toolkit.
+        CONTROL_PLANE_WITHOUT_AGENTS: { className: "ControlPlaneWithoutAgents", useSQLite: true },
         SESSION_STATE: { className: "SessionState", useSQLite: true },
         PLATFORM: { className: "Platform", useSQLite: true },
         // The browser sessions' objects (#213), over a fake provider's browsers (test/worker.ts).

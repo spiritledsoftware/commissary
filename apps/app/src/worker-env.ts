@@ -4,7 +4,8 @@
  * {@link AgentsEnv}; `core` reads none), and the
  * code that stays in the Worker reads {@link AppEnv}. The request context provides each of them from the invocation's
  * `env`, which satisfies every view (`WorkerBindings`), and the ports `@commissary/auth` reaches state and Better
- * Auth's sessions through (`AuthDirectory`, `SignInSessions`).
+ * Auth's sessions through (`AuthDirectory`, `SignInSessions`), with, where the Agents area is, the one through which
+ * Tools' MCP endpoint makes the agents toolkit's calls (`AgentsToolkitPort`, #229).
  */
 import { Context } from "effect";
 import {
@@ -17,8 +18,13 @@ import {
 import { type BillingBindings, BillingEnv } from "@commissary/billing/api";
 import { signInSessions } from "./hosted/sign-in.ts";
 import { type ModelsBindings, ModelsEnv } from "@commissary/models/api";
-import { type ToolsBindings, ToolsEnv } from "@commissary/tools/api";
-import { type AgentsBindings, AgentsEnv } from "@commissary/agents/api";
+import { AgentsToolkitPort, type ToolsBindings, ToolsEnv } from "@commissary/tools/api";
+import {
+  type AgentsBindings,
+  AgentsEnv,
+  agentsPresent,
+  agentsToolkitCalls,
+} from "@commissary/agents/api";
 import {
   CurrentOrg,
   CurrentOutboundPolicy,
@@ -97,12 +103,13 @@ export type EnvServices =
 /**
  * Each view of `env`, as its service, and auth's ports over it: the directory over the Durable Object stubs
  * (`@commissary/state`'s `stateAuthDirectory`) and Better Auth's sessions over the auth Worker's RPC
- * (`hosted/sign-in.ts`).
+ * (`hosted/sign-in.ts`); and, where the Agents area is (`LOADER`), the agents toolkit's calls for the MCP endpoint a
+ * self-hosted Commissary mounts here (#229).
  */
 export const envContext = (env: WorkerBindings): Context.Context<EnvServices> => {
   const directory = stateAuthDirectory(env);
 
-  return Context.make(AuthConfig, env).pipe(
+  const services = Context.make(AuthConfig, env).pipe(
     Context.add(StateEnv, env),
     Context.add(ModelsEnv, env),
     Context.add(BillingEnv, env),
@@ -112,6 +119,10 @@ export const envContext = (env: WorkerBindings): Context.Context<EnvServices> =>
     Context.add(AuthDirectory, directory),
     Context.add(SignInSessions, signInSessions(env)),
   );
+
+  return agentsPresent(env)
+    ? services.pipe(Context.add(AgentsToolkitPort, agentsToolkitCalls(env)))
+    : services;
 };
 
 /**

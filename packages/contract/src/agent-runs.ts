@@ -22,10 +22,10 @@ import { managementErrors } from "./errors.ts";
 const optional = Schema.optionalKey;
 
 /**
- * How a run was started (GLOSSARY "Trigger kind"): the panel's chat, or a trigger configured on the agent, a schedule or
- * a webhook (`./agent-triggers.ts`, #231). The agents toolkit (#229) adds its own.
+ * How a run was started (GLOSSARY "Trigger kind"): the panel's chat, a trigger configured on the agent, a schedule or
+ * a webhook (`./agent-triggers.ts`, #231), or a call of the agents toolkit (`mcp`, #229) by a client or another run.
  */
-export const TriggerKind = Schema.Literals(["chat", "schedule", "webhook"]);
+export const TriggerKind = Schema.Literals(["chat", "schedule", "webhook", "mcp"]);
 
 export type TriggerKind = typeof TriggerKind.Type;
 
@@ -42,8 +42,11 @@ export const TurnStatus = Schema.Literals(["running", "done", "failed", "cancell
 
 export type TurnStatus = typeof TurnStatus.Type;
 
-/** Who started a run: a member, for now (child runs, #229, add another kind). */
-export const RunStarterView = Schema.Struct({ kind: Schema.Literal("member"), id: Schema.String });
+/** Who started a run: a member, or the run that started it through the agents toolkit (a child run, #229). */
+export const RunStarterView = Schema.Struct({
+  kind: Schema.Literals(["member", "run"]),
+  id: Schema.String,
+});
 
 export type RunStarterView = typeof RunStarterView.Type;
 
