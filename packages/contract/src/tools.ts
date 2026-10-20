@@ -34,9 +34,9 @@ const optional = Schema.optionalKey;
 /**
  * What a toolkit is built from: a remote MCP server (Streamable HTTP), an OpenAPI document (3.0, 3.1 or 3.2, or Swagger
  * 2.0, given by URL or uploaded, #203), or, for a toolkit Commissary provides itself (`built_in`), the kind of service
- * behind it: `browser`, the browser toolkit (ADR 0039).
+ * behind it: `browser`, the browser toolkit (ADR 0039), or `sandbox`, the sandbox toolkit (ADR 0041).
  */
-export const ToolkitKind = Schema.Literals(["mcp", "openapi", "browser"]);
+export const ToolkitKind = Schema.Literals(["mcp", "openapi", "browser", "sandbox"]);
 
 export type ToolkitKind = typeof ToolkitKind.Type;
 
@@ -49,6 +49,25 @@ export type AddedToolkitKind = typeof AddedToolkitKind.Type;
 export const CredentialsAccepted = Schema.Literals(["shared", "private", "both"]);
 
 export type CredentialsAccepted = typeof CredentialsAccepted.Type;
+
+/**
+ * A sandbox's network (ADR 0041, #222): `none`, the default; `hosts`, only the hosts listed (an exact name, or `*.`
+ * and a name for every name under it) and those of its presets (`package_registries`: npm, PyPI, GitHub and mise's
+ * download hosts); or `open`, the internet. Every request also passes the outbound guard (ADR 0044), whatever the
+ * network. The sandbox toolkit's (`network` on it) is the org's ceiling, set by org admins; a session opened with
+ * `sandbox_open` asks for one within it and keeps it.
+ */
+export const SandboxNetwork = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("none") }),
+  Schema.Struct({
+    kind: Schema.Literal("hosts"),
+    hosts: Schema.Array(Schema.String),
+    presets: optional(Schema.Array(Schema.Literal("package_registries"))),
+  }),
+  Schema.Struct({ kind: Schema.Literal("open") }),
+]);
+
+export type SandboxNetwork = typeof SandboxNetwork.Type;
 
 /** Whether a tool reads or writes (ADR 0038). */
 export const ToolClass = Schema.Literals(["read", "write"]);
@@ -246,9 +265,10 @@ export const ToolkitView = Schema.Struct({
   /** An OpenAPI toolkit built from an uploaded document (`PUT /toolkits/:id/document` replaces it). */
   uploaded: optional(Schema.Boolean),
   /**
-   * A toolkit Commissary provides itself (the browser toolkit, `id` and `name` `browser`): present while the deployment
-   * has what it runs on, reached under tool grants (no default grant), its tools' overrides as any toolkit's; it cannot
-   * be renamed, edited (but for its approval rules, #201), given a credential, refreshed or removed (`403 built_in`).
+   * A toolkit Commissary provides itself (the browser toolkit, `id` and `name` `browser`; the sandbox toolkit, `sandbox`):
+   * present while the deployment has what it runs on, reached under tool grants (no default grant), its tools'
+   * overrides as any toolkit's; it cannot be renamed, edited (but for its approval rules, #201, and the sandbox's
+   * network, #222), given a credential, refreshed or removed (`403 built_in`).
    * Its times are the epoch until its approval rules change.
    */
   built_in: optional(Schema.Literal(true)),
@@ -282,6 +302,8 @@ export const ToolkitView = Schema.Struct({
    * no call of its tools waits.
    */
   approval_rules: optional(ApprovalRulesView),
+  /** The sandbox toolkit's (#222): the widest network a sandbox session may ask for, the org's ceiling. */
+  network: optional(SandboxNetwork),
 });
 
 export type ToolkitView = typeof ToolkitView.Type;
@@ -369,6 +391,11 @@ export const UpdateToolkit = Schema.Struct({
   approval_rules: optional(Schema.NullOr(ApprovalRules)),
   /** OpenAPI toolkits only: the base URL calls go to (the outbound guard); `null` returns to the document's servers. */
   base_url: optional(Schema.NullOr(Schema.String)),
+  /**
+   * The sandbox toolkit only (#222), org admins: the widest network a sandbox session may ask for (`403 built_in` on
+   * the browser toolkit, `422 invalid` on any other). Sessions keep the network they opened with.
+   */
+  network: optional(SandboxNetwork),
 });
 
 export type UpdateToolkit = typeof UpdateToolkit.Type;
@@ -515,8 +542,9 @@ export class ToolsGroup extends HttpApiGroup.make("tools").add(
    * Rename, change which credentials an org toolkit accepts, price its calls, or set its approval rules; `409 conflict`
    * when the revision is stale, `422 invalid` for a price on a private toolkit or one that is not a whole number of
    * micro-USD, 0 or more, and for approval rules that mark a tool of another toolkit or name a team or member the org
-   * does not have; `403 built_in` for anything but approval rules on a built-in toolkit (also on removing it, and on
-   * connecting or removing its credential).
+   * does not have, and for a network that is not the sandbox toolkit's or not a valid one; `403 built_in` for anything
+   * but approval rules (and the sandbox's network) on a built-in toolkit (also on removing it, and on connecting or
+   * removing its credential).
    */
   HttpApiEndpoint.patch("update", "/toolkits/:id", {
     ...idParam,

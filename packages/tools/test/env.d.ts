@@ -14,6 +14,14 @@ interface __ToolsTestEnv extends Omit<
   BROWSER_SESSIONS: DurableObjectNamespace<import("./worker.ts").BrowserSession>;
   /** A deployment that gains a `browser` binding once its storage says so (`UPGRADE_TO_BROWSER`). */
   UPGRADED_CONTROL_PLANE: DurableObjectNamespace<import("./worker.ts").UpgradedControlPlane>;
+  /** The sandbox toolkit with Cloudflare's sandbox, and with a fake second sandbox provider (#222). */
+  SANDBOX_CONTROL_PLANE: DurableObjectNamespace<import("./worker.ts").SandboxControlPlane>;
+  OTHER_SANDBOX_CONTROL_PLANE: DurableObjectNamespace<
+    import("./worker.ts").OtherSandboxControlPlane
+  >;
+  /** The sandbox's sessions, and the Dynamic Workers their just-bash runs in (`ToolsPartEnv`). */
+  SANDBOX_SESSION: DurableObjectNamespace<import("./worker.ts").SandboxSession>;
+  LOADER: WorkerLoader;
   PLATFORM: DurableObjectNamespace<import("./worker.ts").Platform>;
   SESSION_STATE: DurableObjectNamespace<import("./worker.ts").SessionState>;
   /** The usage database the MCP endpoint writes tool calls' records to (`ToolsBindings`). */
@@ -31,6 +39,9 @@ declare namespace Cloudflare {
       | "OtherBrowserControlPlane"
       | "UpgradedControlPlane"
       | "BrowserSession"
+      | "SandboxControlPlane"
+      | "OtherSandboxControlPlane"
+      | "SandboxSession"
       | "SessionState"
       | "Platform";
   }

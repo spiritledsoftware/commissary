@@ -18,12 +18,19 @@ interface __StateWorkerEnv extends __StateObjectSettings {
   PLATFORM: DurableObjectNamespace<import("./index.ts").Platform>;
   /** One object per browser session (#213, `@commissary/tools/state`), reached by the ControlPlane's Tools part. */
   BROWSER_SESSIONS: DurableObjectNamespace<import("./index.ts").BrowserSession>;
+  /** The sandbox toolkit's sessions (#222), one object each; the Tools part reaches them (`ToolsPartEnv`). */
+  SANDBOX_SESSION: DurableObjectNamespace<import("./index.ts").SandboxSession>;
 }
 
 declare namespace Cloudflare {
   interface GlobalProps {
     mainModule: typeof import("./index.ts");
-    durableNamespaces: "ControlPlane" | "SessionState" | "Platform" | "BrowserSession";
+    durableNamespaces:
+      | "ControlPlane"
+      | "SessionState"
+      | "Platform"
+      | "BrowserSession"
+      | "SandboxSession";
   }
 
   interface Env extends __StateWorkerEnv {}

@@ -1,8 +1,10 @@
 // Tools' tests, two projects like Models': `tools-unit` runs the pure tests (`test/unit/`) in Node.js; `tools` runs the rest
 // in workerd (@cloudflare/vitest-plugin) against the test Worker (test/worker.ts), whose ControlPlane is the org-wide
 // base composed with the Tools part only (two more have a fake browser behind the browser toolkit, #212: the test Worker
-// hands their Tools part a fake `browser` binding, so the config binds none). Compatibility settings as the deployed
-// Worker's (alchemy.run.ts); the bindings are the ones test/env.d.ts declares, with the Worker tests' fixed keys.
+// hands their Tools part a fake `browser` binding, so the config binds none), and two more have the sandbox toolkit (#222):
+// one Cloudflare's, whose sessions are this Worker's `SandboxSession` objects running just-bash in Dynamic Workers of the
+// test `LOADER`, one a fake second sandbox provider. Compatibility settings as the deployed Worker's (alchemy.run.ts);
+// the bindings are the ones test/env.d.ts declares, with the Worker tests' fixed keys.
 import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import { defineConfig } from "vitest/config";
 import { nodePackageTests } from "../../tools/vitest/node-package.ts";
@@ -44,6 +46,13 @@ export default defineConfig({
                 UPGRADED_CONTROL_PLANE: { className: "UpgradedControlPlane", useSQLite: true },
                 // The browser sessions' objects (#213), over a fake provider's browsers.
                 BROWSER_SESSIONS: { className: "BrowserSession", useSQLite: true },
+                // The sandbox toolkit with Cloudflare's sandbox, and with a fake second sandbox provider (#222).
+                SANDBOX_CONTROL_PLANE: { className: "SandboxControlPlane", useSQLite: true },
+                OTHER_SANDBOX_CONTROL_PLANE: {
+                  className: "OtherSandboxControlPlane",
+                  useSQLite: true,
+                },
+                SANDBOX_SESSION: { className: "SandboxSession", useSQLite: true },
                 SESSION_STATE: { className: "SessionState", useSQLite: true },
                 PLATFORM: { className: "Platform", useSQLite: true },
               },
@@ -52,6 +61,8 @@ export default defineConfig({
               // the stage stays self-hosted (no `COMMISSARY_MODE`, `MCP_OAUTH_ISSUER` or `MCP_OAUTH_RESOURCE`), so
               // nothing else turns the OAuth server on; its flows are the app Worker's hosted tests'.
               kvNamespaces: ["OAUTH_KV"],
+              // Dynamic Workers, where the sandbox's just-bash runs (ADR 0043: every deployment has them).
+              workerLoaders: { LOADER: {} },
               // A self-hosted stage under test, as the Worker's tests bind it.
               bindings: {
                 ACCESS_TEAM_DOMAIN: "",

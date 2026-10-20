@@ -1403,3 +1403,53 @@ describe("a client of the 2025 handshake", () => {
     expect(refusedNotification.body?.["error"]).toMatchObject({ code: -32022 });
   });
 });
+
+describe("the sandbox toolkit through the endpoint (#222)", () => {
+  it("keeps a session to the API key that opened it: another key of the member, or another member, hears of none", async () => {
+    const { org, alice, bob } = await staffedOrg("mcp-sandbox");
+
+    const granted = await toolsOf(org).writeGrant(
+      {
+        revision: 0,
+        value: { subject: { kind: "everyone" }, toolkit: "sandbox", tools: { kind: "all" } },
+      },
+      "test",
+    );
+
+    if (!granted.ok) throw new Error(granted.message);
+    const laptop = await clientOf(org, alice);
+    const phone = await clientOf(org, alice);
+    const bobs = await clientOf(org, bob);
+
+    const call = async (
+      client: Awaited<ReturnType<typeof clientOf>>,
+      name: string,
+      args: Record<string, unknown>,
+    ) => {
+      const sent = modern(1, "tools/call", { name, arguments: args });
+
+      return resultOf(await client.send(sent.body, sent.headers));
+    };
+
+    const opened = await call(laptop, "sandbox_open", {});
+    const session = (opened?.["structuredContent"] as { session: string } | undefined)?.session;
+
+    expect(session).toMatch(/^sbx_[0-9a-f]{32}$/);
+    await call(laptop, "sandbox_write", { session, path: "a.txt", content: "the laptop's" });
+
+    for (const other of [phone, bobs]) {
+      const read = await call(other, "sandbox_read", { session, path: "a.txt" });
+
+      expect(read).toMatchObject({
+        isError: true,
+        content: [
+          { type: "text", text: `Unknown sandbox session ${session}. Open one with sandbox_open.` },
+        ],
+      });
+    }
+
+    expect(await call(laptop, "sandbox_read", { session, path: "a.txt" })).toMatchObject({
+      content: [{ type: "text", text: "the laptop's" }],
+    });
+  });
+});

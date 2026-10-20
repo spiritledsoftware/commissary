@@ -3,4 +3,11 @@
 // the test Worker's own, so `runInDurableObject` and global `fetch` stubs reach them, with no auxiliary Worker.
 export { default } from "../src/index.ts";
 
-export { ControlPlane, Platform, SessionState } from "@commissary/state-worker";
+export {
+  ControlPlane,
+  Platform,
+  SandboxEgress,
+  SandboxSession,
+  SessionState,
+  WorkspaceServiceProxy,
+} from "@commissary/state-worker";

@@ -71,7 +71,7 @@ describe("Tools' org deletion step", () => {
     expect(await grants.keyIds(org, "member-a")).toEqual([]);
   });
 
-  it("deletes nothing on a self-hosted stage, which has no OAuth server", async () => {
+  it("deletes no sign-ins on a self-hosted stage, which has no OAuth server", async () => {
     const org = OrgId.make("org3");
 
     await grants.write(org, "member-a", "key-a");
@@ -80,7 +80,8 @@ describe("Tools' org deletion step", () => {
       orgDeletionStep.pipe(Effect.provideService(ToolsEnv, env)),
     );
 
-    expect(await step(org, 400)).toEqual({ complete: true, calls: 0 });
+    // One call: the ControlPlane, which has no sandbox sessions to delete.
+    expect(await step(org, 400)).toEqual({ complete: true, calls: 1 });
     expect(await grants.keyIds(org, "member-a")).toEqual(["key-a"]);
   });
 });
