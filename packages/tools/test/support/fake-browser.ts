@@ -91,9 +91,13 @@ export const fakeBrowserRun = (screenshotBytes?: Uint8Array): FakeBrowserRun => 
   };
 };
 
-/** Another browser provider, answering every Quick Action as text that names it and the page. */
+/**
+ * Another browser provider, answering every Quick Action as text that names it and the page, with browsers for sessions
+ * (the test Worker's session objects give every provider the fake's, `fake-sessions.ts`).
+ */
 export const fakeOtherProvider = (): BrowserProvider => ({
   id: "other-browser",
+  sessions: true,
   quickAction: (request) =>
     Effect.succeed({ kind: "text", text: `other-browser ${request.action} ${request.args.url}` }),
 });

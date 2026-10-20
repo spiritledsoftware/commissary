@@ -28,6 +28,34 @@ const QUICK_ACTIONS = [
   "browser_screenshot",
 ];
 
+/** The session tools (#213, test/browser-sessions.test.ts), by their upstream names, and those that read. */
+const SESSION_TOOLS = [
+  "open",
+  "navigate",
+  "navigate_back",
+  "navigate_forward",
+  "snapshot",
+  "click",
+  "type",
+  "press_key",
+  "select_option",
+  "hover",
+  "wait_for",
+  "take_screenshot",
+  "tab_list",
+  "tab_new",
+  "tab_select",
+  "close",
+];
+
+const SESSION_READS = ["snapshot", "take_screenshot", "tab_list"];
+
+/** Every tool's full name, as a member's list sorts them. */
+const ALL_TOOLS = [...QUICK_ACTIONS, ...SESSION_TOOLS.map((name) => `browser_${name}`)].toSorted();
+
+/** The tools a read grant gives: the Quick Actions and the session tools that read. */
+const READ_TOOLS = [...QUICK_ACTIONS, ...SESSION_READS.map((name) => `browser_${name}`)].toSorted();
+
 const withBrowser = () => env.BROWSER_CONTROL_PLANE.getByName(crypto.randomUUID());
 
 const withoutBrowser = () => env.CONTROL_PLANE.getByName(crypto.randomUUID());
@@ -78,7 +106,7 @@ describe("the browser toolkit", () => {
         accepts: "shared",
         built_in: true,
         credentials: { shared: { kind: "none", active: true } },
-        tool_list: { tools: 7 },
+        tool_list: { tools: 7 + SESSION_TOOLS.length },
       });
     }
 
@@ -92,6 +120,11 @@ describe("the browser toolkit", () => {
       ["browser:links", "browser_links", "read"],
       ["browser:scrape", "browser_scrape", "read"],
       ["browser:accessibility_tree", "browser_accessibility_tree", "read"],
+      ...SESSION_TOOLS.map((name) => [
+        `browser:${name}`,
+        `browser_${name}`,
+        SESSION_READS.includes(name) ? "read" : "write",
+      ]),
     ]);
   });
 
@@ -110,10 +143,12 @@ describe("the browser toolkit", () => {
 
     const tools = await stub.tools().clientTools(ALICE);
 
-    expect(tools.map((tool) => tool.name)).toEqual(QUICK_ACTIONS);
-    expect(tools.every((tool) => tool.toolClass === "read" && tool.toolkit === "browser")).toBe(
-      true,
-    );
+    expect(tools.map((tool) => tool.name)).toEqual(ALL_TOOLS);
+    expect(
+      tools
+        .filter((tool) => QUICK_ACTIONS.includes(tool.name))
+        .every((tool) => tool.toolClass === "read" && tool.toolkit === "browser"),
+    ).toBe(true);
     expect(tools.find((tool) => tool.name === "browser_markdown")?.inputSchema).toMatchObject({
       type: "object",
       required: ["url"],
@@ -151,7 +186,7 @@ describe("the browser toolkit", () => {
     const stub = withBrowser();
 
     await grant(stub, { subject: EVERYONE, toolkit: "browser", tools: { kind: "read" } });
-    expect(await listed(stub, ALICE)).toEqual(QUICK_ACTIONS);
+    expect(await listed(stub, ALICE)).toEqual(READ_TOOLS);
 
     const hidden = await stub
       .tools()
@@ -169,7 +204,7 @@ describe("the browser toolkit", () => {
 
     // A read grant no longer gives the screenshot, and the hidden PDF is served to nobody.
     expect(await listed(stub, ALICE)).toEqual(
-      QUICK_ACTIONS.filter((name) => name !== "browser_pdf" && name !== "browser_screenshot"),
+      READ_TOOLS.filter((name) => name !== "browser_pdf" && name !== "browser_screenshot"),
     );
     expect(await call(stub, ALICE, "browser_screenshot")).toBe("unknown");
     expect(await call(stub, ALICE, "browser_pdf")).toBe("unknown");

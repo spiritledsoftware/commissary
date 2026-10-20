@@ -317,9 +317,13 @@ const run = <K extends QuickActionName>(
     return yield* entry.result(response, args);
   });
 
-/** Browser Run behind the deployment's `browser` binding, as a {@link BrowserProvider}. */
+/**
+ * Browser Run behind the deployment's `browser` binding, as a {@link BrowserProvider}: its sessions' browsers are
+ * `browser-run-sessions.ts`'s, which the session's Durable Object reaches over the same binding.
+ */
 export const browserRun = (binding: BrowserRunBinding): BrowserProvider => ({
   id: BROWSER_RUN,
+  sessions: true,
   quickAction: (request) =>
     run(binding, request.action, request.args).pipe(
       Effect.timeoutOrElse({

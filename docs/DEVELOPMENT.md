@@ -160,10 +160,9 @@ may have stored its writes before, so it may run twice. Only chains are retried:
   cron task) through `@commissary/tools/api`.
 - `apps/state` (`@commissary/state-worker`): the state Worker (ADR 0030). `src/index.ts` exports the ControlPlane
   (`src/control-plane.ts`: `@commissary/state`'s org-wide base composed with `@commissary/models/state`'s and
-  `@commissary/tools/state`'s parts),
-  SessionState and Platform, and answers every request 404; `src/env.d.ts` declares what the classes read; `src/dev.ts`
-  adds the dev-only bridge ("Infrastructure"). No tests of its own: the app's, the API's and the auth Worker's test
-  Workers run its classes.
+  `@commissary/tools/state`'s parts), SessionState, Platform and `@commissary/tools/state`'s BrowserSession, and answers
+  every request 404; `src/env.d.ts` declares what the classes read; `src/dev.ts` adds the dev-only bridge
+  ("Infrastructure"). No tests of its own: the app's, the API's and the auth Worker's test Workers run its classes.
 - `apps/auth` (`@commissary/auth-worker`): the auth Worker (`Auth`, ADR 0030), Commissary Cloud only: Better Auth on the
   auth host and its `SignIn` database, and the `SignInService` RPC the app Worker calls. `src/http` (router, CORS for the
   app origin, the sign-in routes, `/healthz`), `src/sign-in` (Better Auth, sessions and the RPC's D1 work, the SSO
@@ -200,10 +199,12 @@ may have stored its writes before, so it may run twice. Only chains are retried:
   lists, and the requests their tools make), `http` (the HTTP-call path API-calling kinds share), `management` (its management routes,
   role-table entries, its section of the org export), the ControlPlane part, its cron task (refreshing tool lists) and
   its org-deletion step. Three entry points like Models': `./api` (the API Worker's: cron tasks, `ToolsEnv`),
-  `./management` (the app Worker's) and `./state` (the state Worker's: `ToolsPart`); `./testing` serves fake MCP
-  servers to the Worker's tests (`fakeMcpServer`, `serveFakeMcpServers`) and a fake Browser Run binding
-  (`fakeBrowserRun`), and holds Tools' usage writer (`insertToolCallRecord`), with which other tests seed tool calls'
-  records. `browser` holds the browser toolkit (#212). It reads its bindings through `ToolsEnv` (`CONTROL_PLANE`,
+  `./management` (the app Worker's) and `./state` (the state Worker's: `ToolsPart` and the browser sessions' Durable
+  Object, `BrowserSession`); `./testing` serves fake MCP servers to the Worker's tests (`fakeMcpServer`,
+  `serveFakeMcpServers`), a fake Browser Run binding (`fakeBrowserRun`) and the browser sessions' object over a fake
+  provider's browsers (`FakeBrowserSession`, `browserSessionStub`), and holds Tools' usage writer
+  (`insertToolCallRecord`), with which other tests seed tool calls' records. `browser` holds the browser toolkit
+  (#212) and its sessions (#213). It reads its bindings through `ToolsEnv` (`CONTROL_PLANE`,
   `PLATFORM`, `APP_DOMAIN` and `USAGE`, the usage database its tool calls' records go into) and may import
   `@commissary/state`, `auth`, `contract`, `core`, `effect` and the runtime
   modules `tools/oxlint/boundaries` lists: nothing from `apps/` or Models.
@@ -352,12 +353,13 @@ stays with that Worker.
   held until the test ends, and the eviction never finishes. `@commissary/tools` has two projects the same way:
   `tools-unit` (`test/unit/`, Node.js) and `tools` (workerd, `packages/tools/test/worker.ts`: state's base composed
   with the Tools part only, and three more ControlPlanes whose browser toolkit runs on a fake Browser Run binding or a
-  fake second browser provider, or that gains the fake binding when a test restarts it). Its upstreams are fakes the
-  tests serve by replacing the isolate's `fetch`, which the ControlPlane in the same isolate calls: one routing `fetch`
-  hands each request to the fake of its origin (`test/support/fake-fetch.ts`, `serveFakeServers`; the Worker's tests
-  install it as `serveFakeMcpServers` from `@commissary/tools/testing`), fake MCP servers (`fakeMcpServer`) and fake
-  HTTP servers for OpenAPI toolkits' documents and calls (`test/support/http-server.ts`, `fakeHttpServer`, which records
-  each request with its body).
+  fake second browser provider, or that gains the fake binding when a test restarts it, and the browser sessions'
+  object over a fake provider's browsers, `test/support/fake-sessions.ts`). Its upstreams are fakes the tests serve by
+  replacing the isolate's `fetch`, which the ControlPlane in the same isolate calls: one routing `fetch` hands each
+  request to the fake of its origin (`test/support/fake-fetch.ts`, `serveFakeServers`; the Worker's tests install it as
+  `serveFakeMcpServers` from `@commissary/tools/testing`), fake MCP servers (`fakeMcpServer`) and fake HTTP servers for
+  OpenAPI toolkits' documents and calls (`test/support/http-server.ts`, `fakeHttpServer`, which records each request
+  with its body).
 - **Package config.** A workerd package's `vitest.config.ts` uses `cloudflareTest` with its test Worker, the deployed
   Worker's compatibility settings and the bindings its env view names; its tsconfig adds the shared Workers runtime
   types and `@cloudflare/vitest-plugin/types`. A Node.js package's `vitest.config.ts` is

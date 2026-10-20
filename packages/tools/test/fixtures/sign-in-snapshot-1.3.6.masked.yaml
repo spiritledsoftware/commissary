@@ -1,0 +1,25 @@
+- generic [ref=e1]:
+  - banner [ref=e2]:
+    - link "Example" [ref=e3] [cursor=pointer]:
+      - /url: /
+  - main [ref=e4]:
+    - heading "Sign in" [level=1] [ref=e5]
+    - generic [ref=e6]:
+      - text: Email
+      - textbox "Email" [ref=e7]: alice@example.com
+    - generic [ref=e8]:
+      - text: Password
+      - textbox "Password" [active] [ref=e9]: ••••••••
+    - textbox "Confirm password" [ref=e10]:
+      - /placeholder: Repeat your password
+      - text: ••••••••
+    - textbox "Recovery code" [ref=e11]: "123456"
+    - textbox "Saved PIN": ••••••••
+    - checkbox "Remember me" [checked] [ref=e12]
+    - button "Sign in" [ref=e13] [cursor=pointer]
+    - iframe [ref=e14]:
+      - generic [ref=f1e1]:
+        - 'textbox "Card: PIN" [ref=f1e2]': ••••••••
+        - button "Pay" [ref=f1e3] [cursor=pointer]
+  - contentinfo [ref=e15]:
+    - paragraph [ref=e16]: © Example

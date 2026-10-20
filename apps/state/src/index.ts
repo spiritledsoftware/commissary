@@ -1,6 +1,7 @@
 /**
  * The state Worker (ADR 0030, #128): it defines the Durable Objects `ControlPlane`, `SessionState` and `Platform`, and
- * the other Workers bind them by script name (alchemy.run.ts). It has no routes, no domain and no workers.dev URL.
+ * the other Workers bind them by script name (alchemy.run.ts); and `BrowserSession`, one per browser session of the
+ * browser toolkit (#213), which only its own ControlPlane reaches. It has no routes, no domain and no workers.dev URL.
  * Deploying a Worker restarts the Durable Objects it defines; this one changes only when their code does, so a client
  * API or panel change no longer restarts them.
  *
@@ -12,6 +13,8 @@ export { ControlPlane } from "./control-plane.ts";
 // `SessionState` holds the replay/continuity caches; the Responses WebSocket keeps its state in the Worker invocation
 // that accepted the socket, not there (see docs/ARCHITECTURE.md).
 export { Platform, SessionState } from "@commissary/state";
+
+export { BrowserSession } from "@commissary/tools/state";
 
 export default {
   fetch: () => new Response("the state Worker serves no requests", { status: 404 }),
