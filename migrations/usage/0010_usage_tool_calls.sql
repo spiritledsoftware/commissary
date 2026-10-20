@@ -4,7 +4,17 @@
 -- tool call's record names its toolkit and the tool's stable id (`<toolkit id>:<upstream name>`), its outcome
 -- (`success`, `tool_error`, `upstream_failure`, `refused`, `needs_credential`), the sizes in bytes of the call's
 -- arguments and of its result, and its approval (empty until approvals exist, #201). It holds no arguments and no
--- results. The token, provider and model columns stay empty or at their defaults on a tool call's record.
+-- results. The token, provider and model columns stay empty or at their defaults on a tool call's record; `auth_id` is
+-- empty and `auth_type` holds which of the toolkit's credentials served the call (`shared` or `private`, empty when none
+-- did).
+--
+-- Forward only, like every migration here: nothing drops these columns. Code from before this migration reads every
+-- record as a model attempt, so reverting the code to it means first deleting the tool calls' records:
+--   DELETE FROM usage_records WHERE area = 'tools';
+-- The new columns and indexes may stay (the older code ignores them); its export queue reads without the index this
+-- drops, so recreate that for speed:
+--   CREATE INDEX IF NOT EXISTS usage_records_org_unexported ON usage_records (org_id, requested_at)
+--     WHERE exported_at IS NULL;
 ALTER TABLE usage_records ADD COLUMN area TEXT NOT NULL DEFAULT 'models';
 ALTER TABLE usage_records ADD COLUMN toolkit_id TEXT;
 ALTER TABLE usage_records ADD COLUMN tool_id TEXT;

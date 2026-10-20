@@ -179,7 +179,8 @@ may have stored its writes before, so it may run twice. Only chains are retried:
   role-table entries, its section of the org export), the ControlPlane part, its cron task (refreshing tool lists) and
   its org-deletion step. Three entry points like Models': `./api` (the API Worker's: cron tasks, `ToolsEnv`),
   `./management` (the app Worker's) and `./state` (the state Worker's: `ToolsPart`); `./testing` serves fake MCP
-  servers to the Worker's tests (`fakeMcpServer`, `serveFakeMcpServers`). It reads its bindings through `ToolsEnv`
+  servers to the Worker's tests (`fakeMcpServer`, `serveFakeMcpServers`) and holds Tools' usage writer
+  (`insertToolCallRecord`), with which other tests seed tool calls' records. It reads its bindings through `ToolsEnv`
   (`CONTROL_PLANE`, `PLATFORM`, `APP_DOMAIN` and `USAGE`, the usage database its tool calls' records go into) and may
   import `@commissary/state`, `auth`, `contract`, `core`, `effect` and the runtime
   modules `tools/oxlint/boundaries` lists: nothing from `apps/` or Models.
@@ -215,7 +216,8 @@ may have stored its writes before, so it may run twice. Only chains are retried:
   body readers), the retry on a code-update reset (`retryOnCodeUpdate`) and the one `AuthDirectory` adapter, all behind the one export `.`; `./spend` holds
   Spend limits (`src/spend`: model, calendar, store, ledger, the `SpendService` the base owns; pure, so Node.js tests
   import it too); `./testing` holds the workerd test helpers
-  (`tablesOf`, `storedText`, `alarmOf`, `withPart`, `ORG_WIDE_TABLES`). It reads its bindings through `StateEnv` and its
+  (`tablesOf`, `storedText`, `alarmOf`, `withPart`, `ORG_WIDE_TABLES`, and the in-memory Spend book `MemorySpendBook`
+  with `limit` and `USD`). It reads its bindings through `StateEnv` and its
   classes' settings from `StateObjectEnv`, and may import `@commissary/auth`, `@commissary/core`,
   `@commissary/contract`, `@commissary/json` and `effect` only: nothing from an area's code or `apps/`.
 - `packages/json` (`@commissary/json`): the gjson/sjson path engine over parsed JSON, the `Json` types, `isValidJson`,
