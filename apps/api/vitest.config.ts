@@ -32,6 +32,10 @@ const HOSTED_BINDINGS = {
   COMMISSARY_MODE: "cloud",
   PLATFORM_ADMIN_EMAILS: "root@example.com",
   PLATFORM_ADMIN_SERVICE_TOKENS: "admin-token.access",
+  // Pay as you go through Polar (#237): test values. No test reaches Polar: no org here has a Polar customer.
+  POLAR_ACCESS_TOKEN: "polar_oat_test",
+  POLAR_PRODUCT_ID: "prod_payg",
+  POLAR_SERVER: "sandbox",
 };
 
 /**

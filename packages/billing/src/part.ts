@@ -1,8 +1,9 @@
 /**
  * The Billing part of an org's ControlPlane (#134 "How an area's ControlPlane part works", #148): the single writer for
- * the org's plan and its free-usage counters (`store.ts`). An `RpcTarget` the composed `ControlPlane` constructs once
- * per object (`new BillingPart(ctx)`); callers reach it as `stub.billing().x(…)`, one pipelined round trip. Methods
- * exchange plain data only. New in the Workers port, no Go counterpart.
+ * the org's plan and its free-usage counters, and what Polar knows the org by and was sent of its usage (`store.ts`).
+ * An `RpcTarget` the composed `ControlPlane` constructs once per object (`new BillingPart(ctx)`); callers reach it as
+ * `stub.billing().x(…)`, one pipelined round trip. Methods exchange plain data only. New in the Workers port, no Go
+ * counterpart.
  *
  * The part itself does not know the deployment's mode: on a self-hosted Commissary nothing calls it (`env.ts`,
  * `meter.ts`), so it stores nothing there.
@@ -13,7 +14,13 @@
 import { RpcTarget } from "cloudflare:workers";
 import type { ControlPlanePart } from "@commissary/state";
 import type { Plan } from "./plan.ts";
-import { type Admission, BillingStore, type BillingUsage } from "./store.ts";
+import {
+  type Admission,
+  BillingStore,
+  type BillingUsage,
+  type MeterBatch,
+  type SubscriptionChange,
+} from "./store.ts";
 
 export class BillingPart extends RpcTarget implements ControlPlanePart {
   readonly #store: BillingStore;
@@ -28,9 +35,39 @@ export class BillingPart extends RpcTarget implements ControlPlanePart {
     return this.#store.plan();
   }
 
-  /** Sets the org's plan (switching it through Polar is #237's; tests set it directly). */
+  /** Sets the org's plan directly (tests; Polar's webhooks go through {@link applySubscription}). */
   setPlan(plan: Plan): void {
     this.#store.setPlan(plan);
+  }
+
+  /** The plan whose limits apply: Free's while a Pay-as-you-go org is past due. */
+  limitsPlan(): Plan {
+    return this.#store.limitsPlan();
+  }
+
+  /** Records the org's Polar customer. */
+  setCustomer(customerId: string): void {
+    this.#store.setCustomer(customerId);
+  }
+
+  /** Applies what Polar reports of the org's subscription; answers whether anything changed. */
+  applySubscription(change: SubscriptionChange): boolean {
+    return this.#store.applySubscription(change);
+  }
+
+  /** An org owner switched to Free at `now`: answers the subscription to cancel, `null` when there was none. */
+  endSubscription(now: number): string | null {
+    return this.#store.endSubscription(now);
+  }
+
+  /** The usage not sent to Polar yet (the batch on its way first), `null` for none. */
+  meterBatch(now: number): MeterBatch | null {
+    return this.#store.meterBatch(now);
+  }
+
+  /** Polar took the batch `id`. */
+  meterBatchSent(id: string): void {
+    this.#store.meterBatchSent(id);
   }
 
   /** The org's plan and what it used in the month containing `now` (epoch ms). */

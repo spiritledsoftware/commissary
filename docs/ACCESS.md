@@ -187,6 +187,7 @@ the Worker asks on every request: a removed member, or a member whose role was l
 | Read the Spend limits that bind them and limit their own API keys (`/spend`, `/spend/limits`)    |         ✓         |     ✓     |              ✓               |       ✓        |
 | Set any Spend limit and the org's calendar (`/spend/limits`, `/spend/settings`)                  |                   |     ✓     |              ✓               |       ✓        |
 | Read the org's plan and this month's usage against free usage (Commissary Cloud, `/billing`)     |                   |     ✓     |              ✓               |       ✓        |
+| Upgrade, open the billing portal, switch back to Free (Commissary Cloud, `/billing/*` writes)    |                   |           |              ✓               |       ✓        |
 | Create API keys for themselves; list and revoke their own (`/api-keys`)                          |         ✓         |     ✓     |              ✓               | if a member ¹  |
 | List and revoke every API key of the org                                                         |                   |     ✓     |              ✓               |       ✓        |
 | Turn auto-join, or Access sign-ins for clients in `global`, on or off (`PATCH /membership`)      |                   |           |              ✓               |       ✓        |
@@ -561,9 +562,16 @@ management keys work as above. What changes:
   (authentication, the rate ceiling, a spend limit, a plan limit, an unknown model, no credential) do not count. A plan
   change reaches every isolate within 30 seconds (per-isolate caches, like suspension). A Free org
   over its free usage is refused with `429 plan_limit_reached` and `Retry-After` until the first of the next month UTC;
-  work in flight finishes. `GET /billing` (org admins) answers the plan and the month's usage against free usage; on a
-  self-hosted Commissary there are no plans and it answers 404. Switching plans, the billing cap and invoices come with
-  Polar (#237, #238).
+  work in flight finishes. `GET /billing` (org admins) answers the plan, the payment state (`ok`, `past_due`), whether a
+  card is on file and the month's usage against free usage; on a self-hosted Commissary there are no plans and it
+  answers 404. **Org owners only** (an org admin who is not an owner gets 403) switch plans through Polar:
+  `POST /billing/checkout` answers a Polar checkout URL for Pay as you go (a person only, whose email becomes the org's
+  billing email; `409 billing_email_taken` when it already bills another org), `POST /billing/portal` a link to Polar's
+  customer portal (invoices, receipts, payment method, tax ID), and `POST /billing/plan {"plan": "free"}` cancels the
+  subscription at the end of its period and puts the org on Free at once (the usage until then is still invoiced). They answer 404 on a stage
+  without Polar's settings. Polar's webhooks (`POST /webhooks/polar` on the app host) need no sign-in: their signature
+  is checked. A failed payment holds a Pay-as-you-go org to Free's limits until a payment succeeds; nothing is deleted
+  or suspended for non-payment. The billing cap comes with #238.
 - **Scripts** use management keys; credential downloads are for platform admins only (§4 "Management API security").
 - **Browser protections.** The cross-site checks of §4 apply unchanged, Better Auth checks the origin of its own
   requests, and the sign-in routes (`/api/auth/*`, `/api/sign-in-options`, `/sign-in`) exist only on Commissary Cloud.

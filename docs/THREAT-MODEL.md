@@ -97,6 +97,10 @@ A Live View link is a bearer link. Commissary mints it only for the session's me
 
 - **Strangers sign up**: anyone may. Turnstile guards sign-in and sign-up; Better Auth's own limiter is off.
 - **Abuse of free usage and billing**: plan limits, the billing cap, the owned-org limit and suspension (ADR 0042).
+- **Forged billing webhooks**: Polar's webhooks reach a public route on the app host; only those signed with the
+  deployment's `POLAR_WEBHOOK_SECRET` (Standard Webhooks, within 5 minutes) change an org's plan, and they name the org
+  through the Polar customer Commissary created for it. Only org owners start a checkout, open the billing portal or
+  switch plans; Polar holds the payment details, Commissary never sees them.
 - The per-org request-rate ceiling fails open: a failing rate-limit binding lets a request through, logged.
 
 ## Accepted risks

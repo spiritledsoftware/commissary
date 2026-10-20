@@ -1,10 +1,10 @@
-// Billing's tests run in workerd (@cloudflare/vitest-plugin) against its Durable Object part on real SQLite storage: the
-// test Worker (test/worker.ts) exports a ControlPlane (the org-wide base composed with the Billing part), the Platform
-// registry and SessionState. Compatibility settings as the deployed Worker's (alchemy.run.ts, apps/app/vitest.config.ts);
-// the bindings are the ones test/env.d.ts declares: Commissary Cloud, since Billing does nothing elsewhere (the tests
-// that need a self-hosted Commissary pass their own view of `env`). The rate-limit bindings (FREE_RATE_LIMIT,
-// PAYG_RATE_LIMIT) are not bound here: test/rate-limit.test.ts injects its own per test, so a ceiling is under the test's
-// control.
+// Billing's tests run in workerd (@cloudflare/vitest-plugin) against its Durable Object part on real SQLite storage:
+// the test Worker (test/worker.ts) exports a ControlPlane (the org-wide base composed with the Billing part), the
+// Platform registry and SessionState. Compatibility settings as the deployed Worker's (alchemy.run.ts,
+// apps/app/vitest.config.ts); the bindings are the ones test/env.d.ts declares: Commissary Cloud, since Billing does
+// nothing elsewhere (the tests that need a self-hosted Commissary pass their own view of `env`), with Polar's settings
+// (test values). The rate-limit bindings (FREE_RATE_LIMIT, PAYG_RATE_LIMIT) are not bound here: test/rate-limit.test.ts
+// injects its own per test, so a ceiling is under the test's control.
 import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import { defineConfig } from "vitest/config";
 import { testWorkerOptions } from "../../tools/vitest/test-workers.ts";
@@ -28,6 +28,12 @@ export default defineConfig({
           PLATFORM_ADMIN_EMAILS: "",
           PLATFORM_ADMIN_SERVICE_TOKENS: "",
           APP_DOMAIN: "app.example.com",
+          // Pay as you go through Polar (#237): test values (test/testing.ts `TEST_POLAR`). No test reaches Polar:
+          // those that call it provide a fake provider (`fakeBillingProvider`) or stub `fetch` (test/polar.test.ts).
+          POLAR_ACCESS_TOKEN: "polar_oat_test",
+          POLAR_WEBHOOK_SECRET: "polar_whs_test-secret",
+          POLAR_PRODUCT_ID: "prod_payg",
+          POLAR_SERVER: "sandbox",
           SECRETS_KEY: "commissary-test-secrets-key-0123456789abcdef0123456789abcdef012345",
           SECRETS_KEY_PREVIOUS: "commissary-test-previous-secrets-key-0123456789abcdef012345678901",
         },

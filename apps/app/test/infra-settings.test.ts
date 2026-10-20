@@ -148,6 +148,37 @@ describe("Commissary Cloud settings", () => {
     }),
   );
 
+  it.effect(
+    "bill through Polar with its three settings: production Polar on the cloud stage only",
+    () =>
+      Effect.gen(function* () {
+        const polar = {
+          ...cloud,
+          POLAR_ACCESS_TOKEN: "polar_oat_x",
+          POLAR_WEBHOOK_SECRET: "polar_whs_x",
+          POLAR_PRODUCT_ID: "prod_1",
+        };
+
+        assert.strictEqual(
+          (yield* read(cloud, { stage: "cloud" })).settings.hosted?.polar,
+          undefined,
+        );
+
+        const onCloud = (yield* read(polar, { stage: "cloud" })).settings.hosted?.polar;
+
+        assert.strictEqual(onCloud?.server, "production");
+        assert.strictEqual(onCloud?.productId, "prod_1");
+        assert.strictEqual(
+          Redacted.value(onCloud?.accessToken ?? Redacted.make("")),
+          "polar_oat_x",
+        );
+        assert.strictEqual(
+          (yield* read(polar, { stage: "pr-12" })).settings.hosted?.polar?.server,
+          "sandbox",
+        );
+      }),
+  );
+
   it.effect("are not read on a self-hosted Commissary", () =>
     Effect.gen(function* () {
       assert.strictEqual(
@@ -327,6 +358,10 @@ describe("Commissary Cloud settings", () => {
           "ORG_RATE_LIMIT_PAYG_NAMESPACE_ID must differ from ORG_RATE_LIMIT_NAMESPACE_ID",
         ],
         [{ COMMISSARY_DOMAIN: "" }, "COMMISSARY_DOMAIN is required"],
+        [
+          { POLAR_ACCESS_TOKEN: "polar_oat_x" },
+          "needs POLAR_ACCESS_TOKEN, POLAR_WEBHOOK_SECRET and POLAR_PRODUCT_ID together",
+        ],
       ] as const)
         assert.include(yield* refusal({ ...hosted, ...variables }), message);
     }),

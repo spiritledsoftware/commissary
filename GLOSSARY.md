@@ -630,6 +630,16 @@ _Avoid_: spend limit (an org's own cap on cost), quota, rate limit (on its own)
 The most Commissary Cloud may bill a Pay-as-you-go org in a month, which its org owners set.
 _Avoid_: budget, spend limit, overage cap
 
+**Payment state**:
+Whether a Pay-as-you-go org's payments are in order (ok) or one failed (past due). A past-due org stays on Pay as you
+go but is held to Free's plan limits until a payment succeeds.
+_Avoid_: delinquent, suspended, unpaid
+
+**Billing email**:
+The email Commissary Cloud bills a Pay-as-you-go org to: that of the org owner who first upgraded it. One email bills
+one org.
+_Avoid_: payer, billing contact, owner (an org role)
+
 ### Tools
 
 **Toolkit**:

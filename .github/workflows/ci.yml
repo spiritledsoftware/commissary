@@ -233,6 +233,11 @@ jobs:
       OWNED_ORG_LIMIT: ${{ vars.OWNED_ORG_LIMIT }}
       ORG_RATE_LIMIT_NAMESPACE_ID: ${{ vars.ORG_RATE_LIMIT_NAMESPACE_ID }}
       ORG_RATE_LIMIT_PAYG_NAMESPACE_ID: ${{ vars.ORG_RATE_LIMIT_PAYG_NAMESPACE_ID }}
+      # Pay as you go through Polar (#237, docs/DEPLOY.md "Polar"): all three or none (none: no billing). Previews
+      # use Polar's sandbox (the preview environment's values), the cloud stage production Polar.
+      POLAR_ACCESS_TOKEN: ${{ secrets.POLAR_ACCESS_TOKEN }}
+      POLAR_WEBHOOK_SECRET: ${{ secrets.POLAR_WEBHOOK_SECRET }}
+      POLAR_PRODUCT_ID: ${{ vars.POLAR_PRODUCT_ID }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -322,6 +327,11 @@ jobs:
       OWNED_ORG_LIMIT: ${{ vars.OWNED_ORG_LIMIT }}
       ORG_RATE_LIMIT_NAMESPACE_ID: ${{ vars.ORG_RATE_LIMIT_NAMESPACE_ID }}
       ORG_RATE_LIMIT_PAYG_NAMESPACE_ID: ${{ vars.ORG_RATE_LIMIT_PAYG_NAMESPACE_ID }}
+      # Pay as you go through Polar (#237, docs/DEPLOY.md "Polar"): all three or none (none: no billing). Previews
+      # use Polar's sandbox (the preview environment's values), the cloud stage production Polar.
+      POLAR_ACCESS_TOKEN: ${{ secrets.POLAR_ACCESS_TOKEN }}
+      POLAR_WEBHOOK_SECRET: ${{ secrets.POLAR_WEBHOOK_SECRET }}
+      POLAR_PRODUCT_ID: ${{ vars.POLAR_PRODUCT_ID }}
     steps:
       - name: Not set up
         if: env.CONFIGURED != 'true'

@@ -138,6 +138,23 @@ export default Alchemy.Stack(
             TURNSTILE_SECRET_KEY: hosted.turnstileSecretKey,
           };
 
+    // Commissary Cloud's Pay as you go through Polar (ADR 0042, #237), on the app Worker (checkout, portal, plan
+    // switches, webhooks, org deletion) and the API Worker (the cron task that sends usage): bound only when the stage
+    // has all of Polar's settings (infra/settings.ts); without them nothing is billed and the billing routes answer
+    // 404. The tokens are secrets (`Redacted`: bound as secret text). Production Polar on the `cloud` stage only, its
+    // sandbox elsewhere. Only the app Worker takes webhooks, so only it gets the webhook secret (`polarWebhookEnv`).
+    const polarEnv =
+      hosted?.polar === undefined
+        ? {}
+        : {
+            POLAR_ACCESS_TOKEN: hosted.polar.accessToken,
+            POLAR_PRODUCT_ID: hosted.polar.productId,
+            POLAR_SERVER: hosted.polar.server,
+          };
+
+    const polarWebhookEnv =
+      hosted?.polar === undefined ? {} : { POLAR_WEBHOOK_SECRET: hosted.polar.webhookSecret };
+
     // Commissary Cloud on the API Worker: API keys only, under the per-org request-rate ceiling of the client API, one
     // binding per plan (60 a minute on Free, 600 on Pay as you go: the constants of `@commissary/billing`, ADR 0042),
     // each in a namespace of its own.
@@ -154,6 +171,7 @@ export default Alchemy.Stack(
               namespaceId: hosted.paygRateLimitNamespaceId,
               simple: { limit: REQUEST_RATE_CEILING.payg, period: RATE_LIMIT_PERIOD_SECONDS },
             }),
+            ...polarEnv,
           };
 
     // Where the client API is served (ADR 0028, ADR 0030; apps/app/src/http/hosts.ts, apps/api/src/http/hosts.ts): with
@@ -309,6 +327,8 @@ export default Alchemy.Stack(
             : {
                 COMMISSARY_MODE: "cloud",
                 OWNED_ORG_LIMIT: hosted.ownedOrgLimit,
+                ...polarEnv,
+                ...polarWebhookEnv,
                 AUTH: auth,
                 // Where the sign-in page sends its requests and the orgs' identity providers send people back.
                 AUTH_ORIGIN: Output.asOutput(auth.url).pipe(

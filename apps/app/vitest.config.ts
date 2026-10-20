@@ -40,6 +40,11 @@ const HOSTED_BINDINGS = {
   PLATFORM_ADMIN_SERVICE_TOKENS: "admin-token.access",
   AUTH_ORIGIN: "https://auth.commissary.test",
   OWNED_ORG_LIMIT: "3",
+  // Pay as you go through Polar (#237): test values. No test reaches Polar: no org here has a Polar customer.
+  POLAR_ACCESS_TOKEN: "polar_oat_test",
+  POLAR_WEBHOOK_SECRET: "polar_whs_test-secret",
+  POLAR_PRODUCT_ID: "prod_payg",
+  POLAR_SERVER: "sandbox",
 };
 
 // The test Worker mirrors the deployed ones declared in alchemy.run.ts (compatibility settings and binding names); there

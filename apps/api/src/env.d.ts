@@ -47,6 +47,15 @@ interface __ApiWorkerEnv {
   FREE_RATE_LIMIT?: RateLimit;
   /** Hosted: Pay as you go's, 600 a minute. */
   PAYG_RATE_LIMIT?: RateLimit;
+  /**
+   * Hosted: Pay as you go through Polar (#237, `@commissary/billing`'s `polar.ts`): an organization access token
+   * (secret), the Pay-as-you-go product and which Polar (`production` on the `cloud` stage, `sandbox` elsewhere),
+   * for the cron task that sends usage. No webhook secret: only the app Worker takes webhooks. Unset (a self-hosted
+   * Commissary, a stage without them): nothing is billed.
+   */
+  POLAR_ACCESS_TOKEN?: string;
+  POLAR_PRODUCT_ID?: string;
+  POLAR_SERVER?: string;
   CONTROL_PLANE: DurableObjectNamespace<import("@commissary/state-worker").ControlPlane>;
   SESSION_STATE: DurableObjectNamespace<import("@commissary/state-worker").SessionState>;
   /** The Platform registry: one object per deployment (`platformOf`, `@commissary/state`). */

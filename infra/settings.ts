@@ -44,6 +44,24 @@ export interface HostedSettings {
    * `commissary-<stage>` on a preview, so previews, which share the account's workers.dev subdomain, keep apart.
    */
   readonly cookiePrefix: string;
+  /**
+   * Pay as you go through Polar (ADR 0042, #237): `POLAR_ACCESS_TOKEN` and `POLAR_WEBHOOK_SECRET` (secrets) and
+   * `POLAR_PRODUCT_ID`, all three or none. None: the stage bills nothing (`@commissary/billing`'s routes answer 404,
+   * nothing is sent). The `cloud` stage uses production Polar, every other stage Polar's sandbox (`server`).
+   */
+  readonly polar: PolarStageSettings | undefined;
+}
+
+/**
+ * Polar's settings of a Commissary Cloud stage that bills (`HostedSettings.polar`); the Workers read theirs as
+ * `@commissary/billing`'s `PolarSettings`.
+ */
+export interface PolarStageSettings {
+  readonly accessToken: Redacted.Redacted<string>;
+  readonly webhookSecret: Redacted.Redacted<string>;
+  readonly productId: string;
+  /** `production` on the `cloud` stage only; `sandbox` on previews and any other stage. */
+  readonly server: "production" | "sandbox";
 }
 
 /**
@@ -344,6 +362,30 @@ const hostedSettings = Effect.fnUntraced(function* (
   if (namespace !== undefined && namespace === paygNamespace)
     problems.push("ORG_RATE_LIMIT_PAYG_NAMESPACE_ID must differ from ORG_RATE_LIMIT_NAMESPACE_ID");
 
+  const polarToken = yield* secret("POLAR_ACCESS_TOKEN");
+  const polarWebhookSecret = yield* secret("POLAR_WEBHOOK_SECRET");
+  const polarProduct = (yield* text("POLAR_PRODUCT_ID")).trim();
+
+  const polarSet = [
+    Redacted.value(polarToken) !== "",
+    Redacted.value(polarWebhookSecret) !== "",
+    polarProduct !== "",
+  ];
+
+  if (polarSet.some((set) => set) && !polarSet.every((set) => set))
+    problems.push(
+      "Pay as you go through Polar needs POLAR_ACCESS_TOKEN, POLAR_WEBHOOK_SECRET and POLAR_PRODUCT_ID together (or none: no billing)",
+    );
+
+  const polar: PolarStageSettings | undefined = polarSet.every((set) => set)
+    ? {
+        accessToken: polarToken,
+        webhookSecret: polarWebhookSecret,
+        productId: polarProduct,
+        server: stage === CLOUD_STAGE ? "production" : "sandbox",
+      }
+    : undefined;
+
   const hosted: HostedSettings = {
     githubClientId: (yield* text("SIGN_IN_GITHUB_CLIENT_ID")).trim(),
     githubClientSecret: yield* secret("SIGN_IN_GITHUB_CLIENT_SECRET"),
@@ -359,6 +401,7 @@ const hostedSettings = Effect.fnUntraced(function* (
       : "",
     cookieDomain: deployed ? baseDomain : "",
     cookiePrefix: preview ? `commissary-${stage}` : scopedToBase ? BASE_COOKIE_PREFIX : "",
+    polar,
   };
 
   if (hosted.authDomain !== "") {

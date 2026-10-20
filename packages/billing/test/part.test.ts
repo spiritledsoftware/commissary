@@ -78,6 +78,7 @@ describe("free usage", () => {
       allowed: 25_000,
       resetsAt: FIRST_OF_APRIL,
       retryAfterSeconds: (FIRST_OF_APRIL - MID_MARCH) / 1000,
+      pastDue: false,
     });
     expect((await part.usage(MID_MARCH)).used.requests).toBe(25_000);
 
@@ -131,13 +132,230 @@ describe("free usage", () => {
   });
 });
 
+/** A change of the org's Polar subscription, as a webhook reports it. */
+const change = (
+  status: "active" | "past_due" | "ended",
+  changedAt: number,
+  subscriptionId = "sub_1",
+) => ({ status, subscriptionId, customerId: "cus_1", changedAt });
+
+describe("the Polar subscription", () => {
+  it("moves the org to Pay as you go when it becomes active, and a repeat changes nothing", async () => {
+    const { part } = billingOf();
+
+    expect(await part.applySubscription(change("active", MID_MARCH))).toBe(true);
+    expect(await part.plan()).toBe("payg");
+    expect((await part.usage(MID_MARCH)).payment).toBe("ok");
+    expect((await part.usage(MID_MARCH)).customerId).toBe("cus_1");
+
+    expect(await part.applySubscription(change("active", MID_MARCH))).toBe(false);
+    expect(await part.plan()).toBe("payg");
+  });
+
+  it("holds a past-due org to Free's limits until a payment succeeds", async () => {
+    const { org, part } = billingOf();
+
+    await part.applySubscription(change("active", MID_MARCH));
+    await seedRequestsUsed(env, org, MID_MARCH, FREE_USAGE.requests);
+    expect((await part.admit(MID_MARCH)).ok).toBe(true);
+
+    expect(await part.applySubscription(change("past_due", MID_MARCH + 1))).toBe(true);
+    expect(await part.plan()).toBe("payg");
+    expect(await part.limitsPlan()).toBe("free");
+    expect((await part.usage(MID_MARCH)).payment).toBe("past_due");
+    expect((await part.admit(MID_MARCH)).ok).toBe(false);
+
+    expect(await part.applySubscription(change("active", MID_MARCH + 2))).toBe(true);
+    expect(await part.limitsPlan()).toBe("payg");
+    expect((await part.usage(MID_MARCH)).payment).toBe("ok");
+    expect((await part.admit(MID_MARCH)).ok).toBe(true);
+  });
+
+  it("moves the org to Free when it ends, keeping what it used", async () => {
+    const { org, part } = billingOf();
+
+    await part.applySubscription(change("active", MID_MARCH));
+    await seedRequestsUsed(env, org, MID_MARCH, FREE_USAGE.requests + 5);
+
+    expect(await part.applySubscription(change("ended", MID_MARCH + 1))).toBe(true);
+    expect(await part.plan()).toBe("free");
+    expect((await part.usage(MID_MARCH)).used.requests).toBe(FREE_USAGE.requests + 5);
+    // The customer stays: the usage it still owes is sent.
+    expect((await part.usage(MID_MARCH)).customerId).toBe("cus_1");
+  });
+
+  it("ignores a change older than the last one, and the end of a subscription it no longer has", async () => {
+    const { part } = billingOf();
+
+    await part.applySubscription(change("active", MID_MARCH, "sub_old"));
+    await part.applySubscription(change("ended", MID_MARCH + 10, "sub_old"));
+    await part.applySubscription(change("active", MID_MARCH + 20, "sub_new"));
+
+    // Delivered late: the old subscription's activation, and its end once more.
+    expect(await part.applySubscription(change("active", MID_MARCH, "sub_old"))).toBe(false);
+    expect(await part.applySubscription(change("ended", MID_MARCH + 30, "sub_old"))).toBe(false);
+    expect(await part.plan()).toBe("payg");
+  });
+
+  it("switches to Free at once when an owner ends Pay as you go, whatever arrives about it later", async () => {
+    const { part } = billingOf();
+
+    await part.applySubscription(change("active", MID_MARCH));
+
+    expect(await part.endSubscription(MID_MARCH + 100)).toBe("sub_1");
+    expect(await part.plan()).toBe("free");
+    expect(await part.applySubscription(change("active", MID_MARCH + 50))).toBe(false);
+    expect(await part.plan()).toBe("free");
+    expect(await part.endSubscription(MID_MARCH + 200)).toBeNull();
+  });
+
+  it("ignores a past_due about a subscription that already ended", async () => {
+    const { part } = billingOf();
+
+    await part.applySubscription(change("active", MID_MARCH));
+    await part.endSubscription(MID_MARCH + 100);
+
+    // Cancelled at the end of its period, the subscription's last invoice is not paid.
+    expect(await part.applySubscription(change("past_due", MID_MARCH + 200))).toBe(false);
+    expect(await part.plan()).toBe("free");
+    expect((await part.usage(MID_MARCH)).payment).toBe("ok");
+
+    // Its owner takes the cancellation back in the portal: it is the org's subscription again.
+    expect(await part.applySubscription(change("active", MID_MARCH + 300))).toBe(true);
+    expect(await part.plan()).toBe("payg");
+    expect(await part.applySubscription(change("past_due", MID_MARCH + 400))).toBe(true);
+    expect((await part.usage(MID_MARCH)).payment).toBe("past_due");
+  });
+
+  it("ignores a past_due about a subscription that ended through Polar", async () => {
+    const { part } = billingOf();
+
+    await part.applySubscription(change("active", MID_MARCH));
+    await part.applySubscription(change("ended", MID_MARCH + 100));
+
+    expect(await part.applySubscription(change("past_due", MID_MARCH + 200))).toBe(false);
+    expect(await part.plan()).toBe("free");
+  });
+});
+
+describe("meter batches", () => {
+  it("has nothing to send for an org that has no Polar customer", async () => {
+    const { org, part } = billingOf();
+
+    await setPlan(env, org, "payg");
+    await seedRequestsUsed(env, org, MID_MARCH, FREE_USAGE.requests + 100);
+
+    expect(await part.meterBatch(MID_MARCH)).toBeNull();
+  });
+
+  it("sends only what is above free usage and not sent before", async () => {
+    const { org, part } = billingOf();
+
+    await part.applySubscription(change("active", MID_MARCH));
+    await seedRequestsUsed(env, org, MID_MARCH, FREE_USAGE.requests - 1);
+    expect(await part.meterBatch(MID_MARCH)).toBeNull();
+
+    await seedRequestsUsed(env, org, MID_MARCH, FREE_USAGE.requests + 300);
+
+    const first = await part.meterBatch(MID_MARCH);
+
+    expect(first?.customerId).toBe("cus_1");
+    expect(first?.events).toEqual([
+      expect.objectContaining({ unit: "requests", monthStart: Date.UTC(2026, 2, 1), amount: 300 }),
+    ]);
+
+    await part.meterBatchSent(first?.id ?? "");
+    expect(await part.meterBatch(MID_MARCH)).toBeNull();
+
+    await seedRequestsUsed(env, org, MID_MARCH, FREE_USAGE.requests + 320);
+
+    const second = await part.meterBatch(MID_MARCH);
+
+    expect(second?.events.map((event) => event.amount)).toEqual([20]);
+    expect(second?.id).not.toBe(first?.id);
+  });
+
+  it("answers the same batch with the same ids until it is sent, so a retry is not counted twice", async () => {
+    const { org, part } = billingOf();
+
+    await part.applySubscription(change("active", MID_MARCH));
+    await seedRequestsUsed(env, org, MID_MARCH, FREE_USAGE.requests + 7);
+
+    const pending = await part.meterBatch(MID_MARCH);
+
+    // More usage while the batch is out: the retry is the same batch, the rest goes in the next one.
+    await seedRequestsUsed(env, org, MID_MARCH, FREE_USAGE.requests + 9);
+    const retried = await part.meterBatch(MID_MARCH);
+
+    expect(retried).toEqual(pending);
+    expect(new Set(pending?.events.map((event) => event.externalId)).size).toBe(1);
+
+    // Confirming another batch changes nothing.
+    await part.meterBatchSent("another");
+    expect(await part.meterBatch(MID_MARCH)).toEqual(pending);
+
+    await part.meterBatchSent(pending?.id ?? "");
+    expect((await part.meterBatch(MID_MARCH))?.events.map((event) => event.amount)).toEqual([2]);
+  });
+
+  it("sends what it owed when it went back to Free, then nothing, and nothing of before to a later subscription", async () => {
+    const { org, part } = billingOf();
+
+    await part.applySubscription(change("active", MID_MARCH));
+    await seedRequestsUsed(env, org, MID_MARCH, FREE_USAGE.requests + 40);
+    await part.applySubscription(change("ended", MID_MARCH + 1));
+
+    // Used after it ended: on Free, never sent.
+    await seedRequestsUsed(env, org, MID_MARCH, FREE_USAGE.requests + 45);
+    await seedRequestsUsed(env, org, FIRST_OF_APRIL, 10);
+
+    const owed = await part.meterBatch(FIRST_OF_APRIL);
+
+    expect(owed?.events).toEqual([
+      expect.objectContaining({ unit: "requests", monthStart: Date.UTC(2026, 2, 1), amount: 40 }),
+    ]);
+    await part.meterBatchSent(owed?.id ?? "");
+    expect(await part.meterBatch(FIRST_OF_APRIL)).toBeNull();
+
+    await part.applySubscription(change("active", FIRST_OF_APRIL, "sub_2"));
+    expect(await part.meterBatch(FIRST_OF_APRIL)).toBeNull();
+
+    await seedRequestsUsed(env, org, FIRST_OF_APRIL, FREE_USAGE.requests + 3);
+    expect((await part.meterBatch(FIRST_OF_APRIL))?.events).toEqual([
+      expect.objectContaining({ unit: "requests", monthStart: FIRST_OF_APRIL, amount: 3 }),
+    ]);
+  });
+
+  it("still sends the batch that was on its way when the org went back to Free", async () => {
+    const { org, part } = billingOf();
+
+    await part.applySubscription(change("active", MID_MARCH));
+    await seedRequestsUsed(env, org, MID_MARCH, FREE_USAGE.requests + 40);
+
+    const pending = await part.meterBatch(MID_MARCH);
+
+    await part.endSubscription(MID_MARCH + 1);
+    expect(await part.meterBatch(MID_MARCH + 2)).toEqual(pending);
+
+    await part.meterBatchSent(pending?.id ?? "");
+    await part.applySubscription(change("active", MID_MARCH + 3, "sub_2"));
+    expect(await part.meterBatch(MID_MARCH + 4)).toBeNull();
+  });
+});
+
 describe("org deletion", () => {
   it("drops the part's tables with the org's", async () => {
     const { org, part } = billingOf();
 
     await part.admit(MID_MARCH);
     expect(await tablesOf(env.CONTROL_PLANE.getByName(org))).toEqual(
-      expect.arrayContaining(["billing_plan", "billing_usage"]),
+      expect.arrayContaining([
+        "billing_plan",
+        "billing_usage",
+        "billing_account",
+        "billing_meter_sent",
+        "billing_meter_batch",
+      ]),
     );
 
     await env.CONTROL_PLANE.getByName(org).wipeOrg();

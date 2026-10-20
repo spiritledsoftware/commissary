@@ -42,12 +42,15 @@ const HOSTED_VARIABLES = [
   "OWNED_ORG_LIMIT",
   "ORG_RATE_LIMIT_NAMESPACE_ID",
   "ORG_RATE_LIMIT_PAYG_NAMESPACE_ID",
+  "POLAR_PRODUCT_ID",
 ] as const;
 
 const HOSTED_SECRETS = [
   "SIGN_IN_GITHUB_CLIENT_SECRET",
   "SIGN_IN_GOOGLE_CLIENT_SECRET",
   "TURNSTILE_SECRET_KEY",
+  "POLAR_ACCESS_TOKEN",
+  "POLAR_WEBHOOK_SECRET",
 ] as const;
 
 /** The `.env` value of `name`, trimmed; "" when unset. */
