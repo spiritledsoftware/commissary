@@ -2678,7 +2678,7 @@ prices each attempt, the ControlPlane counts and decides.
   ("Runtime topology") the application covers the app host only and the API host has none; on a stage with one host a
   bypass application takes the client API paths, which zone routes send to the API Worker, out of Access (but `/mcp`,
   which stays the app Worker's behind Access: "MCP clients signed in through Access" below); a preview's API Worker
-  answers on its own `workers.dev` URL, outside the preview's application. The application has Managed OAuth on.
+  answers on its own `workers.dev` URL, outside the preview's application. The application has Managed OAuth on with `ACCESS_MANAGED_OAUTH=true`.
 - The Worker verifies `Cf-Access-Jwt-Assertion` (RS256, JWKS from `https://<team>.cloudflareaccess.com/cdn-cgi/access/certs`,
   `iss` = team domain, `aud` contains the application AUD tag, `exp`/`nbf`). JWKS is cached per isolate.
 - Principal: `email` for users, `common_name` (service token client id) for service tokens. The principal replaces the
@@ -2716,15 +2716,18 @@ prices each attempt, the ControlPlane counts and decides.
   adapter over the Durable Object stubs is `state/auth-directory.ts`, an in-memory one is
   `@commissary/auth/testing`. The session lookup is the auth Worker's, reached over its RPC behind auth's `SignInSessions` port. Auth
   imports `@commissary/core`, `@commissary/contract`, `effect` and `jose` only, and tests in Node.js.
-- **MCP clients signed in through Access** (ADR 0045): the stack's Access application has Managed OAuth on
-  (`oauth_configuration`: dynamic client registration for `ACCESS_OAUTH_REDIRECT_URIS` and, with
-  `ACCESS_OAUTH_LOOPBACK_CLIENTS`, any `localhost`/`127.0.0.1` redirect; `infra/access.ts` `managedOAuth`). Access is
+- **MCP clients signed in through Access** (ADR 0045): with `ACCESS_MANAGED_OAUTH=true` (off by default while Managed
+  OAuth is in open beta, as it makes Access answer the whole app host's non-browser requests `401` instead of
+  redirecting them, #267) the stack's Access application has Managed OAuth on (`oauth_configuration`: dynamic client
+  registration for `ACCESS_OAUTH_REDIRECT_URIS` and, with `ACCESS_OAUTH_LOOPBACK_CLIENTS`, any `localhost`/`127.0.0.1`
+  redirect; `infra/access-config.ts` `managedOAuth`). Access is
   the OAuth server and resolves its opaque token into the usual `Cf-Access-Jwt-Assertion`, so the app Worker's MCP
   endpoint (`/mcp`, "Tools") authenticates such a client as it does the panel, and it acts as the person's member:
   usage and logs show the member, not the client, and cutting one client off means revoking the person's Access
   session. Alchemy's application resource sets `oauthConfiguration`, but the follow-up PUT that re-applies the cookie
-  settings would reset it, so that step sends it again and fails the deploy unless Cloudflare answers with it on. Managed
-  OAuth is in open beta and documents DCR but not CIMD. With `ACCESS_AUD` the operator turns it on (docs/DEPLOY.md).
+  settings would reset it, so that step sends it again (with the grant the application has) and fails the deploy unless
+  Cloudflare answers with it on. Managed OAuth documents DCR but not CIMD. Without it the endpoint takes the same
+  Access JWT from a `cloudflared` token or a service token. With `ACCESS_AUD` the operator turns it on (docs/DEPLOY.md).
 - Clients of the client API send API keys ("API keys" above). Scripts on the management API use Access service
   tokens (`CF-Access-Client-Id`/`CF-Access-Client-Secret` headers, or Access single-header mode via `x-api-key`, set on
   the Access application with `read_service_tokens_from_header`; the Worker only sees the resulting JWT, so no Worker
@@ -3030,14 +3033,19 @@ behind the outbound guard.
   API Worker's client gate like the model routes: a member's API key in any form the gate reads, the cross-site checks (a foreign
   `Origin` is `403`, the transport's DNS-rebinding rule) and, on Commissary Cloud, the org's request-rate ceiling. A
   `401` there carries `WWW-Authenticate: Bearer`; `resource_metadata` comes with Commissary Cloud's OAuth server (#200).
-  **Behind Access** (#251, ADR 0045): a self-hosted Commissary's app Worker mounts the same routes (`McpRoutes`) on the
-  app host, in a zone of their own (`management/zones.ts` `mcp`), for MCP clients that Access's Managed OAuth signs in.
-  Its Access gate verifies the `Cf-Access-Jwt-Assertion` as for the panel (a person, or a service token as its
-  registered role's principal), needs any role in the request's org (`global`, as for the panel's unaddressed URLs),
-  and applies the management zone's cross-site checks (no foreign `Origin` or cross-site fetch, JSON bodies); API keys
-  and `access_clients` play no part there. The member's whole reach is served, narrowed by `?toolkits=`; no tool scope
-  applies. On a stage with one host the API Worker gets no `/mcp*` zone route and the bypass application leaves `/mcp`
-  out (`infra/access.ts` `zoneRoutedPrefixes`, `CLIENT_API_PATHS`), so the app host's `/mcp` is this endpoint and the
+  **Behind Access** (#251, ADR 0045): a self-hosted Commissary's app Worker mounts the same routes on the app host at
+  `/mcp` for `global` and `/o/<slug>/mcp` for another org (Tools' `mcpRoutesAt`, from `@commissary/tools/management`;
+  `apps/app/src/http/mcp.ts`), in a zone of their own (`management/zones.ts` `mcp`, classified before the panel pages),
+  for MCP clients that Access signs in: through Managed OAuth when it is on, else with a `cloudflared` token or a
+  service token. Its Access gate verifies the `Cf-Access-Jwt-Assertion` as for the panel (a person, or a service token
+  as its registered role's principal), needs any role in the org the path addresses (`403` otherwise), and applies the
+  management zone's cross-site checks (no foreign `Origin` or cross-site fetch, JSON bodies); API keys and
+  `access_clients` play no part there, and a management key is refused before the management gate would take it
+  (`access/authenticate.ts` `authenticateMcp`): every `401` says `Sign in through Access` with
+  `WWW-Authenticate: Bearer`. The member's whole reach is served, narrowed by `?toolkits=`; no tool scope applies.
+  Service tokens are callers without a member, so they share the one upstream session per credential of such callers
+  (_Upstream sessions_ below). On a stage with one host the API Worker gets no `/mcp*` zone route and the bypass
+  application leaves `/mcp` out (`infra/access-config.ts` `zoneRoutedPrefixes`, `CLIENT_API_PATHS`), so the app host's `/mcp` is this endpoint and the
   API-key one needs an API host. Commissary Cloud's app Worker answers `/mcp` `404` like the client API; its MCP
   clients use the API host's with Commissary's own OAuth (#200). Commissary speaks the protocol itself
   rather than through the MCP TypeScript SDK or Cloudflare's `createMcpHandler` (neither is a dependency): it serves

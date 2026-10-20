@@ -67,8 +67,8 @@ the auth Worker ([Commissary Cloud](#commissary-cloud)):
 2. **`Commissary`** (`apps/app`), the app Worker: the control panel (with Commissary Cloud's sign-in page) and the
    management API, on the stage's
    domain (the app host) or `workers.dev` URL, behind Access on a self-hosted stage. It answers the client API paths
-   `404` with the address of the client API, except, on a self-hosted stage, the MCP endpoint `/mcp`, which it serves
-   behind Access to MCP clients Access signs in (ADR 0045). It binds the state Worker's Durable Objects by script name, which is also
+   `404` with the address of the client API, except, on a self-hosted stage, the MCP endpoint `/mcp` (and `/o/<slug>/mcp`), which
+   it serves behind Access to MCP clients Access signs in (ADR 0045). It binds the state Worker's Durable Objects by script name, which is also
    why Alchemy deploys it after the state Worker, and no secrets keys, which only the ControlPlane reads.
 3. **`Api`** (`apps/api`), the API Worker: the client API (`/v1`, `/v1beta`, `/v1internal`, `/openai/v1`,
    `/backend-api/codex`, `/chat/completions`, `/completions`, `/responses` and the MCP endpoint `/mcp`), `/healthz` and
@@ -369,16 +369,22 @@ the stack (`pnpm exec alchemy destroy --config stacks/github.ts --stage ci --pro
   URL), and no binding, secret or migration (upstream sessions live in each org's ControlPlane, a table created on
   first use).
 - **MCP clients through Access** (#251, ADR 0045). On a self-hosted stage the app Worker serves the app host's `/mcp`
-  behind Access, and the deploy turns on **Managed OAuth** on the stack's Access application (`ACCESS_OAUTH_REDIRECT_URIS`,
-  `ACCESS_OAUTH_LOOPBACK_CLIENTS`, [ACCESS.md](ACCESS.md#1-what-the-deploy-creates)), re-applied after every change of
-  the application like its cookie settings; the deploy fails if Cloudflare answers with Managed OAuth off, and
-  `tools/check-deploy.sh` checks that the app host's `/mcp` is the app Worker's. From that deploy on, Access answers a
-  non-browser request without a sign-in `401` (with a `WWW-Authenticate` pointing at its OAuth metadata) instead of
-  redirecting to its login page; browsers and service tokens are unaffected. **On a stage with one host** the deploy
+  (another org's at `/o/<slug>/mcp`) behind Access, for `cloudflared` tokens and service tokens, and
+  `tools/check-deploy.sh` checks that the app host's `/mcp` is the app Worker's. **Managed OAuth**, with which MCP
+  clients sign their person in by themselves, is a setting, `ACCESS_MANAGED_OAUTH` (and `ACCESS_OAUTH_REDIRECT_URIS`,
+  `ACCESS_OAUTH_LOOPBACK_CLIENTS`, [ACCESS.md](ACCESS.md#1-what-the-deploy-creates)), **off by default**: Cloudflare has
+  it in open beta, and with it on Access answers every non-browser request to the app host without a sign-in `401`
+  (with a `WWW-Authenticate` pointing at its OAuth metadata) instead of redirecting to its login page, which may break
+  `cloudflared access login`/`token` for the management API until a stage confirms it does not (#267); browsers and
+  service tokens are unaffected. Set it to `true` (in CI: the environment's `ACCESS_MANAGED_OAUTH` variable) to turn
+  it on; the deploy re-applies it after every change of the application like its cookie settings, fails if Cloudflare
+  answers with Managed OAuth off, and `tools/check-deploy.sh` then checks that the app host's `/mcp` answers `401`
+  with Access's `resource_metadata`. **On a stage with one host** the deploy
   drops the `/mcp*` zone route and takes `/mcp` out of the bypass application (after the API Worker's routes change; in
   between the app Worker, which verifies the Access JWT itself, refuses a request without one), so the app host's
   `/mcp` takes Access sign-ins and service tokens only: an MCP client that used an API key there needs an
-  [API host](#api-host), or signs in through Access. Commissary Cloud is unchanged: its app host answers `/mcp` `404`.
+  [API host](#api-host), or signs in through Access. Commissary Cloud is unchanged: its app Worker answers `/mcp` `404`,
+  and a Cloud stage with one host keeps the `/mcp*` zone route to the API Worker's endpoint for API keys.
   With your own application (`ACCESS_AUD`), see [below](#your-own-access-application-and-mcp-clients).
 
 - **Platform registry and orgs.** The `Platform` Durable Object (the list of orgs, ADR 0021) is a new class that the
@@ -468,7 +474,8 @@ the stack (`pnpm exec alchemy destroy --config stacks/github.ts --stage ci --pro
 
 ### Your own Access application and MCP clients
 
-With `ACCESS_AUD` the deploy changes nothing in Access. For MCP clients to sign in at the app host's `/mcp`:
+With `ACCESS_AUD` the deploy changes nothing in Access. The app host's `/mcp` takes `cloudflared` tokens and service
+tokens as it is. For MCP clients to sign in there through Managed OAuth (why it is off by default: [above](#operations)):
 
 1. In the Cloudflare dashboard, **Zero Trust** > **Access controls** > **Applications**, edit your application for the
    app host, open **Advanced settings** and turn on **Managed OAuth**.
@@ -482,8 +489,8 @@ With `ACCESS_AUD` the deploy changes nothing in Access. For MCP clients to sign 
 3. On a stage with one host, remove `/mcp` from your bypass application of the client API paths, if you added it for
    #197: the app host's `/mcp` must stay behind Access. The deploy already dropped the `/mcp*` zone route.
 
-`ACCESS_OAUTH_REDIRECT_URIS` and `ACCESS_OAUTH_LOOPBACK_CLIENTS` are refused with `ACCESS_AUD`: set them on your
-application instead.
+`ACCESS_MANAGED_OAUTH`, `ACCESS_OAUTH_REDIRECT_URIS` and `ACCESS_OAUTH_LOOPBACK_CLIENTS` are refused with `ACCESS_AUD`:
+set them on your application instead.
 
 ## Cutover to the Commissary stacks
 

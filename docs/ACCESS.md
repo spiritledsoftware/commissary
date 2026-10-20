@@ -28,7 +28,8 @@ settings in `.env` (template: `.env.example`):
 | `ACCESS_ALLOW_SERVICE_TOKEN_IDS`                              | Adds service tokens managed elsewhere (by token ID, e.g. CI's) to the **Service Auth** policy                                         |
 | `ACCESS_SESSION_DURATION`                                     | Session duration of the application (default `24h`)                                                                                   |
 | `ACCESS_SERVICE_TOKEN_HEADER`                                 | Optional single-header service tokens (section 5)                                                                                     |
-| `ACCESS_OAUTH_REDIRECT_URIS`, `ACCESS_OAUTH_LOOPBACK_CLIENTS` | **Managed OAuth** on the application, for MCP clients: the redirect URIs it allows and whether loopback clients may register (below)  |
+| `ACCESS_MANAGED_OAUTH` (off by default)                       | **Managed OAuth** on the application, for MCP clients (below)                                                                         |
+| `ACCESS_OAUTH_REDIRECT_URIS`, `ACCESS_OAUTH_LOOPBACK_CLIENTS` | With Managed OAuth: the redirect URIs it allows and whether loopback clients may register (below)                                     |
 | `ACCESS_TEAM_DOMAIN`                                          | Worker variable (issuer and JWKS host); your Zero Trust team name                                                                     |
 | `PLATFORM_ADMIN_EMAILS`, `PLATFORM_ADMIN_SERVICE_TOKENS`      | Worker variables: platform admins (token names from `ACCESS_SERVICE_TOKENS` are replaced by their Client IDs)                         |
 
@@ -38,10 +39,16 @@ subrequests (the first line of defence against cross-site request forgery on the
 Alchemy application resource does not manage these fields and its updates are PUT-style, so a follow-up step re-applies them
 after every change of the application: do not edit them in the dashboard.
 
-**MCP clients through Access** (ADR 0045). The deploy turns on the application's **Managed OAuth**: Access acts as the
-OAuth server of MCP clients (discovery, dynamic client registration and PKCE), and a signed-in client's requests reach
-the app Worker with the person's `Cf-Access-Jwt-Assertion`, as the panel's do. The app Worker serves the MCP endpoint
-`/mcp` on the app host for them (§4). Settings, re-applied after every change of the application like the cookie's:
+**MCP clients through Access** (ADR 0045). The app Worker serves the MCP endpoint at the app host's `/mcp` (and another
+org's at `/o/<slug>/mcp`) behind the application (§4), for any request that reaches it with a `Cf-Access-Jwt-Assertion`,
+as the panel's do: a service token's, or a person's token from `cloudflared access token -app=https://<app host>` sent in
+`cf-access-token` ([CLIENTS.md](CLIENTS.md)). With `ACCESS_MANAGED_OAUTH=true` the deploy also turns on the
+application's **Managed OAuth**: Access acts as the OAuth server of MCP clients (discovery, dynamic client registration
+and PKCE), so a client signs its person in by itself. Settings, re-applied after every change of the application like
+the cookie's:
+
+- `ACCESS_MANAGED_OAUTH`: `true` turns Managed OAuth on; off by default (below). The two settings that follow apply only
+  with it on, and are refused otherwise.
 
 - `ACCESS_OAUTH_REDIRECT_URIS`: the redirect URIs a dynamically registered client may use, comma separated, `https:` (a
   path may end in `/*`) or a client's own scheme matched exactly. Default: the hosted clients of
@@ -54,9 +61,15 @@ Access's tokens last 15 minutes and are refreshed after Access checks its policy
 Allow policy cuts their MCP clients off at the next refresh; revoking their Access session does at once. Managed OAuth is
 in open beta, and Access documents dynamic client registration but not Client ID Metadata Documents (CIMD): a client
 that only registers through CIMD cannot sign in this way and uses an API key on the API host. The deploy fails if
-Cloudflare answers with Managed OAuth off. With Managed OAuth on, Access answers a non-browser client without a sign-in
-with `401` and a `WWW-Authenticate` header pointing at its OAuth metadata, where it used to redirect to its login page;
-browsers still get the login page, and service tokens work as before.
+Cloudflare answers with Managed OAuth off. A grant set on the application in the dashboard (token lifetime, session
+duration) is kept.
+
+Why it is off by default: Managed OAuth is in open beta, and it changes how Access answers the **whole app host**, not just
+`/mcp`. A non-browser client without a sign-in gets `401` and a `WWW-Authenticate` header pointing at Access's OAuth
+metadata where it used to be redirected to the login page; browsers still get the login page, and service tokens work as
+before. That may break `cloudflared access login`/`token -app=https://<app host>`, which [CLIENTS.md](CLIENTS.md) and
+[MIGRATION.md](MIGRATION.md) use for the management API, until a stage confirms it does not (issue #267). Without it the
+endpoint works all the same for service tokens and `cloudflared` tokens.
 
 **The client API leaves Access.** The client API is the API Worker's (ADR 0030), which no Access application protects;
 the app Worker serves everything else (the panel, the management API, the OAuth callbacks), each with a `404` naming
@@ -352,12 +365,15 @@ characters; a missing key is refused everywhere.
    show familiar errors). On a client API route of an org that takes API keys only, an Access sign-in alone answers 401
    `Missing API key` too (`Invalid API key` when another credential came with it).
 7. **The app host's `/mcp`** (ADR 0045, self-hosted only): the app Worker verifies the Access JWT as for the panel (an MCP
-   client signed in through Managed OAuth, a person's browser session, or a service token) and needs any role in the
-   org; an unaddressed request is for `global`, like the panel's unaddressed URLs, so a member of another org uses an
-   API key on the API host. API keys are not read there, nor is `access_clients` (it governs the client API). A person
-   is served as their member, with their whole reach narrowed by `?toolkits=`, and a service token as its registered
-   role's principal; no tool scope applies. A refusal's `401` carries `WWW-Authenticate: Bearer`, though Access
-   answers a client without a sign-in before the Worker does. On Commissary Cloud the app Worker answers `/mcp` `404`.
+   client signed in through Managed OAuth, a `cloudflared` token, a person's browser session, or a service token) and
+   needs any role in the org. `/mcp` is for `global`, like the panel's unaddressed URLs, and `/o/<slug>/mcp` for the org
+   with that slug, so a member of another org adds its slug; a principal with no role in the org it addresses gets 403.
+   API keys are not read there, nor is `access_clients` (it governs the client API), and a management key is refused
+   (401): it is for the management API, not the MCP endpoint. A person is served as their member, with their whole
+   reach narrowed by `?toolkits=`, and a service token as its registered role's principal; no tool scope applies.
+   Every `401` there says `Sign in through Access` and carries `WWW-Authenticate: Bearer`, though with Managed OAuth on
+   Access answers a client without a sign-in before the Worker does. On Commissary Cloud the app Worker answers `/mcp`
+   `404`.
 
 Outside the client API the Worker trusts only the signed JWT, so requests that skip Access (e.g. a `workers.dev` URL enabled
 by hand) are rejected.

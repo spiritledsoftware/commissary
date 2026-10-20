@@ -60,7 +60,7 @@ Commissary Cloud's hostname for signing in, under the base domain (`auth.<base d
 _Avoid_: login domain, SSO host
 
 **App host**:
-The hostname of the control panel, the sign-in _page_ and the management API, and on a self-hosted Commissary of the MCP endpoint behind Access; with no API host it still serves the rest of the client API, through the API Worker. The base domain itself or a host under it.
+The hostname of the control panel, the sign-in _page_ and the management API, and on a self-hosted Commissary of the MCP endpoint behind Access (`/mcp`, another org's at `/o/<slug>/mcp`); with no API host it still serves the rest of the client API, through the API Worker. The base domain itself or a host under it.
 _Avoid_: dashboard domain, panel host
 
 **Base domain**:

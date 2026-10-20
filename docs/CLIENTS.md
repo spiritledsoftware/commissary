@@ -161,8 +161,8 @@ const ai = new GoogleGenAI({
 
 Commissary's MCP endpoint serves the tools of the toolkits you may use as one MCP server (Streamable HTTP; clients of
 the 2026-07-28 revision and of the 2025 handshake alike). Its tools are named `<toolkit>_<tool>`: every tool of your own
-private toolkits, and of the org's toolkits that take your own credential. A toolkit's shared credential needs a grant
-from an org admin (not there yet), so its tools are not listed. Narrow the list to some toolkits with `?toolkits=`, by
+private toolkits, of the org's toolkits that take your own credential, and of the org toolkits' shared credentials an
+org admin granted you (a tool grant: all of a toolkit's tools, its read tools or named ones). Narrow the list to some toolkits with `?toolkits=`, by
 the names the panel shows: `…/mcp?toolkits=github,linear` (an unknown name narrows to nothing; a tool left out answers
 as an unknown tool). When a tool needs your own credential for its toolkit and you have not connected one, the call
 answers with a link to the panel's connect page instead: a client of the 2026-07-28 revision that supports URL
@@ -171,13 +171,16 @@ elicitation offers to open it, any other client shows it in the tool's result. C
 A self-hosted Commissary serves the endpoint at two addresses (ADR 0045):
 
 - **Signed in through Access**, for clients a person uses: `https://commissary.example.com/mcp` on the **app host** (the
-  panel's address). The client signs in through Cloudflare Access's OAuth (Managed OAuth): it opens your browser on
-  the Access login, then acts as you, with every tool you may use in the org `global` (the first org; a member of
-  another org uses an API key). Nothing to copy or rotate; your Access session's policy is checked again every 15
-  minutes, and removing you from Access cuts the client off. Usage shows you, not the client, and there is no tool
-  scope: for a narrower client, use a key. Access service tokens (`CF-Access-Client-Id`/`-Secret` headers) work there
-  too, as the token's role in the org. A client that registers only through Client ID Metadata Documents (CIMD), which
-  Access does not document yet, cannot sign in this way: give it a key.
+  panel's address) for the org `global` (the first org), and `https://commissary.example.com/o/<slug>/mcp` for another
+  org. The client acts as you, with every tool you may use in that org. With Managed OAuth on the deployment's Access
+  application (`ACCESS_MANAGED_OAUTH=true`, [ACCESS.md](ACCESS.md#1-what-the-deploy-creates); off by default) the
+  client signs in by itself through Cloudflare Access's OAuth: it opens your browser on the Access login. Nothing to
+  copy or rotate; your Access session's policy is checked again every 15 minutes, and removing you from Access cuts
+  the client off. Without Managed OAuth, give the client an Access token as a header instead (below). Usage shows
+  you, not the client, and there is no tool scope: for a narrower client, use a key. Access service tokens
+  (`CF-Access-Client-Id`/`-Secret` headers) work there too, with or without Managed OAuth, as the token's role in the
+  org. API keys and management keys are not taken there. A client that registers only through Client ID Metadata
+  Documents (CIMD), which Access does not document yet, cannot sign in through Managed OAuth: give it a key.
 - **With an API key**, for headless clients and scripts: `https://api.example.com/mcp` on the **API host**, with the same
   key as the rest of the client API as a static bearer header. Without a valid key it answers `401` with
   `WWW-Authenticate: Bearer`; it offers no OAuth sign-in, so a client that starts one has no key configured. A
@@ -186,6 +189,9 @@ A self-hosted Commissary serves the endpoint at two addresses (ADR 0045):
 On Commissary Cloud the endpoint is on the API host only, with API keys.
 
 ### Signed in through Access (app host)
+
+These sign in through Managed OAuth, which needs `ACCESS_MANAGED_OAUTH=true` (without it, see "Without Managed OAuth"
+below). For an org other than `global`, use `https://commissary.example.com/o/<slug>/mcp` in place of the URL.
 
 **Claude** (claude.ai, Desktop): **Settings** > **Connectors** > **Add custom connector**, URL
 `https://commissary.example.com/mcp`, then **Connect** and sign in through Access. Claude's callback
@@ -216,6 +222,24 @@ url = "https://commissary.example.com/mcp"
 Loopback clients (Claude Code, Codex, Cursor's desktop app, pi) need `ACCESS_OAUTH_LOOPBACK_CLIENTS` on, the default; a
 hosted client whose callback is not in `ACCESS_OAUTH_REDIRECT_URIS` is refused by Access
 ([ACCESS.md](ACCESS.md#1-what-the-deploy-creates)).
+
+**Without Managed OAuth**, a client sends an Access token itself: a person's from `cloudflared access login` (it
+lasts as long as the Access session, so refresh it with `cloudflared access token` when it expires), or a service
+token's headers. Claude Code, for example:
+
+```bash
+cloudflared access login https://commissary.example.com
+claude mcp add --transport http commissary https://commissary.example.com/mcp \
+  --header "cf-access-token: $(cloudflared access token -app=https://commissary.example.com)"
+```
+
+or, with a service token (`.alchemy/access-service-tokens.json`, [ACCESS.md](ACCESS.md#1-what-the-deploy-creates)):
+
+```bash
+claude mcp add --transport http commissary https://commissary.example.com/mcp \
+  --header "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" \
+  --header "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET"
+```
 
 ### With an API key (API host)
 
