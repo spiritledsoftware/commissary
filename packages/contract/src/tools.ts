@@ -21,8 +21,11 @@ import { GrantSubject } from "./grants.ts";
 
 const optional = Schema.optionalKey;
 
-/** What a toolkit is built from; this version builds remote MCP servers (Streamable HTTP) only. */
-export const ToolkitKind = Schema.Literals(["mcp"]);
+/**
+ * What a toolkit is built from: a remote MCP server (Streamable HTTP), or, for a toolkit Commissary provides itself
+ * (`built_in`), the kind of service behind it: `browser`, the browser toolkit (ADR 0039).
+ */
+export const ToolkitKind = Schema.Literals(["mcp", "browser"]);
 
 export type ToolkitKind = typeof ToolkitKind.Type;
 
@@ -111,9 +114,16 @@ export const ToolkitView = Schema.Struct({
   name: Schema.String,
   /**
    * The MCP server's URL. A member who only reads an org toolkit sees its query parameters' values masked (`***`), their
-   * names kept; managers and the org export get it whole. A key belongs in a `query` credential, not in the source.
+   * names kept; managers and the org export get it whole. A key belongs in a `query` credential, not in the source. A
+   * browser toolkit's is its browser provider (`browser-run`).
    */
   source: Schema.String,
+  /**
+   * A toolkit Commissary provides itself (the browser toolkit, `id` and `name` `browser`): present while the deployment
+   * has what it runs on, reached under tool grants (no default grant), its tools' overrides as any toolkit's; it cannot
+   * be renamed, edited, given a credential, refreshed or removed (`403 built_in`). Its times are the epoch.
+   */
+  built_in: optional(Schema.Literal(true)),
   /** A private toolkit, the caller's own. */
   private: Schema.Boolean,
   accepts: CredentialsAccepted,
@@ -309,7 +319,8 @@ export class ToolsGroup extends HttpApiGroup.make("tools").add(
   }),
   /**
    * Rename, change which credentials an org toolkit accepts, or price its calls; `409 conflict` when the revision is
-   * stale, `422 invalid` for a price on a private toolkit or one that is not a whole number of micro-USD, 0 or more.
+   * stale, `422 invalid` for a price on a private toolkit or one that is not a whole number of micro-USD, 0 or more,
+   * `403 built_in` for a built-in toolkit (also on removing it, and on connecting or removing its credential).
    */
   HttpApiEndpoint.patch("update", "/toolkits/:id", {
     ...idParam,

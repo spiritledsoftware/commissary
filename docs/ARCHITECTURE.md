@@ -127,16 +127,20 @@ to `packages/billing/src/`), Tools' as `tools/...` (relative to `packages/tools/
     src/api.ts                for the API Worker: the MCP endpoint (/mcp), its cron task (tool-list-refresh), ToolsEnv
     src/management.ts         for the app Worker: management routes, role-table entries, org-deletion step, its section
                               of the org export
-    src/state.ts              for the state Worker: ToolsPart, its part of the ControlPlane
+    src/state.ts              for the state Worker: ToolsPart, its part of the ControlPlane, and the built-in toolkits'
+                              providers from its env (builtInProviders, ToolsPartEnv: the optional browser binding)
     src/control-plane-part.ts the ControlPlane's Tools part (toolkits, their credentials, tool lists, overrides, tool
                               grants, the endpoint's list and calls, upstream sessions)
-    src/toolkits/             storage, names, the flat list of unique full names, static secrets
+    src/toolkits/             storage, names, the flat list of unique full names, static secrets, built-in toolkits
+    src/browser/              the browser toolkit (#212): its Quick Action tools, the browser-provider interface and
+                              its Browser Run adapter
     src/grants/               tool grants (#198): their storage and what a member's grants give
     src/mcp/                  the MCP client that lists and calls a remote MCP server's tools, and Commissary's MCP
                               endpoint (protocol.ts, endpoint.ts)
     src/management/           Tools' /v9/management routes (toolkits, tool grants)
     test/                     Node.js tests (test/unit/) and workerd tests against a test-only ControlPlane
-                              (test/worker.ts) and fake MCP servers; test/testing.ts is ./testing
+                              (test/worker.ts), fake MCP servers and a fake Browser Run binding; test/testing.ts is
+                              ./testing
   packages/contract/          @commissary/contract: the management API's Effect HttpApi schemas and addressing (browser-safe)
   packages/core/              @commissary/core: the foundation without bindings (org model, shared errors, hashing,
                               log-safe helpers, management replies, route services, the execution context, the
@@ -2468,9 +2472,10 @@ Anyone else gets `403 platform_admin_required` on the org routes it may not use.
 
 `deployment` (ADR 0043) is on every deployment: `hosted` is `isHosted`, `browser` is true exactly when the deployment has a
 Browser Run binding, `computer` exactly when it has the sandbox's container binding, each read from `env` at request time.
-**The two binding checks are `hasBrowserBinding` and `hasComputerBinding` in `apps/app/src/management/deployment.ts`**;
-neither binding exists yet, so both return `false`, and #212 and #223 wire theirs in there (and add the binding to
-`AppBindings`). The panel reads `me.deployment.hosted` for the mode; `browser` and `computer` are exposed for #216, #217
+**The two binding checks are `hasBrowserBinding` and `hasComputerBinding` in `apps/app/src/management/deployment.ts`**:
+the browser's is wired in (#212: the app Worker binds Browser Run, `BROWSER` in `AppBindings`, exactly when the state
+Worker does, unless `COMMISSARY_BROWSER=off`, and reads only its presence); the computer's binding does not exist yet,
+so its check returns `false` until #223 wires it in there. The panel reads `me.deployment.hosted` for the mode; `browser` and `computer` are exposed for #216, #217
 and #225 and unused so far.
 
 Routes of the addressed org (`/org`, `/export`) and the account route (`DELETE /me`), all in `org-routes.ts` (ADR 0027,
@@ -3004,7 +3009,8 @@ usage records and Spend limits of tool calls (#199) are here. The package
 `tool_grants`, dropped by `wipe()`), its view of `env` (`ToolsBindings`) adds the Platform registry and the app
 host for the endpoint's connect links, and `USAGE`, the D1 database its tool calls' records go into (Models' records
 go there too), and it reaches MCP servers from the ControlPlane through the global `fetch`
-behind the outbound guard.
+behind the outbound guard. The part's one binding is optional: Browser Run's `BROWSER` on the state Worker
+(`ToolsPartEnv`, `builtInProviders`), which the browser toolkit runs on (_Built-in toolkits_ below).
 
 - **What Tools shares with Models**: the ownership rules (`Scope`, `FULL_ACCESS`, `accessTo`: who reaches a shared or a
   private thing), which lived in `models/credentials/ownership.ts`. They moved into `@commissary/auth`
@@ -3013,7 +3019,7 @@ behind the outbound guard.
   behind them, so an RPC would add a round trip and a dependency between the areas' parts for nothing. Sealing is the
   org-wide base's already (`core.secrets`). Tools imports nothing of Models (its manifest does not name it, so the lint
   rule refuses it).
-- **Toolkits** (`tools/toolkits/store.ts`): a kind (`mcp`), a source (the MCP server's URL), a name and which
+- **Toolkits** (`tools/toolkits/store.ts`): a kind (`mcp`; `browser` for the built-in browser toolkit, below), a source (the MCP server's URL), a name and which
   credentials it accepts (`shared`, `private` or `both`; a private toolkit takes its owner's only). An org admin adds
   org toolkits; any member adds private toolkits (a plain member's toolkit is always private) while the org setting
   `membership.private_toolkits` allows them (#198, ADR 0038). The setting mirrors `private_credentials`: on for
@@ -3192,6 +3198,61 @@ behind the outbound guard.
 - **Who a call is**: on the app host a call is the member's Access principal (`user:<email>`), as a panel request is,
   so what records calls (usage, logs) shows the member, not the MCP client; Access's tokens carry no client. A static API
   key on the API host is the key and its member.
+- **Built-in toolkits** (`tools/toolkits/built-in.ts`, #212, ADR 0039, ADR 0041): toolkits Commissary provides itself,
+  so far the **browser toolkit**. One exists exactly when the deployment has what it runs on: the state Worker's
+  composition hands the Tools part the providers its env's bindings give (`new ToolsPart(ctx, core,
+  builtInProviders(env))`; a `browser` binding gives Browser Run). Without the binding (`COMMISSARY_BROWSER=off`,
+  ADR 0043) the toolkit is missing everywhere: not in toolkit lists, the MCP endpoint's list or calls (an unknown tool),
+  the export or the grants list, and a grant naming it is refused like one of a toolkit the org lacks; nothing else
+  changes. A built-in toolkit is not stored: the part lists it
+  beside the stored toolkits as an org toolkit with a fixed id, its name (`browser`, never a `tk_…` id), kind `browser`,
+  source its browser provider (`browser-run`), `accepts: "shared"`, `built_in: true`, revision 1 and the epoch as its
+  times, and a tool list from code (a `BuiltInToolkit`, `tools/toolkits/toolkit.ts`, beside the rows' `StoredToolkit`
+  of kind `mcp`; what only a stored one takes goes through the part's one resolver, `#stored`). Its shared credential is Commissary's own binding, shown as kind `none`, so tool
+  grants decide who reaches it, and there is no default grant: an org admin grants it like any org toolkit (all tools,
+  read tools or named ones, stable ids `browser:<tool>`). A call is recorded in usage like any tool call (#199, on the
+  shared credential) and charged a tool override's price, if an org admin set one. Overrides (hide, rename, re-describe, reclassify) and grants on
+  it are stored by its id in the usual tables, kept while the binding is absent and applied again when it is back.
+  Renaming it, changing what it accepts, connecting or removing a credential, refreshing its list and removing it answer
+  `403 built_in`; while it exists its name is taken (`409 name_taken`) for org and private toolkits alike, so a member
+  cannot add a private copy (and adding a toolkit takes an MCP URL anyway). A stored toolkit, org or private, named
+  `browser` from before the deployment had the binding is renamed once when the part starts with it, to the first
+  `browser_<n>` from 2 that no toolkit of the org has, by `commissary` (its revision moves on). Its tools hold their full names against a
+  stored toolkit's (they count as seen first). API keys' tool scopes (ADR 0036) do not exist yet; `?toolkits=browser`
+  narrows to it as to any toolkit.
+  - **The browser toolkit's tools** (`tools/browser/toolkit.ts`): Browser Run's stateless Quick Actions, all of class
+    `read` (Commissary sets its own tools' class: `readOnlyHint`): `browser_markdown`, `browser_html`,
+    `browser_screenshot`, `browser_pdf`, `browser_links`, `browser_scrape` and `browser_accessibility_tree`. Each takes a
+    URL (`http` or `https`; the browser reaches the open web, ADR 0044, so no outbound guard) and the Browser Run options
+    that make sense for a client, under Browser Run's names (`waitUntil`, `timeout`, `waitForSelector`,
+    `waitForTimeout`, `viewport`, `userAgent`, `rejectResourceTypes`, `javaScriptEnabled`, and per action the
+    screenshot's `selector`, `fullPage`, `type`, `quality`, the PDF's `format` (`letter`, `legal`, `tabloid`,
+    `ledger`, `a0` to `a6`), `landscape`, `printBackground`, `scale`,
+    `pageRanges`, the links' `visibleLinksOnly`, `excludeExternalLinks`, the scrape's `selectors`, the tree's `root`,
+    `interestingOnly`); each is one record of `QUICK_ACTIONS` (its description and the Effect schema of its arguments,
+    which is the tool's input schema, `Schema.toJsonSchemaDocument`). Left out:
+    what would run script in the page (`addScriptTag`, ADR 0039), carry sign-ins (`cookies`, `authenticate`, extra
+    headers: profiles and handoff are #213's), render given HTML, pick a backend, and the cache (`cacheTTL` is always
+    `0`). A result is a text content (Markdown, HTML, or JSON for links, scraped elements and the tree), an `image` (a
+    screenshot) or an embedded `resource` with a `blob` (a PDF, its `uri` the page's URL), at most 10 MiB (a larger
+    declared length is refused unread; a body is read in chunks and cancelled as soon as it passes the limit), and is
+    kept nowhere. Invalid arguments and Browser Run's refusals (its own `errors` messages, at most 500 characters) are tool
+    results with `isError`, logged as a warning with the provider, action and status only. Browser Run's `/json` (an AI
+    model under the deployment's account) is left out (#212); so is **crawling**: Browser Run's `/crawl` is on its REST
+    API only, which needs an account API token with "Browser Run - Edit", not the binding, so the crawl start, result
+    and cancel tools are a follow-up. Browser time in usage records and its price are #214; sessions are #213.
+  - **Browser providers** (`tools/browser/provider.ts`, ADR 0041): the toolkit reaches its browser only through the
+    `BrowserProvider` interface, one method so far, `quickAction(request)`, whose request is the action and its decoded
+    arguments (provider-neutral) and whose answer is text, JSON or a file, or a `BrowserProviderError` whose message is
+    told to the model. Browser Run (`tools/browser/browser-run.ts`, `browserRun(binding)`) is the one adapter: each
+    action is one `quickAction()` call of the binding (no API token), within three minutes, from one record per Quick
+    Action keyed like `QUICK_ACTIONS` (the binding's action, its options built from the arguments, its answer's
+    decoder). A later provider
+    (Browserbase, Kernel) is another adapter plus a catalog entry: a stored toolkit of kind `browser` whose source names
+    the provider and whose shared (or a member's private) credential is the org's key for it, serving the same tools;
+    none is built. The sessions of #213 join the same interface, and the sandbox toolkit's sandbox provider (#223)
+    follows the pattern. The tests run the toolkit over a fake binding and over a fake second provider, which serves
+    the same tools.
 - **Members and orgs**: a member who leaves takes their private toolkits, their private credentials on org toolkits,
   the upstream sessions of those and the tool grants that named them (`memberLeft`); a deleted team takes its tool
   grants (`teamDeleted`), and a removed toolkit its own (`tool_grants` is keyed by `toolkit_id` like the other

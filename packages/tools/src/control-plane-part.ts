@@ -13,6 +13,7 @@ import type {
   RemovedToolOverride,
   SetToolOverride,
   ToolkitCredentialView,
+  ToolkitKind,
   ToolkitSecret,
   ToolkitsList,
   ToolkitView,
@@ -45,13 +46,20 @@ import {
 } from "./toolkits/resolve.ts";
 import {
   freshToolkitId,
-  type Toolkit,
+  type StoredTool,
   type ToolkitCredential,
   ToolkitStore,
   TOOLS_TABLES,
 } from "./toolkits/store.ts";
 import { priceRefusal } from "./toolkits/price.ts";
 import { secretRefusal } from "./toolkits/secret.ts";
+import {
+  type BuiltIn,
+  type BuiltInProviders,
+  builtInToolkits,
+  COMMISSARY,
+} from "./toolkits/built-in.ts";
+import type { StoredToolkit, Toolkit } from "./toolkits/toolkit.ts";
 
 /** Why a call of the part was refused; the routes answer each with its status. */
 export type ToolsErrorCode =
@@ -64,7 +72,8 @@ export type ToolsErrorCode =
   | "private_credentials_unavailable"
   | "private_toolkits_unavailable"
   | "no_credential"
-  | "tool_list_failed";
+  | "tool_list_failed"
+  | "built_in";
 
 export type ToolsResult<A> =
   | { readonly ok: true; readonly value: A }
@@ -75,6 +84,11 @@ const refuse = (error: ToolsErrorCode, message: string) => ({ ok: false, error, 
 const ok = <A>(value: A): ToolsResult<A> => ({ ok: true, value });
 
 const NOT_FOUND = refuse("not_found", "toolkit not found");
+
+const BUILT_IN = refuse(
+  "built_in",
+  "the toolkit is Commissary's own: it cannot be renamed, edited, given a credential, refreshed or removed",
+);
 
 const iso = (at: number): string => new Date(at).toISOString();
 
@@ -137,7 +151,7 @@ export interface RefreshSummary {
 /** What the export holds of a toolkit: no secrets. */
 export interface ToolkitExport {
   readonly name: string;
-  readonly kind: "mcp";
+  readonly kind: ToolkitKind;
   readonly source: string;
   readonly private: boolean;
   readonly accepts: CredentialsAccepted;
@@ -266,19 +280,26 @@ const accepts = (toolkit: Pick<Toolkit, "owner" | "accepts">, slot: CredentialSl
  * Who may do what follows `@commissary/auth`'s ownership rules: an org toolkit is read by every member and managed by
  * org admins; a private toolkit is its owner's, and an org admin only sees that it exists (and may remove it). Methods
  * exchange plain data only.
+ *
+ * The built-in toolkits (`toolkits/built-in.ts`, #212) are listed beside the stored ones as org toolkits, from the
+ * providers the deployment's bindings give (`builtInProviders`): their tool grants and overrides are stored like any
+ * toolkit's, while they themselves cannot be edited or removed.
  */
 export class ToolsPart extends RpcTarget implements ControlPlanePart {
   readonly #ctx: DurableObjectState;
   readonly #core: OrgCore;
   readonly #store: ToolkitStore;
   readonly #grants: ToolGrantStore;
+  readonly #builtIns: ReadonlyArray<BuiltIn>;
 
-  constructor(ctx: DurableObjectState, core: OrgCore) {
+  constructor(ctx: DurableObjectState, core: OrgCore, providers: BuiltInProviders = {}) {
     super();
     this.#ctx = ctx;
     this.#core = core;
+    this.#builtIns = builtInToolkits(providers);
     this.#store = new ToolkitStore(ctx.storage.sql, core.secrets, (body) => core.transaction(body));
     this.#grants = new ToolGrantStore(ctx.storage.sql, (body) => core.transaction(body));
+    this.#yieldBuiltInNames();
   }
 
   // --- the org-wide base's calls (`ControlPlanePart`, `@commissary/state`) ------------------------------------
@@ -356,7 +377,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     const toolkits: Array<ToolkitView> = [];
     const others: Array<LimitedToolkitView> = [];
 
-    for (const toolkit of this.#store.toolkits()) {
+    for (const toolkit of this.#toolkits()) {
       const access = reach(toolkit, viewer);
 
       if (access === "limited") others.push(this.#limitedView(toolkit));
@@ -460,7 +481,10 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     },
     by: string,
   ): ToolsResult<ToolkitView> {
-    const toolkit = this.#managed(id, viewer);
+    const managed = this.#managed(id, viewer);
+
+    if (!managed.ok) return managed;
+    const toolkit = this.#stored(managed.value);
 
     if (!toolkit.ok) return toolkit;
     const current = toolkit.value;
@@ -495,7 +519,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
   /** Removes a toolkit with all it holds; an org admin may remove a member's private toolkit too. */
   removeToolkit(viewer: Scope, id: string, revision: number): ToolsResult<{ readonly id: string }> {
-    const toolkit = this.#store.toolkit(id);
+    const toolkit = this.#toolkit(id);
 
     if (toolkit === undefined) return NOT_FOUND;
     const access = reach(toolkit, viewer);
@@ -505,8 +529,15 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     if (access === "read")
       return refuse("forbidden", "only an org admin can remove an org toolkit");
 
-    if (toolkit.revision !== revision)
-      return refuse("conflict", `the toolkit is at revision ${toolkit.revision}, not ${revision}`);
+    const stored = this.#stored(toolkit);
+
+    if (!stored.ok) return stored;
+
+    if (stored.value.revision !== revision)
+      return refuse(
+        "conflict",
+        `the toolkit is at revision ${stored.value.revision}, not ${revision}`,
+      );
 
     this.#core.transaction(() => {
       this.#store.deleteToolkit(id);
@@ -581,13 +612,19 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     viewer: Viewer,
     id: string,
     slot: CredentialSlot,
-  ): ToolsResult<{ readonly toolkit: Toolkit; readonly owner: string | undefined }> {
-    const toolkit = this.#store.toolkit(id);
+  ): ToolsResult<{ readonly toolkit: StoredToolkit; readonly owner: string | undefined }> {
+    const found = this.#toolkit(id);
 
-    if (toolkit === undefined) return NOT_FOUND;
-    const access = reach(toolkit, viewer);
+    if (found === undefined) return NOT_FOUND;
+    const access = reach(found, viewer);
 
     if (access === "none" || access === "limited") return NOT_FOUND;
+
+    // A built-in toolkit's credential is Commissary's own binding.
+    const stored = this.#stored(found);
+
+    if (!stored.ok) return stored;
+    const toolkit = stored.value;
 
     if (slot === "shared") {
       if (toolkit.owner !== undefined)
@@ -701,12 +738,17 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     id: string,
     policy: OutboundPolicy,
   ): Promise<ToolsResult<ToolsList>> {
-    const toolkit = this.#store.toolkit(id);
+    const toolkit = this.#toolkit(id);
 
     if (toolkit === undefined) return NOT_FOUND;
     const access = reach(toolkit, viewer);
 
     if (access === "none" || access === "limited") return NOT_FOUND;
+
+    // A built-in toolkit's tool list is Commissary's own, never built from a source.
+    const stored = this.#stored(toolkit);
+
+    if (!stored.ok) return stored;
 
     // A shared credential the toolkit no longer accepts is not used, so it does not make the build an admin's.
     if (
@@ -822,7 +864,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
    * org's and its owner's (none while the org does not serve private toolkits).
    */
   listTools(viewer: Scope, id: string): ToolsResult<ToolsList> {
-    const toolkit = this.#store.toolkit(id);
+    const toolkit = this.#toolkit(id);
 
     if (toolkit === undefined) return NOT_FOUND;
     const access = reach(toolkit, viewer);
@@ -872,6 +914,9 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
    * A priced call (#199) is checked against the Spend limits it would count toward before the upstream is reached, and
    * refused when one has no room; a free call goes ahead whatever the limits. It is charged once the upstream answered
    * with a result, an `isError` one included (the upstream did the work); a call that failed upstream is not.
+   *
+   * A built-in toolkit's tool (#212) is called on its provider, through Commissary's own binding (the toolkit's shared
+   * credential, which a grant gives), and recorded and charged the same way; it always answers a result.
    */
   async callTool(viewer: Viewer, call: ToolCall, policy: OutboundPolicy): Promise<ToolCallOutcome> {
     const reached = this.#reachable(viewer).find(
@@ -883,15 +928,27 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     if (reached === undefined) return { outcome: "unknown" };
     const { tool, asMember, granted } = reached;
     const toolkit = tool.toolkit;
+    const builtIn = this.#builtIn(toolkit.id);
 
     const own =
+      builtIn === undefined &&
       asMember &&
       viewer.member !== undefined &&
       this.#store.credential(toolkit.id, viewer.member) !== undefined;
 
-    // The member's own credential, or else the shared one a grant gives them.
+    // The member's own credential, or else the shared one a grant gives them; a built-in toolkit's shared credential
+    // is Commissary's own binding, which only a grant reaches (it accepts no private credential).
     const owner = own ? viewer.member : undefined;
     const secret = own || granted ? this.#store.secret(toolkit.id, owner) : undefined;
+
+    const serving =
+      builtIn !== undefined
+        ? granted
+          ? { builtIn }
+          : undefined
+        : secret === undefined
+          ? undefined
+          : { secret };
 
     const usage = (credential: CredentialSlot | undefined, costMicros = 0): CallUsage => ({
       toolkitId: toolkit.id,
@@ -901,7 +958,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       costMicros,
     });
 
-    if (secret === undefined)
+    if (serving === undefined)
       return {
         outcome: "connect",
         toolkit: { id: toolkit.id, name: toolkit.name },
@@ -926,13 +983,24 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       if (refusal !== undefined) return { outcome: "refused", refusal, usage: usage(slot) };
     }
 
+    // A built-in tool always answers a result, a failure as one with `isError`; it is charged like an upstream's.
+    if ("builtIn" in serving) {
+      const result = await Effect.runPromise(
+        serving.builtIn.call(tool.upstreamName, call.arguments),
+      );
+
+      if (price > 0) ledger.charge(ledger.scopes(spender, charged), price, Date.now());
+
+      return { outcome: "result", result, usage: usage(slot, price) };
+    }
+
     const connectedAt = this.#store.credential(toolkit.id, owner)?.connectedAt;
     // Sessions are the calling member's, also on the shared credential: an upstream's session state never carries over.
     const caller = viewer.member ?? "";
     const known = this.#store.session(toolkit.id, owner, caller, Date.now());
 
     const called = await Effect.runPromise(
-      callUpstreamTool(toolkit.source, secret, known, {
+      callUpstreamTool(toolkit.source, serving.secret, known, {
         name: tool.upstreamName,
         arguments: call.arguments,
         inputSchema: tool.tool?.inputSchema,
@@ -987,12 +1055,14 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   #reachable(viewer: Viewer): ReadonlyArray<ReachableTool> {
     const member = viewer.member;
 
-    const shared = new Set(
-      this.#store
+    // A built-in toolkit's shared credential is Commissary's own binding, always there.
+    const shared = new Set([
+      ...this.#builtIns.map((builtIn) => builtIn.toolkit.id),
+      ...this.#store
         .credentials()
         .filter((credential) => credential.owner === undefined)
         .map((credential) => credential.toolkitId),
-    );
+    ]);
 
     const granted = grantedTools(this.#grants.entries(), {
       member,
@@ -1025,25 +1095,29 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
    */
   listGrants(): ToolGrants {
     const listed = new Set(
-      this.#store.tools().map((tool) => stableId(tool.toolkitId, tool.upstreamName)),
+      this.#tools().map((tool) => stableId(tool.toolkitId, tool.upstreamName)),
     );
 
     return {
-      grants: this.#grants.entries().map((entry): ToolGrant => {
-        const missing =
-          entry.tools.kind === "named" ? entry.tools.ids.filter((id) => !listed.has(id)) : [];
+      // A built-in toolkit's grants are kept while the deployment lacks it, and shown again when it has it.
+      grants: this.#grants
+        .entries()
+        .filter((entry) => this.#toolkit(entry.toolkit) !== undefined)
+        .map((entry): ToolGrant => {
+          const missing =
+            entry.tools.kind === "named" ? entry.tools.ids.filter((id) => !listed.has(id)) : [];
 
-        return {
-          id: entry.id,
-          subject: entry.subject,
-          toolkit: entry.toolkit,
-          tools: entry.tools,
-          revision: entry.revision,
-          updated_at: entry.updatedAt,
-          updated_by: entry.updatedBy,
-          ...(missing.length === 0 ? {} : { missing }),
-        };
-      }),
+          return {
+            id: entry.id,
+            subject: entry.subject,
+            toolkit: entry.toolkit,
+            tools: entry.tools,
+            revision: entry.revision,
+            updated_at: entry.updatedAt,
+            updated_by: entry.updatedBy,
+            ...(missing.length === 0 ? {} : { missing }),
+          };
+        }),
     };
   }
 
@@ -1077,7 +1151,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     const missing = this.#subjectRefusal(grant.subject);
 
     if (missing !== undefined) return missing;
-    const toolkit = this.#store.toolkit(grant.toolkit);
+    const toolkit = this.#toolkit(grant.toolkit);
 
     if (toolkit === undefined) return `the org has no toolkit ${grant.toolkit}`;
 
@@ -1126,7 +1200,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
         `the override is at revision ${current?.revision ?? 0}, not ${revision}`,
       );
 
-    const known = this.#store.tools(id).some((listed) => listed.upstreamName === tool);
+    const known = this.#tools(id).some((listed) => listed.upstreamName === tool);
 
     if (!known && current === undefined)
       return refuse("not_found", "the toolkit's tool list has no such tool");
@@ -1219,7 +1293,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     const admin = isFullAccess(viewer) || viewer.admin;
     const grants = admin ? this.#grants.entries() : [];
 
-    return this.#store.toolkits().flatMap((toolkit) => {
+    return this.#toolkits().flatMap((toolkit) => {
       const access = reach(toolkit, viewer);
 
       if (access === "none" || access === "limited") return [];
@@ -1227,8 +1301,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       const member = this.#memberOf(viewer);
 
       // The shared credential and the viewer's own private one.
-      const credentials = this.#store
-        .credentials(toolkit.id)
+      const credentials = this.#credentialsOf(toolkit)
         .filter((credential) => credential.owner === undefined || credential.owner === member)
         .map((credential) => ({
           slot: credential.owner === undefined ? ("shared" as const) : ("private" as const),
@@ -1294,13 +1367,94 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
   // --- helpers ----------------------------------------------------------------------------------------------------
 
+  /** Every toolkit of the org: the built-in ones, then the stored ones. */
+  #toolkits(): ReadonlyArray<Toolkit> {
+    return [...this.#builtIns.map((builtIn) => builtIn.toolkit), ...this.#store.toolkits()];
+  }
+
+  #toolkit(id: string): Toolkit | undefined {
+    return this.#builtIn(id)?.toolkit ?? this.#store.toolkit(id);
+  }
+
+  #builtIn(id: string): BuiltIn | undefined {
+    return this.#builtIns.find((builtIn) => builtIn.toolkit.id === id);
+  }
+
+  /**
+   * `toolkit` as a stored toolkit, for what only a stored one takes (editing or removing it, its credentials, building
+   * its list from its source), or `403 built_in` for a built-in toolkit: the one place the part refuses those.
+   */
+  #stored(toolkit: Toolkit): ToolsResult<StoredToolkit> {
+    return toolkit.builtIn ? BUILT_IN : ok(toolkit);
+  }
+
+  /**
+   * Renames the stored toolkits that have a built-in toolkit's name, once, to the next free name (ADR 0037): toolkits,
+   * org or private, added before the deployment had the built-in one, which now takes the name everywhere. The new
+   * name is the first `<name>_<n>` from 2 that no toolkit of the org has, so the rename shadows nothing; it is stored,
+   * by Commissary, and moves the toolkit's revision on.
+   */
+  #yieldBuiltInNames(): void {
+    const builtIn = new Set(this.#builtIns.map((entry) => entry.toolkit.name));
+
+    if (builtIn.size === 0) return;
+
+    this.#core.transaction(() => {
+      for (const toolkit of this.#store.toolkits()) {
+        if (!builtIn.has(toolkit.name)) continue;
+        const taken = new Set(this.#toolkits().map((other) => other.name));
+        let suffix = 2;
+
+        while (taken.has(`${toolkit.name}_${suffix}`)) suffix++;
+
+        this.#store.updateToolkit(
+          toolkit.id,
+          {
+            name: `${toolkit.name}_${suffix}`,
+            accepts: toolkit.accepts,
+            priceMicros: toolkit.priceMicros,
+          },
+          COMMISSARY,
+          Date.now(),
+        );
+      }
+    });
+  }
+
+  /** The tools listed of every toolkit (`toolkitId`: of one): the built-in ones' from code, the others' as stored. */
+  #tools(toolkitId?: string): ReadonlyArray<StoredTool> {
+    const builtIn = this.#builtIns.flatMap((entry) => entry.tools);
+
+    return toolkitId === undefined
+      ? [...builtIn, ...this.#store.tools()]
+      : this.#builtIn(toolkitId) === undefined
+        ? this.#store.tools(toolkitId)
+        : builtIn.filter((tool) => tool.toolkitId === toolkitId);
+  }
+
+  /** A toolkit's credentials; a built-in toolkit's is its shared one, Commissary's own binding, of kind `none`. */
+  #credentialsOf(toolkit: Toolkit): ReadonlyArray<ToolkitCredential> {
+    return toolkit.builtIn
+      ? [
+          {
+            toolkitId: toolkit.id,
+            owner: undefined,
+            kind: "none",
+            param: undefined,
+            connectedAt: toolkit.createdAt,
+            connectedBy: toolkit.createdBy,
+          },
+        ]
+      : this.#store.credentials(toolkit.id);
+  }
+
   #memberOf(viewer: Scope): string | undefined {
     return isFullAccess(viewer) ? undefined : viewer.member;
   }
 
   /** The toolkit `id` if `viewer` manages it (an org admin an org toolkit, a member their private one). */
   #managed(id: string, viewer: Scope): ToolsResult<Toolkit> {
-    const toolkit = this.#store.toolkit(id);
+    const toolkit = this.#toolkit(id);
 
     if (toolkit === undefined) return NOT_FOUND;
     const access = reach(toolkit, viewer);
@@ -1329,29 +1483,27 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
         "a toolkit's name is lowercase letters and digits, words joined by _, at most 32 characters",
       );
 
-    const clash = this.#store
-      .toolkits()
-      .some(
-        (other) =>
-          other.id !== except &&
-          other.name === name &&
-          (other.owner === undefined || (owner !== undefined && other.owner === owner)),
-      );
+    const clash = this.#toolkits().some(
+      (other) =>
+        other.id !== except &&
+        other.name === name &&
+        (other.owner === undefined || (owner !== undefined && other.owner === owner)),
+    );
 
     return clash ? refuse("name_taken", `a toolkit is already named ${name}`) : undefined;
   }
 
   #resolve(member: string | undefined): Resolution {
     return resolveTools({
-      toolkits: this.#store.toolkits(),
-      tools: this.#store.tools(),
+      toolkits: this.#toolkits(),
+      tools: this.#tools(),
       overrides: this.#store.overrides(),
       member,
     });
   }
 
   #viewOf(id: string, viewer: Scope): ToolsResult<ToolkitView> {
-    const toolkit = this.#store.toolkit(id);
+    const toolkit = this.#toolkit(id);
 
     return toolkit === undefined
       ? NOT_FOUND
@@ -1362,7 +1514,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     return {
       ...(toolkit.listBuiltAt === undefined ? {} : { built_at: iso(toolkit.listBuiltAt) }),
       ...(toolkit.listError === undefined ? {} : { error: toolkit.listError }),
-      tools: this.#store.tools(toolkit.id).length,
+      tools: this.#tools(toolkit.id).length,
     };
   }
 
@@ -1385,7 +1537,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
   #view(toolkit: Toolkit, viewer: Scope, resolution: Resolution): ToolkitView {
     const member = this.#memberOf(viewer);
-    const credentials = this.#store.credentials(toolkit.id);
+    const credentials = this.#credentialsOf(toolkit);
     const shared = credentials.find((credential) => credential.owner === undefined);
 
     const mine =
@@ -1418,6 +1570,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       ...(toolkit.priceMicros === undefined ? {} : { price_micros: toolkit.priceMicros }),
       ...(resolution.renameSuggested.has(toolkit.id) ? { rename_suggested: true } : {}),
       ...(resolution.shadowed.has(toolkit.id) ? { shadowed: true } : {}),
+      ...(toolkit.builtIn ? { built_in: true } : {}),
     };
   }
 

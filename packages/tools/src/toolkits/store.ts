@@ -16,6 +16,7 @@ import type { CredentialsAccepted, ToolClass, ToolkitSecret } from "@commissary/
 import type { Sealer } from "@commissary/state";
 import type { Schema } from "effect";
 import type { UpstreamSession, UpstreamTool } from "../mcp/client.ts";
+import type { StoredToolkit } from "./toolkit.ts";
 
 /**
  * Every table of the Tools part (this store's and the tool grants', `grants/store.ts`), which the part's `wipe` drops
@@ -58,25 +59,6 @@ const SCHEMA = [
      session_id TEXT NOT NULL, opened_at INTEGER NOT NULL, PRIMARY KEY (toolkit_id, owner, member)
    )`,
 ];
-
-export interface Toolkit {
-  readonly id: string;
-  readonly kind: "mcp";
-  readonly name: string;
-  readonly source: string;
-  /** The member of a private toolkit; undefined for an org toolkit. */
-  readonly owner: string | undefined;
-  readonly accepts: CredentialsAccepted;
-  readonly revision: number;
-  readonly createdAt: number;
-  readonly createdBy: string;
-  readonly updatedAt: number;
-  readonly updatedBy: string;
-  readonly listBuiltAt: number | undefined;
-  readonly listError: string | undefined;
-  /** What a call of its tools costs, in micro-USD, unless a tool's override says otherwise (#199); undefined: free. */
-  readonly priceMicros: number | undefined;
-}
 
 /** A credential without its secret. */
 export interface ToolkitCredential {
@@ -196,9 +178,10 @@ const parseObject = (text: string | null): Schema.JsonObject | undefined =>
   // SAFETY: the column holds the JSON object this store wrote from a decoded tool.
   text === null ? undefined : (JSON.parse(text) as Schema.JsonObject);
 
-const toolkitOf = (row: ToolkitRow): Toolkit => ({
+const toolkitOf = (row: ToolkitRow): StoredToolkit => ({
   id: row.id,
   kind: "mcp",
+  builtIn: false,
   name: row.name,
   source: row.source,
   owner: ownerOf(row.owner),
@@ -298,21 +281,23 @@ export class ToolkitStore {
 
   // --- toolkits ---------------------------------------------------------------------------------------------------
 
-  toolkits(): ReadonlyArray<Toolkit> {
+  toolkits(): ReadonlyArray<StoredToolkit> {
     return this.#sql
       .exec<ToolkitRow>(`SELECT * FROM toolkits ORDER BY created_at, id`)
       .toArray()
       .map(toolkitOf);
   }
 
-  toolkit(id: string): Toolkit | undefined {
+  toolkit(id: string): StoredToolkit | undefined {
     const row = this.#sql.exec<ToolkitRow>(`SELECT * FROM toolkits WHERE id = ?`, id).toArray()[0];
 
     return row === undefined ? undefined : toolkitOf(row);
   }
 
   /** A new toolkit has no price: an org admin sets one afterwards (`updateToolkit`). */
-  insertToolkit(toolkit: Omit<Toolkit, "listBuiltAt" | "listError" | "priceMicros">): void {
+  insertToolkit(
+    toolkit: Omit<StoredToolkit, "builtIn" | "listBuiltAt" | "listError" | "priceMicros">,
+  ): void {
     this.#sql.exec(
       `INSERT INTO toolkits (id, kind, name, source, owner, accepts, revision, created_at, created_by, updated_at,
          updated_by, list_built_at, list_error)

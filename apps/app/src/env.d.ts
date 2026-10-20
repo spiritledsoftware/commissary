@@ -56,6 +56,13 @@ interface __BaseEnv_Env {
   AUTH_ORIGIN?: string;
   /** Hosted: how many orgs a person may own unless a platform admin raised their limit (default 3). */
   OWNED_ORG_LIMIT?: string;
+  /**
+   * Browser Run (#212, ADR 0043), bound unless `COMMISSARY_BROWSER=off`: only its presence is read here, for
+   * `deployment.browser` on `GET /v9/management/me` (src/management/deployment.ts); the browser toolkit runs on the
+   * state Worker's binding. Typed as what Commissary uses of it (`quickAction`); tests bind none unless one passes a
+   * fake.
+   */
+  BROWSER?: Pick<BrowserRun, "quickAction">;
   CONTROL_PLANE: DurableObjectNamespace<import("@commissary/state-worker").ControlPlane>;
   SESSION_STATE: DurableObjectNamespace<import("@commissary/state-worker").SessionState>;
   /** The Platform registry: one object per deployment (`platformOf`, `@commissary/state`). */

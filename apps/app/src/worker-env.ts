@@ -53,6 +53,11 @@ export interface AppBindings {
    * `alchemy dev`), which the outbound guard refuses ({@link outboundPolicyOf}).
    */
   readonly OWN_HOSTS: string;
+  /**
+   * Browser Run (#212, ADR 0043): bound unless the deploy turned the browser off. Only its presence is read here
+   * (`management/deployment.ts`); the browser toolkit runs on the state Worker's own binding.
+   */
+  readonly BROWSER?: Pick<BrowserRun, "quickAction"> | undefined;
 }
 
 /**
