@@ -113,6 +113,9 @@ describe("GET /billing", () => {
       browser_hours: { used: 0, free: 1 },
       computer_hours: { used: 0, free: 0 },
     });
+    expect(shown.billing_cap).toBe(50);
+    expect(shown.bill).toBe(0);
+    expect(shown.notices).toEqual([]);
   });
 
   it("shows the plan, the payment state, the card on file and what the month used", async () => {
@@ -158,6 +161,117 @@ describe("GET /billing", () => {
     const response = await call({ bindings: { ...env, COMMISSARY_MODE: undefined } });
 
     expect(response.status).toBe(404);
+  });
+});
+
+describe("GET /billing's notices", () => {
+  const noticesOf = async (org: OrgId, options: Call = {}) =>
+    (await view(await call({ org, provider: fakeBillingProvider().provider, ...options }))).notices;
+
+  it("tells a Free org at 80% and at 100% of its free usage", async () => {
+    const org = newOrgId();
+
+    await seedRequestsUsed(env, org, Date.now(), 19_999);
+    expect(await noticesOf(org)).toEqual([]);
+
+    await seedRequestsUsed(env, org, Date.now(), 20_000);
+    expect(await noticesOf(org)).toEqual([{ kind: "free_usage", unit: "requests", percent: 80 }]);
+
+    await seedRequestsUsed(env, org, Date.now(), FREE_USAGE.requests);
+    expect(await noticesOf(org)).toEqual([{ kind: "free_usage", unit: "requests", percent: 100 }]);
+  });
+
+  it("tells a Pay as you go org at 80% and at 100% of its billing cap, with the month's bill", async () => {
+    const org = newOrgId();
+
+    await activate(org);
+    // $40 and then $50 above free usage, at $0.50 per 100,000 requests.
+    await seedRequestsUsed(env, org, Date.now(), FREE_USAGE.requests + 8_000_000);
+
+    const at80 = await view(await call({ org, provider: fakeBillingProvider().provider }));
+
+    expect(at80.bill).toBe(40);
+    expect(at80.notices).toEqual([{ kind: "billing_cap", percent: 80 }]);
+
+    await seedRequestsUsed(env, org, Date.now(), FREE_USAGE.requests + 10_000_000);
+    expect(await noticesOf(org)).toEqual([{ kind: "billing_cap", percent: 100 }]);
+
+    // Past its free usage on Pay as you go, but far from the cap: nothing to tell.
+    await seedRequestsUsed(env, org, Date.now(), FREE_USAGE.requests + 1_000);
+    expect(await noticesOf(org)).toEqual([]);
+  });
+
+  it("tells of a failed payment without asking Polar for a portal link on a read", async () => {
+    const org = newOrgId();
+    const fake = fakeBillingProvider();
+
+    await activate(org);
+    await env.CONTROL_PLANE.getByName(org).billing().applySubscription({
+      status: "past_due",
+      subscriptionId: "sub_1",
+      customerId: "cus_1",
+      changedAt: Date.now(),
+    });
+    await seedRequestsUsed(env, org, Date.now(), FREE_USAGE.requests);
+
+    // Held to Free's limits: its free usage is what stops it, not the cap.
+    expect(await noticesOf(org, { provider: fake.provider })).toEqual([
+      { kind: "payment_failed" },
+      { kind: "free_usage", unit: "requests", percent: 100 },
+    ]);
+    expect(fake.calls.map((made) => made.call)).toEqual(["hasPaymentMethod"]);
+  });
+});
+
+describe("PATCH /billing", () => {
+  /** `PATCH /billing` of `org` with `options.body`, through a fake provider unless `options` names another. */
+  const setCap = (org: OrgId, options: Call) =>
+    call({ method: "PATCH", org, provider: fakeBillingProvider().provider, ...options });
+
+  /** Whether the org's Billing part would count a request now (no isolate cache: `test/meter.test.ts` has that). */
+  const admitted = async (org: OrgId) =>
+    (await env.CONTROL_PLANE.getByName(org).billing().admit(Date.now())).ok;
+
+  it("sets and removes the billing cap in dollars, which the org's Billing part applies to its next request", async () => {
+    const org = newOrgId();
+
+    await activate(org);
+    await seedRequestsUsed(env, org, Date.now(), FREE_USAGE.requests + 10_000_000);
+    expect(await admitted(org)).toBe(false);
+
+    const raised = await setCap(org, { body: { billing_cap: 120.5 } });
+
+    expect(raised.status).toBe(200);
+    expect((await view(raised)).billing_cap).toBe(120.5);
+    expect(await admitted(org)).toBe(true);
+
+    await setCap(org, { body: { billing_cap: 0 } });
+    expect(await admitted(org)).toBe(false);
+
+    const removed = await setCap(org, { body: { billing_cap: null } });
+
+    expect(removed.status).toBe(200);
+    expect((await view(removed)).billing_cap).toBeNull();
+    expect(await admitted(org)).toBe(true);
+  });
+
+  it("takes a number of dollars or null, and refuses an amount below 0 or in fractions of a cent", async () => {
+    for (const body of [{ billing_cap: "50" }, {}, { billing_cap: 50, extra: 1 }])
+      expect((await setCap(newOrgId(), { body })).status).toBe(400);
+
+    for (const billing_cap of [-1, 10.005])
+      expect((await setCap(newOrgId(), { body: { billing_cap } })).status).toBe(422);
+
+    expect((await setCap(newOrgId(), { body: { billing_cap: 19.99 } })).status).toBe(200);
+  });
+
+  it("works on a Commissary Cloud stage without Polar, and answers 404 on a self-hosted Commissary", async () => {
+    const body = { billing_cap: 10 };
+
+    expect((await setCap(newOrgId(), { body, provider: undefined })).status).toBe(200);
+    expect(
+      (await setCap(newOrgId(), { body, bindings: { ...env, COMMISSARY_MODE: undefined } })).status,
+    ).toBe(404);
   });
 });
 

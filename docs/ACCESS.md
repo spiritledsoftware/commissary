@@ -187,8 +187,8 @@ the Worker asks on every request: a removed member, or a member whose role was l
 | Read and replace an org OpenAPI toolkit's uploaded document (`/toolkits/:id/document`)           |                   |     ✓     |              ✓               |       ✓        |
 | Read the Spend limits that bind them and limit their own API keys (`/spend`, `/spend/limits`)    |         ✓         |     ✓     |              ✓               |       ✓        |
 | Set any Spend limit and the org's calendar (`/spend/limits`, `/spend/settings`)                  |                   |     ✓     |              ✓               |       ✓        |
-| Read the org's plan and this month's usage against free usage (Commissary Cloud, `/billing`)     |                   |     ✓     |              ✓               |       ✓        |
-| Upgrade, open the billing portal, switch back to Free (Commissary Cloud, `/billing/*` writes)    |                   |           |              ✓               |       ✓        |
+| Read the org's plan, usage, bill, billing cap and notices (Commissary Cloud, `GET /billing`)     |                   |     ✓     |              ✓               |       ✓        |
+| Upgrade, open the billing portal, switch to Free, set the billing cap (Cloud, `/billing` writes) |                   |           |              ✓               |       ✓        |
 | Create API keys for themselves; list and revoke their own (`/api-keys`)                          |         ✓         |     ✓     |              ✓               | if a member ¹  |
 | List and revoke every API key of the org                                                         |                   |     ✓     |              ✓               |       ✓        |
 | Turn auto-join, or Access sign-ins for clients in `global`, on or off (`PATCH /membership`)      |                   |           |              ✓               |       ✓        |
@@ -575,7 +575,15 @@ management keys work as above. What changes:
   subscription at the end of its period and puts the org on Free at once (the usage until then is still invoiced). They answer 404 on a stage
   without Polar's settings. Polar's webhooks (`POST /webhooks/polar` on the app host) need no sign-in: their signature
   is checked. A failed payment holds a Pay-as-you-go org to Free's limits until a payment succeeds; nothing is deleted
-  or suspended for non-payment. The billing cap comes with #238.
+  or suspended for non-payment. **The billing cap** (#238): what Commissary Cloud may bill a Pay-as-you-go org a month,
+  $50 until an org owner sets it to any amount from $0 in whole cents or removes it with `PATCH /billing
+  {"billing_cap": <dollars> | null}` (owners only: an org admin who is not an owner gets 403; it needs no Polar
+  settings). A request that would be billed past it is refused with `429 plan_limit_reached` (`limit: "billing_cap"`)
+  and `Retry-After` until the first of the next month UTC; use within free usage never is. A changed cap reaches the
+  client API within 5 seconds. `GET /billing` also answers the cap, the month's bill so far and notices for the panel
+  (no email): 80% and 100% of a unit's free usage where Free's limits apply, 80% and 100% of the cap on Pay as you go,
+  and a failed payment; an owner follows that one to Polar's customer portal (`POST /billing/portal`), an admin who is
+  not an owner is told to ask an owner.
 - **Scripts** use management keys; credential downloads are for platform admins only (§4 "Management API security").
 - **Browser protections.** The cross-site checks of §4 apply unchanged, Better Auth checks the origin of its own
   requests, and the sign-in routes (`/api/auth/*`, `/api/sign-in-options`, `/sign-in`) exist only on Commissary Cloud.

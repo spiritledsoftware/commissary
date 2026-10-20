@@ -16,6 +16,8 @@
  *   sends only what usage above free usage grew by since.
  * - **billing_meter_batch** (#237): the one batch on its way to Polar, if any: until Polar took it, every attempt sends
  *   the same events with the same ids, so a retried batch is not counted twice.
+ * - **billing_cap** (#238): one row with the billing cap its org owners set, in dollars a month, `NULL` for none; no
+ *   row means the default ($50, `bill.ts`).
  *
  * Every table is created `IF NOT EXISTS` in the constructor. All methods are synchronous, so a check and the count
  * that follows it are one step of the single-threaded object.
@@ -27,9 +29,11 @@ import {
   isUnit,
   type PaymentState,
   type Plan,
+  type PlanLimitKind,
   type Unit,
   type Usage,
 } from "./plan.ts";
+import { billMicros, capRefusesNextRequest, DEFAULT_BILLING_CAP, toDollars } from "./bill.ts";
 import { monthOf } from "./month.ts";
 
 export const BILLING_TABLES = [
@@ -38,6 +42,7 @@ export const BILLING_TABLES = [
   "billing_account",
   "billing_meter_sent",
   "billing_meter_batch",
+  "billing_cap",
 ] as const;
 
 const SCHEMA = [
@@ -71,14 +76,23 @@ const SCHEMA = [
     customer_id TEXT NOT NULL,
     events TEXT NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS billing_cap (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    cap REAL
+  )`,
 ];
 
 /** Below this, an amount of hours left to send is rounding, not usage. */
 const SEND_EPSILON = 1e-9;
 
-/** Free usage of requests and tool calls is used up: plain data, as it crosses the RPC boundary. */
+/**
+ * A plan limit refuses use: free usage of requests and tool calls is used up (`requests`, on Free or while past due),
+ * or the month's bill is at the billing cap (`billing_cap`, on Pay as you go). Plain data, as it crosses the RPC
+ * boundary.
+ */
 export interface PlanLimit {
-  /** What the month allows free. */
+  readonly limit: PlanLimitKind;
+  /** What the month allows: its free usage of requests and tool calls, or the billing cap in dollars. */
   readonly allowed: number;
   /** When the month ends and the counter starts over (epoch ms), and the seconds until then, at least 1. */
   readonly resetsAt: number;
@@ -105,6 +119,10 @@ export interface BillingUsage {
   readonly monthStart: number;
   readonly monthEnd: number;
   readonly used: Usage;
+  /** What the month's usage bills above free usage so far, in dollars (what Pay as you go is invoiced). */
+  readonly bill: number;
+  /** The most Pay as you go may bill the org a month, in dollars; `null`: no cap. */
+  readonly billingCap: number | null;
 }
 
 /**
@@ -201,9 +219,27 @@ export class BillingStore {
     return plan === "payg" && this.#account().payment === "past_due" ? "free" : plan;
   }
 
+  /** The billing cap in dollars a month, `null` for none: $50 until an org owner sets it. */
+  billingCap(): number | null {
+    const row = this.#sql
+      .exec<{ cap: number | null }>("SELECT cap FROM billing_cap WHERE id = 1")
+      .toArray()[0];
+
+    return row === undefined ? DEFAULT_BILLING_CAP : row.cap;
+  }
+
+  setBillingCap(cap: number | null): void {
+    this.#sql.exec(
+      `INSERT INTO billing_cap (id, cap) VALUES (1, ?)
+       ON CONFLICT (id) DO UPDATE SET cap = excluded.cap`,
+      cap,
+    );
+  }
+
   usage(now: number): BillingUsage {
     const month = monthOf(now);
     const account = this.#account();
+    const used = this.used(month.start);
 
     return {
       plan: this.plan(),
@@ -212,27 +248,47 @@ export class BillingStore {
       subscriptionId: account.subscriptionId,
       monthStart: month.start,
       monthEnd: month.end,
-      used: this.used(month.start),
+      used,
+      bill: toDollars(billMicros(used)),
+      billingCap: this.billingCap(),
     };
   }
 
   /**
    * A request starts being served at `now`: on Free (or on Pay as you go while past due) with the month's requests and
    * tool calls used up it is refused (and not counted); otherwise it is counted, on either plan (free usage is on both;
-   * Pay as you go bills above it).
+   * Pay as you go bills above it). On Pay as you go a request that would be billed (free usage of requests is used up)
+   * is refused when it would take the month's bill past the billing cap.
    */
   admit(now: number): Admission {
     const month = monthOf(now);
-    const used = this.used(month.start).requests;
+    const used = this.used(month.start);
+    const limitsPlan = this.limitsPlan();
+    const retryAfterSeconds = Math.max(1, Math.ceil((month.end - now) / 1000));
 
-    if (this.limitsPlan() === "free" && used >= FREE_USAGE.requests)
+    if (limitsPlan === "free" && used.requests >= FREE_USAGE.requests)
       return {
         ok: false,
         limit: {
+          limit: "requests",
           allowed: FREE_USAGE.requests,
           resetsAt: month.end,
-          retryAfterSeconds: Math.max(1, Math.ceil((month.end - now) / 1000)),
+          retryAfterSeconds,
           pastDue: this.plan() === "payg",
+        },
+      };
+
+    const cap = limitsPlan === "payg" ? this.billingCap() : null;
+
+    if (cap !== null && capRefusesNextRequest(used, cap))
+      return {
+        ok: false,
+        limit: {
+          limit: "billing_cap",
+          allowed: cap,
+          resetsAt: month.end,
+          retryAfterSeconds,
+          pastDue: false,
         },
       };
 

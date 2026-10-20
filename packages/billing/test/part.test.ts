@@ -75,6 +75,7 @@ describe("free usage", () => {
 
     if (refused.ok) throw new Error("expected a refusal");
     expect(refused.limit).toEqual({
+      limit: "requests",
       allowed: 25_000,
       resetsAt: FIRST_OF_APRIL,
       retryAfterSeconds: (FIRST_OF_APRIL - MID_MARCH) / 1000,
@@ -129,6 +130,93 @@ describe("free usage", () => {
 
     await part.refund(admitted.monthStart);
     expect((await part.usage(MID_MARCH)).used.requests).toBe(0);
+  });
+});
+
+/** Requests and tool calls above free usage that Pay as you go bills $50 for ($0.50 per 100,000). */
+const FIFTY_DOLLARS_OF_REQUESTS = 10_000_000;
+
+describe("the billing cap", () => {
+  it("is $50 for a new org, and refuses the next billed request once the month's bill reaches it", async () => {
+    const { org, part } = billingOf();
+
+    await setPlan(env, org, "payg");
+    await seedRequestsUsed(
+      env,
+      org,
+      MID_MARCH,
+      FREE_USAGE.requests + FIFTY_DOLLARS_OF_REQUESTS - 1,
+    );
+
+    const before = await part.usage(MID_MARCH);
+
+    expect(before.billingCap).toBe(50);
+    expect(before.bill).toBeCloseTo(49.999_995, 9);
+
+    // The request that brings the bill to $50 is served; the next one would bill past the cap.
+    expect((await part.admit(MID_MARCH)).ok).toBe(true);
+    expect((await part.usage(MID_MARCH)).bill).toBe(50);
+
+    const refused = await part.admit(MID_MARCH);
+
+    if (refused.ok) throw new Error("expected a refusal");
+    expect(refused.limit).toEqual({
+      limit: "billing_cap",
+      allowed: 50,
+      resetsAt: FIRST_OF_APRIL,
+      retryAfterSeconds: (FIRST_OF_APRIL - MID_MARCH) / 1000,
+      pastDue: false,
+    });
+    // The refusal counted nothing, and the next month starts over.
+    expect((await part.usage(MID_MARCH)).used.requests).toBe(
+      FREE_USAGE.requests + FIFTY_DOLLARS_OF_REQUESTS,
+    );
+    expect((await part.admit(FIRST_OF_APRIL)).ok).toBe(true);
+  });
+
+  it("never refuses use within free usage, even at a cap of $0", async () => {
+    const { org, part } = billingOf();
+
+    await setPlan(env, org, "payg");
+    await part.setBillingCap(0);
+    await seedRequestsUsed(env, org, MID_MARCH, FREE_USAGE.requests - 1);
+
+    expect((await part.admit(MID_MARCH)).ok).toBe(true);
+    expect((await part.admit(MID_MARCH)).ok).toBe(false);
+  });
+
+  it("takes effect at once when an owner raises or removes it", async () => {
+    const { org, part } = billingOf();
+
+    await setPlan(env, org, "payg");
+    await seedRequestsUsed(env, org, MID_MARCH, FREE_USAGE.requests + FIFTY_DOLLARS_OF_REQUESTS);
+    expect((await part.admit(MID_MARCH)).ok).toBe(false);
+
+    await part.setBillingCap(50.5);
+    expect((await part.usage(MID_MARCH)).billingCap).toBe(50.5);
+    expect((await part.admit(MID_MARCH)).ok).toBe(true);
+
+    await part.setBillingCap(null);
+    expect((await part.usage(MID_MARCH)).billingCap).toBeNull();
+    await seedRequestsUsed(
+      env,
+      org,
+      MID_MARCH,
+      FREE_USAGE.requests + 10 * FIFTY_DOLLARS_OF_REQUESTS,
+    );
+    expect((await part.admit(MID_MARCH)).ok).toBe(true);
+  });
+
+  it("does not apply on Free, where free usage is the limit", async () => {
+    const { org, part } = billingOf();
+
+    await part.setBillingCap(0);
+    await seedRequestsUsed(env, org, MID_MARCH, FREE_USAGE.requests);
+
+    const refused = await part.admit(MID_MARCH);
+
+    if (refused.ok) throw new Error("expected a refusal");
+    expect(refused.limit.limit).toBe("requests");
   });
 });
 
@@ -355,6 +443,7 @@ describe("org deletion", () => {
         "billing_account",
         "billing_meter_sent",
         "billing_meter_batch",
+        "billing_cap",
       ]),
     );
 

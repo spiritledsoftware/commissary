@@ -1,9 +1,9 @@
 /**
  * The Billing part of an org's ControlPlane (#134 "How an area's ControlPlane part works", #148): the single writer for
- * the org's plan and its free-usage counters, and what Polar knows the org by and was sent of its usage (`store.ts`).
- * An `RpcTarget` the composed `ControlPlane` constructs once per object (`new BillingPart(ctx)`); callers reach it as
- * `stub.billing().x(…)`, one pipelined round trip. Methods exchange plain data only. New in the Workers port, no Go
- * counterpart.
+ * the org's plan, its free-usage counters and its billing cap, and what Polar knows the org by and was sent of its
+ * usage (`store.ts`). An `RpcTarget` the composed `ControlPlane` constructs once per object
+ * (`new BillingPart(ctx)`); callers reach it as `stub.billing().x(…)`, one pipelined round trip. Methods exchange
+ * plain data only. New in the Workers port, no Go counterpart.
  *
  * The part itself does not know the deployment's mode: on a self-hosted Commissary nothing calls it (`env.ts`,
  * `meter.ts`), so it stores nothing there.
@@ -45,6 +45,11 @@ export class BillingPart extends RpcTarget implements ControlPlanePart {
     return this.#store.limitsPlan();
   }
 
+  /** An org owner set the billing cap: dollars a month, `null` for none. Applies to the next request. */
+  setBillingCap(cap: number | null): void {
+    this.#store.setBillingCap(cap);
+  }
+
   /** Records the org's Polar customer. */
   setCustomer(customerId: string): void {
     this.#store.setCustomer(customerId);
@@ -70,7 +75,7 @@ export class BillingPart extends RpcTarget implements ControlPlanePart {
     this.#store.meterBatchSent(id);
   }
 
-  /** The org's plan and what it used in the month containing `now` (epoch ms). */
+  /** The org's plan, what it used and billed in the month containing `now` (epoch ms), and its billing cap. */
   usage(now: number): BillingUsage {
     return this.#store.usage(now);
   }

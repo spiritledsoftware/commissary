@@ -17,7 +17,10 @@ import {
 import type { CurrentOrg } from "@commissary/core";
 import { ExecutionError } from "../executor/errors.ts";
 
-/** `429 plan_limit_reached`: a Free org used up its free usage (JSON body and `Retry-After` until the month ends). */
+/**
+ * `429 plan_limit_reached`: a Free org used up its free usage, or a Pay-as-you-go org reached its billing cap (JSON
+ * body and `Retry-After` until the month ends).
+ */
 export const planLimitError = (refused: PlanLimitReached): ExecutionError =>
   new ExecutionError({
     status: 429,
