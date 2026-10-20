@@ -7,14 +7,19 @@
  * A failure is Browser Run's own message about the page (its `errors`), or a short one of Commissary's when it could not
  * be reached or answered something unreadable (`browser-run-http.ts`, shared with the crawls' adapter). A screenshot or
  * PDF larger than {@link MAX_FILE_BYTES} is refused rather than returned, as a tool result travels in one JSON answer.
+ *
+ * Browser Run reports the browser time an action used in its `X-Browser-Ms-Used` header, on a refusal of the page too
+ * (any status below 500): it goes with the answer, or with the failure (#214), for the call's usage record and its price
+ * per browser hour.
  */
 import { Effect, Schema } from "effect";
 import { cappedBody, compact, decoded, fail, refusal } from "./browser-run-http.ts";
 import {
   type BrowserCrawlProvider,
   type BrowserProvider,
-  type BrowserProviderError,
+  BrowserProviderError,
   type PageArguments,
+  type QuickActionAnswer,
   type QuickActionArguments,
   type QuickActionName,
   type QuickActionResult,
@@ -71,6 +76,14 @@ const JsonBody = Schema.Struct({ result: Schema.Json });
 const AccessibilityTreeBody = Schema.Struct({
   result: Schema.Struct({ accessibilityTree: Schema.Json }),
 });
+
+/** The browser time Browser Run says an action used, in milliseconds (`X-Browser-Ms-Used`), when it says one. */
+const browserMsOf = (response: Response): number | undefined => {
+  const header = response.headers.get("x-browser-ms-used");
+  const ms = header === null ? Number.NaN : Number(header);
+
+  return Number.isFinite(ms) && ms >= 0 ? Math.round(ms) : undefined;
+};
 
 /** A screenshot or PDF, at most {@link MAX_FILE_BYTES}. */
 const file = (response: Response, fallbackType: string) =>
@@ -208,9 +221,23 @@ const run = <K extends QuickActionName>(
       catch: () => fail("Browser Run could not be reached"),
     });
 
-    if (!response.ok) return yield* refusal(response);
+    const browserMs = browserMsOf(response);
 
-    return yield* entry.result(response, args);
+    // A failure carries the browser time the action used anyway.
+    const used = (error: BrowserProviderError) =>
+      browserMs === undefined
+        ? error
+        : new BrowserProviderError({
+            message: error.message,
+            ...(error.status === undefined ? {} : { status: error.status }),
+            browserMs,
+          });
+
+    const result = yield* (response.ok ? entry.result(response, args) : refusal(response)).pipe(
+      Effect.mapError(used),
+    );
+
+    return { result, browserMs } satisfies QuickActionAnswer;
   });
 
 /**

@@ -11,7 +11,7 @@
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import type { SandboxNetwork } from "@commissary/contract/tools";
-import { Effect, Layer, ManagedRuntime, Result } from "effect";
+import { Effect, Layer, ManagedRuntime, Result, type Schema } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   AuthDirectory,
@@ -1109,23 +1109,25 @@ const STORES: ReadonlyArray<StoreCase> = [
     write: async (org, name, value) => {
       const id = browserSessionId(name);
 
-      const opened = await browserSessionStub(env.BROWSER_SESSIONS, org.id, id).open(
+      // SAFETY: a call without metering (as a Tools part from before #214 makes) answers the bare tool result.
+      const opened = (await browserSessionStub(env.BROWSER_SESSIONS, org.id, id).open(
         browserCaller(org),
         id,
         "browser-run",
         `https://${value}.iso-browser.example.com/`,
-      );
+      )) as Schema.JsonObject;
 
       if (opened["isError"] === true) throw new Error(JSON.stringify(opened));
     },
     read: async (org, name) => {
       const id = browserSessionId(name);
 
-      const listed = await browserSessionStub(env.BROWSER_SESSIONS, org.id, id).operate(
+      // SAFETY: as above, the bare tool result.
+      const listed = (await browserSessionStub(env.BROWSER_SESSIONS, org.id, id).operate(
         browserCaller(org),
         id,
         { tool: "tab_list", args: { sessionId: id } },
-      );
+      )) as Schema.JsonObject;
 
       if (listed["isError"] === true) return undefined;
       // SAFETY: a session's tab list is one text content.

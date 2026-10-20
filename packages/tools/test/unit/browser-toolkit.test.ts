@@ -1,6 +1,7 @@
 // The browser toolkit's tools (#212) over Browser Run's adapter and a fake `browser` binding: the Quick Actions it lists,
 // the options a call asks Browser Run for, and the MCP tool results it answers, invalid arguments, Browser Run's
-// refusals, oversized files and a Browser Run that does not answer (driven by TestClock) included.
+// refusals, oversized files and a Browser Run that does not answer (driven by TestClock) included, and the browser time
+// Browser Run reports for a call (#214).
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Fiber, type Schema } from "effect";
 import { TestClock } from "effect/testing";
@@ -10,10 +11,19 @@ import {
   MAX_FILE_BYTES,
 } from "../../src/browser/browser-run.ts";
 import { BROWSER_TOOLS, callBrowserTool } from "../../src/browser/toolkit.ts";
-import { fakeBrowserRun, PDF_BYTES, PNG_BYTES } from "../support/fake-browser.ts";
+import { BROWSER_MS, fakeBrowserRun, PDF_BYTES, PNG_BYTES } from "../support/fake-browser.ts";
 
+/** A call's answer: its tool result and the browser time it used, at `hourPrice` per browser hour (none: free). */
+const answerOf = (
+  binding: BrowserRunBinding,
+  tool: string,
+  args?: Schema.JsonObject,
+  hourPrice = 0,
+) => callBrowserTool(browserRun(binding), tool, args, hourPrice);
+
+/** A call's tool result. */
 const call = (binding: BrowserRunBinding, tool: string, args?: Schema.JsonObject) =>
-  callBrowserTool(browserRun(binding), tool, args);
+  answerOf(binding, tool, args).pipe(Effect.map((answer) => answer.result));
 
 /** A binding that answers every Quick Action with `answer()`. */
 const answering = (answer: () => Promise<Response>): BrowserRunBinding => ({
@@ -191,6 +201,42 @@ describe("the browser toolkit's tools", () => {
         ],
         isError: true,
       });
+    }),
+  );
+
+  it.effect("answers the browser time Browser Run reports for a call, a refused one's too", () =>
+    Effect.gen(function* () {
+      const binding = fakeBrowserRun();
+
+      expect(yield* answerOf(binding, "markdown", { url: "https://example.com/" })).toMatchObject({
+        browserTime: { browserMs: BROWSER_MS, costMicros: 0 },
+      });
+      // At a price per browser hour, prorated: an hour at 3,600,000 micro-USD costs one per millisecond.
+      expect(
+        yield* answerOf(binding, "markdown", { url: "https://example.com/" }, 3_600_000),
+      ).toMatchObject({ browserTime: { browserMs: BROWSER_MS, costMicros: BROWSER_MS } });
+      expect(
+        yield* answerOf(binding, "markdown", { url: "https://unreachable.invalid/" }, 3_600_000),
+      ).toMatchObject({
+        result: { isError: true },
+        browserTime: { browserMs: BROWSER_MS, costMicros: BROWSER_MS },
+      });
+      // Invalid arguments reach no browser.
+      expect(yield* answerOf(binding, "markdown", {}, 3_600_000)).not.toHaveProperty("browserTime");
+
+      // An answer without the header, or with one that is no number of milliseconds, says nothing of browser time.
+      for (const header of [undefined, "soon", "-5"]) {
+        const silent = answering(async () =>
+          Response.json(
+            { success: true, result: "# Page" },
+            { headers: header === undefined ? {} : { "x-browser-ms-used": header } },
+          ),
+        );
+
+        expect(
+          yield* answerOf(silent, "markdown", { url: "https://example.com/" }, 3_600_000),
+        ).toEqual({ result: { content: [{ type: "text", text: "# Page" }] } });
+      }
     }),
   );
 

@@ -13,7 +13,9 @@
  *
  * Prices (#199, ADR 0038): an org admin may price a call of an org toolkit's tools, in micro-USD (1 USD = 1,000,000),
  * on the toolkit (`PATCH /toolkits/:id`, `price_micros`) and per tool in its override, which wins (`0` makes one tool of
- * a priced toolkit free). A tool without a price costs nothing. A private toolkit takes no price (`422 invalid`).
+ * a priced toolkit free). A tool without a price costs nothing. A private toolkit takes no price (`422 invalid`). The
+ * browser toolkit takes a price per browser hour besides (#214, ADR 0039, `browser_hour_price_micros`): its browser time
+ * costs that, prorated by the millisecond, on top of any price per call of its tools; without one it costs nothing.
  *
  * OAuth 2 (#202): a credential may be an OAuth 2 client credentials grant (shared only), connected like any other, or
  * the tokens of an authorization code sign-in, started with `signIn` (the browser opens its `url`, comes back to
@@ -521,6 +523,11 @@ export const ToolkitView = Schema.Struct({
    * org admin allows it). A deployment without the computer (`deployment.computer` of `GET /me`) cannot allow it.
    */
   computer: optional(Schema.Boolean),
+  /**
+   * The browser toolkit's (#214): what an hour of browser time costs in micro-USD, prorated, besides any price per call
+   * of its tools; absent: browser time is free.
+   */
+  browser_hour_price_micros: optional(Schema.Number),
 });
 
 export type ToolkitView = typeof ToolkitView.Type;
@@ -628,6 +635,12 @@ export const UpdateToolkit = Schema.Struct({
    * what they opened with.
    */
   computer: optional(Schema.Boolean),
+  /**
+   * The browser toolkit only (#214), org admins: a whole number of micro-USD per hour of browser time, 0 or more, at most
+   * the highest price of a call; `null` clears it (browser time is free). `403 built_in` on the sandbox toolkit,
+   * `422 invalid` on any other.
+   */
+  browser_hour_price_micros: optional(Schema.NullOr(Schema.Number)),
 });
 
 export type UpdateToolkit = typeof UpdateToolkit.Type;
@@ -776,13 +789,14 @@ export class ToolsGroup extends HttpApiGroup.make("tools").add(
     error: managementErrors,
   }),
   /**
-   * Rename, change which credentials an org toolkit accepts, price its calls, or set its approval rules; `409 conflict`
-   * when the revision is stale, `422 invalid` for a price on a private toolkit or one that is not a whole number of
-   * micro-USD, 0 or more, and for approval rules that mark a tool of another toolkit or name a team or member the org
-   * does not have, and for a network or computer setting that is not the sandbox toolkit's, a network that is not a
-   * valid one, and the computer on a deployment without it; `403 built_in` for anything but approval rules (and the
-   * sandbox's network and computer) on a built-in toolkit (also on removing it, and on connecting or
-   * removing its credential).
+   * Rename, change which credentials an org toolkit accepts, price its calls (or the browser toolkit's browser time), or
+   * set its approval rules; `409 conflict` when the revision is stale, `422 invalid` for a price on a private toolkit or
+   * one that is not a whole number of micro-USD, 0 or more, and for approval rules that mark a tool of another toolkit
+   * or name a team or member the org does not have, for a network or computer setting that is not the sandbox
+   * toolkit's, a network that is not a valid one, and the computer on a deployment without it, and for a price per
+   * browser hour on a toolkit that is not built in or that is not a valid price; `403 built_in` for anything but
+   * approval rules (and the sandbox's network and computer, the browser's price per browser hour) on a built-in toolkit
+   * (also on removing it, and on connecting or removing its credential).
    */
   HttpApiEndpoint.patch("update", "/toolkits/:id", {
     ...idParam,

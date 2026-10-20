@@ -338,6 +338,15 @@ export type QuickActionResult =
   | { readonly kind: "file"; readonly mimeType: string; readonly data: Uint8Array };
 
 /**
+ * A Quick Action's answer, and the browser time it used in milliseconds when the provider reports it (#214: Browser
+ * Run's `X-Browser-Ms-Used`), which its call's usage record carries and a price per browser hour costs.
+ */
+export interface QuickActionAnswer {
+  readonly result: QuickActionResult;
+  readonly browserMs: number | undefined;
+}
+
+/**
  * A Quick Action the provider could not do. `message` is told to the model: the provider's own words about the page or
  * the arguments (a navigation that timed out, a malformed selector), never a secret.
  */
@@ -347,6 +356,8 @@ export class BrowserProviderError extends Schema.TaggedError<BrowserProviderErro
     message: Schema.String,
     /** The provider's HTTP status, when it answered one. */
     status: optional(Schema.Number),
+    /** The browser time the failed action used anyway, in milliseconds, when the provider reports it (#214). */
+    browserMs: optional(Schema.Number),
   },
 ) {}
 
@@ -504,7 +515,7 @@ export interface BrowserProvider {
   readonly id: string;
   readonly quickAction: (
     request: QuickActionRequest,
-  ) => Effect.Effect<QuickActionResult, BrowserProviderError>;
+  ) => Effect.Effect<QuickActionAnswer, BrowserProviderError>;
   /**
    * Whether it has browsers for interactive sessions; a provider without serves the Quick Actions only. The session's
    * Durable Object reaches them by the provider's id (`sessionProviderOf`, `session-object.ts`), as it outlives the

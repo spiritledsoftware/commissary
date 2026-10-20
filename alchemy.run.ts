@@ -289,6 +289,9 @@ export default Alchemy.Stack(
         // with or without Browser Run: without it the toolkit is absent and no session opens, and the class never comes
         // and goes with `COMMISSARY_BROWSER`.
         BROWSER_SESSIONS: Cloudflare.DurableObject("BrowserSession"),
+        // The usage database, which a browser session writes its record of browser time into when it closes (#214,
+        // `BrowserSessionEnv`); the ControlPlane above charges that time to the Spend limits.
+        USAGE: usage,
         // The sandbox toolkit (ADR 0041, ADR 0043, #222), on every deployment: one object per sandbox session, reached
         // by the ControlPlane only, and Dynamic Workers (Workers Paid), where each session's just-bash runs with no
         // binding beyond its files and the sandbox's egress entrypoint as its only way out.

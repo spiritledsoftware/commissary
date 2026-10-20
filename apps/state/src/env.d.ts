@@ -18,6 +18,8 @@ interface __StateWorkerEnv extends __StateObjectSettings {
   PLATFORM: DurableObjectNamespace<import("./index.ts").Platform>;
   /** One object per browser session (#213, `@commissary/tools/state`), reached by the ControlPlane's Tools part. */
   BROWSER_SESSIONS: DurableObjectNamespace<import("./index.ts").BrowserSession>;
+  /** Usage records (D1, migrations/usage/): a browser session's record of its browser time (#214, `BrowserSessionEnv`). */
+  USAGE: D1Database;
   /** The sandbox toolkit's sessions (#222), one object each; the Tools part reaches them (`ToolsPartEnv`). */
   SANDBOX_SESSION: DurableObjectNamespace<import("./index.ts").SandboxSession>;
 }

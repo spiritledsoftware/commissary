@@ -22,10 +22,15 @@ export {
 } from "./support/oauth-server.ts";
 
 /**
- * Tools' writer of a tool call's usage record: tests that read usage records seed tool calls through it, so what they
- * read is what Tools writes.
+ * Tools' writers of a tool call's usage record and of a browser session's (#214): tests that read usage records seed
+ * them through these, so what they read is what Tools writes.
  */
-export { insertToolCallRecord, type ToolCallRecord } from "../src/usage/record.ts";
+export {
+  type BrowserSessionRecord,
+  insertBrowserSessionRecord,
+  insertToolCallRecord,
+  type ToolCallRecord,
+} from "../src/usage/record.ts";
 
 export { type FakeBrowserRun, fakeBrowserRun } from "./support/fake-browser.ts";
 

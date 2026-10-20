@@ -38,8 +38,9 @@ import hostedAuthMigration from "../../../migrations/usage/0008_hosted_auth.sql?
 import dropHostedAuthMigration from "../../../migrations/usage/0009_drop_hosted_auth.sql?raw";
 import toolCallsMigration from "../../../migrations/usage/0010_usage_tool_calls.sql?raw";
 import agentRunsMigration from "../../../migrations/usage/0011_usage_agent_runs.sql?raw";
+import browserTimeMigration from "../../../migrations/usage/0012_usage_browser_time.sql?raw";
 import { platformOf } from "@commissary/state";
-import { insertToolCallRecord } from "@commissary/tools/testing";
+import { insertBrowserSessionRecord, insertToolCallRecord } from "@commissary/tools/testing";
 import { envContext } from "./support/context.ts";
 
 /** The D1 sink without pricing: records are stored as they are published. */
@@ -95,6 +96,7 @@ describe("migration 0003 (usage org)", () => {
       ...statementsOf(failureMigration),
       ...statementsOf(toolCallsMigration),
       ...statementsOf(agentRunsMigration),
+      ...statementsOf(browserTimeMigration),
     ])
       await db.prepare(statement).run();
 
@@ -191,6 +193,7 @@ describe("migration 0007 (usage failure)", () => {
       ...statementsOf(failureMigration),
       ...statementsOf(toolCallsMigration),
       ...statementsOf(agentRunsMigration),
+      ...statementsOf(browserTimeMigration),
     ])
       await db.prepare(statement).run();
 
@@ -248,6 +251,7 @@ describe("migration 0004 (usage cost)", () => {
       ...statementsOf(failureMigration),
       ...statementsOf(toolCallsMigration),
       ...statementsOf(agentRunsMigration),
+      ...statementsOf(browserTimeMigration),
     ])
       await db.prepare(statement).run();
 
@@ -333,6 +337,7 @@ describe("migration 0005 (usage member)", () => {
       ...statementsOf(failureMigration),
       ...statementsOf(toolCallsMigration),
       ...statementsOf(agentRunsMigration),
+      ...statementsOf(browserTimeMigration),
     ])
       await db.prepare(statement).run();
 
@@ -420,6 +425,7 @@ describe("migration 0006 (usage private)", () => {
       ...statementsOf(failureMigration),
       ...statementsOf(toolCallsMigration),
       ...statementsOf(agentRunsMigration),
+      ...statementsOf(browserTimeMigration),
     ])
       await db.prepare(statement).run();
 
@@ -1235,6 +1241,49 @@ describe("tool calls (#199)", () => {
     );
 
     expect(authSeries.map((series) => series.key)).toEqual([""]);
+  });
+
+  it("leave a browser session's own record out of requests and latency, its cost and browser time in (#214)", async () => {
+    await insertToolCall({ requestId: "t1", requestedAt: 1500, costMicros: 1_000 });
+    await insertBrowserSessionRecord(db, {
+      sessionId: `bs_${"0".repeat(32)}`,
+      orgId: acme,
+      principalId: "key:k1",
+      memberId: undefined,
+      toolkitId: "tk_a",
+      openedAt: 1600,
+      browserMs: 90_000,
+      costMicros: 2_250,
+    });
+
+    const summary = await summarizeUsage(
+      db,
+      acme,
+      { groupBy: "toolkit", area: "tools" },
+      authIndexOf,
+    );
+
+    expect(summary.totals).toMatchObject({
+      requests: 1,
+      failed: 0,
+      avg_latency_ms: 7,
+      cost_micros: 3_250,
+      browser_ms: 90_000,
+    });
+    expect(summary.groups).toEqual([
+      expect.objectContaining({ key: "tk_a", requests: 1, cost_micros: 3_250 }),
+    ]);
+
+    const series = await summarizeUsageSeries(
+      db,
+      acme,
+      { since: 0, until: 10_000, bucket: "hour", groupBy: "toolkit" },
+      authIndexOf,
+    );
+
+    expect(
+      series.map((entry) => [entry.key, entry.points[0]?.requests, entry.points[0]?.cost_micros]),
+    ).toEqual([["tk_a", 1, 3_250]]);
   });
 
   it("keep a private call to its member, out of every org-wide read", async () => {
