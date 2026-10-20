@@ -151,7 +151,7 @@ may have stored its writes before, so it may run twice. Only chains are retried:
 - `packages/models` (`@commissary/models`): the Models area (#134, #151). `handlers` (inbound protocols and the shared
   execution pipeline), `executor` (one directory per provider, the `Thinking` service, `translateRequestForExecutor`
   with the Codex rewrites), `credentials` (credential pool, selection, token refresh), `registry` (model catalogs and
-  `/models`), `config` (with the payload rules), `oauth`, `quota`, `usage` (D1 usage records), `grants`, `spend`,
+  `/models`), `config` (with the payload rules), `oauth`, `quota`, `usage` (D1 usage records), `grants`,
   `signature` (the `CACHE` KV store of signatures), `session-routing`, `management` (its management routes), the
   ControlPlane part, the client-API HTTP helpers, the request trace, its cron tasks and its org-deletion step. Three
   entry points and no root export: `./api` (the API Worker's: client API routes, request trace, cron tasks,
@@ -173,13 +173,15 @@ may have stored its writes before, so it may run twice. Only chains are retried:
   runtime modules `tools/oxlint/boundaries` lists, and no other area; Models imports its `./api` only. Its tests run in
   workerd against `packages/billing/test/worker.ts`, a test-only ControlPlane (state's base composed with its part).
 - `packages/tools` (`@commissary/tools`): the Tools area (#196): toolkits built from remote MCP servers, their
-  credentials and tool lists. `toolkits` (names, the store, resolving the tools a caller sees, credential secrets),
+  credentials, tool lists and prices. `toolkits` (names, the store, resolving the tools a caller sees, credential
+  secrets, prices), `usage` (the usage record of a tool call),
   `mcp` (a minimal Streamable HTTP MCP client, behind the outbound guard), `management` (its management routes,
   role-table entries, its section of the org export), the ControlPlane part, its cron task (refreshing tool lists) and
   its org-deletion step. Three entry points like Models': `./api` (the API Worker's: cron tasks, `ToolsEnv`),
   `./management` (the app Worker's) and `./state` (the state Worker's: `ToolsPart`); `./testing` serves fake MCP
   servers to the Worker's tests (`fakeMcpServer`, `serveFakeMcpServers`). It reads its bindings through `ToolsEnv`
-  (only `CONTROL_PLANE`) and may import `@commissary/state`, `auth`, `contract`, `core`, `effect` and the runtime
+  (`CONTROL_PLANE`, `PLATFORM`, `APP_DOMAIN` and `USAGE`, the usage database its tool calls' records go into) and may
+  import `@commissary/state`, `auth`, `contract`, `core`, `effect` and the runtime
   modules `tools/oxlint/boundaries` lists: nothing from `apps/` or Models.
 - `apps/web` (`@commissary/web`): the control panel (below).
 - `packages/auth` (`@commissary/auth`): request-side authentication (#132). The principal and `AccessPrincipal`, roles,
@@ -210,7 +212,9 @@ may have stored its writes before, so it may run twice. Only chains are retried:
   each reached through a method of its name, `stub.models().x()`), the Platform registry (`src/platform`), the
   general-purpose lease store (`src/lease.ts`), `SessionState` (`src/session-state`: class, client, protocol, engine),
   the stub helpers (`controlPlaneOf`, `platformOf`, `currentControlPlane`, the management routes' `controlPlane` and
-  body readers), the retry on a code-update reset (`retryOnCodeUpdate`) and the one `AuthDirectory` adapter, all behind the one export `.`; `./testing` holds the workerd test helpers
+  body readers), the retry on a code-update reset (`retryOnCodeUpdate`) and the one `AuthDirectory` adapter, all behind the one export `.`; `./spend` holds
+  Spend limits (`src/spend`: model, calendar, store, ledger, the `SpendService` the base owns; pure, so Node.js tests
+  import it too); `./testing` holds the workerd test helpers
   (`tablesOf`, `storedText`, `alarmOf`, `withPart`, `ORG_WIDE_TABLES`). It reads its bindings through `StateEnv` and its
   classes' settings from `StateObjectEnv`, and may import `@commissary/auth`, `@commissary/core`,
   `@commissary/contract`, `@commissary/json` and `effect` only: nothing from an area's code or `apps/`.

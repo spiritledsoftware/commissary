@@ -85,14 +85,15 @@ to `packages/billing/src/`), Tools' as `tools/...` (relative to `packages/tools/
                               through AuthDirectory; the viewer and the ownership rules the areas share
   packages/state/             @commissary/state: the org-wide state on Durable Objects (the ControlPlane's org-wide
                               base and its stores, composeControlPlane, Platform registry, leases, SessionState,
-                              the stub helpers, the AuthDirectory adapter), tested in workerd
+                              the stub helpers, the AuthDirectory adapter, Spend limits in src/spend/ behind
+                              ./spend), tested in workerd
   packages/models/            @commissary/models: the Models area (#151); no root export, the Workers import it only
                               through ./api, ./management and ./state (lint rule boundaries/models-imports)
     src/api.ts                for the API Worker: client API routes, the request trace, cron tasks, ModelsEnv
     src/management.ts         for the app Worker: management routes, OAuth callbacks, role-table entries, org-deletion
                               step, its section of the org export
     src/state.ts              for the state Worker: ModelsPart, its part of the ControlPlane
-    src/control-plane-part.ts the ControlPlane's Models part (config, credentials, grants, Spend, quota, OAuth)
+    src/control-plane-part.ts the ControlPlane's Models part (config, credentials, grants, quota, OAuth)
     src/http/                 client-API HTTP helpers (error formatting per protocol, bodies, headers)
     src/observability/        the request trace
     src/config/               config schema (Effect Schema), storage, payload rules
@@ -105,7 +106,7 @@ to `packages/billing/src/`), Tools' as `tools/...` (relative to `packages/tools/
     src/oauth/                provider logins (OAuth flows, public callbacks)
     src/usage/                usage records, D1 persistence
     src/quota/                server-side quota check: provider usage endpoints, stored per-credential reports
-    src/grants/, src/spend/   grants and Spend limits
+    src/grants/               grants
     test/                     Node.js tests (test/unit/) and workerd tests against a test-only ControlPlane
                               (test/worker.ts), fixtures generated from the Go code; test/testing.ts is ./testing
   packages/billing/           @commissary/billing: Commissary Cloud's billing area (plans, free usage, plan limits, the
@@ -213,9 +214,9 @@ to `packages/billing/src/`), Tools' as `tools/...` (relative to `packages/tools/
     (`apps/state/src/control-plane.ts`) is the org-wide base (`state/control-plane.ts`: members, teams, service tokens, the
     membership index and settings, API keys, management keys, SSO, `SessionState` instances, the org's data key)
     composed (`composeControlPlane`, `state/compose.ts`, which gives each part a method of its name) with the Models part (`models/control-plane-part.ts`: config, credentials, selection, refresh, grants,
-    Spend limits, quota, reset grants, OAuth logins), the Billing part (`billing/part.ts`: the plan and the
+    quota, reset grants, OAuth logins; it checks and charges Spend limits through the base's, `core.spend`), the Billing part (`billing/part.ts`: the plan and the
     free-usage counters, `stub.billing().admit(…)`; see "Billing") and the Tools part (`tools/control-plane-part.ts`:
-    toolkits, their credentials, tool lists and overrides; see "Tools"). A part is an `RpcTarget` constructed once per object with the
+    toolkits, their credentials, tool lists, overrides and prices; see "Tools"). A part is an `RpcTarget` constructed once per object with the
     base's in-object view (`OrgCore`: org id, member and team lookups, data key, the alarm), creates its own tables and
     is reached through a method, `stub.models().pick(…)`: one pipelined round trip. A getter (`stub.models.pick(…)`) was
     the first plan; vitest-pool-workers answers a getter of a Durable Object stub with a function, so the pipelined call
@@ -1842,6 +1843,30 @@ once; a 401 retry keeps the rejected attempt's failed record, a failed-over cred
 - **Failures without a body** (difference from Go): a failed attempt's usage record keeps the upstream status, error type
   and error code, and nothing of the response body (the `fail_body` column stays `NULL`; migration `0007` clears the
   bodies stored before it). Go's queue keeps the failure body for the management API.
+- **Tool calls** (#199, ADR 0038; `migrations/usage/0010_usage_tool_calls.sql`, `tools/usage/record.ts`): every call of
+  Commissary's MCP endpoint that reaches a tool leaves one record in `usage_records`, beside the model attempts. The
+  migration adds `area` (`models` by default, so every earlier record is a model attempt's; `tools` for a tool call),
+  `toolkit_id`, `tool_id` (the stable id, `<toolkit id>:<upstream name>`), `tool_outcome` (`success`, `tool_error` for
+  an upstream result with `isError`, `upstream_failure`, `refused` by a Spend limit, `needs_credential`),
+  `request_bytes` and `response_bytes` (the UTF-8 bytes of the arguments and of the answered result as JSON) and
+  `approval` (empty until approvals, #201); it holds no arguments and no results. The org, principal (an API key's
+  `key:<id>` names the key), member, `private` (a private credential or a private toolkit), latency (measured in the
+  endpoint, from the call's arrival to its answer), `cost_micros` (the price charged, else 0; never `unpriced`) and
+  `failed` (any outcome but `success`) are the columns model attempts use; `auth_type` holds the credential's slot
+  (`shared` or `private`), and provider, model and `auth_id` are empty. A call of an unknown tool leaves no record: it
+  names no toolkit, only what the client typed. **Tools writes its own rows** (`writeToolCallRecord`, through
+  `ctx.waitUntil` like the D1 sink, a failed write logged with the request id only) into the shared table, through its
+  own `USAGE` binding (`ToolsBindings`): Models' writer is the model attempt's (the reporter, token accounting,
+  pricing by the token) and has nothing a tool call needs, while one table keeps one set of reads, one retention task
+  and one org-deletion statement, which delete by org and so cover tool calls with no change. **Reads** take `area`
+  (`models`, `tools` or `all`), `toolkit` and `tool` filters; unset, they read model attempts (or tool calls when
+  `toolkit` or `tool` is set), so a model-only client reads what it read before. `summary` groups by `area`, `toolkit`
+  or `tool` too, `series` by `toolkit` or `tool`. A tool call's JSON adds `area`, `toolkit_id`, `tool_id`, `outcome`,
+  `credential`, the sizes and `approval`, answers `auth_index: ""` (its credential is the toolkit's, not a keyed
+  Models credential) and `fail: {status_code: 200}` whatever the outcome (the MCP endpoint answered 200; `outcome`
+  says how it went). The queue (`.../queue`) keeps Go's export shape and hands out model attempts only (its partial
+  index is rebuilt with `area = 'models'`, so the tool calls it skips are not scanned and never marked exported), and
+  `.../unpriced` lists models only. The private-traffic rule applies as to model attempts.
 - **Management** (`models/management/usage-routes.ts`): `GET /v9/management/observability/usage/queue?count=N` (atomically pops the oldest unexported records, Go queue JSON with
   `token_breakdown`; `api_key` = Access principal id, `auth_index` = the management (keyed) `auth_index`) and the Workers
   additions `.../records` (filters `since|until|provider|model|principal|member|team|auth_index|failed`, `limit`, keyset
@@ -2167,7 +2192,7 @@ ADR 0027: deleting something deletes it at once, and Commissary keeps no content
   deletes so the key's Spend limits and counters go with it.
 - **Org deletion** (`deleteOrg`, called by `DELETE /org` and by account deletion, app-only) runs, in this order: the
   org-deletion steps of the areas the Worker mounts, which it takes as input (`OrgDeletionStep` of `@commissary/core`;
-  Models' `deleteOrgModels`: the org's usage rows in D1, `deleteOrgUsage`, batched, then its `org.<id>.…` keys in the
+  Models' `deleteOrgModels`: the org's usage rows in D1, `deleteOrgUsage`, batched, tool calls' included, then its `org.<id>.…` keys in the
   `CACHE` KV namespace; Billing's and Tools' steps have nothing outside the ControlPlane to delete yet), the
   `SessionState` instances it registered, its ControlPlane's whole storage (`ControlPlane.wipeOrg`: the Models, Billing
   and Tools parts drop their tables, then the rest of the SQL
@@ -2610,22 +2635,33 @@ Workers addition replacing the Go server's client keys (`access.api-keys`, impor
   a deploy applies it only after the new Worker, which reads `cf-access-token`, is live. `tools/check-deploy.sh` verifies
   both sides after each CI deploy, and that a `cloudflared`-style request (`cf-access-token` plus a dummy key) is served.
 
-## Spend limits (`models/spend/`, `models/management/spend-routes.ts`)
+## Spend limits (`state/spend/`, `models/management/spend-routes.ts`)
 
 Workers addition, no Go counterpart; ADR 0024. A Spend limit caps the Cost an org's traffic adds up to over a day, week or
-month. Cost is the attempt's token breakdown at the model's price (_Usage accounting and observability_); the Worker
-prices each attempt, the ControlPlane counts and decides.
+month. Cost is the attempt's token breakdown at the model's price (_Usage accounting and observability_), or a tool
+call's price (_Tools_); the Worker prices each attempt, the ControlPlane prices each tool call, counts and decides.
+
+- **Where it lives** (#199): the org-wide base, `@commissary/state/spend` (model, calendar, store, ledger and
+  `SpendService`, pure modules that Node.js tests import too). The base owns the object's one `SpendService` and gives
+  it to the parts as `OrgCore.spend`; Models checks and charges model attempts through it, Tools tool calls. Lifted out
+  of the Models part rather than reached over an RPC from Tools because a Spend limit spans both areas (a member's,
+  team's, org's or key's limit counts model attempts and tool calls together) and the store caches the limits in the
+  object: one instance per object must decide, and a call between two parts of the same object would be a detour
+  through the base anyway. Each part names the credentials a limit may cover (`ControlPlanePart.spendCredentials`:
+  Models' shared credentials by `auth_index`, Tools' org toolkits with a shared credential), so the routes resolve and
+  label a `credential` or `toolkit` subject without the base knowing either area. The base forgets the limits of a
+  member, team or API key it removes; a part forgets those of the credentials it removes (`spend.forget`).
 
 - **Entries** (`spend/store.ts` `SpendStore`, in each org's ControlPlane, SQLite tables `spend_limits`, `spend_counters`
   and `spend_settings`, `CREATE IF NOT EXISTS`, so there is no D1 migration and a ControlPlane that predates the feature
   upgrades in place with no limits): a subject (`member`, `team`, `org`, `credential` (a shared one, named by its
-  `auth_index`) or `key` (an API key id)), a period and an amount in micro-USD, written by an org admin or, on their own
+  `auth_index`), `key` (an API key id) or `toolkit` (an org toolkit's shared credential, named by the toolkit's id; #199)), a period and an amount in micro-USD, written by an org admin or, on their own
   API key, by a member. Each limit has a revision and `updated_at/by`; an edit or delete names the revision in `If-Match`
   (`409 conflict` when stale). There is one limit per subject, period and writer, and the limits on one subject and period
   are enforced together, so the smaller amount binds. A member may not write a limit above an admin's on the same key and
   period (`422 exceeds_admin_limit`). A credential limit stores the credential's id and is named by its `auth_index` at the
-  edge. Removing a member (with their API keys), deleting a team and removing a credential delete the limits and
-  counters that name them in the same call; revoking an API key leaves its limit, which no request meets any more.
+  edge. Removing a member (with their API keys), deleting a team, removing a credential, removing an org toolkit and
+  disconnecting its shared credential delete the limits and counters that name them in the same call; revoking an API key leaves its limit, which no request meets any more.
 - **Calendar** (`spend_settings`, `PATCH /spend/settings`, org admins): an IANA time zone and the first day of the week;
   `UTC` and Monday until set. A day runs from local midnight to the next local midnight (`spend/period.ts`, through
   `Intl`, so a DST day has 23 or 25 hours), a week from the first day of the week, a month from the 1st. A counter is
@@ -2642,6 +2678,15 @@ prices each attempt, the ControlPlane counts and decides.
   `503 auth_unavailable`: the limit is the credential's, not the request's). A refusal is the pick failure `spend_limit_reached`: `429` with the OpenAI-shaped body, a message naming the
   period ("the daily Spend limit ... is reached") and `Retry-After` until the period ends. It is request-level: no
   cooldown is set on any credential and the conductor does not fail over (`spendLimitReached` stops the attempt loop).
+- **Tool calls** (`ToolsPart.callTool`, `SpendLedger.refusal`; #199): a priced call is checked before the upstream is
+  reached against every limit it would be charged to (the scopes below); a call has one credential to go to, so any of
+  them without room refuses it, a `toolkit` limit included. The refusal is a tool result with `isError` naming the
+  limit and when it resets ("The daily Spend limit of this API key is reached; it resets at …"), and the call's usage
+  record says `refused`. A free call (no price, or `0`) is neither checked nor charged, so it goes ahead whatever the
+  limits say. The call is charged once the upstream answered with a result, an `isError` one included (the upstream
+  did the work); an upstream or transport failure is not charged. As for model attempts, a call on the toolkit's
+  shared credential counts toward the key's, member's, teams', org's and toolkit's limits, one on the member's private
+  credential toward the key's only.
 - **Charge** (`conductor.ts` `finish`, `usage/sink.ts` `priceForSpend`): when the lease carries limits the Worker builds the
   attempt's usage records first, prices them (`UsageSink.cost`, the same price table the D1 sink writes with, so the
   stored record and the counter agree), reports `costMicros` with `report`, and the ControlPlane adds it to every
@@ -2656,7 +2701,7 @@ prices each attempt, the ControlPlane counts and decides.
 - **Routes** (`spend-routes.ts`, contract `@commissary/contract/spend`; the role-table entries in `models/management/access-rules.ts`): `GET /spend` answers the calendar and
   the limits the caller sees with `spent_micros`, `remaining_micros`, `period_start`, `resets_at` and `editable`
   (org admins: every limit; a plain member: their own member limit, their teams', the org's and those on their API
-  keys); `POST /spend/limits` (201), `PUT|DELETE /spend/limits/:id` and `PATCH /spend/settings` (org admins only). Every
+  keys; a `toolkit` limit is an org admin's, listed to admins); `POST /spend/limits` (201), `PUT|DELETE /spend/limits/:id` and `PATCH /spend/settings` (org admins only). Every
   other route above is open to members; the ControlPlane's `SpendService` decides what each may write
   (`403 forbidden` for a member on anything but their own keys, `404 subject_not_found`, `409 conflict` for a second
   limit on the subject and period, `422 invalid_limit`).
@@ -2848,7 +2893,7 @@ refuses or reads anything, and its management route answers 404.
 - **The part** (`billing/part.ts`, `store.ts`): tables `billing_plan` (one row; none means `free`, so an org that existed
   before plans needs no backfill and nothing of past usage is counted) and `billing_usage` (`month_start`, `unit`,
   `amount`; a row appears with the month's first use, so a new month starts at zero by itself, like the spend counters of
-  `models/spend/store.ts`, and nothing is derived from the D1 usage records). `admit(now)` is one synchronous step of the
+  `state/spend/store.ts`, and nothing is derived from the D1 usage records). `admit(now)` is one synchronous step of the
   object: a Free org with `requests` at the free usage is refused (and not counted), anything else is counted, on either
   plan; `refund(monthStart)` takes a count back. `usage(now)` reads the plan and the month. Hours of the other two units
   are stored as `REAL` and read 0 until #241 counts them. `setPlan` stores the plan (switching it is #237's; tests set
@@ -2936,13 +2981,15 @@ server can still be imported through management.
 
 The Tools area (ADR 0036, ADR 0037, ADR 0038) turns outside sources into **toolkits** and serves them on Commissary's
 own MCP endpoint. This version builds one kind, the remote MCP server (Streamable HTTP); OpenAPI, GraphQL and Discovery
-toolkits, OAuth sign-in, the toolkit catalog, grants, prices and approval rules come later (#198 to #209). The package
+toolkits, OAuth sign-in, the toolkit catalog and approval rules come later (#200 to #209); grants (#198) and prices,
+usage records and Spend limits of tool calls (#199) are here. The package
 (`@commissary/tools`) is shaped like Models: entry points `./api` (the MCP endpoint's routes, the cron task),
 `./management`, `./state` and `./testing`, a lint boundary (`boundaries/tools-imports`) and a ControlPlane part,
 `ToolsPart`, reached as `stub.tools().x(…)`. It needs no binding of its own: its state is the ControlPlane's
 (`TOOLS_TABLES`: `toolkits`, `toolkit_credentials`, `toolkit_tools`, `tool_overrides`, `toolkit_sessions`,
 `tool_grants`, dropped by `wipe()`), its view of `env` (`ToolsBindings`) adds only the Platform registry and the app
-host for the endpoint's connect links, and it reaches MCP servers from the ControlPlane through the global `fetch`
+host for the endpoint's connect links and the usage database its tool calls' records go into (`USAGE`, the table
+Models writes too), and it reaches MCP servers from the ControlPlane through the global `fetch`
 behind the outbound guard.
 
 - **What Tools shares with Models**: the ownership rules (`Scope`, `FULL_ACCESS`, `accessTo`: who reaches a shared or a
@@ -3028,6 +3075,21 @@ behind the outbound guard.
   and clearing it answers `{ id, removed: true }`, as the tool then leaves the list.
 - **Tool class** (ADR 0038): `read` when the tool's annotations say `readOnlyHint: true`, else `write`; an override's
   class wins.
+- **Prices** (`tools/toolkits/price.ts`, #199, ADR 0038): an org admin prices a call of an org toolkit's tools in
+  micro-USD, on the toolkit (`PATCH /toolkits/:id` `price_micros`; `null` clears it) or per tool in its override
+  (`price_micros`, which wins, so `0` makes one tool of a priced toolkit free; the override is written whole, so one
+  that leaves the price out clears it). A whole number from 0 to 10^12 (US$1,000,000), else `422 invalid`; a private
+  toolkit takes none (`422 invalid`): a member may not price the tools of their own. A tool without a price costs
+  nothing and, unlike a model without one, is not flagged: most tools are free. Prices are columns of `toolkits` and
+  `tool_overrides` (`price_micros`, added by `ALTER TABLE` to a ControlPlane from before them, so nothing is priced
+  after an upgrade). Views show the toolkit's price, the override's and each tool's effective price; the org export
+  carries the toolkit's and the override's. A call is priced in the ControlPlane when it is called, so a later price
+  change prices later calls only.
+- **Usage and Spend of tool calls** (#199): each call that reaches a tool leaves a usage record (_Usage accounting
+  and observability_, "Tool calls"), written by the endpoint off the response path; a priced call is checked against
+  the caller's Spend limits before the upstream is reached and charged on a result (_Spend limits_, "Tool calls"). A
+  toolkit's shared credential may carry Spend limits of its own (`POST /spend/limits`, `kind: "toolkit"`, `subject`
+  the toolkit's id); they go when the toolkit is removed or its shared credential disconnected.
 - **The MCP endpoint** (`tools/mcp/endpoint.ts`, `tools/mcp/protocol.ts`, #197): `POST /mcp` on the API host (a client
   API path, `CLIENT_API_PREFIXES`; on a Commissary Cloud stage with one host also the zone route `/mcp*`), behind the
   API Worker's client gate like the model routes: a member's API key in any form the gate reads, the cross-site checks (a foreign
@@ -3119,7 +3181,8 @@ behind the outbound guard.
 - **Members and orgs**: a member who leaves takes their private toolkits, their private credentials on org toolkits,
   the upstream sessions of those and the tool grants that named them (`memberLeft`); a deleted team takes its tool
   grants (`teamDeleted`), and a removed toolkit its own (`tool_grants` is keyed by `toolkit_id` like the other
-  tables); org deletion drops the tables (`wipe()`), and Tools' org-deletion step has nothing else to delete. Tools
+  tables) and its Spend limits; org deletion drops the tables (`wipe()`), and Tools' org-deletion step has nothing
+  else to delete: its usage records go with Models' step, which deletes every usage row of the org. Tools
   keeps nothing in KV or a per-isolate cache; the cross-org suite (`apps/app/test/org-isolation.test.ts`) checks that
   one org's toolkits are neither listed nor reached by id from another, that its tool grants are its own, and that a
   call goes on in its own org's upstream session. The org export lists the toolkits the caller reaches with their
