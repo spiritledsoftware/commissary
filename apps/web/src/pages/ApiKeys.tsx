@@ -1,6 +1,8 @@
 // API keys (/api-keys): the keys clients send on the client API instead of an Access sign-in (ADR 0022). Every
 // member creates, lists and revokes their own; org admins see and revoke every key of the org. A key is shown whole
 // once, in the answer to its creation: the page keeps it in memory until it is dismissed and never asks for it again.
+// A key may carry a tool scope (#200): the tools of the MCP endpoint it may use, picked when it is created and changed
+// by its member later; the list says how many tools each key may use now.
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { Check, Copy, KeyRound } from "lucide-react";
 import { AsyncResult } from "effect/reactivity";
@@ -12,9 +14,12 @@ import {
   API_KEYS,
   apiKeysAtom,
   revokeApiKeyAtom,
+  updateApiKeyAtom,
+  usableToolsAtom,
 } from "../api/client.ts";
 import { ConfirmDialog, type ConfirmRequest } from "../components/Confirm.tsx";
 import { kit, Problem, Section } from "../components/Kit.tsx";
+import { ToolScopeEditor } from "../components/ToolScopeEditor.tsx";
 import { failureMessage } from "../lib/failure.ts";
 import { formatCount } from "../lib/format.ts";
 import {
@@ -40,6 +45,14 @@ import {
   todayInput,
 } from "../lib/api-keys.ts";
 import { type Caller, roleAs, seesEveryApiKey } from "../lib/role.ts";
+import {
+  draftOfScope,
+  EVERY_TOOL,
+  keyToolsText,
+  missingText,
+  type ScopeDraft,
+  scopeOfDraft,
+} from "../lib/tool-scope.ts";
 import { useAction } from "../lib/use-action.ts";
 import { usePageTitle } from "../lib/use-page-title.ts";
 import { useRole } from "../lib/use-role.ts";
@@ -139,6 +152,37 @@ export const Reveal = ({
   );
 };
 
+/** The tool scope editor over the tools the caller may use; without them, a line that says why. */
+const ScopeField = ({
+  draft,
+  onChange,
+  disabled,
+}: {
+  readonly draft: ScopeDraft;
+  readonly onChange: (draft: ScopeDraft) => void;
+  readonly disabled: boolean;
+}) => {
+  const usable = useAtomValue(usableToolsAtom);
+
+  if (AsyncResult.isSuccess(usable))
+    return (
+      <ToolScopeEditor
+        usable={usable.value}
+        draft={draft}
+        onChange={onChange}
+        disabled={disabled}
+      />
+    );
+
+  return (
+    <p className={kit["muted"]} aria-busy={AsyncResult.isFailure(usable) ? undefined : "true"}>
+      {AsyncResult.isFailure(usable)
+        ? `Could not load your tools, so the key may use every tool you may use. ${failureMessage(usable)}`
+        : "Loading your tools…"}
+    </p>
+  );
+};
+
 const NewKey = ({
   closedBecause,
   onCreated,
@@ -151,6 +195,7 @@ const NewKey = ({
   const create = useAction(createApiKeyAtom);
   const [name, setName] = useState("");
   const [expires, setExpires] = useState("");
+  const [scope, setScope] = useState<ScopeDraft>(EVERY_TOOL);
   const [tried, setTried] = useState(false);
   const [note, setNote] = useState<Note | undefined>(undefined);
   const now = Date.now();
@@ -165,18 +210,21 @@ const NewKey = ({
     if (keyNameProblem(name) !== undefined || expiryProblem(expires, Date.now()) !== undefined)
       return;
     const expiresAt = expiryIso(expires, Date.now());
+    const toolScope = scopeOfDraft(scope);
 
     const outcome = await create.run({
-      payload:
-        expiresAt === undefined
-          ? { name: name.trim() }
-          : { name: name.trim(), expires_at: expiresAt },
+      payload: {
+        name: name.trim(),
+        ...(expiresAt === undefined ? {} : { expires_at: expiresAt }),
+        ...(toolScope === null ? {} : { tool_scope: toolScope }),
+      },
       reactivityKeys: API_KEYS,
     });
 
     if (outcome.ok) {
       setName("");
       setExpires("");
+      setScope(EVERY_TOOL);
       setTried(false);
       onCreated(outcome.value);
     } else {
@@ -244,6 +292,9 @@ const NewKey = ({
             expiryIssue ??
             "Name it after where it is used. A key without an expiry works until you revoke it; one with an expiry stops working at the end of that day."}
         </p>
+        {closedBecause === undefined ? (
+          <ScopeField draft={scope} onChange={setScope} disabled={create.busy} />
+        ) : null}
       </form>
       <NoteLine note={note} what="create the key" />
     </>
@@ -268,12 +319,14 @@ const KeyTable = ({
   withMember,
   busy,
   onRevoke,
+  onEditTools,
 }: {
   readonly keys: ReadonlyArray<ApiKeyView>;
   readonly now: number;
   readonly withMember: boolean;
   readonly busy: boolean;
   readonly onRevoke: (key: ApiKeyView) => void;
+  readonly onEditTools: (key: ApiKeyView) => void;
 }) => (
   <div className={styles["scroll"]} role="region" aria-label="API keys" tabIndex={0}>
     <table className={styles["table"]}>
@@ -284,6 +337,7 @@ const KeyTable = ({
           <th scope="col">Created</th>
           <th scope="col">Last used</th>
           <th scope="col">Expires</th>
+          <th scope="col">Tools</th>
           <th scope="col">Status</th>
           <th scope="col">
             <span className={kit["visuallyHidden"]}>Actions</span>
@@ -310,9 +364,26 @@ const KeyTable = ({
             <td>{lastUsedText(key, now)}</td>
             <td>{expiresText(key)}</td>
             <td>
+              {keyToolsText(key)}
+              {missingText(key) === undefined ? null : (
+                <span className={styles["secondary"]}>{missingText(key)}</span>
+              )}
+            </td>
+            <td>
               <Status keyView={key} now={now} />
             </td>
             <td className={styles["actions"]}>
+              {key.mine && canRevoke(key, now) ? (
+                <button
+                  type="button"
+                  className={styles["revoke"]}
+                  aria-label={`Change the tools of ${key.name}`}
+                  disabled={busy}
+                  onClick={() => onEditTools(key)}
+                >
+                  Tools
+                </button>
+              ) : null}
               {canRevoke(key, now) ? (
                 <button
                   type="button"
@@ -332,6 +403,63 @@ const KeyTable = ({
   </div>
 );
 
+/** Changes the tool scope of one of the caller's keys: it applies to the key's next request. */
+const EditTools = ({
+  keyView,
+  onDone,
+}: {
+  readonly keyView: ApiKeyView;
+  readonly onDone: (note: Note | undefined) => void;
+}) => {
+  const update = useAction(updateApiKeyAtom);
+  const [draft, setDraft] = useState<ScopeDraft>(() => draftOfScope(keyView.tool_scope));
+  const [problem, setProblem] = useState<string | undefined>(undefined);
+
+  const save = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setProblem(undefined);
+
+    const outcome = await update.run({
+      params: { id: keyView.id },
+      payload: { tool_scope: scopeOfDraft(draft) },
+      reactivityKeys: API_KEYS,
+    });
+
+    if (outcome.ok) onDone({ tone: "done", text: `Changed the tools of ${keyView.name}.` });
+    else setProblem(keyProblem(outcome.error, outcome.message, outcome.detail));
+  };
+
+  return (
+    <form
+      className={styles["form"]}
+      onSubmit={save}
+      noValidate
+      aria-label={`The tools of ${keyView.name}`}
+    >
+      <ScopeField draft={draft} onChange={setDraft} disabled={update.busy} />
+      {problem === undefined ? null : <Problem>Could not change the tools. {problem}</Problem>}
+      <div className={styles["formRow"]}>
+        <button
+          type="submit"
+          className={kit["primary"]}
+          disabled={update.busy}
+          aria-busy={update.busy}
+        >
+          {update.busy ? "Saving…" : `Save the tools of ${keyView.name}`}
+        </button>
+        <button
+          type="button"
+          className={kit["secondary"]}
+          disabled={update.busy}
+          onClick={() => onDone(undefined)}
+        >
+          Cancel
+        </button>
+      </div>
+    </form>
+  );
+};
+
 const Keys = ({ caller }: { readonly caller: Caller }) => {
   const result = useAtomValue(apiKeysAtom);
   const retry = useAtomRefresh(apiKeysAtom);
@@ -339,6 +467,7 @@ const Keys = ({ caller }: { readonly caller: Caller }) => {
   const [filter, setFilter] = useState<KeyFilter>("active");
   const [confirm, setConfirm] = useState<ConfirmRequest | undefined>(undefined);
   const [note, setNote] = useState<Note | undefined>(undefined);
+  const [editing, setEditing] = useState<ApiKeyView | undefined>(undefined);
   const every = seesEveryApiKey(caller);
 
   if (!AsyncResult.isSuccess(result)) {
@@ -421,6 +550,20 @@ const Keys = ({ caller }: { readonly caller: Caller }) => {
           withMember={showMemberColumn(all, every)}
           busy={revoke.busy}
           onRevoke={askRevoke}
+          onEditTools={(key) => {
+            setNote(undefined);
+            setEditing(key);
+          }}
+        />
+      )}
+      {editing === undefined ? null : (
+        <EditTools
+          key={editing.id}
+          keyView={editing}
+          onDone={(done) => {
+            setEditing(undefined);
+            setNote(done);
+          }}
         />
       )}
       <NoteLine note={note} what="revoke the key" />

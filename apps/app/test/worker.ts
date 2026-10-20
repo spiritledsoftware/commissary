@@ -6,11 +6,19 @@
 // (`AUTH`). Here `AUTH` is {@link FakeSignIn}, an entrypoint of this Worker reached over RPC like the real one
 // (`ctx.exports`), whose sessions the tests start themselves (test/hosted/support.ts `signIn`). Better Auth's own
 // sign-in is the auth Worker's, tested there (apps/auth/test/).
+//
+// A request with {@link API_WORKER_HEADER} goes to the API Worker's handler (apps/api) instead, with the same bindings:
+// the client API as the zone routes send it to the API Worker on a stage with one host, so a test can follow an MCP
+// client from the app host's OAuth server to `/mcp` (test/hosted/mcp-oauth.test.ts).
 import { WorkerEntrypoint } from "cloudflare:workers";
+import { api } from "@commissary/api";
 import type { SignedInPerson, SignInService } from "@commissary/auth";
 import app from "../src/index.ts";
 
 export { ControlPlane, Platform, SessionState } from "@commissary/state-worker";
+
+/** A request that carries this header goes to the API Worker's handler rather than the app Worker's. */
+export const API_WORKER_HEADER = "x-test-api-worker";
 
 /** The session cookie the fake reads, named like Better Auth's. */
 export const FAKE_SESSION_COOKIE = "__Secure-better-auth.session_token";
@@ -98,6 +106,8 @@ export default {
       bound = { ...env, AUTH: fake };
       withAuth.set(env, bound);
     }
+
+    if (request.headers.has(API_WORKER_HEADER)) return await api.fetch(request, bound, ctx);
 
     return await app.fetch(request, bound, ctx);
   },

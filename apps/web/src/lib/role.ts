@@ -170,6 +170,8 @@ export const pageAllowed = (role: OrgRole, pathname: string, privateCredentials 
   trimmed(pathname) === "/my-models" ||
   trimmed(pathname) === "/api-keys" ||
   trimmed(pathname) === "/limits" ||
+  // The consent page of an MCP client's sign-in (#200): every member signs their own apps in.
+  trimmed(pathname) === "/authorize" ||
   (privateCredentials && (within(pathname, "/accounts") || within(pathname, "/keys")));
 
 // ---------------------------------------------------------------------------------------------------------------

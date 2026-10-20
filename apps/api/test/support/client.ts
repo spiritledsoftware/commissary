@@ -15,6 +15,7 @@ import {
   signToken,
   userClaims,
 } from "@commissary/auth/testing";
+import type { ToolScope } from "@commissary/contract/api-keys";
 import { CurrentOrg, GLOBAL_ORG, newOrgId, type OrgId } from "@commissary/core";
 import { controlPlaneOf, stateAuthDirectory } from "@commissary/state";
 import { makeBehindGate, makeGateLayer } from "../../src/http/gate.ts";
@@ -175,15 +176,24 @@ export const staffedOrg = async (
   return staff;
 };
 
-/** An API key of `member` in `org`, issued as `POST /api-keys` issues it: its id and whole text. */
+/**
+ * An API key of `member` in `org`, issued as `POST /api-keys` issues it: its id and whole text. `toolScope` gives it a
+ * tool scope (#200); without one it may use every tool its member may use.
+ */
 export const issueKey = async (
   org: OrgId,
   member: TestMember,
   name = "laptop",
   expiresAt?: number,
+  toolScope?: ToolScope,
 ): Promise<{ readonly id: string; readonly key: string }> => {
   const issued = await controlPlaneOf(env, org).createApiKey(
-    { memberId: member.id, name, ...(expiresAt === undefined ? {} : { expiresAt }) },
+    {
+      memberId: member.id,
+      name,
+      ...(expiresAt === undefined ? {} : { expiresAt }),
+      ...(toolScope === undefined ? {} : { toolScope }),
+    },
     Date.now(),
   );
 

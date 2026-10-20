@@ -191,11 +191,40 @@ A self-hosted Commissary serves the endpoint at two addresses (ADR 0045):
   org. API keys and management keys are not taken there. A client that registers only through Client ID Metadata
   Documents (CIMD), which Access does not document yet, cannot sign in through Managed OAuth: give it a key.
 - **With an API key**, for headless clients and scripts: `https://api.example.com/mcp` on the **API host**, with the same
-  key as the rest of the client API as a static bearer header. Without a valid key it answers `401` with
-  `WWW-Authenticate: Bearer`; it offers no OAuth sign-in, so a client that starts one has no key configured. A
+  key as the rest of the client API as a static bearer header (a key's tool scope applies, below). Without a valid key
+  it answers `401` with `WWW-Authenticate: Bearer`; on a self-hosted Commissary it offers no OAuth sign-in, so a client
+  that starts one has no key configured. A
   deployment with one host (no API host) has no API-key MCP endpoint: its `/mcp` is the one behind Access.
 
-On Commissary Cloud the endpoint is on the API host only, with API keys.
+On Commissary Cloud the endpoint is on the API host only (`https://api.example.com/mcp`; on a deployment with one host,
+the app host's `/mcp`), and a client either signs in by itself through Commissary's own OAuth (below) or sends an API key
+as a static header ([With an API key](#with-an-api-key-api-host)).
+
+An API key may carry a **tool scope**: on the API keys page, pick per toolkit none, all of its tools, its read tools or
+tools one by one, or leave every tool you may use (now and later). A scoped key's client sees and calls only those
+tools, and never more than you may use; change the scope there at any time, and the next request follows it.
+
+### Commissary Cloud: signed in through OAuth
+
+Add the server by its URL alone and let the client sign in: it finds Commissary's sign-in from the endpoint's `401`,
+registers itself (by its Client ID Metadata Document, or dynamically), and opens your browser on Commissary's consent
+page. Sign in if asked, pick the org (if you are in several), check the app's name and where its access goes, pick the
+tools it may use, and **Allow**. That creates an API key of yours in that org, named after the app, with that tool
+scope: the API keys page lists it, its usage and Spend limits are the key's, and revoking it (or changing its scope)
+there applies to the app. The app refreshes its access by itself until the key is revoked; signing in again from the
+same app replaces the key. **Deny** sends the app away with nothing.
+
+**Claude** (claude.ai, Desktop): **Settings** > **Connectors** > **Add custom connector**, URL
+`https://api.example.com/mcp`, then **Connect**.
+
+**Claude Code**: `claude mcp add --transport http commissary https://api.example.com/mcp`, then `/mcp` and
+**Authenticate** (it listens on `localhost`).
+
+**Cursor**: `{ "mcpServers": { "commissary": { "url": "https://api.example.com/mcp" } } }` in `~/.cursor/mcp.json`, then
+**Connect** in Cursor's MCP settings.
+
+**Codex**: `[mcp_servers.commissary]` with `url = "https://api.example.com/mcp"` in `~/.codex/config.toml`, then
+`codex mcp login commissary`.
 
 ### Signed in through Access (app host)
 

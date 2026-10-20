@@ -8,3 +8,11 @@ export { type ToolsBindings, ToolsEnv } from "./env.ts";
 export { McpRoutes as ClientApiLayer } from "./mcp/endpoint.ts";
 
 export { scheduledTasks } from "./scheduled-tasks.ts";
+
+export {
+  mcpChallenge,
+  ProtectedResourceMetadataRoutes,
+  withMcpAccessToken,
+} from "./oauth/resource.ts";
+
+export { PROTECTED_RESOURCE_METADATA_PATH } from "./oauth/config.ts";

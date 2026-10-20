@@ -1,0 +1,65 @@
+/* The tool scope editor: two choices, then one row per toolkit with its pick, and the tools picked by hand. */
+.editor {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.modes {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+}
+
+.toolkits {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-3);
+  list-style: none;
+  background: var(--sunk);
+  border-radius: var(--radius);
+}
+
+.toolkit {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.toolkitHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.toolkitName {
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.choice {
+  min-width: 10rem;
+}
+
+.tools {
+  display: grid;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0 0 0 var(--space-4);
+  list-style: none;
+}
+
+.toolName {
+  overflow-wrap: anywhere;
+}

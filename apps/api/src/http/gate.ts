@@ -5,11 +5,13 @@
  * cross-site checks (`crossSiteRejection`). On success the principal is available to handlers as `AccessPrincipal`, and
  * `CurrentOrg` is the org the API key names. Any new client-facing surface (the MCP endpoint, #197; webhook triggers,
  * #231) must sit behind this gate or call `limitClientRate` itself: the plan's ceiling is applied here and nowhere else.
- * `/healthz` (and nothing else, `http/hosts.ts` refuses every other path first) passes through. Registered after CORS
- * (`cors.ts`), so preflights are answered before authentication and refusals still carry CORS headers. Refusals on
- * the System One endpoint are in TypeSafe's format (ADR 0032), so TypeSafe's SDKs read them. A `401` on the MCP
- * endpoint carries `WWW-Authenticate: Bearer` (the MCP authorization spec; `resource_metadata` is Commissary Cloud's
- * OAuth server's, #200), so an MCP client asks for a key rather than retrying.
+ * `/healthz` and the MCP endpoint's OAuth metadata (and nothing else, `http/hosts.ts` refuses every other path first)
+ * pass through. Registered after CORS (`cors.ts`), so preflights are answered before authentication and refusals
+ * still carry CORS headers. Refusals on the System One endpoint are in TypeSafe's format (ADR 0032), so TypeSafe's
+ * SDKs read them. A `401` on the MCP endpoint carries `WWW-Authenticate: Bearer` (the MCP authorization spec;
+ * `resource_metadata` is Commissary Cloud's OAuth server's, #200), so an MCP client asks for a key rather than
+ * retrying; there an MCP client may send an access token of that server instead of an API key, which the gate swaps
+ * for the key it stands for (`withMcpAccessToken`), and a `503` answers when that server's store cannot be read.
  */
 import { Effect, Layer, Result } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
@@ -23,6 +25,7 @@ import {
   refusalResponse,
 } from "@commissary/auth";
 import { limitClientRate } from "@commissary/billing/api";
+import { mcpChallenge, withMcpAccessToken } from "@commissary/tools/api";
 import {
   CurrentOrg,
   isClientApiPath,
@@ -64,8 +67,29 @@ export const ClientGate = HttpRouter.middleware<{ provides: AccessPrincipal }>()
         if (rejection !== undefined)
           return refusalResponse(rejection.status, rejection.message, dialect);
 
+        // On Commissary Cloud an MCP client may send an access token of its OAuth server for the API key it stands for.
+        // A store that cannot be read is not a refusal: the client retries rather than signing in again.
+        const swapped = yield* Effect.result(
+          withMcpAccessToken(request.headers, request.originalUrl),
+        );
+
+        if (Result.isFailure(swapped))
+          return yield* Effect.logError(
+            `MCP access token lookup failed: ${swapped.failure.message}`,
+          ).pipe(
+            Effect.as(
+              HttpServerResponse.setHeader(
+                refusalResponse(503, "Authentication service unavailable", dialect),
+                "retry-after",
+                "5",
+              ),
+            ),
+          );
+
+        const headers = swapped.success;
+
         const authenticated = yield* Effect.result(
-          authenticateClient(request.headers, request.originalUrl).pipe(
+          authenticateClient(headers, request.originalUrl).pipe(
             Effect.provideService(AccessJwks, jwks),
             // After authentication and standing: only an org's own requests count against its ceiling.
             Effect.tap((identity) => limitClientRate(identity.org)),
@@ -76,7 +100,7 @@ export const ClientGate = HttpRouter.middleware<{ provides: AccessPrincipal }>()
           const refusal = yield* accessErrorResponse(authenticated.failure, dialect);
 
           return refusal.status === 401 && isMcpPath(request.originalUrl)
-            ? HttpServerResponse.setHeader(refusal, "www-authenticate", "Bearer")
+            ? HttpServerResponse.setHeader(refusal, "www-authenticate", yield* mcpChallenge)
             : refusal;
         }
 

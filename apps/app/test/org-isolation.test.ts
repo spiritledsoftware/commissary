@@ -3,7 +3,7 @@
 // the others: KV, the signature and Antigravity state, the per-isolate caches, SessionState, the D1 usage records
 // through every query the management API exposes, the ControlPlane addressed by key prefix and by slug, and Tools'
 // toolkits by name and by id, their tool grants, the upstream MCP sessions their calls keep and the pending approvals
-// of their calls.
+// of their calls, and Commissary Cloud's OAuth grants for MCP clients.
 // Each store is one `storeCase` in `STORES`: a new store (tool calls, approvals, runs, sandbox and browser sessions,
 // profiles) adds one line there (docs/DEVELOPMENT.md, "Tests").
 import { env } from "cloudflare:workers";
@@ -59,6 +59,7 @@ import {
   fakeMcpServer,
   insertToolCallRecord,
   serveFakeMcpServers,
+  signInGrants,
 } from "@commissary/tools/testing";
 
 serveFakeMcpServers();
@@ -268,6 +269,17 @@ const sessionOf = async (org: IsolationOrg, name: string): Promise<string | unde
 
 // --- the stores ---------------------------------------------------------------------------------------------------------
 
+/** Commissary Cloud's OAuth grants for MCP clients (#200), on the test Worker's `OAUTH_KV`. */
+const oauthGrants = () => {
+  if (env.OAUTH_KV === undefined) throw new Error("OAUTH_KV is not bound (vitest.config.ts)");
+
+  return signInGrants({
+    issuer: "https://commissary.test",
+    resource: "https://commissary.test/mcp",
+    kv: env.OAUTH_KV,
+  });
+};
+
 /** Every store of org data; adding a store is adding a line. */
 const STORES: ReadonlyArray<StoreCase> = [
   // KV through `OrgKv`.
@@ -303,6 +315,12 @@ const STORES: ReadonlyArray<StoreCase> = [
       ),
     read: async (org, name) =>
       (await loadAntigravityHints(orgKv(env.CACHE, org.id), [name])).get(name)?.modelIds?.at(0),
+  }),
+
+  // The library's KV, under the member in their org (`signInUserId`): `name` is the same member id in every org.
+  storeCase("kv: OAuth grants for MCP clients", {
+    write: async (org, name, value) => await oauthGrants().write(org.id, name, value),
+    read: async (org, name) => (await oauthGrants().keyIds(org.id, name)).at(0),
   }),
 
   // SessionState.

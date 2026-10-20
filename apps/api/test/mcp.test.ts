@@ -10,6 +10,7 @@ import {
 } from "cloudflare:test";
 import { env, exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
+import type { ToolScope } from "@commissary/contract/api-keys";
 import { newOrgId, type OrgId } from "@commissary/core";
 import { controlPlaneOf, platformOf } from "@commissary/state";
 import { fakeMcpServer, type FakeMcpOptions, serveFakeMcpServers } from "@commissary/tools/testing";
@@ -108,11 +109,21 @@ const fetchWith = async (request: Request, bindings: Partial<Env>): Promise<Resp
   return response;
 };
 
-/** A client of the endpoint signed in with an API key of `member`, on the Worker with `bindings` if given. */
-const clientOf = async (org: OrgId, member: TestMember, bindings?: Partial<Env>) => {
-  const { key } = await issueKey(org, member);
+/**
+ * A client of the endpoint signed in with an API key of `member`, on the Worker with `bindings` if given; `toolScope`
+ * gives the key a tool scope (#200).
+ */
+const clientOf = async (
+  org: OrgId,
+  member: TestMember,
+  bindings?: Partial<Env>,
+  toolScope?: ToolScope,
+) => {
+  const { id, key } = await issueKey(org, member, "laptop", undefined, toolScope);
 
   return {
+    /** The key's id. */
+    id,
     /** One JSON-RPC message POSTed with the key, and its HTTP answer. */
     send: async (body: RpcMessage, headers: Record<string, string> = {}, path = "/mcp") => {
       const request = new Request(`${LOCAL}${path}`, {
@@ -772,6 +783,151 @@ describe("a private toolkit while the org has private toolkits off", () => {
 
     expect(await names()).toContain("notes_add_note");
     expect(resultOf(await client.send(call.body, call.headers))?.["isError"]).toBeUndefined();
+  });
+});
+
+describe("an API key's tool scope", () => {
+  /** The full names of the tools `member`'s key with `scope` is listed, at `path`. */
+  const listed = async (
+    org: OrgId,
+    member: TestMember,
+    scope: ToolScope | undefined,
+    path = "/mcp",
+  ) => {
+    const list = modern(1, "tools/list");
+
+    return toolsIn(
+      await (await clientOf(org, member, undefined, scope)).send(list.body, list.headers, path),
+    ).map((tool) => tool.name);
+  };
+
+  it("gives exactly the toolkits, read tools or single tools it names, within the member's reach", async () => {
+    const { org, admin, alice, linearId, stripeId, notesId } = await toolkitsOrg("mcp-scope");
+
+    // Without a scope: every tool the member may use.
+    expect(await listed(org, admin, undefined)).toEqual([
+      "linear_create_issue",
+      "linear_delete_issue",
+      "linear_find_issues",
+      "linear_list_issues",
+      "stripe_refund",
+    ]);
+
+    expect(await listed(org, admin, [{ toolkit: stripeId, tools: { kind: "all" } }])).toEqual([
+      "stripe_refund",
+    ]);
+
+    expect(await listed(org, admin, [{ toolkit: linearId, tools: { kind: "read" } }])).toEqual([
+      "linear_find_issues",
+      "linear_list_issues",
+    ]);
+
+    expect(
+      await listed(org, admin, [
+        { toolkit: linearId, tools: { kind: "named", ids: [`${linearId}:delete_issue`] } },
+        { toolkit: stripeId, tools: { kind: "all" } },
+      ]),
+    ).toEqual(["linear_delete_issue", "stripe_refund"]);
+
+    expect(await listed(org, admin, [])).toEqual([]);
+
+    // Never beyond the member's reach: alice is granted nothing of stripe, and admin does not see alice's notes.
+    expect(
+      await listed(org, alice, [
+        { toolkit: stripeId, tools: { kind: "all" } },
+        { toolkit: notesId, tools: { kind: "all" } },
+      ]),
+    ).toEqual(["notes_add_note"]);
+
+    expect(await listed(org, admin, [{ toolkit: notesId, tools: { kind: "all" } }])).toEqual([]);
+
+    // `?toolkits=` narrows what the scope gives.
+    expect(
+      await listed(
+        org,
+        alice,
+        [
+          { toolkit: linearId, tools: { kind: "read" } },
+          { toolkit: notesId, tools: { kind: "all" } },
+        ],
+        "/mcp?toolkits=linear",
+      ),
+    ).toEqual(["linear_find_issues", "linear_list_issues"]);
+  });
+
+  it("answers a call of a tool outside it as an unknown tool, and calls one inside it", async () => {
+    const { org, admin, linearId, stripe } = await toolkitsOrg("mcp-scope-call");
+
+    const client = await clientOf(org, admin, undefined, [
+      { toolkit: linearId, tools: { kind: "read" } },
+    ]);
+
+    const refund = modern(1, "tools/call", { name: "stripe_refund", arguments: {} });
+    const refused = await client.send(refund.body, refund.headers);
+
+    expect(refused.body?.["error"]).toEqual({
+      code: -32602,
+      message: "Unknown tool: stripe_refund",
+    });
+    expect(callsTo(stripe)).toEqual([]);
+
+    const list = modern(2, "tools/call", { name: "linear_list_issues", arguments: {} });
+    const called = await client.send(list.body, list.headers);
+
+    expect(resultOf(called)?.["isError"]).not.toBe(true);
+  });
+
+  it("leaves the model routes alone: a key that may use no tool still lists models", async () => {
+    const { org, admin } = await toolkitsOrg("mcp-scope-models");
+    const { key } = await issueKey(org, admin, "models", undefined, []);
+
+    const response = await exports.default.fetch(
+      new Request(`${LOCAL}/v1/models`, { headers: { authorization: `Bearer ${key}` } }),
+    );
+
+    expect(response.status).toBe(200);
+    await response.body?.cancel();
+  });
+
+  it("gives a key revoked while the gate still trusts it nothing, not its member's reach", async () => {
+    const { org, admin, linearId, linear, stripe } = await toolkitsOrg("mcp-scope-revoked");
+
+    const client = await clientOf(org, admin, undefined, [
+      { toolkit: linearId, tools: { kind: "read" } },
+    ]);
+
+    const list = modern(1, "tools/list");
+
+    // The first request verifies the key, which the gate then trusts for 30 seconds (`VERIFIED_KEY_TTL_MS`).
+    expect(toolsIn(await client.send(list.body, list.headers)).map((tool) => tool.name)).toEqual([
+      "linear_find_issues",
+      "linear_list_issues",
+    ]);
+
+    const revoked = await controlPlaneOf(env, org).revokeApiKey(client.id, Date.now());
+
+    expect(revoked.ok).toBe(true);
+
+    // No `resetApiKeyCaches()`: the gate may still let the key through, but it reaches no tool.
+    const after = await client.send(list.body, list.headers);
+
+    if (after.status === 200) expect(toolsIn(after)).toEqual([]);
+    else expect(after.status).toBe(401);
+
+    for (const [id, name] of [
+      [2, "stripe_refund"],
+      [3, "linear_list_issues"],
+    ] as const) {
+      const call = modern(id, "tools/call", { name, arguments: {} });
+      const refused = await client.send(call.body, call.headers);
+
+      if (refused.status === 200)
+        expect(refused.body?.["error"]).toEqual({ code: -32602, message: `Unknown tool: ${name}` });
+      else expect(refused.status).toBe(401);
+    }
+
+    expect(callsTo(stripe)).toEqual([]);
+    expect(callsTo(linear)).toEqual([]);
   });
 });
 

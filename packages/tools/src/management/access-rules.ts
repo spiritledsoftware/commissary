@@ -11,4 +11,6 @@ import type { AccessRule } from "@commissary/auth";
 export const accessRules: ReadonlyArray<AccessRule> = [
   { path: "/v9/management/toolkits", subpaths: true, role: "member" },
   { path: "/v9/management/approvals", subpaths: true, role: "member" },
+  // What the caller may use (#200): every member reads their own.
+  { path: "/v9/management/tools", role: "member" },
 ];

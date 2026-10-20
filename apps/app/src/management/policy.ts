@@ -41,12 +41,17 @@ const API_KEYS = `${MANAGEMENT_PREFIX}/api-keys`;
  */
 const SPEND = `${MANAGEMENT_PREFIX}/spend`;
 
+/** A member's sign-ins of MCP clients (`hosted/mcp-oauth.ts`), which issue API keys of their own. */
+const MCP_SIGN_INS = `${MANAGEMENT_PREFIX}/mcp-sign-ins`;
+
 /**
  * The routes below `admin`, first match wins: the Worker's own (a member's API keys, Spend limits; the calendar comes
  * before the rest of `/spend`), then each area's, listed explicitly (#134 "The area package convention").
  */
 const RULES: ReadonlyArray<AccessRule> = [
   { path: API_KEYS, subpaths: true, role: "member" },
+  // Commissary Cloud's consent page for MCP clients (#200, `hosted/mcp-oauth.ts`): a member signs a client in.
+  { path: MCP_SIGN_INS, subpaths: true, role: "member" },
   { path: `${SPEND}/settings`, role: "admin" },
   { path: SPEND, subpaths: true, role: "member" },
   ...modelsAccessRules,

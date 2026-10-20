@@ -8,6 +8,8 @@
  * credentials. A toolkit's source passes the outbound guard when it is saved (ADR 0044), and the part builds tool lists
  * with the request's guard policy. Edits of a toolkit or an override name its revision in `If-Match`.
  *
+ * `GET /v9/management/tools`: the tools the caller may use, by toolkit (#200): what a key's tool scope picks from.
+ *
  * `/v9/management/grants/tools` (`ToolGrantsGroup` in `@commissary/contract/grants`): the tool grants (#198, ADR 0038),
  * beside Models' model grants at `/grants`, so the panel shows both on one Grants page. Org admins only (the role
  * table's default); a write names the grant's revision in `If-Match` (`POST` creates at 0).
@@ -270,6 +272,16 @@ const removeGrant = Effect.gen(function* () {
   return yield* writeGrant(id, revision, null);
 });
 
+/** `GET /tools`: what the caller may use on the MCP endpoint, by toolkit (#200). */
+const usable = Effect.gen(function* () {
+  const viewer = yield* currentViewer;
+
+  return jsonReply(
+    200,
+    yield* toolsControlPlane("usableTools", (stub) => stub.tools().usableTools(viewer)),
+  );
+});
+
 // --- pending approvals ------------------------------------------------------------------------------------------------
 
 const listApprovals = Effect.gen(function* () {
@@ -314,6 +326,7 @@ const route = <R>(
 /** Tools' management routes. */
 export const ManagementRoutes = HttpRouter.addAll([
   route("GET", "/toolkits", list),
+  route("GET", "/tools", usable),
   route("POST", "/toolkits", add),
   route("PATCH", "/toolkits/:id", update),
   route("DELETE", "/toolkits/:id", remove),

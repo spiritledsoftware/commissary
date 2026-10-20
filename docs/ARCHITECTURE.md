@@ -1236,10 +1236,17 @@ Every URL an org or member supplies passes one **outbound guard** before Commiss
 - a Vertex service account's `token_uri`, fetched on every token mint (the Vertex import, auth files);
 - the `models.catalog` source, fetched by the cron and the panel's catalog refresh;
 - Commissary Cloud's SSO: an org's OIDC issuer (its discovery document), the JWKS endpoint and the SAML sign-in URL;
-- a toolkit's source, the MCP server's URL, on save and on every fetch (see "Tools").
+- a toolkit's source, the MCP server's URL, on save and on every fetch (see "Tools");
+- Commissary Cloud's OAuth server for MCP clients: a client's Client ID Metadata Document (CIMD) and the JWKS it names,
+  which `@cloudflare/workers-oauth-provider` fetches itself with the global `fetch`. Every call of the library that may
+  fetch runs inside `withOutboundGuard(policy, run)` (`core/outbound/global-fetch.ts`): while `run` is pending, the
+  global `fetch` of the isolate checks each request it makes, and each redirect hop (followed by hand, at most five),
+  against the policy of the request being served (an `AsyncLocalStorage` scope, so other requests of the isolate are
+  untouched; a `fetch` replaced in the meantime, as tests do, is wrapped again). A refused URL rejects like a failed
+  fetch, which the library answers as a CIMD failure.
 
-OAuth sign-in to toolkits, the toolkit catalog's live checks, CIMD and DCR fetches and the sandbox's egress point use the
-same guard when they land, from `@commissary/core`.
+OAuth sign-in to toolkits, the toolkit catalog's live checks and the sandbox's egress point use the same guard when they
+land, from `@commissary/core`.
 
 - **The check** (`core/outbound/check.ts`, `checkOutboundUrl`): only `https:`, plus `http:` and `https:` to loopback
   (`localhost`, `*.localhost`, `127.0.0.0/8`, `::1`) in local development; no IP literal outside the public internet
@@ -2212,8 +2219,9 @@ ADR 0027: deleting something deletes it at once, and Commissary keeps no content
 - **Org deletion** (`deleteOrg`, called by `DELETE /org` and by account deletion, app-only) runs, in this order: the
   org-deletion steps of the areas the Worker mounts, which it takes as input (`OrgDeletionStep` of `@commissary/core`;
   Models' `deleteOrgModels`: the org's usage rows in D1, `deleteOrgUsage`, batched, tool calls' included, then its `org.<id>.…` keys in the
-  `CACHE` KV namespace; Billing's sends the org's unsent usage to Polar and cancels its subscription; Tools' has
-  nothing outside the ControlPlane to delete yet), the
+  `CACHE` KV namespace; Billing's sends the org's unsent usage to Polar and cancels its subscription; Tools', on
+  Commissary Cloud, the org's OAuth sign-ins of MCP clients in `OAUTH_KV`: the grants and tokens of the users
+  `<org>/<member>`, a page at a time), the
   `SessionState` instances it registered, its ControlPlane's whole storage (`ControlPlane.wipeOrg`: the Models, Billing
   and Tools parts drop their tables, then the rest of the SQL
   tables, the key-value store and the alarm go) and last its registry entry, which frees the slug. The registry entry goes last, so a deletion that stops half way
@@ -2639,6 +2647,17 @@ Workers addition replacing the Go server's client keys (`access.api-keys`, impor
   routes that revoke do not clear this cache: the client API may run in its own Worker (ADR 0030), where they could not
   reach it, so the window is the same in every isolate. A deliberate trade against a ControlPlane round trip on every
   request (ADR 0027 asks for "at once"; the member and role checks of Access sign-ins stay per request).
+- **Tool scope** (#200, `ToolScope` in `@commissary/contract/api-keys`; the `tool_scope` JSON column): a key may name the
+  tools of the MCP endpoint it may use, as a tool grant selects them, per toolkit all of its tools, its read tools or
+  tools by stable id (`<toolkit id>:<tool name>`); none (`null`) is every tool its member may use. It narrows the
+  member's reach, never widens it: the Tools part intersects the member's reach, the scope and `?toolkits=` on every
+  list and call (`ToolsPart.#keyScope`, read from the org-wide base per request, so a change applies at once). Set on
+  creation (`POST /api-keys` `tool_scope`) and changed by the key's own member only (`PATCH /api-keys/:id`; another's key
+  is `404`, an admin cannot widen or narrow a member's key); `422 invalid_tool_scope` for a malformed one. A key's view
+  carries `tool_scope`, `tool_count` (what it may use now) and `tool_scope_missing` (ids its scope names that are gone:
+  a removed toolkit or tool stays in the scope, giving nothing). `GET /tools` lists what the caller may use, by toolkit,
+  for the panel's editor and the consent page of an MCP client's sign-in (_Commissary Cloud_). The model routes ignore
+  the scope.
 - **Principal** `{kind: "key", keyId, memberId, email}`: usage records and logs store `key:<key id>` and the member id; the
   caller scope of session state is the member's (`user:<email>`), so a member's keys and their Access-era sessions share
   state. A key is never a platform admin, and the management zone never reads keys.
@@ -2753,6 +2772,8 @@ call's price (_Tools_); the Worker prices each attempt, the ControlPlane prices 
   answers on its own `workers.dev` URL, outside the preview's application. The application has Managed OAuth on with `ACCESS_MANAGED_OAUTH=true`.
 - The Worker verifies `Cf-Access-Jwt-Assertion` (RS256, JWKS from `https://<team>.cloudflareaccess.com/cdn-cgi/access/certs`,
   `iss` = team domain, `aud` contains the application AUD tag, `exp`/`nbf`). JWKS is cached per isolate.
+- MCP clients of a self-hosted Commissary sign in through Access ("MCP clients signed in through Access"); on
+  Commissary Cloud, through Commissary's own OAuth server ("Commissary Cloud", "OAuth for MCP clients").
 - Principal: `email` for users, `common_name` (service token client id) for service tokens. The principal replaces the
   Go `userApiKey` for usage records and the `caller_scope` hash used to isolate session state.
 - Past Access, every protected request needs a role in its org (see "Members, roles and teams"): the
@@ -2846,6 +2867,48 @@ is the Access one, unchanged, and there is no auth Worker. User docs: `docs/ACCE
   preview's Workers share the account's workers.dev subdomain, which its cookie is scoped to, so each preview names its
   cookie apart (`AUTH_COOKIE_PREFIX`). A Cloud preview's app origin is derived before the app Worker exists
   (`infra/preview-origin.ts`). The app host has none of Better Auth's routes.
+- **OAuth for MCP clients** (#200, ADR 0036; `tools/oauth/`, `src/hosted/mcp-oauth.ts`, `apps/api/src/http/gate.ts`):
+  an OAuth 2.1 authorization server on `@cloudflare/workers-oauth-provider` (`OAuthAuthorizationServer`), so an MCP
+  client (Claude's connectors, Claude Code, Cursor, Codex) signs in by itself. It is on only with
+  `COMMISSARY_MODE=cloud` and its three bindings, which the deploy gives the app and API Workers of the `cloud` stage
+  (and `alchemy dev`), never a self-hosted stage or a preview (`mcpOAuthConfig`): `OAUTH_KV` (the library's own KV
+  layout: clients, grants, tokens, consent transactions; a grant's user is `<org id>/<member id>`, so it is org data in
+  the cross-org suite), `MCP_OAUTH_ISSUER` (`https://<app host>`) and `MCP_OAUTH_RESOURCE` (`https://<API host>/mcp`, or
+  the app host's `/mcp` on a stage with one host). Elsewhere every path below answers like an unknown one.
+  - **Discovery**: a `401` on `/mcp` names `resource_metadata` (RFC 9728), served at
+    `/.well-known/oauth-protected-resource/mcp` on the resource's origin (by the API Worker, whose `hosts.ts` lets that
+    path through, or by the app Worker on a stage with one host); it names the issuer, whose RFC 8414 metadata, token
+    endpoint (`/oauth/token`, also RFC 7009 revocation) and dynamic registration (`/oauth/register`, RFC 7591) the app
+    Worker serves through the library (public zone; the library answers CORS and wrong methods).
+  - **Clients**: CIMD (the client id is an `https` URL of its metadata document, fetched behind the outbound guard)
+    preferred, DCR as the fallback. Redirect URIs match exactly, except the port of a loopback redirect URI (RFC 8252
+    §7.3: a native client listens on any free port); PKCE (S256) is required of every client, confidential
+    ones too (Commissary refuses a request without it with an `invalid_request` redirect); `resource` (RFC 8707) must be
+    the MCP endpoint, and every token is bound to it; `iss` (RFC 9207) comes back with the code.
+  - **Consent**: the authorization endpoint is the panel's `/authorize` (a page section, `zones.ts`; `/o/<slug>/authorize`
+    in an org), behind the panel session like any page (a browser without one goes to the sign-in page and back). The
+    page posts the client's query to `POST /mcp-sign-ins` (`McpSignInsGroup`, member role), which validates it and keeps
+    the request server-side in the library's KV, bound to the browser by a `__Host-` cookie; the page gets a handle and
+    what to show of the client (its self-asserted name, or a CIMD client's domain; where the redirect goes, loopback or
+    not). `POST /mcp-sign-ins/approve` (with the tool scope the member picked) creates **one API key** of the member in
+    that org, named after the client, then completes the authorization; `/deny` answers `access_denied`. A handle works
+    once, in that browser, for ten minutes; a refusal the page shows is `422 sign_in_refused`. A member's later sign-in
+    of the same client (a CIMD client: from the same redirect URI) replaces the grant, as the library does, and revokes
+    the replaced grant's key, best-effort: the library has deleted the grant's tokens already and nobody else holds
+    the key, so a revocation that fails is logged and leaves a key no one can use in the member's list.
+  - **Tokens stand for the key**: the grant's props carry the key itself, encrypted by the library with key material
+    only a token unwraps, and the metadata its id. On `/mcp` the API Worker's gate swaps a bearer that is not a `cms_`
+    key for the key its live access token carries (`withMcpAccessToken`) before `authenticateClient`, so the request is
+    the key's in everything: usage, Spend limits, the plan's rate ceiling, the tool scope. A token of another resource,
+    expired or of no grant stays as sent and is refused like a bad key; a store that cannot be read answers `503`, not
+    `401`, so the client retries rather than sending its member through a sign-in again. The token endpoint checks on
+    every code exchange and refresh that the key is still live (`verifyApiKey`): a revoked key answers
+    `invalid_grant`, which also revokes the grant; a check that cannot be made answers `temporarily_unavailable` and
+    keeps it. Revoking the key in the panel therefore signs the client out: an access token already issued may pass the gate for the verified-key
+    cache's 30 s, but reaches no tool, since the tool scope of a key no longer stored is none (`ToolsPart`). A client
+    that revokes its own grant (RFC 7009) leaves its key in the member's list, where nothing can use it (no token
+    reaches it, and the key itself was only ever in the grant); nothing sweeps it, the member revokes it.
+    No token passes through: neither these tokens nor any upstream credential cross over.
 - **RPC** (`SignInService`, `auth/sign-in-service.ts`; `src/hosted/sign-in.ts`): the app Worker binds the auth Worker
   as a service (`AUTH`, Cloud only) and asks it whose session a cookie is (the gate's `SignInSessions` port), to end
   people's or a domain's sessions (a suspension, single sign-on becoming required) and to delete a sign-in account.
@@ -3205,7 +3268,8 @@ behind the outbound guard. The part's one binding is optional: Browser Run's `BR
   API path, `CLIENT_API_PREFIXES`; on a Commissary Cloud stage with one host also the zone route `/mcp*`), behind the
   API Worker's client gate like the model routes: a member's API key in any form the gate reads, the cross-site checks (a foreign
   `Origin` is `403`, the transport's DNS-rebinding rule) and, on Commissary Cloud, the org's request-rate ceiling. A
-  `401` there carries `WWW-Authenticate: Bearer`; `resource_metadata` comes with Commissary Cloud's OAuth server (#200).
+  `401` there carries `WWW-Authenticate: Bearer`, with `resource_metadata` on Commissary Cloud (its OAuth server, below).
+  A key's tool scope (_API keys_) narrows what the endpoint lists and calls.
   **Behind Access** (#251, ADR 0045): a self-hosted Commissary's app Worker mounts the same routes on the app host at
   `/mcp` for `global` and `/o/<slug>/mcp` for another org (Tools' `mcpRoutesAt`, from `@commissary/tools/management`;
   `apps/app/src/http/mcp.ts`), in a zone of their own (`management/zones.ts` `mcp`, classified before the panel pages),
@@ -3220,7 +3284,7 @@ behind the outbound guard. The part's one binding is optional: Browser Run's `BR
   (_Upstream sessions_ below). On a stage with one host the API Worker gets no `/mcp*` zone route and the bypass
   application leaves `/mcp` out (`infra/access-config.ts` `zoneRoutedPrefixes`, `CLIENT_API_PATHS`), so the app host's `/mcp` is this endpoint and the
   API-key one needs an API host. Commissary Cloud's app Worker answers `/mcp` `404` like the client API; its MCP
-  clients use the API host's with Commissary's own OAuth (#200). Commissary speaks the protocol itself
+  clients use the API Worker's with Commissary's own OAuth (_Commissary Cloud_, "OAuth for MCP clients"). Commissary speaks the protocol itself
   rather than through the MCP TypeScript SDK or Cloudflare's `createMcpHandler` (neither is a dependency): it serves
   five methods with one JSON answer each, and the area's client already speaks both eras by hand. Effect's own
   `McpServer` (`effect/ai`) does not fit either: its HTTP layer (`layerHttpRequestScoped`) is sessionless only, so it
@@ -3435,10 +3499,11 @@ behind the outbound guard. The part's one binding is optional: Browser Run's `BR
   the upstream sessions of those, the tool grants that named them and the pending approvals of their calls, and leaves
   every list of approvers (`memberLeft`); a deleted team takes its tool grants (`teamDeleted`), and a removed toolkit
   its own and its pending approvals (`tool_grants` and `tool_approvals` are keyed by `toolkit_id` like the other
-  tables) and its Spend limits; org deletion drops the tables (`wipe()`), and Tools' org-deletion step has nothing
-  else to delete: its usage records go with Models' step, which deletes every usage row of the org. Tools
-  keeps nothing in KV or a per-isolate cache; the cross-org suite (`apps/app/test/org-isolation.test.ts`) checks that
-  one org's toolkits are neither listed nor reached by id from another, that its tool grants are its own, that a
+  tables) and its Spend limits; org deletion drops the tables (`wipe()`), and Tools' org-deletion step deletes the
+  org's OAuth sign-ins of MCP clients on Commissary Cloud (grants and tokens in `OAUTH_KV`, the one thing Tools keeps
+  in KV; the per-isolate cache of OAuth servers in `oauth/server.ts` holds no org data): its usage records go with
+  Models' step, which deletes every usage row of the org. The cross-org suite (`apps/app/test/org-isolation.test.ts`)
+  checks that one org's toolkits are neither listed nor reached by id from another, that its tool grants are its own, that a
   call goes on in its own org's upstream session, and that a member finds only their own org's pending approvals. The
   org export lists the toolkits the caller reaches with their credentials' kinds, their overrides and their approval
   rules, never a secret, and for an org admin each org toolkit's tool grants (subjects by email or team name, as

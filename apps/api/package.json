@@ -5,6 +5,9 @@
   "description": "The API Worker (ADR 0030): the client API of every area and the cron jobs; it binds the state Worker's Durable Objects",
   "license": "FSL-1.1-ALv2",
   "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc"
@@ -20,6 +23,7 @@
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "1.4.2",
+    "@commissary/contract": "workspace:*",
     "@commissary/state-worker": "workspace:*",
     "@effect/vitest": "catalog:",
     "@types/node": "catalog:",

@@ -13,7 +13,7 @@
  */
 import { Clock, Effect, Layer, type Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
-import { AccessPrincipal, currentViewer, viewerOf } from "@commissary/auth";
+import { AccessPrincipal, viewerOf } from "@commissary/auth";
 import type { Approver } from "@commissary/contract/approvals";
 import { boundedBodyText, CurrentOrg, CurrentOutboundPolicy, MCP_PATH } from "@commissary/core";
 import { panelPageUrl } from "@commissary/state";
@@ -91,11 +91,18 @@ interface Served {
   readonly toolkits: ReadonlySet<string> | undefined;
 }
 
-/** `tools/list`: every tool in one page; the list is the member's, so only their caches may keep it. */
+/**
+ * `tools/list`: every tool in one page, narrowed by the API key's tool scope (#200); the list is the member's, so only
+ * their caches may keep it.
+ */
 const listTools = Effect.fnUntraced(function* (context: Served) {
-  const viewer = yield* currentViewer;
+  const identity = yield* AccessPrincipal;
+  const viewer = viewerOf(identity);
+  const apiKeyId = identity.principal.kind === "key" ? identity.principal.keyId : undefined;
 
-  const tools = yield* toolsControlPlane("clientTools", (stub) => stub.tools().clientTools(viewer));
+  const tools = yield* toolsControlPlane("clientTools", (stub) =>
+    stub.tools().clientTools(viewer, apiKeyId),
+  );
 
   return {
     tools: tools

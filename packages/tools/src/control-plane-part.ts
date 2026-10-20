@@ -8,6 +8,7 @@ import type {
   Approver,
   ApproverView,
 } from "@commissary/contract/approvals";
+import type { ToolScope } from "@commissary/contract/api-keys";
 import type { GrantSubject, ToolGrant, ToolGrants } from "@commissary/contract/grants";
 import type {
   ConnectCredential,
@@ -27,6 +28,8 @@ import type {
   ToolsList,
   ToolView,
   UpdateToolkit,
+  UsableTool,
+  UsableTools,
 } from "@commissary/contract/tools";
 import type { ToolCallApproval } from "@commissary/contract/usage";
 import {
@@ -55,7 +58,7 @@ import {
   type ToolGrantEntry,
   type ToolGrantValue,
 } from "./grants/grant.ts";
-import { type GrantableTool, grantedTools } from "./grants/reach.ts";
+import { type GrantableTool, grantedTools, inToolScope } from "./grants/reach.ts";
 import { cleanToolGrant, ToolGrantStore } from "./grants/store.ts";
 import { callUpstreamTool, LISTING_TIMEOUT, listUpstreamTools } from "./mcp/client.ts";
 import { isToolkitName, isToolName, fullToolName, MAX_FULL_NAME } from "./toolkits/names.ts";
@@ -236,7 +239,10 @@ export interface ToolCall {
   readonly arguments?: Schema.JsonObject | undefined;
   /** The toolkits `?toolkits=` names; undefined: every toolkit. */
   readonly toolkits?: ReadonlyArray<string> | undefined;
-  /** The API key the call came with, whose Spend limits a priced call counts toward (#199). */
+  /**
+   * The API key the call came with: its tool scope narrows what the call reaches (#200), and a priced call counts
+   * toward its Spend limits (#199).
+   */
   readonly apiKeyId?: string | undefined;
   /** The caller's principal, which names a caller without a member in a pending approval (#201). */
   readonly principalId?: string | undefined;
@@ -329,6 +335,12 @@ export type ToolCallOutcome =
   | { readonly outcome: "refused"; readonly refusal: Refusal; readonly usage: CallUsage }
   | { readonly outcome: "result"; readonly result: Schema.JsonObject; readonly usage: CallUsage }
   | { readonly outcome: "failed"; readonly message: string; readonly usage: CallUsage };
+
+/** What an API key's view says of its tools (#200): how many it may use now, and what its scope names that is gone. */
+export interface KeyToolSummary {
+  readonly toolCount: number;
+  readonly missing: ReadonlyArray<string>;
+}
 
 /** A tool the MCP endpoint serves a member, and how they reach it. */
 interface ReachableTool {
@@ -1080,10 +1092,11 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
    * (ADR 0038). A member uses every tool of their own private toolkits (while the org lets members add them) and every
    * tool of an org toolkit that takes private credentials, as themselves, while the org lets members hold private
    * credentials; and the tools of org toolkits' shared credentials their tool grants give (#198). There is no default
-   * tool grant.
+   * tool grant. A request with an API key (`apiKeyId`) gets what both the member's reach and the key's tool scope allow
+   * (#200), read from the key on every request, so a change to the scope applies at once.
    */
-  clientTools(viewer: Viewer): ReadonlyArray<ClientTool> {
-    return this.#reachable(viewer).map(({ tool }) => ({
+  clientTools(viewer: Viewer, apiKeyId?: string): ReadonlyArray<ClientTool> {
+    return this.#reachable(viewer, this.#keyScope(apiKeyId)).map(({ tool }) => ({
       name: tool.name,
       toolkit: tool.toolkit.name,
       ...(tool.description === undefined ? {} : { description: tool.description }),
@@ -1148,7 +1161,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     call: ToolCall,
     policy: OutboundPolicy,
   ): Promise<ToolCallOutcome> {
-    const reached = this.#reachable(viewer).find(
+    const reached = this.#reachable(viewer, this.#keyScope(call.apiKeyId)).find(
       ({ tool }) =>
         tool.name === call.name &&
         (call.toolkits === undefined || call.toolkits.includes(tool.toolkit.name)),
@@ -1422,9 +1435,9 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   /**
    * The served tools `viewer` reaches ({@link clientTools}), sorted by full name, and how. A private toolkit counts
    * only while the org lets members add them: otherwise it is kept, but not served, and does not shadow an org toolkit
-   * of its name.
+   * of its name. `scope` (an API key's tool scope, #200) narrows them further; `undefined`: no narrowing.
    */
-  #reachable(viewer: Viewer): ReadonlyArray<ReachableTool> {
+  #reachable(viewer: Viewer, scope?: ToolScope): ReadonlyArray<ReachableTool> {
     const member = viewer.member;
 
     // A built-in toolkit's shared credential is Commissary's own binding, always there.
@@ -1455,8 +1468,79 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
           shared.has(tool.toolkit.id) &&
           granted(grantable(tool)),
       }))
-      .filter((reachable) => reachable.asMember || reachable.granted)
+      .filter(
+        (reachable) =>
+          (reachable.asMember || reachable.granted) &&
+          inToolScope(scope, grantable(reachable.tool)),
+      )
       .toSorted((a, b) => (a.tool.name < b.tool.name ? -1 : 1));
+  }
+
+  /**
+   * The tool scope of the API key `id` (#200), read from the org-wide base on every request; `undefined` (no narrowing)
+   * for a request without a key or a key without a scope. A key no longer stored (revoked, or replaced by a later
+   * sign-in of its MCP client) reaches nothing (`[]`): the gate's verified-key cache may still let it through for up
+   * to 30 seconds (`@commissary/auth` `VERIFIED_KEY_TTL_MS`), so its tools must not fall back to its member's reach.
+   */
+  #keyScope(id: string | undefined): ToolScope | undefined {
+    if (id === undefined) return undefined;
+
+    const key = this.#core.apiKey(id);
+
+    return key === undefined ? [] : key.toolScope;
+  }
+
+  /**
+   * The tools `viewer` may use, by toolkit, for the panel's tool scope editor and consent page (#200): what the MCP
+   * endpoint lists for them without a key's scope, with each tool's stable id and class.
+   */
+  usableTools(viewer: Viewer): UsableTools {
+    const toolkits = new Map<string, { id: string; name: string; tools: Array<UsableTool> }>();
+
+    for (const { tool } of this.#reachable(viewer)) {
+      const toolkit = toolkits.get(tool.toolkit.id) ?? {
+        id: tool.toolkit.id,
+        name: tool.toolkit.name,
+        tools: [],
+      };
+
+      toolkit.tools.push({
+        id: stableId(tool.toolkit.id, tool.upstreamName),
+        name: tool.name,
+        tool_class: tool.toolClass,
+      });
+      toolkits.set(tool.toolkit.id, toolkit);
+    }
+
+    return {
+      toolkits: [...toolkits.values()].toSorted((a, b) => (a.name < b.name ? -1 : 1)),
+    };
+  }
+
+  /**
+   * For each API key (its member and tool scope), how many tools it may use now (`tool_count`) and what its scope names
+   * that no longer exists (`missing`: a removed toolkit's id, a named tool's stable id its toolkit's list no longer
+   * has), for the API keys' views (#200).
+   */
+  keyToolSummaries(
+    keys: ReadonlyArray<{ readonly memberId: string; readonly toolScope?: ToolScope | undefined }>,
+  ): ReadonlyArray<KeyToolSummary> {
+    const listed = new Set(
+      this.#store.tools().map((tool) => stableId(tool.toolkitId, tool.upstreamName)),
+    );
+
+    return keys.map((key) => {
+      const missing = (key.toolScope ?? []).flatMap((entry) => {
+        if (this.#store.toolkit(entry.toolkit) === undefined) return [entry.toolkit];
+
+        return entry.tools.kind === "named" ? entry.tools.ids.filter((id) => !listed.has(id)) : [];
+      });
+
+      return {
+        toolCount: this.#reachable({ member: key.memberId, admin: false }, key.toolScope).length,
+        missing,
+      };
+    });
   }
 
   // --- tool grants (ADR 0038) -------------------------------------------------------------------------------------

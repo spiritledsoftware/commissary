@@ -205,11 +205,11 @@ export const webPanelAsset = Effect.gen(function* () {
 
 /**
  * Router paths of the panel pages: `/` and each section with its sub-paths (a `/x/*` route also matches `/x`).
- * `/assets` is served by `webPanelAsset`.
+ * `/assets` is served by `webPanelAsset`, `/authorize` (Commissary Cloud's only) by `hosted/mcp-oauth.ts`.
  */
 export const PANEL_PAGE_PATHS: ReadonlyArray<`/${string}`> = [
   "/",
-  ...PANEL_SECTIONS.filter((section) => section !== "assets").map(
+  ...PANEL_SECTIONS.filter((section) => section !== "assets" && section !== "authorize").map(
     (section): `/${string}` => `/${section}/*`,
   ),
 ];

@@ -2,7 +2,10 @@ import { Layer } from "effect";
 import { HttpRouter } from "effect/http";
 import { WorkersLoggerLayer } from "@commissary/core";
 import { ClientApiLayer as ModelsClientApi, TraceLayer } from "@commissary/models/api";
-import { ClientApiLayer as ToolsClientApi } from "@commissary/tools/api";
+import {
+  ClientApiLayer as ToolsClientApi,
+  ProtectedResourceMetadataRoutes,
+} from "@commissary/tools/api";
 import { behindGate, GateLayer } from "./gate.ts";
 import { RootRoutes } from "./routes.ts";
 
@@ -12,6 +15,8 @@ import { RootRoutes } from "./routes.ts";
  */
 export const ApiLayer = Layer.mergeAll(
   RootRoutes,
+  // Public: the MCP endpoint's OAuth metadata on Commissary Cloud (#200), unknown elsewhere.
+  ProtectedResourceMetadataRoutes,
   GateLayer,
   behindGate(Layer.mergeAll(ModelsClientApi, ToolsClientApi)),
   // Request trace id header and structured request logs (packages/models/src/observability).

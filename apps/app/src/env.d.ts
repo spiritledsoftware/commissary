@@ -73,6 +73,16 @@ interface __BaseEnv_Env {
    * fake.
    */
   BROWSER?: Pick<BrowserRun, "quickAction">;
+  /**
+   * Commissary Cloud's OAuth server for MCP clients (#200, src/hosted/mcp-oauth.ts, `@commissary/tools`' `oauth/`): the
+   * KV namespace `@cloudflare/workers-oauth-provider` keeps clients, grants, tokens and consents in; bound on the
+   * `cloud` stage only (and under `alchemy dev`), never on a self-hosted stage or a preview.
+   */
+  OAUTH_KV?: KVNamespace;
+  /** The OAuth server's issuer, `https://<app host>`; with `OAUTH_KV` only. */
+  MCP_OAUTH_ISSUER?: string;
+  /** The MCP endpoint as its resource, `https://<API host>/mcp` (the app host's on a stage with one host). */
+  MCP_OAUTH_RESOURCE?: string;
   CONTROL_PLANE: DurableObjectNamespace<import("@commissary/state-worker").ControlPlane>;
   SESSION_STATE: DurableObjectNamespace<import("@commissary/state-worker").SessionState>;
   /** The Platform registry: one object per deployment (`platformOf`, `@commissary/state`). */

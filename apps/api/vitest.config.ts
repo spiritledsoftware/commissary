@@ -36,6 +36,9 @@ const HOSTED_BINDINGS = {
   POLAR_ACCESS_TOKEN: "polar_oat_test",
   POLAR_PRODUCT_ID: "prod_payg",
   POLAR_SERVER: "sandbox",
+  // The OAuth server for MCP clients (#200), on the test host, as on a stage with one host.
+  MCP_OAUTH_ISSUER: "https://commissary.test",
+  MCP_OAUTH_RESOURCE: "https://commissary.test/mcp",
 };
 
 /**
@@ -63,7 +66,7 @@ const worker = (bindings: Record<string, string>, hosted: boolean) =>
         SESSION_STATE: { className: "SessionState", useSQLite: true },
         PLATFORM: { className: "Platform", useSQLite: true },
       },
-      kvNamespaces: ["CACHE"],
+      kvNamespaces: hosted ? ["CACHE", "OAUTH_KV"] : ["CACHE"],
       d1Databases: ["USAGE"],
       ...(hosted
         ? {

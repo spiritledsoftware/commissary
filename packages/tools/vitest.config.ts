@@ -43,6 +43,10 @@ export default defineConfig({
                 PLATFORM: { className: "Platform", useSQLite: true },
               },
               d1Databases: ["USAGE"],
+              // The OAuth server's store for MCP clients (#200), which its tests hand `oauth/` in a config of their own:
+              // the stage stays self-hosted (no `COMMISSARY_MODE`, `MCP_OAUTH_ISSUER` or `MCP_OAUTH_RESOURCE`), so
+              // nothing else turns the OAuth server on; its flows are the app Worker's hosted tests'.
+              kvNamespaces: ["OAUTH_KV"],
               // A self-hosted stage under test, as the Worker's tests bind it.
               bindings: {
                 ACCESS_TEAM_DOMAIN: "",

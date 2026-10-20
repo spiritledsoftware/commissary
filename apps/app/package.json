@@ -26,6 +26,7 @@
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "1.4.2",
+    "@commissary/api": "workspace:*",
     "@effect/vitest": "catalog:",
     "@types/node": "catalog:",
     "typescript": "catalog:",

@@ -2,7 +2,8 @@
  * What `@commissary/tools` reads from a Worker's env (#134 "How packages get their bindings"): the org's ControlPlane,
  * typed as objects with the Tools part ({@link ToolsControlPlane}), so callers write `stub.tools().x(…)`, and, for the
  * MCP endpoint's connect links, the Platform registry and the app host, and the usage database its tool calls' records
- * go into (#199, `USAGE`, the D1 database Models' records go into too). Its state is the ControlPlane's, and it reaches
+ * go into (#199, `USAGE`, the D1 database Models' records go into too), and on Commissary Cloud its OAuth server for MCP
+ * clients (#200: `OAUTH_KV`, `MCP_OAUTH_ISSUER`, `MCP_OAUTH_RESOURCE`). Its state is the ControlPlane's, and it reaches
  * MCP servers through the global `fetch` behind the outbound guard. Its ControlPlane part reads one binding of the
  * state Worker's apart from these: Browser Run's optional `BROWSER` (#212, `ToolsPartEnv`, `toolkits/built-in.ts`).
  */
@@ -24,6 +25,8 @@ type ToolsPartMethod =
   | "listTools"
   | "servedTools"
   | "clientTools"
+  | "usableTools"
+  | "keyToolSummaries"
   | "callTool"
   | "setOverride"
   | "listGrants"
@@ -55,6 +58,19 @@ export interface ToolsBindings {
   readonly APP_DOMAIN?: string | undefined;
   /** Usage records (D1, `migrations/usage/`): one per tool call (#199), beside Models' model attempts. */
   readonly USAGE: D1Database;
+  /** `cloud` on Commissary Cloud (ADR 0026), the only deployment with an OAuth server for MCP clients (#200). */
+  readonly COMMISSARY_MODE?: string | undefined;
+  /**
+   * Commissary Cloud's OAuth server for MCP clients (#200, `oauth/config.ts`): the KV namespace
+   * `@cloudflare/workers-oauth-provider` keeps its clients, grants, tokens and consent transactions in (its own layout,
+   * not an `OrgKv`: a grant is keyed by the org and member it was issued to), bound on the app and API Workers of the
+   * `cloud` stage only.
+   */
+  readonly OAUTH_KV?: KVNamespace | undefined;
+  /** The OAuth server's issuer, `https://<app host>`; with {@link OAUTH_KV} only. */
+  readonly MCP_OAUTH_ISSUER?: string | undefined;
+  /** The MCP endpoint as the OAuth server's one resource, `https://<API host>/mcp`; with {@link OAUTH_KV} only. */
+  readonly MCP_OAUTH_RESOURCE?: string | undefined;
 }
 
 /**

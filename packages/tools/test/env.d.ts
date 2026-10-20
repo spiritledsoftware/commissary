@@ -16,6 +16,8 @@ interface __ToolsTestEnv extends Omit<
   SESSION_STATE: DurableObjectNamespace<import("./worker.ts").SessionState>;
   /** The usage database the MCP endpoint writes tool calls' records to (`ToolsBindings`). */
   USAGE: D1Database;
+  /** The OAuth server's store for MCP clients (#200, `ToolsBindings`); the stage stays self-hosted without the rest. */
+  OAUTH_KV: KVNamespace;
 }
 
 declare namespace Cloudflare {

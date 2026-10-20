@@ -3,7 +3,8 @@
  * removes, in this order (#134 "Org deletion and crons"):
  *
  * 1. what each area keeps outside the ControlPlane, through the area steps it is given (Models: its usage records in D1
- *    and its keys in the `CACHE` KV namespace, `models/org-deletion.ts`),
+ *    and its keys in the `CACHE` KV namespace, `models/org-deletion.ts`; Tools, on Commissary Cloud: its OAuth sign-ins
+ *    of MCP clients in `OAUTH_KV`, `tools/org-deletion.ts`),
  * 2. the `SessionState` instances it registered (`@commissary/state`'s session instances), each wiped,
  * 3. its ControlPlane's whole storage: credentials, config entries, members, API keys, private data, OAuth logins and
  *    the refresh alarm (`ControlPlane.wipeOrg`),

@@ -41,6 +41,15 @@ interface __ApiWorkerEnv {
   /** `cloud`: Commissary Cloud (ADR 0026): API keys only, under the per-org, per-plan rate ceiling; unset: self-hosted. */
   COMMISSARY_MODE?: string;
   /**
+   * Commissary Cloud's OAuth server for MCP clients (#200, `@commissary/tools`' `oauth/`): its KV namespace, where the
+   * access tokens MCP clients send to `/mcp` are looked up; bound on the `cloud` stage only (and under `alchemy dev`).
+   */
+  OAUTH_KV?: KVNamespace;
+  /** The OAuth server's issuer, `https://<app host>`; with `OAUTH_KV` only. */
+  MCP_OAUTH_ISSUER?: string;
+  /** The MCP endpoint as its resource, `https://<API host>/mcp` (the app host's on a stage with one host). */
+  MCP_OAUTH_RESOURCE?: string;
+  /**
    * Hosted: the Free plan's per-org request-rate ceiling of the client API, 60 a minute (Workers rate limiting, keyed
    * by org id).
    */

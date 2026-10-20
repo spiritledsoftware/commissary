@@ -35,6 +35,8 @@ export const PANEL_SECTIONS = [
   "management-keys",
   "people",
   "approvals",
+  // Commissary Cloud's consent page for MCP clients (#200, `hosted/mcp-oauth.ts`), the OAuth server's `/authorize`.
+  "authorize",
   "assets",
 ] as const;
 
