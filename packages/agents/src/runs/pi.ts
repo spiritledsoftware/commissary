@@ -1,9 +1,9 @@
 /**
  * The adapter over pi-durable and the pi packages it needs (#227, ADR 0040 "Pinning"): the only module that imports
  * `@earendil-works/*`, so they can be replaced without touching the rest of the area. Their versions are pinned exactly
- * (packages/agents/package.json), as their APIs are experimental. The run's Durable Object loads this module with a
- * dynamic `import()` on its first event, so the API Worker's startup does not pay for it (docs/ARCHITECTURE.md,
- * "Agents").
+ * (packages/agents/package.json), as their APIs are experimental. The run's Durable Object imports it statically, and
+ * it imports pi-ai's provider module statically too: no lazy `import()` is shared by the run objects of one isolate,
+ * whose waits on one pending import would resume in another object's I/O context (docs/ARCHITECTURE.md, "Agents").
  *
  * What it does with them: a pi-durable `Harness` on the object's SQLite (`openDurableObjectSqliteStorage`), whose root
  * conversation is the run; one pi-ai provider (`commissary`) whose OpenAI-compatible requests go to the client API
@@ -20,7 +20,7 @@ import {
   type Model,
   Type,
 } from "@earendil-works/pi-ai";
-import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
+import * as openAICompletions from "@earendil-works/pi-ai/api/openai-completions";
 import {
   AssistantEntry,
   ConversationBusy,
@@ -207,8 +207,11 @@ const spendRefusal = (result: CallToolResult): string | undefined =>
 /** Opens the run's harness on the object's storage. */
 export const openPiRun = async (options: PiRunOptions): Promise<PiRun> => {
   const context = BACKGROUND_CONTEXT;
-  // Every request of pi-ai's provider goes through the run's `fetch`, which pi-durable does not pass itself.
-  const completions = openAICompletionsApi();
+  // Every request of pi-ai's provider goes through the run's `fetch`, which pi-durable does not pass itself. The
+  // provider's module is imported statically, not through pi-ai's lazy `import()` (`openai-completions.lazy`): run
+  // objects of one isolate starting at once would await one pending import, and all but one would resume in another
+  // object's I/O context, which workerd refuses.
+  const completions = openAICompletions;
 
   const throughRun = {
     stream: (model, transcript, streamOptions) =>

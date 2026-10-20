@@ -16,18 +16,36 @@ export class ControlPlane extends composeControlPlane({
   agents: (ctx, _env, core) => new AgentsPart(ctx, core),
 }) {}
 
+/** The storage key by which a test marks a run's object unreachable for deliveries. */
+export const UNREACHABLE = "test:unreachable";
+
+/**
+ * No client API: every request answers `404`, a status the model client (pi-ai) does not retry, so a turn fails at once.
+ * A `503` it would retry with backoff, seconds per turn, which made the tests' waits depend on the runner's speed.
+ */
 const NO_CLIENT_API: RunGateway = {
-  serve: async () => new Response("no client API in Agents' tests", { status: 503 }),
+  serve: async () => new Response("no client API in Agents' tests", { status: 404 }),
 };
 
 /**
- * The agent runs' object (`AGENT_RUN`, #227) without the API Worker: its run gateway answers every request `503`, so a
+ * The agent runs' object (`AGENT_RUN`, #227) without the API Worker: its run gateway answers every request `404`, so a
  * run's turn fails at its first model call. The run's model and tool calls are tested with the API Worker's gateway in
  * the app Worker's tests (apps/app/test/agent-runs.test.ts).
  */
 export class AgentRun extends AgentRunObject {
   constructor(ctx: DurableObjectState, env: AgentRunEnv) {
     super(ctx, env, { gateway: () => NO_CLIENT_API });
+  }
+
+  /**
+   * A test marks a run unreachable ({@link UNREACHABLE} in its storage): a child run's deliveries to it fail as to a
+   * parent whose ControlPlane cannot be reached (#229).
+   */
+  override async deliver(child: Parameters<AgentRunObject["deliver"]>[0]) {
+    if (this.ctx.storage.kv.get(UNREACHABLE) === true)
+      return { ok: false, error: "unavailable", message: "unreachable in this test" } as const;
+
+    return await super.deliver(child);
   }
 }
 

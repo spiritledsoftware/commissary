@@ -27,6 +27,8 @@ interface __ToolsTestEnv extends Omit<
   COMPUTER_SANDBOX_CONTROL_PLANE: DurableObjectNamespace<
     import("./worker.ts").ComputerSandboxControlPlane
   >;
+  /** A deployment with the Agents area (#229): the agents toolkit, over a fake directory of agents. */
+  AGENTS_CONTROL_PLANE: DurableObjectNamespace<import("./worker.ts").AgentsControlPlane>;
   /** The sandbox's sessions, and the Dynamic Workers their just-bash runs in (`ToolsPartEnv`). */
   SANDBOX_SESSION: DurableObjectNamespace<import("./worker.ts").SandboxSession>;
   LOADER: WorkerLoader;

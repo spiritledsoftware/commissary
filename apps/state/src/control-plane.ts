@@ -1,17 +1,20 @@
 /**
  * The ControlPlane Durable Object as the state Worker defines it (`CONTROL_PLANE`, one object per org):
  * `@commissary/state`'s org-wide base composed with the areas' parts (`composeControlPlane`; #134 "How an area's
- * ControlPlane part works", #148). Today that is the Models part, Billing's and Tools', reached as `stub.models().x(…)`,
- * `stub.billing().x(…)` and `stub.tools().x(…)`. The Tools part gets the built-in toolkits the env's bindings give (the
- * browser toolkit with a `browser` binding, #212; the sandbox toolkit on the `SandboxSession` objects and Dynamic
- * Workers, which every deployment has, #222) and, on Commissary Cloud, the managed OAuth apps whose secrets the env
- * binds (#207).
+ * ControlPlane part works", #148). Today that is the Models part, Billing's, Tools' and Agents', reached as
+ * `stub.models().x(…)`, `stub.billing().x(…)`, `stub.tools().x(…)` and `stub.agents().x(…)`. The Tools part gets the
+ * built-in toolkits the env's bindings give (the browser toolkit with a `browser` binding, #212; the sandbox toolkit on
+ * the `SandboxSession` objects and Dynamic Workers, which every deployment has, #222), on Commissary Cloud the managed
+ * OAuth apps whose secrets the env binds (#207), and the agents toolkit (#229) where the Agents area is (`LOADER`),
+ * whose reach is the Agents part's answer to which agents a caller may run, read in place in the same object: Tools
+ * imports nothing of Agents, and this composition is the seam between them.
  */
 import { composeControlPlane } from "@commissary/state";
-import { AgentsPart } from "@commissary/agents/state";
+import { AgentsPart, type AgentsPartEnv, agentsPresent } from "@commissary/agents/state";
 import { BillingPart } from "@commissary/billing/state";
 import { ModelsPart, type ModelsPartEnv } from "@commissary/models/state";
 import {
+  type AgentDirectory,
   builtInProviders,
   managedAppsOf,
   ToolsPart,
@@ -19,13 +22,44 @@ import {
 } from "@commissary/tools/state";
 
 /** What the parts read from the state Worker's env. */
-type PartsEnv = ModelsPartEnv & ToolsPartEnv;
+type PartsEnv = ModelsPartEnv & ToolsPartEnv & AgentsPartEnv;
+
+/** Each object's Agents part, by the object's state: the Tools part of the same object reads it. */
+const agentsParts = new WeakMap<DurableObjectState, AgentsPart>();
+
+/**
+ * The agents a caller may run, from the Agents part of the object `ctx`. The composition makes both parts with the
+ * object, so the part is there by the first call; one missing is a wiring fault, which fails the call rather than
+ * hiding the toolkit.
+ */
+const agentDirectory = (ctx: DurableObjectState): AgentDirectory => ({
+  runnable: (member) => {
+    const part = agentsParts.get(ctx);
+
+    if (part === undefined) throw new Error("the ControlPlane's Agents part is not wired");
+
+    return part.runnableAgents(member);
+  },
+});
 
 export class ControlPlane extends composeControlPlane({
   models: (ctx, env: PartsEnv, core) => new ModelsPart(ctx, env, core),
   billing: (ctx) => new BillingPart(ctx),
   tools: (ctx, env: PartsEnv, core) =>
-    new ToolsPart(ctx, core, builtInProviders(env), env.OWN_HOSTS, managedAppsOf(env)),
+    new ToolsPart(
+      ctx,
+      core,
+      // The agents toolkit only where the Agents area is (`LOADER`, ADR 0043), as the rest of the area.
+      { ...builtInProviders(env), ...(agentsPresent(env) ? { agents: agentDirectory(ctx) } : {}) },
+      env.OWN_HOSTS,
+      managedAppsOf(env),
+    ),
   // The Agents part (#226), reached as `stub.agents().x(…)`: hosted agent definitions and their grants.
-  agents: (ctx, _env, core) => new AgentsPart(ctx, core),
+  agents: (ctx, _env, core) => {
+    const part = new AgentsPart(ctx, core);
+
+    agentsParts.set(ctx, part);
+
+    return part;
+  },
 }) {}

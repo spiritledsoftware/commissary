@@ -6,11 +6,11 @@ import type { OrgRole } from "@commissary/contract/members";
 import { GLOBAL_ORG, type OrgId } from "@commissary/core";
 
 /**
- * Who started an agent run (GLOSSARY "Starter"): a member, for now (child runs, #229, add a run). A run no one started
- * (a shared agent's schedule or webhook, #231) has none.
+ * Who started an agent run (GLOSSARY "Starter"): a member, or the run that started it through the agents toolkit (a
+ * child run, #229). A run no one started (a shared agent's schedule or webhook, #231) has none.
  */
 export interface RunStarter {
-  readonly kind: "member";
+  readonly kind: "member" | "run";
   readonly id: string;
 }
 
@@ -62,7 +62,13 @@ export type Principal =
       readonly agentId: string;
       /** None for a run no one started (a shared agent's schedule or webhook). */
       readonly starter?: RunStarter | undefined;
-      /** The starter's email: on Commissary Cloud their standing is checked on every request of the run. */
+      /**
+       * The member who started the run, or, for a child run (#229), the member who started the run at the head of its
+       * chain: the caller of its tool calls' approvals (ADR 0040). Absent from a principal its ControlPlane resolved
+       * before child runs (then the starter, if any, is a member), and for a run no one started.
+       */
+      readonly starterMember?: string | undefined;
+      /** The starter member's email: on Commissary Cloud their standing is checked on every request of the run. */
       readonly starterEmail?: string | undefined;
       readonly actsAs: RunActsAs;
       readonly reach: RunReach;
@@ -168,7 +174,7 @@ export const isSharedAgentRun = (
 export interface UsageRun {
   readonly agentId: string;
   readonly runId: string;
-  /** `member:<member id>`; none for a run no one started. */
+  /** `member:<member id>`, or `run:<run id>` for a child run (#229); none for a run no one started. */
   readonly starter?: string;
 }
 

@@ -26,6 +26,15 @@
  * never made again, an interrupted one answers the model as interrupted, and a model call cut off is made again. A
  * storage failure closes the harness; the next event reopens it.
  *
+ * **Claims and child runs** (#229). The agents toolkit's wait claims a turn's result for its caller
+ * ({@link AgentRunObject.claim}, a {@link Claimant}): the oldest finished turn that caller has not claimed yet, or the
+ * running turn's once it finishes. A child run (one another run started through the agents toolkit, which its start
+ * names, {@link ChildOf}) hands each finished turn's result to the run that started it unless that run claimed it: it
+ * delivers it there as a message ({@link AgentRunObject.deliver}), which joins the parent's running turn as steering or
+ * starts a turn on an idle parent. A delivery that cannot reach the parent is kept and tried again from the object's
+ * alarm, backing off, at most {@link MAX_DELIVERY_ATTEMPTS} times; the parent takes each once (its idempotency key), and
+ * only from its own child runs. A run that ends stops the child runs the index ended with it ({@link AgentRunObject.stop}).
+ *
  * Its calls that change the run run one at a time (`#serial`); waiting and showing do not wait for them.
  */
 import { DurableObject } from "cloudflare:workers";
@@ -40,8 +49,8 @@ import type {
 import { OrgId } from "@commissary/core";
 import { type AgentsControlPlane, agentRunName } from "../env.ts";
 import { iso, ok, refuse } from "../result.ts";
-import type { PiEntry, PiRun, Settled } from "./pi.ts";
-import type { RunContext, RunsResult } from "./runs.ts";
+import { openPiRun, type PiEntry, type PiRun, type Settled } from "./pi.ts";
+import type { ChildOf, RunContext, RunsResult } from "./runs.ts";
 
 /** How often an object with a running turn wakes, so a turn an eviction or a deploy cut off resumes. */
 export const HEARTBEAT_MS = 60_000;
@@ -57,6 +66,19 @@ const ACTIVITY_LIMIT = 10;
 /** How much of an entry's text the recent activity shows. */
 const ACTIVITY_TEXT = 300;
 
+/** How long a child run waits before it first tries a failed delivery to its parent again; it doubles each time. */
+const DELIVERY_RETRY_MS = 30_000;
+
+/** The longest wait between two tries of a delivery. */
+const DELIVERY_RETRY_MAX_MS = 3_600_000;
+
+/** How many times a child run tries to deliver a turn's result (about three hours of tries) before it gives up. */
+export const MAX_DELIVERY_ATTEMPTS = 10;
+
+/** The wait before the next try of a delivery tried `attempts` times. */
+const deliveryBackoff = (attempts: number): number =>
+  Math.min(DELIVERY_RETRY_MS * 2 ** Math.max(0, attempts - 1), DELIVERY_RETRY_MAX_MS);
+
 /** The API Worker's run gateway, as the run reaches it: a client API request as the run. */
 export interface RunGateway {
   serve(org: OrgId, run: string, request: Request): Promise<Response>;
@@ -66,13 +88,32 @@ export interface RunGateway {
 export interface AgentRunEnv {
   /** The org's ControlPlane: the run's definition at each turn, and its state in the org's index. */
   readonly CONTROL_PLANE: DurableObjectNamespace<AgentsControlPlane>;
+  /** The runs' objects (its own class): a child run delivers its turns' results to the run that started it (#229). */
+  readonly AGENT_RUN: DurableObjectNamespace<AgentRunObject>;
 }
 
-/** The run an object is asked to start: its org and id, which its name must be. */
+/**
+ * The run an object is asked to start: its org and id, which its name must be; for a child run (#229), its link to the
+ * run that started it, where its turns' results go.
+ */
 export interface RunInit {
   readonly org: OrgId;
   readonly id: string;
+  readonly child?: ChildOf | undefined;
 }
+
+/** A child run's finished turn, as it delivers it to the run that started it (#229). */
+export interface ChildTurn {
+  readonly run: string;
+  readonly child: ChildOf;
+  readonly turn: TurnView;
+}
+
+/**
+ * Who claims a run's results through the agents toolkit (#229): `run:<id>` (a run, for its child runs), `key:<id>` (an
+ * API key) or `member:<id>` (a member signed in). Each claims every result once.
+ */
+export type Claimant = string;
 
 /** A message the run took: the turn it started or joined. */
 export interface Delivered {
@@ -96,6 +137,21 @@ export interface Waited {
   readonly activity?: ReadonlyArray<RunActivity>;
 }
 
+/**
+ * What a claim found (#229): the finished turn it claimed, or on timeout the running turn with the latest activity, or
+ * no turn at all when the claimant had every result already and none runs (`delivered`: some of them reached it as
+ * messages, a child run's results delivered to the run that started it).
+ */
+export interface Claimed {
+  readonly finished: boolean;
+  readonly state: RunState;
+  readonly turn?: TurnView | undefined;
+  readonly activity?: ReadonlyArray<RunActivity> | undefined;
+  readonly delivered?: boolean | undefined;
+}
+
+const ChildOfSchema = Schema.Struct({ parent: Schema.String, agentName: Schema.String });
+
 const StoredMeta = Schema.Struct({
   org: OrgId,
   id: Schema.String,
@@ -104,6 +160,8 @@ const StoredMeta = Schema.Struct({
   ended: Schema.optionalKey(Schema.String),
   /** The last turn's number. */
   seq: Schema.Int,
+  /** Its link to the run that started it through the agents toolkit (#229). */
+  child: Schema.optionalKey(ChildOfSchema),
 });
 
 type StoredMeta = typeof StoredMeta.Type;
@@ -119,6 +177,13 @@ const StoredTurn = Schema.Struct({
   error: Schema.optionalKey(Schema.String),
   startedAt: Schema.Number,
   finishedAt: Schema.optionalKey(Schema.Number),
+  /** The claimants that took its result (#229, {@link Claimant}): none of them takes it again. */
+  claimedBy: Schema.optionalKey(Schema.Array(Schema.String)),
+  /**
+   * A child run's turn (#229): its result is to be delivered to the run that started it (`pending`), was (`delivered`),
+   * or could not be (`dropped`); none when that run claimed it.
+   */
+  delivery: Schema.optionalKey(Schema.Literals(["pending", "delivered", "dropped"])),
 });
 
 type StoredTurn = typeof StoredTurn.Type;
@@ -137,6 +202,25 @@ const ACTIVE = "active";
 
 /** A spend limit's refusal the running turn met: its answer. */
 const REFUSAL = "refusal";
+
+/** The finished turns a child run has yet to deliver to the run that started it (#229), oldest first. */
+const DELIVERIES = "deliveries";
+
+/** A turn a child run has yet to deliver, and how many times it tried. */
+interface PendingDelivery {
+  readonly turn: string;
+  readonly attempts: number;
+}
+
+/** The claimant a child run's parent claims as. */
+const parentClaimant = (child: ChildOf): Claimant => `run:${child.parent}`;
+
+/** Whether `claimant` has `turn`'s result: it claimed it, or it is the parent the result was delivered to. */
+const hasResult = (turn: StoredTurn, claimant: Claimant, meta: StoredMeta): boolean =>
+  (turn.claimedBy ?? []).includes(claimant) ||
+  (meta.child !== undefined &&
+    claimant === parentClaimant(meta.child) &&
+    turn.delivery === "delivered");
 
 const turnKey = (id: string) => `turn:${id}`;
 
@@ -158,6 +242,23 @@ const turnView = (turn: StoredTurn): TurnView => ({
   started_at: iso(turn.startedAt),
   ...(turn.finishedAt === undefined ? {} : { finished_at: iso(turn.finishedAt) }),
 });
+
+/** What a child run's finished turn says to the run that started it, as the message that delivers it (#229). */
+const deliveryText = (child: ChildTurn): string => {
+  const { turn } = child;
+  const head = `[agents] Run ${child.run} (agent ${child.child.agentName}), which you started, finished its turn ${turn.id}`;
+
+  switch (turn.status) {
+    case "done":
+      return `${head}. Its answer:\n\n${turn.answer ?? ""}`;
+    case "failed":
+      return `${head} without an answer: ${turn.error ?? "it failed"}.`;
+    case "cancelled":
+      return `${head}: it was cancelled.`;
+    case "running":
+      return `${head}.`;
+  }
+};
 
 const clipped = (text: string): string =>
   text.length <= ACTIVITY_TEXT ? text : `${text.slice(0, ACTIVITY_TEXT - 1)}…`;
@@ -290,6 +391,9 @@ const warn = (message: string, run: string, ...details: ReadonlyArray<string>): 
 
 const RUN_NOT_FOUND = refuse("not_found", "run not found");
 
+/** A delivery from a run this one did not start (#229). */
+const NOT_A_CHILD = refuse("forbidden", "not a child run of this run");
+
 /** How the API Worker wires the run's object (its constructor's third argument). */
 export interface AgentRunWiring {
   /** The run gateway: deployed, the API Worker's own entrypoint, over its loopback binding (`ctx.exports`). */
@@ -315,6 +419,8 @@ export abstract class AgentRunObject extends DurableObject<AgentRunEnv> {
   #queue: Promise<unknown> = Promise.resolve();
   /** The turns this instance waits on, so each is watched once. */
   readonly #watched = new Set<string>();
+  /** The claimants waiting on each running turn now (#229): its result is theirs when it finishes. */
+  readonly #claiming = new Map<string, Set<Claimant>>();
 
   constructor(ctx: DurableObjectState, env: AgentRunEnv, wiring: AgentRunWiring) {
     super(ctx, env);
@@ -365,12 +471,20 @@ export abstract class AgentRunObject extends DurableObject<AgentRunEnv> {
     return this.env.CONTROL_PLANE.getByName(meta.org).agents();
   }
 
-  /** Tells the org's index the run's state; a failure is only logged (the next change tells it again). */
-  async #report(meta: StoredMeta, state: RunState): Promise<void> {
+  /**
+   * Tells the org's index the run's state; a failure is only logged (the next change tells it again). Answers the child
+   * runs the index ended with this run (#229), when it ended.
+   */
+  async #report(meta: StoredMeta, state: RunState): Promise<ReadonlyArray<string>> {
     try {
-      await this.#controlPlane(meta).runStateChanged(meta.id, state);
+      const ended: unknown = await this.#controlPlane(meta).runStateChanged(meta.id, state);
+
+      // A ControlPlane deployed before child runs answers nothing.
+      return Array.isArray(ended) ? ended.filter((id) => typeof id === "string") : [];
     } catch (error) {
       warn("agent run: state not reported", meta.id, String(error));
+
+      return [];
     }
   }
 
@@ -413,8 +527,6 @@ export abstract class AgentRunObject extends DurableObject<AgentRunEnv> {
     if (this.#pi !== undefined) return this.#pi;
 
     const opening = (async () => {
-      const { openPiRun } = await import("./pi.ts");
-
       const pi = await openPiRun({
         storage: this.ctx.storage,
         fetch: this.#fetch(meta),
@@ -543,11 +655,33 @@ export abstract class AgentRunObject extends DurableObject<AgentRunEnv> {
       outcome = { error: settled.detail === "" ? settled.reason : settled.detail };
     }
 
-    const finished: StoredTurn = { ...turn, status, ...outcome, finishedAt: Date.now() };
+    // The claimants waiting on it take its result; otherwise a child run's result goes to the run that started it
+    // (#229), unless that run is one of them.
+    const claimedBy = [...(this.#claiming.get(id) ?? [])];
+
+    const delivery =
+      meta.child === undefined || claimedBy.includes(parentClaimant(meta.child))
+        ? undefined
+        : "pending";
+
+    const finished: StoredTurn = {
+      ...turn,
+      status,
+      ...outcome,
+      finishedAt: Date.now(),
+      ...(claimedBy.length === 0 ? {} : { claimedBy }),
+      ...(delivery === undefined ? {} : { delivery }),
+    };
 
     this.ctx.storage.kv.put(turnKey(id), finished);
     this.ctx.storage.kv.delete(cancelKey(id));
     this.ctx.storage.kv.delete(REFUSAL);
+
+    if (delivery === "pending")
+      this.ctx.storage.kv.put(DELIVERIES, [
+        ...this.#pendingDeliveries(),
+        { turn: id, attempts: 0 } satisfies PendingDelivery,
+      ]);
 
     if (this.ctx.storage.kv.get<string>(ACTIVE) === id) {
       this.ctx.storage.kv.delete(ACTIVE);
@@ -555,7 +689,100 @@ export abstract class AgentRunObject extends DurableObject<AgentRunEnv> {
       await this.#report(meta, this.#state(meta));
     }
 
+    if (delivery === "pending") await this.#deliverPending(meta);
+
     return finished;
+  }
+
+  #pendingDeliveries(): ReadonlyArray<PendingDelivery> {
+    return this.ctx.storage.kv.get<ReadonlyArray<PendingDelivery>>(DELIVERIES) ?? [];
+  }
+
+  /** The object of the run `run` of this run's org (#229): the parent it delivers to, or a child it stops. */
+  #run(meta: StoredMeta, run: string) {
+    return this.env.AGENT_RUN.getByName(agentRunName(meta.org, run));
+  }
+
+  /** Records how the delivery of `turn` ended (#229): it is no longer pending. */
+  #delivered(id: string, delivery: "delivered" | "dropped"): void {
+    const turn = this.#turn(id);
+
+    if (turn !== undefined && turn.delivery === "pending")
+      this.ctx.storage.kv.put(turnKey(id), { ...turn, delivery } satisfies StoredTurn);
+  }
+
+  /**
+   * Delivers the finished turns not yet delivered to the run that started this one (#229), oldest first. One the parent
+   * took is delivered; one it refused for good (it ended, it is gone, it is not this run's parent) is dropped; one that
+   * could not reach it is tried again from the alarm, backing off, until {@link MAX_DELIVERY_ATTEMPTS} tries, after
+   * which it is dropped and logged. It never fails: what it could not do waits for the alarm.
+   */
+  async #deliverPending(meta: StoredMeta): Promise<void> {
+    const { child } = meta;
+
+    if (child === undefined) return;
+
+    try {
+      const tried = new Map<string, number>();
+
+      for (const pending of this.#pendingDeliveries()) {
+        const turn = this.#turn(pending.turn);
+
+        // Claimed by its parent meanwhile, or gone.
+        if (turn === undefined || turn.delivery !== "pending") continue;
+
+        try {
+          const answered = await this.#run(meta, child.parent).deliver({
+            run: meta.id,
+            child,
+            turn: turnView(turn),
+          });
+
+          if (answered.ok) {
+            this.#delivered(turn.id, "delivered");
+            continue;
+          }
+
+          if (answered.error !== "unavailable") {
+            warn("agent run: result refused by its parent", meta.id, turn.id, answered.message);
+            this.#delivered(turn.id, "dropped");
+            continue;
+          }
+        } catch (error) {
+          warn("agent run: result not delivered", meta.id, turn.id, String(error));
+        }
+
+        tried.set(turn.id, pending.attempts + 1);
+      }
+
+      // Read again: a turn may have finished meanwhile, and joined the list.
+      const left: Array<PendingDelivery> = [];
+
+      for (const pending of this.#pendingDeliveries()) {
+        if (this.#turn(pending.turn)?.delivery !== "pending") continue;
+        const attempts = tried.get(pending.turn) ?? pending.attempts;
+
+        if (attempts >= MAX_DELIVERY_ATTEMPTS) {
+          warn("agent run: result never delivered, given up", meta.id, pending.turn);
+          this.#delivered(pending.turn, "dropped");
+        } else left.push({ turn: pending.turn, attempts });
+      }
+
+      if (left.length === 0) {
+        this.ctx.storage.kv.delete(DELIVERIES);
+
+        return;
+      }
+
+      this.ctx.storage.kv.put(DELIVERIES, left);
+      const at = Date.now() + deliveryBackoff(Math.min(...left.map((entry) => entry.attempts)));
+      const alarm = await this.ctx.storage.getAlarm();
+
+      if (alarm === null || alarm > at) await this.ctx.storage.setAlarm(at);
+    } catch (error) {
+      // Storage failed under it: the alarm, if set, or the next finished turn tries again.
+      warn("agent run: deliveries not tried", meta.id, String(error));
+    }
   }
 
   /**
@@ -579,6 +806,7 @@ export abstract class AgentRunObject extends DurableObject<AgentRunEnv> {
           id: init.id,
           createdAt: Date.now(),
           seq: 0,
+          ...(init.child === undefined ? {} : { child: init.child }),
         } satisfies StoredMeta);
 
       return await this.#message(input, "start");
@@ -590,14 +818,76 @@ export abstract class AgentRunObject extends DurableObject<AgentRunEnv> {
     return this.#serial(() => this.#message(message, key === undefined ? undefined : `msg:${key}`));
   }
 
-  /** Ends the run: its agent or its starter can no longer go on (`beginTurn` said why). */
+  /**
+   * Takes a child run's finished turn (#229) as a message: steering of the running turn, or a new turn on an idle run.
+   * Only from a run this one started (the org's index says so; `forbidden` otherwise), and the same turn of the same
+   * child once.
+   */
+  deliver(child: ChildTurn): Promise<RunsResult<Delivered>> {
+    return this.#serial(async () => {
+      const meta = this.#meta();
+
+      if (meta === undefined) return RUN_NOT_FOUND;
+
+      if (child.child.parent !== meta.id) return NOT_A_CHILD;
+      let found: RunsResult<unknown>;
+
+      try {
+        found = await this.#controlPlane(meta).getToolkitRun(
+          { kind: "run", runId: meta.id },
+          child.run,
+        );
+      } catch (error) {
+        return refuse("unavailable", String(error));
+      }
+
+      if (!found.ok) return NOT_A_CHILD;
+
+      return await this.#message(deliveryText(child), `child:${child.run}:${child.turn.id}`);
+    });
+  }
+
+  /**
+   * Ends the run: its agent or its starter can no longer go on (`beginTurn` said why), or the run that started it ended
+   * ({@link stop}). The index ends its child runs with it, whose objects it then stops (#229).
+   */
   async #end(meta: StoredMeta, why: string): Promise<RunsResult<never>> {
     const ended: StoredMeta = { ...meta, ended: why };
 
     this.ctx.storage.kv.put(META, ended);
-    await this.#report(ended, "ended");
+    const children = await this.#report(ended, "ended");
+
+    await Promise.all(
+      children.map(async (id) => {
+        try {
+          await this.#run(meta, id).stop(`the run that started it (${meta.id}) ended`);
+        } catch (error) {
+          // Its index row is ended: its next request through the gateway is refused, and its next turn ends it.
+          warn("agent run: child run not stopped", meta.id, id, String(error));
+        }
+      }),
+    );
 
     return refuse("run_ended", why);
+  }
+
+  /**
+   * Stops the run because the run that started it ended (#229): aborts its running turn, recorded as cancelled, and
+   * ends it. The index ended it already, with the runs it started, which the run that ended stops in turn.
+   */
+  stop(why: string): Promise<RunsResult<boolean>> {
+    return this.#serial(async () => {
+      const meta = this.#meta();
+
+      if (meta === undefined) return RUN_NOT_FOUND;
+
+      if (meta.ended !== undefined) return ok(false);
+      await this.#abortActive(meta);
+      this.ctx.storage.kv.put(META, { ...meta, ended: why } satisfies StoredMeta);
+      await this.#report(meta, "ended");
+
+      return ok(true);
+    });
   }
 
   async #message(input: string, key: string | undefined): Promise<RunsResult<Delivered>> {
@@ -728,6 +1018,112 @@ export abstract class AgentRunObject extends DurableObject<AgentRunEnv> {
     });
   }
 
+  /**
+   * Claims a turn's result for `claimant` through the agents toolkit's wait (#229): the turn `id`'s, or else the oldest
+   * finished turn whose result `claimant` does not have yet (claimed, or delivered to it as the run's parent), or else
+   * the running turn's once it finishes, waiting at most `timeoutMs`. On timeout it answers the running turn as it is
+   * with the latest activity; it never cancels anything. A result the parent claims is not delivered to it.
+   */
+  async claim(
+    id: string | undefined,
+    timeoutMs: number,
+    claimant: Claimant,
+  ): Promise<RunsResult<Claimed>> {
+    const meta = this.#meta();
+
+    if (meta === undefined) return RUN_NOT_FOUND;
+    const named = id === undefined ? undefined : this.#turn(id);
+
+    if (id !== undefined && named === undefined) return refuse("not_found", "turn not found");
+
+    const target =
+      named ??
+      this.#turns().find((turn) => turn.status !== "running" && !hasResult(turn, claimant, meta)) ??
+      this.#active();
+
+    if (target === undefined)
+      return ok({
+        finished: false,
+        state: this.#state(meta),
+        delivered: this.#turns().some(
+          (turn) => hasResult(turn, claimant, meta) && turn.delivery === "delivered",
+        ),
+      });
+
+    if (target.status !== "running")
+      return ok({
+        finished: true,
+        state: this.#state(meta),
+        turn: turnView(this.#hand(meta, target, claimant)),
+      });
+
+    const waiting = this.#claiming.get(target.id) ?? new Set<Claimant>();
+
+    waiting.add(claimant);
+    this.#claiming.set(target.id, waiting);
+    let now: StoredTurn;
+
+    try {
+      const pi = await this.#harness(meta);
+
+      this.#watch(meta, target);
+      const settled = await this.#settle(pi, target.id, timeoutMs);
+
+      if (settled !== undefined) await this.#finish(meta, target.id, settled);
+      now = this.#turn(target.id) ?? target;
+
+      if (now.status !== "running")
+        return ok({
+          finished: true,
+          state: this.#state(meta),
+          turn: turnView(this.#hand(meta, now, claimant)),
+        });
+    } finally {
+      // From here the turn's result is no longer this claim's: a child run's goes to its parent again.
+      waiting.delete(claimant);
+
+      if (waiting.size === 0) this.#claiming.delete(target.id);
+    }
+
+    const activity = activityOf(await (await this.#harness(meta)).entries(ACTIVITY_LIMIT));
+
+    return ok({
+      finished: false,
+      state: this.#state(meta),
+      turn: turnView(this.#turn(target.id) ?? now),
+      activity,
+    });
+  }
+
+  /**
+   * `turn`, claimed by `claimant`. The parent's claim of a child run's result not delivered yet takes it from the
+   * deliveries (#229).
+   */
+  #hand(meta: StoredMeta, turn: StoredTurn, claimant: Claimant): StoredTurn {
+    const byParent = meta.child !== undefined && claimant === parentClaimant(meta.child);
+    const undelivered = byParent && turn.delivery === "pending";
+
+    if ((turn.claimedBy ?? []).includes(claimant) && !undelivered) return turn;
+
+    const { delivery: _delivery, ...rest } = turn;
+
+    const claimed: StoredTurn = {
+      ...(undelivered ? rest : turn),
+      claimedBy: [...new Set([...(turn.claimedBy ?? []), claimant])],
+    };
+
+    this.ctx.storage.kv.put(turnKey(turn.id), claimed);
+
+    if (undelivered) {
+      const left = this.#pendingDeliveries().filter((entry) => entry.turn !== turn.id);
+
+      if (left.length === 0) this.ctx.storage.kv.delete(DELIVERIES);
+      else this.ctx.storage.kv.put(DELIVERIES, left);
+    }
+
+    return claimed;
+  }
+
   /** The run as it is: its state, turns, recent activity and transcript. */
   async show(): Promise<RunsResult<RunShown>> {
     const meta = this.#meta();
@@ -752,31 +1148,37 @@ export abstract class AgentRunObject extends DurableObject<AgentRunEnv> {
       const meta = this.#meta();
 
       if (meta === undefined) return RUN_NOT_FOUND;
-      const active = this.#active();
 
-      if (active === undefined) return ok(false);
-
-      this.ctx.storage.kv.put(cancelKey(active.id), true);
-      const pi = await this.#harness(meta);
-
-      const settled = await Promise.race([
-        pi.abort().then(async () => await this.#settle(pi, active.id, CANCEL_SETTLE_MS)),
-        new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), CANCEL_SETTLE_MS)),
-      ]);
-
-      if (settled === undefined) {
-        warn("agent run: cancelled turn did not settle", meta.id, active.id);
-        this.#drop(meta);
-      }
-
-      await this.#finish(
-        meta,
-        active.id,
-        settled ?? { status: "unanswered", reason: "cancelled", detail: "" },
-      );
-
-      return ok(true);
+      return ok(await this.#abortActive(meta));
     });
+  }
+
+  /** Aborts the running turn, if any, and records it as cancelled (`false` when the run was idle). */
+  async #abortActive(meta: StoredMeta): Promise<boolean> {
+    const active = this.#active();
+
+    if (active === undefined) return false;
+
+    this.ctx.storage.kv.put(cancelKey(active.id), true);
+    const pi = await this.#harness(meta);
+
+    const settled = await Promise.race([
+      pi.abort().then(async () => await this.#settle(pi, active.id, CANCEL_SETTLE_MS)),
+      new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), CANCEL_SETTLE_MS)),
+    ]);
+
+    if (settled === undefined) {
+      warn("agent run: cancelled turn did not settle", meta.id, active.id);
+      this.#drop(meta);
+    }
+
+    await this.#finish(
+      meta,
+      active.id,
+      settled ?? { status: "unanswered", reason: "cancelled", detail: "" },
+    );
+
+    return true;
   }
 
   /**
@@ -792,15 +1194,22 @@ export abstract class AgentRunObject extends DurableObject<AgentRunEnv> {
     await this.ctx.storage.deleteAll();
   }
 
-  /** The heartbeat while a turn runs: reopens the harness after an eviction or a deploy, so the turn resumes. */
+  /**
+   * The heartbeat while a turn runs: reopens the harness after an eviction or a deploy, so the turn resumes. A child
+   * run's alarm also tries again the deliveries that failed (#229).
+   */
   override async alarm(): Promise<void> {
     const meta = this.#meta();
+
+    if (meta === undefined) return;
     const active = this.#active();
 
-    if (meta === undefined || active === undefined) return;
+    if (active !== undefined) {
+      await this.ctx.storage.setAlarm(Date.now() + HEARTBEAT_MS);
+      await this.#harness(meta);
+      this.#watch(meta, active);
+    }
 
-    await this.ctx.storage.setAlarm(Date.now() + HEARTBEAT_MS);
-    await this.#harness(meta);
-    this.#watch(meta, active);
+    await this.#deliverPending(meta);
   }
 }

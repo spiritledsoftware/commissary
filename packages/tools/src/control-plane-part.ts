@@ -8,7 +8,7 @@ import type {
   Approver,
   ApproverView,
 } from "@commissary/contract/approvals";
-import type { ToolScope } from "@commissary/contract/api-keys";
+import { agentsInScope, type ToolScope } from "@commissary/contract/api-keys";
 import type {
   BrowserProfileGrants,
   BrowserProfilesList,
@@ -179,6 +179,7 @@ import {
 import { exchangeToken, type Minted, mintGitHubApp, mintJwt } from "./signing/tokens.ts";
 import {
   type BuiltIn,
+  type CalledBuiltIn,
   type BuiltInCall,
   type BuiltInProviders,
   browserTimeOf,
@@ -188,6 +189,12 @@ import {
 } from "./toolkits/built-in.ts";
 import type { BrowserSessions } from "./browser/session-object.ts";
 import type { BuiltInToolkit, StoredToolkit, Toolkit } from "./toolkits/toolkit.ts";
+import {
+  type AgentDirectory,
+  isAgentsToolkit,
+  runnableAgents,
+  startDescription,
+} from "./agents/toolkit.ts";
 import { NO_ALLOWANCE, networkProblem, normalizedNetwork } from "./sandbox/network.ts";
 import type { SandboxProvider } from "./sandbox/provider.ts";
 import { SandboxSessionStore, type TrackedSession } from "./sandbox/sessions.ts";
@@ -522,6 +529,8 @@ export interface RunToolReach {
   readonly toolScope: ToolScope;
   readonly asAgent: boolean;
   readonly starterMember?: string | undefined;
+  /** The run's agent (#229), which the agents toolkit does not offer it. */
+  readonly agentId?: string | undefined;
 }
 
 /** A call of Commissary's MCP endpoint (#197): the tool's full name, its arguments, and the toolkits it narrows to. */
@@ -557,6 +566,18 @@ export interface ToolCall {
    * "State RPC: expand, then contract"); it sends no `approvalForm`, so it is never asked to show one.
    */
   readonly approvalOutcomes?: true | undefined;
+  /**
+   * Set by an MCP endpoint whose Worker makes the agents toolkit's calls (#229, `AgentsToolkitPort`): only such a call
+   * reaches its tools, and gets them as `delegated`. An API Worker deployed before the agents toolkit sends none, and
+   * reaches none of its tools (docs/DEVELOPMENT.md, "State RPC: expand, then contract").
+   */
+  readonly agentsToolkit?: true | undefined;
+}
+
+/** What a caller of {@link ToolsPart.clientTools} serves beyond the part's own toolkits. */
+export interface ClientToolsOptions {
+  /** The endpoint's Worker makes the agents toolkit's calls ({@link ToolCall.agentsToolkit}): list its tools. */
+  readonly agentsToolkit?: true | undefined;
 }
 
 /** How a client's caller answered an elicitation form (MCP `ElicitResult.action`). */
@@ -597,9 +618,10 @@ export interface CallUsage {
  * approves on a form first (the client makes it again with their answer), `pending`, a call that waits for its
  * approver in the panel, or `not_approved`, one that was denied (or that no one could approve); the upstream's
  * `result`, an `isError` one included; or `failed`, an upstream or transport failure, with a short message that
- * quotes neither the source nor the server's answer. All but `unknown` and `approve` say what the call's usage record
- * holds (a call on a form writes its record once it ends). The approval outcomes go only to a call that says it
- * understands them (`ToolCall.approvalOutcomes`).
+ * quotes neither the source nor the server's answer; or, for the agents toolkit, `delegated`: a call the endpoint's
+ * Worker makes (#229). All but `unknown` and `approve` say what the call's usage record holds (a call on a form writes
+ * its record once it ends). The approval outcomes go only to a call that says it understands them
+ * (`ToolCall.approvalOutcomes`), and `delegated` only to one that serves the agents toolkit (`ToolCall.agentsToolkit`).
  */
 export type ToolCallOutcome =
   | { readonly outcome: "unknown" }
@@ -644,12 +666,50 @@ export type ToolCallOutcome =
       readonly sessionClosed?: true;
     }
   | { readonly outcome: "result"; readonly result: Schema.JsonObject; readonly usage: CallUsage }
-  | { readonly outcome: "failed"; readonly message: string; readonly usage: CallUsage };
+  | { readonly outcome: "failed"; readonly message: string; readonly usage: CallUsage }
+  | {
+      /**
+       * A call of the agents toolkit (#229) that went through reach, tool scope, Spend and approval: the endpoint's
+       * Worker makes it (`AgentsToolkitPort`), with the agents the caller's tool scope names (`undefined`: every agent
+       * within reach). Only to a call with {@link ToolCall.agentsToolkit}.
+       */
+      readonly outcome: "delegated";
+      readonly tool: string;
+      readonly arguments: Schema.JsonObject;
+      readonly scopeAgents?: ReadonlyArray<string> | undefined;
+      readonly usage: CallUsage;
+    };
 
 /** What an API key's view says of its tools (#200): how many it may use now, and what its scope names that is gone. */
 export interface KeyToolSummary {
   readonly toolCount: number;
   readonly missing: ReadonlyArray<string>;
+}
+
+/** The tool scope a caller of the MCP endpoint is narrowed by, and whether it acts as a shared agent (#227). */
+interface CallerScope {
+  readonly scope: ToolScope | undefined;
+  readonly asAgent: boolean;
+  /** The calling run's agent (#229): the agents toolkit leaves it out, as a run cannot start its own agent. */
+  readonly self?: string | undefined;
+}
+
+/**
+ * Whether a management caller takes the agents toolkit (#229) in toolkit lists, tool lists and the export: the app
+ * Worker's routes ask for it; a caller deployed before it (DEVELOPMENT.md, "State RPC: expand, then contract") does not,
+ * and never meets the toolkit kind `agents` it could not decode.
+ */
+export interface KindsOptions {
+  readonly agentsToolkit?: boolean | undefined;
+}
+
+/** What {@link ToolsPart.#reachable} narrows to: a caller's scope, and whether to count the agents toolkit. */
+interface Reach extends Partial<CallerScope> {
+  /**
+   * Count the agents toolkit (#229): only for an MCP endpoint whose Worker makes its calls, and for the panel's views
+   * that show no toolkit kind. Off by default, so a caller deployed before it never meets its kind.
+   */
+  readonly agentsToolkit?: boolean | undefined;
 }
 
 /** A tool the MCP endpoint serves a member, and how they reach it. */
@@ -817,6 +877,8 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   readonly #managedApps: ManagedApps;
   /** The org's lookups at integrations.sh of domains the toolkit catalog lacks (#207), counted to throttle them. */
   readonly #lookups = new LookupThrottle();
+  /** Which agents a caller may run (#229): the agents toolkit's reach, from the Agents part. */
+  readonly #agents: AgentDirectory | undefined;
   /** What the part reads the time from: the live clock, or a test's (`useClock`). */
   #clock: Clock.Clock = Clock.Clock.defaultValue();
 
@@ -848,6 +910,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     this.#browserSessionLog = new BrowserSessionStore(ctx.storage.sql);
     this.#browserSessions = providers.browserSessions;
     this.#managedApps = managedApps;
+    this.#agents = providers.agents;
     this.#yieldBuiltInNames();
   }
 
@@ -1112,13 +1175,16 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
   // --- toolkits ---------------------------------------------------------------------------------------------------
 
-  /** The toolkits `viewer` reaches; an org admin also gets the other members' private toolkits, as existence only. */
-  listToolkits(viewer: Scope): ToolkitsList {
+  /**
+   * The toolkits `viewer` reaches; an org admin also gets the other members' private toolkits, as existence only. The
+   * agents toolkit (#229) only for a caller that asks for it ({@link KindsOptions}).
+   */
+  listToolkits(viewer: Scope, options?: KindsOptions): ToolkitsList {
     const resolution = this.#resolve(this.#servedMember(this.#memberOf(viewer)));
     const toolkits: Array<ToolkitView> = [];
     const others: Array<LimitedToolkitView> = [];
 
-    for (const toolkit of this.#toolkits()) {
+    for (const toolkit of this.#toolkits(options ?? {})) {
       const access = reach(toolkit, viewer);
 
       if (access === "limited") others.push(this.#limitedView(toolkit));
@@ -2601,12 +2667,14 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
   /**
    * The tools of a toolkit, with their flags: an org toolkit's among the org's toolkits, a private toolkit's among the
-   * org's and its owner's (none while the org does not serve private toolkits).
+   * org's and its owner's (none while the org does not serve private toolkits). The agents toolkit's (#229) only for a
+   * caller that asks for it ({@link KindsOptions}).
    */
-  listTools(viewer: Scope, id: string): ToolsResult<ToolsList> {
+  listTools(viewer: Scope, id: string, options?: KindsOptions): ToolsResult<ToolsList> {
     const toolkit = this.#toolkit(id);
 
-    if (toolkit === undefined) return NOT_FOUND;
+    if (toolkit === undefined || (isAgentsToolkit(toolkit) && options?.agentsToolkit !== true))
+      return NOT_FOUND;
     const access = reach(toolkit, viewer);
 
     if (access === "none" || access === "limited") return NOT_FOUND;
@@ -2635,15 +2703,37 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
    * tool grant. A request with an API key (`apiKeyId`) gets what both the member's reach and the key's tool scope allow
    * (#200), read from the key on every request, so a change to the scope applies at once. An agent run (`run`, #227)
    * gets what its definition's tool scope allows, as its member or as the shared agent ({@link RunToolReach}).
+   *
+   * The agents toolkit's tools (#229) are listed only to a caller whose endpoint makes their calls (`options`), and
+   * only while they may run an agent; `agents_start`'s description lists those agents, so it changes with them.
    */
-  clientTools(viewer: Viewer, apiKeyId?: string, run?: RunToolReach): ReadonlyArray<ClientTool> {
-    return this.#callerReach(viewer, apiKeyId, run).map(({ tool }) => ({
-      name: tool.name,
-      toolkit: tool.toolkit.name,
-      ...(tool.description === undefined ? {} : { description: tool.description }),
-      ...(tool.tool?.inputSchema === undefined ? {} : { inputSchema: tool.tool.inputSchema }),
-      toolClass: tool.toolClass,
-    }));
+  clientTools(
+    viewer: Viewer,
+    apiKeyId?: string,
+    run?: RunToolReach,
+    options?: ClientToolsOptions,
+  ): ReadonlyArray<ClientTool> {
+    const caller = this.#caller(viewer, apiKeyId, run);
+
+    const reached = this.#reachable(viewer, {
+      ...caller,
+      agentsToolkit: options?.agentsToolkit === true,
+    });
+
+    return reached.map(({ tool }) => {
+      const description =
+        isAgentsToolkit(tool.toolkit) && tool.upstreamName === "start" && this.#agents !== undefined
+          ? startDescription(runnableAgents(this.#agents, { member: viewer.member, ...caller }))
+          : tool.description;
+
+      return {
+        name: tool.name,
+        toolkit: tool.toolkit.name,
+        ...(description === undefined ? {} : { description }),
+        ...(tool.tool?.inputSchema === undefined ? {} : { inputSchema: tool.tool.inputSchema }),
+        toolClass: tool.toolClass,
+      };
+    });
   }
 
   /**
@@ -2702,7 +2792,12 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     call: ToolCall,
     policy: OutboundPolicy,
   ): Promise<ToolCallOutcome> {
-    const reached = this.#callerReach(viewer, call.apiKeyId, call.run).find(
+    const caller = this.#caller(viewer, call.apiKeyId, call.run);
+
+    const reached = this.#reachable(viewer, {
+      ...caller,
+      agentsToolkit: call.agentsToolkit === true,
+    }).find(
       ({ tool }) =>
         tool.name === call.name &&
         (call.toolkits === undefined || call.toolkits.includes(tool.toolkit.name)),
@@ -2797,7 +2892,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       if (refusal !== undefined) {
         // A session whose browser time costs money is closed once a limit it counts toward has no room (#214).
         const closed =
-          timed && builtIn !== undefined
+          timed && builtIn?.calledBy === "part"
             ? await this.#closeSession(builtIn, viewer, call, policy, spender, charged)
             : false;
 
@@ -2848,15 +2943,30 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     if ("builtIn" in serving) {
       const now = this.#now();
       const { builtIn } = serving;
-      const caller = this.#builtInCall(builtIn, viewer, call, policy, now);
+
+      // The agents toolkit's call (#229) is the endpoint's Worker's to make, with the agents the caller's scope names;
+      // it is charged here, as a built-in tool's is.
+      if (builtIn.calledBy === "worker") {
+        if (price > 0) ledger.charge(ledger.scopes(spender, charged), price, now);
+
+        return {
+          outcome: "delegated",
+          tool: tool.upstreamName,
+          arguments: call.arguments ?? {},
+          scopeAgents: agentsInScope(caller.scope),
+          usage: usage(slot, price, approved),
+        };
+      }
+
+      const session = this.#builtInCall(builtIn, viewer, call, policy, now);
 
       const answer = await Effect.runPromise(
-        builtIn.call(tool.upstreamName, call.arguments, caller.call),
+        builtIn.call(tool.upstreamName, call.arguments, session.call),
       );
 
       // A new sandbox session ends a day after its last use, and a new crawl is kept 21 days: the part wakes up then to
       // forget it.
-      if (caller.opened()) await this.#core.wakeUpChanged(this.#nextWakeUp(now));
+      if (session.opened()) await this.#core.wakeUpChanged(this.#nextWakeUp(now));
 
       // Browser time costs the price per browser hour on top of the price per call (#214): a Quick Action's on its own
       // record, a session's since its last call on the session's, which writes it when it closes.
@@ -2903,7 +3013,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
    * session's owner (a call without a principal reaches no session).
    */
   #builtInCall(
-    builtIn: BuiltIn,
+    builtIn: CalledBuiltIn,
     viewer: Viewer,
     call: ToolCall,
     policy: OutboundPolicy,
@@ -2975,7 +3085,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
    * last call is charged. Answers whether a session of the caller's closed; another's, or none, stays as it was.
    */
   async #closeSession(
-    builtIn: BuiltIn,
+    builtIn: CalledBuiltIn,
     viewer: Viewer,
     call: ToolCall,
     policy: OutboundPolicy,
@@ -3244,17 +3354,18 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     this.#approvals.delete(orphaned.map((approval) => approval.id));
   }
 
-  /** What a caller of the MCP endpoint reaches: an agent run by its definition, anyone else by their key's scope. */
-  #callerReach(
+  /**
+   * The tool scope a caller of the MCP endpoint is narrowed by, and whether it acts as a shared agent: an agent run by
+   * its definition, anyone else by their key's scope.
+   */
+  #caller(
     viewer: Viewer,
     apiKeyId: string | undefined,
     run: RunToolReach | undefined,
-  ): ReadonlyArray<ReachableTool> {
-    if (run === undefined) return this.#reachable(viewer, this.#keyScope(apiKeyId));
+  ): CallerScope {
+    if (run === undefined) return { scope: this.#keyScope(apiKeyId), asAgent: false };
 
-    return run.asAgent
-      ? this.#reachable({ admin: false }, run.toolScope, true)
-      : this.#reachable(viewer, run.toolScope);
+    return { scope: run.toolScope, asAgent: run.asAgent, self: run.agentId };
   }
 
   /**
@@ -3262,9 +3373,20 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
    * only while the org lets members add them: otherwise it is kept, but not served, and does not shadow an org toolkit
    * of its name. `scope` (an API key's tool scope, #200) narrows them further; `undefined`: no narrowing. `asAgent` (a
    * shared agent's run, #227): every tool of an org toolkit's shared credential, whatever the grants, as no member.
+   *
+   * The agents toolkit's tools (#229) take no grant: they reach a caller who may run an agent (other than a calling
+   * run's own), as a member or as a shared agent, within their scope's agents; and only when `agentsToolkit` asks for
+   * them ({@link Reach}).
    */
-  #reachable(viewer: Viewer, scope?: ToolScope, asAgent = false): ReadonlyArray<ReachableTool> {
+  #reachable(viewer: Viewer, reach: Reach = {}): ReadonlyArray<ReachableTool> {
+    const { scope, self } = reach;
+    const asAgent = reach.asAgent === true;
     const member = asAgent ? undefined : viewer.member;
+
+    const runsAgents =
+      reach.agentsToolkit === true &&
+      this.#agents !== undefined &&
+      runnableAgents(this.#agents, { member, asAgent, scope, self }).length > 0;
 
     // A built-in toolkit's shared credential is Commissary's own binding, always there.
     const shared = new Set([
@@ -3288,11 +3410,12 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
           member !== undefined &&
           accepts(tool.toolkit, "private") &&
           this.#privateAllowed(tool.toolkit),
-        granted:
-          tool.toolkit.owner === undefined &&
-          accepts(tool.toolkit, "shared") &&
-          shared.has(tool.toolkit.id) &&
-          (asAgent || granted(grantable(tool))),
+        granted: isAgentsToolkit(tool.toolkit)
+          ? runsAgents
+          : tool.toolkit.owner === undefined &&
+            accepts(tool.toolkit, "shared") &&
+            shared.has(tool.toolkit.id) &&
+            (asAgent || granted(grantable(tool))),
       }))
       .filter(
         (reachable) =>
@@ -3323,7 +3446,8 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   usableTools(viewer: Viewer): UsableTools {
     const toolkits = new Map<string, { id: string; name: string; tools: Array<UsableTool> }>();
 
-    for (const { tool } of this.#reachable(viewer)) {
+    // The panel's tool scope editor names the agents toolkit as any toolkit, by id and name (no kind).
+    for (const { tool } of this.#reachable(viewer, { agentsToolkit: true })) {
       const toolkit = toolkits.get(tool.toolkit.id) ?? {
         id: tool.toolkit.id,
         name: tool.toolkit.name,
@@ -3363,7 +3487,10 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       });
 
       return {
-        toolCount: this.#reachable({ member: key.memberId, admin: false }, key.toolScope).length,
+        toolCount: this.#reachable(
+          { member: key.memberId, admin: false },
+          { scope: key.toolScope, agentsToolkit: true },
+        ).length,
         missing,
       };
     });
@@ -3738,6 +3865,9 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
     if (toolkit === undefined) return `the org has no toolkit ${grant.toolkit}`;
 
+    if (isAgentsToolkit(toolkit))
+      return "the agents toolkit takes no grant: who may run which agent comes from the agents and their grants";
+
     return toolkit.owner === undefined
       ? undefined
       : "a private toolkit is its owner's alone: its tools take no grant";
@@ -4018,13 +4148,14 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
   /**
    * The toolkits `viewer` reaches, with what their credentials are (never their secrets) and their overrides, and, for
-   * an org admin, each org toolkit's tool grants.
+   * an org admin, each org toolkit's tool grants. The agents toolkit (#229) only for a caller that asks for it
+   * ({@link KindsOptions}).
    */
-  exportToolkits(viewer: Scope): ReadonlyArray<ToolkitExport> {
+  exportToolkits(viewer: Scope, options?: KindsOptions): ReadonlyArray<ToolkitExport> {
     const admin = isOrgAdmin(viewer);
     const grants = admin ? this.#grants.entries() : [];
 
-    return this.#toolkits().flatMap((toolkit) => {
+    return this.#toolkits(options ?? {}).flatMap((toolkit) => {
       const access = reach(toolkit, viewer);
 
       if (access === "none" || access === "limited") return [];
@@ -4139,10 +4270,15 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
   // --- helpers ----------------------------------------------------------------------------------------------------
 
-  /** Every toolkit of the org: the built-in ones, then the stored ones. */
-  #toolkits(): ReadonlyArray<Toolkit> {
+  /**
+   * Every toolkit of the org: the built-in ones, then the stored ones; the agents toolkit only when `options` asks for
+   * it, and always for the part's own checks (names, grants), which pass none.
+   */
+  #toolkits(options: KindsOptions = { agentsToolkit: true }): ReadonlyArray<Toolkit> {
     return [
-      ...this.#builtIns.map((builtIn) => this.#withSettings(builtIn.toolkit)),
+      ...this.#builtIns
+        .filter((builtIn) => options.agentsToolkit === true || !isAgentsToolkit(builtIn.toolkit))
+        .map((builtIn) => this.#withSettings(builtIn.toolkit)),
       ...this.#store.toolkits(),
     ];
   }

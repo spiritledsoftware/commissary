@@ -46,7 +46,11 @@ type AgentsPartMethod =
   | "startWebhookRun"
   | "scheduleObjectsPage"
   | "retiredSchedules"
-  | "forgetScheduleObjects";
+  | "forgetScheduleObjects"
+  | "startToolkitRun"
+  | "getToolkitRun"
+  | "listToolkitRuns"
+  | "abandonToolkitRun";
 
 /** The Agents part of an org's ControlPlane (`AgentsPart`) as Agents sees it: the methods it calls. */
 export type AgentsControlPlanePart = Pick<AgentsPart, AgentsPartMethod> & Rpc.RpcTargetBranded;
@@ -110,8 +114,13 @@ export class AgentsEnv extends Context.Service<AgentsEnv, AgentsBindings>()(
 ) {}
 
 /** Whether the deployment has the Agents area: its Dynamic Workers binding (`LOADER`, #226). */
-export const agentsPresent = (env: Pick<AgentsBindings, "LOADER">): boolean =>
-  env.LOADER !== undefined;
+export const agentsPresent = (env: AgentsPartEnv): boolean => env.LOADER !== undefined;
+
+/**
+ * What the state Worker reads for Agents (#229): only whether the area is there (`LOADER`), which decides whether its
+ * ControlPlane has the agents toolkit.
+ */
+export type AgentsPartEnv = Pick<AgentsBindings, "LOADER">;
 
 /** Calls the current org's ControlPlane from an Agents management route (`callControlPlane`). */
 export const agentsControlPlane = <R>(

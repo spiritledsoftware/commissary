@@ -21,6 +21,20 @@ import app from "../src/index.ts";
 
 export { AgentRun, AgentRunGateway, AgentSchedule } from "@commissary/api";
 
+import { ControlPlane } from "@commissary/state-worker";
+
+/**
+ * The state Worker's ControlPlane on a deployment without the Agents area (no `LOADER`): no agents toolkit (#229).
+ * Bound as `CONTROL_PLANE_WITHOUT_AGENTS` (vitest.config.ts).
+ */
+export class ControlPlaneWithoutAgents extends ControlPlane {
+  constructor(ctx: DurableObjectState, workerEnv: Cloudflare.Env) {
+    // SAFETY: the env without Dynamic Workers. Only the sandbox's session objects (another class) run code on them; the
+    // ControlPlane reads `LOADER` only as the Agents area's presence.
+    super(ctx, { ...workerEnv, LOADER: undefined } as unknown as Cloudflare.Env);
+  }
+}
+
 export {
   ControlPlane,
   Platform,

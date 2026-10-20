@@ -4,7 +4,7 @@
 // hands their Tools part a fake `browser` binding, so the config binds none), and three more have the sandbox toolkit
 // (#222): one Cloudflare's, whose sessions are this Worker's `SandboxSession` objects running just-bash in Dynamic
 // Workers of the test `LOADER`, one the same with the sandbox's computer (#223, its container faked), and one a fake
-// second sandbox provider. Compatibility settings as the deployed Worker's (alchemy.run.ts);
+// second sandbox provider; one more has the agents toolkit (#229), over a fake directory of agents. Compatibility settings as the deployed Worker's (alchemy.run.ts);
 // the bindings are the ones test/env.d.ts declares, with the Worker tests' fixed keys.
 import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import { defineConfig } from "vitest/config";
@@ -62,6 +62,8 @@ export default defineConfig({
                   className: "ComputerSandboxControlPlane",
                   useSQLite: true,
                 },
+                // A deployment with the Agents area, whose agents a fake directory answers (#229).
+                AGENTS_CONTROL_PLANE: { className: "AgentsControlPlane", useSQLite: true },
                 SANDBOX_SESSION: { className: "SandboxSession", useSQLite: true },
                 SESSION_STATE: { className: "SessionState", useSQLite: true },
                 PLATFORM: { className: "Platform", useSQLite: true },

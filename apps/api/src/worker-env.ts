@@ -2,15 +2,21 @@
  * The API Worker's bindings as its code reads them (#134 "How packages get their bindings"): every package reads only
  * its own view ({@link AuthConfig}, {@link StateEnv}, {@link ModelsEnv}, {@link BillingEnv}, {@link ToolsEnv},
  * {@link AgentsEnv}: an agent run's principal, `http/run-gateway.ts`; `core` reads none), and the request context provides each of them from the invocation's `env`, which satisfies every view
- * (`ApiWorkerBindings`), plus the port `@commissary/auth` reaches state through (`AuthDirectory`). The API Worker never
- * sees sessions (ADR 0030): it provides no `SignInSessions`.
+ * (`ApiWorkerBindings`), plus the port `@commissary/auth` reaches state through (`AuthDirectory`) and the one through
+ * which Tools' MCP endpoint makes the agents toolkit's calls (`AgentsToolkitPort`, filled from Agents, #229). The API
+ * Worker never sees sessions (ADR 0030): it provides no `SignInSessions`.
  */
 import { Context } from "effect";
-import { type AgentsBindings, AgentsEnv } from "@commissary/agents/api";
+import {
+  type AgentsBindings,
+  AgentsEnv,
+  agentsPresent,
+  agentsToolkitCalls,
+} from "@commissary/agents/api";
 import { type AuthBindings, AuthConfig, AuthDirectory } from "@commissary/auth";
 import { type BillingBindings, BillingEnv } from "@commissary/billing/api";
 import { type ModelsBindings, ModelsEnv } from "@commissary/models/api";
-import { type ToolsBindings, ToolsEnv } from "@commissary/tools/api";
+import { AgentsToolkitPort, type ToolsBindings, ToolsEnv } from "@commissary/tools/api";
 import {
   CurrentOrg,
   CurrentOutboundPolicy,
@@ -46,7 +52,7 @@ export type ApiWorkerBindings = AuthBindings &
   AgentsBindings &
   ApiBindings;
 
-/** The services {@link envContext} provides. */
+/** The services {@link envContext} provides; where the Agents area is, also the optional `AgentsToolkitPort`. */
 export type EnvServices =
   | AuthConfig
   | StateEnv
@@ -56,9 +62,12 @@ export type EnvServices =
   | AgentsEnv
   | AuthDirectory;
 
-/** Each view of `env`, as its service, and the directory over the Durable Object stubs (`stateAuthDirectory`). */
-export const envContext = (env: ApiWorkerBindings): Context.Context<EnvServices> =>
-  Context.make(AuthConfig, env).pipe(
+/**
+ * Each view of `env`, as its service, the directory over the Durable Object stubs (`stateAuthDirectory`), and, where
+ * the Agents area is (`LOADER`), the agents toolkit's calls over the runs' objects this Worker defines (#229).
+ */
+export const envContext = (env: ApiWorkerBindings): Context.Context<EnvServices> => {
+  const services = Context.make(AuthConfig, env).pipe(
     Context.add(StateEnv, env),
     Context.add(ModelsEnv, env),
     Context.add(BillingEnv, env),
@@ -66,6 +75,11 @@ export const envContext = (env: ApiWorkerBindings): Context.Context<EnvServices>
     Context.add(AgentsEnv, env),
     Context.add(AuthDirectory, stateAuthDirectory(env)),
   );
+
+  return agentsPresent(env)
+    ? services.pipe(Context.add(AgentsToolkitPort, agentsToolkitCalls(env)))
+    : services;
+};
 
 /**
  * The outbound guard's policy (ADR 0044) of an invocation: the deployment's own hosts as the API Worker's bindings name

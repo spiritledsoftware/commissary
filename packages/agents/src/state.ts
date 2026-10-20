@@ -4,3 +4,5 @@
  * rule `boundaries/agents-imports`).
  */
 export { AgentsPart } from "./control-plane-part.ts";
+
+export { type AgentsPartEnv, agentsPresent } from "./env.ts";

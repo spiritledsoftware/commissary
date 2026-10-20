@@ -37,8 +37,8 @@ const optional = Schema.optionalKey;
  * What a toolkit is built from: a remote MCP server (Streamable HTTP), an OpenAPI document (3.0, 3.1 or 3.2, or Swagger
  * 2.0, given by URL or uploaded, #203), a GraphQL endpoint (its schema introspected, or uploaded as SDL, #204), a
  * Google Discovery document (`discovery`, given by URL or uploaded, #205), or, for a toolkit Commissary provides itself
- * (`built_in`), the kind of service behind it: `browser`, the browser toolkit (ADR 0039), or `sandbox`, the sandbox
- * toolkit (ADR 0041).
+ * (`built_in`), the kind of service behind it: `browser`, the browser toolkit (ADR 0039), `sandbox`, the sandbox
+ * toolkit (ADR 0041), or `agents`, the agents toolkit (ADR 0040, #229).
  */
 export const ToolkitKind = Schema.Literals([
   "mcp",
@@ -47,6 +47,7 @@ export const ToolkitKind = Schema.Literals([
   "discovery",
   "browser",
   "sandbox",
+  "agents",
 ]);
 
 export type ToolkitKind = typeof ToolkitKind.Type;

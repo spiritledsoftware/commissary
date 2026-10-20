@@ -12,11 +12,20 @@
  * **Runs a trigger starts** (#231, {@link Runs.startTriggered}): a schedule's or a webhook's run of a private agent
  * counts as started by its member, a shared agent's as started by no one (its watchers watch it, #232); either names its
  * trigger. A run no one started has no starter to check at its turns: its agent's state alone decides.
+ *
+ * **The agents toolkit** (#229, ADR 0040) starts runs too ({@link Runs.startFromToolkit}), with the trigger kind `mcp`:
+ * a client's call as its member (an API key's, which the run records: a key sees only the runs it started), or a run's,
+ * which starts a **child run** of the agent it names, acting as that agent and started by the calling run. A run may run
+ * the agents its member may use (a private agent's) or the shared agents (a shared agent's), within its definition's
+ * tool scope; a chain of runs is at most {@link MAX_CHAIN} deep, an agent already in the chain is refused, and a run has
+ * at most {@link MAX_ACTIVE_CHILDREN} child runs running at once. A child run's turns check that the run that started it
+ * is still there and may still run its agent; its approvals are the member's at the head of its chain (none when no one
+ * started that run). A run that ends ends its child runs, and theirs ({@link Runs.stateChanged}).
  */
 import type { RunActsAs, RunStarter, Viewer } from "@commissary/auth";
 import type { RunState, RunView, TriggerKind } from "@commissary/contract/agent-runs";
 import type { ThinkingLevel } from "@commissary/contract/agents";
-import type { ToolScope } from "@commissary/contract/api-keys";
+import { agentsInScope, type ToolScope } from "@commissary/contract/api-keys";
 import type { OrgCore } from "@commissary/state";
 import type { AgentStore, StoredAgent } from "../agents/store.ts";
 import { iso, ok, type Refusable, refuse } from "../result.ts";
@@ -48,7 +57,12 @@ export interface RunContext {
   readonly agentId: string;
   /** None for a run no one started. */
   readonly starter?: RunStarter | undefined;
-  /** The starter's email, whose standing Commissary Cloud checks on every call of the run. */
+  /**
+   * The member who started the run, or the one at the head of a child run's chain (#229): the caller of its approvals.
+   * None for a run, or a chain, no one started.
+   */
+  readonly starterMember?: string | undefined;
+  /** That member's email, whose standing Commissary Cloud checks on every call of the run. */
   readonly starterEmail?: string | undefined;
   readonly actsAs: RunActsAs;
   readonly model: string;
@@ -74,21 +88,49 @@ const isStarter = (run: StoredRun, member: string | undefined): boolean =>
 
 const contextOf = (
   run: StoredRun,
-  starterEmail: string | undefined,
+  starter: { readonly id: string; readonly email: string } | undefined,
   definition: TurnDefinition,
 ): RunContext => ({
   runId: run.id,
   agentId: run.agent,
   ...(run.starter === undefined ? {} : { starter: run.starter }),
-  ...(starterEmail === undefined ? {} : { starterEmail }),
+  ...(starter === undefined ? {} : { starterMember: starter.id, starterEmail: starter.email }),
   ...definition,
 });
 
 /** The trigger configured on an agent that starts a run: its kind and id. */
 export interface RunTrigger {
-  readonly kind: Exclude<TriggerKind, "chat">;
+  readonly kind: Exclude<TriggerKind, "chat" | "mcp">;
   readonly id: string;
 }
+
+/** The longest chain of runs the agents toolkit starts: a run, its child and its grandchild (ADR 0040). */
+export const MAX_CHAIN = 3;
+
+/** The most child runs a run may have running at once (#229): a start beyond them is refused. */
+export const MAX_ACTIVE_CHILDREN = 8;
+
+/**
+ * Who calls the agents toolkit (#229): a member, through an API key (`apiKeyId`, which sees only the runs it started) or
+ * signed in (who sees every run they started); or an agent run, which sees the child runs it started.
+ */
+export type ToolkitCaller =
+  | { readonly kind: "member"; readonly member: string; readonly apiKeyId?: string | undefined }
+  | { readonly kind: "run"; readonly runId: string };
+
+/** A child run's link to the run that started it (#229): that run, where its turns' results go, and its agent's name. */
+export interface ChildOf {
+  readonly parent: string;
+  readonly agentName: string;
+}
+
+/** A run the agents toolkit started: the run, whether this start created it, and for a child run its link. */
+export interface ToolkitStartedRun extends StartedRunRecord {
+  readonly child?: ChildOf | undefined;
+}
+
+/** The calling run of a child run's start ended, or is not the org's. */
+const CALLING_RUN_ENDED = refuse("run_ended", "the run that calls ended");
 
 export class Runs {
   readonly #runs: RunStore;
@@ -215,8 +257,200 @@ export class Runs {
   abandonTriggered(runId: string): void {
     const run = this.#runs.run(runId);
 
-    if (run !== undefined && run.triggerId !== undefined)
-      this.#runs.setState(runId, "ended", this.#now());
+    if (run !== undefined && run.triggerId !== undefined) this.#end(runId);
+  }
+
+  /**
+   * Starts a run of the agent named `agentName` for `caller` through the agents toolkit (#229, trigger `mcp`), or returns
+   * the run their `idempotencyKey` started of it before. The agent must be one the caller may run (`scopeAgents`: the
+   * ones their tool scope names, `undefined` for all): any other answers like an unknown one; a member's disabled agent
+   * answers `agent_disabled`, a run's like an unknown one. A run's call starts a child run, refused (`forbidden`) when
+   * the chain would be deeper than {@link MAX_CHAIN}, the agent already runs in it, or the run has
+   * {@link MAX_ACTIVE_CHILDREN} child runs running.
+   */
+  startFromToolkit(
+    caller: ToolkitCaller,
+    agentName: string,
+    scopeAgents: ReadonlyArray<string> | undefined,
+    idempotencyKey: string | undefined,
+  ): RunsResult<ToolkitStartedRun> {
+    if (idempotencyKey !== undefined && idempotencyKey.length > MAX_IDEMPOTENCY_KEY)
+      return refuse("invalid", `an idempotency key has at most ${MAX_IDEMPOTENCY_KEY} characters`);
+
+    const unknown = refuse("not_found", `unknown agent ${agentName}`);
+    const agent = this.#agents.byName(agentName.trim());
+
+    if (agent === undefined || (scopeAgents !== undefined && !scopeAgents.includes(agent.id)))
+      return unknown;
+
+    let starter: RunStarter;
+
+    if (caller.kind === "member") {
+      if (!this.#reaches(agent, caller.member)) return unknown;
+
+      if (!agent.enabled) return refuse("agent_disabled", "the agent is disabled");
+      starter = { kind: "member", id: caller.member };
+    } else {
+      const calling = this.#runs.run(caller.runId);
+
+      if (calling === undefined || calling.state === "ended") return CALLING_RUN_ENDED;
+
+      if (!this.#mayRun(calling, agent)) return unknown;
+      const chain = this.#chain(calling);
+
+      if (chain.length >= MAX_CHAIN)
+        return refuse(
+          "forbidden",
+          `a chain of runs is at most ${MAX_CHAIN} deep: this run cannot start another`,
+        );
+
+      if (chain.some((run) => run.agent === agent.id))
+        return refuse(
+          "forbidden",
+          `the agent ${agent.name} already runs in this chain of runs: a chain cannot run an agent twice`,
+        );
+
+      starter = { kind: "run", id: calling.id };
+    }
+
+    const apiKeyId = caller.kind === "member" ? caller.apiKeyId : undefined;
+
+    const child =
+      starter.kind === "run" ? { child: { parent: starter.id, agentName: agent.name } } : {};
+
+    // Apart from the panel's keys, and one API key's from another's.
+    const key =
+      idempotencyKey === undefined ? undefined : `mcp:${apiKeyId ?? ""}:${idempotencyKey}`;
+
+    if (key !== undefined) {
+      const existing = this.#runs.byKey(agent.id, starter, key);
+
+      if (existing !== undefined) return ok({ run: this.view(existing), created: false, ...child });
+    }
+
+    if (starter.kind === "run" && this.#runs.runningStartedBy(starter) >= MAX_ACTIVE_CHILDREN)
+      return refuse(
+        "forbidden",
+        `a run has at most ${MAX_ACTIVE_CHILDREN} child runs running at once: wait for one to finish`,
+      );
+
+    const now = this.#now();
+    const id = freshRunId();
+
+    const run: StoredRun = {
+      id,
+      agent: agent.id,
+      trigger: "mcp",
+      starter,
+      ...(apiKeyId === undefined ? {} : { apiKeyId }),
+      idempotencyKey: key ?? id,
+      // A child run counts as running from its start, so that the cap holds for starts made at once.
+      state: starter.kind === "run" ? "running" : "idle",
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    this.#runs.insert(run);
+
+    return ok({ run: this.view(run), created: true, ...child });
+  }
+
+  /** The run `runId` if the agents toolkit's `caller` sees it ({@link ToolkitCaller}); any other answers like an unknown one. */
+  ofToolkitCaller(caller: ToolkitCaller, runId: string): RunsResult<RunView> {
+    const run = this.#runs.run(runId);
+
+    return run !== undefined && this.#sees(caller, run) ? ok(this.view(run)) : RUN_NOT_FOUND;
+  }
+
+  /** The runs the agents toolkit's `caller` sees, the latest activity first. */
+  ofToolkitCallerAll(caller: ToolkitCaller): ReadonlyArray<RunView> {
+    const runs =
+      caller.kind === "run"
+        ? this.#runs.startedBy({ kind: "run", id: caller.runId })
+        : caller.apiKeyId === undefined
+          ? this.#runs.startedBy({ kind: "member", id: caller.member })
+          : this.#runs.startedByKey(caller.apiKeyId);
+
+    return runs.map((run) => this.view(run));
+  }
+
+  /** Ends the run `runId` the agents toolkit's `caller` started, whose object could not be reached to start it. */
+  abandonFromToolkit(caller: ToolkitCaller, runId: string): void {
+    const run = this.#runs.run(runId);
+
+    if (run !== undefined && this.#sees(caller, run)) this.#end(run.id);
+  }
+
+  /** Whether the agents toolkit's `caller` sees `run`: one it started (a key: through that key). */
+  #sees(caller: ToolkitCaller, run: StoredRun): boolean {
+    if (caller.kind === "run")
+      return run.starter?.kind === "run" && run.starter.id === caller.runId;
+
+    return caller.apiKeyId === undefined
+      ? isStarter(run, caller.member)
+      : run.apiKeyId === caller.apiKeyId && isStarter(run, caller.member);
+  }
+
+  /**
+   * Whether the run `calling` may run `agent`, as its latest turn read its definition: a private agent's run any agent
+   * its member may use, a shared agent's run the shared agents, within the agents its tool scope names. A disabled agent
+   * it may not run, so that a refusal tells nothing of an agent's existence.
+   */
+  #mayRun(calling: StoredRun, agent: StoredAgent): boolean {
+    const definition = calling.definition;
+
+    if (definition === undefined || !agent.enabled) return false;
+    const named = agentsInScope(definition.toolScope);
+
+    if (named !== undefined && !named.includes(agent.id)) return false;
+
+    return definition.actsAs.kind === "member"
+      ? this.#reaches(agent, definition.actsAs.memberId)
+      : agent.owner === undefined;
+  }
+
+  /** `run` and the runs that started it, the run first: at most {@link MAX_CHAIN} and one more. */
+  #chain(run: StoredRun): ReadonlyArray<StoredRun> {
+    const chain = [run];
+
+    for (let current = run; current.starter?.kind === "run" && chain.length <= MAX_CHAIN;) {
+      const parent = this.#runs.run(current.starter.id);
+
+      if (parent === undefined) break;
+      chain.push(parent);
+      current = parent;
+    }
+
+    return chain;
+  }
+
+  /**
+   * The member at the head of `run`'s chain (#229): its starter, or its first run's; `none` when no one started that run
+   * (a shared agent's trigger); `gone` when the chain's head is a run no longer in the index.
+   */
+  #starterMember(run: StoredRun): { readonly id: string } | "none" | "gone" {
+    const head = this.#chain(run).at(-1) ?? run;
+
+    if (head.starter === undefined) return "none";
+
+    return head.starter.kind === "member" ? { id: head.starter.id } : "gone";
+  }
+
+  /** Ends the run `runId` in the index, and the child runs it started, and theirs (#229): answers the runs it ended. */
+  #end(runId: string): ReadonlyArray<string> {
+    const now = this.#now();
+    const pending = [runId];
+    const ended: Array<string> = [];
+
+    for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
+      this.#runs.setState(next, "ended", now);
+      ended.push(next);
+
+      for (const child of this.#runs.startedBy({ kind: "run", id: next }))
+        if (child.state !== "ended") pending.push(child.id);
+    }
+
+    return ended;
   }
 
   /** The run `runId` if `viewer` started it; any other answers like an unknown one. */
@@ -270,17 +504,24 @@ export class Runs {
     if (agent.owner !== undefined && !this.#core.privateAgents())
       return refuse("run_ended", "the org does not serve private agents");
 
-    // A run no one started (a shared agent's trigger) has no starter to check.
-    let starterEmail: string | undefined;
+    if (run.starter?.kind === "run") {
+      // A child run (#229): the run that started it must still be there, and still able to run its agent.
+      const parent = this.#runs.run(run.starter.id);
 
-    if (run.starter !== undefined) {
-      const starter = this.#core.member(run.starter.id);
-
-      if (starter === undefined || !this.#reaches(agent, run.starter.id))
-        return refuse("run_ended", "the run's starter may no longer use the agent");
-
-      starterEmail = starter.email;
+      if (parent === undefined || parent.state === "ended" || !this.#mayRun(parent, agent))
+        return refuse("run_ended", "the run that started it may no longer run the agent");
     }
+
+    // A run no one started (a shared agent's trigger), or a child run of one, has no starter to check.
+    const head = this.#starterMember(run);
+    const starter = typeof head === "object" ? this.#core.member(head.id) : undefined;
+
+    if (
+      head === "gone" ||
+      (head !== "none" && starter === undefined) ||
+      (run.starter?.kind === "member" && !this.#reaches(agent, run.starter.id))
+    )
+      return refuse("run_ended", "the run's starter may no longer use the agent");
 
     const definition: TurnDefinition = {
       actsAs: actsAs.value,
@@ -292,7 +533,7 @@ export class Runs {
 
     this.#runs.beginTurn(run.id, definition, this.#now());
 
-    return ok(contextOf(run, starterEmail, definition));
+    return ok(contextOf(run, starter, definition));
   }
 
   /**
@@ -312,28 +553,36 @@ export class Runs {
 
     if (actsAs.kind === "member" && this.#core.member(actsAs.memberId) === undefined)
       return refuse("run_ended", "the agent's member left the org");
+    const head = this.#starterMember(run);
 
-    if (run.starter === undefined) return ok(contextOf(run, undefined, run.definition));
-    const starter = this.#core.member(run.starter.id);
+    if (head === "none") return ok(contextOf(run, undefined, run.definition));
+    const starter = head === "gone" ? undefined : this.#core.member(head.id);
 
     if (starter === undefined) return refuse("run_ended", "the run's starter left the org");
 
-    return ok(contextOf(run, starter.email, run.definition));
+    return ok(contextOf(run, starter, run.definition));
   }
 
-  /** Records the state the run's object reports, as its last activity; an ended run stays ended. */
-  stateChanged(runId: string, state: RunState): void {
+  /**
+   * Records the state the run's object reports, as its last activity; an ended run stays ended. A run that ends ends
+   * the child runs it started, and theirs (#229): it answers their ids, whose objects the run's object then stops.
+   */
+  stateChanged(runId: string, state: RunState): ReadonlyArray<string> {
     const run = this.#runs.run(runId);
 
-    if (run !== undefined && run.state !== "ended") this.#runs.setState(runId, state, this.#now());
+    if (run === undefined || run.state === "ended") return [];
+
+    if (state === "ended") return this.#end(runId).filter((id) => id !== runId);
+    this.#runs.setState(runId, state, this.#now());
+
+    return [];
   }
 
   /** Ends the run `runId` that `viewer` started: its object could not be reached to start it. */
   abandon(viewer: Viewer, runId: string): void {
     const run = this.#runs.run(runId);
 
-    if (run !== undefined && isStarter(run, viewer.member))
-      this.#runs.setState(runId, "ended", this.#now());
+    if (run !== undefined && isStarter(run, viewer.member)) this.#end(runId);
   }
 
   /** Up to `limit` runs' ids, and how many the index holds: the org's deletion deletes their objects first. */

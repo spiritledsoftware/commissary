@@ -71,7 +71,7 @@ export interface StoredToolkit extends ToolkitFields {
  * taking its shared credential only (Commissary's own binding), with no list to build and no price of its own.
  */
 export interface BuiltInToolkit extends ToolkitFields {
-  readonly kind: "browser" | "sandbox";
+  readonly kind: "browser" | "sandbox" | "agents";
   readonly owner: undefined;
   readonly accepts: "shared";
   readonly listBuiltAt: undefined;
