@@ -8,6 +8,7 @@ import {
   filterMyModels,
   EMPTY_GRANT_DRAFT,
   givesEveryModel,
+  grantsAreaOf,
   GRANT_PROVIDERS,
   grantBody,
   grantProblem,
@@ -15,6 +16,7 @@ import {
   hasGrantErrors,
   modelsNote,
   parsePatterns,
+  readGrantsSearch,
   scopeLabel,
   sortGrants,
   subjectLabel,
@@ -268,5 +270,15 @@ describe("my models", () => {
   it("tells a member with no models what to ask for", () => {
     expect(modelsNote(0)).toMatch(/Grants page/);
     expect(modelsNote(2)).toBe("");
+  });
+});
+
+describe("the address of the page", () => {
+  it("names the tool grants with area=tools, and reads anything else as the model grants", () => {
+    expect(grantsAreaOf(readGrantsSearch({ area: "tools" }))).toBe("tools");
+    expect(grantsAreaOf(readGrantsSearch({ area: "models" }))).toBe("models");
+    expect(grantsAreaOf(readGrantsSearch({ area: "nonsense" }))).toBe("models");
+    expect(grantsAreaOf(readGrantsSearch({}))).toBe("models");
+    expect(grantsAreaOf(readGrantsSearch(undefined))).toBe("models");
   });
 });

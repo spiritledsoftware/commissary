@@ -28,11 +28,12 @@ Google on the panel's sign-in page), on a desktop browser, in English. Each hold
   the Management keys page.
 - **Plain members** use Commissary from their coding agents and open the panel to see their own usage and to create and
   revoke their own API keys (the API keys page; org admins see every key of the org), and to see which models their
-  grants let them use (My models), and the Spend limits that bind them with what is left of each (Limits; they may cap
-  their own API keys, and org admins set every other limit and the org's calendar). Where the org lets members
-  connect private credentials, they also get their own Accounts and Provider keys pages: they connect their own accounts and
-  add their own keys, used only for their requests; org admins see that each exists (provider, owner, label) and can
-  disable or remove it, never how it is used. Every other page is closed to them.
+  grants let them use (My models) and which tools they reach and why (My tools), and the Spend limits that bind them
+  with what is left of each (Limits; they may cap their own API keys, and org admins set every other limit and the
+  org's calendar). Where the org lets members connect private credentials, they also get their own Accounts and
+  Provider keys pages: they connect their own accounts and add their own keys, used only for their requests; org
+  admins see that each exists (provider, owner, label) and can disable or remove it, never how it is used. Every
+  other page is closed to them.
 
 Day to day Commissary is consumed by coding agents (pi, Claude Code, Codex) on the members' machines; the panel is where
 they go to check on it or change it.

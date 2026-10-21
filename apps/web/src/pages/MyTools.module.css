@@ -1,0 +1,120 @@
+.page {
+  display: grid;
+  gap: var(--space-6);
+  max-width: 56rem;
+}
+
+.head {
+  display: grid;
+  gap: var(--space-3);
+  padding-bottom: var(--space-5);
+  border-bottom: 2px solid var(--text);
+}
+
+.title {
+  font-size: 2rem;
+  font-weight: 750;
+  letter-spacing: -0.025em;
+}
+
+.intro {
+  max-width: 65ch;
+  font-size: var(--text-sm);
+  color: var(--quiet);
+}
+
+.empty {
+  max-width: 60ch;
+  color: var(--quiet);
+}
+
+.count {
+  font-size: var(--text-sm);
+  color: var(--quiet);
+}
+
+.table {
+  width: 100%;
+  font-size: var(--text-sm);
+}
+
+.table th,
+.table td {
+  padding: var(--space-3) var(--space-4);
+  text-align: left;
+  vertical-align: middle;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.table > thead th {
+  padding-top: 0;
+  padding-bottom: var(--space-2);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--quiet);
+  border-bottom: 2px solid var(--text);
+  white-space: nowrap;
+}
+
+.table tr > :first-child {
+  padding-left: 0;
+}
+
+.table tr > :last-child {
+  padding-right: 0;
+}
+
+.name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+@container (max-width: 43rem) {
+  .wide {
+    display: none;
+  }
+}
+
+/* One toolkit: its name, why it reaches the member, and its tools, folded until opened. */
+.toolkit {
+  display: grid;
+  gap: var(--space-2);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--hairline);
+}
+
+.toolkit > summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-4);
+  cursor: pointer;
+}
+
+.toolkitName {
+  font-size: var(--text-md, 1rem);
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.reasons {
+  margin: 0 0 var(--space-3);
+  padding: 0;
+  list-style: none;
+  font-size: var(--text-sm);
+  color: var(--quiet);
+}
+
+.reasons strong {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.toolkit[open] > summary {
+  margin-bottom: var(--space-2);
+}
+
+.toolkits {
+  display: grid;
+  gap: var(--space-3);
+}

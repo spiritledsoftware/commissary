@@ -3,7 +3,32 @@
 // tested in test/grants.test.ts.
 import type { Grant, GrantBody, GrantScope, GrantSubject } from "@commissary/contract/grants";
 import type { MemberView, TeamView } from "@commissary/contract/members";
+import { Option, Schema } from "effect";
+import { flow } from "effect/Function";
 import { asSentence } from "./failure.ts";
+import { lenient } from "./usage.ts";
+
+/** Which grants the page lists: those of models or those of tools (#209). */
+export type GrantsArea = "models" | "tools";
+
+export const GRANTS_AREAS: ReadonlyArray<{ readonly id: GrantsArea; readonly label: string }> = [
+  { id: "models", label: "Models" },
+  { id: "tools", label: "Tools" },
+];
+
+/** The page's address: `/grants?area=tools`. A malformed parameter reads as none, which is the model grants. */
+export const GrantsSearch = Schema.Struct({ area: lenient(Schema.Literals(["models", "tools"])) });
+
+export type GrantsSearch = typeof GrantsSearch.Type;
+
+export const readGrantsSearch = flow(
+  Schema.decodeUnknownOption(GrantsSearch),
+  Option.getOrElse((): GrantsSearch => ({})),
+);
+
+/** The area an address names. */
+export const grantsAreaOf = (search: GrantsSearch): GrantsArea =>
+  search.area === "tools" ? "tools" : "models";
 
 export type GrantsView = "member" | "team" | "credential";
 

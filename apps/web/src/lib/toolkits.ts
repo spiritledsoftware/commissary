@@ -247,11 +247,22 @@ export interface ToolkitControls {
   /** Build its tool list now. */
   readonly refresh: boolean;
   readonly remove: boolean;
+  /**
+   * Price its calls, and its tools' (#209): org admins, on an org toolkit (the browser and sandbox toolkits take a
+   * price per hour of their time). A private toolkit takes no price, not even from its owner.
+   */
+  readonly prices: boolean;
+  /**
+   * Set its approval rules (#209): org admins on an org toolkit, the built-in ones included, and a member on their own
+   * private toolkit.
+   */
+  readonly approvals: boolean;
 }
 
 /**
  * What a caller may do with a toolkit: org admins manage org toolkits, a member their own private toolkits (the list
- * holds no one else's); a built-in toolkit takes only its tools' overrides (and settings outside this page). A member
+ * holds no one else's); a built-in toolkit takes only its tools' overrides, its approval rules and its prices per hour
+ * (and settings outside this page). A member
  * lists an org toolkit's tools again only while it has no shared credential, so the listing uses their own.
  */
 export const controlsFor = (toolkit: ToolkitView, caller: ToolsCaller): ToolkitControls => {
@@ -266,6 +277,8 @@ export const controlsFor = (toolkit: ToolkitView, caller: ToolsCaller): ToolkitC
     private: !builtIn && privateAllowed && acceptsSlot(toolkit, "private"),
     refresh: !builtIn && (manage || !sharedInUse),
     remove: !builtIn && manage,
+    prices: caller.admin && !toolkit.private,
+    approvals: manage,
   };
 };
 

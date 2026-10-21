@@ -34,11 +34,12 @@ describe("the caller's role", () => {
 });
 
 describe("pages", () => {
-  it("opens only Usage, Tools, My models, API keys, Limits and Approvals to a plain member and everything to an admin", () => {
+  it("opens only Usage, Tools, My models, My tools, API keys, Limits and Approvals to a plain member and everything to an admin", () => {
     expect(pagesFor("member").map((page) => page.to)).toEqual([
       "/usage",
       "/tools",
       "/my-models",
+      "/my-tools",
       "/api-keys",
       "/limits",
       "/approvals",
@@ -51,6 +52,9 @@ describe("pages", () => {
     expect(pageAllowed("member", "/usage")).toBe(true);
     expect(pageAllowed("member", "/usage/")).toBe(true);
     expect(pageAllowed("member", "/my-models")).toBe(true);
+    // The tools a member reaches and why (#209) are theirs to read; granting them (Grants) is not.
+    expect(pageAllowed("member", "/my-tools")).toBe(true);
+    expect(pageAllowed("member", "/my-toolsx")).toBe(false);
     expect(pageAllowed("member", "/grants")).toBe(false);
     expect(pageAllowed("member", "/api-keys")).toBe(true);
     expect(pageAllowed("member", "/api-keys/")).toBe(true);
@@ -87,7 +91,16 @@ describe("the sidebar's groups of pages", () => {
       ["Providers", ["Accounts", "Provider keys", "Models", "Tools"]],
       [
         "People and access",
-        ["Members", "Grants", "My models", "API keys", "Management keys", "Limits", "Approvals"],
+        [
+          "Members",
+          "Grants",
+          "My models",
+          "My tools",
+          "API keys",
+          "Management keys",
+          "Limits",
+          "Approvals",
+        ],
       ],
       ["Org", ["Settings"]],
     ]);
@@ -115,12 +128,12 @@ describe("the sidebar's groups of pages", () => {
     expect(outline(pageGroupsFor("member"))).toEqual([
       ["", ["Usage"]],
       ["Providers", ["Tools"]],
-      ["People and access", ["My models", "API keys", "Limits", "Approvals"]],
+      ["People and access", ["My models", "My tools", "API keys", "Limits", "Approvals"]],
     ]);
     expect(outline(pageGroupsFor("member", true))).toEqual([
       ["", ["Usage"]],
       ["Providers", ["Accounts", "Provider keys", "Tools"]],
-      ["People and access", ["My models", "API keys", "Limits", "Approvals"]],
+      ["People and access", ["My models", "My tools", "API keys", "Limits", "Approvals"]],
     ]);
   });
 
@@ -152,6 +165,7 @@ describe("private credentials in the panel (ADR 0023)", () => {
       "/keys",
       "/tools",
       "/my-models",
+      "/my-tools",
       "/api-keys",
       "/limits",
       "/approvals",
@@ -160,6 +174,7 @@ describe("private credentials in the panel (ADR 0023)", () => {
       "/usage",
       "/tools",
       "/my-models",
+      "/my-tools",
       "/api-keys",
       "/limits",
       "/approvals",

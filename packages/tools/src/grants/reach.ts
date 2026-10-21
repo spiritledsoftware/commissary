@@ -37,7 +37,8 @@ const selects = (toolkit: string, selection: ToolSelection, tool: GrantableTool)
   }
 };
 
-const gives = (grant: ToolGrantEntry, tool: GrantableTool): boolean =>
+/** Whether one grant gives a tool: its toolkit's, and one its selection takes in (whoever it names). */
+export const grantGives = (grant: ToolGrantEntry, tool: GrantableTool): boolean =>
   selects(grant.toolkit, grant.tools, tool);
 
 /**
@@ -54,5 +55,5 @@ export const grantedTools = (
 ): ((tool: GrantableTool) => boolean) => {
   const applicable = grants.filter((grant) => names(grant, holder));
 
-  return (tool) => applicable.some((grant) => gives(grant, tool));
+  return (tool) => applicable.some((grant) => grantGives(grant, tool));
 };

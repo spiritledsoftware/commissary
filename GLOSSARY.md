@@ -606,8 +606,9 @@ _Avoid_: charge, bill, spend (for one attempt)
 
 **Unpriced**:
 Said of an attempt on a model that has no price. It costs nothing toward spend limits; its usage record is flagged and
-the model is listed so an admin can give it a price override.
-_Avoid_: free
+the model is listed so an admin can give it a price override. A tool call without a price costs nothing too; the panel
+shows it as Free and does not flag it as unpriced.
+_Avoid_: free (as a name for the state; the panel labels a price-less tool call Free)
 
 **Spend**:
 The cost added up over a period for whatever a spend limit covers.

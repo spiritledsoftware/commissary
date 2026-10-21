@@ -7,6 +7,7 @@ import type {
   SpendSubjectKind,
   SpendWeekStart,
 } from "@commissary/contract/spend";
+import type { ToolkitView } from "@commissary/contract/tools";
 import { asSentence } from "./failure.ts";
 import { formatCost } from "./format.ts";
 
@@ -27,17 +28,37 @@ export const SUBJECT_KINDS: ReadonlyArray<{
   { id: "team", label: "Team" },
   { id: "member", label: "Member" },
   { id: "credential", label: "Shared credential" },
+  // An org toolkit's shared credential (#199, #209): its priced tool calls count toward it.
+  { id: "toolkit_credential", label: "Toolkit credential" },
   { id: "key", label: "API key" },
 ];
 
-/**
- * The kinds listed, not offered in the form yet: a toolkit's shared credential (#199; the panel's toolkits are #209's)
- * and a shared hosted agent (#226; the panel's agents come later).
- */
+/** The kinds listed, not offered in the form yet: a shared hosted agent (#226; the panel's agents come later). */
 const LISTED_ONLY: Partial<Record<SpendSubjectKind, string>> = {
-  toolkit_credential: "Toolkit credential",
   agent: "Agent",
 };
+
+/** What a limit can name: its id, and what to call it. */
+export interface LimitSubject {
+  readonly id: string;
+  readonly label: string;
+}
+
+/**
+ * The toolkits a limit on a shared credential can name (`toolkit_credential`, #209): the org's own toolkits that hold a
+ * shared credential, by name. A private toolkit has none (its calls count toward its member's and API keys' limits
+ * only), and neither does a built-in one.
+ */
+export const limitableToolkits = (
+  toolkits: ReadonlyArray<ToolkitView>,
+): ReadonlyArray<LimitSubject> =>
+  toolkits
+    .flatMap((toolkit) =>
+      !toolkit.private && toolkit.built_in !== true && toolkit.credentials.shared !== undefined
+        ? [{ id: toolkit.id, label: toolkit.name }]
+        : [],
+    )
+    .toSorted((a, b) => a.label.localeCompare(b.label));
 
 export const kindLabel = (kind: SpendSubjectKind): string =>
   LISTED_ONLY[kind] ?? SUBJECT_KINDS.find((candidate) => candidate.id === kind)?.label ?? kind;

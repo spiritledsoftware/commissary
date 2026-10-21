@@ -2738,8 +2738,10 @@ Workers addition replacing the Go server's client keys (`access.api-keys`, impor
   is `404`, an admin cannot widen or narrow a member's key); `422 invalid_tool_scope` for a malformed one. A key's view
   carries `tool_scope`, `tool_count` (what it may use now) and `tool_scope_missing` (ids its scope names that are gone:
   a removed toolkit or tool stays in the scope, giving nothing). `GET /tools` lists what the caller may use, by toolkit,
-  for the panel's editor and the consent page of an MCP client's sign-in (_Commissary Cloud_). The model routes ignore
-  the scope.
+  for the panel's editor and the consent page of an MCP client's sign-in (_Commissary Cloud_); each toolkit also says why
+  the caller reaches it (`via`, #209: their private credential, `private` once connected and `private_available` while
+  the toolkit takes one and the org allows it but they have none; the tool grants that name them with the tools each
+  gives; the agents toolkit), as members cannot read `GET /grants/tools`. The model routes ignore the scope.
 - **Principal** `{kind: "key", keyId, memberId, email}`: usage records and logs store `key:<key id>` and the member id; the
   caller scope of session state is the member's (`user:<email>`), so a member's keys and their Access-era sessions share
   state. A key is never a platform admin, and the management zone never reads keys.
@@ -3359,7 +3361,7 @@ own MCP endpoint. This version builds four kinds, the remote MCP server (Streama
 _OpenAPI toolkits_ below), the GraphQL endpoint (#204, _GraphQL toolkits_ below) and the Google Discovery document
 (#205, _Discovery toolkits_ below), each through its driver (`tools/toolkits/kinds.ts`: how its list is built, whether
 that needs a credential, how a call reaches the upstream, whether calls keep an upstream session), and offers the
-toolkit catalog to add them from (#207, _Toolkit catalog_ below) and the panel's Tools pages (#208, _Panel_ below; prices and approval rules there come with #209); grants (#198), prices, usage records and Spend limits of tool calls (#199), approval rules with
+toolkit catalog to add them from (#207, _Toolkit catalog_ below) and the panel's Tools pages (#208, #209, _Panel_ below); grants (#198), prices, usage records and Spend limits of tool calls (#199), approval rules with
 pending approvals (#201) and OAuth 2 sign-in to toolkits (#202, around the drivers: a driver gets a credential's secret
 already signed in) are here. The package (`@commissary/tools`) is shaped like Models: entry points `./api` (the MCP
 endpoint's routes, Commissary's CIMD document, the cron task), `./management`, `./state` and `./testing`, a lint
@@ -4533,6 +4535,25 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
   why), narrowed with `?toolkits=` to picked toolkits, how many tools each gives (`GET /tools`, narrowed by the picked
   toolkits and, for a key's URL, a picked API key's tool scope), a suggestion to narrow above 100 tools, and setup
   snippets for Claude, Claude Code, Cursor, Codex and pi that read a key from `COMMISSARY_API_KEY`, never showing one.
+- **Panel, grants, prices, approvals and usage** (#209; models in `apps/web/src/lib/tool-grants.ts`, `tool-id.ts`,
+  `my-tools.ts`, `tool-prices.ts`, `approval-rules.ts`, `usage-tools.ts`). The **Grants** page (`/grants`) has a Models
+  | Tools switch (`?area=tools`): the tool grants (`GrantsTools.tsx`) read by member, team or toolkit, a form for the
+  subject, an org toolkit (not a private one, nor one that takes private credentials only, nor the agents toolkit) and
+  all, read or named tools picked from the toolkit's tool list (named tools shown by their current names, a vanished one
+  marked missing), and a note on the toolkits that hold a shared credential and no grant. **My tools** (`/my-tools`,
+  every member) lists the tools the caller may use by toolkit with the reasons `GET /tools` gives. A toolkit's page adds
+  **Prices** (org admins: a price per call, or per browser or computer hour on those toolkits, and a tool's own price in
+  its editor; an empty price is free and not flagged) and **Approvals** (org admins on any toolkit, a member on their
+  own private toolkit: the write switch, marks on tools and each rule's approver, the caller, a team or members, written
+  whole with the toolkit's `If-Match`; a plain member names only the caller, as the panel has no member or team list for
+  them, and sees a rule an API call gave a team or members as a disabled "set elsewhere" choice; a rule's team or
+  members the org no longer has start unchosen, and a rule nobody can approve under is flagged), with a link to the
+  Approvals page. The Limits page offers a toolkit's shared credential as a subject (`toolkit_credential`). **Usage**
+  has an Area switch (`area=tools`): the tool calls' totals, a breakdown by toolkit, tool, member, team, API key or
+  user, and the log with each call's outcome, approval outcome, latency, cost and credential, filterable by toolkit and
+  tool; it shows no arguments or results (sizes only), a private call is its caller's alone, as every record is, and
+  "not completed" counts every outcome but `success`, as the server's `failed` does, and is not painted as failing.
+  **Members** has a switch for private toolkits beside the private credentials one.
 
 ## Agents (`agents/`, `agents/management/routes.ts`, `src/management/agent-routes.ts`, `apps/api/src/http/run-gateway.ts`)
 

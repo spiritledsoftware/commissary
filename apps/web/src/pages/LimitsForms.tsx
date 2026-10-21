@@ -11,6 +11,7 @@ import {
   apiKeysAtom,
   SPEND,
   teamsAtom,
+  toolkitsAtom,
   updateSpendSettingsAtom,
 } from "../api/client.ts";
 import { kit, Problem } from "../components/Kit.tsx";
@@ -19,6 +20,7 @@ import {
   amountProblem,
   kindLabel,
   knownZones,
+  limitableToolkits,
   limitProblem,
   parseDollars,
   PERIODS,
@@ -156,6 +158,7 @@ const useSubjects = (): Readonly<Record<SpendSubjectKind, ReadonlyArray<Subject>
   const groups = useAtomValue(teamsAtom);
   const files = useAtomValue(credentialsAtom);
   const keys = useAtomValue(apiKeysAtom);
+  const toolkits = useAtomValue(toolkitsAtom);
 
   return {
     org: [],
@@ -178,8 +181,10 @@ const useSubjects = (): Readonly<Record<SpendSubjectKind, ReadonlyArray<Subject>
             label: key.mine ? key.name : `${key.name} (${key.member_email ?? key.member_id})`,
           }))
       : [],
-    // The form does not offer toolkit limits yet (#209).
-    toolkit_credential: [],
+    // An org toolkit's shared credential (#209): the toolkits that hold one.
+    toolkit_credential: AsyncResult.isSuccess(toolkits)
+      ? limitableToolkits(toolkits.value.toolkits)
+      : [],
     // Nor agent limits: the panel has no agents yet (#226 adds the API).
     agent: [],
   };

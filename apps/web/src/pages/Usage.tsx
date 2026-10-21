@@ -1,6 +1,8 @@
 // Usage: what Commissary served over a range (24 hours, 7 days, 30 days), narrowed by model, account, provider or
 // user: the totals, tokens per hour or day, a breakdown whose rows narrow the page further, and the request log
-// with each request's details. The range, breakdown and filters live in the address, so a view can be linked to.
+// with each request's details. The area switch reads tool calls instead (#209, UsageTools.tsx), narrowed by toolkit,
+// tool or user, with their outcome, approval, latency and cost; a call's arguments and results are never shown. The
+// area, range, breakdown and filters live in the address, so a view can be linked to.
 // A plain member sees their own requests only (the server narrows every read), without the account names, the
 // unpriced models and the Prices page, which are for org admins.
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
@@ -43,11 +45,14 @@ import { canManageMembers } from "../lib/role.ts";
 import { useRole } from "../lib/use-role.ts";
 import {
   activeFilters,
+  AREAS,
+  areaOf,
   type Breakdown,
   breakdownOf,
   breakdownsFor,
   FILTER_LABELS,
   type FilterKey,
+  filtersFor,
   RANGES,
   type Range,
   rangeBars,
@@ -56,7 +61,9 @@ import {
   readUsageSearch,
   type UsageSearch,
 } from "../lib/usage.ts";
+import { toolkitIdOf, upstreamNameOf } from "../lib/tool-id.ts";
 import { usePageTitle } from "../lib/use-page-title.ts";
+import { type ToolNames, ToolLog, ToolSummary, useToolkitNames } from "./UsageTools.tsx";
 import styles from "./Usage.module.css";
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -71,6 +78,8 @@ interface Names {
   readonly teams: ReadonlyMap<string, string>;
   /** API key names by key id. */
   readonly keys: ReadonlyMap<string, string>;
+  /** Toolkit names by toolkit id: those the caller reaches. */
+  readonly toolkits: ReadonlyMap<string, string>;
 }
 
 /** API keys by id: a plain member lists their own, an org admin every key. */
@@ -89,9 +98,11 @@ const useNames = (): Names => {
   const members = AsyncResult.isSuccess(people) ? people.value.members : [];
   const teams = AsyncResult.isSuccess(groups) ? groups.value.teams : [];
   const keys = useKeyNames();
+  const toolkits = useToolkitNames();
 
   return {
     keys,
+    toolkits,
     byIndex: new Map(files.map((entry) => [entry.auth_index, entry])),
     members: new Map(members.map((member) => [member.id, member.email])),
     teams: new Map(teams.map((team) => [team.id, team.name])),
@@ -99,7 +110,11 @@ const useNames = (): Names => {
 };
 
 /** A plain member may not read the accounts, members or teams: only their own API keys are named. */
-const NO_NAMES: Omit<Names, "keys"> = { byIndex: new Map(), members: new Map(), teams: new Map() };
+const NO_NAMES: Omit<Names, "keys" | "toolkits"> = {
+  byIndex: new Map(),
+  members: new Map(),
+  teams: new Map(),
+};
 
 /** A breakdown row's or filter's value as the operator knows it. */
 const valueName = (key: FilterKey | Breakdown["id"], value: string, names: Names): string => {
@@ -126,6 +141,14 @@ const valueName = (key: FilterKey | Breakdown["id"], value: string, names: Names
       return value === "" ? "Unknown user" : value;
     case "endpoint":
       return value === "" ? "Unknown endpoint" : value;
+    case "toolkit":
+      return value === "" ? "Unknown toolkit" : (names.toolkits.get(value) ?? value);
+    case "tool": {
+      const toolkit = names.toolkits.get(toolkitIdOf(value));
+      const tool = upstreamNameOf(value);
+
+      return toolkit === undefined ? tool : `${toolkit} · ${tool}`;
+    }
   }
 };
 
@@ -139,6 +162,8 @@ const filtersOf = (search: UsageSearch): UsageFilters => ({
   user: search.user,
   member: search.member,
   team: search.team,
+  toolkit: search.toolkit,
+  tool: search.tool,
 });
 
 const useUsageSearch = () => {
@@ -780,13 +805,20 @@ const UsageContent = ({ names, admin }: { readonly names: Names; readonly admin:
   usePageTitle("Usage");
   const { search, update } = useUsageSearch();
   const range = rangeOf(search.range);
-  const breakdown = breakdownOf(search.by, breakdownsFor(admin));
-  const filters = filtersOf(search);
-  const view: UsageView = { range: range.id, filters };
+  const area = areaOf(search.area);
+  const breakdowns = breakdownsFor(admin, area);
+  const breakdown = breakdownOf(search.by, breakdowns);
+  const filters = filtersFor(filtersOf(search), area);
+  const view: UsageView = { range: range.id, area, filters };
   const failedOnly = search.failed === true;
   const active = activeFilters(filters);
   // The log starts over from its first page whenever what it shows changes.
   const logKey = JSON.stringify([view, failedOnly]);
+
+  const toolNames: ToolNames = {
+    toolkits: names.toolkits,
+    valueName: (key, value) => valueName(key, value, names),
+  };
 
   return (
     <div className={kit["page"]}>
@@ -798,6 +830,34 @@ const UsageContent = ({ names, admin }: { readonly names: Names; readonly admin:
               Prices
             </Link>
           ) : null}
+        </div>
+        <div className={kit["tabs"]} role="radiogroup" aria-label="Area">
+          {AREAS.map((candidate) => (
+            <button
+              key={candidate.id}
+              type="button"
+              role="radio"
+              aria-checked={candidate.id === area}
+              className={kit["tab"]}
+              onClick={() =>
+                candidate.id === area
+                  ? undefined
+                  : // Another area reads other filters and groupings: start it afresh, keeping the range and who.
+                    update({
+                      area: candidate.id === "tools" ? "tools" : undefined,
+                      by: undefined,
+                      failed: undefined,
+                      ...Object.fromEntries(
+                        active
+                          .filter(({ key }) => filtersFor(filters, candidate.id)[key] === undefined)
+                          .map(({ key }) => [key, undefined]),
+                      ),
+                    })
+              }
+            >
+              {candidate.label}
+            </button>
+          ))}
         </div>
         <div className={kit["tabs"]} role="radiogroup" aria-label="Range">
           {RANGES.map((candidate) => (
@@ -813,6 +873,23 @@ const UsageContent = ({ names, admin }: { readonly names: Names; readonly admin:
             </button>
           ))}
         </div>
+        {area === "tools" && names.toolkits.size > 0 ? (
+          <select
+            className={styles["teamPick"]}
+            aria-label="Toolkit"
+            value={filters.toolkit ?? ""}
+            onChange={(event) =>
+              update({ toolkit: event.target.value || undefined, tool: undefined })
+            }
+          >
+            <option value="">All toolkits</option>
+            {[...names.toolkits].map(([id, name]) => (
+              <option key={id} value={id}>
+                {name}
+              </option>
+            ))}
+          </select>
+        ) : null}
         {admin && names.teams.size > 0 ? (
           <select
             className={styles["teamPick"]}
@@ -857,23 +934,46 @@ const UsageContent = ({ names, admin }: { readonly names: Names; readonly admin:
           )}
         </div>
       )}
-      <Summary
-        view={view}
-        range={range}
-        breakdown={breakdown}
-        names={names}
-        admin={admin}
-        onBreakdown={(by) => update({ by })}
-        onNarrow={(key, value) => update({ [key]: value })}
-      />
-      <Fragment key={logKey}>
-        <Log
-          view={view}
-          failedOnly={failedOnly}
-          names={names}
-          onFailedOnly={(value) => update({ failed: value ? true : undefined })}
-        />
-      </Fragment>
+      {area === "tools" ? (
+        <>
+          <ToolSummary
+            view={view}
+            breakdown={breakdown}
+            breakdowns={breakdowns}
+            names={toolNames}
+            onBreakdown={(by) => update({ by })}
+            onNarrow={(key, value) => update({ [key]: value })}
+          />
+          <Fragment key={logKey}>
+            <ToolLog
+              view={view}
+              failedOnly={failedOnly}
+              names={toolNames}
+              onFailedOnly={(value) => update({ failed: value ? true : undefined })}
+            />
+          </Fragment>
+        </>
+      ) : (
+        <>
+          <Summary
+            view={view}
+            range={range}
+            breakdown={breakdown}
+            names={names}
+            admin={admin}
+            onBreakdown={(by) => update({ by })}
+            onNarrow={(key, value) => update({ [key]: value })}
+          />
+          <Fragment key={logKey}>
+            <Log
+              view={view}
+              failedOnly={failedOnly}
+              names={names}
+              onFailedOnly={(value) => update({ failed: value ? true : undefined })}
+            />
+          </Fragment>
+        </>
+      )}
     </div>
   );
 };
@@ -881,7 +981,9 @@ const UsageContent = ({ names, admin }: { readonly names: Names; readonly admin:
 const MemberUsage = () => {
   const keys = useKeyNames();
 
-  return <UsageContent names={{ ...NO_NAMES, keys }} admin={false} />;
+  const toolkits = useToolkitNames();
+
+  return <UsageContent names={{ ...NO_NAMES, keys, toolkits }} admin={false} />;
 };
 
 const OrgAdminUsage = () => {

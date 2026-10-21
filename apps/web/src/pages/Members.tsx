@@ -11,6 +11,7 @@ import {
   MEMBERS,
   membershipAtom,
   ORGS,
+  TOOLKITS,
   membersAtom,
   serviceTokensAtom,
   teamsAtom,
@@ -18,6 +19,12 @@ import {
 } from "../api/client.ts";
 import { kit, Problem, Section } from "../components/Kit.tsx";
 import { failureMessage } from "../lib/failure.ts";
+import {
+  PRIVATE_SWITCH_ORDER,
+  PRIVATE_SWITCHES,
+  type PrivateSetting,
+  privateSettingPatch,
+} from "../lib/members.ts";
 import { type Caller, canManageMembers, canSetAutoJoin, roleAs } from "../lib/role.ts";
 import { useAction } from "../lib/use-action.ts";
 import { usePageTitle } from "../lib/use-page-title.ts";
@@ -137,47 +144,53 @@ const MembershipToggle = ({
   );
 };
 
-/** Whether plain members may connect private accounts and provider keys (ADR 0023); org admins decide. */
-const PrivateCredentials = () => {
+/**
+ * Whether plain members may connect private accounts and provider keys (ADR 0023) or add private toolkits (#209, ADR
+ * 0038); org admins decide, each setting on its own.
+ */
+const PrivateSwitchSetting = ({ setting }: { readonly setting: PrivateSetting }) => {
   const result = useAtomValue(membershipAtom);
   const retry = useAtomRefresh(membershipAtom);
   const save = useAction(updateMembershipAtom);
   const { note, settle, clear } = useNote();
+  const control = PRIVATE_SWITCHES[setting];
 
   return (
-    <Loaded result={result} retry={retry} what="the private credentials setting">
-      {({ private_credentials: on }) => (
-        <>
-          <label className={styles["toggle"]}>
-            <input
-              type="checkbox"
-              checked={on}
-              disabled={save.busy}
-              onChange={async (event) => {
-                clear();
+    <Loaded result={result} retry={retry} what={control.what}>
+      {(settings) => {
+        const on = settings[setting];
 
-                settle(
-                  await save.run({
-                    payload: { private_credentials: event.target.checked },
-                    // The panel's pages for plain members follow the setting (`GET /me`).
-                    reactivityKeys: [...MEMBERS, ...ORGS],
-                  }),
-                  event.target.checked
-                    ? "Members can connect private accounts and provider keys now."
-                    : "Private accounts and provider keys are switched off, not deleted.",
-                );
-              }}
-            />
-            <span>Let members connect private accounts and provider keys</span>
-          </label>
-          <p className={kit["muted"]}>
-            {on
-              ? "On: a member's private account or provider key is used only for their own requests. Org admins see that it exists, its provider, owner and label, and can disable or remove it, but not how it is used."
-              : "Off: members cannot connect private credentials, and the ones they connected stay in place but are not used. Turning it on again brings them back."}
-          </p>
-          <NoteLine note={note} />
-        </>
-      )}
+        return (
+          <>
+            <label className={styles["toggle"]}>
+              <input
+                type="checkbox"
+                checked={on}
+                disabled={save.busy}
+                onChange={async (event) => {
+                  clear();
+
+                  settle(
+                    await save.run({
+                      payload: privateSettingPatch(setting, event.target.checked),
+                      // The panel's pages for plain members follow the setting (`GET /me`).
+                      // The toolkits a member may add follow the setting (`GET /toolkits`, `GET /tools`).
+                      reactivityKeys:
+                        setting === "private_toolkits"
+                          ? [...MEMBERS, ...ORGS, ...TOOLKITS]
+                          : [...MEMBERS, ...ORGS],
+                    }),
+                    control.said(event.target.checked),
+                  );
+                }}
+              />
+              <span>{control.label}</span>
+            </label>
+            <p className={kit["muted"]}>{control.describe(on)}</p>
+            <NoteLine note={note} />
+          </>
+        );
+      }}
     </Loaded>
   );
 };
@@ -288,9 +301,11 @@ const Lists = ({ caller }: { readonly caller: Caller }) => {
       <Section title="Joining">
         <AutoJoin caller={caller} />
       </Section>
-      <Section title="Private credentials">
-        <PrivateCredentials />
-      </Section>
+      {PRIVATE_SWITCH_ORDER.map((setting) => (
+        <Section key={setting} title={PRIVATE_SWITCHES[setting].title}>
+          <PrivateSwitchSetting setting={setting} />
+        </Section>
+      ))}
       <ClientApiSignIn caller={caller} />
     </>
   );

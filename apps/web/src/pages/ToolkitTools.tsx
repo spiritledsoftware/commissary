@@ -1,7 +1,8 @@
 // A toolkit's tool list (#208, ADR 0037, ADR 0038): every tool its source lists, by the full name clients call it by,
 // with its class, its price and what its flags say (renamed, hidden, shortened, a name clash, gone upstream,
-// deprecated). The toolkit's managers edit a tool's override in place (hide it, rename it, describe it, set its class)
-// or reset it, and list its tools again now. Prices and approval rules are set elsewhere (#199, #209).
+// deprecated). The toolkit's managers edit a tool's override in place (hide it, rename it, describe it, set its class,
+// and for an org toolkit its own price per call, #209) or reset it, and list its tools again now. A tool's row says
+// whether its calls wait for approval; the rules are set on the toolkit's Approvals section.
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/reactivity";
 import { RefreshCw } from "lucide-react";
@@ -10,7 +11,8 @@ import type { ToolClass, ToolkitView, ToolView } from "@commissary/contract/tool
 import { overrideToolAtom, refreshToolkitAtom, TOOLKITS, toolkitToolsAtom } from "../api/client.ts";
 import { kit, Problem, Section } from "../components/Kit.tsx";
 import { failureMessage } from "../lib/failure.ts";
-import { formatCost, formatDate } from "../lib/format.ts";
+import { type ApproverDirectory, approvalOfTool, approverText } from "../lib/approval-rules.ts";
+import { formatDate } from "../lib/format.ts";
 import {
   draftOfTool,
   type OverrideDraft,
@@ -20,6 +22,7 @@ import {
   toolNameProblem,
   toolNotes,
 } from "../lib/tool-list.ts";
+import { priceProblem, toolPriceText, toolsTakePrices } from "../lib/tool-prices.ts";
 import { toolCountText } from "../lib/tool-scope.ts";
 import { problemOf } from "../lib/toolkits.ts";
 import { useAction } from "../lib/use-action.ts";
@@ -45,6 +48,7 @@ const ToolEditor = ({
   const override = useAction(overrideToolAtom);
   const [draft, setDraft] = useState<OverrideDraft>(() => draftOfTool(tool));
   const [nameProblem, setNameProblem] = useState<string | undefined>(undefined);
+  const [priceIssue, setPriceIssue] = useState<string | undefined>(undefined);
   const [problem, setProblem] = useState<string | undefined>(undefined);
 
   const send = async (body: ReturnType<typeof overrideBody>) => {
@@ -73,9 +77,12 @@ const ToolEditor = ({
     event.preventDefault();
     const badName = toolNameProblem(draft.name, toolkit.name);
 
-    setNameProblem(badName);
+    const badPrice = toolsTakePrices(toolkit) ? priceProblem(draft.price) : undefined;
 
-    if (badName === undefined) void send(overrideBody(tool, draft));
+    setNameProblem(badName);
+    setPriceIssue(badPrice);
+
+    if (badName === undefined && badPrice === undefined) void send(overrideBody(tool, draft));
   };
 
   return (
@@ -118,6 +125,20 @@ const ToolEditor = ({
             <option value="write">Write: it changes something</option>
           </select>
         </div>
+        {toolsTakePrices(toolkit) ? (
+          <SpecField
+            spec={{
+              key: "price",
+              label: "Price per call (USD)",
+              secret: false,
+              optional: true,
+              hint: "Wins over the toolkit's price for this tool; 0 makes it free. Empty: the toolkit's.",
+            }}
+            value={draft.price}
+            problem={priceIssue}
+            onChange={(price) => setDraft({ ...draft, price })}
+          />
+        ) : null}
         <SpecField
           spec={{
             key: "description",
@@ -170,16 +191,20 @@ const ToolRow = ({
   tool,
   manage,
   editing,
+  directory,
   onEdit,
 }: {
   readonly toolkit: ToolkitView;
   readonly tool: ToolView;
+  readonly directory: ApproverDirectory | undefined;
   readonly manage: boolean;
   readonly editing: boolean;
   readonly onEdit: (editing: boolean) => void;
 }) => {
   const notes = toolNotes(tool);
   const shown = !tool.flags.hidden && !tool.flags.clash && !tool.flags.missing;
+  const approval = approvalOfTool(toolkit.approval_rules, tool);
+  const price = toolPriceText(tool);
 
   return (
     <>
@@ -198,11 +223,18 @@ const ToolRow = ({
             {notes.map((note) => (
               <FlagText key={note.text} flag={note} />
             ))}
+            {approval === undefined ? null : (
+              <span className={styles["secondary"]}>
+                Calls wait for approval from {approverText(approval.approver, directory)}
+                {approval.because === "writes" ? ", as a write tool" : ", marked"}
+              </span>
+            )}
           </div>
         </td>
         <td>{CLASS_LABELS[tool.class]}</td>
         <td className={`${styles["number"]} ${styles["wide"]}`}>
-          {tool.price_micros === undefined ? "Unpriced" : formatCost(tool.price_micros)}
+          {price.text}
+          {price.own ? <span className={styles["secondary"]}>its own</span> : null}
         </td>
         {manage ? (
           <td className={styles["number"]}>
@@ -243,8 +275,11 @@ export const ToolList = ({
   toolkit,
   manage,
   refresh,
+  directory,
 }: {
   readonly toolkit: ToolkitView;
+  /** The members and teams, to name approvers: org admins have them. */
+  readonly directory?: ApproverDirectory | undefined;
   /** Edit the tools' overrides. */
   readonly manage: boolean;
   /** Build the list now. */
@@ -335,6 +370,7 @@ export const ToolList = ({
                         tool={tool}
                         manage={manage}
                         editing={editing === tool.id}
+                        directory={directory}
                         onEdit={(open) => setEditing(open ? tool.id : undefined)}
                       />
                     ))}

@@ -8,6 +8,7 @@ import type {
   ApproverView,
 } from "@commissary/contract/approvals";
 import { formatDuration } from "./format.ts";
+import { upstreamNameOf } from "./tool-id.ts";
 
 /** Who may decide calls under `approver`, as a heading: the caller, a team or a list of members. */
 export const approverLabel = (approver: ApproverView): string => {
@@ -75,9 +76,7 @@ export const approvalRulesWarnings = (rules: ApprovalRulesView): ReadonlyArray<s
     ...(rules.writes?.nobody_decides === true
       ? [warning("The write tools' rule", rules.writes.approver)]
       : []),
-    ...marks.map((mark) =>
-      warning(`The rule on ${mark.id.slice(mark.id.indexOf(":") + 1)}`, mark.approver),
-    ),
+    ...marks.map((mark) => warning(`The rule on ${upstreamNameOf(mark.id)}`, mark.approver)),
   ];
 };
 

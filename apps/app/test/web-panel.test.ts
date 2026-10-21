@@ -68,6 +68,8 @@ describe("web panel", () => {
     "/o/default/tools",
     "/o/default/tools/add",
     "/o/default/tools/tk_0123456789abcdef/connect",
+    // The tools a member reaches and why (#209).
+    "/o/default/my-tools",
     "/o/default/settings/",
     "/o/DEFAULT/Settings",
   ])("serves index.html for %s with the panel's security headers", async (path) => {

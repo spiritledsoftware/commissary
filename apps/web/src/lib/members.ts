@@ -1,6 +1,11 @@
 // The Members page's model: what a refused write tells the caller, the checks that mirror the server's, and how
 // members, teams and service tokens are read together. Pure: no DOM, tested in test/members.test.ts.
-import type { MemberView, ServiceTokenView, TeamView } from "@commissary/contract/members";
+import type {
+  MemberView,
+  ServiceTokenView,
+  TeamView,
+  UpdateMembershipSettings,
+} from "@commissary/contract/members";
 import { asSentence } from "./failure.ts";
 import { roleLabel } from "./role.ts";
 
@@ -165,3 +170,66 @@ export const roleCounts = (members: ReadonlyArray<MemberView>): string => {
 
   return parts.length === 0 ? "No members" : parts.join(", ");
 };
+
+// ---------------------------------------------------------------------------------------------------------------
+// What members may keep privately
+
+/** The two settings that say what plain members may keep to themselves: org admins decide both (ADR 0023, ADR 0038). */
+export type PrivateSetting = "private_credentials" | "private_toolkits";
+
+/** One such switch as its section words it. */
+export interface PrivateSwitch {
+  readonly setting: PrivateSetting;
+  /** The section's heading. */
+  readonly title: string;
+  readonly label: string;
+  /** What the setting means in its current state. */
+  readonly describe: (on: boolean) => string;
+  /** What changed, said after a save. */
+  readonly said: (on: boolean) => string;
+  /** What the page is called while its setting loads or fails. */
+  readonly what: string;
+}
+
+export const PRIVATE_SWITCHES: Readonly<Record<PrivateSetting, PrivateSwitch>> = {
+  private_credentials: {
+    setting: "private_credentials",
+    title: "Private credentials",
+    label: "Let members connect private accounts and provider keys",
+    what: "the private credentials setting",
+    describe: (on) =>
+      on
+        ? "On: a member's private account or provider key is used only for their own requests. Org admins see that it exists, its provider, owner and label, and can disable or remove it, but not how it is used."
+        : "Off: members cannot connect private credentials, and the ones they connected stay in place but are not used. Turning it on again brings them back.",
+    said: (on) =>
+      on
+        ? "Members can connect private accounts and provider keys now."
+        : "Private accounts and provider keys are switched off, not deleted.",
+  },
+  private_toolkits: {
+    setting: "private_toolkits",
+    title: "Private toolkits",
+    label: "Let members add private toolkits",
+    what: "the private toolkits setting",
+    describe: (on) =>
+      on
+        ? "On: a member may add toolkits of their own, from their own sources and with their own credentials, which only they can use. They set those toolkits' approval rules, but cannot price them. Org admins see that each exists and who added it, and can remove it, but not its tools or how it is used."
+        : "Off: members cannot add private toolkits, and the ones they added stay in place but are not served. Turning it on again brings them back. This is separate from private credentials: members may still connect their own credentials to the org's toolkits.",
+    said: (on) =>
+      on
+        ? "Members can add private toolkits now."
+        : "Private toolkits are switched off, not deleted.",
+  },
+};
+
+/** The sections in the order the Members page lists them. */
+export const PRIVATE_SWITCH_ORDER: ReadonlyArray<PrivateSetting> = [
+  "private_credentials",
+  "private_toolkits",
+];
+
+/** The write that sets one switch: a partial patch, so it never changes the other settings. */
+export const privateSettingPatch = (
+  setting: PrivateSetting,
+  on: boolean,
+): UpdateMembershipSettings => ({ [setting]: on });

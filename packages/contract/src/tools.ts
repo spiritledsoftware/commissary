@@ -31,7 +31,7 @@ import { Schema, Tuple } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
 import { ApprovalRules, ApprovalRulesView } from "./approvals.ts";
 import { managementErrors } from "./errors.ts";
-import { GrantSubject } from "./grants.ts";
+import { GrantSubject, ToolSelection } from "./grants.ts";
 
 const optional = Schema.optionalKey;
 
@@ -835,11 +835,45 @@ export const UsableTool = Schema.Struct({
 
 export type UsableTool = typeof UsableTool.Type;
 
+/**
+ * One tool grant that reaches the caller, as they see it (#209, ADR 0038): who it names (`member`: the caller
+ * themselves; a team with its name, which the caller is on) and which tools of the toolkit it gives.
+ */
+export const UsableGrant = Schema.Struct({
+  subject: Schema.Union([
+    Schema.Struct({ kind: Schema.Literal("everyone") }),
+    Schema.Struct({ kind: Schema.Literal("member") }),
+    Schema.Struct({ kind: Schema.Literal("team"), id: Schema.String, name: Schema.String }),
+  ]),
+  tools: ToolSelection,
+});
+
+export type UsableGrant = typeof UsableGrant.Type;
+
+/**
+ * Why a toolkit's tools reach the caller (#209): `private`, the caller holds a private credential on the toolkit (a
+ * private toolkit of theirs, or an org toolkit that accepts one while the org lets members connect them), which gives
+ * every tool an admin has not hidden; `private_available`, the toolkit takes a private credential and the org allows it
+ * but the caller has not connected one, so a call answers that it needs it; `grants`, the tool grants that name them
+ * (their own, their teams' and everyone's), each with the tools it gives; `agents`, the agents toolkit, which takes no
+ * grant: they may run an agent. A tool may be reached more than one way.
+ */
+export const UsableVia = Schema.Struct({
+  private: optional(Schema.Literal(true)),
+  private_available: optional(Schema.Literal(true)),
+  grants: optional(Schema.Array(UsableGrant)),
+  agents: optional(Schema.Literal(true)),
+});
+
+export type UsableVia = typeof UsableVia.Type;
+
 /** A toolkit of which the caller may use some tools, with those tools sorted by full name. */
 export const UsableToolkit = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
   tools: Schema.Array(UsableTool),
+  /** Why they reach it (the panel's "My tools" page, #209); absent from an answer that predates it. */
+  via: optional(UsableVia),
 });
 
 export type UsableToolkit = typeof UsableToolkit.Type;

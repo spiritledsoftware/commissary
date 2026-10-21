@@ -263,6 +263,214 @@ describe("connecting a toolkit's shared credential", () => {
   });
 });
 
+describe("why a member reaches a toolkit's tools (GET /tools, #209)", () => {
+  interface Via {
+    readonly private?: true;
+    readonly private_available?: true;
+    readonly agents?: true;
+    readonly grants?: ReadonlyArray<{ readonly subject: unknown; readonly tools: unknown }>;
+  }
+
+  const viaOf = async (org: Org, who: Person, name: string): Promise<Via | undefined> => {
+    const reply = await send(org, "/tools", who);
+
+    expect(reply.status).toBe(200);
+
+    return (
+      reply.body as {
+        toolkits: ReadonlyArray<{ readonly name: string; readonly via?: Via }>;
+      }
+    ).toolkits.find((toolkit) => toolkit.name === name)?.via;
+  };
+
+  it("names the grants that give the caller tools, and the team by its name, and no one else's", async () => {
+    const org = await newOrg();
+    const toolkit = await toolkitOf(org);
+
+    const team = await send(org, "/teams", org.admin, "POST", { name: "Research" });
+
+    expect(team.status).toBe(201);
+    const teamId = (team.body as { id: string }).id;
+
+    expect(
+      (await send(org, `/teams/${teamId}/members`, org.admin, "POST", { member_id: org.alice.id }))
+        .status,
+    ).toBe(200);
+
+    const grant = (subject: Record<string, string>, tools: Record<string, string | string[]>) =>
+      send(org, "/grants/tools", org.admin, "POST", { subject, toolkit, tools });
+
+    // The toolkit has no shared credential yet, so its grants give nothing.
+    expect(await grant({ kind: "everyone" }, { kind: "all" })).toMatchObject({ status: 200 });
+    expect(await viaOf(org, org.alice, "github")).toBeUndefined();
+
+    const connected = await send(org, `/toolkits/${toolkit}/credentials/shared`, org.admin, "PUT", {
+      kind: "bearer",
+      token: "shared",
+      subject: { kind: "everyone" },
+    });
+
+    expect(connected).toMatchObject({ status: 200, body: { grant: { created: false } } });
+
+    expect(await grant({ kind: "team", id: teamId }, { kind: "read" })).toMatchObject({
+      status: 200,
+    });
+
+    expect(
+      await grant(
+        { kind: "member", id: org.alice.id },
+        { kind: "named", ids: [`${toolkit}:create_issue`] },
+      ),
+    ).toMatchObject({ status: 200 });
+    // Another member's grant is not the caller's reason.
+    expect(await grant({ kind: "member", id: org.admin.id }, { kind: "read" })).toMatchObject({
+      status: 200,
+    });
+
+    const via = await viaOf(org, org.alice, "github");
+
+    expect(via?.private).toBeUndefined();
+
+    expect(via?.grants).toHaveLength(3);
+
+    expect(via?.grants).toEqual(
+      expect.arrayContaining([
+        { subject: { kind: "everyone" }, tools: { kind: "all" } },
+        { subject: { kind: "team", id: teamId, name: "Research" }, tools: { kind: "read" } },
+        {
+          subject: { kind: "member" },
+          tools: { kind: "named", ids: [`${toolkit}:create_issue`] },
+        },
+      ]),
+    );
+  });
+
+  it("says a private toolkit is the caller's own, with no grant", async () => {
+    const org = await newOrg({ private_toolkits: true });
+
+    const added = await send(org, "/toolkits", org.alice, "POST", {
+      source: server().url,
+      name: "notes",
+    });
+
+    expect(added.status).toBe(201);
+    const { id } = added.body as { id: string };
+
+    // Its tool list is built with its owner's credential.
+    expect(
+      (await send(org, `/toolkits/${id}/credentials/private`, org.alice, "PUT", { kind: "none" }))
+        .status,
+    ).toBe(200);
+
+    expect(await viaOf(org, org.alice, "notes")).toEqual({ private: true });
+  });
+});
+
+describe("why a caller reaches an org toolkit that takes private credentials (GET /tools, #209)", () => {
+  const usable = async (org: Org, who: Person | string, name: string) => {
+    const reply = await send(org, "/tools", who);
+
+    expect(reply.status).toBe(200);
+
+    return (
+      reply.body as {
+        toolkits: ReadonlyArray<{ readonly name: string; readonly via?: Record<string, unknown> }>;
+      }
+    ).toolkits.find((toolkit) => toolkit.name === name);
+  };
+
+  const sharedBoth = async (org: Org): Promise<string> => {
+    const added = await send(org, "/toolkits", org.admin, "POST", {
+      source: server().url,
+      name: "github",
+      accepts: "both",
+      credential: { kind: "bearer", token: "shared", subject: { kind: "everyone" } },
+    });
+
+    expect(added.status).toBe(201);
+
+    return (added.body as { id: string }).id;
+  };
+
+  it("says their own credential is available, not connected, until they connect it", async () => {
+    const org = await newOrg({ private_credentials: true });
+    const toolkit = await sharedBoth(org);
+
+    const available = await usable(org, org.alice, "github");
+
+    expect(available?.via).toEqual({
+      private_available: true,
+      grants: [{ subject: { kind: "everyone" }, tools: { kind: "all" } }],
+    });
+
+    expect(
+      (
+        await send(org, `/toolkits/${toolkit}/credentials/private`, org.alice, "PUT", {
+          kind: "bearer",
+          token: "mine",
+        })
+      ).status,
+    ).toBe(200);
+
+    expect((await usable(org, org.alice, "github"))?.via).toEqual({
+      private: true,
+      grants: [{ subject: { kind: "everyone" }, tools: { kind: "all" } }],
+    });
+  });
+
+  it("offers no private credential while the org does not allow them", async () => {
+    const org = await newOrg();
+
+    await sharedBoth(org);
+
+    expect((await usable(org, org.alice, "github"))?.via).toEqual({
+      grants: [{ subject: { kind: "everyone" }, tools: { kind: "all" } }],
+    });
+  });
+
+  it("gives a caller without a member (a platform admin) only the grants that name everyone", async () => {
+    const org = await newOrg({ private_credentials: true });
+
+    await sharedBoth(org);
+
+    expect((await usable(org, org.platform, "github"))?.via).toEqual({
+      grants: [{ subject: { kind: "everyone" }, tools: { kind: "all" } }],
+    });
+  });
+
+  it("says the agents toolkit is reached by running an agent, with no grant", async () => {
+    const org = await newOrg({ private_credentials: true });
+
+    expect(
+      (
+        await send(org, "/provider-keys/groups", org.admin, "PUT", {
+          family: "claude",
+          revision: 0,
+          group: {
+            "base-url": "https://api.example.test/v1",
+            keys: [{ "api-key": "sk-shared-0001" }],
+            models: [{ name: "claude-sonnet-4-5", alias: "team-sonnet" }],
+          },
+        })
+      ).status,
+    ).toBe(200);
+
+    const made = await send(org, "/agents", org.admin, "POST", {
+      name: "helper",
+      description: "The helper agent",
+      instructions: "Answer briefly.",
+      model: "team-sonnet",
+      tool_scope: [],
+      private: false,
+      subject: { kind: "everyone" },
+    });
+
+    expect(made.status).toBe(201);
+
+    expect((await usable(org, org.alice, "agents"))?.via).toEqual({ agents: true });
+  });
+});
+
 describe("the private toolkits setting", () => {
   it("is off for a new org unless chosen at its creation, and changed by org admins only", async () => {
     const off = await newOrg({ private_credentials: true });
