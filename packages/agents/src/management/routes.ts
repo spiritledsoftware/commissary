@@ -226,5 +226,5 @@ export const managementRoutes = <R>(references: AgentReferences<R>) => {
     route("POST", "/grants/agents", createGrant),
     route("PUT", "/grants/agents/:id", replaceGrant),
     route("DELETE", "/grants/agents/:id", removeGrant),
-  ]).pipe(Layer.merge(runRoutes), Layer.merge(triggerRoutes));
+  ]).pipe(Layer.merge(runRoutes(references)), Layer.merge(triggerRoutes));
 };

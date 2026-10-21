@@ -2,14 +2,23 @@
 // enabled), the notice when it starts runs unattended with write tools no approval rule covers (ADR 0044), its
 // triggers and, for a shared agent, who may use it, its watchers (part of the definition) and its Spend limit, and
 // removing it, which is at once and deletes its runs (ADR 0027). Only the agent's manager opens it: its member for a
-// private agent, an org admin for a shared one; the list holds every agent the caller manages.
+// private agent, an org admin for a shared one; the list holds every agent the caller manages. The head links to a new
+// chat with it (#234) when the caller may use it (`GET /agents/mine`: enabled, and theirs or granted to them).
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { getRouteApi, Link, useNavigate } from "@tanstack/react-router";
 import { AsyncResult } from "effect/reactivity";
-import { ArrowLeft, Trash2 } from "lucide-react";
+import { ArrowLeft, MessageSquare, Trash2 } from "lucide-react";
 import { useState } from "react";
 import type { AgentView } from "@commissary/contract/agents";
-import { AGENT_GRANTS, AGENTS, agentsAtom, meAtom, removeAgentAtom, SPEND } from "../api/client.ts";
+import {
+  AGENT_GRANTS,
+  AGENTS,
+  agentsAtom,
+  meAtom,
+  removeAgentAtom,
+  SPEND,
+  usableAgentsAtom,
+} from "../api/client.ts";
 import { AgentEditor } from "../components/AgentEditor.tsx";
 import { AgentGrants } from "../components/AgentGrants.tsx";
 import { AgentUnattended } from "../components/AgentUnattended.tsx";
@@ -107,6 +116,13 @@ const Loaded = ({ agentId }: { readonly agentId: string }) => {
     ? result.value.agents.find((each) => each.id === agentId)
     : undefined;
 
+  const usable = useAtomValue(usableAgentsAtom);
+
+  const chat =
+    agent !== undefined &&
+    AsyncResult.isSuccess(usable) &&
+    usable.value.agents.some((each) => each.id === agent.id);
+
   usePageTitle(agent?.name ?? "Agent");
 
   return (
@@ -116,7 +132,17 @@ const Loaded = ({ agentId }: { readonly agentId: string }) => {
           <ArrowLeft aria-hidden="true" size={16} strokeWidth={2.25} />
           Agents
         </Link>
-        <h1 className={styles["title"]}>{agent?.name ?? "Agent"}</h1>
+        <div className={styles["titleRow"]}>
+          <h1 className={styles["title"]}>{agent?.name ?? "Agent"}</h1>
+          {chat ? (
+            <div className={styles["actions"]}>
+              <Link to="/agents/$agentId/chat" params={{ agentId }} className={kit["primary"]}>
+                <MessageSquare aria-hidden="true" size={18} strokeWidth={2.25} />
+                Start a chat
+              </Link>
+            </div>
+          ) : null}
+        </div>
         {agent === undefined ? null : (
           <p className={styles["intro"]}>
             {agent.private

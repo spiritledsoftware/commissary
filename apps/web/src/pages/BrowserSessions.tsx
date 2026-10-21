@@ -3,7 +3,8 @@
 // watches each in its Live View (minted when the page opens, for them only, connecting within 60 seconds) and answers a
 // handoff there; an org admin also sees the org's other sessions (whose, when, which profile) and may end any, but never
 // watches one. The server decides all of it (`own`, `watchable`); where the deployment has no browser toolkit (ADR 0043)
-// the pages are not found and nothing links to them.
+// the pages are not found and nothing links to them. A session a hosted agent run opened links its run's page (`run`,
+// #234).
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { getRouteApi, Link, useNavigate } from "@tanstack/react-router";
 import { AsyncResult } from "effect/reactivity";
@@ -20,6 +21,7 @@ import {
   nowAtom,
 } from "../api/client.ts";
 import { ConfirmDialog, type ConfirmRequest } from "../components/Confirm.tsx";
+import { FromRun } from "../components/FromRun.tsx";
 import { kit, Problem, Section } from "../components/Kit.tsx";
 import {
   BROWSER_SESSIONS_PAGE,
@@ -210,8 +212,11 @@ export const BrowserSessionsPage = () => {
 // ---------------------------------------------------------------------------------------------------------------
 // One session
 
-/** The session's Live View, minted when the page opens and again on Reconnect; the link lives in this state only. */
-const LiveView = ({ session }: { readonly session: BrowserSessionView }) => {
+/**
+ * The session's Live View, minted when the page opens and again on Reconnect; the link lives in this state only. The
+ * run page (#234) shows it under a handoff its run waits on.
+ */
+export const LiveView = ({ session }: { readonly session: BrowserSessionView }) => {
   const mint = useAction(browserLiveViewAtom);
   const { run } = mint;
   const [view, setView] = useState<BrowserLiveView | undefined>(undefined);
@@ -285,7 +290,7 @@ const LiveView = ({ session }: { readonly session: BrowserSessionView }) => {
 };
 
 /** The handoff that waits for the caller: what the client asks, how to answer, until when. */
-const Handoff = ({ session }: { readonly session: BrowserSessionView }) => {
+export const Handoff = ({ session }: { readonly session: BrowserSessionView }) => {
   const now = useAtomValue(nowAtom);
 
   if (session.handoff === null || !session.watchable) return null;
@@ -312,6 +317,7 @@ const Details = ({ session }: { readonly session: BrowserSessionView }) => {
 
   return (
     <>
+      <FromRun view={session} />
       <dl className={styles["facts"]}>
         <dt>Member</dt>
         <dd>{ownerText(session)}</dd>

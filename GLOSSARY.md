@@ -833,6 +833,7 @@ _Avoid_: owner, initiator, caller
 
 **Watcher**:
 A member, or a member of a team, named on a shared agent to watch, steer and answer its runs that no one started.
+A child run's watchers are the people of the run at the head of its chain: its starter, or its agent's watchers.
 _Avoid_: owner, supervisor, subscriber
 
 **Parked call**:

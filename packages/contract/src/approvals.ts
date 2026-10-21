@@ -116,6 +116,11 @@ export const ApprovalView = Schema.Struct({
   arguments: optional(Schema.Record(Schema.String, Schema.Json)),
   /** Whether the caller of this route may approve or deny it now. */
   can_decide: Schema.Boolean,
+  /**
+   * The hosted agent run whose call it is (#232, #234), whose page the panel links (`/agent-runs/<run>`, which decides
+   * who sees the run); absent for any other caller's.
+   */
+  run: optional(Schema.String),
 });
 
 export type ApprovalView = typeof ApprovalView.Type;

@@ -1,5 +1,5 @@
 ---
-status: accepted, amended below (no default limits)
+status: accepted, amended below (no default limits; who sees a child run)
 ---
 
 # Hosted agents are definitions whose runs act as a member or as themselves
@@ -78,7 +78,7 @@ Clients and runs use agents through the built-in **agents toolkit** on the MCP e
 
 - `agents_start`'s description lists the agents the caller may use, with each one's name and description. Clients see the agents without one tool per agent.
 - Long runs need no MCP async tasks, because `agents_wait` covers them. There is no tool to delete a run: runs are deleted in the panel or pruned by the retention period.
-- **Which runs a caller sees.** An API key sees the runs it started. A run sees the child runs it started. In the panel, a member sees every run they started, and watchers see their agent's runs that no one started. Any other run id answers like an unknown one.
+- **Which runs a caller sees.** An API key sees the runs it started. A run sees the child runs it started. In the panel, a member sees every run they started, and watchers see their agent's runs that no one started. Amended (#234): a child run is also seen, as a watcher, by the people of the run at the head of its chain, who already answer its approvals and handoffs. Any other run id answers like an unknown one.
 - **Which agents a caller may run.**
   - A tool scope may name agents within the agents toolkit, as it names single tools elsewhere. Naming the toolkit alone allows every agent the member, or the shared agent's reach, may use.
   - A shared agent's definition lists the agents it may run, as part of its reach. A private agent may run any agent its member may use.
@@ -119,6 +119,10 @@ Commissary sets no limits of its own on runs: no cap on concurrent runs, no step
 - Grant, reach, spend limit and tool scope widen to cover shared agents.
 - The map's "Hosted agents' runtime design" fog is resolved here and in ADR 0041. What remains is implementation.
 - How the usage export carries agent runs is still open, with the export's other non-Models areas.
+
+## Amendment: a child run is its chain's people's to see (#234)
+
+The panel's run pages link a run's child runs from its transcript. Those who answer a chain are the member at the head of it, or the head agent's watchers when no one started the head. They also see each child run in the panel, as a watcher: they watch, steer, cancel and delete it. Before, a child run showed only to org admins, as its metadata, so a chat's starter could not open the child runs their own run started.
 
 ## Amendment: no default limits
 

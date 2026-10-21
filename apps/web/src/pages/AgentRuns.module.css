@@ -1,0 +1,205 @@
+/* The agent runs' pages (#234), beside the Tools pages' own styles (`Tools.module.css`): the runs list, a run's page
+   with its facts, what it waits on, its transcript and the composer, and the page that starts a chat. Hairlines between
+   the transcript's entries, captions for who said what, monospace only for a tool's arguments and results (data, not
+   decoration), the trail mark beside a failure and no colour besides (the One Meaning Rule). */
+
+.status {
+  font-size: var(--text-md);
+  font-weight: 650;
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--space-2) var(--space-5);
+  max-width: 64rem;
+  font-size: var(--text-sm);
+}
+
+.facts dt {
+  color: var(--quiet);
+}
+
+.facts dd {
+  overflow-wrap: anywhere;
+}
+
+.figure {
+  font-weight: 750;
+}
+
+/* What the run waits on: one set-apart block each on the sunk ground, as a browser session's handoff. */
+.waits {
+  display: grid;
+  gap: var(--space-4);
+  max-width: 64rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.wait {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: var(--space-4) var(--space-5);
+  background: var(--sunk);
+  border-radius: var(--radius);
+}
+
+.waitHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-1) var(--space-4);
+}
+
+.waitTitle {
+  font-size: var(--text-md);
+  font-weight: 750;
+}
+
+.caption {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--quiet);
+}
+
+/* The transcript: one entry a row, who on the left in a caption, what on the right, hairlines between. */
+.transcript {
+  display: grid;
+  max-width: 64rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 2px solid var(--text);
+}
+
+.entry {
+  display: grid;
+  grid-template-columns: 10rem minmax(0, 1fr);
+  gap: var(--space-2) var(--space-5);
+  padding: var(--space-4) 0;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.who {
+  display: grid;
+  align-content: start;
+  gap: var(--space-1);
+  font-size: var(--text-sm);
+  font-weight: 750;
+  overflow-wrap: anywhere;
+}
+
+.when {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--quiet);
+}
+
+.said {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.text {
+  max-width: 70ch;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* A tool's arguments or result: data, set in monospace on the sunk ground, scrolling rather than overflowing. */
+.code {
+  max-height: 20rem;
+  margin: 0;
+  overflow: auto;
+  padding: var(--space-3) var(--space-4);
+  font-family: ui-monospace, monospace;
+  font-size: var(--text-xs);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--sunk);
+  border-radius: var(--radius);
+}
+
+.failed {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  font-weight: 650;
+}
+
+.failed > span:first-child {
+  flex-shrink: 0;
+}
+
+.more summary {
+  cursor: pointer;
+  font-size: var(--text-sm);
+  font-weight: 650;
+}
+
+.more[open] summary {
+  margin-bottom: var(--space-2);
+}
+
+/* The composer: the message, then Send or Steer and Stop, then what sending does now. */
+.composer {
+  display: grid;
+  gap: var(--space-3);
+  max-width: 64rem;
+}
+
+.message {
+  min-height: 6rem;
+  padding: var(--space-2) var(--space-3);
+  background: var(--field);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--text-md);
+  border: 2px solid var(--rule);
+  border-radius: var(--radius);
+  resize: vertical;
+}
+
+.message:focus-visible {
+  border-color: var(--text);
+  outline-offset: 0;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.hint {
+  max-width: 65ch;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--quiet);
+}
+
+.sent {
+  font-size: var(--text-sm);
+  font-weight: 650;
+}
+
+/* On a narrow page the caption sits over what was said. */
+@container (max-width: 35rem) {
+  .entry {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .who {
+    grid-auto-flow: column;
+    justify-content: start;
+    align-items: baseline;
+    gap: var(--space-3);
+  }
+}

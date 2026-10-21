@@ -4,6 +4,7 @@ import {
   type Access,
   accessTo,
   isFullAccess,
+  runOfPrincipal,
   runPrincipalId,
   type Scope,
   type UsageRun,
@@ -4191,7 +4192,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     const profile =
       session.profile === undefined ? undefined : this.#profiles.profile(session.profile);
 
-    return {
+    const view: BrowserSessionView = {
       id: session.id,
       opened_at: iso(session.openedAt),
       member:
@@ -4217,6 +4218,11 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
             },
       handoff: watchable ? handoff : null,
     };
+
+    // Its run's page is for those who watch the session (#234): an org admin's view of another's session names no run.
+    const run = watchable || own ? runOfPrincipal(session.principal) : undefined;
+
+    return run === undefined ? view : { ...view, run };
   }
 
   /**
@@ -5405,7 +5411,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
         ? undefined
         : this.#core.member(approval.callerMember)?.email;
 
-    return {
+    const view: ApprovalView = {
       id: approval.id,
       status: approvalStatus(approval),
       toolkit: {
@@ -5427,6 +5433,11 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       ...(args === undefined ? {} : { arguments: args }),
       can_decide: decides && pending,
     };
+
+    // Its run's page is for the run's people (#234), who are its caller; an approver beyond them is not told the run.
+    const run = caller ? runOfPrincipal(approval.callerPrincipal) : undefined;
+
+    return run === undefined ? view : { ...view, run };
   }
 
   #approverView(approver: Approver): ApproverView {

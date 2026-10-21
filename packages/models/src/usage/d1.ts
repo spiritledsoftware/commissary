@@ -930,6 +930,34 @@ export const summarizeUsage = async (
   };
 };
 
+/**
+ * What the agent runs `runs` of `org` cost so far, by run id (#234: the panel's run pages), in every area: model
+ * attempts, tool calls and browser and computer time. A run with no costed record is left out. The caller decided who
+ * sees these runs (the Agents area's visibility, #232); a private record still counts only for its member
+ * (`privateOf`), as in every read. One query, on the partial index of agent runs' records
+ * (`migrations/usage/0015_usage_run_index.sql`).
+ */
+export const runCosts = async (
+  db: D1Database,
+  org: OrgId,
+  runs: ReadonlyArray<string>,
+  privateOf: string | undefined,
+): Promise<ReadonlyMap<string, number>> => {
+  if (runs.length === 0) return new Map();
+
+  const rows = await db
+    .prepare(
+      `SELECT run_id, SUM(cost_micros) AS cost FROM usage_records
+       WHERE org_id = ?1 AND run_id IS NOT NULL AND run_id IN (SELECT value FROM json_each(?2))
+         AND (private = 0 OR member_id = ?3) AND cost_micros IS NOT NULL
+       GROUP BY run_id`,
+    )
+    .bind(org, JSON.stringify(runs), privateOf ?? null)
+    .all<{ run_id: string; cost: number }>();
+
+  return new Map(rows.results.map((row) => [row.run_id, row.cost]));
+};
+
 export interface UnpricedModel {
   readonly provider: string;
   readonly model: string;

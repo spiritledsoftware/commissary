@@ -14,8 +14,10 @@
  * metadata only (`access: "admin"`: no turns, activity or transcript). Anyone else gets `404`, as for a run that does
  * not exist. Its starter and its watchers watch it (its transcript), steer it (messages, waits) and cancel it; an org
  * admin cancels any run of the org, a private agent's too, of which they learn only whether a turn was cancelled. A
- * child run (#229) shows to an org admin only, as metadata; its starter is the run that started it. A run's cost is not
- * part of its view: the usage reads filter by run (#228).
+ * child run (#229), whose starter is the run that started it, shows to those who answer its chain as a watcher (#234:
+ * the member at the head of the chain, or the head agent's watchers when no one started it, so a parent's transcript
+ * links it) and to an org admin as metadata. A run's starter and its watchers delete it, with its child runs (#234).
+ * The panel's views carry the run's cost from its usage records (`cost_micros`, #234), whoever sees it.
  *
  * `RunDetail`'s `turns`, `activity` and `transcript` were always there before #232; they are optional since, as an org
  * admin's view leaves them out (a client that reads them checks `access` first).
@@ -69,8 +71,9 @@ export const RunStarterView = Schema.Struct({
 export type RunStarterView = typeof RunStarterView.Type;
 
 /**
- * Why the caller sees a run (#232): they started it (`starter`), they watch its shared agent and no one started it
- * (`watcher`), or they are an org admin, who sees its metadata only (`admin`).
+ * Why the caller sees a run (#232): they started it (`starter`), they watch its shared agent and no one started it, or
+ * it is a child run and they are the people of the run at the head of its chain (its starter, or that agent's watchers:
+ * `Runs.watchersOf`, #234) (`watcher`), or they are an org admin, who sees its metadata only (`admin`).
  */
 export const RunAccess = Schema.Literals(["starter", "watcher", "admin"]);
 
@@ -134,6 +137,12 @@ export const RunView = Schema.Struct({
   updated_at: Schema.String,
   /** Why the caller sees it (#232); absent from the agents toolkit's views. */
   access: optional(RunAccess),
+  /**
+   * What its usage records cost so far, in micro-dollars (#234, ADR 0024: model attempts, tool calls, browser and
+   * computer time), on the panel's list and page: `0` for a run with no priced record yet. Absent from the agents
+   * toolkit's views, and when the usage store is missing or could not be read (the cost is then not known).
+   */
+  cost_micros: optional(Schema.Number),
 });
 
 export type RunView = typeof RunView.Type;
@@ -228,6 +237,21 @@ export const CancelledRun = Schema.Struct({ run: optional(RunView), cancelled: S
 
 export type CancelledRun = typeof CancelledRun.Type;
 
+/**
+ * `GET /agent-runs/:run/retention` (#234): the org's retention period for agent runs, in days after a run's last
+ * activity (#228; `null`: kept until deleted), so the run's page says when the run is pruned, whoever sees it (a plain
+ * member cannot read `GET /org`). The page reads it once, not on each read of the run. Absent when the registry could
+ * not be read.
+ */
+export const RunRetention = Schema.Struct({ retention_days: optional(Schema.NullOr(Schema.Int)) });
+
+export type RunRetention = typeof RunRetention.Type;
+
+/** `DELETE /agent-runs/:run` (#234): the run deleted, and how many runs went, its child runs included. */
+export const DeletedRun = Schema.Struct({ id: Schema.String, deleted: Schema.Number });
+
+export type DeletedRun = typeof DeletedRun.Type;
+
 const runParam = { params: { run: Schema.String } };
 
 export class AgentRunsGroup extends HttpApiGroup.make("agentRuns").add(
@@ -261,9 +285,24 @@ export class AgentRunsGroup extends HttpApiGroup.make("agentRuns").add(
     success: WaitResult,
     error: managementErrors,
   }),
+  /** Whoever sees the run (`404 not_found` for anyone else). */
+  HttpApiEndpoint.get("retention", "/agent-runs/:run/retention", {
+    ...runParam,
+    success: RunRetention,
+    error: managementErrors,
+  }),
   HttpApiEndpoint.post("cancel", "/agent-runs/:run/cancel", {
     ...runParam,
     success: CancelledRun,
+    error: managementErrors,
+  }),
+  /**
+   * Deletes the run at once (ADR 0027), with its transcript and its child runs (#234): its starter and its watchers;
+   * `403 forbidden` for an org admin who sees its metadata only.
+   */
+  HttpApiEndpoint.delete("remove", "/agent-runs/:run", {
+    ...runParam,
+    success: DeletedRun,
     error: managementErrors,
   }),
 ) {}

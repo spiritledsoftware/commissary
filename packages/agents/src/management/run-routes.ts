@@ -1,15 +1,18 @@
 /**
  * Agent runs on the management API (`AgentRunsGroup` in `@commissary/contract/agent-runs`, #227, ADR 0040): start a run
- * of an agent (`POST /agents/:id/runs`), list the caller's runs, show one, send it a message, wait for a turn and cancel
- * the running turn. The panel's chat (#234) and the agents toolkit (#229) are built on the same operations.
+ * of an agent (`POST /agents/:id/runs`), list the caller's runs, show one, send it a message, wait for a turn, cancel
+ * the running turn and delete the run (#234). The panel's chat (#234) and the agents toolkit (#229) are built on the
+ * same operations. The list and a run's page carry each run's cost from its usage records (`cost_micros`, #234), read
+ * through the references the app Worker fills (`AgentReferences.runCosts`), for exactly the runs the caller sees.
  *
  * The org's index of runs (the Agents part, `runs/runs.ts`) decides who sees a run (#232, ADR 0040): its starter, and
  * for a shared agent's run no one started its watchers, who watch it (its transcript and what it waits on), steer it
  * (messages, waits) and cancel it; and an org admin, who sees every shared agent's run as its metadata only (`403
  * forbidden` on messages and waits) and cancels any run of the org, a private agent's too, of which they learn only
- * whether a turn was cancelled. Any other run answers like an unknown one. The run itself is its Durable Object
- * (`AGENT_RUN`, `runs/run-object.ts`), which this Worker reaches by the API Worker's script name. A run started here is
- * started by the member who asks, with the trigger kind `chat`.
+ * whether a turn was cancelled. Any other run answers like an unknown one. Its starter and its watchers delete it, with
+ * its child runs (#234; `403 forbidden` for an org admin), and the route then sweeps the deleted runs' objects. The run
+ * itself is its Durable Object (`AGENT_RUN`, `runs/run-object.ts`), which this Worker reaches by the API Worker's
+ * script name. A run started here is started by the member who asks, with the trigger kind `chat`.
  *
  * A start whose call of the run's object fails ends the run it created (`abandonRun`): the object may or may not have
  * taken it, so the run is not left looking idle. A start again with the same idempotency key then answers `409
@@ -17,14 +20,16 @@
  *
  * Like every Agents route, each answers 404 without the deployment's Dynamic Workers binding (`LOADER`).
  */
-import { Effect } from "effect";
+import { Effect, Option } from "effect";
 import { HttpRouter } from "effect/http";
-import { currentViewer } from "@commissary/auth";
+import { currentViewer, type Viewer } from "@commissary/auth";
 import {
   type CancelledRun,
+  type DeletedRun,
   MAX_WAIT_MS,
   type MessageSent,
   type RunDetail,
+  type RunRetention,
   type RunView,
   SendMessage,
   StartRun,
@@ -32,10 +37,12 @@ import {
   WaitRun,
 } from "@commissary/contract/agent-runs";
 import { CurrentOrg, jsonReply, replyError } from "@commissary/core";
-import { callControlPlane } from "@commissary/state";
+import { callControlPlane, platform } from "@commissary/state";
 import { agentRunOf, agentsControlPlane, AgentsEnv } from "../env.ts";
+import { sweepDeletedRuns } from "../runs/retention.ts";
 import { MAX_IDEMPOTENCY_KEY, type RunsErrorCode, type RunsResult } from "../runs/runs.ts";
 import { decode, orRefuseWith, param, route } from "./http.ts";
+import type { AgentReferences } from "./references.ts";
 
 /** How long a wait takes when the request names no timeout. */
 const DEFAULT_WAIT_MS = 30_000;
@@ -132,6 +139,25 @@ const detailOf = (run: RunView) =>
     } satisfies RunDetail;
   });
 
+/**
+ * The current org's retention period for agent runs (#228), from the Platform registry, for a run's page (#234), which
+ * reads it once (`GET /agent-runs/:run/retention`), not on each read of the run; `undefined` when the registry cannot
+ * be read (logged): the page then says nothing of it.
+ */
+const retentionDays = Effect.gen(function* () {
+  const org = yield* CurrentOrg;
+  const found = yield* platform("getOrgById", (stub) => stub.getOrgById(org));
+
+  return found?.runRetentionDays;
+}).pipe(
+  Effect.catch((error) =>
+    Effect.logWarning("agent runs: retention period unread").pipe(
+      Effect.annotateLogs({ detail: error.message }),
+      Effect.as(undefined),
+    ),
+  ),
+);
+
 const start = Effect.gen(function* () {
   const viewer = yield* currentViewer;
   const org = yield* CurrentOrg;
@@ -164,21 +190,6 @@ const start = Effect.gen(function* () {
   const current = yield* visibleRun(run.id);
 
   return jsonReply(201, { run: current, turn: first.turn } satisfies StartedRun);
-});
-
-const list = Effect.gen(function* () {
-  const viewer = yield* currentViewer;
-
-  return jsonReply(
-    200,
-    yield* agentsControlPlane("viewRuns", (stub) => stub.agents().viewRuns(viewer)),
-  );
-});
-
-const get = Effect.gen(function* () {
-  const run = yield* visibleRun(yield* param("run"));
-
-  return jsonReply(200, yield* detailOf(run));
 });
 
 const message = Effect.gen(function* () {
@@ -235,12 +246,89 @@ const cancel = Effect.gen(function* () {
   return jsonReply(200, { run: yield* visibleRun(id), cancelled } satisfies CancelledRun);
 });
 
-/** The agent run routes (mounted by `managementRoutes`, `routes.ts`). */
-export const runRoutes = HttpRouter.addAll([
-  route("POST", "/agents/:id/runs", start),
-  route("GET", "/agent-runs", list),
-  route("GET", "/agent-runs/:run", get),
-  route("POST", "/agent-runs/:run/messages", message),
-  route("POST", "/agent-runs/:run/wait", wait),
-  route("POST", "/agent-runs/:run/cancel", cancel),
-]);
+const remove = Effect.gen(function* () {
+  const id = yield* param("run");
+  const viewer = yield* currentViewer;
+
+  // Its starter or its watchers (#234); an org admin who sees its metadata only gets `403`, anyone else `404`.
+  const removed = yield* orRefuse(
+    yield* agentsControlPlane("deleteRun", (stub) => stub.agents().deleteRun(viewer, id)),
+  );
+
+  // It left the index with its child runs: their objects, which hold the transcripts, are deleted now (#228).
+  yield* sweepDeletedRuns(yield* AgentsEnv, yield* CurrentOrg);
+
+  return jsonReply(200, { id, deleted: removed.deleted } satisfies DeletedRun);
+});
+
+/** The run's retention period (`GET /agent-runs/:run/retention`), for whoever sees the run. */
+const retention = Effect.gen(function* () {
+  yield* visibleRun(yield* param("run"));
+  const days = yield* retentionDays;
+
+  return jsonReply(
+    200,
+    (days === undefined ? {} : { retention_days: days }) satisfies RunRetention,
+  );
+});
+
+/** `view` with its cost from `costs` (#234): `0` for a run with no priced record. */
+const costed = <V extends RunView>(view: V, costs: ReadonlyMap<string, number>): V => ({
+  ...view,
+  cost_micros: costs.get(view.id) ?? 0,
+});
+
+/**
+ * The agent run routes (mounted by `managementRoutes`, `routes.ts`), with what they read of the other areas: the runs'
+ * costs (`references.runCosts`, #234).
+ */
+export const runRoutes = <R>(references: AgentReferences<R>) => {
+  /**
+   * `views` with what each costs so far, as `viewer` may read it (#234); when the costs cannot be read, none says one
+   * (not known, rather than `0`).
+   */
+  const withCosts = <V extends RunView>(views: ReadonlyArray<V>, viewer: Viewer) =>
+    Effect.map(
+      references.runCosts(
+        views.map((view) => view.id),
+        viewer.member,
+      ),
+      Option.match({
+        onNone: () => views,
+        onSome: (costs) => views.map((view) => costed(view, costs)),
+      }),
+    );
+
+  /** One run's view with its cost, as {@link withCosts}. */
+  const withCost = <V extends RunView>(view: V, viewer: Viewer) =>
+    Effect.map(
+      references.runCosts([view.id], viewer.member),
+      Option.match({ onNone: () => view, onSome: (costs) => costed(view, costs) }),
+    );
+
+  const list = Effect.gen(function* () {
+    const viewer = yield* currentViewer;
+
+    const listed = yield* agentsControlPlane("viewRuns", (stub) => stub.agents().viewRuns(viewer));
+
+    return jsonReply(200, { runs: yield* withCosts(listed.runs, viewer) });
+  });
+
+  const get = Effect.gen(function* () {
+    const viewer = yield* currentViewer;
+    const run = yield* visibleRun(yield* param("run"));
+
+    return jsonReply(200, yield* withCost(yield* detailOf(run), viewer));
+  });
+
+  return HttpRouter.addAll([
+    route("POST", "/agents/:id/runs", start),
+    route("GET", "/agent-runs", list),
+    route("GET", "/agent-runs/:run", get),
+    route("DELETE", "/agent-runs/:run", remove),
+    route("POST", "/agent-runs/:run/messages", message),
+    route("POST", "/agent-runs/:run/wait", wait),
+    route("GET", "/agent-runs/:run/retention", retention),
+    route("POST", "/agent-runs/:run/cancel", cancel),
+  ]);
+};

@@ -31,6 +31,7 @@ type AgentsPartMethod =
   | "viewRun"
   | "viewRuns"
   | "cancellableRun"
+  | "deleteRun"
   | "beginTurn"
   | "turnContext"
   | "abandonRun"

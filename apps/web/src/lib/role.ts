@@ -93,6 +93,9 @@ export const TOOLS_PAGE = "/tools";
 /** The Agents page's path, under which the pages of each agent and the page that creates one live. */
 export const AGENTS_PAGE = "/agents";
 
+/** The agent runs' list (#234), with each run's page below it: the chats and the runs a member watches. */
+export const AGENT_RUNS_PAGE = "/agent-runs";
+
 /** The Billing page's path: the sidebar's link, its route, and where the plan notices lead. */
 export const BILLING_PAGE = "/billing";
 
@@ -107,6 +110,8 @@ export const PAGES: ReadonlyArray<PanelPage> = [
   { to: TOOLS_PAGE, label: "Tools", group: "providers", role: "member" },
   // Every member's (#233), where the deployment has the Agents area: their private agents and the shared ones granted to them.
   { to: AGENTS_PAGE, label: "Agents", group: "providers", role: "member", agents: true },
+  // Every member's (#234): the runs they started or watch, an org admin's every shared agent's run as metadata.
+  { to: AGENT_RUNS_PAGE, label: "Agent runs", group: "providers", role: "member", agents: true },
   { to: "/members", label: "Members", group: "people", role: "admin" },
   { to: "/grants", label: "Grants", group: "people", role: "admin" },
   { to: "/my-models", label: "My models", group: "people", role: "member" },
@@ -186,7 +191,8 @@ const within = (pathname: string, page: string): boolean =>
  * need an org admin, like `/usage/prices`, except the page itself. A plain member opens Usage, My models, My tools, API keys and Limits, the
  * Approvals page with each approval's page (#201: the server shows each to its approvers and its caller only), Tools with
  * its pages (#208: the toolkits they reach and their private ones, and connecting their own credentials), Agents with its
- * pages (#233: their private agents; the server shows each agent to its manager only), and the
+ * pages (#233: their private agents; the server shows each agent to its manager only), the agent runs and each run's
+ * page (#234: the server shows each run to its starter and watchers, and its metadata to org admins), and the
  * pages of their own private accounts and provider keys, with their sub-pages, where the org lets members connect private
  * credentials.
  */
@@ -195,6 +201,7 @@ export const pageAllowed = (role: OrgRole, pathname: string, privateCredentials 
   within(pathname, "/approvals") ||
   within(pathname, TOOLS_PAGE) ||
   within(pathname, AGENTS_PAGE) ||
+  within(pathname, AGENT_RUNS_PAGE) ||
   trimmed(pathname) === "/usage" ||
   trimmed(pathname) === "/my-models" ||
   trimmed(pathname) === "/my-tools" ||

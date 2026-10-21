@@ -13,6 +13,9 @@
 // the app's test Worker exports the API Worker's `AgentRun` and `AgentRunGateway` (test/worker.ts); and the agents
 // toolkit's calls need the agents, grants and API keys the app Worker's routes create, the API Worker's MCP endpoint and
 // the runs' objects together.
+//
+// The panel's run pages (#234) read more of the same routes: each run's cost, the org's retention period, deleting a
+// run, the child runs its people open, and a turn a plan refuses (the last describe blocks).
 import {
   abortAllDurableObjects,
   createExecutionContext,
@@ -30,7 +33,7 @@ import { FULL_ACCESS } from "@commissary/auth";
 import type { CreateAgent } from "@commissary/contract/agents";
 import type { OrgId } from "@commissary/core";
 import type { Json } from "@commissary/json";
-import { resetUsageDb } from "@commissary/models/testing";
+import { insertUsageRecord, resetUsageDb, sampleRecord } from "@commissary/models/testing";
 import { platformOf } from "@commissary/state";
 import {
   browserSessionStub,
@@ -2883,7 +2886,7 @@ describe("watchers, approvals and handoffs in runs (#232)", () => {
       expect(
         ok<{ approvals: ReadonlyArray<{ id: string }> }>(await send(org, "/approvals", org.alice))
           .approvals,
-      ).toMatchObject([{ id: waiting?.id }]);
+      ).toMatchObject([{ id: waiting?.id, run: waiting?.run }]);
 
       ok(
         await send(org, `/approvals/${waiting?.id}/decision`, org.alice, "POST", {
@@ -2906,6 +2909,343 @@ describe("watchers, approvals and handoffs in runs (#232)", () => {
         ).waiting ?? [],
       ).toEqual([]);
       expect(tools.calls()).toHaveLength(1);
+    },
+    RUN_TIMEOUT,
+  );
+});
+
+// The panel's run pages (#234): each run's cost from its usage records (`RunView.cost_micros`, for whoever sees the
+// run, a plain member and a watcher included, whose usage reads leave a shared agent's run out), the org's retention
+// period for a run's page, deleting a run (`DELETE /agent-runs/:run`, its starter and its watchers; an org admin, who
+// sees its metadata only, may not), the child runs a parent's transcript links, which those who answer the chain open
+// (#232 showed them to org admins only), and a turn a plan refuses, whose error names the refusal the page links to
+// Billing. Usage records are seeded into the usage store, as the run's own calls would write them, so their costs are
+// known.
+
+interface PageRun {
+  readonly id: string;
+  readonly access?: string;
+  readonly cost_micros?: number;
+}
+
+/** A chat `who` starts with `agent`, once its first turn settled. */
+const chatRun = async (org: Org, who: Person, agent: string) => {
+  const started = await start(org, who, agent, "hello");
+
+  await waitFor(org, who, started.run.id);
+
+  return started.run.id;
+};
+
+/** A shared agent everyone may use, watched by `watchers` (the creating admin by default). */
+const sharedAgent = (org: Org, name: string, watchers?: CreateAgent["watchers"]) =>
+  createAgent(
+    org,
+    org.admin,
+    agentBody(name, MODEL, {
+      subject: { kind: "everyone" },
+      ...(watchers === undefined ? {} : { watchers }),
+    }),
+  );
+
+/** A usage record of `run` that cost `micros`, as the run's own calls write them. */
+const recordOf = (
+  org: Org,
+  agent: string,
+  run: string,
+  micros: number,
+  extra: Partial<Parameters<typeof sampleRecord>[0]> = {},
+) =>
+  insertUsageRecord(
+    env.USAGE,
+    sampleRecord({
+      orgId: org.id,
+      principalId: `run:${run}`,
+      run: { agentId: agent, runId: run },
+      requestedAt: Date.now(),
+      cost: { micros, unpriced: false },
+      ...extra,
+    }),
+  );
+
+const listed = async (org: Org, who: Person) =>
+  ok<{ runs: ReadonlyArray<PageRun> }>(await send(org, "/agent-runs", who)).runs;
+
+const costsOf = async (org: Org, who: Person) =>
+  Object.fromEntries((await listed(org, who)).map((each) => [each.id, each.cost_micros]));
+
+describe("a run's cost (#234)", () => {
+  it(
+    "is what its usage records cost, for its starter, a plain member, and for an org admin's metadata",
+    async () => {
+      const org = await newOrg(fakeUpstream(() => ({ text: "noted" })));
+      const agent = await sharedAgent(org, "support");
+      const run = await chatRun(org, org.alice, agent.id);
+      const other = await chatRun(org, org.bob, agent.id);
+
+      // A shared agent's run's records name no member: the usage reads leave them out of a plain member's own.
+      await recordOf(org, agent.id, run, 1_000);
+      await recordOf(org, agent.id, run, 2_500);
+      await recordOf(org, agent.id, other, 9_999);
+
+      expect(await listed(org, org.alice)).toMatchObject([{ id: run, cost_micros: 3_500 }]);
+      expect(ok<PageRun>(await send(org, `/agent-runs/${run}`, org.alice))).toMatchObject({
+        id: run,
+        access: "starter",
+        cost_micros: 3_500,
+      });
+      expect(ok<PageRun>(await send(org, `/agent-runs/${run}`, org.admin))).toMatchObject({
+        access: "admin",
+        cost_micros: 3_500,
+      });
+      expect(await costsOf(org, org.admin)).toEqual({ [run]: 3_500, [other]: 9_999 });
+    },
+    RUN_TIMEOUT,
+  );
+
+  it(
+    "is 0, not unknown, for a run with no priced record yet",
+    async () => {
+      const org = await newOrg(fakeUpstream(() => ({ text: "noted" })));
+      const agent = await sharedAgent(org, "support");
+      const run = await chatRun(org, org.alice, agent.id);
+
+      expect(ok<PageRun>(await send(org, `/agent-runs/${run}`, org.alice))).toMatchObject({
+        cost_micros: 0,
+      });
+    },
+    RUN_TIMEOUT,
+  );
+
+  it(
+    "of a shared agent's run no one started reaches its watcher, who did not start it",
+    async () => {
+      const org = await newOrg(fakeUpstream(() => ({ text: "noted" })));
+      const agent = await sharedAgent(org, "support", [{ kind: "member", id: org.bob.id }]);
+      const run = await webhookRun(org, agent.id);
+
+      await recordOf(org, agent.id, run, 4_200);
+
+      expect(ok<PageRun>(await send(org, `/agent-runs/${run}`, org.bob))).toMatchObject({
+        access: "watcher",
+        cost_micros: 4_200,
+      });
+      expect(await costsOf(org, org.bob)).toEqual({ [run]: 4_200 });
+    },
+    RUN_TIMEOUT,
+  );
+
+  it(
+    "counts a member's private records for them alone: not in an org admin's cost of the run",
+    async () => {
+      const org = await newOrg(fakeUpstream(() => ({ text: "noted" })));
+      const agent = await sharedAgent(org, "support");
+      const run = await chatRun(org, org.alice, agent.id);
+
+      await recordOf(org, agent.id, run, 1_000);
+      await recordOf(org, agent.id, run, 500, { memberId: org.alice.id, private: true });
+
+      expect(ok<PageRun>(await send(org, `/agent-runs/${run}`, org.admin))).toMatchObject({
+        access: "admin",
+        cost_micros: 1_000,
+      });
+      expect(ok<PageRun>(await send(org, `/agent-runs/${run}`, org.alice))).toMatchObject({
+        cost_micros: 1_500,
+      });
+    },
+    RUN_TIMEOUT,
+  );
+
+  it(
+    "of a private agent's run counts its member's private records",
+    async () => {
+      const org = await newOrg(fakeUpstream(() => ({ text: "noted" })));
+      const agent = await createAgent(org, org.alice, agentBody("mine", MODEL));
+      const run = await chatRun(org, org.alice, agent.id);
+
+      await recordOf(org, agent.id, run, 700, { memberId: org.alice.id, private: true });
+
+      expect(await listed(org, org.alice)).toMatchObject([{ id: run, cost_micros: 700 }]);
+    },
+    RUN_TIMEOUT,
+  );
+});
+
+describe("a run's retention and deletion (#234)", () => {
+  it(
+    "says the org's retention period to whoever sees the run, apart from the run's reads",
+    async () => {
+      const org = await newOrg(fakeUpstream(() => ({ text: "noted" })));
+      const agent = await sharedAgent(org, "support");
+      const run = await chatRun(org, org.alice, agent.id);
+
+      // A plain member cannot read it through `GET /org` (30 days by default); the run's reads do not carry it.
+      expect(ok(await send(org, `/agent-runs/${run}/retention`, org.alice))).toEqual({
+        retention_days: 30,
+      });
+      expect(ok(await send(org, `/agent-runs/${run}/retention`, org.admin))).toEqual({
+        retention_days: 30,
+      });
+      expect(ok<Json>(await send(org, `/agent-runs/${run}`, org.alice))).not.toHaveProperty(
+        "retention_days",
+      );
+      expect((await send(org, `/agent-runs/${run}/retention`, org.bob)).status).toBe(404);
+    },
+    RUN_TIMEOUT,
+  );
+
+  it(
+    "is its starter's, at once with its object; an org admin may not, and anyone else finds no run",
+    async () => {
+      const org = await newOrg(fakeUpstream(() => ({ text: "noted" })));
+      const agent = await sharedAgent(org, "support");
+      const run = await chatRun(org, org.alice, agent.id);
+
+      expect((await send(org, `/agent-runs/${run}`, org.bob, "DELETE")).status).toBe(404);
+      expect((await send(org, `/agent-runs/${run}`, org.admin, "DELETE")).status).toBe(403);
+
+      expect(ok(await send(org, `/agent-runs/${run}`, org.alice, "DELETE"))).toEqual({
+        id: run,
+        deleted: 1,
+      });
+      expect((await send(org, `/agent-runs/${run}`, org.alice)).status).toBe(404);
+      expect(await listed(org, org.alice)).toEqual([]);
+      // The route swept its object.
+      expect(await env.AGENT_RUN.getByName(`${org.id}:${run}`).show()).toMatchObject({
+        ok: false,
+        error: "not_found",
+      });
+    },
+    RUN_TIMEOUT,
+  );
+});
+
+describe("a child run a parent's transcript links (#234)", () => {
+  it(
+    "is named by the parent's agents_start result, as the panel reads it, and opens for the parent's starter",
+    async () => {
+      const upstream = fakeUpstream(chainScript({ lead: "helper" }));
+      const org = await newOrg(upstream);
+
+      const lead = await createAgent(
+        org,
+        org.admin,
+        agentBody("lead", MODEL, {
+          instructions: marked("lead"),
+          tool_scope: AGENTS_SCOPE,
+          subject: { kind: "everyone" },
+        }),
+      );
+
+      await createAgent(
+        org,
+        org.admin,
+        agentBody("helper", MODEL, {
+          instructions: marked("helper"),
+          subject: { kind: "everyone" },
+        }),
+      );
+
+      // A chat on the lead, whose model starts the helper through the agents toolkit.
+      const started = await start(org, org.alice, lead.id, "delegate this");
+
+      await waitFor(org, org.alice, started.run.id, started.turn.id);
+
+      const { transcript } = ok<{
+        transcript: ReadonlyArray<{
+          role: string;
+          tool?: string;
+          text: string;
+          is_error?: boolean;
+        }>;
+      }>(await send(org, `/agent-runs/${started.run.id}`, org.alice));
+
+      const result = transcript.find(
+        (entry) => entry.role === "tool" && entry.tool === "agents_start",
+      );
+
+      // What the panel's transcript reads a child run from (`startedChild`, apps/web/src/lib/agent-runs.ts): a tool
+      // entry of `agents_start`, not an error, whose text is JSON naming the run in `run`.
+      expect(result).toBeDefined();
+      expect(result?.is_error).not.toBe(true);
+      const parsed: unknown = JSON.parse(result?.text ?? "null");
+
+      expect(parsed).toMatchObject({ run: expect.stringMatching(/^ar_[0-9a-f]{32}$/u) });
+      // SAFETY: matched just above: an object with a string `run`.
+      const child = (parsed as { readonly run: string }).run;
+
+      expect(child).not.toBe(started.run.id);
+      expect(ok<PageRun>(await send(org, `/agent-runs/${child}`, org.alice))).toMatchObject({
+        id: child,
+        access: "watcher",
+        starter: { kind: "run", id: started.run.id },
+      });
+      expect((await send(org, `/agent-runs/${child}`, org.bob)).status).toBe(404);
+    },
+    RUN_TIMEOUT,
+  );
+
+  it(
+    "opens for the parent's starter, who answers its chain, and for no other member",
+    async () => {
+      const org = await newOrg(fakeUpstream(() => ({ text: "noted" })));
+      const agent = await sharedAgent(org, "support");
+      await sharedAgent(org, "helper");
+      const parent = await chatRun(org, org.alice, agent.id);
+
+      // The parent's `agents_start`, as the agents toolkit makes it: the child's row, then its object.
+      const started = await env.CONTROL_PLANE.getByName(org.id)
+        .agents()
+        .startToolkitRun({ kind: "run", runId: parent }, "helper", undefined, undefined);
+
+      if (!started.ok) throw new Error(`${started.error}: ${started.message}`);
+      const child = started.value.run.id;
+
+      expect(
+        await env.AGENT_RUN.getByName(`${org.id}:${child}`).start(
+          { org: org.id, id: child, child: started.value.child },
+          "look it up",
+        ),
+      ).toMatchObject({ ok: true });
+
+      expect(ok<PageRun>(await send(org, `/agent-runs/${child}`, org.alice))).toMatchObject({
+        id: child,
+        access: "watcher",
+        starter: { kind: "run", id: parent },
+      });
+      expect((await send(org, `/agent-runs/${child}`, org.bob)).status).toBe(404);
+    },
+    RUN_TIMEOUT,
+  );
+});
+
+describe("a turn a plan refuses (#234)", () => {
+  it(
+    "fails with an error that names plan_limit_reached, which the run's page links to Billing",
+    async () => {
+      // The upstream answers as Commissary Cloud's client API refuses a request over the plan (#241): the refusal
+      // reaches the run's model call as the client API's answer, and the turn fails with it.
+      const origin = `https://llm-${crypto.randomUUID().slice(0, 8)}.example.com`;
+
+      serveOrigin(origin, () =>
+        Response.json(
+          {
+            error: {
+              code: "plan_limit_reached",
+              message: "The Free plan's 25,000 requests and tool calls this month are used.",
+              type: "rate_limit_error",
+            },
+          },
+          { status: 429 },
+        ),
+      );
+      const org = await newOrg({ origin });
+      const agent = await createAgent(org, org.alice, agentBody("mine", MODEL));
+      const started = await start(org, org.alice, agent.id, "hello");
+      const settled = await waitFor(org, org.alice, started.run.id);
+
+      expect(settled.turn).toMatchObject({ status: "failed" });
+      expect(settled.turn.error).toContain("plan_limit_reached");
     },
     RUN_TIMEOUT,
   );

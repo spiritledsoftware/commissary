@@ -3,8 +3,9 @@
  * sees it, and what a run is at each turn.
  *
  * **Who sees a run** in the panel (#232, ADR 0040 "Who watches and steers", {@link Runs.accessOf}): its starter; for a
- * shared agent's run that no one started, the agent's watchers (GLOSSARY "Watcher"); and an org admin, every shared
- * agent's run, child runs included, as its metadata only. Its starter and its watchers watch, steer and cancel it; an
+ * shared agent's run that no one started, the agent's watchers (GLOSSARY "Watcher"); for a child run, the people of the
+ * run at the head of its chain ({@link Runs.watchersOf}), as watchers too (#234); and an org admin, every shared agent's
+ * run, child runs included, as its metadata only. Its starter and its watchers watch, steer and cancel it; an
  * org admin cancels any run of the org ({@link Runs.cancellableBy}), a private agent's without seeing it. The people
  * who answer a run's approvals and handoffs are those who watch it ({@link Runs.watchersOf}): the member at the head of
  * its chain, or, when no one started that run, its agent's watchers.
@@ -509,9 +510,10 @@ export class Runs {
 
   /**
    * Why `viewer` sees `run` in the panel (#232, ADR 0040), if they do: they started it (`starter`); it is a shared
-   * agent's run no one started, and they watch the agent (`watcher`); or they are an org admin and it is a shared
-   * agent's run (`admin`, its metadata only). A starter and a watcher watch, steer and cancel it; an org admin only
-   * cancels it.
+   * agent's run no one started, and they watch the agent (`watcher`); it is a child run (#229) and they answer its
+   * chain ({@link watchersOf}: the member at its head, or the head agent's watchers), so the parent's transcript links
+   * it (`watcher`, #234); or they are an org admin and it is a shared agent's run (`admin`, its metadata only). A
+   * starter and a watcher watch, steer and cancel it; an org admin only cancels it.
    */
   accessOf(viewer: Viewer, run: StoredRun): RunAccess | undefined {
     if (isStarter(run, viewer.member)) return "starter";
@@ -524,6 +526,13 @@ export class Runs {
       run.starter === undefined &&
       shared &&
       (this.#watchers(run.agent) ?? []).includes(viewer.member)
+    )
+      return "watcher";
+
+    if (
+      viewer.member !== undefined &&
+      run.starter?.kind === "run" &&
+      this.watchersOf(run.id).includes(viewer.member)
     )
       return "watcher";
 
@@ -542,7 +551,8 @@ export class Runs {
 
   /**
    * The runs `viewer` sees in the panel, the latest activity first ({@link accessOf}): those they started, the runs no
-   * one started of the shared agents they watch, and, for an org admin, every shared agent's run.
+   * one started of the shared agents they watch, the child runs below either (#234), and, for an org admin, every
+   * shared agent's run.
    */
   visibleTo(viewer: Viewer): ReadonlyArray<RunView> {
     const shared = this.#agents.agents().filter((agent) => agent.owner === undefined);
@@ -555,13 +565,28 @@ export class Runs {
             .filter((agent) => (this.#watchers(agent.id) ?? []).includes(member))
             .map((agent) => agent.id);
 
-    const candidates = [
+    // The runs the viewer answers, and the child runs below them (#234; a chain is at most `MAX_CHAIN` deep).
+    const answered = [
       ...(member === undefined ? [] : this.#runs.startedBy({ kind: "member", id: member })),
-      ...this.#runs.ofAgents(
-        viewer.admin ? shared.map((agent) => agent.id) : watched,
-        !viewer.admin,
-      ),
+      ...this.#runs.ofAgents(watched, true),
     ];
+
+    for (let at = 0; at < answered.length; at++) {
+      const parent = answered[at];
+
+      if (parent !== undefined)
+        answered.push(...this.#runs.startedBy({ kind: "run", id: parent.id }));
+    }
+
+    const candidates = viewer.admin
+      ? [
+          ...answered,
+          ...this.#runs.ofAgents(
+            shared.map((agent) => agent.id),
+            false,
+          ),
+        ]
+      : answered;
 
     const seen = new Set<string>();
     const views: Array<RunView> = [];
@@ -614,6 +639,27 @@ export class Runs {
     if (access !== undefined) return ok(this.#viewAs(run, access));
 
     return viewer.admin ? ok(null) : RUN_NOT_FOUND;
+  }
+
+  /**
+   * Deletes the run `runId` at once when `viewer` watches it (#234, ADR 0027): its starter, or its watchers when no one
+   * started it, with the child runs it started and theirs, as any deletion takes them; their objects wait for a sweep
+   * (`deleted`). An org admin who sees only its metadata gets `forbidden`; anyone else an unknown run. Answers how many
+   * runs it deleted.
+   */
+  deleteBy(viewer: Viewer, runId: string): RunsResult<{ readonly deleted: number }> {
+    const run = this.#runs.run(runId);
+    const access = run === undefined ? undefined : this.accessOf(viewer, run);
+
+    if (access === undefined) return RUN_NOT_FOUND;
+
+    if (access === "admin")
+      return refuse(
+        "forbidden",
+        "an org admin sees this run's metadata only: its starter or watchers delete it",
+      );
+
+    return ok({ deleted: this.discard({ run: runId }) });
   }
 
   /** The run `runId` if `viewer` started it; any other answers like an unknown one. */

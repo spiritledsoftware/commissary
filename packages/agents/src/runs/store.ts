@@ -40,12 +40,14 @@ const SCHEMA = [
 ];
 
 /**
- * Which runs a deletion takes (#228): those the member `member` started or those of the agents `agents`, each with the
- * child runs it started, and theirs; or those whose last activity was before `idleBefore` (epoch ms) and that run no
- * turn now, alone (retention: a child run goes on its own last activity, not its parent's).
+ * Which runs a deletion takes (#228): those the member `member` started, those of the agents `agents`, or the one run
+ * `run` (deleted in the panel, #234), each with the child runs it started, and theirs; or those whose last activity was
+ * before `idleBefore` (epoch ms) and that run no turn now, alone (retention: a child run goes on its own last activity,
+ * not its parent's).
  */
 export type DiscardedRuns =
   | { readonly member: string }
+  | { readonly run: string }
   | { readonly agents: ReadonlyArray<string> }
   | { readonly idleBefore: number };
 
@@ -54,12 +56,14 @@ const discardedWhere = (
 ): { readonly where: string; readonly value: string | number } =>
   "member" in runs
     ? { where: "starter_kind = 'member' AND starter_id = ?", value: runs.member }
-    : "agents" in runs
-      ? {
-          where: "agent_id IN (SELECT value FROM json_each(?))",
-          value: JSON.stringify(runs.agents),
-        }
-      : { where: "updated_at < ? AND state <> 'running'", value: runs.idleBefore };
+    : "run" in runs
+      ? { where: "id = ?", value: runs.run }
+      : "agents" in runs
+        ? {
+            where: "agent_id IN (SELECT value FROM json_each(?))",
+            value: JSON.stringify(runs.agents),
+          }
+        : { where: "updated_at < ? AND state <> 'running'", value: runs.idleBefore };
 
 /** The starter columns of a run no one started. */
 const NO_STARTER = { kind: "none", id: "" } as const;
