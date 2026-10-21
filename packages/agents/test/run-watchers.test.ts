@@ -198,8 +198,39 @@ describe("a run's watchers", () => {
     expect(await o.agents.runWatchers(raw)).toEqual([o.bob.member]);
     expect(await o.agents.runWatchers(rawChild)).toEqual([o.bob.member]);
 
-    // Panel views of child runs: their admins' metadata; the watchers of the head watch it, not its child.
+    // Panel views of child runs (#234): those who answer the chain watch them too, so a parent's transcript links them;
+    // an org admin sees their metadata; anyone else, the helper agent's own watcher included, an unknown run.
     expect(await o.agents.viewRun(o.admin, rawChild)).toMatchObject({ value: { access: "admin" } });
+    expect(await o.agents.viewRun(o.bob, rawChild)).toMatchObject({
+      ok: true,
+      value: { id: rawChild, access: "watcher" },
+    });
+    expect(await o.agents.viewRun(o.alice, ownChild)).toMatchObject({
+      ok: true,
+      value: { id: ownChild, access: "watcher" },
+    });
+
+    for (const [viewer, run] of [
+      [o.carol, rawChild],
+      [o.carol, ownChild],
+      [o.bob, ownChild],
+      [o.alice, rawChild],
+    ] as const)
+      expect(await o.agents.viewRun(viewer, run)).toMatchObject({ ok: false, error: "not_found" });
+
+    // They list them too, and cancel and delete them as any run they watch.
+    expect((await o.agents.viewRuns(o.alice)).runs.map((each) => each.id).toSorted()).toEqual(
+      [own, ownChild].toSorted(),
+    );
+    expect((await o.agents.viewRuns(o.carol)).runs).toEqual([]);
+    expect(await o.agents.cancellableRun(o.bob, rawChild)).toMatchObject({
+      ok: true,
+      value: { access: "watcher" },
+    });
+    expect(await o.agents.deleteRun(o.alice, ownChild)).toEqual({
+      ok: true,
+      value: { deleted: 1 },
+    });
 
     expect(await o.agents.runWatchers("run_unknown")).toEqual([]);
   });

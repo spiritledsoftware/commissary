@@ -196,6 +196,8 @@ the Worker asks on every request: a removed member, or a member whose role was l
 | Read the agents they may use; create and manage their own private agents (`/agents`)             |         ✓         |     ✓     |              ✓               |       ✓        |
 | Create, edit and remove shared agents; disable or remove a member's private agent                |                   |     ✓     |              ✓               |       ✓        |
 | Read, add, edit and remove agent grants (`/grants/agents`)                                       |                   |     ✓     |              ✓               |       ✓        |
+| Chat with an agent; see, steer, stop and delete the runs they started or watch (`/agent-runs`)   |         ✓         |     ✓     |              ✓               |       ✓        |
+| See every shared agent's runs' metadata; stop any run of the org                                 |                   |     ✓     |              ✓               |       ✓        |
 | Create, rename and remove their own private browser profiles (`/browser-profiles`)               |         ✓         |     ✓     |              ✓               |       ✓        |
 | Create, rename and remove shared browser profiles; remove a member's private browser profile     |                   |     ✓     |              ✓               |       ✓        |
 | Read, add, edit and remove browser profile grants (`/grants/profiles`)                           |                   |     ✓     |              ✓               |       ✓        |
@@ -299,6 +301,13 @@ the Worker asks on every request: a removed member, or a member whose role was l
   creating one answers `403 private_agents_unavailable` and the private agents are kept but not usable until it is on
   again. `GET /agents/mine` lists what the caller may use. Without the deployment's Dynamic Workers binding the Agents
   routes answer `404`.
+  A run (`/agent-runs`, #227, #232, #234) shows to its starter; a shared agent's run no one started, to the agent's
+  watchers; a child run, to the people of the run at the head of its chain (its starter, or that agent's watchers); and
+  every shared agent's run, child runs included, to an org admin as its metadata only (no transcript, `403 forbidden`
+  on messages and waits). A private agent's run is its member's alone, but an org admin may stop any run's turn. Its
+  starter and its watchers delete a run (`DELETE /agent-runs/<id>`), with the runs it started, at once and for good; an
+  org admin who sees only its metadata gets `403 forbidden`. Anyone else gets `404`, as for an unknown run. A run's
+  view carries its cost so far (`cost_micros`) to whoever sees it.
 - **Browser profiles** (`/browser-profiles`, `/grants/profiles`, #215, ADR 0039): saved logins and site data a browser
   session of the browser toolkit starts from (`browser_open`'s `profile`), one member's (private) or the org's
   (shared), sealed with the org's data key. Every member creates, renames and removes their own private profiles; a
@@ -571,7 +580,8 @@ Commissary keeps as little as it can and deletes at once; there is no grace peri
   so does removing a member for their private agents' runs and every run they started, each with the runs it started:
   they are refused from then on, the removal deletes up to 60 runs' transcripts before it answers, and the cron task
   deletes the rest at its next run (every 3 hours). Preview deployments run no cron tasks, so there the rest waits for
-  the next removal or the org's deletion.
+  the next removal or the org's deletion. A run's starter or watchers may delete it sooner (`DELETE /agent-runs/<id>`,
+  #234), with its transcript and the runs it started.
 - **Removing a member** (`DELETE /members/<id>`) deletes their API keys, private accounts and provider key groups, the
   OAuth logins they started in that org, their private agents and agent runs, and their Spend limits and counters and
   those of their API keys.

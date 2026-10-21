@@ -195,6 +195,61 @@ describe("removing an agent", () => {
   });
 });
 
+describe("deleting a run in the panel (#234)", () => {
+  it("is its starter's: it goes at once with its child runs, and the sweep deletes their objects", async () => {
+    const o = await org();
+    const shared = await created(o, o.admin, "support", { subject: { kind: "everyone" } });
+
+    await created(o, o.admin, "aide", { subject: { kind: "everyone" } });
+    const run = await started(o, o.alice, shared.id);
+    const descendant = await child(o, run, "aide");
+    const other = await started(o, o.alice, shared.id);
+
+    // Another member gets an unknown run; an org admin, who sees its metadata only, may not delete it.
+    expect(await o.agents.deleteRun(o.bob, run)).toMatchObject({ ok: false, error: "not_found" });
+    expect(await o.agents.deleteRun(o.admin, run)).toMatchObject({
+      ok: false,
+      error: "forbidden",
+    });
+    expect(await indexed(o, run)).toBe(true);
+
+    expect(await o.agents.deleteRun(o.alice, run)).toEqual({ ok: true, value: { deleted: 2 } });
+    expect(await indexed(o, run)).toBe(false);
+    expect(await indexed(o, descendant)).toBe(false);
+    expect((await o.agents.viewRuns(o.alice)).runs.map((each) => each.id)).toEqual([other]);
+
+    expect(await purgeDeletedRuns(env, o.id, 3)).toMatchObject({ purged: 2, complete: true });
+    expect(await kept(o.id, run)).toBe(false);
+    expect(await kept(o.id, descendant)).toBe(false);
+    expect(await kept(o.id, other)).toBe(true);
+    expect(await o.agents.deleteRun(o.alice, run)).toMatchObject({ ok: false, error: "not_found" });
+  });
+
+  it("is its shared agent's watchers' when no one started it", async () => {
+    const o = await org();
+
+    const shared = await created(o, o.admin, "intake", {
+      subject: { kind: "everyone" },
+      watchers: [{ kind: "member", id: o.bob.member }],
+    });
+
+    const hook = await o.agents.createTrigger(
+      { viewer: o.admin, agentId: shared.id, origin: "https://api.example.com", by: "test" },
+      { kind: "webhook", name: "Raw" },
+    );
+
+    if (!hook.ok) throw new Error(hook.message);
+    const delivered = await o.agents.startWebhookRun(hook.value.id, "webhook:id:one");
+
+    if (!delivered.ok) throw new Error(delivered.message);
+    const run = delivered.value.run.id;
+
+    expect(await o.agents.deleteRun(o.alice, run)).toMatchObject({ ok: false, error: "not_found" });
+    expect(await o.agents.deleteRun(o.bob, run)).toEqual({ ok: true, value: { deleted: 1 } });
+    expect(await o.agents.deletedRuns(10)).toEqual([run]);
+  });
+});
+
 describe("the retention period for agent runs", () => {
   /** Runs the cron task with `TestClock` at `now`. */
   const prune = (now: number) =>

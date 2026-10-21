@@ -3,12 +3,13 @@
  * hosted agent names a model (Models) and toolkits (Tools), and Agents imports neither area. The management routes ask
  * an {@link AgentReferences} instead, which the app Worker fills from Models' and Tools' `/management` entries
  * (`servedModelCheck`, `toolkitIds`, `sandboxRefusal`; `apps/app/src/management/agent-routes.ts`); Agents' own tests
- * need none, as the part takes what the routes found ({@link ReferenceCheck}) as plain data.
+ * need none, as the part takes what the routes found ({@link ReferenceCheck}) as plain data. The run routes read what
+ * runs cost from Models' usage records through it too (`runCosts`, #234).
  *
  * `R` is what the adapter's checks need of the request (the org, the bindings), provided by the Worker's request
  * context like any route's.
  */
-import { Effect } from "effect";
+import { Effect, type Option } from "effect";
 import type { AgentSandbox } from "@commissary/contract/agents";
 import { AGENTS_TOOLKIT, type ToolScope } from "@commissary/contract/api-keys";
 import type { Reply } from "@commissary/core";
@@ -38,6 +39,15 @@ export interface AgentReferences<R> {
     sandbox: AgentSandbox,
     member: string | undefined,
   ) => Effect.Effect<string | undefined, Reply, R>;
+  /**
+   * What each of `runs` (runs the caller sees, #232) cost so far, in micro-dollars, by run id, from the usage records,
+   * `member` (the caller) reading their own private records too (#234); a run with no priced record is left out (it
+   * cost nothing). Never fails: `None` when the usage store is missing or could not be read.
+   */
+  readonly runCosts: (
+    runs: ReadonlyArray<string>,
+    member: string | undefined,
+  ) => Effect.Effect<Option.Option<ReadonlyMap<string, number>>, never, R>;
 }
 
 /**

@@ -705,8 +705,9 @@ export class AgentsPart extends RpcTarget implements ControlPlanePart {
 
   /**
    * The run `runId` as `viewer` sees it in the panel (#232, ADR 0040), with why (`access`): its starter, its shared
-   * agent's watchers when no one started it, or an org admin for any shared agent's run (its metadata only); anyone
-   * else's answers like an unknown run. See `runs/runs.ts` (`accessOf`).
+   * agent's watchers when no one started it, for a child run the people of the run at the head of its chain (as
+   * watchers, #234), or an org admin for any shared agent's run (its metadata only); anyone else's answers like an
+   * unknown run. See `runs/runs.ts` (`accessOf`).
    */
   viewRun(viewer: Viewer, runId: string): RunsResult<RunView> {
     return this.#runs.ofViewer(viewer, runId);
@@ -734,6 +735,17 @@ export class AgentsPart extends RpcTarget implements ControlPlanePart {
    */
   cancellableRun(viewer: Viewer, runId: string): RunsResult<RunView | null> {
     return this.#runs.cancellableBy(viewer, runId);
+  }
+
+  /**
+   * Deletes the run `runId` at once, with its child runs, when `viewer` watches it (#234): its starter, or its shared
+   * agent's watchers when no one started it; an org admin's metadata view answers `forbidden`, anyone else an unknown
+   * run. Their objects wait for a sweep ({@link deletedRuns}). A new method: an app Worker calls it only once the state
+   * Worker that has it deployed (docs/DEVELOPMENT.md, "State RPC: expand, then contract"). See `runs/runs.ts`
+   * (`deleteBy`).
+   */
+  deleteRun(viewer: Viewer, runId: string): RunsResult<{ readonly deleted: number }> {
+    return this.#runs.deleteBy(viewer, runId);
   }
 
   /**

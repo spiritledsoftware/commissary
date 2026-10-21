@@ -96,8 +96,11 @@ const runSession = async (plane: Org) => {
   return { id, browser: fakeBrowsers.opened.at(-1) ?? "" };
 };
 
-/** Puts the org's browser toolkit's write tools under an approval rule of the caller. */
-const underApprovals = async (plane: Org) => {
+/** Puts the org's browser toolkit's write tools under an approval rule of `approver` (the caller by default). */
+const underApprovals = async (
+  plane: Org,
+  approver?: { kind: "members"; ids: ReadonlyArray<string> },
+) => {
   const current = (await plane.stub.tools().listToolkits(ADMIN)).toolkits.find(
     (toolkit) => toolkit.id === "browser",
   );
@@ -108,7 +111,7 @@ const underApprovals = async (plane: Org) => {
       ADMIN,
       "browser",
       current?.revision ?? 0,
-      { approval_rules: { writes: {} } },
+      { approval_rules: { writes: approver === undefined ? {} : { approver } } },
       "test",
       POLICY,
     );
@@ -150,10 +153,11 @@ describe("an approval of a run no one started", () => {
       await plane.stub.tools().runWaitState("ar_other", { kind: "approval", id: approval }),
     ).toBe("gone");
 
-    // Its watcher sees it with its arguments and decides it; no other member, and an org admin decides none.
+    // Its watcher sees it with its arguments and decides it; no other member, and an org admin decides none. It names
+    // its run (#234), whose page the panel links.
     expect(await plane.stub.tools().getApproval(BOB, approval)).toMatchObject({
       ok: true,
-      value: { id: approval },
+      value: { id: approval, run: RUN },
     });
     expect((await plane.stub.tools().listApprovals(BOB)).approvals).toHaveLength(1);
     expect(await plane.stub.tools().getApproval(ALICE, approval)).toMatchObject({
@@ -178,6 +182,38 @@ describe("an approval of a run no one started", () => {
     expect(
       await runCall(plane, "browser_ask_human", { sessionId: id, reason: REASON }),
     ).toMatchObject({ outcome: "handoff", sessionId: id });
+  });
+
+  it("names its run to the run's people only, not to an approver beyond them", async () => {
+    const plane = await org();
+    const { id } = await runSession(plane);
+
+    // An approver the org knows, who does not watch the run.
+    const added = await plane.stub.addMember(
+      { email: "carol@example.com", role: "member" },
+      { role: "owner", sensitive: false },
+      "test",
+    );
+
+    if (!added.ok) throw new Error(added.message);
+    const carol = { member: added.value.id, admin: false };
+
+    await underApprovals(plane, { kind: "members", ids: [carol.member] });
+    const asked = await runCall(plane, "browser_ask_human", { sessionId: id, reason: REASON });
+
+    if (asked.outcome !== "pending") throw new Error(`the call came to ${asked.outcome}`);
+    const approval = asked.approval.id;
+
+    // Bob watches the run: its caller, told its run. Carol decides it under the rule, and is not.
+    expect(await plane.stub.tools().getApproval(BOB, approval)).toMatchObject({
+      ok: true,
+      value: { run: RUN, can_decide: false },
+    });
+
+    const decider = await plane.stub.tools().getApproval(carol, approval);
+
+    expect(decider).toMatchObject({ ok: true, value: { can_decide: true } });
+    expect(decider.ok && decider.value).not.toHaveProperty("run");
   });
 
   it("expires after its hour by the part's clock", async () => {
@@ -212,12 +248,21 @@ describe("a browser session of a run no one started", () => {
     if (asked.outcome !== "handoff") throw new Error(`the call came to ${asked.outcome}`);
 
     expect((await plane.stub.tools().listBrowserSessions(BOB)).sessions).toMatchObject([
-      { id, own: false, watchable: true, handoff: { until: new Date(asked.until).toISOString() } },
+      {
+        id,
+        own: false,
+        watchable: true,
+        // The run that opened it (#234), whose page the panel links.
+        run: RUN,
+        handoff: { until: new Date(asked.until).toISOString() },
+      },
     ]);
     expect((await plane.stub.tools().listBrowserSessions(ALICE)).sessions).toEqual([]);
-    expect((await plane.stub.tools().listBrowserSessions(ADMIN)).sessions).toMatchObject([
-      { id, watchable: false, handoff: null },
-    ]);
+    const listedForAdmin = (await plane.stub.tools().listBrowserSessions(ADMIN)).sessions;
+
+    expect(listedForAdmin).toMatchObject([{ id, watchable: false, handoff: null }]);
+    // An org admin, who watches none of it, is not told its run (#234).
+    expect(listedForAdmin[0]).not.toHaveProperty("run");
 
     expect(await plane.stub.tools().browserLiveView(BOB, id)).toMatchObject({ ok: true });
     expect(await plane.stub.tools().browserLiveView(ADMIN, id)).toMatchObject({
@@ -228,7 +273,7 @@ describe("a browser session of a run no one started", () => {
     // The session's page tells its watcher what the handoff asks; an org admin, who watches none, learns nothing of it.
     expect(await plane.stub.tools().browserSession(BOB, id)).toMatchObject({
       ok: true,
-      value: { member: null, watchable: true, handoff: { reason: REASON } },
+      value: { member: null, watchable: true, run: RUN, handoff: { reason: REASON } },
     });
     expect(await plane.stub.tools().browserSession(ADMIN, id)).toMatchObject({
       ok: true,

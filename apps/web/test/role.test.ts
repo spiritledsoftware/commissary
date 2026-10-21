@@ -50,9 +50,11 @@ describe("the Agents section (#233)", () => {
       agents: true,
     });
 
+    // The agent runs (#234) beside the agents.
     expect(groups.find((group) => group.id === "providers")?.pages.map((page) => page.to)).toEqual([
       "/tools",
       "/agents",
+      "/agent-runs",
     ]);
   });
 

@@ -42,6 +42,8 @@ export const PANEL_SECTIONS = [
   "tools",
   // The Agents pages (#233): the agent list, an agent's page with its triggers, and the page that creates one.
   "agents",
+  // The agent runs (#234): the runs list and each run's page, where a chat goes on and a run's people answer it.
+  "agent-runs",
   // Commissary Cloud's billing page of an org (#239; the panel shows Not found on a self-hosted Commissary), the
   // address a `plan_limit_reached` refusal links to.
   "billing",

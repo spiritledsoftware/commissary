@@ -2,11 +2,12 @@
 // whether it is enabled, and the shared agents a member may use but does not manage. A member's own are private; an
 // org admin manages every shared agent and their own private ones, and sees only that other members' private agents
 // exist (their name and owner), which they may disable or remove. The head creates an agent. The Agents area is
-// absent where the deployment has no Dynamic Workers binding: the page then is Not found.
+// absent where the deployment has no Dynamic Workers binding: the page then is Not found. Each agent the caller may use
+// (`GET /agents/mine`: enabled, and theirs or granted to them) has a Chat link to start a run of it (#234).
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { Link } from "@tanstack/react-router";
 import { AsyncResult } from "effect/reactivity";
-import { Plus } from "lucide-react";
+import { MessageSquare, Plus } from "lucide-react";
 import type { UsableAgent } from "@commissary/contract/agents";
 import {
   AGENTS,
@@ -42,7 +43,15 @@ import { NotFound } from "./NotFound.tsx";
 /** What a write of a row the list no longer has says. */
 const GONE = "That agent is no longer in the list. Reload the page.";
 
-const Row = ({ row }: { readonly row: AgentRow }) => (
+/** The Chat link of an agent the caller may use. */
+const ChatLink = ({ id, name }: { readonly id: string; readonly name: string }) => (
+  <Link to="/agents/$agentId/chat" params={{ agentId: id }} className={kit["secondary"]}>
+    <MessageSquare aria-hidden="true" size={16} strokeWidth={2.25} />
+    Chat<span className={kit["visuallyHidden"]}> with {name}</span>
+  </Link>
+);
+
+const Row = ({ row, usable }: { readonly row: AgentRow; readonly usable: boolean }) => (
   <tr>
     <td>
       <div className={styles["name"]}>
@@ -60,6 +69,7 @@ const Row = ({ row }: { readonly row: AgentRow }) => (
     <td className={styles["wide"]}>{row.model}</td>
     <td className={styles["wide"]}>{scopeText(row.agent)}</td>
     <td>{row.agent.enabled ? "Enabled" : "Disabled"}</td>
+    <td>{usable ? <ChatLink id={row.agent.id} name={row.agent.name} /> : null}</td>
   </tr>
 );
 
@@ -67,7 +77,8 @@ const SharedWithYou = ({ agents }: { readonly agents: ReadonlyArray<UsableAgent>
   agents.length === 0 ? null : (
     <Section title="Shared with you" className={styles["section"]}>
       <p className={styles["intro"]}>
-        Shared agents an org admin granted you. Clients start them through the agents toolkit.
+        Shared agents an org admin granted you. Chat with one here, or start it from a client
+        through the agents toolkit.
       </p>
       <div className={styles["scroll"]}>
         <table className={styles["table"]}>
@@ -75,6 +86,9 @@ const SharedWithYou = ({ agents }: { readonly agents: ReadonlyArray<UsableAgent>
             <tr>
               <th scope="col">Agent</th>
               <th scope="col">What it is for</th>
+              <th scope="col">
+                <span className={kit["visuallyHidden"]}>Chat</span>
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -82,6 +96,9 @@ const SharedWithYou = ({ agents }: { readonly agents: ReadonlyArray<UsableAgent>
               <tr key={agent.id}>
                 <td className={styles["name"]}>{agent.name}</td>
                 <td>{agent.description === "" ? "No description" : agent.description}</td>
+                <td>
+                  <ChatLink id={agent.id} name={agent.name} />
+                </td>
               </tr>
             ))}
           </tbody>
@@ -162,6 +179,10 @@ const List = ({ caller }: { readonly caller: AgentsCaller }) => {
         ? sharedWithCaller(value.agents, usable.value.agents)
         : [];
 
+      const usableIds = new Set(
+        AsyncResult.isSuccess(usable) ? usable.value.agents.map((agent) => agent.id) : [],
+      );
+
       const off = privateOffText(caller);
 
       return (
@@ -181,11 +202,14 @@ const List = ({ caller }: { readonly caller: AgentsCaller }) => {
                       Tools
                     </th>
                     <th scope="col">State</th>
+                    <th scope="col">
+                      <span className={kit["visuallyHidden"]}>Chat</span>
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
                   {rows.map((row) => (
-                    <Row key={row.agent.id} row={row} />
+                    <Row key={row.agent.id} row={row} usable={usableIds.has(row.agent.id)} />
                   ))}
                 </tbody>
               </table>

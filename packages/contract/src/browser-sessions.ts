@@ -66,6 +66,11 @@ export const BrowserSessionView = Schema.Struct({
   profile: Schema.NullOr(BrowserSessionProfile),
   /** The handoff that waits for the caller, in a session they may watch only; `null` otherwise. */
   handoff: Schema.NullOr(BrowserSessionHandoff),
+  /**
+   * The hosted agent run that opened it (`opened_by: "agent_run"`, #234), whose page the panel links
+   * (`/agent-runs/<run>`, which decides who sees the run); absent for any other session.
+   */
+  run: optional(Schema.String),
 });
 
 export type BrowserSessionView = typeof BrowserSessionView.Type;

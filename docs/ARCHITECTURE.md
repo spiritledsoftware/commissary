@@ -1902,6 +1902,9 @@ once; a 401 retry keeps the rejected attempt's failed record, a failed-over cred
   task). The deployment variable `USAGE_RETENTION_DAYS` (default 30) is gone: the period belongs to the org and an org admin
   sets it (`PATCH /org`). `usage-statistics-enabled` and `redis-usage-queue-retention-seconds` are not used:
   persistence is always on when the `USAGE` binding exists.
+- **Run costs** (#234; `runCosts`, `usage/d1.ts`; migration `0015_usage_run_index.sql`): the Agents area's run
+  routes sum a run's records' cost through `@commissary/models/management`'s `runCosts` (_Agents_, "What a run
+  costs"), over a partial index of the records that name a run (`org_id, run_id`, `run_id IS NOT NULL`).
 - **Agent runs** (#228, ADR 0040; columns of migration `0011_usage_agent_runs.sql`, "Agent runs"): `records`, `summary`
   and `series` take `agent` (a hosted agent's id) and `run` (a run's id) filters, in whichever area the read covers, so
   a run's model attempts, tool calls and browser time read together with `area=all`. `records` names each record's
@@ -4792,12 +4795,12 @@ shared agents and their watchers (#226), runs them as their starter asks, one tu
 the schedules and webhooks configured on them (#231), and serves them to clients and runs through the agents toolkit,
 whose calls from a run start child runs (#229), and gives a run whose definition names a sandbox pi's coding tools on a
 sandbox session of its own (#230); the panel's Agents pages (#233) manage them; it lets watchers and org admins see
-runs, and a run's people answer the approvals and handoffs it waits on (#232); the panel's chat comes later (#234). The
-package (`@commissary/agents`) is shaped like Tools: entry points `./api`, `./management`, `./state` and `./testing`, a
-lint boundary (`boundaries/agents-imports`) and a ControlPlane part, `AgentsPart`, reached as `stub.agents().x(…)`. Its
-state is the ControlPlane's (`AGENTS_TABLES`: `agents`, `agent_grants`, `agent_runs` and `agent_triggers`, dropped by
-`wipe()`); its view of `env` (`AgentsBindings`) is the ControlPlane namespace and the deployment's Dynamic Workers
-binding `LOADER`.
+runs, and a run's people answer the approvals and handoffs it waits on (#232); the panel's chat and run pages (#234)
+start, steer, watch and delete runs. The package (`@commissary/agents`) is shaped like Tools: entry points `./api`,
+`./management`, `./state` and `./testing`, a lint boundary (`boundaries/agents-imports`) and a ControlPlane part,
+`AgentsPart`, reached as `stub.agents().x(…)`. Its state is the ControlPlane's (`AGENTS_TABLES`: `agents`,
+`agent_grants`, `agent_runs` and `agent_triggers`, dropped by `wipe()`); its view of `env` (`AgentsBindings`) is the
+ControlPlane namespace and the deployment's Dynamic Workers binding `LOADER`.
 
 - **Presence** (ADR 0043): the area exists exactly when `LOADER` is bound (`agentsPresent`), on the app Worker, which
   serves the area's routes, runs' included (the runs' objects themselves need no `LOADER`: a run's sandbox is the state
@@ -5051,10 +5054,28 @@ binding `LOADER`.
   (a member by email, a run by id), its trigger, state and times, never a transcript.
 - **Management routes** (`agents/management/run-routes.ts`, `AgentRunsGroup` in `@commissary/contract/agent-runs`):
   `POST /agents/:id/runs` (start, as the asking member, trigger `chat`), `GET /agent-runs`, `GET /agent-runs/:run`,
-  `POST /agent-runs/:run/messages`, `POST /agent-runs/:run/wait` (default 30 s) and `POST /agent-runs/:run/cancel`.
+  `POST /agent-runs/:run/messages`, `POST /agent-runs/:run/wait` (default 30 s), `POST /agent-runs/:run/cancel` and
+  `DELETE /agent-runs/:run` (#234).
   A run shows to its starter, to a shared agent's watchers when no one started it, and to an org admin as its metadata
   (#232, `RunView.access`, _Watchers, approvals and handoffs in runs_ below); any other run answers like an unknown
-  one.
+  one. The list and a run's page carry each run's cost so far (`cost_micros`, #234, below). `GET
+  /agent-runs/:run/retention` (#234, `RunRetention`) answers whoever sees the run the org's run retention period
+  (`retention_days`, `null` for none), which a member cannot read from `GET /org`: the run's page reads it once, apart
+  from its two-second reads of the run, which make no Platform call.
+- **Deleting a run** (#234; `DELETE /agent-runs/:run`, `AgentsPart.deleteRun`, `Runs.deleteBy`): its starter and its
+  watchers delete it, with the child runs it started and theirs (`RunStore.discard`, as for the deletions below), at
+  once and whatever its state (a running turn's object is deleted under it, as when its agent is removed); the route
+  then sweeps the deleted runs' objects, which hold the transcripts. An org admin who sees only its metadata gets `403
+  forbidden` (they cancel it instead); anyone else an unknown run (`404`). The answer (`DeletedRun`) counts the runs
+  that went.
+- **What a run costs** (#234; `AgentReferences.runCosts`, filled by the app Worker from
+  `@commissary/models/management`'s `runCosts`): the sum of its usage records' `cost_micros` (model attempts, tool
+  calls, browser and computer time), read for exactly the runs the route shows the caller, so the starter and the
+  watchers of a shared agent's run see its cost although their own usage reads leave its records out (they name no
+  member). A private record counts only for its member. A run with no priced record costs `0`; without the usage
+  store, or when the read fails (logged: `runCosts` answers `None`), no run has `cost_micros` and the panel says the
+  cost is not known. Migration `0015_usage_run_index.sql` adds the partial index the sum reads
+  (`usage_records (org_id, run_id) WHERE run_id IS NOT NULL`).
 - **pi packages**: `@earendil-works/*` 1.3.0, pinned exactly (their APIs are experimental), imported only by
   `agents/runs/pi.ts` and the run's sandbox tools it installs (`agents/runs/pi-sandbox.ts`,
   `agents/runs/sandbox-env.ts`), all imported statically: the object imports the adapter, as the adapter imports pi-ai's
@@ -5184,6 +5205,36 @@ binding `LOADER`.
   toolkit as its tool scope is edited. Disabled triggers do not count; hidden, missing and clashing tools are left out;
   a toolkit whose tool list cannot be read is said, as its write tools go unchecked.
 
+### Chat and run pages (#234)
+
+- **Pages** (`apps/web/src/pages/AgentChat.tsx`, `AgentRunsList.tsx`, `AgentRun.tsx`; component `RunComposer.tsx`;
+  model in `apps/web/src/lib/agent-runs.ts`; atoms in `api/client.ts`): a **chat** (`/agents/$agentId/chat`, linked
+  from each agent the caller may use on Agents and from an agent's page) is a run with the trigger kind `chat`, started
+  by the caller's first message (`POST /agents/:id/runs`), for the agents of `GET /agents/mine` only. **Agent runs**
+  (`/agent-runs`, every member's, in the sidebar's Providers group where `/me` says `deployment.agents`;
+  `agent-runs` is in `PANEL_SECTIONS`) lists the runs the caller sees, filtered by `access` (started, watching, the
+  org's), each with its agent, trigger, starter, state, last activity and cost. A **run's page**
+  (`/agent-runs/$runId`) shows its facts, what it waits on, answered in place (a pending approval with the approval
+  page's decision, #201; a browser handoff with its Live View, #216; their own pages linked), its transcript with the
+  child runs it started linked, and the composer: typing while a turn runs steers it, typing while the run is idle
+  starts a new turn, and Stop cancels the running turn. Delete asks to confirm. An org admin sees the metadata and
+  Stop only, and only an org admin's pages read the members (`components/MemberEmails.tsx`) to name a starter by
+  email. The page reads the run again every two seconds (`POLL_MS`) while a turn runs or something waits, and not
+  otherwise (`pollStep`): never while a read is in flight, on from the run last read after a failed read, and not at
+  all once the run answers `not_found` ("This run was deleted."). It shows the turn's transcript as the run's object
+  saved it, not a token stream.
+- **Refusals** (`billingLinkOf`, `runProblem`): a failed turn's error, or a tool's error result in the transcript,
+  that names `plan_limit_reached` (Commissary Cloud, #241) links an owner or org admin to Billing: the client API's
+  refusal reaches the run's model call, and pi's error detail keeps its body. A start or a message the routes refuse is
+  worded by `runProblem` and links nowhere. The run's page says when the run is pruned (its last activity plus
+  `retention_days`, read once).
+- **Links back to the run** (#234): an approval's view and a browser session's view name the run whose call it is or
+  that opened it (`ApprovalView.run`, `BrowserSessionView.run`, from the caller's or the session's `run:<id>`
+  principal, `runOfPrincipal`), so #232's links, which land on the approval's and the session's own pages, lead on
+  to the run's page ("From run …", `components/FromRun.tsx`). Only the run's people are told it: an approval's
+  caller (the run's people), not an approver beyond them, and a session's watchers, not an org admin's view of it. The
+  run's page applies its own rule: the link adds none.
+
 ### The agents toolkit and child runs (#229)
 
 - **The toolkit** (`tools/agents/toolkit.ts`; the tools' names, classes and arguments in
@@ -5229,7 +5280,7 @@ binding `LOADER`.
   keeps the key, `api_key_id`; a second key of the same member gets an unknown run); a member signed in (a request
   through Access, without a key), every run they started, through a key or not; a run, the
   child runs it started. Any other run answers like an unknown one. In the panel (`/agent-runs`) a child run shows to
-  org admins only, as its metadata (#232): its people are the head of its chain's.
+  its people, the head of its chain's (`Runs.watchersOf`), as a watcher (#234), and to org admins as its metadata.
 - **Child runs**: a run's `agents_start` starts a child run of the agent it names, acting as that agent (a private
   agent's member, or the shared agent itself), started by the calling run (starter kind `run`) and trigger `mcp`. A run
   may run only enabled agents: a disabled one answers like an unknown one, so nothing tells a run of an agent it may not
@@ -5270,13 +5321,15 @@ not told a link to pass on: the run **parks** the call (GLOSSARY "Parked call") 
 
 - **Who sees a run** (`RunAccess` in `@commissary/contract/agent-runs`; `Runs.accessOf`, `agents/runs/runs.ts`;
   `AgentsPart.viewRun`, `viewRuns`): its starter (`access: "starter"`); for a shared agent's run that no one started (a
-  trigger's), the agent's watchers as they are now (`"watcher"`); and an org admin, any shared agent's run, child runs
-  included (`"admin"`), as its metadata only: `RunDetail` without `turns`, `activity` and `transcript` (optional fields
-  since #232), and the run's object is not asked. A private agent's run is its member's alone. A starter and a watcher
-  watch, steer, wait on and cancel the run; an org admin gets `403 forbidden` on messages and waits. Anyone else gets
-  an unknown run (`404`). A run's cost is not in its view: the usage reads filter by run (#228). An org admin's view of
-  a child run that a private agent's run started names its starter's kind only (`RunStarterView.id` left out): that run
-  is its member's alone.
+  trigger's), the agent's watchers as they are now (`"watcher"`); a child run, the people of its chain's head
+  (`Runs.watchersOf`: its head's starter, or that agent's watchers), also as `"watcher"` (#234: before it, a child run
+  showed to org admins only, so a chat's starter could not open the child runs their run started); and an org admin, any
+  shared agent's run, child runs included (`"admin"`), as its metadata only: `RunDetail` without `turns`, `activity` and
+  `transcript` (optional fields since #232), and the run's object is not asked. A private agent's run is its member's
+  alone. A starter and a watcher watch, steer, wait on and cancel the run; an org admin gets `403 forbidden` on messages
+  and waits. Anyone else gets an unknown run (`404`). A run's cost is in its view since #234 (`cost_micros`, _Management
+  routes_ above). An org admin's view of a child run that a private agent's run started names its starter's kind only
+  (`RunStarterView.id` left out): that run is its member's alone.
 - **Who cancels a run** (`Runs.cancellableBy`, `AgentsPart.cancellableRun`): its starter and its watchers, and an org
   admin any run of the org (ADR 0040), a private agent's too; for a run they do not see, the answer is only whether a
   turn was cancelled (`CancelledRun` without `run`).

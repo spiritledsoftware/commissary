@@ -79,6 +79,10 @@ describe("web panel", () => {
     "/o/default/agents",
     "/o/default/agents/new",
     "/o/default/agents/ag_0123456789abcdef",
+    // The chat and run pages (#234): a chat's start, the runs list and a run's page.
+    "/o/default/agents/ag_0123456789abcdef/chat",
+    "/o/default/agent-runs",
+    "/o/default/agent-runs/ar_0123456789abcdef0123456789abcdef",
     "/o/default/settings/",
     "/o/DEFAULT/Settings",
   ])("serves index.html for %s with the panel's security headers", async (path) => {
