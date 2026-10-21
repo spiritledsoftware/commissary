@@ -28,7 +28,7 @@ const QUICK_ACTIONS = [
   "browser_screenshot",
 ];
 
-/** The session tools (#213, test/browser-sessions.test.ts), by their upstream names, and those that read. */
+/** The session tools (#213, #216, test/browser-sessions.test.ts), by their upstream names, and those that read. */
 const SESSION_TOOLS = [
   "open",
   "navigate",
@@ -47,6 +47,7 @@ const SESSION_TOOLS = [
   "tab_select",
   "close",
   "profile_list",
+  "ask_human",
 ];
 
 const SESSION_READS = ["snapshot", "take_screenshot", "tab_list", "profile_list"];

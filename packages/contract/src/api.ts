@@ -16,6 +16,7 @@ import { AgentGrantsGroup, AgentsGroup } from "./agents.ts";
 import { ApprovalsGroup } from "./approvals.ts";
 import { BillingGroup } from "./billing.ts";
 import { BrowserProfileGrantsGroup, BrowserProfilesGroup } from "./browser-profiles.ts";
+import { BrowserSessionsGroup } from "./browser-sessions.ts";
 import { ProviderKeysGroup } from "./provider-keys.ts";
 import { CatalogGroup } from "./catalog.ts";
 import { CredentialsGroup } from "./credentials.ts";
@@ -67,6 +68,7 @@ export class ManagementApi extends HttpApi.make("management")
   .add(AgentTriggersGroup)
   .add(BrowserProfilesGroup)
   .add(BrowserProfileGrantsGroup)
+  .add(BrowserSessionsGroup)
   .prefix(MANAGEMENT_API_PREFIX) {}
 
 // Below the prefix `/orgs...` is platform-level and every other route exists per org; `/me` is not platform-level:

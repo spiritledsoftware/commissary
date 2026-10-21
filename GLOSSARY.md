@@ -766,6 +766,11 @@ A browser session's request that a person act in it themselves, such as typing a
 the tools carry on.
 _Avoid_: takeover, intervention, human-in-the-loop (on its own)
 
+**Live View**:
+A view of a browser session's tab in the panel, in which its member watches it and acts in a handoff; reached through a
+short-lived link minted only for them.
+_Avoid_: screen share, stream, recording, remote desktop
+
 **Browser provider**:
 The service behind a browser toolkit, reached through Commissary's own adapter, such as Cloudflare's Browser Run.
 _Avoid_: provider (on its own: that is a model provider), browser host, browser vendor

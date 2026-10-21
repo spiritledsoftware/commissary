@@ -47,6 +47,7 @@ import type {
 } from "../control-plane-part.ts";
 import { toolsControlPlane, ToolsEnv } from "../env.ts";
 import { AgentsToolkitPort } from "./agents-port.ts";
+import { handoffAnswerOf, handoffResult, SESSION_PAGE, sessionPagePath } from "./handoff.ts";
 import { writeToolCallRecord } from "../usage/record.ts";
 import {
   acceptedUnder,
@@ -193,6 +194,14 @@ const approvalLink = Effect.fnUntraced(function* (id: string) {
   return yield* panelPageUrl(env, org, `approvals/${encodeURIComponent(id)}`, APPROVAL_PAGE);
 });
 
+/** The panel's page of the browser session `id` (#216), where its member acts in a handoff, or {@link SESSION_PAGE}. */
+const sessionLink = Effect.fnUntraced(function* (id: string) {
+  const env = yield* ToolsEnv;
+  const org = yield* CurrentOrg;
+
+  return yield* panelPageUrl(env, org, sessionPagePath(id), SESSION_PAGE);
+});
+
 /** The key of the approve-or-deny form among a call's input requests (#201). */
 const APPROVAL_KEY = "approval";
 
@@ -294,6 +303,9 @@ const recordedOutcome = (outcome: EndedCall) => {
       return "not_approved";
     case "failed":
       return "upstream_failure";
+    // A handoff started (#216): the call did what it was asked, whether the person is asked or given the link.
+    case "handoff":
+      return "success";
     case "result":
       return outcome.result["isError"] === true ? "tool_error" : "success";
   }
@@ -366,6 +378,16 @@ const toolResult = Effect.fnUntraced(function* (
   if (outcome.outcome === "refused") return toolError(refusedText(name, outcome));
 
   if (outcome.outcome === "not_approved") return toolError(notApprovedText(name, outcome.reason));
+
+  if (outcome.outcome === "handoff")
+    return handoffResult({
+      name,
+      sessionId: outcome.sessionId,
+      reason: outcome.reason,
+      until: outcome.until,
+      link: yield* sessionLink(outcome.sessionId),
+      elicitsUrls: elicitsUrls(context.era),
+    });
 
   if (outcome.outcome === "pending") {
     const link = yield* approvalLink(outcome.approval.id);
@@ -450,6 +472,9 @@ const callTool = Effect.fnUntraced(function* (request: RpcRequest, context: Serv
     // A 2025 client is never asked (see `toolResult`): it gets a pending approval's link.
     approvalForm: elicitsForms(context.era) ? approvalFormOf(request.params) : undefined,
     approvalOutcomes: true,
+    // A browser session's handoff (#216): the endpoint reaches its person, and a client it asked answers with its retry.
+    handoffOutcomes: true,
+    handoffAnswer: elicitsUrls(context.era) ? handoffAnswerOf(request.params) : undefined,
     ...(agents === undefined ? {} : { agentsToolkit: true }),
     // A run's call of its coding tools asks for a ticket rather than the call (#230); no other caller's.
     ...(identity.principal.kind === "run" && metaFlag(request.params, RUN_EXECUTES_META)

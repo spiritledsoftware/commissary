@@ -44,6 +44,7 @@ const SESSION_TOOLS = [
   "browser_tab_select",
   "browser_close",
   "browser_profile_list",
+  "browser_ask_human",
 ];
 
 const READS = new Set([

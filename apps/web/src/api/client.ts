@@ -940,3 +940,31 @@ export const lookupDomainAtom = ManagementClient.mutation("toolkitCatalog", "loo
 
 /** integrations.sh's slower `discover` of a domain, only when asked ("Look deeper"). */
 export const discoverDomainAtom = ManagementClient.mutation("toolkitCatalog", "discover");
+
+/** The Browser sessions pages (#216) refetch after ending a session, tagged with this key. */
+export const BROWSER_SESSIONS = ["browser-sessions"] as const;
+
+/** How often the Browser sessions pages read again while open: a handoff's start and end show without a reload. */
+const SESSIONS_REFRESH = Duration.seconds(15);
+
+/** The caller's open browser sessions, and for an org admin the org's others (#216). */
+export const browserSessionsAtom = ManagementClient.query("browserSessions", "list", {
+  reactivityKeys: BROWSER_SESSIONS,
+}).pipe(Atom.withRefresh(SESSIONS_REFRESH));
+
+/** One open browser session, by id: its page in the panel, the link a handoff answers. */
+export const browserSessionAtom = Atom.family((id: string) =>
+  ManagementClient.query("browserSessions", "get", {
+    params: { id },
+    reactivityKeys: BROWSER_SESSIONS,
+  }).pipe(Atom.withRefresh(SESSIONS_REFRESH)),
+);
+
+/**
+ * Mints a Live View link of the caller's own session: a bearer link that connects within 60 seconds, kept in the page's
+ * state only (a POST, so nothing caches it).
+ */
+export const browserLiveViewAtom = ManagementClient.mutation("browserSessions", "liveView");
+
+/** Ends a session (call with `reactivityKeys: BROWSER_SESSIONS`). */
+export const endBrowserSessionAtom = ManagementClient.mutation("browserSessions", "end");

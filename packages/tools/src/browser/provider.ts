@@ -442,6 +442,56 @@ export interface BrowserTab {
   }) => Effect.Effect<Uint8Array, BrowserFailure>;
   /** Brings the tab to the front, as the one the session acts in. */
   readonly focus: () => Effect.Effect<void, BrowserFailure>;
+  /**
+   * Asks a person to act in this tab (#216, a handoff): the provider shows them `instructions` in the tab's Live View,
+   * with a way to say they are done or failed, for at most `timeout` ms. `onComplete` hears how it ended (the person's
+   * answer, or the provider's own timeout) while the connection that asked lives.
+   */
+  readonly handoff: (
+    instructions: string,
+    timeout: number,
+    onComplete: (result: HandoffResult) => void,
+  ) => Effect.Effect<void, BrowserFailure>;
+  /**
+   * Whether a handoff is active in this tab now. While one is, `onComplete` hears how it ends, on this connection: a
+   * session reached again after its object restarted listens again this way.
+   */
+  readonly handoffActive: (
+    onComplete: (result: HandoffResult) => void,
+  ) => Effect.Effect<boolean, BrowserFailure>;
+  /** Ends the tab's active handoff as failed, with `reason`: the person declined it. */
+  readonly endHandoff: (reason: string) => Effect.Effect<void, BrowserFailure>;
+  /**
+   * A Live View link of this tab (#216): a bearer link through which a person sees and controls the tab, shown alone
+   * (Browser Run's `tab` mode, the one that shows a handoff), which starts a connection only within `expiresInMs`.
+   * Only the session's member gets it, in the panel: never a tool result or a log line.
+   */
+  readonly liveView: (expiresInMs: number) => Effect.Effect<string, BrowserFailure>;
+  /**
+   * Starts marking the fields a person types into in this tab (#216: during a handoff, or while its member may type in
+   * a Live View), in every frame's document and in each new document from now on, until {@link unwatchInputs}. The
+   * provider's own fixed code (`page-scripts.ts`): it marks the targets of trusted input events, which catches a field
+   * whose value the page keeps equal to its default. A failure means the marks cannot be relied on.
+   */
+  readonly watchInputs: () => Effect.Effect<void, BrowserFailure>;
+  /** Stops marking what a person types in this tab, in its current documents and in new ones. */
+  readonly unwatchInputs: () => Effect.Effect<void, BrowserFailure>;
+  /**
+   * CSS selectors of the fields of the page, in every frame, that a person typed into ({@link watchInputs}) or whose
+   * value differs from what the page loaded with, or, with `everyNonEmpty` (when the marks could not be relied on),
+   * every text field that is not empty: the fields the session masks from then on (#216). Never their values: the
+   * provider's own fixed code answers selectors only, and a page's answer that is not a short list of short strings is
+   * a {@link BrowserProviderError}.
+   */
+  readonly filledFields: (
+    everyNonEmpty: boolean,
+  ) => Effect.Effect<ReadonlyArray<string>, BrowserFailure>;
+}
+
+/** How a handoff ended (#216), as the provider tells it: done (`success`) or failed, with the person's reason. */
+export interface HandoffResult {
+  readonly success: boolean;
+  readonly reason?: string | undefined;
 }
 
 /**

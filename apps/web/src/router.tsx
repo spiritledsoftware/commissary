@@ -7,6 +7,7 @@ import { AccountsPage } from "./pages/Accounts.tsx";
 import { ApprovalPage } from "./pages/Approval.tsx";
 import { ApprovalsPage } from "./pages/Approvals.tsx";
 import { BillingPage } from "./pages/Billing.tsx";
+import { BrowserSessionPage, BrowserSessionsPage } from "./pages/BrowserSessions.tsx";
 import { AuthorizePage } from "./pages/Authorize.tsx";
 import { ConnectPage } from "./pages/Connect.tsx";
 import { GrantsPage } from "./pages/Grants.tsx";
@@ -97,6 +98,18 @@ const routeTree = rootRoute.addChildren([
     getParentRoute: () => rootRoute,
     path: "/tools/endpoint",
     component: McpEndpointPage,
+  }),
+  // The browser toolkit's Browser sessions pages (#216), where the deployment has it: the list and each session's
+  // page, the link a handoff answers (`/tools/sessions/<session id>`).
+  createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/tools/sessions",
+    component: BrowserSessionsPage,
+  }),
+  createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/tools/sessions/$sessionId",
+    component: BrowserSessionPage,
   }),
   createRoute({
     getParentRoute: () => rootRoute,

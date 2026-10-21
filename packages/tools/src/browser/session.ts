@@ -38,6 +38,11 @@ interface SessionView {
   readonly tab: number;
   /** CSS selectors of the fields masked besides password fields (#216's handoff fields). */
   readonly masks: ReadonlyArray<string>;
+  /**
+   * Whether a handoff ended in the session (#216), whose fields may have gone with the page (a sign-in form sent and
+   * left): the query of every address is masked from then on, whatever `masks` holds.
+   */
+  readonly maskUrls?: boolean | undefined;
 }
 
 /** A tool result that reports a failure to the model. */
@@ -184,7 +189,7 @@ export const maskSnapshot = Effect.fnUntraced(function* (
  * with GET carries its fields in the next page's address. A URL that cannot be read is masked whole.
  */
 const maskUrl = (url: string, view: SessionView): string => {
-  if (view.masks.length === 0) return url;
+  if (view.masks.length === 0 && view.maskUrls !== true) return url;
 
   try {
     const parsed = new URL(url);
@@ -206,7 +211,10 @@ const pageLines = Effect.fnUntraced(function* (tab: BrowserTab, view: SessionVie
 });
 
 /** The tab the session acts in, and its index: the current one, or the last one when that was closed. */
-const currentTab = Effect.fnUntraced(function* (browser: ProviderBrowser, view: SessionView) {
+export const currentTab = Effect.fnUntraced(function* (
+  browser: ProviderBrowser,
+  view: SessionView,
+) {
   const tabs = yield* browser.tabs();
   const tab = tabs[view.tab];
 

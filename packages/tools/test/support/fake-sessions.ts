@@ -11,7 +11,10 @@
 // has them, and reads them back, the local storage of the sites its current connection visited (or loaded from the
 // state) only, as Playwright's `storageState()` over a connection to a running browser does. `fakeBrowsers` lets a test
 // refuse new browsers (an account at its limit), end a browser as the provider would, drop the connections to one
-// (which a later connection reaches again), and see which browsers are open.
+// (which a later connection reaches again), and see which browsers are open. A handoff (#216) is the browser's own: a
+// test sees its instructions, has the person fill a field of the current page and click Done or Failed (or the provider
+// time it out), which the connection that asked or listened last hears; and it sees the Live View links minted, with
+// their expiry.
 import { Effect } from "effect";
 import {
   BrowserGone,
@@ -19,6 +22,7 @@ import {
   BrowserProviderError,
   type BrowserSessionProvider,
   type BrowserTab,
+  type HandoffResult,
   type ProviderBrowser,
   type StorageState,
 } from "../../src/browser/provider.ts";
@@ -43,6 +47,10 @@ interface FakeElement {
   readonly options?: ReadonlyArray<string>;
   /** Signs in as the page's username when clicked: sets the site's `session` cookie. */
   readonly signsIn?: boolean;
+  /** A person typed into it (#216): its value changed from the page's. */
+  filled?: boolean;
+  /** A person's typing reached it while the session watched inputs: marked whatever its value. */
+  typed?: boolean;
 }
 
 interface FakePage {
@@ -185,8 +193,15 @@ const load = (
   }
 };
 
-/** A simple selector of the fake's: `tag`, `#id` or `[attr="value"]` (with ` i`), alone or combined. */
-const SIMPLE = /^([a-z][a-z0-9]*)?(?:#([\w-]+))?(?:\[([\w-]+)="([^"]*)"( i)?\])?$/;
+/**
+ * A simple selector of the fake's: `tag`, `#id` and any `[attr]`, `[attr="value"]` or `:not([attr="value"])` (with
+ * ` i`), alone or combined, as the masks' selectors are. `[data-commissary-typed]` is a field a person's typing reached
+ * while the session watched (`typed`).
+ */
+const SIMPLE =
+  /^([a-z][a-z0-9]*)?(?:#([\w-]+))?((?:(?::not\()?\[[\w-]+(?:="[^"]*"(?: i)?)?\]\)?)*)$/;
+
+const ATTRIBUTE = /(:not\()?\[([\w-]+)(?:="([^"]*)"( i)?)?\]\)?/g;
 
 const matchesSelector = (element: FakeElement, selector: string): boolean =>
   selector
@@ -196,18 +211,31 @@ const matchesSelector = (element: FakeElement, selector: string): boolean =>
       const match = SIMPLE.exec(part);
 
       if (match === null) throw new Error(`the fake supports no selector ${part}`);
-      const [, tag, id, attribute, value, insensitive] = match;
+      const [, tag, id, attributes] = match;
 
       if (tag !== undefined && tag !== element.tag) return false;
 
       if (id !== undefined && element.attributes["id"] !== id) return false;
 
-      if (attribute === undefined) return true;
-      const actual = element.attributes[attribute];
+      return [...(attributes ?? "").matchAll(ATTRIBUTE)].every(
+        ([, not, attribute, value, insensitive]) => {
+          const actual =
+            attribute === "data-commissary-typed"
+              ? element.typed === true
+                ? ""
+                : undefined
+              : element.attributes[attribute ?? ""];
 
-      return insensitive === undefined
-        ? actual === value
-        : actual?.toLowerCase() === value?.toLowerCase();
+          if (value === undefined) return (actual !== undefined) === (not === undefined);
+
+          const equal =
+            insensitive === undefined
+              ? actual === value
+              : actual?.toLowerCase() === value?.toLowerCase();
+
+          return not === undefined ? equal : !equal;
+        },
+      );
     });
 
 interface FakeTabState {
@@ -226,6 +254,16 @@ interface FakeBrowserState {
   origins: FakeOrigins;
   /** The sites whose local storage its current connection knows: those it visited, or loaded from a state. */
   seen: Set<string>;
+  /** The handoff asked of it (#216), until it ends, and who hears its end: a listener of one connection. */
+  handoff?:
+    | {
+        readonly instructions: string;
+        readonly timeout: number;
+        listener?: { readonly connection: number; readonly hear: (result: HandoffResult) => void };
+      }
+    | undefined;
+  /** Whether the session marks what a person types in it (#216). */
+  watching?: boolean;
 }
 
 const browsers = new Map<string, FakeBrowserState>();
@@ -252,6 +290,58 @@ export const fakeBrowsers = {
   },
   /** Whether the browser `id` is still open at the provider. */
   isOpen: (id: string) => browsers.get(id)?.ended === false,
+  /** The instructions and timeout of the handoff active in the browser `id`, if one is. */
+  handoff: (id: string) => {
+    const handoff = browsers.get(id)?.handoff;
+
+    return handoff === undefined
+      ? undefined
+      : { instructions: handoff.instructions, timeout: handoff.timeout };
+  },
+  /**
+   * A person types `value` into the field named `name` of the browser `id`'s first tab, as in its Live View; while the
+   * session watches inputs the field is marked as typed into too. `controlled`: the page keeps the field's value equal
+   * to its default (a React controlled input), so only the mark tells it was typed into.
+   */
+  fill: (id: string, name: string, value: string, controlled = false) => {
+    const browser = browsers.get(id);
+    const tab = browser?.tabs[0];
+
+    const found =
+      tab === undefined
+        ? undefined
+        : page(tab).elements.find((each) => each.attributes["name"] === name);
+
+    if (found === undefined) throw new Error(`the fake page has no field ${name}`);
+    found.value = value;
+    found.filled = !controlled;
+    found.typed = browser?.watching === true;
+  },
+  /** Whether the session of the browser `id` marks what a person types in it now. */
+  watching: (id: string) => browsers.get(id)?.watching === true,
+  /** While true, marking a person's input fails, as on a page the provider cannot script. */
+  failWatch: false,
+  /** While set, minting a Live View fails with this message. */
+  failLiveView: undefined as string | undefined,
+  /** While set, the filled fields the provider answers: a hostile page's answer, not a list of selectors (#216). */
+  filledOverride: undefined as unknown,
+  /**
+   * While set, the filled fields' answer waits for it once read: a test holds the session's object in a handoff's end,
+   * or types while a call reads the page.
+   */
+  filledGate: undefined as Promise<void> | undefined,
+  /** Ends the handoff of the browser `id`: the person's Done (`success`) or Failed, or the provider's timeout. */
+  completeHandoff: (id: string, result: HandoffResult) => {
+    const browser = browsers.get(id);
+    const handoff = browser?.handoff;
+
+    if (browser === undefined || handoff === undefined) throw new Error("no handoff is active");
+    browser.handoff = undefined;
+
+    if (handoff.listener?.connection === browser.connection) handoff.listener.hear(result);
+  },
+  /** The Live View links minted so far: the browser, and how long each starts a connection for. */
+  liveViews: [] as Array<{ readonly browser: string; readonly expiresInMs: number }>,
 };
 
 const page = (state: FakeTabState): FakePage => {
@@ -462,6 +552,60 @@ const fakeTab = (
         ),
       ),
     focus: () => live(() => undefined),
+    handoff: (instructions, timeout, onComplete) =>
+      live(() => {
+        browser.handoff = { instructions, timeout, listener: { connection, hear: onComplete } };
+      }),
+    handoffActive: (onComplete) =>
+      live(() => {
+        const { handoff } = browser;
+
+        if (handoff === undefined) return false;
+        handoff.listener = { connection, hear: onComplete };
+
+        return true;
+      }),
+    endHandoff: (reason) =>
+      live(() => {
+        const listener = browser.handoff?.listener;
+
+        browser.handoff = undefined;
+
+        if (listener?.connection === connection) listener.hear({ success: false, reason });
+      }),
+    liveView: (expiresInMs) =>
+      fakeBrowsers.failLiveView !== undefined
+        ? Effect.fail(new BrowserProviderError({ message: fakeBrowsers.failLiveView }))
+        : live(() => {
+            fakeBrowsers.liveViews.push({ browser: browser.id, expiresInMs });
+
+            return `https://live.browser.run/ui/view?mode=tab&wss=fake/${browser.id}?jwt=secret-${crypto.randomUUID()}`;
+          }),
+    watchInputs: () =>
+      fakeBrowsers.failWatch
+        ? Effect.fail(new BrowserProviderError({ message: "the page cannot be scripted" }))
+        : live(() => {
+            browser.watching = true;
+          }),
+    unwatchInputs: () =>
+      live(() => {
+        browser.watching = false;
+      }),
+    filledFields: (everyNonEmpty) =>
+      // The fields are read first, then the gate waits: typing while it holds is not in the answer.
+      live(() =>
+        fakeBrowsers.filledOverride !== undefined
+          ? // SAFETY: a test hands the session's object what a hostile page could answer, whatever its type.
+            (fakeBrowsers.filledOverride as ReadonlyArray<string>)
+          : page(state)
+              .elements.filter(
+                (each) =>
+                  each.filled === true ||
+                  each.typed === true ||
+                  (everyNonEmpty && each.tag === "input" && (each.value ?? "") !== ""),
+              )
+              .map((each) => `input[name="${each.attributes["name"] ?? ""}"]`),
+      ).pipe(Effect.tap(() => Effect.promise(() => fakeBrowsers.filledGate ?? Promise.resolve()))),
   };
 };
 

@@ -2571,8 +2571,9 @@ variable rather than its binding (#223): its container is attached to the state 
 exists only as `ctx.container` inside those objects, with no binding in any Worker's `env`, so the deploy binds the
 marker `COMPUTER=on` on the State and app Workers exactly when it attaches the container, from the one
 `COMMISSARY_COMPUTER` setting (`@commissary/core`'s `COMPUTER_MARKER` and `hasComputer`, which both the deploy and the
-checks use; the session objects check `ctx.container` themselves too). The panel reads `me.deployment.hosted` for the mode; `browser` and `computer` are exposed for #216, #217
-and #225 and unused so far.
+checks use; the session objects check `ctx.container` themselves too). The panel reads `me.deployment.hosted` for the mode and `browser` for the Browser sessions pages and the link to them
+(#216: without it the pages answer Not found and nothing links to them); `computer` is exposed for #217 and #225 and
+unused so far.
 
 Routes of the addressed org (`/org`, `/export`) and the account route (`DELETE /me`), all in `org-routes.ts` (ADR 0027,
 "Zero data retention" below):
@@ -4160,8 +4161,8 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
     tab's accessibility snapshot, Playwright's YAML for a model, whose `[ref=e3]` references the actions take),
     `browser_click`, `browser_type` (fills a field, `submit` presses Enter), `browser_press_key`,
     `browser_select_option`, `browser_hover`, `browser_wait_for` (a text or a CSS selector, at most 60 s; below),
-    `browser_take_screenshot`, `browser_tab_list`, `browser_tab_new`, `browser_tab_select` and `browser_close`, and
-    `browser_profile_list` (the browser profiles the caller may open a session from, below; it takes no session). The
+    `browser_take_screenshot`, `browser_tab_list`, `browser_tab_new`, `browser_tab_select`, `browser_ask_human` (a
+    handoff, below) and `browser_close`, and `browser_profile_list` (the browser profiles the caller may open a session from, below; it takes no session). The
     snapshot, the screenshot, the tab list and the profile list are `read` (`readOnlyHint`); the rest are `write`. An action answers the
     page's URL and title afterwards; invalid arguments and the provider's failures (a ref that names nothing, a
     timeout: Playwright's message's first line, at most 500 characters) are tool results with `isError`, and the
@@ -4253,7 +4254,8 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
       micro-USD from 0, charges nothing). The close is stored first, with what is left to do (`unrecorded`, `owed`); a
       record write or a report that fails is tried again from the alarm every minute (`SETTLE_RETRY_MS`) until the
       closed session is forgotten a day on, and each is done once. The Tools part logs the org's open sessions
-      (`browser_sessions`, `tools/browser/session-log.ts`: id, toolkit, member, principal, opening), forgetting one a
+      (`browser_sessions`, `tools/browser/session-log.ts`: id, toolkit, member, principal, opening, the browser profile it
+      opened from and until when a handoff waits, #216, which the Browser sessions page lists), forgetting one a
       call closes or whose alarm's close it hears of; the org's deletion deletes each logged session's object at once,
       without a record or a report (`ToolsPart.purgeBrowserSessions`, 20 a call, `BrowserSession.purge`), so no alarm
       of a deleted org's writes a usage row or wakes its wiped ControlPlane. A session opened before metering keeps
@@ -4267,7 +4269,8 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
     - **Masking** (`session.ts`): Playwright's snapshot copies every input's value as the element's text, password
       fields' included and whatever the input's role (`<input type="password" role="button">` too), so the session
       masks the snapshot before anyone sees it. The masked selectors are `input[type="password" i]` plus the fields a
-      handoff filled (#216: `BrowserSession.maskFields(caller, selectors)` is the hook). It first counts the elements
+      handoff filled (#216, below: the object adds them through the same hook as `BrowserSession.maskFields(caller,
+      selectors)`). It first counts the elements
       that match them in every frame; a page without any is shown as it is. Otherwise every element of the snapshot
       that shows a value, on its line or in its `- text:` lines, is asked about in one batch (by its ref), and the
       value of each that matches, of each the browser gave no ref (not interactable) and of each whose element cannot
@@ -4284,6 +4287,87 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
       `renderAriaTree`: a password field with and without a placeholder, an iframe, a field without a ref) and run the
       workerd canary
       (`packages/tools/test/browser-run-sessions.test.ts`), which checks the client page still has `_snapshotForAI`.
+    - **Handoff and Live View** (#216, ADR 0039, ADR 0044, GLOSSARY "Handoff"): `browser_ask_human(sessionId,
+      reason)` (`write`) asks the session's member to act in its current tab themselves, to type a password or solve a
+      CAPTCHA, so the secret never reaches the model or Commissary. Its first call starts Browser Run's handoff
+      (`Cloudflare.handoff` on the tab's CDP session, the reason as its instructions, 30 minutes, Browser Run's
+      longest: `HANDOFF_TIMEOUT_MS`) and answers at once, the way an approval does (#201): to a 2026-07-28 client that
+      declares URL elicitation, an `InputRequiredResult` whose `handoff` request is a URL-mode elicitation of the
+      session's page in the panel (`tools/sessions/<id>`, `panelPageUrl`), whose retry with `accept` waits and with
+      anything else declines (ends the handoff with `Cloudflare.handoffComplete` `success: false`); to any other
+      client, a tool result (not an error) with the page's link, saying to call again with the same `sessionId` to wait
+      (`tools/mcp/handoff.ts`). The call made again waits, outside the object's chain of calls so a Live View can still
+      be minted meanwhile, for at most 45 seconds (`HANDOFF_WAIT_MS`: no client request, nor the Workers carrying it,
+      waits half an hour): until the person clicks Done or Failed in the Live View (`Cloudflare.handoffComplete`, heard
+      on the tab's CDP session) or the 30 minutes are up, and it answers which (`done`, `failed`, `timed_out`, or the
+      session closed); else it answers, not as an error, that the person is still asked until when, and to call again
+      with the same `sessionId`. While it waits it polls `Cloudflare.getHandoffState` every 15 seconds (`Clock`, so the
+      tests drive it with `TestClock`) in case the event was lost, and an inactive answer at least 15 seconds after a
+      first one ends it; nothing polls once it answered. Each listener for the provider's end is bound to the handoff it
+      was set for (`startedAt`), and a wait that runs out times out only the handoff it waited on. An ended handoff's
+      outcome wakes every call waiting on it, each answered alike, and stays in the session's storage with which handoff
+      it ended (`startedAt`) and when a call first took it (`takenAt`): a call within the next 2 minutes
+      (`OUTCOME_KEPT_MS`, a client's retry) gets the same answer, after which `browser_ask_human` asks anew; another
+      tool acting on the page drops it at once. A woken call that answers after a newer handoff started stamps nothing
+      on it. What the person was asked is dropped when the handoff ends. Each call writes its usage record as any tool
+      call does, the one that started the handoff with the outcome `success`. An approval rule holds only the call that
+      starts a handoff: before its approvals the Tools part asks the session's object whether the caller has a handoff
+      there, waiting or with its outcome kept (`hasHandoff`), and a call that waits on it, answers how it ended or
+      carries the person's decline goes through (only when a rule holds the call). Such a call may start no handoff
+      (`askHuman`'s `mayStart: false`, decided in the object's turn): if the handoff went meanwhile (another tool
+      dropped it, its outcome no longer kept), it answers that none waits, and the next call is approved first. While a
+      handoff is active the session's other tools answer that it waits for a person (no snapshot of what they type),
+      except `browser_close`; the alarm keeps the session open while it lasts and checks it every minute. The log keeps
+      until when a handoff waits, for the Browser sessions page; a call that ends or drops it clears it, and the list
+      asks the object of every handoff the log says waits, forgetting one that ended unheard (the person clicked Done,
+      the client has not called since).
+      - **What the person typed** is masked from then on (`page-scripts.ts`, Commissary's own fixed, argument-free
+        scripts, which answer selectors only, never a value). At the handoff's start the session installs, in every
+        frame, a capturing `input` listener that marks the target of each trusted (`isTrusted`) input event with
+        `data-commissary-typed`, and keeps it in new documents with `Page.addScriptToEvaluateOnNewDocument` while the
+        handoff lasts (each poll installs it again, as an object that restarted lost it). At its end `filledFields`
+        asks every frame of every tab of the session for the fields marked as typed into, and those whose value
+        differs from their default; a controlled input, whose page keeps its value at its default, is caught by its
+        mark. A frame without the listener (another tab, or a frame it never reached) answers every text field that is
+        not empty, and so does every frame when the listener could not be installed; and the answer must be a list of
+        at most 64 strings of at most 256 characters each, every one a bare CSS selector (`filledSelectorsOf`,
+        `notCss`): anything else, or any failure, masks every field that takes text, so masking fails closed. The
+        fields are added to the masked selectors, and from then on the session masks the query of every URL it shows.
+        From the first watch on (a handoff, or a Live View) the masks also hold `[data-commissary-typed]`, which
+        snapshots and screenshots check when they read the page, so typing while a call runs is masked in that call
+        (a frame without the listener keeps that gap until the next call's filled-field step). A session masks at
+        most 256 selectors (`MAX_MASKS`); past that it masks every field that takes text instead.
+      - **The Live View** (`Cloudflare.getLiveView`, tab mode, the only mode a handoff works in) is a bearer link to
+        the browser: it is minted only for whom may watch the session, on their request from the panel (`POST
+        /browser-sessions/:id/live-view`, `Cache-Control: no-store`), with Browser Run's shortest lifetime (60 seconds
+        to start the connection: `LIVE_VIEW_EXPIRES_MS`), and no tool result, log line or other route carries it; a
+        failed mint answers fixed words, as the provider's could quote the link. Its watcher can type in it outside a
+        handoff, and the open frame outlives its link, so minting one installs the same listener and marks the
+        session `watched` for the rest of its life: every later call masks the fields filled since the call before
+        (as at a handoff's end) before it acts, and installs the listener again. Fields the model fills itself after a
+        Live View are masked too, as they cannot be told apart from the person's. The scripts run in the page's own
+        world, so a hostile page can defeat the marks: masking keeps typed values from the model, not from the page,
+        which holds them already (an isolated world would not change that). Watching moves the session's idle timer.
+        Who may watch is one method of the Tools part (`#mayWatch`, the session's member today), which the page's
+        `watchable` reflects, apart from `own` (the caller is its member): a hosted agent's run will name its watchers
+        there (#232), which needs a watchers port that answers at once, or watchers read before the list is made, as
+        the list asks it of every session.
+      - **The Browser sessions routes** (`/v9/management/browser-sessions`, `BrowserSessionsGroup`,
+        `tools/management/browser-session-routes.ts`, every member): `GET` lists the caller's open sessions (with the
+        handoff that waits for them) and, for an org admin, every other session of the org (its member, when it
+        opened, its browser profile, named unless it is another member's private one); `GET /:id` is one, with what
+        its handoff asks; `POST /:id/live-view` mints a Live View for the session's member only (an org admin gets
+        `403 forbidden` on another's); `DELETE /:id` ends a session (its member, or any org admin) as `browser_close`
+        would, and its tools then answer that it is closed (`ended`), a waiting `browser_ask_human` too. A session the
+        caller may not see, or that closed, is `404 not_found`; a provider that fails to mint is `502 browser_failed`.
+      - **Deploys** (expand, then contract): a call reaches the part with `ToolCall.handoffOutcomes`, set by an
+        endpoint that knows the `handoff` outcome; an endpoint from before gets the started handoff as a plain text
+        result without the link. The object's new methods (`askHuman`, `awaitHandoff`, `declineHandoff`, `watch`,
+        `liveView`, `end`) are called only by a part that has them, and the log's new columns are added in place
+        (`ALTER TABLE`). Rolling the State Worker back after this deploy is not clean for the sessions open meanwhile:
+        the older code fails to decode one closed as `ended` (it answers as unknown), and decodes one that stores a
+        handoff, `watched` or `maskUrls` without them, so it neither waits on that handoff nor masks the queries of the
+        session's addresses (the masked fields stay).
     - **Browser Run's sessions** (`tools/browser/browser-run-sessions.ts`): a browser is acquired with a `keep_alive` of
       20 minutes (Browser Run's longest: Cloudflare's limits and its Playwright and Puppeteer pages allow up to 20
       minutes; the comment in `@cloudflare/playwright` 1.3.6's types, 10 s to 10 min, predates that) and reached again
@@ -4535,6 +4619,13 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
   why), narrowed with `?toolkits=` to picked toolkits, how many tools each gives (`GET /tools`, narrowed by the picked
   toolkits and, for a key's URL, a picked API key's tool scope), a suggestion to narrow above 100 tools, and setup
   snippets for Claude, Claude Code, Cursor, Codex and pi that read a key from `COMMISSARY_API_KEY`, never showing one.
+  The **Browser sessions pages** (#216; where the deployment has the browser toolkit, `me.deployment.browser`, else Not
+  found and no link on the Tools page): **Browser sessions** (`/tools/sessions`) lists the caller's open sessions, those
+  waiting for them first, and for an org admin every other session (whose, when, which profile), each with End; a
+  **session's page** (`/tools/sessions/$sessionId`, the link a handoff answers) shows its facts, the handoff's request
+  and deadline, and, for its member only, the Live View in a frame, minted when the page opens and again on Reconnect
+  (the link lives in the page's state only; the panel's CSP allows frames from `https://live.browser.run` and nothing
+  else), with End session (confirmed). Both read again every 15 seconds while open.
 - **Panel, grants, prices, approvals and usage** (#209; models in `apps/web/src/lib/tool-grants.ts`, `tool-id.ts`,
   `my-tools.ts`, `tool-prices.ts`, `approval-rules.ts`, `usage-tools.ts`). The **Grants** page (`/grants`) has a Models
   | Tools switch (`?area=tools`): the tool grants (`GrantsTools.tsx`) read by member, team or toolkit, a form for the

@@ -26,9 +26,12 @@ import { AppEnv } from "../worker-env.ts";
 
 export const PANEL_NOT_BUILT = "the control panel is not built; run `pnpm build`";
 
+/** Where a browser session's Live View is served from (#216): the session's page embeds it in a frame. */
+export const LIVE_VIEW_ORIGIN = "https://live.browser.run";
+
 /**
  * Inline `style` attributes carry computed meter widths; scripts, styles and fonts come only from the panel's own
- * bundle, and the page may only call its own origin.
+ * bundle, the page may only call its own origin, and the only frame it embeds is a browser session's Live View.
  */
 export const PANEL_CSP = [
   "default-src 'none'",
@@ -41,6 +44,7 @@ export const PANEL_CSP = [
   "manifest-src 'self'",
   "base-uri 'none'",
   "form-action 'self'",
+  `frame-src ${LIVE_VIEW_ORIGIN}`,
   "frame-ancestors 'none'",
 ].join("; ");
 
@@ -58,7 +62,7 @@ export const hostedPanelCsp = (authOrigin: string | undefined): string =>
       "connect-src 'self'",
       `connect-src 'self'${authOrigin === undefined ? "" : ` ${authOrigin}`}`,
     )
-    .replace("frame-ancestors 'none'", `frame-src ${TURNSTILE_ORIGIN}; frame-ancestors 'none'`);
+    .replace(`frame-src ${LIVE_VIEW_ORIGIN}`, `frame-src ${LIVE_VIEW_ORIGIN} ${TURNSTILE_ORIGIN}`);
 
 const escapeAttribute = (value: string): string =>
   value.replace(/[&"<>]/g, (char) => `&#${char.charCodeAt(0)};`);
