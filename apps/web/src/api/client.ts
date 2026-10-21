@@ -231,7 +231,8 @@ export const updateApiKeyAtom = ManagementClient.mutation("apiKeys", "update");
  * consent page of an MCP client's sign-in pick from.
  */
 export const usableToolsAtom = ManagementClient.query("tools", "usable", {
-  reactivityKeys: API_KEYS,
+  // Toolkit writes change it too (`TOOLKITS`, below).
+  reactivityKeys: [...API_KEYS, "toolkits"],
   timeToLive: KEEP,
 });
 
@@ -800,3 +801,81 @@ export const approvalAtom = Atom.family((id: string) =>
 
 /** Approves or denies an approval (call with `reactivityKeys: APPROVALS`). */
 export const decideApprovalAtom = ManagementClient.mutation("approvals", "decide");
+
+/** The Tools pages (and the tools the caller may use) refetch after a mutation tagged with this key. */
+export const TOOLKITS = ["toolkits"] as const;
+
+/** The toolkits the caller reaches, with the other members' private toolkits as existence only for an org admin. */
+export const toolkitsAtom = ManagementClient.query("tools", "list", {
+  reactivityKeys: TOOLKITS,
+  timeToLive: KEEP,
+});
+
+/** One toolkit's tool list with each tool's flags and override. */
+export const toolkitToolsAtom = Atom.family((id: string) =>
+  ManagementClient.query("tools", "tools", {
+    params: { id },
+    reactivityKeys: TOOLKITS,
+    timeToLive: KEEP,
+  }),
+);
+
+// Toolkit writes (#208): call with `reactivityKeys: TOOLKITS`. Edits of a toolkit or an override name its revision in
+// `If-Match`; adding one or connecting a shared credential answers `grant`. The sign-in starts, then its status is read
+// until it is done (a GET, called as a mutation so each read is fresh).
+export const addToolkitAtom = ManagementClient.mutation("tools", "add");
+
+export const updateToolkitAtom = ManagementClient.mutation("tools", "update");
+
+export const removeToolkitAtom = ManagementClient.mutation("tools", "remove");
+
+export const connectToolkitAtom = ManagementClient.mutation("tools", "connect");
+
+export const disconnectToolkitAtom = ManagementClient.mutation("tools", "disconnect");
+
+export const startToolkitSignInAtom = ManagementClient.mutation("tools", "signIn");
+
+export const toolkitSignInStatusAtom = ManagementClient.mutation("tools", "signInStatus");
+
+export const setOAuthAppAtom = ManagementClient.mutation("tools", "setOAuthApp");
+
+export const clearOAuthAppAtom = ManagementClient.mutation("tools", "clearOAuthApp");
+
+export const refreshToolkitAtom = ManagementClient.mutation("tools", "refresh");
+
+export const overrideToolAtom = ManagementClient.mutation("tools", "override");
+
+/** The org's tool grants (org admins): who already holds one on a toolkit whose shared credential is replaced. */
+export const toolGrantsAtom = ManagementClient.query("toolGrants", "list", {
+  reactivityKeys: [...TOOLKITS, ...GRANTS],
+  timeToLive: KEEP,
+});
+
+/** How many services a page of the toolkit catalog holds. */
+export const CATALOG_PAGE = 60;
+
+/** The key of a page of the catalog: its first service's place and the search (`catalogPageKey`). */
+export const catalogPageKey = (q: string, offset: number): string => `${offset}:${q}`;
+
+/** A page of the toolkit catalog matching a search (featured services first), by {@link catalogPageKey}. */
+export const toolkitCatalogAtom = Atom.family((key: string) => {
+  const at = key.indexOf(":");
+  const offset = Number(key.slice(0, at));
+  const q = key.slice(at + 1);
+
+  return ManagementClient.query("toolkitCatalog", "list", {
+    query: q === "" ? { limit: CATALOG_PAGE, offset } : { q, limit: CATALOG_PAGE, offset },
+    timeToLive: KEEP,
+  });
+});
+
+/** One catalog service with its sources and how to sign in to each. */
+export const toolkitCatalogServiceAtom = Atom.family((id: string) =>
+  ManagementClient.query("toolkitCatalog", "service", { params: { id }, timeToLive: KEEP }),
+);
+
+/** What a domain looks up to: the catalog's service, else integrations.sh's quick `detect`. */
+export const lookupDomainAtom = ManagementClient.mutation("toolkitCatalog", "lookup");
+
+/** integrations.sh's slower `discover` of a domain, only when asked ("Look deeper"). */
+export const discoverDomainAtom = ManagementClient.mutation("toolkitCatalog", "discover");

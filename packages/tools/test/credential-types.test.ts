@@ -749,7 +749,14 @@ describe("a signed JWT", () => {
     await openApi(
       stub,
       api.origin,
-      { kind: "jwt", private_key: pem, issuer: "svc@example.com", key_id: "k1", subject: EVERYONE },
+      {
+        kind: "jwt",
+        private_key: pem,
+        issuer: "svc@example.com",
+        key_id: "k1",
+        sub: "user-42",
+        subject: EVERYONE,
+      },
       {
         jwt: {
           algorithm: "RS256",
@@ -771,6 +778,7 @@ describe("a signed JWT", () => {
     expect(await verifiedClaims(first, publicKey)).toEqual({
       tenant: "t1",
       iss: "svc@example.com",
+      sub: "user-42",
       aud: "https://api.example.com/",
       scope: "read",
       iat: issuedAt,

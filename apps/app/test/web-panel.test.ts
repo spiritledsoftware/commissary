@@ -64,6 +64,10 @@ describe("web panel", () => {
     "/o/default/approvals/ap_0123456789abcdef01234567",
     // The billing page a plan_limit_reached refusal links to (#239).
     "/o/default/billing",
+    // The Tools pages (#208), and the connect page a tool call that needs a private credential links to (#197).
+    "/o/default/tools",
+    "/o/default/tools/add",
+    "/o/default/tools/tk_0123456789abcdef/connect",
     "/o/default/settings/",
     "/o/DEFAULT/Settings",
   ])("serves index.html for %s with the panel's security headers", async (path) => {

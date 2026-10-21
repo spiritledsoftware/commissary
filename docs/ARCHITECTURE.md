@@ -3319,7 +3319,7 @@ own MCP endpoint. This version builds four kinds, the remote MCP server (Streama
 _OpenAPI toolkits_ below), the GraphQL endpoint (#204, _GraphQL toolkits_ below) and the Google Discovery document
 (#205, _Discovery toolkits_ below), each through its driver (`tools/toolkits/kinds.ts`: how its list is built, whether
 that needs a credential, how a call reaches the upstream, whether calls keep an upstream session), and offers the
-toolkit catalog to add them from (#207, _Toolkit catalog_ below); the panel's toolkit pages come later (#208, #209); grants (#198), prices, usage records and Spend limits of tool calls (#199), approval rules with
+toolkit catalog to add them from (#207, _Toolkit catalog_ below) and the panel's Tools pages (#208, _Panel_ below; prices and approval rules there come with #209); grants (#198), prices, usage records and Spend limits of tool calls (#199), approval rules with
 pending approvals (#201) and OAuth 2 sign-in to toolkits (#202, around the drivers: a driver gets a credential's secret
 already signed in) are here. The package (`@commissary/tools`) is shaped like Models: entry points `./api` (the MCP
 endpoint's routes, Commissary's CIMD document, the cron task), `./management`, `./state` and `./testing`, a lint
@@ -3482,7 +3482,7 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
   - **Minted** like client credentials (a token on first use, kept sealed with the credential until a minute before it
     expires, minted again once on a `401`, a refusal marking it `needs_sign_in` until it is connected again; the token
     is kept with a fingerprint of the settings it was minted with, so changing them mints a new one): `jwt`
-    (`private_key`, `key_id?`, `issuer?`, `subject?`, `client_id?`, `client_secret?`; settings `jwt: { algorithm (RS,
+    (`private_key`, `key_id?`, `issuer?`, `sub?`, `client_id?`, `client_secret?`; settings `jwt: { algorithm (RS,
     PS, HS 256-512, ES256, ES384), token_url?, audience?, scope?, lifetime_seconds? (120 to 3600, the default),
     claims? }`; a JWT signed with WebCrypto from a PEM key (PKCS#8, PKCS#1 RSA or SEC1 EC) or an HMAC secret,
     exchanged at `token_url` with RFC 7523's JWT bearer grant (the JWT names its `iss`; the request sends `scope`,
@@ -3897,9 +3897,9 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
     link to the panel's connect page, `https://<app host>/o/<org slug>/tools/<toolkit id>/connect` (`panelPageUrl`,
     `@commissary/state`, as Billing's link to the billing page). The API Worker gets `APP_DOMAIN` on every deployed
     stage, one host or split; without it (a preview, `alchemy dev`), or when the Platform registry cannot name the org's
-    slug, the words "the toolkit's page in the panel" stand in, and nothing is elicited. #208 builds the page: it must
-    add `tools` to `PANEL_SECTIONS` (`apps/app/src/management/zones.ts`) and the panel route
-    `/tools/$toolkitId/connect`. A 2026-07-28 client that declares URL elicitation
+    slug, the words "the toolkit's page in the panel" stand in, and nothing is elicited. The page is the panel's
+    `/tools/$toolkitId/connect` (`tools` is in `PANEL_SECTIONS`, `apps/app/src/management/zones.ts`; _Panel_ below).
+    A 2026-07-28 client that declares URL elicitation
     (`clientCapabilities.elicitation.url`) gets an `InputRequiredResult` (MRTR) whose `connect_<toolkit>` input request
     is a URL-mode `elicitation/create`, again on each retry until the credential is there; a declined or dismissed
     elicitation, and every other client, get the link in a tool result with `isError`. **A 2025 client never gets an
@@ -4425,6 +4425,34 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
   toolkits the caller reaches with their credentials' kinds, their overrides and their approval
   rules, never a secret, and for an org admin each org toolkit's tool grants (subjects by email or team name, as
   Models' grants; tools `all`, `read` or the named tools' upstream names; `updated_at`).
+- **Panel** (#208, `apps/web/src/pages/Tools.tsx`, `ToolkitAdd.tsx`, `Toolkit.tsx` with `ToolkitCredential.tsx`,
+  `ToolkitTools.tsx` and `ToolkitSettings.tsx`, `ToolkitConnect.tsx`, `McpEndpoint.tsx`; models in
+  `apps/web/src/lib/toolkits.ts`, `toolkit-add.ts`, `toolkit-credentials.ts`, `tool-list.ts`, `mcp-endpoint.ts`):
+  **Tools** (`/tools`, every member's, in the sidebar's Providers group) lists what `GET /toolkits` gives the caller,
+  each toolkit with its kind and source, its sign-ins (shared, the caller's own), its tool count and what needs
+  attention (a failed refresh, a credential that needs sign-in again or is not used, a private toolkit shadowed or asked
+  to rename), those first; an org admin also sees the other members' private toolkits, existence only, and can remove
+  one. **Add a toolkit** (`/tools/add`; org admins, and members where the org allows private toolkits, whose toolkit is
+  always private) picks a catalog service and one of its sources, a domain's lookup (integrations.sh's `discover` only
+  on "Look deeper"), a URL as typed, or an uploaded document, then the name, whose it is, what an org toolkit accepts
+  and the source's way to sign in; the catalog shows no icons, as the panel's CSP loads images from its own origin
+  only. A **toolkit's page** (`/tools/$toolkitId`; read from the list, as there is no read of one toolkit) shows its
+  facts and flags, its sign-in slots (the shared credential for org admins, the caller's own where the toolkit and the
+  org take one): a form for every credential type the API takes (the type's settings, its managers', in the same form), and an OAuth sign-in opened in a new tab while the page asks
+  `GET /toolkits/:id/sign-in` every 3 seconds until it is done, failed or expired. A shared credential's form names
+  who may use it, everyone at first; replacing one names a subject that already holds a grant on the toolkit (everyone
+  first), so a key rotation keeps everyone's reach (#198). Its tool list shows each tool's full name, class, price and
+  flags; its managers edit an override in place (hidden, name, description, class; the whole override is sent with
+  its revision, carrying the price an org admin set) or reset it, and list the tools again now. Its managers' settings:
+  name, what an org toolkit accepts, an OpenAPI toolkit's base URL (`PATCH` with `If-Match`), the OAuth app (replaced
+  whole, so its secret is typed again) and removal. The **connect page** (`/tools/$toolkitId/connect`, the link a call
+  without the member's own credential answers) is that toolkit's own-credential slot alone, then says to make the call
+  again; it says why when the toolkit or the org takes none. The **endpoint URL builder** (`/tools/endpoint`) shows
+  the MCP endpoint's URLs on this deployment (Commissary Cloud: its one endpoint; self-hosted: the app host's
+  `/o/<slug>/mcp` behind Access and, with an API host, the API host's for API keys; with one host the first only, saying
+  why), narrowed with `?toolkits=` to picked toolkits, how many tools each gives (`GET /tools`, narrowed by the picked
+  toolkits and, for a key's URL, a picked API key's tool scope), a suggestion to narrow above 100 tools, and setup
+  snippets for Claude, Claude Code, Cursor, Codex and pi that read a key from `COMMISSARY_API_KEY`, never showing one.
 
 ## Agents (`agents/`, `agents/management/routes.ts`, `src/management/agent-routes.ts`, `apps/api/src/http/run-gateway.ts`)
 

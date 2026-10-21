@@ -203,7 +203,7 @@ export const secretRefusal = (secret: ToolkitSecret): string | undefined => {
         secret.private_key,
         secret.key_id,
         secret.issuer,
-        secret.subject,
+        secret.sub,
         secret.client_id,
         secret.client_secret,
       )

@@ -14,6 +14,7 @@ import { KeyGroupPage, NewKeyGroupPage, OwnKeyGroupPage } from "./pages/KeyGroup
 import { KeysPage } from "./pages/Keys.tsx";
 import { LimitsPage } from "./pages/Limits.tsx";
 import { ManagementKeysPage } from "./pages/ManagementKeys.tsx";
+import { McpEndpointPage } from "./pages/McpEndpoint.tsx";
 import { MembersPage } from "./pages/Members.tsx";
 import { ModelRulesPage } from "./pages/ModelRules.tsx";
 import { ModelsPage } from "./pages/Models.tsx";
@@ -24,9 +25,13 @@ import { PricesPage } from "./pages/Prices.tsx";
 import { ApiKeysPage } from "./pages/ApiKeys.tsx";
 import { SettingsPage } from "./pages/Settings.tsx";
 import { SsoPage } from "./pages/Sso.tsx";
+import { ToolkitPage } from "./pages/Toolkit.tsx";
+import { ToolkitAddPage } from "./pages/ToolkitAdd.tsx";
+import { ToolkitConnectPage } from "./pages/ToolkitConnect.tsx";
+import { ToolsPage } from "./pages/Tools.tsx";
 import { UsagePage } from "./pages/Usage.tsx";
 import { readNewKeySearch } from "./lib/keys.ts";
-import { BILLING_PAGE } from "./lib/role.ts";
+import { BILLING_PAGE, TOOLS_PAGE } from "./lib/role.ts";
 import { legacyHashTarget } from "./lib/legacy-hash.ts";
 import { panelBasepath } from "./lib/org.ts";
 import { readPricesSearch } from "./lib/prices.ts";
@@ -81,6 +86,25 @@ const routeTree = rootRoute.addChildren([
     path: "/usage/prices",
     validateSearch: readPricesSearch,
     component: PricesPage,
+  }),
+  // Tools (#208): the toolkits, adding one, the endpoint URL builder, a toolkit's page, and the connect page a tool call
+  // that needs the caller's own credential links to (`/tools/<toolkit id>/connect`).
+  createRoute({ getParentRoute: () => rootRoute, path: TOOLS_PAGE, component: ToolsPage }),
+  createRoute({ getParentRoute: () => rootRoute, path: "/tools/add", component: ToolkitAddPage }),
+  createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/tools/endpoint",
+    component: McpEndpointPage,
+  }),
+  createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/tools/$toolkitId",
+    component: ToolkitPage,
+  }),
+  createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/tools/$toolkitId/connect",
+    component: ToolkitConnectPage,
   }),
   createRoute({ getParentRoute: () => rootRoute, path: "/members", component: MembersPage }),
   createRoute({ getParentRoute: () => rootRoute, path: "/grants", component: GrantsPage }),

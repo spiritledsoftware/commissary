@@ -35,6 +35,9 @@ export const PANEL_SECTIONS = [
   "management-keys",
   "people",
   "approvals",
+  // The Tools pages (#208), with each toolkit's connect page, the link a tool call that needs the member's private
+  // credential answers (#197, `/tools/<toolkit id>/connect`).
+  "tools",
   // Commissary Cloud's billing page of an org (#239; the panel shows Not found on a self-hosted Commissary), the
   // address a `plan_limit_reached` refusal links to.
   "billing",

@@ -34,9 +34,10 @@ describe("the caller's role", () => {
 });
 
 describe("pages", () => {
-  it("opens only Usage, My models, API keys, Limits and Approvals to a plain member and everything to an admin", () => {
+  it("opens only Usage, Tools, My models, API keys, Limits and Approvals to a plain member and everything to an admin", () => {
     expect(pagesFor("member").map((page) => page.to)).toEqual([
       "/usage",
+      "/tools",
       "/my-models",
       "/api-keys",
       "/limits",
@@ -58,6 +59,14 @@ describe("pages", () => {
     expect(pageAllowed("member", "/approvals")).toBe(true);
     expect(pageAllowed("member", "/approvals/ap_123")).toBe(true);
     expect(pageAllowed("member", "/approvalsx")).toBe(false);
+    // Tools with its pages (#208): every member sees the toolkits they reach, adds private ones, connects their own
+    // credentials (the connect link a tool call answers) and builds an endpoint URL; the server shows each only theirs.
+    expect(pageAllowed("member", "/tools")).toBe(true);
+    expect(pageAllowed("member", "/tools/add")).toBe(true);
+    expect(pageAllowed("member", "/tools/endpoint")).toBe(true);
+    expect(pageAllowed("member", "/tools/tk_1")).toBe(true);
+    expect(pageAllowed("member", "/tools/tk_1/connect")).toBe(true);
+    expect(pageAllowed("member", "/toolsx")).toBe(false);
     // Billing is the org admins' (ADR 0042): a plain member has no billing page, on Commissary Cloud either.
     expect(pageAllowed("member", "/billing")).toBe(false);
     expect(pagesFor("member", true, true).map((page) => page.to)).not.toContain("/billing");
@@ -75,7 +84,7 @@ describe("the sidebar's groups of pages", () => {
   it("shows an org admin every page, grouped under headings, with Overview and Usage first", () => {
     expect(outline(pageGroupsFor("admin"))).toEqual([
       ["", ["Overview", "Usage"]],
-      ["Providers", ["Accounts", "Provider keys", "Models"]],
+      ["Providers", ["Accounts", "Provider keys", "Models", "Tools"]],
       [
         "People and access",
         ["Members", "Grants", "My models", "API keys", "Management keys", "Limits", "Approvals"],
@@ -105,11 +114,12 @@ describe("the sidebar's groups of pages", () => {
   it("leaves out the groups a plain member has no page in", () => {
     expect(outline(pageGroupsFor("member"))).toEqual([
       ["", ["Usage"]],
+      ["Providers", ["Tools"]],
       ["People and access", ["My models", "API keys", "Limits", "Approvals"]],
     ]);
     expect(outline(pageGroupsFor("member", true))).toEqual([
       ["", ["Usage"]],
-      ["Providers", ["Accounts", "Provider keys"]],
+      ["Providers", ["Accounts", "Provider keys", "Tools"]],
       ["People and access", ["My models", "API keys", "Limits", "Approvals"]],
     ]);
   });
@@ -140,6 +150,7 @@ describe("private credentials in the panel (ADR 0023)", () => {
       "/usage",
       "/accounts",
       "/keys",
+      "/tools",
       "/my-models",
       "/api-keys",
       "/limits",
@@ -147,6 +158,7 @@ describe("private credentials in the panel (ADR 0023)", () => {
     ]);
     expect(pagesFor("member", false).map((page) => page.to)).toEqual([
       "/usage",
+      "/tools",
       "/my-models",
       "/api-keys",
       "/limits",
