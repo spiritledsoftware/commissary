@@ -12,10 +12,17 @@
  *
  * Every answer is an MCP tool result, its text a JSON document; a refusal is one with `isError`, so the model can
  * correct itself. Nothing fails the call.
+ *
+ * **A run that waits for its starter** (#232, ADR 0040): `agents_wait` of a member's client returns as soon as the
+ * run's turn parks on something they answer themselves (an approval under a rule of the caller, a browser handoff), and
+ * a client that declares URL-mode elicitation is asked to open its page in the panel (an `InputRequiredResult` whose
+ * input request `waiting_<kind>_<id>` is a URL-mode `elicitation/create`); its retry with the answer waits on. Any
+ * other client gets what the run waits on, with the page's link, in the result (`waiting`).
  */
 import { Data, Effect, Result, Schema } from "effect";
 import type { AccessIdentity } from "@commissary/auth";
 import type { RunView, TurnView } from "@commissary/contract/agent-runs";
+import type { RunWaiting } from "@commissary/contract/run-waits";
 import {
   CancelArguments,
   DEFAULT_WAIT_SECONDS,
@@ -29,6 +36,7 @@ import type { OrgId, Reply } from "@commissary/core";
 import { callControlPlane, controlPlaneOf } from "@commissary/state";
 import { type AgentsBindings, type AgentsControlPlaneStub, agentRunOf } from "../env.ts";
 import { MAX_IDEMPOTENCY_KEY, type RunsResult, type ToolkitCaller } from "../runs/runs.ts";
+import { panelLinkOf, panelOrigin } from "../runs/wait-links.ts";
 
 /** A call of the agents toolkit, as Tools' MCP endpoint hands it over (its `AgentsToolkitRequest`). */
 export interface ToolkitRequest {
@@ -39,6 +47,10 @@ export interface ToolkitRequest {
   readonly arguments: Schema.JsonObject;
   /** The agents the caller's tool scope names; `undefined`: every agent within reach. */
   readonly scopeAgents?: ReadonlyArray<string> | undefined;
+  /** The client declares URL-mode elicitation (#232): `agents_wait` may ask its member to open a page. */
+  readonly elicitsUrls?: boolean | undefined;
+  /** The input requests the client answered in this retry of the call (their keys, `inputResponses`). */
+  readonly answered?: ReadonlyArray<string> | undefined;
 }
 
 /** An answer that ends the call early: a refusal, as the tool result the model gets. */
@@ -114,6 +126,62 @@ const turnOf = (turn: TurnView) => ({
   ...(turn.error === undefined ? {} : { error: turn.error }),
 });
 
+/** The input request that asks a run's starter to answer what it waits on (#232). */
+const waitingKey = (waiting: Pick<RunWaiting, "kind" | "id">): string =>
+  `waiting_${waiting.kind}_${waiting.id}`;
+
+/** The ids of what the client answered already, from the keys of its answers ({@link waitingKey}). */
+const answeredIds = (keys: ReadonlySet<string>): ReadonlyArray<string> =>
+  [...keys].flatMap((key) => {
+    const matched = /^waiting_(?:approval|handoff)_(.+)$/.exec(key);
+
+    return matched?.[1] === undefined ? [] : [matched[1]];
+  });
+
+/** What a run waits on, as the toolkit answers it. */
+const waitingOf = (waiting: RunWaiting) => ({
+  kind: waiting.kind,
+  // A child run's call (#229), when it is not the run's own.
+  ...(waiting.run === undefined ? {} : { run: waiting.run }),
+  ...(waiting.kind === "approval" ? { approval: waiting.id } : { browser_session: waiting.id }),
+  until: waiting.until,
+  ...(waiting.link === undefined ? {} : { link: waiting.link }),
+  answered_by: waiting.by_caller ? "you" : "another of its approvers",
+});
+
+/**
+ * The URL-mode elicitation that asks the run's starter to answer what `run`'s turn waits on in the panel (#232): an
+ * approval of its tool call, or a handoff in its browser session.
+ */
+const elicitation = (run: RunView, waiting: RunWaiting & { readonly link: string }) => {
+  const agent = run.agent.name ?? run.agent.id;
+
+  const who =
+    waiting.run === undefined
+      ? `Run ${run.id} of the agent ${agent}`
+      : `Run ${waiting.run}, a child run of run ${run.id} of the agent ${agent},`;
+
+  return {
+    resultType: "input_required",
+    inputRequests: {
+      [waitingKey(waiting)]: {
+        method: "elicitation/create",
+        params: {
+          mode: "url",
+          url: waiting.link,
+          message:
+            waiting.kind === "approval"
+              ? `${who} waits for your approval of a tool call, until ${waiting.until}. ` +
+                `Open the approval's page to approve or deny it: the run goes on once you decide.`
+              : `${who} asks you to act in its browser session ${waiting.id} yourself, ` +
+                `until ${waiting.until}. Open its page, do it in the browser, then click Done (or Failed). What you ` +
+                `type there is not shown to the agent.`,
+        },
+      },
+    },
+  } satisfies Schema.JsonObject;
+};
+
 /** A run as the toolkit lists it. */
 const runOf = (run: RunView) => ({
   run: run.id,
@@ -124,7 +192,12 @@ const runOf = (run: RunView) => ({
 });
 
 /** The agents toolkit's calls over `env`'s ControlPlanes and runs' objects (the Worker's request context fills Tools' port with it). */
-export const agentsToolkitCalls = (env: Pick<AgentsBindings, "CONTROL_PLANE" | "AGENT_RUN">) => {
+export const agentsToolkitCalls = (
+  env: Pick<AgentsBindings, "CONTROL_PLANE" | "AGENT_RUN" | "APP_DOMAIN">,
+) => {
+  // Where the panel is: a wait's member is asked to open only its page there (#232).
+  const panel = panelOrigin(env.APP_DOMAIN);
+
   const agents = <R>(org: OrgId, label: string, call: (stub: AgentsControlPlaneStub) => R) =>
     callControlPlane(label, controlPlaneOf(env, org), call);
 
@@ -257,13 +330,37 @@ export const agentsToolkitCalls = (env: Pick<AgentsBindings, "CONTROL_PLANE" | "
 
     const run = yield* visible(request.org, caller, args.run);
 
+    // A member's client that asks people to open pages is asked as soon as the run waits on them (#232), once each.
+    const asks = caller.kind === "member" && request.elicitsUrls === true && panel !== undefined;
+    const answered = new Set(request.answered ?? []);
+
     const claimed = yield* onRun(
       request.org,
       run.id,
       "claim",
-      (stub) => stub.claim(args.turn, Math.round(seconds * 1000), claimantOf(caller)),
+      (stub) =>
+        stub.claim(
+          args.turn,
+          Math.round(seconds * 1000),
+          claimantOf(caller),
+          asks && panel !== undefined ? { answered: answeredIds(answered), panel } : undefined,
+        ),
       runRefusal(run.id),
     );
+
+    // The first wait its member answers whose link is the panel's page of it (`panelLinkOf`), not asked yet.
+    const ask =
+      !asks || claimed.finished
+        ? undefined
+        : claimed.waiting?.flatMap((waiting) => {
+            const link = panelLinkOf(waiting, panel);
+
+            return waiting.by_caller && link !== undefined && !answered.has(waitingKey(waiting))
+              ? [{ ...waiting, link }]
+              : [];
+          })[0];
+
+    if (ask !== undefined) return elicitation(run, ask);
 
     if (claimed.turn === undefined)
       return jsonResult({
@@ -273,6 +370,10 @@ export const agentsToolkitCalls = (env: Pick<AgentsBindings, "CONTROL_PLANE" | "
           claimed.delivered === true
             ? "none: you have every turn's result (some were delivered to you as messages), and no turn runs"
             : "none: you claimed every turn's result already, and no turn runs",
+        // Its child runs may still wait on someone (#232).
+        ...(claimed.waiting === undefined || claimed.waiting.length === 0
+          ? {}
+          : { waiting: claimed.waiting.map(waitingOf) }),
       });
 
     return jsonResult({
@@ -281,6 +382,9 @@ export const agentsToolkitCalls = (env: Pick<AgentsBindings, "CONTROL_PLANE" | "
       finished: claimed.finished,
       turn: turnOf(claimed.turn),
       ...(claimed.activity === undefined ? {} : { latest_activity: claimed.activity }),
+      ...(claimed.waiting === undefined || claimed.waiting.length === 0
+        ? {}
+        : { waiting: claimed.waiting.map(waitingOf) }),
     });
   });
 

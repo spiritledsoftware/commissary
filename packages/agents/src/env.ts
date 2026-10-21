@@ -28,6 +28,9 @@ type AgentsPartMethod =
   | "startRun"
   | "getRun"
   | "listRuns"
+  | "viewRun"
+  | "viewRuns"
+  | "cancellableRun"
   | "beginTurn"
   | "turnContext"
   | "abandonRun"
@@ -87,6 +90,12 @@ export interface AgentsBindings {
    * the app host (zone routes), whose URLs then take the request's origin.
    */
   readonly API_DOMAIN?: string | undefined;
+  /**
+   * The panel's host (`COMMISSARY_APP_DOMAIN`), which the API Worker binds on every deployed stage (not on a preview or
+   * under `alchemy dev`): the agents toolkit's wait asks a member to open a run's wait only at its page there (#232).
+   * Unset (the app Worker, a preview), the wait asks no one and answers what the run waits on.
+   */
+  readonly APP_DOMAIN?: string | undefined;
 }
 
 /** The name of the run `run` of `org`'s object: both, so a run id never reaches another org's run. */

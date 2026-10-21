@@ -35,6 +35,8 @@ export default defineConfig({
           SECRETS_KEY: "commissary-test-secrets-key-0123456789abcdef0123456789abcdef012345",
           // The API host (`AgentsBindings`), where webhooks' URLs point; the part's tests hand it their own origin.
           API_DOMAIN: "api.example.com",
+          // The panel's host (`AgentsBindings`), where the agents toolkit's wait sends a run's people (#232).
+          APP_DOMAIN: "app.example.com",
         },
       },
     }),

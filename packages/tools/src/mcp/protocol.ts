@@ -272,6 +272,26 @@ const unreserved = (meta: Schema.JsonObject): Schema.JsonObject =>
   Object.fromEntries(Object.entries(meta).filter(([key]) => !key.startsWith(RESERVED_META)));
 
 /**
+ * The `_meta` key prefixes of Commissary's own (`RUN_WAITS_META`, `RUN_TICKET_META`, `SPEND_REFUSAL_META`, …), which an
+ * agent run reads as the endpoint's word: what a call waits on, a gated call's ticket, a spend limit's refusal.
+ */
+const OWN_META = ["commissary/", "commissary.dev/"] as const;
+
+/**
+ * An upstream server's tool `result` without any `_meta` key of Commissary's own ({@link OWN_META}): a server could
+ * otherwise make a run park on a wait of its own making (and its starter be asked to open its link, #232), or end a
+ * turn as a spend limit would. The endpoint adds its own keys after.
+ */
+export const withoutOwnMeta = (result: Schema.JsonObject): Schema.JsonObject => {
+  const { _meta: meta, ...fields } = result;
+
+  if (!isJsonObject(meta)) return result;
+  const kept = Object.entries(meta).filter(([key]) => !OWN_META.some((own) => key.startsWith(own)));
+
+  return kept.length === 0 ? fields : { ...fields, _meta: Object.fromEntries(kept) };
+};
+
+/**
  * A result as `era` frames it: any reserved `_meta` key the result came with (an upstream's) left out, and a modern
  * one naming its kind and the server.
  */

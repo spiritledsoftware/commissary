@@ -1,6 +1,6 @@
 // The test Worker's bindings (vitest.config.ts) as `env` from `cloudflare:workers` types them: what state's Durable
 // Object classes read (`StateObjectEnv`), with the namespaces typed through the test Worker's classes (test/worker.ts),
-// and Agents' `LOADER`, `AGENT_RUN`, `AGENT_SCHEDULE` and `API_DOMAIN`.
+// and Agents' `LOADER`, `AGENT_RUN`, `AGENT_SCHEDULE`, `API_DOMAIN` and `APP_DOMAIN`.
 interface __AgentsTestEnv extends Omit<
   import("@commissary/state").StateObjectEnv,
   keyof import("@commissary/state").StateBindings
@@ -16,6 +16,8 @@ interface __AgentsTestEnv extends Omit<
   AGENT_SCHEDULE: DurableObjectNamespace<import("./worker.ts").AgentSchedule>;
   /** The API host (`AgentsBindings`), where webhooks' URLs point. */
   API_DOMAIN: string;
+  /** The panel's host (`AgentsBindings`, #232). */
+  APP_DOMAIN: string;
 }
 
 declare namespace Cloudflare {

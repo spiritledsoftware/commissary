@@ -1179,9 +1179,9 @@ export class BrowserSession extends DurableObject<BrowserSessionEnv> {
   /**
    * A Live View link of the session's current tab (#216, ADR 0044), which starts a connection only within
    * {@link LIVE_VIEW_EXPIRES_MS}: a bearer link, minted for the panel of whom the Tools part lets watch (the session's
-   * member) and never stored or logged. The member may type in it as in a handoff, so what they type is marked from now
-   * on (`watched`), and the session's next call masks the fields they filled before it acts. Watching is a use of the
-   * session: its idle minutes start again.
+   * member, or the watchers of the agent run that opened it, #232) and never stored or logged. The watcher may type in
+   * it as in a handoff, so what they type is marked from now on (`watched`), and the session's next call masks the
+   * fields they filled before it acts. Watching is a use of the session: its idle minutes start again.
    */
   liveView(org: string): Promise<LiveViewAnswer> {
     return this.#serial(async (): Promise<LiveViewAnswer> => {

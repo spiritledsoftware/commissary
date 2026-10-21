@@ -5,7 +5,8 @@
  * tool, the outcome, the latency from the gate to the settling, the sizes of the arguments and of the answer, the cost
  * (the price the gate charged) and how an approval rule decided it. The computer time its operations used (#224) is
  * charged as each answers, and recorded by the run's session, once per stretch of its computer
- * (`sandbox/cloudflare/session.ts`), as a sandbox session's own record holds the computer time of its calls.
+ * (`sandbox/cloudflare/session.ts`), as a sandbox session's own record holds the computer time of its calls. And how
+ * what a run's parked call waits on stands (#232, {@link runWaitState}): an approval, or a browser handoff.
  * The gate itself is the endpoint's `tools/call` (`RUN_EXECUTES_META`); the ticket it answers is the Tools part's
  * (`sandbox/run-calls.ts`).
  */
@@ -16,11 +17,24 @@ import type {
   SandboxEnvReply,
   SandboxEnvRequest,
 } from "@commissary/contract/sandbox-env";
+import type { RunWaitState, RunWaiting } from "@commissary/contract/run-waits";
 import { CurrentOrg, type Reply, replyError } from "@commissary/core";
 import type { BillingEnv } from "@commissary/billing/api";
 import { toolsControlPlane, ToolsEnv } from "../env.ts";
 import { insertToolCallRecord, type ToolCallRecord } from "../usage/record.ts";
 import { planLimitedText, refusedText } from "./endpoint.ts";
+
+/**
+ * How what a parked call of the run `run` of the current org waits on stands (#232): a pending approval of its call, or
+ * a handoff in its browser session (`ToolsPart.runWaitState`).
+ */
+export const runWaitState = (
+  run: string,
+  waiting: Pick<RunWaiting, "kind" | "id">,
+): Effect.Effect<RunWaitState, Reply, ToolsEnv | CurrentOrg> =>
+  toolsControlPlane("runWaitState", (stub) =>
+    stub.tools().runWaitState(run, { kind: waiting.kind, id: waiting.id }),
+  );
 
 /** Runs `request` of the gated call `ticket` of the run `run` of the current org on its session. */
 export const runSandboxOperation = (

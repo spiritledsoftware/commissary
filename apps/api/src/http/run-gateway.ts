@@ -24,9 +24,10 @@ import type {
   SandboxEnvReply,
   SandboxEnvRequest,
 } from "@commissary/contract/sandbox-env";
+import type { RunWaitState, RunWaiting } from "@commissary/contract/run-waits";
 import { CurrentOrg, OrgId, type WorkerExecutionContext } from "@commissary/core";
 import { retryOnCodeUpdate } from "@commissary/state";
-import { runSandboxOperation, settleRunToolCall } from "@commissary/tools/api";
+import { runSandboxOperation, runWaitState, settleRunToolCall } from "@commissary/tools/api";
 import { type ApiWorkerBindings, type EnvServices, requestContext } from "../worker-env.ts";
 import { handler } from "./handler.ts";
 import { PresentedRun } from "./presented-run.ts";
@@ -90,6 +91,20 @@ export class AgentRunGateway extends WorkerEntrypoint<ApiWorkerBindings> impleme
     if (!isOrgId(org) || run === "") return { recorded: false };
 
     return await this.#inOrg(org, settleRunToolCall(run, ticket, report));
+  }
+
+  /**
+   * How what the run's parked call waits on stands (#232): a pending approval of its call, or a handoff in its browser
+   * session. Rejects when the org's tools cannot be reached: the run asks again later.
+   */
+  async waitState(
+    org: OrgId,
+    run: string,
+    waiting: Pick<RunWaiting, "kind" | "id">,
+  ): Promise<RunWaitState> {
+    if (!isOrgId(org) || run === "") return "gone";
+
+    return await this.#inOrg(org, runWaitState(run, waiting));
   }
 
   /** Runs `effect` with this Worker's services, as the org `org`. */

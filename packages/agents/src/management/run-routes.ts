@@ -3,8 +3,11 @@
  * of an agent (`POST /agents/:id/runs`), list the caller's runs, show one, send it a message, wait for a turn and cancel
  * the running turn. The panel's chat (#234) and the agents toolkit (#229) are built on the same operations.
  *
- * The org's index of runs (the Agents part, `runs/runs.ts`) decides who sees a run: its starter only, for now (watchers
- * and org admins come with #232); any other run answers like an unknown one. The run itself is its Durable Object
+ * The org's index of runs (the Agents part, `runs/runs.ts`) decides who sees a run (#232, ADR 0040): its starter, and
+ * for a shared agent's run no one started its watchers, who watch it (its transcript and what it waits on), steer it
+ * (messages, waits) and cancel it; and an org admin, who sees every shared agent's run as its metadata only (`403
+ * forbidden` on messages and waits) and cancels any run of the org, a private agent's too, of which they learn only
+ * whether a turn was cancelled. Any other run answers like an unknown one. The run itself is its Durable Object
  * (`AGENT_RUN`, `runs/run-object.ts`), which this Worker reaches by the API Worker's script name. A run started here is
  * started by the member who asks, with the trigger kind `chat`.
  *
@@ -22,6 +25,7 @@ import {
   MAX_WAIT_MS,
   type MessageSent,
   type RunDetail,
+  type RunView,
   SendMessage,
   StartRun,
   type StartedRun,
@@ -77,14 +81,55 @@ const callRun = <A>(
     return yield* orRefuse(result as RunsResult<A>);
   });
 
-/** The run `id` as its starter sees it in the org's index: anyone else's answers like an unknown run (`404`). */
+/**
+ * The run `id` as the caller sees it in the org's index (#232), with why (`access`): anyone else's answers like an
+ * unknown run (`404`).
+ */
 const visibleRun = (id: string) =>
   Effect.gen(function* () {
     const viewer = yield* currentViewer;
 
     return yield* orRefuse(
-      yield* agentsControlPlane("getRun", (stub) => stub.agents().getRun(viewer, id)),
+      yield* agentsControlPlane("viewRun", (stub) => stub.agents().viewRun(viewer, id)),
     );
+  });
+
+/**
+ * The run `id` when the caller watches it (its starter, or its watcher): an org admin who sees only its metadata gets
+ * `403 forbidden`.
+ */
+const watchedRun = (id: string) =>
+  Effect.gen(function* () {
+    const run = yield* visibleRun(id);
+
+    if (run.access === "admin")
+      return yield* replyError(403, "forbidden", {
+        message: "an org admin sees this run's metadata only: its starter or watchers steer it",
+      });
+
+    return run;
+  });
+
+/**
+ * A run as the panel shows it (`GET /agent-runs/:run`): what the index says, and, to its starter and its watchers, what
+ * its object says it is now (its turns, activity, transcript, and what it and its child runs wait on). An org admin's
+ * view is the index's metadata only: the object is not asked.
+ */
+const detailOf = (run: RunView) =>
+  Effect.gen(function* () {
+    // An org admin's view is the run's metadata (ADR 0040): its object, which holds the transcript, is not asked.
+    if (run.access === "admin") return run satisfies RunDetail;
+    const shown = yield* callRun("show", run.id, (stub) => stub.show());
+
+    return {
+      ...run,
+      state: shown.state,
+      turns: shown.turns,
+      activity: shown.activity,
+      transcript: shown.transcript,
+      // An object from before #232 answers no `waiting`.
+      ...(shown.waiting === undefined ? {} : { waiting: shown.waiting }),
+    } satisfies RunDetail;
   });
 
 const start = Effect.gen(function* () {
@@ -126,25 +171,18 @@ const list = Effect.gen(function* () {
 
   return jsonReply(
     200,
-    yield* agentsControlPlane("listRuns", (stub) => stub.agents().listRuns(viewer)),
+    yield* agentsControlPlane("viewRuns", (stub) => stub.agents().viewRuns(viewer)),
   );
 });
 
 const get = Effect.gen(function* () {
   const run = yield* visibleRun(yield* param("run"));
-  const shown = yield* callRun("show", run.id, (stub) => stub.show());
 
-  return jsonReply(200, {
-    ...run,
-    state: shown.state,
-    turns: shown.turns,
-    activity: shown.activity,
-    transcript: shown.transcript,
-  } satisfies RunDetail);
+  return jsonReply(200, yield* detailOf(run));
 });
 
 const message = Effect.gen(function* () {
-  const run = yield* visibleRun(yield* param("run"));
+  const run = yield* watchedRun(yield* param("run"));
   const body = yield* decode(SendMessage);
 
   yield* checked(body.message, "message", body.idempotency_key);
@@ -157,7 +195,7 @@ const message = Effect.gen(function* () {
 });
 
 const wait = Effect.gen(function* () {
-  const run = yield* visibleRun(yield* param("run"));
+  const run = yield* watchedRun(yield* param("run"));
   const body = yield* decode(WaitRun);
   const timeout = body.timeout_ms ?? DEFAULT_WAIT_MS;
 
@@ -174,17 +212,27 @@ const wait = Effect.gen(function* () {
     state: waited.state,
     turn: waited.turn,
     ...(waited.activity === undefined ? {} : { activity: waited.activity }),
+    ...(waited.waiting === undefined || waited.waiting.length === 0
+      ? {}
+      : { waiting: waited.waiting }),
   });
 });
 
 const cancel = Effect.gen(function* () {
   const id = yield* param("run");
+  const viewer = yield* currentViewer;
 
-  yield* visibleRun(id);
+  // Its starter, its watchers, or an org admin, any run of the org (#232, ADR 0040).
+  const seen = yield* orRefuse(
+    yield* agentsControlPlane("cancellableRun", (stub) => stub.agents().cancellableRun(viewer, id)),
+  );
+
   const cancelled = yield* callRun("cancel", id, (stub) => stub.cancel());
-  const run = yield* visibleRun(id);
 
-  return jsonReply(200, { run, cancelled } satisfies CancelledRun);
+  // An org admin who does not see the run (a private agent's) learns only whether a turn was cancelled.
+  if (seen === null) return jsonReply(200, { cancelled } satisfies CancelledRun);
+
+  return jsonReply(200, { run: yield* visibleRun(id), cancelled } satisfies CancelledRun);
 });
 
 /** The agent run routes (mounted by `managementRoutes`, `routes.ts`). */

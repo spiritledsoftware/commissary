@@ -17,7 +17,7 @@ export {
 
 export { scheduledTasks } from "./scheduled-tasks.ts";
 
-export { runSandboxOperation, settleRunToolCall } from "./mcp/run-calls.ts";
+export { runSandboxOperation, runWaitState, settleRunToolCall } from "./mcp/run-calls.ts";
 
 export {
   mcpChallenge,

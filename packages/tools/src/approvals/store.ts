@@ -273,6 +273,18 @@ export class ApprovalStore {
     return row === undefined ? undefined : approvalOf(row);
   }
 
+  /**
+   * A pending approval (never a form) while its row is kept, expired or not (#232: a parked run's call learns that it
+   * expired, until the part's alarm deletes it).
+   */
+  held(id: string): StoredApproval | undefined {
+    const row = this.#sql
+      .exec<ApprovalRow>(`SELECT * FROM tool_approvals WHERE id = ? AND form = 0`, id)
+      .toArray()[0];
+
+    return row === undefined ? undefined : approvalOf(row);
+  }
+
   /** Every pending approval (never a form) kept at `now`, newest first. */
   approvals(now: number): ReadonlyArray<StoredApproval> {
     return this.#sql

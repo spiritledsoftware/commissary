@@ -4,7 +4,8 @@
 // browser and computer ControlPlanes carry to test what plans count of Tools (#241, `PLANS_ON`).
 //
 // `ControlPlane` is a deployment without built-in toolkits; `BrowserControlPlane` one with a fake Browser Run binding
-// (#212) and the browser sessions' objects (#213: `BrowserSession`, whose browsers are a fake provider's),
+// (#212) and the browser sessions' objects (#213: `BrowserSession`, whose browsers are a fake provider's), and a fake
+// Agents area's watchers of runs (#232, `RUN_WATCHERS_KEY`),
 // `OtherBrowserControlPlane` one whose browser toolkit has a fake second browser provider behind it, and
 // `UpgradedControlPlane` one that gets the binding once its storage holds `UPGRADE_TO_BROWSER`: a test sets it and
 // restarts the object, as a deploy that adds the binding does. `SandboxControlPlane` has the sandbox toolkit as every
@@ -232,6 +233,12 @@ export class CloudControlPlane extends composeControlPlane({
   tools: (ctx, _env, core) => new ToolsPart(ctx, core, {}, { managedApps: cloudManagedApps }),
 }) {}
 
+/**
+ * The prefix of the keys whose values (member ids) a `BrowserControlPlane`'s fake Agents area answers as a run's
+ * watchers (#232): `RUN_WATCHERS_KEY + runId`, which a test writes into the object's storage. No key: no one.
+ */
+export const RUN_WATCHERS_KEY = "test:run-watchers:";
+
 export class BrowserControlPlane extends composeControlPlane({
   billing: (ctx) => billingPartOf(ctx),
   tools: (ctx, env: Cloudflare.Env, core) =>
@@ -241,6 +248,9 @@ export class BrowserControlPlane extends composeControlPlane({
       {
         browser: browserRun(fakeBrowserRun()),
         browserSessions: browserSessions(env.BROWSER_SESSIONS),
+        runWatchers: {
+          of: (runId) => ctx.storage.kv.get<ReadonlyArray<string>>(RUN_WATCHERS_KEY + runId) ?? [],
+        },
       },
       { plans: plansOf(ctx) },
     ),
