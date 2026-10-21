@@ -7,6 +7,7 @@ import {
   ceilingHint,
   ceilingText,
   emailProblem,
+  hasBrowser,
   orgCountText,
   parseCeiling,
   parseOrgLimit,
@@ -18,6 +19,15 @@ import { callerOf } from "../src/lib/role.ts";
 const SELF_HOSTED = { hosted: false, browser: false, computer: false, agents: false };
 
 const HOSTED = { hosted: true, browser: false, computer: false, agents: false };
+
+describe("the browser (ADR 0043)", () => {
+  it("is on the panel only where the deployment has the browser toolkit", () => {
+    const deployment = { hosted: false, computer: false, agents: false };
+
+    expect(hasBrowser({ deployment: { ...deployment, browser: true } })).toBe(true);
+    expect(hasBrowser({ deployment: { ...deployment, browser: false } })).toBe(false);
+  });
+});
 
 describe("creating orgs", () => {
   it("is for platform admins, and for everyone on Commissary Cloud", () => {

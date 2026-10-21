@@ -73,7 +73,24 @@ export const approvalWord = (approval: ToolCallApproval | undefined): string | u
 };
 
 /** The record is a tool call (one that names a tool), not the record a browser or sandbox session writes on closing. */
-export const isCall = (record: UsageRecord): boolean => record.tool_id !== undefined;
+export const isCall = (record: Pick<UsageRecord, "tool_id">): boolean =>
+  record.tool_id !== undefined;
+
+/** What a session's record says for its outcome: it is written when the session closes, and has no outcome of its own. */
+export const SESSION_OUTCOME = "Closed";
+
+/** A record's outcome in a table cell: a call's (`OK` for one from before outcomes), or that a session closed. */
+export const resultWord = (record: Pick<UsageRecord, "tool_id" | "outcome">): string =>
+  record.outcome === undefined
+    ? isCall(record)
+      ? "OK"
+      : SESSION_OUTCOME
+    : outcomeWord(record.outcome);
+
+/** A call's latency in a table cell; a session's record has none (it is not a call), so the cell stays empty. */
+export const latencyText = (
+  record: Pick<UsageRecord, "tool_id" | "latency_ms">,
+): string | undefined => (isCall(record) ? formatLatency(record.latency_ms) : undefined);
 
 /** What a record is of, in words: a tool of a toolkit, or a session of the browser or the computer. */
 export const recordSubject = (
@@ -109,6 +126,8 @@ export const formatBytes = (bytes: number): string => {
 export const recordFacts = (
   record: UsageRecord,
   toolkitName: string,
+  browser: boolean,
+  profile: string | undefined,
 ): ReadonlyArray<readonly [string, string]> => {
   const approval = approvalText(record.approval);
 
@@ -116,7 +135,11 @@ export const recordFacts = (
     ["Request", record.request_id],
     ["Toolkit", toolkitName],
     ...(record.tool_id === undefined ? [] : [["Tool", record.tool_id] as const]),
-    ...(record.outcome === undefined ? [] : [["Outcome", outcomeText(record.outcome)] as const]),
+    ...(record.outcome === undefined
+      ? isCall(record)
+        ? []
+        : [["Outcome", SESSION_OUTCOME] as const]
+      : [["Outcome", outcomeText(record.outcome)] as const]),
     ...(approval === undefined || record.approval === "none"
       ? []
       : [["Approval", approval] as const]),
@@ -128,15 +151,16 @@ export const recordFacts = (
     ...(record.response_bytes === undefined
       ? []
       : [["Result size", formatBytes(record.response_bytes)] as const]),
-    ...(record.browser_ms === undefined
+    ...(profile === undefined ? [] : [["Profile", profile] as const]),
+    ...(record.browser_ms === undefined || !browser
       ? []
-      : [["Browser time", formatDuration(record.browser_ms)] as const]),
+      : [["Browser time", browserDuration(record.browser_ms)] as const]),
     ...(record.computer_ms === undefined
       ? []
       : [["Computer time", formatDuration(record.computer_ms)] as const]),
     ...(record.agent_id === undefined ? [] : [["Agent", record.agent_id] as const]),
     ...(record.run_id === undefined ? [] : [["Agent run", record.run_id] as const]),
-    ["Latency", formatLatency(record.latency_ms)],
+    ...(isCall(record) ? [["Latency", formatLatency(record.latency_ms)] as const] : []),
   ];
 };
 
@@ -155,10 +179,37 @@ export const toolHeadline = (totals: UsageTotals): ReadonlyArray<Figure> => [
   ["Average latency", totals.requests === 0 ? "None" : formatLatency(totals.avg_latency_ms)],
 ];
 
-/** The time the browser and the computer ran, as detail figures: only where there was some. */
-export const toolDetails = (totals: UsageTotals): ReadonlyArray<Figure> => [
-  ...((totals.browser_ms ?? 0) > 0
-    ? [["Browser time", formatDuration(totals.browser_ms ?? 0)] as const]
+/** Browser time as a figure: to the tenth of a second under a minute (a Quick Action), else in minutes and up. */
+export const browserDuration = (ms: number): string =>
+  ms < 60_000 ? formatLatency(ms) : formatDuration(ms);
+
+/**
+ * The profile a browser session opened from, by name: the caller sees the names of the profiles they manage only, so
+ * another is said to be one they do not see. `undefined` for a record that names none.
+ */
+export const profileFact = (
+  record: Pick<UsageRecord, "browser_profile_id">,
+  names: ReadonlyMap<string, string>,
+): string | undefined =>
+  record.browser_profile_id === undefined
+    ? undefined
+    : (names.get(record.browser_profile_id) ?? "A profile you do not manage, or one since deleted");
+
+/** A record's or group's browser time as the log and the breakdown word it: "12 min of browser time". */
+export const browserTimeText = (ms: number | undefined): string | undefined =>
+  ms === undefined ? undefined : `${browserDuration(ms)} of browser time`;
+
+/** Whether a breakdown has a column of browser time: some row used any. */
+export const hasBrowserTime = (groups: ReadonlyArray<Pick<UsageTotals, "browser_ms">>): boolean =>
+  groups.some((group) => (group.browser_ms ?? 0) > 0);
+
+/**
+ * The time the browser and the computer ran, as detail figures: only where there was some. `browser` is false where the
+ * deployment has no browser toolkit.
+ */
+export const toolDetails = (totals: UsageTotals, browser: boolean): ReadonlyArray<Figure> => [
+  ...(browser && (totals.browser_ms ?? 0) > 0
+    ? [["Browser time", browserDuration(totals.browser_ms ?? 0)] as const]
     : []),
   ...((totals.computer_ms ?? 0) > 0
     ? [["Computer time", formatDuration(totals.computer_ms ?? 0)] as const]

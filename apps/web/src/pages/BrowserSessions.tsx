@@ -34,10 +34,10 @@ import {
   ownerText,
   sessionRow,
   sessionTitle,
-  showsBrowserSessions,
   sortSessions,
 } from "../lib/browser-sessions.ts";
 import { failureMessage } from "../lib/failure.ts";
+import { hasBrowser } from "../lib/hosted.ts";
 import { atLeast } from "../lib/role.ts";
 import { useAction } from "../lib/use-action.ts";
 import { usePageTitle } from "../lib/use-page-title.ts";
@@ -54,7 +54,7 @@ const WithBrowser = ({ children }: { readonly children: ReactNode }) => {
 
   if (!AsyncResult.isSuccess(me)) return null;
 
-  return showsBrowserSessions(me.value) ? children : <NotFound />;
+  return hasBrowser(me.value) ? children : <NotFound />;
 };
 
 /** Ending a session: the confirmation, the call, and what came of it. */

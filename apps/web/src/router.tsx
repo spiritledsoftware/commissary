@@ -10,6 +10,7 @@ import { AccountsPage } from "./pages/Accounts.tsx";
 import { ApprovalPage } from "./pages/Approval.tsx";
 import { ApprovalsPage } from "./pages/Approvals.tsx";
 import { BillingPage } from "./pages/Billing.tsx";
+import { BrowserProfilesPage } from "./pages/BrowserProfiles.tsx";
 import { BrowserSessionPage, BrowserSessionsPage } from "./pages/BrowserSessions.tsx";
 import { AuthorizePage } from "./pages/Authorize.tsx";
 import { ConnectPage } from "./pages/Connect.tsx";
@@ -113,6 +114,12 @@ const routeTree = rootRoute.addChildren([
     getParentRoute: () => rootRoute,
     path: "/tools/sessions/$sessionId",
     component: BrowserSessionPage,
+  }),
+  // The browser toolkit's Browser profiles page (#217), where the deployment has it.
+  createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/tools/profiles",
+    component: BrowserProfilesPage,
   }),
   createRoute({
     getParentRoute: () => rootRoute,

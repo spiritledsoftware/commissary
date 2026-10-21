@@ -9,17 +9,10 @@ import type {
   BrowserSessionProfile,
   BrowserSessionView,
 } from "@commissary/contract/browser-sessions";
-import type { Me } from "@commissary/contract/orgs";
 import { formatAgo, formatClock, formatDuration } from "./format.ts";
 
 /** The Browser sessions page's path, under the Tools pages; each session's page is below it. */
 export const BROWSER_SESSIONS_PAGE = "/tools/sessions";
-
-/**
- * Whether the panel shows the Browser sessions pages and the links to them: only where the deployment has the browser
- * toolkit (ADR 0043). Elsewhere nothing mentions them.
- */
-export const showsBrowserSessions = (me: Pick<Me, "deployment">): boolean => me.deployment.browser;
 
 /** Whose a session is: "You" for the caller's own, else its member's email (or id), or a shared agent's. */
 export const ownerText = (session: Pick<BrowserSessionView, "own" | "member">): string => {

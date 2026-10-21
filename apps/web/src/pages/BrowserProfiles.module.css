@@ -1,0 +1,82 @@
+/* The Browser profiles page (#217), beside the Tools pages' own styles (`Tools.module.css`): the row's actions, the
+   checklist of who may use a shared profile and the rename form. Ink and hairlines only; the trail mark stays for what
+   is closed or failing. */
+.rowActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-1) var(--space-4);
+}
+
+.status {
+  font-size: var(--text-sm);
+  font-weight: 650;
+}
+
+/* Who may use it: the checklist is a form part of its own, so the legend reads as a field label. */
+.access > legend {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--quiet);
+}
+
+.access[data-invalid="true"] > legend {
+  color: var(--danger);
+}
+
+.subhead {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--quiet);
+}
+
+.pickList {
+  max-height: 12rem;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+  background: var(--field);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+}
+
+.pickList > li {
+  padding: var(--space-1) var(--space-3);
+  border-bottom: 1px solid var(--hairline);
+}
+
+.pickList > li:last-child {
+  border-bottom: 0;
+}
+
+.pick {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 2.25rem;
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.pick > input {
+  width: auto;
+  accent-color: var(--text);
+}
+
+.pickName {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.rename {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: var(--space-3);
+}
+
+.renameField {
+  flex: 1 1 16rem;
+}

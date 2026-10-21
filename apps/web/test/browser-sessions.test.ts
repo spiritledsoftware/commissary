@@ -13,7 +13,6 @@ import {
   profileText,
   sessionRow,
   sessionTitle,
-  showsBrowserSessions,
   sortSessions,
 } from "../src/lib/browser-sessions.ts";
 import { pageAllowed } from "../src/lib/role.ts";
@@ -32,12 +31,8 @@ const session = (id: string, extra: Partial<BrowserSessionView> = {}): BrowserSe
   ...extra,
 });
 
-const deployment = { hosted: false, computer: false, agents: false };
-
 describe("the Browser sessions pages", () => {
-  it("are shown only where the deployment has the browser toolkit, and every member opens them", () => {
-    expect(showsBrowserSessions({ deployment: { ...deployment, browser: true } })).toBe(true);
-    expect(showsBrowserSessions({ deployment: { ...deployment, browser: false } })).toBe(false);
+  it("are opened by every member", () => {
     expect(pageAllowed("member", BROWSER_SESSIONS_PAGE)).toBe(true);
     expect(pageAllowed("member", `${BROWSER_SESSIONS_PAGE}/abc`)).toBe(true);
   });

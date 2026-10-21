@@ -29,6 +29,7 @@ import { approvalRulesWarnings } from "../lib/approvals.ts";
 import { callPriceText, formatPrice } from "../lib/tool-prices.ts";
 import { usePageTitle } from "../lib/use-page-title.ts";
 import { directoryOf, WithApproverDirectory } from "./ApproverDirectory.tsx";
+import { BrowserToolkitLinks } from "./BrowserProfiles.tsx";
 import { CredentialSlotBlock } from "./ToolkitCredential.tsx";
 import { TrailMark } from "../components/Signs.tsx";
 import { Flags } from "./ToolkitFlags.tsx";
@@ -243,6 +244,7 @@ const Details = ({
         )}
       </WithApproverDirectory>
       {controls.prices ? <ToolkitPrices toolkit={toolkit} /> : null}
+      {toolkit.built_in === true && toolkit.kind === "browser" ? <BrowserToolkitLinks /> : null}
       {controls.approvals ? <ToolkitApprovals toolkit={toolkit} admin={caller.admin} /> : null}
       {controls.manage && toolkit.built_in !== true ? <ToolkitSettings toolkit={toolkit} /> : null}
     </>

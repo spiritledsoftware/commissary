@@ -20,6 +20,15 @@ import { type ChunkOutcome, chunks, foldOutcomes } from "../lib/batch.ts";
 import { causeMessage } from "../lib/failure.ts";
 import type { SaveSettings, SettingsView } from "@commissary/contract/settings";
 import { HISTORY_SPAN_MS } from "../lib/history.ts";
+import {
+  type AccessChange,
+  createProfile,
+  type DeleteTarget,
+  deleteProfile,
+  type ProfileDraft,
+  type ProfileIo,
+  saveAccess,
+} from "../lib/browser-profiles.ts";
 import { orgSlugOfPath } from "../lib/org.ts";
 import { type RuleChange, type RuleWrite, saveRuleChange } from "../lib/models.ts";
 import { type Edits, saveDraft } from "../lib/settings.ts";
@@ -1072,3 +1081,89 @@ export const updateTriggerAtom = ManagementClient.mutation("agentTriggers", "upd
 export const removeTriggerAtom = ManagementClient.mutation("agentTriggers", "remove");
 
 export const rotateTriggerSecretAtom = ManagementClient.mutation("agentTriggers", "rotateSecret");
+
+/** The Browser profiles page (#217) refetches after a mutation tagged with this key. */
+export const BROWSER_PROFILES = ["browser-profiles"] as const;
+
+/**
+ * The browser profiles the caller manages: their own private ones and, for an org admin, the shared ones and the other
+ * members' private ones as existence only.
+ */
+export const browserProfilesAtom = ManagementClient.query("browserProfiles", "list", {
+  reactivityKeys: BROWSER_PROFILES,
+  timeToLive: KEEP,
+});
+
+/** The grants on shared profiles (org admins only: the route refuses everyone else). */
+export const browserProfileGrantsAtom = ManagementClient.query("browserProfileGrants", "list", {
+  reactivityKeys: BROWSER_PROFILES,
+  timeToLive: KEEP,
+});
+
+/** Renames a profile, at its revision in `If-Match` (call with `reactivityKeys: BROWSER_PROFILES`). */
+export const renameBrowserProfileAtom = ManagementClient.mutation("browserProfiles", "update");
+
+/** The writes of the Browser profiles page over the generated client. */
+const profileIo = (
+  client: ManagementClient["Service"],
+): ProfileIo<ManagementError | Schema.SchemaError | HttpClientError.HttpClientError, never> => ({
+  create: (payload) => client.browserProfiles.create({ payload }),
+  remove: (id, revision) =>
+    client.browserProfiles.remove({ params: { id }, headers: { "if-match": String(revision) } }),
+  grant: (payload) => client.browserProfileGrants.create({ payload }),
+  ungrant: (id, revision) =>
+    client.browserProfileGrants.remove({
+      params: { id },
+      headers: { "if-match": String(revision) },
+    }),
+});
+
+/**
+ * Creates a profile and, for a shared one, the grant of each subject chosen (`createProfile`). The lists refetch after
+ * any outcome (a grant refused leaves the profile deleted again, or the grants half written). Transport and decoding
+ * failures become defects, as in the generated mutations.
+ */
+export const createBrowserProfileAtom = ManagementClient.runtime.fn((draft: ProfileDraft) =>
+  Effect.gen(function* () {
+    const client = yield* ManagementClient;
+
+    return yield* createProfile(draft, profileIo(client));
+  }).pipe(
+    Effect.catchIf(
+      (error) => Schema.isSchemaError(error) || HttpClientError.isHttpClientError(error),
+      Effect.die,
+    ),
+    Effect.ensuring(Reactivity.invalidate(BROWSER_PROFILES)),
+  ),
+);
+
+/** Changes who may use a shared profile (`saveAccess`); the lists refetch after any outcome. */
+export const saveBrowserProfileAccessAtom = ManagementClient.runtime.fn(
+  (input: { readonly profile: string; readonly change: AccessChange }) =>
+    Effect.gen(function* () {
+      const client = yield* ManagementClient;
+
+      return yield* saveAccess(input.profile, input.change, profileIo(client));
+    }).pipe(
+      Effect.catchIf(
+        (error) => Schema.isSchemaError(error) || HttpClientError.isHttpClientError(error),
+        Effect.die,
+      ),
+      Effect.ensuring(Reactivity.invalidate(BROWSER_PROFILES)),
+    ),
+);
+
+/** Deletes a profile with its grants at the revision its row was read at (`deleteProfile`); the lists refetch after any outcome. */
+export const deleteBrowserProfileAtom = ManagementClient.runtime.fn((target: DeleteTarget) =>
+  Effect.gen(function* () {
+    const client = yield* ManagementClient;
+
+    return yield* deleteProfile(target, profileIo(client));
+  }).pipe(
+    Effect.catchIf(
+      (error) => Schema.isSchemaError(error) || HttpClientError.isHttpClientError(error),
+      Effect.die,
+    ),
+    Effect.ensuring(Reactivity.invalidate(BROWSER_PROFILES)),
+  ),
+);

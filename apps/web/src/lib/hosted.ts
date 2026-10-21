@@ -11,6 +11,12 @@ import { asSentence } from "./failure.ts";
 
 type Hosting = Pick<Me, "platform_admin" | "deployment" | "org_limit" | "owned_orgs">;
 
+/**
+ * Whether the deployment has the browser toolkit (ADR 0043: `deployment.browser`). Where it has not, the panel shows
+ * no browser pages, link, price or browser time, and nothing explains the absence.
+ */
+export const hasBrowser = (me: Pick<Me, "deployment">): boolean => me.deployment.browser;
+
 /** Anyone signed in creates orgs on Commissary Cloud; on a self-hosted one only platform admins do. */
 export const canCreateOrg = (me: Hosting): boolean => me.platform_admin || me.deployment.hosted;
 

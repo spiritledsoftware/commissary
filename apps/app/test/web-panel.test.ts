@@ -69,6 +69,8 @@ describe("web panel", () => {
     "/o/default/tools/add",
     "/o/default/tools/tk_0123456789abcdef/connect",
     "/o/default/tools/sessions/0123456789abcdef",
+    // The Browser profiles page (#217).
+    "/o/default/tools/profiles",
     // The tools a member reaches and why (#209).
     "/o/default/my-tools",
     // The Agents pages (#233): the list, a new agent and an agent's page.
