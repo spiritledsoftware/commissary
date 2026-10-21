@@ -20,6 +20,7 @@ import { ModelRulesPage } from "./pages/ModelRules.tsx";
 import { ModelsPage } from "./pages/Models.tsx";
 import { OverviewPage } from "./pages/Overview.tsx";
 import { MyModelsPage } from "./pages/MyModels.tsx";
+import { MyToolsPage } from "./pages/MyTools.tsx";
 import { NotFound } from "./pages/NotFound.tsx";
 import { PricesPage } from "./pages/Prices.tsx";
 import { ApiKeysPage } from "./pages/ApiKeys.tsx";
@@ -30,6 +31,7 @@ import { ToolkitAddPage } from "./pages/ToolkitAdd.tsx";
 import { ToolkitConnectPage } from "./pages/ToolkitConnect.tsx";
 import { ToolsPage } from "./pages/Tools.tsx";
 import { UsagePage } from "./pages/Usage.tsx";
+import { readGrantsSearch } from "./lib/grants.ts";
 import { readNewKeySearch } from "./lib/keys.ts";
 import { BILLING_PAGE, TOOLS_PAGE } from "./lib/role.ts";
 import { legacyHashTarget } from "./lib/legacy-hash.ts";
@@ -107,8 +109,14 @@ const routeTree = rootRoute.addChildren([
     component: ToolkitConnectPage,
   }),
   createRoute({ getParentRoute: () => rootRoute, path: "/members", component: MembersPage }),
-  createRoute({ getParentRoute: () => rootRoute, path: "/grants", component: GrantsPage }),
+  createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/grants",
+    validateSearch: readGrantsSearch,
+    component: GrantsPage,
+  }),
   createRoute({ getParentRoute: () => rootRoute, path: "/my-models", component: MyModelsPage }),
+  createRoute({ getParentRoute: () => rootRoute, path: "/my-tools", component: MyToolsPage }),
   createRoute({ getParentRoute: () => rootRoute, path: "/api-keys", component: ApiKeysPage }),
   createRoute({ getParentRoute: () => rootRoute, path: "/limits", component: LimitsPage }),
   createRoute({ getParentRoute: () => rootRoute, path: "/approvals", component: ApprovalsPage }),

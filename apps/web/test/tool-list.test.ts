@@ -65,7 +65,13 @@ describe("the flags", () => {
 
 describe("the overrides", () => {
   it("start from the tool's override, and name its revision for If-Match (0 for none)", () => {
-    expect(draftOfTool(tool())).toEqual({ hidden: false, name: "", description: "", class: "" });
+    expect(draftOfTool(tool())).toEqual({
+      hidden: false,
+      name: "",
+      description: "",
+      class: "",
+      price: "",
+    });
     expect(overrideRevision(tool())).toBe(0);
 
     const overridden = tool({
@@ -80,6 +86,7 @@ describe("the overrides", () => {
       name: "open_issue",
       description: "",
       class: "read",
+      price: "",
     });
     expect(overrideRevision(overridden)).toBe(3);
   });
@@ -123,6 +130,27 @@ describe("the overrides", () => {
     });
     expect(resetBody(priced)).toEqual({ tool: "create_issue", price_micros: 5000 });
     expect(resetBody(tool())).toEqual({ tool: "create_issue" });
+  });
+
+  it("set, change and clear a tool's own price per call, in dollars; 0 makes the tool free", () => {
+    const draft = draftOfTool(tool());
+
+    expect(overrideBody(tool(), { ...draft, price: "0.005" })).toEqual({
+      tool: "create_issue",
+      price_micros: 5000,
+    });
+    expect(overrideBody(tool(), { ...draft, price: "$0" })).toEqual({
+      tool: "create_issue",
+      price_micros: 0,
+    });
+
+    // An empty field clears the tool's own price: the toolkit's applies again.
+    const priced = tool({ override: { ...override, price_micros: 5000 } });
+
+    expect(draftOfTool(priced).price).toBe("0.005");
+    expect(overrideBody(priced, { ...draftOfTool(priced), price: "" })).toEqual({
+      tool: "create_issue",
+    });
   });
 
   it("check a new name: lowercase letters, digits and _, within the 46 characters of a full name", () => {

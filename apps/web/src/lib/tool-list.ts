@@ -1,8 +1,9 @@
 // A toolkit's tool list (#208, ADR 0037, ADR 0038, GLOSSARY "Tool override", "Full name"): what each flag tells the
 // toolkit's managers, and the override each edit sends. An override is written whole by the tool's upstream name at its
-// revision, so an edit carries what it does not change (the price an org admin set, #199). Pure: no DOM, tested in
-// test/tool-list.test.ts.
+// revision, so an edit carries what it does not change. A tool's own price per call (#199, #209) is part of its override
+// and is edited with it. Pure: no DOM, tested in test/tool-list.test.ts.
 import type { SetToolOverride, ToolClass, ToolView } from "@commissary/contract/tools";
+import { parsePrice, priceText } from "./tool-prices.ts";
 
 /**
  * One thing a flag says of a tool: `failing` when it cannot be called as it is listed (gone upstream), `note` for what
@@ -56,6 +57,8 @@ export interface OverrideDraft {
   readonly name: string;
   readonly description: string;
   readonly class: ToolClass | "";
+  /** The tool's own price per call in dollars; empty: it has none, and its toolkit's price (or none) applies. */
+  readonly price: string;
 }
 
 export const draftOfTool = (tool: ToolView): OverrideDraft => ({
@@ -63,6 +66,7 @@ export const draftOfTool = (tool: ToolView): OverrideDraft => ({
   name: tool.override?.name ?? "",
   description: tool.override?.description ?? "",
   class: tool.override?.class ?? "",
+  price: priceText(tool.override?.price_micros),
 });
 
 /** The revision an edit of the tool's override names in `If-Match`: 0 while it has none. */
@@ -71,9 +75,16 @@ export const overrideRevision = (tool: ToolView): number => tool.override?.revis
 const priceOf = (tool: ToolView) =>
   tool.override?.price_micros === undefined ? {} : { price_micros: tool.override.price_micros };
 
+/** The price the draft's field says, in the override's own shape: none when it is empty (or not a price). */
+const draftPrice = (draft: OverrideDraft) => {
+  const price = parsePrice(draft.price);
+
+  return typeof price === "number" ? { price_micros: price } : {};
+};
+
 /**
  * The whole override an edit sends. Hiding sets `hidden: true`; a deprecated tool, hidden by default, is shown with
- * `hidden: false`. The price an org admin set stays.
+ * `hidden: false`. The price is the draft's: an empty field clears the tool's own price.
  */
 export const overrideBody = (tool: ToolView, draft: OverrideDraft): SetToolOverride => {
   const name = draft.name.trim();
@@ -85,7 +96,7 @@ export const overrideBody = (tool: ToolView, draft: OverrideDraft): SetToolOverr
     ...(name === "" ? {} : { name }),
     ...(description === "" ? {} : { description }),
     ...(draft.class === "" ? {} : { class: draft.class }),
-    ...priceOf(tool),
+    ...draftPrice(draft),
   };
 };
 

@@ -2,9 +2,12 @@
 // what a refused write says.
 import { describe, expect, it } from "vitest";
 import type { SpendLimitView } from "@commissary/contract/spend";
+import type { ToolkitView } from "@commissary/contract/tools";
 import {
   amountProblem,
   dollarsInput,
+  kindLabel,
+  limitableToolkits,
   limitProblem,
   parseDollars,
   reached,
@@ -12,6 +15,7 @@ import {
   sortLimits,
   spentShare,
   spentText,
+  SUBJECT_KINDS,
   zoneProblem,
 } from "../src/lib/spend.ts";
 
@@ -104,5 +108,54 @@ describe("refused writes", () => {
     expect(limitProblem("not_found", "x")).toContain("no longer exists");
     expect(limitProblem("invalid_limit", "fallback", "amount is bad")).toBe("Amount is bad.");
     expect(limitProblem(undefined, "fallback")).toBe("fallback");
+  });
+});
+
+describe("limits on a toolkit's shared credential (#209)", () => {
+  const toolkit = (patch: Partial<ToolkitView>): ToolkitView => ({
+    id: "tk_1",
+    kind: "mcp",
+    name: "linear",
+    source: "https://mcp.linear.app/mcp",
+    private: false,
+    accepts: "shared",
+    revision: 1,
+    created_at: "2026-08-01T00:00:00.000Z",
+    updated_at: "2026-08-01T00:00:00.000Z",
+    updated_by: "user:admin@example.com",
+    credentials: {
+      shared: {
+        kind: "bearer",
+        connected_at: "2026-08-01T00:00:00.000Z",
+        connected_by: "user:admin@example.com",
+        active: true,
+      },
+    },
+    tool_list: { tools: 3 },
+    ...patch,
+  });
+
+  it("are offered in the new limit form, named by the toolkit", () => {
+    expect(SUBJECT_KINDS.map((kind) => kind.id)).toContain("toolkit_credential");
+    expect(kindLabel("toolkit_credential")).toBe("Toolkit credential");
+    expect(kindLabel("credential")).toBe("Shared credential");
+  });
+
+  it("name an org toolkit that holds a shared credential, by name", () => {
+    expect(
+      limitableToolkits([
+        toolkit({ id: "tk_b", name: "stripe" }),
+        toolkit({ id: "tk_a", name: "github" }),
+        // No shared credential to limit yet.
+        toolkit({ id: "tk_c", name: "hubspot", credentials: {} }),
+        // A private toolkit counts toward its member's and API keys' limits only.
+        toolkit({ id: "tk_d", name: "notes", private: true }),
+        // The browser toolkit is Commissary's own: its time is priced, not its credential limited.
+        toolkit({ id: "browser", name: "browser", kind: "browser", built_in: true }),
+      ]),
+    ).toEqual([
+      { id: "tk_a", label: "github" },
+      { id: "tk_b", label: "stripe" },
+    ]);
   });
 });

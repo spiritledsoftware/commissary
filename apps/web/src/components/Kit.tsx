@@ -10,13 +10,15 @@ export const Section = ({
   aside,
   children,
   className,
+  id,
 }: {
   readonly title: string;
+  readonly id?: string | undefined;
   readonly aside?: ReactNode;
   readonly children: ReactNode;
   readonly className?: string | undefined;
 }) => (
-  <section className={className} aria-label={title}>
+  <section id={id} className={className} aria-label={title}>
     <header className={kit["sectionHead"]}>
       <h2 className={kit["sectionTitle"]}>{title}</h2>
       {aside}

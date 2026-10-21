@@ -4,6 +4,7 @@
 // restrict. A private account is its owner's alone and never appears here. Edits are saved with the grant's revision
 // (`If-Match`); another edit that landed first is refused and the list reloads.
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
+import { useNavigate, useSearch } from "@tanstack/react-router";
 import { AsyncResult } from "effect/reactivity";
 import { Check, Pencil, Plus, X } from "lucide-react";
 import { type FormEvent, useId, useState } from "react";
@@ -15,6 +16,8 @@ import {
   membersAtom,
   saveGrantAtom,
   teamsAtom,
+  toolGrantsAtom,
+  toolkitsAtom,
 } from "../api/client.ts";
 import { kit, Problem } from "../components/Kit.tsx";
 import { failureMessage } from "../lib/failure.ts";
@@ -27,6 +30,8 @@ import {
   type GrantErrors,
   grantBody,
   grantProblem,
+  GRANTS_AREAS,
+  grantsAreaOf,
   GRANTS_VIEWS,
   type GrantsView,
   givesEveryModel,
@@ -38,6 +43,7 @@ import {
 } from "../lib/grants.ts";
 import { useAction } from "../lib/use-action.ts";
 import { usePageTitle } from "../lib/use-page-title.ts";
+import { ToolGrants } from "./GrantsTools.tsx";
 import styles from "./Grants.module.css";
 
 /** What a save did, or why it failed, said under the list. */
@@ -534,67 +540,141 @@ const accountsOf = (
         }))
     : [];
 
-export const GrantsPage = () => {
-  usePageTitle("Grants");
+/** The model grants: the grants, members and teams, then the page's body. */
+const ModelGrantsBody = () => {
   const grants = useAtomValue(grantsAtom);
   const members = useAtomValue(membersAtom);
   const teams = useAtomValue(teamsAtom);
   const credentials = useAtomValue(credentialsAtom);
   const reload = useAtomRefresh(grantsAtom);
 
-  const body = () => {
-    if (AsyncResult.isFailure(grants))
-      return (
-        <Problem onRetry={reload}>Could not load the grants. {failureMessage(grants)}</Problem>
-      );
+  if (AsyncResult.isFailure(grants))
+    return <Problem onRetry={reload}>Could not load the grants. {failureMessage(grants)}</Problem>;
 
-    if (AsyncResult.isFailure(members))
-      return (
-        <Problem onRetry={reload}>Could not load the members. {failureMessage(members)}</Problem>
-      );
-
-    if (AsyncResult.isFailure(teams))
-      return <Problem onRetry={reload}>Could not load the teams. {failureMessage(teams)}</Problem>;
-
-    if (
-      !AsyncResult.isSuccess(grants) ||
-      !AsyncResult.isSuccess(members) ||
-      !AsyncResult.isSuccess(teams)
-    )
-      return (
-        <p className={kit["muted"]} aria-busy="true">
-          Loading the grants…
-        </p>
-      );
-
-    const directory: Directory = {
-      members: members.value.members satisfies ReadonlyArray<MemberView>,
-      teams: teams.value.teams satisfies ReadonlyArray<TeamView>,
-    };
-
+  if (AsyncResult.isFailure(members))
     return (
-      <Grants
-        grants={grants.value.grants}
-        directory={directory}
-        accounts={accountsOf(credentials)}
-        onReload={reload}
-      />
+      <Problem onRetry={reload}>Could not load the members. {failureMessage(members)}</Problem>
     );
+
+  if (AsyncResult.isFailure(teams))
+    return <Problem onRetry={reload}>Could not load the teams. {failureMessage(teams)}</Problem>;
+
+  if (
+    !AsyncResult.isSuccess(grants) ||
+    !AsyncResult.isSuccess(members) ||
+    !AsyncResult.isSuccess(teams)
+  )
+    return (
+      <p className={kit["muted"]} aria-busy="true">
+        Loading the grants…
+      </p>
+    );
+
+  const directory: Directory = {
+    members: members.value.members satisfies ReadonlyArray<MemberView>,
+    teams: teams.value.teams satisfies ReadonlyArray<TeamView>,
   };
+
+  return (
+    <Grants
+      grants={grants.value.grants}
+      directory={directory}
+      accounts={accountsOf(credentials)}
+      onReload={reload}
+    />
+  );
+};
+
+/** The tool grants: the grants, the toolkits they name, members and teams, then the page's body. */
+const ToolGrantsBody = () => {
+  const grants = useAtomValue(toolGrantsAtom);
+  const toolkits = useAtomValue(toolkitsAtom);
+  const members = useAtomValue(membersAtom);
+  const teams = useAtomValue(teamsAtom);
+  const reload = useAtomRefresh(toolGrantsAtom);
+
+  if (AsyncResult.isFailure(grants))
+    return (
+      <Problem onRetry={reload}>Could not load the tool grants. {failureMessage(grants)}</Problem>
+    );
+
+  if (AsyncResult.isFailure(toolkits))
+    return (
+      <Problem onRetry={reload}>Could not load the toolkits. {failureMessage(toolkits)}</Problem>
+    );
+
+  if (AsyncResult.isFailure(members))
+    return (
+      <Problem onRetry={reload}>Could not load the members. {failureMessage(members)}</Problem>
+    );
+
+  if (AsyncResult.isFailure(teams))
+    return <Problem onRetry={reload}>Could not load the teams. {failureMessage(teams)}</Problem>;
+
+  if (
+    !AsyncResult.isSuccess(grants) ||
+    !AsyncResult.isSuccess(toolkits) ||
+    !AsyncResult.isSuccess(members) ||
+    !AsyncResult.isSuccess(teams)
+  )
+    return (
+      <p className={kit["muted"]} aria-busy="true">
+        Loading the tool grants…
+      </p>
+    );
+
+  const directory: Directory = {
+    members: members.value.members satisfies ReadonlyArray<MemberView>,
+    teams: teams.value.teams satisfies ReadonlyArray<TeamView>,
+  };
+
+  return (
+    <ToolGrants
+      grants={grants.value.grants}
+      directory={directory}
+      toolkits={toolkits.value.toolkits}
+      onReload={reload}
+    />
+  );
+};
+
+export const GrantsPage = () => {
+  usePageTitle("Grants");
+  const search = useSearch({ from: "/grants" });
+  const navigate = useNavigate({ from: "/grants" });
+  const area = grantsAreaOf(search);
 
   return (
     <div className={styles["page"]}>
       <header className={styles["head"]}>
         <h1 className={styles["title"]}>Grants</h1>
         <p className={styles["intro"]}>
-          A grant says which models of which shared credentials a member, a team or everyone may
-          use. A member may use everything their own grants, their teams&rsquo; and everyone&rsquo;s
-          add up to; there is no deny, so a new org starts with one grant that gives everyone every
-          model. Delete it and add narrower ones to restrict. A model a member may not use answers
-          as unknown, and private accounts are never granted: they are their owner&rsquo;s alone.
+          {area === "models"
+            ? "A grant says which models of which shared credentials a member, a team or everyone may use. A member may use everything their own grants, their teams\u2019 and everyone\u2019s add up to; there is no deny, so a new org starts with one grant that gives everyone every model. Delete it and add narrower ones to restrict. A model a member may not use answers as unknown, and private accounts are never granted: they are their owner\u2019s alone."
+            : "A tool grant says which tools of a toolkit\u2019s shared credential a member, a team or everyone may call: all of them, its read tools or ones you name. Grants add up and there is no deny; a toolkit nobody holds a grant on is reached by no one but through a private credential."}
         </p>
+        <div className={kit["tabs"]} role="radiogroup" aria-label="Grants of">
+          {GRANTS_AREAS.map((candidate) => (
+            <button
+              key={candidate.id}
+              type="button"
+              role="radio"
+              aria-checked={area === candidate.id}
+              className={kit["tab"]}
+              onClick={() =>
+                void navigate({
+                  search: candidate.id === "tools" ? { area: "tools" } : {},
+                  replace: true,
+                  resetScroll: false,
+                })
+              }
+            >
+              {candidate.label}
+            </button>
+          ))}
+        </div>
       </header>
-      {body()}
+      {area === "models" ? <ModelGrantsBody /> : <ToolGrantsBody />}
     </div>
   );
 };

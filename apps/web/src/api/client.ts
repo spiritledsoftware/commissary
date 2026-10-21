@@ -6,7 +6,12 @@ import { Atom, AtomHttpApi, Reactivity } from "effect/reactivity";
 import { ManagementApi, scopedApiUrl } from "@commissary/contract/api";
 import { type BatchAction, batchLimit } from "@commissary/contract/credentials";
 import { ManagementError } from "@commissary/contract/errors";
-import type { GrantBody, GrantSaved } from "@commissary/contract/grants";
+import type {
+  GrantBody,
+  GrantSaved,
+  ToolGrantBody,
+  ToolGrantSaved,
+} from "@commissary/contract/grants";
 import type { PriceOverrideBody, PriceOverrideSaved } from "@commissary/contract/prices";
 import type { RoutingModels } from "@commissary/contract/routing";
 import { type ChunkOutcome, chunks, foldOutcomes } from "../lib/batch.ts";
@@ -17,12 +22,14 @@ import { orgSlugOfPath } from "../lib/org.ts";
 import { type RuleChange, type RuleWrite, saveRuleChange } from "../lib/models.ts";
 import { type Edits, saveDraft } from "../lib/settings.ts";
 import {
+  areaFilterQuery,
   type Breakdown,
   filterQuery,
   mergePoints,
   type RangeId,
   rangeOf,
   rangeStart,
+  type UsageArea,
   type UsageFilters,
 } from "../lib/usage.ts";
 
@@ -231,8 +238,8 @@ export const updateApiKeyAtom = ManagementClient.mutation("apiKeys", "update");
  * consent page of an MCP client's sign-in pick from.
  */
 export const usableToolsAtom = ManagementClient.query("tools", "usable", {
-  // Toolkit writes change it too (`TOOLKITS`, below).
-  reactivityKeys: [...API_KEYS, "toolkits"],
+  // Toolkit writes change it too (`TOOLKITS`, below), and so do grants (`GRANTS`, below).
+  reactivityKeys: [...API_KEYS, "toolkits", "grants"],
   timeToLive: KEEP,
 });
 
@@ -289,9 +296,11 @@ export const usageLastDayAtom = ManagementClient.runtime
   )
   .pipe(Atom.setIdleTTL(KEEP));
 
-/** What the Usage page shows: a range and filters (atom family keys compare structurally). */
+/** What the Usage page shows: a range, the area it reads and filters (atom family keys compare structurally). */
 export interface UsageView {
   readonly range: RangeId;
+  /** Model attempts or tool calls (#209). */
+  readonly area: UsageArea;
   readonly filters: UsageFilters;
 }
 
@@ -309,7 +318,7 @@ export const usageSummaryAtom = Atom.family(
             query: {
               group_by: key.by,
               since: rangeStart(rangeOf(key.view.range), now),
-              ...filterQuery(key.view.filters),
+              ...areaFilterQuery(key.view.filters, key.view.area),
             },
           });
         }),
@@ -385,7 +394,7 @@ export const usageRecordsAtom = Atom.family(
             query: {
               since: rangeStart(rangeOf(key.view.range), now),
               limit: LOG_PAGE_SIZE,
-              ...filterQuery(key.view.filters),
+              ...areaFilterQuery(key.view.filters, key.view.area),
               ...(key.failedOnly ? { failed: "true" as const } : {}),
               ...(key.before === undefined ? {} : { before: key.before }),
             },
@@ -850,6 +859,58 @@ export const toolGrantsAtom = ManagementClient.query("toolGrants", "list", {
   reactivityKeys: [...TOOLKITS, ...GRANTS],
   timeToLive: KEEP,
 });
+
+/** One tool grant write (#209): add, replace (with the grant's revision as `If-Match`) or remove. */
+export type ToolGrantWrite =
+  | { readonly kind: "create"; readonly body: ToolGrantBody }
+  | {
+      readonly kind: "replace";
+      readonly id: string;
+      readonly revision: number;
+      readonly body: ToolGrantBody;
+    }
+  | { readonly kind: "remove"; readonly id: string; readonly revision: number };
+
+/**
+ * A tool grant write; the list refetches afterwards, also after a refusal that stays (409: another edit landed first).
+ * Transport and decoding failures become defects, as in the generated mutations.
+ */
+export const saveToolGrantAtom = ManagementClient.runtime.fn((write: ToolGrantWrite) =>
+  Effect.gen(function* () {
+    const client = yield* ManagementClient;
+
+    const call = (): Effect.Effect<
+      ToolGrantSaved,
+      ManagementError | Schema.SchemaError | HttpClientError.HttpClientError
+    > => {
+      switch (write.kind) {
+        case "create":
+          return client.toolGrants.create({ payload: write.body });
+        case "replace":
+          return client.toolGrants.replace({
+            params: { id: write.id },
+            headers: { "if-match": String(write.revision) },
+            payload: write.body,
+          });
+        case "remove":
+          return client.toolGrants.remove({
+            params: { id: write.id },
+            headers: { "if-match": String(write.revision) },
+          });
+      }
+    };
+
+    // The tools the members may use (`usableToolsAtom`) and the toolkits' views change with the grants.
+    return yield* Reactivity.mutation(call(), [...GRANTS, ...TOOLKITS]).pipe(
+      reloadOnConflict([...GRANTS, ...TOOLKITS]),
+    );
+  }).pipe(
+    Effect.catchIf(
+      (error) => Schema.isSchemaError(error) || HttpClientError.isHttpClientError(error),
+      Effect.die,
+    ),
+  ),
+);
 
 /** How many services a page of the toolkit catalog holds. */
 export const CATALOG_PAGE = 60;

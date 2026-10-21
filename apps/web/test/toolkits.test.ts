@@ -150,6 +150,8 @@ describe("the controls a caller gets", () => {
       private: true,
       refresh: false,
       remove: false,
+      prices: false,
+      approvals: false,
     });
     // Without a shared credential, a refresh builds the list with the member's own: theirs to ask for.
     expect(controlsFor(toolkit({ accepts: "both" }), MEMBER).refresh).toBe(true);
@@ -166,13 +168,18 @@ describe("the controls a caller gets", () => {
       private: true,
       refresh: true,
       remove: true,
+      prices: true,
+      approvals: true,
     });
+    // A member sets the approval rules of their own private toolkit, but may not price it (#209, ADR 0038).
     expect(controlsFor(toolkit({ private: true, accepts: "private" }), MEMBER)).toEqual({
       manage: true,
       shared: false,
       private: true,
       refresh: true,
       remove: true,
+      prices: false,
+      approvals: true,
     });
     // While the org has private toolkits off, its member keeps it but connects nothing to it.
     expect(
@@ -186,14 +193,21 @@ describe("the controls a caller gets", () => {
   it("give nobody a built-in toolkit's credentials, refresh or removal, and org admins its overrides", () => {
     const sandbox = toolkit({ id: "sandbox", kind: "sandbox", built_in: true });
 
+    // The approval rules and the price per computer hour are an org admin's on a built-in toolkit (#201, #224).
     expect(controlsFor(sandbox, ADMIN)).toEqual({
       manage: true,
       shared: false,
       private: false,
       refresh: false,
       remove: false,
+      prices: true,
+      approvals: true,
     });
-    expect(controlsFor(sandbox, MEMBER).manage).toBe(false);
+    expect(controlsFor(sandbox, MEMBER)).toMatchObject({
+      manage: false,
+      prices: false,
+      approvals: false,
+    });
   });
 });
 

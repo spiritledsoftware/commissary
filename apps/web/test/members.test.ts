@@ -6,6 +6,9 @@ import {
   memberProblem,
   membersOfTeam,
   normalizeEmail,
+  PRIVATE_SWITCH_ORDER,
+  PRIVATE_SWITCHES,
+  privateSettingPatch,
   roleCounts,
   sortMembers,
   sortTeams,
@@ -128,5 +131,32 @@ describe("ordering and joins", () => {
       "1 org owner, 1 org admin, 2 members",
     );
     expect(roleCounts([])).toBe("No members");
+  });
+});
+
+describe("what members may keep privately (#209, ADR 0023, ADR 0038)", () => {
+  it("has a switch for private credentials and, beside it, one for private toolkits", () => {
+    expect(PRIVATE_SWITCH_ORDER).toEqual(["private_credentials", "private_toolkits"]);
+    expect(PRIVATE_SWITCHES.private_toolkits.title).toBe("Private toolkits");
+    expect(PRIVATE_SWITCHES.private_toolkits.label).toBe("Let members add private toolkits");
+    expect(PRIVATE_SWITCHES.private_credentials.title).toBe("Private credentials");
+  });
+
+  it("writes a partial patch that changes the one setting and nothing else", () => {
+    expect(privateSettingPatch("private_toolkits", true)).toEqual({ private_toolkits: true });
+    expect(privateSettingPatch("private_toolkits", false)).toEqual({ private_toolkits: false });
+    expect(privateSettingPatch("private_credentials", true)).toEqual({ private_credentials: true });
+  });
+
+  it("says what each state means: off keeps what members added, and the two settings are separate", () => {
+    const toolkits = PRIVATE_SWITCHES.private_toolkits;
+
+    expect(toolkits.describe(true)).toContain("approval rules");
+    expect(toolkits.describe(true)).toContain("cannot price");
+    expect(toolkits.describe(false)).toContain("stay in place but are not served");
+    expect(toolkits.describe(false)).toContain("separate from private credentials");
+    expect(toolkits.said(false)).toBe("Private toolkits are switched off, not deleted.");
+    expect(toolkits.said(true)).toBe("Members can add private toolkits now.");
+    expect(PRIVATE_SWITCHES.private_credentials.said(false)).toContain("not deleted");
   });
 });

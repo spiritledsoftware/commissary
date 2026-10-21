@@ -312,9 +312,11 @@ export const LimitsPage = () => {
       <header className={styles["head"]}>
         <h1 className={styles["title"]}>Limits</h1>
         <p className={styles["intro"]}>
-          A Spend limit caps what a member, a team, the whole org, a shared credential or an API key
-          may spend in a day, week or month. When a limit is reached Commissary refuses what it
-          covers with a 429 until the period starts over; other limits and credentials keep working.{" "}
+          A Spend limit caps what a member, a team, the whole org, a shared credential (an account,
+          or a toolkit&rsquo;s) or an API key may spend in a day, week or month. When a limit is
+          reached Commissary refuses what it covers with a 429 until the period starts over; other
+          limits and credentials keep working. Priced tool calls count toward the same limits as
+          model requests; a free tool call goes ahead even when a limit is used up.{" "}
           {admin
             ? "You are an org admin, so you set any limit and the calendar."
             : "You see the limits that bind you, and set limits on your own API keys."}

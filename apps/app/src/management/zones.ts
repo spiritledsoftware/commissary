@@ -30,6 +30,8 @@ export const PANEL_SECTIONS = [
   "members",
   "grants",
   "my-models",
+  // The tools a member reaches and why (#209).
+  "my-tools",
   "api-keys",
   "limits",
   "management-keys",

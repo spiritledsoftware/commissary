@@ -55,6 +55,7 @@ import type {
   ToolsList,
   ToolView,
   UpdateToolkit,
+  UsableGrant,
   UsableTool,
   UsableTools,
 } from "@commissary/contract/tools";
@@ -107,7 +108,7 @@ import {
   type ToolGrantEntry,
   type ToolGrantValue,
 } from "./grants/grant.ts";
-import { type GrantableTool, grantedTools, inToolScope } from "./grants/reach.ts";
+import { type GrantableTool, grantedTools, grantGives, inToolScope } from "./grants/reach.ts";
 import { cleanToolGrant, ToolGrantStore } from "./grants/store.ts";
 import { namesHolder, trimmedSubject } from "./grants/subject.ts";
 import { LISTING_TIMEOUT } from "./mcp/client.ts";
@@ -3900,17 +3901,37 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
   /**
    * The tools `viewer` may use, by toolkit, for the panel's tool scope editor and consent page (#200): what the MCP
-   * endpoint lists for them without a key's scope, with each tool's stable id and class.
+   * endpoint lists for them without a key's scope, with each tool's stable id and class. Each toolkit says why they
+   * reach it (`via`, #209): their own private credential (`private`, once connected; `private_available`, while it
+   * can be but is not), the tool grants that name them and give some of its tools, or (the agents toolkit) that they
+   * may run an agent.
    */
   usableTools(viewer: Viewer): UsableTools {
-    const toolkits = new Map<string, { id: string; name: string; tools: Array<UsableTool> }>();
+    const member = viewer.member;
+    const holder = { member, teams: member === undefined ? [] : this.#core.teamIdsOf(member) };
+    const applicable = this.#grants.entries().filter((grant) => namesHolder(grant.subject, holder));
+
+    const toolkits = new Map<
+      string,
+      {
+        id: string;
+        name: string;
+        tools: Array<UsableTool>;
+        reached: Array<GrantableTool>;
+        asMember: boolean;
+        agents: boolean;
+      }
+    >();
 
     // The panel's tool scope editor names the agents toolkit as any toolkit, by id and name (no kind).
-    for (const { tool } of this.#reachable(viewer, { agentsToolkit: true })) {
+    for (const { tool, asMember, granted } of this.#reachable(viewer, { agentsToolkit: true })) {
       const toolkit = toolkits.get(tool.toolkit.id) ?? {
         id: tool.toolkit.id,
         name: tool.toolkit.name,
         tools: [],
+        reached: [],
+        asMember: false,
+        agents: false,
       };
 
       toolkit.tools.push({
@@ -3918,12 +3939,55 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
         name: tool.name,
         tool_class: tool.toolClass,
       });
+
+      toolkit.asMember ||= asMember;
+
+      if (isAgentsToolkit(tool.toolkit)) toolkit.agents ||= granted;
+      else if (granted) toolkit.reached.push(grantable(tool));
       toolkits.set(tool.toolkit.id, toolkit);
     }
 
     return {
-      toolkits: [...toolkits.values()].toSorted((a, b) => (a.name < b.name ? -1 : 1)),
+      toolkits: [...toolkits.values()]
+        .toSorted((a, b) => (a.name < b.name ? -1 : 1))
+        .map(({ reached, asMember, agents, ...toolkit }) => {
+          // Their own credential: the toolkit takes one and the org allows it, whether they have connected it or not.
+          const connected =
+            member !== undefined && this.#store.credential(toolkit.id, member) !== undefined;
+
+          // A grant counts when it gives at least one of the tools they reach through grants.
+          const grants = applicable
+            .filter((grant) => reached.some((tool) => grantGives(grant, tool)))
+            .map((grant): UsableGrant => this.#usableGrant(grant));
+
+          return {
+            ...toolkit,
+            via: {
+              ...(asMember && connected ? { private: true as const } : {}),
+              ...(asMember && !connected ? { private_available: true as const } : {}),
+              ...(grants.length === 0 ? {} : { grants }),
+              ...(agents ? { agents: true as const } : {}),
+            },
+          };
+        }),
     };
+  }
+
+  /** A tool grant that reaches the caller as they see it: a member subject is them, a team shows its name. */
+  #usableGrant(grant: ToolGrantEntry): UsableGrant {
+    const { subject, tools } = grant;
+
+    switch (subject.kind) {
+      case "everyone":
+        return { subject, tools };
+      case "member":
+        return { subject: { kind: "member" }, tools };
+      case "team":
+        return {
+          subject: { kind: "team", id: subject.id, name: this.#core.team(subject.id)?.name ?? "" },
+          tools,
+        };
+    }
   }
 
   /**

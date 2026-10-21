@@ -103,6 +103,8 @@ export const PAGES: ReadonlyArray<PanelPage> = [
   { to: "/members", label: "Members", group: "people", role: "admin" },
   { to: "/grants", label: "Grants", group: "people", role: "admin" },
   { to: "/my-models", label: "My models", group: "people", role: "member" },
+  // The tools a member reaches and why (#209), My models' counterpart.
+  { to: "/my-tools", label: "My tools", group: "people", role: "member" },
   { to: "/api-keys", label: "API keys", group: "people", role: "member" },
   { to: "/management-keys", label: "Management keys", group: "people", role: "admin" },
   { to: "/limits", label: "Limits", group: "people", role: "member" },
@@ -168,7 +170,7 @@ const within = (pathname: string, page: string): boolean =>
 
 /**
  * Whether a role may open a page of the panel (`pathname` is relative to the org's base path). Sub-pages of a page
- * need an org admin, like `/usage/prices`, except the page itself. A plain member opens Usage, My models, API keys and Limits, the
+ * need an org admin, like `/usage/prices`, except the page itself. A plain member opens Usage, My models, My tools, API keys and Limits, the
  * Approvals page with each approval's page (#201: the server shows each to its approvers and its caller only), Tools with
  * its pages (#208: the toolkits they reach and their private ones, and connecting their own credentials), and the
  * pages of their own private accounts and provider keys, with their sub-pages, where the org lets members connect private
@@ -180,6 +182,7 @@ export const pageAllowed = (role: OrgRole, pathname: string, privateCredentials 
   within(pathname, TOOLS_PAGE) ||
   trimmed(pathname) === "/usage" ||
   trimmed(pathname) === "/my-models" ||
+  trimmed(pathname) === "/my-tools" ||
   trimmed(pathname) === "/api-keys" ||
   trimmed(pathname) === "/limits" ||
   // The consent page of an MCP client's sign-in (#200): every member signs their own apps in.

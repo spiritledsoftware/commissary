@@ -5,15 +5,19 @@ import type { UsagePoint } from "@commissary/contract/usage";
 import { formatLatency } from "../src/lib/format.ts";
 import {
   activeFilters,
+  areaFilterQuery,
+  areaOf,
   breakdownOf,
   breakdownsFor,
   filterQuery,
+  filtersFor,
   hourlyHistory,
   mergePoints,
   rangeBars,
   rangeOf,
   rangeStart,
   readUsageSearch,
+  toolFilterQuery,
 } from "../src/lib/usage.ts";
 
 const HOUR = 3_600_000;
@@ -119,6 +123,106 @@ describe("filters", () => {
     expect(activeFilters({ team: "t1", member: "m1" })).toEqual([
       { key: "member", value: "m1" },
       { key: "team", value: "t1" },
+    ]);
+  });
+});
+
+describe("tool calls (#209)", () => {
+  it("read the tool calls area only when the address asks for it", () => {
+    expect(areaOf("tools")).toBe("tools");
+    expect(areaOf("models")).toBe("models");
+    expect(areaOf(undefined)).toBe("models");
+    expect(areaOf("all")).toBe("models");
+    expect(readUsageSearch({ area: "tools", toolkit: "tk_1", tool: "tk_1:create_issue" })).toEqual({
+      area: "tools",
+      toolkit: "tk_1",
+      tool: "tk_1:create_issue",
+    });
+    expect(readUsageSearch({ area: "everything" })).toEqual({});
+  });
+
+  it("ask the API for the tools area, narrowed to a toolkit, a tool and who made the calls", () => {
+    expect(toolFilterQuery({})).toEqual({ area: "tools" });
+
+    expect(
+      toolFilterQuery({
+        toolkit: "tk_1",
+        tool: "tk_1:create_issue",
+        user: "ana@example.com",
+        member: "m1",
+        team: "t1",
+        // Meaningless to a tool call: never sent.
+        model: "gpt-5",
+        provider: "codex",
+        account: "abc",
+      }),
+    ).toEqual({
+      area: "tools",
+      toolkit: "tk_1",
+      tool: "tk_1:create_issue",
+      principal: "ana@example.com",
+      member: "m1",
+      team: "t1",
+    });
+
+    expect(areaFilterQuery({ model: "gpt-5" }, "models")).toEqual({ model: "gpt-5" });
+    expect(areaFilterQuery({ model: "gpt-5", toolkit: "tk_1" }, "tools")).toEqual({
+      area: "tools",
+      toolkit: "tk_1",
+    });
+  });
+
+  it("keep the filters an area reads when the area changes, and drop the others", () => {
+    const all = {
+      model: "gpt-5",
+      account: "a",
+      toolkit: "tk_1",
+      tool: "t",
+      member: "m1",
+      team: "t1",
+    };
+
+    expect(filtersFor(all, "tools")).toEqual({
+      toolkit: "tk_1",
+      tool: "t",
+      member: "m1",
+      team: "t1",
+    });
+    expect(filtersFor(all, "models")).toEqual({
+      model: "gpt-5",
+      account: "a",
+      member: "m1",
+      team: "t1",
+    });
+  });
+
+  it("break calls down by toolkit and tool, and by who made them for an org admin", () => {
+    expect(breakdownsFor(false, "tools").map((breakdown) => breakdown.id)).toEqual([
+      "toolkit",
+      "tool",
+      "key",
+    ]);
+    expect(breakdownsFor(true, "tools").map((breakdown) => breakdown.id)).toEqual([
+      "toolkit",
+      "tool",
+      "member",
+      "team",
+      "key",
+      "principal",
+    ]);
+    expect(breakdownOf("toolkit", breakdownsFor(true, "tools")).filter).toBe("toolkit");
+    expect(breakdownOf("tool", breakdownsFor(true, "tools")).filter).toBe("tool");
+    // An address left from the models area starts at the first breakdown of this one.
+    expect(breakdownOf("model", breakdownsFor(true, "tools")).id).toBe("toolkit");
+    expect(readUsageSearch({ by: "toolkit" }).by).toBe("toolkit");
+    expect(readUsageSearch({ by: "tool" }).by).toBe("tool");
+  });
+
+  it("list the toolkit and tool filters first among those that are set", () => {
+    expect(activeFilters({ member: "m1", tool: "tk_1:x", toolkit: "tk_1" })).toEqual([
+      { key: "toolkit", value: "tk_1" },
+      { key: "tool", value: "tk_1:x" },
+      { key: "member", value: "m1" },
     ]);
   });
 });
