@@ -193,6 +193,9 @@ overrides:
   xpath: 0.0.34
   just-bash: 3.2.0
 
+patchedDependencies:
+  alchemy@2.0.0-beta.83: 2f62cd7eaa72a7d3beb4f920a4ae478eca1213124e231972068f81d5d898206d
+
 importers:
 
   .:
@@ -232,7 +235,7 @@ importers:
         version: 26.6.5
       alchemy:
         specifier: 2.0.0-beta.83
-        version: 2.0.0-beta.83(@effect/platform-node@4.0.4(effect@4.0.4)(redis@6.3.0))(@effect/vitest@4.0.4(effect@4.0.4)(vitest@5.0.3(@types/node@26.6.5)(vite@8.3.4(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.6.1)(yaml@2.9.1))))(@types/node@26.6.5)(@types/react@19.3.0)(effect@4.0.4)(hono@4.11.4)(typescript@7.0.2)(vite@8.3.4(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.6.1)(yaml@2.9.1))(ws@8.21.0)
+        version: 2.0.0-beta.83(patch_hash=2f62cd7eaa72a7d3beb4f920a4ae478eca1213124e231972068f81d5d898206d)(@effect/platform-node@4.0.4(effect@4.0.4)(redis@6.3.0))(@effect/vitest@4.0.4(effect@4.0.4)(vitest@5.0.3(@types/node@26.6.5)(vite@8.3.4(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.6.1)(yaml@2.9.1))))(@types/node@26.6.5)(@types/react@19.3.0)(effect@4.0.4)(hono@4.11.4)(typescript@7.0.2)(vite@8.3.4(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.6.1)(yaml@2.9.1))(ws@8.21.0)
       effect:
         specifier: 'catalog:'
         version: 4.0.4
@@ -6038,7 +6041,7 @@ snapshots:
       json-schema-traverse: 1.0.0
       require-from-string: 2.0.2
 
-  alchemy@2.0.0-beta.83(@effect/platform-node@4.0.4(effect@4.0.4)(redis@6.3.0))(@effect/vitest@4.0.4(effect@4.0.4)(vitest@5.0.3(@types/node@26.6.5)(vite@8.3.4(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.6.1)(yaml@2.9.1))))(@types/node@26.6.5)(@types/react@19.3.0)(effect@4.0.4)(hono@4.11.4)(typescript@7.0.2)(vite@8.3.4(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.6.1)(yaml@2.9.1))(ws@8.21.0):
+  alchemy@2.0.0-beta.83(patch_hash=2f62cd7eaa72a7d3beb4f920a4ae478eca1213124e231972068f81d5d898206d)(@effect/platform-node@4.0.4(effect@4.0.4)(redis@6.3.0))(@effect/vitest@4.0.4(effect@4.0.4)(vitest@5.0.3(@types/node@26.6.5)(vite@8.3.4(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.6.1)(yaml@2.9.1))))(@types/node@26.6.5)(@types/react@19.3.0)(effect@4.0.4)(hono@4.11.4)(typescript@7.0.2)(vite@8.3.4(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.6.1)(yaml@2.9.1))(ws@8.21.0):
     dependencies:
       '@alchemy.run/cloudflare-runtime': 2.0.0-beta.83(@distilled.cloud/cloudflare@1.0.0-rc.15(effect@4.0.4))(@effect/platform-node@4.0.4(effect@4.0.4)(redis@6.3.0))(@types/node@26.6.5)(effect@4.0.4)(rolldown@1.2.5)(typescript@7.0.2)(vite@8.3.4(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.6.1)(yaml@2.9.1))
       '@alchemy.run/floci': 2.0.0-beta.83(effect@4.0.4)

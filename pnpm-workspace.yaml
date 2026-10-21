@@ -37,3 +37,6 @@ overrides:
   # upgrade of either needs a test run (packages/tools/test/sandbox-toolkit.test.ts) first: .github/dependabot.yml
   # groups them.
   just-bash: 3.2.0
+
+patchedDependencies:
+  alchemy@2.0.0-beta.83: patches/alchemy@2.0.0-beta.83.patch
