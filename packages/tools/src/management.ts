@@ -23,7 +23,7 @@ export { SIGN_IN_CALLBACK_PATH, signInCallbackOrg } from "./oauth/urls.ts";
 
 export { orgDeletionStep } from "./org-deletion.ts";
 
-export { toolkitIds } from "./management/toolkit-ids.ts";
+export { sandboxRefusal, toolkitIds } from "./management/toolkit-ids.ts";
 
 export {
   AUTHORIZATION_SERVER_METADATA_PATH,

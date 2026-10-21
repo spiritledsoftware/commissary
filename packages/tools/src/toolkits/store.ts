@@ -62,6 +62,7 @@ export const TOOLS_TABLES = [
   "toolkit_schemas",
   ...OAUTH_TABLES,
   "sandbox_sessions",
+  "sandbox_run_calls",
   "browser_crawls",
   "browser_sessions",
 ] as const;

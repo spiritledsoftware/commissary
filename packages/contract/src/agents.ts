@@ -2,20 +2,21 @@
  * Hosted agents (`/v9/management/agents`, `packages/agents/src/management/routes.ts`; ADR 0040, #226): the org's shared
  * agents and the caller's private agents, as saved definitions, and the grants on shared agents
  * (`/v9/management/grants/agents`). Their runs are `./agent-runs.ts` (#227). Shared with the browser: imports `effect`,
- * `./api-keys.ts`, `./config.ts`, `./errors.ts` and `./grants.ts` only.
+ * `./api-keys.ts`, `./config.ts`, `./errors.ts`, `./grants.ts` and `./tools.ts` only.
  *
  * A hosted agent has a name (`[a-z0-9_]`, unique in the org, the `agent` argument of the agents toolkit), a
  * description, instructions, one model named as clients send it (Models' aliases, selection and failover apply) with an
- * optional thinking level, a tool scope (an API key's, whose agents toolkit entry may name agents) and whether it is
- * enabled. There are no versions: an edit replaces what it names, and keeps no history.
+ * optional thinking level, a tool scope (an API key's, whose agents toolkit entry may name agents), optionally a
+ * sandbox to work in (#230) and whether it is enabled. There are no versions: an edit replaces what it names, and keeps
+ * no history.
  *
  * - A **private agent** is one member's, while the org's `membership.private_agents` setting allows them (`403
  *   private_agents_unavailable` otherwise; turning it off keeps them but serves none). Only its member sees it in full.
  *   An org admin sees that it exists (`others`: name and owner) and may disable or remove it.
  * - A **shared agent** is created and edited by org admins only. The models and toolkits it names must exist in the org
- *   (`422 unknown_model`, `422 unknown_toolkit`). Creating one names who may use it (`subject`, a grant written at
- *   once; there is no default grant), and it names its watchers (members and teams, the creating admin by default; the
- *   org admins when none is left). Spend limits on one are `agent` limits of `/spend`.
+ *   (`422 unknown_model`, `422 unknown_toolkit`, `422 invalid_sandbox`). Creating one names who may use it (`subject`,
+ *   a grant written at once; there is no default grant), and it names its watchers (members and teams, the creating
+ *   admin by default; the org admins when none is left). Spend limits on one are `agent` limits of `/spend`.
  *
  * Edits and removals name the agent's revision in `If-Match`. Without the deployment's Dynamic Workers binding
  * (`LOADER`) the Agents area is absent: every route here answers 404, and `/me` says `deployment.agents: false`.
@@ -26,8 +27,23 @@ import { ToolScope } from "./api-keys.ts";
 import { Revision } from "./config.ts";
 import { managementErrors } from "./errors.ts";
 import { GrantSubject } from "./grants.ts";
+import { SandboxNetwork } from "./tools.ts";
 
 const optional = Schema.optionalKey;
+
+/**
+ * A hosted agent's sandbox (#230, ADR 0041): the sandbox toolkit it works in (its id: the built-in `sandbox`), with the
+ * settings of the sandbox session each of its runs opens, within that toolkit's ceiling (`422 invalid_sandbox`): its
+ * network (`none` when left out) and whether it may use the computer (`false` when left out). A run of an agent with a
+ * sandbox has pi's bash, read, write and edit tools, routed to its own session; one without has none.
+ */
+export const AgentSandbox = Schema.Struct({
+  toolkit: Schema.String,
+  network: optional(SandboxNetwork),
+  computer: optional(Schema.Boolean),
+});
+
+export type AgentSandbox = typeof AgentSandbox.Type;
 
 /** A thinking level the agent's model calls ask for, as a client names it in a model's suffix (`model(high)`). */
 export const ThinkingLevel = Schema.Literals([
@@ -70,6 +86,8 @@ export const AgentView = Schema.Struct({
   model: Schema.String,
   thinking: optional(ThinkingLevel),
   tool_scope: ToolScope,
+  /** Its sandbox (#230); absent: its runs have no bash or file tools. */
+  sandbox: optional(AgentSandbox),
   enabled: Schema.Boolean,
   /** A private agent, the caller's own. */
   private: Schema.Boolean,
@@ -118,6 +136,8 @@ const definition = {
   thinking: optional(ThinkingLevel),
   /** The toolkits, tools and agents it may use; `[]` is none. */
   tool_scope: ToolScope,
+  /** The sandbox its runs work in (#230); none when left out. */
+  sandbox: optional(AgentSandbox),
 };
 
 /**
@@ -135,8 +155,8 @@ export const CreateAgent = Schema.Struct({
 export type CreateAgent = typeof CreateAgent.Type;
 
 /**
- * `PATCH /agents/:id`: the fields to change (at least one); `thinking: null` clears it. An org admin may only enable
- * or disable another member's private agent.
+ * `PATCH /agents/:id`: the fields to change (at least one); `thinking: null` and `sandbox: null` clear them. An org
+ * admin may only enable or disable another member's private agent.
  */
 export const UpdateAgent = Schema.Struct({
   name: optional(Schema.String),
@@ -145,6 +165,7 @@ export const UpdateAgent = Schema.Struct({
   model: optional(Schema.String),
   thinking: optional(Schema.NullOr(ThinkingLevel)),
   tool_scope: optional(ToolScope),
+  sandbox: optional(Schema.NullOr(AgentSandbox)),
   enabled: optional(Schema.Boolean),
   /** Shared agents only. */
   watchers: optional(Schema.Array(AgentWatcher)),
@@ -227,8 +248,9 @@ export class AgentsGroup extends HttpApiGroup.make("agents").add(
   HttpApiEndpoint.get("mine", "/agents/mine", { success: UsableAgents, error: managementErrors }),
   /**
    * `422 invalid` (a name, a length, a tool scope, a watcher or a subject), `422 unknown_model` (`path: "model"`), `422
-   * unknown_toolkit` (`path: "tool_scope"`), `422 unknown_agent` (an agent its tool scope names that the owner may not
-   * use), `409 name_taken`, `403 forbidden` (a private agent by a caller who is no member), `403
+   * unknown_toolkit` (`path: "tool_scope"`), `422 invalid_sandbox` (`path: "sandbox"`: no sandbox toolkit the
+   * agent's owner can see, or settings above its ceiling), `422 unknown_agent` (an agent its tool scope names that the
+   * owner may not use), `409 name_taken`, `403 forbidden` (a private agent by a caller who is no member), `403
    * private_agents_unavailable`. A plain member's agent is private whatever `private` says.
    *
    * Names are unique across private and shared agents, as a name is the agents toolkit's `agent` argument and must mean

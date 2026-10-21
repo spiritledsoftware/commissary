@@ -16,11 +16,18 @@
  * plan's request-rate ceiling apply unchanged.
  */
 import { WorkerEntrypoint } from "cloudflare:workers";
-import { Context, Schema } from "effect";
+import { Context, Effect, Schema } from "effect";
 import { type AgentRunEnv, AgentRunObject, type RunGateway } from "@commissary/agents/api";
-import { OrgId } from "@commissary/core";
+import type {
+  RunToolReport,
+  RunToolSettled,
+  SandboxEnvReply,
+  SandboxEnvRequest,
+} from "@commissary/contract/sandbox-env";
+import { CurrentOrg, OrgId, type WorkerExecutionContext } from "@commissary/core";
 import { retryOnCodeUpdate } from "@commissary/state";
-import { type ApiWorkerBindings, requestContext } from "../worker-env.ts";
+import { runSandboxOperation, settleRunToolCall } from "@commissary/tools/api";
+import { type ApiWorkerBindings, type EnvServices, requestContext } from "../worker-env.ts";
 import { handler } from "./handler.ts";
 import { PresentedRun } from "./presented-run.ts";
 
@@ -36,6 +43,65 @@ export class AgentRunGateway extends WorkerEntrypoint<ApiWorkerBindings> impleme
       request,
       requestContext(retryOnCodeUpdate(this.env), this.ctx, request.url).pipe(
         Context.add(PresentedRun, { org, run }),
+      ),
+    );
+  }
+
+  /**
+   * One operation of the run's call that the MCP endpoint gated (#230), on the run's sandbox session: the Tools part
+   * runs it only with the call's live ticket, which binds it to this run, its session and its tool.
+   */
+  async sandboxOperation(
+    org: OrgId,
+    run: string,
+    ticket: string,
+    request: SandboxEnvRequest,
+  ): Promise<SandboxEnvReply> {
+    if (!isOrgId(org) || run === "")
+      return { ok: false, reason: "ticket", message: "The call has no valid ticket." };
+
+    return await this.#inOrg(
+      org,
+      runSandboxOperation(run, ticket, request).pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning("run gateway: sandbox operation failed").pipe(
+            Effect.annotateLogs({ run, status: cause.response.status }),
+            Effect.as<SandboxEnvReply>({
+              ok: false,
+              reason: "failed",
+              message: "Commissary could not reach the org's tools.",
+            }),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /**
+   * Settles the run's gated call `ticket` (#230) with how it ended, which writes its usage record once. Rejects when
+   * the org's tools cannot be reached: the run settles it again.
+   */
+  async settleToolCall(
+    org: OrgId,
+    run: string,
+    ticket: string,
+    report: RunToolReport,
+  ): Promise<RunToolSettled> {
+    if (!isOrgId(org) || run === "") return { recorded: false };
+
+    return await this.#inOrg(org, settleRunToolCall(run, ticket, report));
+  }
+
+  /** Runs `effect` with this Worker's services, as the org `org`. */
+  async #inOrg<A, E>(
+    org: OrgId,
+    effect: Effect.Effect<A, E, EnvServices | WorkerExecutionContext | CurrentOrg>,
+  ): Promise<A> {
+    return await Effect.runPromise(
+      effect.pipe(
+        Effect.provideContext(
+          requestContext(retryOnCodeUpdate(this.env), this.ctx).pipe(Context.add(CurrentOrg, org)),
+        ),
       ),
     );
   }

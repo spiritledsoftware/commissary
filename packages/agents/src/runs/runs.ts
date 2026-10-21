@@ -24,7 +24,7 @@
  */
 import type { RunActsAs, RunStarter, Viewer } from "@commissary/auth";
 import type { RunState, RunView, TriggerKind } from "@commissary/contract/agent-runs";
-import type { ThinkingLevel } from "@commissary/contract/agents";
+import type { AgentSandbox, ThinkingLevel } from "@commissary/contract/agents";
 import { agentsInScope, type ToolScope } from "@commissary/contract/api-keys";
 import type { OrgCore } from "@commissary/state";
 import type { AgentStore, StoredAgent } from "../agents/store.ts";
@@ -74,7 +74,18 @@ export interface RunContext {
   readonly model: string;
   readonly thinking?: ThinkingLevel | undefined;
   readonly instructions: string;
+  /**
+   * The tool scope of the turn's calls: its definition's, with the sandbox toolkit its sandbox names (#230) added, all
+   * its tools, when the scope has no entry of that toolkit (one it has narrows the sandbox's tools as any other).
+   */
   readonly toolScope: ToolScope;
+  /** The sandbox its definition names (#230): the run's bash and file tools work in a session of it. */
+  readonly sandbox?: AgentSandbox | undefined;
+  /**
+   * The run's sandbox session no longer fits that sandbox (#230, `AgentsPart.beginTurn`): the definition or the
+   * toolkit's ceiling narrowed since it opened, or the definition names no sandbox or another toolkit now.
+   */
+  readonly sandboxNarrowed?: true | undefined;
 }
 
 /** A run in the org export (#228): its metadata, never its transcript. */
@@ -104,6 +115,15 @@ export interface StartedRunRecord {
 const isStarter = (run: StoredRun, member: string | undefined): boolean =>
   member !== undefined && run.starter?.kind === "member" && run.starter.id === member;
 
+/**
+ * `scope` with the sandbox toolkit `sandbox` names, all its tools, unless it has an entry of that toolkit already
+ * (#230): a run whose definition names a sandbox reaches its tools, which its bash and file tools call.
+ */
+const withSandbox = (scope: ToolScope, sandbox: AgentSandbox | undefined): ToolScope =>
+  sandbox === undefined || scope.some((entry) => entry.toolkit === sandbox.toolkit)
+    ? scope
+    : [...scope, { toolkit: sandbox.toolkit, tools: { kind: "all" } }];
+
 const contextOf = (
   run: StoredRun,
   starter: { readonly id: string; readonly email: string } | undefined,
@@ -114,6 +134,7 @@ const contextOf = (
   ...(run.starter === undefined ? {} : { starter: run.starter }),
   ...(starter === undefined ? {} : { starterMember: starter.id, starterEmail: starter.email }),
   ...definition,
+  toolScope: withSandbox(definition.toolScope, definition.sandbox),
 });
 
 /** The trigger configured on an agent that starts a run: its kind and id. */
@@ -547,6 +568,7 @@ export class Runs {
       ...(agent.thinking === undefined ? {} : { thinking: agent.thinking }),
       instructions: agent.instructions,
       toolScope: agent.toolScope,
+      ...(agent.sandbox === undefined ? {} : { sandbox: agent.sandbox }),
     };
 
     this.#runs.beginTurn(run.id, definition, this.#now());

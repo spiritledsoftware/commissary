@@ -22,7 +22,7 @@
 import { Option, Schema } from "effect";
 import type { RunStarter } from "@commissary/auth";
 import { RunState, TriggerKind } from "@commissary/contract/agent-runs";
-import { ThinkingLevel } from "@commissary/contract/agents";
+import { AgentSandbox, ThinkingLevel } from "@commissary/contract/agents";
 import { ToolScope } from "@commissary/contract/api-keys";
 
 const SCHEMA = [
@@ -83,6 +83,8 @@ export const TurnDefinition = Schema.Struct({
   thinking: Schema.optionalKey(ThinkingLevel),
   instructions: Schema.String,
   toolScope: ToolScope,
+  /** The sandbox its runs work in (#230), as the definition named it: its tool scope is widened to it at run time. */
+  sandbox: Schema.optionalKey(AgentSandbox),
 });
 
 export type TurnDefinition = typeof TurnDefinition.Type;

@@ -17,8 +17,9 @@
  * answered as a session that does not exist. It is deleted with its files at once on close, or after a day without use
  * (its alarm), and then keeps only a note that it was closed, for a week, so its owner's later calls answer that it is
  * closed; after that week they answer that it is unknown. `purge` deletes it with no note: the org is being deleted, or
- * its owner left (then it first settles as a close does, #224). Commissary sets no limits of its own on it: the Durable Object's storage limit applies, and a
- * write past it is an error that says so.
+ * its owner left or its agent run was deleted (then it first settles as a close does, #224). An agent run's session
+ * (`untilPurged`, #230) has no idle day: it lasts until its run is deleted, which purges it. Commissary sets no limits
+ * of its own on it: the Durable Object's storage limit applies, and a write past it is an error that says so.
  *
  * **The computer** (#223, `computer.ts`): a session that may use it, on a deployment that attached the computer's
  * container to this class (`ctx.container`), has a second backend in its Workspace. A command goes there only when
@@ -38,6 +39,11 @@
  * it, no call is there to charge what is left, so it reports the close with that cost. A record or report that fails is
  * kept in its closed note and tried again from the alarm (`usage/session-close.ts`) until the note goes. A session
  * opened before #224 meters nothing and writes no record.
+ *
+ * An agent run's session (#230), which may live far longer than a day, writes a usage record each time its computer
+ * stops instead, of that stretch's time and cost (`#recordStretch`), and none when it closes: its alarm records a run
+ * whose idle minutes are over, a call one that stopped for want of room or ended before the call, and its purge the
+ * last. A record that fails is kept with the session and tried again from its alarm.
  *
  * **Deploys** (docs/DEVELOPMENT.md, "State RPC: expand, then contract"): the metering is an optional last argument of
  * the object's calls, and its answers only add `computerTime`; a Tools part from before passes none, and its sessions
@@ -71,6 +77,7 @@ import {
   type CommandResult,
   type ComputerTime,
   type DirectoryEntry,
+  type FileStat,
   type OutputCut,
   SANDBOX_HOME,
   type SandboxError,
@@ -138,6 +145,15 @@ type StoredSession =
       readonly metering?: ComputerMetering | undefined;
       /** When it closes unless a call comes first: a day after the last (absent before #224: its alarm is then). */
       readonly idleAt?: number | undefined;
+      /** An agent run's session (#230): no day without a call ends it (it has no `idleAt`); it is purged with its run. */
+      readonly untilPurged?: true | undefined;
+      /**
+       * An agent run's session's current stretch of computer time (#230): when the computer's run that started it
+       * started, while its time is not recorded yet.
+       */
+      readonly stretchFrom?: number | undefined;
+      /** An agent run's session's records of stretches of its computer time not written yet (#230), tried again. */
+      readonly stretches?: ReadonlyArray<SessionRecord> | undefined;
     } & StoredAllowance)
   | ClosedNote;
 
@@ -152,12 +168,14 @@ interface ClosedNote {
   readonly owner: string;
   readonly closedAt?: number | undefined;
   readonly record?: SessionRecord | undefined;
+  /** An agent run's session's (#230): its records of stretches of computer time, in place of the session's record. */
+  readonly stretches?: ReadonlyArray<SessionRecord> | undefined;
   readonly owed?: number | undefined;
 }
 
 /** What of a closed session's close is left to do, as `settleClose` takes it. */
 const unsettledOf = (note: ClosedNote): Unsettled => ({
-  ...(note.record === undefined ? {} : { unrecorded: true }),
+  ...(note.record === undefined && (note.stretches ?? []).length === 0 ? {} : { unrecorded: true }),
   ...(note.owed === undefined ? {} : { owed: note.owed }),
 });
 
@@ -426,7 +444,9 @@ export class SandboxSession extends DurableObject<SandboxSessionEnv> {
 
   /**
    * Runs a call of the caller's open session: `body`'s answer, with the session's computer time to a metered call, and
-   * whether the call first stopped the computer for want of room (`#stopForLimit`).
+   * whether the call first stopped the computer for want of room (`#stopForLimit`). In an agent run's session (#230), a
+   * stretch of the computer that ended before the call is recorded first, and one that ended with it (stopped for want
+   * of room) after it (`#recordStretch`).
    */
   async #call<A>(
     caller: SessionCaller,
@@ -436,30 +456,166 @@ export class SandboxSession extends DurableObject<SandboxSessionEnv> {
     const session = await this.#session(caller);
 
     if (!session.ok) return session;
+    await this.#endedStretch();
     const stopped = await this.#stopForLimit(metering);
     const reply = await body(session.value);
+    const answer = this.#answer(stopped ? { ...reply, computerStopped: true } : reply, metering);
 
-    return this.#answer(stopped ? { ...reply, computerStopped: true } : reply, metering);
+    await this.#recordStretch();
+
+    return answer;
+  }
+
+  /**
+   * In an agent run's session (#230), a stretch of the computer whose idle minutes ended before its alarm came: its
+   * time is metered now and owed (the call answers it, else the alarm reports it), and the stretch is recorded, so that
+   * one the call starts is a stretch of its own.
+   */
+  async #endedStretch(): Promise<void> {
+    const record = this.#record();
+
+    if (record?.state !== "open" || record.untilPurged !== true || record.metering === undefined)
+      return;
+
+    this.ctx.storage.kv.put(RECORD, { ...record, metering: this.#meterEnded(record.metering) });
+    await this.#recordStretch();
+  }
+
+  /**
+   * An agent run's session (#230) records its computer time once per stretch: its run, from the command that started it
+   * to when it stopped (its idle minutes over, or stopped for want of room, or by the session's purge), once its time
+   * is all metered. It writes no record when it closes, as it lives as long as its run, which may outlive any day. The
+   * record names the run, its agent and member, the toolkit, the stretch's computer time and its cost at the price per
+   * computer hour in force as it ran; it is written under the session's id and the stretch's start, so it is written
+   * once. One that could not be written is kept and tried again from the alarm (`SETTLE_RETRY_MS`).
+   */
+  async #recordStretch(): Promise<void> {
+    const record = this.#record();
+
+    if (record?.state !== "open" || record.untilPurged !== true || record.metering === undefined)
+      return;
+
+    const { metering } = record;
+
+    if (metering.running === undefined && metering.pendingMs === 0) {
+      const stretch = this.#stretchOf(record, metering);
+
+      this.ctx.storage.kv.put(RECORD, {
+        ...record,
+        metering: { ...metering, computerMs: 0, costMicros: 0 },
+        stretchFrom: undefined,
+        stretches: [...(record.stretches ?? []), ...(stretch === undefined ? [] : [stretch])],
+      });
+    }
+
+    await this.#writeStretches();
+  }
+
+  /**
+   * The record of the stretch of an agent run's session's computer `metering` holds the time of since the last one
+   * (#230), or none when its computer did not run.
+   */
+  #stretchOf(record: OpenRecord, metering: ComputerMetering): SessionRecord | undefined {
+    if (metering.computerMs <= 0 && metering.costMicros <= 0) return undefined;
+    const from = record.stretchFrom ?? metering.openedAt;
+
+    return {
+      sessionId: `${this.#nameId()}:${from}`,
+      orgId: record.org,
+      principalId: record.owner,
+      memberId: metering.member,
+      run: metering.run,
+      toolkitId: metering.toolkitId,
+      openedAt: from,
+      computerMs: metering.computerMs,
+      costMicros: metering.costMicros,
+    };
+  }
+
+  /** Writes an agent run's session's records of stretches not written yet (#230); what fails is tried again. */
+  async #writeStretches(): Promise<void> {
+    const stretches = this.#openRecord()?.stretches ?? [];
+
+    if (stretches.length === 0) return;
+    const written = new Set<string>();
+
+    for (const stretch of stretches) {
+      const done = await settleClose(
+        { unrecorded: true },
+        {
+          what: "sandbox session computer stretch",
+          record: () => this.writeRecord(stretch),
+          report: async () => {},
+        },
+      );
+
+      if (done.recorded) written.add(stretch.sessionId);
+    }
+
+    const after = this.#openRecord();
+
+    if (after !== undefined)
+      this.ctx.storage.kv.put(RECORD, {
+        ...after,
+        stretches: (after.stretches ?? []).filter((stretch) => !written.has(stretch.sessionId)),
+      });
+
+    await this.#schedule();
+  }
+
+  /** The session's record while it is open. */
+  #openRecord(): OpenRecord | undefined {
+    const record = this.#record();
+
+    return record?.state === "open" ? record : undefined;
   }
 
   /**
    * Sets the object's alarm for the first thing it has to do (#224): close the session when it has been idle a day,
    * meter the computer's run when its idle minutes are over (a command on it sets it again when it ends), or try again
-   * to report what it metered. A session from before #224 knows only the first, which its call set.
+   * to report what it metered, or to write an agent run's session's records of stretches (#230). A session from before
+   * #224 knows only the first, which its call set; an agent run's has no idle day, and no alarm while it has nothing
+   * to do.
    */
   async #schedule(): Promise<void> {
     const record = this.#record();
 
-    if (record?.state !== "open" || record.idleAt === undefined) return;
+    if (record?.state !== "open" || (record.idleAt === undefined && record.untilPurged !== true))
+      return;
+
     const { metering } = record;
+    const retry = metering?.owed !== undefined || (record.stretches ?? []).length > 0;
 
     const due = [
       record.idleAt,
       ...(metering === undefined ? [] : [computerEndsAt(metering, this.#onComputer > 0)]),
-      ...(metering?.owed === undefined ? [] : [this.#now() + SETTLE_RETRY_MS]),
+      ...(retry ? [this.#now() + SETTLE_RETRY_MS] : []),
     ].filter((at) => at !== undefined);
 
-    await this.ctx.storage.setAlarm(Math.min(...due));
+    if (due.length === 0) await this.ctx.storage.deleteAlarm();
+    else await this.ctx.storage.setAlarm(Math.min(...due));
+  }
+
+  /**
+   * `metering` with the computer's run metered once its idle minutes are over (#224), its time owed, for the next call
+   * to answer or the alarm to report; as it is while the computer runs.
+   */
+  #meterEnded(metering: ComputerMetering): ComputerMetering {
+    const now = this.#now();
+    const busy = this.#onComputer > 0;
+
+    if (
+      computerRuns(metering, now, busy) ||
+      (metering.running === undefined && metering.pendingMs === 0)
+    )
+      return metering;
+
+    const metered = meterComputer(metering, now, {
+      busy,
+      hourPriceMicros: metering.hourPriceMicros,
+    });
+
+    return { ...metered.metering, owed: addedTime(metering.owed, metered.time) };
   }
 
   /**
@@ -471,26 +627,13 @@ export class SandboxSession extends DurableObject<SandboxSessionEnv> {
     const { metering } = record;
 
     if (metering === undefined) return;
-    const now = this.#now();
-    const busy = this.#onComputer > 0;
-    let current = metering;
-
-    if (
-      !computerRuns(metering, now, busy) &&
-      (metering.running !== undefined || metering.pendingMs > 0)
-    ) {
-      const metered = meterComputer(metering, now, {
-        busy,
-        hourPriceMicros: metering.hourPriceMicros,
-      });
-
-      current = { ...metered.metering, owed: addedTime(metering.owed, metered.time) };
-    }
-
+    const current = this.#meterEnded(metering);
     const { owed } = current;
 
     // Taken off before the report, so a call meanwhile does not answer it too.
     this.ctx.storage.kv.put(RECORD, { ...record, metering: { ...current, owed: undefined } });
+    // An agent run's session records the stretch that ended (#230).
+    await this.#recordStretch();
 
     if (owed === undefined || owed.costMicros <= 0) return;
     const reporting = this.#report(record.org, owed);
@@ -575,9 +718,17 @@ export class SandboxSession extends DurableObject<SandboxSessionEnv> {
     });
   }
 
+  /** An agent run's session's computer started a run at `at` (#230): a stretch starts then, unless one is unrecorded. */
+  #stretchStarted(at: number): void {
+    const record = this.#openRecord();
+
+    if (record?.untilPurged === true && record.stretchFrom === undefined)
+      this.ctx.storage.kv.put(RECORD, { ...record, stretchFrom: at });
+  }
+
   /**
    * The caller's open session, or why there is none: another org's or owner's is unknown. A call is a use, unless
-   * `use` is false: the session stays a day from now.
+   * `use` is false: the session stays a day from now (an agent run's, #230, as long as the run).
    */
   async #session(caller: SessionCaller, use = true): Promise<SessionReply<OpenRecord>> {
     const record = this.#record();
@@ -587,7 +738,7 @@ export class SandboxSession extends DurableObject<SandboxSessionEnv> {
 
     if (record.state === "closed") return refused("closed");
 
-    if (!use) return ok(record);
+    if (!use || record.untilPurged === true) return ok(record);
 
     const used = { ...record, idleAt: caller.now + SESSION_IDLE_MS };
 
@@ -633,7 +784,8 @@ export class SandboxSession extends DurableObject<SandboxSessionEnv> {
   /**
    * Opens the session for `caller`, with what it may have (its network, and the computer when the deployment has one)
    * and the outbound guard's `policy`; a used object is refused. A metered opening (#224), with who opens, meters its
-   * computer time from then on.
+   * computer time from then on. An agent run's (`untilPurged`, #230) lasts until it is closed or purged, however long
+   * it goes without a call.
    */
   async open(
     caller: SessionCaller,
@@ -641,6 +793,7 @@ export class SandboxSession extends DurableObject<SandboxSessionEnv> {
     policy: OutboundPolicy,
     metering?: SessionMetering,
     opener?: SessionOpener,
+    untilPurged?: boolean,
   ): Promise<SessionReply<null>> {
     if (this.#record() !== undefined) return refused("unavailable", "the session id is taken");
 
@@ -651,7 +804,9 @@ export class SandboxSession extends DurableObject<SandboxSessionEnv> {
       network,
       computer,
       policy,
-      idleAt: caller.now + SESSION_IDLE_MS,
+      ...(untilPurged === true
+        ? { untilPurged: true as const }
+        : { idleAt: caller.now + SESSION_IDLE_MS }),
       ...(metering === undefined || opener === undefined
         ? {}
         : {
@@ -704,6 +859,8 @@ export class SandboxSession extends DurableObject<SandboxSessionEnv> {
 
           if (!computerRuns(record.metering, started, busy)) startedAt = started;
           this.#meter((current) => computerStarted(current, started, busy));
+
+          if (startedAt !== undefined) this.#stretchStarted(startedAt);
           this.#onComputer += 1;
           metered = true;
         }
@@ -787,6 +944,56 @@ export class SandboxSession extends DurableObject<SandboxSessionEnv> {
     });
   }
 
+  /**
+   * What `path` is (#230, an agent run's coding tools): its kind, size and modification time, following a final
+   * symbolic link; `null` when nothing is there.
+   */
+  stat(
+    caller: SessionCaller,
+    path: string,
+    metering?: SessionMetering,
+  ): Promise<SessionReply<FileStat | null>> {
+    return this.#call(caller, metering, async (record) => {
+      try {
+        const found = await (await this.#workspaceOf(record)).fs.stat(path);
+
+        return ok({
+          kind: found.isDirectory ? "directory" : found.isSymbolicLink ? "symlink" : "file",
+          size: found.size,
+          mtimeMs: found.mtime,
+        });
+      } catch (error) {
+        const failure = error instanceof Error ? error : new Error(String(error));
+
+        return "code" in failure && failure.code === "ENOENT"
+          ? ok(null)
+          : fileFailure(failure, path, "read");
+      }
+    });
+  }
+
+  /** Up to `length` bytes of the file `path` from `offset` (#230); fewer only at its end. */
+  readBytes(
+    caller: SessionCaller,
+    path: string,
+    offset: number,
+    length: number,
+    metering?: SessionMetering,
+  ): Promise<SessionReply<Uint8Array>> {
+    return this.#call(caller, metering, async (record) => {
+      try {
+        const { fs } = await this.#workspaceOf(record);
+
+        if (length === 0) return ok(new Uint8Array());
+        const stream = await fs.readFile(path, { byteOffset: offset, byteLength: length });
+
+        return ok(new Uint8Array(await new Response(stream).arrayBuffer()));
+      } catch (error) {
+        return fileFailure(error instanceof Error ? error : new Error(String(error)), path, "read");
+      }
+    });
+  }
+
   writeFile(
     caller: SessionCaller,
     path: string,
@@ -840,8 +1047,11 @@ export class SandboxSession extends DurableObject<SandboxSessionEnv> {
 
     if (!session.ok) return session;
     const stopped = await this.#stopForLimit({ ...metering, limitReached: true });
+    const answer = this.#answer(ok(stopped), metering);
 
-    return this.#answer(ok(stopped), metering);
+    await this.#recordStretch();
+
+    return answer;
   }
 
   /**
@@ -883,7 +1093,7 @@ export class SandboxSession extends DurableObject<SandboxSessionEnv> {
       const note = this.#record();
 
       // A record not written stays in the closed note, for the alarm to try again.
-      if (note?.state !== "closed" || note.record === undefined) {
+      if (note?.state !== "closed" || unsettledOf(note).unrecorded !== true) {
         await this.ctx.storage.deleteAlarm();
         await this.ctx.storage.deleteAll();
       }
@@ -900,16 +1110,20 @@ export class SandboxSession extends DurableObject<SandboxSessionEnv> {
 
   /**
    * A day without a call closes the session, and what of its computer time no call charged is reported to its org's
-   * Tools part (#224); before that, the computer's run is metered and reported when its idle minutes are over. A closed
-   * session's alarm tries again what of its close is left to do, and a week after it closed the note that it was goes
-   * too.
+   * Tools part (#224); before that, the computer's run is metered and reported when its idle minutes are over (and an
+   * agent run's session, which no day closes, records the stretch, #230). A closed session's alarm tries again what of
+   * its close is left to do, and a week after it closed the note that it was goes too.
    */
   override async alarm(): Promise<void> {
     const record = this.#record();
 
     if (record?.state === "open") {
-      // A session from before #224 knows no time it is idle until: its alarm is its close.
-      if (record.idleAt === undefined || this.#now() >= record.idleAt)
+      // A session from before #224 knows no time it is idle until: its alarm is its close. An agent run's has no idle
+      // day (#230): its alarm meters its computer and writes its records of stretches.
+      if (
+        record.untilPurged !== true &&
+        (record.idleAt === undefined || this.#now() >= record.idleAt)
+      )
         await this.#forget(record, "object");
       else {
         await this.#meterStopped(record);
@@ -966,7 +1180,9 @@ export class SandboxSession extends DurableObject<SandboxSessionEnv> {
    * Deletes the session's files and everything else the object holds, keeping only a note that it was closed. A session
    * that meters its computer (#224) meters its last stretch first, which with what its alarm metered and did not report
    * yet is charged by `charge`: the closing call, the object (its alarm: reported to the Tools part), or no one (a call
-   * from a part before #224); its note keeps its usage record until it is written. Answers what the call charges.
+   * from a part before #224); its note keeps its usage record until it is written. An agent run's session (#230) has no
+   * record of its own: its note keeps the records of its stretches not written yet, the last one ending now. Answers
+   * what the call charges.
    */
   async #forget(
     record: OpenRecord,
@@ -987,13 +1203,17 @@ export class SandboxSession extends DurableObject<SandboxSessionEnv> {
 
     // What is left to charge: the last stretch, and what the alarm metered before and could not report.
     const left = final === undefined ? undefined : addedTime(final.time, metering?.owed);
+    const run = record.untilPurged === true;
+    const last = run && final !== undefined ? this.#stretchOf(record, final.metering) : undefined;
+    const stretches = [...(record.stretches ?? []), ...(last === undefined ? [] : [last])];
 
     const note: ClosedNote = {
       state: "closed",
       org: record.org,
       owner: record.owner,
       closedAt: now,
-      ...(final === undefined
+      ...(stretches.length === 0 ? {} : { stretches }),
+      ...(final === undefined || run
         ? {}
         : {
             record: {
@@ -1028,13 +1248,15 @@ export class SandboxSession extends DurableObject<SandboxSessionEnv> {
    * while anything is left, else when the note goes.
    */
   async #settle(note: ClosedNote): Promise<void> {
-    const { record } = note;
+    const { record, stretches } = note;
     const closedAt = note.closedAt ?? this.#now();
 
     const done = await settleClose(unsettledOf(note), {
       what: "sandbox session",
       record: async () => {
         if (record !== undefined) await this.writeRecord(record);
+
+        for (const stretch of stretches ?? []) await this.writeRecord(stretch);
       },
       // Its org's Tools part charges the cost and forgets the session.
       report: (owed) =>
@@ -1048,7 +1270,7 @@ export class SandboxSession extends DurableObject<SandboxSessionEnv> {
       org: note.org,
       owner: note.owner,
       closedAt,
-      ...(left.unrecorded === true ? { record } : {}),
+      ...(left.unrecorded === true ? { record, stretches } : {}),
       ...(left.owed === undefined ? {} : { owed: left.owed }),
     } satisfies ClosedNote);
     await this.ctx.storage.setAlarm(

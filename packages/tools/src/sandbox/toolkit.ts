@@ -11,7 +11,9 @@
  * whoever's it is.
  */
 import { Effect, Result, Schema } from "effect";
+import { isRunPrincipalId } from "@commissary/auth";
 import type { OutboundPolicy } from "@commissary/core";
+import { SANDBOX_MAX_TIMEOUT_MS } from "@commissary/contract/sandbox-env";
 import { SandboxNetwork } from "@commissary/contract/tools";
 import {
   describeNetwork,
@@ -56,6 +58,11 @@ export interface SandboxSessionLog {
 export interface SandboxCall {
   readonly owner: SandboxOwner;
   readonly sessions: SandboxSessionLog;
+  /**
+   * The call opens an agent run's own session (#230, `RUN_SESSION_META`, a run principal's only): it lasts as long as
+   * the run, which purges it when it is deleted. Any other session ends after a day without a call.
+   */
+  readonly runSession?: boolean | undefined;
   /** The org's ceiling, the sandbox toolkit's: the widest network a session may ask for, and whether the computer. */
   readonly ceiling: SandboxAllowance;
   readonly policy: OutboundPolicy;
@@ -112,8 +119,8 @@ const answered = <A>(
     : { result, computerTime: metered.computerTime };
 };
 
-/** A command's longest run: ten minutes. Without a timeout it may run two. */
-export const MAX_TIMEOUT_SECONDS = 600;
+/** A command's longest run: ten minutes (`SANDBOX_MAX_TIMEOUT_MS`). Without a timeout it may run two. */
+export const MAX_TIMEOUT_SECONDS = SANDBOX_MAX_TIMEOUT_MS / 1000;
 
 const DEFAULT_TIMEOUT_SECONDS = 120;
 
@@ -321,14 +328,25 @@ export const resolvePath = (input: string): string => {
 export const NO_COMPUTER =
   'This deployment has no computer, so a sandbox runs every command with just-bash. Its operator can add one (docs/DEPLOY.md, "Optional pieces").';
 
-/** A provider failure as the model reads it. */
+/** What a call naming no session of the caller's answers (#230: a run's gated call of another's session too). */
+export const unknownSessionResult = (sessionId: string): Schema.JsonObject =>
+  text(`Unknown sandbox session ${sessionId}. Open one with sandbox_open.`, {
+    isError: true,
+    structuredContent: { reason: "unknown_session" },
+  });
+
+/**
+ * A provider failure as the model reads it. A session that is gone also says so in its structured content (`reason`),
+ * so an agent run, which opens its session itself (#230), opens another.
+ */
 const failure = (error: SandboxError, sessionId: string | undefined): Schema.JsonObject => {
   switch (error.reason) {
     case "unknown_session":
-      return toolError(`Unknown sandbox session ${sessionId ?? ""}. Open one with sandbox_open.`);
+      return unknownSessionResult(sessionId ?? "");
     case "closed":
-      return toolError(
+      return text(
         `The sandbox session ${sessionId ?? ""} is closed, and its files are gone. Open a new one with sandbox_open.`,
+        { isError: true, structuredContent: { reason: error.reason } },
       );
     case "file":
     case "unavailable":
@@ -537,8 +555,19 @@ const run = (
           ),
         });
 
+      // An agent run's own session lasts as long as the run (#230), which purges it when it is deleted.
+      const untilPurged = call.runSession === true && isRunPrincipalId(owner.principal);
+
       return provider
-        .open(owner, { network, computer, policy: call.policy, now, meter, opener: call.opener })
+        .open(owner, {
+          network,
+          computer,
+          policy: call.policy,
+          now,
+          meter,
+          opener: call.opener,
+          untilPurged,
+        })
         .pipe(
           Effect.tap((id) => Effect.sync(() => call.sessions.opened(id))),
           Effect.map((id) => ({

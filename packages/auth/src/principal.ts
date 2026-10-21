@@ -116,6 +116,12 @@ export class AccessPrincipal extends Context.Service<AccessPrincipal, AccessIden
   "commissary/auth/AccessPrincipal",
 ) {}
 
+/** The principal id of the agent run `runId` (#227): `run:<run id>`, which owns the run's sandbox sessions (#230). */
+export const runPrincipalId = (runId: string): string => `run:${runId}`;
+
+/** Whether the principal id `id` is an agent run's ({@link runPrincipalId}). */
+export const isRunPrincipalId = (id: string): boolean => id.startsWith("run:");
+
 export const principalId = (principal: Principal): string => {
   switch (principal.kind) {
     case "user":
@@ -127,7 +133,7 @@ export const principalId = (principal: Principal): string => {
     case "mkey":
       return `mkey:${principal.keyId}`;
     case "run":
-      return `run:${principal.runId}`;
+      return runPrincipalId(principal.runId);
   }
 };
 

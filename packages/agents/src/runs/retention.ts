@@ -8,8 +8,9 @@
  * prunes each org's runs past its retention period and then deletes what any deletion left. The org's deletion deletes
  * them all (`org-deletion.ts`).
  *
- * A run's sandbox session (ADR 0041) is not deleted here yet: a run opens none of its own until the sandbox toolkit
- * comes to runs (#230), whose session should then go with the run's object (`AgentRunObject.purge`).
+ * A run's sandbox session (ADR 0041, #230) goes when the ControlPlane forgets the run (`forgetRuns`), after its object:
+ * the Agents part has the Tools part of the same object delete it first, and a run whose session could not be deleted
+ * stays listed, so the next sweep tries again.
  */
 import { Clock, Effect } from "effect";
 import type { OrgId, ScheduledTask } from "@commissary/core";

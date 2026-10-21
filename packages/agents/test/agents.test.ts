@@ -4,7 +4,7 @@
 // and fall back to the org admins; a member who leaves takes their private agents along.
 import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import type { CreateAgent } from "@commissary/contract/agents";
+import type { AgentSandbox, CreateAgent } from "@commissary/contract/agents";
 import type { GrantSubject } from "@commissary/contract/grants";
 import type { ReferenceCheck } from "../src/control-plane-part.ts";
 import { agentBody } from "./testing.ts";
@@ -391,5 +391,65 @@ describe("definitions", () => {
         "test",
       ),
     ).toMatchObject({ ok: false, error: "invalid" });
+  });
+});
+
+describe("a sandbox (#230)", () => {
+  const SANDBOX: AgentSandbox = {
+    toolkit: "sandbox",
+    network: { kind: "hosts", hosts: ["example.com"] },
+    computer: true,
+  };
+
+  it("is saved with the definition, shown and exported, and cleared by an edit with null", async () => {
+    const o = await org();
+
+    const agent = await created(
+      o,
+      o.admin,
+      agentBody("builder", MODEL, { subject: EVERYONE, sandbox: SANDBOX }),
+    );
+
+    expect(agent.sandbox).toEqual(SANDBOX);
+    expect(await o.agents.getAgent(o.admin, agent.id)).toMatchObject({
+      value: { sandbox: SANDBOX },
+    });
+    expect((await o.agents.exportAgents(o.admin))[0]).toMatchObject({ sandbox: SANDBOX });
+
+    // Another edit keeps it.
+    expect(
+      await o.agents.updateAgent(o.admin, agent.id, 1, { instructions: "Build." }, {}, "test"),
+    ).toMatchObject({ ok: true, value: { sandbox: SANDBOX } });
+
+    const cleared = await o.agents.updateAgent(o.admin, agent.id, 2, { sandbox: null }, {}, "test");
+
+    expect(cleared.ok && "sandbox" in cleared.value).toBe(false);
+  });
+
+  it("is refused as the routes found it: no sandbox toolkit of the owner's, or above its ceiling", async () => {
+    const o = await org();
+    const refusal = "the sandbox toolkit allows no network";
+
+    expect(
+      await o.agents.createAgent(
+        o.alice,
+        agentBody("builder", MODEL, { sandbox: SANDBOX }),
+        { ...FOUND, sandboxRefusal: refusal },
+        "test",
+      ),
+    ).toEqual({ ok: false, error: "invalid_sandbox", message: refusal });
+
+    const agent = await created(o, o.alice, agentBody("builder", MODEL));
+
+    expect(
+      await o.agents.updateAgent(
+        o.alice,
+        agent.id,
+        1,
+        { sandbox: SANDBOX },
+        { sandboxRefusal: refusal },
+        "test",
+      ),
+    ).toMatchObject({ ok: false, error: "invalid_sandbox" });
   });
 });

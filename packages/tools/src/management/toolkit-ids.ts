@@ -8,6 +8,7 @@
 import { Effect } from "effect";
 import { FULL_ACCESS } from "@commissary/auth";
 import { toolsControlPlane } from "../env.ts";
+import { type AgentSandboxSettings, agentSandboxRefusal } from "../sandbox/agent-sandbox.ts";
 
 /** The toolkit ids `member` reaches, or the org's (`member` undefined). */
 export const toolkitIds = (member: string | undefined) =>
@@ -21,5 +22,23 @@ export const toolkitIds = (member: string | undefined) =>
             .filter((toolkit) => member !== undefined || !toolkit.private)
             .map((toolkit) => toolkit.id),
         ),
+    ),
+  );
+
+/**
+ * Why `sandbox` cannot be the sandbox of a hosted agent of `member` (`undefined`: a shared agent, which names the org's
+ * toolkits), #230: it names no sandbox toolkit they see, or asks beyond its ceiling (`agentSandboxRefusal`).
+ */
+export const sandboxRefusal = (sandbox: AgentSandboxSettings, member: string | undefined) =>
+  toolsControlPlane("listToolkits", (stub) =>
+    stub.tools().listToolkits(member === undefined ? FULL_ACCESS : { member, admin: false }),
+  ).pipe(
+    Effect.map(({ toolkits }) =>
+      agentSandboxRefusal(
+        sandbox,
+        toolkits.find(
+          (toolkit) => toolkit.id === sandbox.toolkit && (member !== undefined || !toolkit.private),
+        ),
+      ),
     ),
   );

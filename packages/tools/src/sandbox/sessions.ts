@@ -9,9 +9,13 @@
  * time no call charged (#224, `ToolsPart.sandboxComputerTime`), which charges it to the opener's Spend limits as the
  * row names them and forgets the row; a row whose close was never heard of is forgotten {@link CLOSE_REPORT_MS} after
  * that ({@link SandboxSessionStore.prune}, from the part's alarm). A session closed with `sandbox_close` goes at once:
- * the call that closed it charged its last stretch.
+ * the call that closed it charged its last stretch. An agent run's session (its principal a run's, #230) lasts as long
+ * as the run: no day ends it, and it goes when the run is deleted.
  */
 import { CLOSE_REPORT_MS, SESSION_IDLE_MS } from "./provider.ts";
+
+/** The rows of sessions a day without use ends: all but agent runs' (`run:<id>`, `isRunPrincipalId`). */
+const ENDS_IDLE = `principal NOT LIKE 'run:%'`;
 
 /** One open sandbox session. */
 export interface TrackedSession {
@@ -97,12 +101,35 @@ export class SandboxSessionStore {
     return row === undefined ? undefined : sessionOf(row);
   }
 
-  used(id: string, now: number): void {
-    this.#sql.exec(`UPDATE sandbox_sessions SET last_used = ? WHERE id = ?`, now, id);
+  /** Whether the part keeps the open session `id` as `principal`'s (#230: a run's gated call names its own only). */
+  owns(id: string, principal: string): boolean {
+    return (
+      this.#sql
+        .exec(`SELECT 1 FROM sandbox_sessions WHERE id = ? AND principal = ?`, id, principal)
+        .toArray().length > 0
+    );
   }
 
-  ended(ids: ReadonlyArray<string>): void {
-    for (const id of ids) this.#sql.exec(`DELETE FROM sandbox_sessions WHERE id = ?`, id);
+  /** Marks the session `id` used at `now`; `principal`'s only, when given (a call's: another's id is not its). */
+  used(id: string, now: number, principal?: string): void {
+    this.#sql.exec(
+      `UPDATE sandbox_sessions SET last_used = ? WHERE id = ? AND (? IS NULL OR principal = ?)`,
+      now,
+      id,
+      principal ?? null,
+      principal ?? null,
+    );
+  }
+
+  /** Forgets the sessions `ids`; `principal`'s only, when given (a call's: another's id is not its). */
+  ended(ids: ReadonlyArray<string>, principal?: string): void {
+    for (const id of ids)
+      this.#sql.exec(
+        `DELETE FROM sandbox_sessions WHERE id = ? AND (? IS NULL OR principal = ?)`,
+        id,
+        principal ?? null,
+        principal ?? null,
+      );
   }
 
   /**
@@ -125,15 +152,34 @@ export class SandboxSessionStore {
       .map(sessionOf);
   }
 
+  /** The open sessions of the principals `principals` (#230: agent runs'). */
+  sessionsOf(principals: ReadonlyArray<string>): ReadonlyArray<TrackedSession> {
+    if (principals.length === 0) return [];
+
+    return this.#sql
+      .exec<SessionRow>(
+        `SELECT * FROM sandbox_sessions WHERE principal IN (${principals.map(() => "?").join(", ")})
+         ORDER BY opened_at, id`,
+        ...principals,
+      )
+      .toArray()
+      .map(sessionOf);
+  }
+
   /**
-   * Forgets the sessions the provider ended for want of use whose close was not reported by `now` (#224); answers when
-   * the next one is forgotten.
+   * Forgets the sessions the provider ended for want of use whose close was not reported by `now` (#224), but agent
+   * runs' (#230), which no day ends; answers when the next one is forgotten.
    */
   prune(now: number): number | null {
-    this.#sql.exec(`DELETE FROM sandbox_sessions WHERE last_used <= ?`, now - FORGOTTEN_AFTER_MS);
+    this.#sql.exec(
+      `DELETE FROM sandbox_sessions WHERE last_used <= ? AND ${ENDS_IDLE}`,
+      now - FORGOTTEN_AFTER_MS,
+    );
 
     const first = this.#sql
-      .exec<{ first: number | null }>(`SELECT MIN(last_used) AS first FROM sandbox_sessions`)
+      .exec<{ first: number | null }>(
+        `SELECT MIN(last_used) AS first FROM sandbox_sessions WHERE ${ENDS_IDLE}`,
+      )
       .toArray()[0]?.first;
 
     return first === null || first === undefined ? null : first + FORGOTTEN_AFTER_MS;

@@ -1,15 +1,18 @@
 /**
- * The adapter over pi-durable and the pi packages it needs (#227, ADR 0040 "Pinning"): the only module that imports
- * `@earendil-works/*`, so they can be replaced without touching the rest of the area. Their versions are pinned exactly
- * (packages/agents/package.json), as their APIs are experimental. The run's Durable Object imports it statically, and
- * it imports pi-ai's provider module statically too: no lazy `import()` is shared by the run objects of one isolate,
- * whose waits on one pending import would resume in another object's I/O context (docs/ARCHITECTURE.md, "Agents").
+ * The adapter over pi-durable and the pi packages it needs (#227, ADR 0040 "Pinning"): with the run's sandbox tools
+ * (`pi-sandbox.ts`, `sandbox-env.ts`), the only module that imports `@earendil-works/*`, so they can be replaced
+ * without touching the rest of the area. Their versions are pinned exactly (packages/agents/package.json), as their
+ * APIs are experimental. The run's Durable Object imports it statically, and it imports pi-ai's provider module
+ * statically too: no lazy `import()` is shared by the run objects of one isolate, whose waits on one pending import
+ * would resume in another object's I/O context (docs/ARCHITECTURE.md, "Agents").
  *
  * What it does with them: a pi-durable `Harness` on the object's SQLite (`openDurableObjectSqliteStorage`), whose root
  * conversation is the run; one pi-ai provider (`commissary`) whose OpenAI-compatible requests go to the client API
  * through the run's `fetch`; and the tools the MCP endpoint lists for the run, reached with `@earendil-works/pi-mcp`
- * over the same `fetch`, installed as one pi extension (`commissary`). Every model and tool call is therefore a client
- * API request of the run's principal, under every gate (the API Worker's run gateway).
+ * over the same `fetch`, installed as one pi extension (`commissary`), with pi's coding tools on the run's sandbox
+ * session, each call gated as the sandbox toolkit's tool of the same name, in place of that toolkit's own when the
+ * turn's definition names a sandbox (#230, `pi-sandbox.ts`). Every model and tool call is therefore a client API
+ * request of the run's principal, under every gate (the API Worker's run gateway).
  */
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import {
@@ -39,7 +42,23 @@ import {
   toLlmContent,
 } from "@earendil-works/pi-mcp";
 import { Option, Schema } from "effect";
+import type { AgentSandbox } from "@commissary/contract/agents";
+import {
+  RUN_EXECUTES_META,
+  RUN_SESSION_META,
+  RUN_TICKET_META,
+  type RunToolReport,
+  type RunToolSettled,
+  type SandboxEnvReply,
+  type SandboxEnvRequest,
+} from "@commissary/contract/sandbox-env";
 import { SPEND_REFUSAL_META } from "@commissary/core";
+import {
+  SANDBOX_TOOL_NAMES,
+  type SandboxAnswer,
+  sandboxToolName,
+  sandboxTools,
+} from "./pi-sandbox.ts";
 
 /** Where the run's requests say they go: never resolved, the run's `fetch` takes every request to the client API. */
 export const CLIENT_API_ORIGIN = "https://client-api.agent-run.invalid";
@@ -114,6 +133,27 @@ export interface PiRun {
   close(): Promise<void>;
 }
 
+/** The run's sandbox (#230), as the run's object keeps it. */
+export interface PiRunSandbox {
+  /** The sandbox the running turn's definition names, if any. */
+  readonly settings: () => AgentSandbox | undefined;
+  /** The run's session in the sandbox toolkit `toolkit`, if it opened one. */
+  readonly session: (toolkit: string) => string | undefined;
+  /**
+   * Keeps the session the run opened in the sandbox `sandbox` (its toolkit, and the settings it was opened with);
+   * `undefined` forgets one that is gone.
+   */
+  readonly opened: (sandbox: AgentSandbox, session: string | undefined) => void;
+  /** Why the run left its previous session, once: the call that opens the next one tells the model (#230). */
+  readonly notice: () => string | undefined;
+  /** Keeps the ticket of a call the MCP endpoint gated until it is settled (a stopped run settles it later). */
+  readonly gated: (ticket: string) => void;
+  /** Runs one operation of the gated call `ticket` on the run's session (the run gateway). */
+  readonly operate: (ticket: string, request: SandboxEnvRequest) => Promise<SandboxEnvReply>;
+  /** Settles the gated call `ticket`, which writes its usage record, and forgets it. */
+  readonly settle: (ticket: string, report: RunToolReport) => Promise<RunToolSettled>;
+}
+
 /** What opening a run's harness needs. */
 export interface PiRunOptions {
   /** The object's storage (`ctx.storage`). */
@@ -127,6 +167,8 @@ export interface PiRunOptions {
    * run ends its turn with it as the answer.
    */
   readonly refused: (message: string) => void;
+  /** The run's sandbox: its turns' bash and file tools work in its session (`pi-sandbox.ts`). */
+  readonly sandbox: PiRunSandbox;
 }
 
 /** The text parts of a message's content, joined. */
@@ -203,6 +245,32 @@ const decodeRefusalMeta = Schema.decodeUnknownOption(RefusalMeta);
 /** The text of a spend limit's refusal `result` carries, if it is one. */
 const spendRefusal = (result: CallToolResult): string | undefined =>
   Option.getOrUndefined(decodeRefusalMeta(result._meta))?.[SPEND_REFUSAL_META];
+
+/** What a sandbox tool's result says beside its text: the session `sandbox_open` opened, or why a session is gone. */
+const SandboxStructured = Schema.Struct({
+  session: Schema.optionalKey(Schema.String),
+  reason: Schema.optionalKey(Schema.String),
+});
+
+const decodeSandboxStructured = Schema.decodeUnknownOption(SandboxStructured);
+
+/** The ticket in a gated call's result (#230). */
+const GatedMeta = Schema.Struct({ [RUN_TICKET_META]: Schema.Struct({ id: Schema.String }) });
+
+const decodeGatedMeta = Schema.decodeUnknownOption(GatedMeta);
+
+/** A sandbox tool's result as the run's coding tools read it. */
+const sandboxAnswer = (result: CallToolResult): SandboxAnswer => {
+  const structured = Option.getOrUndefined(decodeSandboxStructured(result.structuredContent));
+  const isError = result.isError === true;
+
+  return {
+    output: toLlmContent(result),
+    isError,
+    ...(isError || structured?.session === undefined ? {} : { session: structured.session }),
+    lost: isError && (structured?.reason === "unknown_session" || structured?.reason === "closed"),
+  };
+};
 
 /** Opens the run's harness on the object's storage. */
 export const openPiRun = async (options: PiRunOptions): Promise<PiRun> => {
@@ -288,6 +356,59 @@ export const openPiRun = async (options: PiRunOptions): Promise<PiRun> => {
     return created;
   };
 
+  /** Calls the MCP endpoint's tool `name`; a spend limit's refusal ends the turn (`refused`). */
+  const call = async (
+    name: string,
+    args: JsonObject,
+    signal: AbortSignal | undefined,
+  ): Promise<CallToolResult> => {
+    const result = await (
+      await connected()
+    ).callTool(name, args, {
+      ...(signal === undefined ? {} : { signal }),
+      timeoutMs: TOOL_CALL_TIMEOUT_MS,
+    });
+
+    const refusal = spendRefusal(result);
+
+    if (refusal !== undefined) options.refused(refusal);
+
+    return result;
+  };
+
+  /**
+   * Gates the call of the sandbox tool `name` with `args` as the run's own (#230): the MCP endpoint's `tools/call` with
+   * {@link RUN_EXECUTES_META}, which answers the ticket of a call that went through every gate, or the tool's answer
+   * (a refusal, a call waiting for approval, an error) of one that did not. A spend limit's refusal ends the turn.
+   */
+  const gate = async (
+    name: string,
+    args: JsonObject,
+    signal: AbortSignal | undefined,
+  ): Promise<{ readonly ticket: string } | SandboxAnswer> => {
+    const result = await (
+      await connected()
+    ).request<CallToolResult>(
+      "tools/call",
+      { name, arguments: args, _meta: { [RUN_EXECUTES_META]: true } },
+      { ...(signal === undefined ? {} : { signal }), timeoutMs: TOOL_CALL_TIMEOUT_MS },
+    );
+
+    const ticket = Option.getOrUndefined(decodeGatedMeta(result._meta))?.[RUN_TICKET_META].id;
+
+    if (ticket !== undefined) {
+      options.sandbox.gated(ticket);
+
+      return { ticket };
+    }
+
+    const refusal = spendRefusal(result);
+
+    if (refusal !== undefined) options.refused(refusal);
+
+    return sandboxAnswer(result);
+  };
+
   const mcpTool = (tool: {
     readonly name: string;
     readonly description?: string | undefined;
@@ -305,16 +426,7 @@ export const openPiRun = async (options: PiRunOptions): Promise<PiRun> => {
       // A call cut off by a restart is not made again: the model gets it as interrupted (pi-durable's default).
       replay: "unsafe",
       execute: async (args, _api, callContext) => {
-        const result = await (
-          await connected()
-        ).callTool(tool.name, args, {
-          ...(callContext.abortSignal === undefined ? {} : { signal: callContext.abortSignal }),
-          timeoutMs: TOOL_CALL_TIMEOUT_MS,
-        });
-
-        const refusal = spendRefusal(result);
-
-        if (refusal !== undefined) options.refused(refusal);
+        const result = await call(tool.name, args, callContext.abortSignal);
 
         return { output: toLlmContent(result), isError: result.isError === true };
       },
@@ -325,8 +437,57 @@ export const openPiRun = async (options: PiRunOptions): Promise<PiRun> => {
   return {
     refreshTools: async () => {
       const listed = await (await connected()).listTools();
+      const sandbox = options.sandbox.settings();
 
-      registry.install(defineExtension({ name: TOOLS_EXTENSION, tools: listed.map(mcpTool) }));
+      // With a sandbox, its toolkit's tools reach the model as pi's coding tools on the run's own session: the
+      // sandbox's tools themselves (opening and closing sessions among them) are not offered.
+      const hidden = new Set(
+        sandbox === undefined
+          ? []
+          : SANDBOX_TOOL_NAMES.map((name) => sandboxToolName(sandbox.toolkit, name)),
+      );
+
+      const coding =
+        sandbox === undefined
+          ? []
+          : sandboxTools(sandbox, new Map(listed.map((tool) => [tool.name, tool.description])), {
+              open: async (name, args, signal) => {
+                // The run's own session (#230): it lasts as long as the run.
+                const result = await (
+                  await connected()
+                ).request<CallToolResult>(
+                  "tools/call",
+                  { name, arguments: args, _meta: { [RUN_SESSION_META]: true } },
+                  { ...(signal === undefined ? {} : { signal }), timeoutMs: TOOL_CALL_TIMEOUT_MS },
+                );
+
+                const refusal = spendRefusal(result);
+
+                if (refusal !== undefined) options.refused(refusal);
+
+                return sandboxAnswer(result);
+              },
+              gate,
+              operate: options.sandbox.operate,
+              settle: async (ticket, report) => {
+                const settled = await options.sandbox.settle(ticket, report);
+
+                // A Spend limit that refused the call after all (its computer time, #224) ends the turn too.
+                if (settled.refusal !== undefined) options.refused(settled.refusal);
+
+                return settled;
+              },
+              session: () => options.sandbox.session(sandbox.toolkit),
+              opened: (session) => options.sandbox.opened(sandbox, session),
+              notice: options.sandbox.notice,
+            });
+
+      registry.install(
+        defineExtension({
+          name: TOOLS_EXTENSION,
+          tools: [...listed.filter((tool) => !hidden.has(tool.name)).map(mcpTool), ...coding],
+        }),
+      );
 
       return listed.length;
     },

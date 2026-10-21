@@ -400,6 +400,21 @@ const sandboxCall = async (
   return called.result;
 };
 
+/** The tickets of the agent runs' gated sandbox calls the case gated, by the suite's name, whichever org gated them. */
+const runCallTickets = new Map<string, ReadonlyArray<string>>();
+
+/** The grant of the sandbox toolkit the gated calls' case wrote in each org, to delete once it ran. */
+const runCallGrants = new Map<string, { readonly id: string; readonly revision: number }>();
+
+/** An agent run's reach of the sandbox toolkit, all its tools (#230). */
+const runReach = {
+  toolScope: [{ toolkit: "sandbox", tools: { kind: "all" as const } }],
+  asAgent: false,
+};
+
+/** The same run id in every org under the suite's name `name`: only the org tells its calls apart. */
+const isoRun = (name: string) => `ar_${name.replaceAll("-", "")}`;
+
 // --- the stores ---------------------------------------------------------------------------------------------------------
 
 /** Commissary Cloud's OAuth grants for MCP clients (#200), on the test Worker's `OAUTH_KV`. */
@@ -1410,6 +1425,81 @@ const STORES: ReadonlyArray<StoreCase> = [
           await env.CONTROL_PLANE.getByName(org.id)
             .tools()
             .writeGrant({ id: grant.id, revision: grant.revision, value: null }, "iso");
+      }
+    },
+  }),
+  // An agent run's gated sandbox calls (#230): the same run in each org opens its session, writes the org's value to a
+  // file and gates an edit; every org then reads that file with every ticket gated under the name, and gets through
+  // with its own only, and settles none of another org's.
+  storeCase("controlplane: agent runs' gated sandbox calls", {
+    write: async (org, name, value) => {
+      const tools = env.CONTROL_PLANE.getByName(org.id).tools();
+      const principalId = `run:${isoRun(name)}`;
+
+      const granted = await tools.writeGrant(
+        {
+          revision: 0,
+          value: { subject: { kind: "everyone" }, toolkit: "sandbox", tools: { kind: "all" } },
+        },
+        "iso",
+      );
+
+      if (!granted.ok) throw new Error(granted.message);
+      runCallGrants.set(org.id, granted.value);
+
+      const call = async (tool: string, args: Schema.JsonObject, executes?: true) =>
+        await tools.callTool(
+          isoViewer(org),
+          {
+            name: tool,
+            arguments: args,
+            principalId,
+            run: runReach,
+            ...(tool === "sandbox_open" ? { runSession: true as const } : {}),
+            ...(executes === undefined ? {} : { executes }),
+          },
+          OUTBOUND,
+        );
+
+      const opened = await call("sandbox_open", {});
+
+      if (opened.outcome !== "result") throw new Error(`the call came to ${opened.outcome}`);
+      // SAFETY: `sandbox_open` answers the session id in its structured content.
+      const session = (opened.result["structuredContent"] as { session: string }).session;
+
+      await call("sandbox_write", { session, path: "value.txt", content: value });
+      const gated = await call("sandbox_edit", { session, path: "value.txt", edits: [] }, true);
+
+      if (gated.outcome !== "gated") throw new Error(`the call came to ${gated.outcome}`);
+      runCallTickets.set(name, [...(runCallTickets.get(name) ?? []), gated.ticket.id]);
+    },
+    read: async (org, name) => {
+      const tools = env.CONTROL_PLANE.getByName(org.id).tools();
+
+      for (const ticket of runCallTickets.get(name) ?? []) {
+        const read = await tools.runSandboxOperation(isoRun(name), ticket, {
+          op: "readText",
+          path: "/workspace/value.txt",
+        });
+
+        if (read.ok) return typeof read.value === "string" ? read.value : "not text";
+
+        // Another org's ticket is no ticket here: refused, and not settled.
+        if (read.reason !== "ticket") return `refused: ${read.reason}`;
+
+        if ((await tools.settleRunSandboxCall(isoRun(name), ticket)) !== undefined)
+          return "settled another org's call";
+      }
+
+      return undefined;
+    },
+    after: async (shared) => {
+      for (const org of shared) {
+        const tools = env.CONTROL_PLANE.getByName(org.id).tools();
+        const grant = runCallGrants.get(org.id);
+
+        if (grant !== undefined)
+          await tools.writeGrant({ id: grant.id, revision: grant.revision, value: null }, "iso");
       }
     },
   }),

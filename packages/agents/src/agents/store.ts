@@ -5,7 +5,7 @@
  * decides who may do what, and runs a write that touches both tables in one transaction.
  */
 import { Option, Schema } from "effect";
-import { AgentWatcher, ThinkingLevel } from "@commissary/contract/agents";
+import { AgentSandbox, AgentWatcher, ThinkingLevel } from "@commissary/contract/agents";
 import { ToolScope } from "@commissary/contract/api-keys";
 import type { GrantSubject } from "@commissary/contract/grants";
 
@@ -27,7 +27,7 @@ const SCHEMA = [
      id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, owner TEXT, description TEXT NOT NULL,
      instructions TEXT NOT NULL, model TEXT NOT NULL, thinking TEXT, tool_scope TEXT NOT NULL,
      enabled INTEGER NOT NULL, watchers TEXT NOT NULL, revision INTEGER NOT NULL, created_at INTEGER NOT NULL,
-     created_by TEXT NOT NULL, updated_at INTEGER NOT NULL, updated_by TEXT NOT NULL
+     created_by TEXT NOT NULL, updated_at INTEGER NOT NULL, updated_by TEXT NOT NULL, sandbox TEXT
    )`,
   `CREATE TABLE IF NOT EXISTS agent_grants (
      id TEXT PRIMARY KEY, subject_kind TEXT NOT NULL, subject_id TEXT NOT NULL, agent_id TEXT NOT NULL,
@@ -46,6 +46,8 @@ export interface StoredAgent {
   readonly model: string;
   readonly thinking?: ThinkingLevel | undefined;
   readonly toolScope: ToolScope;
+  /** The sandbox its runs work in (#230), if any. */
+  readonly sandbox?: AgentSandbox | undefined;
   readonly enabled: boolean;
   /** A shared agent's watchers as named; always empty for a private agent. */
   readonly watchers: ReadonlyArray<AgentWatcher>;
@@ -76,6 +78,8 @@ interface AgentRow {
   model: string;
   thinking: string | null;
   tool_scope: string;
+  /** #230: absent from a table #226 created, until the store adds it. */
+  sandbox: string | null;
   enabled: number;
   watchers: string;
   revision: number;
@@ -102,7 +106,17 @@ const decodeWatchers = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Array(AgentWatcher)),
 );
 
+const decodeSandbox = Schema.decodeUnknownOption(Schema.fromJsonString(AgentSandbox));
+
 const isThinking = Schema.is(ThinkingLevel);
+
+/** A row's sandbox; one that does not parse (never written so) is none, so its runs get no sandbox. */
+const sandboxOf = (row: AgentRow): { readonly sandbox?: AgentSandbox } => {
+  const sandbox =
+    row.sandbox === null ? undefined : Option.getOrUndefined(decodeSandbox(row.sandbox));
+
+  return sandbox === undefined ? {} : { sandbox };
+};
 
 /** A row as an agent; a tool scope that does not parse (never written so) gives nothing rather than everything. */
 const agentOf = (row: AgentRow): StoredAgent => ({
@@ -114,6 +128,7 @@ const agentOf = (row: AgentRow): StoredAgent => ({
   model: row.model,
   ...(row.thinking !== null && isThinking(row.thinking) ? { thinking: row.thinking } : {}),
   toolScope: Option.getOrElse(decodeToolScope(row.tool_scope), (): ToolScope => []),
+  ...sandboxOf(row),
   enabled: row.enabled === 1,
   watchers: Option.getOrElse(decodeWatchers(row.watchers), (): ReadonlyArray<AgentWatcher> => []),
   revision: row.revision,
@@ -170,6 +185,16 @@ export class AgentStore {
     this.#sql = sql;
 
     for (const statement of SCHEMA) sql.exec(statement);
+
+    // #230: an agent's sandbox, on a table #226 created without it.
+    const columns = new Set(
+      sql
+        .exec<{ name: string }>("PRAGMA table_info(agents)")
+        .toArray()
+        .map((column) => column.name),
+    );
+
+    if (!columns.has("sandbox")) sql.exec(`ALTER TABLE agents ADD COLUMN sandbox TEXT`);
   }
 
   // --- agents --------------------------------------------------------------------------------------------------------
@@ -195,8 +220,8 @@ export class AgentStore {
     this.#sql.exec(
       `INSERT OR REPLACE INTO agents
          (id, name, owner, description, instructions, model, thinking, tool_scope, enabled, watchers, revision,
-          created_at, created_by, updated_at, updated_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          created_at, created_by, updated_at, updated_by, sandbox)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       agent.id,
       agent.name,
       agent.owner ?? null,
@@ -212,6 +237,7 @@ export class AgentStore {
       agent.createdBy,
       agent.updatedAt,
       agent.updatedBy,
+      agent.sandbox === undefined ? null : JSON.stringify(agent.sandbox),
     );
   }
 

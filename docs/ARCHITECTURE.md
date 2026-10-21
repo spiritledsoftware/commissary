@@ -4347,24 +4347,30 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
     with code N`, with its output) and the provider's failures are results with `isError`; so is any call that names
     no principal (an endpoint from before calls carried one): a session must have an owner.
   - **Sessions**: a session is its principal's alone (`SandboxOwner`: the org and the call's principal, `user:<email>`
-    on the app host, `key:<id>` for an API key; later an agent run, #230): a call with another principal's id, in the
-    same org or another, is answered as an unknown session. It ends on `sandbox_close` or after a day without a call,
-    its files deleted at once (a command still running is killed and the Workspace closed first, so nothing writes
-    its files back); for a week after, its owner's calls answer that it is closed, and after that week that it is
-    unknown. Commissary sets no size limit of its own: the Durable Object's storage limit applies (a write past it
-    answers that the storage is full and the file was not written). The ControlPlane keeps the org's open sessions
-    (`sandbox_sessions`, `tools/sandbox/sessions.ts`: id, toolkit, member, principal, the shared agent whose run opened
-    it (`agent`, #228, which the close's charge goes to), opened and last used): every call goes through the Tools
-    part, which adds a session when it opens, marks it on each use (a call the sandbox failed is one too: the session's
-    object counted it), and drops it when the call closed it or the
-    session's alarm reports its close (#224, below). A session a call found closed is kept, as its close's report is
+    on the app host, `key:<id>` for an API key, `run:<id>` for an agent run, #230): a call with another principal's
+    id, in the same org or another, is answered as an unknown session. It ends on `sandbox_close` or after a day
+    without a call, its files deleted at once (a command still running is killed and the Workspace closed first, so
+    nothing writes its files back); for a week after, its owner's calls answer that it is closed, and after that week
+    that it is unknown. Commissary sets no size limit of its own: the Durable Object's storage limit applies (a write
+    past it answers that the storage is full and the file was not written). The ControlPlane keeps the org's open
+    sessions (`sandbox_sessions`, `tools/sandbox/sessions.ts`: id, toolkit, member, principal, the shared agent whose
+    run opened it (`agent`, #228, which the close's charge goes to), opened and last used): every call goes through the
+    Tools part, which adds a session when it opens, marks it on each use (a call the sandbox failed is one too: the
+    session's object counted it), and drops it when the call closed it or the session's alarm reports its close (#224,
+    below). A session a call found closed is kept, as its close's report is
     still to come. One whose close was never heard of is forgotten from the part's alarm `SESSION_IDLE_MS` +
     `CLOSE_REPORT_MS` (a day and a week) after its last use, so a session whose report keeps failing stays listed up to
     eight days. A member who leaves takes their sessions at once (`memberLeft`: each used within the day is purged,
     settled first as a close is, its last stretch of computer time charged and its usage record written (#224), then
     deleted with its files and no note; an older one is closed already, its files gone, and left to report its close),
     and the org's deletion purges every one (Tools' org-deletion step, `purgeSandboxSessions`, a page of 20 at a time
-    within the deletion's budget, before `wipeOrg` drops the table). Calls are recorded and priced as any tool call.
+    within the deletion's budget, before `wipeOrg` drops the table). An agent run's own session is the exception to
+    the day without a call: the one its harness opens (`sandbox_open` with `_meta["commissary/run-session"]`,
+    `RUN_SESSION_META`, honoured for a run's call only; another session a run opens ends after its idle day as a
+    member's) lasts until the run is deleted, which purges it, settled first as a member's leaving settles theirs
+    (`purgeRunSandboxSessions`, "Agent runs"), and the part's forgetting skips a run's sessions; the run's coding
+    tools reach its session through gated calls ("Agent runs", "Sandbox"), and only a session the part keeps as that
+    run's (`SandboxSessionStore.owns`). Calls are recorded and priced as any tool call.
   - **Computer time** (#224, `tools/sandbox/cloudflare/computer-time.ts`): a session's object meters its computer
     (`ComputerMetering`, kept with the session): the time from the command that starts it to the container's idle
     minutes after its last command, or to when the session stops it (closing, or a Spend limit with no room), a command
@@ -4384,8 +4390,11 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
     settles the same way, by the part's call (`purge(org, settle)`); one its alarm closed already is left to its alarm,
     and the part keeps it until its close is reported. A close or a member's leaving waits for the alarm's report in
     flight (`#reporting`), so the part still keeps the session the report names, and what that report could not report
-    is in what the close charges. A record or report that fails is kept in the closed note and tried again from the alarm (`usage/session-close.ts`, shared with the browser sessions) until the
-    note goes, `CLOSE_REPORT_MS` (a week) after the close.
+    is in what the close charges. A record or report that fails is kept in the closed note and tried again from the
+    alarm (`usage/session-close.ts`, shared with the browser sessions) until the note goes, `CLOSE_REPORT_MS` (a week)
+    after the close. An agent run's session (#230), which has no idle day and may outlive any, writes a record each
+    time its computer stops, of that stretch, and none when it closes ("Agent runs", "Sandbox"); its gated calls pass
+    the metering their gate set, as any call does.
   - **Networks** (`tools/sandbox/network.ts`, ADR 0041, ADR 0044): `none` (the default), `hosts` (DNS names or `*.` and a
     name, plus the `package_registries` preset: npm, PyPI, GitHub and mise's download hosts), or `open`. The sandbox
     toolkit's `network` is the org's ceiling, set by org admins (`PATCH /toolkits/sandbox`, shown in its view and the
@@ -4532,16 +4541,17 @@ instructions, one model with an optional thinking level, a tool scope), its **ru
 pi-durable, and its calls as tools of the agents toolkit (#229). It saves definitions, private and shared, the
 grants on shared agents and their watchers (#226), runs them as their starter asks, one turn at a time (#227),
 starts runs from the schedules and webhooks configured on them (#231), and serves them to clients and runs through the
-agents toolkit, whose calls from a run start child runs (#229); watchers acting in runs, sandboxes and the panel's chat
-come later (#230, #232 to #234). The package (`@commissary/agents`) is shaped like Tools: entry
+agents toolkit, whose calls from a run start child runs (#229), and gives a run whose definition names a sandbox pi's
+coding tools on a sandbox session of its own (#230); watchers acting in runs and the panel's chat come later (#232 to
+#234). The package (`@commissary/agents`) is shaped like Tools: entry
 points `./api`, `./management`, `./state` and `./testing`, a lint boundary (`boundaries/agents-imports`) and a
 ControlPlane part, `AgentsPart`, reached as `stub.agents().x(…)`. Its state is the ControlPlane's (`AGENTS_TABLES`:
 `agents`, `agent_grants`, `agent_runs` and `agent_triggers`, dropped by `wipe()`); its view of `env` (`AgentsBindings`) is the ControlPlane namespace and
 the deployment's Dynamic Workers binding `LOADER`.
 
 - **Presence** (ADR 0043): the area exists exactly when `LOADER` is bound (`agentsPresent`), on the app Worker, which
-  serves the area's routes, runs' included (the runs' objects themselves need no `LOADER` until the sandbox, #230).
-  Without it every Agents route answers `404 not_found` and `/me` says
+  serves the area's routes, runs' included (the runs' objects themselves need no `LOADER`: a run's sandbox is the state
+  Worker's `SandboxSession` object, #230). Without it every Agents route answers `404 not_found` and `/me` says
   `deployment.agents: false`; the definitions are kept. Every deployment binds it (`alchemy.run.ts`), and the app's tests
   bind it too (`workerLoaders` in `vitest.config.ts`), but for one harness that passes `LOADER: undefined`.
 - **Definitions** (`CreateAgent`, `UpdateAgent` in `@commissary/contract/agents`; `agents/agents/definition.ts`): a
@@ -4585,8 +4595,13 @@ the deployment's Dynamic Workers binding `LOADER`.
   (`wipe()`), after Agents' org-deletion step deleted each run's object (below). The org export lists the
   agents the caller manages, a shared agent with its watchers and grants (members by email, teams by name). The
   cross-org suite checks that one org's agents are not listed in another (`controlplane: agents`).
-- **The sandbox** a definition may name (`sandbox`) is not part of this version: it comes with the sandbox toolkit
-  (#230).
+- **The sandbox** a definition may name (`sandbox`, `AgentSandbox`, #230, ADR 0041): the sandbox toolkit its runs work
+  in (`toolkit`, the built-in `sandbox`), and the network and computer their sessions ask for, as `sandbox_open` takes
+  them. It must be a sandbox toolkit the agent's owner can see, and within that toolkit's ceiling as it stands
+  (`422 invalid_sandbox`, `path: "sandbox"`; `AgentReferences.sandboxRefusal`, which the app Worker fills from Tools'
+  `sandboxRefusal`, `tools/sandbox/agent-sandbox.ts`); `sandbox: null` in an edit removes it. A ceiling lowered later
+  leaves it named: the run's `sandbox_open` is refused then, as a client's would be. A run's session opened before an
+  edit or a ceiling narrowed is left at its next turn ("Agent runs", "Sandbox"). The export lists it.
 
 ### Agent runs (#227)
 
@@ -4659,6 +4674,85 @@ the deployment's Dynamic Workers binding `LOADER`.
   a child run's: the member who started the run at the head of its chain), for a shared agent's run too, which has no member of its own. Under a rule of the caller the starter decides (in the
   panel), and under a team's or members' rule they do not; the model gets the
   approval's link text and may call again once it is decided. Watchers answering approvals in runs come with #232.
+- **Sandbox** (#230, ADR 0041, `agents/runs/pi-sandbox.ts`): a turn whose definition names a sandbox gets pi-durable's
+  coding tools `bash`, `read`, `write` and `edit` (their names, parameters, argument repair and output, as models know
+  them) in place of the sandbox toolkit's own tools, which its model is not offered (opening and closing sessions
+  among them). pi's own tools run, with an `ExecutionEnv` of the run's over its sandbox session
+  (`agents/runs/sandbox-env.ts`, after cloudpid's `ComputerExecutionEnv`), each call gated first:
+  - **The gate**: the call is the sandbox tool of the same name (`sandbox_bash`, …) through the MCP endpoint, as the
+    run's principal, on the run's session, with `_meta["commissary/run-executes"]` (`@commissary/contract/sandbox-env`),
+    so the sandbox toolkit's grants, the tool scope (the turn's scope gains the sandbox toolkit, all its tools, when it
+    has no entry of it; one it has narrows them, a read-only one leaving `read` alone), approval rules, Spend limits and
+    price apply to it as to that tool. Once every gate passed, the Tools part charges the price, marks the session's row
+    used (its last use; the daily forgetting skips a run's rows, which go with the run) and, instead of making the call, keeps a **ticket** (`tools/sandbox/run-calls.ts`, the `sandbox_run_calls`
+    table) bound to the run's principal, the session and the tool, with the call's spender (`spenderOf`: its member,
+    API key, and the shared agent a shared agent's run charges as, #228) and its computer metering (below), answered as
+    `outcome: "gated"` and in the result's `_meta["commissary/run-ticket"]`; the endpoint writes no record for it. Only
+    a run's call is gated so (an API key's marker is ignored). A call that does not pass is answered as the sandbox
+    tool's, its text naming pi's tools (a call waiting for approval says to call `bash` again).
+  - **The operations**: pi's tool then runs, and each operation it makes on the environment (a command, what a path is,
+    a byte range of a file, a file's text, a file written) goes over the run gateway's RPC (`sandboxOperation`) to the
+    org's ControlPlane, whose Tools part runs it on the session through the sandbox provider (`runSandboxOperation`,
+    `sandbox/run-operations.ts`) only with the call's live ticket, for its run, and only the operations its tool makes
+    (`bash`: a command; `read`: what a path is and its bytes; `write`: a file written; `edit`: what a path is, its text,
+    the file written), so one call of pi's `edit` is one gate and one record however many operations it makes. A
+    command runs as `sandbox_bash`'s does (the fallback rule, the computer, ten minutes at most, its output cut to its
+    tail and saved whole in the session, which is the call's `spillPath`); the rest of the interface answers
+    `not_supported`. The run holds no binding or stub of the session: the `SANDBOX_SESSION` stub stays in the state
+    Worker, behind the ControlPlane, and no Dynamic Worker gets anything new (the session's just-bash is the same
+    Dynamic Worker with its files only, ADR 0044).
+  - **The record**: once pi's tool answered, the run settles the ticket (`settleToolCall`): the Tools part ends its
+    operations and answers its fields (`settleRunSandboxCall`), and the API Worker writes the call's one usage record
+    under the ticket's id (`request_id`; outcome `success` or `tool_error`, or `refused` for a command refused the
+    computer, below; latency from gate to the first settling, the answer's bytes, the cost the gate charged), naming
+    the sandbox tool, as the run's principal, before it answers: a record it could not write fails the settling. A
+    ticket's operations live five minutes past its last sign of life (its gate, and the start of each operation plus
+    the command's timeout, and its end), so a slow command never outlives it; an expired or settled one, or another
+    run's, runs nothing. Its settling is not bound by that: within a day of the gate (`SETTLE_GRACE_MS`) it answers the
+    same each time, so a retried settling writes the same record once; the part forgets tickets past that day at its
+    next gate. The run keeps each ticket in its storage (`sandbox-call:<ticket>`) from the gate until its settling went
+    through: a run stopped between gate and settling (evicted, its harness closed) settles it as `upstream_failure`
+    when its harness opens again, the call's charge staying; a settling that failed keeps its report (how the call
+    ended, `PendingSettle`) and is tried again from the object's alarm once due (`retryAt`), backing off as a child
+    run's delivery of its result does (#229, `deliveryBackoff`: 30 s, doubling, at most an hour), at most
+    `MAX_DELIVERY_ATTEMPTS` times, one try of a ticket at a time, so a call that succeeded is recorded as one. One
+    never settled within the day writes no record, the charge staying.
+  - **Computer time** (#224), as the sandbox toolkit's own calls have it: the gate sets the call's metering (the price
+    per computer hour, and whether a Spend limit its time counts toward has no room, checked as for `sandbox_bash`),
+    which the ticket keeps and every operation passes to the session (`ComputerMeter`). The session's computer time each
+    operation answers is charged at once to the call's spender's limits; the call's record holds its price only, as a
+    `sandbox_bash` call's does, and the computer's time is the session's records' (below). With no room, an operation
+    that meets the running computer stops it quietly and goes on, its answer carrying a note (`SandboxEnvReply.note`)
+    that the run adds to pi's tool's answer as a warning (`diagnostics`); only a command that needs the computer is
+    refused: the operation fails, the ticket keeps the limit's refusal, and settling it answers its words
+    (`RunToolSettled.refusal`, as `refusedText` words a refused `sandbox_bash`), which end the turn as any Spend
+    limit's refusal does.
+
+  The session is opened at the run's first such call (`sandbox_open` with exactly the definition's network and computer,
+  marked as the run's own, `RUN_SESSION_META`, a call and record of its own) and kept in the object's storage with its
+  toolkit and those settings, so every later turn works in the same files. A gate names the session in its arguments,
+  and the Tools part gates it only when the session is one it keeps as the run's (`SandboxSessionStore.owns`): another
+  run's or member's session, or one it forgot, is answered as an unknown session and charged nothing. **Narrowing**:
+  each turn hands the settings its session was opened with to `beginTurn`, which asks the Tools part whether they still
+  fit the definition's sandbox and the toolkit's ceiling now (`RunSandboxes.fits`, `agentSandboxFits`); a session that
+  no longer fits (a network or the computer narrowed, the sandbox removed or another toolkit named) is left
+  (`sandboxNarrowed`), and the next call opens a new one, telling the model why and that the files are not there (a
+  `sandbox_session` warning). It is not narrowed in place: its network is its Workspace's, set as it opens. The left
+  session goes with the run. A definition or ceiling widened since changes nothing: the session keeps what it has. A
+  session the sandbox lost (unknown or closed, an operation's `lost`, or the sandbox tool's `structuredContent.reason`)
+  is replaced once, and the model is told its files are gone. A run's session does not end after a day without use
+  (`OpenSandbox.untilPurged`, for the run's own session only): it lasts as long as the run, and goes when the run is
+  deleted (below), with its tickets. As it may outlive any day, it writes no usage record when it closes: it writes one
+  **each time its computer stops** (`SandboxSession.#recordStretch`), of that stretch's computer time and cost (a
+  session record, `tool_id` null, under `<session id>:<stretch start>`, naming the run, its agent and starter): its
+  object's alarm, which wakes when the computer's idle minutes are over as for any session, meters the run, reports what
+  no call charged (`sandboxComputerTime`) and records the stretch; a call records one that stopped for want of room, or
+  that ended before the call came (so a command that starts the computer again starts a stretch of its own); and the
+  run's deletion records the last, as its purge settles the session as a member's leaving does (charging and recording a
+  computer still running). A record that fails is kept with the session and tried again from its alarm a minute on
+  (`SETTLE_RETRY_MS`), and the purge keeps one still unwritten in the closed note, as a close does. A run's session's
+  object has no alarm while it has nothing to do.
+
 - **Usage records** (migration `usage/0011_usage_agent_runs.sql`): a model attempt or tool call of a run names the
   agent (`agent_id`), the run (`run_id`) and its starter (`starter`: `member:<id>`, or `run:<id>` for a child run); its principal is `run:<run id>`, and
   `member_id` is the member a private agent's run acts as. A browser session a run opens names the run too
@@ -4683,7 +4777,10 @@ the deployment's Dynamic Workers binding `LOADER`.
   then deletes its alarm and all its storage; a harness still closing then deletes the storage again once it closed
   (`waitUntil`), and from the purge on the instance opens no harness and writes nothing (`#purged`), so nothing it had
   running writes the run back. A later instance starts empty and answers like an unknown run. The run's sandbox
-  session (#230) and computer seconds (#224) join the purge once runs have them.
+  session (#230) is the Tools part's: forgetting the run (`forgetRuns`) has the Tools part of the same ControlPlane
+  purge it first (`RunSandboxes`, wired by the state Worker's composition, `purgeRunSandboxSessions`), and a run whose
+  session could not be purged stays queued for the next sweep. The purge settles the session first, so its last
+  stretch of computer time is charged and recorded (above).
 - **Retention** (#228): each org keeps its agent runs `run_retention_days` after their last activity (a column of the
   Platform registry's `orgs` table, `PATCH /org` and the panel's Settings, Retention; `null` keeps them; every org
   starts at 30, `global` and those from before included). The last activity is the index's `updated_at`: the run's start
@@ -4705,19 +4802,20 @@ the deployment's Dynamic Workers binding `LOADER`.
   so a shared agent's triggered runs, which no one started, are seen by no one until #232, and a child run is seen
   through the agents toolkit only, by the run that started it.
 - **pi packages**: `@earendil-works/*` 1.3.0, pinned exactly (their APIs are experimental), imported only by
-  `agents/runs/pi.ts`, an adapter the object imports statically, as the adapter imports pi-ai's OpenAI-compatible
-  provider module (`@earendil-works/pi-ai/api/openai-completions`, not its lazy `import()` wrapper). A lazy import
-  would be shared by the run objects of one isolate: when several start at once, all but one await the import another
-  object began and resume in that object's I/O context, which workerd refuses ("Cannot perform I/O on behalf of a
-  different Durable Object"), failing the turn and leaving its harness open (its deletion then never finished).
-  `agents/test/run-isolate.test.ts` starts an isolate's first runs at once and fails with pi-ai's lazy import. So both
-  Workers that bundle the Agents area (the API Worker, which runs the objects, and the app Worker, through
-  `@commissary/agents/api`) load the pi packages at startup. The adapter gives pi-ai one OpenAI-compatible provider
-  (`commissary`) whose `fetch` is the run gateway, and installs the tools the MCP endpoint lists for the run
+  `agents/runs/pi.ts` and the run's sandbox tools it installs (`agents/runs/pi-sandbox.ts`,
+  `agents/runs/sandbox-env.ts`), all imported statically: the object imports the adapter, as the adapter imports pi-ai's
+  OpenAI-compatible provider module (`@earendil-works/pi-ai/api/openai-completions`, not its lazy `import()` wrapper). A
+  lazy import would be shared by the run objects of one isolate: when several start at once, all but one await the
+  import another object began and resume in that object's I/O context, which workerd refuses ("Cannot perform I/O on
+  behalf of a different Durable Object"), failing the turn and leaving its harness open (its deletion then never
+  finished). `agents/test/run-isolate.test.ts` starts an isolate's first runs at once and fails with pi-ai's lazy
+  import. So both Workers that bundle the Agents area (the API Worker, which runs the objects, and the app Worker,
+  through `@commissary/agents/api`) load the pi packages at startup. The adapter gives pi-ai one OpenAI-compatible
+  provider (`commissary`) whose `fetch` is the run gateway, and installs the tools the MCP endpoint lists for the run
   (`@earendil-works/pi-mcp` over the same `fetch`). The cost, measured with `wrangler deploy --dry-run` and `wrangler
-  check startup` (median of nine) when the adapter was loaded lazily: the API Worker is 3,041 KiB gzipped with a 68.8
-  ms startup, against 2,665 KiB and 64.4 ms with the pi packages stubbed out; loaded at startup, the startup time
-  includes them.
+  check startup` (median of nine) when the adapter was loaded lazily: the API Worker is 3,041 KiB gzipped with a 68.8 ms
+  startup, against 2,665 KiB and 64.4 ms with the pi packages stubbed out; loaded at startup, the startup time includes
+  them.
 
 ### Triggers (#231)
 

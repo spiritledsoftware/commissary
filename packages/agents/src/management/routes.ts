@@ -39,6 +39,7 @@ const STATUS: Readonly<Record<AgentsErrorCode, number>> = {
   unknown_model: 422,
   unknown_toolkit: 422,
   unknown_agent: 422,
+  invalid_sandbox: 422,
 };
 
 /** Where the refused field is, for the panel's form. */
@@ -46,6 +47,7 @@ const PATH: Partial<Record<AgentsErrorCode, string>> = {
   unknown_model: "model",
   unknown_toolkit: "tool_scope",
   unknown_agent: "tool_scope",
+  invalid_sandbox: "sandbox",
 };
 
 const orRefuse = orRefuseWith(STATUS, PATH);
@@ -167,6 +169,7 @@ export const managementRoutes = <R>(references: AgentReferences<R>) => {
     const check = yield* checkReferences(references, member, {
       model: input.model,
       toolScope: input.tool_scope,
+      sandbox: input.sandbox,
     });
 
     const result = yield* agentsControlPlane("createAgent", (stub) =>
@@ -186,7 +189,11 @@ export const managementRoutes = <R>(references: AgentReferences<R>) => {
 
     // What the edit names is checked against the reach of the agent's owner: its member's for a private agent (only
     // they manage it in full), the org's for a shared one. A limited view takes no definition edit at all.
-    if (input.model !== undefined || input.tool_scope !== undefined) {
+    if (
+      input.model !== undefined ||
+      input.tool_scope !== undefined ||
+      (input.sandbox !== undefined && input.sandbox !== null)
+    ) {
       const found = yield* agentsControlPlane("getAgent", (stub) =>
         stub.agents().getAgent(viewer, id),
       );
@@ -197,6 +204,7 @@ export const managementRoutes = <R>(references: AgentReferences<R>) => {
         check = yield* checkReferences(references, agent.private ? viewer.member : undefined, {
           model: input.model,
           toolScope: input.tool_scope,
+          sandbox: input.sandbox,
         });
     }
 

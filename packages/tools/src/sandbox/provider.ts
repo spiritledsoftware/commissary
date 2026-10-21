@@ -2,21 +2,22 @@
  * The sandbox-provider interface (ADR 0041, #222): the service behind a sandbox toolkit, reached only through it, as a
  * browser provider is behind the browser toolkit (`../browser/provider.ts`). It covers what the sandbox tools need:
  * open a session with a network, run a command, read, write and list files, and close it. Cloudflare's sandbox
- * (`cloudflare/`, `@cloudflare/computer` with just-bash) is the one provider built; another (Daytona, E2B, Modal, Vercel
- * Sandbox) is a new adapter behind the same interface, with the org's or a member's key for it as the toolkit's
+ * (`cloudflare/`, `@cloudflare/computer` with just-bash) is the one provider built; another (Daytona, E2B, Modal,
+ * Vercel Sandbox) is a new adapter behind the same interface, with the org's or a member's key for it as the toolkit's
  * credential, serving the same tools (`toolkit.ts`).
  *
- * A session belongs to one principal in one org ({@link SandboxOwner}): a client's member or API key, or later one agent
- * run (#230). A call with another owner's session id is answered as one with an id that does not exist
- * (`unknown_session`), and a session never crosses orgs. A session the provider closed (on `sandbox_close`, or idle for
- * a day) answers `closed` to its owner for a while (Cloudflare's: a week), and then `unknown_session`.
+ * A session belongs to one principal in one org ({@link SandboxOwner}): a client's member or API key, or one agent run
+ * (#230), whose own session lasts as long as the run ({@link OpenSandbox.untilPurged}). A call with another owner's
+ * session id is answered as one with an id that does not exist (`unknown_session`), and a session never crosses orgs.
+ * A session the provider closed (on `sandbox_close`, or idle for a day) answers `closed` to its owner for a while
+ * (Cloudflare's: a week), and then `unknown_session`.
  */
 import type { UsageRun } from "@commissary/auth";
 import type { OutboundPolicy } from "@commissary/core";
 import { type Effect, Schema } from "effect";
 import type { SandboxAllowance } from "./network.ts";
 
-/** Who a sandbox session belongs to: a principal (`user:<email>`, `key:<id>`, later an agent run) in one org. */
+/** Who a sandbox session belongs to: a principal (`user:<email>`, `key:<id>`, an agent run's `run:<id>`) in one org. */
 export interface SandboxOwner {
   readonly org: string;
   readonly principal: string;
@@ -94,6 +95,12 @@ export interface OpenSandbox extends SandboxAllowance {
   /** Its computer time's metering (#224); absent, as from a part before it: the session meters nothing. */
   readonly meter?: ComputerMeter | undefined;
   readonly opener?: SessionOpener | undefined;
+  /**
+   * The session lasts until it is closed or purged, however long it goes without a call: an agent run's own (#230, ADR
+   * 0041, the one its harness opens), which lives as long as the run and is purged with it. Otherwise a day without a
+   * call ends it.
+   */
+  readonly untilPurged?: boolean | undefined;
 }
 
 /**
@@ -136,6 +143,13 @@ export interface CommandResult {
 export interface DirectoryEntry {
   readonly name: string;
   readonly directory: boolean;
+}
+
+/** What a path is: its kind, its size in bytes and when it was last modified (epoch ms). */
+export interface FileStat {
+  readonly kind: "file" | "directory" | "symlink";
+  readonly size: number;
+  readonly mtimeMs: number;
 }
 
 /**
@@ -191,6 +205,23 @@ export interface SandboxProvider {
     now: number,
     meter?: ComputerMeter,
   ) => MeteredSandboxed<string>;
+  /** What a path is (#230: an agent run's coding tools), or `null` when nothing is there. */
+  readonly stat: (
+    owner: SandboxOwner,
+    session: string,
+    path: string,
+    now: number,
+    meter?: ComputerMeter,
+  ) => MeteredSandboxed<FileStat | null>;
+  /** Up to `length` bytes of a file from `offset` (#230); fewer only at its end. */
+  readonly readBytes: (
+    owner: SandboxOwner,
+    session: string,
+    path: string,
+    range: { readonly offset: number; readonly length: number },
+    now: number,
+    meter?: ComputerMeter,
+  ) => MeteredSandboxed<Uint8Array>;
   /** Writes a file's text, creating its directories. */
   readonly writeFile: (
     owner: SandboxOwner,
@@ -235,7 +266,10 @@ export interface SandboxProvider {
   readonly purge: (org: string, session: string, settle?: boolean) => MeteredSandboxed<void>;
 }
 
-/** How long a session lasts without a call: a day (ADR 0041). */
+/**
+ * How long a session lasts without a call: a day (ADR 0041), but for an agent run's own
+ * ({@link OpenSandbox.untilPurged}).
+ */
 export const SESSION_IDLE_MS = 24 * 60 * 60 * 1000;
 
 /** The working directory of every session, where relative paths resolve. */
