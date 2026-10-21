@@ -71,6 +71,10 @@ describe("web panel", () => {
     "/o/default/tools/sessions/0123456789abcdef",
     // The tools a member reaches and why (#209).
     "/o/default/my-tools",
+    // The Agents pages (#233): the list, a new agent and an agent's page.
+    "/o/default/agents",
+    "/o/default/agents/new",
+    "/o/default/agents/ag_0123456789abcdef",
     "/o/default/settings/",
     "/o/DEFAULT/Settings",
   ])("serves index.html for %s with the panel's security headers", async (path) => {

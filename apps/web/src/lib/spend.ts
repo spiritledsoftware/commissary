@@ -31,12 +31,8 @@ export const SUBJECT_KINDS: ReadonlyArray<{
   // An org toolkit's shared credential (#199, #209): its priced tool calls count toward it.
   { id: "toolkit_credential", label: "Toolkit credential" },
   { id: "key", label: "API key" },
+  { id: "agent", label: "Shared agent" },
 ];
-
-/** The kinds listed, not offered in the form yet: a shared hosted agent (#226; the panel's agents come later). */
-const LISTED_ONLY: Partial<Record<SpendSubjectKind, string>> = {
-  agent: "Agent",
-};
 
 /** What a limit can name: its id, and what to call it. */
 export interface LimitSubject {
@@ -61,7 +57,7 @@ export const limitableToolkits = (
     .toSorted((a, b) => a.label.localeCompare(b.label));
 
 export const kindLabel = (kind: SpendSubjectKind): string =>
-  LISTED_ONLY[kind] ?? SUBJECT_KINDS.find((candidate) => candidate.id === kind)?.label ?? kind;
+  SUBJECT_KINDS.find((candidate) => candidate.id === kind)?.label ?? kind;
 
 export const WEEK_STARTS: ReadonlyArray<{ readonly id: SpendWeekStart; readonly label: string }> = [
   { id: "monday", label: "Monday" },

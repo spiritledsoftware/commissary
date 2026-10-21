@@ -1,0 +1,40 @@
+/* The notice on an unattended agent: a set-apart block on the sunk ground across the column, an icon and ink sentences.
+   No colour fill, no stripe: the words carry it (like the plan notices). */
+.notice {
+  display: grid;
+  grid-template-columns: 1.25rem minmax(0, 1fr);
+  gap: var(--space-3);
+  max-width: 64rem;
+  padding: var(--space-4);
+  background: var(--sunk);
+  border-radius: var(--radius);
+}
+
+.icon {
+  margin-top: 0.125rem;
+}
+
+.body {
+  display: grid;
+  gap: var(--space-2);
+  max-width: 65ch;
+  font-size: var(--text-sm);
+}
+
+.title {
+  font-size: var(--text-md);
+  font-weight: 750;
+}
+
+.list {
+  display: grid;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  font-weight: 600;
+  list-style: none;
+}
+
+.fix {
+  color: var(--quiet);
+}

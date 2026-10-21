@@ -9,6 +9,7 @@ import {
   PRIVATE_SWITCH_ORDER,
   PRIVATE_SWITCHES,
   privateSettingPatch,
+  privateSwitchesFor,
   roleCounts,
   sortMembers,
   sortTeams,
@@ -135,11 +136,23 @@ describe("ordering and joins", () => {
 });
 
 describe("what members may keep privately (#209, ADR 0023, ADR 0038)", () => {
-  it("has a switch for private credentials and, beside it, one for private toolkits", () => {
-    expect(PRIVATE_SWITCH_ORDER).toEqual(["private_credentials", "private_toolkits"]);
+  it("has a switch for private credentials and, beside it, private toolkits and private agents", () => {
+    expect(PRIVATE_SWITCH_ORDER).toEqual([
+      "private_credentials",
+      "private_toolkits",
+      "private_agents",
+    ]);
+
+    expect(PRIVATE_SWITCHES.private_agents.title).toBe("Private agents");
+    expect(PRIVATE_SWITCHES.private_agents.label).toBe("Let members create private agents");
     expect(PRIVATE_SWITCHES.private_toolkits.title).toBe("Private toolkits");
     expect(PRIVATE_SWITCHES.private_toolkits.label).toBe("Let members add private toolkits");
     expect(PRIVATE_SWITCHES.private_credentials.title).toBe("Private credentials");
+  });
+
+  it("lists the private agents switch only where the deployment has the Agents area", () => {
+    expect(privateSwitchesFor(true)).toEqual(PRIVATE_SWITCH_ORDER);
+    expect(privateSwitchesFor(false)).toEqual(["private_credentials", "private_toolkits"]);
   });
 
   it("writes a partial patch that changes the one setting and nothing else", () => {

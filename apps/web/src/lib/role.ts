@@ -83,10 +83,15 @@ export interface PanelPage {
   readonly exact?: boolean;
   /** The page exists on Commissary Cloud only (ADR 0026). */
   readonly hosted?: boolean;
+  /** The page exists where the deployment has the Agents area (`deployment.agents`, #233). */
+  readonly agents?: boolean;
 }
 
 /** The Toolkits page's path, under which the pages of each toolkit, adding one and the endpoint URL builder live. */
 export const TOOLS_PAGE = "/tools";
+
+/** The Agents page's path, under which the pages of each agent and the page that creates one live. */
+export const AGENTS_PAGE = "/agents";
 
 /** The Billing page's path: the sidebar's link, its route, and where the plan notices lead. */
 export const BILLING_PAGE = "/billing";
@@ -100,6 +105,8 @@ export const PAGES: ReadonlyArray<PanelPage> = [
   { to: "/models", label: "Models", group: "providers", role: "admin" },
   // Every member's (#208): the org toolkits they reach and their private ones; the server shows each only theirs.
   { to: TOOLS_PAGE, label: "Tools", group: "providers", role: "member" },
+  // Every member's (#233), where the deployment has the Agents area: their private agents and the shared ones granted to them.
+  { to: AGENTS_PAGE, label: "Agents", group: "providers", role: "member", agents: true },
   { to: "/members", label: "Members", group: "people", role: "admin" },
   { to: "/grants", label: "Grants", group: "people", role: "admin" },
   { to: "/my-models", label: "My models", group: "people", role: "member" },
@@ -122,18 +129,25 @@ export const PAGES: ReadonlyArray<PanelPage> = [
   { to: BILLING_PAGE, label: "Billing", group: "org", role: "admin", hosted: true },
 ];
 
+/** What besides the role decides the pages: the org's settings and the deployment's pieces. */
+export interface PageOptions {
+  readonly privateCredentials?: boolean;
+  readonly hosted?: boolean;
+  readonly agents?: boolean;
+}
+
 /**
  * The nav links a role sees; `privateCredentials`: the org lets members connect private credentials; `hosted`: the
- * deployment is Commissary Cloud, which has the pages that exist there only.
+ * deployment is Commissary Cloud, which has the pages that exist there only; `agents`: it has the Agents area.
  */
 export const pagesFor = (
   role: OrgRole,
-  privateCredentials = false,
-  hosted = false,
+  { privateCredentials = false, hosted = false, agents = false }: PageOptions = {},
 ): ReadonlyArray<PanelPage> =>
   PAGES.filter(
     (page) =>
       (hosted || page.hosted !== true) &&
+      (agents || page.agents !== true) &&
       (atLeast(role, page.role) || (privateCredentials && page.privateMembers === true)),
   );
 
@@ -147,10 +161,9 @@ export interface PageGroup {
 /** The links of {@link pagesFor} as the sidebar groups them, without the groups the role has no page in. */
 export const pageGroupsFor = (
   role: OrgRole,
-  privateCredentials = false,
-  hosted = false,
+  options: PageOptions = {},
 ): ReadonlyArray<PageGroup> => {
-  const pages = pagesFor(role, privateCredentials, hosted);
+  const pages = pagesFor(role, options);
 
   return PAGE_GROUPS.flatMap(({ id, heading }) => {
     const grouped = pages.filter((page) => page.group === id);
@@ -172,7 +185,8 @@ const within = (pathname: string, page: string): boolean =>
  * Whether a role may open a page of the panel (`pathname` is relative to the org's base path). Sub-pages of a page
  * need an org admin, like `/usage/prices`, except the page itself. A plain member opens Usage, My models, My tools, API keys and Limits, the
  * Approvals page with each approval's page (#201: the server shows each to its approvers and its caller only), Tools with
- * its pages (#208: the toolkits they reach and their private ones, and connecting their own credentials), and the
+ * its pages (#208: the toolkits they reach and their private ones, and connecting their own credentials), Agents with its
+ * pages (#233: their private agents; the server shows each agent to its manager only), and the
  * pages of their own private accounts and provider keys, with their sub-pages, where the org lets members connect private
  * credentials.
  */
@@ -180,6 +194,7 @@ export const pageAllowed = (role: OrgRole, pathname: string, privateCredentials 
   atLeast(role, "admin") ||
   within(pathname, "/approvals") ||
   within(pathname, TOOLS_PAGE) ||
+  within(pathname, AGENTS_PAGE) ||
   trimmed(pathname) === "/usage" ||
   trimmed(pathname) === "/my-models" ||
   trimmed(pathname) === "/my-tools" ||

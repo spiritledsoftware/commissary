@@ -347,6 +347,20 @@ Square signage. Buttons take a 3px radius; meters 1px. Blades have a square tail
   payment, the near mark at 80%), most urgent first, then a "Plan and usage" link to the Billing page. No colour fill,
   no stripe: the marks carry the urgency.
 
+### Unattended Notice
+
+- At the head of an agent's page, above its definition, where an enabled schedule or webhook meets a write tool with
+  no approval rule: one
+  set-apart block on the sunk ground (an icon, an 800-weight title, the tools by name in 600, a stone-4 line on the
+  fix), as the Plan Notices. No colour fill, no stripe. It goes when the scope or the triggers change so it no longer
+  applies.
+
+### Secret Notice
+
+- A webhook's secret, shown once (on creation or rotation): a sunk block with a title, a sentence that it is shown
+  this once, the URL and the secret each as a copyable value, and how a request proves itself. It stays until
+  dismissed, since leaving the page loses the secret.
+
 ### Tables
 
 - 0.875rem text, 1rem cell padding, a 2px ink rule under headings, stone-2 hairlines between rows, numbers right-aligned. A failed count above zero is red.

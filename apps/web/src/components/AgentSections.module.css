@@ -1,0 +1,40 @@
+/* The sections of a shared agent's page that list a few rows (who may use it, its Spend limits): hairlines between rows,
+   a link button at each row's end, the add form under them. */
+.section {
+  display: grid;
+  gap: var(--space-4);
+  max-width: 64rem;
+  min-width: 0;
+}
+
+.lead {
+  max-width: 65ch;
+  font-size: var(--text-sm);
+  color: var(--quiet);
+}
+
+/* An ink note: what is so now, which works meanwhile (no mark, the One Meaning Rule). */
+.note {
+  max-width: 65ch;
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.rowActions {
+  display: inline-flex;
+  gap: var(--space-4);
+}
+
+.add {
+  display: grid;
+  gap: var(--space-3);
+  justify-items: start;
+  max-width: 40rem;
+}
+
+.inline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-3);
+}

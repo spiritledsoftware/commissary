@@ -1,0 +1,74 @@
+/* A trigger's form: fields stacked, the cron expression beside its time zone, the preview under them on the sunk ground. */
+.form {
+  display: grid;
+  gap: var(--space-4);
+  max-width: 40rem;
+  min-width: 0;
+}
+
+.pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-4);
+}
+
+@container (max-width: 43rem) {
+  .pair {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.mono {
+  font-family: ui-monospace, monospace;
+  font-size: var(--text-sm);
+}
+
+/* What the expression says and when it runs next: a set-apart block, the one thing the form shows that the server will
+   confirm (`next_at`) once the trigger is saved. */
+.preview {
+  display: grid;
+  gap: 0.125rem;
+  padding: var(--space-3);
+  background: var(--sunk);
+  border-radius: var(--radius);
+}
+
+.said {
+  font-weight: 750;
+}
+
+.textarea {
+  min-height: 4.5rem;
+  padding: var(--space-2) var(--space-3);
+  background: var(--field);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--text-md);
+  border: 2px solid var(--rule);
+  border-radius: var(--radius);
+  resize: vertical;
+}
+
+.textarea:focus-visible {
+  border-color: var(--text);
+  outline-offset: 0;
+}
+
+.textarea[aria-invalid="true"] {
+  border-color: var(--danger);
+}
+
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.check > input {
+  margin: 0;
+  accent-color: var(--text);
+}

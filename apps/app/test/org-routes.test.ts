@@ -413,6 +413,7 @@ describe("who may manage the list of orgs", () => {
       orgs: [{ slug: "default", name: "Default" }],
       private_credentials: true,
       private_toolkits: true,
+      private_agents: true,
       deployment: SELF_HOSTED,
     });
     expect((await harness.json("/v9/management/orgs", { auth: false })).status).toBe(401);
@@ -497,6 +498,7 @@ describe("GET /me", () => {
       orgs: [{ slug: "default", name: "Default" }],
       private_credentials: true,
       private_toolkits: true,
+      private_agents: true,
       deployment: SELF_HOSTED,
     });
 
@@ -509,6 +511,7 @@ describe("GET /me", () => {
         orgs: [{ slug: "renamed-home", name: "Default" }],
         private_credentials: true,
         private_toolkits: true,
+        private_agents: true,
         deployment: SELF_HOSTED,
       });
     } finally {

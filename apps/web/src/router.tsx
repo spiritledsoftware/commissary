@@ -3,6 +3,9 @@
 import { createRootRoute, createRoute, createRouter } from "@tanstack/react-router";
 import { Shell } from "./components/Shell.tsx";
 import { AccountPage } from "./pages/Account.tsx";
+import { AgentNewPage } from "./pages/AgentNew.tsx";
+import { AgentPage } from "./pages/Agent.tsx";
+import { AgentsPage } from "./pages/Agents.tsx";
 import { AccountsPage } from "./pages/Accounts.tsx";
 import { ApprovalPage } from "./pages/Approval.tsx";
 import { ApprovalsPage } from "./pages/Approvals.tsx";
@@ -34,7 +37,7 @@ import { ToolsPage } from "./pages/Tools.tsx";
 import { UsagePage } from "./pages/Usage.tsx";
 import { readGrantsSearch } from "./lib/grants.ts";
 import { readNewKeySearch } from "./lib/keys.ts";
-import { BILLING_PAGE, TOOLS_PAGE } from "./lib/role.ts";
+import { AGENTS_PAGE, BILLING_PAGE, TOOLS_PAGE } from "./lib/role.ts";
 import { legacyHashTarget } from "./lib/legacy-hash.ts";
 import { panelBasepath } from "./lib/org.ts";
 import { readPricesSearch } from "./lib/prices.ts";
@@ -120,6 +123,14 @@ const routeTree = rootRoute.addChildren([
     getParentRoute: () => rootRoute,
     path: "/tools/$toolkitId/connect",
     component: ToolkitConnectPage,
+  }),
+  // Agents (#233): the agents, creating one, and an agent's page with its triggers (`deployment.agents` only).
+  createRoute({ getParentRoute: () => rootRoute, path: AGENTS_PAGE, component: AgentsPage }),
+  createRoute({ getParentRoute: () => rootRoute, path: "/agents/new", component: AgentNewPage }),
+  createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/agents/$agentId",
+    component: AgentPage,
   }),
   createRoute({ getParentRoute: () => rootRoute, path: "/members", component: MembersPage }),
   createRoute({

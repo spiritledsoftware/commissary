@@ -174,8 +174,11 @@ export const roleCounts = (members: ReadonlyArray<MemberView>): string => {
 // ---------------------------------------------------------------------------------------------------------------
 // What members may keep privately
 
-/** The two settings that say what plain members may keep to themselves: org admins decide both (ADR 0023, ADR 0038). */
-export type PrivateSetting = "private_credentials" | "private_toolkits";
+/**
+ * The settings that say what plain members may keep to themselves: org admins decide each on its own (ADR 0023, ADR
+ * 0038, ADR 0040).
+ */
+export type PrivateSetting = "private_credentials" | "private_toolkits" | "private_agents";
 
 /** One such switch as its section words it. */
 export interface PrivateSwitch {
@@ -220,13 +223,32 @@ export const PRIVATE_SWITCHES: Readonly<Record<PrivateSetting, PrivateSwitch>> =
         ? "Members can add private toolkits now."
         : "Private toolkits are switched off, not deleted.",
   },
+  private_agents: {
+    setting: "private_agents",
+    title: "Private agents",
+    label: "Let members create private agents",
+    what: "the private agents setting",
+    describe: (on) =>
+      on
+        ? "On: a member's private agent works within their own reach, and only they use it. Org admins see that it exists and whose it is, and can disable or remove it, but not what it says or does."
+        : "Off: members cannot create private agents, and the ones they made stay in place but run no more. Turning it on again brings them back. This is separate from private credentials and private toolkits.",
+    said: (on) =>
+      on
+        ? "Members can create private agents now."
+        : "Private agents are switched off, not deleted.",
+  },
 };
 
 /** The sections in the order the Members page lists them. */
 export const PRIVATE_SWITCH_ORDER: ReadonlyArray<PrivateSetting> = [
   "private_credentials",
   "private_toolkits",
+  "private_agents",
 ];
+
+/** The sections a deployment has: the private agents one only where it has the Agents area (`deployment.agents`). */
+export const privateSwitchesFor = (agents: boolean): ReadonlyArray<PrivateSetting> =>
+  PRIVATE_SWITCH_ORDER.filter((setting) => agents || setting !== "private_agents");
 
 /** The write that sets one switch: a partial patch, so it never changes the other settings. */
 export const privateSettingPatch = (
