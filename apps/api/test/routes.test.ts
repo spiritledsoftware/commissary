@@ -1,10 +1,16 @@
 import { exports } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { CORS_EXPOSED_RESPONSE_HEADERS } from "../src/http/cors.ts";
 
 // The API Worker's own routes and its CORS (src/http/cors.ts). `localhost` gets the dev bypass (vitest.config.ts).
 const fetchWorker = (path: string, init?: RequestInit, origin = "https://commissary.test") =>
   exports.default.fetch(new Request(`${origin}${path}`, init));
+
+// The first request in this file loads the API Worker's module graph. Under CI load that alone has run past the 30 s
+// test timeout, failing whichever test came first, so it gets its own, longer budget here (as apps/app's does).
+beforeAll(async () => {
+  await (await fetchWorker("/healthz")).text();
+}, 120_000);
 
 const expectCors = (response: Response) => {
   expect(response.headers.get("access-control-allow-origin")).toBe("*");
