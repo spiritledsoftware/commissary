@@ -1,10 +1,16 @@
 // The app Worker's own routes: `/healthz`, the panel at `/`, and the plain 404 of unknown routes. It answers no CORS
 // (src/http/not-found.ts): the client API, which does, is the API Worker's (apps/api/test/routes.test.ts).
 import { exports } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 
 const fetchWorker = (path: string, init?: RequestInit) =>
   exports.default.fetch(new Request(`https://commissary.test${path}`, init));
+
+// The first request in this file starts the whole app Worker. Under CI load that start alone has run past the 30 s
+// test timeout, failing whichever test came first, so it gets its own, longer budget here.
+beforeAll(async () => {
+  await (await fetchWorker("/healthz")).text();
+}, 120_000);
 
 describe("GET /healthz", () => {
   it("returns {status:ok} as JSON", async () => {
