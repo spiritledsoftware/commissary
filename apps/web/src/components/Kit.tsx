@@ -47,3 +47,21 @@ export const Problem = ({
     )}
   </div>
 );
+
+/** Numbered steps like stages on a route (DESIGN.md "Steps"): each a `Step` with its title and content under it. */
+export const Steps = ({ children }: { readonly children: ReactNode }) => (
+  <ol className={kit["steps"]}>{children}</ol>
+);
+
+export const Step = ({
+  title,
+  children,
+}: {
+  readonly title: string;
+  readonly children?: ReactNode;
+}) => (
+  <li className={kit["step"]}>
+    <h3 className={kit["stepTitle"]}>{title}</h3>
+    {children}
+  </li>
+);

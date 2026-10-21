@@ -2572,8 +2572,8 @@ exists only as `ctx.container` inside those objects, with no binding in any Work
 marker `COMPUTER=on` on the State and app Workers exactly when it attaches the container, from the one
 `COMMISSARY_COMPUTER` setting (`@commissary/core`'s `COMPUTER_MARKER` and `hasComputer`, which both the deploy and the
 checks use; the session objects check `ctx.container` themselves too). The panel reads `me.deployment.hosted` for the mode and `browser` for the Browser sessions pages and the link to them
-(#216: without it the pages answer Not found and nothing links to them); `computer` is exposed for #217 and #225 and
-unused so far.
+(#216, #217: without it the pages answer Not found and nothing links to them, and Usage shows no browser time);
+`computer` is exposed for #225 and unused so far.
 
 Routes of the addressed org (`/org`, `/export`) and the account route (`DELETE /me`), all in `org-routes.ts` (ADR 0027,
 "Zero data retention" below):
@@ -4626,6 +4626,28 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
   and deadline, and, for its member only, the Live View in a frame, minted when the page opens and again on Reconnect
   (the link lives in the page's state only; the panel's CSP allows frames from `https://live.browser.run` and nothing
   else), with End session (confirmed). Both read again every 15 seconds while open.
+  The **Browser profiles page** (#217, `/tools/profiles`, `apps/web/src/pages/BrowserProfiles.tsx` and `lib/browser-profiles.ts`;
+  hidden like the sessions pages) lists what `GET /browser-profiles` returns the caller: an org admin's **Shared
+  profiles** (each with who may use it, from `GET /grants/profiles`, and Rename, Who may use it and Delete) and their own
+  private ones, plus the other members' private profiles as existence only (`PrivateRows`, with Remove); a plain member
+  gets their own private profiles and no control of the shared ones (the route gives them none and they never read the
+  grants). The **New profile** form takes a name (1-64 of `[a-z0-9_-]`, checked against the list as the server does)
+  and, for a shared profile, who may use it: a checklist of everyone, teams and members with **nothing preselected**,
+  refused while empty (`validateDraft`). It creates the profile, then one profile grant per subject; a grant the server
+  refuses deletes the profile again (best effort), so no shared profile is left that no one may use. Who may use an
+  existing profile is edited in its row as a diff (grants added first, then those dropped, each at its revision). The
+  page ends with how to log into a profile: open it in a session (`browser_open` with `profile`), ask for a handoff
+  (`browser_ask_human`, answered with a link to the Browser sessions page), close with save (`browser_close` with `save`).
+  The browser toolkit's own page gains a link to both pages beside its **Prices**, which already hold the price per
+  browser hour (#209). **Usage**'s tool-call view words browser time: a column in the breakdown where a row used some,
+  under a record's tool in the log ("2.3 s of browser time", a Quick Action's or a session closing's) and in the totals
+  and a record's facts. A browser session's record (no tool) has no latency and reads "Closed", and its facts name the
+  profile it opened from where the caller manages that profile. Where the deployment has no browser
+  (`me.deployment.browser` false, ADR 0043) the figures of browser time are hidden, but historical session records stay
+  in the log, labelled "Browser session" with their cost: they are records of what happened. An org admin whose members
+  and teams (or grants) could not be read still gets the lists; only the "Who may use it" column and editor and the
+  shared option of the form wait for them. Deletes go through `deleteProfile` at the revision of the row they were read
+  at, and the other members' rows are looked up by id first, so no write is sent at a revision that was never read.
 - **Panel, grants, prices, approvals and usage** (#209; models in `apps/web/src/lib/tool-grants.ts`, `tool-id.ts`,
   `my-tools.ts`, `tool-prices.ts`, `approval-rules.ts`, `usage-tools.ts`). The **Grants** page (`/grants`) has a Models
   | Tools switch (`?area=tools`): the tool grants (`GrantsTools.tsx`) read by member, team or toolkit, a form for the

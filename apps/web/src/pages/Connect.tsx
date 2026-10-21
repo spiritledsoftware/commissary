@@ -16,7 +16,7 @@ import {
   panelOrgSlug,
   uploadAtom,
 } from "../api/client.ts";
-import { kit, Problem } from "../components/Kit.tsx";
+import { kit, Problem, Step, Steps } from "../components/Kit.tsx";
 import { addsPrivately, Ownership } from "../components/Ownership.tsx";
 import {
   authFileName,
@@ -50,23 +50,6 @@ type Flow =
   | { readonly step: "finishing"; readonly start: OAuthStart }
   | { readonly step: "done" }
   | { readonly step: "failed"; readonly message: string };
-
-const Steps = ({ children }: { readonly children: React.ReactNode }) => (
-  <ol className={styles["steps"]}>{children}</ol>
-);
-
-const Step = ({
-  title,
-  children,
-}: {
-  readonly title: string;
-  readonly children?: React.ReactNode;
-}) => (
-  <li className={styles["step"]}>
-    <h3 className={styles["stepTitle"]}>{title}</h3>
-    {children}
-  </li>
-);
 
 const OpenLink = ({ url, label }: { readonly url: string; readonly label: string }) => (
   <a className={kit["primary"]} href={url} target="_blank" rel="noopener noreferrer">

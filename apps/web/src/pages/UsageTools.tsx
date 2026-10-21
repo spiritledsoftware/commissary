@@ -10,6 +10,8 @@ import { type ReactNode, useState } from "react";
 import type { UsageGroup, UsageRecord, UsageSummary } from "@commissary/contract/usage";
 import {
   nowAtom,
+  browserProfilesAtom,
+  meAtom,
   type UsageView,
   usageRecordsAtom,
   usageSummaryAtom,
@@ -19,15 +21,22 @@ import { kit, Problem, Section } from "../components/Kit.tsx";
 import { TrailMark } from "../components/Signs.tsx";
 import { failureMessage } from "../lib/failure.ts";
 import { formatCost, formatCount, formatLatency, formatMoment } from "../lib/format.ts";
+import { hasBrowser } from "../lib/hosted.ts";
 import { type Breakdown, type FilterKey } from "../lib/usage.ts";
 import {
   approvalWord,
+  browserDuration,
+  browserTimeText,
   credentialText,
   type Figure,
   outcomeFailed,
+  hasBrowserTime,
+  latencyText,
   outcomeWord,
+  profileFact,
   recordFacts,
   recordSubject,
+  resultWord,
   toolDetails,
   toolHeadline,
 } from "../lib/usage-tools.ts";
@@ -38,6 +47,13 @@ export interface ToolNames {
   readonly toolkits: ReadonlyMap<string, string>;
   readonly valueName: (key: FilterKey | Breakdown["id"], value: string) => string;
 }
+
+/** Whether the deployment has a browser, so browser time and its cost show (#217; ADR 0043). */
+const useBrowserUsage = (): boolean => {
+  const me = useAtomValue(meAtom);
+
+  return AsyncResult.isSuccess(me) && hasBrowser(me.value);
+};
 
 const Figures = ({
   figures,
@@ -69,15 +85,19 @@ const BreakdownTable = ({
   breakdown,
   names,
   narrowed,
+  browser,
   onNarrow,
 }: {
   readonly summary: UsageSummary;
   readonly breakdown: Breakdown;
   readonly names: ToolNames;
   readonly narrowed: boolean;
+  /** The deployment has a browser: a column of browser time where any row used some. */
+  readonly browser: boolean;
   readonly onNarrow: (group: UsageGroup) => void;
 }) => {
   const canNarrow = breakdown.filter !== undefined && !narrowed;
+  const browserTime = browser && hasBrowserTime(summary.groups);
 
   return (
     <table className={`${styles["table"]} ${styles["breakdown"]}`}>
@@ -96,6 +116,11 @@ const BreakdownTable = ({
           <th scope="col" className={styles["number"]}>
             Cost
           </th>
+          {browserTime ? (
+            <th scope="col" className={`${styles["number"]} ${styles["wide"]}`}>
+              Browser time
+            </th>
+          ) : null}
           <th scope="col" className={`${styles["number"]} ${styles["wide"]}`}>
             Average latency
           </th>
@@ -124,6 +149,11 @@ const BreakdownTable = ({
               <td className={styles["number"]}>{formatCount(group.requests)}</td>
               <td className={styles["number"]}>{formatCount(group.failed)}</td>
               <td className={styles["number"]}>{formatCost(group.cost_micros)}</td>
+              {browserTime ? (
+                <td className={`${styles["number"]} ${styles["wide"]}`}>
+                  {(group.browser_ms ?? 0) > 0 ? browserDuration(group.browser_ms ?? 0) : "None"}
+                </td>
+              ) : null}
               <td className={`${styles["number"]} ${styles["wide"]}`}>
                 {formatLatency(group.avg_latency_ms)}
               </td>
@@ -155,6 +185,7 @@ export const ToolSummary = ({
   const result = useAtomValue(atom);
   const retry = useAtomRefresh(atom);
   const narrowed = breakdown.filter !== undefined && view.filters[breakdown.filter] !== undefined;
+  const browser = useBrowserUsage();
 
   return AsyncResult.match(result, {
     onInitial: () => (
@@ -166,7 +197,7 @@ export const ToolSummary = ({
       <Problem onRetry={retry}>Could not load tool calls. {failureMessage(failure)}</Problem>
     ),
     onSuccess: ({ value, waiting }) => {
-      const details = toolDetails(value.totals);
+      const details = toolDetails(value.totals, browser);
 
       return (
         <>
@@ -204,6 +235,7 @@ export const ToolSummary = ({
                   breakdown={breakdown}
                   names={names}
                   narrowed={narrowed}
+                  browser={browser}
                   onNarrow={(group) => {
                     if (breakdown.filter !== undefined) onNarrow(breakdown.filter, group.key);
                   }}
@@ -225,10 +257,20 @@ export const ToolSummary = ({
 // ---------------------------------------------------------------------------------------------------------------
 // Log
 
-const Detail = ({ record, names }: { readonly record: UsageRecord; readonly names: ToolNames }) => (
+const Facts = ({
+  record,
+  names,
+  browser,
+  profile,
+}: {
+  readonly record: UsageRecord;
+  readonly names: ToolNames;
+  readonly browser: boolean;
+  readonly profile: string | undefined;
+}) => (
   <div className={styles["detail"]}>
     <dl className={styles["facts"]}>
-      {recordFacts(record, toolkitOf(record, names)).map(([label, value]) => (
+      {recordFacts(record, toolkitOf(record, names), browser, profile).map(([label, value]) => (
         <div key={label}>
           <dt>{label}</dt>
           <dd>{value}</dd>
@@ -238,17 +280,50 @@ const Detail = ({ record, names }: { readonly record: UsageRecord; readonly name
   </div>
 );
 
+/** A browser session's record names the profile it opened from by id: its name is in the profiles the caller manages. */
+const SessionFacts = (props: {
+  readonly record: UsageRecord;
+  readonly names: ToolNames;
+  readonly browser: boolean;
+}) => {
+  const result = useAtomValue(browserProfilesAtom);
+
+  const profile = AsyncResult.isSuccess(result)
+    ? profileFact(
+        props.record,
+        new Map(result.value.profiles.map((each) => [each.id, each.name] as const)),
+      )
+    : undefined;
+
+  return <Facts {...props} profile={profile} />;
+};
+
+const Detail = (props: {
+  readonly record: UsageRecord;
+  readonly names: ToolNames;
+  readonly browser: boolean;
+}) =>
+  !props.browser || props.record.browser_profile_id === undefined ? (
+    <Facts {...props} profile={undefined} />
+  ) : (
+    <SessionFacts {...props} />
+  );
+
 const CallRow = ({
   record,
   names,
   now,
+  browser,
 }: {
   readonly record: UsageRecord;
   readonly names: ToolNames;
   readonly now: number;
+  /** The deployment has a browser, so browser time shows. */
+  readonly browser: boolean;
 }) => {
   const [open, setOpen] = useState(false);
   const detailId = `call-${record.request_id}`;
+  const browserTime = browser ? browserTimeText(record.browser_ms) : undefined;
   const outcome = record.outcome;
   const failed = outcome !== undefined && outcomeFailed(outcome);
 
@@ -282,6 +357,9 @@ const CallRow = ({
         <td className={styles["what"]}>
           {recordSubject(record)}
           <span className={styles["secondary"]}>{toolkitOf(record, names)}</span>
+          {browserTime === undefined ? null : (
+            <span className={styles["secondary"]}>{browserTime}</span>
+          )}
         </td>
         <td className={styles["who"]}>
           <span className={styles["accountName"]}>
@@ -292,19 +370,15 @@ const CallRow = ({
         <td className={styles["number"]}>
           {record.cost_micros === undefined ? "None" : formatCost(record.cost_micros)}
         </td>
-        <td className={`${styles["number"]} ${styles["latency"]}`}>
-          {formatLatency(record.latency_ms)}
-        </td>
+        <td className={`${styles["number"]} ${styles["latency"]}`}>{latencyText(record)}</td>
         <td className={styles["result"]} data-failed={failed}>
           {failed ? (
             <span className={styles["failedResult"]}>
               <TrailMark />
               {outcomeWord(outcome)}
             </span>
-          ) : outcome === undefined ? (
-            "OK"
           ) : (
-            outcomeWord(outcome)
+            resultWord(record)
           )}
           {approval === undefined ? null : <span className={styles["secondary"]}>{approval}</span>}
         </td>
@@ -312,7 +386,7 @@ const CallRow = ({
       {open ? (
         <tr className={styles["detailRow"]} id={detailId}>
           <td colSpan={6}>
-            <Detail record={record} names={names} />
+            <Detail record={record} names={names} browser={browser} />
           </td>
         </tr>
       ) : null}
@@ -334,6 +408,7 @@ const LogPage = ({
   before,
   last,
   names,
+  browser,
   onMore,
 }: {
   readonly view: UsageView;
@@ -341,6 +416,7 @@ const LogPage = ({
   readonly before: string | undefined;
   readonly last: boolean;
   readonly names: ToolNames;
+  readonly browser: boolean;
   readonly onMore: (next: string) => void;
 }) => {
   const atom = usageRecordsAtom({ view, failedOnly, before });
@@ -374,7 +450,13 @@ const LogPage = ({
       return (
         <tbody>
           {value.records.map((record) => (
-            <CallRow key={record.request_id} record={record} names={names} now={now} />
+            <CallRow
+              key={record.request_id}
+              record={record}
+              names={names}
+              now={now}
+              browser={browser}
+            />
           ))}
           {last && next !== undefined ? (
             <tr className={styles["message"]}>
@@ -404,6 +486,7 @@ export const ToolLog = ({
   readonly onFailedOnly: (failedOnly: boolean) => void;
 }) => {
   const [cursors, setCursors] = useState<ReadonlyArray<string>>([]);
+  const browser = useBrowserUsage();
   const pages: ReadonlyArray<string | undefined> = [undefined, ...cursors];
 
   return (
@@ -456,6 +539,7 @@ export const ToolLog = ({
             before={before}
             last={index === pages.length - 1}
             names={names}
+            browser={browser}
             onMore={(next) => setCursors([...cursors, next])}
           />
         ))}

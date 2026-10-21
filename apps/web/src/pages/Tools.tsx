@@ -6,13 +6,15 @@
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { Link } from "@tanstack/react-router";
 import { AsyncResult } from "effect/reactivity";
-import { AppWindow, Plus, ShieldCheck, Waypoints } from "lucide-react";
+import { AppWindow, Plus, ShieldCheck, UserRoundCog, Waypoints } from "lucide-react";
 import { Fragment, type ReactNode } from "react";
 import type { LimitedToolkitView } from "@commissary/contract/tools";
 import { meAtom, removeToolkitAtom, TOOLKITS, toolkitsAtom } from "../api/client.ts";
 import { kit, Problem } from "../components/Kit.tsx";
 import { PrivateRows } from "../components/PrivateRows.tsx";
-import { BROWSER_SESSIONS_PAGE, showsBrowserSessions } from "../lib/browser-sessions.ts";
+import { BROWSER_PROFILES_PAGE } from "../lib/browser-profiles.ts";
+import { BROWSER_SESSIONS_PAGE } from "../lib/browser-sessions.ts";
+import { hasBrowser } from "../lib/hosted.ts";
 import { failureMessage } from "../lib/failure.ts";
 import {
   canAdd,
@@ -181,10 +183,16 @@ export const ToolsPage = () => {
               <ShieldCheck aria-hidden="true" size={18} strokeWidth={2.25} />
               Approvals
             </Link>
-            {AsyncResult.isSuccess(me) && showsBrowserSessions(me.value) ? (
+            {AsyncResult.isSuccess(me) && hasBrowser(me.value) ? (
               <Link to={BROWSER_SESSIONS_PAGE} className={kit["secondary"]}>
                 <AppWindow aria-hidden="true" size={18} strokeWidth={2.25} />
                 Browser sessions
+              </Link>
+            ) : null}
+            {AsyncResult.isSuccess(me) && hasBrowser(me.value) ? (
+              <Link to={BROWSER_PROFILES_PAGE} className={kit["secondary"]}>
+                <UserRoundCog aria-hidden="true" size={18} strokeWidth={2.25} />
+                Browser profiles
               </Link>
             ) : null}
             <Link to="/tools/endpoint" className={kit["secondary"]}>
