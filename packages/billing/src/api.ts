@@ -17,11 +17,22 @@ export {
   countRequest,
   PLAN_LIMIT_REACHED,
   PlanLimitReached,
+  planLimitName,
+  planRefusalText,
   uncountRequest,
 } from "./meter.ts";
+
+export type { PlanMeter } from "./plan-meter.ts";
+
+export type { CeilingLimit, PlanLimit, PlanRefusal } from "./store.ts";
 
 export { limitClientRate, limitWebhookAttempts, RATE_LIMITED } from "./rate-limit.ts";
 
 export { scheduledTasks } from "./scheduled-tasks.ts";
 
-export { RATE_LIMIT_PERIOD_SECONDS, REQUEST_RATE_CEILING } from "./plan.ts";
+export {
+  type CeilingKind,
+  type Ceilings,
+  RATE_LIMIT_PERIOD_SECONDS,
+  REQUEST_RATE_CEILING,
+} from "./plan.ts";

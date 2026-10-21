@@ -33,8 +33,16 @@ import {
   CurrentOrg,
   CurrentOutboundPolicy,
   MCP_PATH,
+  PLAN_LIMIT_META,
   SPEND_REFUSAL_META,
 } from "@commissary/core";
+import {
+  type BillingEnv,
+  PLAN_LIMIT_REACHED,
+  planLimitName,
+  type PlanRefusal,
+  planRefusalText,
+} from "@commissary/billing/api";
 import { panelPageUrl } from "@commissary/state";
 import { spendRefusalMessage } from "@commissary/state/spend";
 import type {
@@ -233,17 +241,56 @@ const toolText = (text: string): Schema.JsonObject => ({
 });
 
 /** A tool result that reports a failure to the model. */
-const toolError = (text: string): Schema.JsonObject => ({
+const toolError = (text: string, meta?: Schema.JsonObject): Schema.JsonObject => ({
   content: [{ type: "text", text }],
   isError: true,
+  ...(meta === undefined ? {} : { _meta: meta }),
 });
 
 /** A spend limit's refusal as an agent run gets it (#227): the tool error, and the refusal in `_meta`. */
-const runRefusal = (text: string): Schema.JsonObject => ({
+const runRefusal = (text: string, meta: Schema.JsonObject = {}): Schema.JsonObject => ({
   content: [{ type: "text", text }],
   isError: true,
-  _meta: { [SPEND_REFUSAL_META]: text },
+  _meta: Object.assign({}, meta, { [SPEND_REFUSAL_META]: text }),
 });
+
+/**
+ * What the `_meta` of a plan refusal says of it (#241, {@link PLAN_LIMIT_META}): the code, the limit, the allowance.
+ */
+export const planLimitMeta = (refusal: PlanRefusal): Schema.JsonObject => ({
+  [PLAN_LIMIT_META]: {
+    error: PLAN_LIMIT_REACHED,
+    limit: planLimitName(refusal),
+    allowed: refusal.allowed,
+    ...(refusal.kind === "limit" ? { retry_after: refusal.retryAfterSeconds } : {}),
+  },
+});
+
+/**
+ * What a call the org's plan refused answers (#241): the code, the limit or ceiling, when free usage starts over and
+ * the billing page (`planRefusalText`); and, when the browser session the call named was closed with it, or the sandbox
+ * session it named had its computer stopped, or needed it, that, and that just-bash still runs commands. An agent run's
+ * refusal, as the model routes' `plan_limit_reached`, carries the code in `_meta` too.
+ */
+export const planLimitedText = (
+  name: string,
+  outcome: Pick<
+    Extract<ToolCallOutcome, { outcome: "plan_limited" }>,
+    "refusal" | "sessionClosed" | "computer" | "computerStopped"
+  >,
+): Effect.Effect<string, never, BillingEnv | CurrentOrg> =>
+  Effect.map(
+    planRefusalText(outcome.refusal),
+    (why) =>
+      `${name} was not called (${PLAN_LIMIT_REACHED}): ${why}` +
+      (outcome.sessionClosed === true
+        ? ` The browser session is closed: its browser time counts toward the limit.`
+        : outcome.computer === "stopped"
+          ? ` The sandbox session's computer is stopped. Commands just-bash can run still run.`
+          : outcome.computer === "needed"
+            ? ` It would run on the sandbox session's computer, which the plan keeps from it${outcome.computerStopped === true ? `, and the computer, which was running, is stopped` : ``}. Commands just-bash can run still run.`
+            : ``),
+  );
 
 /** Whether a `tools/call`'s `_meta` sets the flag `key` (#230: {@link RUN_EXECUTES_META}, {@link RUN_SESSION_META}). */
 const metaFlag = (params: Schema.JsonObject, key: string): boolean => {
@@ -296,6 +343,7 @@ const recordedOutcome = (outcome: EndedCall) => {
     case "connect":
       return "needs_credential";
     case "refused":
+    case "plan_limited":
       return "refused";
     case "pending":
       return "approval_pending";
@@ -376,6 +424,10 @@ const toolResult = Effect.fnUntraced(function* (
   if (outcome.outcome === "failed") return toolError(outcome.message);
 
   if (outcome.outcome === "refused") return toolError(refusedText(name, outcome));
+
+  // Commissary Cloud's plan refused the call before any work (#241): the limit, when it starts over, the billing page.
+  if (outcome.outcome === "plan_limited")
+    return toolError(yield* planLimitedText(name, outcome), planLimitMeta(outcome.refusal));
 
   if (outcome.outcome === "not_approved") return toolError(notApprovedText(name, outcome.reason));
 
@@ -475,6 +527,7 @@ const callTool = Effect.fnUntraced(function* (request: RpcRequest, context: Serv
     // A browser session's handoff (#216): the endpoint reaches its person, and a client it asked answers with its retry.
     handoffOutcomes: true,
     handoffAnswer: elicitsUrls(context.era) ? handoffAnswerOf(request.params) : undefined,
+    planOutcomes: true,
     ...(agents === undefined ? {} : { agentsToolkit: true }),
     // A run's call of its coding tools asks for a ticket rather than the call (#230); no other caller's.
     ...(identity.principal.kind === "run" && metaFlag(request.params, RUN_EXECUTES_META)
@@ -526,11 +579,14 @@ const callTool = Effect.fnUntraced(function* (request: RpcRequest, context: Serv
         }
       : outcome;
 
-  // An agent run learns that a spend limit refused the call, and ends its turn with the refusal as the answer (#227).
+  // An agent run learns that a spend limit, or its org's plan (#241), refused the call, and ends its turn with the
+  // refusal as the answer (#227).
   const value =
     ended.outcome === "refused" && call.run !== undefined
       ? runRefusal(refusedText(name, ended))
-      : yield* toolResult(ended, name, request, context);
+      : ended.outcome === "plan_limited" && call.run !== undefined
+        ? runRefusal(yield* planLimitedText(name, ended), planLimitMeta(ended.refusal))
+        : yield* toolResult(ended, name, request, context);
 
   const answeredAt = yield* Clock.currentTimeMillis;
   const { usage } = ended;
@@ -562,7 +618,7 @@ const callTool = Effect.fnUntraced(function* (request: RpcRequest, context: Serv
 const answer = (
   request: RpcRequest,
   context: Served,
-): Effect.Effect<Answer, never, AccessPrincipal | ToolsEnv | CurrentOrg> => {
+): Effect.Effect<Answer, never, AccessPrincipal | ToolsEnv | CurrentOrg | BillingEnv> => {
   const result = (value: Schema.JsonObject) => resultAnswer(request.id, framed(context.era, value));
 
   switch (request.method) {

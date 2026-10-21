@@ -9,6 +9,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { Context, Effect, Layer } from "effect";
 import { HttpRouter } from "effect/http";
 import { AccessPrincipal, type AccessIdentity } from "@commissary/auth";
+import { BillingEnv } from "@commissary/billing/api";
 import { CurrentOrg, type OrgId } from "@commissary/core";
 import { platformOf } from "@commissary/state";
 import { ToolsEnv } from "../src/env.ts";
@@ -76,6 +77,8 @@ const org = async () => {
 const fetchAs = async (id: OrgId, path: string, init: RequestInit) => {
   const context = Context.make(AccessPrincipal, { ...ALICE, org: id }).pipe(
     Context.add(ToolsEnv, { ...env, CONTROL_PLANE: env.BROWSER_CONTROL_PLANE }),
+    // The endpoint words a plan's refusal with it (#241); this org has no plans.
+    Context.add(BillingEnv, env),
     Context.add(CurrentOrg, id),
   );
 

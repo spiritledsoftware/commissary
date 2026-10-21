@@ -57,10 +57,20 @@ export const billMicros = (used: Usage): number =>
   );
 
 /**
- * Whether the billing cap (dollars) refuses the next request after `used`: one that would be billed (free usage of
- * requests is used up) and would take the bill past the cap. The one test both the refusal (`BillingStore.admit`) and
- * the 100% notice (`notices.ts`) use, so they cannot disagree.
+ * What the next use of a unit adds to the bill, in units: one request or tool call, or a minute of browser or computer
+ * time (those are metered as they run, so the cap stops use once a minute more would take the bill past it).
  */
-export const capRefusesNextRequest = (used: Usage, cap: number): boolean =>
-  used.requests >= FREE_USAGE.requests &&
-  billMicros(used) + PAYG_RATE_MICROS.requests > toMicros(cap);
+const CAP_STEP: Readonly<Record<Unit, number>> = {
+  requests: 1,
+  browserHours: 1 / 60,
+  computerHours: 1 / 60,
+};
+
+/**
+ * Whether the billing cap (dollars) refuses the next use of `unit` after `used`: use that would be billed (the unit's
+ * free usage is used up) and would take the bill past the cap. The one test both the refusal (`BillingStore.admit`,
+ * `BillingStore.limitOf`) and the 100% notice (`notices.ts`) use, so they cannot disagree.
+ */
+export const capRefuses = (used: Usage, cap: number, unit: Unit): boolean =>
+  used[unit] >= FREE_USAGE[unit] &&
+  billMicros(used) + PAYG_RATE_MICROS[unit] * CAP_STEP[unit] > toMicros(cap);

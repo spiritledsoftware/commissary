@@ -26,16 +26,23 @@ import {
 } from "./cache.ts";
 import { type BillingBindings, BillingEnv, billingPartOf } from "./env.ts";
 import { PlanLimitKind } from "./plan.ts";
+import type { CeilingLimit, PlanRefusal } from "./store.ts";
 
 export const PLAN_LIMIT_REACHED = "plan_limit_reached";
 
-/** A Free org used up its free usage for the month, or a Pay-as-you-go org's bill reached its billing cap. */
+/**
+ * A Free org used up its free usage of a unit for the month, or a Pay-as-you-go org's bill reached its billing cap. A
+ * unit is requests and tool calls, browser hours or computer hours.
+ */
 export class PlanLimitReached extends Schema.TaggedError<PlanLimitReached>()("PlanLimitReached", {
   /** Names the limit and links to the billing page; safe to show. */
   message: Schema.String,
-  /** Which limit refused: free usage of requests and tool calls, or the billing cap. */
+  /**
+   * Which limit refused: free usage of a unit (requests and tool calls, browser hours, computer hours), or the billing
+   * cap.
+   */
   limit: PlanLimitKind,
-  /** The month's free usage of requests and tool calls, or the billing cap in dollars. */
+  /** The month's free usage of the unit (requests and tool calls, or hours), or the billing cap in dollars. */
   allowed: Schema.Number,
   /** The seconds until free usage starts over (at least 1). */
   retryAfterSeconds: Schema.Number,
@@ -73,16 +80,53 @@ const groups = new Intl.NumberFormat("en-US");
 
 const dollars = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
 
+/**
+ * The start of a refusal of free usage: the plan whose free usage is used up, and whether a failed payment put it
+ * there.
+ */
+const heldTo = (pastDue: boolean): string =>
+  pastDue
+    ? "A payment failed: Pay as you go is held to the Free plan's limits until a payment succeeds, and the"
+    : "The";
+
 /** What a refusal says: the limit, when it starts over and where to see usage. */
 const refusalMessage = (refusal: CachedRefusal, resetsAt: string): string => {
   if (refusal.limit === "billing_cap")
     return `The billing cap of ${dollars.format(refusal.allowed)} a month is reached: use that would be billed is refused until ${resetsAt} unless an org owner raises or removes the cap. Plan and usage: ${refusal.page}`;
 
-  const held = refusal.pastDue
-    ? "A payment failed: Pay as you go is held to the Free plan's limits until a payment succeeds, and the"
-    : "The";
+  const held = heldTo(refusal.pastDue);
+  const usage = `Plan and usage: ${refusal.page}`;
 
-  return `${held} Free plan's ${groups.format(refusal.allowed)} requests and tool calls a month are used up; free usage starts over at ${resetsAt}. Plan and usage: ${refusal.page}`;
+  if (refusal.limit === "computer_hours" && refusal.allowed <= 0)
+    return `${held} Free plan has no computer hours: the computer needs Pay as you go. ${usage}`;
+
+  const one = refusal.allowed === 1;
+
+  const unit =
+    refusal.limit === "requests"
+      ? "requests and tool calls"
+      : `${refusal.limit === "browser_hours" ? "browser" : "computer"} ${one ? "hour" : "hours"}`;
+
+  return `${held} Free plan's ${groups.format(refusal.allowed)} ${unit} a month ${one ? "is" : "are"} used up; free usage starts over at ${resetsAt}. ${usage}`;
+};
+
+/** What a refused ceiling says: how many the plan lets the org have open at once, and where to see usage. */
+const ceilingMessage = (refusal: CeilingLimit, page: string): string => {
+  const usage = `Plan and usage: ${page}`;
+
+  const held = refusal.pastDue
+    ? " A payment failed: Pay as you go is held to the Free plan's limits."
+    : "";
+
+  if (refusal.limit === "computers" && refusal.allowed <= 0)
+    return `The computer needs Pay as you go: the Free plan has none.${held} ${usage}`;
+
+  const [many, one] =
+    refusal.limit === "browserSessions"
+      ? ["concurrent browser sessions", "concurrent browser session"]
+      : ["concurrent computers", "concurrent computer"];
+
+  return `The plan allows ${groups.format(refusal.allowed)} ${refusal.allowed === 1 ? one : many}, and that many are open: close one to open another.${held} ${usage}`;
 };
 
 /** The refusal of a request at `now`: what the month allows, when it starts over and where to see usage. */
@@ -161,4 +205,38 @@ export const uncountRequest = (
     yield* Effect.tryPromise(
       async () => await billingPartOf(env, org).refund(counted.monthStart),
     ).pipe(Effect.catch((error) => Effect.logWarning(`request not taken back: ${error.message}`)));
+  });
+
+/**
+ * The name a refusal's limit or ceiling has on the wire (#241): the `limit` of a `plan_limit_reached` body, and of the
+ * MCP endpoint's `_meta`: snake_case, as the plan limits' are (`browser_sessions`; `computers` is one word).
+ */
+export const planLimitName = (refusal: PlanRefusal): string =>
+  refusal.limit === "browserSessions" ? "browser_sessions" : refusal.limit;
+
+/**
+ * What a refusal of the Tools part says (#241): the limit or ceiling it names, when free usage starts over for a
+ * limit, and the link to the panel's billing page. A refused browser or computer call, or tool call, answers this as
+ * its tool error; never fails.
+ */
+export const planRefusalText = (
+  refusal: PlanRefusal,
+): Effect.Effect<string, never, BillingEnv | CurrentOrg> =>
+  Effect.gen(function* () {
+    const env = yield* BillingEnv;
+    const org = yield* CurrentOrg;
+    const page = yield* billingPage(env, org);
+
+    if (refusal.kind === "ceiling") return ceilingMessage(refusal, page);
+
+    return refusalMessage(
+      {
+        limit: refusal.limit,
+        allowed: refusal.allowed,
+        resetsAt: refusal.resetsAt,
+        page,
+        pastDue: refusal.pastDue,
+      },
+      new Date(refusal.resetsAt).toISOString(),
+    );
   });

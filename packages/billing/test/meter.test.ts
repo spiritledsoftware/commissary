@@ -12,6 +12,7 @@ import {
   BillingEnv,
   countRequest,
   PlanLimitReached,
+  planRefusalText,
   uncountRequest,
 } from "../src/api.ts";
 import {
@@ -277,6 +278,91 @@ describe("countRequest", () => {
       };
 
       assert.isUndefined(yield* asOrg(newOrgId(), countRequest, broken));
+    }),
+  );
+});
+
+describe("planRefusalText", () => {
+  const text = (refusal: Parameters<typeof planRefusalText>[0]) =>
+    Effect.gen(function* () {
+      const org = newOrgId();
+
+      return yield* asOrg(org, planRefusalText(refusal));
+    });
+
+  const RESETS = FIRST_OF_APRIL;
+
+  it.effect(
+    "names the browser hours a Free org used up, when they start over and the billing page",
+    () =>
+      Effect.gen(function* () {
+        const message = yield* text({
+          kind: "limit",
+          limit: "browser_hours",
+          allowed: 1,
+          resetsAt: RESETS,
+          retryAfterSeconds: 60,
+          pastDue: false,
+        });
+
+        assert.include(message, "Free plan's 1 browser hour a month is used up");
+        assert.include(message, "2026-04-01T00:00:00.000Z");
+        assert.include(message, "billing");
+      }),
+  );
+
+  it.effect(
+    "says that the computer needs Pay as you go on Free, whether by hours or by ceiling",
+    () =>
+      Effect.gen(function* () {
+        const hours = yield* text({
+          kind: "limit",
+          limit: "computer_hours",
+          allowed: 0,
+          resetsAt: RESETS,
+          retryAfterSeconds: 60,
+          pastDue: false,
+        });
+
+        const ceiling = yield* text({
+          kind: "ceiling",
+          limit: "computers",
+          allowed: 0,
+          pastDue: false,
+        });
+
+        assert.include(hours, "no computer hours: the computer needs Pay as you go");
+        assert.include(ceiling, "The computer needs Pay as you go");
+      }),
+  );
+
+  it.effect("names a ceiling and tells to close one to open another", () =>
+    Effect.gen(function* () {
+      const one = yield* text({
+        kind: "ceiling",
+        limit: "browserSessions",
+        allowed: 1,
+        pastDue: false,
+      });
+
+      const five = yield* text({
+        kind: "ceiling",
+        limit: "browserSessions",
+        allowed: 5,
+        pastDue: false,
+      });
+
+      const computers = yield* text({
+        kind: "ceiling",
+        limit: "computers",
+        allowed: 3,
+        pastDue: true,
+      });
+
+      assert.include(one, "allows 1 concurrent browser session, and that many are open");
+      assert.include(five, "allows 5 concurrent browser sessions");
+      assert.include(computers, "allows 3 concurrent computers");
+      assert.include(computers, "A payment failed");
     }),
   );
 });

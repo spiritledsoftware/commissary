@@ -75,6 +75,7 @@ describe("free usage", () => {
 
     if (refused.ok) throw new Error("expected a refusal");
     expect(refused.limit).toEqual({
+      kind: "limit",
       limit: "requests",
       allowed: 25_000,
       resetsAt: FIRST_OF_APRIL,
@@ -161,6 +162,7 @@ describe("the billing cap", () => {
 
     if (refused.ok) throw new Error("expected a refusal");
     expect(refused.limit).toEqual({
+      kind: "limit",
       limit: "billing_cap",
       allowed: 50,
       resetsAt: FIRST_OF_APRIL,
@@ -587,6 +589,153 @@ describe("raised ceilings", () => {
     // Back to a later minute after it: a new window.
     expect(await part.admitRate(MID_MARCH + 60_000)).toBe(true);
     expect(await part.admitRate(MID_MARCH)).toBe(true);
+  });
+});
+
+const HOUR_MS = 3_600_000;
+
+describe("browser and computer hours (#241)", () => {
+  it("count the time they are given toward the month, in hours", async () => {
+    const { part } = billingOf();
+
+    await part.addTime("browserHours", 30 * 60_000, MID_MARCH);
+    await part.addTime("browserHours", 15 * 60_000, MID_MARCH);
+    await part.addTime("computerHours", 2 * HOUR_MS, MID_MARCH);
+    // Nothing, or not a time, counts nothing.
+    await part.addTime("computerHours", 0, MID_MARCH);
+    await part.addTime("computerHours", Number.NaN, MID_MARCH);
+
+    expect((await part.usage(MID_MARCH)).used).toEqual({
+      requests: 0,
+      browserHours: 0.75,
+      computerHours: 2,
+    });
+    expect((await part.usage(FIRST_OF_APRIL)).used.browserHours).toBe(0);
+  });
+
+  it("refuse a Free org's browser time past 1 hour while its requests continue", async () => {
+    const { part } = billingOf();
+
+    expect(await part.limitOf("browserHours", MID_MARCH)).toBeUndefined();
+
+    await part.addTime("browserHours", HOUR_MS, MID_MARCH);
+
+    expect(await part.limitOf("browserHours", MID_MARCH)).toEqual({
+      kind: "limit",
+      limit: "browser_hours",
+      allowed: 1,
+      resetsAt: FIRST_OF_APRIL,
+      retryAfterSeconds: (FIRST_OF_APRIL - MID_MARCH) / 1000,
+      pastDue: false,
+    });
+    expect((await part.admit(MID_MARCH)).ok).toBe(true);
+    expect(await part.limitOf("browserHours", FIRST_OF_APRIL)).toBeUndefined();
+  });
+
+  it("refuse a Free org's computer from the start: it has no computer hours", async () => {
+    const { part } = billingOf();
+
+    expect(await part.limitOf("computerHours", MID_MARCH)).toMatchObject({
+      limit: "computer_hours",
+      allowed: 0,
+    });
+  });
+
+  it("are not refused on Pay as you go within the billing cap, and are once a minute more would pass it", async () => {
+    const { org, part } = billingOf();
+
+    await setPlan(env, org, "payg");
+    await part.setBillingCap(1);
+
+    expect(await part.limitOf("computerHours", MID_MARCH)).toBeUndefined();
+
+    // 6 hours and 39 minutes bill $0.9975, and the next minute would take the bill past $1.
+    await part.addTime("computerHours", (6 * 60 + 39) * 60_000, MID_MARCH);
+    expect(await part.limitOf("computerHours", MID_MARCH)).toBeUndefined();
+    await part.addTime("computerHours", 60_000, MID_MARCH);
+
+    expect(await part.limitOf("computerHours", MID_MARCH)).toMatchObject({
+      limit: "billing_cap",
+      allowed: 1,
+    });
+    // Browser hours within free usage are still served.
+    expect(await part.limitOf("browserHours", MID_MARCH)).toBeUndefined();
+  });
+
+  it("bill above free usage at $0.15 an hour, in the bill and in the batch for Polar", async () => {
+    const { org, part } = billingOf();
+
+    await setPlan(env, org, "payg");
+    await part.setCustomer("cus_1");
+    await part.addTime("browserHours", 3 * HOUR_MS, MID_MARCH);
+    await part.addTime("computerHours", 2 * HOUR_MS, MID_MARCH);
+
+    // 2 browser hours above the 1 free, and 2 computer hours: 4 hours.
+    expect((await part.usage(MID_MARCH)).bill).toBeCloseTo(0.6, 9);
+
+    const batch = await part.meterBatch(FIRST_OF_APRIL - 1);
+
+    expect(batch?.events.map(({ unit, amount }) => ({ unit, amount }))).toEqual([
+      { unit: "browserHours", amount: 2 },
+      { unit: "computerHours", amount: 2 },
+    ]);
+  });
+});
+
+describe("ceilings on concurrent use (#241)", () => {
+  it("refuse opening one more past the plan's ceiling: 1 browser session and no computer on Free", async () => {
+    const { part } = billingOf();
+
+    expect(await part.checkCeiling("browserSessions", 0)).toBeUndefined();
+    expect(await part.checkCeiling("browserSessions", 1)).toEqual({
+      kind: "ceiling",
+      limit: "browserSessions",
+      allowed: 1,
+      pastDue: false,
+    });
+    expect(await part.checkCeiling("computers", 0)).toEqual({
+      kind: "ceiling",
+      limit: "computers",
+      allowed: 0,
+      pastDue: false,
+    });
+  });
+
+  it("allow 5 browser sessions and 3 computers on Pay as you go", async () => {
+    const { org, part } = billingOf();
+
+    await setPlan(env, org, "payg");
+
+    expect(await part.checkCeiling("browserSessions", 4)).toBeUndefined();
+    expect(await part.checkCeiling("browserSessions", 5)).toMatchObject({ allowed: 5 });
+    expect(await part.checkCeiling("computers", 2)).toBeUndefined();
+    expect(await part.checkCeiling("computers", 3)).toMatchObject({ allowed: 3 });
+  });
+
+  it("apply a platform admin's raised ceilings, and Free's while payment is past due", async () => {
+    const { org, part } = billingOf();
+
+    await setPlan(env, org, "payg");
+    await part.raiseCeilings({ browserSessions: 8 });
+
+    expect(await part.checkCeiling("browserSessions", 7)).toBeUndefined();
+    expect(await part.checkCeiling("browserSessions", 8)).toMatchObject({ allowed: 8 });
+
+    const late = billingOf();
+
+    await late.part.applySubscription({
+      status: "past_due",
+      subscriptionId: "sub_1",
+      customerId: "cus_1",
+      changedAt: MID_MARCH,
+    });
+
+    expect(await late.part.checkCeiling("browserSessions", 1)).toEqual({
+      kind: "ceiling",
+      limit: "browserSessions",
+      allowed: 1,
+      pastDue: true,
+    });
   });
 });
 

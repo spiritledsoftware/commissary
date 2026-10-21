@@ -99,12 +99,12 @@ export type BillingCeilings = typeof BillingCeilings.Type;
  * `GET /billing`. `unbilled`: a platform admin marked the org unbilled, so it is on Pay as you go with no card and no
  * invoice (it cannot start a checkout, and no billing cap applies). `payment` is the payment state; `card_on_file`
  * whether the org's Polar customer has a payment method (`false` before its first checkout or without Polar, `null`
- * when Polar could not be asked). `requests` counts requests and tool calls together (tool calls are not counted yet);
- * browser and computer hours read 0 until they are counted. Times are ISO: when this month began and when the next one
- * starts and the counters start over. `billing_cap` is the most Pay as you go may bill the org a month, in dollars ($50
- * until an org owner sets it; `null`: no cap; it applies on Pay as you go only); `bill` what the month's usage above
- * free usage bills so far, in dollars, at `rates`, each unit's rate above free usage (from the rates the bill counts
- * at, `PAYG_RATE_MICROS` in `packages/billing`). `ceilings` is for platform admins only.
+ * when Polar could not be asked). `requests` counts requests and tool calls together; browser and computer hours count
+ * the time the browser toolkit's calls and sessions and the sandbox's computer used. Times are ISO: when this month
+ * began and when the next one starts and the counters start over. `billing_cap` is the most Pay as you go may bill the
+ * org a month, in dollars ($50 until an org owner sets it; `null`: no cap; it applies on Pay as you go only); `bill`
+ * what the month's usage above free usage bills so far, in dollars, at `rates`, each unit's rate above free usage (from
+ * the rates the bill counts at, `PAYG_RATE_MICROS` in `packages/billing`). `ceilings` is for platform admins only.
  */
 export const BillingView = Schema.Struct({
   plan: BillingPlan,

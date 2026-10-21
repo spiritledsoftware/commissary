@@ -146,13 +146,20 @@ metering meters nothing. Its new method `stopForLimit` may meet an object from b
 takes any failure of it as "no computer stopped" (`Effect.orElseSucceed`, answering `false`, in
 `ToolsPart.#stopComputer`), which is what such an object, metering nothing, would answer. The object's reports of
 computer time no call charged (`ToolsPart.sandboxComputerTime`, from its alarm) are tried again until they go through,
-so one that meets a part from before is only late.
+so one that meets a part from before is only late. The plans' counting of Tools (#241) is expand-only in the same
+way: a call refused by a plan is answered `plan_limited` only to a call with `planOutcomes: true` (`failed` to one from
+before); the sessions' reports (`browserSessionClosed`, `sandboxComputerTime`) take the time's milliseconds as a new
+optional last argument, which an object from before does not send (that time is then not counted); and a sandbox
+session's `ComputerTime` may carry `runsUntil`, which a part from before ignores and an object from before leaves out (its
+computer then reads as not running, so counts toward no ceiling).
 
 A deploy of the state Worker resets its Durable Objects, and the calls in flight fail with "Durable Object reset because
 its code was updated." The app and the API Worker retry such a call once, on a new stub (`retryOnCodeUpdate`,
 `packages/state/src/code-update-retry.ts`, applied to the `env` in each `src/index.ts`); a call cut off by the reset
 may have stored its writes before, so it may run twice. Only chains are retried: a call on a result the caller awaited
-(`await stub.models()`) goes to the runtime's own stub, so call through the chain (`stub.models().x()`).
+(`await stub.models()`) goes to the runtime's own stub, so call through the chain (`stub.models().x()`). So a `callTool`
+retried after a reset may count once more toward the plan's free usage (#241) than the call made: the count and the work
+are not one atomic step across the reset, as a Spend charge is not either.
 
 ## Layout
 
@@ -201,13 +208,14 @@ may have stored its writes before, so it may run twice. Only chains are retried:
   `translation`, `json`, `contract`, `core`, `effect`, `fzstd`, `yaml` and the runtime modules
   `tools/oxlint/boundaries` lists: nothing from `apps/`.
 - `packages/billing` (`@commissary/billing`): Commissary Cloud's billing area (ADR 0042, #236), shaped like Models: plans
-  (`free`, `payg`), free usage counted per org per calendar month in UTC, the Free plan's stop (`429 plan_limit_reached`),
+  (`free`, `payg`), free usage counted per org per calendar month in UTC (requests, tool calls, browser hours, computer
+  hours; Tools counts the last three through `PlanMeter`, #241), the Free plan's stop (`429 plan_limit_reached`),
   the request-rate ceiling per plan, `GET /billing`, its ControlPlane part (`BillingPart`) and its org-deletion step. It
   does nothing on a self-hosted Commissary. Entry points `./api` (what the API Worker and the areas that count call:
   `limitClientRate`, `countRequest`, `uncountRequest`, `BillingEnv`), `./management` (the app Worker's: the route, the
   org-deletion step), `./state` (the state Worker's: `BillingPart`) and `./testing`; `./plan` (the constants) serves
   `alchemy.run.ts`, not the Workers. It may import `@commissary/state`, `auth`, `contract`, `core`, `effect` and the
-  runtime modules `tools/oxlint/boundaries` lists, and no other area; Models imports its `./api` only. Its tests run in
+  runtime modules `tools/oxlint/boundaries` lists, and no other area; Models and Tools import its `./api` only. Its tests run in
   workerd against `packages/billing/test/worker.ts`, a test-only ControlPlane (state's base composed with its part).
 - `packages/tools` (`@commissary/tools`): the Tools area (#196): toolkits built from remote MCP servers, their
   credentials, tool lists and prices. `toolkits` (names, the store, resolving the tools a caller sees, credential
@@ -227,7 +235,9 @@ may have stored its writes before, so it may run twice. Only chains are retried:
   trim, for `tools/sync-integrations-sh-catalog.ts`). It reads its bindings through `ToolsEnv` (`CONTROL_PLANE`,
   `PLATFORM`, `APP_DOMAIN`, `USAGE`, the usage database its tool calls' records go into, and `CACHE`, where the toolkit
   catalog's refreshed registry is kept) and may import `@commissary/state`, `auth`, `contract`, `core`, `effect` and the runtime
-  modules `tools/oxlint/boundaries` lists: nothing from `apps/` or Models.
+  modules `tools/oxlint/boundaries` lists, and `@commissary/billing`'s `./api` only (`PlanMeter`, which counts tool
+  calls, browser and computer time on Commissary Cloud, and `planRefusalText`); nothing from `apps/` or Models. The MCP
+  endpoint reads `BillingEnv` too, to word a plan's refusal (the API Worker's and the run gateway's contexts provide it).
 - `packages/agents` (`@commissary/agents`): the Agents area (#226, ADR 0040): hosted agent definitions, private and
   shared, the grants on shared agents and their watchers; runs come later (#227). `agents` (the store, the checks of a
   definition's texts), `management` (its routes, the reference check through `AgentReferences`, role-table entries, its

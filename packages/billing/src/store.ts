@@ -27,6 +27,7 @@
  */
 import {
   type Ceiling,
+  type CeilingKind,
   type Ceilings,
   DEFAULT_PLAN,
   FREE_USAGE,
@@ -39,9 +40,10 @@ import {
   type RaisedCeilings,
   RATE_LIMIT_PERIOD_SECONDS,
   type Unit,
+  UNIT_LIMIT,
   type Usage,
 } from "./plan.ts";
-import { billMicros, capRefusesNextRequest, DEFAULT_BILLING_CAP, toDollars } from "./bill.ts";
+import { billMicros, capRefuses, DEFAULT_BILLING_CAP, toDollars } from "./bill.ts";
 import { monthOf } from "./month.ts";
 
 export const BILLING_TABLES = [
@@ -107,6 +109,7 @@ const SEND_EPSILON = 1e-9;
  * boundary.
  */
 export interface PlanLimit {
+  readonly kind: "limit";
   readonly limit: PlanLimitKind;
   /** What the month allows: its free usage of requests and tool calls, or the billing cap in dollars. */
   readonly allowed: number;
@@ -116,6 +119,26 @@ export interface PlanLimit {
   /** The org is on Pay as you go, held to Free's limits until a payment succeeds. */
   readonly pastDue: boolean;
 }
+
+/**
+ * A ceiling for fairness between orgs refuses opening one more browser session or computer (ADR 0042, #241): the org
+ * has as many open as its ceiling allows. Plain data, as it crosses the RPC boundary; it names no month, as a ceiling
+ * does not start over.
+ */
+export interface CeilingLimit {
+  readonly kind: "ceiling";
+  readonly limit: CeilingKind;
+  /** The ceiling: how many the org may have open at once (0: none). */
+  readonly allowed: number;
+  /** The org is on Pay as you go, held to Free's limits until a payment succeeds. */
+  readonly pastDue: boolean;
+}
+
+/** Why use of a unit, or opening a browser session or a computer, is refused. */
+export type PlanRefusal = PlanLimit | CeilingLimit;
+
+/** The time units a plan counts as they run, in hours, from milliseconds. */
+const MS_PER_HOUR = 3_600_000;
 
 /** What a request that starts being served is told: counted (against `monthStart`), or refused by a plan limit. */
 export type Admission =
@@ -396,47 +419,84 @@ export class BillingStore {
   }
 
   /**
-   * A request starts being served at `now`: on Free (or on Pay as you go while past due) with the month's requests and
-   * tool calls used up it is refused (and not counted); otherwise it is counted, on either plan (free usage is on both;
-   * Pay as you go bills above it). On Pay as you go a request that would be billed (free usage of requests is used up)
-   * is refused when it would take the month's bill past the billing cap.
+   * The plan limit that refuses the next use of `unit` at `now`, `undefined` when none does: on Free (or on Pay as you
+   * go while past due) the unit's free usage used up, on Pay as you go use that would be billed (the unit's free usage
+   * is used up) and would take the month's bill past the billing cap. Counts nothing.
    */
-  admit(now: number): Admission {
+  limitOf(unit: Unit, now: number): PlanLimit | undefined {
     const month = monthOf(now);
     const used = this.used(month.start);
     const limitsPlan = this.limitsPlan();
     const retryAfterSeconds = Math.max(1, Math.ceil((month.end - now) / 1000));
 
-    if (limitsPlan === "free" && used.requests >= FREE_USAGE.requests)
+    if (limitsPlan === "free" && used[unit] >= FREE_USAGE[unit])
       return {
-        ok: false,
-        limit: {
-          limit: "requests",
-          allowed: FREE_USAGE.requests,
-          resetsAt: month.end,
-          retryAfterSeconds,
-          pastDue: this.plan() === "payg",
-        },
+        kind: "limit",
+        limit: UNIT_LIMIT[unit],
+        allowed: FREE_USAGE[unit],
+        resetsAt: month.end,
+        retryAfterSeconds,
+        pastDue: this.plan() === "payg",
       };
 
     // An unbilled org is never billed, so no billing cap applies to it.
     const cap = limitsPlan === "payg" && !this.unbilled() ? this.billingCap() : null;
 
-    if (cap !== null && capRefusesNextRequest(used, cap))
+    if (cap !== null && capRefuses(used, cap, unit))
       return {
-        ok: false,
-        limit: {
-          limit: "billing_cap",
-          allowed: cap,
-          resetsAt: month.end,
-          retryAfterSeconds,
-          pastDue: false,
-        },
+        kind: "limit",
+        limit: "billing_cap",
+        allowed: cap,
+        resetsAt: month.end,
+        retryAfterSeconds,
+        pastDue: false,
       };
+
+    return undefined;
+  }
+
+  /**
+   * A request or tool call starts being served at `now`: on Free (or on Pay as you go while past due) with the month's
+   * requests and tool calls used up it is refused (and not counted); otherwise it is counted, on either plan (free
+   * usage is on both; Pay as you go bills above it). On Pay as you go a request that would be billed (free usage of
+   * requests is used up) is refused when it would take the month's bill past the billing cap ({@link limitOf}).
+   */
+  admit(now: number): Admission {
+    const limit = this.limitOf("requests", now);
+
+    if (limit !== undefined) return { ok: false, limit };
+    const month = monthOf(now);
 
     this.#add(month.start, "requests", 1);
 
     return { ok: true, monthStart: month.start };
+  }
+
+  /**
+   * Counts `ms` of browser or computer time used up to `now` toward the month containing `now` (#241). Counted
+   * whatever the limits say: the time was used, and a limit refuses only the use that comes after it.
+   */
+  addTime(unit: "browserHours" | "computerHours", ms: number, now: number): void {
+    if (!Number.isFinite(ms) || ms <= 0) return;
+
+    this.#add(monthOf(now).start, unit, ms / MS_PER_HOUR);
+  }
+
+  /**
+   * Whether the org, with `open` browser sessions or computers open, may not open another: its ceiling (the plan's, or
+   * the one a platform admin raised, {@link ceilings}) is reached. `undefined` when it may.
+   */
+  checkCeiling(kind: CeilingKind, open: number): CeilingLimit | undefined {
+    const allowed = this.ceilings()[kind];
+
+    return open >= allowed
+      ? {
+          kind: "ceiling",
+          limit: kind,
+          allowed,
+          pastDue: this.plan() === "payg" && this.limitsPlan() === "free",
+        }
+      : undefined;
   }
 
   /** Takes back a request `admit` counted against `monthStart` (one that did no work). */

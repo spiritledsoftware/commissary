@@ -21,9 +21,9 @@ export const PAYMENT_STATES = ["ok", "past_due"] as const;
 export type PaymentState = (typeof PAYMENT_STATES)[number];
 
 /**
- * What a plan counts per org per calendar month in UTC: requests and tool calls together, browser hours and computer
- * hours. `requests` is counted since #236; the other units are counted when their areas exist (#241) and read 0 until
- * then.
+ * What a plan counts per org per calendar month in UTC: requests and tool calls together (a tool call counts as a
+ * request, #241), browser hours (the browser toolkit's time, #214) and computer hours (the sandbox toolkit's computer,
+ * #224).
  */
 export const UNITS = ["requests", "browserHours", "computerHours"] as const;
 
@@ -40,12 +40,25 @@ export const FREE_USAGE: Usage = {
 };
 
 /**
- * Which plan limit refuses use: free usage of requests and tool calls (`requests`, on Free or while past due), or the
- * billing cap (`billing_cap`, on Pay as you go; `bill.ts`). It is a `plan_limit_reached` body's `limit`.
+ * Which plan limit refuses use: free usage of requests and tool calls (`requests`), of browser hours (`browser_hours`)
+ * or of computer hours (`computer_hours`), on Free or while past due, or the billing cap (`billing_cap`, on Pay as you
+ * go; `bill.ts`). It is a `plan_limit_reached` body's `limit`.
  */
-export const PlanLimitKind = Schema.Literals(["requests", "billing_cap"]);
+export const PlanLimitKind = Schema.Literals([
+  "requests",
+  "browser_hours",
+  "computer_hours",
+  "billing_cap",
+]);
 
 export type PlanLimitKind = typeof PlanLimitKind.Type;
+
+/** The plan limit that refuses use of a unit once its free usage is used up. */
+export const UNIT_LIMIT: Readonly<Record<Unit, PlanLimitKind>> = {
+  requests: "requests",
+  browserHours: "browser_hours",
+  computerHours: "computer_hours",
+};
 
 /** Requests an org may send a minute on the client API, by plan (ADR 0042 "Ceilings for fairness between orgs"). */
 export const REQUEST_RATE_CEILING: Readonly<Record<Plan, number>> = {
@@ -55,11 +68,18 @@ export const REQUEST_RATE_CEILING: Readonly<Record<Plan, number>> = {
 
 /**
  * The ceilings for fairness between orgs a plan sets (ADR 0042), each of which a platform admin may raise for one org
- * (#240): concurrent browser sessions, concurrent computers (both enforced by #241) and the request rate a minute.
+ * (#240): concurrent browser sessions, concurrent computers (both enforced by the Tools part, #241) and the request
+ * rate a minute.
  */
 export const CEILINGS = ["browserSessions", "computers", "requestRate"] as const;
 
 export type Ceiling = (typeof CEILINGS)[number];
+
+/**
+ * The ceilings on concurrent use that refuse opening one more (`plan_limit_reached` with this as the `limit`):
+ * browser sessions and computers. The request rate is a rate limit, not a refusal to open.
+ */
+export type CeilingKind = Extract<Ceiling, "browserSessions" | "computers">;
 
 /** A value for each ceiling. */
 export type Ceilings = Readonly<Record<Ceiling, number>>;

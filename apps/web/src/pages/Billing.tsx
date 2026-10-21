@@ -334,9 +334,9 @@ const MonthSection = ({ view }: { readonly view: BillingView }) => (
       </table>
     </div>
     <p className={styles["footnote"]}>
-      A request to a model counts once when Commissary starts serving it, whatever credential serves
-      it and however it ends; one refused before any work is not counted. Tool calls, browser hours
-      and computer hours are not counted yet, so they read 0.
+      A request to a model or a tool call counts once when Commissary starts serving it, whatever
+      credential serves it and however it ends; one refused before any work is not counted. Browser
+      hours and computer hours count the time a browser session, a Quick Action or a computer used.
     </p>
   </Section>
 );
@@ -454,9 +454,8 @@ const CapSection = ({ view, owner }: { readonly view: BillingView; readonly owne
           </div>
         )}
         <p className={styles["lead"]}>
-          The most Commissary Cloud may bill this org in a month. Once the bill reaches it, requests
-          that would be billed are refused until the month starts over; requests within free usage
-          never are.{" "}
+          The most Commissary Cloud may bill this org in a month. Once the bill reaches it, use that
+          would be billed is refused until the month starts over; use within free usage never is.{" "}
           {owner
             ? "Raise it, lower it or remove it at any time: the change applies to the next request."
             : "Only an org owner changes it."}
