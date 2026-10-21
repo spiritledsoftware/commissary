@@ -18,6 +18,12 @@ interface FakeSession {
 /** The fake provider's source. */
 export const FAKE_SANDBOX = "fake-sandbox";
 
+/** A file (`unreachable`, written by a test) that makes the fake provider fail to answer for its session: `status` and `purge`. */
+const UNREACHABLE_FILE = "/workspace/unreachable";
+
+/** A file (`vanished`) that makes the fake provider say it knows no such session (`status`), as one lost on its side. */
+const VANISHED_FILE = "/workspace/vanished";
+
 /** An answer with no computer time: the fake provider has no computer to meter (#224). */
 const unmetered = <A, E>(answer: Effect.Effect<A, E>): Effect.Effect<Metered<A>, E> =>
   Effect.map(answer, (value) => ({ value }));
@@ -129,10 +135,31 @@ export const fakeSandboxProvider = (): SandboxProvider => {
       ),
     // It has no computer: there is none to stop, and no computer time to meter (#224).
     stopComputer: (owner, id) => unmetered(Effect.as(session(owner, id), false)),
+    status: (org, id) => {
+      const found = sessions.get(`${org}:${id}`);
+
+      if (found === undefined)
+        return Effect.fail(new SandboxError({ reason: "unknown_session", message: "" }));
+
+      if (found.files.has(UNREACHABLE_FILE))
+        return Effect.fail(new SandboxError({ reason: "unavailable", message: "" }));
+
+      if (found.files.has(VANISHED_FILE))
+        return Effect.fail(new SandboxError({ reason: "unknown_session", message: "" }));
+
+      return found.closed
+        ? Effect.fail(new SandboxError({ reason: "closed", message: "" }))
+        : Effect.succeed({ network: { kind: "none" }, computer: "off" });
+    },
     purge: (org, id) =>
       unmetered(
-        Effect.sync(() => {
+        Effect.suspend(() => {
+          if (sessions.get(`${org}:${id}`)?.files.has(UNREACHABLE_FILE) === true)
+            return Effect.fail(new SandboxError({ reason: "unavailable", message: "" }));
+
           sessions.delete(`${org}:${id}`);
+
+          return Effect.void;
         }),
       ),
   };

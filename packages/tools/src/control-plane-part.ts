@@ -32,6 +32,12 @@ import type {
   BrowserSessionView,
   EndedBrowserSession,
 } from "@commissary/contract/browser-sessions";
+import {
+  type EndedSandboxSession,
+  SANDBOX_SESSIONS_LISTED,
+  type SandboxSessionsList,
+  type SandboxSessionView,
+} from "@commissary/contract/sandbox-sessions";
 import type { GrantSubject, ToolGrant, ToolGrants } from "@commissary/contract/grants";
 import type {
   CatalogCredential,
@@ -262,6 +268,9 @@ import {
 import { CLOSE_TOOL, OPEN_TOOL } from "./browser/session-tools.ts";
 import type { BrowserCrawlProvider } from "./browser/provider.ts";
 
+/** How many sessions the panel's list asks the provider about at once (#225). */
+const SANDBOX_STATUS_CONCURRENCY = 8;
+
 /** Why a call of the part was refused; the routes answer each with its status. */
 export type ToolsErrorCode =
   | "invalid"
@@ -279,7 +288,9 @@ export type ToolsErrorCode =
   | "outbound_refused"
   | "sign_in_failed"
   /** The browser provider could not do what the panel asked of a browser session (#216: mint its Live View). */
-  | "browser_failed";
+  | "browser_failed"
+  /** The sandbox provider could not do what the panel asked of a sandbox session (#225: end it). */
+  | "sandbox_failed";
 
 export type ToolsResult<A> =
   | { readonly ok: true; readonly value: A }
@@ -4324,8 +4335,148 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
     if (ended.kind === "unknown") return refuse("not_found", "browser session not found");
     this.#chargeClosed(session, ended.browserTime.costMicros);
+    this.#countTime("browserHours", ended.browserTime.browserMs);
 
     return ok({ id, ended: true });
+  }
+
+  // --- the sandbox toolkit's open sessions (#225) ---------------------------------------------------------------------
+
+  /**
+   * Whether `viewer` may end the sandbox session `session`: its member's own, or any for an org admin. The list's SQL
+   * applies the same rule (`mayBeOpen`'s member filter), so a hosted agent's run naming its watchers (#232) changes
+   * both.
+   */
+  #mayEndSandbox(session: TrackedSession, viewer: Viewer): boolean {
+    return (session.member !== undefined && session.member === viewer.member) || isOrgAdmin(viewer);
+  }
+
+  /**
+   * The org's open sandbox sessions as the sandbox toolkit's page lists them (#225): the caller's own, and for an org
+   * admin every other too (whose, when, how it opened, its network, whether its computer runs), oldest first. Nothing of
+   * a session's files: the part has no read of them. The provider says which sessions are open and what each says of
+   * itself: one it closed is left out (its row stays until its close is reported), one it does not know is forgotten,
+   * and one it could not be asked about is listed without its network and computer.
+   */
+  async listSandboxSessions(viewer: Viewer): Promise<SandboxSessionsList> {
+    const sandbox = this.#sandbox;
+
+    if (sandbox === undefined) return { sessions: [], truncated: false };
+
+    // A member's rows only, chosen before the cap, so another member's rows never crowd theirs out. A caller with no
+    // member has none of their own.
+    const admin = isOrgAdmin(viewer);
+
+    const rows =
+      !admin && viewer.member === undefined
+        ? []
+        : this.#sandboxSessions.mayBeOpen(
+            this.#now(),
+            SANDBOX_SESSIONS_LISTED + 1,
+            admin ? undefined : viewer.member,
+          );
+
+    const truncated = rows.length > SANDBOX_SESSIONS_LISTED;
+
+    const views = await Effect.runPromise(
+      Effect.forEach(
+        rows.slice(0, SANDBOX_SESSIONS_LISTED),
+        (session) =>
+          sandbox.status(this.#core.org, session.id).pipe(
+            Effect.map((found) => ({ kind: "open", ...found }) as const),
+            Effect.catchTag("SandboxError", (error) =>
+              Effect.succeed(
+                error.reason === "unavailable"
+                  ? ({ kind: "unread" } as const)
+                  : ({ kind: "gone", forget: error.reason === "unknown_session" } as const),
+              ),
+            ),
+            Effect.map((status): SandboxSessionView | undefined => {
+              if (status.kind === "gone") {
+                if (status.forget) this.#sandboxSessions.ended([session.id]);
+
+                return undefined;
+              }
+
+              const email =
+                session.member === undefined ? undefined : this.#core.member(session.member)?.email;
+
+              return {
+                id: session.id,
+                opened_at: iso(session.openedAt),
+                member:
+                  session.member === undefined
+                    ? null
+                    : { member_id: session.member, ...(email === undefined ? {} : { email }) },
+                opened_by: openerOf(session.principal),
+                own: session.member !== undefined && session.member === viewer.member,
+                ...(status.kind === "open"
+                  ? { network: status.network, computer: status.computer }
+                  : {}),
+              };
+            }),
+          ),
+        { concurrency: SANDBOX_STATUS_CONCURRENCY },
+      ),
+    );
+
+    return { sessions: views.filter((view) => view !== undefined), truncated };
+  }
+
+  /**
+   * Ends a sandbox session from the panel (#225): its member's, or any of the org's for an org admin. It closes as
+   * `sandbox_close` would: its files are deleted at once, its usage record is written, and its computer's time since its
+   * last call is charged to its opener's Spend limits; its calls then find no such session. One the provider closed
+   * already is `not_found` (its row stays until its close is reported); one it could not be asked to end stays open.
+   */
+  async endSandboxSession(viewer: Viewer, id: string): Promise<ToolsResult<EndedSandboxSession>> {
+    const session = this.#sandboxSessions.session(id);
+    const sandbox = this.#sandbox;
+
+    if (session === undefined || sandbox === undefined || !this.#mayEndSandbox(session, viewer))
+      return refuse("not_found", "sandbox session not found");
+
+    const ended = await Effect.runPromise(
+      sandbox.purge(this.#core.org, id, true).pipe(
+        Effect.map(
+          ({ computerTime }) =>
+            ({
+              reason: "ended",
+              costMicros: computerTime?.costMicros ?? 0,
+              computerMs: computerTime?.computerMs,
+            }) as const,
+        ),
+        Effect.catchTag("SandboxError", (error) =>
+          Effect.succeed({ reason: error.reason } as const).pipe(
+            Effect.tap(() =>
+              error.reason === "closed" || error.reason === "unknown_session"
+                ? Effect.void
+                : Effect.logWarning("sandbox session not ended").pipe(
+                    Effect.annotateLogs({ reason: error.reason, message: error.message }),
+                  ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    if (ended.reason === "ended") {
+      this.#sandboxSessions.ended([id]);
+      this.#chargeClosed(session, ended.costMicros);
+      this.#countTime("computerHours", ended.computerMs);
+
+      return ok({ id, ended: true });
+    }
+
+    if (ended.reason === "unknown_session") {
+      this.#sandboxSessions.ended([id]);
+
+      return refuse("not_found", "sandbox session not found");
+    }
+
+    if (ended.reason === "closed") return refuse("not_found", "sandbox session not found");
+
+    return refuse("sandbox_failed", "the sandbox could not end the session; try again");
   }
 
   /**

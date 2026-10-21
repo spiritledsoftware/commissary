@@ -199,6 +199,8 @@ the Worker asks on every request: a removed member, or a member whose role was l
 | Create, rename and remove their own private browser profiles (`/browser-profiles`)               |         ✓         |     ✓     |              ✓               |       ✓        |
 | Create, rename and remove shared browser profiles; remove a member's private browser profile     |                   |     ✓     |              ✓               |       ✓        |
 | Read, add, edit and remove browser profile grants (`/grants/profiles`)                           |                   |     ✓     |              ✓               |       ✓        |
+| See their own open sandbox sessions and end them (`/sandbox-sessions`, #225)                     |         ✓         |     ✓     |              ✓               |       ✓        |
+| See and end other members' open sandbox sessions (`/sandbox-sessions`, #225)                     |                   |     ✓     |              ✓               |       ✓        |
 | Read the Spend limits that bind them and limit their own API keys (`/spend`, `/spend/limits`)    |         ✓         |     ✓     |              ✓               |       ✓        |
 | Set any Spend limit and the org's calendar (`/spend/limits`, `/spend/settings`)                  |                   |     ✓     |              ✓               |       ✓        |
 | Read the org's plan, usage, bill, billing cap and notices (Commissary Cloud, `GET /billing`)     |                   |     ✓     |              ✓               |       ✓        |

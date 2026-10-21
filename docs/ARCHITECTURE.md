@@ -4566,6 +4566,23 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
     toolkit's `network` is the org's ceiling, set by org admins (`PATCH /toolkits/sandbox`, shown in its view and the
     export), `none` until set; `sandbox_open` asks for one within it (a host list the ceiling covers, `open` only
     under `open`), and the session keeps it for its life, whatever the ceiling becomes later.
+  - **The Sandbox sessions routes** (#225, `/v9/management/sandbox-sessions`, `SandboxSessionsGroup`,
+    `tools/management/sandbox-session-routes.ts`, every member): `GET` lists the caller's open sandbox sessions (opened
+    with any of their API keys, or signed in) and, for an org admin, every other session of the org, oldest first (at
+    most 200 of the caller's view, a member's own chosen in the query before the cap, with `truncated` true when more
+    are open): its member, when it opened, how (`api_key`, `person`, `agent_run`), the network it opened with and where
+    its computer stands (`off`: it may not use one, `stopped`, `running`). The part keeps the rows
+    (`SandboxSessionStore.mayBeOpen`) and asks the provider about each (`SandboxProvider.status`, over RPC
+    `SandboxSession.status`, a read that is no use of the session): one it closed is left out (its row stays until its
+    close is reported), one it does not know is forgotten, one it could not ask about is listed without network and
+    computer. No file name, size or content is read or answered, to anyone. `DELETE /:id` ends a session (its member, or
+    any org admin) as the member's leaving does (`purge` with `settle`): its files go at once, its usage record is
+    written and its computer's last stretch is charged to its opener's Spend limits and counted toward the plan's
+    computer hours; its tools then answer that no such session is open. A session the caller may not see, or that
+    closed, is `404 not_found`; a sandbox that cannot be reached leaves it open and answers `502 sandbox_failed`. The
+    Tools part is in the State Worker beside `SandboxSession`, so the new RPC is not called across versions; the app
+    Worker's new routes call `listSandboxSessions` and `endSandboxSession`, which a State Worker from before lacks (both
+    routes answer `502 control plane unavailable` until it is deployed: nothing else reads them).
   - **Sandbox providers** (`tools/sandbox/provider.ts`, ADR 0041): the toolkit reaches its sandbox only through the
     `SandboxProvider` interface (open, bash, read, write, list, close, each as an owner, with the call's `ComputerMeter`
     (#224), and purge and `stopComputer`, for the ControlPlane; a `SandboxError` with a reason the toolkit words).
@@ -4728,6 +4745,24 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
   and teams (or grants) could not be read still gets the lists; only the "Who may use it" column and editor and the
   shared option of the form wait for them. Deletes go through `deleteProfile` at the revision of the row they were read
   at, and the other members' rows are looked up by id first, so no write is sent at a revision that was never read.
+- **The sandbox toolkit's page** (#225, `apps/web/src/pages/ToolkitSandbox.tsx`; models in `lib/sandbox-settings.ts`,
+  `lib/sandbox-sessions.ts` and `lib/sandbox-network.ts`): the toolkit's page (`/tools/sandbox`) gains, for its kind, the
+  org's **Network** and **Computer** among its facts (members read them too: a deployment without the computer says
+  "Not allowed" and nothing more), its **Prices** (the one price per computer hour, the same field and control as the
+  price per browser hour, #209), and, for org admins, **Sandbox settings**: the ceiling a session or a hosted agent's
+  sandbox picks within, a network picker (no network, only these hosts with the package registries preset, the
+  internet; the one `NetworkPicker` the agent editor's sandbox also uses, whose kinds beyond the ceiling are not
+  offered) and "May use the computer", under a note that network access and tool results carrying prompt injection are
+  together a way to leak data (ADR 0044). The form saves only what changed, with the toolkit's `If-Match` revision; the
+  ceiling's wording is the agent editor's `sandboxCeilingText`. Where the deployment has no computer
+  (`me.deployment.computer` false, ADR 0043, `hasComputer`) admins see the checkbox turned off with a one-line reason and
+  a link to `docs/DEPLOY.md`'s "Optional pieces", the form never names the computer, and members are told nothing.
+  **Open sessions** (every member) is the `GET /sandbox-sessions` list, own first: who opened it, when, its network and
+  its computer, and End (confirmed, in the danger tone, as ending deletes the session's files at once); it is read again
+  every 15 seconds, and its failure leaves the page be, with a Try again. **Usage**'s tool-call view words computer time
+  as browser time is worded (#217): a column in the breakdown where a row used some, under a record's tool in the log
+  ("12 min of computer time", a session closing's record reading "Computer session"), and in the totals and a record's
+  facts; the toolkit breakdown and filter narrow to the sandbox toolkit.
 - **Panel, grants, prices, approvals and usage** (#209; models in `apps/web/src/lib/tool-grants.ts`, `tool-id.ts`,
   `my-tools.ts`, `tool-prices.ts`, `approval-rules.ts`, `usage-tools.ts`). The **Grants** page (`/grants`) has a Models
   | Tools switch (`?area=tools`): the tool grants (`GrantsTools.tsx`) read by member, team or toolkit, a form for the

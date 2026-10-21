@@ -26,6 +26,8 @@ import {
 } from "../lib/toolkits.ts";
 import { type ApproverDirectory, rulesSummary } from "../lib/approval-rules.ts";
 import { approvalRulesWarnings } from "../lib/approvals.ts";
+import { hasComputer } from "../lib/hosted.ts";
+import { computerFact, networkFact } from "../lib/sandbox-settings.ts";
 import { callPriceText, formatPrice } from "../lib/tool-prices.ts";
 import { usePageTitle } from "../lib/use-page-title.ts";
 import { directoryOf, WithApproverDirectory } from "./ApproverDirectory.tsx";
@@ -35,6 +37,7 @@ import { TrailMark } from "../components/Signs.tsx";
 import { Flags } from "./ToolkitFlags.tsx";
 import { ToolkitApprovals } from "./ToolkitApprovals.tsx";
 import { ToolkitPrices } from "./ToolkitPrices.tsx";
+import { SandboxSessions, SandboxSettings } from "./ToolkitSandbox.tsx";
 import { ToolkitSettings } from "./ToolkitSettings.tsx";
 import { ToolList } from "./ToolkitTools.tsx";
 import styles from "./Tools.module.css";
@@ -87,10 +90,13 @@ const Facts = ({
   toolkit,
   directory,
   approvals,
+  computer,
 }: {
   readonly toolkit: ToolkitView;
   /** Whether the page has the Approvals section, which holds the full warning. */
   readonly approvals: boolean;
+  /** The deployment has the sandbox's computer (`deployment.computer`). */
+  readonly computer: boolean;
   /** The members and teams, to name approvers: org admins have them. */
   readonly directory: ApproverDirectory | undefined;
 }) => {
@@ -151,6 +157,14 @@ const Facts = ({
           <dd>{formatPrice(toolkit.computer_hour_price_micros)} per computer hour</dd>
         </>
       )}
+      {toolkit.built_in === true && toolkit.kind === "sandbox" ? (
+        <>
+          <dt>Network</dt>
+          <dd>{networkFact(toolkit.network)}</dd>
+          <dt>Computer</dt>
+          <dd>{computerFact(toolkit, computer)}</dd>
+        </>
+      ) : null}
       {summary === undefined ? null : (
         <>
           <dt>Approval</dt>
@@ -221,6 +235,9 @@ const Details = ({
 }) => {
   const controls = controlsFor(toolkit, caller);
   const flags = flagsOf(toolkit);
+  const me = useAtomValue(meAtom);
+  const computer = AsyncResult.isSuccess(me) && hasComputer(me.value);
+  const sandbox = toolkit.built_in === true && toolkit.kind === "sandbox";
 
   return (
     <>
@@ -231,6 +248,7 @@ const Details = ({
               toolkit={toolkit}
               directory={directoryOf(state)}
               approvals={controls.approvals}
+              computer={computer}
             />
             <Flags flags={flags} label="Needs attention" />
             <SignIns toolkit={toolkit} caller={caller} controls={controls} />
@@ -245,6 +263,10 @@ const Details = ({
       </WithApproverDirectory>
       {controls.prices ? <ToolkitPrices toolkit={toolkit} /> : null}
       {toolkit.built_in === true && toolkit.kind === "browser" ? <BrowserToolkitLinks /> : null}
+      {sandbox && caller.admin ? (
+        <SandboxSettings toolkit={toolkit} computerAvailable={computer} />
+      ) : null}
+      {sandbox ? <SandboxSessions admin={caller.admin} /> : null}
       {controls.approvals ? <ToolkitApprovals toolkit={toolkit} admin={caller.admin} /> : null}
       {controls.manage && toolkit.built_in !== true ? <ToolkitSettings toolkit={toolkit} /> : null}
     </>

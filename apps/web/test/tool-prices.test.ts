@@ -109,6 +109,20 @@ describe("a toolkit's prices", () => {
     expect(hour && priceBody(hour, "6")).toEqual({ browser_hour_price_micros: 6_000_000 });
   });
 
+  it("send the sandbox toolkit's price per computer hour (#225), which round-trips as the toolkit's current price", () => {
+    const sandbox = toolkit({ kind: "sandbox", built_in: true });
+    const [hour] = priceFieldsOf(sandbox);
+    const priced = toolkit({ ...sandbox, computer_hour_price_micros: 1_250_000 });
+
+    expect(hour?.field).toBe("computer_hour_price_micros");
+    expect(hour && priceBody(hour, "$1.25")).toEqual({ computer_hour_price_micros: 1_250_000 });
+    expect(hour && priceBody(hour, "")).toEqual({ computer_hour_price_micros: null });
+    expect(hour && currentPrice(priced, hour.field)).toBe(1_250_000);
+    expect(hour && priceText(currentPrice(priced, hour.field))).toBe("1.25");
+    expect(hour && priceChanged(priced, hour, "1.25")).toBe(false);
+    expect(hour && priceChanged(priced, hour, "1.5")).toBe(true);
+  });
+
   it("know whether a typed price changes the toolkit's", () => {
     const [call] = priceFieldsOf(toolkit());
     const priced = toolkit({ price_micros: 2000 });

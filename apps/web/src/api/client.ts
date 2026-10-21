@@ -980,6 +980,17 @@ export const browserLiveViewAtom = ManagementClient.mutation("browserSessions", 
 /** Ends a session (call with `reactivityKeys: BROWSER_SESSIONS`). */
 export const endBrowserSessionAtom = ManagementClient.mutation("browserSessions", "end");
 
+/** The sandbox toolkit's open sessions (#225) refetch after ending one, tagged with this key. */
+export const SANDBOX_SESSIONS = ["sandbox-sessions"] as const;
+
+/** The caller's open sandbox sessions, and for an org admin the org's others (#225); read again as sessions come and go. */
+export const sandboxSessionsAtom = ManagementClient.query("sandboxSessions", "list", {
+  reactivityKeys: SANDBOX_SESSIONS,
+}).pipe(Atom.withRefresh(SESSIONS_REFRESH));
+
+/** Ends a sandbox session (call with `reactivityKeys: SANDBOX_SESSIONS`). */
+export const endSandboxSessionAtom = ManagementClient.mutation("sandboxSessions", "end");
+
 /** The Agents pages (and the agents a member may use) refetch after a mutation tagged with this key. */
 export const AGENTS = ["agents"] as const;
 

@@ -231,6 +231,26 @@ export class SandboxSessionStore {
       .map(sessionOf);
   }
 
+  /**
+   * The sessions that may still be open at `now`, oldest first (#225: the panel's list), `member`'s only when given, at
+   * most `limit`: an agent run's, which no day ends, and the others used within their idle day. One the provider closed
+   * whose close is not reported yet is among them until it is forgotten: the provider says which are open.
+   */
+  mayBeOpen(now: number, limit: number, member?: string): ReadonlyArray<TrackedSession> {
+    return this.#sql
+      .exec<SessionRow>(
+        `SELECT * FROM sandbox_sessions
+         WHERE (NOT (${ENDS_IDLE}) OR last_used > ?) AND (? IS NULL OR member = ?)
+         ORDER BY opened_at, id LIMIT ?`,
+        now - SESSION_IDLE_MS,
+        member ?? null,
+        member ?? null,
+        limit,
+      )
+      .toArray()
+      .map(sessionOf);
+  }
+
   /** The open sessions of the principals `principals` (#230: agent runs'). */
   sessionsOf(principals: ReadonlyArray<string>): ReadonlyArray<TrackedSession> {
     if (principals.length === 0) return [];

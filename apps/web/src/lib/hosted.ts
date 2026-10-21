@@ -17,6 +17,13 @@ type Hosting = Pick<Me, "platform_admin" | "deployment" | "org_limit" | "owned_o
  */
 export const hasBrowser = (me: Pick<Me, "deployment">): boolean => me.deployment.browser;
 
+/**
+ * Whether the deployment has the sandbox's computer (ADR 0043: `deployment.computer`). The sandbox toolkit itself is
+ * always there; without the computer an org admin sees "may use the computer" turned off, with the reason and a link to
+ * the docs, and a member sees nothing explained.
+ */
+export const hasComputer = (me: Pick<Me, "deployment">): boolean => me.deployment.computer;
+
 /** Anyone signed in creates orgs on Commissary Cloud; on a self-hosted one only platform admins do. */
 export const canCreateOrg = (me: Hosting): boolean => me.platform_admin || me.deployment.hosted;
 

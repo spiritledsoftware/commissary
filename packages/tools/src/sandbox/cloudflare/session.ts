@@ -81,6 +81,7 @@ import {
   type OutputCut,
   SANDBOX_HOME,
   type SandboxError,
+  type SandboxStatus,
   type SessionOpener,
   SESSION_IDLE_MS,
 } from "../provider.ts";
@@ -1102,6 +1103,28 @@ export class SandboxSession extends DurableObject<SandboxSessionEnv> {
     await this.#recordStretch();
 
     return answer;
+  }
+
+  /**
+   * What the org's Tools part asks of an open session for the panel's list (#225): its network, and where its computer
+   * stands. A read: it is no use of the session, whoever's it is, and it changes nothing. Another org's session is
+   * unknown; a closed one is `closed`.
+   */
+  status(org: string): SessionReply<SandboxStatus> {
+    const record = this.#record();
+
+    if (record === undefined || record.org !== org) return refused("unknown_session");
+
+    if (record.state === "closed") return refused("closed");
+
+    const running =
+      record.metering !== undefined &&
+      computerRuns(record.metering, this.#now(), this.#onComputer > 0);
+
+    return ok({
+      network: record.network,
+      computer: record.computer !== true ? "off" : running ? "running" : "stopped",
+    });
   }
 
   /**
