@@ -19,6 +19,13 @@ export interface AgentsToolkitRequest {
   readonly arguments: Schema.JsonObject;
   /** The agents the caller's tool scope lets it run; `undefined`: every agent within reach. */
   readonly scopeAgents?: ReadonlyArray<string> | undefined;
+  /**
+   * The client declares URL-mode elicitation (a 2026-07-28 client, #232): a wait may answer an `InputRequiredResult`
+   * that asks its member to open a page (an approval or a handoff their run waits on).
+   */
+  readonly elicitsUrls?: boolean | undefined;
+  /** The keys of the input requests the client answered in this retry of the call (`inputResponses`). */
+  readonly answered?: ReadonlyArray<string> | undefined;
 }
 
 export interface AgentsToolkitCalls {

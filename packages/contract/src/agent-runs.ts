@@ -9,15 +9,29 @@
  * aborts the active turn, and the run takes a new message afterwards. Each turn reads the agent's definition as it stands
  * when the turn starts; a run whose agent was disabled or removed since ends at its next turn (`state: "ended"`).
  *
- * Only a run's starter sees it here (`404` for anyone else, as for a run that does not exist); watchers and org admins
- * come with #232. Starting a run needs the agent to be one the caller may use (`GET /agents/mine`). Resubmitting a start
- * or a message with the same `idempotency_key` returns the run or turn it started the first time.
+ * Who sees a run here (#232, ADR 0040 "Who watches and steers"): its starter; for a shared agent's run that no one
+ * started (a schedule's or a webhook's, #231), the agent's watchers; and an org admin, every shared agent's run, as its
+ * metadata only (`access: "admin"`: no turns, activity or transcript). Anyone else gets `404`, as for a run that does
+ * not exist. Its starter and its watchers watch it (its transcript), steer it (messages, waits) and cancel it; an org
+ * admin cancels any run of the org, a private agent's too, of which they learn only whether a turn was cancelled. A
+ * child run (#229) shows to an org admin only, as metadata; its starter is the run that started it. A run's cost is not
+ * part of its view: the usage reads filter by run (#228).
+ *
+ * `RunDetail`'s `turns`, `activity` and `transcript` were always there before #232; they are optional since, as an org
+ * admin's view leaves them out (a client that reads them checks `access` first).
+ * Starting a run needs the agent to be one the caller may use (`GET /agents/mine`). Resubmitting a start or a message
+ * with the same `idempotency_key` returns the run or turn it started the first time.
+ *
+ * A run whose tool call waits for a person (a pending approval, a browser handoff, `./run-waits.ts`) says so in
+ * `waiting`, with the panel's page where its person answers it; a child run's waits show in the runs above it in its
+ * chain too (`RunWaiting.run`), as the same person answers them.
  *
  * Without the deployment's Agents area (the `LOADER` binding) every route here answers 404, as the definitions' do.
  */
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
 import { managementErrors } from "./errors.ts";
+import { RunWaiting } from "./run-waits.ts";
 
 const optional = Schema.optionalKey;
 
@@ -45,10 +59,22 @@ export type TurnStatus = typeof TurnStatus.Type;
 /** Who started a run: a member, or the run that started it through the agents toolkit (a child run, #229). */
 export const RunStarterView = Schema.Struct({
   kind: Schema.Literals(["member", "run"]),
-  id: Schema.String,
+  /**
+   * The member's or the run's id; absent from an org admin's view of a child run that a private agent's run started
+   * (#232): that run is its member's alone.
+   */
+  id: optional(Schema.String),
 });
 
 export type RunStarterView = typeof RunStarterView.Type;
+
+/**
+ * Why the caller sees a run (#232): they started it (`starter`), they watch its shared agent and no one started it
+ * (`watcher`), or they are an org admin, who sees its metadata only (`admin`).
+ */
+export const RunAccess = Schema.Literals(["starter", "watcher", "admin"]);
+
+export type RunAccess = typeof RunAccess.Type;
 
 export const TurnView = Schema.Struct({
   id: Schema.String,
@@ -106,16 +132,22 @@ export const RunView = Schema.Struct({
   created_at: Schema.String,
   /** Its last activity. */
   updated_at: Schema.String,
+  /** Why the caller sees it (#232); absent from the agents toolkit's views. */
+  access: optional(RunAccess),
 });
 
 export type RunView = typeof RunView.Type;
 
-/** `GET /agent-runs/:run`: the run, its turns (oldest first), its recent activity and its transcript. */
+/**
+ * `GET /agent-runs/:run`: the run, its turns (oldest first), its recent activity, its transcript, and what its tool
+ * calls wait on (#232). An org admin's view (`access: "admin"`) is the run's metadata only: none of them.
+ */
 export const RunDetail = Schema.Struct({
   ...RunView.fields,
-  turns: Schema.Array(TurnView),
-  activity: Schema.Array(RunActivity),
-  transcript: Schema.Array(TranscriptEntry),
+  turns: optional(Schema.Array(TurnView)),
+  activity: optional(Schema.Array(RunActivity)),
+  transcript: optional(Schema.Array(TranscriptEntry)),
+  waiting: optional(Schema.Array(RunWaiting)),
 });
 
 export type RunDetail = typeof RunDetail.Type;
@@ -182,12 +214,17 @@ export const WaitResult = Schema.Struct({
   state: RunState,
   turn: TurnView,
   activity: optional(Schema.Array(RunActivity)),
+  /** On timeout, what the run's tool calls wait on (#232). */
+  waiting: optional(Schema.Array(RunWaiting)),
 });
 
 export type WaitResult = typeof WaitResult.Type;
 
-/** `POST /agent-runs/:run/cancel`: whether a turn was running, and the run as it is now. */
-export const CancelledRun = Schema.Struct({ run: RunView, cancelled: Schema.Boolean });
+/**
+ * `POST /agent-runs/:run/cancel`: whether a turn was running, and the run as it is now. Its starter, its watchers and
+ * an org admin may cancel it (#232); an org admin who does not see the run (a private agent's) gets no `run`.
+ */
+export const CancelledRun = Schema.Struct({ run: optional(RunView), cancelled: Schema.Boolean });
 
 export type CancelledRun = typeof CancelledRun.Type;
 

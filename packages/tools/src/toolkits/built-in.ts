@@ -23,6 +23,7 @@ import { type ComputerMarker, hasComputer, type OutboundPolicy } from "@commissa
 import { Effect, Result, Schema } from "effect";
 import { AGENTS_TOOLKIT } from "@commissary/contract/api-keys";
 import { AGENTS_TOOL_LIST, type AgentDirectory } from "../agents/toolkit.ts";
+import type { RunWatchers } from "../agents/run-watchers.ts";
 import { browserRun, type BrowserRunBinding } from "../browser/browser-run.ts";
 import { browserRunCrawls, crawlCredentialsOf } from "../browser/browser-run-crawls.ts";
 import {
@@ -118,6 +119,11 @@ export interface BuiltInProviders {
    * the Agents area (`apps/state/src/control-plane.ts`), and with it the agents toolkit (#229).
    */
   readonly agents?: AgentDirectory | undefined;
+  /**
+   * Who watches each agent run (#232), from the Agents part of the same ControlPlane: given where the state Worker
+   * composes the Agents area. They answer a run's approvals and watch the browser sessions a shared agent's run opened.
+   */
+  readonly runWatchers?: RunWatchers | undefined;
 }
 
 /**

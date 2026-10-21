@@ -23,6 +23,7 @@ import {
   viewerOf,
 } from "@commissary/auth";
 import type { Approver } from "@commissary/contract/approvals";
+import { RUN_WAITS_META, type RunWaiting } from "@commissary/contract/run-waits";
 import {
   RUN_EXECUTES_META,
   RUN_SESSION_META,
@@ -73,6 +74,7 @@ import {
   RpcCode,
   type RpcRequest,
   resultAnswer,
+  withoutOwnMeta,
 } from "./protocol.ts";
 import { isJsonObject } from "../http/shared.ts";
 
@@ -299,6 +301,31 @@ const metaFlag = (params: Schema.JsonObject, key: string): boolean => {
   return isJsonObject(meta) && meta[key] === true;
 };
 
+/** The keys of the input requests a client's retry answers (`inputResponses`, MRTR). */
+const answeredKeys = (params: Schema.JsonObject): ReadonlyArray<string> => {
+  const responses = params["inputResponses"];
+
+  return isJsonObject(responses) ? Object.keys(responses) : [];
+};
+
+/**
+ * `result` with what the run's call waits on in its `_meta` (#232, `RUN_WAITS_META`): the run parks the call on it, and
+ * shows its person the link, when there is one (the panel's URL known).
+ */
+const waitingFor = (
+  result: Schema.JsonObject,
+  waiting: Omit<RunWaiting, "link">,
+  link: string,
+  fallback: string,
+): Schema.JsonObject => {
+  const { _meta: meta, ...fields } = result;
+  const own: Readonly<Record<string, Schema.Json>> = isJsonObject(meta) ? meta : {};
+
+  const value: RunWaiting = { ...waiting, ...(link === fallback ? {} : { link }) };
+
+  return { ...fields, _meta: { ...own, [RUN_WAITS_META]: value } };
+};
+
 /** Whether the client's retry says the member declined (or dismissed) the elicitation `key`. */
 const declined = (params: Schema.JsonObject, key: string): boolean => {
   const responses = params["inputResponses"];
@@ -411,15 +438,19 @@ const approvalForm = (
  * URL-mode elicitation is asked to open the connect link (an `InputRequiredResult`, MRTR) until it declines; any other
  * client gets the link as a tool error, a 2025 client too, as its elicitation would need the request's SSE stream
  * (docs/ARCHITECTURE.md, "Tools"), and so does every client when there is no URL to open. A pending call's link is
- * always a tool result: its approver may be someone else, and the call is made again once approved.
+ * always a tool result: its approver may be someone else, and the call is made again once approved. An agent run's
+ * (`run`) pending call and started handoff also say what they wait on in `_meta` (#232), where the run parks them.
  */
 const toolResult = Effect.fnUntraced(function* (
   outcome: EndedCall,
   name: string,
   request: RpcRequest,
   context: Served,
+  run = false,
 ) {
-  if (outcome.outcome === "result") return outcome.result;
+  // A tool's own result (an upstream server's, or a built-in's): never with Commissary's `_meta` keys, which only the
+  // endpoint adds.
+  if (outcome.outcome === "result") return withoutOwnMeta(outcome.result);
 
   if (outcome.outcome === "failed") return toolError(outcome.message);
 
@@ -431,15 +462,33 @@ const toolResult = Effect.fnUntraced(function* (
 
   if (outcome.outcome === "not_approved") return toolError(notApprovedText(name, outcome.reason));
 
-  if (outcome.outcome === "handoff")
-    return handoffResult({
+  if (outcome.outcome === "handoff") {
+    const link = yield* sessionLink(outcome.sessionId);
+
+    const started = handoffResult({
       name,
       sessionId: outcome.sessionId,
       reason: outcome.reason,
       until: outcome.until,
-      link: yield* sessionLink(outcome.sessionId),
+      link,
       elicitsUrls: elicitsUrls(context.era),
     });
+
+    // A run parks the call until its person is done (#232): its starter, or its watchers, act in the session.
+    return run
+      ? waitingFor(
+          started,
+          {
+            kind: "handoff",
+            id: outcome.sessionId,
+            until: new Date(outcome.until).toISOString(),
+            by_caller: true,
+          },
+          link,
+          SESSION_PAGE,
+        )
+      : started;
+  }
 
   if (outcome.outcome === "pending") {
     const link = yield* approvalLink(outcome.approval.id);
@@ -447,11 +496,26 @@ const toolResult = Effect.fnUntraced(function* (
 
     const where = link === APPROVAL_PAGE ? `on ${link}` : `at ${link}`;
 
-    return toolText(
+    const pending = toolText(
       `${name} was not called yet: the call waits for approval by ${approvedBy(outcome.approval.approver)}. ` +
         `It can be approved or denied ${where} until ${by}. Once it is approved, call ${name} again with the ` +
         `same arguments: it goes through once.`,
     );
+
+    // A run parks the call until it is decided (#232), and makes it again then.
+    return run
+      ? waitingFor(
+          pending,
+          {
+            kind: "approval",
+            id: outcome.approval.id,
+            until: by,
+            by_caller: outcome.approval.approver.kind === "caller",
+          },
+          link,
+          APPROVAL_PAGE,
+        )
+      : pending;
   }
 
   const link = yield* connectLink(outcome.toolkit.id);
@@ -574,6 +638,9 @@ const callTool = Effect.fnUntraced(function* (request: RpcRequest, context: Serv
                   tool: outcome.tool,
                   arguments: outcome.arguments,
                   scopeAgents: outcome.scopeAgents,
+                  // A wait may ask the member to answer what their run waits on (#232).
+                  elicitsUrls: elicitsUrls(context.era),
+                  answered: answeredKeys(request.params),
                 }),
           usage: outcome.usage,
         }
@@ -586,7 +653,7 @@ const callTool = Effect.fnUntraced(function* (request: RpcRequest, context: Serv
       ? runRefusal(refusedText(name, ended))
       : ended.outcome === "plan_limited" && call.run !== undefined
         ? runRefusal(yield* planLimitedText(name, ended), planLimitMeta(ended.refusal))
-        : yield* toolResult(ended, name, request, context);
+        : yield* toolResult(ended, name, request, context, call.run !== undefined);
 
   const answeredAt = yield* Clock.currentTimeMillis;
   const { usage } = ended;

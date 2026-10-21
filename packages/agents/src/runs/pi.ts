@@ -13,6 +13,15 @@
  * session, each call gated as the sandbox toolkit's tool of the same name, in place of that toolkit's own when the
  * turn's definition names a sandbox (#230, `pi-sandbox.ts`). Every model and tool call is therefore a client API
  * request of the run's principal, under every gate (the API Worker's run gateway).
+ *
+ * **Parked calls** (#232, ADR 0040 "Who watches and steers"): a tool call that waits for a person (a pending approval,
+ * a browser handoff: the MCP endpoint says so in the result's `_meta`, `RUN_WAITS_META`) is parked: the turn waits, no
+ * request stays open, and the run asks the run gateway how it stands, now and then ({@link WAIT_POLL_MS}). Once it is
+ * decided the call is made again with the same arguments, which takes the outcome (an approved call goes through once);
+ * once it expired the call answers the model as refused, and the turn goes on. An MCP tool's call is replay-safe for
+ * this alone: its memos say whether a rerun after a restart (an eviction, a deploy) finds it parked, and goes on
+ * waiting, or cut off while it called, which answers as interrupted, as pi-durable answers any call that is not
+ * replay-safe.
  */
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import {
@@ -43,6 +52,7 @@ import {
 } from "@earendil-works/pi-mcp";
 import { Option, Schema } from "effect";
 import type { AgentSandbox } from "@commissary/contract/agents";
+import { RUN_WAITS_META, RunWaiting, type RunWaitState } from "@commissary/contract/run-waits";
 import {
   RUN_EXECUTES_META,
   RUN_SESSION_META,
@@ -82,6 +92,21 @@ const MAX_TOKENS = 32_000;
 
 /** How long one tool call may take before the run gives up on it. */
 const TOOL_CALL_TIMEOUT_MS = 15 * 60_000;
+
+/**
+ * How long a parked call waits between two asks of how what it waits on stands (#232): soon at first, as an approver
+ * in the panel may decide at once, then every 15 seconds (an hour's approval is some 240 asks).
+ */
+const WAIT_POLL_MS: ReadonlyArray<number> = [2_000, 4_000, 8_000, 15_000];
+
+/**
+ * How long past its time a call waits on what the run gateway still says waits before it is refused: the time is the
+ * ControlPlane's, or the browser provider's for a handoff, which ends it itself.
+ */
+export const EXPIRY_GRACE_MS = 60_000;
+
+/** The most times one call parks (#232): an approval, then a handoff its approved call started, and a few more. */
+const MAX_PARKS = 8;
 
 /** What a turn's model is: its definition's model, with its thinking level as Commissary's suffix (`model(high)`). */
 export interface TurnAgent {
@@ -133,6 +158,15 @@ export interface PiRun {
   close(): Promise<void>;
 }
 
+/** What the run's parked calls wait on (#232), as the run's object keeps it. */
+export interface PiRunWaits {
+  /** A call parks on `waiting`: the run shows it (and the agents toolkit's wait may ask its person) until unparked. */
+  readonly parked: (waiting: RunWaiting) => void;
+  readonly unparked: (id: string) => void;
+  /** How `waiting` stands now, through the run gateway; a failure is taken as still waiting. */
+  readonly state: (waiting: RunWaiting) => Promise<RunWaitState>;
+}
+
 /** The run's sandbox (#230), as the run's object keeps it. */
 export interface PiRunSandbox {
   /** The sandbox the running turn's definition names, if any. */
@@ -169,6 +203,8 @@ export interface PiRunOptions {
   readonly refused: (message: string) => void;
   /** The run's sandbox: its turns' bash and file tools work in its session (`pi-sandbox.ts`). */
   readonly sandbox: PiRunSandbox;
+  /** What its parked calls wait on (#232). */
+  readonly waits: PiRunWaits;
 }
 
 /** The text parts of a message's content, joined. */
@@ -258,6 +294,80 @@ const decodeSandboxStructured = Schema.decodeUnknownOption(SandboxStructured);
 const GatedMeta = Schema.Struct({ [RUN_TICKET_META]: Schema.Struct({ id: Schema.String }) });
 
 const decodeGatedMeta = Schema.decodeUnknownOption(GatedMeta);
+
+/** What a run's call waits on, in its result's `_meta` (#232). */
+const WaitsMeta = Schema.Struct({ [RUN_WAITS_META]: RunWaiting });
+
+const decodeWaitsMeta = Schema.decodeUnknownOption(WaitsMeta);
+
+/** What `result` says its call waits on, if it waits on a person (#232). */
+const waitingOf = (result: CallToolResult): RunWaiting | undefined =>
+  Option.getOrUndefined(decodeWaitsMeta(result._meta))?.[RUN_WAITS_META];
+
+/** What a handoff's end says of how it ended, in a `browser_ask_human`'s `structuredContent` (#216). */
+const HandoffEnd = Schema.Struct({ outcome: Schema.String });
+
+const decodeHandoffEnd = Schema.decodeUnknownOption(HandoffEnd);
+
+/** A tool error with `text`. */
+const refusedResult = (text: string): CallToolResult => ({
+  content: [{ type: "text", text }],
+  isError: true,
+});
+
+/** What a parked call answers once what it waited on expired (ADR 0040): it is refused, and the turn goes on. */
+const expiredResult = (name: string, waiting: RunWaiting): CallToolResult =>
+  refusedResult(
+    waiting.kind === "approval"
+      ? `${name} was not called: nobody decided its approval before it expired at ${waiting.until}, so the call is ` +
+          `refused. Go on without it, or call ${name} again to ask for approval anew.`
+      : `Nobody answered the handoff in browser session ${waiting.id} before it expired at ${waiting.until}, so ` +
+          `${name} is refused. Go on without it.`,
+  );
+
+/** What a call that parked more than {@link MAX_PARKS} times answers: refused, not the words to call it again. */
+const tooManyParks = (name: string): CallToolResult =>
+  refusedResult(
+    `${name} was not called: it waited for a person ${MAX_PARKS} times in a row, the most one call waits, so it is ` +
+      `refused. Go on without it.`,
+  );
+
+/**
+ * The answer a parked call's next call gave, as the model gets it: a handoff that timed out (#216) is refused
+ * (ADR 0040), as an expiry the run saw itself is.
+ */
+const afterParking = (result: CallToolResult): CallToolResult =>
+  Option.getOrUndefined(decodeHandoffEnd(result.structuredContent))?.outcome === "timed_out"
+    ? { ...result, isError: true }
+    : result;
+
+/** The wait before the next ask of a parked call that asked `asked` times. */
+const pollDelay = (asked: number): number =>
+  WAIT_POLL_MS[Math.min(asked, WAIT_POLL_MS.length - 1)] ?? 15_000;
+
+/** Resolves after `ms`, or rejects with the signal's reason once `signal` aborts. */
+const sleep = (ms: number, signal: AbortSignal | undefined): Promise<void> =>
+  new Promise((resolve, reject) => {
+    signal?.throwIfAborted();
+
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", aborted);
+      resolve();
+    }, ms);
+
+    const aborted = () => {
+      clearTimeout(timer);
+      reject(signal?.reason);
+    };
+
+    signal?.addEventListener("abort", aborted, { once: true });
+  });
+
+/** The memo of a call that its `n`th call of the MCP endpoint was made (#232): a rerun past it was cut off. */
+const callMemo = (n: number) => `call:${n}`;
+
+/** The memo of what the `n`th call of the MCP endpoint parked on (#232): a rerun past it goes on waiting. */
+const parkedMemo = (n: number) => `parked:${n}`;
 
 /** A sandbox tool's result as the run's coding tools read it. */
 const sandboxAnswer = (result: CallToolResult): SandboxAnswer => {
@@ -356,6 +466,45 @@ export const openPiRun = async (options: PiRunOptions): Promise<PiRun> => {
     return created;
   };
 
+  /**
+   * Waits on what a parked call waits on (#232): asks the run gateway how it stands, soon at first and then every 15
+   * seconds, until it is decided (`ready`: the call is made again) or expired (`expired`: refused). The run shows it
+   * meanwhile. A cancelled turn aborts the wait (`signal`).
+   */
+  const awaitDecision = async (
+    waiting: RunWaiting,
+    signal: AbortSignal | undefined,
+  ): Promise<"ready" | "expired"> => {
+    const until = Date.parse(waiting.until);
+
+    options.waits.parked(waiting);
+
+    try {
+      for (let asked = 0; ; asked += 1) {
+        let state: RunWaitState;
+
+        try {
+          state = await options.waits.state(waiting);
+        } catch (error) {
+          options.report(`a parked call's state was not read: ${String(error)}`);
+          state = "waiting";
+        }
+
+        const now = Date.now();
+
+        if (state === "ready" || state === "expired") return state;
+
+        // Nothing of it is kept: before its time the call is made again (its rule may be gone), after it refused.
+        if (state === "gone") return now >= until ? "expired" : "ready";
+
+        if (now >= until + EXPIRY_GRACE_MS) return "expired";
+        await sleep(Math.min(pollDelay(asked), until + EXPIRY_GRACE_MS - now), signal);
+      }
+    } finally {
+      options.waits.unparked(waiting.id);
+    }
+  };
+
   /** Calls the MCP endpoint's tool `name`; a spend limit's refusal ends the turn (`refused`). */
   const call = async (
     name: string,
@@ -386,13 +535,31 @@ export const openPiRun = async (options: PiRunOptions): Promise<PiRun> => {
     args: JsonObject,
     signal: AbortSignal | undefined,
   ): Promise<{ readonly ticket: string } | SandboxAnswer> => {
-    const result = await (
-      await connected()
-    ).request<CallToolResult>(
-      "tools/call",
-      { name, arguments: args, _meta: { [RUN_EXECUTES_META]: true } },
-      { ...(signal === undefined ? {} : { signal }), timeoutMs: TOOL_CALL_TIMEOUT_MS },
-    );
+    const gated = async () =>
+      await (
+        await connected()
+      ).request<CallToolResult>(
+        "tools/call",
+        { name, arguments: args, _meta: { [RUN_EXECUTES_META]: true } },
+        { ...(signal === undefined ? {} : { signal }), timeoutMs: TOOL_CALL_TIMEOUT_MS },
+      );
+
+    let result = await gated();
+
+    // A call that waits for its approval parks (#232), in memory: pi's coding tools are not replay-safe, so a restart
+    // answers it as interrupted, and the approval stays for the next call.
+    for (let parks = 1; ; parks += 1) {
+      const waiting = waitingOf(result);
+
+      if (waiting === undefined) break;
+
+      // Parked once more than a call may: refused, rather than the result's words to call again.
+      if (parks > MAX_PARKS) return sandboxAnswer(tooManyParks(name));
+
+      if ((await awaitDecision(waiting, signal)) === "expired")
+        return sandboxAnswer(expiredResult(name, waiting));
+      result = await gated();
+    }
 
     const ticket = Option.getOrUndefined(decodeGatedMeta(result._meta))?.[RUN_TICKET_META].id;
 
@@ -423,12 +590,52 @@ export const openPiRun = async (options: PiRunOptions): Promise<PiRun> => {
         type: "object",
         properties: tool.inputSchema.properties ?? {},
       }),
-      // A call cut off by a restart is not made again: the model gets it as interrupted (pi-durable's default).
-      replay: "unsafe",
-      execute: async (args, _api, callContext) => {
-        const result = await call(tool.name, args, callContext.abortSignal);
+      // Replay-safe only to go on waiting where it parked (#232): a call cut off while it called the endpoint is not
+      // made again, and answers as interrupted, as pi-durable answers a call that is not replay-safe.
+      replay: "safe",
+      execute: async (args, api, callContext) => {
+        const signal = callContext.abortSignal;
 
-        return { output: toLlmContent(result), isError: result.isError === true };
+        const answer = (result: CallToolResult) => ({
+          output: toLlmContent(result),
+          isError: result.isError === true,
+        });
+
+        // The memos say where a rerun after a restart stands: the last call made, and whether it parked.
+        let made = 0;
+        let waiting: RunWaiting | undefined;
+
+        while ((await api.memo<boolean>(callMemo(made + 1), callContext)) === true) {
+          made += 1;
+          const parked = await api.memo<RunWaiting>(parkedMemo(made), callContext);
+
+          waiting = parked;
+        }
+
+        if (made > 0 && waiting === undefined)
+          return answer(
+            refusedResult(`Tool ${toolName(tool.name)} was interrupted and may have partially run`),
+          );
+
+        const name = toolName(tool.name);
+
+        // Every call made but the last parked: a rerun counts the parks its memos say were made.
+        for (;;) {
+          if (waiting !== undefined && (await awaitDecision(waiting, signal)) === "expired")
+            return answer(expiredResult(name, waiting));
+
+          made += 1;
+          await api.memo(callMemo(made), true, callContext);
+          const result = await call(tool.name, args, signal);
+
+          waiting = waitingOf(result);
+
+          if (waiting === undefined) return answer(made > 1 ? afterParking(result) : result);
+
+          // Parked once more than a call may: refused, rather than the result's words to call again.
+          if (made > MAX_PARKS) return answer(tooManyParks(name));
+          await api.memo(parkedMemo(made), waiting, callContext);
+        }
       },
     });
 

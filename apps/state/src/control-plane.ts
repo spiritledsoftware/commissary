@@ -7,8 +7,10 @@
  * the `SandboxSession` objects and Dynamic Workers, which every deployment has, #222), on Commissary Cloud the managed
  * OAuth apps whose secrets the env binds (#207), and the agents toolkit (#229) where the Agents area is (`LOADER`),
  * whose reach is the Agents part's answer to which agents a caller may run, read in place in the same object: Tools
- * imports nothing of Agents, and this composition is the seam between them. The other way, the Agents part deletes the
- * sandbox sessions of the runs it deletes through the Tools part of the same object (#230), which keeps them.
+ * imports nothing of Agents, and this composition is the seam between them; and who watches each agent run (#232), read
+ * in place the same way, for the run's approvals and its browser sessions' Live View. The other way, the Agents part
+ * deletes the sandbox sessions of the runs it deletes through the Tools part of the same object (#230), which keeps
+ * them.
  */
 import { composeControlPlane } from "@commissary/state";
 import {
@@ -23,6 +25,7 @@ import {
   type AgentDirectory,
   builtInProviders,
   managedAppsOf,
+  type RunWatchers,
   ToolsPart,
   type ToolsPartEnv,
 } from "@commissary/tools/state";
@@ -48,6 +51,20 @@ const agentDirectory = (ctx: DurableObjectState): AgentDirectory => ({
     if (part === undefined) throw new Error("the ControlPlane's Agents part is not wired");
 
     return part.runnableAgents(member);
+  },
+});
+
+/**
+ * Who watches each agent run of the object `ctx`, from its Agents part (#232): read at once, as the Tools part decides
+ * who may watch a browser session for every session of a list. A part missing is a wiring fault, which fails the call.
+ */
+const runWatchers = (ctx: DurableObjectState): RunWatchers => ({
+  of: (runId) => {
+    const part = agentsParts.get(ctx);
+
+    if (part === undefined) throw new Error("the ControlPlane's Agents part is not wired");
+
+    return part.runWatchers(runId);
   },
 });
 
@@ -90,7 +107,12 @@ export class ControlPlane extends composeControlPlane({
       ctx,
       core,
       // The agents toolkit only where the Agents area is (`LOADER`, ADR 0043), as the rest of the area.
-      { ...builtInProviders(env), ...(agentsPresent(env) ? { agents: agentDirectory(ctx) } : {}) },
+      {
+        ...builtInProviders(env),
+        ...(agentsPresent(env)
+          ? { agents: agentDirectory(ctx), runWatchers: runWatchers(ctx) }
+          : {}),
+      },
       {
         ownHosts: env.OWN_HOSTS,
         managedApps: managedAppsOf(env),

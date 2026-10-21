@@ -222,6 +222,7 @@ export class AgentsPart extends RpcTarget implements ControlPlanePart {
       core,
       (agent, member) => this.#reaches(agent, member),
       now,
+      (agent) => this.agentWatchers(agent),
     );
     this.#triggers = new Triggers(
       new TriggerStore(ctx.storage.sql, core.secrets),
@@ -556,9 +557,9 @@ export class AgentsPart extends RpcTarget implements ControlPlanePart {
   }
 
   /**
-   * The member ids that watch a shared agent's runs no one started (GLOSSARY "Watcher"; they act in #232): its watching
-   * members and the members of its watching teams, or the org admins when none is left. `undefined` for a private agent
-   * or an unknown id.
+   * The member ids that watch a shared agent's runs no one started (GLOSSARY "Watcher", #232): its watching members and
+   * the members of its watching teams, or the org admins when none is left. `undefined` for a private agent or an
+   * unknown id.
    */
   agentWatchers(id: string): ReadonlyArray<string> | undefined {
     const agent = this.#store.agent(id);
@@ -687,14 +688,52 @@ export class AgentsPart extends RpcTarget implements ControlPlanePart {
     return this.#runs.start(viewer, agentId, trigger, idempotencyKey);
   }
 
-  /** The run `runId` as its starter sees it; anyone else's answers like an unknown run. */
+  /**
+   * The run `runId` as its starter sees it; anyone else's answers like an unknown run. An app Worker from before #232
+   * calls it (docs/DEVELOPMENT.md, "State RPC: expand, then contract"): {@link viewRun} replaces it.
+   */
   getRun(viewer: Viewer, runId: string): RunsResult<RunView> {
     return this.#runs.ofStarter(viewer, runId);
   }
 
-  /** The runs `viewer` started, the latest activity first. */
+  /**
+   * The runs `viewer` started, the latest activity first. Before #232, as {@link getRun}: {@link viewRuns} replaces it.
+   */
   listRuns(viewer: Viewer): RunsList {
     return { runs: this.#runs.startedBy(viewer) };
+  }
+
+  /**
+   * The run `runId` as `viewer` sees it in the panel (#232, ADR 0040), with why (`access`): its starter, its shared
+   * agent's watchers when no one started it, or an org admin for any shared agent's run (its metadata only); anyone
+   * else's answers like an unknown run. See `runs/runs.ts` (`accessOf`).
+   */
+  viewRun(viewer: Viewer, runId: string): RunsResult<RunView> {
+    return this.#runs.ofViewer(viewer, runId);
+  }
+
+  /** The runs `viewer` sees in the panel (#232), each with why, the latest activity first. */
+  viewRuns(viewer: Viewer): RunsList {
+    return { runs: this.#runs.visibleTo(viewer) };
+  }
+
+  /**
+   * The members who watch the run `runId` and answer its approvals and handoffs (#232, ADR 0040): the member at the
+   * head of its chain, or that run's shared agent's watchers when no one started it. The Tools part of the same
+   * ControlPlane reads it in place (`apps/state/src/control-plane.ts`) to decide a run's approvals and who may watch
+   * its browser sessions.
+   */
+  runWatchers(runId: string): ReadonlyArray<string> {
+    return this.#runs.watchersOf(runId);
+  }
+
+  /**
+   * The run `runId` when `viewer` may cancel it (#232, ADR 0040), as they see it: its starter and its watchers get its
+   * view, an org admin any run of the org, and a private agent's as `null` (no view: only whether a turn was
+   * cancelled). Anyone else's answers like an unknown run. See `runs/runs.ts` (`cancellableBy`).
+   */
+  cancellableRun(viewer: Viewer, runId: string): RunsResult<RunView | null> {
+    return this.#runs.cancellableBy(viewer, runId);
   }
 
   /**

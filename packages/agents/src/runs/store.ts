@@ -241,6 +241,24 @@ export class RunStore {
       .map(runOf);
   }
 
+  /**
+   * The runs of the agents `agents`, the latest activity first; with `unstarted`, only those no one started (#232: what
+   * the agents' watchers see).
+   */
+  ofAgents(agents: ReadonlyArray<string>, unstarted: boolean): ReadonlyArray<StoredRun> {
+    if (agents.length === 0) return [];
+
+    return this.#sql
+      .exec<RunRow>(
+        `SELECT * FROM agent_runs WHERE agent_id IN (SELECT value FROM json_each(?))
+           ${unstarted ? "AND starter_kind = 'none'" : ""}
+         ORDER BY updated_at DESC, id DESC`,
+        JSON.stringify(agents),
+      )
+      .toArray()
+      .map(runOf);
+  }
+
   /** How many of the runs `starter` started are running (a turn works, or a child run's first turn is to start). */
   runningStartedBy(starter: RunStarter): number {
     return this.#sql

@@ -58,8 +58,9 @@ export const BrowserSessionView = Schema.Struct({
   /** The caller's own session: they are its member. */
   own: Schema.Boolean,
   /**
-   * The caller may watch it: open its Live View and answer its handoff (today its member alone; an agent run's watchers
-   * with #232). An org admin's view of another member's session is `false`: they may only end it.
+   * The caller may watch it: open its Live View and answer its handoff (its member; for a session a shared agent's run
+   * opened, which has no member, the run's watchers, #232). An org admin's view of another member's session is `false`:
+   * they may only end it.
    */
   watchable: Schema.Boolean,
   profile: Schema.NullOr(BrowserSessionProfile),

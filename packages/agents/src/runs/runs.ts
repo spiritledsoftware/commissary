@@ -1,6 +1,13 @@
 /**
  * The Agents part's side of agent runs (#227, ADR 0040): starting a run (its row in the org's index, `store.ts`), who
- * sees it (its starter only, for now; watchers and org admins come with #232), and what a run is at each turn.
+ * sees it, and what a run is at each turn.
+ *
+ * **Who sees a run** in the panel (#232, ADR 0040 "Who watches and steers", {@link Runs.accessOf}): its starter; for a
+ * shared agent's run that no one started, the agent's watchers (GLOSSARY "Watcher"); and an org admin, every shared
+ * agent's run, child runs included, as its metadata only. Its starter and its watchers watch, steer and cancel it; an
+ * org admin cancels any run of the org ({@link Runs.cancellableBy}), a private agent's without seeing it. The people
+ * who answer a run's approvals and handoffs are those who watch it ({@link Runs.watchersOf}): the member at the head of
+ * its chain, or, when no one started that run, its agent's watchers.
  *
  * **Turns read the definition once.** A turn reads the agent's definition when it starts ({@link Runs.beginTurn}, the
  * run's Durable Object calls it), and every call of that turn reaches what that reading allowed
@@ -15,15 +22,16 @@
  *
  * **The agents toolkit** (#229, ADR 0040) starts runs too ({@link Runs.startFromToolkit}), with the trigger kind `mcp`:
  * a client's call as its member (an API key's, which the run records: a key sees only the runs it started), or a run's,
- * which starts a **child run** of the agent it names, acting as that agent and started by the calling run. A run may run
- * the agents its member may use (a private agent's) or the shared agents (a shared agent's), within its definition's
- * tool scope; a chain of runs is at most {@link MAX_CHAIN} deep, an agent already in the chain is refused, and a run has
- * at most {@link MAX_ACTIVE_CHILDREN} child runs running at once. A child run's turns check that the run that started it
- * is still there and may still run its agent; its approvals are the member's at the head of its chain (none when no one
- * started that run). A run that ends ends its child runs, and theirs ({@link Runs.stateChanged}).
+ * which starts a **child run** of the agent it names, acting as that agent and started by the calling run. A run may
+ * run the agents its member may use (a private agent's) or the shared agents (a shared agent's), within its
+ * definition's tool scope; a chain of runs is at most {@link MAX_CHAIN} deep, an agent already in the chain is refused,
+ * and a run has at most {@link MAX_ACTIVE_CHILDREN} child runs running at once. A child run's turns check that the run
+ * that started it is still there and may still run its agent; its approvals are the member's at the head of its chain
+ * (its agent's watchers', when no one started that run, #232). A run that ends ends its child runs, and theirs
+ * ({@link Runs.stateChanged}).
  */
 import type { RunActsAs, RunStarter, Viewer } from "@commissary/auth";
-import type { RunState, RunView, TriggerKind } from "@commissary/contract/agent-runs";
+import type { RunAccess, RunState, RunView, TriggerKind } from "@commissary/contract/agent-runs";
 import type { AgentSandbox, ThinkingLevel } from "@commissary/contract/agents";
 import { agentsInScope, type ToolScope } from "@commissary/contract/api-keys";
 import type { OrgCore } from "@commissary/state";
@@ -182,6 +190,11 @@ export class Runs {
   readonly #reaches: (agent: StoredAgent, member: string) => boolean;
   /** The part's clock (epoch ms), the triggers' too: a test's `TestClock` drives both. */
   readonly #now: () => number;
+  /**
+   * The members who watch a shared agent's runs that no one started, as the part decides it (its watchers, or its org
+   * admins once none is left); `undefined` for a private agent or an unknown one.
+   */
+  readonly #watchers: (agent: string) => ReadonlyArray<string> | undefined;
 
   constructor(
     runs: RunStore,
@@ -189,12 +202,14 @@ export class Runs {
     core: OrgCore,
     reaches: (agent: StoredAgent, member: string) => boolean,
     now: () => number,
+    watchers: (agent: string) => ReadonlyArray<string> | undefined,
   ) {
     this.#runs = runs;
     this.#agents = agents;
     this.#core = core;
     this.#reaches = reaches;
     this.#now = now;
+    this.#watchers = watchers;
   }
 
   /**
@@ -492,6 +507,115 @@ export class Runs {
     return ended;
   }
 
+  /**
+   * Why `viewer` sees `run` in the panel (#232, ADR 0040), if they do: they started it (`starter`); it is a shared
+   * agent's run no one started, and they watch the agent (`watcher`); or they are an org admin and it is a shared
+   * agent's run (`admin`, its metadata only). A starter and a watcher watch, steer and cancel it; an org admin only
+   * cancels it.
+   */
+  accessOf(viewer: Viewer, run: StoredRun): RunAccess | undefined {
+    if (isStarter(run, viewer.member)) return "starter";
+
+    const agent = this.#agents.agent(run.agent);
+    const shared = agent !== undefined && agent.owner === undefined;
+
+    if (
+      viewer.member !== undefined &&
+      run.starter === undefined &&
+      shared &&
+      (this.#watchers(run.agent) ?? []).includes(viewer.member)
+    )
+      return "watcher";
+
+    return viewer.admin && shared ? "admin" : undefined;
+  }
+
+  /** The run `runId` as `viewer` sees it in the panel, with why ({@link accessOf}); any other answers as unknown. */
+  ofViewer(viewer: Viewer, runId: string): RunsResult<RunView> {
+    const run = this.#runs.run(runId);
+    const access = run === undefined ? undefined : this.accessOf(viewer, run);
+
+    return run === undefined || access === undefined
+      ? RUN_NOT_FOUND
+      : ok(this.#viewAs(run, access));
+  }
+
+  /**
+   * The runs `viewer` sees in the panel, the latest activity first ({@link accessOf}): those they started, the runs no
+   * one started of the shared agents they watch, and, for an org admin, every shared agent's run.
+   */
+  visibleTo(viewer: Viewer): ReadonlyArray<RunView> {
+    const shared = this.#agents.agents().filter((agent) => agent.owner === undefined);
+    const member = viewer.member;
+
+    const watched =
+      member === undefined
+        ? []
+        : shared
+            .filter((agent) => (this.#watchers(agent.id) ?? []).includes(member))
+            .map((agent) => agent.id);
+
+    const candidates = [
+      ...(member === undefined ? [] : this.#runs.startedBy({ kind: "member", id: member })),
+      ...this.#runs.ofAgents(
+        viewer.admin ? shared.map((agent) => agent.id) : watched,
+        !viewer.admin,
+      ),
+    ];
+
+    const seen = new Set<string>();
+    const views: Array<RunView> = [];
+
+    for (const run of candidates) {
+      if (seen.has(run.id)) continue;
+      seen.add(run.id);
+      const access = this.accessOf(viewer, run);
+
+      if (access !== undefined) views.push(this.#viewAs(run, access));
+    }
+
+    return views.toSorted((a, b) =>
+      a.updated_at === b.updated_at
+        ? b.id.localeCompare(a.id)
+        : b.updated_at.localeCompare(a.updated_at),
+    );
+  }
+
+  /**
+   * The members who watch the run `runId` and answer its approvals and handoffs (#232, ADR 0040): the member at the
+   * head of its chain (its starter, or the one who started the run that started it); or, when no one started that run
+   * (a shared agent's trigger), the watchers of that run's agent. None for an unknown run, or a chain whose head is
+   * gone.
+   */
+  watchersOf(runId: string): ReadonlyArray<string> {
+    const run = this.#runs.run(runId);
+
+    if (run === undefined) return [];
+    const head = this.#starterMember(run);
+
+    if (head === "gone") return [];
+
+    if (head === "none") return this.#watchers((this.#chain(run).at(-1) ?? run).agent) ?? [];
+
+    return this.#core.member(head.id) === undefined ? [] : [head.id];
+  }
+
+  /**
+   * The run `runId` when `viewer` may cancel it (#232, ADR 0040): its starter and its watchers, with the run as they
+   * see it; an org admin, any run of the org, a private agent's too, which they get no view of (`null`: they learn only
+   * whether a turn was cancelled). Anyone else's answers like an unknown run.
+   */
+  cancellableBy(viewer: Viewer, runId: string): RunsResult<RunView | null> {
+    const run = this.#runs.run(runId);
+
+    if (run === undefined) return RUN_NOT_FOUND;
+    const access = this.accessOf(viewer, run);
+
+    if (access !== undefined) return ok(this.#viewAs(run, access));
+
+    return viewer.admin ? ok(null) : RUN_NOT_FOUND;
+  }
+
   /** The run `runId` if `viewer` started it; any other answers like an unknown one. */
   ofStarter(viewer: Viewer, runId: string): RunsResult<RunView> {
     const run = this.#runs.run(runId);
@@ -680,6 +804,23 @@ export class Runs {
   /** Up to `limit` deleted runs whose objects are still to delete, for the sweeps that delete them. */
   deleted(limit: number): ReadonlyArray<string> {
     return this.#runs.queued(limit);
+  }
+
+  /**
+   * `run` as a viewer with `access` sees it: an org admin's view of a child run that a private agent's run started
+   * names that run's kind only, as the run is its member's alone.
+   */
+  #viewAs(run: StoredRun, access: RunAccess): RunView {
+    const view = { ...this.view(run), access };
+    const { starter } = run;
+
+    if (access !== "admin" || starter?.kind !== "run") return view;
+    const starting = this.#runs.run(starter.id);
+    const agent = starting === undefined ? undefined : this.#agents.agent(starting.agent);
+
+    return agent !== undefined && agent.owner === undefined
+      ? view
+      : { ...view, starter: { kind: "run" } };
   }
 
   view(run: StoredRun): RunView {

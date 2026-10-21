@@ -122,6 +122,10 @@ export const runPrincipalId = (runId: string): string => `run:${runId}`;
 /** Whether the principal id `id` is an agent run's ({@link runPrincipalId}). */
 export const isRunPrincipalId = (id: string): boolean => id.startsWith("run:");
 
+/** The agent run the principal id `id` names ({@link runPrincipalId}), if it is a run's. */
+export const runOfPrincipal = (id: string): string | undefined =>
+  isRunPrincipalId(id) ? id.slice("run:".length) : undefined;
+
 export const principalId = (principal: Principal): string => {
   switch (principal.kind) {
     case "user":

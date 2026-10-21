@@ -54,13 +54,13 @@ export interface FakeMcpOptions {
   /**
    * What `tools/call` answers for the upstream tool `name`: a result, or a whole response; by default a text result
    * that echoes the name and the arguments. A handler that throws makes the request fail, as an unreachable server
-   * does.
+   * does; one that answers a promise holds the request until it settles (a call still running).
    */
   readonly call?: (
     name: string,
     args: Record<string, unknown> | undefined,
     request: Request,
-  ) => Record<string, unknown> | Response;
+  ) => Record<string, unknown> | Response | Promise<Record<string, unknown> | Response>;
 }
 
 /** A JSON-RPC request id as the fake reads it. */
@@ -190,7 +190,7 @@ export const fakeMcpServer = (url: string, options: FakeMcpOptions = {}): FakeMc
       const args = body.params?.arguments;
 
       const answered =
-        options.call?.(name, args, request) ??
+        (await options.call?.(name, args, request)) ??
         ({
           content: [{ type: "text", text: JSON.stringify({ name, arguments: args ?? null }) }],
         } satisfies RpcResult);

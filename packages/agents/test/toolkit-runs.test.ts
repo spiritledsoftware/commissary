@@ -553,3 +553,68 @@ describe("a child run's object", () => {
     expect(await object.message("more")).toMatchObject({ ok: false, error: "run_ended" });
   });
 });
+
+/** A wait on a pending approval, until `inMs` from now. */
+const approvalWait = (inMs: number) => ({
+  kind: "approval" as const,
+  id: `ap_${crypto.randomUUID().replaceAll("-", "").slice(0, 24)}`,
+  until: new Date(Date.now() + inMs).toISOString(),
+  by_caller: true,
+});
+
+const parentWaits = async (parent: ReturnType<typeof agentRunOf>) => {
+  const shown = await parent.show();
+
+  return shown.ok ? (shown.value.waiting ?? []) : [];
+};
+
+describe("what a child run waits on (#232)", () => {
+  it("shows in the run that started it, marked with the child, until its time and the grace passed", async () => {
+    const { parent, child } = await family();
+    const soon = approvalWait(60 * 60_000);
+
+    expect(await parent.childWaiting(child, [soon])).toEqual({ ok: true, value: null });
+    expect(await parentWaits(parent)).toEqual([{ ...soon, run: child }]);
+
+    // A wait whose time passed more than a minute ago is not shown, though the child never said it ended.
+    const past = approvalWait(-2 * 60_000);
+
+    await parent.childWaiting(child, [past]);
+    expect(await parentWaits(parent)).toEqual([]);
+
+    // The child waits on nothing any more.
+    await parent.childWaiting(child, [soon]);
+    await parent.childWaiting(child, []);
+    expect(await parentWaits(parent)).toEqual([]);
+
+    // Only a run this one started tells it.
+    expect(await parent.childWaiting("ar_someone_else", [soon])).toMatchObject({
+      ok: false,
+      error: "forbidden",
+    });
+  });
+
+  it("is told again from the child's alarm after a telling failed, and cleared when the child is purged", async () => {
+    const { o, parent, child, childOf } = await family();
+    const object = await startedObject(o, child, { child: childOf });
+    const soon = approvalWait(60 * 60_000);
+
+    // The child's call waits on an approval, and its last telling failed.
+    await runInDurableObject(agentRunOf(env, o.id, child), async (_instance, state) => {
+      state.storage.kv.put("waiting", [soon]);
+      state.storage.kv.put("waits-untold", true);
+      await state.storage.setAlarm(Date.now() + 60_000);
+    });
+
+    expect(await runDurableObjectAlarm(agentRunOf(env, o.id, child))).toBe(true);
+    expect(await parentWaits(parent)).toEqual([{ ...soon, run: child }]);
+    expect(
+      await runInDurableObject(agentRunOf(env, o.id, child), (_instance, state) =>
+        state.storage.kv.get("waits-untold"),
+      ),
+    ).toBeUndefined();
+
+    await object.purge();
+    expect(await parentWaits(parent)).toEqual([]);
+  });
+});

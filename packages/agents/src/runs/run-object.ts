@@ -35,6 +35,15 @@
  * alarm, backing off, at most {@link MAX_DELIVERY_ATTEMPTS} times; the parent takes each once (its idempotency key), and
  * only from its own child runs. A run that ends stops the child runs the index ended with it ({@link AgentRunObject.stop}).
  *
+ * **Waiting for a person** (#232, ADR 0040). A tool call that waits for a pending approval or a browser handoff parks
+ * (`pi.ts`): the object keeps what it waits on ({@link WAITING}) while it does, and shows it (`show`, `wait`, `claim`),
+ * with the panel's page where its person answers it; the agents toolkit's wait of the run's starter returns as soon as
+ * the run parks on something they answer, so their client can ask them ({@link AgentRunObject.claim}). How it stands is
+ * the run gateway's answer ({@link RunGateway.waitState}). A child run tells the run that started it what it and the
+ * runs below it wait on ({@link AgentRunObject.childWaiting}, {@link CHILD_WAITING}) each time that changes, so the
+ * head of a chain shows, and its claims return for, what any run of the chain waits on, marked with the run's id
+ * (`RunWaiting.run`).
+ *
  * Its calls that change the run run one at a time (`#serial`); waiting and showing do not wait for them.
  */
 import { DurableObject } from "cloudflare:workers";
@@ -47,6 +56,7 @@ import type {
   TurnView,
 } from "@commissary/contract/agent-runs";
 import { AgentSandbox } from "@commissary/contract/agents";
+import { RunWaiting, type RunWaitState } from "@commissary/contract/run-waits";
 import type {
   RunToolReport,
   RunToolSettled,
@@ -56,7 +66,8 @@ import type {
 import { OrgId } from "@commissary/core";
 import { type AgentsControlPlane, agentRunName } from "../env.ts";
 import { iso, ok, refuse } from "../result.ts";
-import { openPiRun, type PiEntry, type PiRun, type Settled } from "./pi.ts";
+import { EXPIRY_GRACE_MS, openPiRun, type PiEntry, type PiRun, type Settled } from "./pi.ts";
+import { panelLinkOf } from "./wait-links.ts";
 import type { ChildOf, RunContext, RunsResult } from "./runs.ts";
 
 /** How often an object with a running turn wakes, so a turn an eviction or a deploy cut off resumes. */
@@ -109,6 +120,15 @@ export interface RunGateway {
     ticket: string,
     report: RunToolReport,
   ): Promise<RunToolSettled>;
+  /**
+   * How what a parked call of the run waits on stands (#232): a pending approval of its call, or a handoff in its
+   * browser session. Rejects when the org's tools cannot be reached: the run asks again later.
+   */
+  waitState(
+    org: OrgId,
+    run: string,
+    waiting: Pick<RunWaiting, "kind" | "id">,
+  ): Promise<RunWaitState>;
 }
 
 /** What the run's object reads from its Worker's env. */
@@ -154,14 +174,20 @@ export interface RunShown {
   readonly turns: ReadonlyArray<TurnView>;
   readonly activity: ReadonlyArray<RunActivity>;
   readonly transcript: ReadonlyArray<TranscriptEntry>;
+  /** What its parked calls, and its child runs', wait on (#232); absent from an object from before #232. */
+  readonly waiting?: ReadonlyArray<RunWaiting> | undefined;
 }
 
-/** What a wait found: the finished turn, or on timeout the turn as it is with the latest activity. */
+/**
+ * What a wait found: the finished turn, or on timeout the turn as it is with the latest activity and what its parked
+ * calls wait on.
+ */
 export interface Waited {
   readonly finished: boolean;
   readonly state: RunState;
   readonly turn: TurnView;
   readonly activity?: ReadonlyArray<RunActivity>;
+  readonly waiting?: ReadonlyArray<RunWaiting>;
 }
 
 /**
@@ -175,6 +201,26 @@ export interface Claimed {
   readonly turn?: TurnView | undefined;
   readonly activity?: ReadonlyArray<RunActivity> | undefined;
   readonly delivered?: boolean | undefined;
+  /** On timeout, or when it returned because the run parked (#232), what its parked calls wait on. */
+  readonly waiting?: ReadonlyArray<RunWaiting> | undefined;
+}
+
+/**
+ * A claim that returns as soon as the run parks on something its claimant answers (#232): an approval of theirs or a
+ * handoff, other than those `answered` names (their client asked them already).
+ */
+export interface ParkedReturn {
+  readonly answered: ReadonlyArray<string>;
+  /** The panel's origin (`panelOrigin`): only a wait that links to its page there is returned for (`panelLinkOf`). */
+  readonly panel: string;
+}
+
+/**
+ * A claim's listener for the run parking: `found` settles once it parked on something to return for; `stop` ends it.
+ */
+interface ParkedListener {
+  readonly found: Promise<void>;
+  readonly stop: () => void;
 }
 
 const ChildOfSchema = Schema.Struct({ parent: Schema.String, agentName: Schema.String });
@@ -281,6 +327,37 @@ const PendingSettle = Schema.Struct({
 type PendingSettle = typeof PendingSettle.Type;
 
 const decodePendingSettle = Schema.decodeUnknownOption(PendingSettle);
+
+/** What the run's parked calls wait on now (#232), each once: a pending approval, a browser handoff. */
+const WAITING = "waiting";
+
+const decodeWaiting = Schema.decodeUnknownOption(Schema.Array(RunWaiting));
+
+/**
+ * What the run's child runs wait on (#232), by child run: each child tells it what it and the runs below it wait on, so
+ * the run shows its chain's waits to the person who answers them all (the head of the chain's).
+ */
+const CHILD_WAITING = "child-waiting";
+
+const decodeChildWaiting = Schema.decodeUnknownOption(
+  Schema.Record(Schema.String, Schema.Array(RunWaiting)),
+);
+
+/**
+ * Set while the run that started this one may not know what this run's chain waits on (#232): its last telling failed.
+ * The alarm and the turn's end tell it again.
+ */
+const UNTOLD = "waits-untold";
+
+/** How soon the alarm tells the run that started this one again, after a telling failed. */
+const TELL_RETRY_MS = 30_000;
+
+/** Whether `waiting` may still be answered by its time: past it and the grace (`EXPIRY_GRACE_MS`), it is not shown. */
+const live = (waiting: RunWaiting, now: number): boolean => {
+  const until = Date.parse(waiting.until);
+
+  return !Number.isFinite(until) || now < until + EXPIRY_GRACE_MS;
+};
 
 /** The finished turns a child run has yet to deliver to the run that started it (#229), oldest first. */
 const DELIVERIES = "deliveries";
@@ -502,6 +579,12 @@ export abstract class AgentRunObject extends DurableObject<AgentRunEnv> {
   readonly #settling = new Set<string>();
   /** The claimants waiting on each running turn now (#229): its result is theirs when it finishes. */
   readonly #claiming = new Map<string, Set<Claimant>>();
+  /** Told each time a call parks (#232): a claim that returns when the run parks listens. */
+  readonly #parking = new Set<() => void>();
+  /**
+   * The last telling of the run that started this one what this run's chain waits on (#232): each waits for the last.
+   */
+  #telling: Promise<void> = Promise.resolve();
   /**
    * The run was deleted (`purge`): this instance opens no harness and writes nothing any more, so nothing it still had
    * running writes the run back. A later instance starts with empty storage, which answers like an unknown run.
@@ -546,6 +629,91 @@ export abstract class AgentRunObject extends DurableObject<AgentRunEnv> {
     const id = this.ctx.storage.kv.get<string>(ACTIVE);
 
     return id === undefined ? undefined : this.#turn(id);
+  }
+
+  /** What the run's own parked calls wait on now (#232). */
+  #ownWaiting(): ReadonlyArray<RunWaiting> {
+    if (this.#purged) return [];
+
+    return Option.getOrElse(decodeWaiting(this.ctx.storage.kv.get(WAITING)), () => []);
+  }
+
+  /**
+   * What the run's child runs, and theirs, told it they wait on (#232), by child run. A wait past its time and the
+   * grace is left out: a child that could not tell this run it no longer waits leaves no wait here for good.
+   */
+  #childWaiting(): Readonly<Record<string, ReadonlyArray<RunWaiting>>> {
+    if (this.#purged) return {};
+    const now = Date.now();
+
+    const told = Option.getOrElse(
+      decodeChildWaiting(this.ctx.storage.kv.get(CHILD_WAITING)),
+      () => ({}),
+    );
+
+    return Object.fromEntries(
+      Object.entries(told).flatMap(([child, waits]) => {
+        const kept = waits.filter((waiting) => live(waiting, now));
+
+        return kept.length === 0 ? [] : [[child, kept]];
+      }),
+    );
+  }
+
+  /** What the run's parked calls wait on now (#232): its own, then its child runs', each marked with its run. */
+  #waiting(): ReadonlyArray<RunWaiting> {
+    return [...this.#ownWaiting(), ...Object.values(this.#childWaiting()).flat()];
+  }
+
+  /**
+   * Tells the run that started this one (#229) what this run and the runs below it wait on now (#232), after the last
+   * telling; a failure is only logged (the next change tells it again).
+   */
+  #tellParent(meta: StoredMeta): Promise<void> {
+    const { child } = meta;
+
+    if (child === undefined || this.#purged) return this.#telling;
+
+    this.#telling = this.#telling.then(async () => {
+      try {
+        const told = await this.#run(meta, child.parent).childWaiting(meta.id, this.#waiting());
+
+        // One the parent refused for good (it ended, it is gone) is not tried again.
+        if (told.ok || told.error !== "unavailable") {
+          if (!told.ok) warn("agent run: waits not taken by its parent", meta.id, told.message);
+
+          if (!this.#purged) this.ctx.storage.kv.delete(UNTOLD);
+
+          return;
+        }
+
+        warn("agent run: waits not told to its parent", meta.id, told.message);
+      } catch (error) {
+        warn("agent run: waits not told to its parent", meta.id, String(error));
+      }
+
+      // The alarm tells it again.
+      if (this.#purged) return;
+      this.ctx.storage.kv.put(UNTOLD, true);
+      const at = Date.now() + TELL_RETRY_MS;
+      const alarm = await this.ctx.storage.getAlarm();
+
+      if (alarm === null || alarm > at) await this.ctx.storage.setAlarm(at);
+    });
+
+    return this.#telling;
+  }
+
+  /** Keeps what a parked call waits on (`undefined`: forgets the `id` it waited on), and tells the claims listening. */
+  #park(id: string, waiting: RunWaiting | undefined): void {
+    if (this.#purged) return;
+    const others = this.#ownWaiting().filter((each) => each.id !== id);
+    const next = waiting === undefined ? others : [...others, waiting];
+
+    if (next.length === 0) this.ctx.storage.kv.delete(WAITING);
+    else this.ctx.storage.kv.put(WAITING, next);
+
+    if (waiting !== undefined) for (const told of this.#parking) told();
   }
 
   #state(meta: StoredMeta): RunState {
@@ -752,6 +920,20 @@ export abstract class AgentRunObject extends DurableObject<AgentRunEnv> {
             await this.#wiring.gateway().sandboxOperation(meta.org, meta.id, ticket, request),
           settle: async (ticket, report) => await this.#settleCall(meta, ticket, report),
         },
+        waits: {
+          parked: (waiting) => {
+            this.#park(waiting.id, waiting);
+            void this.#tellParent(meta);
+          },
+          unparked: (id) => {
+            this.#park(id, undefined);
+            void this.#tellParent(meta);
+          },
+          state: async (waiting) =>
+            await this.#wiring
+              .gateway()
+              .waitState(meta.org, meta.id, { kind: waiting.kind, id: waiting.id }),
+        },
       });
 
       // The gated calls a stopped harness left unsettled were cut off: each is recorded as such, once; those whose
@@ -779,6 +961,13 @@ export abstract class AgentRunObject extends DurableObject<AgentRunEnv> {
       } catch (error) {
         // A turn still starts: its tool list is refreshed again at the next turn.
         warn("agent run: tools not listed", meta.id, String(error));
+      }
+
+      // What the last process's parked calls waited on is its own: a call that still waits parks again as it reruns,
+      // and a sandbox call parked in memory answers as interrupted (#232).
+      if (this.#ownWaiting().length > 0) {
+        this.ctx.storage.kv.delete(WAITING);
+        void this.#tellParent(meta);
       }
 
       pi.resume();
@@ -902,6 +1091,12 @@ export abstract class AgentRunObject extends DurableObject<AgentRunEnv> {
     this.ctx.storage.kv.put(turnKey(id), finished);
     this.ctx.storage.kv.delete(cancelKey(id));
     this.ctx.storage.kv.delete(REFUSAL);
+    // A turn that settled waits on nothing (a cancelled one's parked call was aborted); its child runs may still.
+    const waited = this.#ownWaiting().length > 0;
+
+    this.ctx.storage.kv.delete(WAITING);
+
+    if (waited || this.ctx.storage.kv.get(UNTOLD) === true) void this.#tellParent(meta);
 
     if (delivery === "pending")
       this.ctx.storage.kv.put(DELIVERIES, [
@@ -1075,6 +1270,57 @@ export abstract class AgentRunObject extends DurableObject<AgentRunEnv> {
 
       return await this.#message(deliveryText(child), `child:${child.run}:${child.turn.id}`);
     });
+  }
+
+  /**
+   * Takes what the child run `child` and the runs below it wait on now (#232), which replaces what it told before
+   * (none: it waits on nothing any more), marked with the run whose call waits. Only from a run this one started (the
+   * org's index says so, asked the first time it tells; `forbidden` otherwise). The claims listening are told, and so
+   * is the run that started this one, so the head of the chain has its whole chain's waits.
+   */
+  async childWaiting(child: string, waiting: ReadonlyArray<RunWaiting>): Promise<RunsResult<null>> {
+    const meta = this.#meta();
+
+    if (meta === undefined || this.#purged) return RUN_NOT_FOUND;
+    // Checked again: an RPC argument is whatever the caller sent.
+    const decoded = decodeWaiting(waiting);
+
+    if (Option.isNone(decoded)) return refuse("invalid", "not what a run waits on");
+    const known = this.#childWaiting();
+
+    if (decoded.value.length > 0 && known[child] === undefined) {
+      let found: RunsResult<unknown>;
+
+      try {
+        found = await this.#controlPlane(meta).getToolkitRun(
+          { kind: "run", runId: meta.id },
+          child,
+        );
+      } catch (error) {
+        return refuse("unavailable", String(error));
+      }
+
+      if (!found.ok) return NOT_A_CHILD;
+    }
+
+    // Read again: another telling may have come meanwhile.
+    const { [child]: _told, ...others } = this.#childWaiting();
+
+    const next =
+      decoded.value.length === 0
+        ? others
+        : {
+            ...others,
+            [child]: decoded.value.map((each) => ({ ...each, run: each.run ?? child })),
+          };
+
+    if (Object.keys(next).length === 0) this.ctx.storage.kv.delete(CHILD_WAITING);
+    else this.ctx.storage.kv.put(CHILD_WAITING, next);
+
+    if (decoded.value.length > 0) for (const told of this.#parking) told();
+    await this.#tellParent(meta);
+
+    return ok(null);
   }
 
   /**
@@ -1270,24 +1516,58 @@ export abstract class AgentRunObject extends DurableObject<AgentRunEnv> {
     if (finished !== undefined && finished.status !== "running")
       return ok({ finished: true, state: this.#state(meta), turn: turnView(finished) });
 
+    const waiting = this.#waiting();
+
     return ok({
       finished: false,
       state: this.#state(meta),
       turn: turnView(this.#turn(turn.id) ?? turn),
       activity: activityOf(await pi.entries(ACTIVITY_LIMIT)),
+      ...(waiting.length === 0 ? {} : { waiting }),
     });
+  }
+
+  /**
+   * The first of what the run's parked calls wait on that `parked` returns a claim for (#232), if any: one its claimant
+   * answers, with the panel's page to ask them on (none when the panel's URL is unknown), not asked yet.
+   */
+  #parkedFor(parked: ParkedReturn): RunWaiting | undefined {
+    return this.#waiting().find(
+      (waiting) =>
+        waiting.by_caller &&
+        panelLinkOf(waiting, parked.panel) !== undefined &&
+        !parked.answered.includes(waiting.id),
+    );
+  }
+
+  /** Settles once the run parks on something `parked` returns a claim for (#232), or `stop` is called. */
+  #onParked(parked: ParkedReturn): ParkedListener {
+    let told: () => void = () => undefined;
+
+    const found = new Promise<void>((resolve) => {
+      told = () => {
+        if (this.#parkedFor(parked) !== undefined) resolve();
+      };
+    });
+
+    this.#parking.add(told);
+
+    return { found, stop: () => this.#parking.delete(told) };
   }
 
   /**
    * Claims a turn's result for `claimant` through the agents toolkit's wait (#229): the turn `id`'s, or else the oldest
    * finished turn whose result `claimant` does not have yet (claimed, or delivered to it as the run's parent), or else
    * the running turn's once it finishes, waiting at most `timeoutMs`. On timeout it answers the running turn as it is
-   * with the latest activity; it never cancels anything. A result the parent claims is not delivered to it.
+   * with the latest activity and what its parked calls wait on; it never cancels anything. A result the parent claims
+   * is not delivered to it. With `parked` (#232: the run's starter, whose client can ask them), it returns as soon as
+   * the running turn waits on something they answer that their client did not ask them yet.
    */
   async claim(
     id: string | undefined,
     timeoutMs: number,
     claimant: Claimant,
+    parked?: ParkedReturn,
   ): Promise<RunsResult<Claimed>> {
     const meta = this.#meta();
 
@@ -1301,14 +1581,19 @@ export abstract class AgentRunObject extends DurableObject<AgentRunEnv> {
       this.#turns().find((turn) => turn.status !== "running" && !hasResult(turn, claimant, meta)) ??
       this.#active();
 
-    if (target === undefined)
+    if (target === undefined) {
+      // No turn of its own runs, but its child runs may wait on someone (#232).
+      const waiting = this.#waiting();
+
       return ok({
         finished: false,
         state: this.#state(meta),
         delivered: this.#turns().some(
           (turn) => hasResult(turn, claimant, meta) && turn.delivery === "delivered",
         ),
+        ...(waiting.length === 0 ? {} : { waiting }),
       });
+    }
 
     if (target.status !== "running")
       return ok({
@@ -1317,17 +1602,26 @@ export abstract class AgentRunObject extends DurableObject<AgentRunEnv> {
         turn: turnView(this.#hand(meta, target, claimant)),
       });
 
-    const waiting = this.#claiming.get(target.id) ?? new Set<Claimant>();
+    const claiming = this.#claiming.get(target.id) ?? new Set<Claimant>();
 
-    waiting.add(claimant);
-    this.#claiming.set(target.id, waiting);
+    claiming.add(claimant);
+    this.#claiming.set(target.id, claiming);
+    const listening = parked === undefined ? undefined : this.#onParked(parked);
     let now: StoredTurn;
 
     try {
       const pi = await this.#harness(meta);
 
       this.#watch(meta, target);
-      const settled = await this.#settle(pi, target.id, timeoutMs);
+
+      // Parked already on something the claimant answers: no wait (#232).
+      const settled =
+        parked !== undefined && this.#parkedFor(parked) !== undefined
+          ? undefined
+          : await Promise.race([
+              this.#settle(pi, target.id, timeoutMs),
+              ...(listening === undefined ? [] : [listening.found.then(() => undefined)]),
+            ]);
 
       if (settled !== undefined) await this.#finish(meta, target.id, settled);
       now = this.#turn(target.id) ?? target;
@@ -1339,19 +1633,22 @@ export abstract class AgentRunObject extends DurableObject<AgentRunEnv> {
           turn: turnView(this.#hand(meta, now, claimant)),
         });
     } finally {
+      listening?.stop();
       // From here the turn's result is no longer this claim's: a child run's goes to its parent again.
-      waiting.delete(claimant);
+      claiming.delete(claimant);
 
-      if (waiting.size === 0) this.#claiming.delete(target.id);
+      if (claiming.size === 0) this.#claiming.delete(target.id);
     }
 
     const activity = activityOf(await (await this.#harness(meta)).entries(ACTIVITY_LIMIT));
+    const waiting = this.#waiting();
 
     return ok({
       finished: false,
       state: this.#state(meta),
       turn: turnView(this.#turn(target.id) ?? now),
       activity,
+      ...(waiting.length === 0 ? {} : { waiting }),
     });
   }
 
@@ -1396,6 +1693,7 @@ export abstract class AgentRunObject extends DurableObject<AgentRunEnv> {
       turns: this.#turns().map(turnView),
       activity: activityOf(entries),
       transcript: transcriptOf(entries),
+      waiting: this.#waiting(),
     });
   }
 
@@ -1448,8 +1746,24 @@ export abstract class AgentRunObject extends DurableObject<AgentRunEnv> {
    * sandbox session (#230) is not: the Tools part purges it when the run is forgotten (`forgetRuns`).
    */
   async purge(): Promise<void> {
-    const id = this.#meta()?.id;
+    const meta = this.#meta();
+    const id = meta?.id;
     const pi = this.#pi;
+
+    // The run that started this one shows none of its waits any more (#232): told once, briefly; a failure leaves them
+    // to pass their time there.
+    if (meta?.child !== undefined && !this.#purged) {
+      const parent = this.#run(meta, meta.child.parent);
+
+      try {
+        await Promise.race([
+          parent.childWaiting(meta.id, []),
+          new Promise((resolve) => setTimeout(resolve, PURGE_CLOSE_MS)),
+        ]);
+      } catch (error) {
+        warn("agent run: waits not cleared from its parent", meta.id, String(error));
+      }
+    }
 
     this.#purged = true;
     this.#pi = undefined;
@@ -1504,5 +1818,8 @@ export abstract class AgentRunObject extends DurableObject<AgentRunEnv> {
 
     await this.#deliverPending(meta);
     await this.#retrySettles(meta);
+
+    // A telling of what this run's chain waits on that failed (#232).
+    if (this.ctx.storage.kv.get(UNTOLD) === true) await this.#tellParent(meta);
   }
 }

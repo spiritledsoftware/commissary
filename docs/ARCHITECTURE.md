@@ -4093,7 +4093,8 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
     arguments; a repeat after a denial answers that it was denied (`denied`) and settles it. A repeat after the hour
     finds no approval (it expired, and is gone) and waits for a new one. A caller without a member (a service token)
     under a rule of the caller, without a form, is answered a tool error that no one can approve it (`not_approved`,
-    reason `no_approver`, recorded `denied`): no member could decide it in the panel.
+    reason `no_approver`, recorded `denied`): no member could decide it in the panel. An agent run no one started is
+    the exception (#232): its agent's watchers are its caller, and its call waits for one of them.
   - **The hash**: SHA-256 (hex) of the arguments in the JSON Canonicalization Scheme's form (RFC 8785) for what
     arguments hold: object keys sorted by UTF-16 code units at every depth, arrays in order, no whitespace, strings and
     numbers as `JSON.stringify` writes them; absent arguments are `{}` (`approvals/hash.ts`).
@@ -4258,7 +4259,7 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
       another org reaches another, empty object. It keeps its owner (the org, the member and the call's principal:
       `key:<id>` for an API key, `user:<email>` for a person through Access, so another member, another API key of the
       same member or the same member through Access answers `Unknown browser session <id>`, exactly as an id never
-      opened; a hosted agent's run, #232, will be a principal of its own), the provider it opened on (the toolkit's
+      opened; a hosted agent's run is a principal of its own, `run:<id>`), the provider it opened on (the toolkit's
       source, from which it finds the provider's browsers again: `sessionProviderOf`) and the provider's id of the
       browser, the id of the browser profile it opened from, whether its browser was reached again on a new connection,
       the current tab's index, the fields to mask and its times,
@@ -4427,10 +4428,10 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
         Live View are masked too, as they cannot be told apart from the person's. The scripts run in the page's own
         world, so a hostile page can defeat the marks: masking keeps typed values from the model, not from the page,
         which holds them already (an isolated world would not change that). Watching moves the session's idle timer.
-        Who may watch is one method of the Tools part (`#mayWatch`, the session's member today), which the page's
-        `watchable` reflects, apart from `own` (the caller is its member): a hosted agent's run will name its watchers
-        there (#232), which needs a watchers port that answers at once, or watchers read before the list is made, as
-        the list asks it of every session.
+        Who may watch is one method of the Tools part (`#mayWatch`), which the page's `watchable` reflects, apart from
+        `own` (the caller is its member): the session's member; and for a session a shared agent's run opened, which
+        has no member (#232), the run's watchers, through the `RunWatchers` port (`tools/agents/run-watchers.ts`),
+        which the Agents part of the same ControlPlane answers at once, as the list asks it of every session.
       - **The Browser sessions routes** (`/v9/management/browser-sessions`, `BrowserSessionsGroup`,
         `tools/management/browser-session-routes.ts`, every member): `GET` lists the caller's open sessions (with the
         handoff that waits for them) and, for an org admin, every other session of the org (its member, when it
@@ -4751,16 +4752,17 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
 
 The Agents area (ADR 0040) holds **hosted agents**: an agent's definition saved in Commissary (name, description,
 instructions, one model with an optional thinking level, a tool scope), its **runs** (GLOSSARY "Agent run", "Turn") on
-pi-durable, and its calls as tools of the agents toolkit (#229). It saves definitions, private and shared, the
-grants on shared agents and their watchers (#226), runs them as their starter asks, one turn at a time (#227),
-starts runs from the schedules and webhooks configured on them (#231), and serves them to clients and runs through the
-agents toolkit, whose calls from a run start child runs (#229), and gives a run whose definition names a sandbox pi's
-coding tools on a sandbox session of its own (#230); the panel's Agents pages (#233) manage them; watchers acting in runs and the panel's chat come later (#232,
-#234). The package (`@commissary/agents`) is shaped like Tools: entry
-points `./api`, `./management`, `./state` and `./testing`, a lint boundary (`boundaries/agents-imports`) and a
-ControlPlane part, `AgentsPart`, reached as `stub.agents().x(…)`. Its state is the ControlPlane's (`AGENTS_TABLES`:
-`agents`, `agent_grants`, `agent_runs` and `agent_triggers`, dropped by `wipe()`); its view of `env` (`AgentsBindings`) is the ControlPlane namespace and
-the deployment's Dynamic Workers binding `LOADER`.
+pi-durable, and its calls as tools of the agents toolkit (#229). It saves definitions, private and shared, the grants on
+shared agents and their watchers (#226), runs them as their starter asks, one turn at a time (#227), starts runs from
+the schedules and webhooks configured on them (#231), and serves them to clients and runs through the agents toolkit,
+whose calls from a run start child runs (#229), and gives a run whose definition names a sandbox pi's coding tools on a
+sandbox session of its own (#230); the panel's Agents pages (#233) manage them; it lets watchers and org admins see
+runs, and a run's people answer the approvals and handoffs it waits on (#232); the panel's chat comes later (#234). The
+package (`@commissary/agents`) is shaped like Tools: entry points `./api`, `./management`, `./state` and `./testing`, a
+lint boundary (`boundaries/agents-imports`) and a ControlPlane part, `AgentsPart`, reached as `stub.agents().x(…)`. Its
+state is the ControlPlane's (`AGENTS_TABLES`: `agents`, `agent_grants`, `agent_runs` and `agent_triggers`, dropped by
+`wipe()`); its view of `env` (`AgentsBindings`) is the ControlPlane namespace and the deployment's Dynamic Workers
+binding `LOADER`.
 
 - **Presence** (ADR 0043): the area exists exactly when `LOADER` is bound (`agentsPresent`), on the app Worker, which
   serves the area's routes, runs' included (the runs' objects themselves need no `LOADER`: a run's sandbox is the state
@@ -4783,8 +4785,9 @@ the deployment's Dynamic Workers binding `LOADER`.
   `/grants/agents`, one per subject and agent, for org admins only. `GET /agents/mine` lists what the caller may use:
   their private agents (while the setting is on) and the enabled shared agents a grant gives them.
 - **Watchers** (GLOSSARY "Watcher"): a shared agent names members and teams who watch it (the creating admin by default);
-  once none is left (a member who leaves, a deleted team), its org admins watch it (`admins_watch`). They act in runs
-  (steering, approvals, handoffs) with #232; `agentWatchers` already resolves them to members.
+  once none is left (a member who leaves, a deleted team), its org admins watch it (`admins_watch`). They watch, steer
+  and cancel its runs that no one started, and answer their approvals and handoffs (#232, _Watchers, approvals and
+  handoffs in runs_ below); `agentWatchers` resolves them to members.
 - **What a definition names** (the seam): the model and the toolkits must exist where the agent runs: in the org (its
   shared credentials, its toolkits) for a shared agent; for a private agent, the models its member may use and the
   toolkits the member can see (the org's and their private ones), tools outside their grants being narrowed at run time
@@ -4846,7 +4849,9 @@ the deployment's Dynamic Workers binding `LOADER`.
 - **Resume**: while a turn runs, the object's alarm wakes it every 60 s (`HEARTBEAT_MS`). After an eviction or a deploy
   of the API Worker (every merge) the alarm reopens the harness and the turn goes on (`resume()`): a tool call that
   finished is never made again, one cut off answers the model as interrupted, and a model call cut off is made again
-  (and billed again). A storage failure closes the harness; the next event reopens it.
+  (and billed again). A tool call parked on a person (#232) goes on waiting where it parked: the turn is still running,
+  so the heartbeat keeps waking the object, and the rerun of the call reads its memos (_Watchers, approvals and
+  handoffs in runs_ below). A storage failure closes the harness; the next event reopens it.
 - **The run's principal** (`@commissary/auth`'s `run` kind, `agents/runs/principal.ts`): the run, its agent, its
   starter, whom it acts as (a private agent's member, or a shared agent itself, `isSharedAgentRun`) and its reach (the
   model and tool scope its latest turn read). The gate resolves it on every request from the org's ControlPlane
@@ -4886,7 +4891,8 @@ the deployment's Dynamic Workers binding `LOADER`.
 - **Approvals**: the run's starter is the caller of its tool calls' approvals (ADR 0040; `RunToolReach.starterMember`;
   a child run's: the member who started the run at the head of its chain), for a shared agent's run too, which has no member of its own. Under a rule of the caller the starter decides (in the
   panel), and under a team's or members' rule they do not; the model gets the
-  approval's link text and may call again once it is decided. Watchers answering approvals in runs come with #232.
+  approval's link text, and the run parks the call until it is decided and makes it again (#232). A run no one started
+  has its agent's watchers for its caller (_Watchers, approvals and handoffs in runs_ below).
 - **Sandbox** (#230, ADR 0041, `agents/runs/pi-sandbox.ts`): a turn whose definition names a sandbox gets pi-durable's
   coding tools `bash`, `read`, `write` and `edit` (their names, parameters, argument repair and output, as models know
   them) in place of the sandbox toolkit's own tools, which its model is not offered (opening and closing sessions
@@ -5011,9 +5017,9 @@ the deployment's Dynamic Workers binding `LOADER`.
 - **Management routes** (`agents/management/run-routes.ts`, `AgentRunsGroup` in `@commissary/contract/agent-runs`):
   `POST /agents/:id/runs` (start, as the asking member, trigger `chat`), `GET /agent-runs`, `GET /agent-runs/:run`,
   `POST /agent-runs/:run/messages`, `POST /agent-runs/:run/wait` (default 30 s) and `POST /agent-runs/:run/cancel`.
-  Only a run's starter sees it for now (watchers and org admins with #232); any other run answers like an unknown one,
-  so a shared agent's triggered runs, which no one started, are seen by no one until #232, and a child run is seen
-  through the agents toolkit only, by the run that started it.
+  A run shows to its starter, to a shared agent's watchers when no one started it, and to an org admin as its metadata
+  (#232, `RunView.access`, _Watchers, approvals and handoffs in runs_ below); any other run answers like an unknown
+  one.
 - **pi packages**: `@earendil-works/*` 1.3.0, pinned exactly (their APIs are experimental), imported only by
   `agents/runs/pi.ts` and the run's sandbox tools it installs (`agents/runs/pi-sandbox.ts`,
   `agents/runs/sandbox-env.ts`), all imported statically: the object imports the adapter, as the adapter imports pi-ai's
@@ -5041,9 +5047,8 @@ the deployment's Dynamic Workers binding `LOADER`.
   read one clock (`useClock` puts a test's `TestClock` in its place).
 - **Starters**: a private agent's triggered run counts as started by its member (it acts as them, as their chat runs
   do; refused while the org serves no private agents or the member left). A shared agent's triggered run has **no
-  starter** (ADR 0040: a run records its starter "if anyone did"), and so, until #232, **no one sees it, cancels it or
-  answers its approvals**: the run routes show a run to its starter only, and under an approval rule of the caller its
-  tool calls wait for an approver that only #232's watchers will be. Its turns check no starter (its agent's state
+  starter** (ADR 0040: a run records its starter "if anyone did"): its agent's watchers see, steer and cancel it, and
+  answer its approvals and handoffs (#232). Its turns check no starter (its agent's state
   alone decides), Commissary Cloud checks no starter's standing, and its usage records' `starter` is `NULL` (not a
   member, so no filter by member or starter matches it). The panel's notice that an unattended agent acts with no one
   present (ADR 0044) is the panel's (#233, _The panel_ below).
@@ -5188,17 +5193,17 @@ the deployment's Dynamic Workers binding `LOADER`.
 - **Which runs a caller sees** (`ToolkitCaller`, `agents/runs/runs.ts`): an API key, the runs it started (the index
   keeps the key, `api_key_id`; a second key of the same member gets an unknown run); a member signed in (a request
   through Access, without a key), every run they started, through a key or not; a run, the
-  child runs it started. Any other run answers like an unknown one. In the panel (`/agent-runs`) only runs a member
-  started show, so a child run is seen through the agents toolkit only, by the run that started it, until #232.
+  child runs it started. Any other run answers like an unknown one. In the panel (`/agent-runs`) a child run shows to
+  org admins only, as its metadata (#232): its people are the head of its chain's.
 - **Child runs**: a run's `agents_start` starts a child run of the agent it names, acting as that agent (a private
-  agent's member, or the shared agent itself), started by the calling run (starter kind `run`) and trigger `mcp`. A
-  run may run only enabled agents: a disabled one answers like an unknown one, so nothing tells a run of an agent it
-  may not run. The chain of runs is at most three deep (`MAX_CHAIN`: a run, its child, its grandchild), an agent already
-  in the chain is refused (`a → b → a` as `a → a`), and a run has at most eight child runs running at once
-  (`MAX_ACTIVE_CHILDREN`: a child counts as running from its start until it reports a turn done); each is a tool
-  error. A child run's turns check, besides #227's checks, that the run that started it is still there and may still
-  run its agent; its tool calls' approvals are the member's at the head of its chain (a chain no one started, from a
-  shared agent's trigger, has none, as #231's runs). A child run of a run that ended is refused at its next request.
+  agent's member, or the shared agent itself), started by the calling run (starter kind `run`) and trigger `mcp`. A run
+  may run only enabled agents: a disabled one answers like an unknown one, so nothing tells a run of an agent it may not
+  run. The chain of runs is at most three deep (`MAX_CHAIN`: a run, its child, its grandchild), an agent already in the
+  chain is refused (`a → b → a` as `a → a`), and a run has at most eight child runs running at once
+  (`MAX_ACTIVE_CHILDREN`: a child counts as running from its start until it reports a turn done); each is a tool error.
+  A child run's turns check, besides #227's checks, that the run that started it is still there and may still run its
+  agent; its tool calls' approvals are the member's at the head of its chain (for a chain no one started, from a shared
+  agent's trigger, the head agent's watchers', #232). A child run of a run that ended is refused at its next request.
 - **Ending**: a run that ends (its object reports `ended`: its agent disabled or removed, its member or its starter gone)
   ends its child runs and theirs in the index at once (`Runs.stateChanged`, so their next request through the
   gateway is refused), and its object stops their objects (`AgentRunObject.stop`: the running turn aborted and recorded
@@ -5206,16 +5211,107 @@ the deployment's Dynamic Workers binding `LOADER`.
 - **Claims and deliveries** (`agents/runs/run-object.ts`): `agents_wait` claims a turn's result for its caller (a
   `Claimant`: `run:<id>`, `key:<id>` or `member:<id>`): the named turn's, or the oldest finished turn that caller has
   not claimed yet, or else the running turn's once it finishes. On timeout it answers the running turn with its latest
-  activity and cancels nothing; with nothing left it says whether the results were claimed or delivered. A child run
+  activity and what the run and its child runs wait on (`waiting`, #232), and cancels nothing; with nothing left it says
+  whether the results were claimed or delivered, and what its child runs still wait on. For a member's client that asks
+  people to open pages, a claim returns as soon as the run parks on something they answer (#232, below). A child run
   hands each finished turn its parent did not claim to the parent: it delivers it as a message (`[agents] Run … (agent
-  …), which you started, finished its turn …` with the answer), which steers the parent's running turn or starts a
-  turn on an idle parent. The parent takes it only from its own child runs (the index says so) and each child turn once
-  (its idempotency key, `child:<run>:<turn>`); one it refuses for good (it ended) is dropped. A delivery that cannot
-  reach the parent is kept and tried again from the child's alarm, after 30 s and then twice as long each time (at most
-  an hour), ten tries in all (`MAX_DELIVERY_ATTEMPTS`, about three hours), after which it is dropped and logged; a parent
+  …), which you started, finished its turn …` with the answer), which steers the parent's running turn or starts a turn
+  on an idle parent. The parent takes it only from its own child runs (the index says so) and each child turn once (its
+  idempotency key, `child:<run>:<turn>`); one it refuses for good (it ended) is dropped. A delivery that cannot reach
+  the parent is kept and tried again from the child's alarm, after 30 s and then twice as long each time (at most an
+  hour), ten tries in all (`MAX_DELIVERY_ATTEMPTS`, about three hours), after which it is dropped and logged; a parent
   claiming a result still to be delivered takes it from the deliveries. The panel's wait (`POST /agent-runs/:run/wait`)
-  claims nothing, until watchers (#232) align the two.
+  claims nothing: it is a person's look at the run, not a client's claim.
 - **Deletion** (#228, "Agent runs"): a run deleted with its agent or its member takes its child runs and theirs
   (`RunStore.discard` follows `starter_kind` `run` down the tree), whatever agent they run, and the sweeps delete their
   objects like any run's; a run pruned past the org's retention period goes alone, each child on its own last
   activity. Org deletion deletes every run's object, child runs included (they are rows of the index like any run).
+
+### Watchers, approvals and handoffs in runs (#232)
+
+A run's people (ADR 0040 "Who watches and steers") see it, steer it, and answer what it waits on: a pending approval
+of one of its tool calls (#201) or a handoff its `browser_ask_human` started in a browser session (#216). The model is
+not told a link to pass on: the run **parks** the call (GLOSSARY "Parked call") until its person answers.
+
+- **Who sees a run** (`RunAccess` in `@commissary/contract/agent-runs`; `Runs.accessOf`, `agents/runs/runs.ts`;
+  `AgentsPart.viewRun`, `viewRuns`): its starter (`access: "starter"`); for a shared agent's run that no one started (a
+  trigger's), the agent's watchers as they are now (`"watcher"`); and an org admin, any shared agent's run, child runs
+  included (`"admin"`), as its metadata only: `RunDetail` without `turns`, `activity` and `transcript` (optional fields
+  since #232), and the run's object is not asked. A private agent's run is its member's alone. A starter and a watcher
+  watch, steer, wait on and cancel the run; an org admin gets `403 forbidden` on messages and waits. Anyone else gets
+  an unknown run (`404`). A run's cost is not in its view: the usage reads filter by run (#228). An org admin's view of
+  a child run that a private agent's run started names its starter's kind only (`RunStarterView.id` left out): that run
+  is its member's alone.
+- **Who cancels a run** (`Runs.cancellableBy`, `AgentsPart.cancellableRun`): its starter and its watchers, and an org
+  admin any run of the org (ADR 0040), a private agent's too; for a run they do not see, the answer is only whether a
+  turn was cancelled (`CancelledRun` without `run`).
+- **Who answers a run** (`Runs.watchersOf`, `AgentsPart.runWatchers`): the member at the head of its chain, or, when no
+  one started that run, the head agent's watchers; none for a chain whose head is gone. Tools names them through its
+  `RunWatchers` port (`tools/agents/run-watchers.ts`, `BuiltInProviders.runWatchers`; Tools imports nothing of Agents),
+  which the state Worker fills where the Agents area is present (`apps/state/src/control-plane.ts`: the Agents part of
+  the same ControlPlane, read in place and at once, as the Tools part asks it for every session of a list). For a run
+  no one started, they are its caller under an approval rule of the caller: its call waits for one of them
+  (`ToolsPart.#approvalOf`; `no_approver` without the port or when none is left), who sees and decides it
+  (`#callersOf`, `#mayDecide`, `#approvalView`; an org admin who is not one of them decides nothing). They watch the
+  browser sessions such a run opened (`#mayWatch`), which have no member: the session's page shows them its handoff
+  and they mint its Live View, while an org admin lists the session but sees no handoff (`handoff: null`) and watches
+  none.
+- **What a call waits on** (`@commissary/contract/run-waits`): for a run's call only, the MCP endpoint adds to the
+  tool result any client gets (the approval's or the session's link in words) what the call waits on, in `_meta`
+  under `RUN_WAITS_META` (`commissary/run-waits`): a `RunWaiting` with its `kind` (`approval` or `handoff`), `id` (the
+  approval's, or the browser session's), `until` (the approval's hour, the handoff's thirty minutes), the panel's
+  `link` when the deployment knows the panel's host (`APP_DOMAIN`), and `by_caller` (the run's people answer it: an
+  approval under a rule of the caller, or a handoff; `false` for an approval another approver decides). Only the
+  endpoint sets it: it strips every `_meta` key of Commissary's own (`commissary/…`, `commissary.dev/…`:
+  `RUN_WAITS_META`, `RUN_TICKET_META`, `SPEND_REFUSAL_META`, `PLAN_LIMIT_META`) from a tool's own result before it
+  adds its own (`withoutOwnMeta`, `tools/mcp/protocol.ts`), so an upstream server can neither park a run on a wait of
+  its making (and have its member asked to open its link) nor end a turn as a spend or plan limit would.
+- **How it stands** (`RunWaitState`): the run asks `RunGateway.waitState`, which the API Worker's gateway answers from
+  the Tools part's `runWaitState` (`tools/mcp/run-calls.ts`). For an approval it reads the row while it is kept
+  (`ApprovalStore.held`, expired or not): none, or one another caller's, is `gone`; then, by the part's clock, one past
+  its hour is `expired` (checked before its status: an approved call goes through only within the hour anyway); then an
+  undecided one is `waiting` and a decided one `ready`. For a handoff: a session the run did not open, or none kept, is
+  `gone`; one whose handoff still waits (the session's object says) is `waiting`; one whose handoff ended, or that
+  closed, is `ready`. `gone` means nothing of it is kept (the part's alarm deleted an expired approval): the run
+  decides by its own clock, making the call again before `until` (its rule may be gone) and refusing it after.
+- **Parking** (`agents/runs/pi.ts`): the run shows what the call waits on and asks after 2, 4 and 8 seconds and then
+  every 15 seconds (`WAIT_POLL_MS`): no decision reaches the run, which keeps the Tools part free of runs' objects. On
+  `ready` it makes the same call again, which takes the outcome (an approved call goes through once; a denied one
+  answers so; a handoff's end is answered, one that timed out at the browser provider as an error). On `expired`, or
+  once the run's clock is a minute past `until` while the gateway still says it waits (`EXPIRY_GRACE_MS`), the model
+  is told the call is refused, and the turn goes on. A call parks at most eight times in a row (`MAX_PARKS`: an
+  approval, then a handoff the approved call started, and a few more); once more, it is refused rather than answered
+  with the words to call again. A cancelled turn aborts the wait.
+- **Durable parking**: MCP tools are replay-safe for pi-durable (`replay: "safe"`, before #232 `unsafe`) behind memos:
+  `call:<n>` before the call's `n`th request to the endpoint and `parked:<n>` with what that request parked on. A
+  rerun after a restart reads them: the last call parked, so it goes on waiting where it did (the parks counted so far
+  included); the last call has no `parked` memo, so it was cut off mid-request and answers as interrupted, never made
+  twice, as pi-durable answers a call that is not replay-safe. The sandbox's coding tools (#230) park in memory only:
+  they are not replay-safe, so a restart answers a parked one as interrupted, and its approval stays for the next call.
+  So the harness, as it reopens, forgets what the last process's calls waited on (`WAITING`): a call that still waits
+  parks again as it reruns.
+- **The run's object** keeps what its own parked calls wait on (`WAITING`, `waiting` in its storage; cleared when the
+  turn ends) and what its child runs told it theirs wait on (`CHILD_WAITING`, by child run): a child run tells the run
+  that started it what it and the runs below it wait on each time that changes (`AgentRunObject.childWaiting`, from
+  its own run only, as the index says), so the head of a chain, at most three deep, shows its whole chain's waits to
+  the person who answers them all, each marked with the run whose call waits (`RunWaiting.run`). It shows them in the
+  panel (`RunDetail.waiting`, the panel's wait) and in the agents toolkit's wait. A telling that failed is kept to do
+  (`waits-untold`) and done again from the alarm (in 30 s) and at the turn's end; a child run deleted (`purge`) tells
+  its parent once that it waits on nothing; and a wait past its `until` and the grace is no longer shown, so a child
+  that could not tell leaves no wait on its parent for good.
+- **The agents toolkit's wait** (`agents/toolkit/calls.ts`): `agents_wait` answers what the run waits on (`waiting`,
+  with the link and who answers it). For a member's client that declares URL elicitation, a claim returns as soon as
+  the run (or a run below it) parks on something they answer, with a link, that their client has not asked them
+  (`claim`'s `ParkedReturn`; a claim already waiting is told as the run parks, `#onParked`), with an `input_required`
+  URL elicitation of the panel's page keyed `waiting_<kind>_<id>`; the retry with the answer waits on, and is not asked
+  about it again. Only a link that is the panel's page of that very wait is asked (`panelLinkOf`,
+  `agents/runs/wait-links.ts`: the origin of the panel's host, `AgentsBindings.APP_DOMAIN`, which the API Worker binds;
+  the path `/o/<org>/approvals/<id>` or `/o/<org>/tools/sessions/<id>`; an id of its form, `ap_` and 24 hex digits or
+  `bs_` and 32): defence in depth behind the endpoint's stripping. Without the panel's host (a preview, the app Worker)
+  the client is never asked, and the claim waits as before.
+- **Deploys** (DEVELOPMENT.md, "State RPC: expand, then contract"): the Agents part's `viewRun`, `viewRuns`,
+  `cancellableRun` and `runWatchers` and the Tools part's `runWaitState` are new methods, which exist when the API and
+  app Workers call them, as the state Worker deploys first. `getRun` and `listRuns` (a starter's only) stay beside
+  `viewRun` and `viewRuns` for an app Worker from before #232, until a release later. A run on an endpoint from before
+  #232 gets no `_meta` and answers the model the link's words, as before; a parent object from before #232 does not
+  take its child runs' waits (the child logs it). Nothing is migrated: no table or column is added.

@@ -9,8 +9,8 @@
  * Worker's main module exports them with the entrypoints their Dynamic Workers reach: `SandboxEgress`, the sandbox's
  * one egress point, `WorkspaceServiceProxy`, their files, and `WorkspaceProxy`, the computer's way back to its session
  * (#223). The state Worker hands the part the Agents area's answer to which agents a caller may run (`AgentDirectory`),
- * which gives it the agents toolkit (#229). The apps import Tools only through this entry, `./api` and `./management`
- * (the lint rule `boundaries/tools-imports`).
+ * which gives it the agents toolkit (#229), and who watches each agent run (`RunWatchers`, #232). The apps import Tools
+ * only through this entry, `./api` and `./management` (the lint rule `boundaries/tools-imports`).
  */
 export { ToolsPart } from "./control-plane-part.ts";
 
@@ -21,6 +21,8 @@ export { builtInProviders, type ToolsPartEnv } from "./toolkits/built-in.ts";
 export { managedAppsOf } from "./catalog/managed-apps.ts";
 
 export type { AgentDirectory, RunnableAgent } from "./agents/toolkit.ts";
+
+export type { RunWatchers } from "./agents/run-watchers.ts";
 
 export { SandboxSession } from "./sandbox/cloudflare/session.ts";
 

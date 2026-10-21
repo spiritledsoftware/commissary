@@ -72,6 +72,7 @@ import {
   type SandboxEnvRequest,
 } from "@commissary/contract/sandbox-env";
 import type { ToolCallApproval } from "@commissary/contract/usage";
+import type { RunWaitState } from "@commissary/contract/run-waits";
 import {
   CurrentOutboundPolicy,
   OutboundHttpClientLive,
@@ -225,6 +226,7 @@ import {
   runnableAgents,
   startDescription,
 } from "./agents/toolkit.ts";
+import { type RunWatchers, watchersOfPrincipal } from "./agents/run-watchers.ts";
 import { NO_ALLOWANCE, networkProblem, normalizedNetwork } from "./sandbox/network.ts";
 import { agentSandboxFits, type AgentSandboxSettings } from "./sandbox/agent-sandbox.ts";
 import {
@@ -630,7 +632,8 @@ export interface ClientTool {
  * definition: every org toolkit with a shared credential, whatever the tool grants. A private agent's run acts as its
  * member (the viewer), with their reach. Its starter (`starterMember`) is the caller of its approvals (ADR 0040): under
  * a rule of the caller they decide, and under the others they do not. A run no one started (a shared agent's schedule
- * or webhook, #231) has none: under a rule of the caller its calls have no approver (its watchers answer with #232).
+ * or webhook, #231) has none: its agent's watchers are its caller (#232, {@link RunWatchers}), any of whom decides
+ * under a rule of the caller.
  */
 export interface RunToolReach {
   readonly toolScope: ToolScope;
@@ -1094,6 +1097,8 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
    * computers that run, or may start, for the ceiling.
    */
   readonly #pendingComputers = new Map<string, number>();
+  /** Who watches each agent run (#232), from the Agents part: its approvals' caller, its browser sessions' watchers. */
+  readonly #runWatchers: RunWatchers | undefined;
   /** What the part reads the time from: the live clock, or a test's (`useClock`). */
   #clock: Clock.Clock = Clock.Clock.defaultValue();
 
@@ -1137,6 +1142,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     this.#browserSessions = providers.browserSessions;
     this.#managedApps = managedApps;
     this.#agents = providers.agents;
+    this.#runWatchers = providers.runWatchers;
     this.#yieldBuiltInNames();
   }
 
@@ -1315,6 +1321,39 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     const left = new Set(this.#sandboxSessions.sessionsOf(principals).map((row) => row.principal));
 
     return runIds.filter((id) => !left.has(runPrincipalId(id)));
+  }
+
+  /**
+   * How what a parked call of the agent run `run` waits on stands (#232, ADR 0040), as the run gateway asks it now and
+   * then: a pending approval of the run's call (`waiting` while undecided, `ready` once approved or denied, as the same
+   * call made again takes the outcome, `expired` once its hour passed by the part's clock), or a handoff in a browser
+   * session the run opened (`waiting` while its person is asked, `ready` once it ended or the session closed). One that
+   * is not the run's, or of which nothing is kept, is `gone`: the run decides by its own clock. Reads only.
+   */
+  async runWaitState(
+    run: string,
+    waiting: { readonly kind: "approval" | "handoff"; readonly id: string },
+  ): Promise<RunWaitState> {
+    const principal = runPrincipalId(run);
+
+    if (waiting.kind === "approval") {
+      const approval = this.#approvals.held(waiting.id);
+
+      if (approval === undefined || approval.callerPrincipal !== principal) return "gone";
+
+      if (approval.expiresAt <= this.#now()) return "expired";
+
+      return approval.status === "pending" && !approval.settled ? "waiting" : "ready";
+    }
+
+    const session = this.#browserSessionLog.session(waiting.id);
+    const sessions = this.#browserSessions;
+
+    if (session === undefined || session.principal !== principal || sessions === undefined)
+      return "gone";
+    const watched = await sessions.watch(this.#core.org, waiting.id);
+
+    return watched.kind === "open" && watched.handoff !== undefined ? "waiting" : "ready";
   }
 
   /**
@@ -4097,13 +4136,20 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
   /**
    * Whether `viewer` may watch the logged session `session`: open its Live View and answer its handoff (#216, ADR
-   * 0039). Today the session's member alone, whichever of their principals opened it; a hosted agent's run will add its
-   * watchers here (#232), the one place that decides it. The answer is synchronous, as the list asks it of every
-   * session: #232 needs a watchers port that answers at once, or the watchers read before the list is made. An org
-   * admin is no watcher of another member's session.
+   * 0039), the one place that decides it. The session's member, whichever of their principals opened it; and for a
+   * session a shared agent's run opened, which belongs to the run, not to a member (#232, ADR 0040), the run's
+   * watchers: its starter, or the agent's watchers when no one started it, as the Agents part answers at once
+   * ({@link RunWatchers}), so the list asks it of every session. An org admin is no watcher of another member's
+   * session.
    */
   #mayWatch(session: LoggedBrowserSession, viewer: Viewer): boolean {
-    return session.member !== undefined && session.member === viewer.member;
+    const member = viewer.member;
+
+    if (member === undefined) return false;
+
+    if (session.member !== undefined) return session.member === member;
+
+    return watchersOfPrincipal(this.#runWatchers, session.principal).includes(member);
   }
 
   /** The logged session `id` when `viewer` may see it: a watcher, or an org admin; undefined otherwise. */
@@ -4222,7 +4268,8 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       this.#sessionView(
         session,
         viewer,
-        watched.handoff === undefined
+        // What the handoff asks is its watchers' alone: an org admin who may not watch it learns nothing of it.
+        watched.handoff === undefined || !this.#mayWatch(session, viewer)
           ? null
           : { until: iso(watched.handoff.until), reason: watched.handoff.reason },
       ),
@@ -4230,9 +4277,11 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   }
 
   /**
-   * Mints a Live View link of a browser session for its member (#216, ADR 0044): a bearer link to the session's current
-   * tab, which starts a connection only within 60 seconds, for the panel alone. An org admin may see the session but
-   * not watch it (`forbidden`); anyone else, or a closed session, gets `not_found`. The link is never logged.
+   * Mints a Live View link of a browser session for those who may watch it (#216, ADR 0044, {@link #mayWatch}): its
+   * member, or, for a session a shared agent's run opened, the run's watchers (#232). A bearer link to the session's
+   * current tab, which starts a connection only within 60 seconds, for the panel alone. An org admin may see the
+   * session but not watch it (`forbidden`); anyone else, or a closed session, gets `not_found`. The link is never
+   * logged.
    */
   async browserLiveView(viewer: Viewer, id: string): Promise<ToolsResult<BrowserLiveView>> {
     const session = this.#visibleSession(viewer, id);
@@ -4242,7 +4291,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       return refuse("not_found", "browser session not found");
 
     if (!this.#mayWatch(session, viewer))
-      return refuse("forbidden", "only the session's member may watch it");
+      return refuse("forbidden", "only the session's member or its run's watchers may watch it");
     const minted = await sessions.liveView(this.#core.org, id);
 
     switch (minted.kind) {
@@ -4397,7 +4446,8 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
    * one lets it through once (`approved_panel`) and is settled; a denied one answers so and is settled, so the next
    * identical call asks anew; an undecided one answers pending again. Without one (none, or it expired), a pending
    * approval is created, the arguments sealed. A caller without a member under a rule of the caller, without a form,
-   * cannot be approved by anyone.
+   * cannot be approved by anyone, but for an agent run no one started (#232): its watchers are its caller
+   * ({@link #callersOf}), and its approval waits for one of them.
    */
   async #approvalOf(
     viewer: Viewer,
@@ -4443,7 +4493,14 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       return { kind: "approve", requestState: state };
     }
 
-    if (approver.kind === "caller" && callerMember === undefined)
+    // A run no one started has its watchers for its caller (#232); without any (no Agents area, or none left), no one
+    // decides.
+    if (
+      approver.kind === "caller" &&
+      callerMember === undefined &&
+      (call.run === undefined ||
+        watchersOfPrincipal(this.#runWatchers, call.principalId ?? "").length === 0)
+    )
       return { kind: "not_approved", reason: "no_approver" };
 
     const kept = this.#approvals.unsettled(key, now);
@@ -5152,14 +5209,30 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     return this.getApproval(viewer, id);
   }
 
-  /** Whether `viewer` may decide `approval` now (its approver, the teams they are in now). */
+  /**
+   * Whether `viewer` may decide `approval` now (its approver, the teams they are in now). Under a rule of the caller,
+   * an agent run's call that no member made is decided by any of the run's watchers (#232, {@link #callersOf}).
+   */
   #mayDecide(approval: StoredApproval, viewer: Viewer): boolean {
     const member = viewer.member;
+
+    if (approval.approver.kind === "caller" && approval.callerMember === undefined)
+      return member !== undefined && this.#callersOf(approval).includes(member);
 
     return mayDecide(approval.approver, approval.callerMember, {
       member,
       teams: member === undefined ? [] : this.#core.teamIdsOf(member),
     });
+  }
+
+  /**
+   * The members who are `approval`'s caller: the member who made the call, or, for an agent run's call that no member
+   * made (a run no one started, #232), the run's watchers as they are now (ADR 0040).
+   */
+  #callersOf(approval: StoredApproval): ReadonlyArray<string> {
+    return approval.callerMember === undefined
+      ? watchersOfPrincipal(this.#runWatchers, approval.callerPrincipal)
+      : [approval.callerMember];
   }
 
   /**
@@ -5169,7 +5242,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   #approvalView(approval: StoredApproval, viewer: Viewer, now: number): ApprovalView | undefined {
     const decides = this.#mayDecide(approval, viewer);
 
-    const caller = viewer.member !== undefined && approval.callerMember === viewer.member;
+    const caller = viewer.member !== undefined && this.#callersOf(approval).includes(viewer.member);
 
     if (!decides && !caller) return undefined;
 

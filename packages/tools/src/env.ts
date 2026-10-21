@@ -52,6 +52,7 @@ type ToolsPartMethod =
   | "purgeSandboxSessions"
   | "runSandboxOperation"
   | "settleRunSandboxCall"
+  | "runWaitState"
   | "listProfiles"
   | "createProfile"
   | "updateProfile"

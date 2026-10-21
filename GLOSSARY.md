@@ -768,8 +768,8 @@ the tools carry on.
 _Avoid_: takeover, intervention, human-in-the-loop (on its own)
 
 **Live View**:
-A view of a browser session's tab in the panel, in which its member watches it and acts in a handoff; reached through a
-short-lived link minted only for them.
+A view of a browser session's tab in the panel, in which its member, or the watchers of the agent run that opened it,
+watch it and act in a handoff; reached through a short-lived link minted only for them.
 _Avoid_: screen share, stream, recording, remote desktop
 
 **Browser provider**:
@@ -834,6 +834,11 @@ _Avoid_: owner, initiator, caller
 **Watcher**:
 A member, or a member of a team, named on a shared agent to watch, steer and answer its runs that no one started.
 _Avoid_: owner, supervisor, subscriber
+
+**Parked call**:
+An agent run's tool call that waits for a person, such as an approval or a handoff, while its turn waits with no
+connection open; the run makes the call again once the person answered, or is told it was refused once the wait expired.
+_Avoid_: suspended call, blocked call, pending call (a pending approval is what it waits on)
 
 **Child run**:
 An agent run that another run started through the agents toolkit, which acts as the agent it runs.
