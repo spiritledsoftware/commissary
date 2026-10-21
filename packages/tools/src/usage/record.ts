@@ -14,9 +14,14 @@
  *
  * Browser time (#214, ADR 0039, `migrations/usage/0012_usage_browser_time.sql`): a Quick Action's record carries the
  * browser milliseconds its call used (`browser_ms`), its cost the price per browser hour's share of them on top of the
- * tool's price per call. A browser session writes one record of its own when it closes ({@link BrowserSessionRecord},
+ * tool's price per call. A browser session writes one record of its own when it closes ({@link SessionRecord},
  * written by its Durable Object): its browser time from opening to closing and what that cost, under the session's id;
  * the calls in it keep their own records, without browser time. No record holds a URL, page content or a screenshot.
+ *
+ * Computer time (#224, ADR 0041, `migrations/usage/0014_usage_computer_time.sql`): a sandbox session writes one record
+ * of its own when it closes, as a browser session does (the same {@link SessionRecord}, written by its Durable Object):
+ * the time its computer ran (`computer_ms`) and what that cost at the price per computer hour. just-bash's time is not
+ * metered, and the calls in it keep their own records. No record holds a command, a path, file content or output.
  */
 import { Effect } from "effect";
 import type { UsageRun } from "@commissary/auth";
@@ -89,6 +94,7 @@ const COLUMNS = [
   "starter",
   "browser_ms",
   "browser_profile_id",
+  "computer_ms",
 ] as const;
 
 const INSERT_SQL = `INSERT OR IGNORE INTO usage_records (${COLUMNS.join(", ")}) VALUES (${COLUMNS.map(
@@ -132,6 +138,7 @@ const rowOf = (
   starter: record.run?.starter ?? null,
   browser_ms: record.browserMs ?? null,
   browser_profile_id: null,
+  computer_ms: null,
 });
 
 /** Stores one record (idempotent on `request_id`). */
@@ -170,15 +177,17 @@ export const writeToolCallRecord = (record: ToolCallRecord): Effect.Effect<void,
   });
 
 /**
- * The usage record of a browser session (#214): one per session, written when it closes, under the session's id (so a
- * close that runs twice writes it once). It names the session's org, principal (`key:<key id>` for an API key, which
- * names the key) and member, the toolkit, its browser time from opening to closing and what that cost at the price per
- * browser hour, prorated; no tool (its calls keep their own records), no URL, no page content. The browser toolkit's
- * credential is its shared one (Commissary's own binding), so the record is org-wide, but for a private agent's run's
- * (#228), which is its member's alone. It names the browser profile the session opened from (#215), if it opened from
- * one, and the agent run that opened it (#228), if one did.
+ * The usage record of a browser session (#214) or a sandbox session (#224): one per session, written when it closes,
+ * under the session's id (so a close that runs twice writes it once). It names the session's org, principal
+ * (`key:<key id>` for an API key, which names the key; an agent run's, with its agent, run and starter) and member, the
+ * toolkit, the time it metered and what that cost at the toolkit's price per hour, prorated: a browser session's
+ * browser time from opening to closing, a sandbox session's computer time (just-bash's is not metered); no tool (its
+ * calls keep their own records), no URL, command, path, file content or output. A built-in toolkit's credential is its
+ * shared one (Commissary's own binding), so the record is org-wide, but for a private agent's run's (#228), which is its
+ * member's alone. A browser session's names the browser profile it opened from (#215), if it opened from one; either
+ * names the agent run that opened it (#228), if one did.
  */
-export interface BrowserSessionRecord {
+export interface SessionRecord {
   readonly sessionId: string;
   readonly orgId: string;
   readonly principalId: string;
@@ -186,17 +195,20 @@ export interface BrowserSessionRecord {
   readonly toolkitId: string;
   /** Epoch ms when the session opened. */
   readonly openedAt: number;
-  readonly browserMs: number;
-  /** Micro-USD: its browser time at the price per browser hour while it was open; 0 without one. */
+  /** A browser session's browser time from opening to closing, in ms (#214). */
+  readonly browserMs?: number | undefined;
+  /** A sandbox session's computer time, in ms (#224): 0 for one whose computer never ran. */
+  readonly computerMs?: number | undefined;
+  /** Micro-USD: its time at the toolkit's price per hour while it was open; 0 without one. */
   readonly costMicros: number;
-  /** The browser profile it opened from (#215); undefined when it opened from none. */
+  /** The browser profile a browser session opened from (#215); undefined when it opened from none. */
   readonly profileId?: string | undefined;
   /** The agent run that opened it (#228): its agent, the run and its starter; a private agent's is its member's alone. */
   readonly run?: UsageRun | undefined;
 }
 
 const sessionRowOf = (
-  record: BrowserSessionRecord,
+  record: SessionRecord,
 ): Readonly<Record<(typeof COLUMNS)[number], string | number | null>> => ({
   request_id: record.sessionId,
   requested_at: record.openedAt,
@@ -226,15 +238,13 @@ const sessionRowOf = (
   agent_id: record.run?.agentId ?? null,
   run_id: record.run?.runId ?? null,
   starter: record.run?.starter ?? null,
-  browser_ms: record.browserMs,
+  browser_ms: record.browserMs ?? null,
   browser_profile_id: record.profileId ?? null,
+  computer_ms: record.computerMs ?? null,
 });
 
-/** Stores a browser session's record (idempotent on the session's id). */
-export const insertBrowserSessionRecord = async (
-  db: D1Database,
-  record: BrowserSessionRecord,
-): Promise<void> => {
+/** Stores a browser or sandbox session's record (idempotent on the session's id). */
+export const insertSessionRecord = async (db: D1Database, record: SessionRecord): Promise<void> => {
   const row = sessionRowOf(record);
 
   await db
@@ -244,16 +254,16 @@ export const insertBrowserSessionRecord = async (
 };
 
 /**
- * The SQL condition of a browser session's own record (#214) in `usage_records`: a tool record that names no tool. The
+ * The SQL condition of a session's own record (#214, #224) in `usage_records`: a tool record that names no tool. The
  * summaries count it as no request (Models' `usage/d1.ts` has the same condition).
  */
 export const SESSION_RECORD = "area = 'tools' AND tool_id IS NULL";
 
 /**
- * Deletes the org's browser sessions' records (#214): Tools' org-deletion step, after it deleted the sessions, for a
- * record one of them wrote after Models' step deleted the org's usage rows.
+ * Deletes the org's browser and sandbox sessions' records (#214, #224): Tools' org-deletion step, after it deleted the
+ * sessions, for a record one of them wrote after Models' step deleted the org's usage rows.
  */
-export const deleteBrowserSessionRecords = async (db: D1Database, org: string): Promise<void> => {
+export const deleteSessionRecords = async (db: D1Database, org: string): Promise<void> => {
   await db
     .prepare(`DELETE FROM usage_records WHERE org_id = ? AND ${SESSION_RECORD}`)
     .bind(org)

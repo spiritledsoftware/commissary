@@ -8,6 +8,7 @@ import { Effect } from "effect";
 import {
   type CommandResult,
   type DirectoryEntry,
+  type Metered,
   SandboxError,
   type SandboxOwner,
   type SandboxProvider,
@@ -23,8 +24,14 @@ const newSessionId = (): string => `sbx_${crypto.randomUUID().replaceAll("-", ""
 /** What an id that was never a session's looks like; any other is unknown without asking. */
 const SESSION_ID = /^sbx_[0-9a-f]{32}$/;
 
-/** The answer of one object call, as the interface answers it. */
-const replied = <A>(call: () => Promise<SessionReply<A>>): Effect.Effect<A, SandboxError> =>
+/**
+ * The answer of one object call, as the interface answers it, with the computer time it answers (#224): a failure
+ * carries it too, and a refusal for want of room whether the session stopped its computer. An object from before #224
+ * answers none.
+ */
+const replied = <A>(
+  call: () => Promise<SessionReply<A>>,
+): Effect.Effect<Metered<A>, SandboxError> =>
   Effect.tryPromise({
     try: call,
     catch: (cause) =>
@@ -33,11 +40,20 @@ const replied = <A>(call: () => Promise<SessionReply<A>>): Effect.Effect<A, Sand
         message: `Commissary could not reach the sandbox: ${cause instanceof Error ? cause.message : String(cause)}`,
       }),
   }).pipe(
-    Effect.flatMap((reply) =>
-      reply.ok
-        ? Effect.succeed(reply.value)
-        : Effect.fail(new SandboxError({ reason: reply.reason, message: reply.message })),
-    ),
+    Effect.flatMap((reply) => {
+      const { computerTime, computerStopped } = reply;
+
+      const metered = {
+        ...(computerTime === undefined ? {} : { computerTime }),
+        ...(computerStopped === true ? { computerStopped } : {}),
+      };
+
+      return reply.ok
+        ? Effect.succeed({ value: reply.value, ...metered })
+        : Effect.fail(
+            new SandboxError({ reason: reply.reason, message: reply.message, ...metered }),
+          );
+    }),
   );
 
 /** The caller as the session's object takes it. */
@@ -60,7 +76,7 @@ export const cloudflareSandbox = (
     owner: SandboxOwner,
     id: string,
     call: (stub: DurableObjectStub<SandboxSession>) => Promise<SessionReply<A>>,
-  ): Effect.Effect<A, SandboxError> =>
+  ): Effect.Effect<Metered<A>, SandboxError> =>
     SESSION_ID.test(id)
       ? replied(() => call(namespace.getByName(`${owner.org}:${id}`)))
       : Effect.fail(new SandboxError({ reason: "unknown_session", message: "" }));
@@ -68,30 +84,44 @@ export const cloudflareSandbox = (
   return {
     id: CLOUDFLARE_SANDBOX,
     computer,
-    open: (owner, { network, computer: asked, policy, now }) => {
+    open: (owner, { network, computer: asked, policy, now, meter, opener }) => {
       const id = newSessionId();
 
       return object(owner, id, (stub) =>
-        stub.open(caller(owner, now), { network, computer: asked && computer }, policy),
+        stub.open(
+          caller(owner, now),
+          { network, computer: asked && computer },
+          policy,
+          meter,
+          opener,
+        ),
       ).pipe(Effect.as(id));
     },
-    run: (owner, id, { command, timeoutMs, now }) =>
-      object<CommandResult>(owner, id, (stub) => stub.run(caller(owner, now), command, timeoutMs)),
-    readFile: (owner, id, path, now) =>
-      object(owner, id, (stub) => stub.readFile(caller(owner, now), path)),
-    writeFile: (owner, id, path, text, now) =>
-      object(owner, id, (stub) => stub.writeFile(caller(owner, now), path, text)).pipe(
-        Effect.asVoid,
+    run: (owner, id, { command, timeoutMs, now }, meter) =>
+      object<CommandResult>(owner, id, (stub) =>
+        stub.run(caller(owner, now), command, timeoutMs, meter),
       ),
-    list: (owner, id, path, now) =>
+    readFile: (owner, id, path, now, meter) =>
+      object(owner, id, (stub) => stub.readFile(caller(owner, now), path, meter)),
+    writeFile: (owner, id, path, text, now, meter) =>
+      object(owner, id, (stub) => stub.writeFile(caller(owner, now), path, text, meter)).pipe(
+        Effect.map((metered) => ({ ...metered, value: undefined })),
+      ),
+    list: (owner, id, path, now, meter) =>
       object<ReadonlyArray<DirectoryEntry>>(owner, id, (stub) =>
-        stub.list(caller(owner, now), path),
+        stub.list(caller(owner, now), path, meter),
       ),
-    close: (owner, id, now) =>
-      object(owner, id, (stub) => stub.close(caller(owner, now))).pipe(Effect.asVoid),
-    purge: (org, id) =>
+    close: (owner, id, now, meter) =>
+      object(owner, id, (stub) => stub.close(caller(owner, now), meter)).pipe(
+        Effect.map((metered) => ({ ...metered, value: undefined })),
+      ),
+    stopComputer: (owner, id, now, meter) =>
+      object<boolean>(owner, id, (stub) => stub.stopForLimit(caller(owner, now), meter)),
+    purge: (org, id, settle) =>
       SESSION_ID.test(id)
-        ? replied(() => namespace.getByName(`${org}:${id}`).purge(org)).pipe(Effect.asVoid)
-        : Effect.void,
+        ? replied(() => namespace.getByName(`${org}:${id}`).purge(org, settle)).pipe(
+            Effect.map((metered) => ({ ...metered, value: undefined })),
+          )
+        : Effect.succeed({ value: undefined }),
   };
 };

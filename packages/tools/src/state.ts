@@ -5,11 +5,12 @@
  * browser sessions' namespace, the sandbox's Dynamic Workers, and Commissary Cloud's managed OAuth apps,
  * `managedAppsOf`; `BrowserSessionEnv`: the `browser` binding, for the sessions' browsers, and the usage database and
  * the ControlPlane, for their browser time, #214). The sandbox toolkit's sessions are Durable Objects of their own
- * (`SandboxSession`, #222), and the state Worker's main module exports them with the entrypoints their Dynamic Workers reach: `SandboxEgress`, the
- * sandbox's one egress point, `WorkspaceServiceProxy`, their files, and `WorkspaceProxy`, the computer's way back to its
- * session (#223). The state Worker hands the part the Agents area's answer to which agents a caller may run
- * (`AgentDirectory`), which gives it the agents toolkit (#229). The apps import Tools only through this entry,
- * `./api` and `./management` (the lint rule `boundaries/tools-imports`).
+ * (`SandboxSession`, #222; they read the same two for their computer time, #224, `SandboxSessionEnv`), and the state
+ * Worker's main module exports them with the entrypoints their Dynamic Workers reach: `SandboxEgress`, the sandbox's
+ * one egress point, `WorkspaceServiceProxy`, their files, and `WorkspaceProxy`, the computer's way back to its session
+ * (#223). The state Worker hands the part the Agents area's answer to which agents a caller may run (`AgentDirectory`),
+ * which gives it the agents toolkit (#229). The apps import Tools only through this entry, `./api` and `./management`
+ * (the lint rule `boundaries/tools-imports`).
  */
 export { ToolsPart } from "./control-plane-part.ts";
 

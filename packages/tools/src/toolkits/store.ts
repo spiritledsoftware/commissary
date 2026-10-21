@@ -41,7 +41,9 @@ import type { StoredSecret } from "./secret.ts";
  * approvals', `approvals/store.ts`), which the part's `wipe` drops with the browser profiles' (`PROFILE_TABLES`,
  * `browser/profiles.ts`, which outlive any toolkit and so are not in this list). `built_in_toolkits` holds what an org says of a built-in toolkit
  * beyond its grants and overrides, which has no `toolkits` row: its approval rules (#201), the sandbox toolkit's network
- * ceiling (#222), the browser toolkit's price per browser hour (#214), and their revision; `sandbox_sessions`, the
+ * ceiling (#222), its price per hour (the browser toolkit's per browser hour, #214, the sandbox toolkit's per computer
+ * hour, #224, both in `browser_hour_price_micros`, named for the first; `HOUR_PRICES`, `price.ts`, says which field
+ * of the management API each kind's is), and their revision; `sandbox_sessions`, the
  * org's open sandbox sessions (`sandbox/sessions.ts`); `browser_crawls`, who started each of the org's browser crawls
  * (`browser/crawls.ts`); `browser_sessions`, the org's open browser sessions (`browser/session-log.ts`)
  * (test/control-plane.test.ts checks the list). Each but `toolkits` is keyed by `toolkit_id`, so {@link
@@ -311,8 +313,11 @@ export interface BuiltInSettings {
   readonly approvalRules: StoredApprovalRules | undefined;
   /** The sandbox toolkit's ceiling (its network, #222, and the computer, #223); undefined: none, the default. */
   readonly ceiling: SandboxAllowance | undefined;
-  /** The browser toolkit's price per browser hour (#214), in micro-USD; undefined: browser time is free. */
-  readonly browserHourPriceMicros: number | undefined;
+  /**
+   * Its price per hour, in micro-USD: the browser toolkit's per browser hour (#214), the sandbox toolkit's per computer
+   * hour (#224); undefined: that time is free.
+   */
+  readonly hourPriceMicros: number | undefined;
 }
 
 const toolkitOf = (row: ToolkitRow): StoredToolkit => ({
@@ -498,7 +503,9 @@ export class ToolkitStore {
     if (!builtInColumns.includes("computer"))
       sql.exec(`ALTER TABLE built_in_toolkits ADD COLUMN computer INTEGER`);
 
-    // And the browser toolkit's price per browser hour (#214): unset, browser time is free.
+    // And the toolkit's price per hour (#214): unset, its time is free. The sandbox toolkit's price per computer hour
+    // (#224) is the same column: one price per hour of a built-in toolkit, named for the browser's, which came first;
+    // its field in the management API is its kind's (`HOUR_PRICES`, `price.ts`).
     if (!builtInColumns.includes("browser_hour_price_micros"))
       sql.exec(`ALTER TABLE built_in_toolkits ADD COLUMN browser_hour_price_micros INTEGER`);
   }
@@ -607,10 +614,10 @@ export class ToolkitStore {
   }
 
   /**
-   * What the org set on the built-in toolkit `id` (#201, #222, #223, #214): its approval rules, its network ceiling and
-   * whether it allows the computer (the sandbox toolkit's), its price per browser hour (the browser toolkit's) and the
-   * revision and time of the last change, or undefined when it set nothing yet (the toolkit is then
-   * at its first revision).
+   * What the org set on the built-in toolkit `id` (#201, #222, #223, #214, #224): its approval rules, its network
+   * ceiling and whether it allows the computer (the sandbox toolkit's), its price per hour (per browser or computer
+   * hour) and the revision and time of the last change, or undefined when it set nothing yet (the toolkit is then at
+   * its first revision).
    */
   builtInSettings(id: string):
     | (BuiltInSettings & {
@@ -641,7 +648,7 @@ export class ToolkitStore {
             row.network === null && row.computer === null
               ? undefined
               : { network: parseNetwork(row.network) ?? NO_NETWORK, computer: row.computer === 1 },
-          browserHourPriceMicros: orUndefined(row.browser_hour_price_micros),
+          hourPriceMicros: orUndefined(row.browser_hour_price_micros),
           updatedAt: row.updated_at,
           updatedBy: row.updated_by,
         };
@@ -668,7 +675,7 @@ export class ToolkitStore {
       settings.approvalRules === undefined ? null : JSON.stringify(settings.approvalRules),
       settings.ceiling === undefined ? null : JSON.stringify(settings.ceiling.network),
       settings.ceiling === undefined ? null : Number(settings.ceiling.computer),
-      settings.browserHourPriceMicros ?? null,
+      settings.hourPriceMicros ?? null,
       now,
       by,
     );

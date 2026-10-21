@@ -69,6 +69,7 @@ import type { ControlPlanePart, OrgCore } from "@commissary/state";
 import type {
   ChargedCredential,
   Refusal,
+  SpendAgent,
   SpendCaller,
   SpendCredential,
 } from "@commissary/state/spend";
@@ -165,7 +166,14 @@ import {
   ToolkitStore,
   TOOLS_TABLES,
 } from "./toolkits/store.ts";
-import { browserHourPriceRefusal, priceRefusal } from "./toolkits/price.ts";
+import {
+  HOUR_PRICES,
+  type HourPriceField,
+  type HourPricedKind,
+  hourPriceRefusal,
+  isHourPriced,
+  priceRefusal,
+} from "./toolkits/price.ts";
 import {
   isMinted,
   isMintedKind,
@@ -203,7 +211,13 @@ import {
   startDescription,
 } from "./agents/toolkit.ts";
 import { NO_ALLOWANCE, networkProblem, normalizedNetwork } from "./sandbox/network.ts";
-import type { SandboxProvider } from "./sandbox/provider.ts";
+import {
+  type ComputerMeter,
+  type Metered,
+  type SandboxProvider,
+  SESSION_IDLE_MS,
+} from "./sandbox/provider.ts";
+import { meetsComputer } from "./sandbox/toolkit.ts";
 import { SandboxSessionStore, type TrackedSession } from "./sandbox/sessions.ts";
 import { BrowserCrawlStore } from "./browser/crawls.ts";
 import { apiKeyOf, BrowserSessionStore } from "./browser/session-log.ts";
@@ -364,10 +378,33 @@ const NOT_FOUND = refuse("not_found", "toolkit not found");
 
 const BUILT_IN = refuse(
   "built_in",
-  "the toolkit is Commissary's own: it cannot be renamed, edited (but for its approval rules, the sandbox's network and the browser's price per browser hour), given a credential, refreshed or removed",
+  "the toolkit is Commissary's own: it cannot be renamed, edited (but for its approval rules, the sandbox's network and computer, and its price per browser or computer hour), given a credential, refreshed or removed",
 );
 
 const iso = (at: number): string => new Date(at).toISOString();
+
+/**
+ * The prices per hour `change` sets (#214, #224), each with its field and the kind of toolkit it belongs to: `null`
+ * clears one.
+ */
+const hourPricesOf = (
+  change: UpdateToolkit,
+): ReadonlyArray<{
+  readonly kind: HourPricedKind;
+  readonly field: HourPriceField;
+  readonly price: number | null;
+}> =>
+  Object.entries(HOUR_PRICES).flatMap(([kind, { field }]) => {
+    const price = change[field];
+
+    return price === undefined || !isHourPriced(kind) ? [] : [{ kind, field, price }];
+  });
+
+/** A built-in toolkit's price per hour (#214, #224) as its view and the export show it, under its kind's field. */
+const hourPriceView = (toolkit: Toolkit): Partial<Record<HourPriceField, number>> =>
+  toolkit.builtIn && toolkit.hourPriceMicros !== undefined && isHourPriced(toolkit.kind)
+    ? { [HOUR_PRICES[toolkit.kind].field]: toolkit.hourPriceMicros }
+    : {};
 
 /** How a built-in tool is called for a call, and whether the call opened a sandbox session (`#builtInCall`). */
 interface BuiltInCalling {
@@ -488,6 +525,8 @@ export interface ToolkitExport {
   readonly computer?: boolean;
   /** The browser toolkit's price per browser hour, in micro-USD (#214). */
   readonly browser_hour_price_micros?: number;
+  /** The sandbox toolkit's price per computer hour, in micro-USD (#224). */
+  readonly computer_hour_price_micros?: number;
   /** Its approval rules (#201): marked tools by upstream name, approvers by what a person reads. */
   readonly approval_rules?: {
     readonly writes?: { readonly approver: ExportedApprover };
@@ -687,6 +726,13 @@ export type ToolCallOutcome =
       readonly usage: CallUsage;
       /** The browser session the call named was closed with it, as its browser time costs money (#214). */
       readonly sessionClosed?: true;
+      /**
+       * What the refusal did to the sandbox session the call named, as its computer time costs money (#224): its running
+       * computer was `stopped`, or the call `needed` the computer (its command would have run there); with `needed`,
+       * `computerStopped` when the call stopped the computer, which ran, first.
+       */
+      readonly computer?: "stopped" | "needed";
+      readonly computerStopped?: true;
     }
   | { readonly outcome: "result"; readonly result: Schema.JsonObject; readonly usage: CallUsage }
   | { readonly outcome: "failed"; readonly message: string; readonly usage: CallUsage }
@@ -1031,12 +1077,17 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   /**
    * Zero data retention (ADR 0027): a member's private toolkits, private credentials and private browser profiles go
    * with them, and so do the tool and profile grants that named them and the pending approvals of their calls (#201).
-   * They leave every list of approvers. Their open sandbox sessions (#222) are deleted at once, with their files, and
-   * their browser crawls (#270) that may still be running are cancelled at the provider (as far as it answers) before
-   * the part forgets them all.
+   * They leave every list of approvers. Their open sandbox sessions (#222) are deleted at once, with their files, each
+   * first settled as a close is: its computer time charged and its usage record written (#224; one idle for a day is
+   * closed already, its files gone: it is left to report its close), and their browser crawls
+   * (#270) that may still be running are cancelled at the provider (as far as it answers) before the part forgets them
+   * all.
    */
   async memberLeft(member: string): Promise<void> {
-    await this.#purgeSandboxSessions(this.#sandboxSessions.sessions({ member }));
+    await this.#purgeSandboxSessions(
+      this.#sandboxSessions.sessions({ member, usedSince: this.#now() - SESSION_IDLE_MS }),
+      true,
+    );
     await this.#cancelCrawls(this.#crawls.mayRun(this.#now(), { member }));
 
     this.#core.transaction(() => {
@@ -1124,9 +1175,15 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
   /**
    * Deletes `sessions` in their sandbox, and their rows once deleted; answers how many it asked the sandbox to delete.
-   * One the sandbox could not reach keeps its row, for the next try (it ends by itself after a day without use).
+   * One the sandbox could not reach keeps its row, for the next try (it ends by itself after a day without use). When
+   * their member left (`settle`, #224), each settles as a close does first: its usage record written, and its computer
+   * time no call charged charged here, to its opener's Spend limits; one its alarm closed meanwhile keeps its row, for
+   * the close's report.
    */
-  async #purgeSandboxSessions(sessions: ReadonlyArray<TrackedSession>): Promise<number> {
+  async #purgeSandboxSessions(
+    sessions: ReadonlyArray<TrackedSession>,
+    settle = false,
+  ): Promise<number> {
     const sandbox = this.#sandbox;
 
     if (sandbox === undefined || sessions.length === 0) return 0;
@@ -1134,13 +1191,20 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     const purged = await Promise.all(
       sessions.map(async (session) =>
         Effect.runPromise(
-          sandbox.purge(this.#core.org, session.id).pipe(
-            Effect.as(session.id),
+          sandbox.purge(this.#core.org, session.id, settle).pipe(
+            Effect.map(({ computerTime }) => {
+              this.#chargeClosed(session, computerTime?.costMicros ?? 0);
+
+              return session.id;
+            }),
             Effect.catchTag("SandboxError", (error) =>
-              Effect.logWarning("sandbox session not purged").pipe(
-                Effect.annotateLogs({ reason: error.reason, message: error.message }),
-                Effect.as(undefined),
-              ),
+              // One its alarm closed is kept until its close is reported (#224): its files are gone already.
+              settle && error.reason === "closed"
+                ? Effect.succeed(undefined)
+                : Effect.logWarning("sandbox session not purged").pipe(
+                    Effect.annotateLogs({ reason: error.reason, message: error.message }),
+                    Effect.as(undefined),
+                  ),
             ),
           ),
         ),
@@ -1168,8 +1232,8 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   /** Read on every use: nothing to forget. */
   privateCredentialsChanged(): void {}
 
-  /** Tools holds no agents: no Spend limit names one of its. */
-  spendAgents(): readonly [] {
+  /** Tools holds no agents: no Spend limit names one of its (a test's subclass names one, to limit an agent's run). */
+  spendAgents(): ReadonlyArray<SpendAgent> {
     return [];
   }
 
@@ -1406,8 +1470,13 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     if (change.computer !== undefined)
       return refuse("invalid", "only the sandbox toolkit has a computer");
 
-    if (change.browser_hour_price_micros !== undefined)
-      return refuse("invalid", "only the browser toolkit has a price per browser hour");
+    const [hourPriced] = hourPricesOf(change);
+
+    if (hourPriced !== undefined)
+      return refuse(
+        "invalid",
+        `only the ${hourPriced.kind} toolkit has a price per ${HOUR_PRICES[hourPriced.kind].hour}`,
+      );
 
     if (current.revision !== revision)
       return refuse("conflict", `the toolkit is at revision ${current.revision}, not ${revision}`);
@@ -1472,11 +1541,12 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   /**
    * Sets a built-in toolkit's approval rules (#201), which apply as any toolkit's, and the sandbox toolkit's network
    * ceiling (#222), the widest network its sessions may ask for, and whether they may use the computer (#223), which a
-   * deployment without the computer cannot allow, and the browser toolkit's price per browser hour (#214; `null` clears
-   * it) (an org admin's: the toolkit is an org toolkit). Nothing else of it changes (`403 built_in` for a name, what it
-   * accepts or a price per call; a network or computer on the browser toolkit, or a price per browser hour on the
-   * sandbox toolkit, too). Open sandbox sessions keep the network and the computer they opened with; open browser
-   * sessions cost the price per browser hour from their next call on.
+   * deployment without the computer cannot allow, and its price per hour: the browser toolkit's per browser hour (#214),
+   * the sandbox toolkit's per computer hour (#224), one mechanism (`HOUR_PRICES`; `null` clears it) (an org
+   * admin's: the toolkit is an org toolkit). Nothing else of it changes (`403 built_in` for a name, what it accepts or a
+   * price per call; a network or computer on the browser toolkit, or the other toolkit's price per hour, too). Open
+   * sandbox sessions keep the network and the computer they opened with; open sessions cost the new price per hour from
+   * their next call on.
    */
   #updateBuiltIn(
     viewer: Viewer,
@@ -1489,14 +1559,18 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       approval_rules: _rules,
       network,
       computer,
-      browser_hour_price_micros: hourPrice,
+      browser_hour_price_micros: _browserHour,
+      computer_hour_price_micros: _computerHour,
       ...rest
     } = change;
+
+    const hourPrices = hourPricesOf(change);
+    const hourPrice = hourPrices[0];
 
     if (
       Object.values(rest).some((value) => value !== undefined) ||
       ((network !== undefined || computer !== undefined) && current.kind !== "sandbox") ||
-      (hourPrice !== undefined && current.kind !== "browser")
+      hourPrices.some(({ kind }) => kind !== current.kind)
     )
       return BUILT_IN;
 
@@ -1508,9 +1582,9 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
     const problem =
       (network === undefined ? undefined : networkProblem(network)) ??
-      (hourPrice === undefined || hourPrice === null
+      (hourPrice === undefined || hourPrice.price === null
         ? undefined
-        : browserHourPriceRefusal(hourPrice));
+        : hourPriceRefusal(hourPrice.field, hourPrice.price));
 
     if (problem !== undefined) return refuse("invalid", problem);
 
@@ -1535,8 +1609,8 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
                     : normalizedNetwork(network),
                 computer: computer ?? (current.ceiling ?? NO_ALLOWANCE).computer,
               },
-        browserHourPriceMicros:
-          hourPrice === undefined ? current.browserHourPriceMicros : (hourPrice ?? undefined),
+        hourPriceMicros:
+          hourPrice === undefined ? current.hourPriceMicros : (hourPrice.price ?? undefined),
       },
       by,
       this.#now(),
@@ -2899,33 +2973,52 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       kind: "toolkit_credential",
     };
 
-    // The browser toolkit's price per browser hour (#214): with one, a call that uses browser time (its tool says,
-    // `browserTimeOf`) counts toward the limits as a priced call does; closing a session, or a tool that reaches no
-    // browser, does not.
+    // A built-in toolkit's price per hour of the time it meters (#214, #224), one mechanism: the browser toolkit's
+    // browser time, the sandbox toolkit's computer time.
     const hourPrice =
-      builtIn?.toolkit.kind === "browser"
-        ? (this.#withSettings(builtIn.toolkit).browserHourPriceMicros ?? 0)
+      builtIn !== undefined && isHourPriced(builtIn.toolkit.kind)
+        ? (this.#withSettings(builtIn.toolkit).hourPriceMicros ?? 0)
         : 0;
 
-    const timed = hourPrice > 0 && browserTimeOf(tool.upstreamName) === "uses";
+    // With a price per browser hour, a call that uses browser time (its tool says, `browserTimeOf`) counts toward the
+    // limits as a priced call does; closing a session, or a tool that reaches no browser, does not.
+    const timed =
+      hourPrice > 0 &&
+      builtIn?.toolkit.kind === "browser" &&
+      browserTimeOf(tool.upstreamName) === "uses";
 
-    if (price > 0 || timed) {
-      const refusal = ledger.refusal(spender, charged, this.#now());
+    // With a price per computer hour, a call that meets its session's computer (`meetsComputer`) is checked too, but
+    // only the session can tell whether it meets one: with no room, it stops a running computer quietly and the call
+    // goes on, saying so; only a command that would run on the computer is refused (#224).
+    const computerPriced = hourPrice > 0 && builtIn?.toolkit.kind === "sandbox";
+    const computerChecked = computerPriced && meetsComputer(tool.upstreamName);
 
-      if (refusal !== undefined) {
-        // A session whose browser time costs money is closed once a limit it counts toward has no room (#214).
-        const closed =
-          timed && builtIn?.calledBy === "part"
-            ? await this.#closeSession(builtIn, viewer, call, policy, spender, charged)
-            : false;
+    const noRoom =
+      price > 0 || timed || computerChecked
+        ? ledger.refusal(spender, charged, this.#now())
+        : undefined;
 
-        return {
-          outcome: "refused",
-          refusal,
-          usage: usage(slot),
-          ...(closed ? { sessionClosed: true as const } : {}),
-        };
-      }
+    if (noRoom !== undefined && (price > 0 || timed)) {
+      // A session whose browser time costs money is closed once a limit it counts toward has no room (#214), and a
+      // sandbox session's running computer stopped (#224): the refused call never reaches the session, so the part
+      // stops it, for a refused `sandbox_close` too.
+      const closed =
+        timed && builtIn?.calledBy === "part"
+          ? await this.#closeSession(builtIn, viewer, call, policy, spender, charged)
+          : false;
+
+      const stopped =
+        computerPriced && builtIn !== undefined
+          ? await this.#stopComputer(builtIn, viewer, call, spender, charged, hourPrice)
+          : false;
+
+      return {
+        outcome: "refused",
+        refusal: noRoom,
+        usage: usage(slot),
+        ...(closed ? { sessionClosed: true as const } : {}),
+        ...(stopped ? { computer: "stopped" as const } : {}),
+      };
     }
 
     const approval = await this.#approvalOf(viewer, call, tool, slot);
@@ -2981,7 +3074,14 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
         };
       }
 
-      const session = this.#builtInCall(builtIn, viewer, call, spender, policy, now);
+      // A sandbox session's computer time (#224): the price from this call on, and whether a limit has no room
+      // (`noRoom` is set only for a call that meets the computer), which only the session can act on.
+      const computer: ComputerMeter | undefined =
+        builtIn.toolkit.kind === "sandbox"
+          ? { hourPriceMicros: hourPrice, limitReached: noRoom !== undefined }
+          : undefined;
+
+      const session = this.#builtInCall(builtIn, viewer, call, spender, policy, now, computer);
 
       const answer = await Effect.runPromise(
         builtIn.call(tool.upstreamName, call.arguments, session.call),
@@ -2991,15 +3091,40 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       // forget it.
       if (session.opened()) await this.#core.wakeUpChanged(this.#nextWakeUp(now));
 
-      // Browser time costs the price per browser hour on top of the price per call (#214): a Quick Action's on its own
-      // record, a session's since its last call on the session's, which writes it when it closes.
-      const { result, browserTime, inSession } = answer;
+      // The session answers its computer time since its last call, which the call charges; for want of room it stops a
+      // running computer quietly (the result says so) and refuses only a command that needs the computer
+      // (`#stopForLimit`).
+      const {
+        result,
+        browserTime,
+        inSession,
+        computerTime,
+        computer: refusedFor,
+        computerStopped,
+      } = answer;
+
+      const computerCost = computerTime?.costMicros ?? 0;
+
+      if (noRoom !== undefined && refusedFor === "needed") {
+        ledger.charge(ledger.scopes(spender, charged), computerCost, this.#now());
+
+        return {
+          outcome: "refused",
+          refusal: noRoom,
+          usage: usage(slot, 0, approved),
+          computer: refusedFor,
+          ...(computerStopped === true ? { computerStopped } : {}),
+        };
+      }
+
+      // Browser and computer time cost their price per hour on top of the price per call (#214, #224): a Quick
+      // Action's on its own record, a session's since its last call on the session's, which writes it when it closes.
       const callTime = inSession === true ? undefined : browserTime;
       const cost = price + (callTime?.costMicros ?? 0);
 
       ledger.charge(
         ledger.scopes(spender, charged),
-        price + (browserTime?.costMicros ?? 0),
+        price + (browserTime?.costMicros ?? 0) + computerCost,
         this.#now(),
       );
 
@@ -3042,6 +3167,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     spender: SpendCaller,
     policy: OutboundPolicy,
     now: number,
+    computer?: ComputerMeter,
   ): BuiltInCalling {
     const { principalId } = call;
     let opened = false;
@@ -3055,6 +3181,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
         member: viewer.member,
         principal: principalId,
         ...(call.run?.usage === undefined ? {} : { run: call.run.usage }),
+        ...(computer === undefined ? {} : { computer }),
         profiles: this.#callerProfiles(viewer, principalId ?? viewer.member),
         // A browser session is logged while it is open, so the org's deletion deletes it (#214).
         browserSessions: {
@@ -3077,6 +3204,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
               toolkitId: builtIn.toolkit.id,
               member: viewer.member,
               principal: principalId ?? "",
+              agent: spender.agentId,
               openedAt: now,
             });
           },
@@ -3147,7 +3275,40 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
     if (session === undefined) return;
     this.#browserSessionLog.forget([sessionId]);
+    this.#chargeClosed(session, costMicros);
+  }
 
+  /**
+   * Hears of computer time of the sandbox session `sessionId` that no call charged (#224): its object's alarm metered it
+   * when the computer stopped after its idle minutes, or when it `closed` the session after a day without a call (it is
+   * then forgotten). Charges `costMicros` of it to the Spend limits it counts toward, as a browser session's
+   * ({@link browserSessionClosed}). The session's Durable Object calls it. A session the part does not keep, or a cost
+   * that is not a whole number of micro-USD, 0 or more, charges nothing.
+   */
+  sandboxComputerTime(sessionId: string, costMicros: number, closed: boolean): void {
+    const session = this.#sandboxSessions.session(sessionId);
+
+    if (session === undefined) return;
+
+    if (closed) this.#sandboxSessions.ended([sessionId]);
+    this.#chargeClosed(session, costMicros);
+  }
+
+  /**
+   * Charges `costMicros`, the time a session's alarm metered since its last call (#214, #224), to the Spend limits of
+   * its opener, as its toolkit's shared credential served it: those of the member who opened it, their teams and the
+   * org, and of the API key it was opened with, or of the shared agent whose run opened it (#228). A cost that is not a
+   * whole number of micro-USD, 0 or more, charges nothing.
+   */
+  #chargeClosed(
+    session: {
+      readonly toolkitId: string;
+      readonly member: string | undefined;
+      readonly principal: string;
+      readonly agent?: string | undefined;
+    },
+    costMicros: number,
+  ): void {
     if (!Number.isSafeInteger(costMicros) || costMicros <= 0) return;
     const ledger = this.#core.spend.ledger();
     const apiKeyId = apiKeyOf(session.principal);
@@ -3163,6 +3324,48 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       costMicros,
       this.#now(),
     );
+  }
+
+  /**
+   * Stops the computer of the sandbox session that `call`, refused by a Spend limit, names (#224): a priced tool's call
+   * (`sandbox_close` too) is refused before it reaches the session, so the part stops a running computer itself, as the
+   * session does for a call that reaches it. Its last stretch is charged. The refused call is no use of the session.
+   * Answers whether a computer of the caller's session ran.
+   */
+  async #stopComputer(
+    builtIn: BuiltIn,
+    viewer: Viewer,
+    call: ToolCall,
+    spender: SpendCaller,
+    charged: ChargedCredential,
+    hourPriceMicros: number,
+  ): Promise<boolean> {
+    const sessionId = call.arguments?.["session"];
+    const sandbox = this.#sandbox;
+    const { principalId } = call;
+
+    if (typeof sessionId !== "string" || sandbox === undefined || principalId === undefined)
+      return false;
+
+    const stopped = await Effect.runPromise(
+      sandbox
+        .stopComputer({ org: this.#core.org, principal: principalId }, sessionId, this.#now(), {
+          hourPriceMicros,
+          limitReached: true,
+        })
+        // An object from before #224 has no `stopForLimit`: it has no metered computer to stop.
+        .pipe(Effect.orElseSucceed((): Metered<boolean> => ({ value: false }))),
+    );
+
+    const ledger = this.#core.spend.ledger();
+
+    ledger.charge(
+      ledger.scopes(spender, { ...charged, id: builtIn.toolkit.id }),
+      stopped.computerTime?.costMicros ?? 0,
+      this.#now(),
+    );
+
+    return stopped.value;
   }
 
   /**
@@ -4231,9 +4434,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
           ...(toolkit.builtIn && toolkit.kind === "sandbox"
             ? { ...(toolkit.ceiling ?? NO_ALLOWANCE) }
             : {}),
-          ...(toolkit.builtIn && toolkit.browserHourPriceMicros !== undefined
-            ? { browser_hour_price_micros: toolkit.browserHourPriceMicros }
-            : {}),
+          ...hourPriceView(toolkit),
         },
       ];
     });
@@ -4558,9 +4759,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       ...(toolkit.builtIn && toolkit.kind === "sandbox"
         ? { ...(toolkit.ceiling ?? NO_ALLOWANCE) }
         : {}),
-      ...(toolkit.builtIn && toolkit.browserHourPriceMicros !== undefined
-        ? { browser_hour_price_micros: toolkit.browserHourPriceMicros }
-        : {}),
+      ...hourPriceView(toolkit),
       ...(toolkit.approvalRules === undefined
         ? {}
         : {

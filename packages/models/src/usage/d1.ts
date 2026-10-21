@@ -130,6 +130,12 @@ export interface UsageRow {
    * outcome); `null` on any other record.
    */
   browser_ms: number | null;
+  /**
+   * The computer time a sandbox toolkit's record holds, in ms (`migrations/usage/0014_usage_computer_time.sql`, #224):
+   * a sandbox session's whole, on the record the session writes when it closes (no tool, no outcome); `null` on any
+   * other record.
+   */
+  computer_ms: number | null;
   /** The browser profile a browser session's record (#214) opened from (#215); `null` on any other record. */
   browser_profile_id: string | null;
 }
@@ -146,6 +152,7 @@ type ModelColumns = Omit<
   | "response_bytes"
   | "approval"
   | "browser_ms"
+  | "computer_ms"
   | "browser_profile_id"
 >;
 
@@ -328,6 +335,7 @@ const toolPayload = (row: UsageRow) =>
         ...(row.response_bytes === null ? {} : { response_bytes: row.response_bytes }),
         ...(row.approval === null ? {} : { approval: row.approval }),
         ...(row.browser_ms === null ? {} : { browser_ms: row.browser_ms }),
+        ...(row.computer_ms === null ? {} : { computer_ms: row.computer_ms }),
         ...(row.browser_profile_id === null ? {} : { browser_profile_id: row.browser_profile_id }),
       };
 
@@ -775,7 +783,8 @@ const AGGREGATES = `${REQUESTS} AS requests,
   COALESCE(SUM(unpriced), 0) AS unpriced_requests,
   COALESCE(AVG(CASE WHEN ${SESSION_RECORD} THEN NULL ELSE latency_ms END), 0) AS avg_latency_ms,
   AVG(ttft_ms) AS avg_ttft_ms,
-  COALESCE(SUM(browser_ms), 0) AS browser_ms`;
+  COALESCE(SUM(browser_ms), 0) AS browser_ms,
+  COALESCE(SUM(computer_ms), 0) AS computer_ms`;
 
 export interface UsageTotals {
   readonly requests: number;
@@ -796,6 +805,8 @@ export interface UsageTotals {
   readonly avg_ttft_ms: number | null;
   /** Browser time (#214), in ms: the Quick Actions' and the browser sessions' (their own records'). */
   readonly browser_ms: number;
+  /** Computer time (#224), in ms: the sandbox sessions' (their own records'). */
+  readonly computer_ms: number;
 }
 
 const EMPTY_TOTALS: UsageTotals = {
@@ -814,6 +825,7 @@ const EMPTY_TOTALS: UsageTotals = {
   avg_latency_ms: 0,
   avg_ttft_ms: null,
   browser_ms: 0,
+  computer_ms: 0,
 };
 
 export interface UsageGroup extends UsageTotals {

@@ -11,12 +11,16 @@ import { egressRefusal, networkProblem, withinCeiling } from "../../src/sandbox/
 import type { CommandResult, SandboxProvider } from "../../src/sandbox/provider.ts";
 import {
   applyEdits,
-  callSandboxTool,
+  callSandboxTool as callWithTime,
   resolvePath,
   SANDBOX_TOOLS,
   type SandboxSessionLog,
 } from "../../src/sandbox/toolkit.ts";
 import { fakeSandboxProvider } from "../support/fake-sandbox.ts";
+
+/** A call's tool result, without the computer time (#224) the fake provider never meters. */
+const callSandboxTool = (...args: Parameters<typeof callWithTime>) =>
+  callWithTime(...args).pipe(Effect.map((answer) => answer.result));
 
 const POLICY = { ownHosts: ["app.example.com"], localDevelopment: false };
 
@@ -59,7 +63,7 @@ const textOf = (result: Schema.JsonObject): string =>
 /** The fake provider, whose `run` answers `result` instead. */
 const running = (result: CommandResult): SandboxProvider => ({
   ...fakeSandboxProvider(),
-  run: () => Effect.succeed(result),
+  run: () => Effect.succeed({ value: result }),
 });
 
 describe("a sandbox's network", () => {
@@ -273,14 +277,13 @@ describe("the sandbox toolkit's tools", () => {
       // Another's session tells nothing.
       yield* callSandboxTool(provider, call, "read", { session: "fake_99", path: "a.txt" });
       yield* callSandboxTool(provider, call, "close", { session });
-      // A closed one is ended, again.
+      // A closed one tells nothing: a session its provider closed reports its close itself (#224).
       yield* callSandboxTool(provider, call, "list", { session });
 
       expect(told).toEqual([
         `opened ${session}`,
         `used ${session}`,
         `used ${session}`,
-        `ended ${session}`,
         `ended ${session}`,
       ]);
     }),

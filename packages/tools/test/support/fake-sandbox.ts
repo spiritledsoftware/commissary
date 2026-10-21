@@ -3,6 +3,7 @@
 // which provider served a call. It shows that the sandbox toolkit's tools are the same whatever provider is behind them.
 import { Effect } from "effect";
 import {
+  type Metered,
   SandboxError,
   type SandboxOwner,
   type SandboxProvider,
@@ -16,6 +17,10 @@ interface FakeSession {
 
 /** The fake provider's source. */
 export const FAKE_SANDBOX = "fake-sandbox";
+
+/** An answer with no computer time: the fake provider has no computer to meter (#224). */
+const unmetered = <A, E>(answer: Effect.Effect<A, E>): Effect.Effect<Metered<A>, E> =>
+  Effect.map(answer, (value) => ({ value }));
 
 const missing = (path: string) =>
   new SandboxError({ reason: "file", message: `No such file or directory: ${path}` });
@@ -53,44 +58,58 @@ export const fakeSandboxProvider = (): SandboxProvider => {
         return id;
       }),
     run: (owner, id, { command }) =>
-      Effect.map(session(owner, id), ({ files }) => {
-        const [verb, path] = command.split(" ");
-        const file = path === undefined ? undefined : files.get(`/workspace/${path}`);
+      unmetered(
+        Effect.map(session(owner, id), ({ files }) => {
+          const [verb, path] = command.split(" ");
+          const file = path === undefined ? undefined : files.get(`/workspace/${path}`);
 
-        return verb === "cat" && file !== undefined
-          ? { exitCode: 0, stdout: { text: file }, stderr: { text: FAKE_SANDBOX } }
-          : {
-              exitCode: 127,
-              stdout: { text: "" },
-              stderr: { text: `${FAKE_SANDBOX}: ${command}` },
-            };
-      }),
+          return verb === "cat" && file !== undefined
+            ? { exitCode: 0, stdout: { text: file }, stderr: { text: FAKE_SANDBOX } }
+            : {
+                exitCode: 127,
+                stdout: { text: "" },
+                stderr: { text: `${FAKE_SANDBOX}: ${command}` },
+              };
+        }),
+      ),
     readFile: (owner, id, path) =>
-      Effect.flatMap(session(owner, id), ({ files }) => {
-        const text = files.get(path);
+      unmetered(
+        Effect.flatMap(session(owner, id), ({ files }) => {
+          const text = files.get(path);
 
-        return text === undefined ? Effect.fail(missing(path)) : Effect.succeed(text);
-      }),
+          return text === undefined ? Effect.fail(missing(path)) : Effect.succeed(text);
+        }),
+      ),
     writeFile: (owner, id, path, text) =>
-      Effect.map(session(owner, id), ({ files }) => {
-        files.set(path, text);
-      }),
+      unmetered(
+        Effect.map(session(owner, id), ({ files }) => {
+          files.set(path, text);
+        }),
+      ),
     list: (owner, id, path) =>
-      Effect.map(session(owner, id), ({ files }) =>
-        [...files.keys()].flatMap((file) =>
-          file.startsWith(`${path}/`)
-            ? [{ name: file.slice(path.length + 1), directory: false }]
-            : [],
+      unmetered(
+        Effect.map(session(owner, id), ({ files }) =>
+          [...files.keys()].flatMap((file) =>
+            file.startsWith(`${path}/`)
+              ? [{ name: file.slice(path.length + 1), directory: false }]
+              : [],
+          ),
         ),
       ),
     close: (owner, id) =>
-      Effect.map(session(owner, id), (found) => {
-        found.closed = true;
-        found.files.clear();
-      }),
+      unmetered(
+        Effect.map(session(owner, id), (found) => {
+          found.closed = true;
+          found.files.clear();
+        }),
+      ),
+    // It has no computer: there is none to stop, and no computer time to meter (#224).
+    stopComputer: (owner, id) => unmetered(Effect.as(session(owner, id), false)),
     purge: (org, id) =>
-      Effect.sync(() => {
-        sessions.delete(`${org}:${id}`);
-      }),
+      unmetered(
+        Effect.sync(() => {
+          sessions.delete(`${org}:${id}`);
+        }),
+      ),
   };
 };

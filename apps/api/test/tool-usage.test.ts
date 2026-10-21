@@ -16,7 +16,7 @@ import { controlPlaneOf, platformOf } from "@commissary/state";
 import {
   fakeMcpServer,
   type FakeMcpOptions,
-  insertBrowserSessionRecord,
+  insertSessionRecord,
   insertToolCallRecord,
   serveFakeMcpServers,
 } from "@commissary/tools/testing";
@@ -268,7 +268,7 @@ describe("a tool call's usage record", () => {
       approval: "none",
       browserMs: 1_500,
     });
-    await insertBrowserSessionRecord(env.USAGE, {
+    await insertSessionRecord(env.USAGE, {
       sessionId: `bs_${"0".repeat(32)}`,
       orgId: org,
       principalId: "key:k-browser",

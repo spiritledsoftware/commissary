@@ -290,7 +290,8 @@ export default Alchemy.Stack(
         // and goes with `COMMISSARY_BROWSER`.
         BROWSER_SESSIONS: Cloudflare.DurableObject("BrowserSession"),
         // The usage database, which a browser session writes its record of browser time into when it closes (#214,
-        // `BrowserSessionEnv`); the ControlPlane above charges that time to the Spend limits.
+        // `BrowserSessionEnv`), and a sandbox session its record of computer time (#224, `SandboxSessionEnv`); the
+        // ControlPlane above charges that time to the Spend limits.
         USAGE: usage,
         // The sandbox toolkit (ADR 0041, ADR 0043, #222), on every deployment: one object per sandbox session, reached
         // by the ControlPlane only, and Dynamic Workers (Workers Paid), where each session's just-bash runs with no

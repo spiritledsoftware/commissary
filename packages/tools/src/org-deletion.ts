@@ -1,24 +1,25 @@
 /**
  * Tools' step of deleting an org (ADR 0027, #134 "Org deletion and crons"). Tools keeps nearly everything in the org's
- * ControlPlane, whose tables go with `wipeOrg` (`ToolsPart.wipe`): its toolkits, credentials, tool lists and
- * overrides. Four things are kept outside it. The org's open sandbox sessions (#222) are Durable Objects of their own,
- * with their files: this step has the ControlPlane delete each (`ToolsPart.purgeSandboxSessions`), before `wipeOrg`
- * drops the table that lists them. So are its open browser sessions (#214), whose alarm would write a usage record and
- * report to the ControlPlane once they close: the ControlPlane deletes each at once (`ToolsPart.purgeBrowserSessions`),
- * then this step deletes the org's browser sessions' usage records, for one written after Models' step deleted the
- * org's usage rows. The org's browser crawls (#270) run at the browser provider: the ControlPlane
- * cancels each that may still be running (`ToolsPart.purgeBrowserCrawls`, as far as the provider answers), as
- * `wipeOrg` cannot: it is synchronous. On Commissary Cloud the org's OAuth sign-ins of MCP clients (#200) are kept in
- * the OAuth server's KV namespace (`OAUTH_KV`, `oauth/config.ts`): this step deletes their grants and tokens, which the
- * library keeps under the user `<org>/<member id>` (`signInUserId`). Clients, registered by no org, and consents
- * waiting on the consent page, which expire within minutes, stay.
+ * ControlPlane, whose tables go with `wipeOrg` (`ToolsPart.wipe`): its toolkits, credentials, tool lists and overrides.
+ * Four things are kept outside it. The org's open sandbox sessions (#222) are Durable Objects of their own, with their
+ * files, and would write a usage record of their computer time (#224) and report to the ControlPlane once they close:
+ * this step has the ControlPlane delete each at once, without a record (`ToolsPart.purgeSandboxSessions`), before
+ * `wipeOrg` drops the table that lists them. So are its open browser sessions (#214), whose alarm would do the same:
+ * the ControlPlane deletes each at once (`ToolsPart.purgeBrowserSessions`), then this step deletes the org's browser
+ * and sandbox sessions' usage records, for one written after Models' step deleted the org's usage rows. The org's
+ * browser crawls (#270) run at the browser provider: the ControlPlane cancels each that may still be running
+ * (`ToolsPart.purgeBrowserCrawls`, as far as the provider answers), as `wipeOrg` cannot: it is synchronous. On
+ * Commissary Cloud the org's OAuth sign-ins of MCP clients (#200) are kept in the OAuth server's KV namespace
+ * (`OAUTH_KV`, `oauth/config.ts`): this step deletes their grants and tokens, which the library keeps under the user
+ * `<org>/<member id>` (`signInUserId`). Clients, registered by no org, and consents waiting on the consent page, which
+ * expire within minutes, stay.
  */
 import { Effect } from "effect";
 import type { OrgDeletionStep } from "@commissary/core";
 import { controlPlaneOf } from "@commissary/state";
 import { type ToolsBindings, ToolsEnv } from "./env.ts";
 import { type McpOAuthConfig, mcpOAuthConfig } from "./oauth/config.ts";
-import { deleteBrowserSessionRecords } from "./usage/record.ts";
+import { deleteSessionRecords } from "./usage/record.ts";
 import { signInUserId } from "./oauth/server.ts";
 
 /** Keys read and deleted per page: each key is one KV call. */
@@ -54,7 +55,8 @@ const BROWSER_SESSION_PAGE = 20;
 
 /**
  * Deletes the org's open browser sessions, a page at a time within `budget` (each page is one call of the ControlPlane
- * and, counted against the budget too, one call of each session's object), then their usage records (one call).
+ * and, counted against the budget too, one call of each session's object), then the browser and sandbox sessions'
+ * usage records (one call: the sandbox sessions were deleted before, `deleteOrgSandboxSessions`).
  */
 export const deleteOrgBrowserSessions =
   (env: Pick<ToolsBindings, "CONTROL_PLANE" | "USAGE">): OrgDeletionStep =>
@@ -74,7 +76,7 @@ export const deleteOrgBrowserSessions =
       if (remaining === 0) break;
     }
 
-    await deleteBrowserSessionRecords(env.USAGE, org);
+    await deleteSessionRecords(env.USAGE, org);
 
     return { complete: true, calls: calls + 1 };
   };
