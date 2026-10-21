@@ -1,0 +1,96 @@
+/* An agent's tool scope: one row per toolkit with its pick, the tools or agents picked by hand under it. Hairlines between
+   toolkits on the page's own ground: no box, no card (DESIGN.md). */
+.editor {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.toolkits {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 2px solid var(--text);
+}
+
+.toolkit {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.toolkitHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-4);
+}
+
+.toolkitName {
+  font-weight: 750;
+  overflow-wrap: anywhere;
+}
+
+.choice {
+  min-width: 10rem;
+}
+
+/* An ink note: what to know, which works meanwhile (no mark, the One Meaning Rule). */
+.open {
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.check > input {
+  margin: 0;
+  accent-color: var(--text);
+}
+
+.picker {
+  display: grid;
+  gap: var(--space-2);
+  max-width: 32rem;
+  padding-left: var(--space-4);
+}
+
+.tools {
+  display: grid;
+  gap: var(--space-1);
+  max-height: 14rem;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.toolName {
+  overflow-wrap: anywhere;
+}
+
+.agents {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+  margin: 0;
+  padding: 0 0 0 var(--space-4);
+  border: 0;
+}
+
+.agents > legend {
+  margin-bottom: var(--space-1);
+  padding: 0;
+}

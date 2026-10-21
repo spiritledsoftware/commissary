@@ -162,6 +162,11 @@ export const Me = Schema.Struct({
    * caller belongs to no org there.
    */
   private_toolkits: Schema.optionalKey(Schema.Boolean),
+  /**
+   * Whether the addressed org lets members create private agents (`private_agents` of `/membership`, #226, #233). Absent
+   * when the caller belongs to no org there.
+   */
+  private_agents: Schema.optionalKey(Schema.Boolean),
   /** Which optional pieces this deployment has, and whether it is Commissary Cloud. */
   deployment: Deployment,
   /**

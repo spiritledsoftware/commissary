@@ -287,7 +287,9 @@ export const noticeLines = (view: BillingView, owner: boolean): ReadonlyArray<No
  * the sidebar (`PAGES`: org admins, on Commissary Cloud only, where plans exist).
  */
 export const seesBilling = (hosted: boolean, caller: Caller): boolean =>
-  pagesFor(caller.role, caller.privateCredentials, hosted).some((page) => page.to === BILLING_PAGE);
+  pagesFor(caller.role, { privateCredentials: caller.privateCredentials, hosted }).some(
+    (page) => page.to === BILLING_PAGE,
+  );
 
 /** Org owners switch plans, change the payment method and set the billing cap; other org admins read them. */
 export const changesBilling = (caller: Caller): boolean => atLeast(caller.role, "owner");

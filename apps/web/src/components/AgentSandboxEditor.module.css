@@ -1,0 +1,95 @@
+/* An agent's sandbox: a switch, then its settings indented under it. No box: the settings are the page's own ground. */
+.sandbox {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.check > input,
+.choice > input {
+  margin: 0;
+  accent-color: var(--text);
+}
+
+.settings {
+  display: grid;
+  gap: var(--space-3);
+  max-width: 40rem;
+  padding-left: var(--space-4);
+}
+
+.network {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.network > legend {
+  margin-bottom: var(--space-1);
+  padding: 0;
+}
+
+.choice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.choice > input {
+  transform: translateY(0.125rem);
+}
+
+.choice[data-allowed="false"],
+.check[data-allowed="false"] {
+  cursor: not-allowed;
+}
+
+.choiceText {
+  display: grid;
+  gap: 0.125rem;
+}
+
+.hosts {
+  display: grid;
+  gap: var(--space-2);
+  padding-left: var(--space-5);
+}
+
+.textarea {
+  min-height: 5rem;
+  padding: var(--space-2) var(--space-3);
+  background: var(--field);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--text-sm);
+  border: 2px solid var(--rule);
+  border-radius: var(--radius);
+  resize: vertical;
+}
+
+.textarea:focus-visible {
+  border-color: var(--text);
+  outline-offset: 0;
+}
+
+/* An ink note: what to know, which works meanwhile (no mark, the One Meaning Rule). */
+.note {
+  font-size: var(--text-sm);
+  font-weight: 600;
+}

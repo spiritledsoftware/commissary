@@ -8,7 +8,9 @@ import { AsyncResult } from "effect/reactivity";
 import type { ReactNode } from "react";
 import type { MembershipSettings } from "@commissary/contract/members";
 import {
+  AGENTS,
   MEMBERS,
+  meAtom,
   membershipAtom,
   ORGS,
   TOOLKITS,
@@ -20,7 +22,7 @@ import {
 import { kit, Problem, Section } from "../components/Kit.tsx";
 import { failureMessage } from "../lib/failure.ts";
 import {
-  PRIVATE_SWITCH_ORDER,
+  privateSwitchesFor,
   PRIVATE_SWITCHES,
   type PrivateSetting,
   privateSettingPatch,
@@ -144,6 +146,13 @@ const MembershipToggle = ({
   );
 };
 
+/** What each switch changes beyond the members and the org: the toolkits and the agents a member may use follow it. */
+const PRIVATE_SETTING_KEYS: Readonly<Record<PrivateSetting, ReadonlyArray<string>>> = {
+  private_credentials: [],
+  private_toolkits: TOOLKITS,
+  private_agents: AGENTS,
+};
+
 /**
  * Whether plain members may connect private accounts and provider keys (ADR 0023) or add private toolkits (#209, ADR
  * 0038); org admins decide, each setting on its own.
@@ -174,11 +183,8 @@ const PrivateSwitchSetting = ({ setting }: { readonly setting: PrivateSetting })
                     await save.run({
                       payload: privateSettingPatch(setting, event.target.checked),
                       // The panel's pages for plain members follow the setting (`GET /me`).
-                      // The toolkits a member may add follow the setting (`GET /toolkits`, `GET /tools`).
-                      reactivityKeys:
-                        setting === "private_toolkits"
-                          ? [...MEMBERS, ...ORGS, ...TOOLKITS]
-                          : [...MEMBERS, ...ORGS],
+                      // The toolkits (`GET /toolkits`, `GET /tools`) and agents (`GET /agents`) a member may add follow it.
+                      reactivityKeys: [...MEMBERS, ...ORGS, ...PRIVATE_SETTING_KEYS[setting]],
                     }),
                     control.said(event.target.checked),
                   );
@@ -249,6 +255,7 @@ const Lists = ({ caller }: { readonly caller: Caller }) => {
   const members = useAtomValue(membersAtom);
   const teams = useAtomValue(teamsAtom);
   const tokens = useAtomValue(serviceTokensAtom);
+  const me = useAtomValue(meAtom);
   const retryMembers = useAtomRefresh(membersAtom);
   const retryTeams = useAtomRefresh(teamsAtom);
   const retryTokens = useAtomRefresh(serviceTokensAtom);
@@ -301,11 +308,13 @@ const Lists = ({ caller }: { readonly caller: Caller }) => {
       <Section title="Joining">
         <AutoJoin caller={caller} />
       </Section>
-      {PRIVATE_SWITCH_ORDER.map((setting) => (
-        <Section key={setting} title={PRIVATE_SWITCHES[setting].title}>
-          <PrivateSwitchSetting setting={setting} />
-        </Section>
-      ))}
+      {privateSwitchesFor(AsyncResult.isSuccess(me) && me.value.deployment.agents).map(
+        (setting) => (
+          <Section key={setting} title={PRIVATE_SWITCHES[setting].title}>
+            <PrivateSwitchSetting setting={setting} />
+          </Section>
+        ),
+      )}
       <ClientApiSignIn caller={caller} />
     </>
   );

@@ -1,0 +1,7 @@
+/* The page that creates an agent: its form in the Tools pages' 64rem column. */
+.form {
+  display: grid;
+  gap: var(--space-5);
+  max-width: 64rem;
+  min-width: 0;
+}

@@ -4654,7 +4654,7 @@ pi-durable, and its calls as tools of the agents toolkit (#229). It saves defini
 grants on shared agents and their watchers (#226), runs them as their starter asks, one turn at a time (#227),
 starts runs from the schedules and webhooks configured on them (#231), and serves them to clients and runs through the
 agents toolkit, whose calls from a run start child runs (#229), and gives a run whose definition names a sandbox pi's
-coding tools on a sandbox session of its own (#230); watchers acting in runs and the panel's chat come later (#232 to
+coding tools on a sandbox session of its own (#230); the panel's Agents pages (#233) manage them; watchers acting in runs and the panel's chat come later (#232,
 #234). The package (`@commissary/agents`) is shaped like Tools: entry
 points `./api`, `./management`, `./state` and `./testing`, a lint boundary (`boundaries/agents-imports`) and a
 ControlPlane part, `AgentsPart`, reached as `stub.agents().x(…)`. Its state is the ControlPlane's (`AGENTS_TABLES`:
@@ -4945,7 +4945,7 @@ the deployment's Dynamic Workers binding `LOADER`.
   tool calls wait for an approver that only #232's watchers will be. Its turns check no starter (its agent's state
   alone decides), Commissary Cloud checks no starter's standing, and its usage records' `starter` is `NULL` (not a
   member, so no filter by member or starter matches it). The panel's notice that an unattended agent acts with no one
-  present (ADR 0044) comes with the panel (#233).
+  present (ADR 0044) is the panel's (#233, _The panel_ below).
 - **Schedules** (`triggers/schedule.ts`, `triggers/schedule-object.ts`): a five-field cron expression (minute to day of
   week, no seconds) in an IANA time zone, through Effect's `Cron`; one that matches no date is refused. Each schedule
   has a Durable Object of its own, `AgentSchedule` (`<org>:<trigger>`, `agentScheduleName`), whose alarm is its next
@@ -5016,6 +5016,32 @@ the deployment's Dynamic Workers binding `LOADER`.
   schedule_not_armed`, to be armed by the next edit. A webhook's URL is on the API host (`API_DOMAIN`), else on the
   request's host (zone routes; under `alchemy dev` without an API host, the app's origin, which is fine for local
   development: nothing outside reaches it there).
+
+### The panel (#233)
+
+- **Panel** (`apps/web/src/pages/Agents.tsx`, `AgentNew.tsx`, `Agent.tsx`; components `AgentEditor.tsx` with
+  `AgentFields.tsx`, `AgentScopeEditor.tsx`, `AgentSandboxEditor.tsx`, `AgentShared.tsx`, `AgentTriggers.tsx`,
+  `AgentTriggerForm.tsx`, `AgentGrants.tsx`, `AgentSpend.tsx` and `UnattendedNotice.tsx`; models in
+  `apps/web/src/lib/agents.ts`, `agent-form.ts`, `agent-triggers.ts` and `agent-notice.ts`): **Agents** (`/agents`,
+  every member's, in the sidebar's Providers group, only where `/me` says `deployment.agents`; `agents` is in
+  `PANEL_SECTIONS`) lists the agents the caller manages, with their model, tools and whether each is enabled, the
+  shared agents granted to the caller, and for an org admin the other members' private agents as existence only, to
+  disable or remove. **New agent** (`/agents/new`) is private for a member where the org allows private agents
+  (`Me.private_agents`, an org setting a switch on Members sets) and shared for an org admin, who names who may use
+  it (the grant is required, so the form blocks without one), its watchers and optionally a spend limit, created
+  after the agent through `/spend/limits` (a refusal there leaves the agent and says so). The model is a free-text
+  field with the caller's reachable models as suggestions; the server validates it. The tool scope has its own
+  pickers (toolkits the caller reaches, a toolkit's tools read lazily from `GET /toolkits/:id/tools`, and the agents
+  toolkit's usable agents); the sandbox part names a sandbox toolkit and settings within its ceiling (#230; a refusal is `422 invalid_sandbox`). An **agent's page**
+  (`/agents/$agentId`) edits the definition with its `If-Match` revision, enables or disables it, and carries its
+  triggers (schedule and webhook: a schedule's cron is previewed in words and as its next three runs in its time
+  zone, parsed with the same `Cron` the server uses; a webhook's secret is shown once, on creation or rotation, in a
+  notice that stays until dismissed), and for a shared agent its grants and spend limit; removal asks to confirm.
+  The **unattended notice** (ADR 0044) heads the page, over the saved agent, when an enabled schedule or webhook trigger
+  meets a write tool in its tool scope with no approval rule on it: nothing asks anyone before such a call, and no one
+  watches when the run starts, so a steered run could make it unchecked. The form counts the same tools beside each
+  toolkit as its tool scope is edited. Disabled triggers do not count; hidden, missing and clashing tools are left out;
+  a toolkit whose tool list cannot be read is said, as its write tools go unchecked.
 
 ### The agents toolkit and child runs (#229)
 

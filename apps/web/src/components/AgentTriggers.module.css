@@ -1,0 +1,158 @@
+/* The triggers on an agent's page: a table with the Tools pages' rules (ink rule under the heads, hairlines between rows),
+   the row editor under the row it edits, and the webhook secret's notice set apart on the sunk ground. */
+.section {
+  display: grid;
+  gap: var(--space-4);
+  max-width: 64rem;
+  min-width: 0;
+}
+
+.lead {
+  max-width: 65ch;
+  font-size: var(--text-sm);
+  color: var(--quiet);
+}
+
+.adds {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.scroll {
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.table {
+  width: 100%;
+  font-size: var(--text-sm);
+}
+
+.table th,
+.table td {
+  padding: var(--space-3) var(--space-4);
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.table > thead th {
+  padding-top: 0;
+  padding-bottom: var(--space-2);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--quiet);
+  border-bottom: 2px solid var(--text);
+  white-space: nowrap;
+}
+
+.table tr > :first-child {
+  padding-left: 0;
+}
+
+.table tr > :last-child {
+  padding-right: 0;
+}
+
+.name {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 8rem;
+  font-weight: 750;
+  overflow-wrap: anywhere;
+}
+
+.lines {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 12rem;
+}
+
+.url {
+  overflow-wrap: anywhere;
+}
+
+.state {
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.rowActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-1) var(--space-4);
+}
+
+.editRow > td {
+  background: var(--sunk);
+}
+
+.edit,
+.add {
+  display: grid;
+  gap: var(--space-4);
+  justify-items: start;
+  padding: var(--space-2) var(--space-4);
+}
+
+.add {
+  max-width: 40rem;
+  padding: var(--space-4) 0 0;
+  border-top: 1px solid var(--rule);
+}
+
+.formTitle {
+  font-size: var(--text-md);
+  font-weight: 750;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.secret {
+  display: grid;
+  gap: var(--space-3);
+  justify-items: start;
+  max-width: 40rem;
+  padding: var(--space-4);
+  background: var(--sunk);
+  border-radius: var(--radius);
+}
+
+.secret > * {
+  max-width: 100%;
+}
+
+.secretTitle {
+  font-size: var(--text-md);
+  font-weight: 750;
+}
+
+.proofs {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--space-1) var(--space-4);
+  margin: 0;
+  font-size: var(--text-sm);
+}
+
+.proofs dt {
+  font-weight: 650;
+}
+
+.proofs dd {
+  margin: 0;
+}
+
+.proofs code,
+.secret code {
+  font-family: ui-monospace, monospace;
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}

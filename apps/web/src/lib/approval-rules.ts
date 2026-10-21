@@ -198,6 +198,10 @@ export const withMarkApprover = (
   marks: draft.marks.map((mark) => (mark.id === id ? { ...mark, approver } : mark)),
 });
 
+/** Whether a toolkit serves a tool: it is not hidden, shadowed by a name clash or gone upstream, so a client can call it. */
+export const isServed = (tool: Pick<ToolView, "flags">): boolean =>
+  !tool.flags.hidden && !tool.flags.clash && !tool.flags.missing;
+
 /**
  * The tools a mark can be added to: those the toolkit serves (not hidden, shadowed by a name clash or gone upstream)
  * that have no mark yet, by full name; narrowed to `query` (case-insensitive) when it is not blank.
@@ -212,9 +216,7 @@ export const markableTools = (
   return tools
     .filter(
       (tool) =>
-        !tool.flags.hidden &&
-        !tool.flags.clash &&
-        !tool.flags.missing &&
+        isServed(tool) &&
         !draft.marks.some((mark) => mark.id === tool.id) &&
         (needle === "" || tool.name.toLowerCase().includes(needle)),
     )
@@ -251,10 +253,7 @@ export const markRows = (
 
 /** How many of a toolkit's served tools are write tools: what the switch makes wait. */
 export const writeToolCount = (tools: ReadonlyArray<ToolView>): number =>
-  tools.filter(
-    (tool) =>
-      tool.class === "write" && !tool.flags.hidden && !tool.flags.clash && !tool.flags.missing,
-  ).length;
+  tools.filter((tool) => tool.class === "write" && isServed(tool)).length;
 
 // ---------------------------------------------------------------------------------------------------------------
 // What a tool's row says

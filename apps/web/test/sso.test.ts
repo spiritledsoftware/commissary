@@ -63,7 +63,8 @@ const service: SsoSettings["service_provider"] = {
   saml_metadata_url: "https://proxy.example/api/auth/sso/saml2/sp/metadata?providerId=sso-org",
 };
 
-const navLinks = (hosted: boolean) => pagesFor("admin", false, hosted).map((page) => page.to);
+const navLinks = (hosted: boolean) =>
+  pagesFor("admin", { privateCredentials: false, hosted }).map((page) => page.to);
 
 describe("who may change single sign-on", () => {
   it("is for org owners, and platform admins who own every org", () => {
@@ -76,7 +77,9 @@ describe("who may change single sign-on", () => {
   it("puts the page in the nav of org admins on Commissary Cloud only", () => {
     expect(navLinks(true)).toContain("/settings/sso");
     expect(navLinks(false)).not.toContain("/settings/sso");
-    expect(pagesFor("member", true, true).map((page) => page.to)).not.toContain("/settings/sso");
+    expect(
+      pagesFor("member", { privateCredentials: true, hosted: true }).map((page) => page.to),
+    ).not.toContain("/settings/sso");
     expect(pageAllowed("member", "/settings/sso")).toBe(false);
     expect(pageAllowed("admin", "/settings/sso")).toBe(true);
   });

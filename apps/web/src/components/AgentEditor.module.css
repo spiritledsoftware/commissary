@@ -1,0 +1,37 @@
+/* The agent editor: its section, the lead that says when an edit takes effect, and the save row. */
+.section {
+  display: grid;
+  gap: var(--space-4);
+  max-width: 64rem;
+  min-width: 0;
+}
+
+.lead {
+  max-width: 65ch;
+  font-size: var(--text-sm);
+  color: var(--quiet);
+}
+
+.form {
+  display: grid;
+  gap: var(--space-5);
+  justify-items: start;
+  min-width: 0;
+}
+
+.form > :first-child {
+  width: 100%;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+/* An ink note: what happened, which asks nothing of the operator (no mark, the One Meaning Rule). */
+.note {
+  font-size: var(--text-sm);
+  font-weight: 600;
+}

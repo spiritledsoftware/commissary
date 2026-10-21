@@ -161,6 +161,7 @@ const me = Effect.gen(function* () {
       : {
           private_credentials: settings.privateCredentials,
           private_toolkits: settings.privateToolkits,
+          private_agents: settings.privateAgents,
         }),
     ...(yield* ownedOrgs(identity)),
     ...(api === undefined ? {} : { api_url: api }),
