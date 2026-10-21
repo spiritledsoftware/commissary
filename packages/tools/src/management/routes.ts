@@ -75,6 +75,7 @@ import { MAX_DOCUMENT_BYTES } from "../http/call.ts";
 import { signInUrls } from "../oauth/urls.ts";
 import { templateAs } from "../signing/template.ts";
 import { defaultToolkitName } from "../toolkits/names.ts";
+import { browserSessionHandlers } from "./browser-session-routes.ts";
 import { catalogHandlers as catalogRoute } from "./catalog-routes.ts";
 
 const BASE = "/v9/management";
@@ -94,6 +95,7 @@ const STATUS: Readonly<Record<ToolsErrorCode, number>> = {
   built_in: 403,
   outbound_refused: 422,
   sign_in_failed: 502,
+  browser_failed: 502,
 };
 
 const orRefuse = <A>(result: ToolsResult<A>): Effect.Effect<A, Reply> => {
@@ -790,6 +792,8 @@ const route = <R>(
   handler: Effect.Effect<HttpServerResponse.HttpServerResponse, Reply, R>,
 ) => HttpRouter.route(method, `${BASE}${path}`, handled(handler));
 
+const browserSession = browserSessionHandlers(orRefuse);
+
 /** Tools' management routes. */
 export const ManagementRoutes = HttpRouter.addAll([
   route("GET", "/toolkits", list),
@@ -829,4 +833,8 @@ export const ManagementRoutes = HttpRouter.addAll([
   route("POST", "/toolkit-catalog/domains/:domain/discover", catalogRoute.discover),
   route("GET", "/toolkit-catalog/status", catalogRoute.status),
   route("POST", "/toolkit-catalog/refresh", catalogRoute.refresh),
+  route("GET", "/browser-sessions", browserSession.list),
+  route("GET", "/browser-sessions/:id", browserSession.get),
+  route("POST", "/browser-sessions/:id/live-view", browserSession.liveView),
+  route("DELETE", "/browser-sessions/:id", browserSession.end),
 ]);

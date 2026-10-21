@@ -62,6 +62,10 @@ type ToolsPartMethod =
   | "browserSessionClosed"
   | "sandboxComputerTime"
   | "purgeBrowserSessions"
+  | "listBrowserSessions"
+  | "browserSession"
+  | "browserLiveView"
+  | "endBrowserSession"
   | "hasManagedApp"
   | "takeCatalogLookup";
 

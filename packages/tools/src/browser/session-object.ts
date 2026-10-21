@@ -45,7 +45,7 @@
  * takes an object from before #214's bare answer as one that used no browser time.
  */
 import { DurableObject } from "cloudflare:workers";
-import { Clock, Effect, Option, Schema } from "effect";
+import { Clock, Duration, Effect, Option, Schema } from "effect";
 import type { UsageRun } from "@commissary/auth";
 import type { OrgId } from "@commissary/core";
 import { controlPlaneOf } from "@commissary/state";
@@ -64,9 +64,22 @@ import {
 import { BROWSER_RUN } from "./browser-run.ts";
 import { browserRunSessions, type BrowserRunSessionBinding } from "./browser-run-sessions.ts";
 import { type BrowserTime, type Timed, untimed } from "./browser-time.ts";
-import type { BrowserSessionProvider, ProviderBrowser, StorageState } from "./provider.ts";
-import { runOperation, textResult, toolError } from "./session.ts";
-import { IDLE_TIME, IDLE_TIMEOUT_MS, notCss, type SessionOperation } from "./session-tools.ts";
+import type {
+  BrowserFailure,
+  BrowserSessionProvider,
+  BrowserTab,
+  HandoffResult,
+  ProviderBrowser,
+  StorageState,
+} from "./provider.ts";
+import { currentTab, runOperation, textResult, toolError } from "./session.ts";
+import {
+  HANDOFF_TIMEOUT_MS,
+  IDLE_TIME,
+  IDLE_TIMEOUT_MS,
+  notCss,
+  type SessionOperation,
+} from "./session-tools.ts";
 
 /** How long a closed session answers that it is closed, before it answers as unknown. */
 export const CLOSED_KEPT_MS = 24 * 60 * 60_000;
@@ -130,12 +143,91 @@ const StoredRun = Schema.Struct({
  */
 export interface SessionAnswer extends Timed {
   readonly session?: "opened" | "closed" | undefined;
+  /**
+   * The call dropped the outcome of the session's handoff (#216): it acted on the page first, so no call waits on the
+   * handoff any more, which the Tools part's log of sessions forgets.
+   */
+  readonly handoffCleared?: true | undefined;
 }
 
-/** Why a session closed: `browser_close`, its idle time, or the provider closing its browser. */
-const ClosedReason = Schema.Literals(["closed", "idle", "provider"]);
+/**
+ * What `browser_ask_human` answers (#216): a session answer, and, while its handoff waits for the person, whether this
+ * call `started` it or it is still `waiting` (one before started it; or a call waited on it as long as one waits, and the
+ * client calls again), and until when it waits (epoch ms).
+ */
+export interface HandoffAnswer extends SessionAnswer {
+  readonly handoff?: { readonly state: "started" | "waiting"; readonly until: number } | undefined;
+}
+
+/** What the panel sees of a session (#216): unknown (to its org), closed, or open with the handoff that waits. */
+export type SessionWatch =
+  | { readonly kind: "unknown" }
+  | { readonly kind: "closed" }
+  | {
+      readonly kind: "open";
+      readonly handoff?: { readonly reason: string; readonly until: number } | undefined;
+    };
+
+/** A Live View link minted (#216), with when it stops starting connections (epoch ms), or why there is none. */
+export type LiveViewAnswer =
+  | { readonly kind: "unknown" }
+  | { readonly kind: "closed" }
+  // Why is not told: the provider's message could quote the link.
+  | { readonly kind: "failed" }
+  | { readonly kind: "minted"; readonly url: string; readonly expiresAt: number };
+
+/** A session ended from the panel (#216), with its browser time since the call before, or why it could not be. */
+export type SessionEnded =
+  | { readonly kind: "unknown" }
+  | { readonly kind: "closed" }
+  | { readonly kind: "ended"; readonly browserTime: BrowserTime };
+
+/**
+ * Why a session closed: `browser_close`, its idle time, the provider closing its browser, or someone ending it in the
+ * panel (#216: its member, or an org admin).
+ */
+const ClosedReason = Schema.Literals(["closed", "idle", "provider", "ended"]);
 
 type ClosedReason = typeof ClosedReason.Type;
+
+/**
+ * How a handoff ended (#216): the person clicked Done (`done`) or Failed (`failed`), nobody finished it in time
+ * (`timed_out`), the person declined it when their client asked (`declined`), or it ended without the session hearing
+ * how (`ended`: its object restarted meanwhile, and the provider no longer had it).
+ */
+const HandoffOutcome = Schema.Literals(["done", "failed", "timed_out", "declined", "ended"]);
+
+export type HandoffOutcome = typeof HandoffOutcome.Type;
+
+/** How a session's handoff ended (#216), which one (`startedAt`), and when a call first answered it. */
+const StoredEnded = Schema.Struct({
+  outcome: HandoffOutcome,
+  /** When the handoff that ended started: a call woken by its end answers it, not a newer one's. */
+  startedAt: Schema.Number,
+  /** The person's reason, as the provider told it. */
+  why: Schema.optionalKey(Schema.String),
+  at: Schema.Number,
+  /** When a call first answered it: it is answered alike for {@link OUTCOME_KEPT_MS} from then. */
+  takenAt: Schema.optionalKey(Schema.Number),
+});
+
+type StoredEnded = typeof StoredEnded.Type;
+
+/**
+ * The handoff of a session (#216): what the person is asked (the call's `reason`, kept only while the handoff waits, to
+ * show them on the session's page, and dropped when it ends), when it started and until when it waits, whether what
+ * the person types could not be marked (`unwatched`: every text field that is not empty is masked at its end), and how
+ * it ended, kept until {@link OUTCOME_KEPT_MS} after a call first answered it or until another tool acts on the page.
+ */
+const StoredHandoff = Schema.Struct({
+  reason: Schema.optionalKey(Schema.String),
+  startedAt: Schema.Number,
+  until: Schema.Number,
+  unwatched: Schema.optionalKey(Schema.Boolean),
+  ended: Schema.optionalKey(StoredEnded),
+});
+
+type StoredHandoff = typeof StoredHandoff.Type;
 
 /** What the object keeps of its session. */
 const StoredSession = Schema.Struct({
@@ -172,6 +264,16 @@ const StoredSession = Schema.Struct({
   unrecorded: Schema.optionalKey(Schema.Boolean),
   /** Closed by its alarm, and the close not reported to the Tools part yet, with the cost it charges: its alarm does. */
   owed: Schema.optionalKey(Schema.Number),
+  /** Its handoff (#216), from when a call asked for one until a call took how it ended. */
+  handoff: Schema.optionalKey(StoredHandoff),
+  /** A handoff ended in it, or someone watched it (#216): the query of every address it shows is masked from then on. */
+  maskUrls: Schema.optionalKey(Schema.Boolean),
+  /**
+   * A Live View of it was minted (#216), so its member may type in it for as long as they keep it open, which outlives
+   * its link: from then on what they type is marked (`marked`), or could not be (`unmarked`: every text field that is
+   * not empty is masked), and every call masks what they filled before it acts.
+   */
+  watched: Schema.optionalKey(Schema.Literals(["marked", "unmarked"])),
 });
 
 type StoredSession = typeof StoredSession.Type;
@@ -193,7 +295,112 @@ const CLOSED_BECAUSE: Record<ClosedReason, string> = {
   closed: "it was closed",
   idle: `it was idle for ${IDLE_TIMEOUT_MS / 60_000} minutes`,
   provider: "the browser provider ended its browser",
+  ended: "it was ended in the panel",
 };
+
+/** How often a call waiting on a handoff asks the provider whether it is still active (#216). */
+const HANDOFF_POLL_MS = 15_000;
+
+/**
+ * How long one `browser_ask_human` call waits on a handoff (#216) before it answers that the handoff still waits, so the
+ * client calls again: a client's request, and the Workers that carry it, do not wait half an hour.
+ */
+export const HANDOFF_WAIT_MS = 45_000;
+
+/**
+ * How long a handoff's outcome is answered alike after a call first answered it (#216): every call that waited on it,
+ * and a client's retry of the same call, get it; after that a `browser_ask_human` asks a person anew.
+ */
+export const OUTCOME_KEPT_MS = 2 * 60_000;
+
+/**
+ * How often the session's alarm asks the provider about its handoff while no call waits (#216): it hears an end its
+ * object missed, and its command keeps the browser alive (Browser Run's `keep_alive` counts from the last command).
+ */
+const HANDOFF_ALARM_MS = 60_000;
+
+/** How long a minted Live View link starts a connection for: Browser Run's shortest (ADR 0044, #216). */
+export const LIVE_VIEW_EXPIRES_MS = 60_000;
+
+/**
+ * Every field that takes text: what a handoff masks when the provider could not tell which fields the person filled
+ * (#216), so masking fails closed.
+ */
+const EVERY_TEXT_FIELD =
+  'input:not([type="hidden" i]):not([type="checkbox" i]):not([type="radio" i]):not([type="submit" i]):not([type="button" i]), textarea';
+
+/**
+ * The fields the person's typing was marked on (`page-scripts.ts`): masked from the first watch on, so that a field
+ * typed into while a call reads the page is masked at that read, before any filled-field step names it.
+ */
+const TYPED_FIELDS = "[data-commissary-typed]";
+
+/** The most selectors a session masks: past them it masks every field that takes text instead (#216). */
+export const MAX_MASKS = 256;
+
+/** The session's masks with `added`, without repeats; past {@link MAX_MASKS}, every field that takes text. */
+const withMasks = (
+  masks: ReadonlyArray<string>,
+  added: ReadonlyArray<string>,
+): ReadonlyArray<string> => {
+  const all = [...new Set([...masks, ...added])];
+
+  return all.length <= MAX_MASKS
+    ? all
+    : [EVERY_TEXT_FIELD, ...(all.includes(TYPED_FIELDS) ? [TYPED_FIELDS] : [])];
+};
+
+/** What a call answers once a handoff ended, in words, and in `structuredContent` for a client that reads it. */
+const handoffEnded = (
+  id: string,
+  ended: NonNullable<StoredHandoff["ended"]>,
+): Schema.JsonObject => {
+  const why = ended.why === undefined || ended.why === "" ? "" : ` (${ended.why})`;
+
+  const text: Record<HandoffOutcome, string> = {
+    done:
+      `The person clicked Done in browser session ${id}${why}. The fields they filled are masked in snapshots and ` +
+      `screenshots; take a browser_snapshot to see the page now.`,
+    failed: `The person clicked Failed in browser session ${id}${why}.`,
+    timed_out: `Nobody finished the handoff in browser session ${id} within ${HANDOFF_TIMEOUT_MS / 60_000} minutes: it timed out.`,
+    declined: `The person declined to act in browser session ${id}.`,
+    ended:
+      `The handoff in browser session ${id} ended, but the session did not hear how. Take a browser_snapshot to see ` +
+      `the page now.`,
+  };
+
+  return {
+    content: [{ type: "text", text: text[ended.outcome] }],
+    structuredContent: {
+      outcome: ended.outcome,
+      ...(ended.why === undefined ? {} : { reason: ended.why }),
+    },
+  };
+};
+
+/** What waiting on a handoff answers when the session has none (#216). */
+const NO_HANDOFF = (id: string): Schema.JsonObject =>
+  toolError(
+    `No handoff waits in browser session ${id}: ask a person to act in it with browser_ask_human.`,
+  );
+
+/** What a call that waited on a handoff as long as one waits answers while it still waits for its person (#216). */
+const stillWaiting = (id: string, until: number): HandoffAnswer => ({
+  ...untimed(
+    textResult(
+      `A person is still asked to act in browser session ${id}, until ${new Date(until).toISOString()}. Call ` +
+        `browser_ask_human again with the same sessionId to keep waiting for them.`,
+    ),
+  ),
+  handoff: { state: "waiting", until },
+});
+
+/** What a call that acts on the page answers while a person acts in it (#216). */
+const handedOff = (id: string, handoff: StoredHandoff): Schema.JsonObject =>
+  toolError(
+    `A person is acting in browser session ${id} (a handoff) until ${new Date(handoff.until).toISOString()}: wait ` +
+      `for them with browser_ask_human and the same sessionId, or close the session.`,
+  );
 
 const closedSession = (id: string, reason: ClosedReason): Schema.JsonObject =>
   toolError(
@@ -289,6 +496,13 @@ export class BrowserSession extends DurableObject<BrowserSessionEnv> {
   #clock: Clock.Clock = Clock.Clock.defaultValue();
   /** The call running now: the next one starts once it settled. */
   #queue: Promise<unknown> = Promise.resolve();
+  /** The calls waiting on the session's handoff (#216), woken when it ends or the session closes. */
+  readonly #waiters = new Set<(ended: StoredEnded | undefined) => void>();
+  /**
+   * When a poll first found the handoff no longer active without its end heard: a poll that finds it so again at least
+   * {@link HANDOFF_POLL_MS} later ends it (`ended`), as its end may still have been on its way.
+   */
+  #inactiveSince: number | undefined;
 
   /** The browsers of the provider `source`; `undefined` on a deployment without them. */
   protected sessionProvider(source: string): BrowserSessionProvider | undefined {
@@ -304,6 +518,14 @@ export class BrowserSession extends DurableObject<BrowserSessionEnv> {
   /** Writes the usage record of a session (a test's subclass may fail it). */
   protected writeRecord(record: SessionRecord): Promise<void> {
     return insertSessionRecord(this.env.USAGE, record);
+  }
+
+  /**
+   * How long one call waits on a handoff before it answers that it still waits. A test's subclass waits less, on the
+   * live clock: a test cannot know when a waiting call has reached its sleep, so it cannot move a `TestClock` on after.
+   */
+  protected handoffWait(): number {
+    return HANDOFF_WAIT_MS;
   }
 
   /** Makes the object read the time from `clock` (a test's `TestClock`). In the object's isolate only. */
@@ -358,6 +580,8 @@ export class BrowserSession extends DurableObject<BrowserSessionEnv> {
 
     this.#save(closed);
     await this.ctx.storage.setAlarm(now + SETTLE_RETRY_MS);
+    // A call waiting on its handoff answers that it closed.
+    this.#wake();
     const browser = this.#browser;
 
     this.#browser = undefined;
@@ -569,7 +793,19 @@ export class BrowserSession extends DurableObject<BrowserSessionEnv> {
 
     if (session.closed !== null) return untimed(closedSession(id, session.closed.reason));
 
-    return await this.#operate(session, id, operation, metering);
+    const { handoff, ...rest } = session;
+
+    // While a person acts in the page, no tool does (#216): a snapshot would show what they are typing.
+    if (handoff !== undefined && handoff.ended === undefined)
+      return untimed(handedOff(id, handoff));
+
+    // How an ended handoff ended is for `browser_ask_human`; another tool acting on the page drops it.
+    if (handoff !== undefined) this.#save(rest);
+
+    // The member may have typed in a Live View: what they filled is masked before the call acts (#216).
+    const answer = await this.#operate(await this.#afterWatch(rest), id, operation, metering);
+
+    return handoff === undefined ? answer : { ...answer, handoffCleared: true };
   }
 
   /**
@@ -685,10 +921,641 @@ export class BrowserSession extends DurableObject<BrowserSessionEnv> {
       if (session === undefined || !owns(session, caller) || session.closed !== null) return false;
 
       if (selectors.some((selector) => notCss(selector) !== undefined)) return false;
-      this.#save({ ...session, masks: [...new Set([...session.masks, ...selectors])] });
+      this.#save({ ...session, masks: withMasks(session.masks, selectors) });
 
       return true;
     });
+  }
+
+  // --- handoff (#216) ------------------------------------------------------------------------------------------------
+
+  /**
+   * `browser_ask_human` in the session `id` for `caller`: asks a person to act in its current tab, with `reason` as the
+   * instructions the provider shows them, for at most {@link HANDOFF_TIMEOUT_MS}, and marks what they type
+   * (`watchInputs`). Answers that the handoff `started` (the Tools part has the person reached: an elicitation, or a
+   * link), that one asked before still `waiting` (the part then waits on it, {@link awaitHandoff}), or, when one ended
+   * and its outcome is still kept ({@link OUTCOME_KEPT_MS} from when a call first took it), how. With `mayStart` false
+   * (the Tools part let the call through its approvals as one that continues a handoff) it starts none, and answers
+   * that none waits, decided in turn with the object's other calls. The session's browser time since the call before
+   * comes with the answer, as for any metered call.
+   */
+  askHuman(
+    caller: SessionCaller,
+    id: string,
+    reason: string,
+    metering: SessionMetering,
+    options: { readonly mayStart?: boolean } = {},
+  ): Promise<HandoffAnswer> {
+    return this.#serial(async (): Promise<HandoffAnswer> => {
+      const stored = this.#stored();
+
+      if (stored === undefined || !owns(stored, caller)) return untimed(unknownSession(id));
+
+      if (stored.closed !== null) return untimed(closedSession(id, stored.closed.reason));
+      const { handoff, ...withoutHandoff } = stored;
+
+      if (handoff?.ended !== undefined && this.#kept(handoff.ended))
+        return this.#take(stored, id, handoff.ended, metering);
+
+      if (handoff !== undefined && handoff.ended === undefined)
+        return {
+          ...untimed(textResult(`A person is already asked to act in browser session ${id}.`)),
+          handoff: { state: "waiting", until: handoff.until },
+        };
+
+      // A call the Tools part let through its approvals as one that continues a handoff starts none (`mayStart`): the
+      // handoff it saw may have gone since (another tool dropped it, its outcome no longer kept).
+      if (options.mayStart === false) return untimed(NO_HANDOFF(id));
+
+      // An outcome no longer kept is dropped: this call asks anew.
+      const session: StoredSession = withoutHandoff;
+      // Which handoff the provider's end belongs to: one started later is another.
+      const startedAt = Math.max(this.#now(), (handoff?.startedAt ?? 0) + 1);
+
+      // What the person types is marked from the start; a page that cannot be marked has every filled field masked.
+      const started = await this.#onTab(session, (tab) =>
+        tab.watchInputs().pipe(
+          Effect.as(true),
+          Effect.catchTag("BrowserProviderError", () => Effect.succeed(false)),
+          Effect.flatMap((watched) =>
+            tab.handoff(reason, HANDOFF_TIMEOUT_MS, this.#hear(startedAt)).pipe(Effect.as(watched)),
+          ),
+        ),
+      );
+
+      if ("gone" in started) {
+        const browserTime = await this.#close(session, "provider", "call");
+
+        return this.#closedAnswer(closedSession(id, "provider"), browserTime, metering);
+      }
+
+      const now = this.#now();
+      const metered = meterSession(session, now, metering.hourPriceMicros);
+
+      if ("failed" in started) {
+        this.#save({ ...metered.session, usedAt: now });
+        await this.ctx.storage.setAlarm(now + IDLE_TIMEOUT_MS);
+
+        return { result: toolError(started.failed), browserTime: metered.browserTime };
+      }
+
+      const until = now + HANDOFF_TIMEOUT_MS;
+
+      this.#inactiveSince = undefined;
+      this.#save({
+        ...metered.session,
+        // What the person types is masked at every read from now on.
+        masks: withMasks(metered.session.masks, [TYPED_FIELDS]),
+        usedAt: now,
+        handoff: {
+          reason,
+          startedAt,
+          until,
+          ...(started.ok ? {} : { unwatched: true }),
+        },
+        ...(started.reconnected ? { reconnected: true } : {}),
+      });
+      await this.ctx.storage.setAlarm(Math.min(now + HANDOFF_ALARM_MS, until));
+
+      return {
+        result: textResult(`A person is asked to act in browser session ${id}.`),
+        browserTime: metered.browserTime,
+        handoff: { state: "started", until },
+      };
+    });
+  }
+
+  /**
+   * Waits, for `caller`, on the handoff of the session `id` (#216) for at most {@link HANDOFF_WAIT_MS}: answers how it
+   * ended (the person's Done or Failed, the provider's timeout, a decline) as soon as it does, every call waiting on it
+   * alike; or, while it still waits for its person, that it does, until when (`handoff.state` `waiting`), so that the
+   * client calls again. Not one of the object's calls in turn (`#serial`): the session's other calls (the panel's Live
+   * View, its end, the alarm) go on meanwhile. While it waits it asks the provider every {@link HANDOFF_POLL_MS} whether
+   * the handoff is still active, in case its end was not heard; nothing goes on once it answered.
+   */
+  async awaitHandoff(
+    caller: SessionCaller,
+    id: string,
+    metering: SessionMetering,
+  ): Promise<HandoffAnswer> {
+    const deadline = this.#now() + this.handoffWait();
+
+    for (;;) {
+      const session = this.#stored();
+
+      if (session === undefined || !owns(session, caller)) return untimed(unknownSession(id));
+
+      if (session.closed !== null) return untimed(closedSession(id, session.closed.reason));
+      const { handoff } = session;
+
+      if (handoff === undefined) return untimed(NO_HANDOFF(id));
+
+      if (handoff.ended !== undefined)
+        return this.#kept(handoff.ended)
+          ? await this.#serial(() => this.#takeKept(caller, id, undefined, metering))
+          : untimed(NO_HANDOFF(id));
+
+      const now = this.#now();
+
+      if (now >= handoff.until) {
+        await this.#serial(async () => {
+          const latest = this.#stored();
+
+          // The handoff this call waited on, not one started since.
+          if (
+            latest?.closed === null &&
+            latest.handoff?.ended === undefined &&
+            latest.handoff?.startedAt === handoff.startedAt
+          )
+            await this.#endHandoff(latest, { outcome: "timed_out" });
+        });
+        continue;
+      }
+
+      if (now >= deadline) return stillWaiting(id, handoff.until);
+
+      const woke = await this.#sleepOrHear(
+        Math.min(HANDOFF_POLL_MS, handoff.until - now, deadline - now),
+      );
+
+      // The handoff ended while this call waited: it answers that outcome, whatever another call did with it since.
+      if (woke !== "slept") {
+        const { heard } = woke;
+
+        if (heard !== undefined)
+          return await this.#serial(() => this.#takeKept(caller, id, heard, metering));
+        continue;
+      }
+
+      if (this.#now() < deadline)
+        await this.#serial(async () => {
+          const latest = this.#stored();
+
+          if (latest?.closed === null) await this.#pollHandoff(latest);
+        });
+    }
+  }
+
+  /**
+   * The person declined the handoff of the session `id` when their client asked them (#216): it is ended as failed at
+   * the provider, and the call takes that it was declined. A handoff that ended already answers how it did.
+   */
+  declineHandoff(
+    caller: SessionCaller,
+    id: string,
+    metering: SessionMetering,
+  ): Promise<SessionAnswer> {
+    return this.#serial(async (): Promise<SessionAnswer> => {
+      const session = this.#stored();
+
+      if (session === undefined || !owns(session, caller)) return untimed(unknownSession(id));
+
+      if (session.closed !== null) return untimed(closedSession(id, session.closed.reason));
+      const { handoff } = session;
+
+      if (handoff === undefined) return untimed(NO_HANDOFF(id));
+
+      if (handoff.ended === undefined) {
+        await this.#onTab(session, (tab) => tab.endHandoff("declined"));
+        await this.#endHandoff(this.#stored() ?? session, { outcome: "declined" });
+      }
+
+      const latest = this.#stored() ?? session;
+
+      return latest.closed === null && latest.handoff?.ended !== undefined
+        ? this.#take(latest, id, latest.handoff.ended, metering)
+        : untimed(closedSession(id, latest.closed?.reason ?? "provider"));
+    });
+  }
+
+  /**
+   * Whether `caller` has a handoff in the session (#216): one that waits for its person, or one that ended whose
+   * outcome is still answered. A `browser_ask_human` call then waits on it or answers how it ended rather than asking a
+   * person anew, which an approval rule does not hold again (the Tools part asks before its approvals).
+   */
+  hasHandoff(caller: SessionCaller): Promise<boolean> {
+    const session = this.#stored();
+    const handoff = session?.handoff;
+
+    return Promise.resolve(
+      session !== undefined &&
+        owns(session, caller) &&
+        session.closed === null &&
+        handoff !== undefined &&
+        (handoff.ended === undefined || this.#kept(handoff.ended)),
+    );
+  }
+
+  /**
+   * What the panel shows of the session (#216) to whom the Tools part lets watch it: whether it is open, and the handoff
+   * that waits for its person, with what they are asked. The part has decided who may see it; the object checks the org.
+   */
+  watch(org: string): Promise<SessionWatch> {
+    return Promise.resolve(this.#watch(org));
+  }
+
+  #watch(org: string): SessionWatch {
+    const session = this.#stored();
+
+    if (session === undefined || session.org !== org) return { kind: "unknown" };
+
+    if (session.closed !== null) return { kind: "closed" };
+    const { handoff } = session;
+
+    return handoff === undefined || handoff.ended !== undefined
+      ? { kind: "open" }
+      : { kind: "open", handoff: { reason: handoff.reason ?? "", until: handoff.until } };
+  }
+
+  /**
+   * A Live View link of the session's current tab (#216, ADR 0044), which starts a connection only within
+   * {@link LIVE_VIEW_EXPIRES_MS}: a bearer link, minted for the panel of whom the Tools part lets watch (the session's
+   * member) and never stored or logged. The member may type in it as in a handoff, so what they type is marked from now
+   * on (`watched`), and the session's next call masks the fields they filled before it acts. Watching is a use of the
+   * session: its idle minutes start again.
+   */
+  liveView(org: string): Promise<LiveViewAnswer> {
+    return this.#serial(async (): Promise<LiveViewAnswer> => {
+      const session = this.#stored();
+
+      if (session === undefined || session.org !== org) return { kind: "unknown" };
+
+      if (session.closed !== null) return { kind: "closed" };
+
+      const minted = await this.#onTab(session, (tab) =>
+        tab.liveView(LIVE_VIEW_EXPIRES_MS).pipe(
+          Effect.flatMap((url) =>
+            tab.watchInputs().pipe(
+              Effect.as({ url, watched: true }),
+              Effect.catchTag("BrowserProviderError", () =>
+                Effect.succeed({ url, watched: false }),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      if ("gone" in minted) {
+        await this.#close(this.#stored() ?? session, "provider", "object");
+
+        return { kind: "closed" };
+      }
+
+      if ("failed" in minted) return { kind: "failed" };
+      const now = this.#now();
+      const latest = this.#stored() ?? session;
+
+      this.#save({
+        ...latest,
+        masks: withMasks(latest.masks, [TYPED_FIELDS]),
+        usedAt: now,
+        watched: latest.watched === "unmarked" || !minted.ok.watched ? "unmarked" : "marked",
+        ...(minted.reconnected ? { reconnected: true } : {}),
+      });
+
+      if (latest.handoff === undefined || latest.handoff.ended !== undefined)
+        await this.ctx.storage.setAlarm(now + IDLE_TIMEOUT_MS);
+
+      return { kind: "minted", url: minted.ok.url, expiresAt: now + LIVE_VIEW_EXPIRES_MS };
+    });
+  }
+
+  /**
+   * Ends the session from the panel (#216: its member, or an org admin, as the Tools part decided): it closes as
+   * `browser_close` would, and later calls answer that it is closed (`ended`). Answers its browser time since the call
+   * before, which the part charges to its opener.
+   */
+  end(org: string): Promise<SessionEnded> {
+    return this.#serial(async (): Promise<SessionEnded> => {
+      const session = this.#stored();
+
+      if (session === undefined || session.org !== org) return { kind: "unknown" };
+
+      if (session.closed !== null) return { kind: "closed" };
+
+      return { kind: "ended", browserTime: await this.#close(session, "ended", "call") };
+    });
+  }
+
+  /**
+   * What hears that the handoff started at `startedAt` ended at the provider: ends it, in turn with the object's other
+   * calls. An end heard for another handoff (one before, whose listener lingered) is no end of the session's.
+   */
+  #hear(startedAt: number): (result: HandoffResult) => void {
+    return (result) => this.#heard(startedAt, result);
+  }
+
+  #heard(startedAt: number, result: HandoffResult): void {
+    this.#serial(async () => {
+      const session = this.#stored();
+      const handoff = session?.handoff;
+
+      if (
+        session?.closed !== null ||
+        handoff === undefined ||
+        handoff.ended !== undefined ||
+        handoff.startedAt !== startedAt
+      )
+        return;
+
+      const timedOut =
+        !result.success &&
+        (this.#now() >= handoff.until - HANDOFF_POLL_MS ||
+          /time[ds]? ?out/i.test(result.reason ?? ""));
+
+      await this.#endHandoff(session, {
+        outcome: result.success ? "done" : timedOut ? "timed_out" : "failed",
+        ...(result.reason === undefined ? {} : { why: result.reason }),
+      });
+    }).catch(() => undefined);
+  }
+
+  /**
+   * The fields a person filled in the session's current tab (#216), as selectors to mask: those marked as typed into or
+   * changed from their default, or, when `everyNonEmpty` (their typing could not be marked), every text field that is
+   * not empty. Stops marking what they type unless `keepWatching` (a Live View is still open to them). Fails closed:
+   * anything but a list of bare CSS selectors from the provider (a failure, a page's odd answer) masks every field that
+   * takes text. Never throws.
+   */
+  async #filled(
+    session: StoredSession,
+    everyNonEmpty: boolean,
+    keepWatching: boolean,
+  ): Promise<ReadonlyArray<string>> {
+    try {
+      // Watching on, the listener is installed again: an object that restarted lost its on-new-document script.
+      const filled = await this.#onTab(session, (tab) =>
+        keepWatching
+          ? tab.filledFields(everyNonEmpty).pipe(Effect.tap(() => Effect.ignore(tab.watchInputs())))
+          : tab
+              .filledFields(everyNonEmpty)
+              .pipe(Effect.ensuring(Effect.ignore(tab.unwatchInputs()))),
+      );
+
+      if (!("ok" in filled)) return [EVERY_TEXT_FIELD];
+      const fields = filled.ok.filter((field) => notCss(field) === undefined);
+
+      return fields.length === filled.ok.length ? fields : [...fields, EVERY_TEXT_FIELD];
+    } catch {
+      return [EVERY_TEXT_FIELD];
+    }
+  }
+
+  /**
+   * The session before a call acts on its page, once a Live View was minted (#216): the fields its member filled in it
+   * masked from then on, as after a handoff, and the query of every address. The member may still be watching (the frame
+   * outlives its link), so what they type stays marked for the session's life. Unchanged when no one watched.
+   */
+  async #afterWatch(session: StoredSession): Promise<StoredSession> {
+    const { watched } = session;
+
+    if (watched === undefined) return session;
+    const fields = await this.#filled(session, watched === "unmarked", true);
+    const latest = this.#stored() ?? session;
+
+    const masked: StoredSession = {
+      ...latest,
+      masks: withMasks(latest.masks, fields),
+      maskUrls: true,
+    };
+
+    this.#save(masked);
+
+    return masked;
+  }
+
+  /**
+   * Ends the session's handoff with `ended`: masks the fields the person filled from then on (`#filled`), and the query
+   * of every address, and wakes the calls waiting on it with how it ended. Its idle minutes start again.
+   */
+  async #endHandoff(
+    session: StoredSession,
+    ended: { readonly outcome: HandoffOutcome; readonly why?: string },
+  ): Promise<void> {
+    const { handoff } = session;
+
+    if (handoff === undefined || handoff.ended !== undefined) return;
+
+    // A Live View still open to the member keeps their typing marked until the session's next call.
+    const fields = await this.#filled(
+      session,
+      handoff.unwatched === true || session.watched === "unmarked",
+      session.watched !== undefined,
+    );
+
+    const now = this.#now();
+    const latest = this.#stored() ?? session;
+
+    if (latest.closed !== null) return;
+    const done = { ...ended, at: now, startedAt: handoff.startedAt };
+    // What the person was asked is for the session's page while the handoff waits only.
+    const { reason: _reason, ...asked } = handoff;
+
+    this.#save({
+      ...latest,
+      masks: withMasks(latest.masks, fields),
+      maskUrls: true,
+      handoff: { ...asked, ended: done },
+      usedAt: now,
+    });
+
+    await this.ctx.storage.setAlarm(now + IDLE_TIMEOUT_MS);
+    this.#wake(done);
+  }
+
+  /**
+   * Asks the provider whether the session's handoff is still active, listening again for its end on the connection the
+   * object holds, and marking what the person types on it (an object that restarted lost its on-new-document script).
+   * One not active whose end was not heard is ended (`ended`) by a poll that finds it so at least
+   * {@link HANDOFF_POLL_MS} after the first did: its end may still be on its way at the first. A browser gone closes the
+   * session.
+   */
+  async #pollHandoff(session: StoredSession): Promise<void> {
+    if (session.handoff === undefined || session.handoff.ended !== undefined) return;
+    const { startedAt } = session.handoff;
+
+    const active = await this.#onTab(session, (tab) =>
+      tab.handoffActive(this.#hear(startedAt)).pipe(
+        Effect.flatMap(
+          (
+            on,
+          ): Effect.Effect<{ readonly on: boolean; readonly watched: boolean }, BrowserFailure> =>
+            on
+              ? tab.watchInputs().pipe(
+                  Effect.as({ on, watched: true }),
+                  Effect.catchTag("BrowserProviderError", () =>
+                    Effect.succeed({ on, watched: false }),
+                  ),
+                )
+              : Effect.succeed({ on, watched: true }),
+        ),
+      ),
+    );
+
+    if ("gone" in active) {
+      await this.#close(this.#stored() ?? session, "provider", "object");
+
+      return;
+    }
+
+    if (!("ok" in active)) {
+      this.#inactiveSince = undefined;
+
+      return;
+    }
+
+    if (active.ok.on) {
+      this.#inactiveSince = undefined;
+      const latest = this.#stored() ?? session;
+
+      if (!active.ok.watched && latest.handoff !== undefined && latest.handoff.unwatched !== true)
+        this.#save({ ...latest, handoff: { ...latest.handoff, unwatched: true } });
+
+      return;
+    }
+
+    const now = this.#now();
+
+    if (this.#inactiveSince === undefined) this.#inactiveSince = now;
+    else if (now - this.#inactiveSince >= HANDOFF_POLL_MS)
+      await this.#endHandoff(this.#stored() ?? session, { outcome: "ended" });
+  }
+
+  /** Whether a handoff's outcome is still answered: until {@link OUTCOME_KEPT_MS} after a call first took it. */
+  #kept(ended: StoredEnded): boolean {
+    return ended.takenAt === undefined || this.#now() - ended.takenAt < OUTCOME_KEPT_MS;
+  }
+
+  /**
+   * The call's answer once the handoff ended: how, and the browser time since the call before. The outcome is kept, for
+   * the other calls waiting on it and those within {@link OUTCOME_KEPT_MS} of its first answer, in the session's handoff
+   * only when that is the one that ended: a call woken by its end may answer after a newer handoff started.
+   */
+  #take(
+    session: StoredSession,
+    id: string,
+    ended: StoredEnded,
+    metering: SessionMetering,
+  ): SessionAnswer {
+    const now = this.#now();
+    const taken = ended.takenAt === undefined ? { ...ended, takenAt: now } : ended;
+    const { handoff } = session;
+    const metered = meterSession(session, now, metering.hourPriceMicros);
+
+    this.#save(
+      handoff?.startedAt === ended.startedAt
+        ? { ...metered.session, handoff: { ...handoff, ended: taken } }
+        : metered.session,
+    );
+
+    return { result: handoffEnded(id, ended), browserTime: metered.browserTime };
+  }
+
+  /**
+   * The answer, in turn, of a call that waited on the handoff of the session `id`: the outcome it `heard` (kept or not:
+   * another tool may have dropped it since), else the kept one.
+   */
+  async #takeKept(
+    caller: SessionCaller,
+    id: string,
+    heard: StoredEnded | undefined,
+    metering: SessionMetering,
+  ): Promise<SessionAnswer> {
+    const session = this.#stored();
+
+    if (session === undefined || !owns(session, caller)) return untimed(unknownSession(id));
+
+    if (session.closed !== null) return untimed(closedSession(id, session.closed.reason));
+    const ended = session.handoff?.ended ?? heard;
+
+    if (ended === undefined || (heard === undefined && !this.#kept(ended)))
+      return untimed(NO_HANDOFF(id));
+
+    return this.#take(session, id, heard ?? ended, metering);
+  }
+
+  /**
+   * Waits `millis` on the object's clock, or less when the handoff ends (`heard`: how) or the session closes first
+   * (`heard` absent).
+   */
+  async #sleepOrHear(
+    millis: number,
+  ): Promise<"slept" | { readonly heard: StoredEnded | undefined }> {
+    let wake: ((ended: StoredEnded | undefined) => void) | undefined;
+
+    const heard = new Promise<{ readonly heard: StoredEnded | undefined }>(
+      (resolve) => (wake = (ended) => resolve({ heard: ended })),
+    );
+
+    // SAFETY: the promise's executor ran at once and set `wake`.
+    const waiter = wake as (ended: StoredEnded | undefined) => void;
+
+    this.#waiters.add(waiter);
+
+    try {
+      return await Effect.runPromise(
+        Effect.race(
+          Effect.promise(() => heard),
+          this.#clock.sleep(Duration.millis(Math.max(0, millis))).pipe(Effect.as("slept" as const)),
+        ),
+      );
+    } finally {
+      this.#waiters.delete(waiter);
+    }
+  }
+
+  /** Wakes the calls waiting on the handoff: with how it ended, or with nothing when the session closed. */
+  #wake(ended?: StoredEnded): void {
+    for (const waiter of this.#waiters) waiter(ended);
+    this.#waiters.clear();
+  }
+
+  /**
+   * Runs `use` on the session's current tab, on the connection the object holds (one that dropped is reached again
+   * once) or a new one: its value, and whether it took a new connection; `gone` when the provider no longer has the
+   * browser; or the provider's words when it failed.
+   */
+  async #onTab<A>(
+    session: StoredSession,
+    use: (tab: BrowserTab) => Effect.Effect<A, BrowserFailure>,
+  ): Promise<
+    | { readonly ok: A; readonly reconnected: boolean }
+    | { readonly gone: true }
+    | { readonly failed: string }
+  > {
+    const provider = this.sessionProvider(session.source);
+
+    if (provider === undefined) return { gone: true };
+    const view = { tab: session.tab, masks: session.masks };
+
+    const run = (browser: ProviderBrowser) =>
+      currentTab(browser, view).pipe(
+        Effect.flatMap(({ tab }) => use(tab)),
+        Effect.map((value) => ({ browser, value })),
+      );
+
+    const reach = provider.connect(session.browser);
+    const cached = this.#browser;
+
+    return await Effect.runPromise(
+      (cached === undefined
+        ? Effect.flatMap(reach, run)
+        : run(cached).pipe(Effect.catchTag("BrowserGone", () => Effect.flatMap(reach, run)))
+      ).pipe(
+        Effect.map(({ browser, value }) => {
+          this.#browser = browser;
+
+          return { ok: value, reconnected: browser !== cached };
+        }),
+        Effect.catchTags({
+          BrowserGone: () => Effect.succeed({ gone: true as const }),
+          BrowserProviderError: (error) =>
+            Effect.logWarning("browser session handoff step failed").pipe(
+              Effect.as({ failed: error.message }),
+            ),
+        }),
+      ),
+    );
   }
 
   async #operate(
@@ -706,7 +1573,7 @@ export class BrowserSession extends DurableObject<BrowserSessionEnv> {
       return this.#closedAnswer(closedSession(id, "provider"), browserTime, metering);
     }
 
-    const view = { tab: session.tab, masks: session.masks };
+    const view = { tab: session.tab, masks: session.masks, maskUrls: session.maskUrls };
 
     const run = (browser: ProviderBrowser) =>
       runOperation(browser, view, operation).pipe(Effect.map((done) => ({ browser, done })));
@@ -807,6 +1674,28 @@ export class BrowserSession extends DurableObject<BrowserSessionEnv> {
         return;
       }
 
+      const { handoff } = session;
+
+      // While a handoff waits for its person (#216) the session stays open: its alarm asks the provider about it, which
+      // keeps the browser alive and hears an end its object missed, until the handoff times out.
+      if (handoff !== undefined && handoff.ended === undefined) {
+        if (now >= handoff.until) await this.#endHandoff(session, { outcome: "timed_out" });
+        else await this.#pollHandoff(session);
+        const after = this.#stored();
+
+        if (after?.closed === null) {
+          const waiting = after.handoff !== undefined && after.handoff.ended === undefined;
+
+          await this.ctx.storage.setAlarm(
+            waiting
+              ? Math.min(this.#now() + HANDOFF_ALARM_MS, after.handoff.until)
+              : after.usedAt + IDLE_TIMEOUT_MS,
+          );
+        }
+
+        return;
+      }
+
       const idleAt = session.usedAt + IDLE_TIMEOUT_MS;
 
       if (now < idleAt) {
@@ -866,6 +1755,37 @@ export interface BrowserSessions {
   ) => Promise<SessionClosed>;
   /** Deletes the session `sessionId` of `org` at once, without a usage record: the org was deleted. */
   readonly purge: (org: string, sessionId: string) => Promise<void>;
+  /** `browser_ask_human` (#216): starts a handoff, or answers the one asked before, waiting or ended. */
+  readonly askHuman: (
+    caller: SessionCaller,
+    sessionId: string,
+    reason: string,
+    metering: SessionMetering,
+    options?: { readonly mayStart?: boolean },
+  ) => Promise<HandoffAnswer>;
+  /**
+   * Waits on the handoff of the session `sessionId` (#216) for at most {@link HANDOFF_WAIT_MS} (45 seconds): how it
+   * ended, or that it still waits.
+   */
+  readonly awaitHandoff: (
+    caller: SessionCaller,
+    sessionId: string,
+    metering: SessionMetering,
+  ) => Promise<HandoffAnswer>;
+  /** The person declined the handoff when their client asked them (#216). */
+  readonly declineHandoff: (
+    caller: SessionCaller,
+    sessionId: string,
+    metering: SessionMetering,
+  ) => Promise<SessionAnswer>;
+  /** Whether `caller` has a handoff in the session `sessionId`, waiting or with its outcome kept (#216). */
+  readonly hasHandoff: (caller: SessionCaller, sessionId: string) => Promise<boolean>;
+  /** What the panel shows of the session `sessionId` of `org` (#216); the Tools part decided who may see it. */
+  readonly watch: (org: string, sessionId: string) => Promise<SessionWatch>;
+  /** A Live View link of the session `sessionId` of `org` (#216), for whom the Tools part lets watch it. */
+  readonly liveView: (org: string, sessionId: string) => Promise<LiveViewAnswer>;
+  /** Ends the session `sessionId` of `org` from the panel (#216). */
+  readonly end: (org: string, sessionId: string) => Promise<SessionEnded>;
 }
 
 /** The sessions behind `namespace`. An id that is not one of a session's answers as unknown without reaching any. */
@@ -901,4 +1821,38 @@ export const browserSessions = (namespace: BrowserSessionNamespace): BrowserSess
   purge: async (org, id) => {
     if (SESSION_ID.test(id)) await browserSessionStub(namespace, org, id).purge();
   },
+  askHuman: async (caller, id, reason, metering, options = {}) =>
+    SESSION_ID.test(id)
+      ? await browserSessionStub(namespace, caller.org, id).askHuman(
+          caller,
+          id,
+          reason,
+          metering,
+          options,
+        )
+      : untimed(unknownSession(id)),
+  awaitHandoff: async (caller, id, metering) =>
+    SESSION_ID.test(id)
+      ? await browserSessionStub(namespace, caller.org, id).awaitHandoff(caller, id, metering)
+      : untimed(unknownSession(id)),
+  declineHandoff: async (caller, id, metering) =>
+    SESSION_ID.test(id)
+      ? await browserSessionStub(namespace, caller.org, id).declineHandoff(caller, id, metering)
+      : untimed(unknownSession(id)),
+  hasHandoff: async (caller, id) =>
+    SESSION_ID.test(id)
+      ? await browserSessionStub(namespace, caller.org, id).hasHandoff(caller)
+      : false,
+  watch: async (org, id) =>
+    SESSION_ID.test(id)
+      ? await browserSessionStub(namespace, org, id).watch(org)
+      : { kind: "unknown" },
+  liveView: async (org, id) =>
+    SESSION_ID.test(id)
+      ? await browserSessionStub(namespace, org, id).liveView(org)
+      : { kind: "unknown" },
+  end: async (org, id) =>
+    SESSION_ID.test(id)
+      ? await browserSessionStub(namespace, org, id).end(org)
+      : { kind: "unknown" },
 });

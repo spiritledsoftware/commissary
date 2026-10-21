@@ -43,12 +43,23 @@ export { Platform, SessionState } from "@commissary/state";
  * that opened them (#214): here the browser one, as only it opens sessions. A test of browser time sets what new
  * objects read the time from (`clock`, a `TestClock` it also gives the part, so both read one time from before a
  * session opens), and makes the next usage record writes or reports fail (`failRecords`, `failReports`), through an
- * instance's constructor in the objects' isolate (browser-time.test.ts).
+ * instance's constructor in the objects' isolate (browser-time.test.ts). A test of a handoff makes one object's calls
+ * wait on it for less than a client's call does (`waitOnHandoffFor`, browser-handoff.test.ts).
  */
 export class BrowserSession extends FakeBrowserSession {
   static clock: Clock.Clock | undefined;
   static failRecords = 0;
   static failReports = 0;
+  #handoffWait: number | undefined;
+
+  /** Makes the object's calls wait on its handoff for at most `millis` (of the live clock) before they answer. */
+  waitOnHandoffFor(millis: number): void {
+    this.#handoffWait = millis;
+  }
+
+  protected override handoffWait(): number {
+    return this.#handoffWait ?? super.handoffWait();
+  }
 
   constructor(ctx: DurableObjectState, sessionEnv: BrowserSessionEnv) {
     super(ctx, sessionEnv);

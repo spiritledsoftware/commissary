@@ -47,7 +47,7 @@ Commissary assumes any content an agent or client reads can steer it, and does n
 - **Approval rules**: an org admin can make write tools, or any tool, wait for an approver who is not the agent (ADR 0038). A steered client cannot answer for its person: an answer to the approve-or-deny form counts only with the `requestState` sealed for that form and that very call (tool and arguments), once and within the hour; a pending approval is decided only in the panel, by a person its rule names, and goes once its hour is over or its rule is removed or narrowed.
 - **Spend limits**, and on Commissary Cloud plan limits and the billing cap.
 - **The sandbox's network**: none by default (ADR 0041), enforced at one point (below).
-- **The browser**: passwords are typed by a person through handoff and never reach the model; password and handoff fields are masked; no tool runs JavaScript in the page; there is no raw CDP endpoint (ADR 0039).
+- **The browser**: passwords are typed by a person through handoff and never reach the model; password and handoff fields are masked; no tool runs JavaScript in the page, and the only scripts Commissary runs there are its own fixed ones (marking and naming the fields a person typed into, with no argument; loading a browser profile's local storage), whose answers about a page are selectors only, checked before use, a malformed one masking every text field; there is no raw CDP endpoint (ADR 0039).
 
 ### Exfiltration
 
@@ -81,9 +81,11 @@ Every Worker sets the `global_fetch_strictly_public` compatibility flag, so a fe
 - An OAuth 1.0a sign-in to a toolkit (#206) has no PKCE and no `state` parameter: the sign-in's `state` rides in the `oauth_callback` URL Commissary signs into its temporary credential request, and the callback goes through the same gate, bound to the member who started the sign-in. Its `oauth_token` must be the temporary token that sign-in got (kept sealed in its flow with the token's secret), so a callback with another token finishes nothing; the verifier is used once. The consumer's secret is the toolkit's OAuth app's, sealed.
 - A toolkit's **credential settings** (#206: OAuth 1.0a's signature method and realm, a NetSuite account, a JWT's algorithm, claims and token endpoint, a GitHub App's API, a token exchange's endpoint, AWS's region and service, a compound credential's template) are not secret: they are stored in the clear, shown to everyone who reads the toolkit (members connecting their own credential need them) and kept in its export. A manager who puts a literal secret into a template or a claim makes it visible to those readers; the secret belongs in the credential's fields. Their URLs pass the outbound guard on save and on use, and a compound template's fields are percent-encoded into a base URL, so a field cannot change its host.
 
-### Watching and taking over a browser
+### Live View and handoff
 
-A Live View link is a bearer link. Commissary mints it only for the session's member, with the shortest lifetime (60 seconds to open the connection), shows it only in the panel, and never gives it to the model or a log.
+A Live View link is a bearer link. Commissary mints it only for the session's member, with the shortest lifetime (60 seconds to open the connection), shows it only in the panel, and never gives it to the model or a log. The open frame outlives its link, so once a Live View is minted the session marks what a person types for the rest of its life. Before each later call acts, it masks from the model the fields typed into or changed since the last call. In a tab or frame the marking never reached, or a page where it could not be installed, it masks every field that is not empty. A field marked as typed into is also masked whenever a call reads the page, so typing while a call runs is masked in that call; in a frame without the marking, what is typed while a call runs shows in that call and is masked from the next one.
+
+This masking keeps what a person types away from the model. It does not protect against the page itself, which already holds the value and, being hostile, can defeat the marks; a person types secrets only into sites they trust.
 
 ### Running up costs and exhausting resources
 

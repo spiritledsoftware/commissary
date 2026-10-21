@@ -48,6 +48,13 @@ const tabMasking = (masked: ReadonlyArray<string>, count = masked.length) => {
     waitFor: unused,
     screenshot: unused,
     focus: unused,
+    handoff: unused,
+    handoffActive: unused,
+    endHandoff: unused,
+    liveView: unused,
+    watchInputs: unused,
+    unwatchInputs: unused,
+    filledFields: unused,
   };
 
   return { tab, asked };

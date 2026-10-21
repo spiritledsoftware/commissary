@@ -1,0 +1,59 @@
+/* The Browser sessions pages (#216), beside the Tools pages' own styles (`Tools.module.css`): the handoff waiting for the
+   caller, set apart on the sunk ground, and the session's Live View in a framed well the width of the page column. A
+   waiting handoff is an ink note in the list: it needs the caller, but nothing is closed or failing (the One Meaning
+   Rule). */
+.waits {
+  font-size: var(--text-sm);
+  font-weight: 650;
+}
+
+.nowrap {
+  white-space: nowrap;
+}
+
+/* What the client asks of the caller: one set-apart block, no stripe and no colour; its heading carries it. */
+.handoff {
+  display: grid;
+  gap: var(--space-3);
+  max-width: 64rem;
+  padding: var(--space-4) var(--space-5);
+  background: var(--sunk);
+  border-radius: var(--radius);
+}
+
+.handoffTitle {
+  font-size: var(--text-md);
+  font-weight: 750;
+}
+
+/* The client's own words, as it sent them, in quotation marks: body text, between the heading and the panel's note. */
+.reason {
+  max-width: 65ch;
+  margin: 0;
+  font-size: var(--text-md);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.handoff > p {
+  max-width: 65ch;
+  font-size: var(--text-sm);
+}
+
+.live {
+  display: grid;
+  gap: var(--space-3);
+  max-width: 64rem;
+  min-width: 0;
+}
+
+/* The browser's tab, framed like a field so its own white page reads apart from the panel's. */
+.frame {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  min-height: 20rem;
+  background: var(--field);
+  border: 2px solid var(--rule);
+  border-radius: var(--radius);
+}

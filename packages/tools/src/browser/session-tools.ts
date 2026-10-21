@@ -21,6 +21,15 @@ const MAX_TIMEOUT = 60_000;
 /** How long a session stays open without a call (its Durable Object's alarm, `session-object.ts`). */
 export const IDLE_TIMEOUT_MS = 10 * 60_000;
 
+/**
+ * How long a handoff waits for its person (#216, ADR 0039): thirty minutes, Browser Run's longest. `browser_ask_human`
+ * answers by then at the latest.
+ */
+export const HANDOFF_TIMEOUT_MS = 30 * 60_000;
+
+/** The longest reason a handoff takes: Browser Run's longest instructions. */
+const MAX_REASON_LENGTH = 4096;
+
 /** {@link IDLE_TIMEOUT_MS} in words, for what the tools tell a client. */
 export const IDLE_TIME = `${IDLE_TIMEOUT_MS / 60_000} idle minutes`;
 
@@ -249,6 +258,24 @@ export const SESSION_TOOLS = {
     {},
     "none",
   ),
+  ask_human: tool(
+    "write",
+    "Ask the person whose session it is to act in its current tab themselves, such as to sign in with a password or " +
+      "solve a CAPTCHA: what they type never reaches you. They are asked in your client, or you get a link to give " +
+      "them; then call this tool again with the same sessionId to wait. It answers when they click Done or Failed, " +
+      `or after ${HANDOFF_TIMEOUT_MS / 60_000} minutes; a call that waited a while may answer that they are still ` +
+      "acting: then call it again. The fields they filled stay masked in snapshots and screenshots.",
+    {
+      ...SESSION,
+      reason: Schema.String.check(
+        Schema.isMinLength(1),
+        Schema.isMaxLength(MAX_REASON_LENGTH),
+      ).annotate({
+        description:
+          "What the person should do, shown to them in the browser, such as: Sign in to example.com, then click Done.",
+      }),
+    },
+  ),
 } as const;
 
 export type SessionToolName = keyof typeof SESSION_TOOLS;
@@ -268,8 +295,14 @@ type SessionRequest = {
   readonly [K in SessionToolName]: { readonly tool: K; readonly args: SessionToolArguments<K> };
 }[SessionToolName];
 
-/** A call in a session that is open: every tool but `open` and `profile_list`, which need none. */
-export type SessionOperation = Exclude<SessionRequest, { readonly tool: "open" | "profile_list" }>;
+/**
+ * A call that acts on the page of a session that is open: every tool but `open` and `profile_list`, which need none,
+ * and `ask_human` (#216), which hands the page to a person (`session-object.ts`).
+ */
+export type SessionOperation = Exclude<
+  SessionRequest,
+  { readonly tool: "open" | "profile_list" | "ask_human" }
+>;
 
 export const isSessionTool = (name: string): name is SessionToolName =>
   Object.hasOwn(SESSION_TOOLS, name);

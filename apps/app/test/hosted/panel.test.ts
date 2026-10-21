@@ -36,7 +36,7 @@ describe("the panel on Commissary Cloud", () => {
 
     expect(csp).toBe(hostedPanelCsp(AUTH_ORIGIN));
     expect(csp).toContain(`connect-src 'self' ${AUTH_ORIGIN}`);
-    expect(csp).toContain("frame-src https://challenges.cloudflare.com");
+    expect(csp).toContain("frame-src https://live.browser.run https://challenges.cloudflare.com");
     expect(await response.text()).toContain(
       `<meta name="${AUTH_ORIGIN_META}" content="${AUTH_ORIGIN}">`,
     );

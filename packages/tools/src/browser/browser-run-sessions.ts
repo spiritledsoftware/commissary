@@ -20,10 +20,20 @@
  * it would stay open until its `keep_alive`.
  *
  * The snapshot is Playwright's snapshot for a model (`_snapshotForAI`, which Playwright MCP uses: its elements' refs
- * are what `aria-ref=` locators resolve); nothing here evaluates JavaScript in the page. The selectors the session
- * gives (masked fields, `wait_for`'s) go to Playwright as CSS (`css=`), never as another selector engine.
+ * are what `aria-ref=` locators resolve). No caller's script runs in a page: the only JavaScript evaluated there is
+ * Commissary's own fixed code: with no argument, the scripts that mark the fields a person types into and name them
+ * (`page-scripts.ts`, #216), whose answers are selectors only and are checked before use (`filledSelectorsOf`); and,
+ * with a browser profile's entries as its argument, the one that loads their local storage ({@link loadState}). The
+ * selectors the session gives (masked fields, `wait_for`'s) go to Playwright as CSS (`css=`), never as another selector
+ * engine.
  */
-import type { Browser, BrowserContext, Page } from "@cloudflare/playwright";
+import type {
+  Browser,
+  BrowserContext,
+  CDPSession,
+  HandoffCompleteResponse,
+  Page,
+} from "@cloudflare/playwright";
 import { Effect, Predicate } from "effect";
 import {
   BrowserGone,
@@ -32,9 +42,17 @@ import {
   type BrowserFailure,
   type BrowserSessionProvider,
   type BrowserTab,
+  type HandoffResult,
   type ProviderBrowser,
   type StorageState,
 } from "./provider.ts";
+import {
+  FILLED_FIELDS,
+  filledSelectorsOf,
+  NONEMPTY_FIELDS,
+  UNWATCH_INPUTS,
+  WATCH_INPUTS,
+} from "./page-scripts.ts";
 
 /**
  * Browser Run's `keep_alive`: how long a browser stays open without commands. Cloudflare's documentation (Browser Run's
@@ -115,7 +133,55 @@ interface SnapshotForAi {
 const snapshotsForAi = (page: Page): page is Page & SnapshotForAi =>
   Predicate.hasProperty(page, "_snapshotForAI") && Predicate.isFunction(page._snapshotForAI);
 
-const tab = (browser: Browser, page: Page): BrowserTab => {
+/**
+ * A page's CDP session for Browser Run's own commands (#216: `Cloudflare.handoff`, `Cloudflare.getLiveView`), one per
+ * page and connection, and who hears its `Cloudflare.handoffComplete` now: the session that asked for the handoff, or
+ * listens again after its object restarted. Kept by page, so a page reached again on a new connection gets its own.
+ */
+interface PageCdp {
+  readonly session: CDPSession;
+  listener: ((result: HandoffResult) => void) | undefined;
+  /** The on-new-document script that marks a person's input (`WATCH_INPUTS`), while the session watches inputs. */
+  watching: string | undefined;
+}
+
+const pageCdps = new WeakMap<Page, PageCdp>();
+
+/**
+ * `@cloudflare/playwright`'s CDP session as it emits Browser Run's own events, which its types do not list: its `on` is
+ * declared over the standard protocol's events only (Cloudflare's own docs cast it the same way).
+ */
+type CloudflareEvents = {
+  on(
+    event: "Cloudflare.handoffComplete",
+    listener: (result: HandoffCompleteResponse) => void,
+  ): void;
+};
+
+/** The CDP session of `page` for Browser Run's commands, opened on first use, and listening for a handoff's end. */
+const cdpOf = async (page: Page): Promise<PageCdp> => {
+  const known = pageCdps.get(page);
+
+  if (known !== undefined) return known;
+  const session = await page.context().newCDPSession(page);
+  const cdp: PageCdp = { session, listener: undefined, watching: undefined };
+
+  // SAFETY: Browser Run emits `Cloudflare.handoffComplete` on the CDP session of the page its handoff is in; the
+  // session's `on` takes any event name at run time.
+  (session as CDPSession & CloudflareEvents).on("Cloudflare.handoffComplete", (result) =>
+    cdp.listener?.({
+      success: result.success,
+      ...(result.reason === undefined ? {} : { reason: result.reason }),
+    }),
+  );
+
+  pageCdps.set(page, cdp);
+
+  return cdp;
+};
+
+/** The tab `page` of `browser` as a session acts on it (exported for its tests, which hand it a fake page). */
+export const tab = (browser: Browser, page: Page): BrowserTab => {
   const run = <A>(body: () => Promise<A>) => attempt(browser, body);
   const element = (ref: string) => page.locator(`aria-ref=${ref}`);
 
@@ -178,6 +244,91 @@ const tab = (browser: Browser, page: Page): BrowserTab => {
         return new Uint8Array(await page.screenshot({ fullPage, type, mask: masked }));
       }),
     focus: () => run(() => page.bringToFront()),
+    handoff: (instructions, timeout, onComplete) =>
+      run(async () => {
+        const cdp = await cdpOf(page);
+
+        cdp.listener = onComplete;
+        await cdp.session.send("Cloudflare.handoff", { instructions, timeout });
+      }),
+    handoffActive: (onComplete) =>
+      run(async () => {
+        const cdp = await cdpOf(page);
+        const { active } = await cdp.session.send("Cloudflare.getHandoffState", {});
+
+        if (active) cdp.listener = onComplete;
+
+        return active;
+      }),
+    endHandoff: (reason) =>
+      run(async () => {
+        const cdp = await cdpOf(page);
+
+        await cdp.session.send("Cloudflare.handoffComplete", { success: false, reason });
+      }).pipe(Effect.asVoid),
+    liveView: (expiresInMs) =>
+      run(async () => {
+        const cdp = await cdpOf(page);
+
+        const { devtoolsFrontendUrl } = await cdp.session.send("Cloudflare.getLiveView", {
+          mode: "tab",
+          expiresInMs,
+        });
+
+        return devtoolsFrontendUrl;
+      }),
+    watchInputs: () =>
+      run(async () => {
+        const cdp = await cdpOf(page);
+
+        // New documents (a navigation, a frame loaded) get the listener before their own scripts run.
+        if (cdp.watching === undefined) {
+          const { identifier } = await cdp.session.send("Page.addScriptToEvaluateOnNewDocument", {
+            source: WATCH_INPUTS,
+          });
+
+          cdp.watching = identifier;
+        }
+
+        await Promise.all(page.frames().map((frame) => frame.evaluate<unknown>(WATCH_INPUTS)));
+      }),
+    unwatchInputs: () =>
+      run(async () => {
+        const cdp = await cdpOf(page);
+        const { watching } = cdp;
+
+        cdp.watching = undefined;
+
+        if (watching !== undefined)
+          await cdp.session.send("Page.removeScriptToEvaluateOnNewDocument", {
+            identifier: watching,
+          });
+
+        await Promise.all(page.frames().map((frame) => frame.evaluate<unknown>(UNWATCH_INPUTS)));
+      }),
+    // Every tab's frames: a person in a Live View may open or switch to another tab, which the listener never reached
+    // (there each frame answers its fields that are not empty, `FILLED_FIELDS`).
+    filledFields: (everyNonEmpty) =>
+      run(() =>
+        Promise.all(
+          page
+            .context()
+            .pages()
+            .flatMap((each) => each.frames())
+            .map((frame) =>
+              frame.evaluate<unknown>(everyNonEmpty ? NONEMPTY_FIELDS : FILLED_FIELDS),
+            ),
+        ),
+      ).pipe(
+        Effect.flatMap((answers) => {
+          // A page answers what it likes: only a short list of short selectors is taken.
+          const selectors = filledSelectorsOf(answers);
+
+          return selectors === undefined
+            ? Effect.fail(fail("the page's fields could not be told apart"))
+            : Effect.succeed(selectors);
+        }),
+      ),
   };
 };
 

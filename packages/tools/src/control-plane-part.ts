@@ -26,6 +26,12 @@ import type {
   RemovedBrowserProfile,
   UpdateBrowserProfile,
 } from "@commissary/contract/browser-profiles";
+import type {
+  BrowserLiveView,
+  BrowserSessionsList,
+  BrowserSessionView,
+  EndedBrowserSession,
+} from "@commissary/contract/browser-sessions";
 import type { GrantSubject, ToolGrant, ToolGrants } from "@commissary/contract/grants";
 import type {
   CatalogCredential,
@@ -238,7 +244,12 @@ import {
 } from "./sandbox/run-calls.ts";
 import { sandboxOperation } from "./sandbox/run-operations.ts";
 import { BrowserCrawlStore } from "./browser/crawls.ts";
-import { apiKeyOf, BrowserSessionStore } from "./browser/session-log.ts";
+import {
+  apiKeyOf,
+  BrowserSessionStore,
+  type LoggedBrowserSession,
+  openerOf,
+} from "./browser/session-log.ts";
 import { CLOSE_TOOL } from "./browser/session-tools.ts";
 import type { BrowserCrawlProvider } from "./browser/provider.ts";
 
@@ -257,7 +268,9 @@ export type ToolsErrorCode =
   | "body_too_large"
   | "built_in"
   | "outbound_refused"
-  | "sign_in_failed";
+  | "sign_in_failed"
+  /** The browser provider could not do what the panel asked of a browser session (#216: mint its Live View). */
+  | "browser_failed";
 
 export type ToolsResult<A> =
   | { readonly ok: true; readonly value: A }
@@ -637,6 +650,18 @@ export interface ToolCall {
    */
   readonly approvalOutcomes?: true | undefined;
   /**
+   * Set by an MCP endpoint that reaches the person a browser session's handoff asks for (#216): it gets a call that
+   * started one as `handoff`, and asks them (a URL elicitation) or gives the link to the session's page. An API Worker
+   * deployed before it sends none, and gets such a call as a `result` that says so in words, without the link
+   * (docs/DEVELOPMENT.md, "State RPC: expand, then contract").
+   */
+  readonly handoffOutcomes?: true | undefined;
+  /**
+   * How the caller answered the elicitation that asked them to act in a browser session (#216), when the call is made
+   * again with their answer: `accept` waits on the handoff, anything else declines it.
+   */
+  readonly handoffAnswer?: FormAction | undefined;
+  /**
    * Set by an MCP endpoint whose Worker makes the agents toolkit's calls (#229, `AgentsToolkitPort`): only such a call
    * reaches its tools, and gets them as `delegated`. An API Worker deployed before the agents toolkit sends none, and
    * reaches none of its tools (docs/DEVELOPMENT.md, "State RPC: expand, then contract").
@@ -764,6 +789,18 @@ export type ToolCallOutcome =
       readonly computerStopped?: true;
     }
   | { readonly outcome: "result"; readonly result: Schema.JsonObject; readonly usage: CallUsage }
+  | {
+      /**
+       * `browser_ask_human` started a handoff in the browser session `sessionId` (#216), which waits for its person
+       * until `until` (epoch ms): the endpoint reaches them. Only to a call with {@link ToolCall.handoffOutcomes}.
+       */
+      readonly outcome: "handoff";
+      readonly sessionId: string;
+      /** What the person is asked, as the call said it. */
+      readonly reason: string;
+      readonly until: number;
+      readonly usage: CallUsage;
+    }
   | { readonly outcome: "failed"; readonly message: string; readonly usage: CallUsage }
   | {
       /**
@@ -3200,7 +3237,13 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       };
     }
 
-    const approval = await this.#approvalOf(viewer, call, tool, slot);
+    // Only the `browser_ask_human` that starts a handoff asks a person anew (#216): one that waits on it, answers how it
+    // ended, or carries the person's decline is held by no approval rule again.
+    const continued = await this.#continuesHandoff(builtIn, viewer, call, tool);
+
+    const approval = continued
+      ? ({ kind: "go", approval: "none" } as const)
+      : await this.#approvalOf(viewer, call, tool, slot);
 
     switch (approval.kind) {
       case "approve":
@@ -3311,7 +3354,16 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
         return { outcome: "gated", ticket: { id }, usage: usage(slot, price, approved) };
       }
 
-      const session = this.#builtInCall(builtIn, viewer, call, spender, policy, now, computer);
+      const session = this.#builtInCall(
+        builtIn,
+        viewer,
+        call,
+        spender,
+        policy,
+        now,
+        computer,
+        continued,
+      );
 
       const answer = await Effect.runPromise(
         builtIn.call(tool.upstreamName, call.arguments, session.call),
@@ -3358,7 +3410,30 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
         this.#now(),
       );
 
-      return { outcome: "result", result, usage: usage(slot, cost, approved, callTime?.browserMs) };
+      const done = usage(slot, cost, approved, callTime?.browserMs);
+      const { handoff } = answer;
+
+      // A handoff started (#216): the endpoint reaches the person; one from before it gets the words without the link.
+      if (handoff !== undefined)
+        return call.handoffOutcomes === true
+          ? { outcome: "handoff", ...handoff, usage: done }
+          : {
+              outcome: "result",
+              result: {
+                content: [
+                  {
+                    type: "text",
+                    text:
+                      `A person is asked to act in browser session ${handoff.sessionId}, on its page in the panel ` +
+                      `(Tools, Browser sessions), until ${new Date(handoff.until).toISOString()}. Call ` +
+                      `${call.name} again with the same sessionId to wait for them.`,
+                  },
+                ],
+              },
+              usage: done,
+            };
+
+      return { outcome: "result", result, usage: done };
     }
 
     const attempt = await this.#callUpstream(serving.stored, {
@@ -3388,7 +3463,8 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   /**
    * How a built-in tool is called for `viewer`'s `call` ({@link BuiltInCall}), and whether the call opened a sandbox
    * session. A browser or sandbox session's tools (#213, #222) act for the org, member and principal of the call: the
-   * session's owner (a call without a principal reaches no session).
+   * session's owner (a call without a principal reaches no session). `continuesHandoff`: the call went through the
+   * approvals as one that continues a handoff (`#continuesHandoff`), so it may start none (#216).
    */
   #builtInCall(
     builtIn: CalledBuiltIn,
@@ -3398,6 +3474,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     policy: OutboundPolicy,
     now: number,
     computer?: ComputerMeter,
+    continuesHandoff = false,
   ): BuiltInCalling {
     const { principalId } = call;
     let opened = false;
@@ -3414,9 +3491,10 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
         ...(call.runSession === true && call.run !== undefined ? { runSession: true } : {}),
         ...(computer === undefined ? {} : { computer }),
         profiles: this.#callerProfiles(viewer, principalId ?? viewer.member),
-        // A browser session is logged while it is open, so the org's deletion deletes it (#214).
+        // A browser session is logged while it is open, so the org's deletion deletes it (#214), and the panel lists it
+        // with its profile and its handoff (#216).
         browserSessions: {
-          opened: (id) =>
+          opened: (id, profile) =>
             this.#browserSessionLog.opened({
               id,
               toolkitId: builtIn.toolkit.id,
@@ -3424,9 +3502,13 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
               principal: principalId ?? "",
               agent: spender.agentId,
               openedAt: now,
+              profile,
             }),
           closed: (id) => this.#browserSessionLog.forget([id]),
+          handoff: (id, until) => this.#browserSessionLog.handoff(id, until),
         },
+        ...(call.handoffAnswer === undefined ? {} : { handoffAnswer: call.handoffAnswer }),
+        ...(continuesHandoff ? { continuesHandoff: true as const } : {}),
         sessions: {
           opened: (id) => {
             opened = true;
@@ -3636,6 +3718,192 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     };
   }
 
+  // --- the Browser sessions page (#216) ------------------------------------------------------------------------------
+
+  /**
+   * Whether `viewer` may watch the logged session `session`: open its Live View and answer its handoff (#216, ADR
+   * 0039). Today the session's member alone, whichever of their principals opened it; a hosted agent's run will add its
+   * watchers here (#232), the one place that decides it. The answer is synchronous, as the list asks it of every
+   * session: #232 needs a watchers port that answers at once, or the watchers read before the list is made. An org
+   * admin is no watcher of another member's session.
+   */
+  #mayWatch(session: LoggedBrowserSession, viewer: Viewer): boolean {
+    return session.member !== undefined && session.member === viewer.member;
+  }
+
+  /** The logged session `id` when `viewer` may see it: a watcher, or an org admin; undefined otherwise. */
+  #visibleSession(viewer: Viewer, id: string): LoggedBrowserSession | undefined {
+    const session = this.#browserSessionLog.session(id);
+
+    return session !== undefined && (this.#mayWatch(session, viewer) || isOrgAdmin(viewer))
+      ? session
+      : undefined;
+  }
+
+  /**
+   * A logged session as the Browser sessions page shows it to `viewer`: whether it is theirs (`own`: they are its
+   * member) and whether they may watch it (`watchable`, {@link #mayWatch}), with the handoff its object told, if any,
+   * to a watcher only.
+   */
+  #sessionView(
+    session: LoggedBrowserSession,
+    viewer: Viewer,
+    handoff: BrowserSessionView["handoff"],
+  ): BrowserSessionView {
+    const own = session.member !== undefined && session.member === viewer.member;
+    const watchable = this.#mayWatch(session, viewer);
+
+    const email =
+      session.member === undefined ? undefined : this.#core.member(session.member)?.email;
+
+    const profile =
+      session.profile === undefined ? undefined : this.#profiles.profile(session.profile);
+
+    return {
+      id: session.id,
+      opened_at: iso(session.openedAt),
+      member:
+        session.member === undefined
+          ? null
+          : {
+              member_id: session.member,
+              ...(email === undefined ? {} : { email }),
+            },
+      opened_by: openerOf(session.principal),
+      own,
+      watchable,
+      profile:
+        profile === undefined
+          ? null
+          : {
+              id: profile.id,
+              private: profile.owner !== undefined,
+              // Another member's private profile: an org admin sees only that it exists.
+              ...(profile.owner === undefined || profile.owner === viewer.member
+                ? { name: profile.name }
+                : {}),
+            },
+      handoff: watchable ? handoff : null,
+    };
+  }
+
+  /**
+   * The org's open browser sessions as the Browser sessions page lists them (#216): those the caller may watch, with the
+   * handoff that waits for them, and for an org admin every other session too (whose, when, which profile), which they
+   * may end but not watch. Oldest first. A handoff the log says waits is asked of its session's object first, as it may
+   * have ended without a call hearing it (the person clicked Done, and the client has not called since): one that no
+   * longer waits is forgotten.
+   */
+  async listBrowserSessions(viewer: Viewer): Promise<BrowserSessionsList> {
+    const now = this.#now();
+    const sessions = this.#browserSessions;
+
+    const visible = this.#browserSessionLog
+      .all()
+      .filter((session) => this.#mayWatch(session, viewer) || isOrgAdmin(viewer));
+
+    const handoffOf = async (
+      session: LoggedBrowserSession,
+    ): Promise<BrowserSessionView["handoff"]> => {
+      const until = session.handoffUntil;
+
+      if (until === undefined || until <= now || !this.#mayWatch(session, viewer)) return null;
+
+      if (sessions === undefined) return { until: iso(until) };
+      const watched = await sessions.watch(this.#core.org, session.id);
+
+      if (watched.kind === "open" && watched.handoff !== undefined)
+        return { until: iso(watched.handoff.until) };
+
+      if (watched.kind === "open") this.#browserSessionLog.handoff(session.id, undefined);
+
+      return null;
+    };
+
+    return {
+      sessions: await Promise.all(
+        visible.map(async (session) =>
+          this.#sessionView(session, viewer, await handoffOf(session)),
+        ),
+      ),
+    };
+  }
+
+  /**
+   * A browser session's page (#216): as listed, with what its handoff asks of its member, from its object. A session the
+   * caller may not see, or that closed, is `not_found`.
+   */
+  async browserSession(viewer: Viewer, id: string): Promise<ToolsResult<BrowserSessionView>> {
+    const session = this.#visibleSession(viewer, id);
+    const sessions = this.#browserSessions;
+
+    if (session === undefined || sessions === undefined)
+      return refuse("not_found", "browser session not found");
+    const watched = await sessions.watch(this.#core.org, id);
+
+    if (watched.kind !== "open") return refuse("not_found", "browser session not found");
+
+    return ok(
+      this.#sessionView(
+        session,
+        viewer,
+        watched.handoff === undefined
+          ? null
+          : { until: iso(watched.handoff.until), reason: watched.handoff.reason },
+      ),
+    );
+  }
+
+  /**
+   * Mints a Live View link of a browser session for its member (#216, ADR 0044): a bearer link to the session's current
+   * tab, which starts a connection only within 60 seconds, for the panel alone. An org admin may see the session but
+   * not watch it (`forbidden`); anyone else, or a closed session, gets `not_found`. The link is never logged.
+   */
+  async browserLiveView(viewer: Viewer, id: string): Promise<ToolsResult<BrowserLiveView>> {
+    const session = this.#visibleSession(viewer, id);
+    const sessions = this.#browserSessions;
+
+    if (session === undefined || sessions === undefined)
+      return refuse("not_found", "browser session not found");
+
+    if (!this.#mayWatch(session, viewer))
+      return refuse("forbidden", "only the session's member may watch it");
+    const minted = await sessions.liveView(this.#core.org, id);
+
+    switch (minted.kind) {
+      case "minted":
+        return ok({ url: minted.url, expires_at: iso(minted.expiresAt) });
+      case "failed":
+        // The provider's words could quote the link: the panel gets fixed ones.
+        return refuse("browser_failed", "the browser provider could not show the session");
+      default:
+        return refuse("not_found", "browser session not found");
+    }
+  }
+
+  /**
+   * Ends a browser session from the panel (#216): its member's, or any of the org's for an org admin. It closes as
+   * `browser_close` would, its calls answer that it is closed from then on, and its browser time since its last call is
+   * charged to its opener's Spend limits, as its alarm's close would be.
+   */
+  async endBrowserSession(viewer: Viewer, id: string): Promise<ToolsResult<EndedBrowserSession>> {
+    const session = this.#visibleSession(viewer, id);
+    const sessions = this.#browserSessions;
+
+    if (session === undefined || sessions === undefined)
+      return refuse("not_found", "browser session not found");
+    const ended = await sessions.end(this.#core.org, id);
+
+    // A session its object closed already is left logged until its close is reported, which charges its last stretch.
+    if (ended.kind === "closed") return refuse("not_found", "browser session not found");
+    this.#browserSessionLog.forget([id]);
+
+    if (ended.kind === "unknown") return refuse("not_found", "browser session not found");
+    this.#chargeClosed(session, ended.browserTime.costMicros);
+
+    return ok({ id, ended: true });
+  }
+
   /**
    * A call of a stored toolkit's tool, by its kind's driver, signed in with `credential` ({@link #withCredential}). A
    * kind that keeps upstream sessions (MCP, #197) calls in the one kept for `caller` on the credential, at most seven
@@ -3707,6 +3975,41 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     }
 
     return { kind: "done", done: Result.succeed(result) };
+  }
+
+  /**
+   * Whether `call` continues a handoff of its caller's rather than starting one (#216): a `browser_ask_human` that
+   * carries the person's decline, or whose session has a handoff of the caller's that waits, or ended with its outcome
+   * still kept (the session's object tells), under an approval rule that holds it. Any doubt (no session reached, an
+   * object from before) is no.
+   */
+  async #continuesHandoff(
+    builtIn: BuiltIn | undefined,
+    viewer: Viewer,
+    call: ToolCall,
+    tool: ResolvedTool,
+  ): Promise<boolean> {
+    if (builtIn?.toolkit.kind !== "browser" || tool.upstreamName !== "ask_human") return false;
+
+    // Without an approval rule over the call there is nothing to let it through: it may start a handoff.
+    if (approverFor(tool.toolkit.approvalRules, tool.upstreamName, tool.toolClass) === undefined)
+      return false;
+
+    if (call.handoffAnswer !== undefined && call.handoffAnswer !== "accept") return true;
+    const sessionId = call.arguments?.["sessionId"];
+    const sessions = this.#browserSessions;
+
+    if (typeof sessionId !== "string" || sessions === undefined || call.principalId === undefined)
+      return false;
+
+    try {
+      return await sessions.hasHandoff(
+        { org: this.#core.org, member: viewer.member, principal: call.principalId },
+        sessionId,
+      );
+    } catch {
+      return false;
+    }
   }
 
   /**

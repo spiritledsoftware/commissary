@@ -207,6 +207,17 @@ export interface BuiltInCall {
   readonly computer?: ComputerMeter | undefined;
   /** The org's open browser sessions (#214), which the org's deletion deletes. */
   readonly browserSessions: BrowserSessionLog;
+  /**
+   * How the caller answered the elicitation that asked them to act in a browser session (#216), when the call is made
+   * again with their answer: `accept` (they went to act) waits on the handoff, anything else declines it. Absent: no
+   * elicitation was answered.
+   */
+  readonly handoffAnswer?: "accept" | "decline" | "cancel" | undefined;
+  /**
+   * The Tools part let a `browser_ask_human` through its approvals as one that continues a handoff (#216): it may wait
+   * on one or answer how one ended, but start none.
+   */
+  readonly continuesHandoff?: true | undefined;
   /** The crawls of the call's member and principal (#270). */
   readonly crawls: CrawlLog;
   readonly policy: OutboundPolicy;
@@ -214,10 +225,14 @@ export interface BuiltInCall {
   readonly toolkit: BuiltInToolkit;
 }
 
-/** The Tools part's log of the org's open browser sessions (#214): a session opened, or a call closed it. */
+/**
+ * The Tools part's log of the org's open browser sessions (#214): a session opened (from a browser profile, #215), a
+ * call closed it, or a handoff in it waits for its person until a time, or no longer does (#216: `undefined`).
+ */
 export interface BrowserSessionLog {
-  readonly opened: (id: string) => void;
+  readonly opened: (id: string, profile: string | undefined) => void;
   readonly closed: (id: string) => void;
+  readonly handoff: (id: string, until: number | undefined) => void;
 }
 
 /**
@@ -235,6 +250,14 @@ export interface BuiltInAnswer extends Timed {
   readonly computerTime?: SandboxAnswer["computerTime"];
   readonly computer?: SandboxAnswer["computer"];
   readonly computerStopped?: SandboxAnswer["computerStopped"];
+  /**
+   * The call started a handoff in a browser session (#216), which waits for its person until `until` (epoch ms), with
+   * what they are asked (`reason`): the MCP endpoint reaches them (an elicitation, or a link to the session's page in the
+   * panel).
+   */
+  readonly handoff?:
+    | { readonly sessionId: string; readonly reason: string; readonly until: number }
+    | undefined;
 }
 
 /**
@@ -428,12 +451,57 @@ const callSessionTool = (
       profile,
     );
 
-    if (answer.session === "opened") log.opened(answer.id);
+    if (answer.session === "opened") log.opened(answer.id, profile?.id);
 
     return answer;
   };
 
-  const answer = async (): Promise<SessionAnswer> => {
+  /**
+   * `browser_ask_human` (#216): a call that starts a handoff answers at once that it did, and the endpoint reaches the
+   * person; a call made while one waits (the same call again, or the client's retry once the person went to act) waits
+   * on it a while (`HANDOFF_WAIT_MS`) and answers how it ended, or that it still waits; a call after it ended answers
+   * how; a declined elicitation declines it. The log keeps until when a handoff waits while one does, so the panel's
+   * list flags it.
+   */
+  const askHuman = async (
+    sessionId: string,
+    reason: string,
+  ): Promise<SessionAnswer & { readonly handoff?: BuiltInAnswer["handoff"] }> => {
+    if (caller.handoffAnswer !== undefined && caller.handoffAnswer !== "accept") {
+      const declined = await sessions.declineHandoff(owner, sessionId, metering);
+
+      log.handoff(sessionId, undefined);
+
+      return declined;
+    }
+
+    // A call let through the approvals as one that continues a handoff starts none (the session decides, in turn).
+    const { handoff, ...asked } = await sessions.askHuman(owner, sessionId, reason, metering, {
+      mayStart: caller.continuesHandoff !== true,
+    });
+
+    if (asked.session === "closed") log.closed(sessionId);
+
+    if (handoff === undefined) {
+      log.handoff(sessionId, undefined);
+
+      return asked;
+    }
+
+    log.handoff(sessionId, handoff.until);
+
+    if (handoff.state === "started")
+      return { ...asked, handoff: { sessionId, reason, until: handoff.until } };
+    const { handoff: still, ...waited } = await sessions.awaitHandoff(owner, sessionId, metering);
+
+    log.handoff(sessionId, still?.until);
+
+    return waited;
+  };
+
+  const answer = async (): Promise<
+    SessionAnswer & { readonly handoff?: BuiltInAnswer["handoff"] }
+  > => {
     switch (decoded.tool) {
       case "profile_list":
         return untimed(profileList(profiles));
@@ -451,6 +519,8 @@ const callSessionTool = (
           : await opened(decoded.args.url, usable);
       }
 
+      case "ask_human":
+        return await askHuman(decoded.args.sessionId, decoded.args.reason);
       case "close":
         return await closeSession(
           sessions,
@@ -465,6 +535,8 @@ const callSessionTool = (
         const operated = await sessions.operate(owner, decoded, metering);
 
         if (operated.session === "closed") log.closed(decoded.args.sessionId);
+        // The call dropped how a handoff ended: none waits in the session any more.
+        else if (operated.handoffCleared === true) log.handoff(decoded.args.sessionId, undefined);
 
         return operated;
       }
@@ -472,9 +544,11 @@ const callSessionTool = (
   };
 
   return Effect.tryPromise(answer).pipe(
-    Effect.map(({ result, browserTime }): BuiltInAnswer =>
-      browserTime === undefined ? { result } : { result, browserTime, inSession: true },
-    ),
+    Effect.map(({ result, browserTime, handoff }): BuiltInAnswer => ({
+      result,
+      ...(browserTime === undefined ? {} : { browserTime, inSession: true as const }),
+      ...(handoff === undefined ? {} : { handoff }),
+    })),
     Effect.catch(() =>
       Effect.logWarning("browser session could not be reached").pipe(
         Effect.annotateLogs({ tool: name }),

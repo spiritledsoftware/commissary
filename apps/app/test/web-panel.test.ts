@@ -68,6 +68,7 @@ describe("web panel", () => {
     "/o/default/tools",
     "/o/default/tools/add",
     "/o/default/tools/tk_0123456789abcdef/connect",
+    "/o/default/tools/sessions/0123456789abcdef",
     // The tools a member reaches and why (#209).
     "/o/default/my-tools",
     "/o/default/settings/",
@@ -81,6 +82,8 @@ describe("web panel", () => {
     expect(fetched).toEqual(["/"]);
     expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
     expect(response.headers.get("content-security-policy")).toBe(PANEL_CSP);
+    // The only frame the panel embeds: a browser session's Live View (#216).
+    expect(PANEL_CSP).toContain("frame-src https://live.browser.run;");
     expect(response.headers.get("x-frame-options")).toBe("DENY");
     expect(response.headers.get("cache-control")).toBe("no-cache");
     expect(response.headers.get("access-control-allow-origin")).toBeNull();
