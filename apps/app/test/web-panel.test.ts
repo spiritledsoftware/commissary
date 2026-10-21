@@ -69,6 +69,8 @@ describe("web panel", () => {
     "/o/default/tools/add",
     "/o/default/tools/tk_0123456789abcdef/connect",
     "/o/default/tools/sessions/0123456789abcdef",
+    // The sandbox toolkit's page, with its settings and open sessions (#225).
+    "/o/default/tools/sandbox",
     // The Browser profiles page (#217).
     "/o/default/tools/profiles",
     // The tools a member reaches and why (#209).

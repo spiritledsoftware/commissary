@@ -353,6 +353,16 @@ describe("browser hours", () => {
     expect((await org.used()).browserHours).toBeCloseTo((IDLE_TIMEOUT_MS + MINUTE) / HOUR, 6);
   });
 
+  it("count the stretch after a session's last call when its member ends it from the panel", async () => {
+    const org = await browserOrg();
+    const id = sessionIdOf(await openBrowser(org));
+
+    await org.advance(MINUTE);
+    expect(await org.stub.tools().endBrowserSession(org.alice, id)).toMatchObject({ ok: true });
+
+    expect((await org.used()).browserHours).toBeCloseTo(MINUTE / HOUR, 6);
+  });
+
   it("close the session a call over the limit names", async () => {
     const org = await browserOrg();
     const id = sessionIdOf(await openBrowser(org));
@@ -474,6 +484,19 @@ describe("the computer", () => {
 
     expect((await org.used()).computerHours).toBeGreaterThan(0);
     expect((await org.used()).computerHours).toBeCloseTo(5 / 60, 4);
+  });
+
+  it("counts the computer's last stretch when its member ends the session from the panel", async () => {
+    const org = await computerOrg("payg");
+    const session = await open(org);
+
+    expect(await bash(org, session, ON_COMPUTER)).toMatchObject({ outcome: "result" });
+    await org.advance(MINUTE);
+    expect(await org.stub.tools().endSandboxSession(org.alice, session)).toMatchObject({
+      ok: true,
+    });
+
+    expect((await org.used()).computerHours).toBeCloseTo(MINUTE / HOUR, 6);
   });
 
   it("counts the computer's idle minutes when its alarm meters them with no call to answer, though they cost nothing", async () => {

@@ -154,10 +154,10 @@ export const recordFacts = (
     ...(profile === undefined ? [] : [["Profile", profile] as const]),
     ...(record.browser_ms === undefined || !browser
       ? []
-      : [["Browser time", browserDuration(record.browser_ms)] as const]),
+      : [["Browser time", meteredDuration(record.browser_ms)] as const]),
     ...(record.computer_ms === undefined
       ? []
-      : [["Computer time", formatDuration(record.computer_ms)] as const]),
+      : [["Computer time", meteredDuration(record.computer_ms)] as const]),
     ...(record.agent_id === undefined ? [] : [["Agent", record.agent_id] as const]),
     ...(record.run_id === undefined ? [] : [["Agent run", record.run_id] as const]),
     ...(isCall(record) ? [["Latency", formatLatency(record.latency_ms)] as const] : []),
@@ -179,8 +179,8 @@ export const toolHeadline = (totals: UsageTotals): ReadonlyArray<Figure> => [
   ["Average latency", totals.requests === 0 ? "None" : formatLatency(totals.avg_latency_ms)],
 ];
 
-/** Browser time as a figure: to the tenth of a second under a minute (a Quick Action), else in minutes and up. */
-export const browserDuration = (ms: number): string =>
+/** Browser or computer time as a figure: to the tenth of a second under a minute (a Quick Action), else in minutes. */
+export const meteredDuration = (ms: number): string =>
   ms < 60_000 ? formatLatency(ms) : formatDuration(ms);
 
 /**
@@ -197,11 +197,19 @@ export const profileFact = (
 
 /** A record's or group's browser time as the log and the breakdown word it: "12 min of browser time". */
 export const browserTimeText = (ms: number | undefined): string | undefined =>
-  ms === undefined ? undefined : `${browserDuration(ms)} of browser time`;
+  ms === undefined ? undefined : `${meteredDuration(ms)} of browser time`;
 
 /** Whether a breakdown has a column of browser time: some row used any. */
 export const hasBrowserTime = (groups: ReadonlyArray<Pick<UsageTotals, "browser_ms">>): boolean =>
   groups.some((group) => (group.browser_ms ?? 0) > 0);
+
+/** A record's or group's computer time as the log and the breakdown word it: "12 min of computer time" (#225). */
+export const computerTimeText = (ms: number | undefined): string | undefined =>
+  ms === undefined ? undefined : `${meteredDuration(ms)} of computer time`;
+
+/** Whether a breakdown has a column of computer time: some row used any (#225). */
+export const hasComputerTime = (groups: ReadonlyArray<Pick<UsageTotals, "computer_ms">>): boolean =>
+  groups.some((group) => (group.computer_ms ?? 0) > 0);
 
 /**
  * The time the browser and the computer ran, as detail figures: only where there was some. `browser` is false where the
@@ -209,9 +217,9 @@ export const hasBrowserTime = (groups: ReadonlyArray<Pick<UsageTotals, "browser_
  */
 export const toolDetails = (totals: UsageTotals, browser: boolean): ReadonlyArray<Figure> => [
   ...(browser && (totals.browser_ms ?? 0) > 0
-    ? [["Browser time", browserDuration(totals.browser_ms ?? 0)] as const]
+    ? [["Browser time", meteredDuration(totals.browser_ms ?? 0)] as const]
     : []),
   ...((totals.computer_ms ?? 0) > 0
-    ? [["Computer time", formatDuration(totals.computer_ms ?? 0)] as const]
+    ? [["Computer time", meteredDuration(totals.computer_ms ?? 0)] as const]
     : []),
 ];

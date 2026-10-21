@@ -19,6 +19,13 @@ import {
 import type { GrantSubject } from "@commissary/contract/grants";
 import type { SpendPeriod } from "@commissary/contract/spend";
 import type { SandboxNetwork, ToolkitView } from "@commissary/contract/tools";
+import {
+  fieldsOfNetwork,
+  hostsProblem,
+  type NetworkFields,
+  type NetworkKind,
+  networkOfFields,
+} from "./sandbox-network.ts";
 import { type ScopeDraft, draftOfScope, pickOf, scopeOfDraft } from "./tool-scope.ts";
 import { parseDollars } from "./spend.ts";
 
@@ -34,37 +41,11 @@ export const MAX_MODEL = 200;
 // ---------------------------------------------------------------------------------------------------------------
 // The sandbox
 
-/** What the network picker offers: none, a list of hosts (with the package registries preset), or the internet. */
-export type NetworkKind = SandboxNetwork["kind"];
-
-export const NETWORK_KINDS: ReadonlyArray<{
-  readonly id: NetworkKind;
-  readonly label: string;
-  readonly hint: string;
-}> = [
-  { id: "none", label: "No network", hint: "Commands cannot reach anything outside the sandbox." },
-  {
-    id: "hosts",
-    label: "Only these hosts",
-    hint: "One host name a line: example.com, or *.example.com for every name under it.",
-  },
-  {
-    id: "open",
-    label: "The internet",
-    hint: "Every public address, as the outbound guard allows.",
-  },
-];
-
 /** The sandbox part of a draft: whether the agent has one, which toolkit, and what its session may have. */
-export interface SandboxDraft {
+export interface SandboxDraft extends NetworkFields {
   readonly on: boolean;
   /** The sandbox toolkit's id. */
   readonly toolkit: string;
-  readonly network: NetworkKind;
-  /** Host names a line, for `hosts`. */
-  readonly hosts: string;
-  /** For `hosts`: also the package registries (npm, PyPI, GitHub and mise's download hosts). */
-  readonly registries: boolean;
   readonly computer: boolean;
 }
 
@@ -91,39 +72,13 @@ export const sandboxCeiling = (
   return sandboxes.find((toolkit) => toolkit.id === draft.toolkit) ?? sandboxes[0];
 };
 
-const hostLines = (text: string): ReadonlyArray<string> =>
-  text
-    .split(/[\s,]+/)
-    .map((host) => host.trim().toLowerCase())
-    .filter((host) => host !== "");
-
-/** A host entry the sandbox takes: a DNS name, or `*.` and one; no scheme, port or path. */
-const HOST_ENTRY =
-  /^(\*\.)?([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/;
-
-/** The network a draft asks for. */
-export const networkOf = (draft: SandboxDraft): SandboxNetwork => {
-  switch (draft.network) {
-    case "none":
-      return { kind: "none" };
-    case "open":
-      return { kind: "open" };
-    case "hosts":
-      return {
-        kind: "hosts",
-        hosts: [...new Set(hostLines(draft.hosts))],
-        ...(draft.registries ? { presets: ["package_registries" as const] } : {}),
-      };
-  }
-};
-
 /** The sandbox a draft asks for; `undefined` for an agent without one. */
 export const sandboxOf = (draft: SandboxDraft): AgentSandbox | undefined => {
   if (!draft.on) return undefined;
 
   return {
     toolkit: draft.toolkit,
-    network: networkOf(draft),
+    network: networkOfFields(draft),
     ...(draft.computer ? { computer: true } : {}),
   };
 };
@@ -131,15 +86,11 @@ export const sandboxOf = (draft: SandboxDraft): AgentSandbox | undefined => {
 /** The draft of a stored sandbox. */
 export const draftOfSandbox = (sandbox: AgentSandbox | undefined): SandboxDraft => {
   if (sandbox === undefined) return NO_SANDBOX;
-  const network = sandbox.network ?? { kind: "none" };
 
   return {
     on: true,
     toolkit: sandbox.toolkit,
-    network: network.kind,
-    hosts: network.kind === "hosts" ? network.hosts.join("\n") : "",
-    registries:
-      network.kind === "hosts" && network.presets?.includes("package_registries") === true,
+    ...fieldsOfNetwork(sandbox.network),
     computer: sandbox.computer === true,
   };
 };
@@ -332,16 +283,9 @@ export const sandboxProblem = (
 
   if (draft.toolkit === "") return "Pick the sandbox toolkit it works in.";
 
-  if (draft.network === "hosts") {
-    const hosts = hostLines(draft.hosts);
-    const malformed = hosts.find((host) => !HOST_ENTRY.test(host));
+  const hosts = hostsProblem(draft);
 
-    if (malformed !== undefined)
-      return `“${malformed}” is not a host name: use a name such as example.com, or *.example.com.`;
-
-    if (hosts.length === 0 && !draft.registries)
-      return "Name a host, or allow the package registries, or choose no network.";
-  }
+  if (hosts !== undefined) return hosts;
 
   if (ceiling !== undefined) {
     if (!networkAllowed(draft.network, ceiling.network))

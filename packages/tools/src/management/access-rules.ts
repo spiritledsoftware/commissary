@@ -17,6 +17,8 @@ export const accessRules: ReadonlyArray<AccessRule> = [
   { path: "/v9/management/browser-profiles", subpaths: true, role: "member" },
   // The Browser sessions page (#216): a member's own sessions, and for an org admin the org's (the part decides).
   { path: "/v9/management/browser-sessions", subpaths: true, role: "member" },
+  // The sandbox toolkit's open sessions (#225): a member's own, and for an org admin the org's (the part decides).
+  { path: "/v9/management/sandbox-sessions", subpaths: true, role: "member" },
   // Before the catalog's member entry, which would cover it.
   { path: "/v9/management/toolkit-catalog/refresh", role: "admin" },
   { path: "/v9/management/toolkit-catalog", subpaths: true, role: "member" },

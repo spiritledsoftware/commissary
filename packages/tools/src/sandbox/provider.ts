@@ -15,6 +15,8 @@
 import type { UsageRun } from "@commissary/auth";
 import type { OutboundPolicy } from "@commissary/core";
 import { type Effect, Schema } from "effect";
+import type { SandboxSessionComputer } from "@commissary/contract/sandbox-sessions";
+import type { SandboxNetwork } from "@commissary/contract/tools";
 import type { SandboxAllowance } from "./network.ts";
 
 /** Who a sandbox session belongs to: a principal (`user:<email>`, `key:<id>`, an agent run's `run:<id>`) in one org. */
@@ -195,6 +197,12 @@ export class SandboxError extends Schema.TaggedError<SandboxError>()("SandboxErr
   ),
 }) {}
 
+/** What an open session says of itself to the panel's list (#225): the network it opened with, and where its computer stands. */
+export interface SandboxStatus {
+  readonly network: SandboxNetwork;
+  readonly computer: SandboxSessionComputer;
+}
+
 /** What a provider's operation answers. */
 type Sandboxed<A> = Effect.Effect<A, SandboxError>;
 
@@ -283,6 +291,11 @@ export interface SandboxProvider {
     now: number,
     meter: ComputerMeter,
   ) => MeteredSandboxed<boolean>;
+  /**
+   * What the open session `session` of `org` says of itself (#225), whoever's it is: a read that is no use of the session.
+   * `closed` and `unknown_session` for one that is not open.
+   */
+  readonly status: (org: string, session: string) => Sandboxed<SandboxStatus>;
   /**
    * Deletes the session `session` of `org` and everything of it at once, whoever's it is and whatever its state, with
    * no note that it was: its owner left the org, or the org is being deleted (ADR 0027). Done for a session that no

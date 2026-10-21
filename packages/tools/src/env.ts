@@ -67,6 +67,8 @@ type ToolsPartMethod =
   | "browserSession"
   | "browserLiveView"
   | "endBrowserSession"
+  | "listSandboxSessions"
+  | "endSandboxSession"
   | "hasManagedApp"
   | "takeCatalogLookup";
 

@@ -8,6 +8,7 @@ import {
   ceilingText,
   emailProblem,
   hasBrowser,
+  hasComputer,
   orgCountText,
   parseCeiling,
   parseOrgLimit,
@@ -19,6 +20,15 @@ import { callerOf } from "../src/lib/role.ts";
 const SELF_HOSTED = { hosted: false, browser: false, computer: false, agents: false };
 
 const HOSTED = { hosted: true, browser: false, computer: false, agents: false };
+
+describe("the computer (ADR 0043)", () => {
+  it("is available only where the deployment has one: the sandbox toolkit is there either way", () => {
+    const deployment = { hosted: false, browser: false, agents: false };
+
+    expect(hasComputer({ deployment: { ...deployment, computer: true } })).toBe(true);
+    expect(hasComputer({ deployment: { ...deployment, computer: false } })).toBe(false);
+  });
+});
 
 describe("the browser (ADR 0043)", () => {
   it("is on the panel only where the deployment has the browser toolkit", () => {

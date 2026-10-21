@@ -76,6 +76,7 @@ import { signInUrls } from "../oauth/urls.ts";
 import { templateAs } from "../signing/template.ts";
 import { defaultToolkitName } from "../toolkits/names.ts";
 import { browserSessionHandlers } from "./browser-session-routes.ts";
+import { sandboxSessionHandlers } from "./sandbox-session-routes.ts";
 import { catalogHandlers as catalogRoute } from "./catalog-routes.ts";
 
 const BASE = "/v9/management";
@@ -96,6 +97,7 @@ const STATUS: Readonly<Record<ToolsErrorCode, number>> = {
   outbound_refused: 422,
   sign_in_failed: 502,
   browser_failed: 502,
+  sandbox_failed: 502,
 };
 
 const orRefuse = <A>(result: ToolsResult<A>): Effect.Effect<A, Reply> => {
@@ -794,6 +796,8 @@ const route = <R>(
 
 const browserSession = browserSessionHandlers(orRefuse);
 
+const sandboxSession = sandboxSessionHandlers(orRefuse);
+
 /** Tools' management routes. */
 export const ManagementRoutes = HttpRouter.addAll([
   route("GET", "/toolkits", list),
@@ -837,4 +841,7 @@ export const ManagementRoutes = HttpRouter.addAll([
   route("GET", "/browser-sessions/:id", browserSession.get),
   route("POST", "/browser-sessions/:id/live-view", browserSession.liveView),
   route("DELETE", "/browser-sessions/:id", browserSession.end),
+  // The sandbox toolkit's open sessions (#225).
+  route("GET", "/sandbox-sessions", sandboxSession.list),
+  route("DELETE", "/sandbox-sessions/:id", sandboxSession.end),
 ]);

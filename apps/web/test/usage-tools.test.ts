@@ -5,11 +5,13 @@ import type { UsageRecord, UsageTotals } from "@commissary/contract/usage";
 import {
   approvalText,
   approvalWord,
-  browserDuration,
+  meteredDuration,
   browserTimeText,
+  computerTimeText,
   credentialText,
   formatBytes,
   hasBrowserTime,
+  hasComputerTime,
   isCall,
   latencyText,
   outcomeFailed,
@@ -219,8 +221,8 @@ describe("browser usage (#217)", () => {
     expect(browserTimeText(2_300)).toBe("2.3 s of browser time");
     expect(browserTimeText(5_400_000)).toBe("1 h 30 min of browser time");
     expect(browserTimeText(undefined)).toBeUndefined();
-    expect(browserDuration(840)).toBe("840 ms");
-    expect(browserDuration(754_000)).toBe("12 min");
+    expect(meteredDuration(840)).toBe("840 ms");
+    expect(meteredDuration(754_000)).toBe("12 min");
     expect(recordSubject(record({ browser_ms: 2_300 }))).toBe("create_issue");
     expect(recordSubject(session({ browser_ms: 5_400_000, cost_micros: 6_000_000 }))).toBe(
       "Browser session",
@@ -283,5 +285,37 @@ describe("browser usage (#217)", () => {
     expect(Object.fromEntries(recordFacts(closed, "x", false, undefined))).toMatchObject({
       Cost: "<$0.0001",
     });
+  });
+});
+
+describe("computer usage (#225)", () => {
+  it("words a record's computer time as the log shows it, beside any browser time", () => {
+    expect(computerTimeText(754_000)).toBe("12 min of computer time");
+    expect(computerTimeText(5_400_000)).toBe("1 h 30 min of computer time");
+    expect(computerTimeText(2_300)).toBe("2.3 s of computer time");
+    expect(computerTimeText(undefined)).toBeUndefined();
+    expect(recordSubject(session({ computer_ms: 754_000, cost_micros: 100 }))).toBe(
+      "Computer session",
+    );
+  });
+
+  it("gives a breakdown a column of computer time only where a row used some", () => {
+    expect(hasComputerTime([{}, {}])).toBe(false);
+    expect(hasComputerTime([{ computer_ms: 0 }])).toBe(false);
+    expect(hasComputerTime([{}, { computer_ms: 1_000 }])).toBe(true);
+  });
+
+  it("shows computer time in a session's facts and the totals, where there is a browser or not", () => {
+    for (const browser of [true, false])
+      expect(
+        Object.fromEntries(
+          recordFacts(
+            session({ computer_ms: 1_800_000, cost_micros: 3_000_000 }),
+            "sandbox",
+            browser,
+            undefined,
+          ),
+        ),
+      ).toMatchObject({ "Computer time": "30 min", Toolkit: "sandbox", Outcome: "Closed" });
   });
 });

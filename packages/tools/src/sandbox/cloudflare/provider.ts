@@ -125,6 +125,12 @@ export const cloudflareSandbox = (
       ),
     stopComputer: (owner, id, now, meter) =>
       object<boolean>(owner, id, (stub) => stub.stopForLimit(caller(owner, now), meter)),
+    status: (org, id) =>
+      SESSION_ID.test(id)
+        ? replied(() => namespace.getByName(`${org}:${id}`).status(org)).pipe(
+            Effect.map(({ value }) => value),
+          )
+        : Effect.fail(new SandboxError({ reason: "unknown_session", message: "" })),
     purge: (org, id, settle) =>
       SESSION_ID.test(id)
         ? replied(() => namespace.getByName(`${org}:${id}`).purge(org, settle)).pipe(

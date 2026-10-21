@@ -6,12 +6,11 @@ import type { ToolkitView } from "@commissary/contract/tools";
 import {
   sandboxCeiling,
   sandboxCeilingText,
-  NETWORK_KINDS,
-  type NetworkKind,
   networkAllowed,
   type SandboxDraft,
 } from "../lib/agent-form.ts";
 import { kit } from "./Kit.tsx";
+import { NetworkPicker } from "./NetworkPicker.tsx";
 import styles from "./AgentSandboxEditor.module.css";
 
 export const AgentSandboxEditor = ({
@@ -88,58 +87,12 @@ export const AgentSandboxEditor = ({
                   </select>
                 </div>
               ) : null}
-              <fieldset className={styles["network"]}>
-                <legend className={kit["fieldLabel"]}>Network</legend>
-                {NETWORK_KINDS.map((kind) => {
-                  const allowed = networkAllowed(kind.id, ceiling?.network);
-
-                  return (
-                    <label key={kind.id} className={styles["choice"]} data-allowed={allowed}>
-                      <input
-                        type="radio"
-                        name={`${id}-network`}
-                        checked={draft.network === kind.id}
-                        disabled={!allowed && draft.network !== kind.id}
-                        onChange={() =>
-                          onChange({ ...draft, network: kind.id satisfies NetworkKind })
-                        }
-                      />
-                      <span className={styles["choiceText"]}>
-                        {kind.label}
-                        <span className={kit["muted"]}>
-                          {allowed ? kind.hint : "Beyond what the sandbox toolkit allows."}
-                        </span>
-                      </span>
-                    </label>
-                  );
-                })}
-                {draft.network === "hosts" ? (
-                  <div className={styles["hosts"]}>
-                    <label className={kit["fieldLabel"]} htmlFor={`${id}-hosts`}>
-                      Hosts it may reach
-                    </label>
-                    <textarea
-                      id={`${id}-hosts`}
-                      className={styles["textarea"]}
-                      rows={3}
-                      spellCheck={false}
-                      autoComplete="off"
-                      value={draft.hosts}
-                      onChange={(event) => onChange({ ...draft, hosts: event.target.value })}
-                    />
-                    <label className={styles["check"]}>
-                      <input
-                        type="checkbox"
-                        checked={draft.registries}
-                        onChange={(event) =>
-                          onChange({ ...draft, registries: event.target.checked })
-                        }
-                      />
-                      Also the package registries (npm, PyPI, GitHub, mise)
-                    </label>
-                  </div>
-                ) : null}
-              </fieldset>
+              <NetworkPicker
+                fields={draft}
+                onChange={(fields) => onChange({ ...draft, ...fields })}
+                allowed={(kind) => networkAllowed(kind, ceiling?.network)}
+                beyond="Beyond what the sandbox toolkit allows."
+              />
               <label className={styles["check"]} data-allowed={computerAllowed}>
                 <input
                   type="checkbox"

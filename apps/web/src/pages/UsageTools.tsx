@@ -25,12 +25,14 @@ import { hasBrowser } from "../lib/hosted.ts";
 import { type Breakdown, type FilterKey } from "../lib/usage.ts";
 import {
   approvalWord,
-  browserDuration,
+  meteredDuration,
   browserTimeText,
+  computerTimeText,
   credentialText,
   type Figure,
   outcomeFailed,
   hasBrowserTime,
+  hasComputerTime,
   latencyText,
   outcomeWord,
   profileFact,
@@ -98,6 +100,8 @@ const BreakdownTable = ({
 }) => {
   const canNarrow = breakdown.filter !== undefined && !narrowed;
   const browserTime = browser && hasBrowserTime(summary.groups);
+  // The sandbox toolkit is always there: computer time shows wherever a row has some (#225).
+  const computerTime = hasComputerTime(summary.groups);
 
   return (
     <table className={`${styles["table"]} ${styles["breakdown"]}`}>
@@ -119,6 +123,11 @@ const BreakdownTable = ({
           {browserTime ? (
             <th scope="col" className={`${styles["number"]} ${styles["wide"]}`}>
               Browser time
+            </th>
+          ) : null}
+          {computerTime ? (
+            <th scope="col" className={`${styles["number"]} ${styles["wide"]}`}>
+              Computer time
             </th>
           ) : null}
           <th scope="col" className={`${styles["number"]} ${styles["wide"]}`}>
@@ -151,7 +160,12 @@ const BreakdownTable = ({
               <td className={styles["number"]}>{formatCost(group.cost_micros)}</td>
               {browserTime ? (
                 <td className={`${styles["number"]} ${styles["wide"]}`}>
-                  {(group.browser_ms ?? 0) > 0 ? browserDuration(group.browser_ms ?? 0) : "None"}
+                  {(group.browser_ms ?? 0) > 0 ? meteredDuration(group.browser_ms ?? 0) : "None"}
+                </td>
+              ) : null}
+              {computerTime ? (
+                <td className={`${styles["number"]} ${styles["wide"]}`}>
+                  {(group.computer_ms ?? 0) > 0 ? meteredDuration(group.computer_ms ?? 0) : "None"}
                 </td>
               ) : null}
               <td className={`${styles["number"]} ${styles["wide"]}`}>
@@ -324,6 +338,7 @@ const CallRow = ({
   const [open, setOpen] = useState(false);
   const detailId = `call-${record.request_id}`;
   const browserTime = browser ? browserTimeText(record.browser_ms) : undefined;
+  const computerTime = computerTimeText(record.computer_ms);
   const outcome = record.outcome;
   const failed = outcome !== undefined && outcomeFailed(outcome);
 
@@ -359,6 +374,9 @@ const CallRow = ({
           <span className={styles["secondary"]}>{toolkitOf(record, names)}</span>
           {browserTime === undefined ? null : (
             <span className={styles["secondary"]}>{browserTime}</span>
+          )}
+          {computerTime === undefined ? null : (
+            <span className={styles["secondary"]}>{computerTime}</span>
           )}
         </td>
         <td className={styles["who"]}>
