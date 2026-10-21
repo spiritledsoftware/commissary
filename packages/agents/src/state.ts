@@ -3,6 +3,6 @@
  * ControlPlane Durable Object. The apps import Agents only through this entry, `./api` and `./management` (the lint
  * rule `boundaries/agents-imports`).
  */
-export { AgentsPart } from "./control-plane-part.ts";
+export { AgentsPart, type RunSandboxes } from "./control-plane-part.ts";
 
 export { type AgentsPartEnv, agentsPresent } from "./env.ts";

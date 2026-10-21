@@ -50,6 +50,8 @@ type ToolsPartMethod =
   | "signInStatus"
   | "completeSignIn"
   | "purgeSandboxSessions"
+  | "runSandboxOperation"
+  | "settleRunSandboxCall"
   | "listProfiles"
   | "createProfile"
   | "updateProfile"

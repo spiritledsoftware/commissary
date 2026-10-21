@@ -188,6 +188,52 @@ describe("a turn", () => {
   });
 });
 
+describe("a turn of an agent with a sandbox (#230)", () => {
+  const SANDBOX = { toolkit: "sandbox", network: { kind: "open" as const }, computer: true };
+
+  it("reads the sandbox, and reaches its toolkit: wholly, or as the tool scope's entry for it narrows it", async () => {
+    const o = await org();
+    const lookup = { toolkit: "tk_lookup", tools: { kind: "all" as const } };
+
+    const agent = await created(o, o.alice, "builder", {
+      tool_scope: [lookup],
+      sandbox: SANDBOX,
+    });
+
+    const { run } = await started(o, o.alice, agent.id);
+
+    expect(await o.agents.beginTurn(run.id)).toMatchObject({
+      ok: true,
+      value: {
+        sandbox: SANDBOX,
+        toolScope: [lookup, { toolkit: "sandbox", tools: { kind: "all" } }],
+      },
+    });
+    expect(await o.agents.turnContext(run.id)).toMatchObject({
+      value: { sandbox: SANDBOX, toolScope: [lookup, { toolkit: "sandbox" }] },
+    });
+
+    // A scope that names the sandbox toolkit keeps its own entry: read tools only here.
+    const readOnly = { toolkit: "sandbox", tools: { kind: "read" as const } };
+
+    await o.agents.updateAgent(o.alice, agent.id, 1, { tool_scope: [readOnly] }, {}, "test");
+    await o.agents.runStateChanged(run.id, "idle");
+
+    expect(await o.agents.beginTurn(run.id)).toMatchObject({
+      value: { sandbox: SANDBOX, toolScope: [readOnly] },
+    });
+
+    // Without a sandbox, the scope is the definition's alone.
+    await o.agents.updateAgent(o.alice, agent.id, 2, { tool_scope: [], sandbox: null }, {}, "test");
+    await o.agents.runStateChanged(run.id, "idle");
+
+    const plain = await o.agents.beginTurn(run.id);
+
+    expect(plain).toMatchObject({ ok: true, value: { toolScope: [] } });
+    expect(plain.ok && "sandbox" in plain.value).toBe(false);
+  });
+});
+
 describe("the index", () => {
   it("ends a run whose object could not be started, and pages its runs for the org's deletion", async () => {
     const o = await org();

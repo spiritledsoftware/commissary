@@ -84,6 +84,35 @@ const open = async (stub: Stub, viewer: Viewer, network?: SandboxNetwork, princi
   return (result["structuredContent"] as { session: string }).session;
 };
 
+/** An agent run's reach of the sandbox toolkit, all its tools, as its object's call carries it (#230). */
+const reach = {
+  toolScope: [{ toolkit: "sandbox", tools: { kind: "all" as const } }],
+  asAgent: false,
+};
+
+/** Opens the run `run`'s own session, as its harness does (`RUN_SESSION_META`): its id. */
+const openForRun = async (stub: Stub, run: string) => {
+  const outcome = await stub.tools().callTool(
+    ALICE,
+    {
+      name: "sandbox_open",
+      arguments: {},
+      principalId: `run:${run}`,
+      run: reach,
+      runSession: true,
+    },
+    POLICY,
+  );
+
+  if (outcome.outcome !== "result") throw new Error(`the call came to ${outcome.outcome}`);
+
+  // SAFETY: `sandbox_open` answers the session id in its structured content.
+  return (outcome.result["structuredContent"] as { session: string }).session;
+};
+
+/** A time long after any test's sessions opened, at which the ControlPlane's alarm runs. */
+const MUCH_LATER = Date.parse("2100-01-01T00:00:00Z");
+
 const setCeiling = async (stub: Stub, network: SandboxNetwork) => {
   const { toolkits } = await stub.tools().listToolkits(ADMIN);
   const revision = toolkits.find((toolkit) => toolkit.id === "sandbox")?.revision ?? 0;
@@ -429,6 +458,246 @@ describe("the org's open sandbox sessions", () => {
     expect(await tracked(stub)).toEqual([]);
 
     for (const session of sessions) expect(await heldBy(org, session)).toEqual([]);
+  });
+});
+
+describe("an agent run's sandbox sessions (#230)", () => {
+  it("last as long as the run, however long unused, and go when the run is deleted", async () => {
+    const org = crypto.randomUUID();
+    const stub = env.SANDBOX_CONTROL_PLANE.getByName(org);
+
+    await grantEveryone(stub);
+    const runs = await openForRun(stub, "ar_one");
+    const other = await openForRun(stub, "ar_two");
+
+    // A session a run opened as any other call (not its harness's own) ends after a day without use, as a member's; the
+    // ControlPlane keeps it, as the run's, until it hears of its close or the run is deleted.
+    const plain = await open(stub, ALICE, undefined, "run:ar_three");
+
+    const plainAlarm = await runInDurableObject(
+      env.SANDBOX_SESSION.getByName(`${org}:${plain}`),
+      async (_instance, state) => await state.storage.getAlarm(),
+    );
+
+    expect(plainAlarm).not.toBeNull();
+
+    // A member's own session, which a day without use ends.
+    await open(stub, ALICE);
+
+    await call(
+      stub,
+      ALICE,
+      "sandbox_write",
+      { session: runs, path: "notes.md", content: "kept" },
+      "run:ar_one",
+    );
+
+    // No alarm ends a run's session for want of use, and the ControlPlane keeps it past a day.
+    const alarm = await runInDurableObject(
+      env.SANDBOX_SESSION.getByName(`${org}:${runs}`),
+      async (_instance, state) => await state.storage.getAlarm(),
+    );
+
+    expect(alarm).toBeNull();
+    await runInDurableObject(stub, async (instance) => {
+      await instance.tools().alarm(MUCH_LATER);
+    });
+    expect(new Set((await tracked(stub)).map(([id]) => id))).toEqual(new Set([runs, other, plain]));
+
+    // Deleting the run deletes its sessions with their files; another run's stay.
+    expect(await stub.tools().purgeRunSandboxSessions(["ar_one", "ar_gone"])).toEqual([
+      "ar_one",
+      "ar_gone",
+    ]);
+    expect(await heldBy(org, runs)).toEqual([]);
+    expect(new Set((await tracked(stub)).map(([id]) => id))).toEqual(new Set([other, plain]));
+  });
+});
+
+describe("an agent run's gated sandbox calls (#230)", () => {
+  /** Gates the run `run`'s call of `name` with `args`: its ticket. */
+  const gate = async (stub: Stub, run: string, name: string, args: Schema.JsonObject) => {
+    const outcome = await stub
+      .tools()
+      .callTool(
+        ALICE,
+        { name, arguments: args, principalId: `run:${run}`, run: reach, executes: true },
+        POLICY,
+      );
+
+    if (outcome.outcome !== "gated") throw new Error(`the call came to ${outcome.outcome}`);
+
+    return outcome.ticket.id;
+  };
+
+  it("run each operation of the gated tool with its live ticket only, for its run, and settle the same each time", async () => {
+    const stub = withSandbox();
+
+    await grantEveryone(stub);
+    const session = await open(stub, ALICE, undefined, "run:ar_one");
+
+    // A call not made for a run is made, never gated.
+    const plain = await stub.tools().callTool(
+      ALICE,
+      {
+        name: "sandbox_write",
+        arguments: { session, path: "a.txt", content: "x" },
+        principalId: "run:ar_one",
+        executes: true,
+      },
+      POLICY,
+    );
+
+    expect(plain.outcome).toBe("result");
+
+    const write = await gate(stub, "ar_one", "sandbox_write", {
+      session,
+      path: "/workspace/b.txt",
+      content: "",
+    });
+
+    const writing = { op: "write" as const, path: "/workspace/b.txt", content: "hello" };
+
+    // Another run's operation, or one the tool does not make, has no ticket.
+    expect(await stub.tools().runSandboxOperation("ar_two", write, writing)).toMatchObject({
+      ok: false,
+      reason: "ticket",
+    });
+    expect(
+      await stub
+        .tools()
+        .runSandboxOperation("ar_one", write, { op: "readText", path: "/workspace/b.txt" }),
+    ).toMatchObject({ ok: false, reason: "ticket" });
+    expect(await stub.tools().runSandboxOperation("ar_one", write, writing)).toEqual({
+      ok: true,
+      value: null,
+    });
+
+    // Settling answers its record's fields, the same each time it is tried (the run retries one that failed, and the
+    // record is written under the ticket's id once); its operations end with the first.
+    expect(await stub.tools().settleRunSandboxCall("ar_two", write)).toBeUndefined();
+    const settled = await stub.tools().settleRunSandboxCall("ar_one", write);
+
+    expect(settled).toMatchObject({
+      id: write,
+      tool: "write",
+      toolkitId: "sandbox",
+      principal: "run:ar_one",
+      session,
+      costMicros: 0,
+      approval: "none",
+      settledAt: expect.any(Number),
+    });
+    expect(await stub.tools().settleRunSandboxCall("ar_one", write)).toEqual(settled);
+    expect(await stub.tools().runSandboxOperation("ar_one", write, writing)).toMatchObject({
+      reason: "ticket",
+    });
+
+    // pi's read, bash and edit, each on its own ticket.
+    const read = await gate(stub, "ar_one", "sandbox_read", { session, path: "b.txt" });
+
+    expect(
+      await stub
+        .tools()
+        .runSandboxOperation("ar_one", read, { op: "stat", path: "/workspace/b.txt" }),
+    ).toMatchObject({ ok: true, value: { kind: "file", size: 5 } });
+    expect(
+      await stub
+        .tools()
+        .runSandboxOperation("ar_one", read, { op: "stat", path: "/workspace/none" }),
+    ).toEqual({ ok: true, value: null });
+
+    const bytes = await stub.tools().runSandboxOperation("ar_one", read, {
+      op: "read",
+      path: "/workspace/b.txt",
+      offset: 1,
+      length: 3,
+    });
+
+    if (!bytes.ok || !(bytes.value instanceof Uint8Array)) throw new Error("no bytes read");
+    expect(new TextDecoder().decode(bytes.value)).toBe("ell");
+
+    const bash = await gate(stub, "ar_one", "sandbox_bash", { session, command: "cat b.txt" });
+
+    expect(
+      await stub.tools().runSandboxOperation("ar_one", bash, {
+        op: "exec",
+        command: "cat b.txt",
+        timeoutMs: 10_000,
+      }),
+    ).toMatchObject({ ok: true, value: { exitCode: 0, stdout: "hello" } });
+
+    const edit = await gate(stub, "ar_one", "sandbox_edit", { session, path: "b.txt", edits: [] });
+
+    expect(
+      await stub
+        .tools()
+        .runSandboxOperation("ar_one", edit, { op: "readText", path: "/workspace/b.txt" }),
+    ).toEqual({ ok: true, value: "hello" });
+
+    // An expired ticket's operations are refused, but it still settles within its day's grace; past it, it does not.
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec("UPDATE sandbox_run_calls SET expires_at = 0 WHERE id = ?", edit);
+    });
+    expect(
+      await stub
+        .tools()
+        .runSandboxOperation("ar_one", edit, { op: "readText", path: "/workspace/b.txt" }),
+    ).toMatchObject({ reason: "ticket" });
+    expect(await stub.tools().settleRunSandboxCall("ar_one", edit)).toMatchObject({ id: edit });
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec("UPDATE sandbox_run_calls SET requested_at = 0 WHERE id = ?", read);
+    });
+    expect(await stub.tools().settleRunSandboxCall("ar_one", read)).toBeUndefined();
+
+    // A session that is gone answers so, and is forgotten; deleting the run forgets its tickets.
+    await call(stub, ALICE, "sandbox_close", { session }, "run:ar_one");
+    expect(
+      await stub
+        .tools()
+        .runSandboxOperation("ar_one", bash, { op: "exec", command: "true", timeoutMs: 1000 }),
+    ).toMatchObject({ ok: false, reason: "lost" });
+    await stub.tools().purgeRunSandboxSessions(["ar_one"]);
+    expect(await stub.tools().settleRunSandboxCall("ar_one", bash)).toBeUndefined();
+  });
+
+  it("gate a call in the run's own session only: another run's session is unknown, and the call charged nothing", async () => {
+    const stub = withSandbox();
+
+    await grantEveryone(stub);
+    await stub.tools().setOverride(ADMIN, "sandbox", 0, { tool: "write", price_micros: 100 }, "t");
+    const theirs = await openForRun(stub, "ar_two");
+    const mine = await openForRun(stub, "ar_one");
+
+    const outcome = await stub.tools().callTool(
+      ALICE,
+      {
+        name: "sandbox_write",
+        arguments: { session: theirs, path: "a.txt", content: "x" },
+        principalId: "run:ar_one",
+        run: reach,
+        executes: true,
+      },
+      POLICY,
+    );
+
+    expect(outcome).toMatchObject({
+      outcome: "result",
+      result: { isError: true, structuredContent: { reason: "unknown_session" } },
+      usage: { costMicros: 0 },
+    });
+
+    // Its own session is gated, at its price.
+    const ticket = await gate(stub, "ar_one", "sandbox_write", {
+      session: mine,
+      path: "a.txt",
+      content: "x",
+    });
+
+    expect(await stub.tools().settleRunSandboxCall("ar_one", ticket)).toMatchObject({
+      session: mine,
+      costMicros: 100,
+    });
   });
 });
 

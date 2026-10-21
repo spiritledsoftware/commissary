@@ -8,6 +8,7 @@ import { Effect } from "effect";
 import {
   type CommandResult,
   type DirectoryEntry,
+  type FileStat,
   type Metered,
   SandboxError,
   type SandboxOwner,
@@ -84,7 +85,7 @@ export const cloudflareSandbox = (
   return {
     id: CLOUDFLARE_SANDBOX,
     computer,
-    open: (owner, { network, computer: asked, policy, now, meter, opener }) => {
+    open: (owner, { network, computer: asked, policy, now, meter, opener, untilPurged }) => {
       const id = newSessionId();
 
       return object(owner, id, (stub) =>
@@ -94,6 +95,7 @@ export const cloudflareSandbox = (
           policy,
           meter,
           opener,
+          untilPurged,
         ),
       ).pipe(Effect.as(id));
     },
@@ -103,6 +105,12 @@ export const cloudflareSandbox = (
       ),
     readFile: (owner, id, path, now, meter) =>
       object(owner, id, (stub) => stub.readFile(caller(owner, now), path, meter)),
+    stat: (owner, id, path, now, meter) =>
+      object<FileStat | null>(owner, id, (stub) => stub.stat(caller(owner, now), path, meter)),
+    readBytes: (owner, id, path, { offset, length }, now, meter) =>
+      object<Uint8Array>(owner, id, (stub) =>
+        stub.readBytes(caller(owner, now), path, offset, length, meter),
+      ),
     writeFile: (owner, id, path, text, now, meter) =>
       object(owner, id, (stub) => stub.writeFile(caller(owner, now), path, text, meter)).pipe(
         Effect.map((metered) => ({ ...metered, value: undefined })),

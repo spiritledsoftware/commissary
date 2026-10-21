@@ -4,6 +4,7 @@ import {
   type Access,
   accessTo,
   isFullAccess,
+  runPrincipalId,
   type Scope,
   type UsageRun,
   type Viewer,
@@ -57,6 +58,12 @@ import type {
   UsableTool,
   UsableTools,
 } from "@commissary/contract/tools";
+import {
+  type RunToolTicket,
+  SANDBOX_MAX_TIMEOUT_MS,
+  type SandboxEnvReply,
+  type SandboxEnvRequest,
+} from "@commissary/contract/sandbox-env";
 import type { ToolCallApproval } from "@commissary/contract/usage";
 import {
   CurrentOutboundPolicy,
@@ -211,14 +218,24 @@ import {
   startDescription,
 } from "./agents/toolkit.ts";
 import { NO_ALLOWANCE, networkProblem, normalizedNetwork } from "./sandbox/network.ts";
+import { agentSandboxFits, type AgentSandboxSettings } from "./sandbox/agent-sandbox.ts";
 import {
   type ComputerMeter,
   type Metered,
   type SandboxProvider,
   SESSION_IDLE_MS,
 } from "./sandbox/provider.ts";
-import { meetsComputer } from "./sandbox/toolkit.ts";
+import { COMPUTER_STOPPED_NOTE, meetsComputer, unknownSessionResult } from "./sandbox/toolkit.ts";
 import { SandboxSessionStore, type TrackedSession } from "./sandbox/sessions.ts";
+import {
+  argumentBytes,
+  gatedTool,
+  type RunCallTicket,
+  RunCallTickets,
+  TICKET_IDLE_MS,
+  ticketAllows,
+} from "./sandbox/run-calls.ts";
+import { sandboxOperation } from "./sandbox/run-operations.ts";
 import { BrowserCrawlStore } from "./browser/crawls.ts";
 import { apiKeyOf, BrowserSessionStore } from "./browser/session-log.ts";
 import { CLOSE_TOOL } from "./browser/session-tools.ts";
@@ -624,6 +641,17 @@ export interface ToolCall {
    * reaches none of its tools (docs/DEVELOPMENT.md, "State RPC: expand, then contract").
    */
   readonly agentsToolkit?: true | undefined;
+  /**
+   * An agent run's call that asks for a ticket rather than the call (#230, `RUN_EXECUTES_META`): a call of the sandbox
+   * toolkit's `bash`, `read`, `write` or `edit` that went through every gate answers `gated`, and the run executes it
+   * on its session itself ({@link ToolsPart.runSandboxOperation}). Only a run's call (`run`) is gated so.
+   */
+  readonly executes?: true | undefined;
+  /**
+   * An agent run's `sandbox_open` of its own session (#230, `RUN_SESSION_META`): that session lasts as long as the run.
+   * Only a run's call is honoured so.
+   */
+  readonly runSession?: true | undefined;
 }
 
 /** What a caller of {@link ToolsPart.clientTools} serves beyond the part's own toolkits. */
@@ -746,6 +774,16 @@ export type ToolCallOutcome =
       readonly tool: string;
       readonly arguments: Schema.JsonObject;
       readonly scopeAgents?: ReadonlyArray<string> | undefined;
+      readonly usage: CallUsage;
+    }
+  | {
+      /**
+       * A run's sandbox call that went through every gate and was charged its price (#230, {@link ToolCall.executes}):
+       * the run executes it with this ticket, and settling the ticket writes its usage record
+       * ({@link ToolsPart.settleRunSandboxCall}), not the endpoint.
+       */
+      readonly outcome: "gated";
+      readonly ticket: RunToolTicket;
       readonly usage: CallUsage;
     };
 
@@ -934,6 +972,8 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   /** The org's open sandbox sessions (#222), and the sandbox they are in. */
   readonly #sandboxSessions: SandboxSessionStore;
   readonly #sandbox: SandboxProvider | undefined;
+  /** The tickets of agent runs' gated sandbox calls (#230). */
+  readonly #runCalls: RunCallTickets;
   /** The org's browser profiles (#215) and the grants on shared ones. */
   readonly #profiles: ProfileStore;
   /** Who started each of the org's browser crawls (#270), and the browser provider's crawls they run at. */
@@ -972,6 +1012,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     this.#oauth = new OAuthStore(ctx.storage.sql, core.secrets);
     this.#outbound = outboundPolicy({ hosts: [ownHosts] });
     this.#sandboxSessions = new SandboxSessionStore(ctx.storage.sql);
+    this.#runCalls = new RunCallTickets(ctx.storage.sql);
     this.#sandbox = providers.sandbox;
     this.#profiles = new ProfileStore(ctx.storage.sql, core.secrets);
     this.#crawls = new BrowserCrawlStore(ctx.storage.sql);
@@ -1125,6 +1166,143 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       purged,
       remaining: this.#sandboxSessions.sessions().length,
     };
+  }
+
+  /**
+   * Whether an agent run's session opened with `opened` still fits its definition's sandbox `definition` and the
+   * sandbox toolkit's ceiling now (#230, `agentSandboxFits`): the Agents part of the same ControlPlane asks as a turn
+   * starts, and a run whose definition or ceiling narrowed since opens a new session. A toolkit that is no sandbox fits
+   * nothing.
+   */
+  runSandboxFits(definition: AgentSandboxSettings, opened: AgentSandboxSettings): boolean {
+    const builtIn = this.#builtIn(definition.toolkit);
+
+    if (builtIn?.toolkit.kind !== "sandbox") return false;
+    const ceiling = this.#withSettings(builtIn.toolkit).ceiling ?? NO_ALLOWANCE;
+
+    return agentSandboxFits(definition, opened, { kind: "sandbox", ...ceiling });
+  }
+
+  /**
+   * Deletes the sandbox sessions of the agent runs `runIds` (#230), with their files: a run's sessions last as long as
+   * the run, and go when it is deleted (its agent or its member removed, or the org's retention period for agent runs
+   * passed), which the Agents part of the same ControlPlane tells this one (`apps/state/src/control-plane.ts`). Each
+   * settles first, as a member's leaving settles theirs (#224): a computer still running stops, its last stretch is
+   * charged and recorded. Answers the runs none of whose sessions is left; one the sandbox could not reach keeps its
+   * row, for the next try.
+   */
+  async purgeRunSandboxSessions(runIds: ReadonlyArray<string>): Promise<ReadonlyArray<string>> {
+    const principals = runIds.map(runPrincipalId);
+
+    await this.#purgeSandboxSessions(this.#sandboxSessions.sessionsOf(principals), true);
+    this.#runCalls.forgetPrincipals(principals);
+    const left = new Set(this.#sandboxSessions.sessionsOf(principals).map((row) => row.principal));
+
+    return runIds.filter((id) => !left.has(runPrincipalId(id)));
+  }
+
+  /**
+   * Runs one operation of an agent run's gated sandbox call (#230) on its session: only with the call's live ticket
+   * (`ticket`, of the run `run`'s), and only an operation the gated tool makes (`TICKET_OPS`). Each operation's start
+   * and end keep the ticket alive (`run-calls.ts`, "Expiry"). The session is the call's, as the run's principal owns
+   * it; it is used as the sandbox toolkit's own calls use it.
+   *
+   * Its computer time (#224) is metered as the sandbox toolkit's calls meter it: each operation passes the metering the
+   * gate set (the price per computer hour, and whether a Spend limit its time counts toward had no room), and the
+   * session's computer time it answers is charged at once to the call's spender's limits (a shared agent's run's, as
+   * the agent, #228). With no room, an operation that met the running computer stopped it and goes on, with a note for
+   * the model; a command that needs the computer is refused, which the ticket keeps, so that settling it ends the
+   * run's turn.
+   */
+  async runSandboxOperation(
+    run: string,
+    ticket: string,
+    request: SandboxEnvRequest,
+  ): Promise<SandboxEnvReply> {
+    const principal = runPrincipalId(run);
+    const gated = this.#runCalls.live(ticket, principal, this.#now());
+    const sandbox = this.#sandbox;
+
+    if (gated === undefined || !ticketAllows(gated.tool, request.op))
+      return { ok: false, reason: "ticket", message: "The call has no valid ticket." };
+
+    if (sandbox === undefined)
+      return { ok: false, reason: "failed", message: "The deployment has no sandbox." };
+    const owner = { org: this.#core.org, principal };
+    const start = this.#now();
+
+    // A command may run as long as its timeout, the sandbox's ten minutes at most: the ticket lives past it.
+    const running =
+      request.op === "exec" ? Math.min(Math.max(0, request.timeoutMs), SANDBOX_MAX_TIMEOUT_MS) : 0;
+
+    this.#runCalls.extend(ticket, start + running + TICKET_IDLE_MS);
+
+    const meter = { hourPriceMicros: gated.hourPriceMicros, limitReached: gated.limitReached };
+    const operation = sandboxOperation(sandbox, owner, gated.session, request, start, meter);
+
+    const reply = await Effect.runPromise(
+      operation.pipe(
+        Effect.map(({ value, ...metered }) => ({ reply: { ok: true, value } as const, metered })),
+        Effect.catch((error) =>
+          Effect.succeed({
+            reply: {
+              ok: false,
+              reason:
+                error.reason === "unknown_session" || error.reason === "closed" ? "lost" : "failed",
+              message: error.message,
+            } as const,
+            metered: error,
+            refused: error.reason === "refused",
+            unknown: error.reason === "unknown_session",
+          }),
+        ),
+      ),
+    );
+
+    const end = this.#now();
+    const { computerTime, computerStopped } = reply.metered;
+    const ledger = this.#core.spend.ledger();
+    const spender = { memberId: gated.member, apiKeyId: gated.apiKey, agentId: gated.agent };
+
+    const charged: ChargedCredential = {
+      id: gated.toolkitId,
+      shared: gated.credential === "shared",
+      kind: "toolkit_credential",
+    };
+
+    ledger.charge(ledger.scopes(spender, charged), computerTime?.costMicros ?? 0, end);
+
+    // A command that needs the computer, refused for want of room: the call's settling ends the turn with the limit's
+    // refusal.
+    const refusal =
+      "refused" in reply && reply.refused ? ledger.refusal(spender, charged, end) : undefined;
+
+    if (refusal !== undefined) this.#runCalls.refused(ticket, refusal, computerStopped === true);
+
+    this.#runCalls.extend(ticket, end + TICKET_IDLE_MS);
+
+    // A session the sandbox does not know is forgotten, as the sandbox toolkit's own calls forget it; one found closed
+    // is kept until its close is reported (#224).
+    if ("unknown" in reply && reply.unknown)
+      this.#sandboxSessions.ended([gated.session], principal);
+    else if (reply.reply.ok || reply.reply.reason !== "lost")
+      this.#sandboxSessions.used(gated.session, end, principal);
+
+    // An operation that met the running computer stopped it for want of room, and went on: the model is told.
+    return computerStopped === true && refusal === undefined
+      ? { ...reply.reply, note: COMPUTER_STOPPED_NOTE }
+      : reply.reply;
+  }
+
+  /**
+   * Settles the gated call `ticket` of the run `run` (#230): ends its operations and answers what the call's usage
+   * record says of it (the run's settling writes it, under the ticket's id, `@commissary/tools/api`). Settling is not
+   * bound by the ticket's expiry, which limits its operations only: a settling tried again within a day of the gate
+   * (`SETTLE_GRACE_MS`, as the run retries one that failed, or one the API Worker could not finish) answers the same,
+   * and the record is written once. `undefined` for none (unknown, past that day, or another run's), which writes none.
+   */
+  async settleRunSandboxCall(run: string, ticket: string): Promise<RunCallTicket | undefined> {
+    return this.#runCalls.settle(ticket, runPrincipalId(run), this.#now());
   }
 
   /**
@@ -3081,6 +3259,57 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
           ? { hourPriceMicros: hourPrice, limitReached: noRoom !== undefined }
           : undefined;
 
+      // A run's call of pi's coding tool (#230) is gated here and executed by the run on its session, with the ticket,
+      // which keeps the call's computer metering and spender for each of its operations.
+      const sessionId = call.arguments?.["session"];
+
+      if (
+        call.executes === true &&
+        call.run !== undefined &&
+        call.principalId !== undefined &&
+        computer !== undefined &&
+        gatedTool(tool.upstreamName) &&
+        typeof sessionId === "string"
+      ) {
+        // Only a session the part keeps as the run's own: another's id, or one it forgot, is answered as unknown, and
+        // the call charged nothing.
+        if (!this.#sandboxSessions.owns(sessionId, call.principalId))
+          return {
+            outcome: "result",
+            result: unknownSessionResult(sessionId),
+            usage: usage(slot, 0, approved),
+          };
+
+        if (price > 0) ledger.charge(ledger.scopes(spender, charged), price, now);
+        // The call is a use of the session, as a call the part makes is.
+        this.#sandboxSessions.used(sessionId, now, call.principalId);
+
+        const id = this.#runCalls.issue(
+          {
+            toolkitId: toolkit.id,
+            tool: tool.upstreamName,
+            principal: call.principalId,
+            member: viewer.member,
+            apiKey: spender.apiKeyId,
+            agent: spender.agentId,
+            run: call.run.usage,
+            session: sessionId,
+            expiresAt: now + TICKET_IDLE_MS,
+            requestedAt: now,
+            requestBytes: argumentBytes(call.arguments),
+            credential: slot,
+            private: slot === "private" || toolkit.owner !== undefined,
+            costMicros: price,
+            approval: approved,
+            hourPriceMicros: computer.hourPriceMicros,
+            limitReached: computer.limitReached,
+          },
+          now,
+        );
+
+        return { outcome: "gated", ticket: { id }, usage: usage(slot, price, approved) };
+      }
+
       const session = this.#builtInCall(builtIn, viewer, call, spender, policy, now, computer);
 
       const answer = await Effect.runPromise(
@@ -3181,6 +3410,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
         member: viewer.member,
         principal: principalId,
         ...(call.run?.usage === undefined ? {} : { run: call.run.usage }),
+        ...(call.runSession === true && call.run !== undefined ? { runSession: true } : {}),
         ...(computer === undefined ? {} : { computer }),
         profiles: this.#callerProfiles(viewer, principalId ?? viewer.member),
         // A browser session is logged while it is open, so the org's deletion deletes it (#214).
@@ -3208,8 +3438,8 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
               openedAt: now,
             });
           },
-          used: (id) => this.#sandboxSessions.used(id, now),
-          ended: (id) => this.#sandboxSessions.ended([id]),
+          used: (id) => this.#sandboxSessions.used(id, now, principalId),
+          ended: (id) => this.#sandboxSessions.ended([id], principalId),
         },
         // A browser crawl is its starter's, member and principal (#270), as a session is.
         crawls: {

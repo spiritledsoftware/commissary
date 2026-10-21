@@ -46,6 +46,13 @@ import type {
   TurnStatus,
   TurnView,
 } from "@commissary/contract/agent-runs";
+import { AgentSandbox } from "@commissary/contract/agents";
+import type {
+  RunToolReport,
+  RunToolSettled,
+  SandboxEnvReply,
+  SandboxEnvRequest,
+} from "@commissary/contract/sandbox-env";
 import { OrgId } from "@commissary/core";
 import { type AgentsControlPlane, agentRunName } from "../env.ts";
 import { iso, ok, refuse } from "../result.ts";
@@ -82,9 +89,26 @@ export const MAX_DELIVERY_ATTEMPTS = 10;
 const deliveryBackoff = (attempts: number): number =>
   Math.min(DELIVERY_RETRY_MS * 2 ** Math.max(0, attempts - 1), DELIVERY_RETRY_MAX_MS);
 
-/** The API Worker's run gateway, as the run reaches it: a client API request as the run. */
+/**
+ * The API Worker's run gateway, as the run reaches it: a client API request as the run; and, for the run's coding tools
+ * on its sandbox session (#230), an operation of a call the MCP endpoint gated (`@commissary/contract/sandbox-env`),
+ * and the settling of that call, which writes its usage record (it rejects when the org's tools cannot be reached, so
+ * the run settles it again later).
+ */
 export interface RunGateway {
   serve(org: OrgId, run: string, request: Request): Promise<Response>;
+  sandboxOperation(
+    org: OrgId,
+    run: string,
+    ticket: string,
+    request: SandboxEnvRequest,
+  ): Promise<SandboxEnvReply>;
+  settleToolCall(
+    org: OrgId,
+    run: string,
+    ticket: string,
+    report: RunToolReport,
+  ): Promise<RunToolSettled>;
 }
 
 /** What the run's object reads from its Worker's env. */
@@ -205,6 +229,58 @@ const ACTIVE = "active";
 
 /** A spend limit's refusal the running turn met: its answer. */
 const REFUSAL = "refusal";
+
+/** The sandbox the running turn's definition names (#230), absent when it names none. */
+const SANDBOX = "sandbox";
+
+/**
+ * The run's sandbox session (#230): the toolkit it is in, the settings it was opened with, and its id. Purged with the
+ * run, by the Tools part. A turn whose definition's sandbox, or the toolkit's ceiling, no longer allows those settings
+ * leaves it ({@link SANDBOX_NOTICE}), and the run opens a new one.
+ */
+const SANDBOX_SESSION = "sandbox-session";
+
+/** Why the run left its previous session (#230), until the call that opens the next one tells the model. */
+const SANDBOX_NOTICE = "sandbox-notice";
+
+/** What the model is told when the run left its session for a new one. */
+const NARROWED =
+  "The agent's sandbox settings narrowed since the run's sandbox session opened: this is a new, empty session, " +
+  "and the files of the previous one are not here.";
+
+const decodeSandbox = Schema.decodeUnknownOption(AgentSandbox);
+
+const SandboxSession = Schema.Struct({ ...AgentSandbox.fields, session: Schema.String });
+
+const decodeSandboxSession = Schema.decodeUnknownOption(SandboxSession);
+
+/**
+ * The prefix of the keys of the run's gated sandbox calls not yet settled (#230), one per ticket: `true` while pi's
+ * tool runs, then the report of how it ended ({@link PendingSettle}) until its settling went through. A call the run
+ * was stopped in (its object evicted, its harness closed) is settled as interrupted when the harness opens again; a
+ * settling that failed is tried again from the alarm, backing off, at most {@link MAX_DELIVERY_ATTEMPTS} times (a few
+ * hours, within the day the Tools part takes a settling in), with the report it kept, so a call that succeeded is
+ * recorded as one.
+ */
+const SANDBOX_CALL = "sandbox-call:";
+
+/**
+ * A gated call's settling to try again (#230): how the call ended, how many times its settling was tried, and when it
+ * is next due (epoch ms, the last try's start plus {@link deliveryBackoff} of its attempts), which also keeps a try in
+ * flight from being made again meanwhile.
+ */
+const PendingSettle = Schema.Struct({
+  report: Schema.Struct({
+    outcome: Schema.Literals(["success", "tool_error", "upstream_failure"]),
+    responseBytes: Schema.Number,
+  }),
+  attempts: Schema.Number,
+  retryAt: Schema.Number,
+});
+
+type PendingSettle = typeof PendingSettle.Type;
+
+const decodePendingSettle = Schema.decodeUnknownOption(PendingSettle);
 
 /** The finished turns a child run has yet to deliver to the run that started it (#229), oldest first. */
 const DELIVERIES = "deliveries";
@@ -422,6 +498,8 @@ export abstract class AgentRunObject extends DurableObject<AgentRunEnv> {
   #queue: Promise<unknown> = Promise.resolve();
   /** The turns this instance waits on, so each is watched once. */
   readonly #watched = new Set<string>();
+  /** The gated sandbox calls (#230) whose settling this instance is trying now, so each is tried once at a time. */
+  readonly #settling = new Set<string>();
   /** The claimants waiting on each running turn now (#229): its result is theirs when it finishes. */
   readonly #claiming = new Map<string, Set<Claimant>>();
   /**
@@ -533,6 +611,91 @@ export abstract class AgentRunObject extends DurableObject<AgentRunEnv> {
     };
   }
 
+  /**
+   * Settles the run's gated sandbox call `ticket` (#230) with `report`, which writes its usage record, and forgets it.
+   * The report is kept first: a settling that fails (the org's tools or the usage database not reached) is tried again
+   * from the alarm with it ({@link SANDBOX_CALL}).
+   */
+  async #settleCall(
+    meta: StoredMeta,
+    ticket: string,
+    report: RunToolReport,
+  ): Promise<RunToolSettled> {
+    const key = `${SANDBOX_CALL}${ticket}`;
+    const kept = Option.getOrUndefined(decodePendingSettle(this.ctx.storage.kv.get(key)));
+    const attempts = (kept?.attempts ?? 0) + 1;
+
+    // One try of a ticket at a time: another already running (the alarm's, a reopened harness's) answers for it.
+    if (this.#purged || this.#settling.has(ticket)) return { recorded: false };
+    this.#settling.add(ticket);
+    const retryAt = Date.now() + deliveryBackoff(attempts);
+
+    this.ctx.storage.kv.put(key, { report, attempts, retryAt } satisfies PendingSettle);
+
+    try {
+      const settled = await this.#wiring
+        .gateway()
+        .settleToolCall(meta.org, meta.id, ticket, report);
+
+      if (!this.#purged) this.ctx.storage.kv.delete(key);
+
+      return settled;
+    } catch (error) {
+      warn("agent run: sandbox call not settled", meta.id, String(error));
+
+      if (attempts >= MAX_DELIVERY_ATTEMPTS) {
+        warn("agent run: sandbox call never settled, given up", meta.id, ticket);
+        this.ctx.storage.kv.delete(key);
+      } else await this.#retryLater(Math.max(0, retryAt - Date.now()));
+
+      return { recorded: false };
+    } finally {
+      this.#settling.delete(ticket);
+    }
+  }
+
+  /** The gated calls whose settling failed (#230), with their reports, to try again. */
+  #pendingSettles(): ReadonlyArray<readonly [string, PendingSettle]> {
+    return [...this.ctx.storage.kv.list({ prefix: SANDBOX_CALL })].flatMap(([key, value]) => {
+      const pending = Option.getOrUndefined(decodePendingSettle(value));
+
+      return pending === undefined ? [] : [[key.slice(SANDBOX_CALL.length), pending] as const];
+    });
+  }
+
+  /**
+   * Tries again each gated call's settling that failed (#230) and is due, with the report it kept; the alarm is set
+   * for the next of those not due yet. The list is read before the first await, so a settling started after the call
+   * is not tried with it.
+   */
+  async #retrySettles(meta: StoredMeta): Promise<void> {
+    const now = Date.now();
+    const pending = this.#pendingSettles();
+
+    await Promise.all(
+      pending
+        .filter(([, settle]) => settle.retryAt <= now)
+        .map(async ([ticket, settle]) => await this.#settleCall(meta, ticket, settle.report)),
+    );
+    await this.#scheduleSettles();
+  }
+
+  /** Sets the alarm for the next gated call's settling to try again (#230), if any is left. */
+  async #scheduleSettles(): Promise<void> {
+    const due = this.#pendingSettles().map(([, pending]) => pending.retryAt);
+
+    if (due.length > 0) await this.#retryLater(Math.max(0, Math.min(...due) - Date.now()));
+  }
+
+  /** Sets the alarm `delay` from now, unless it is set sooner. */
+  async #retryLater(delay: number): Promise<void> {
+    if (this.#purged) return;
+    const at = Date.now() + delay;
+    const alarm = await this.ctx.storage.getAlarm();
+
+    if (alarm === null || alarm > at) await this.ctx.storage.setAlarm(at);
+  }
+
   /** The run's harness, opened on first use: its tools listed, and what the last process left running resumed. */
   #harness(meta: StoredMeta): Promise<PiRun> {
     if (this.#purged) return Promise.reject(new Error("the run was deleted"));
@@ -555,7 +718,57 @@ export abstract class AgentRunObject extends DurableObject<AgentRunEnv> {
             }
           })();
         },
+        sandbox: {
+          settings: () => {
+            const stored = this.ctx.storage.kv.get(SANDBOX);
+
+            return stored === undefined ? undefined : Option.getOrUndefined(decodeSandbox(stored));
+          },
+          session: (toolkit) => {
+            const stored = Option.getOrUndefined(
+              decodeSandboxSession(this.ctx.storage.kv.get(SANDBOX_SESSION)),
+            );
+
+            // A session in another toolkit (the definition named another since) is not this one's: the run opens one.
+            return stored?.toolkit === toolkit ? stored.session : undefined;
+          },
+          opened: (sandbox, session) => {
+            if (this.#purged) return;
+
+            if (session === undefined) this.ctx.storage.kv.delete(SANDBOX_SESSION);
+            else this.ctx.storage.kv.put(SANDBOX_SESSION, { ...sandbox, session });
+          },
+          notice: () => {
+            const notice = this.ctx.storage.kv.get(SANDBOX_NOTICE);
+
+            this.ctx.storage.kv.delete(SANDBOX_NOTICE);
+
+            return typeof notice === "string" ? notice : undefined;
+          },
+          gated: (ticket) => {
+            if (!this.#purged) this.ctx.storage.kv.put(`${SANDBOX_CALL}${ticket}`, true);
+          },
+          operate: async (ticket, request) =>
+            await this.#wiring.gateway().sandboxOperation(meta.org, meta.id, ticket, request),
+          settle: async (ticket, report) => await this.#settleCall(meta, ticket, report),
+        },
       });
+
+      // The gated calls a stopped harness left unsettled were cut off: each is recorded as such, once; those whose
+      // settling failed are settled with the report they kept.
+      const cutOff = [...this.ctx.storage.kv.list({ prefix: SANDBOX_CALL })].flatMap(
+        ([key, value]) =>
+          Option.isSome(decodePendingSettle(value)) ? [] : [key.slice(SANDBOX_CALL.length)],
+      );
+
+      // The retries read their list first, so a ticket just cut off is never tried twice at once.
+      void Promise.all([
+        this.#retrySettles(meta),
+        ...cutOff.map(
+          async (ticket) =>
+            await this.#settleCall(meta, ticket, { outcome: "upstream_failure", responseBytes: 0 }),
+        ),
+      ]);
 
       void pi.closed.then(() => {
         if (this.#pi === opening) this.#pi = undefined;
@@ -699,6 +912,9 @@ export abstract class AgentRunObject extends DurableObject<AgentRunEnv> {
     if (this.ctx.storage.kv.get<string>(ACTIVE) === id) {
       this.ctx.storage.kv.delete(ACTIVE);
       await this.ctx.storage.deleteAlarm();
+
+      // A gated call's settling still to try again keeps its alarm (#230).
+      await this.#scheduleSettles();
       await this.#report(meta, this.#state(meta));
     }
 
@@ -927,7 +1143,24 @@ export abstract class AgentRunObject extends DurableObject<AgentRunEnv> {
     // A new turn reads the definition as it stands (ADR 0040): an agent disabled or removed since, or a starter who
     // may no longer use it, ends the run here. Steering joins the running turn, which keeps the definition it read.
     if (this.#active() === undefined) {
-      const found: RunsResult<RunContext> = await this.#controlPlane(meta).beginTurn(meta.id);
+      // The settings the run's session was opened with: one its definition no longer allows is left (#230).
+      const session = Option.getOrUndefined(
+        decodeSandboxSession(this.ctx.storage.kv.get(SANDBOX_SESSION)),
+      );
+
+      const opened =
+        session === undefined
+          ? undefined
+          : {
+              toolkit: session.toolkit,
+              ...(session.network === undefined ? {} : { network: session.network }),
+              ...(session.computer === undefined ? {} : { computer: session.computer }),
+            };
+
+      const found: RunsResult<RunContext> = await this.#controlPlane(meta).beginTurn(
+        meta.id,
+        opened,
+      );
 
       if (!found.ok) {
         if (found.error === "run_ended" || found.error === "not_found")
@@ -938,6 +1171,19 @@ export abstract class AgentRunObject extends DurableObject<AgentRunEnv> {
 
       context = found.value;
       this.ctx.storage.kv.delete(REFUSAL);
+
+      // The turn's tools follow its definition's sandbox, read when they are listed below.
+      if (context.sandbox === undefined) this.ctx.storage.kv.delete(SANDBOX);
+      else this.ctx.storage.kv.put(SANDBOX, context.sandbox);
+
+      // A session the definition no longer allows is left for a new one, which the call that opens it tells the model
+      // of; the Tools part deletes it with the run. Narrowing it in place is not offered: its network is its
+      // Workspace's.
+      if (context.sandboxNarrowed === true) {
+        this.ctx.storage.kv.delete(SANDBOX_SESSION);
+
+        if (context.sandbox !== undefined) this.ctx.storage.kv.put(SANDBOX_NOTICE, NARROWED);
+      }
     }
 
     const pi = await this.#harness(meta);
@@ -1199,7 +1445,7 @@ export abstract class AgentRunObject extends DurableObject<AgentRunEnv> {
    * Deletes the run: its harness closed, its alarm and all its storage (its transcript and turns) deleted. The org's
    * deletion calls it for each of its runs (`org-deletion.ts`) before it forgets them, and so do the sweeps of runs
    * deleted with their agent or their member or past the org's retention period (#228, `retention.ts`). The run's own
-   * sandbox session, once runs have one (#230), goes here too.
+   * sandbox session (#230) is not: the Tools part purges it when the run is forgotten (`forgetRuns`).
    */
   async purge(): Promise<void> {
     const id = this.#meta()?.id;
@@ -1241,7 +1487,8 @@ export abstract class AgentRunObject extends DurableObject<AgentRunEnv> {
 
   /**
    * The heartbeat while a turn runs: reopens the harness after an eviction or a deploy, so the turn resumes. A child
-   * run's alarm also tries again the deliveries that failed (#229).
+   * run's alarm also tries again the deliveries that failed (#229), and any run's the settlings of its gated sandbox
+   * calls that failed (#230).
    */
   override async alarm(): Promise<void> {
     const meta = this.#meta();
@@ -1256,5 +1503,6 @@ export abstract class AgentRunObject extends DurableObject<AgentRunEnv> {
     }
 
     await this.#deliverPending(meta);
+    await this.#retrySettles(meta);
   }
 }

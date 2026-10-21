@@ -128,7 +128,9 @@ export class SandboxSession extends FakeComputerSandboxSession {
   }
 
   override open(
-    ...[caller, allowance, policy, metering, opener]: Parameters<FakeComputerSandboxSession["open"]>
+    ...[caller, allowance, policy, metering, opener, untilPurged]: Parameters<
+      FakeComputerSandboxSession["open"]
+    >
   ) {
     return super.open(
       caller,
@@ -136,6 +138,7 @@ export class SandboxSession extends FakeComputerSandboxSession {
       policy,
       SandboxSession.#taken(metering),
       SandboxSession.#taken(opener),
+      untilPurged,
     );
   }
 
@@ -149,6 +152,16 @@ export class SandboxSession extends FakeComputerSandboxSession {
     ...[caller, path, metering]: Parameters<FakeComputerSandboxSession["readFile"]>
   ) {
     return super.readFile(caller, path, SandboxSession.#taken(metering));
+  }
+
+  override stat(...[caller, path, metering]: Parameters<FakeComputerSandboxSession["stat"]>) {
+    return super.stat(caller, path, SandboxSession.#taken(metering));
+  }
+
+  override readBytes(
+    ...[caller, path, offset, length, metering]: Parameters<FakeComputerSandboxSession["readBytes"]>
+  ) {
+    return super.readBytes(caller, path, offset, length, SandboxSession.#taken(metering));
   }
 
   override writeFile(

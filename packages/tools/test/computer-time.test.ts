@@ -836,17 +836,21 @@ describe("an agent run's sandbox session (#228)", () => {
     usage: { agentId: "ag_shared", runId: "ar_1", starter: "member:m_starter" },
   };
 
-  /** A call of `tool` by the shared agent's run, which has no member. */
+  /** A call of `tool` by the shared agent's run, which has no member; `sandbox_open` opens the run's own session. */
   const runCall = (org: Org, tool: string, args: Schema.JsonObject = {}) =>
-    org.stub
-      .tools()
-      .callTool(
-        { admin: false },
-        { name: tool, arguments: args, principalId: "run:ar_1", run: reach },
-        POLICY,
-      );
+    org.stub.tools().callTool(
+      { admin: false },
+      {
+        name: tool,
+        arguments: args,
+        principalId: "run:ar_1",
+        run: reach,
+        ...(tool === "sandbox_open" ? { runSession: true as const } : {}),
+      },
+      POLICY,
+    );
 
-  it("counts its computer time toward the agent's own limit, per call and from its alarm, and its record names the run", async () => {
+  it("counts its computer time toward the agent's own limit, per call and from its alarm, and its records name the run", async () => {
     const org = await computerOrg(MICRO_PER_MS);
 
     await org.limit("agent", "ag_shared", 10_000_000);
@@ -865,26 +869,231 @@ describe("an agent run's sandbox session (#228)", () => {
       ),
     ).toEqual([{ agent: "ag_shared" }]);
 
+    const startedAt = await org.now();
+
     await runCall(org, "sandbox_bash", { session: id, command: ON_COMPUTER });
     await org.advance(MINUTE);
     await runCall(org, "sandbox_list", { session: id });
     expect(await org.spent("agent")).toBe(MINUTE);
 
-    // The alarm reports the rest of the run when the computer stops, charged to the agent the part logged.
+    // The alarm reports the rest of the run when the computer stops, charged to the agent the part logged, and the
+    // run's session records that stretch then (#230); its close writes no record of its own.
     await org.advance(30 * MINUTE);
     await alarmOf(org, id);
     expect(await org.spent("agent")).toBe(10 * MINUTE);
     await runCall(org, "sandbox_close", { session: id });
-    expect(await sessionRecord(id)).toMatchObject({
+    expect(await sessionRecord(id)).toBeNull();
+    expect(await sessionRecord(`${id}:${startedAt}`)).toMatchObject({
       principal_id: "run:ar_1",
       member_id: null,
       private: 0,
       agent_id: "ag_shared",
       run_id: "ar_1",
       starter: "member:m_starter",
+      requested_at: startedAt,
       computer_ms: 10 * MINUTE,
       cost_micros: 10 * MINUTE,
     });
+  });
+});
+
+/** A command of the run `ar_1`'s gated call `ticket`. */
+const exec = (org: Org, ticket: string, command: string) =>
+  org.stub.tools().runSandboxOperation("ar_1", ticket, { op: "exec", command, timeoutMs: 10_000 });
+
+/** What a path is, by the run `ar_1`'s gated call `ticket`. */
+const stat = (org: Org, ticket: string) =>
+  org.stub.tools().runSandboxOperation("ar_1", ticket, { op: "stat", path: "/workspace/a" });
+
+describe("an agent run's gated sandbox calls (#230)", () => {
+  const reach = {
+    toolScope: [{ toolkit: "sandbox", tools: { kind: "all" as const } }],
+    asAgent: true,
+    starterMember: "m_starter",
+    usage: { agentId: "ag_shared", runId: "ar_1", starter: "member:m_starter" },
+  };
+
+  /** A call of `tool` by the shared agent's run; `executes`: gated for the run to execute (its ticket's id). */
+  const runCall = (org: Org, tool: string, args: Schema.JsonObject, executes = false) =>
+    org.stub.tools().callTool(
+      { admin: false },
+      {
+        name: tool,
+        arguments: args,
+        principalId: "run:ar_1",
+        run: reach,
+        ...(executes ? { executes: true as const } : {}),
+        ...(tool === "sandbox_open" ? { runSession: true as const } : {}),
+      },
+      POLICY,
+    );
+
+  /** The run's session, opened with the computer. */
+  const runSession = async (org: Org) => {
+    const opened = await runCall(org, "sandbox_open", { computer: true });
+
+    if (opened.outcome !== "result") throw new Error(`the call came to ${opened.outcome}`);
+
+    // SAFETY: `sandbox_open` answers the session in its structured content.
+    return (opened.result["structuredContent"] as { session: string }).session;
+  };
+
+  /** Gates the run's call of `tool` in `session`: its ticket. */
+  const gate = async (org: Org, session: string, tool: string) => {
+    const gated = await runCall(org, tool, { session }, true);
+
+    if (gated.outcome !== "gated") throw new Error(`the call came to ${gated.outcome}`);
+
+    return gated.ticket.id;
+  };
+
+  it("meter each operation's computer time, charged at once to the agent, and the session records each stretch as it stops", async () => {
+    const org = await computerOrg(MICRO_PER_MS);
+
+    await org.limit("agent", "ag_shared", 10_000_000);
+    const id = await runSession(org);
+    const firstAt = await org.now();
+    const command = await gate(org, id, "sandbox_bash");
+
+    expect(await exec(org, command, ON_COMPUTER)).toMatchObject({ ok: true });
+    await org.advance(MINUTE);
+
+    // Another call's operation answers the minute since, charged to the agent; the call's ticket holds its price only.
+    const read = await gate(org, id, "sandbox_read");
+
+    expect(await stat(org, read)).toEqual({ ok: true, value: null });
+    expect(await org.spent("agent")).toBe(MINUTE);
+    expect(await org.stub.tools().settleRunSandboxCall("ar_1", command)).toMatchObject({
+      costMicros: 0,
+      agent: "ag_shared",
+    });
+    expect((await org.stub.tools().settleRunSandboxCall("ar_1", read))?.refusal).toBeUndefined();
+
+    // The computer stops ten idle minutes after its command: the alarm charges the rest and records the stretch.
+    await org.advance(30 * MINUTE);
+    await alarmOf(org, id);
+    expect(await org.spent("agent")).toBe(10 * MINUTE);
+    expect(await sessionRecord(`${id}:${firstAt}`)).toMatchObject({
+      principal_id: "run:ar_1",
+      agent_id: "ag_shared",
+      run_id: "ar_1",
+      tool_id: null,
+      requested_at: firstAt,
+      computer_ms: 10 * MINUTE,
+      cost_micros: 10 * MINUTE,
+    });
+    // With nothing left to do, a run's session has no alarm: no idle day ends it.
+    expect(await alarmAt(org, id)).toBeNull();
+
+    // A second stretch, still running when the run is deleted: the purge stops it, charges it and records it.
+    const secondAt = await org.now();
+
+    expect(await exec(org, await gate(org, id, "sandbox_bash"), ON_COMPUTER)).toMatchObject({
+      ok: true,
+    });
+    await org.advance(2 * MINUTE);
+    expect(await org.stub.tools().purgeRunSandboxSessions(["ar_1"])).toEqual(["ar_1"]);
+    expect(await org.spent("agent")).toBe(12 * MINUTE);
+    expect(await sessionRecord(`${id}:${secondAt}`)).toMatchObject({
+      requested_at: secondAt,
+      computer_ms: 2 * MINUTE,
+      cost_micros: 2 * MINUTE,
+    });
+    // The session writes no record of its own.
+    expect(await sessionRecord(id)).toBeNull();
+    expect(await keptSessions(org)).toEqual([]);
+  });
+
+  it("record a stretch that ended before the next call as its own, and try a record that failed again from the alarm", async () => {
+    const org = await computerOrg(MICRO_PER_MS);
+    const session = await sessionClass();
+    const id = await runSession(org);
+    const firstAt = await org.now();
+
+    await exec(org, await gate(org, id, "sandbox_bash"), ON_COMPUTER);
+    // The next command comes after the computer stopped, before its alarm: the first stretch is recorded first.
+    await org.advance(15 * MINUTE);
+    const secondAt = await org.now();
+
+    // Its record fails, and fails again as the call ends.
+    session.failRecords = 2;
+    await exec(org, await gate(org, id, "sandbox_bash"), ON_COMPUTER);
+    expect(await sessionRecord(`${id}:${firstAt}`)).toBeNull();
+    expect(await alarmAt(org, id)).toBe(secondAt + SETTLE_RETRY_MS);
+
+    await org.advance(SETTLE_RETRY_MS);
+    await alarmOf(org, id);
+    expect(await sessionRecord(`${id}:${firstAt}`)).toMatchObject({ computer_ms: 10 * MINUTE });
+
+    await org.advance(30 * MINUTE);
+    await alarmOf(org, id);
+    expect(await sessionRecord(`${id}:${secondAt}`)).toMatchObject({ computer_ms: 10 * MINUTE });
+  });
+
+  it("once a limit has no room, stop a running computer with a note, and refuse only a command that needs it, which ends the turn", async () => {
+    const org = await computerOrg(MICRO_PER_MS);
+
+    await org.limit("agent", "ag_shared", 100_000);
+    const id = await runSession(org);
+    const startedAt = await org.now();
+
+    await exec(org, await gate(org, id, "sandbox_bash"), ON_COMPUTER);
+    await org.advance(200_000);
+    // The computer's time uses the limit up.
+    expect(await stat(org, await gate(org, id, "sandbox_read"))).toMatchObject({ ok: true });
+    expect(await org.spent("agent")).toBe(200_000);
+
+    // A call that does not need the computer goes on: the computer is stopped, and the model is told.
+    await org.advance(5_000);
+    const read = await gate(org, id, "sandbox_read");
+
+    expect(await stat(org, read)).toEqual({ ok: true, value: null, note: COMPUTER_STOPPED_NOTE });
+    expect(await org.spent("agent")).toBe(205_000);
+    expect(await sessionRecord(`${id}:${startedAt}`)).toMatchObject({
+      computer_ms: 205_000,
+      cost_micros: 205_000,
+    });
+    expect(await stat(org, read)).toEqual({ ok: true, value: null });
+    expect((await org.stub.tools().settleRunSandboxCall("ar_1", read))?.refusal).toBeUndefined();
+
+    // A command just-bash runs runs; one that needs the computer is refused, and settling the call answers the refusal.
+    const command = await gate(org, id, "sandbox_bash");
+
+    expect(await exec(org, command, "echo still here")).toMatchObject({
+      ok: true,
+      value: { stdout: "still here\n" },
+    });
+    expect(await exec(org, command, ON_COMPUTER)).toMatchObject({ ok: false, reason: "failed" });
+    expect(await org.stub.tools().settleRunSandboxCall("ar_1", command)).toMatchObject({
+      refusal: { kind: "agent" },
+    });
+    expect(await org.spent("agent")).toBe(205_000);
+  });
+
+  it("charge a priced tool's price as the call is gated, which its ticket holds, and refuse it once a limit has no room", async () => {
+    const org = await computerOrg();
+
+    await org.stub
+      .tools()
+      .setOverride(org.admin, "sandbox", 0, { tool: "bash", price_micros: 100 }, "t");
+    await org.limit("agent", "ag_shared", 150);
+    const id = await runSession(org);
+    const command = await gate(org, id, "sandbox_bash");
+
+    expect(await org.spent("agent")).toBe(100);
+    expect(await org.stub.tools().settleRunSandboxCall("ar_1", command)).toMatchObject({
+      costMicros: 100,
+      agent: "ag_shared",
+    });
+
+    // The limit's room is used: the next call is refused at its gate, with no ticket and no charge.
+    await gate(org, id, "sandbox_bash");
+    expect(await org.spent("agent")).toBe(200);
+    expect(await runCall(org, "sandbox_bash", { session: id }, true)).toMatchObject({
+      outcome: "refused",
+      refusal: { kind: "agent" },
+    });
+    expect(await org.spent("agent")).toBe(200);
   });
 });
 

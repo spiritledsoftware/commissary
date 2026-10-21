@@ -17,6 +17,7 @@ import {
   abortAllDurableObjects,
   createExecutionContext,
   runDurableObjectAlarm,
+  runInDurableObject,
 } from "cloudflare:test";
 import { env, exports } from "cloudflare:workers";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -1571,6 +1572,512 @@ describe("the agents toolkit", () => {
         { timeout: 60_000 },
       );
       expect(upstream.requests.some((request) => agentOf(request) === "d")).toBe(false);
+    },
+    RUN_TIMEOUT,
+  );
+});
+
+// --- a run's sandbox (#230) ---------------------------------------------------------------------------------------------
+
+/** The sandbox the agents of these tests name: the built-in sandbox toolkit, without network or computer. */
+const SANDBOX = { toolkit: "sandbox" };
+
+/** pi's coding tools, as a run whose definition names a sandbox offers them to its model. */
+const CODING_TOOLS = ["bash", "read", "write", "edit"];
+
+/** An org whose members may all use the built-in sandbox toolkit. */
+const sandboxOrg = async (upstream: { readonly origin: string }): Promise<Org> => {
+  const org = await newOrg(upstream);
+
+  ok(
+    await send(org, "/grants/tools", org.admin, "POST", {
+      subject: { kind: "everyone" },
+      toolkit: "sandbox",
+      tools: { kind: "all" },
+    }),
+  );
+
+  return org;
+};
+
+/** The names of the tools a model request offers. */
+const offered = (request: ChatRequest): ReadonlyArray<string> =>
+  (request.tools ?? []).map((tool) => tool.function.name);
+
+/**
+ * A model that works in the sandbox: to `write` it writes a file with the `write` tool, to `edit` it changes it with
+ * the `edit` tool, to `read` it reads it back with `bash`; once the tool answered, it answers with the tool's result.
+ */
+const sandboxScript = (request: ChatRequest): Reply => {
+  const messages = request.messages ?? [];
+  const asked = messages.findLastIndex((message) => message.role === "user");
+  const input = contentText(messages[asked]?.content);
+  const result = messages.slice(asked + 1).find((message) => message.role === "tool");
+
+  if (result !== undefined) return { text: `tool said: ${contentText(result.content)}` };
+
+  switch (input) {
+    case "write":
+      return { tool: "write", args: { path: "notes.txt", content: "hello from the sandbox" } };
+    case "edit":
+      return {
+        tool: "edit",
+        args: { path: "notes.txt", edits: [{ oldText: "hello", newText: "greetings" }] },
+      };
+    default:
+      return { tool: "bash", args: { command: "cat notes.txt" } };
+  }
+};
+
+/** The run's sandbox session, as its object keeps it. */
+const runSession = async (org: Org, run: string) =>
+  await runInDurableObject(
+    env.AGENT_RUN.getByName(`${org.id}:${run}`),
+    // SAFETY: the run's object keeps its session as `{ toolkit, session }` (`run-object.ts`, `SANDBOX_SESSION`).
+    (_, state) => state.storage.kv.get("sandbox-session") as { session: string } | undefined,
+  );
+
+/** The run's tool calls' usage records: each tool and how its call ended, oldest first. */
+const toolRecordsOf = async (run: string) =>
+  (
+    await env.USAGE.prepare(
+      `SELECT tool_id, tool_outcome FROM usage_records WHERE run_id = ? AND area = 'tools'
+       ORDER BY requested_at`,
+    )
+      .bind(run)
+      .all<{ tool_id: string; tool_outcome: string }>()
+  ).results.map((row) => [row.tool_id, row.tool_outcome]);
+
+/** The tickets of gated sandbox calls the org's ControlPlane still holds. */
+const ticketsOf = async (org: Org) =>
+  await runInDurableObject(env.CONTROL_PLANE.getByName(org.id), (_, state) =>
+    state.storage.sql.exec("SELECT id FROM sandbox_run_calls WHERE settled_at IS NULL").toArray(),
+  );
+
+/** The sandbox sessions the org's ControlPlane tracks for the run `run`. */
+const trackedSessions = async (org: Org, run: string) =>
+  await runInDurableObject(env.CONTROL_PLANE.getByName(org.id), (_, state) =>
+    state.storage.sql
+      .exec<{ id: string }>("SELECT id FROM sandbox_sessions WHERE principal = ?", `run:${run}`)
+      .toArray()
+      .map((row) => row.id),
+  );
+
+describe("a run's sandbox (#230)", () => {
+  it(
+    "gives the model pi's coding tools on one session of the run's, which lasts across turns and goes with the run",
+    async () => {
+      const upstream = fakeUpstream(sandboxScript);
+      const org = await sandboxOrg(upstream);
+
+      const agent = await createAgent(
+        org,
+        org.alice,
+        agentBody("builder", MODEL, { sandbox: SANDBOX }),
+      );
+
+      const started = await start(org, org.alice, agent.id, "write");
+
+      expect(await waitFor(org, org.alice, started.run.id)).toMatchObject({
+        finished: true,
+        turn: { status: "done" },
+      });
+
+      // The sandbox toolkit's own tools are not offered: pi's coding tools stand for them, on the run's session.
+      const tools = offered(upstream.requests[0] ?? {});
+
+      expect(tools).toEqual(expect.arrayContaining(CODING_TOOLS));
+      expect(tools.filter((name) => name.startsWith("sandbox_"))).toEqual([]);
+
+      const session = (await runSession(org, started.run.id))?.session;
+
+      expect(session).toEqual(expect.any(String));
+      expect(await trackedSessions(org, started.run.id)).toEqual([session]);
+
+      // A later turn works in the same session: the file the first wrote is there.
+      const next = ok<{ turn: Turn }>(
+        await send(org, `/agent-runs/${started.run.id}/messages`, org.alice, "POST", {
+          message: "read",
+        }),
+      );
+
+      const read = await waitFor(org, org.alice, started.run.id, next.turn.id);
+
+      expect(read.turn.status).toBe("done");
+      expect(read.turn.answer).toContain("hello from the sandbox");
+      expect((await runSession(org, started.run.id))?.session).toBe(session);
+
+      // pi's edit makes three operations on the session (what the file is, its text, the new text): one call.
+      const edit = ok<{ turn: Turn }>(
+        await send(org, `/agent-runs/${started.run.id}/messages`, org.alice, "POST", {
+          message: "edit",
+        }),
+      );
+
+      const edited = await waitFor(org, org.alice, started.run.id, edit.turn.id);
+
+      expect(edited.turn.answer).toContain("Successfully replaced 1 block(s) in notes.txt.");
+
+      // Each call was gated as the sandbox toolkit's tool, as the run's principal, and has one usage record; no ticket
+      // is left unsettled.
+      const records = await recordsOf(started.run.id, 10);
+
+      expect(records.filter((record) => record.area === "tools")).toHaveLength(4);
+      expect(await toolRecordsOf(started.run.id)).toEqual([
+        ["sandbox:open", "success"],
+        ["sandbox:write", "success"],
+        ["sandbox:bash", "success"],
+        ["sandbox:edit", "success"],
+      ]);
+      expect(await ticketsOf(org)).toEqual([]);
+
+      // A ticket never issued writes no record.
+      expect(
+        await gateway().settleToolCall(org.id, started.run.id, "rtc_none", {
+          outcome: "success",
+          responseBytes: 0,
+        }),
+      ).toEqual({ recorded: false });
+
+      // Deleting the agent deletes its runs, and their sandbox sessions with them.
+      ok(
+        await send(
+          org,
+          `/agents/${agent.id}`,
+          org.alice,
+          "DELETE",
+          undefined,
+          await revisionOf(org, org.alice, agent.id),
+        ),
+      );
+      expect(await trackedSessions(org, started.run.id)).toEqual([]);
+    },
+    RUN_TIMEOUT,
+  );
+
+  it(
+    "keeps a gated call's report when its settling fails, and settles it from the alarm, backing off, into one record",
+    async () => {
+      const upstream = fakeUpstream(sandboxScript);
+      const org = await sandboxOrg(upstream);
+
+      const agent = await createAgent(
+        org,
+        org.alice,
+        agentBody("builder", MODEL, { sandbox: SANDBOX }),
+      );
+
+      // The usage database refuses the write's record until the trigger goes: its settling fails.
+      await env.USAGE.prepare(
+        `CREATE TRIGGER fail_write_record BEFORE INSERT ON usage_records WHEN NEW.tool_id = 'sandbox:write'
+         BEGIN SELECT RAISE(ABORT, 'the record cannot be written'); END`,
+      ).run();
+
+      try {
+        const before = Date.now();
+        const started = await start(org, org.alice, agent.id, "write");
+
+        expect(await waitFor(org, org.alice, started.run.id)).toMatchObject({
+          turn: { status: "done" },
+        });
+
+        const after = Date.now();
+        const object = env.AGENT_RUN.getByName(`${org.id}:${started.run.id}`);
+
+        /** The run's settlings to try again, and its alarm. */
+        const pending = async () =>
+          await runInDurableObject(object, async (_, state) => ({
+            // SAFETY: the run keeps each as `{ report, attempts, retryAt }` (`run-object.ts`, `PendingSettle`).
+            settles: [...state.storage.kv.list({ prefix: "sandbox-call:" })] as Array<
+              [string, { report: { outcome: string }; attempts: number; retryAt: number }]
+            >,
+            alarm: await state.storage.getAlarm(),
+          }));
+
+        /** Makes each settling to try again due now. */
+        const due = async () =>
+          await runInDurableObject(object, (_, state) => {
+            for (const [key, value] of state.storage.kv.list({ prefix: "sandbox-call:" }))
+              state.storage.kv.put(key, { ...(value as object), retryAt: 0 });
+          });
+
+        // The report is kept, to be tried again 30 s after the first try, which the alarm is set for.
+        const first = await pending();
+        const [[, kept] = []] = first.settles;
+
+        expect(first.settles).toHaveLength(1);
+        expect(kept).toMatchObject({ report: { outcome: "success" }, attempts: 1 });
+        expect(kept?.retryAt).toBeGreaterThanOrEqual(before + 30_000);
+        expect(kept?.retryAt).toBeLessThanOrEqual(after + 30_000);
+        expect(first.alarm).toBe(kept?.retryAt);
+
+        // An alarm before it is due tries nothing, and sets itself for it again.
+        await runDurableObjectAlarm(object);
+        expect(await pending()).toEqual(first);
+
+        // Due, tried again and failing again: the next try waits twice as long.
+        await due();
+        const retriedAt = Date.now();
+
+        await runDurableObjectAlarm(object);
+        const second = await pending();
+        const [[, again] = []] = second.settles;
+
+        expect(again).toMatchObject({ report: { outcome: "success" }, attempts: 2 });
+        expect(again?.retryAt).toBeGreaterThanOrEqual(retriedAt + 60_000);
+        expect(again?.retryAt).toBeLessThanOrEqual(Date.now() + 60_000);
+        expect(second.alarm).toBe(again?.retryAt);
+
+        // Once the record can be written, the next try writes it, once, as the call ended: a success.
+        await env.USAGE.prepare("DROP TRIGGER fail_write_record").run();
+        await due();
+        await runDurableObjectAlarm(object);
+        expect((await pending()).settles).toEqual([]);
+        expect(
+          (await toolRecordsOf(started.run.id)).filter(([tool]) => tool === "sandbox:write"),
+        ).toEqual([["sandbox:write", "success"]]);
+      } finally {
+        await env.USAGE.prepare("DROP TRIGGER IF EXISTS fail_write_record").run();
+      }
+    },
+    RUN_TIMEOUT,
+  );
+
+  it(
+    "records a gated call the run was stopped in as interrupted when it reopens, once",
+    async () => {
+      const upstream = fakeUpstream(() => ({ text: "resumed" }));
+      const org = await sandboxOrg(upstream);
+
+      const agent = await createAgent(
+        org,
+        org.alice,
+        agentBody("builder", MODEL, { sandbox: SANDBOX }),
+      );
+
+      const held = deferred();
+
+      upstream.holdAt(0, held.promise);
+      const started = await start(org, org.alice, agent.id, "work");
+
+      await upstream.arrived(1);
+
+      /** A `tools/call` of `name` with `args` and `meta` as the run, through its gateway. */
+      const runCall = async (
+        name: string,
+        args: Record<string, string>,
+        meta: Record<string, true>,
+      ) =>
+        await gateway().serve(
+          org.id,
+          started.run.id,
+          new Request("https://client-api.agent-run.invalid/mcp", {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              accept: "application/json, text/event-stream",
+            },
+            body: JSON.stringify({
+              jsonrpc: "2.0",
+              id: 1,
+              method: "tools/call",
+              params: { name, arguments: args, _meta: meta },
+            }),
+          }),
+        );
+
+      // The run's own session, as its harness opens it; then a call gated for the run in it, as its coding tool's
+      // gate makes it, whose run then stops before settling it.
+      const opening = await runCall("sandbox_open", {}, { "commissary/run-session": true });
+
+      // SAFETY: the endpoint answers a JSON-RPC response, `sandbox_open`'s with the session in its structured content.
+      const opened = (await opening.json()) as {
+        result: { structuredContent: { session: string } };
+      };
+
+      const gated = await runCall(
+        "sandbox_bash",
+        { session: opened.result.structuredContent.session, command: "true" },
+        { "commissary/run-executes": true },
+      );
+
+      // SAFETY: the endpoint answers a JSON-RPC response, a gated call's with its ticket in `_meta`.
+      const answer = (await gated.json()) as {
+        result: { _meta: { "commissary/run-ticket": { id: string } } };
+      };
+
+      const ticket = answer.result._meta["commissary/run-ticket"].id;
+      const object = env.AGENT_RUN.getByName(`${org.id}:${started.run.id}`);
+
+      await runInDurableObject(object, (_, state) => {
+        state.storage.kv.put(`sandbox-call:${ticket}`, true);
+      });
+
+      await abortAllDurableObjects();
+      held.release();
+
+      // The heartbeat reopens the harness, which settles the call as interrupted: its one record.
+      await runDurableObjectAlarm(env.AGENT_RUN.getByName(`${org.id}:${started.run.id}`));
+      await waitFor(org, org.alice, started.run.id, started.turn.id);
+
+      await vi.waitFor(
+        async () =>
+          expect(
+            (await toolRecordsOf(started.run.id)).toSorted(([a], [b]) =>
+              String(a).localeCompare(String(b)),
+            ),
+          ).toEqual([
+            ["sandbox:bash", "upstream_failure"],
+            ["sandbox:open", "success"],
+          ]),
+        { timeout: 15_000 },
+      );
+      expect(await ticketsOf(org)).toEqual([]);
+    },
+    RUN_TIMEOUT,
+  );
+
+  it(
+    "puts its calls under the sandbox toolkit's approval rules: a marked sandbox_bash holds bash",
+    async () => {
+      const upstream = fakeUpstream(sandboxScript);
+      const org = await sandboxOrg(upstream);
+
+      const toolkits = ok<{ toolkits: ReadonlyArray<{ id: string; revision: number }> }>(
+        await send(org, "/toolkits", org.admin),
+      );
+
+      const sandbox = toolkits.toolkits.find((toolkit) => toolkit.id === "sandbox");
+
+      ok(
+        await send(
+          org,
+          "/toolkits/sandbox",
+          org.admin,
+          "PATCH",
+          { approval_rules: { tools: [{ id: "sandbox:bash" }] } },
+          sandbox?.revision,
+        ),
+      );
+
+      const agent = await createAgent(
+        org,
+        org.alice,
+        agentBody("builder", MODEL, { sandbox: SANDBOX }),
+      );
+
+      const started = await start(org, org.alice, agent.id, "read");
+      const waited = await waitFor(org, org.alice, started.run.id);
+
+      // The call waits for its approver, the run's starter; the model is told in the names it knows.
+      expect(waited.turn.answer).toContain("bash was not called yet: the call waits for approval");
+      expect(waited.turn.answer).not.toContain("sandbox_bash");
+
+      expect(
+        ok<{ approvals: ReadonlyArray<{ tool: { name: string }; status: string }> }>(
+          await send(org, "/approvals", org.alice),
+        ).approvals,
+      ).toMatchObject([{ tool: { name: "sandbox_bash" }, status: "pending" }]);
+    },
+    RUN_TIMEOUT,
+  );
+
+  it(
+    "leaves the run's session for a new one once its definition narrowed, and keeps it when the definition widened",
+    async () => {
+      const upstream = fakeUpstream(sandboxScript);
+      const org = await sandboxOrg(upstream);
+      const hosts = { kind: "hosts" as const, hosts: ["example.com"] };
+
+      const toolkits = ok<{ toolkits: ReadonlyArray<{ id: string; revision: number }> }>(
+        await send(org, "/toolkits", org.admin),
+      );
+
+      const sandbox = toolkits.toolkits.find((toolkit) => toolkit.id === "sandbox");
+
+      ok(
+        await send(
+          org,
+          "/toolkits/sandbox",
+          org.admin,
+          "PATCH",
+          { network: hosts },
+          sandbox?.revision,
+        ),
+      );
+
+      const agent = await createAgent(
+        org,
+        org.alice,
+        agentBody("builder", MODEL, { sandbox: { ...SANDBOX, network: hosts } }),
+      );
+
+      const started = await start(org, org.alice, agent.id, "write");
+
+      await waitFor(org, org.alice, started.run.id);
+      const first = await runSession(org, started.run.id);
+
+      expect(first).toMatchObject({ toolkit: "sandbox", network: hosts });
+
+      /** Runs a turn of the run that reads the file back; the run's session after it. */
+      const readTurn = async () => {
+        const next = ok<{ turn: Turn }>(
+          await send(org, `/agent-runs/${started.run.id}/messages`, org.alice, "POST", {
+            message: "read",
+          }),
+        );
+
+        await waitFor(org, org.alice, started.run.id, next.turn.id);
+
+        return await runSession(org, started.run.id);
+      };
+
+      // Its network narrowed (none now): the next turn opens a new, empty session; the old one goes with the run.
+      await editAgent(org, org.alice, agent.id, { sandbox: SANDBOX });
+      const second = await readTurn();
+
+      expect(second?.session).toEqual(expect.any(String));
+      expect(second?.session).not.toBe(first?.session);
+      expect(second).not.toHaveProperty("network");
+      expect(new Set(await trackedSessions(org, started.run.id))).toEqual(
+        new Set([first?.session, second?.session]),
+      );
+
+      // The call that opened it told the model why, once.
+      expect(
+        await runInDurableObject(
+          env.AGENT_RUN.getByName(`${org.id}:${started.run.id}`),
+          (_, state) => state.storage.kv.get("sandbox-notice"),
+        ),
+      ).toBeUndefined();
+
+      // Widened again: the session keeps what it has.
+      await editAgent(org, org.alice, agent.id, { sandbox: { ...SANDBOX, network: hosts } });
+      expect((await readTurn())?.session).toBe(second?.session);
+    },
+    RUN_TIMEOUT,
+  );
+
+  it(
+    "gives a run whose definition names no sandbox no coding tools, the sandbox toolkit's own as its tool scope has them",
+    async () => {
+      const upstream = fakeUpstream(() => ({ text: "no sandbox" }));
+      const org = await sandboxOrg(upstream);
+
+      const agent = await createAgent(
+        org,
+        org.alice,
+        agentBody("plain", MODEL, { tool_scope: allTools("sandbox") }),
+      );
+
+      const started = await start(org, org.alice, agent.id, "hello");
+
+      await waitFor(org, org.alice, started.run.id);
+
+      const tools = offered(upstream.requests[0] ?? {});
+
+      expect(tools.filter((name) => CODING_TOOLS.includes(name))).toEqual([]);
+      expect(tools).toEqual(expect.arrayContaining(["sandbox_open", "sandbox_bash"]));
     },
     RUN_TIMEOUT,
   );

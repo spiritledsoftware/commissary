@@ -574,7 +574,8 @@ The stored account of one attempt, tool call, browser session or sandbox session
 tool call's org, principal, credential, tokens or tool, cost, latency and outcome, and the hosted agent, agent run and
 starter behind it if any; a browser session's org, principal, browser profile, browser time and cost; a sandbox
 session's org, principal, computer time and cost. A request that fails over leaves one record per attempt; a browser
-or sandbox session leaves one when it closes, which is not a request.
+or sandbox session leaves one when it closes, which is not a request, but an agent run's sandbox session leaves one
+each time its computer stops instead.
 _Avoid_: request, log entry
 
 **Token breakdown**:
@@ -775,6 +776,12 @@ _Avoid_: workspace (on its own), shell, code interpreter
 **Sandbox session**:
 One open sandbox with its files, which belongs to the member and API key that opened it, or to the agent run it serves.
 _Avoid_: container, VM, workspace (on its own)
+
+**Gated call**:
+An agent run's call of one of its coding tools (bash, read, write, edit), checked as the sandbox toolkit's tool of the
+same name and charged its price, then made by the run itself on its sandbox session; its ticket authorises that call's
+operations until it is settled. It is not a call held for an approver: that is a pending approval.
+_Avoid_: pending call, approval ticket
 
 **Computer**:
 The Linux machine that Cloudflare's sandbox falls back to for a command its shell cannot run, working on the same files.

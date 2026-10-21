@@ -3,6 +3,7 @@ import { Clock } from "effect";
 import { accessTo, isFullAccess, roleAtLeast, type Scope, type Viewer } from "@commissary/auth";
 import type {
   AgentGrantBody,
+  AgentSandbox,
   AgentGrants,
   AgentsList,
   AgentView,
@@ -72,7 +73,8 @@ export type AgentsErrorCode =
   | "private_agents_unavailable"
   | "unknown_model"
   | "unknown_toolkit"
-  | "unknown_agent";
+  | "unknown_agent"
+  | "invalid_sandbox";
 
 export type AgentsResult<A> = Refusable<AgentsErrorCode, A>;
 
@@ -92,6 +94,27 @@ export interface ReferenceCheck {
   readonly modelServed?: boolean | undefined;
   /** The toolkits its tool scope names that the org (or a private agent's member) does not have. */
   readonly unknownToolkits?: ReadonlyArray<string> | undefined;
+  /**
+   * Why its sandbox (#230) cannot be: it names no sandbox toolkit the org (or a private agent's member) has, or asks
+   * for more than that toolkit's ceiling; absent when it can, or the write does not name one.
+   */
+  readonly sandboxRefusal?: string | undefined;
+}
+
+/**
+ * The sandbox sessions of the org's agent runs (#230), which the Tools part of the same ControlPlane keeps: a run's
+ * session lasts as long as the run, and goes when the run is deleted. The state Worker's composition wires it
+ * (`apps/state/src/control-plane.ts`), as Agents imports nothing of Tools; without it (Agents' own tests) a run has no
+ * session to delete.
+ */
+export interface RunSandboxes {
+  /** Deletes the sandbox sessions of the runs `runIds`; answers the runs none of whose sessions is left. */
+  readonly purge: (runIds: ReadonlyArray<string>) => Promise<ReadonlyArray<string>>;
+  /**
+   * Whether a run's session opened with `opened` still fits its definition's sandbox `definition` and the sandbox
+   * toolkit's ceiling now: a definition or ceiling narrowed since does not, and the run opens a new session.
+   */
+  readonly fits: (definition: AgentSandbox, opened: AgentSandbox) => boolean;
 }
 
 /** What the routes hand over for an agent grant: `value` `null` deletes it; no `id` creates one (`revision` 0). */
@@ -117,6 +140,7 @@ export interface AgentExport {
   readonly model: string;
   readonly thinking?: string;
   readonly tool_scope: ToolScope;
+  readonly sandbox?: AgentSandbox;
   readonly enabled: boolean;
   readonly private: boolean;
   readonly triggers: ReadonlyArray<TriggerExport>;
@@ -135,6 +159,7 @@ interface DefinitionFields {
   readonly model: string;
   readonly thinking?: CreateAgent["thinking"];
   readonly tool_scope: ToolScope;
+  readonly sandbox?: AgentSandbox | undefined;
 }
 
 /** Whether `subject` names the member `member` (of the teams `teams`). */
@@ -179,13 +204,15 @@ export class AgentsPart extends RpcTarget implements ControlPlanePart {
   readonly #store: AgentStore;
   readonly #runs: Runs;
   readonly #triggers: Triggers;
+  readonly #sandboxes: RunSandboxes | undefined;
   /** What the part reads the time from: the live clock, or a test's (`useClock`). */
   #clock: Clock.Clock = Clock.Clock.defaultValue();
 
-  constructor(ctx: DurableObjectState, core: OrgCore) {
+  constructor(ctx: DurableObjectState, core: OrgCore, sandboxes?: RunSandboxes) {
     super();
     this.#ctx = ctx;
     this.#core = core;
+    this.#sandboxes = sandboxes;
     this.#store = new AgentStore(ctx.storage.sql);
     const now = () => this.#clock.currentTimeMillisUnsafe();
 
@@ -460,6 +487,7 @@ export class AgentsPart extends RpcTarget implements ControlPlanePart {
         model: input.model ?? agent.model,
         thinking: input.thinking === undefined ? agent.thinking : (input.thinking ?? undefined),
         tool_scope: input.tool_scope ?? agent.toolScope,
+        sandbox: input.sandbox === undefined ? agent.sandbox : (input.sandbox ?? undefined),
       },
       agent.owner,
       check,
@@ -700,10 +728,21 @@ export class AgentsPart extends RpcTarget implements ControlPlanePart {
 
   /**
    * A new turn of the run `runId` starts (its object asks): its agent's definition as it stands now, recorded as the
-   * turn's reach; or why the run cannot go on (`run_ended`). See `runs/runs.ts`.
+   * turn's reach; or why the run cannot go on (`run_ended`). See `runs/runs.ts`. `opened` is what the run's sandbox
+   * session was opened with (#230), if it has one: a session the definition's sandbox, or the toolkit's ceiling, no
+   * longer allows answers `sandboxNarrowed`, and the run leaves it for a new one; a widened one keeps what it has.
    */
-  beginTurn(runId: string): RunsResult<RunContext> {
-    return this.#runs.beginTurn(runId);
+  beginTurn(runId: string, opened?: AgentSandbox): RunsResult<RunContext> {
+    const turn = this.#runs.beginTurn(runId);
+
+    if (!turn.ok || opened === undefined) return turn;
+    const { sandbox } = turn.value;
+
+    const fits =
+      sandbox !== undefined &&
+      (this.#sandboxes === undefined || this.#sandboxes.fits(sandbox, opened));
+
+    return fits ? turn : ok({ ...turn.value, sandboxNarrowed: true });
   }
 
   /**
@@ -724,9 +763,13 @@ export class AgentsPart extends RpcTarget implements ControlPlanePart {
     return this.#runs.page(limit);
   }
 
-  /** Forgets the runs `ids`, whose objects were deleted (the org's deletion, or a sweep of deleted runs). */
-  forgetRuns(ids: ReadonlyArray<string>): void {
-    this.#runs.forget(ids);
+  /**
+   * Forgets the runs `ids`, whose objects were deleted (the org's deletion, or a sweep of deleted runs), once their
+   * sandbox sessions are deleted too (#230): a run whose session the sandbox could not reach stays listed, for the next
+   * sweep.
+   */
+  async forgetRuns(ids: ReadonlyArray<string>): Promise<void> {
+    this.#runs.forget(this.#sandboxes === undefined ? ids : await this.#sandboxes.purge(ids));
   }
 
   /**
@@ -849,6 +892,7 @@ export class AgentsPart extends RpcTarget implements ControlPlanePart {
         model: agent.model,
         ...(agent.thinking === undefined ? {} : { thinking: agent.thinking }),
         tool_scope: agent.toolScope,
+        ...(agent.sandbox === undefined ? {} : { sandbox: agent.sandbox }),
         enabled: agent.enabled,
         private: agent.owner !== undefined,
         triggers: this.#triggers.exported(agent.id),
@@ -879,7 +923,10 @@ export class AgentsPart extends RpcTarget implements ControlPlanePart {
     check: ReferenceCheck,
     changed: { readonly name: boolean; readonly toolScope: boolean; readonly self?: string },
   ): AgentsResult<
-    Pick<StoredAgent, "name" | "description" | "instructions" | "model" | "thinking" | "toolScope">
+    Pick<
+      StoredAgent,
+      "name" | "description" | "instructions" | "model" | "thinking" | "toolScope" | "sandbox"
+    >
   > {
     const textRefusal = definitionRefusal(fields);
 
@@ -909,6 +956,8 @@ export class AgentsPart extends RpcTarget implements ControlPlanePart {
           ? `the org has no toolkit ${unknownToolkit}`
           : `the agent's member reaches no toolkit ${unknownToolkit}`,
       );
+
+    if (check.sandboxRefusal !== undefined) return refuse("invalid_sandbox", check.sandboxRefusal);
 
     const toolScope = changed.toolScope
       ? normalizedToolScope(fields.tool_scope)
@@ -948,6 +997,10 @@ export class AgentsPart extends RpcTarget implements ControlPlanePart {
       model: fields.model.trim(),
       thinking: fields.thinking,
       toolScope,
+      sandbox:
+        fields.sandbox === undefined
+          ? undefined
+          : { ...fields.sandbox, toolkit: fields.sandbox.toolkit.trim() },
     });
   }
 
@@ -1073,6 +1126,7 @@ export class AgentsPart extends RpcTarget implements ControlPlanePart {
       model: agent.model,
       ...(agent.thinking === undefined ? {} : { thinking: agent.thinking }),
       tool_scope: agent.toolScope,
+      ...(agent.sandbox === undefined ? {} : { sandbox: agent.sandbox }),
       enabled: agent.enabled,
       private: agent.owner !== undefined,
       ...(agent.owner === undefined

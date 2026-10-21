@@ -25,6 +25,8 @@ export const UNREACHABLE = "test:unreachable";
  */
 const NO_CLIENT_API: RunGateway = {
   serve: async () => new Response("no client API in Agents' tests", { status: 404 }),
+  sandboxOperation: async () => ({ ok: false, reason: "ticket", message: "no tools" }),
+  settleToolCall: async () => ({ recorded: false }),
 };
 
 /**

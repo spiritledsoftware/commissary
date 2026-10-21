@@ -24,6 +24,11 @@ import {
 } from "@commissary/auth";
 import type { Approver } from "@commissary/contract/approvals";
 import {
+  RUN_EXECUTES_META,
+  RUN_SESSION_META,
+  RUN_TICKET_META,
+} from "@commissary/contract/sandbox-env";
+import {
   boundedBodyText,
   CurrentOrg,
   CurrentOutboundPolicy,
@@ -231,6 +236,13 @@ const runRefusal = (text: string): Schema.JsonObject => ({
   _meta: { [SPEND_REFUSAL_META]: text },
 });
 
+/** Whether a `tools/call`'s `_meta` sets the flag `key` (#230: {@link RUN_EXECUTES_META}, {@link RUN_SESSION_META}). */
+const metaFlag = (params: Schema.JsonObject, key: string): boolean => {
+  const meta = params["_meta"];
+
+  return isJsonObject(meta) && meta[key] === true;
+};
+
 /** Whether the client's retry says the member declined (or dismissed) the elicitation `key`. */
 const declined = (params: Schema.JsonObject, key: string): boolean => {
   const responses = params["inputResponses"];
@@ -246,7 +258,10 @@ const declined = (params: Schema.JsonObject, key: string): boolean => {
  */
 export const refusedText = (
   name: string,
-  outcome: Extract<ToolCallOutcome, { outcome: "refused" }>,
+  outcome: Pick<
+    Extract<ToolCallOutcome, { outcome: "refused" }>,
+    "refusal" | "sessionClosed" | "computer" | "computerStopped"
+  >,
 ): string =>
   `${spendRefusalMessage(outcome.refusal)}. ${name} was not called` +
   (outcome.sessionClosed === true
@@ -263,7 +278,7 @@ export const refusedText = (
  */
 type EndedCall = Exclude<
   ToolCallOutcome,
-  { outcome: "unknown" } | { outcome: "approve" } | { outcome: "delegated" }
+  { outcome: "unknown" } | { outcome: "approve" } | { outcome: "delegated" } | { outcome: "gated" }
 >;
 
 /** What a call came to, as its usage record says it (#199, #201). */
@@ -436,6 +451,14 @@ const callTool = Effect.fnUntraced(function* (request: RpcRequest, context: Serv
     approvalForm: elicitsForms(context.era) ? approvalFormOf(request.params) : undefined,
     approvalOutcomes: true,
     ...(agents === undefined ? {} : { agentsToolkit: true }),
+    // A run's call of its coding tools asks for a ticket rather than the call (#230); no other caller's.
+    ...(identity.principal.kind === "run" && metaFlag(request.params, RUN_EXECUTES_META)
+      ? { executes: true }
+      : {}),
+    // A run's opening of its own sandbox session, which lasts as long as the run (#230); no other caller's.
+    ...(identity.principal.kind === "run" && metaFlag(request.params, RUN_SESSION_META)
+      ? { runSession: true }
+      : {}),
   };
 
   const outcome = yield* toolsControlPlane("callTool", (stub) =>
@@ -444,6 +467,16 @@ const callTool = Effect.fnUntraced(function* (request: RpcRequest, context: Serv
 
   if (outcome.outcome === "unknown")
     return errorAnswer(200, request.id, RpcCode.invalidParams, `Unknown tool: ${name}`);
+
+  // A run's gated sandbox call (#230): the run executes it with the ticket, and its settling writes the record.
+  if (outcome.outcome === "gated")
+    return resultAnswer(
+      request.id,
+      framed(context.era, {
+        content: [],
+        _meta: { [RUN_TICKET_META]: { id: outcome.ticket.id } },
+      }),
+    );
 
   // The call goes on once the caller answers the form: its record is written then.
   if (outcome.outcome === "approve")

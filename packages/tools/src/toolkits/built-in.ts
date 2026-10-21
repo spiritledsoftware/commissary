@@ -201,6 +201,8 @@ export interface BuiltInCall {
   readonly run?: UsageRun | undefined;
   readonly profiles: CallerProfiles;
   readonly sessions: SandboxSessionLog;
+  /** The call opens an agent run's own sandbox session (#230, `SandboxCall.runSession`). */
+  readonly runSession?: boolean | undefined;
   /** A sandbox session's computer time's metering (#224); absent for other toolkits. */
   readonly computer?: ComputerMeter | undefined;
   /** The org's open browser sessions (#214), which the org's deletion deletes. */
@@ -573,7 +575,11 @@ const browserToolkit = (
 const sandboxToolkit = (provider: SandboxProvider): CalledBuiltIn => ({
   calledBy: "part",
   ...builtInToolkit(SANDBOX_TOOLKIT, "sandbox", provider.id, SANDBOX_TOOLS),
-  call: (tool, args, { org, principal, member, run, sessions, policy, now, toolkit, computer }) =>
+  call: (
+    tool,
+    args,
+    { org, principal, member, run, sessions, runSession, policy, now, toolkit, computer },
+  ) =>
     principal === undefined
       ? Effect.succeed({ result: NO_PRINCIPAL })
       : callSandboxTool(
@@ -581,6 +587,7 @@ const sandboxToolkit = (provider: SandboxProvider): CalledBuiltIn => ({
           {
             owner: { org, principal },
             sessions,
+            runSession,
             policy,
             now,
             ceiling: toolkit.ceiling ?? NO_ALLOWANCE,

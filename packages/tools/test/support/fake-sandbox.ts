@@ -80,6 +80,30 @@ export const fakeSandboxProvider = (): SandboxProvider => {
           return text === undefined ? Effect.fail(missing(path)) : Effect.succeed(text);
         }),
       ),
+    stat: (owner, id, path) =>
+      unmetered(
+        Effect.map(session(owner, id), ({ files }) => {
+          const text = files.get(path);
+
+          return text === undefined
+            ? null
+            : {
+                kind: "file" as const,
+                size: new TextEncoder().encode(text).byteLength,
+                mtimeMs: 0,
+              };
+        }),
+      ),
+    readBytes: (owner, id, path, { offset, length }) =>
+      unmetered(
+        Effect.flatMap(session(owner, id), ({ files }) => {
+          const text = files.get(path);
+
+          return text === undefined
+            ? Effect.fail(missing(path))
+            : Effect.succeed(new TextEncoder().encode(text).slice(offset, offset + length));
+        }),
+      ),
     writeFile: (owner, id, path, text) =>
       unmetered(
         Effect.map(session(owner, id), ({ files }) => {
