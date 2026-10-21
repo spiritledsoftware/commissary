@@ -79,6 +79,7 @@ import {
   outboundPolicy,
 } from "@commissary/core";
 import type { HttpClient } from "effect/http";
+import { planLimitName, type PlanMeter, type PlanRefusal } from "@commissary/billing/api";
 import type { ControlPlanePart, OrgCore } from "@commissary/state";
 import type {
   ChargedCredential,
@@ -232,7 +233,13 @@ import {
   type SandboxProvider,
   SESSION_IDLE_MS,
 } from "./sandbox/provider.ts";
-import { COMPUTER_STOPPED_NOTE, meetsComputer, unknownSessionResult } from "./sandbox/toolkit.ts";
+import {
+  computerStoppedNote,
+  meetsComputer,
+  NO_COMPUTER_HOURS_HINT,
+  noted,
+  unknownSessionResult,
+} from "./sandbox/toolkit.ts";
 import { SandboxSessionStore, type TrackedSession } from "./sandbox/sessions.ts";
 import {
   argumentBytes,
@@ -250,7 +257,7 @@ import {
   type LoggedBrowserSession,
   openerOf,
 } from "./browser/session-log.ts";
-import { CLOSE_TOOL } from "./browser/session-tools.ts";
+import { CLOSE_TOOL, OPEN_TOOL } from "./browser/session-tools.ts";
 import type { BrowserCrawlProvider } from "./browser/provider.ts";
 
 /** Why a call of the part was refused; the routes answer each with its status. */
@@ -436,6 +443,29 @@ const hourPriceView = (toolkit: Toolkit): Partial<Record<HourPriceField, number>
   toolkit.builtIn && toolkit.hourPriceMicros !== undefined && isHourPriced(toolkit.kind)
     ? { [HOUR_PRICES[toolkit.kind].field]: toolkit.hourPriceMicros }
     : {};
+
+/** What a call holds of the plan's ceilings while it is served (#241): see {@link ToolsPart.#planRefusal}. */
+interface Held {
+  /** The call is a `browser_open` whose room under the ceiling on concurrent browser sessions is held. */
+  open: boolean;
+  /** The sandbox session whose computer the call may start, its room under the ceiling on computers held. */
+  computer: string | undefined;
+}
+
+/** Why the plan refuses a call, and whether the browser session it names is closed with it. */
+interface PlanFound {
+  readonly refusal: PlanRefusal;
+  readonly session: boolean;
+}
+
+/**
+ * Whether a call of the tool `name` ends a use of the plan's units rather than starting one: closing a browser session
+ * (a tool that `ends` browser time) or a sandbox session. The plan never refuses it, however the month stands: a
+ * refusal would only keep the use, and its time counting, going (#241).
+ */
+const endsUse = (builtIn: BuiltIn | undefined, name: string): boolean =>
+  (builtIn?.toolkit.kind === "browser" && browserTimeOf(name) === "ends") ||
+  (builtIn?.toolkit.kind === "sandbox" && name === "close");
 
 /** How a built-in tool is called for a call, and whether the call opened a sandbox session (`#builtInCall`). */
 interface BuiltInCalling {
@@ -678,6 +708,12 @@ export interface ToolCall {
    * Only a run's call is honoured so.
    */
   readonly runSession?: true | undefined;
+  /**
+   * Set by an MCP endpoint that understands `plan_limited` (#241). An API Worker deployed before it sends a call
+   * without it, and gets a call a plan limit refuses as `failed` (docs/DEVELOPMENT.md, "State RPC: expand, then
+   * contract").
+   */
+  readonly planOutcomes?: true | undefined;
 }
 
 /** What a caller of {@link ToolsPart.clientTools} serves beyond the part's own toolkits. */
@@ -735,9 +771,11 @@ export interface CallUsage {
  * approver in the panel, or `not_approved`, one that was denied (or that no one could approve); the upstream's
  * `result`, an `isError` one included; or `failed`, an upstream or transport failure, with a short message that
  * quotes neither the source nor the server's answer; or, for the agents toolkit, `delegated`: a call the endpoint's
- * Worker makes (#229). All but `unknown` and `approve` say what the call's usage record holds (a call on a form writes
+ * Worker makes (#229); or `plan_limited`, a call Commissary Cloud's plan refused before any work (#241). All but
+ * `unknown` and `approve` say what the call's usage record holds (a call on a form writes
  * its record once it ends). The approval outcomes go only to a call that says it understands them
- * (`ToolCall.approvalOutcomes`), and `delegated` only to one that serves the agents toolkit (`ToolCall.agentsToolkit`).
+ * (`ToolCall.approvalOutcomes`), `delegated` only to one that serves the agents toolkit (`ToolCall.agentsToolkit`) and
+ * `plan_limited` only to one that says it understands it (`ToolCall.planOutcomes`).
  */
 export type ToolCallOutcome =
   | { readonly outcome: "unknown" }
@@ -785,6 +823,21 @@ export type ToolCallOutcome =
        * computer was `stopped`, or the call `needed` the computer (its command would have run there); with `needed`,
        * `computerStopped` when the call stopped the computer, which ran, first.
        */
+      readonly computer?: "stopped" | "needed";
+      readonly computerStopped?: true;
+    }
+  | {
+      /**
+       * Commissary Cloud's plan refused the call before any work (#241): a plan limit (the month's free usage of a unit
+       * used up, or the billing cap), or a ceiling on concurrent browser sessions or computers. Not counted. Only to a
+       * call with {@link ToolCall.planOutcomes}; the endpoint's Worker words it (`planRefusalText`).
+       */
+      readonly outcome: "plan_limited";
+      readonly refusal: PlanRefusal;
+      readonly usage: CallUsage;
+      /** The browser session the call named was closed with it, as its browser time is over the plan's limit. */
+      readonly sessionClosed?: true;
+      /** What it did to the sandbox session the call named, as for a refusal by a Spend limit (`refused`). */
       readonly computer?: "stopped" | "needed";
       readonly computerStopped?: true;
     }
@@ -1026,21 +1079,46 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   readonly #lookups = new LookupThrottle();
   /** Which agents a caller may run (#229): the agents toolkit's reach, from the Agents part. */
   readonly #agents: AgentDirectory | undefined;
+  /**
+   * The org's Billing part, which counts what plans count of the part (#241), where the deployment has plans
+   * (Commissary Cloud); read when needed, as the state Worker makes the parts of an object one after the other.
+   */
+  readonly #plans: () => PlanMeter | undefined;
+  /**
+   * The `browser_open` calls being served now, which the ceiling on concurrent browser sessions counts besides the open
+   * ones (#241): the session is logged only once its object opened it. In memory: a call does not outlive the object.
+   */
+  #pendingOpens = 0;
+  /**
+   * The sandbox sessions with a computer that calls being served are in now, as many calls as each has (#241): the
+   * computers that run, or may start, for the ceiling.
+   */
+  readonly #pendingComputers = new Map<string, number>();
   /** What the part reads the time from: the live clock, or a test's (`useClock`). */
   #clock: Clock.Clock = Clock.Clock.defaultValue();
 
   /**
-   * `ownHosts`: the deployment's own hosts (`OWN_HOSTS`), which the part's own requests refuse; `managedApps`: the
-   * managed OAuth apps the deployment has (`managedAppsOf(env)`, `catalog/managed-apps.ts`; none on a self-hosted one).
+   * `options.ownHosts`: the deployment's own hosts (`OWN_HOSTS`), which the part's own requests refuse;
+   * `options.managedApps`: the managed OAuth apps the deployment has (`managedAppsOf(env)`,
+   * `catalog/managed-apps.ts`; none on a self-hosted one); `options.plans`: the org's Billing part on Commissary Cloud,
+   * and nothing on a self-hosted Commissary (#241).
    */
   constructor(
     ctx: DurableObjectState,
     core: OrgCore,
     providers: BuiltInProviders = {},
-    ownHosts?: string,
-    managedApps: ManagedApps = NO_MANAGED_APPS,
+    {
+      ownHosts,
+      managedApps = NO_MANAGED_APPS,
+      plans = () => undefined,
+    }: {
+      readonly ownHosts?: string;
+      readonly managedApps?: ManagedApps;
+      readonly plans?: () => PlanMeter | undefined;
+    } = {},
   ) {
     super();
+    this.#plans = plans;
     this.#ctx = ctx;
     this.#core = core;
     this.#builtIns = builtInToolkits(providers);
@@ -1275,7 +1353,13 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
     this.#runCalls.extend(ticket, start + running + TICKET_IDLE_MS);
 
-    const meter = { hourPriceMicros: gated.hourPriceMicros, limitReached: gated.limitReached };
+    const meter: ComputerMeter = {
+      hourPriceMicros: gated.hourPriceMicros,
+      limitReached: gated.limitReached,
+      ...(gated.planRefusal === undefined ? {} : { limitReason: "plan" as const }),
+      ...(gated.plans ? { plans: true as const } : {}),
+    };
+
     const operation = sandboxOperation(sandbox, owner, gated.session, request, start, meter);
 
     const reply = await Effect.runPromise(
@@ -1310,12 +1394,29 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
     ledger.charge(ledger.scopes(spender, charged), computerTime?.costMicros ?? 0, end);
 
+    // The computer time counts toward the plan, and where the computer stands toward its ceiling (#241).
+    this.#countTime("computerHours", computerTime?.computerMs);
+
+    if (computerTime !== undefined)
+      this.#sandboxSessions.computerRunsUntil(gated.session, computerTime.runsUntil);
+
     // A command that needs the computer, refused for want of room: the call's settling ends the turn with the limit's
-    // refusal.
-    const refusal =
-      "refused" in reply && reply.refused ? ledger.refusal(spender, charged, end) : undefined;
+    // refusal, a Spend limit's or else the plan's (#241).
+    // The plan's, when the gate found it kept the computer from the call: that is what the session's answer said, so the
+    // settling says it too, whatever a Spend limit has come to since.
+    const needed = "refused" in reply && reply.refused;
+    const planRefused = needed && gated.planRefusal !== undefined;
+    const refusal = needed && !planRefused ? ledger.refusal(spender, charged, end) : undefined;
 
     if (refusal !== undefined) this.#runCalls.refused(ticket, refusal, computerStopped === true);
+    else if (planRefused) this.#runCalls.planRefused(ticket, computerStopped === true);
+
+    // The call did no work then: it is no tool call (#241), as a refused command of a call outside a run is none.
+    if (refusal !== undefined || planRefused) {
+      const counted = this.#runCalls.uncount(ticket);
+
+      if (counted !== undefined) this.#plans()?.refund(counted);
+    }
 
     this.#runCalls.extend(ticket, end + TICKET_IDLE_MS);
 
@@ -1327,8 +1428,8 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       this.#sandboxSessions.used(gated.session, end, principal);
 
     // An operation that met the running computer stopped it for want of room, and went on: the model is told.
-    return computerStopped === true && refusal === undefined
-      ? { ...reply.reply, note: COMPUTER_STOPPED_NOTE }
+    return computerStopped === true && refusal === undefined && !planRefused
+      ? { ...reply.reply, note: computerStoppedNote(meter) }
       : reply.reply;
   }
 
@@ -3073,7 +3174,21 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
    * replaced (docs/DEVELOPMENT.md, "State RPC: expand, then contract").
    */
   async callTool(viewer: Viewer, call: ToolCall, policy: OutboundPolicy): Promise<ToolCallOutcome> {
-    const outcome = await this.#callTool(viewer, call, policy);
+    const held: Held = { open: false, computer: undefined };
+    let outcome: ToolCallOutcome;
+
+    try {
+      outcome = await this.#callTool(viewer, call, policy, held);
+    } finally {
+      this.#release(held);
+    }
+
+    if (outcome.outcome === "plan_limited" && call.planOutcomes !== true)
+      return {
+        outcome: "failed",
+        message: `the org's plan refused the call (${planLimitName(outcome.refusal)}); see the billing page in the panel`,
+        usage: outcome.usage,
+      };
 
     if (call.approvalOutcomes === true) return outcome;
 
@@ -3104,6 +3219,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     viewer: Viewer,
     call: ToolCall,
     policy: OutboundPolicy,
+    held: Held,
   ): Promise<ToolCallOutcome> {
     const caller = this.#caller(viewer, call.apiKeyId, call.run);
 
@@ -3237,6 +3353,38 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       };
     }
 
+    // Commissary Cloud's plan refuses a call that would do work beyond its limits before anyone is asked to approve it
+    // (#241): nothing is counted here, and a call it refuses uses up no approval.
+    const meter = this.#plans();
+
+    const limited = async (found: PlanFound): Promise<ToolCallOutcome> => {
+      // A session over the plan's browser hours is closed, as one over a Spend limit is (`#closeSession`); a running
+      // computer is stopped (`#stopComputer`).
+      const closed =
+        found.session && builtIn?.calledBy === "part"
+          ? await this.#closeSession(builtIn, viewer, call, policy, spender, charged)
+          : false;
+
+      const stopped =
+        builtIn?.toolkit.kind === "sandbox" && meetsComputer(tool.upstreamName)
+          ? await this.#stopComputer(builtIn, viewer, call, spender, charged, hourPrice, "plan")
+          : false;
+
+      return {
+        outcome: "plan_limited",
+        refusal: found.refusal,
+        usage: usage(slot),
+        ...(closed ? { sessionClosed: true as const } : {}),
+        ...(stopped ? { computer: "stopped" as const } : {}),
+      };
+    };
+
+    if (meter !== undefined) {
+      const early = this.#planRefusal(meter, builtIn, tool.upstreamName, call);
+
+      if (early !== undefined) return await limited(early);
+    }
+
     // Only the `browser_ask_human` that starts a handoff asks a person anew (#216): one that waits on it, answers how it
     // ended, or carries the person's decline is held by no approval rule again.
     const continued = await this.#continuesHandoff(builtIn, viewer, call, tool);
@@ -3275,6 +3423,22 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
     const approved = approval.approval;
 
+    // The plan counts the call before any work (#241), and holds the ceilings' room for it while it is served: the
+    // approval took time, in which others may have taken the room, so the ceilings are checked again, with nothing
+    // awaited between the check and the hold. A call that ends a use (`endsUse`) is never refused.
+    let counted: number | undefined;
+
+    if (meter !== undefined) {
+      const found = this.#planRefusal(meter, builtIn, tool.upstreamName, call, held);
+
+      if (found !== undefined) return await limited(found);
+      const admission = meter.admit(this.#now());
+
+      if (admission.ok) counted = admission.monthStart;
+      else if (!endsUse(builtIn, tool.upstreamName))
+        return await limited({ refusal: admission.limit, session: false });
+    }
+
     // A built-in tool always answers a result, a failure as one with `isError`; it is charged like an upstream's. A
     // browser or sandbox session's tools (#213, #222) act for the org, member and principal of the call: the session's
     // owner (a call without a principal reaches no session).
@@ -3298,9 +3462,24 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
       // A sandbox session's computer time (#224): the price from this call on, and whether a limit has no room
       // (`noRoom` is set only for a call that meets the computer), which only the session can act on.
+      // The plan keeps the computer from a command that would start it, too (#241: Free has none, Pay as you go has a
+      // ceiling and a billing cap), as a Spend limit does; just-bash's commands run on.
+      const planRefusal =
+        meter !== undefined && builtIn.toolkit.kind === "sandbox"
+          ? this.#computerRefusal(meter, tool.upstreamName, call, now, held)
+          : undefined;
+
+      // A Spend limit's words win where both have no room.
       const computer: ComputerMeter | undefined =
         builtIn.toolkit.kind === "sandbox"
-          ? { hourPriceMicros: hourPrice, limitReached: noRoom !== undefined }
+          ? {
+              hourPriceMicros: hourPrice,
+              limitReached: noRoom !== undefined || planRefusal !== undefined,
+              ...(noRoom === undefined && planRefusal !== undefined
+                ? { limitReason: "plan" as const }
+                : {}),
+              ...(meter === undefined ? {} : { plans: true as const }),
+            }
           : undefined;
 
       // A run's call of pi's coding tool (#230) is gated here and executed by the run on its session, with the ticket,
@@ -3347,6 +3526,9 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
             approval: approved,
             hourPriceMicros: computer.hourPriceMicros,
             limitReached: computer.limitReached,
+            planRefusal: noRoom === undefined ? planRefusal : undefined,
+            plans: meter !== undefined,
+            counted,
           },
           now,
         );
@@ -3387,8 +3569,33 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
       const computerCost = computerTime?.costMicros ?? 0;
 
+      // What the call used counts toward the plan, and where the session's computer stands counts toward its ceiling.
+      this.#countTime("browserHours", browserTime?.browserMs);
+      this.#countTime("computerHours", computerTime?.computerMs);
+
+      if (computerTime !== undefined && typeof call.arguments?.["session"] === "string")
+        this.#sandboxSessions.computerRunsUntil(call.arguments["session"], computerTime.runsUntil);
+
+      if (planRefusal !== undefined && noRoom === undefined && refusedFor === "needed") {
+        ledger.charge(ledger.scopes(spender, charged), computerCost, this.#now());
+
+        // The command did not run on the computer: no work, so no tool call.
+        if (meter !== undefined && counted !== undefined) meter.refund(counted);
+
+        return {
+          outcome: "plan_limited",
+          refusal: planRefusal,
+          usage: usage(slot, 0, approved),
+          computer: refusedFor,
+          ...(computerStopped === true ? { computerStopped } : {}),
+        };
+      }
+
       if (noRoom !== undefined && refusedFor === "needed") {
         ledger.charge(ledger.scopes(spender, charged), computerCost, this.#now());
+
+        // The command did not run on the computer: no work, so no tool call (#241).
+        if (meter !== undefined && counted !== undefined) meter.refund(counted);
 
         return {
           outcome: "refused",
@@ -3433,7 +3640,20 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
               usage: done,
             };
 
-      return { outcome: "result", result, usage: done };
+      // A computer opened where the plan has none to give: the commands that need it will be refused, and the model is
+      // told so now, not at its first one (#241).
+      const hinted =
+        meter !== undefined &&
+        builtIn.toolkit.kind === "sandbox" &&
+        tool.upstreamName === "open" &&
+        call.arguments?.["computer"] === true &&
+        meter.limitOf("computerHours", this.#now()) !== undefined;
+
+      return {
+        outcome: "result",
+        result: hinted ? noted(result, NO_COMPUTER_HOURS_HINT) : result,
+        usage: done,
+      };
     }
 
     const attempt = await this.#callUpstream(serving.stored, {
@@ -3445,7 +3665,13 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       policy,
     });
 
-    if (attempt.kind === "sign_in") return signIn(approved);
+    // A call that could not sign in made no request: it is not a tool call that did work.
+    if (attempt.kind === "sign_in") {
+      if (meter !== undefined && counted !== undefined) meter.refund(counted);
+
+      return signIn(approved);
+    }
+
     const called = attempt.kind === "failed" ? Result.fail(notSigned(attempt)) : attempt.done;
 
     if (Result.isFailure(called))
@@ -3458,6 +3684,130 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     if (price > 0) ledger.charge(ledger.scopes(spender, charged), price, this.#now());
 
     return { outcome: "result", result: called.success, usage: usage(slot, price, approved) };
+  }
+
+  /**
+   * What Commissary Cloud's plan says of a call about to do its work (#241): refused by the plan limit of browser hours
+   * (a call that uses browser time, `session` when it may name a session to close), by the ceiling on concurrent
+   * browser sessions (`browser_open`, but for an agent run's: no ceiling caps a run, ADR 0042) or by the limit on tool
+   * calls; `undefined` when it may go on. Counts nothing: {@link PlanMeter.admit} counts a call that may. A call that
+   * ends a use (`endsUse`) is never refused.
+   *
+   * With `held`, a call that may go on holds the room of the ceiling it passed, which the calls of the same object see
+   * until `held` is released ({@link #release}): two `browser_open` calls at once may not both take the last room.
+   */
+  #planRefusal(
+    meter: PlanMeter,
+    builtIn: BuiltIn | undefined,
+    name: string,
+    call: ToolCall,
+    held?: Held,
+  ): PlanFound | undefined {
+    if (endsUse(builtIn, name)) return undefined;
+
+    const now = this.#now();
+
+    const opens =
+      builtIn?.toolkit.kind === "browser" && name === OPEN_TOOL && call.run === undefined;
+
+    if (builtIn?.toolkit.kind === "browser" && browserTimeOf(name) === "uses") {
+      const limit = meter.limitOf("browserHours", now);
+
+      if (limit !== undefined) return { refusal: limit, session: true };
+    }
+
+    if (opens) {
+      const ceiling = meter.checkCeiling(
+        "browserSessions",
+        this.#browserSessionLog.countCapped() + this.#pendingOpens,
+      );
+
+      if (ceiling !== undefined) return { refusal: ceiling, session: false };
+    }
+
+    const limit = meter.limitOf("requests", now);
+
+    if (limit !== undefined) return { refusal: limit, session: false };
+
+    if (opens && held !== undefined) {
+      this.#pendingOpens += 1;
+      held.open = true;
+    }
+
+    return undefined;
+  }
+
+  /**
+   * Why the plan keeps a call of the sandbox tool `name` from the computer (#241), `undefined` when it does not: the
+   * plan limit of computer hours (Free has none, so on Free the computer is unavailable; Pay as you go's billing cap),
+   * or the ceiling on concurrent computers, which a session whose computer runs already is not another of, and no
+   * agent run's session counts toward or meets (ADR 0042). Only a session opened with the computer has one to count: a
+   * call in any other is neither checked nor held.
+   *
+   * Every call outside a run in a session with a computer holds its place (`held`, see {@link #planRefusal}) while it is
+   * served, even where the computer runs: a command may outlast the computer's idle minutes, and keeps the slot until
+   * it ends, which the count of running computers alone would not. A session with a call held counts as running for
+   * the calls it has at once, and for the other sessions' checks as one computer however many calls it holds.
+   */
+  #computerRefusal(
+    meter: PlanMeter,
+    name: string,
+    call: ToolCall,
+    now: number,
+    held: Held,
+  ): PlanRefusal | undefined {
+    if (!meetsComputer(name)) return undefined;
+
+    const limit = meter.limitOf("computerHours", now);
+
+    if (limit !== undefined) return limit;
+
+    const session = call.arguments?.["session"];
+
+    if (call.run !== undefined || typeof session !== "string") return undefined;
+
+    if (!this.#sandboxSessions.mayHaveComputer(session)) return undefined;
+
+    const runs =
+      this.#pendingComputers.has(session) || this.#sandboxSessions.computerRuns(session, now);
+
+    if (!runs) {
+      // The computers of other sessions that run, or that a call being served holds a place for.
+      const held = [...this.#pendingComputers.keys()].filter(
+        (other) => other !== session && !this.#sandboxSessions.computerRuns(other, now),
+      ).length;
+
+      const ceiling = meter.checkCeiling(
+        "computers",
+        this.#sandboxSessions.computersRunning(now, session) + held,
+      );
+
+      if (ceiling !== undefined) return ceiling;
+    }
+
+    this.#pendingComputers.set(session, (this.#pendingComputers.get(session) ?? 0) + 1);
+    held.computer = session;
+
+    return undefined;
+  }
+
+  /** Gives back what a call held of the ceilings' room (`held`, {@link #planRefusal}) once it is served or refused. */
+  #release(held: Held): void {
+    if (held.open) this.#pendingOpens -= 1;
+
+    if (held.computer !== undefined) {
+      const left = (this.#pendingComputers.get(held.computer) ?? 1) - 1;
+
+      if (left > 0) this.#pendingComputers.set(held.computer, left);
+      else this.#pendingComputers.delete(held.computer);
+    }
+  }
+
+  /** Counts `ms` of browser or computer time toward the plan, where the deployment has plans (#241). */
+  #countTime(unit: "browserHours" | "computerHours", ms: number | undefined): void {
+    if (ms === undefined || ms <= 0) return;
+
+    this.#plans()?.addTime(unit, ms, this.#now());
   }
 
   /**
@@ -3512,14 +3862,17 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
         sessions: {
           opened: (id) => {
             opened = true;
-            this.#sandboxSessions.opened({
-              id,
-              toolkitId: builtIn.toolkit.id,
-              member: viewer.member,
-              principal: principalId ?? "",
-              agent: spender.agentId,
-              openedAt: now,
-            });
+            this.#sandboxSessions.opened(
+              {
+                id,
+                toolkitId: builtIn.toolkit.id,
+                member: viewer.member,
+                principal: principalId ?? "",
+                agent: spender.agentId,
+                openedAt: now,
+              },
+              call.arguments?.["computer"] === true,
+            );
           },
           used: (id) => this.#sandboxSessions.used(id, now, principalId),
           ended: (id) => this.#sandboxSessions.ended([id], principalId),
@@ -3572,6 +3925,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     const ledger = this.#core.spend.ledger();
 
     ledger.charge(ledger.scopes(spender, charged), browserTime?.costMicros ?? 0, this.#now());
+    this.#countTime("browserHours", browserTime?.browserMs);
 
     return result["isError"] !== true;
   }
@@ -3580,15 +3934,20 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
    * Hears that the alarm of the logged browser session `sessionId` closed it after its idle minutes (#214): forgets it,
    * and charges `costMicros` of its browser time, the stretch since its last call, which no call charged, to the Spend
    * limits it counts toward, as its toolkit's shared credential served it: those of the member who opened it, their
-   * teams and the org, and of the API key it was opened with, or of the shared agent whose run opened it (#228). The session's Durable Object calls it. A session the part
-   * did not log (or forgot), or a cost that is not a whole number of micro-USD, 0 or more, charges nothing.
+   * teams and the org, and of the API key it was opened with, or of the shared agent whose run opened it (#228). The
+   * session's Durable Object calls it. A session the part did not log (or forgot), or a cost that is not a whole number
+   * of micro-USD, 0 or more, charges nothing. `browserMs`, the stretch's browser time, counts toward the org's plan
+   * (#241).
    */
-  browserSessionClosed(sessionId: string, costMicros: number): void {
+  browserSessionClosed(sessionId: string, costMicros: number, browserMs?: number): void {
     const session = this.#browserSessionLog.session(sessionId);
 
     if (session === undefined) return;
     this.#browserSessionLog.forget([sessionId]);
     this.#chargeClosed(session, costMicros);
+    // The same stretch counts toward the org's plan (#241), though it cost nothing; a session's object from before
+    // sends none.
+    this.#countTime("browserHours", browserMs);
   }
 
   /**
@@ -3596,15 +3955,26 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
    * when the computer stopped after its idle minutes, or when it `closed` the session after a day without a call (it is
    * then forgotten). Charges `costMicros` of it to the Spend limits it counts toward, as a browser session's
    * ({@link browserSessionClosed}). The session's Durable Object calls it. A session the part does not keep, or a cost
-   * that is not a whole number of micro-USD, 0 or more, charges nothing.
+   * that is not a whole number of micro-USD, 0 or more, charges nothing. `computerMs`, the time's length, counts toward
+   * the org's plan (#241).
    */
-  sandboxComputerTime(sessionId: string, costMicros: number, closed: boolean): void {
+  sandboxComputerTime(
+    sessionId: string,
+    costMicros: number,
+    closed: boolean,
+    computerMs?: number,
+  ): void {
     const session = this.#sandboxSessions.session(sessionId);
 
     if (session === undefined) return;
 
     if (closed) this.#sandboxSessions.ended([sessionId]);
+    // Its computer stopped (its idle minutes were over), unless a command started it again since: the report may come
+    // after (#241).
+    else this.#sandboxSessions.computerStopped(sessionId, this.#now());
     this.#chargeClosed(session, costMicros);
+    // The same time counts toward the org's plan (#241), though it cost nothing; an object from before sends none.
+    this.#countTime("computerHours", computerMs);
   }
 
   /**
@@ -3640,10 +4010,10 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
   }
 
   /**
-   * Stops the computer of the sandbox session that `call`, refused by a Spend limit, names (#224): a priced tool's call
-   * (`sandbox_close` too) is refused before it reaches the session, so the part stops a running computer itself, as the
-   * session does for a call that reaches it. Its last stretch is charged. The refused call is no use of the session.
-   * Answers whether a computer of the caller's session ran.
+   * Stops the computer of the sandbox session that `call`, refused by a Spend limit (or by the plan, #241), names
+   * (#224): a priced tool's call (`sandbox_close` too) is refused before it reaches the session, so the part stops a
+   * running computer itself, as the session does for a call that reaches it. Its last stretch is charged. The refused
+   * call is no use of the session. Answers whether a computer of the caller's session ran.
    */
   async #stopComputer(
     builtIn: BuiltIn,
@@ -3652,6 +4022,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     spender: SpendCaller,
     charged: ChargedCredential,
     hourPriceMicros: number,
+    reason: "spend" | "plan" = "spend",
   ): Promise<boolean> {
     const sessionId = call.arguments?.["session"];
     const sandbox = this.#sandbox;
@@ -3665,6 +4036,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
         .stopComputer({ org: this.#core.org, principal: principalId }, sessionId, this.#now(), {
           hourPriceMicros,
           limitReached: true,
+          limitReason: reason,
         })
         // An object from before #224 has no `stopForLimit`: it has no metered computer to stop.
         .pipe(Effect.orElseSucceed((): Metered<boolean> => ({ value: false }))),
@@ -3677,6 +4049,9 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
       stopped.computerTime?.costMicros ?? 0,
       this.#now(),
     );
+    this.#countTime("computerHours", stopped.computerTime?.computerMs);
+
+    if (stopped.value) this.#sandboxSessions.computerRunsUntil(sessionId, undefined);
 
     return stopped.value;
   }

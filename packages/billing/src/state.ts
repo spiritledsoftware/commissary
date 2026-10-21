@@ -4,3 +4,5 @@
  * `boundaries/billing-imports`).
  */
 export { BillingPart } from "./part.ts";
+
+export { planMeterOf } from "./plan-meter.ts";

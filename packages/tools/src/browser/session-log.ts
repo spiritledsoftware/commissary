@@ -125,6 +125,20 @@ export class BrowserSessionStore {
     return row === undefined ? undefined : sessionOf(row);
   }
 
+  /**
+   * How many sessions are open that count toward the plan's ceiling on concurrent browser sessions (#241): all but
+   * those agent runs opened (`run:<id>` principals), which no ceiling caps (ADR 0042).
+   */
+  countCapped(): number {
+    return (
+      this.#sql
+        .exec<{ open: number }>(
+          `SELECT COUNT(*) AS open FROM browser_sessions WHERE principal NOT LIKE 'run:%'`,
+        )
+        .toArray()[0]?.open ?? 0
+    );
+  }
+
   /** The ids of the logged sessions, oldest first, at most `limit` (all without). */
   ids(limit?: number): ReadonlyArray<string> {
     return this.#sql

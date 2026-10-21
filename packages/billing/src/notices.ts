@@ -1,11 +1,11 @@
 /**
  * The notices `GET /billing` gives the panel for the org's owners and admins (ADR 0042 "Notices"; Commissary sends no
  * billing email): 80% and 100% of a unit's free usage where Free's limits apply, 80% and 100% of the billing cap on Pay
- * as you go, and a failed payment; none for an unbilled org (#240), which is never billed. Pure: computed from what the Billing part answers, without asking the billing
- * provider anything. New in the Workers port, no Go counterpart.
+ * as you go, and a failed payment; none for an unbilled org (#240), which is never billed. Pure: computed from what the
+ * Billing part answers, without asking the billing provider anything. New in the Workers port, no Go counterpart.
  */
 import type { BillingNotice, BillingUnit } from "@commissary/contract/billing";
-import { billMicros, capRefusesNextRequest, toMicros } from "./bill.ts";
+import { billMicros, capRefuses, toMicros } from "./bill.ts";
 import { FREE_USAGE, UNITS, type Unit } from "./plan.ts";
 import type { BillingUsage } from "./store.ts";
 
@@ -18,11 +18,15 @@ const API_UNIT: Readonly<Record<Unit, BillingUnit>> = {
 /** Whether `used` is at least 80% of `limit` (a positive amount). */
 const atEightyPercent = (used: number, limit: number): boolean => used * 5 >= limit * 4;
 
-/** The billing cap's notice: 100% exactly when the cap refuses the next request (`admit`'s test), else 80% from 80%. */
+/**
+ * The billing cap's notice: 100% when the cap refuses the next use of any unit (`capRefuses`, the test the refusals
+ * make: a request, or a minute of browser or computer time), else 80% from 80% of the cap.
+ */
 const capNotice = (billing: BillingUsage, cap: number): BillingNotice | undefined => {
-  if (capRefusesNextRequest(billing.used, cap)) return { kind: "billing_cap", percent: 100 };
-
   const capMicros = toMicros(cap);
+
+  if (UNITS.some((unit) => capRefuses(billing.used, cap, unit)))
+    return { kind: "billing_cap", percent: 100 };
 
   return capMicros > 0 && atEightyPercent(billMicros(billing.used), capMicros)
     ? { kind: "billing_cap", percent: 80 }

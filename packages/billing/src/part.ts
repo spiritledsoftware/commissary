@@ -13,17 +13,20 @@
  */
 import { RpcTarget } from "cloudflare:workers";
 import type { ControlPlanePart } from "@commissary/state";
-import type { Ceilings, Plan, RaisedCeilings } from "./plan.ts";
+import type { CeilingKind, Ceilings, Plan, RaisedCeilings } from "./plan.ts";
+import type { PlanMeter } from "./plan-meter.ts";
 import {
   type Admission,
   BillingStore,
   type BillingUsage,
+  type CeilingLimit,
   type MeterBatch,
+  type PlanLimit,
   type RateCeiling,
   type SubscriptionChange,
 } from "./store.ts";
 
-export class BillingPart extends RpcTarget implements ControlPlanePart {
+export class BillingPart extends RpcTarget implements ControlPlanePart, PlanMeter {
   readonly #store: BillingStore;
 
   constructor(ctx: DurableObjectState) {
@@ -114,6 +117,21 @@ export class BillingPart extends RpcTarget implements ControlPlanePart {
   /** Takes back the request `admit` counted against `monthStart`. */
   refund(monthStart: number): void {
     this.#store.refund(monthStart);
+  }
+
+  /** The plan limit that refuses the next use of `unit` at `now` (#241), if any; counts nothing. */
+  limitOf(unit: "requests" | "browserHours" | "computerHours", now: number): PlanLimit | undefined {
+    return this.#store.limitOf(unit, now);
+  }
+
+  /** Counts `ms` of browser or computer time used up to `now` (#241). */
+  addTime(unit: "browserHours" | "computerHours", ms: number, now: number): void {
+    this.#store.addTime(unit, ms, now);
+  }
+
+  /** Whether the org, with `open` browser sessions or computers open, has reached the ceiling for another (#241). */
+  checkCeiling(kind: CeilingKind, open: number): CeilingLimit | undefined {
+    return this.#store.checkCeiling(kind, open);
   }
 
   sealPlaintext(): number {

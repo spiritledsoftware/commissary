@@ -17,7 +17,7 @@ import {
   agentsPresent,
   type RunSandboxes,
 } from "@commissary/agents/state";
-import { BillingPart } from "@commissary/billing/state";
+import { BillingPart, planMeterOf } from "@commissary/billing/state";
 import { ModelsPart, type ModelsPartEnv } from "@commissary/models/state";
 import {
   type AgentDirectory,
@@ -73,17 +73,30 @@ const runSandboxes = (ctx: DurableObjectState): RunSandboxes => ({
   },
 });
 
+/** Each object's Billing part: the Tools part of the same object counts what plans count of it through it (#241). */
+const billingParts = new WeakMap<DurableObjectState, BillingPart>();
+
 export class ControlPlane extends composeControlPlane({
   models: (ctx, env: PartsEnv, core) => new ModelsPart(ctx, env, core),
-  billing: (ctx) => new BillingPart(ctx),
+  billing: (ctx) => {
+    const part = new BillingPart(ctx);
+
+    billingParts.set(ctx, part);
+
+    return part;
+  },
   tools: (ctx, env: PartsEnv, core) => {
     const part = new ToolsPart(
       ctx,
       core,
       // The agents toolkit only where the Agents area is (`LOADER`, ADR 0043), as the rest of the area.
       { ...builtInProviders(env), ...(agentsPresent(env) ? { agents: agentDirectory(ctx) } : {}) },
-      env.OWN_HOSTS,
-      managedAppsOf(env),
+      {
+        ownHosts: env.OWN_HOSTS,
+        managedApps: managedAppsOf(env),
+        // Plans exist on Commissary Cloud only: tool calls, browser and computer time count there (#241).
+        plans: () => planMeterOf(env, billingParts.get(ctx)),
+      },
     );
 
     toolsParts.set(ctx, part);

@@ -10,7 +10,8 @@
  *   `/testing`): not its other exports (Models' `/auth-index-key` and `/models-dev` are for the deploy and the catalog
  *   sync script) and never a file of the package by a relative path;
  * - another package's sources import it only through the entries `packageEntries` lists: none for Models, Tools and
- *   Agents, `/api` for Billing, which Models calls to count requests.
+ *   Agents, `/api` for Billing, which Models calls to count requests and Tools to count tool calls, browser and
+ *   computer time (#241).
  *
  * Every module specifier counts: imports and re-exports (types too), `import()` calls and `import("…")` types. An
  * `import()` of a computed specifier cannot be checked and is refused in both places.
@@ -58,7 +59,10 @@ const MODELS: Area = {
   packageEntries: [],
 };
 
-/** Billing (`@commissary/billing`) is the one area whose `/api` another area's sources import (Models counts requests). */
+/**
+ * Billing (`@commissary/billing`) is the one area whose `/api` other areas' sources import (Models counts requests,
+ * Tools counts tool calls and the time of browsers and computers).
+ */
 const BILLING: Area = {
   rule: "billing-imports",
   title: "Billing",

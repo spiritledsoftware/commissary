@@ -14,6 +14,13 @@ export const MCP_PATH = "/mcp";
 export const SPEND_REFUSAL_META = "commissary.dev/spend_refusal";
 
 /**
+ * The `_meta` key of a tool result the MCP endpoint gives when the org's plan refused the call (#241): `{ error:
+ * "plan_limit_reached", limit, allowed, retry_after? }` (`retry_after`, in seconds, for a limit that starts over), as
+ * the model routes' `plan_limit_reached` body names its limit, so a client can tell a plan limit from a Spend limit.
+ */
+export const PLAN_LIMIT_META = "commissary.dev/plan_limit";
+
+/**
  * Commissary's Client ID Metadata Document (CIMD) for toolkits' OAuth sign-ins (Tools, #202): the `client_id` an MCP
  * server's authorization server fetches, unauthenticated. A client API path, so it is served where an authorization
  * server reaches it (the API host, or the app host's zone route, outside Access).

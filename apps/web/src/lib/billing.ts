@@ -32,11 +32,13 @@ const FREE_UNIT_NAMES: Readonly<Record<BillingUnit, string>> = {
 };
 
 /**
- * What the server refuses once a unit's free usage is used up, where Free's limits apply: requests only (Billing's
- * `PlanLimitKind`); the other units are not counted yet, so nothing of them is refused.
+ * What the server refuses once a unit's free usage is used up, where Free's limits apply (Billing's `PlanLimitKind`):
+ * model requests and tool calls, browser use. Computer hours have no entry: Free has none, so there is no free usage
+ * to use up and no notice for it.
  */
 const REFUSED_AT_FREE_USAGE: Readonly<Partial<Record<BillingUnit, string>>> = {
-  requests: "requests",
+  requests: "requests and tool calls",
+  browser_hours: "browser sessions and Quick Actions",
 };
 
 const hours = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 });
@@ -147,7 +149,7 @@ export const resetDay = (view: Pick<BillingView, "resets_at">): string =>
 
 /** What the billing cap refuses once the bill reaches it. */
 const capRefusal = (view: BillingView): string =>
-  `requests that would be billed are refused until ${resetDay(view)}`;
+  `use that would be billed is refused until ${resetDay(view)}`;
 
 /**
  * Pay as you go's bill so far, the billing cap (none: `undefined`), the share of it billed, how near it is and the note

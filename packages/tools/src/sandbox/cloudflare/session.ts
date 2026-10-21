@@ -84,7 +84,7 @@ import {
   type SessionOpener,
   SESSION_IDLE_MS,
 } from "../provider.ts";
-import { atLimit, COMPUTER_BACKEND, computerBackend } from "./computer.ts";
+import { atLimit, COMPUTER_BACKEND, COMPUTER_IDLE_MS, computerBackend } from "./computer.ts";
 import {
   type ComputerMetering,
   computerNotStarted,
@@ -171,6 +171,8 @@ interface ClosedNote {
   /** An agent run's session's (#230): its records of stretches of computer time, in place of the session's record. */
   readonly stretches?: ReadonlyArray<SessionRecord> | undefined;
   readonly owed?: number | undefined;
+  /** The computer time, in ms, the report of `owed` carries for the org's plan (#241). */
+  readonly owedMs?: number | undefined;
 }
 
 /** What of a closed session's close is left to do, as `settleClose` takes it. */
@@ -205,6 +207,10 @@ export interface SessionCaller {
 export interface SessionMetering {
   readonly hourPriceMicros: number;
   readonly limitReached?: boolean | undefined;
+  /** Whose limit `limitReached` is: a Spend limit's (default) or the org's plan's, which words the refusal (#241). */
+  readonly limitReason?: "spend" | "plan" | undefined;
+  /** The org's plan counts the computer's time (#241): time that cost nothing is reported to it too. */
+  readonly plans?: true | undefined;
 }
 
 /**
@@ -291,6 +297,10 @@ const loadComputer = async () => {
 /** What a command that would run on the computer answers once a Spend limit its time counts toward has no room. */
 const COMPUTER_REFUSED =
   "The computer cannot run this command: a Spend limit its time counts toward is reached. Commands just-bash can run still run.";
+
+/** What it answers once the org's plan keeps the computer from it (#241): no computer hours, or a cap reached. */
+const COMPUTER_REFUSED_BY_PLAN =
+  "The computer cannot run this command: the org's plan does not allow it more computer time (see the billing page in the panel). Commands just-bash can run still run.";
 
 export class SandboxSession extends DurableObject<SandboxSessionEnv> {
   #workspace: Promise<Workspace> | undefined;
@@ -412,10 +422,33 @@ export class SandboxSession extends DurableObject<SandboxSessionEnv> {
 
     this.ctx.storage.kv.put(RECORD, {
       ...record,
-      metering: { ...metered.metering, owed: undefined },
+      metering: {
+        ...metered.metering,
+        owed: undefined,
+        plans: metering.plans === true ? true : undefined,
+      },
     });
 
-    return { ...reply, computerTime: addedTime(metered.time, owed) ?? metered.time };
+    // Where its computer stands now, for the org's count of running computers (#241).
+    const runsUntil = this.#computerRunsUntil(metered.metering);
+
+    return {
+      ...reply,
+      computerTime: {
+        ...(addedTime(metered.time, owed) ?? metered.time),
+        ...(runsUntil === undefined ? {} : { runsUntil }),
+      },
+    };
+  }
+
+  /** When the computer stops unless a command uses it again, as `metering` stands now; undefined: it does not run. */
+  #computerRunsUntil(metering: ComputerMetering): number | undefined {
+    if (metering.running === undefined) return undefined;
+
+    return Math.max(
+      computerEndsAt(metering, false) ?? 0,
+      this.#onComputer > 0 ? this.#now() + COMPUTER_IDLE_MS : 0,
+    );
   }
 
   /**
@@ -635,7 +668,12 @@ export class SandboxSession extends DurableObject<SandboxSessionEnv> {
     // An agent run's session records the stretch that ended (#230).
     await this.#recordStretch();
 
-    if (owed === undefined || owed.costMicros <= 0) return;
+    // Time that cost nothing is reported too where the org's plan counts it (#241).
+    if (
+      owed === undefined ||
+      (owed.costMicros <= 0 && (current.plans !== true || owed.computerMs <= 0))
+    )
+      return;
     const reporting = this.#report(record.org, owed);
 
     this.#reporting = reporting;
@@ -655,7 +693,9 @@ export class SandboxSession extends DurableObject<SandboxSessionEnv> {
         what: "sandbox session computer time",
         record: async () => {},
         report: (costMicros) =>
-          this.controlPlane(org).tools().sandboxComputerTime(this.#nameId(), costMicros, false),
+          this.controlPlane(org)
+            .tools()
+            .sandboxComputerTime(this.#nameId(), costMicros, false, owed.computerMs),
       },
     );
 
@@ -670,7 +710,11 @@ export class SandboxSession extends DurableObject<SandboxSessionEnv> {
         metering: { ...after.metering, owed: addedTime(after.metering.owed, owed) },
       });
     else if (after?.state === "closed")
-      this.ctx.storage.kv.put(RECORD, { ...after, owed: (after.owed ?? 0) + owed.costMicros });
+      this.ctx.storage.kv.put(RECORD, {
+        ...after,
+        owed: (after.owed ?? 0) + owed.costMicros,
+        owedMs: (after.owedMs ?? 0) + owed.computerMs,
+      });
   }
 
   /** The session's Workspace, made on first use: its shell's egress is the session's network. */
@@ -818,6 +862,7 @@ export class SandboxSession extends DurableObject<SandboxSessionEnv> {
               computerMs: 0,
               costMicros: 0,
               hourPriceMicros: metering.hourPriceMicros,
+              ...(metering.plans === true ? { plans: true as const } : {}),
               pendingMs: 0,
             },
           }),
@@ -853,7 +898,12 @@ export class SandboxSession extends DurableObject<SandboxSessionEnv> {
         if (onComputer && record.metering !== undefined) {
           // A command that would start or use the computer is refused once its time has no room (#224).
           if (metering?.limitReached === true)
-            return { ok: false, reason: "refused", message: COMPUTER_REFUSED };
+            return {
+              ok: false,
+              reason: "refused",
+              message:
+                metering.limitReason === "plan" ? COMPUTER_REFUSED_BY_PLAN : COMPUTER_REFUSED,
+            };
           const started = this.#now();
           const busy = this.#onComputer > 0;
 
@@ -1229,7 +1279,9 @@ export class SandboxSession extends DurableObject<SandboxSessionEnv> {
             },
           }),
       // Its alarm closed it: the Tools part hears of it, and charges what is left.
-      ...(charge === "object" ? { owed: left?.costMicros ?? 0 } : {}),
+      ...(charge === "object"
+        ? { owed: left?.costMicros ?? 0, owedMs: left?.computerMs ?? 0 }
+        : {}),
     };
 
     // The note goes first, so a call that waits while the rest is deleted finds the session closed.
@@ -1260,7 +1312,9 @@ export class SandboxSession extends DurableObject<SandboxSessionEnv> {
       },
       // Its org's Tools part charges the cost and forgets the session.
       report: (owed) =>
-        this.controlPlane(note.org).tools().sandboxComputerTime(this.#nameId(), owed, true),
+        this.controlPlane(note.org)
+          .tools()
+          .sandboxComputerTime(this.#nameId(), owed, true, note.owedMs),
     });
 
     const left = remaining(unsettledOf(note), done);
@@ -1271,7 +1325,9 @@ export class SandboxSession extends DurableObject<SandboxSessionEnv> {
       owner: note.owner,
       closedAt,
       ...(left.unrecorded === true ? { record, stretches } : {}),
-      ...(left.owed === undefined ? {} : { owed: left.owed }),
+      ...(left.owed === undefined
+        ? {}
+        : { owed: left.owed, ...(note.owedMs === undefined ? {} : { owedMs: note.owedMs }) }),
     } satisfies ClosedNote);
     await this.ctx.storage.setAlarm(
       done.recorded && done.reported ? closedAt + CLOSE_REPORT_MS : this.#now() + SETTLE_RETRY_MS,

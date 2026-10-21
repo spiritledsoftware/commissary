@@ -20,6 +20,7 @@
  */
 import type { Schema } from "effect";
 import type { UsageRun } from "@commissary/auth";
+import type { PlanRefusal } from "@commissary/billing/api";
 import type { Refusal } from "@commissary/state/spend";
 import type { SandboxEnvOp } from "@commissary/contract/sandbox-env";
 import type { ToolCallApproval } from "@commissary/contract/usage";
@@ -85,12 +86,26 @@ export interface RunCallTicket {
   readonly hourPriceMicros: number;
   readonly limitReached: boolean;
   /**
+   * The org's plan keeps the computer from the call's commands (#241), and no Spend limit does: `limitReached` is then
+   * the plan's, and a command that would run on the computer is refused in the plan's words.
+   */
+  readonly planRefusal: PlanRefusal | undefined;
+  /** The org's plan counts the computer's time (#241): the session reports time that cost nothing too. */
+  readonly plans: boolean;
+  /**
+   * What the gate counted of the call against the plan (`PlanMeter.admit`'s `monthStart`), until a refused operation
+   * takes it back: the call did no work then (#241).
+   */
+  readonly counted: number | undefined;
+  /**
    * The Spend limit that refused one of the call's operations after all (#224): a command that would have run on the
    * computer while the limit had no room. Settling it ends the run's turn with the refusal.
    */
   readonly refusal?: Refusal | undefined;
   /** Whether the refused operation stopped the session's running computer first. */
   readonly computerStopped?: true | undefined;
+  /** The plan refused one of the call's operations after all (#241): `planRefusal` is what settling it answers. */
+  readonly planRefused?: true | undefined;
   /** When it was first settled (epoch ms), which ended its operations; the record's latency runs to then. */
   readonly settledAt?: number | undefined;
 }
@@ -114,6 +129,10 @@ interface TicketRow extends Record<string, SqlStorageValue> {
   approval: string;
   hour_price_micros: number;
   limit_reached: number;
+  plan_refusal: string;
+  plan_refused: number;
+  plans: number;
+  counted: number | null;
   refusal: string;
   computer_stopped: number;
   settled_at: number | null;
@@ -125,8 +144,17 @@ const SCHEMA = `CREATE TABLE IF NOT EXISTS sandbox_run_calls (
   requested_at INTEGER NOT NULL, request_bytes INTEGER NOT NULL, credential TEXT NOT NULL, private INTEGER NOT NULL,
   cost_micros INTEGER NOT NULL, approval TEXT NOT NULL, hour_price_micros INTEGER NOT NULL,
   limit_reached INTEGER NOT NULL, refusal TEXT NOT NULL DEFAULT '', computer_stopped INTEGER NOT NULL DEFAULT 0,
-  settled_at INTEGER
+  settled_at INTEGER, plan_refusal TEXT NOT NULL DEFAULT '', plan_refused INTEGER NOT NULL DEFAULT 0,
+  plans INTEGER NOT NULL DEFAULT 0, counted INTEGER
 )`;
+
+/** The columns #241 added to a table from before. */
+const PLAN_COLUMNS = {
+  plan_refusal: "TEXT NOT NULL DEFAULT ''",
+  plan_refused: "INTEGER NOT NULL DEFAULT 0",
+  plans: "INTEGER NOT NULL DEFAULT 0",
+  counted: "INTEGER",
+} as const;
 
 const ticketOf = (row: TicketRow): RunCallTicket => ({
   id: row.id,
@@ -149,6 +177,11 @@ const ticketOf = (row: TicketRow): RunCallTicket => ({
   approval: row.approval as ToolCallApproval,
   hourPriceMicros: row.hour_price_micros,
   limitReached: row.limit_reached === 1,
+  // SAFETY: only `issue` writes the column, the JSON of a `PlanRefusal` or "" for none.
+  planRefusal: row.plan_refusal === "" ? undefined : (JSON.parse(row.plan_refusal) as PlanRefusal),
+  plans: row.plans === 1,
+  counted: row.counted ?? undefined,
+  planRefused: row.plan_refused === 1 ? true : undefined,
   // SAFETY: only `refused` writes the column, the JSON of a `Refusal` or "" for none.
   refusal: row.refusal === "" ? undefined : (JSON.parse(row.refusal) as Refusal),
   computerStopped: row.computer_stopped === 1 ? true : undefined,
@@ -161,11 +194,20 @@ export class RunCallTickets {
   constructor(sql: SqlStorage) {
     this.#sql = sql;
     sql.exec(SCHEMA);
+
+    const columns = sql
+      .exec<{ name: string }>("PRAGMA table_info(sandbox_run_calls)")
+      .toArray()
+      .map((column) => column.name);
+
+    for (const [column, type] of Object.entries(PLAN_COLUMNS))
+      if (!columns.includes(column))
+        sql.exec(`ALTER TABLE sandbox_run_calls ADD COLUMN ${column} ${type}`);
   }
 
   /** Keeps a new ticket, with a fresh id, and forgets those past their settling's grace; answers its id. */
   issue(
-    ticket: Omit<RunCallTicket, "id" | "refusal" | "computerStopped" | "settledAt">,
+    ticket: Omit<RunCallTicket, "id" | "refusal" | "computerStopped" | "planRefused" | "settledAt">,
     now: number,
   ): string {
     const id = `rtc_${crypto.randomUUID().replaceAll("-", "")}`;
@@ -174,8 +216,9 @@ export class RunCallTickets {
 
     this.#sql.exec(
       `INSERT INTO sandbox_run_calls (id, toolkit_id, tool, principal, member, api_key, agent, run, session, expires_at,
-         requested_at, request_bytes, credential, private, cost_micros, approval, hour_price_micros, limit_reached)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         requested_at, request_bytes, credential, private, cost_micros, approval, hour_price_micros, limit_reached,
+         plan_refusal, plans, counted)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       id,
       ticket.toolkitId,
       ticket.tool,
@@ -194,6 +237,9 @@ export class RunCallTickets {
       ticket.approval,
       ticket.hourPriceMicros,
       ticket.limitReached ? 1 : 0,
+      ticket.planRefusal === undefined ? "" : JSON.stringify(ticket.planRefusal),
+      ticket.plans ? 1 : 0,
+      ticket.counted ?? null,
     );
 
     return id;
@@ -237,6 +283,33 @@ export class RunCallTickets {
       computerStopped ? 1 : 0,
       id,
     );
+  }
+
+  /**
+   * Keeps that the plan refused one of the call's operations after all (#241), and whether it stopped the session's
+   * running computer: settling the ticket answers its `planRefusal`.
+   */
+  planRefused(id: string, computerStopped: boolean): void {
+    this.#sql.exec(
+      `UPDATE sandbox_run_calls SET plan_refused = 1, computer_stopped = MAX(computer_stopped, ?) WHERE id = ?`,
+      computerStopped ? 1 : 0,
+      id,
+    );
+  }
+
+  /**
+   * Takes the call's count against the plan off the ticket, once: answers it (`counted`) the first time, for the part
+   * to give back to the plan, and nothing after (#241).
+   */
+  uncount(id: string): number | undefined {
+    const row = this.#sql
+      .exec<{ counted: number | null }>(`SELECT counted FROM sandbox_run_calls WHERE id = ?`, id)
+      .toArray()[0];
+
+    if (row?.counted === null || row?.counted === undefined) return undefined;
+    this.#sql.exec(`UPDATE sandbox_run_calls SET counted = NULL WHERE id = ?`, id);
+
+    return row.counted;
   }
 
   /**

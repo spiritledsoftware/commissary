@@ -94,8 +94,20 @@ export interface SandboxAnswer {
 export const COMPUTER_STOPPED_NOTE =
   "The sandbox session's computer was stopped: a Spend limit its computer time counts toward is reached. Commands just-bash can run still run; one that needs the computer is refused.";
 
+/** The note once the org's plan stopped it (#241): its computer hours or its billing cap are used up. */
+export const COMPUTER_STOPPED_BY_PLAN_NOTE =
+  "The sandbox session's computer was stopped: the org's plan allows no more computer time (see the billing page in the panel). Commands just-bash can run still run; one that needs the computer is refused.";
+
+/** The note a call that stopped the computer carries, in the words of the limit that stopped it. */
+export const computerStoppedNote = (meter: ComputerMeter | undefined): string =>
+  meter?.limitReason === "plan" ? COMPUTER_STOPPED_BY_PLAN_NOTE : COMPUTER_STOPPED_NOTE;
+
+/** What `sandbox_open` adds when it opens a computer where the org's plan allows no computer time (#241). */
+export const NO_COMPUTER_HOURS_HINT =
+  "The org's plan allows no computer time right now (see the billing page in the panel): commands that need the computer will be refused. Commands just-bash can run still run.";
+
 /** `result` with `note` after it, as a text block of its own. */
-const noted = (result: Schema.JsonObject, note: string): Schema.JsonObject => {
+export const noted = (result: Schema.JsonObject, note: string): Schema.JsonObject => {
   const content = Array.isArray(result["content"]) ? result["content"] : [];
 
   return Object.assign({}, result, { content: [...content, { type: "text", text: note }] });
@@ -107,10 +119,11 @@ const noted = (result: Schema.JsonObject, note: string): Schema.JsonObject => {
  */
 const answered = <A>(
   metered: Metered<A>,
+  meter: ComputerMeter | undefined,
   render: (value: A, note: string | undefined) => Schema.JsonObject,
   ownNote = false,
 ): SandboxAnswer => {
-  const note = metered.computerStopped === true ? COMPUTER_STOPPED_NOTE : undefined;
+  const note = metered.computerStopped === true ? computerStoppedNote(meter) : undefined;
   const rendered = render(metered.value, note);
   const result = note === undefined || ownNote ? rendered : noted(rendered, note);
 
@@ -593,6 +606,7 @@ const run = (
           Effect.map((metered) =>
             answered(
               metered,
+              meter,
               (result, stoppedNote) => {
                 const stdout = renderedOutput(result.stdout);
                 const stderr = renderedOutput(result.stderr);
@@ -635,7 +649,7 @@ const run = (
         .readFile(owner, id, filePath, now, meter)
         .pipe(
           Effect.map((metered) =>
-            answered(metered, (content) => renderedRead(content, filePath, offset, limit)),
+            answered(metered, meter, (content) => renderedRead(content, filePath, offset, limit)),
           ),
         );
     }
@@ -648,7 +662,7 @@ const run = (
         .writeFile(owner, id, filePath, content, now, meter)
         .pipe(
           Effect.map((metered) =>
-            answered(metered, () =>
+            answered(metered, meter, () =>
               text(`Successfully wrote ${byteLength(content)} bytes to ${filePath}`),
             ),
           ),
@@ -664,7 +678,7 @@ const run = (
           const edited = applyEdits(read.value, edits, filePath);
 
           if (Result.isFailure(edited))
-            return Effect.succeed(answered(read, () => toolError(edited.failure)));
+            return Effect.succeed(answered(read, meter, () => toolError(edited.failure)));
 
           // The write answers the computer time since the read: the call's is both, and the read may have stopped the
           // computer.
@@ -679,7 +693,7 @@ const run = (
 
           return provider.writeFile(owner, id, filePath, edited.success, now, meter).pipe(
             Effect.map((written) =>
-              answered({ value: undefined, ...both(written) }, () =>
+              answered({ value: undefined, ...both(written) }, meter, () =>
                 text(`Successfully replaced ${edits.length} block(s) in ${filePath}.`),
               ),
             ),
@@ -704,7 +718,9 @@ const run = (
         .list(owner, id, resolvePath(request.args.path ?? SANDBOX_HOME), now, meter)
         .pipe(
           Effect.map((metered) =>
-            answered(metered, (entries) => renderedList(entries, limit ?? DEFAULT_LIST_LIMIT)),
+            answered(metered, meter, (entries) =>
+              renderedList(entries, limit ?? DEFAULT_LIST_LIMIT),
+            ),
           ),
         );
     }
@@ -716,7 +732,9 @@ const run = (
         .close(owner, id, now, meter)
         .pipe(
           Effect.map((metered) =>
-            answered(metered, () => text(`Closed sandbox session ${id}; its files are deleted.`)),
+            answered(metered, meter, () =>
+              text(`Closed sandbox session ${id}; its files are deleted.`),
+            ),
           ),
         );
     }
@@ -774,7 +792,7 @@ export const callSandboxTool = (
         return {
           result:
             error.computerStopped === true && error.reason !== "refused"
-              ? noted(result, COMPUTER_STOPPED_NOTE)
+              ? noted(result, computerStoppedNote(call.meter))
               : result,
           ...(error.computerTime === undefined ? {} : { computerTime: error.computerTime }),
           ...(error.reason === "refused" ? { computer: "needed" as const } : {}),

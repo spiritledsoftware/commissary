@@ -1,6 +1,7 @@
 // The test Worker's entry (vitest.config.ts, project `tools`): test-only ControlPlanes, `@commissary/state`'s org-wide
 // base composed with the Tools part the way a Worker composes it (`composeControlPlane`), the Platform registry and
-// SessionState, on real SQLite storage. Tools' tests depend on no other area and on no app.
+// SessionState, on real SQLite storage. Tools' tests depend on no app, and on no other area but Billing, whose part the
+// browser and computer ControlPlanes carry to test what plans count of Tools (#241, `PLANS_ON`).
 //
 // `ControlPlane` is a deployment without built-in toolkits; `BrowserControlPlane` one with a fake Browser Run binding
 // (#212) and the browser sessions' objects (#213: `BrowserSession`, whose browsers are a fake provider's),
@@ -20,6 +21,7 @@
 // each member may run.
 import { env } from "cloudflare:workers";
 import type { Clock } from "effect";
+import { BillingPart } from "@commissary/billing/state";
 import { COMPUTER_MARKER } from "@commissary/core";
 import { composeControlPlane } from "@commissary/state";
 import type { SpendAgent } from "@commissary/state/spend";
@@ -197,24 +199,56 @@ export class SandboxSession extends FakeComputerSandboxSession {
   }
 }
 
+/**
+ * The key whose value `true` makes a ControlPlane with a Billing part count what plans count of its Tools part (#241),
+ * as on Commissary Cloud: tool calls, browser and computer time and the ceilings, over the real Billing part (a test
+ * sets it with `runInDurableObject`). Without it the part counts and limits nothing, as on a self-hosted Commissary, so
+ * the other tests' orgs, which are on Free, meet no plan.
+ */
+export const PLANS_ON = "test:plans";
+
+/** Each object's Billing part, where the object has one. */
+const billingParts = new WeakMap<DurableObjectState, BillingPart>();
+
+const billingPartOf = (ctx: DurableObjectState): BillingPart => {
+  const part = new BillingPart(ctx);
+
+  billingParts.set(ctx, part);
+
+  return part;
+};
+
+/** What the Tools part counts through: the Billing part once a test turned plans on. */
+const plansOf = (ctx: DurableObjectState) => () =>
+  ctx.storage.kv.get(PLANS_ON) === true ? billingParts.get(ctx) : undefined;
+
 export class ControlPlane extends composeControlPlane({
-  tools: (ctx, _env, core) => new ToolsPart(ctx, core),
+  billing: (ctx) => billingPartOf(ctx),
+  tools: (ctx, _env, core) => new ToolsPart(ctx, core, {}, { plans: plansOf(ctx) }),
 }) {}
 
 /** Commissary Cloud's ControlPlane, with a managed OAuth app for the catalog service `acme` (#207). */
 export class CloudControlPlane extends composeControlPlane({
-  tools: (ctx, _env, core) => new ToolsPart(ctx, core, {}, undefined, cloudManagedApps),
+  tools: (ctx, _env, core) => new ToolsPart(ctx, core, {}, { managedApps: cloudManagedApps }),
 }) {}
 
 export class BrowserControlPlane extends composeControlPlane({
+  billing: (ctx) => billingPartOf(ctx),
   tools: (ctx, env: Cloudflare.Env, core) =>
-    new ToolsPart(ctx, core, {
-      browser: browserRun(fakeBrowserRun()),
-      browserSessions: browserSessions(env.BROWSER_SESSIONS),
-    }),
+    new ToolsPart(
+      ctx,
+      core,
+      {
+        browser: browserRun(fakeBrowserRun()),
+        browserSessions: browserSessions(env.BROWSER_SESSIONS),
+      },
+      { plans: plansOf(ctx) },
+    ),
 }) {}
 
+// These carry the Billing part too, so that their stubs are of one type for the tests that use more than one.
 export class OtherBrowserControlPlane extends composeControlPlane({
+  billing: (ctx) => billingPartOf(ctx),
   tools: (ctx, env: Cloudflare.Env, core) =>
     new ToolsPart(ctx, core, {
       browser: fakeOtherProvider(),
@@ -275,8 +309,11 @@ class WithSharedAgent extends ToolsPart {
  * Spend limits apply to its runs ({@link SHARED_AGENT}).
  */
 export class ComputerSandboxControlPlane extends composeControlPlane({
+  billing: (ctx) => billingPartOf(ctx),
   tools: (ctx, env: Cloudflare.Env, core) =>
-    new WithSharedAgent(ctx, core, builtInProviders({ ...env, ...COMPUTER_MARKER })),
+    new WithSharedAgent(ctx, core, builtInProviders({ ...env, ...COMPUTER_MARKER }), {
+      plans: plansOf(ctx),
+    }),
 }) {}
 
 export class OtherSandboxControlPlane extends composeControlPlane({

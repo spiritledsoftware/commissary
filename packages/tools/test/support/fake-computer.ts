@@ -8,6 +8,7 @@
 //   its shim, and writes `mise.toml`, as mise does;
 // - `node --version`, `node <file>`, `python3 --version`: through the installed shim, reading the Workspace's files;
 // - `curl -sS <url>`: through the egress;
+// - `nap <seconds>`: takes that many real seconds, as a slow command does (#241's tests of calls at once);
 // - those joined by `&&`.
 //
 // Anything else is not found, as on the barebones image. Each start of a session's computer is counted, by session.
@@ -125,6 +126,12 @@ const runOne = async (
     await files.writeFile(`${cwd}/mise.toml`, `[tools]\n${tool} = "${version}"\n`);
 
     return { exitCode: 0, stderr: `mise ${tool}@${version} installed\n` };
+  }
+
+  if (command === "nap") {
+    await new Promise((done) => setTimeout(done, Number(args[0] ?? 0) * 1000));
+
+    return { exitCode: 0 };
   }
 
   if (command === "curl") {

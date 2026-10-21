@@ -274,6 +274,8 @@ const StoredSession = Schema.Struct({
    * not empty is masked), and every call masks what they filled before it acts.
    */
   watched: Schema.optionalKey(Schema.Literals(["marked", "unmarked"])),
+  /** The browser time, in ms, of the stretch `owed` charges, which the report carries for the org's plan (#241). */
+  owedMs: Schema.optionalKey(Schema.Number),
 });
 
 type StoredSession = typeof StoredSession.Type;
@@ -472,9 +474,14 @@ const meterSession = (
 
 /** `session` without what is left to do once it closed. */
 const settled = (session: StoredSession, done: Settled): StoredSession => {
-  const { unrecorded: _unrecorded, owed: _owed, ...rest } = session;
+  const { unrecorded: _unrecorded, owed: _owed, owedMs, ...rest } = session;
+  const left = remaining(session, done);
 
-  return { ...rest, ...remaining(session, done) };
+  return {
+    ...rest,
+    ...left,
+    ...(left.owed === undefined || owedMs === undefined ? {} : { owedMs }),
+  };
 };
 
 const owns = (stored: StoredSession, caller: SessionCaller): boolean =>
@@ -575,7 +582,9 @@ export class BrowserSession extends DurableObject<BrowserSessionEnv> {
       ...closing.session,
       closed: { at: now, reason },
       unrecorded: true,
-      ...(charge === "object" ? { owed: closing.browserTime.costMicros } : {}),
+      ...(charge === "object"
+        ? { owed: closing.browserTime.costMicros, owedMs: closing.browserTime.browserMs }
+        : {}),
     };
 
     this.#save(closed);
@@ -634,7 +643,7 @@ export class BrowserSession extends DurableObject<BrowserSessionEnv> {
       report: (owed) =>
         this.controlPlane(session.org)
           .tools()
-          .browserSessionClosed(session.id ?? this.#nameId(), owed),
+          .browserSessionClosed(session.id ?? this.#nameId(), owed, session.owedMs),
     });
 
     const left = settled(session, done);

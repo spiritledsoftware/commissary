@@ -151,7 +151,7 @@ describe("the bill so far against the billing cap", () => {
       percent: 100,
       level: "out",
       levelNote:
-        "The billing cap is reached: requests that would be billed are refused until September 1, UTC.",
+        "The billing cap is reached: use that would be billed is refused until September 1, UTC.",
     });
     expect(billReading(payg({ billing_cap: null, bill: 12.4 }))).toEqual({
       bill: "$12.40",
@@ -205,13 +205,12 @@ describe("plan notices", () => {
     ).toEqual([
       {
         level: "out",
-        text: "This org has used all of this month’s free requests and tool calls: requests are refused until September 1, UTC.",
+        text: "This org has used all of this month’s free requests and tool calls: requests and tool calls are refused until September 1, UTC.",
         action: undefined,
       },
       {
         level: "near",
-        // Browser hours are not refused at free usage (the server refuses requests only).
-        text: "This org has used 80% of this month’s free browser hours.",
+        text: "This org has used 80% of this month’s free browser hours. At 100%, browser sessions and Quick Actions are refused until September 1, UTC.",
         action: undefined,
       },
     ]);
@@ -221,7 +220,7 @@ describe("plan notices", () => {
     expect(lines({ notices: [{ kind: "free_usage", unit: "requests", percent: 80 }] })).toEqual([
       {
         level: "near",
-        text: "This org has used 80% of this month’s free requests and tool calls. At 100%, requests are refused until September 1, UTC.",
+        text: "This org has used 80% of this month’s free requests and tool calls. At 100%, requests and tool calls are refused until September 1, UTC.",
         action: undefined,
       },
     ]);
@@ -244,7 +243,7 @@ describe("plan notices", () => {
     ).toEqual([
       {
         level: "out",
-        text: "This month’s bill has reached the billing cap of $50.00: requests that would be billed are refused until September 1, UTC.",
+        text: "This month’s bill has reached the billing cap of $50.00: use that would be billed is refused until September 1, UTC.",
         action: undefined,
       },
     ]);

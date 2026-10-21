@@ -30,6 +30,12 @@ export interface SandboxOwner {
 export interface ComputerTime {
   readonly computerMs: number;
   readonly costMicros: number;
+  /**
+   * A call's answer says when the session's computer stops unless a command uses it again (epoch ms), absent when it
+   * does not run (#241: the org's concurrent computers are counted from it). A session from before it says nothing,
+   * which reads as not running.
+   */
+  readonly runsUntil?: number;
 }
 
 /** Two stretches of computer time together; either may be none. */
@@ -39,7 +45,13 @@ export const addedTime = (
 ): ComputerTime | undefined =>
   a === undefined || b === undefined
     ? (a ?? b)
-    : { computerMs: a.computerMs + b.computerMs, costMicros: a.costMicros + b.costMicros };
+    : {
+        computerMs: a.computerMs + b.computerMs,
+        costMicros: a.costMicros + b.costMicros,
+        ...(a.runsUntil === undefined && b.runsUntil === undefined
+          ? {}
+          : { runsUntil: Math.max(a.runsUntil ?? 0, b.runsUntil ?? 0) }),
+      };
 
 /**
  * What the Tools part passes with each call of a session about its computer time (#224): the sandbox toolkit's price
@@ -56,6 +68,16 @@ export interface ComputerMeter {
    * (`computerStopped`), and a command that would run on the computer is refused (`reason` `refused`).
    */
   readonly limitReached: boolean;
+  /**
+   * Whose limit it is: a Spend limit's (the default), or the org's plan's (#241), which words the refusal and the
+   * note of a stopped computer as the plan's.
+   */
+  readonly limitReason?: "spend" | "plan" | undefined;
+  /**
+   * The org's plan counts the computer's time (#241): the session reports time that cost nothing too, when its computer
+   * stopped with no call to answer it. Absent where nothing counts it (a self-hosted Commissary).
+   */
+  readonly plans?: true | undefined;
 }
 
 /** Who opened a session, as its usage record of computer time names them (#224): the toolkit, member and agent run. */
@@ -165,7 +187,11 @@ export class SandboxError extends Schema.TaggedError<SandboxError>()("SandboxErr
   message: Schema.String,
   computerStopped: Schema.optionalKey(Schema.Literal(true)),
   computerTime: Schema.optionalKey(
-    Schema.Struct({ computerMs: Schema.Number, costMicros: Schema.Number }),
+    Schema.Struct({
+      computerMs: Schema.Number,
+      costMicros: Schema.Number,
+      runsUntil: Schema.optionalKey(Schema.Number),
+    }),
   ),
 }) {}
 

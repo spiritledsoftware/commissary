@@ -631,8 +631,9 @@ The requests and tool calls, browser hours and computer hours an org gets free e
 _Avoid_: allowance, quota (a provider's), free tier, credits
 
 **Plan limit**:
-Where a plan refuses further use: Free's stop at its free usage, the billing cap, or a ceiling on concurrent browser
-sessions, computers or request rate.
+Where a plan refuses further use: Free's stop at the free usage of a unit (requests and tool calls, browser hours,
+computer hours: Free has no computer hours, so no computer), the billing cap, or a ceiling on concurrent browser
+sessions, computers or request rate. A used-up unit refuses only its own use; agent runs stay uncapped by the ceilings.
 _Avoid_: spend limit (an org's own cap on cost), quota, rate limit (on its own)
 
 **Billing cap**:

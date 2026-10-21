@@ -17,9 +17,10 @@ import type {
   SandboxEnvRequest,
 } from "@commissary/contract/sandbox-env";
 import { CurrentOrg, type Reply, replyError } from "@commissary/core";
+import type { BillingEnv } from "@commissary/billing/api";
 import { toolsControlPlane, ToolsEnv } from "../env.ts";
 import { insertToolCallRecord, type ToolCallRecord } from "../usage/record.ts";
-import { refusedText } from "./endpoint.ts";
+import { planLimitedText, refusedText } from "./endpoint.ts";
 
 /** Runs `request` of the gated call `ticket` of the run `run` of the current org on its session. */
 export const runSandboxOperation = (
@@ -36,13 +37,14 @@ export const runSandboxOperation = (
  * usage record under the ticket's id, before it answers: it fails when the record could not be written, and the run
  * settles it again, which answers the same and writes the record once (`INSERT OR IGNORE`). A ticket unknown, past its
  * settling's grace or another run's writes none. A call one of whose commands a Spend limit refused after all, as it
- * needed the computer (#224), is recorded as refused, and answers the refusal's words, which end the run's turn.
+ * needed the computer (#224), or the org's plan (#241), is recorded as refused, and answers the refusal's words, which
+ * end the run's turn.
  */
 export const settleRunToolCall = (
   run: string,
   ticket: string,
   report: RunToolReport,
-): Effect.Effect<RunToolSettled, Reply, ToolsEnv | CurrentOrg> =>
+): Effect.Effect<RunToolSettled, Reply, ToolsEnv | BillingEnv | CurrentOrg> =>
   Effect.gen(function* () {
     const settled = yield* toolsControlPlane("settleRunSandboxCall", (stub) =>
       stub.tools().settleRunSandboxCall(run, ticket),
@@ -50,6 +52,7 @@ export const settleRunToolCall = (
 
     if (settled === undefined) return { recorded: false };
     const { refusal } = settled;
+    const planRefused = settled.planRefused === true && settled.planRefusal !== undefined;
     const org = yield* CurrentOrg;
     const env = yield* ToolsEnv;
     const settledAt = settled.settledAt ?? (yield* Clock.currentTimeMillis);
@@ -64,7 +67,7 @@ export const settleRunToolCall = (
       toolId: `${settled.toolkitId}:${settled.tool}`,
       credential: settled.credential,
       private: settled.private,
-      outcome: refusal === undefined ? report.outcome : "refused",
+      outcome: refusal === undefined && !planRefused ? report.outcome : "refused",
       requestedAt: settled.requestedAt,
       latencyMs: Math.max(0, settledAt - settled.requestedAt),
       requestBytes: settled.requestBytes,
@@ -85,7 +88,20 @@ export const settleRunToolCall = (
       ),
     );
 
-    if (refusal === undefined) return { recorded: true };
+    // A command the plan kept from the computer after all (#241): the plan's words end the turn.
+    if (refusal === undefined) {
+      if (!planRefused || settled.planRefusal === undefined) return { recorded: true };
+
+      return {
+        recorded: true,
+        refusal: yield* planLimitedText(settled.tool, {
+          refusal: settled.planRefusal,
+          computer: "needed",
+          ...(settled.computerStopped === true ? { computerStopped: true as const } : {}),
+        }),
+      };
+    }
+
     const needed = { refusal, computer: "needed" as const };
 
     return {

@@ -40,6 +40,8 @@ export interface ComputerMetering {
   readonly costMicros: number;
   /** The price per computer hour in force since the last call that metered, in micro-USD. */
   readonly hourPriceMicros: number;
+  /** The org's plan counts the computer's time (#241): its free time is reported too. As its last call said. */
+  readonly plans?: true | undefined;
   /** The time of runs that ended since then, not answered yet, in ms. */
   readonly pendingMs: number;
   /** The computer's run, while it may run. */

@@ -283,6 +283,9 @@ export type SessionToolName = keyof typeof SESSION_TOOLS;
 /** The session tool that closes a session, the one that ends its browser time. */
 export const CLOSE_TOOL = "close" satisfies SessionToolName;
 
+/** The tool that opens a session: the one call that counts toward the plan's ceiling on concurrent sessions (#241). */
+export const OPEN_TOOL = "open" satisfies SessionToolName;
+
 // SAFETY: `SESSION_TOOLS`'s own keys are exactly its names.
 export const SESSION_TOOL_NAMES = Object.keys(SESSION_TOOLS) as ReadonlyArray<SessionToolName>;
 

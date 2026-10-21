@@ -76,12 +76,22 @@ export class SandboxSessionStore {
       .map((column) => column.name);
 
     if (!columns.includes("agent")) sql.exec(`ALTER TABLE sandbox_sessions ADD COLUMN agent TEXT`);
+
+    // When a session's computer stops unless a command uses it again (#241): a log from before has no column for it.
+    if (!columns.includes("computer_until"))
+      sql.exec(`ALTER TABLE sandbox_sessions ADD COLUMN computer_until INTEGER`);
+
+    // Whether a session was opened with the computer (#241): a log from before has no column for it, and its sessions
+    // may have one.
+    if (!columns.includes("computer"))
+      sql.exec(`ALTER TABLE sandbox_sessions ADD COLUMN computer INTEGER`);
   }
 
-  opened(session: Omit<TrackedSession, "lastUsed">): void {
+  /** Keeps a session just opened; `computer`: whether it was opened asking for the computer (#241). */
+  opened(session: Omit<TrackedSession, "lastUsed">, computer = true): void {
     this.#sql.exec(
-      `INSERT OR REPLACE INTO sandbox_sessions (id, toolkit_id, member, principal, agent, opened_at, last_used)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT OR REPLACE INTO sandbox_sessions (id, toolkit_id, member, principal, agent, opened_at, last_used, computer)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       session.id,
       session.toolkitId,
       session.member ?? "",
@@ -89,7 +99,20 @@ export class SandboxSessionStore {
       session.agent ?? null,
       session.openedAt,
       session.openedAt,
+      computer ? 1 : 0,
     );
+  }
+
+  /**
+   * Whether the session `id` may have a computer (#241): the part keeps it, and it was not opened without one. A
+   * session from before the column may; the ceiling on computers counts and holds no other.
+   */
+  mayHaveComputer(id: string): boolean {
+    const row = this.#sql
+      .exec<{ computer: number | null }>(`SELECT computer FROM sandbox_sessions WHERE id = ?`, id)
+      .toArray()[0];
+
+    return row !== undefined && row.computer !== 0;
   }
 
   /** The open session `id`, if the part keeps it. */
@@ -130,6 +153,62 @@ export class SandboxSessionStore {
         principal ?? null,
         principal ?? null,
       );
+  }
+
+  /**
+   * Notes when the computer of the session `id` stops unless a command uses it again (`until`, epoch ms), as its object
+   * answered with a call, or that it does not run (`undefined`): the org's concurrent computers are counted from it
+   * ({@link computersRunning}, #241).
+   */
+  computerRunsUntil(id: string, until: number | undefined): void {
+    this.#sql.exec(
+      `UPDATE sandbox_sessions SET computer_until = ? WHERE id = ?`,
+      until ?? null,
+      id,
+    );
+  }
+
+  /**
+   * Notes that the computer of the session `id` stopped, as its object reported at `now`: unless a later answer says it
+   * runs on past `now` (a command started it again before the report came).
+   */
+  computerStopped(id: string, now: number): void {
+    this.#sql.exec(
+      `UPDATE sandbox_sessions SET computer_until = NULL WHERE id = ? AND (computer_until IS NULL OR computer_until <= ?)`,
+      id,
+      now,
+    );
+  }
+
+  /** Whether the computer of the session `id` runs at `now`, as its object last answered. */
+  computerRuns(id: string, now: number): boolean {
+    const row = this.#sql
+      .exec<{ computer_until: number | null }>(
+        `SELECT computer_until FROM sandbox_sessions WHERE id = ?`,
+        id,
+      )
+      .toArray()[0];
+
+    return row?.computer_until !== null && row?.computer_until !== undefined
+      ? row.computer_until > now
+      : false;
+  }
+
+  /**
+   * How many computers the org has running at `now`, as the sessions' objects last answered, apart from the session
+   * `except`'s and from agent runs' (`run:<id>` principals, which no ceiling caps, ADR 0042).
+   */
+  computersRunning(now: number, except?: string): number {
+    return (
+      this.#sql
+        .exec<{ running: number }>(
+          `SELECT COUNT(*) AS running FROM sandbox_sessions
+           WHERE computer_until > ? AND id != ? AND principal NOT LIKE 'run:%'`,
+          now,
+          except ?? "",
+        )
+        .toArray()[0]?.running ?? 0
+    );
   }
 
   /**

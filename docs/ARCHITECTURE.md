@@ -114,10 +114,13 @@ to `packages/agents/src/`) and the JSON path engine as `packages/json`.
                               through ./api, ./management and ./state (lint rule boundaries/billing-imports); does
                               nothing on a self-hosted Commissary
     src/api.ts                for the API Worker and the areas that count: limitClientRate, countRequest,
-                              uncountRequest, PlanLimitReached, BillingEnv, its cron task (billing-meter-events)
+                              uncountRequest, PlanLimitReached, PlanMeter and planRefusalText (Tools), BillingEnv, its
+                              cron task (billing-meter-events)
     src/management.ts         for the app Worker: the /billing routes and their role-table entries, Polar's webhook
                               route (/webhooks/polar), its org-deletion step
-    src/state.ts              for the state Worker: BillingPart, its part of the ControlPlane
+    src/state.ts              for the state Worker: BillingPart, its part of the ControlPlane, planMeterOf (what the
+                              composition hands the Tools part)
+    src/plan-meter.ts         the PlanMeter port the Tools part counts through, and planMeterOf
     src/part.ts, store.ts     the Billing part (plan, free-usage counters, billing cap, Polar account and meter batches
                               in SQLite)
     src/provider.ts, providers.ts, polar.ts
@@ -3110,15 +3113,17 @@ is the Access one, unchanged, and there is no auth Worker. User docs: `docs/ACCE
 
 Workers addition, no Go counterpart; ADR 0042, #236, #237. Commissary Cloud's plans: every org holds one, `free` or
 `payg`, and has a month's **free usage** counted in its ControlPlane; Pay as you go is billed through Polar and stopped
-by the org's **billing cap** (#238). The other units come later (#241). **A self-hosted Commissary has none of it**:
+by the org's **billing cap** (#238). All three units count: requests, tool calls (with requests), browser hours and
+computer hours, and the ceilings on concurrent browser sessions and computers apply (#241, _Tool calls, browser and
+computer hours, and the ceilings_ below). **A self-hosted Commissary has none of it**:
 the package checks `isHosted` before it counts, refuses or reads anything, and its routes answer 404.
 
 - **Seam** (`codebase-design`): Billing is an area package (`packages/billing`, entries `./api`, `./management`,
   `./state`, `./testing`, lint rule `boundaries/billing-imports`) that imports no other area. What callers see is small:
-  `countRequest` / `uncountRequest` (Models), `limitClientRate` and the cron task (the API Worker), the `/billing`
-  routes, their role-table entries, Polar's webhook route and the org-deletion step (the app Worker) and `BillingPart`
-  (the state Worker). Models imports `@commissary/billing/api` (the lint rule lets another
-  package's sources import only `./api`); Billing imports `@commissary/auth` (`isHosted`), `@commissary/state` (stubs,
+  `countRequest` / `uncountRequest` (Models), `PlanMeter` and `planRefusalText` (Tools), `limitClientRate` and the cron
+  task (the API Worker), the `/billing` routes, their role-table entries, Polar's webhook route and the org-deletion
+  step (the app Worker) and `BillingPart` (the state Worker). Models and Tools import `@commissary/billing/api` (the
+  lint rule lets another package's sources import only `./api`); Billing imports `@commissary/auth` (`isHosted`), `@commissary/state` (stubs,
   `ControlPlanePart`), `@commissary/core` and `@commissary/contract`.
 - **The part** (`billing/part.ts`, `store.ts`): tables `billing_plan` (one row; none means `free`, so an org that existed
   before plans needs no backfill and nothing of past usage is counted) and `billing_usage` (`month_start`, `unit`,
@@ -3126,7 +3131,7 @@ the package checks `isHosted` before it counts, refuses or reads anything, and i
   `state/spend/store.ts`, and nothing is derived from the D1 usage records). `admit(now)` is one synchronous step of the
   object: a Free org (or a Pay-as-you-go one that is past due, `limitsPlan()`) with `requests` at the free usage is
   refused (and not counted), anything else is counted, on either plan; `refund(monthStart)` takes a count back. `usage(now)` reads the plan and the month. Hours of the other two units
-  are stored as `REAL` and read 0 until #241 counts them. `setPlan` stores the plan directly (tests; Polar's webhooks go
+  are stored as `REAL` (hours, from the milliseconds Tools counts, `addTime`). `setPlan` stores the plan directly (tests; Polar's webhooks go
   through `applySubscription`). Three tables serve Polar (#237): `billing_account` (one row: the Polar customer, the
   current subscription, the payment state `ok`/`past_due`, and Polar's `modified_at` of the last change applied),
   `billing_meter_sent` (what was sent of each unit and month) and `billing_meter_batch` (the one batch on its way).
@@ -3171,6 +3176,76 @@ the package checks `isHosted` before it counts, refuses or reads anything, and i
   it. Work in flight finishes. Changing the cap takes effect at the next request in the isolate that changed it
   (`forgetBilling`) and **within 5 seconds on the client API**: the app Worker cannot clear the API Worker's isolates,
   so they remember a refusal by the cap for 5 seconds only (`BILLING_CAP_REFUSAL_TTL_MS`), not Free's 30.
+- **Tool calls, browser and computer hours, and the ceilings** (#241, `billing/plan-meter.ts`, `tools/control-plane-part.ts`):
+  the other units are counted by the **Tools part**, in the org's ControlPlane beside the Billing part, through the port
+  `PlanMeter` (`@commissary/billing/api`; the state Worker's composition hands the Tools part its object's `BillingPart`
+  on Commissary Cloud only, `planMeterOf`, so a self-hosted Commissary's Tools part has none and counts and limits
+  nothing). Billing says what is counted and refused (`BillingStore.limitOf(unit)`, `admit`, `addTime`, `checkCeiling`;
+  the same synchronous object, so a check and its count are one step); Tools says when.
+  - **Tool calls** count once with requests, toward the same 25,000, in `ToolsPart.callTool` right before the work, in
+    two steps. The plan's _non-counting_ checks (the limit on requests and tool calls, the browser hours, the ceilings) come
+    after the call is known to exist and its caller to reach it, its credential to be there and a Spend limit to have room,
+    and _before_ its approval rule is asked: a call the plan will refuse creates and uses up no approval. The _counting_ is
+    after the approval rule let the call go (`go`), when the ceilings are checked again, since approving takes time, and
+    the call counts, with nothing awaited between. (One check cannot come first: whether a sandbox command needs the
+    computer is known to the session only, so a command that turns out to need it where the plan keeps it from it is
+    refused after its approval, and taken back.) So a call refused by grants (an unknown tool), a Spend limit, an
+    approval rule that is pending, denied or asks the caller's form, or the plan is not counted, and an approved retry counts once
+    (the approval's own call did not); failed calls and tool errors are counted (the work was attempted); a call whose
+    sign-in could not be used and a command that would have run on a refused computer are taken back (`refund`). Every
+    toolkit counts, the browser and sandbox toolkits and the agents toolkit (`delegated`) included, and so do an agent
+    run's calls (they reach the same method; a run's gated sandbox call, #230, counts at its gate, once, and is taken
+    back if one of its commands is refused after all). **A call that ends a use is never refused by the plan**:
+    `browser_close`, any tool whose browser time `ends`, and `sandbox_close`; if the count would refuse one it goes
+    through uncounted, since a refusal would only keep the session, and its time, running. One that the plan refuses
+    answers outcome `plan_limited` (only to a call that says it knows it, `planOutcomes`, as the approval outcomes are:
+    an older API Worker gets `failed`): the endpoint's Worker words it as a tool error (`planRefusalText`: the limit, when
+    free usage starts over, a link to the billing page), with the code `plan_limit_reached` in the text and in the
+    result's `_meta` under `commissary.dev/plan_limit` (`{ error, limit, allowed, retry_after? }`, as the model routes'
+    body names them), so a client can tell it from a Spend limit's refusal; it records it as `refused`. An agent run sees
+    it as a tool error with the same `_meta` and the Spend refusal's `_meta` text too, by which the run ends its turn.
+  - **Browser hours** count the browser time the part is told of: each call's (a Quick Action's, a session's since its last
+    call, `browserTime`), a close the part makes for a limit, and a session closed by its alarm (`browserSessionClosed`
+    gets the stretch's milliseconds as a new optional argument, kept with the session's `owed`). A Free org's browser
+    use past its hour is refused (`browser_hours`): a call that uses browser time, and `browser_open`; a call that
+    reaches no browser (`browser_profile_list`, `browser_close`) is a tool call like another. A session named by a refused
+    call is closed, as a Spend limit's refusal closes it. On Pay as you go the billing cap refuses it the same way
+    (`capRefuses`, a minute of time at a time).
+  - **Computer hours** count the computer time every metered call answers (`computerTime`) and what a session's alarm
+    meters when its computer stops with no call to answer (`sandboxComputerTime` gets the milliseconds as a new optional
+    argument; time that cost nothing is reported too, where plans count it: the session's metering carries `plans`, so a
+    self-hosted Commissary's sessions report no more than before). Free has no computer hours, so a command that would
+    start the computer is refused with `plan_limit_reached` (`computer_hours`, allowed 0) while just-bash keeps working:
+    the part passes the session's metering `limitReached` with `limitReason: "plan"`, which already makes the session
+    refuse such a command and stop a running computer, when the plan keeps the computer from the call; both say so in the
+    plan's words (not a Spend limit's), and a call the plan refuses outright stops a running computer too. Opening a
+    session is not starting a computer (a `sandbox_open` with `computer: true` where the plan has no computer time says
+    so in its result). The org setting that turns the computer on (ADR 0041) still applies. **An agent run's gated
+    sandbox call** (#230) is metered the same way: the gate computes the plan's refusal as for any call and keeps it on the
+    run-call ticket (`planRefusal`, `limitReached`), each operation counts the computer time it answers and sets
+    `computer_until`, and an operation refused for the plan is kept on the ticket (`planRefused`), so settling the call
+    records it as refused and answers the plan's words, which end the run's turn.
+  - **Ceilings**: `browser_open` is refused when the org already has as many sessions open as its ceiling (1 on Free, 5 on
+    Pay as you go, or what a platform admin raised, `ceilings()`), counted from the part's log of open browser sessions;
+    a command that would start a computer is refused when the org already runs that many (0 and 3), counted from
+    `sandbox_sessions.computer_until`, which each metered call's answer sets (`ComputerTime.runsUntil`: the session says
+    when its computer stops unless a command uses it again; an idle report clears it only if no later answer set a later
+    time). A session whose computer runs is not another one, and only a session opened with the computer
+    (`sandbox_sessions.computer`, from `sandbox_open`'s `computer`; a log from before has it unknown, which counts as
+    asking) has one to count. Calls made at once do not pass a ceiling together: a `browser_open`, and every call
+    outside a run in a session with a computer, hold their place in the part's memory while they are served (`Held`),
+    even where the computer runs, since a command may outlast its idle minutes and keeps the slot until it ends; the
+    checks count what is held (a session with a call held is one computer, whatever its calls), and the hold is
+    released when the call ends. **Agent
+    runs stay uncapped** (ADR 0042): a call with a run's reach is neither refused by a ceiling nor are the sessions
+    opened by `run:<id>` principals counted toward one; their time still counts toward hours and the billing cap. The refusal is
+    `plan_limit_reached` naming the ceiling (`limit` `browser_sessions` or `computers` on the wire, in the body of the `_meta` too), with no month to start over, since a ceiling
+    does not start over.
+  - **Deploys** (`docs/DEVELOPMENT.md`, "State RPC: expand, then contract"): the new outcome, the optional arguments of
+    the sessions' reports and the optional `runsUntil` of a computer's answer are all expand-only: an old caller, or an
+    old session object, meets the old values, and what it does not send counts nothing.
+  - **Polar** gets all three units already (`METER_EVENT_NAMES`, one event per unit and month above free usage); the bill
+    and `GET /billing` count them in the same way.
 - **Request-rate ceiling** (`billing/rate-limit.ts`): two Workers rate-limiting bindings on the API Worker,
   `FREE_RATE_LIMIT` (60 a minute) and `PAYG_RATE_LIMIT` (600), keyed by org id; the plan whose limits apply (a
   `limitsPlan()` call to its Billing part: Free's while a Pay-as-you-go org is past due; cached per isolate for 30
@@ -3194,12 +3269,12 @@ the package checks `isHosted` before it counts, refuses or reads anything, and i
   `null` for none), the month's bill so far (`bill`, dollars), Pay as you go's rate of each unit above free usage
   (`rates`: `dollars` per `per` of it, from `PAYG_RATE_MICROS` and `PAYG_RATE_PER` in `billing/bill.ts`, so the panel
   states the rates the bill counts at) and the **notices** (`billing/notices.ts`); any org admin
-  may read it (the role table's default; `docs/ACCESS.md`). Units not counted yet read 0. Commissary sends no billing
+  may read it (the role table's default; `docs/ACCESS.md`). Commissary sends no billing
   email (ADR 0042): the notices are state the panel (#239) shows owners and admins. `free_usage` (a unit, 80 or 100):
   where Free's limits apply (on Free, and on Pay as you go while past due), at 80% and at 100% of a unit's free usage,
   for the units that have some; `billing_cap` (80 or 100): on Pay as you go, at 80% of the cap and at 100% exactly when
-  the cap refuses the next request (none without a cap; a cap of $0 shows 100% once free usage of requests is used
-  up); `payment_failed`: while past due, first, with no link (a read asks Polar for nothing more than the card on
+  the cap refuses the next use of some unit (`capRefuses`: a request, or a minute of browser or computer time; none
+  without a cap; a cap of $0 shows 100% at once, as the computer has no free usage and its first minute would be refused); `payment_failed`: while past due, first, with no link (a read asks Polar for nothing more than the card on
   file). The panel opens Polar's customer portal through `POST /billing/portal` when an org owner follows the notice,
   and tells admins who are not owners to ask an owner, since only owners may change the payment method.
   `PATCH /billing {"billing_cap": <dollars> | null}` sets or removes the cap and answers the overview: `400` for
@@ -3303,7 +3378,7 @@ the package checks `isHosted` before it counts, refuses or reads anything, and i
   over every other page of the org for its owners and admins on Commissary Cloud, most urgent first (the red trail mark for
   100% and a failed payment, the white-red-white band at 80%), with a link to the Billing page; a failed payment
   offers an owner the portal and tells other admins to ask an owner. The page and the notices say only what the server
-  does today: requests are counted and refused (tool calls, browser and computer hours are not counted yet).
+  does today: requests and tool calls, browser hours and computer hours are counted, and refused at their limits.
 - **Org deletion** (`billing/org-deletion.ts`): with a billing provider, Billing's `OrgDeletionStep` sends the org's
   unsent usage, then cancels its subscription at the end of its period (as switching to Free does, so the usage sent is
   invoiced); deletion does not wait for payment. A failure that may pass (the part cannot be reached; Polar rate limits,
@@ -3869,6 +3944,10 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
   after an upgrade). Views show the toolkit's price, the override's and each tool's effective price; the org export
   carries the toolkit's and the override's. A call is priced in the ControlPlane when it is called, so a later price
   change prices later calls only.
+- **Plans count tool calls, browser time and computer time** (#241, Commissary Cloud only): each call counts once with
+  requests toward free usage right before its work, browser and computer time count toward browser and computer hours,
+  and `browser_open` and a command that would start a computer meet the plan's ceilings; the part reaches the org's
+  Billing part through the `PlanMeter` port (_Billing_, "Tool calls, browser and computer hours, and the ceilings").
 - **Usage and Spend of tool calls** (#199): each call that reaches a tool leaves a usage record (_Usage accounting
   and observability_, "Tool calls"), written by the endpoint off the response path; a priced call is checked against
   the caller's Spend limits before the upstream is reached and charged on a result (_Spend limits_, "Tool calls"). A

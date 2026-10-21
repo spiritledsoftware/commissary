@@ -54,19 +54,21 @@ describe("billing notices", () => {
     ).toEqual([{ kind: "free_usage", unit: "requests", percent: 100 }]);
   });
 
-  it("tells a Pay as you go org at 80% of its cap, and at 100% exactly when the next request would be refused", () => {
+  it("tells a Pay as you go org at 80% of its cap, and at 100% when the cap refuses the next use of a unit", () => {
     const payg = (above: number, billingCap: number | null = 50) =>
       billingNotices(month({ plan: "payg", used: requestsAbove(above), billingCap }));
 
     expect(payg(7_999_999)).toEqual([]);
     expect(payg(8_000_000)).toEqual([{ kind: "billing_cap", percent: 80 }]);
-    // One request short of $50: that request is still served.
-    expect(payg(9_999_999)).toEqual([{ kind: "billing_cap", percent: 80 }]);
+    // A minute of computer time is $0.0025: the cap refuses it, though requests are still served, from the last
+    // $0.0025 of the cap.
+    expect(payg(9_999_500)).toEqual([{ kind: "billing_cap", percent: 80 }]);
+    expect(payg(9_999_501)).toEqual([{ kind: "billing_cap", percent: 100 }]);
     expect(payg(10_000_000)).toEqual([{ kind: "billing_cap", percent: 100 }]);
     expect(payg(10_000_000, null)).toEqual([]);
   });
 
-  it("tells of a $0 cap once free usage is used up, when use starts being refused", () => {
+  it("tells of a $0 cap at once, as the computer has no free usage: its first minute would be billed and is refused", () => {
     const capped = (requests: number) =>
       billingNotices(
         month({
@@ -76,7 +78,7 @@ describe("billing notices", () => {
         }),
       );
 
-    expect(capped(FREE_USAGE.requests - 1)).toEqual([]);
+    expect(capped(0)).toEqual([{ kind: "billing_cap", percent: 100 }]);
     expect(capped(FREE_USAGE.requests)).toEqual([{ kind: "billing_cap", percent: 100 }]);
   });
 

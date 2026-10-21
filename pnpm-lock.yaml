@@ -749,6 +749,9 @@ importers:
       '@commissary/auth':
         specifier: workspace:*
         version: link:../auth
+      '@commissary/billing':
+        specifier: workspace:*
+        version: link:../billing
       '@commissary/contract':
         specifier: workspace:*
         version: link:../contract
