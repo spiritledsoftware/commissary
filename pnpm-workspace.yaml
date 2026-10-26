@@ -7,7 +7,7 @@ packages:
 # Versions several packages share, named `catalog:` in their package.json so they cannot drift apart (two copies of
 # `effect` in one bundle break its services).
 catalog:
-  "@effect/vitest": 4.0.4
+  "@effect/vitest": 4.0.5
   "@types/js-yaml": 4.0.9
   "@types/node": ^26.6.5
   effect: 4.0.4

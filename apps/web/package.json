@@ -13,13 +13,13 @@
   },
   "dependencies": {
     "@commissary/contract": "workspace:*",
-    "@effect/atom-react": "4.0.4",
+    "@effect/atom-react": "4.0.5",
     "@fontsource-variable/atkinson-hyperlegible-next": "5.3.0",
-    "@tanstack/react-router": "1.170.44",
+    "@tanstack/react-router": "1.170.45",
     "effect": "catalog:",
-    "lucide-react": "1.57.0",
-    "react": "19.3.0",
-    "react-dom": "19.3.0",
+    "lucide-react": "1.59.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
     "scheduler": "0.28.0"
   },
   "devDependencies": {

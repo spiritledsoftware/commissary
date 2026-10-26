@@ -13,21 +13,21 @@
     "typecheck": "tsc"
   },
   "dependencies": {
-    "@better-auth/core": "1.7.7",
-    "@better-auth/sso": "1.7.7",
+    "@better-auth/core": "1.7.11",
+    "@better-auth/sso": "1.7.11",
     "@commissary/auth": "workspace:*",
     "@commissary/contract": "workspace:*",
     "@commissary/core": "workspace:*",
     "@commissary/state": "workspace:*",
-    "better-auth": "1.7.7",
+    "better-auth": "1.7.11",
     "effect": "catalog:"
   },
   "devDependencies": {
-    "@cloudflare/vitest-plugin": "1.4.2",
+    "@cloudflare/vitest-plugin": "1.4.5",
     "@commissary/state-worker": "workspace:*",
     "@types/node": "catalog:",
     "jose": "catalog:",
-    "samlify": "2.13.1",
+    "samlify": "2.14.0",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

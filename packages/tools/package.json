@@ -33,7 +33,7 @@
     "just-bash": "3.2.0"
   },
   "devDependencies": {
-    "@cloudflare/vitest-plugin": "1.4.2",
+    "@cloudflare/vitest-plugin": "1.4.5",
     "@effect/vitest": "catalog:",
     "@types/js-yaml": "catalog:",
     "@types/node": "catalog:",
