@@ -11,7 +11,7 @@
 # image is built.
 
 # ghcr.io/cloudflare/computer-computerd-linux-x64:0.5.1
-FROM ghcr.io/cloudflare/computer-computerd-linux-x64:0.5.1@sha256:63b743262f9e854bde861c5d4a08fb57539012997f6b9e7d231cb32667c65c6a AS computerd
+FROM ghcr.io/cloudflare/computer-computerd-linux-x64:0.8.0@sha256:de6f3727a12c8adb2f8ece853105ccc461fef02f90e368fac4e0578eacc461aa AS computerd
 
 # debian:trixie-slim
 FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
