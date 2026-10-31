@@ -49,7 +49,7 @@
     "@commissary/tools": "workspace:*",
     "@commitlint/cli": "21.2.3",
     "@commitlint/config-conventional": "21.2.3",
-    "@distilled.cloud/cloudflare": "1.0.0-rc.15",
+    "@distilled.cloud/cloudflare": "1.0.0-rc.17",
     "@effect/platform-bun": "4.0.4",
     "@effect/platform-node": "4.0.4",
     "@effect/tsgo": "0.52.0",
