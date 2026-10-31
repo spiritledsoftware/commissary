@@ -23,7 +23,7 @@
     "effect": "catalog:"
   },
   "devDependencies": {
-    "@cloudflare/vitest-plugin": "1.4.2",
+    "@cloudflare/vitest-plugin": "1.4.7",
     "@types/node": "catalog:",
     "tsrs": "catalog:",
     "vitest": "catalog:"
