@@ -30,7 +30,7 @@
     "yaml": "^2.9.1"
   },
   "devDependencies": {
-    "@cloudflare/vitest-plugin": "1.4.2",
+    "@cloudflare/vitest-plugin": "1.4.7",
     "@commissary/tools": "workspace:*",
     "@effect/vitest": "catalog:",
     "@types/node": "catalog:",

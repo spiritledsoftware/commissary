@@ -20,20 +20,20 @@
   "dependencies": {
     "@cloudflare/computer": "0.5.1",
     "@cloudflare/playwright": "1.3.6",
-    "@cloudflare/workers-oauth-provider": "1.2.3",
+    "@cloudflare/workers-oauth-provider": "1.2.4",
     "@commissary/auth": "workspace:*",
     "@commissary/billing": "workspace:*",
     "@commissary/contract": "workspace:*",
     "@commissary/core": "workspace:*",
     "@commissary/state": "workspace:*",
-    "@scalar/openapi-upgrader": "0.4.5",
+    "@scalar/openapi-upgrader": "0.4.6",
     "effect": "catalog:",
     "graphql": "17.0.2",
     "js-yaml": "catalog:",
     "just-bash": "3.2.0"
   },
   "devDependencies": {
-    "@cloudflare/vitest-plugin": "1.4.2",
+    "@cloudflare/vitest-plugin": "1.4.7",
     "@effect/vitest": "catalog:",
     "@types/js-yaml": "catalog:",
     "@types/node": "catalog:",
