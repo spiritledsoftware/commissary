@@ -1,0 +1,4 @@
+# The tools this repo pins, for mise. Bun's version is the one in package.json's `packageManager` (which CI's
+# setup-bun reads); keep the two equal. Node.js is .node-version's.
+[tools]
+bun = "1.4.4"

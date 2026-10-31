@@ -1,15 +1,15 @@
 /**
- * Infrastructure of the Workers port, deployed with Alchemy (`pnpm deploy`, `pnpm dev`, `pnpm destroy`): the Workers of
- * ADR 0030, the state Worker, which defines the Durable Objects, the app Worker (panel, management API) with its static
- * assets, and the API Worker (the client API) with its cron trigger, which both bind the objects by script name (but
- * one: the API Worker defines the agent runs' `AgentRun`, which the app Worker binds by its script name); the KV
- * namespace, the D1 usage database (migrations applied on every deploy), the `auth_index` HMAC key and the Cloudflare
- * Access application, policies and service tokens in front of the app (and of the client API on a stage with one host,
- * except that clients send API keys there). Commissary Cloud (`COMMISSARY_MODE=cloud`, ADR 0026) creates no Access
- * resources: people sign in on the auth host, served by a fourth Worker, the auth Worker (apps/auth), with Better Auth's
- * `SignIn` D1 database, its sign-in settings and secret; the app Worker asks it over a service binding, and the API
- * Worker gets the per-org rate limit.
- * Deploy-time settings are read from the environment / `.env` (see `.env.example` and infra/settings.ts).
+ * Infrastructure of the Workers port, deployed with Alchemy (`bun run deploy`, `bun run dev`, `bun run destroy`): the
+ * Workers of ADR 0030, the state Worker, which defines the Durable Objects, the app Worker (panel, management API) with
+ * its static assets, and the API Worker (the client API) with its cron trigger, which both bind the objects by script
+ * name (but one: the API Worker defines the agent runs' `AgentRun`, which the app Worker binds by its script name); the
+ * KV namespace, the D1 usage database (migrations applied on every deploy), the `auth_index` HMAC key and the
+ * Cloudflare Access application, policies and service tokens in front of the app (and of the client API on a stage with
+ * one host, except that clients send API keys there). Commissary Cloud (`COMMISSARY_MODE=cloud`, ADR 0026) creates no
+ * Access resources: people sign in on the auth host, served by a fourth Worker, the auth Worker (apps/auth), with
+ * Better Auth's `SignIn` D1 database, its sign-in settings and secret; the app Worker asks it over a service binding,
+ * and the API Worker gets the per-org rate limit. Deploy-time settings are read from the environment / `.env` (see
+ * `.env.example` and infra/settings.ts).
  */
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
@@ -384,7 +384,7 @@ export default Alchemy.Stack(
         ...(access.application === undefined ? {} : { access: access.application }),
         limits: { cpuMs: settings.cpuMs },
         build: { input: { resolve: { alias: { ...BUNDLE_ALIASES } } } },
-        // The control panel (`pnpm build`, apps/web). The Worker runs first so Access gates the panel
+        // The control panel (`bun run build`, apps/web). The Worker runs first so Access gates the panel
         // (apps/app/src/management/web-panel.ts serves it) and a client API path gets its 404, not an asset.
         assets: { directory: "./apps/web/dist", runWorkerFirst: true },
         env: {

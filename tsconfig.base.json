@@ -1,6 +1,6 @@
 {
   // Compiler options every program of the workspace shares; each tsconfig adds its runtime (lib, types) and files.
-  // There is no emit: bundlers (Alchemy, Vite, Vitest) compile the TypeScript, `tsc` only checks it.
+  // There is no emit: bundlers (Alchemy, Vite, Vitest) compile the TypeScript, `tsrs` only checks it.
   "compilerOptions": {
     "target": "ES2023",
     "module": "ESNext",

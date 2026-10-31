@@ -25,7 +25,7 @@
  *
  * **One just-bash.** The session's shell runs the just-bash that `@cloudflare/computer` bundled into its worker-shell
  * modules; the rule asks the just-bash this package imports. The workspace pins both to one version (the `just-bash`
- * override in pnpm-workspace.yaml), and a unit test (`test/unit/sandbox-fallback.test.ts`) fails when the bundled
+ * override in the root package.json), and a unit test (`test/unit/sandbox-fallback.test.ts`) fails when the bundled
  * modules are not the installed version's, so neither can move alone.
  *
  * just-bash is loaded with a dynamic import the first time a session asks, like the rest of the sandbox (`session.ts`).

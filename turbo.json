@@ -9,7 +9,7 @@
       "dependsOn": ["^transit"]
     },
     "typecheck": {
-      "description": "tsc over each program of the package (no emit); the packages' Vitest configs import tools/vitest, and the workerd programs read the Workers runtime types in tools/workers",
+      "description": "tsrs over each program of the package (no emit); the packages' Vitest configs import tools/vitest, and the workerd programs read the Workers runtime types in tools/workers",
       "dependsOn": ["transit"],
       "inputs": [
         "$TURBO_DEFAULT$",
@@ -19,7 +19,7 @@
       "outputs": []
     },
     "test": {
-      "description": "Vitest; arguments after `--` (such as CI's --shard=N/3) reach every package's run and its cache key. The packages' Vitest configs import tools/vitest. Locally `pnpm test` (tools/test.sh) limits the packages that test at once and each Vitest's workers (the local test budget, docs/DEVELOPMENT.md): the variables below only change how many run at once, never a result, so they pass through to the task without entering its hash (CI also keeps Vitest's defaults)",
+      "description": "Vitest; arguments after `--` (such as CI's --shard=N/3) reach every package's run and its cache key. The packages' Vitest configs import tools/vitest. Locally `bun run test` (tools/test.sh) limits the packages that test at once and each Vitest's workers (the local test budget, docs/DEVELOPMENT.md): the variables below only change how many run at once, never a result, so they pass through to the task without entering its hash (CI also keeps Vitest's defaults)",
       "dependsOn": ["transit"],
       "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/tools/vitest/**"],
       "passThroughEnv": ["CI", "COMMISSARY_TEST_WORKERS", "COMMISSARY_TEST_PACKAGES"],
@@ -31,7 +31,7 @@
       "outputs": ["dist/**"]
     },
     "//#typecheck:root": {
-      "description": "tsc over the deploy code at the root (tsconfig.infra.json) and the Worker modules it imports; the root task hashes the whole repository",
+      "description": "tsrs over the deploy code at the root (tsconfig.infra.json) and the Worker modules it imports; the root task hashes the whole repository",
       "outputs": []
     },
     "//#lint:root": {

@@ -22,9 +22,9 @@ done
 commits="$(git -C "$reference" log --no-merges --format='- [`%h`](https://github.com/router-for-me/CLIProxyAPI/commit/%H) %s' "$ported..$head")"
 # The packages whose tests read fixtures (tools/fixturegen writes into each of them).
 failing=""
-for package in @commissary/json @commissary/translation @commissary/app; do
+for package in packages/json packages/translation apps/app; do
   results="$(mktemp)"
-  pnpm --filter "$package" exec vitest run --reporter=json --outputFile="$results" >/dev/null 2>&1 || true
+  (cd "$package" && bunx vitest run --reporter=json --outputFile="$results") >/dev/null 2>&1 || true
   failing+="$(jq -r --arg root "$PWD/" '.testResults[] | select(.status != "passed") | "- `" + (.name | ltrimstr($root)) + "`"' "$results")"$'\n'
   rm -f "$results"
 done
@@ -47,7 +47,7 @@ fi
   echo
   echo "${failing:-None: the new commits do not change any behaviour covered by the fixtures.}"
   echo
-  echo "To port: \`pnpm repos:sync\`, regenerate (\`tools/upstream-drift.sh\`), port the Go changes until \`pnpm test\`"
+  echo "To port: \`bun run repos:sync\`, regenerate (\`tools/upstream-drift.sh\`), port the Go changes until \`bun run test\`"
   echo "passes with the new fixtures, then set \`tools/fixturegen/UPSTREAM_COMMIT\` to the reference commit."
 } >"$report"
 exit 10

@@ -1,12 +1,12 @@
 /**
  * The local test budget (docs/DEVELOPMENT.md, "Tests"): how many Vitest workers one package's run may use, so that
- * `pnpm test` (tools/test.sh runs `turbo run test` with `--concurrency=$COMMISSARY_TEST_PACKAGES`) stays near the
+ * `bun run test` (tools/test.sh runs `turbo run test` with `--concurrency=$COMMISSARY_TEST_PACKAGES`) stays near the
  * machine's core count: packages at once × workers each. Many of the workers are workerd processes, one Miniflare
  * each (`@cloudflare/vitest-plugin`), so Vitest's default (cores - 1 per package) times Turborepo's 10 packages at
  * once starts dozens of them on a laptop.
  *
- * - `CI` set (GitHub Actions' jobs run `pnpm test --shard=N/3`): `undefined`, so Vitest keeps its defaults and CI runs
- *   exactly as before.
+ * - `CI` set (GitHub Actions' jobs run `bun run test --shard=N/3`): `undefined`, so Vitest keeps its defaults and CI
+ *   runs exactly as before.
  * - Otherwise `COMMISSARY_TEST_WORKERS` if it is set to a positive integer, else the cores divided by the packages
  *   that run at once (`COMMISSARY_TEST_PACKAGES`, tools/test.sh exports it; {@link DEFAULT_TEST_PACKAGES} when a
  *   package's tests run on their own), at least 1.

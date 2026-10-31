@@ -1,0 +1,11 @@
+# Bun's settings for this repo (docs/adr/0046-bun-installs-and-runs-scripts-tsrs-typechecks.md).
+
+[install]
+# A pnpm-style layout: each package sees only what it declares. The global store keeps one copy of each package in
+# Bun's cache and links every checkout (each worktree in .worktrees/) to it, so `node_modules` is mostly symlinks.
+# Patched and trusted packages (alchemy; oxlint and oxlint-tsgolint, which `effect-tsgo patch` rewrites in place) stay in
+# the checkout's own node_modules/.bun.
+linker = "isolated"
+globalStore = true
+# Leave a release a day before installing it (pnpm's default), against packages hijacked and republished.
+minimumReleaseAge = 86400

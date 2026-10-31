@@ -25,7 +25,7 @@ The `cla-signatures` branch must exist and stay unprotected (no branch protectio
 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) covers the workspace, scripts and conventions; [AGENTS.md](AGENTS.md) the commands to run before a pull request:
 
 ```sh
-pnpm typecheck && pnpm lint && pnpm test && pnpm smoke
+bun run typecheck && bun run lint && bun run test && bun run smoke
 ```
 
 Commits follow [Conventional Commits](https://www.conventionalcommits.org) with a lowercase subject (`feat(tools): ...`). Husky hooks format and lint staged files and check the message.

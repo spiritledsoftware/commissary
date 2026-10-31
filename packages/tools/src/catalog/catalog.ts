@@ -369,7 +369,7 @@ export const buildCatalog = (
 
 let embeddedCredentials: SourceCredentials | undefined;
 
-/** The bundled credentials (`integrations-sh-credentials.json`, `pnpm toolkits:sync`), decoded once per isolate. */
+/** The bundled credentials (`integrations-sh-credentials.json`, `bun run toolkits:sync`), decoded once per isolate. */
 export const bundledCredentials = (): SourceCredentials => {
   if (embeddedCredentials === undefined) {
     const decoded = Schema.decodeUnknownResult(CatalogCredentials)(credentialsJson);

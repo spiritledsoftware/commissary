@@ -4,7 +4,7 @@
  * Commissary reads from the models.dev document, trimmed to the fields it uses (ADR 0020). The catalog additions
  * (`packages/models/src/registry/catalog/additions.json`) are maintained by hand and untouched.
  *
- * Usage: `pnpm catalog:sync [source]`, where `source` is an http(s) URL or a local file (for instance a saved
+ * Usage: `bun run catalog:sync [source]`, where `source` is an http(s) URL or a local file (for instance a saved
  * `api.json`). Defaults to `https://models.dev/api.json`. Run by Node directly (type stripping), so it only imports the
  * dependency-light trim module (`@commissary/models/models-dev`). Idempotent: syncing a trimmed document rewrites it unchanged.
  */

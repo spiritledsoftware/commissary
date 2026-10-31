@@ -9,7 +9,7 @@
     "build": "vite build",
     "dev": "vite",
     "test": "vitest run",
-    "typecheck": "tsc -p tsconfig.app.json && tsc -p tsconfig.node.json"
+    "typecheck": "tsrs -p tsconfig.app.json && tsrs -p tsconfig.node.json"
   },
   "dependencies": {
     "@commissary/contract": "workspace:*",
@@ -28,7 +28,7 @@
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "6.1.2",
-    "typescript": "catalog:",
+    "tsrs": "catalog:",
     "vite": "8.3.4",
     "vitest": "catalog:"
   }

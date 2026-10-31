@@ -15,7 +15,7 @@ redeploys it in the other mode); production is one when the `production` environ
 else in this file describes a self-hosted Commissary, the default. A preview has the sandbox's computer
 (`COMMISSARY_COMPUTER=on`) while its pull request has the label `preview-computer` (adding or removing it redeploys
 it); `prod` and `cloud` have it (ADR 0043) through their deployer settings: `.env` (for `prod`) and `.env.cloud` set
-`COMMISSARY_COMPUTER=on`, in effect once `pnpm ci:setup` has written it into their environments
+`COMMISSARY_COMPUTER=on`, in effect once `bun run ci:setup` has written it into their environments
 ([Optional pieces](#optional-pieces)).
 
 Deploys run only after typecheck, lint, workflow lint (actionlint, zizmor), the test shards and the smoke test pass.
@@ -56,8 +56,8 @@ A stage named `pr-<number>` is a preview (`infra/settings.ts`):
 - `COMMISSARY_DOMAIN`, `COMMISSARY_APP_DOMAIN`, `COMMISSARY_API_DOMAIN`, `COMMISSARY_AUTH_DOMAIN`, `ACCESS_AUD` and
   `ACCESS_SERVICE_TOKENS` are ignored.
 
-Any machine with the deploy settings can deploy a preview by hand: `pnpm run deploy --stage pr-123`, and remove it with
-`pnpm run destroy --stage pr-123`.
+Any machine with the deploy settings can deploy a preview by hand: `bun run deploy --stage pr-123`, and remove it with
+`bun run destroy --stage pr-123`.
 
 ## The Workers
 
@@ -126,7 +126,7 @@ binds them on the state Worker instead; nothing is deleted. Production and `clou
 merge; a new stage (every preview) creates the classes on the state Worker directly, and the setting does nothing
 there or once a stage has moved, so it stays in `alchemy.run.ts`.
 
-**Upgrading a self-hosted Commissary.** Deploy as usual (`pnpm run deploy --stage <stage>`, or CI): the stack gains the
+**Upgrading a self-hosted Commissary.** Deploy as usual (`bun run deploy --stage <stage>`, or CI): the stack gains the
 state Worker and the move happens on that deploy, with no setting or manual step. Expect:
 
 - a new Worker, `commissary-state-<stage>-<suffix>` (Alchemy names it from the stack, the logical ID `State` and the
@@ -166,7 +166,7 @@ default the base domain, so a `.env` that sets `COMMISSARY_DOMAIN` alone serves 
 
 - **Moving the app host** (setting `COMMISSARY_APP_DOMAIN` to a host other than the base domain) moves the app Worker's
   custom domain, the Access application and the zone routes: the old hostname stops answering, so point people and
-  clients at the new one. The app host must be on a zone of the account; `pnpm ci:setup` writes the variable into the
+  clients at the new one. The app host must be on a zone of the account; `bun run ci:setup` writes the variable into the
   environment and extends the deploy token to its zone.
 - **Commissary Cloud's session cookie** is scoped to the base domain, so every host under it receives it: a landing
   page, and the API host when it is under the base domain (ADR 0031). While the base domain is the app host the cookie
@@ -195,7 +195,7 @@ and no client API route, with no zone routes. A path on the wrong host answers `
 - **Moving to an API host** changes the address of every client: point them at the API host when the deploy finishes
   (their old base URL answers `404`). Unsetting the variable moves everything back to one host. The API host differs
   from the app host and the auth host; it need not be under the base domain.
-- Both hostnames must be in zones of the account; `pnpm ci:setup` writes the variable into the environment and extends
+- Both hostnames must be in zones of the account; `bun run ci:setup` writes the variable into the environment and extends
   the deploy token to the API host's zone.
 
 ## Optional pieces
@@ -224,15 +224,15 @@ until an org admin sets the toolkit's network ceiling.
 **The computer.** With `COMMISSARY_COMPUTER=on` the deploy builds the `Computer` image (`infra/computer/Dockerfile`:
 computerd, mise and what mise needs; no runtime preinstalled) with Docker on the deploying machine (CI's runners have it),
 pushes it to Cloudflare's registry and attaches it to the `SandboxSession` class as a Durable Object-managed container,
-one per sandbox session that uses it; the deploy token needs **Workers Containers Write** (`pnpm ci:setup` grants it). An
+one per sandbox session that uses it; the deploy token needs **Workers Containers Write** (`bun run ci:setup` grants it). An
 org admin then allows it on the sandbox toolkit ("may use the computer", off by default), and a session opened with
 `computer: true` runs there whatever just-bash cannot run at all (`node`, `python`, `git`, other binaries; the model
 installs runtimes with `mise use node@22`, kept in the session's files). It reaches the network only through the
 sandbox's egress point, within the session's network. It is off unless the deployer turns it on: a local deploy reads
 `COMMISSARY_COMPUTER=on` (and `COMMISSARY_COMPUTER_INSTANCE`, if not the default) from `.env`; deploying through CI, set
-them in `.env` (or `.env.cloud` for the `cloud` stage) and re-run `pnpm ci:setup`, which writes them into the
+them in `.env` (or `.env.cloud` for the `cloud` stage) and re-run `bun run ci:setup`, which writes them into the
 `production` (or `cloud`) environment, or set the GitHub variables there yourself. This repository's own `prod` and
-`cloud` have it on that way (ADR 0043), once `pnpm ci:setup` is re-run with the setting; the code's default, for any
+`cloud` have it on that way (ADR 0043), once `bun run ci:setup` is re-run with the setting; the code's default, for any
 other deployer, stays off. `off`, or unset, deploys no container and needs no Docker. Turning it off later detaches the container; sessions keep their files and run just-bash only. Previews have it
 only with the `preview-computer` label. `alchemy dev` never attaches it (it would build and run the image with Docker).
 The account's container limits apply: when Cloudflare has no container for a session, its command answers that the
@@ -254,11 +254,11 @@ Browser Run's `/crawl` is on its REST API only, not the binding, so the crawl to
    permission **Browser Run - Edit** (shown as "Browser Rendering - Edit" on older dashboards), for the account the
    deployment runs on.
 2. Set it as `BROWSER_RUN_API_TOKEN`: in `.env` for a local deploy, and for CI as a secret of the GitHub environments
-   `production` and `cloud` (and `preview`, for previews' crawl tools); `pnpm ci:setup` writes it to `production` and
+   `production` and `cloud` (and `preview`, for previews' crawl tools); `bun run ci:setup` writes it to `production` and
    `preview` when `.env` sets it, and to `cloud` when `.env.cloud` does. `BROWSER_RUN_ACCOUNT_ID` names the token's
    account if it is not the deploy's own (`CLOUDFLARE_ACCOUNT_ID`, which CI sets); a token without either is refused.
 3. Optionally cap the pages of one crawl with `COMMISSARY_CRAWL_MAX_PAGES` (default 1000, at most Browser Run's own
-   100000; a GitHub variable for CI, which `pnpm ci:setup` writes like `BROWSER_RUN_ACCOUNT_ID`): a crawl asking for
+   100000; a GitHub variable for CI, which `bun run ci:setup` writes like `BROWSER_RUN_ACCOUNT_ID`): a crawl asking for
    more is refused. Each page is browser time on the deployment's account.
 4. Deploy: the state Worker gets `BROWSER_RUN_ACCOUNT_ID`, `COMMISSARY_CRAWL_MAX_PAGES` and the token (a secret). With
    `COMMISSARY_BROWSER=off` the token is ignored, with a warning. Remove the secret and deploy again to take the tools
@@ -329,7 +329,7 @@ set. Replacing it signs everyone out.
    verified email and stores no provider token. A GitHub OAuth app takes a single callback host, so use one app per
    hostname; a GitHub App takes up to ten callback URLs and Google any number.
 2. **Turnstile.** Create a widget (Cloudflare dashboard, Turnstile) for the app host, managed mode.
-3. **Settings.** Put them in `.env` (`.env.example` lists them) for local deploys. For CI, `pnpm ci:setup` writes the
+3. **Settings.** Put them in `.env` (`.env.example` lists them) for local deploys. For CI, `bun run ci:setup` writes the
    ones `.env` sets into both GitHub environments (the ids and limits as variables, the client secrets and the
    Turnstile secret as secrets), and `COMMISSARY_MODE=cloud` into `production` when `.env` sets it. Set them by hand in
    the GitHub environments otherwise.
@@ -403,7 +403,7 @@ Set up each Polar organization (production for `cloud`, a sandbox one for previe
    that takes webhooks). A preview needs its own endpoint in the sandbox.
 5. **Customer portal.** Let customers update their payment method and tax ID and see invoices; Commissary sends
    owners there (`POST /billing/portal`).
-6. **Settings.** `.env.cloud` (production) and `.env` (sandbox, for previews); `pnpm ci:setup` writes them into the
+6. **Settings.** `.env.cloud` (production) and `.env` (sandbox, for previews); `bun run ci:setup` writes them into the
    GitHub environments (`POLAR_PRODUCT_ID` as a variable, the token and the webhook secret as secrets).
 
 The API Worker's cron (every three hours) sends each org's usage above free usage to Polar; previews have no cron, so
@@ -451,12 +451,12 @@ and the Commissary Cloud previews'. Set them up once:
 3. **Turnstile.** Add the app host to a widget (or create one) and put its keys in `.env.cloud`.
 4. **Rate-limit namespaces.** An `ORG_RATE_LIMIT_NAMESPACE_ID` that the previews' environment does not use; Pay as you go's
    (`ORG_RATE_LIMIT_PAYG_NAMESPACE_ID`) is the next integer unless you set it, so leave that one free as well.
-5. **CI.** `pnpm ci:setup` creates the GitHub environment `cloud` (deployments from `main` only) with the settings of
+5. **CI.** `bun run ci:setup` creates the GitHub environment `cloud` (deployments from `main` only) with the settings of
    `.env.cloud`, and extends the deploy token to the zones of its hostnames. Until then the `deploy cloud` job of a push
    to `main` only notes that it is not set up.
 
 The next push to `main` (or a manual run) deploys it and checks it with `tools/check-cloud-deploy.sh`. Whoever signs in with an
-email of `PLATFORM_ADMIN_EMAILS` (verified by the provider) is a platform admin. By hand, `pnpm deploy:cloud`
+email of `PLATFORM_ADMIN_EMAILS` (verified by the provider) is a platform admin. By hand, `bun run deploy:cloud`
 deploys the stage from `.env.cloud` alone (`alchemy deploy --stage cloud --env-file .env.cloud`).
 
 **Switching a stage.** Turning a self-hosted stage into a Commissary Cloud one deletes its Access applications, policies and
@@ -496,8 +496,8 @@ again for GitHub.
 Creating API tokens needs more than the everyday OAuth login, so the stack deploys with a separate Alchemy profile:
 
 ```bash
-pnpm exec alchemy profile create admin
-pnpm exec alchemy profile edit --profile admin
+bunx alchemy profile create admin
+bunx alchemy profile edit --profile admin
 ```
 
 For Cloudflare, use the **Global API Key** (with your email), or an API token with **Account → API Tokens: Write** and
@@ -507,19 +507,19 @@ profile like root: use it only for this stack.
 ### 2. Deploy the CI stack
 
 ```bash
-pnpm ci:setup
+bun run ci:setup
 ```
 
 It runs `alchemy deploy --config stacks/github.ts --stage ci --profile admin` and prints the outputs. Copy
 `checkServiceTokenId` into `ACCESS_ALLOW_SERVICE_TOKEN_IDS` in your local `.env`: a local deploy of `prod` without it
 removes the CI token from the production policy and the next CI check fails.
 
-Re-run `pnpm ci:setup` to apply changed permissions or `.env` values. To rotate the deploy token, destroy and redeploy
-the stack (`pnpm exec alchemy destroy --config stacks/github.ts --stage ci --profile admin`, then `pnpm ci:setup`).
+Re-run `bun run ci:setup` to apply changed permissions or `.env` values. To rotate the deploy token, destroy and redeploy
+the stack (`bunx alchemy destroy --config stacks/github.ts --stage ci --profile admin`, then `bun run ci:setup`).
 
 ## Operations
 
-- **Control panel.** CI builds the control panel from `apps/web` (`pnpm build`, into `apps/web/dist/`) before each
+- **Control panel.** CI builds the control panel from `apps/web` (`bun run build`, into `apps/web/dist/`) before each
   deploy.
 - **API keys.** On a stage with one host, the deploy adds, after the API Worker and its zone routes (the bypass depends
   on the API Worker's output, so the client API never leaves Access while a Worker that only reads the Access edge's JWT
@@ -581,7 +581,7 @@ the stack (`pnpm exec alchemy destroy --config stacks/github.ts --stage ci --pro
   machines; `deploy --yes` also upgrades the state store when Alchemy needs a newer version.
 - **Concurrency.** One deploy per stage at a time, never cancelled midway; a newer push to `main` waits for the
   running production deploy.
-- **Stale previews.** If a destroy fails, rerun the job, or run `pnpm run destroy --stage pr-<number>` locally.
+- **Stale previews.** If a destroy fails, rerun the job, or run `bun run destroy --stage pr-<number>` locally.
 - **`auth_index` key.** `AUTH_INDEX_KEY` (the HMAC key of the credential handle `auth_index`,
   `packages/models/src/management/auth-index.ts`) is an Alchemy `Random` in `alchemy.run.ts`: minted on a stage's first deploy, kept in
   the (encrypted) state store and bound as a secret of both Workers on every deploy. No GitHub secret or manual step is needed.
@@ -604,9 +604,9 @@ the stack (`pnpm exec alchemy destroy --config stacks/github.ts --stage ci --pro
   `SecretsKey` resource (`SecretsKey2`, … after a rotation), in the Cloudflare account (`Cloudflare.state()`), or in
   `.alchemy/` with `ALCHEMY_STATE=local`; Cloudflare does not show a Worker's secrets again, so the Worker's binding is
   not a copy. Keep a copy somewhere you control and apart from the account, such as a password manager: read it with
-  `pnpm exec alchemy state read commissary/<stage>/SecretsKey` from the repository root, with the stage's deploy
+  `bunx alchemy state read commissary/<stage>/SecretsKey` from the repository root, with the stage's deploy
   environment (add `--env-file .env.cloud` for Commissary Cloud, prefix `ALCHEMY_STATE=local` for local state;
-  `pnpm exec alchemy state list commissary/<stage>` shows the `SecretsKey…` paths). It prints the resource's record as
+  `bunx alchemy state list commissary/<stage>` shows the `SecretsKey…` paths). It prints the resource's record as
   JSON: the key is the `attr.text.__redacted__` field (64 hex characters). Store the value of every generation still
   in use. Take the copy after each rotation too, and treat it like the key itself:
   whoever holds it and a copy of the stored data can unseal every org's secrets.
@@ -679,11 +679,11 @@ stacks are destroyed first. A person with the `admin` profile runs it (issue #12
 1. **Save what you will re-create**, from `main` before the merge: each org's Go config (`GET /v9/management/export`),
    its members, teams, grants, spend limits and SSO settings, and the OAuth credentials to log in to again.
 2. **Destroy the old stacks**, still on the code before the rename: let every open pull request with a live preview
-   close, then `pnpm run destroy --stage prod`, `pnpm run destroy --stage hosted --env-file .env.hosted` and the CI stack
-   (`pnpm exec alchemy destroy --config stacks/github.ts --stage ci --profile admin`). The old and new CI stacks manage
-   the same GitHub environments and secrets, so the old one goes before `pnpm ci:setup` runs from the new code.
+   close, then `bun run destroy --stage prod`, `bun run destroy --stage hosted --env-file .env.hosted` and the CI stack
+   (`bunx alchemy destroy --config stacks/github.ts --stage ci --profile admin`). The old and new CI stacks manage
+   the same GitHub environments and secrets, so the old one goes before `bun run ci:setup` runs from the new code.
 3. **Bring up the new stacks**: rename `.env.hosted` to `.env.cloud` and the settings to their `COMMISSARY_*` names
    (`.env.example`, `.env.cloud.example`), rename the label (`gh label edit hosted-preview --name cloud-preview`), run
-   `pnpm ci:setup` (environments `production`, `preview` and `cloud`), then merge: CI deploys `prod` and `cloud`.
+   `bun run ci:setup` (environments `production`, `preview` and `cloud`), then merge: CI deploys `prod` and `cloud`.
 4. **Re-create and reconnect**: sign in, re-create the orgs and import their configs, log in to the OAuth credentials
    again, mint new API keys and management keys, and update every client.

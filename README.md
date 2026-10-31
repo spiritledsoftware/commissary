@@ -57,7 +57,7 @@ secrets Commissary holds for outside services are **credentials**, and a model p
 - A domain (zone) in that account. Commissary gets its own hostname on it, e.g. `llm.example.com`.
 - **Zero Trust** enabled on the account, with an identity provider (the built-in one-time PIN works). Note your team
   name: `<team>.cloudflareaccess.com`.
-- Node.js 22+ and pnpm 12 (the version pinned in `package.json` `devEngines`).
+- [Bun](https://bun.sh) (the version in `package.json`'s `packageManager`) and Node.js 22+.
 - Optional, and possibly billed extra by Cloudflare: the browser toolkit and the sandbox's computer. Without them
   everything else works; see [Optional pieces](docs/DEPLOY.md#optional-pieces).
 
@@ -66,16 +66,16 @@ secrets Commissary holds for outside services are **credentials**, and a model p
 ```bash
 git clone https://github.com/spiritledsoftware/commissary.git
 cd commissary
-pnpm install
+bun install
 ```
 
-`pnpm install` also clones the upstream Go server into `.repos/` (a read-only reference for development; the deploy
+`bun install` also clones the upstream Go server into `.repos/` (a read-only reference for development; the deploy
 does not use it).
 
 ### 2. Log in to Cloudflare
 
 ```bash
-pnpm exec alchemy profile edit --add Cloudflare
+bunx alchemy profile edit --add Cloudflare
 ```
 
 Choose browser OAuth or paste an API token. The profile is stored in `~/.alchemy/profiles.json`.
@@ -102,13 +102,13 @@ Every other setting is optional; see [Configuration](#configuration). The Worker
 ### 4. Build and deploy
 
 ```bash
-pnpm build                      # build the control panel into apps/web/dist/
-pnpm run deploy --stage prod    # shows the plan, asks for confirmation, deploys
+bun run build                  # build the control panel into apps/web/dist/
+bun run deploy --stage prod    # shows the plan, asks for confirmation, deploys
 ```
 
 The first deploy asks to bootstrap Alchemy's state store (a small Worker and Secrets Store in your account that keeps
 the deploy state, shared by every machine that deploys; set `ALCHEMY_STATE=local` to keep it in `.alchemy/` instead).
-Use the same `--stage` for every later deploy (`pnpm plan --stage prod` previews changes).
+Use the same `--stage` for every later deploy (`bun run plan --stage prod` previews changes).
 
 The deploy prints the URL, the Access AUD tag and each service token's Client ID. Cloudflare returns the Client
 Secrets only once: they are written to `.alchemy/access-service-tokens.json` (mode 0600) on the deploying machine.
@@ -215,9 +215,9 @@ extend the policies (IdP groups, device posture).
 ## Updating and removing
 
 ```bash
-git pull && pnpm install && pnpm build && pnpm run deploy --stage prod   # update
-pnpm logs --stage prod --tail                                               # stream Worker logs
-pnpm destroy --stage prod                                                   # remove everything
+git pull && bun install && bun run build && bun run deploy --stage prod   # update
+bun run logs --stage prod --tail                                          # stream Worker logs
+bun run destroy --stage prod                                              # remove everything
 ```
 
 D1 migrations run on every deploy. `destroy` deletes the Durable Objects holding your credentials and the usage
@@ -227,7 +227,7 @@ A cron trigger (`0 */3 * * *`) refreshes the model catalog from [models.dev](htt
 the Models page), prunes old usage rows and re-arms credential refresh alarms.
 
 **Continuous deployment.** `.github/workflows/ci.yml` deploys `main` to production and, once set up, to Commissary Cloud on
-its own domain (stage `cloud`), and every pull request to its own preview stage on `workers.dev`. The CI credentials are code too (`stacks/github.ts`, `pnpm ci:setup`); see
+its own domain (stage `cloud`), and every pull request to its own preview stage on `workers.dev`. The CI credentials are code too (`stacks/github.ts`, `bun run ci:setup`); see
 [DEPLOY.md](docs/DEPLOY.md).
 
 ## Troubleshooting
@@ -283,9 +283,9 @@ Per-provider details: [ARCHITECTURE.md](docs/ARCHITECTURE.md); config keys witho
 ## Local development
 
 ```bash
-pnpm install
-pnpm build                         # or `pnpm --filter @commissary/web dev` for the panel with hot reload on :5173
-ALCHEMY_STATE=local pnpm dev       # panel on http://localhost:1337, client API on :1339, hot reload
+bun install
+bun run build                     # or `bun --cwd apps/web run dev` for the panel with hot reload on :5173
+ALCHEMY_STATE=local bun run dev   # panel on http://localhost:1337, client API on :1339, hot reload
 ```
 
 `alchemy dev` runs the Workers in local workerd with emulated KV, D1 and Durable Objects. No Cloudflare resources are
@@ -300,7 +300,7 @@ curl localhost:1339/v1/models
 curl 'localhost:1339/cdn-cgi/handler/scheduled?cron=0+*/3+*+*+*'   # run the cron jobs
 ```
 
-Before sending a change: `pnpm typecheck && pnpm lint && pnpm test && pnpm smoke`. Scripts, module layout and
+Before sending a change: `bun run typecheck && bun run lint && bun run test && bun run smoke`. Scripts, module layout and
 conventions are in [DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 ## Documentation

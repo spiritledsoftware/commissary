@@ -15,7 +15,7 @@
   },
   "scripts": {
     "test": "vitest run",
-    "typecheck": "tsc"
+    "typecheck": "tsrs"
   },
   "dependencies": {
     "@commissary/auth": "workspace:*",
@@ -34,7 +34,7 @@
     "@commissary/tools": "workspace:*",
     "@effect/vitest": "catalog:",
     "@types/node": "catalog:",
-    "typescript": "catalog:",
+    "tsrs": "catalog:",
     "vitest": "catalog:"
   }
 }

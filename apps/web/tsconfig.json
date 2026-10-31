@@ -1,7 +1,7 @@
 {
   // Solution config of the control panel: the browser code (tsconfig.app.json) and the Node.js side, its Vite and
   // Vitest configs and the tests (tsconfig.node.json). Editors and type-aware linting resolve each file through these
-  // references; `pnpm typecheck` checks both programs.
+  // references; `bun run typecheck` checks both programs.
   "files": [],
   "references": [{ "path": "./tsconfig.app.json" }, { "path": "./tsconfig.node.json" }]
 }

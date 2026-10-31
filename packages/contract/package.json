@@ -9,12 +9,12 @@
     "./*": "./src/*.ts"
   },
   "scripts": {
-    "typecheck": "tsc"
+    "typecheck": "tsrs"
   },
   "dependencies": {
     "effect": "catalog:"
   },
   "devDependencies": {
-    "typescript": "catalog:"
+    "tsrs": "catalog:"
   }
 }

@@ -17,7 +17,7 @@ and signs people in itself: see [Commissary Cloud](#commissary-cloud) at the end
 
 ## 1. What the deploy creates
 
-`pnpm run deploy` (`alchemy.run.ts`, `infra/access.ts`) provisions Access together with the Worker, from the
+`bun run deploy` (`alchemy.run.ts`, `infra/access.ts`) provisions Access together with the Worker, from the
 settings in `.env` (template: `.env.example`):
 
 | Setting                                                       | Creates / sets                                                                                                                        |

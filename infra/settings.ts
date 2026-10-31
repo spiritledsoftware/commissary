@@ -529,7 +529,7 @@ export const PREVIEW_STAGE = /^pr-\d+$/;
 
 /**
  * Stage of Commissary Cloud, which CI deploys from `main` next to `prod` (docs/DEPLOY.md "The Commissary Cloud stage"). Its settings live
- * in `.env.cloud` (`pnpm deploy:cloud`) and the GitHub environment `cloud`.
+ * in `.env.cloud` (`bun run deploy:cloud`) and the GitHub environment `cloud`.
  */
 export const CLOUD_STAGE = "cloud";
 
@@ -543,7 +543,7 @@ export const readSettings = (dev: boolean, stage: string) =>
     if (!dev && stage === CLOUD_STAGE && mode !== "cloud")
       return yield* Effect.die(
         new Error(
-          `Invalid deploy settings:\n- the ${CLOUD_STAGE} stage is Commissary Cloud: set COMMISSARY_MODE=cloud (deploy it with \`pnpm deploy:cloud\`, which reads .env.cloud)`,
+          `Invalid deploy settings:\n- the ${CLOUD_STAGE} stage is Commissary Cloud: set COMMISSARY_MODE=cloud (deploy it with \`bun run deploy:cloud\`, which reads .env.cloud)`,
         ),
       );
 
@@ -555,7 +555,7 @@ export const readSettings = (dev: boolean, stage: string) =>
     // A preview's Workers serve their workers.dev URLs only.
     const apiDomain = dev || preview ? "" : (yield* text("COMMISSARY_API_DOMAIN")).trim();
 
-    // Under `alchemy dev` too (`COMMISSARY_MODE=cloud pnpm smoke`): people sign in on the auth Worker's dev port, without the dev bypass.
+    // Under `alchemy dev` too (`COMMISSARY_MODE=cloud bun run smoke`): people sign in on the auth Worker's dev port, without the dev bypass.
     const hosted =
       mode === "cloud"
         ? yield* hostedSettings(dev, stage, preview, { baseDomain, appDomain, apiDomain })
