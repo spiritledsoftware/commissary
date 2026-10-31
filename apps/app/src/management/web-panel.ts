@@ -1,5 +1,5 @@
 /**
- * The control panel built from `apps/web` (`pnpm build` writes `apps/web/dist/index.html` and
+ * The control panel built from `apps/web` (`bun run build` writes `apps/web/dist/index.html` and
  * `apps/web/dist/assets/*`, with the font's licence in `assets/licenses/`): `/`, its page paths (`zones.ts`
  * `PANEL_SECTIONS`), the same pages under an org
  * (`/o/<slug>/accounts`, routed as the unscoped page by `org-address.ts`) and the bundled files under `/assets`.
@@ -24,7 +24,7 @@ import { openableOrgs } from "./org-routes.ts";
 import { configuredAuthOrigin } from "../hosted/sign-in.ts";
 import { AppEnv } from "../worker-env.ts";
 
-export const PANEL_NOT_BUILT = "the control panel is not built; run `pnpm build`";
+export const PANEL_NOT_BUILT = "the control panel is not built; run `bun run build`";
 
 /** Where a browser session's Live View is served from (#216): the session's page embeds it in a frame. */
 export const LIVE_VIEW_ORIGIN = "https://live.browser.run";

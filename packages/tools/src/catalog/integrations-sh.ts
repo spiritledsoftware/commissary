@@ -9,12 +9,12 @@
  * model with a credential registry) are read only live, by `detect` and `discover` (`lookup.ts`). See
  * docs/ARCHITECTURE.md, "Toolkit catalog".
  *
- * Shared by the sync script (`pnpm toolkits:sync`, run by Node directly, so this module imports nothing but `effect`;
- * it imports it as `@commissary/tools/integrations-sh`) and by the cron refresh (`refresh.ts`). The output keeps the
- * index's shape (`{ version: 1, data }`) with the kept records and fields sorted, so trimming a trimmed document gives
- * it back unchanged and the runtime reads both. A malformed record is skipped and counted (`skipped`); a document that
- * is not the index, or that keeps fewer sources than `minimum`, is rejected, so a broken upstream document never
- * replaces a good one.
+ * Shared by the sync script (`bun run toolkits:sync`, run by Node directly, so this module imports nothing but
+ * `effect`; it imports it as `@commissary/tools/integrations-sh`) and by the cron refresh (`refresh.ts`). The output
+ * keeps the index's shape (`{ version: 1, data }`) with the kept records and fields sorted, so trimming a trimmed
+ * document gives it back unchanged and the runtime reads both. A malformed record is skipped and counted (`skipped`); a
+ * document that is not the index, or that keeps fewer sources than `minimum`, is rejected, so a broken upstream
+ * document never replaces a good one.
  */
 import { Result, Schema } from "effect";
 import { JsonPatchOperation } from "../openapi/patch.ts";

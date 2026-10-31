@@ -3,7 +3,7 @@
   "extends": ["./node_modules/@effect/tsgo/oxlint-presets/recommended.json"],
   "options": {
     "typeAware": true,
-    "typeCheck": true
+    "typeCheck": false
   },
   "plugins": ["typescript", "unicorn", "oxc"],
   "jsPlugins": [

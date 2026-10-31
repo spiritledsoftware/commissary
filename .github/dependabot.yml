@@ -2,7 +2,7 @@
 # upgrades them in lockstep (see docs/DEVELOPMENT.md, "Lint and format").
 version: 2
 updates:
-  - package-ecosystem: npm
+  - package-ecosystem: bun
     directory: /
     schedule:
       interval: weekly
@@ -19,17 +19,18 @@ updates:
       prefix: chore
       include: scope
     groups:
-      # effect-tsgo patches oxlint/tsgolint and targets one TypeScript release.
+      # effect-tsgo patches oxlint/tsgolint and targets one TypeScript release. tsrs (the typechecker) is pinned exactly
+      # in the root package.json's catalog: its version names the TypeScript release it ports.
       lint-toolchain:
-        patterns: ["oxlint", "oxlint-tsgolint", "@oxlint/*", "oxfmt", "@effect/tsgo", "typescript"]
+        patterns: ["oxlint", "oxlint-tsgolint", "@oxlint/*", "oxfmt", "@effect/tsgo", "tsrs"]
       effect:
         patterns: ["effect", "@effect/*"]
       # The sandbox toolkit's shell (#222): `@cloudflare/computer` is a preview whose API may change, pinned exactly in
-      # packages/tools, with the just-bash its worker-shell backend runs pinned by the override in pnpm-workspace.yaml.
-      # Upgrade them together, in a PR of their own, and only once packages/tools/test/sandbox-toolkit.test.ts passes
-      # (the override moves by hand). The computer's computerd image (infra/computer/Dockerfile, the `docker` entry
-      # below) moves with `@cloudflare/computer`: tools/check-computerd.sh, run by `pnpm lint`, fails until both name
-      # the same version.
+      # packages/tools, with the just-bash its worker-shell backend runs pinned by the override in the root
+      # package.json. Upgrade them together, in a PR of their own, and only once
+      # packages/tools/test/sandbox-toolkit.test.ts passes (the override moves by hand). The computer's computerd image
+      # (infra/computer/Dockerfile, the `docker` entry below) moves with `@cloudflare/computer`: tools/check-computerd.sh,
+      # run by `bun run lint`, fails until both name the same version.
       sandbox:
         patterns: ["@cloudflare/computer", "just-bash"]
       cloudflare:

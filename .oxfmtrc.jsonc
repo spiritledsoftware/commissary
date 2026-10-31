@@ -9,11 +9,11 @@
     "node_modules",
     "dist",
     ".alchemy",
-    "pnpm-lock.yaml",
+    "bun.lock",
     "worker-configuration.d.ts",
     "packages/*/test/fixtures",
     "packages/models/src/registry/catalog",
-    // The integrations.sh snapshot, written by `pnpm toolkits:sync`
+    // The integrations.sh snapshot, written by `bun run toolkits:sync`
     "packages/tools/src/catalog/integrations-sh.json",
     // Its credentials, one source per line, written by the same script
     "packages/tools/src/catalog/integrations-sh-credentials.json",

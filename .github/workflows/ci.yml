@@ -4,7 +4,8 @@
 #   self-hosted Commissary; with the label `preview-computer` it has the sandbox's computer (COMMISSARY_COMPUTER=on,
 #   #223), without it none;
 # - main: the `prod` stage (COMMISSARY_MODE from the production environment, self-hosted when unset) and, once the
-#   `cloud` environment is set up (`.env.cloud`, `pnpm ci:setup`), the `cloud` stage: Commissary Cloud on its own domain.
+#   `cloud` environment is set up (`.env.cloud`, `bun run ci:setup`), the `cloud` stage: Commissary Cloud on its own
+#   domain.
 # A change to documentation only (Markdown files anywhere, everything under docs/) skips the checks and deploys
 # (tools/ci-changes.sh): the required checks still report, as skipped or with their steps skipped.
 # Deploy setup (environments, secrets, variables): docs/DEPLOY.md.
@@ -76,8 +77,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
-      - run: pnpm typecheck
-      - run: pnpm lint
+      - run: bun run typecheck
+      - run: bun run lint
       - name: actionlint
         uses: rhysd/actionlint@914e7df21a07ef503a81201c76d2b11c789d3fca # v1.7.12
       - name: zizmor
@@ -116,7 +117,7 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup
         if: needs.changes.outputs.code != 'false'
-      - run: pnpm test --shard="$SHARD/3"
+      - run: bun run test --shard="$SHARD/3"
         if: needs.changes.outputs.code != 'false'
         env:
           SHARD: ${{ matrix.shard }}
@@ -141,7 +142,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
-      - run: pnpm smoke
+      - run: bun run smoke
 
   # The same under Commissary Cloud (ADR 0026, ADR 0030): the auth Worker beside the others, the sign-in on its port.
   smoke-cloud:
@@ -164,7 +165,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
-      - run: pnpm smoke
+      - run: bun run smoke
         env:
           COMMISSARY_MODE: cloud
 
@@ -227,8 +228,8 @@ jobs:
         (contains(github.event.pull_request.labels.*.name, 'cloud-preview') && 'cloud' || 'self-hosted') ||
         vars.COMMISSARY_MODE }}
       # The sandbox's computer (#223, docs/DEPLOY.md "Optional pieces"): previews with the `preview-computer` label,
-      # production when its environment sets COMMISSARY_COMPUTER=on (`pnpm ci:setup` writes it when `.env` does). Off
-      # when unset. Its size: COMMISSARY_COMPUTER_INSTANCE, the default (standard-1) when unset.
+      # production when its environment sets COMMISSARY_COMPUTER=on (`bun run ci:setup` writes it when `.env` does).
+      # Off when unset. Its size: COMMISSARY_COMPUTER_INSTANCE, the default (standard-1) when unset.
       COMMISSARY_COMPUTER: >-
         ${{ github.event_name == 'pull_request' &&
         (contains(github.event.pull_request.labels.*.name, 'preview-computer') && 'on' || 'off') ||
@@ -263,7 +264,7 @@ jobs:
           # No dependency cache in jobs holding deploy credentials (cache poisoning).
           cache: "false"
       - name: Build the control panel
-        run: pnpm build
+        run: bun run build
       - name: Deploy
         id: deploy
         run: tools/deploy-stage.sh "$STAGE"
@@ -334,8 +335,8 @@ jobs:
       SECRETS_KEY_PREVIOUS_GENERATION: ${{ vars.SECRETS_KEY_PREVIOUS_GENERATION }}
       # Always Commissary Cloud: infra/settings.ts refuses the stage otherwise.
       COMMISSARY_MODE: cloud
-      # The sandbox's computer (#223): on when the environment sets it (`pnpm ci:setup` writes it when `.env.cloud`
-      # does), at its size.
+      # The sandbox's computer (#223): on when the environment sets it (`bun run ci:setup` writes it when
+      # `.env.cloud` does), at its size.
       COMMISSARY_COMPUTER: ${{ vars.COMMISSARY_COMPUTER }}
       COMMISSARY_COMPUTER_INSTANCE: ${{ vars.COMMISSARY_COMPUTER_INSTANCE }}
       SIGN_IN_GITHUB_CLIENT_ID: ${{ vars.SIGN_IN_GITHUB_CLIENT_ID }}
@@ -373,7 +374,7 @@ jobs:
           cache: "false"
       - name: Build the control panel
         if: env.CONFIGURED == 'true'
-        run: pnpm build
+        run: bun run build
       - name: Deploy
         id: deploy
         if: env.CONFIGURED == 'true'
@@ -422,7 +423,7 @@ jobs:
       - name: Destroy
         run: |
           case "$STAGE" in pr-[0-9]*) ;; *) echo "::error::refusing to destroy stage $STAGE" >&2; exit 1 ;; esac
-          pnpm run destroy --stage "$STAGE" --no-input --yes
+          bun run destroy --stage "$STAGE" --no-input --yes
       - name: Update the preview comment
         env:
           GH_TOKEN: ${{ github.token }}

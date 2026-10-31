@@ -2,7 +2,7 @@
  * The model catalogs the registry reads: every provider's models built from the models.dev document and the catalog
  * additions (`catalog-build.ts`, ADR 0020), the Codex client catalog, and the OpenCode gateways' view of models.dev.
  *
- * Bundled copies live in `catalog/` (`models-dev.json` from `pnpm catalog:sync`, `additions.json` and
+ * Bundled copies live in `catalog/` (`models-dev.json` from `bun run catalog:sync`, `additions.json` and
  * `codex_client_models.json` maintained here); the cron job refreshes the models.dev document into KV
  * (`refresh.ts`, `catalog-store.ts`). The additions are never fetched: a refreshed document is merged with the bundled
  * additions. Static lookups (`lookupStaticModelInfo*`) read the same catalogs.

@@ -11,12 +11,12 @@
  *
  * The toolkit catalog additions (`packages/tools/src/catalog/additions.json`) are maintained by hand and untouched.
  *
- * Usage: `pnpm toolkits:sync [source] [--fresh] [--no-credentials]`, where `source` is an http(s) URL or a local file
- * (for instance a saved `api.json`), by default `https://integrations.sh/api.json`. The per-domain documents are fetched
- * a few at a time (one request per domain, {@link CONCURRENCY} at once, retried with a pause on `429` and `5xx`) and
- * kept in `node_modules/.cache/integrations-sh/` (a domain without one is kept as such), so a run that stops resumes
- * where it was; `--fresh` fetches them all again. A domain whose document cannot be fetched keeps the credentials the
- * previous run wrote for it. `--no-credentials` rewrites the snapshot only.
+ * Usage: `bun run toolkits:sync [source] [--fresh] [--no-credentials]`, where `source` is an http(s) URL or a local
+ * file (for instance a saved `api.json`), by default `https://integrations.sh/api.json`. The per-domain documents are
+ * fetched a few at a time (one request per domain, {@link CONCURRENCY} at once, retried with a pause on `429` and
+ * `5xx`) and kept in `node_modules/.cache/integrations-sh/` (a domain without one is kept as such), so a run that stops
+ * resumes where it was; `--fresh` fetches them all again. A domain whose document cannot be fetched keeps the
+ * credentials the previous run wrote for it. `--no-credentials` rewrites the snapshot only.
  *
  * Run by Node directly (type stripping), so it only imports the dependency-light modules
  * `@commissary/tools/integrations-sh` and `@commissary/tools/integrations-sh-credentials`. Idempotent: syncing again

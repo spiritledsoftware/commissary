@@ -9,7 +9,7 @@
 # ADR 0026) the auth Worker (`Auth`) starts too, and the checks end with the sign-in across the Workers: the auth host's
 # routes and CORS, and the app Worker asking the auth Worker about a session. Builds the control panel first so `/` is
 # served.
-# Usage: pnpm smoke, or COMMISSARY_MODE=cloud pnpm smoke
+# Usage: bun run smoke, or COMMISSARY_MODE=cloud bun run smoke
 set -eu
 cd "$(dirname "$0")/.."
 mode="${COMMISSARY_MODE:-self-hosted}"
@@ -19,9 +19,9 @@ if [ "$mode" = cloud ]; then
   export SIGN_IN_GITHUB_CLIENT_ID="${SIGN_IN_GITHUB_CLIENT_ID:-smoke-github-client}"
   export SIGN_IN_GITHUB_CLIENT_SECRET="${SIGN_IN_GITHUB_CLIENT_SECRET:-smoke-github-secret}"
 fi
-pnpm -s exec turbo run build --filter=@commissary/web --output-logs=errors-only
+bunx turbo run build --filter=@commissary/web --output-logs=errors-only
 log=$(mktemp)
-ALCHEMY_STATE=local pnpm exec alchemy dev --stage smoke >"$log" 2>&1 &
+ALCHEMY_STATE=local bunx alchemy dev --stage smoke >"$log" 2>&1 &
 pid=$!
 cleanup() {
   kill "$pid" 2>/dev/null || true

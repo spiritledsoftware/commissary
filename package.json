@@ -4,6 +4,22 @@
   "private": true,
   "description": "Commissary: one service on Cloudflare Workers through which an org reaches models, tools, a browser and hosted agents, under its own credentials, grants and spend limits",
   "license": "FSL-1.1-ALv2",
+  "workspaces": {
+    "packages": [
+      "apps/*",
+      "packages/*"
+    ],
+    "catalog": {
+      "@effect/vitest": "4.0.4",
+      "@types/js-yaml": "4.0.9",
+      "@types/node": "^26.6.5",
+      "effect": "4.0.4",
+      "jose": "^6.2.12",
+      "js-yaml": "4.3.2",
+      "tsrs": "0.20.1-ts7.1.0-beta",
+      "vitest": "5.0.3"
+    }
+  },
   "type": "module",
   "scripts": {
     "build": "turbo run build",
@@ -24,7 +40,7 @@
     "smoke": "sh tools/dev-smoke.sh",
     "test": "sh tools/test.sh",
     "typecheck": "turbo run typecheck typecheck:root",
-    "typecheck:root": "tsc -p tsconfig.infra.json"
+    "typecheck:root": "tsrs -p tsconfig.infra.json"
   },
   "devDependencies": {
     "@commissary/billing": "workspace:*",
@@ -34,6 +50,7 @@
     "@commitlint/cli": "21.2.3",
     "@commitlint/config-conventional": "21.2.3",
     "@distilled.cloud/cloudflare": "1.0.0-rc.15",
+    "@effect/platform-bun": "4.0.4",
     "@effect/platform-node": "4.0.4",
     "@effect/tsgo": "0.52.0",
     "@oxlint/plugins": "1.87.0",
@@ -45,8 +62,13 @@
     "oxfmt": "0.73.0",
     "oxlint": "1.87.0",
     "oxlint-tsgolint": "7.0.2004",
-    "turbo": "2.11.7",
-    "typescript": "catalog:"
+    "tsrs": "catalog:",
+    "turbo": "2.11.7"
+  },
+  "overrides": {
+    "@effect/platform-node-shared": "4.0.4",
+    "just-bash": "3.2.0",
+    "xpath": "0.0.34"
   },
   "lint-staged": {
     "*": "oxfmt --no-error-on-unmatched-pattern",
@@ -57,14 +79,17 @@
       "@commitlint/config-conventional"
     ]
   },
-  "devEngines": {
-    "packageManager": {
-      "name": "pnpm",
-      "version": "12.10.1",
-      "onFail": "warn"
-    }
-  },
   "engines": {
     "node": ">=22"
-  }
+  },
+  "packageManager": "bun@1.4.4",
+  "patchedDependencies": {
+    "alchemy@2.0.0-beta.83": "patches/alchemy@2.0.0-beta.83.patch"
+  },
+  "trustedDependencies": [
+    "esbuild",
+    "oxlint",
+    "oxlint-tsgolint",
+    "workerd"
+  ]
 }

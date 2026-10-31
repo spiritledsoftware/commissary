@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The sandbox's computer runs computerd from the image infra/computer/Dockerfile names, and the SandboxSession talks to
 # it through the `@cloudflare/computer` packages/tools pins: one protocol, so both must name the same version. Run by
-# `pnpm lint` (package.json, "lint:root"), so a bump of one alone does not pass CI.
+# `bun run lint` (package.json, "lint:root"), so a bump of one alone does not pass CI.
 set -euo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"

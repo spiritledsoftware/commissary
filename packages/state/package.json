@@ -13,7 +13,7 @@
   },
   "scripts": {
     "test": "vitest run",
-    "typecheck": "tsc"
+    "typecheck": "tsrs"
   },
   "dependencies": {
     "@commissary/auth": "workspace:*",
@@ -25,7 +25,7 @@
   "devDependencies": {
     "@cloudflare/vitest-plugin": "1.4.2",
     "@types/node": "catalog:",
-    "typescript": "catalog:",
+    "tsrs": "catalog:",
     "vitest": "catalog:"
   }
 }

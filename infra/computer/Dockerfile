@@ -6,7 +6,7 @@
 #
 # What is pinned: both images by digest (their tags in the comments; Dependabot's `docker` updates move them), computerd's
 # to the `@cloudflare/computer` version in packages/tools/package.json (they speak one protocol: tools/check-computerd.sh,
-# run with `pnpm lint`, fails when they differ, so a bump of one alone does not pass); mise to a release and its
+# run with `bun run lint`, fails when they differ, so a bump of one alone does not pass); mise to a release and its
 # checksum. The Debian packages are not pinned one by one: they are what the pinned base's release (trixie) has when the
 # image is built.
 

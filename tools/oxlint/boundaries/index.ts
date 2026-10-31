@@ -1,5 +1,5 @@
 /**
- * The workspace's import boundaries, as Oxlint rules (`pnpm lint`). `models-imports`, `billing-imports`,
+ * The workspace's import boundaries, as Oxlint rules (`bun run lint`). `models-imports`, `billing-imports`,
  * `tools-imports` and `agents-imports` keep an area package (`@commissary/models`, `@commissary/billing`,
  * `@commissary/tools`, `@commissary/agents`: `packages/<area>/`) one the Workers reach through its entry points only
  * (#134 "The area package convention", #151):

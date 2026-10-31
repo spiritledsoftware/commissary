@@ -10,7 +10,7 @@
   },
   "scripts": {
     "test": "vitest run",
-    "typecheck": "tsc"
+    "typecheck": "tsrs"
   },
   "dependencies": {
     "@commissary/agents": "workspace:*",
@@ -29,7 +29,7 @@
     "@effect/vitest": "catalog:",
     "@types/node": "catalog:",
     "@typesafe-ai/sdk": "0.7.0",
-    "typescript": "catalog:",
+    "tsrs": "catalog:",
     "vitest": "catalog:"
   }
 }

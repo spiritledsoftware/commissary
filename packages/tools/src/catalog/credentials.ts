@@ -10,7 +10,7 @@
  * scheme) or how it is negotiated (`well-known`: MCP OAuth). Request signing (`signature`) and `custom` schemes need
  * code per service: they are left out.
  *
- * The sync script (`pnpm toolkits:sync`) reads the v3 documents of the catalog's domains through this module (as
+ * The sync script (`bun run toolkits:sync`) reads the v3 documents of the catalog's domains through this module (as
  * `@commissary/tools/integrations-sh-credentials`) into the bundled credentials (`integrations-sh-credentials.json`,
  * {@link CatalogCredentials}), so it imports nothing but `effect`; the domain lookup (`lookup.ts`) reads `discover`'s
  * answers with it too.

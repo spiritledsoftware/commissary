@@ -10,7 +10,7 @@
   },
   "scripts": {
     "test": "vitest run",
-    "typecheck": "tsc"
+    "typecheck": "tsrs"
   },
   "dependencies": {
     "@better-auth/core": "1.7.7",
@@ -28,7 +28,7 @@
     "@types/node": "catalog:",
     "jose": "catalog:",
     "samlify": "2.13.1",
-    "typescript": "catalog:",
+    "tsrs": "catalog:",
     "vitest": "catalog:"
   }
 }

@@ -3,14 +3,14 @@
 # writes the app Worker's URL to the step output `url` and the URL of the client API to `api_url` (ADR 0028, ADR 0030:
 # the API host, a preview's API Worker workers.dev URL, or the same URL, whose client API paths zone routes send to the
 # API Worker), and on Commissary Cloud the auth host's to `auth_url` (empty on a self-hosted stage). The control panel
-# must be built first (`pnpm build`).
+# must be built first (`bun run build`).
 # Usage: tools/deploy-stage.sh <stage>
 set -euo pipefail
 
 stage="${1:?usage: deploy-stage.sh <stage>}"
 log="${RUNNER_TEMP:-/tmp}/deploy-$stage.log"
 
-pnpm run deploy --stage "$stage" --no-input --yes | tee "$log"
+bun run deploy --stage "$stage" --no-input --yes | tee "$log"
 
 # The deploy ends by printing the stack outputs: `url: 'https://…'` on a line of its own, or inline when the outputs are
 # short (`{ url: 'https://…', accessAud: '', … }`).

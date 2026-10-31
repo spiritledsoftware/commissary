@@ -3,7 +3,7 @@
  * reads and the fields it uses (ADR 0020). One trimmed document feeds every provider's model catalog (`catalog.ts`)
  * and the OpenCode gateways (`opencode-catalog.ts`).
  *
- * Shared by the sync script (`pnpm catalog:sync`, run by Node directly, so this module imports nothing but `effect`;
+ * Shared by the sync script (`bun run catalog:sync`, run by Node directly, so this module imports nothing but `effect`;
  * it imports it as `@commissary/models/models-dev`)
  * and by the cron refresh (`refresh.ts`). Decoding strips every key the schemas do not name, so the output keeps the
  * models.dev shape: trimming a trimmed document is a no-op and the runtime parser accepts both. Prices (`cost`, US

@@ -1,2 +1,2 @@
 # Fast checks only; the test suite runs in CI.
-pnpm typecheck && pnpm lint
+bun run typecheck && bun run lint

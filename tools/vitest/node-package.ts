@@ -32,7 +32,7 @@ export const binModules = {
 /**
  * One Vitest project named after the package: `test/**\/*.test.ts` in Node.js, with {@link binModules}.
  * `maxWorkers` is the local test budget ({@link testWorkerOptions}: Vitest's default in CI).
- * `passWithNoTests` lets a package with fewer test files than CI's shards (`pnpm test --shard=N/3` reaches every
+ * `passWithNoTests` lets a package with fewer test files than CI's shards (`bun run test --shard=N/3` reaches every
  * package's run) pass the shards that get none.
  */
 export const nodePackageTests = (name: string) => ({
