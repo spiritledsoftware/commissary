@@ -549,10 +549,9 @@ backend is tsrslint (`@maschwenk/tsrslint`, tsgolint's rules ported to Rust on t
 tsrs ships a backend of its own (oxc-project/tsrs#378, ADR 0047). `tools/oxlint.sh` starts oxlint with
 `OXLINT_TSGOLINT_PATH` set to tsrslint's binary, so run oxlint through it (`bun run lint` and lint-staged do), not as bare
 `oxlint`. In an editor, set `OXLINT_TSGOLINT_PATH` to the output of `bunx tsrslint-path`. tsrslint ships binaries only
-for macOS arm64 and glibc Linux on x64 and arm64, so `bun run lint` and the Git hooks do not run on Intel Macs, Windows
-or musl Linux. oxlint leaves TypeScript's own
-errors to `bun run typecheck` (`options.typeCheck: false`: tsrs is the one TypeScript gate, ADR 0046). On top of its own
-rules it runs:
+for macOS arm64 and glibc Linux on x64 and arm64, so `bun run lint` and the `pre-commit` and `pre-push` hooks fail on
+Intel Macs, Windows and musl Linux. oxlint leaves TypeScript's own errors to `bun run typecheck`
+(`options.typeCheck: false`: tsrs is the one TypeScript gate, ADR 0046). On top of its own rules it runs:
 
 - **anti-slop** (vendored in `tools/oxlint/anti-slop/`, provenance in its `UPSTREAM.md`): the copy belongs to this
   repository; edit its rules there.
