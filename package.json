@@ -10,14 +10,14 @@
       "packages/*"
     ],
     "catalog": {
-      "@effect/vitest": "4.0.4",
+      "@effect/vitest": "4.0.6",
       "@types/js-yaml": "4.0.9",
       "@types/node": "^26.6.5",
-      "effect": "4.0.4",
-      "jose": "^6.2.12",
+      "effect": "4.0.6",
+      "jose": "^6.2.13",
       "js-yaml": "4.3.2",
       "tsrs": "0.20.1-ts7.1.0-beta",
-      "vitest": "5.0.3"
+      "vitest": "5.0.5"
     }
   },
   "type": "module",
@@ -47,23 +47,23 @@
     "@commissary/core": "workspace:*",
     "@commissary/models": "workspace:*",
     "@commissary/tools": "workspace:*",
-    "@commitlint/cli": "21.2.3",
-    "@commitlint/config-conventional": "21.2.3",
+    "@commitlint/cli": "21.2.4",
+    "@commitlint/config-conventional": "21.2.4",
     "@distilled.cloud/cloudflare": "1.0.0-rc.15",
-    "@effect/platform-bun": "4.0.4",
-    "@effect/platform-node": "4.0.4",
+    "@effect/platform-bun": "4.0.6",
+    "@effect/platform-node": "4.0.6",
     "@effect/tsgo": "0.63.0",
     "@maschwenk/tsrslint": "0.1.6",
-    "@oxlint/plugins": "1.87.0",
+    "@oxlint/plugins": "1.89.0",
     "@types/node": "catalog:",
     "alchemy": "2.0.0-beta.83",
     "effect": "catalog:",
     "husky": "9.1.7",
     "lint-staged": "17.6.0",
-    "oxfmt": "0.73.0",
-    "oxlint": "1.87.0",
+    "oxfmt": "0.74.0",
+    "oxlint": "1.89.0",
     "tsrs": "catalog:",
-    "turbo": "2.11.7"
+    "turbo": "2.11.10"
   },
   "overrides": {
     "@effect/platform-node-shared": "4.0.4",
