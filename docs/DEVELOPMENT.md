@@ -30,8 +30,8 @@ caches each task: run again with no change, a task replays its logs (and `build`
 | `bun run dev`                | Builds the panel, then `alchemy dev`: the app (:1337), API (:1339) and state (:1338) Workers, and the auth Worker (:1340) with `COMMISSARY_MODE=cloud`, in workerd with emulated DO/KV/D1, hot reload (`ALCHEMY_STATE=local` avoids a Cloudflare login)                     |
 | `bun run build`              | Build the control panel (`apps/web`) into `apps/web/dist/` (the Worker's assets, served at `/`)                                                                                                                                                                             |
 | `bun --cwd apps/web run dev` | Vite dev server for the panel on :5173 with hot reload, forwarding `/v9` to `bun run dev` (`COMMISSARY_DEV_URL`, default :1337) and `/api` to the auth Worker (`COMMISSARY_AUTH_DEV_URL`, default :1340)                                                                    |
-| `bun run typecheck`          | `tsrs` over every program: each package's `typecheck` (Worker, panel, packages) and the root's deploy code (`typecheck:root`, `tsconfig.infra.json`)                                                                                                                        |
-| `bun run lint`               | `lint:root`: `oxlint` over the whole repository (type-aware, Effect and anti-slop rules) + `oxfmt --check` + `tools/check-computerd.sh`                                                                                                                                     |
+| `bun run typecheck`          | `tsrs`, with the Effect diagnostics, over every program: each package's `typecheck` (Worker, panel, packages) and the root's deploy code (`typecheck:root`, `tsconfig.infra.json`)                                                                                          |
+| `bun run lint`               | `lint:root`: `oxlint` over the whole repository (`tools/oxlint.sh`: type-aware rules through tsrslint, anti-slop and boundaries rules) + `oxfmt --check` + `tools/check-computerd.sh`                                                                                       |
 | `bun run format`             | `oxfmt`                                                                                                                                                                                                                                                                     |
 | `bun run test`               | Each package's `vitest run`: the Worker's inside the Workers runtime (`@cloudflare/vitest-plugin`), the panel's and the packages' in Node.js; arguments go to every run (`bun run test --shard=1/3`)                                                                        |
 | `bun run smoke`              | Builds the panel, boots `alchemy dev` with local state, waits for the Workers' ready lines, checks a few routes of each and an API key's journey across them, stops it (bundle + startup check); `COMMISSARY_MODE=cloud` runs Commissary Cloud with the auth Worker instead |
@@ -523,8 +523,8 @@ them and reports the upstream commits since that commit and the test files that 
 
 `bun install` enables the Husky hooks in `.husky/` (the `prepare` script runs `husky`):
 
-- `pre-commit`: lint-staged formats staged files with `oxfmt` and lints staged scripts with `oxlint --quiet` (errors
-  only).
+- `pre-commit`: lint-staged formats staged files with `oxfmt` and lints staged scripts with `tools/oxlint.sh --quiet`
+  (errors only).
 - `commit-msg`: commitlint with `@commitlint/config-conventional` (`feat:`, `fix:`, `chore:`, `docs:`, `refactor:`,
   `style:`, `test:`, `ci:`, …; header and body lines up to 100 characters).
 - `pre-push`: `bun run typecheck && bun run lint`. The test suite runs in CI.
@@ -543,13 +543,14 @@ permissions they need, and deploy jobs use no dependency cache.
 ## Lint and format
 
 `bun run lint` runs oxlint, `oxfmt --check` and `tools/check-computerd.sh` (the computer image's computerd and
-`@cloudflare/computer` name one version, ADR 0041). oxlint (`.oxlintrc.json`) is type-aware (`options.typeAware`, via
-`oxlint-tsgolint`) but leaves TypeScript's own errors to `bun run typecheck` (`options.typeCheck: false`: tsrs is the one
-TypeScript gate, ADR 0046); on top of its own rules it runs:
+`@cloudflare/computer` name one version, ADR 0041). oxlint (`.oxlintrc.json`) is type-aware (`options.typeAware`). Its
+backend is tsrslint (`@maschwenk/tsrslint`, tsgolint's rules ported to Rust on tsrs) instead of `oxlint-tsgolint`, until
+tsrs ships a backend of its own (oxc-project/tsrs#378, ADR 0047). `tools/oxlint.sh` starts oxlint with
+`OXLINT_TSGOLINT_PATH` set to tsrslint's binary, so run oxlint through it (`bun run lint` and lint-staged do), not as bare
+`oxlint`. In an editor, set `OXLINT_TSGOLINT_PATH` to the output of `bunx tsrslint-path`. oxlint leaves TypeScript's own
+errors to `bun run typecheck` (`options.typeCheck: false`: tsrs is the one TypeScript gate, ADR 0046). On top of its own
+rules it runs:
 
-- **Effect tsgo** (`@effect/tsgo`, recommended preset): Effect-specific diagnostics. The `prepare` script
-  (`effect-tsgo patch --no-typescript --oxlint`) patches the installed oxlint/tsgolint binaries after every install;
-  `oxlint`, `oxlint-tsgolint` and `@effect/tsgo` are pinned to versions the patch supports, so upgrade them together.
 - **anti-slop** (vendored in `tools/oxlint/anti-slop/`, provenance in its `UPSTREAM.md`): the copy belongs to this
   repository; edit its rules there.
 - **boundaries** (`tools/oxlint/boundaries/`, ours): `boundaries/models-imports`, `boundaries/billing-imports`,
@@ -564,8 +565,15 @@ TypeScript gate, ADR 0046); on top of its own rules it runs:
   (`deploymentKvOf(env)`, names from `deploymentKey`); a new area that adds a binding of its own adds its helper file
   to the rule's list. Per-isolate caches of org data are an `OrgCache` by convention, which lint does not check.
 
-Rules downgraded to warnings on purpose (reported, not failing): `effecttsgo/unstable-api-usage` (the HTTP stack is
-`effect/unstable/http`), `anti-slop-effect/no-service-constructor-imports` (flags every `make*` function),
+The **Effect diagnostics** (`@effect/tsgo`) are not part of lint; they come from `bun run typecheck` (ADR 0047). The
+`prepare` script (`effect-tsgo patch --no-typescript --tsrs`) patches the installed tsrs after every install, and the
+plugin settings in `tsconfig.base.json` hold the severities: the rule defaults (`@effect/tsgo`'s recommended preset) plus
+`anyUnknownInErrorContext` and `unsafeEffectTypeAssertion` as errors and `strictEffectProvide` as a warning. Effect
+errors fail the typecheck. Warnings, such as `unstableApiUsage` (the HTTP stack is `effect/unstable/http`), and
+suggestions are printed but do not fail it. `@effect/tsgo` patches only the tsrs versions it lists, so upgrade it with
+tsrs.
+
+Rules downgraded to warnings on purpose (reported, not failing): `anti-slop-effect/no-service-constructor-imports` (flags every `make*` function),
 `anti-slop/no-runtime-typeof` (the translators walk arbitrary JSON like Go's gjson; `typeof` is the parse step) and
 `anti-slop/no-conditional-empty-object-spread` (the `...(x === undefined ? {} : { x })` idiom required by
 `exactOptionalPropertyTypes`). In `test/` folders the type-assertion and
@@ -615,8 +623,8 @@ assertion that cannot be removed carries a `// SAFETY: <invariant>` comment on t
     Object class). `bun install` fails on a patch that no longer applies after an upgrade: drop it if upstream fixed
     the problem, else port it (`bun patch alchemy` starts a new one).
   - `trustedDependencies`: the packages whose install scripts run; the list replaces Bun's default one. `esbuild` and
-    `workerd` fetch their platform binaries; `oxlint` and `oxlint-tsgolint` run none, but `effect-tsgo patch` rewrites
-    their files in place, and a trusted package (with its dependencies) stays in the checkout's own
+    `workerd` fetch their platform binaries; `tsrs` runs none, but `effect-tsgo patch` rewrites its binary in place (ADR
+    0047), and a trusted package (with its dependencies) stays in the checkout's own
     `node_modules/.bun` instead of Bun's global store, which every other checkout on the machine shares. Blocked on
     purpose (`bun pm untrusted` lists them): `@google/genai` and `protobufjs` (pi-ai's provider SDKs, which the agent
     runs never load: they reach models through the client API) and `@mongodb-js/zstd` and `node-liblzma` (native
@@ -631,7 +639,7 @@ assertion that cannot be removed carries a `// SAFETY: <invariant>` comment on t
   (app Worker, workerd types), `apps/api/tsconfig.json` (API Worker, workerd types), `apps/auth/tsconfig.json` (auth Worker, workerd types), `apps/state/tsconfig.json` (state Worker, workerd types), `apps/web/tsconfig.app.json` (panel, DOM types) and `tsconfig.node.json` (its Node.js side),
   `packages/contract/tsconfig.json` (no runtime types), `packages/auth`, `packages/core`, `packages/json` and `packages/translation` (Node.js types,
   no Workers types), `packages/state`, `packages/billing`, `packages/models`, `packages/tools` and `packages/agents` (workerd types, with the Node.js tests of `test/unit/`
-  checked in the same program) and the root's `tsconfig.infra.json` (deploy code, Node.js types). tsrs only checks (`noEmit`); Turborepo caches it. The `typescript` package is no longer a dependency of the
+  checked in the same program) and the root's `tsconfig.infra.json` (deploy code, Node.js types). tsrs only checks (`noEmit`); Turborepo caches it. The installed tsrs is Effect-patched, so it also reports the Effect diagnostics ("Lint and format", ADR 0047). The `typescript` package is no longer a dependency of the
   repository; it is still installed for commitlint's config loader, which declares it as a peer.
 - `@cloudflare/vitest-plugin` (successor of `@cloudflare/vitest-pool-workers`) is used because it supports vitest 5,
   which `@effect/vitest@4` requires.

@@ -19,10 +19,11 @@ updates:
       prefix: chore
       include: scope
     groups:
-      # effect-tsgo patches oxlint/tsgolint and targets one TypeScript release. tsrs (the typechecker) is pinned exactly
-      # in the root package.json's catalog: its version names the TypeScript release it ports.
+      # effect-tsgo patches tsrs, and each release patches only the tsrs versions it lists (ADR 0047). tsrs (the
+      # typechecker) is pinned exactly in the root package.json's catalog: its version names the TypeScript release it
+      # ports. tsrslint is oxlint's type-aware backend until tsrs ships one (oxc-project/tsrs#378).
       lint-toolchain:
-        patterns: ["oxlint", "oxlint-tsgolint", "@oxlint/*", "oxfmt", "@effect/tsgo", "tsrs"]
+        patterns: ["oxlint", "@oxlint/*", "oxfmt", "@effect/tsgo", "tsrs", "@maschwenk/tsrslint"]
       effect:
         patterns: ["effect", "@effect/*"]
       # The sandbox toolkit's shell (#222): `@cloudflare/computer` is a preview whose API may change, pinned exactly in

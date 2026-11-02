@@ -4,7 +4,7 @@ TypeScript + Effect v4 (`effect@4.0.4`) port of [CLIProxyAPI](https://github.com
 
 ## Commands
 
-- Bun installs dependencies and runs scripts (`bunfig.toml`, its version in `packageManager`); Vitest and Vite run on Node.js, alchemy on Bun, and `typecheck` is `tsrs` (ADR 0046). Use `bun run <script>` (not bare `bun <script>`, and `bun test` is Bun's own runner, not this repo's tests) and `bunx <bin>`; one package: `bun --cwd <package dir> run <script>`.
+- Bun installs dependencies and runs scripts (`bunfig.toml`, its version in `packageManager`); Vitest and Vite run on Node.js, alchemy on Bun, and `typecheck` is `tsrs`, Effect-patched so it also reports the Effect diagnostics (ADR 0046, ADR 0047). Use `bun run <script>` (not bare `bun <script>`, and `bun test` is Bun's own runner, not this repo's tests) and `bunx <bin>`; one package: `bun --cwd <package dir> run <script>`.
 - Run before finishing: `bun run typecheck && bun run lint && bun run test && bun run smoke`; `bun run format` formats.
 - `typecheck`, `lint`, `test` and `build` run through Turborepo (`turbo.json`, local cache; `bunx turbo run <task> --force` re-runs). Workspace layout and task graph: `docs/DEVELOPMENT.md` ("Workspace and Turborepo"); docs for the installed version: `node_modules/turbo/docs/`. Packages are source-only (`exports` point at `src/*.ts`, plus `./testing` at `test/testing.ts`; no build).
 - Never run `bun run deploy`/`bun run destroy` (Alchemy) against a real account unless asked. CI deploys previews (`pr-<number>`) and, from `main`, production (`prod`, self-hosted) and Commissary Cloud (`cloud`): `docs/DEPLOY.md`.
