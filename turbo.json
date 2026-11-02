@@ -9,7 +9,7 @@
       "dependsOn": ["^transit"]
     },
     "typecheck": {
-      "description": "tsrs over each program of the package (no emit); the packages' Vitest configs import tools/vitest, and the workerd programs read the Workers runtime types in tools/workers",
+      "description": "tsrs over each program of the package (no emit), with the Effect diagnostics of the Effect-patched tsrs (ADR 0047); the packages' Vitest configs import tools/vitest, and the workerd programs read the Workers runtime types in tools/workers",
       "dependsOn": ["transit"],
       "inputs": [
         "$TURBO_DEFAULT$",
@@ -31,11 +31,11 @@
       "outputs": ["dist/**"]
     },
     "//#typecheck:root": {
-      "description": "tsrs over the deploy code at the root (tsconfig.infra.json) and the Worker modules it imports; the root task hashes the whole repository",
+      "description": "tsrs (Effect-patched) over the deploy code at the root (tsconfig.infra.json) and the Worker modules it imports; the root task hashes the whole repository",
       "outputs": []
     },
     "//#lint:root": {
-      "description": "One oxlint (type-aware) and oxfmt --check run over the whole repository, and tools/check-computerd.sh",
+      "description": "One oxlint (type-aware through tsrslint, tools/oxlint.sh) and oxfmt --check run over the whole repository, and tools/check-computerd.sh",
       "outputs": []
     }
   }

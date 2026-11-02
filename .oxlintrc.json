@@ -1,6 +1,5 @@
 {
-  "$schema": "./node_modules/@effect/tsgo/oxlint-schema.json",
-  "extends": ["./node_modules/@effect/tsgo/oxlint-presets/recommended.json"],
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
   "options": {
     "typeAware": true,
     "typeCheck": false
@@ -57,7 +56,6 @@
     "boundaries/org-scoped-kv": "error",
     "boundaries/tools-imports": "error",
     "boundaries/agents-imports": "error",
-    "effecttsgo/unstable-api-usage": "warn",
     "no-restricted-imports": [
       "error",
       {

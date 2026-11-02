@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted, amended by ADR-0047 (tsrslint is oxlint's type-aware backend, and tsrs reports the Effect diagnostics)
 ---
 
 # Bun installs and runs scripts, tsrs typechecks, Vitest stays on Node.js

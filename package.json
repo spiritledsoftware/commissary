@@ -32,10 +32,10 @@
     "dev": "turbo run build --filter=@commissary/web && alchemy dev",
     "format": "oxfmt",
     "lint": "turbo run lint:root",
-    "lint:root": "oxlint && oxfmt --check && tools/check-computerd.sh",
+    "lint:root": "tools/oxlint.sh && oxfmt --check && tools/check-computerd.sh",
     "logs": "alchemy logs",
     "plan": "alchemy plan",
-    "prepare": "effect-tsgo patch --no-typescript --oxlint && husky && ([ -n \"$CI\" ] || tools/sync-reference-repos.sh)",
+    "prepare": "effect-tsgo patch --no-typescript --tsrs && husky && ([ -n \"$CI\" ] || tools/sync-reference-repos.sh)",
     "repos:sync": "tools/sync-reference-repos.sh",
     "smoke": "sh tools/dev-smoke.sh",
     "test": "sh tools/test.sh",
@@ -52,7 +52,8 @@
     "@distilled.cloud/cloudflare": "1.0.0-rc.15",
     "@effect/platform-bun": "4.0.4",
     "@effect/platform-node": "4.0.4",
-    "@effect/tsgo": "0.52.0",
+    "@effect/tsgo": "0.63.0",
+    "@maschwenk/tsrslint": "0.1.6",
     "@oxlint/plugins": "1.87.0",
     "@types/node": "catalog:",
     "alchemy": "2.0.0-beta.83",
@@ -61,7 +62,6 @@
     "lint-staged": "17.6.0",
     "oxfmt": "0.73.0",
     "oxlint": "1.87.0",
-    "oxlint-tsgolint": "7.0.2004",
     "tsrs": "catalog:",
     "turbo": "2.11.7"
   },
@@ -72,7 +72,7 @@
   },
   "lint-staged": {
     "*": "oxfmt --no-error-on-unmatched-pattern",
-    "*.{ts,mts,cts,js,mjs,cjs}": "oxlint --quiet --no-error-on-unmatched-pattern"
+    "*.{ts,mts,cts,js,mjs,cjs}": "tools/oxlint.sh --quiet --no-error-on-unmatched-pattern"
   },
   "commitlint": {
     "extends": [
@@ -88,8 +88,7 @@
   },
   "trustedDependencies": [
     "esbuild",
-    "oxlint",
-    "oxlint-tsgolint",
+    "tsrs",
     "workerd"
   ]
 }
