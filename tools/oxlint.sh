@@ -5,8 +5,12 @@
 # and lint-staged; arguments pass through to oxlint.
 set -euo pipefail
 
-BIN="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)/node_modules/.bin"
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 
-OXLINT_TSGOLINT_PATH="$("$BIN/tsrslint-path")"
+if ! OXLINT_TSGOLINT_PATH="$("$ROOT/node_modules/.bin/tsrslint-path")"; then
+  echo "oxlint.sh: no tsrslint binary; run \`bun install\`. tsrslint ships for macOS arm64 and glibc Linux on x64 and" \
+    "arm64 only (docs/DEVELOPMENT.md, \"Lint and format\")" >&2
+  exit 1
+fi
 export OXLINT_TSGOLINT_PATH
-exec "$BIN/oxlint" "$@"
+exec "$ROOT/node_modules/.bin/oxlint" "$@"

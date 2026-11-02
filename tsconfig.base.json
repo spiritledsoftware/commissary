@@ -17,8 +17,9 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     // The Effect language service's diagnostics, which `tsrs` reports once `effect-tsgo patch --tsrs` (the root `prepare`
-    // script) has patched it (ADR 0047): the rule defaults, which are @effect/tsgo's recommended preset, plus the three
-    // rules the oxlint integration also ran. Errors fail `bun run typecheck`; warnings and suggestions are reported only.
+    // script) has patched it (ADR 0047): the rule defaults, which are @effect/tsgo's recommended preset, plus
+    // anyUnknownInErrorContext and unsafeEffectTypeAssertion as errors and strictEffectProvide as a warning. Errors fail
+    // `bun run typecheck`; warnings and suggestions are reported only.
     "plugins": [
       {
         "name": "@effect/language-service",

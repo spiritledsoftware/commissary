@@ -20,7 +20,8 @@ On an 8-core Apple Silicon laptop (2026-11-02), one run each:
 - One TypeScript version, 7.1, now backs the typecheck, the type-aware lint rules and the Effect diagnostics. oxlint no longer has a copy of TypeScript 7.0 inside it.
 - oxlint and oxfmt are no longer patched, so their versions no longer have to be ones `@effect/tsgo` supports. `@effect/tsgo` and tsrs still move together: each `@effect/tsgo` release patches a fixed list of tsrs versions (0.63.0 patches `0.20.1-ts7.1.0-beta`).
 - `trustedDependencies` names `tsrs`, which `effect-tsgo patch` rewrites, in place of `oxlint` and `oxlint-tsgolint`. A trusted package stays in the checkout's own `node_modules/.bun`, so the patch never touches the copy that other checkouts link to in Bun's global store.
-- `bun run typecheck` prints the Effect warnings and suggestions, about 3,000 of them, which `bun run lint` used to print.
+- `bun run typecheck` prints the Effect warnings and suggestions, about 3,000 of them, which `bun run lint` used to print. oxlint has no suggestion level, so it reported the preset's suggestion-level rules as warnings; tsrs reports them as suggestions, and neither fails the run.
+- lint-staged no longer runs the Effect diagnostics at commit. An Effect error such as `floatingEffect` now surfaces at `pre-push` (`bun run typecheck`) or in CI.
 - tsrslint ships binaries only for macOS arm64 and glibc Linux on x64 and arm64. CI and Apple Silicon Macs are covered; Intel Macs, Windows and musl Linux cannot run `bun run lint`.
 - An editor's oxlint extension finds no `tsgolint` in `node_modules/.bin`. To run type-aware rules there, set `OXLINT_TSGOLINT_PATH` to the output of `bunx tsrslint-path`. The Effect diagnostics appear in an editor only if it uses the patched tsrs (`tsrs --lsp`) as its language server.
 

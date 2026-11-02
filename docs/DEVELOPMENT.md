@@ -524,7 +524,8 @@ them and reports the upstream commits since that commit and the test files that 
 `bun install` enables the Husky hooks in `.husky/` (the `prepare` script runs `husky`):
 
 - `pre-commit`: lint-staged formats staged files with `oxfmt` and lints staged scripts with `tools/oxlint.sh --quiet`
-  (errors only).
+  (errors only). The Effect diagnostics are not part of lint (ADR 0047), so an Effect error such as `floatingEffect`
+  surfaces at `pre-push` or in CI, not at commit.
 - `commit-msg`: commitlint with `@commitlint/config-conventional` (`feat:`, `fix:`, `chore:`, `docs:`, `refactor:`,
   `style:`, `test:`, `ci:`, …; header and body lines up to 100 characters).
 - `pre-push`: `bun run typecheck && bun run lint`. The test suite runs in CI.
@@ -547,7 +548,9 @@ permissions they need, and deploy jobs use no dependency cache.
 backend is tsrslint (`@maschwenk/tsrslint`, tsgolint's rules ported to Rust on tsrs) instead of `oxlint-tsgolint`, until
 tsrs ships a backend of its own (oxc-project/tsrs#378, ADR 0047). `tools/oxlint.sh` starts oxlint with
 `OXLINT_TSGOLINT_PATH` set to tsrslint's binary, so run oxlint through it (`bun run lint` and lint-staged do), not as bare
-`oxlint`. In an editor, set `OXLINT_TSGOLINT_PATH` to the output of `bunx tsrslint-path`. oxlint leaves TypeScript's own
+`oxlint`. In an editor, set `OXLINT_TSGOLINT_PATH` to the output of `bunx tsrslint-path`. tsrslint ships binaries only
+for macOS arm64 and glibc Linux on x64 and arm64, so `bun run lint` and the Git hooks do not run on Intel Macs, Windows
+or musl Linux. oxlint leaves TypeScript's own
 errors to `bun run typecheck` (`options.typeCheck: false`: tsrs is the one TypeScript gate, ADR 0046). On top of its own
 rules it runs:
 
@@ -633,6 +636,10 @@ assertion that cannot be removed carries a `// SAFETY: <invariant>` comment on t
     copy of each package for every checkout and worktree) and a minimum release age of one day. `node_modules` is then
     mostly links into Bun's cache: after the cache is cleared (`bun pm cache rm`), `Cannot find package` errors mean
     the links dangle, and `bun install` makes them again.
+- `@maschwenk/tsrslint` (oxlint's type-aware backend, "Lint and format") is pinned exactly and stands in until tsrs
+  ships a backend of its own (oxc-project/tsrs#378). When it does, remove the package and `tools/oxlint.sh`, and let
+  oxlint find the backend in `node_modules/.bin` (ADR 0047). `@effect/tsgo` patches only the tsrs versions it lists, so
+  it moves with tsrs, in the same Dependabot group.
 - TypeScript 7.1 through tsrs (`tsrs`, a Rust port of TypeScript 7 that takes `tsc`'s flags; ADR 0046), pinned exactly
   in the catalog: its version names the TypeScript release it ports (`0.20.1-ts7.1.0-beta` ports 7.1.0-beta), so an
   upgrade is a deliberate edit. Each program has its own tsconfig extending `tsconfig.base.json`: `apps/app/tsconfig.json`
