@@ -316,12 +316,8 @@
     },
   },
   "trustedDependencies": [
-    "@google/genai",
     "tsrs",
     "esbuild",
-    "protobufjs",
-    "node-liblzma",
-    "@mongodb-js/zstd",
     "workerd",
   ],
   "patchedDependencies": {
