@@ -621,9 +621,10 @@ assertion that cannot be removed carries a `// SAFETY: <invariant>` comment on t
     `packages/tools/src/sandbox/cloudflare/fallback.ts`; `test/unit/sandbox-fallback.test.ts` fails when they differ):
     both are pinned exactly and move together, by hand, after `packages/tools/test/sandbox-toolkit.test.ts` passes;
     `@effect/platform-node-shared` at `effect`'s version (see `alchemy` below).
-  - `patchedDependencies`: `patches/alchemy@<version>.patch` (a Container application attached to an existing Durable
-    Object class). `bun install` fails on a patch that no longer applies after an upgrade: drop it if upstream fixed
-    the problem, else port it (`bun patch alchemy` starts a new one).
+  - `patchedDependencies`: `patches/@alchemy.run%2Fcloudflare@<version>.patch` (a Container application attached to an
+    existing Durable Object class; it patches both `lib/` and `src/`, which Bun loads through the package's `bun`
+    export condition). `bun install` fails on a patch that no longer applies after an upgrade: drop it if upstream fixed
+    the problem, else port it (`bun patch @alchemy.run/cloudflare` starts a new one).
   - `trustedDependencies`: the packages whose install scripts run; the list replaces Bun's default one. `esbuild` and
     `workerd` fetch their platform binaries; `tsrs` runs none, but `effect-tsgo patch` rewrites its binary in place (ADR
     0047), and a trusted package (with its dependencies) stays in the checkout's own
@@ -648,9 +649,16 @@ assertion that cannot be removed carries a `// SAFETY: <invariant>` comment on t
   checked in the same program) and the root's `tsconfig.infra.json` (deploy code, Node.js types). tsrs only checks (`noEmit`); Turborepo caches it. The installed tsrs is Effect-patched, so it also reports the Effect diagnostics ("Lint and format", ADR 0047). The `typescript` package is no longer a dependency of the
   repository; it is still installed for commitlint's config loader, which declares it as a peer.
 - `@cloudflare/vitest-plugin` (successor of `@cloudflare/vitest-pool-workers`) is used because it supports vitest 5,
-  which `@effect/vitest@4` requires.
+  which `@effect/vitest@4` requires. Vitest is held at 5.0.x (the catalog's `vitest`): under 5.1 with the plugin, work a
+  test schedules (a forked fiber's start, a timer) does not run while the test awaits RPC to the test Worker's own
+  Durable Objects, which breaks tests that let a forked task go on meanwhile (`packages/billing/test/scheduled.test.ts`),
+  and two more fail on 5.1 alone (`apps/app/test/management-batch.test.ts`: an alarm set past 2189;
+  `packages/tools/test/browser-handoff.test.ts`: an `AsyncLocalStorage`-bound call outside its request). Move it once those pass on the new version. The workerd projects
+  also turn Vitest's file-system module cache off (`tools/vitest/workerd.ts`).
 - `alchemy` (2.0.0 beta, pinned) needs `@effect/platform-node` for its CLI under Node.js and `@effect/platform-bun` under
   Bun, which it hands itself to when Bun launched it (`bun run deploy`, `bunx alchemy`); `@effect/platform-bun` depends on
   `@effect/platform-node-shared` with a caret, so the root `overrides` hold it at `effect`'s version (its newest release
   can want a newer `effect`, which would install a second copy): move it with `effect`; `@distilled.cloud/cloudflare` is pinned to
-  the version Alchemy uses (the Access settings step calls the Cloudflare API with Alchemy's credentials).
+  the version `@alchemy.run/cloudflare` uses (the Access settings step calls the Cloudflare API with Alchemy's
+  credentials). Alchemy's Cloudflare and GitHub providers are packages of their own, `@alchemy.run/cloudflare` and
+  `@alchemy.run/github`, pinned to `alchemy`'s version and moved with it.

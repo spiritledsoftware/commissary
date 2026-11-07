@@ -95,9 +95,8 @@ export const sortLimits = (limits: ReadonlyArray<SpendLimitView>): ReadonlyArray
   );
 
 /** The share of a limit that is spent, 0 to 1 (a limit of 0 is spent). */
-export const spentShare = (
-  limit: Pick<SpendLimitView, "spent_micros" | "amount_micros">,
-): number => (limit.amount_micros <= 0 ? 1 : Math.min(1, limit.spent_micros / limit.amount_micros));
+export const spentShare = (limit: Pick<SpendLimitView, "spent_micros" | "amount_micros">): number =>
+  limit.amount_micros <= 0 ? 1 : Math.min(1, limit.spent_micros / limit.amount_micros);
 
 /** Whether the limit has no room left: Commissary refuses what it covers until the period ends. */
 export const reached = (limit: Pick<SpendLimitView, "spent_micros" | "amount_micros">): boolean =>

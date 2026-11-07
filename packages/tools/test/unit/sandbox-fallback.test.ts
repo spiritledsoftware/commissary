@@ -5,7 +5,9 @@ import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";
-import shellModules from "@cloudflare/computer/shell/core";
+import coreModules from "@cloudflare/computer/shell/core";
+import fileModules from "@cloudflare/computer/shell/file";
+import yqModules from "@cloudflare/computer/shell/yq";
 import { shellRefusal } from "../../src/sandbox/cloudflare/fallback.ts";
 
 describe("the computer fallback rule", () => {
@@ -73,21 +75,25 @@ describe("the computer fallback rule", () => {
   });
 
   it("asks the just-bash the session's shell runs: the worker shell's modules are the installed version's", () => {
-    // `@cloudflare/computer` bundles just-bash's content-hashed chunks into its worker-shell modules, each with the path
-    // it came from; every one is a file of the installed just-bash only if both are one version.
+    // `@cloudflare/computer` bundles just-bash's content-hashed chunks into its worker-shell modules, and names the path
+    // of those it keeps license headers for (`just-bash/dist/...`; `node_modules/just-bash/dist/...` before 0.10); every
+    // one is a file of the installed just-bash only if both are one version. Since 0.10 they are few and spread over
+    // the core, file and yq modules (core's alone are in two just-bash versions).
     const installed = dirname(
       dirname(dirname(createRequire(import.meta.url).resolve("just-bash"))),
     );
 
     const bundled = new Set(
-      Object.values(shellModules).flatMap(({ js }) =>
-        [...js.matchAll(/node_modules\/just-bash\/(dist\/[\w./-]+\.js)/g)].map(
-          ([, path]) => path ?? "",
+      [coreModules, fileModules, yqModules]
+        .flatMap(Object.values)
+        .flatMap(({ js }) =>
+          [...js.matchAll(/(?:node_modules\/)?just-bash\/(dist\/[\w./-]+\.js)/g)].map(
+            ([, path]) => path ?? "",
+          ),
         ),
-      ),
     );
 
-    expect(bundled.size).toBeGreaterThan(10);
+    expect(bundled.size).toBeGreaterThanOrEqual(4);
     expect([...bundled].filter((path) => !existsSync(join(installed, path)))).toEqual([]);
   });
 });

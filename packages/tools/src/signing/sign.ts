@@ -5,8 +5,15 @@
  * hop of a same-origin redirect is signed anew for its own URL; the time is the `Clock`'s.
  */
 import { randomBytes } from "node:crypto";
-import { Clock, Effect, Predicate } from "effect";
-import { HttpClient, HttpClientError, HttpClientRequest } from "effect/http";
+import { Clock, Effect, Option, Predicate, Redacted } from "effect";
+import {
+  Headers,
+  HttpBody,
+  HttpClient,
+  HttpClientError,
+  HttpClientRequest,
+  UrlParams,
+} from "effect/http";
 import { type SigningSecret, signsEachRequest, type UpstreamSecret } from "../toolkits/secret.ts";
 import { sha256Hex } from "./encoding.ts";
 import { type OAuth1Keys, oauth1Authorization } from "./oauth1.ts";
@@ -16,7 +23,9 @@ import { amzDateOf, sigV4Authorization, sigV4Url } from "./sigv4.ts";
 const requestUrl = (request: HttpClientRequest.HttpClientRequest): string => {
   const url = new URL(request.url);
 
-  for (const [name, value] of request.urlParams.params) url.searchParams.append(name, value);
+  // A `Redacted` parameter is sent unwrapped, as the client sends it.
+  for (const [name, value] of request.urlParams.params)
+    url.searchParams.append(name, Redacted.isRedacted(value) ? Redacted.value(value) : value);
 
   return url.toString();
 };
@@ -119,10 +128,16 @@ const sigV4Signed = Effect.fnUntraced(function* (
 
   const { host: _host, ...sent } = signed;
 
-  // Rebuilt on the empty request: query parameters kept apart would be written again as a form's (`+` a space).
-  return HttpClientRequest.empty.pipe(
-    HttpClientRequest.setMethod(request.method),
-    HttpClientRequest.setUrl(url.toString()),
+  // Rebuilt from nothing but its method and URL: query parameters kept apart would be written again as a form's (`+`
+  // a space).
+  return HttpClientRequest.makeWith(
+    request.method,
+    url.toString(),
+    UrlParams.empty,
+    Option.none(),
+    Headers.empty,
+    HttpBody.empty,
+  ).pipe(
     HttpClientRequest.setBody(request.body),
     HttpClientRequest.setHeaders(request.headers),
     HttpClientRequest.setHeaders({
