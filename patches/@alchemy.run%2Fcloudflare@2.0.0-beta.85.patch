@@ -1,0 +1,82 @@
+diff --git a/lib/Containers/DurableObjectApplication.js b/lib/Containers/DurableObjectApplication.js
+index 776d8b751d189973d50d50850c44bbf66ed6d428..bed8e78f58ae295698a7967e8785898e521861c0 100644
+--- a/lib/Containers/DurableObjectApplication.js
++++ b/lib/Containers/DurableObjectApplication.js
+@@ -170,7 +170,12 @@ export const LiveDurableObjectApplicationProvider = () => Provider.succeed(Durab
+         // 2. Ensure
+         if (!application) {
+             yield* session.note(`Creating container application ${name}...`);
+-            application = yield* retryNamespacePropagation(Containers.createDurableObjectContainerApplication({
++            // Patched (commissary): attaching containers to a Durable Object class whose namespace already exists
++            // runs before the Worker's upload marks the namespace Container-enabled, and Cloudflare refuses it. Keep
++            // the reserved name and create the application on the next deploy, once the upload has enabled it.
++            const notEnabled = (error) => error._tag === "DurableObjectNotContainerEnabled" ||
++                (error._tag === "BadRequest" && /not Container-enabled/i.test(String(error.message)));
++            const created = yield* retryNamespacePropagation(Containers.createDurableObjectContainerApplication({
+                 accountId,
+                 name,
+                 schedulingPolicy: "durable_object",
+@@ -182,7 +187,18 @@ export const LiveDurableObjectApplicationProvider = () => Provider.succeed(Durab
+                         : {}),
+                 },
+                 observability: settings.observability,
+-            })).pipe(Effect.catchTag("DurableObjectAlreadyHasApplication", () => getApplication));
++            })).pipe(Effect.catchTag("DurableObjectAlreadyHasApplication", () => getApplication), Effect.catchIf(notEnabled, () => Effect.succeed(undefined)));
++            if (created === undefined) {
++                yield* session.note(`Durable Object namespace ${durableObjects.namespaceId} is not Container-enabled yet; the container application ${name} is created on the next deploy.`);
++                return placeholder({
++                    applicationId: "",
++                    applicationName: name,
++                    accountId,
++                    className,
++                    createdAt: "",
++                });
++            }
++            application = created;
+         }
+         yield* assertServesNamespace(application);
+         // 3. Sync declared settings and reset settings no Container declares anymore.
+diff --git a/src/Containers/DurableObjectApplication.ts b/src/Containers/DurableObjectApplication.ts
+index 3174998ff84a2db3602fb4f52b7a7cc6435f9393..e947e98935e59c1f6dcf8cf99758a39982695efb 100644
+--- a/src/Containers/DurableObjectApplication.ts
++++ b/src/Containers/DurableObjectApplication.ts
+@@ -292,7 +292,13 @@ export const LiveDurableObjectApplicationProvider = () =>
+       // 2. Ensure
+       if (!application) {
+         yield* session.note(`Creating container application ${name}...`);
+-        application = yield* retryNamespacePropagation(
++        // Patched (commissary): attaching containers to a Durable Object class whose namespace already exists
++        // runs before the Worker's upload marks the namespace Container-enabled, and Cloudflare refuses it. Keep
++        // the reserved name and create the application on the next deploy, once the upload has enabled it.
++        const notEnabled = (error: { readonly _tag: string; readonly message?: unknown }) =>
++          error._tag === "DurableObjectNotContainerEnabled" ||
++          (error._tag === "BadRequest" && /not Container-enabled/i.test(String(error.message)));
++        const created = yield* retryNamespacePropagation(
+           Containers.createDurableObjectContainerApplication({
+             accountId,
+             name,
+@@ -306,7 +312,23 @@ export const LiveDurableObjectApplicationProvider = () =>
+             },
+             observability: settings.observability,
+           }),
+-        ).pipe(Effect.catchTag("DurableObjectAlreadyHasApplication", () => getApplication));
++        ).pipe(
++          Effect.catchTag("DurableObjectAlreadyHasApplication", () => getApplication),
++          Effect.catchIf(notEnabled, () => Effect.succeed(undefined)),
++        );
++        if (created === undefined) {
++          yield* session.note(
++            `Durable Object namespace ${durableObjects.namespaceId} is not Container-enabled yet; the container application ${name} is created on the next deploy.`,
++          );
++          return placeholder({
++            applicationId: "",
++            applicationName: name,
++            accountId,
++            className,
++            createdAt: "",
++          });
++        }
++        application = created;
+       }
+       yield* assertServesNamespace(application);
+ 

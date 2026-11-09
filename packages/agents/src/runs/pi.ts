@@ -30,7 +30,6 @@ import {
   type JsonObject,
   type Message,
   type Model,
-  Type,
 } from "@earendil-works/pi-ai";
 import * as openAICompletions from "@earendil-works/pi-ai/api/openai-completions";
 import {
@@ -309,6 +308,9 @@ const HandoffEnd = Schema.Struct({ outcome: Schema.String });
 
 const decodeHandoffEnd = Schema.decodeUnknownOption(HandoffEnd);
 
+/** An MCP tool's arguments, which the harness checked against its object schema. */
+const decodeJsonObject = Schema.decodeUnknownOption(Schema.JsonObject);
+
 /** A tool error with `text`. */
 const refusedResult = (text: string): CallToolResult => ({
   content: [{ type: "text", text }],
@@ -430,14 +432,15 @@ export const openPiRun = async (options: PiRunOptions): Promise<PiRun> => {
     {
       models,
       registry,
-      onReport: (error) => options.report(error instanceof Error ? error.message : String(error)),
+      onReport: ({ error }) =>
+        options.report(error instanceof Error ? error.message : String(error)),
       // The definition's thinking level is the model's suffix: pi-ai asks for none of its own.
       settings: { retry: { enabled: true, maxRetries: 2, baseDelayMs: 2_000 } },
     },
     context,
   );
 
-  const closed = harness.closed.then((end) => (end.reason === "failed" ? "failed" : "closed"));
+  const closed = harness.closed.then((end) => end.kind);
 
   // A turn the last process left running resumes with the model it was configured with.
   const resumed = await harness.root(context);
@@ -585,16 +588,17 @@ export const openPiRun = async (options: PiRunOptions): Promise<PiRun> => {
       name: toolName(tool.name),
       description: tool.description ?? tool.name,
       // Providers want an object schema with `properties`; the MCP endpoint validates the arguments itself.
-      parameters: Type.Unsafe<JsonObject>({
+      parameters: {
         ...tool.inputSchema,
         type: "object",
         properties: tool.inputSchema.properties ?? {},
-      }),
+      },
       // Replay-safe only to go on waiting where it parked (#232): a call cut off while it called the endpoint is not
       // made again, and answers as interrupted, as pi-durable answers a call that is not replay-safe.
       replay: "safe",
       execute: async (args, api, callContext) => {
         const signal = callContext.abortSignal;
+        const input = Option.getOrElse(decodeJsonObject(args), () => ({}));
 
         const answer = (result: CallToolResult) => ({
           output: toLlmContent(result),
@@ -626,7 +630,7 @@ export const openPiRun = async (options: PiRunOptions): Promise<PiRun> => {
 
           made += 1;
           await api.memo(callMemo(made), true, callContext);
-          const result = await call(tool.name, args, signal);
+          const result = await call(tool.name, input, signal);
 
           waiting = waitingOf(result);
 

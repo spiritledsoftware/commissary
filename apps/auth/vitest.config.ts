@@ -1,8 +1,10 @@
+import { builtinModules } from "node:module";
 import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import { defineConfig } from "vitest/config";
 import { BUNDLE_ALIASES } from "../../infra/bundle.ts";
 import { BASE_COOKIE_PREFIX } from "../../infra/settings.ts";
 import { testWorkerOptions } from "../../tools/vitest/test-workers.ts";
+import { workerdTestOptions } from "../../tools/vitest/workerd.ts";
 
 /**
  * Commissary Cloud (`COMMISSARY_MODE=cloud`, ADR 0026), the only mode the auth Worker runs in (ADR 0030): Better Auth
@@ -63,9 +65,24 @@ export default defineConfig({
   ],
   test: {
     name: "hosted",
+    // samlify, which the tests' identity provider imports (test/identity-providers.ts), pre-bundled by Vite. Loaded
+    // file by file through workerd's module fallback, its `require("xml")` (the `xml` package) is named after the
+    // requiring directory, `build/src/xml`, which since samlify 2.15 is also its own `./xml` module, so workerd hands
+    // back that one. Bundled, the bare name resolves to the package; Node.js builtins stay workerd's.
+    deps: {
+      optimizer: {
+        ssr: {
+          enabled: true,
+          include: ["samlify"],
+          rolldownOptions: { external: [...builtinModules, /^node:/] },
+        },
+      },
+    },
     include: ["test/**/*.test.ts"],
     // The local test budget (tools/vitest/test-workers.ts): Vitest's default workers in CI.
     ...testWorkerOptions(),
+    // workerd's module fetches without Vitest's file-system cache (tools/vitest/workerd.ts).
+    ...workerdTestOptions,
     // The first test in each file pays for module transformation inside workerd; keep generous timeouts.
     testTimeout: 30_000,
     // Each file's `installFakes` loads Better Auth once (slow under a full parallel run), outside the tests.

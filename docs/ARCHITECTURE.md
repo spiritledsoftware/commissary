@@ -4590,7 +4590,7 @@ defines and always binds the browser sessions' Durable Object (#213: `BrowserSes
     `SandboxProvider` interface (open, bash, read, write, list, close, each as an owner, with the call's `ComputerMeter`
     (#224), and purge and `stopComputer`, for the ControlPlane; a `SandboxError` with a reason the toolkit words).
     Cloudflare's sandbox (`tools/sandbox/cloudflare/`, source `cloudflare`) is the one adapter, and the only code that
-    imports `@cloudflare/computer` or just-bash (lint: `no-restricted-imports` in `.oxlintrc.json`; pinned at 0.5.1,
+    imports `@cloudflare/computer` or just-bash (lint: `no-restricted-imports` in `.oxlintrc.json`; pinned at 0.10.0,
     with just-bash pinned at 3.2.0 by a workspace override, upgraded together in a Dependabot group of their own once
     the sandbox tests pass): each session is a `SandboxSession` Durable Object in the state Worker, named
     `<org>:<session id>`, holding the session's `@cloudflare/computer` Workspace (its files, in the object's SQLite)

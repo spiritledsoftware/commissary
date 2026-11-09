@@ -10,14 +10,14 @@
       "packages/*"
     ],
     "catalog": {
-      "@effect/vitest": "4.0.4",
+      "@effect/vitest": "4.1.2",
       "@types/js-yaml": "4.0.9",
-      "@types/node": "^26.6.5",
-      "effect": "4.0.4",
-      "jose": "^6.2.12",
-      "js-yaml": "4.3.2",
-      "tsrs": "0.20.1-ts7.1.0-beta",
-      "vitest": "5.0.3"
+      "@types/node": "^26.6.6",
+      "effect": "4.1.2",
+      "jose": "^6.2.15",
+      "js-yaml": "5.5.0",
+      "tsrs": "0.22.0-ts7.1.0-beta",
+      "vitest": "5.0.5"
     }
   },
   "type": "module",
@@ -43,32 +43,34 @@
     "typecheck:root": "tsrs -p tsconfig.infra.json"
   },
   "devDependencies": {
+    "@alchemy.run/cloudflare": "2.0.0-beta.85",
+    "@alchemy.run/github": "2.0.0-beta.85",
     "@commissary/billing": "workspace:*",
     "@commissary/core": "workspace:*",
     "@commissary/models": "workspace:*",
     "@commissary/tools": "workspace:*",
-    "@commitlint/cli": "21.2.3",
-    "@commitlint/config-conventional": "21.2.3",
-    "@distilled.cloud/cloudflare": "1.0.0-rc.15",
-    "@effect/platform-bun": "4.0.4",
-    "@effect/platform-node": "4.0.4",
-    "@effect/tsgo": "0.63.0",
+    "@commitlint/cli": "21.2.4",
+    "@commitlint/config-conventional": "21.2.4",
+    "@distilled.cloud/cloudflare": "1.0.0-rc.18",
+    "@effect/platform-bun": "4.1.2",
+    "@effect/platform-node": "4.1.2",
+    "@effect/tsgo": "0.67.4",
     "@maschwenk/tsrslint": "0.1.6",
-    "@oxlint/plugins": "1.87.0",
+    "@oxlint/plugins": "1.91.0",
     "@types/node": "catalog:",
-    "alchemy": "2.0.0-beta.83",
+    "alchemy": "2.0.0-beta.85",
     "effect": "catalog:",
     "husky": "9.1.7",
     "lint-staged": "17.6.0",
-    "oxfmt": "0.73.0",
-    "oxlint": "1.87.0",
+    "oxfmt": "0.76.0",
+    "oxlint": "1.91.0",
     "tsrs": "catalog:",
-    "turbo": "2.11.7"
+    "turbo": "2.11.10"
   },
   "overrides": {
-    "@effect/platform-node-shared": "4.0.4",
+    "@effect/platform-node-shared": "4.1.2",
     "just-bash": "3.2.0",
-    "xpath": "0.0.34"
+    "xpath": "0.0.35"
   },
   "lint-staged": {
     "*": "oxfmt --no-error-on-unmatched-pattern",
@@ -84,7 +86,7 @@
   },
   "packageManager": "bun@1.4.4",
   "patchedDependencies": {
-    "alchemy@2.0.0-beta.83": "patches/alchemy@2.0.0-beta.83.patch"
+    "@alchemy.run/cloudflare@2.0.0-beta.85": "patches/@alchemy.run%2Fcloudflare@2.0.0-beta.85.patch"
   },
   "trustedDependencies": [
     "esbuild",

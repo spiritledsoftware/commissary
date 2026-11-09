@@ -10,6 +10,7 @@ import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import { defineConfig } from "vitest/config";
 import { nodePackageTests } from "../../tools/vitest/node-package.ts";
 import { testWorkerOptions } from "../../tools/vitest/test-workers.ts";
+import { workerdTestOptions } from "../../tools/vitest/workerd.ts";
 
 const unit = nodePackageTests("tools-unit");
 
@@ -105,6 +106,8 @@ export default defineConfig({
         },
         test: {
           name: "tools",
+          // workerd's module fetches without Vitest's file-system cache (tools/vitest/workerd.ts).
+          ...workerdTestOptions,
           include: ["test/**/*.test.ts"],
           exclude: ["test/unit/**"],
           // The first test in each file pays for module transformation inside workerd; keep generous timeouts.
