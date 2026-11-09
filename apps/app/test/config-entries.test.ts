@@ -153,6 +153,20 @@ describe("config import", () => {
     expect(config["api-keys"].claude[0]?.keys[0]?.["api-key"]).toBe("sk-ant-legacy");
   });
 
+  it("keeps a document's write-ins as entries of their own", async () => {
+    const response = await json("/v9/management/settings/import", {
+      method: "POST",
+      headers: { "content-type": "application/yaml" },
+      body: "models:\n  write-ins:\n    Claude:\n      - { name: claude-fable-5-2, like: claude-fable-5-1 }\n",
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ status: "ok", not_applied: [] });
+    expect((await current()).models["write-ins"]).toEqual({
+      claude: [{ name: "claude-fable-5-2", like: "claude-fable-5-1" }],
+    });
+  });
+
   it("answers 422 with the position of a YAML error", async () => {
     const response = await json("/v9/management/settings/import", {
       method: "POST",
@@ -620,5 +634,40 @@ describe("model rules", () => {
     });
 
     expect(removed.status).toBe(404);
+  });
+
+  it("stores a provider's write-ins as normalised, shows them in the config and removes them", async () => {
+    const view = await routing();
+
+    const saved = await put("write-ins", " Claude ", view.revisions.write_ins.claude ?? 0, [
+      { name: " claude-fable-5-2 ", like: "claude-fable-5-1", "display-name": "Fable 5.2" },
+      { name: "CLAUDE-FABLE-5-2" },
+      { name: "claude-mystery-1", like: "claude-mystery-1" },
+    ]);
+
+    expect(saved.status).toBe(200);
+    const after = await routing();
+
+    expect(after.write_ins.claude).toEqual([
+      { name: "claude-fable-5-2", like: "claude-fable-5-1", "display-name": "Fable 5.2" },
+      { name: "claude-mystery-1" },
+    ]);
+    expect(after.revisions.write_ins.claude).toBe((saved.body as { revision: number }).revision);
+
+    expect((await current()).models["write-ins"]).toEqual({ claude: after.write_ins.claude });
+
+    const empty = await put("write-ins", "claude", after.revisions.write_ins.claude ?? 0, [
+      { name: "  " },
+    ]);
+
+    expect(empty.status).toBe(422);
+
+    const removed = await json("/v9/management/model-rules/write-ins/claude", {
+      method: "DELETE",
+      headers: { "if-match": String(after.revisions.write_ins.claude ?? 0) },
+    });
+
+    expect(removed.status).toBe(200);
+    expect((await routing()).write_ins).toEqual({});
   });
 });

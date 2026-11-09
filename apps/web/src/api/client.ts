@@ -533,6 +533,10 @@ export const saveRuleAtom = Atom.family((_key: string) =>
               return client.routing.putExclusions({ params, headers, payload: request.body });
             case "delete-excluded":
               return client.routing.deleteExclusions({ params, headers });
+            case "put-write-ins":
+              return client.routing.putWriteIns({ params, headers, payload: request.body });
+            case "delete-write-ins":
+              return client.routing.deleteWriteIns({ params, headers });
           }
         };
 

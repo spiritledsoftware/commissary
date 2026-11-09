@@ -1,11 +1,12 @@
 // The Models page's model: each model's standing over its routes, the order and filters of the list, where a model
-// comes from and why a route is off, the channel rules (aliases and exclusions) with their live match counts, and
+// comes from and why a route is off, the channel rules (aliases, exclusions and write-ins) with their live match counts, and
 // rule edits as deltas that are re-applied to the latest config when another edit landed first (409). Pure apart
 // from `saveRuleChange`, which runs a change against injected reads and writes; tested in test/models.test.ts.
-import { Effect } from "effect";
+import { Effect, type Types } from "effect";
 import { ManagementError } from "@commissary/contract/errors";
 import type {
   ModelRoute,
+  ModelWriteIn,
   OAuthModelAliasWire,
   RoutedModel,
   RouteState,
@@ -160,21 +161,31 @@ export const modelProviders = (model: RoutedModel): ReadonlyArray<string> => [
   ),
 ];
 
-/** Where the id comes from: "Alias of claude-opus-4-5", "Key config", "Prefix team/"; else "Catalog". */
+/**
+ * Where the id comes from: "Alias of claude-opus-4-5", "Key config", "Write-in", "Prefix team/"; else "Catalog".
+ */
 export const modelOrigins = (model: RoutedModel): ReadonlyArray<string> => {
   const aliases = new Set<string>();
   const prefixes = new Set<string>();
   let configured = false;
+  let writtenIn = false;
 
   for (const route of model.routes) {
     if (route.via === "alias") aliases.add(`Alias of ${route.upstream}`);
 
     if (route.via === "config") configured = true;
 
+    if (route.via === "write-in") writtenIn = true;
+
     if (route.prefix !== undefined) prefixes.add(`Prefix ${route.prefix}/`);
   }
 
-  const origins = [...aliases, ...(configured ? ["Key config"] : []), ...prefixes];
+  const origins = [
+    ...aliases,
+    ...(configured ? ["Key config"] : []),
+    ...(writtenIn ? ["Write-in"] : []),
+    ...prefixes,
+  ];
 
   return origins.length === 0 ? ["Catalog"] : origins;
 };
@@ -186,6 +197,8 @@ export const routeOrigin = (route: ModelRoute): string => {
       return `Alias of ${route.upstream}`;
     case "config":
       return "Key config";
+    case "write-in":
+      return "Write-in";
     case "catalog":
       return "Catalog";
   }
@@ -357,11 +370,43 @@ export interface ChannelRules {
   readonly accounts: number;
   readonly aliases: ReadonlyArray<OAuthModelAliasWire>;
   readonly excluded: ReadonlyArray<string>;
+  readonly writeIns: ReadonlyArray<ModelWriteIn>;
   /** Upstream names the channel's accounts offer (excluded ones included): the name suggestions and match targets. */
   readonly upstreams: ReadonlyArray<string>;
+  /**
+   * Upstream names the provider's catalog gives its credentials, accounts and provider keys alike: the `like`
+   * suggestions, and the names a write-in is no longer needed for.
+   */
+  readonly catalog: ReadonlyArray<string>;
+  /** Upstream names a write-in of the channel serves right now, on some account or provider key. */
+  readonly writtenIn: ReadonlyArray<string>;
+  /** Provider keys of the provider, which its write-ins reach though its other rules do not. */
+  readonly keys: number;
   /** No account uses the channel, so its rules change nothing. */
   readonly inert: boolean;
 }
+
+/**
+ * What a write-in does now: `serving` (some credential serves it), `listed` (the catalog lists the name, so the
+ * write-in changes nothing and can go), `idle` (no credential of the provider takes its models from the catalog).
+ */
+export const writeInState = (
+  rules: ChannelRules,
+  entry: ModelWriteIn,
+): "serving" | "listed" | "idle" => {
+  const name = lower(entry.name);
+
+  if (rules.catalog.some((upstream) => lower(upstream) === name)) return "listed";
+
+  return rules.writtenIn.some((upstream) => lower(upstream) === name) ? "serving" : "idle";
+};
+
+/** Adds `value` to the set `map` holds under `key`. */
+const addTo = (map: Map<string, Set<string>>, key: string, value: string): void => {
+  const names = map.get(key) ?? new Set<string>();
+  names.add(value);
+  map.set(key, names);
+};
 
 /** Every channel with accounts or rules (plus `extra`, channels the operator is adding), by name. */
 export const channelRules = (
@@ -370,13 +415,21 @@ export const channelRules = (
 ): ReadonlyArray<ChannelRules> => {
   const accounts = new Map(view.channels.map((entry) => [entry.channel, entry.accounts]));
   const upstreams = new Map<string, Set<string>>();
+  const catalog = new Map<string, Set<string>>();
+  const writtenIn = new Map<string, Set<string>>();
+  const keys = new Map<string, Set<string>>();
 
   for (const model of view.models) {
     for (const route of model.routes) {
-      if (route.channel === undefined) continue;
-      const names = upstreams.get(route.channel) ?? new Set<string>();
-      names.add(route.upstream);
-      upstreams.set(route.channel, names);
+      const provider = lower(route.provider);
+
+      if (route.channel !== undefined) addTo(upstreams, route.channel, route.upstream);
+
+      if (route.via === "catalog") addTo(catalog, provider, route.upstream);
+
+      if (route.via === "write-in") addTo(writtenIn, provider, route.upstream);
+
+      if (route.source === "config") addTo(keys, provider, route.auth_index);
     }
   }
 
@@ -384,8 +437,11 @@ export const channelRules = (
     ...accounts.keys(),
     ...Object.keys(view.aliases),
     ...Object.keys(view.excluded),
+    ...Object.keys(view.write_ins),
     ...extra,
   ]);
+
+  const sorted = (set: Set<string> | undefined) => [...(set ?? [])].toSorted(compareIds);
 
   return [...names].toSorted(compareIds).map((channel) => {
     const count = accounts.get(channel) ?? 0;
@@ -395,7 +451,11 @@ export const channelRules = (
       accounts: count,
       aliases: view.aliases[channel] ?? [],
       excluded: view.excluded[channel] ?? [],
-      upstreams: [...(upstreams.get(channel) ?? [])].toSorted(compareIds),
+      writeIns: view.write_ins[channel] ?? [],
+      upstreams: sorted(upstreams.get(channel)),
+      catalog: sorted(catalog.get(channel)),
+      writtenIn: sorted(writtenIn.get(channel)),
+      keys: keys.get(channel)?.size ?? 0,
       inert: count === 0,
     };
   });
@@ -506,6 +566,71 @@ export const aliasEntry = (
   };
 };
 
+export interface WriteInDraft {
+  readonly name: string;
+  readonly like: string;
+  readonly displayName: string;
+}
+
+export interface WriteInErrors {
+  readonly name?: string;
+  readonly like?: string;
+}
+
+export const hasWriteInErrors = (errors: WriteInErrors): boolean =>
+  errors.name !== undefined || errors.like !== undefined;
+
+/** The model id field's error: missing, with spaces, listed by the catalog already, or written in already. */
+const writeInNameError = (name: string, rules: ChannelRules): string | undefined => {
+  if (name === "") return "Enter the model's id, as the provider names it.";
+
+  if (/\s/.test(name)) return "A model id has no spaces.";
+
+  if (rules.catalog.some((upstream) => lower(upstream) === lower(name)))
+    return `The catalog lists ${name} already.`;
+
+  if (rules.writeIns.some((entry) => lower(entry.name) === lower(name)))
+    return `${name} is written in already.`;
+
+  return undefined;
+};
+
+/** The like field's error (optional field): with spaces, or the write-in itself. */
+const writeInLikeError = (like: string, name: string): string | undefined => {
+  if (/\s/.test(like)) return "A model id has no spaces.";
+
+  return like !== "" && lower(like) === lower(name)
+    ? "Choose a catalog model other than the write-in itself."
+    : undefined;
+};
+
+/** A draft against the channel's write-ins and catalog: a new name, without spaces, that the catalog lacks. */
+export const validateWriteIn = (draft: WriteInDraft, rules: ChannelRules): WriteInErrors => {
+  const name = draft.name.trim();
+  const nameError = writeInNameError(name, rules);
+  const likeError = writeInLikeError(draft.like.trim(), name);
+  const errors: Types.Mutable<WriteInErrors> = {};
+
+  if (nameError !== undefined) errors.name = nameError;
+
+  if (likeError !== undefined) errors.like = likeError;
+
+  return errors;
+};
+
+/** The entry a draft becomes. */
+export const writeInEntry = (draft: WriteInDraft): ModelWriteIn => {
+  const like = draft.like.trim();
+  const displayName = draft.displayName.trim();
+  const entry: Types.Mutable<ModelWriteIn> = { name: draft.name.trim() };
+
+  if (like !== "") entry.like = like;
+
+  if (displayName !== "") entry["display-name"] = displayName;
+
+  return entry;
+};
+
 export const validatePattern = (
   raw: string,
   existing: ReadonlyArray<string>,
@@ -545,6 +670,12 @@ export type RuleChange =
       readonly channel: string;
       readonly op: "add" | "remove";
       readonly pattern: string;
+    }
+  | {
+      readonly rule: "write-ins";
+      readonly channel: string;
+      readonly op: "add" | "remove";
+      readonly entry: ModelWriteIn;
     };
 
 /** The request a change becomes: the channel's whole list, or deleting it when the list ends up empty. */
@@ -560,7 +691,13 @@ export type RuleWrite =
       readonly channel: string;
       readonly body: ReadonlyArray<string>;
     }
-  | { readonly kind: "delete-excluded"; readonly channel: string };
+  | { readonly kind: "delete-excluded"; readonly channel: string }
+  | {
+      readonly kind: "put-write-ins";
+      readonly channel: string;
+      readonly body: ReadonlyArray<ModelWriteIn>;
+    }
+  | { readonly kind: "delete-write-ins"; readonly channel: string };
 
 /** `none`: the list already says what the change wants; `conflict`: the entry it touches changed meanwhile. */
 export type RulePlan =
@@ -587,12 +724,50 @@ const aliasPlan = (channel: string, list: ReadonlyArray<OAuthModelAliasWire>): R
       : { kind: "put-aliases", channel, body: list },
 });
 
+const sameWriteIn = (a: ModelWriteIn, b: ModelWriteIn): boolean =>
+  lower(a.name) === lower(b.name) &&
+  lower(a.like ?? "") === lower(b.like ?? "") &&
+  (a["display-name"] ?? "") === (b["display-name"] ?? "");
+
+/** A write-in edit: adding a name another edit wrote in differently, or removing one changed since, conflicts. */
+const writeInPlan = (
+  view: Pick<RoutingModels, "write_ins">,
+  channel: string,
+  op: "add" | "remove",
+  entry: ModelWriteIn,
+): RulePlan => {
+  const current = view.write_ins[channel] ?? [];
+  const index = current.findIndex((item) => lower(item.name) === lower(entry.name));
+  const found = current[index];
+
+  if (op === "add") {
+    if (found !== undefined) return sameWriteIn(found, entry) ? NONE : CONFLICT;
+
+    return { kind: "write", write: { kind: "put-write-ins", channel, body: [...current, entry] } };
+  }
+
+  if (found === undefined) return NONE;
+
+  if (!sameWriteIn(found, entry)) return CONFLICT;
+  const next = current.toSpliced(index, 1);
+
+  return {
+    kind: "write",
+    write:
+      next.length === 0
+        ? { kind: "delete-write-ins", channel }
+        : { kind: "put-write-ins", channel, body: next },
+  };
+};
+
 /** The write `change` needs against `view`'s rule maps (the page's own view, or a fresh one after a 409). */
 export const planRuleChange = (
-  view: Pick<RoutingModels, "aliases" | "excluded">,
+  view: Pick<RoutingModels, "aliases" | "excluded" | "write_ins">,
   change: RuleChange,
 ): RulePlan => {
   const { channel } = change;
+
+  if (change.rule === "write-ins") return writeInPlan(view, channel, change.op, change.entry);
 
   if (change.rule === "excluded") {
     const current = view.excluded[channel] ?? [];
@@ -659,11 +834,18 @@ export const planRuleChange = (
 };
 
 /** The revision of the channel entry a write replaces or removes (0: the channel has none): its `If-Match` value. */
-export const ruleRevision = (view: Pick<RoutingModels, "revisions">, write: RuleWrite): number => {
-  const aliases = write.kind === "put-aliases" || write.kind === "delete-aliases";
-
-  return (aliases ? view.revisions.aliases : view.revisions.exclusions)[write.channel] ?? 0;
+/** The `revisions` map of the entry kind each write replaces or removes. */
+const REVISIONS_OF: Readonly<Record<RuleWrite["kind"], keyof RoutingModels["revisions"]>> = {
+  "put-aliases": "aliases",
+  "delete-aliases": "aliases",
+  "put-excluded": "exclusions",
+  "delete-excluded": "exclusions",
+  "put-write-ins": "write_ins",
+  "delete-write-ins": "write_ins",
 };
+
+export const ruleRevision = (view: Pick<RoutingModels, "revisions">, write: RuleWrite): number =>
+  view.revisions[REVISIONS_OF[write.kind]][write.channel] ?? 0;
 
 /** How `saveRuleChange` reads the latest rules and sends one write (`revision`: the `If-Match` value). */
 export interface RuleIo<E, R> {
@@ -693,7 +875,7 @@ export const saveRuleChange = <E, R>(
 
     if (plan.kind === "conflict") return Effect.fail(conflict());
 
-    const deleting = plan.write.kind === "delete-aliases" || plan.write.kind === "delete-excluded";
+    const deleting = plan.write.kind.startsWith("delete-");
 
     return io.write(plan.write, ruleRevision(view, plan.write)).pipe(
       Effect.as("saved" as const),

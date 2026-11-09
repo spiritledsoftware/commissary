@@ -13,6 +13,7 @@ import type {
   ProviderKeyGroup,
   Config,
   ModelEntry,
+  ModelWriteIn,
   OAuthModelAlias,
   OAuthModelSetting,
   OpenAICompatGroup,
@@ -417,6 +418,42 @@ const normalizeExcludedMap = (input: Readonly<Record<string, readonly string[]>>
   return out;
 };
 
+/**
+ * `models.write-ins` (Workers addition): provider keys trimmed and lower-cased, names and `like` trimmed, blank names
+ * dropped, the first write-in of a name kept (case-insensitive), and a `like` that names the write-in itself dropped.
+ */
+const normalizeWriteIns = (input: Readonly<Record<string, readonly ModelWriteIn[]>>) => {
+  const out: Record<string, ModelWriteIn[]> = {};
+
+  for (const [provider, entries] of Object.entries(input)) {
+    const key = lowerKey(provider);
+
+    if (key === "") continue;
+    const seen = new Set<string>();
+    const clean: ModelWriteIn[] = [];
+
+    for (const entry of entries) {
+      const name = entry.name.trim();
+
+      if (name === "" || seen.has(name.toLowerCase())) continue;
+      seen.add(name.toLowerCase());
+      const like = trimmedOrUndefined(entry.like);
+
+      clean.push(
+        compact<ModelWriteIn>({
+          name,
+          like: like?.toLowerCase() === name.toLowerCase() ? undefined : like,
+          "display-name": trimmedOrUndefined(entry["display-name"]),
+        }),
+      );
+    }
+
+    if (clean.length > 0) Object.defineProperty(out, key, { value: clean, enumerable: true });
+  }
+
+  return out;
+};
+
 const normalizeScopedErrorMap = (
   input: Readonly<Record<string, readonly RequestScopedErrorRule[]>>,
 ) => {
@@ -460,6 +497,7 @@ export const normalizeConfig = (config: Config): Config => {
 
   return {
     ...config,
+    models: { ...config.models, "write-ins": normalizeWriteIns(config.models["write-ins"]) },
     access: {
       "api-keys": config.access["api-keys"].map((key) => key.trim()).filter((key) => key !== ""),
       "admin-emails": config.access["admin-emails"]

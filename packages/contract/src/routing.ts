@@ -1,12 +1,12 @@
 /**
  * `GET /v9/management/routing/models` (`packages/models/src/management/routing-models.ts`,
  * `packages/models/src/registry/routing-view.ts`) and the channel rule edits of the Models page (`PUT|DELETE
- * /model-rules/aliases/:channel`, `/model-rules/exclusions/:channel`, served by
+ * /model-rules/aliases/:channel`, `/model-rules/exclusions/:channel`, `/model-rules/write-ins/:channel`, served by
  * `packages/models/src/management/model-rules-routes.ts`). Shared with the browser: imports `effect` only.
  *
  * `routing/models` answers, per client-visible model id, every credential that could serve it and why it does or does
  * not right now. It is built from a fresh (uncached) registry snapshot, so an edit shows on the next read. The same
- * body carries the two rule maps and their `revisions`: each channel's aliases and exclusions are a config entry
+ * body carries the three rule maps and their `revisions`: each channel's aliases, exclusions and write-ins are a config entry
  * (ADR 0025), and a rule edit sends the entry's revision back as `If-Match` (0 for a channel without rules). The write
  * is refused with 409 `conflict` when that entry changed since (lists are replaced whole, so a stale view would
  * otherwise lose another tab's edit); edits of other channels never conflict. The new revision comes back in
@@ -15,7 +15,8 @@
  * Concepts. A *channel* is the credential's provider key as stored (lower-case auth-file `type`, e.g. `claude`,
  * `kimi.com`): the key of `oauth.model-alias` and `oauth.excluded-models`; provider keys and OpenAI-compatible groups have
  * none. A *route* is one credential's way to one model id. `upstream` is the name the provider sees (the id before
- * aliasing and prefixing).
+ * aliasing and prefixing). A *write-in* (`models.write-ins`, keyed like a channel) adds a model the catalog does not
+ * list yet to every credential of the provider whose models come from the catalog, accounts and provider keys alike.
  */
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
@@ -41,8 +42,11 @@ export const RouteState = Schema.Literals([
 
 export type RouteState = typeof RouteState.Type;
 
-/** Where a model comes from: the provider catalog, the credential's configured `models` list, or an alias rule. */
-export const RouteOrigin = Schema.Literals(["catalog", "config", "alias"]);
+/**
+ * Where a model comes from: the provider catalog, the credential's configured `models` list, an alias rule, or a
+ * write-in (a model the org added to the provider's catalog until the catalog lists it).
+ */
+export const RouteOrigin = Schema.Literals(["catalog", "config", "alias", "write-in"]);
 
 export type RouteOrigin = typeof RouteOrigin.Type;
 
@@ -109,6 +113,23 @@ export const OAuthModelAliasWire = Schema.Struct({
 
 export type OAuthModelAliasWire = typeof OAuthModelAliasWire.Type;
 
+/**
+ * One `models.write-ins` entry: a model the org adds to a provider's catalog until the catalog lists it (then the
+ * catalog's record wins and the write-in has no effect).
+ */
+export const ModelWriteIn = Schema.Struct({
+  /** The model id the provider receives, and clients call. */
+  name: Schema.String,
+  /**
+   * A catalog model of the same provider whose limits, modalities, thinking settings and price the write-in takes.
+   * Without it the model is user-defined: thinking settings pass through unchecked, and it has no catalog price.
+   */
+  like: optional(Schema.String),
+  "display-name": optional(Schema.String),
+});
+
+export type ModelWriteIn = typeof ModelWriteIn.Type;
+
 export const RoutingChannel = Schema.Struct({
   channel: Schema.String,
   /** Credentials (enabled or not) using the channel. */
@@ -120,7 +141,7 @@ export const RoutingModels = Schema.Struct({
   /** Config version (the org's change counter) this view was built from. */
   config_version: Schema.Number,
   /** Revision of each channel's rules by channel (absent: 0); send it as `If-Match` on that channel's rule edits. */
-  revisions: Schema.Struct({ aliases: Revisions, exclusions: Revisions }),
+  revisions: Schema.Struct({ aliases: Revisions, exclusions: Revisions, write_ins: Revisions }),
   /** `routing.force-model-prefix`: prefixed credentials serve only `<prefix>/<model>`. */
   force_model_prefix: Schema.Boolean,
   /** Channels with at least one credential, by name. */
@@ -129,6 +150,8 @@ export const RoutingModels = Schema.Struct({
   aliases: Schema.Record(Schema.String, Schema.Array(OAuthModelAliasWire)),
   /** `oauth.excluded-models`: channel to patterns (`*` wildcards, matched on the upstream name). */
   excluded: Schema.Record(Schema.String, Schema.Array(Schema.String)),
+  /** `models.write-ins`: provider key to the models written in for it. */
+  write_ins: Schema.Record(Schema.String, Schema.Array(ModelWriteIn)),
   /** Every model any credential could serve, sorted by id. */
   models: Schema.Array(RoutedModel),
 });
@@ -170,6 +193,21 @@ export class RoutingGroup extends HttpApiGroup.make("routing").add(
   }),
   /** Remove one channel's exclusion patterns (404 when it has none). */
   HttpApiEndpoint.delete("deleteExclusions", "/model-rules/exclusions/:channel", {
+    ...channelParam,
+    ...IfMatch,
+    success: EntrySaved,
+    error: managementErrors,
+  }),
+  /** Replace one provider's write-ins. */
+  HttpApiEndpoint.put("putWriteIns", "/model-rules/write-ins/:channel", {
+    ...channelParam,
+    ...IfMatch,
+    payload: Schema.Array(ModelWriteIn),
+    success: EntrySaved,
+    error: managementErrors,
+  }),
+  /** Remove one provider's write-ins (404 when it has none). */
+  HttpApiEndpoint.delete("deleteWriteIns", "/model-rules/write-ins/:channel", {
     ...channelParam,
     ...IfMatch,
     success: EntrySaved,

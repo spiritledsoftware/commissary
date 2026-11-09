@@ -262,6 +262,54 @@ describe("price overrides and unpriced models", () => {
   });
 });
 
+describe("write-ins", () => {
+  const writeIns = {
+    claude: [
+      { name: "claude-sonnet-9", like: "claude-sonnet-4-5" },
+      { name: "claude-unchecked" },
+      { name: "claude-chained", like: "claude-sonnet-9" },
+    ],
+  };
+
+  const withWriteIns = (overrides: ReadonlyArray<PriceOverride> = []) => ({
+    ...sources(overrides),
+    writeIns,
+  });
+
+  it("prices a write-in the catalog lacks as the model it is like, for its provider only", () => {
+    const price = findPrice(withWriteIns(), "claude", "Claude-Sonnet-9");
+
+    expect(price).toEqual(findPrice(sources(), "claude", "claude-sonnet-4-5"));
+    expect(findPrice(withWriteIns(), "codex", "claude-sonnet-9")).toBeUndefined();
+  });
+
+  it("lets an override of the write-in win, and takes the like's override when it has none", () => {
+    const own: PriceOverride = {
+      id: "p",
+      provider: "claude",
+      model: "claude-sonnet-9",
+      input: 7,
+      output: 7,
+    };
+
+    const like: PriceOverride = {
+      id: "q",
+      provider: "claude",
+      model: "claude-sonnet-4-5",
+      input: 5,
+      output: 5,
+    };
+
+    expect(findPrice(withWriteIns([own, like]), "claude", "claude-sonnet-9")?.input).toBe(7);
+    expect(findPrice(withWriteIns([like]), "claude", "claude-sonnet-9")?.input).toBe(5);
+  });
+
+  it("leaves a write-in without a like, or like another write-in, unpriced", () => {
+    expect(findPrice(withWriteIns(), "claude", "claude-unchecked")).toBeUndefined();
+    expect(findPrice(withWriteIns(), "claude", "claude-chained")).toBeUndefined();
+  });
+});
+
 describe("the bundled catalog", () => {
   it("prices a Claude, OpenAI and Gemini model through the provider mapping", () => {
     const docs = [embeddedModelsDev()];

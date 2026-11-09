@@ -11,7 +11,7 @@ import {
 } from "../src/registry/credential-models.ts";
 import { embeddedCatalogs, sectionModels } from "../src/registry/catalog.ts";
 import type { ModelInfo } from "../src/registry/model-info.ts";
-import { ids, options, source } from "./support/registry-sources.ts";
+import { ids, NOW_SECONDS, options, source } from "./support/registry-sources.ts";
 
 const model = (id: string, extra: Partial<ModelInfo> = {}): ModelInfo => ({
   id,
@@ -23,6 +23,9 @@ const model = (id: string, extra: Partial<ModelInfo> = {}): ModelInfo => ({
 });
 
 const catalogs = embeddedCatalogs();
+
+const find = (models: ReadonlyArray<ModelInfo> | undefined, id: string) =>
+  models?.find((entry) => entry.id === id);
 
 describe("applyOAuthModelAliasEntries", () => {
   it("renames and rewrites the Gemini-style name and display name", () => {
@@ -434,6 +437,124 @@ describe("assembleCredentialModels: provider keys", () => {
         options(),
       ),
     ).toBeUndefined();
+  });
+});
+
+describe("assembleCredentialModels: write-ins", () => {
+  const WRITE_INS = `
+models:
+  write-ins:
+    claude:
+      - { name: claude-fable-5-2, like: claude-fable-5-1, display-name: Claude Fable 5.2 }
+      - { name: claude-mystery-1 }
+      - { name: Claude-Fable-5-1, like: claude-sonnet-4-6 }
+    codex:
+      - { name: gpt-7, like: gpt-5.5 }
+`;
+
+  const claudeCatalog = ids(sectionModels(catalogs, "claude"));
+
+  it("adds the provider's write-ins the catalog does not list after the catalog's models", () => {
+    const assembled = assembleCredentialModels(source("a", "claude"), options(WRITE_INS));
+
+    // Claude-Fable-5-1 is in the catalog already: the catalog's record stays, nothing is added.
+    expect(ids(assembled?.models)).toEqual([
+      ...claudeCatalog,
+      "claude-fable-5-2",
+      "claude-mystery-1",
+    ]);
+    expect(find(assembled?.models, "claude-fable-5-1")?.writeIn).toBeUndefined();
+  });
+
+  it("a write-in like a catalog model takes that model's record under its own id and name", () => {
+    const assembled = assembleCredentialModels(source("a", "claude"), options(WRITE_INS));
+    const like = find(sectionModels(catalogs, "claude"), "claude-fable-5-1");
+    const written = find(assembled?.models, "claude-fable-5-2");
+
+    expect(like?.thinking).toBeDefined();
+    expect(written).toMatchObject({
+      id: "claude-fable-5-2",
+      displayName: "Claude Fable 5.2",
+      ownedBy: like?.ownedBy,
+      type: like?.type,
+      created: NOW_SECONDS,
+      writeIn: true,
+    });
+    expect(written?.thinking).toEqual(like?.thinking);
+    expect(written?.contextLength).toBe(like?.contextLength);
+    expect(written?.metadataModelId).toBeUndefined();
+    expect(written?.userDefined).toBeUndefined();
+  });
+
+  it("a write-in without a like is user-defined, owned and typed like the provider's models", () => {
+    const assembled = assembleCredentialModels(source("a", "claude"), options(WRITE_INS));
+
+    expect(find(assembled?.models, "claude-mystery-1")).toEqual({
+      id: "claude-mystery-1",
+      object: "model",
+      created: NOW_SECONDS,
+      ownedBy: "anthropic",
+      type: "claude",
+      displayName: "claude-mystery-1",
+      userDefined: true,
+      writeIn: true,
+    });
+  });
+
+  it("reaches provider keys that take the catalog, not those with their own models", () => {
+    const catalogKey = assembleCredentialModels(
+      source("k", "claude", { authKind: "apikey", source: "config" }),
+      options(WRITE_INS),
+    );
+
+    const listedKey = assembleCredentialModels(
+      source("k", "claude", {
+        authKind: "apikey",
+        source: "config",
+        models: [{ name: "claude-sonnet-4-6" }],
+      }),
+      options(WRITE_INS),
+    );
+
+    expect(ids(catalogKey?.models)).toContain("claude-fable-5-2");
+    expect(ids(listedKey?.models)).toEqual(["claude-sonnet-4-6"]);
+  });
+
+  it("stays with its provider, and on Codex resolves the like in the account's plan", () => {
+    const codex = assembleCredentialModels(
+      source("c", "codex", { planType: "free" }),
+      options(WRITE_INS),
+    );
+
+    expect(ids(codex?.models)).toEqual([...ids(sectionModels(catalogs, "codex-free")), "gpt-7"]);
+    expect(find(codex?.models, "gpt-7")?.thinking).toEqual(
+      find(sectionModels(catalogs, "codex-free"), "gpt-5.5")?.thinking,
+    );
+    expect(ids(assembleCredentialModels(source("g", "xai"), options(WRITE_INS))?.models)).toEqual(
+      ids(sectionModels(catalogs, "xai")),
+    );
+  });
+
+  it("exclusions, aliases and prefixes apply to write-ins like to catalog models", () => {
+    const yaml = `${WRITE_INS}
+oauth:
+  model-alias:
+    claude:
+      - { name: claude-fable-5-2, alias: fable }
+`;
+
+    // The channel's exclusions reach a credential as its own when it is derived (credentials/derive.ts).
+    const assembled = assembleCredentialModels(
+      source("a", "claude", { prefix: "team", excludedModels: ["claude-mystery-*"] }),
+      options(yaml),
+    );
+
+    const listed = ids(assembled?.models);
+
+    expect(listed).not.toContain("claude-mystery-1");
+    expect(listed).not.toContain("claude-fable-5-2");
+    expect(listed).toEqual(expect.arrayContaining(["fable", "team/fable"]));
+    expect(find(assembled?.models, "team/fable")?.metadataModelId).toBe("claude-fable-5-2");
   });
 });
 

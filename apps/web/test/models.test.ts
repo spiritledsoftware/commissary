@@ -23,6 +23,7 @@ import {
   routeProvenance,
   routeStanding,
   routeWho,
+  ruleRevision,
   type RuleWrite,
   saveRuleChange,
   sortModels,
@@ -31,6 +32,9 @@ import {
   validateAlias,
   validateChannel,
   validatePattern,
+  validateWriteIn,
+  writeInEntry,
+  writeInState,
 } from "../src/lib/models.ts";
 
 const NOW = Date.parse("2026-10-11T12:00:00Z");
@@ -65,11 +69,12 @@ const model = (
 const view = (overrides: Partial<RoutingModels> = {}): RoutingModels => ({
   observed_at: new Date(NOW).toISOString(),
   config_version: 5,
-  revisions: { aliases: { claude: 5 }, exclusions: { claude: 2 } },
+  revisions: { aliases: { claude: 5 }, exclusions: { claude: 2 }, write_ins: { claude: 3 } },
   force_model_prefix: false,
   channels: [{ channel: "claude", accounts: 2 }],
   aliases: {},
   excluded: {},
+  write_ins: {},
   models: [],
   ...overrides,
 });
@@ -197,6 +202,8 @@ describe("search, providers, origins", () => {
   it("says where the id comes from", () => {
     expect(modelOrigins(opus)).toEqual(["Alias of claude-opus-4-5", "Key config", "Prefix team/"]);
     expect(modelOrigins(model("m", [route()]))).toEqual(["Catalog"]);
+    expect(modelOrigins(model("m", [route({ via: "write-in" })]))).toEqual(["Write-in"]);
+    expect(routeOrigin(route({ via: "write-in" }))).toBe("Write-in");
   });
 
   it("says each route's origin in the same words, and the provider's name where the id differs", () => {
@@ -290,6 +297,40 @@ describe("channel rules", () => {
     expect(rules[2]?.excluded).toEqual(["gemini-1*"]);
   });
 
+  it("knows the provider's catalog and write-ins on accounts and keys, and what each write-in does now", () => {
+    const written = view({
+      channels: [],
+      write_ins: {
+        claude: [
+          { name: "claude-fable-5-2", like: "claude-opus-4-5" },
+          { name: "claude-opus-4-5" },
+          { name: "claude-later" },
+        ],
+      },
+      models: [
+        model("claude-opus-4-5", [{ ...keyRoute, upstream: "claude-opus-4-5" }]),
+        model("claude-fable-5-2", [{ ...keyRoute, upstream: "claude-fable-5-2", via: "write-in" }]),
+      ],
+    });
+
+    const [claude] = channelRules(written);
+
+    expect(claude).toMatchObject({
+      channel: "claude",
+      accounts: 0,
+      keys: 1,
+      inert: true,
+      upstreams: [],
+      catalog: ["claude-opus-4-5"],
+      writtenIn: ["claude-fable-5-2"],
+    });
+    expect(claude?.writeIns.map((entry) => (claude ? writeInState(claude, entry) : ""))).toEqual([
+      "serving",
+      "listed",
+      "idle",
+    ]);
+  });
+
   it("matches patterns like the server: * wildcards, case-insensitive, otherwise literal", () => {
     expect(patternMatches("claude-3*", "Claude-3-7-Sonnet")).toBe(true);
     expect(patternMatches("*-sonnet", "claude-3-7-sonnet")).toBe(true);
@@ -347,11 +388,77 @@ describe("drafts", () => {
     });
   });
 
+  it("validates a write-in: an id without spaces the catalog and the write-ins lack, a like other than itself", () => {
+    const [rules] = channelRules(
+      view({
+        write_ins: { claude: [{ name: "claude-fable-5-2" }] },
+        models: [model("claude-opus-4-5", [route()])],
+      }),
+    );
+
+    if (rules === undefined) throw new Error("no channel");
+
+    const draft = (name: string, like = "") =>
+      validateWriteIn({ name, like, displayName: "" }, rules);
+
+    expect(draft(" ").name).toMatch(/Enter the model's id/);
+    expect(draft("claude fable").name).toMatch(/no spaces/);
+    expect(draft("Claude-Opus-4-5").name).toBe("The catalog lists Claude-Opus-4-5 already.");
+    expect(draft("CLAUDE-FABLE-5-2").name).toMatch(/written in already/);
+    expect(draft("claude-new", "Claude-New").like).toMatch(/other than the write-in/);
+    expect(draft("claude-new", "claude-opus-4-5")).toEqual({});
+    expect(writeInEntry({ name: " claude-new ", like: " ", displayName: " New " })).toEqual({
+      name: "claude-new",
+      "display-name": "New",
+    });
+  });
+
   it("validates an exclusion pattern", () => {
     expect(validatePattern(" ", [])).toMatch(/Enter a model name/);
     expect(validatePattern("claude 3", [])).toMatch(/no spaces/);
     expect(validatePattern("Claude-3*", ["claude-3*"])).toMatch(/already excluded/);
     expect(validatePattern("claude-3*", [])).toBeUndefined();
+  });
+});
+
+describe("planRuleChange: write-ins", () => {
+  const fable = { name: "claude-fable-5-2", like: "claude-fable-5-1" };
+  const other = { name: "claude-other" };
+  const base = view({ write_ins: { claude: [fable] } });
+
+  it("adds and removes a write-in in the provider's whole list, at the write-ins revision", () => {
+    const added = planRuleChange(base, {
+      rule: "write-ins",
+      channel: "claude",
+      op: "add",
+      entry: other,
+    });
+
+    expect(added).toEqual({
+      kind: "write",
+      write: { kind: "put-write-ins", channel: "claude", body: [fable, other] },
+    });
+    expect(added.kind === "write" ? ruleRevision(base, added.write) : undefined).toBe(3);
+    expect(
+      planRuleChange(base, { rule: "write-ins", channel: "claude", op: "remove", entry: fable }),
+    ).toEqual({ kind: "write", write: { kind: "delete-write-ins", channel: "claude" } });
+  });
+
+  it("is nothing to do when done already, and a conflict when the same name was written in differently", () => {
+    const change = { rule: "write-ins", channel: "claude" } as const;
+
+    expect(planRuleChange(base, { ...change, op: "add", entry: { ...fable } })).toEqual({
+      kind: "none",
+    });
+    expect(planRuleChange(base, { ...change, op: "remove", entry: other })).toEqual({
+      kind: "none",
+    });
+    expect(
+      planRuleChange(base, { ...change, op: "add", entry: { name: "Claude-Fable-5-2" } }),
+    ).toEqual({ kind: "conflict" });
+    expect(
+      planRuleChange(base, { ...change, op: "remove", entry: { name: "claude-fable-5-2" } }),
+    ).toEqual({ kind: "conflict" });
   });
 });
 
@@ -566,7 +673,7 @@ describe("saveRuleChange", () => {
 
         const fake = server(
           view({
-            revisions: { aliases: { claude: 9 }, exclusions: {} },
+            revisions: { aliases: { claude: 9 }, exclusions: {}, write_ins: {} },
             aliases: { claude: [opus, other] },
           }),
         );
@@ -587,7 +694,7 @@ describe("saveRuleChange", () => {
 
         const fake = server(
           view({
-            revisions: { aliases: { claude: 9 }, exclusions: {} },
+            revisions: { aliases: { claude: 9 }, exclusions: {}, write_ins: {} },
             aliases: { claude: [{ ...sonnet, fork: true }] },
           }),
         );
@@ -605,7 +712,7 @@ describe("saveRuleChange", () => {
 
       const fake = server(
         view({
-          revisions: { aliases: { claude: 9 }, exclusions: {} },
+          revisions: { aliases: { claude: 9 }, exclusions: {}, write_ins: {} },
           aliases: { claude: [opus] },
         }),
         true,

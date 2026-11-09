@@ -57,6 +57,8 @@ export interface ModelInfo {
   /** Defined through config `models[]`: thinking is applied without validation (runtime only). */
   readonly userDefined?: boolean;
   readonly isCompat?: boolean;
+  /** Added by the org's `models.write-ins` rather than listed by the catalog (runtime only, Workers addition). */
+  readonly writeIn?: boolean;
 }
 
 /** Deep copy (registry records are shared between registrations, so derived records are always copies). */

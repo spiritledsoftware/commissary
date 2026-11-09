@@ -177,6 +177,15 @@ const aliasScope = (
   return has(context.snapshot.config.oauth["model-alias"][channel] ?? []) ? "channel" : undefined;
 };
 
+/** Where a route's id comes from: the key's configured list, an alias rule, a write-in, else the catalog. */
+const originOf = (configured: boolean, aliased: boolean, model: ModelInfo): ModelRoute["via"] => {
+  if (configured) return "config";
+
+  if (aliased) return "alias";
+
+  return model.writeIn === true ? "write-in" : "catalog";
+};
+
 const routesOf = (context: Context, source: ModelSource, now: number) => {
   const { options } = context;
   const served = assembleCredentialModels(source, options)?.models ?? [];
@@ -204,8 +213,7 @@ const routesOf = (context: Context, source: ModelSource, now: number) => {
 
     const prefixed = prefix !== "" && model.id.startsWith(`${prefix}/`);
     const bare = prefixed ? model.id.slice(prefix.length + 1) : model.id;
-    const aliased = lower(bare) !== lower(upstream);
-    const via: ModelRoute["via"] = configured ? "config" : aliased ? "alias" : "catalog";
+    const via = originOf(configured, lower(bare) !== lower(upstream), model);
     let current: Runtime;
     let ruleScope: RuleScope | undefined;
 
@@ -342,6 +350,12 @@ export const routingView = (
       Object.entries(config.oauth["excluded-models"]).map(([channel, list]) => [
         channel,
         [...list],
+      ]),
+    ),
+    write_ins: Object.fromEntries(
+      Object.entries(config.models["write-ins"]).map(([provider, list]) => [
+        provider,
+        list.map((entry) => ({ ...entry })),
       ]),
     ),
     models,

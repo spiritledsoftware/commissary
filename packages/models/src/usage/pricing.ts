@@ -11,7 +11,8 @@
  * names the models.dev providers whose prices apply (`PRICE_PROVIDERS`). A provider the table does not list (Devin,
  * an OpenAI-compatible gateway) has no catalog price: its models need a price override. Models models.dev does not
  * list (the System One models of TypeSafe, SubQ and OpenCode Zen, ADR 0032) take the `cost` of their catalog addition
- * record under the same provider key; that record wins over models.dev should it list the model later.
+ * record under the same provider key; that record wins over models.dev should it list the model later. A model the org
+ * wrote in (`models.write-ins`) with neither price takes the price of the model it is `like`, override first.
  *
  * Kinds of token and their rates: uncached input, cache reads, cache writes, output (reasoning tokens are output and
  * take the output rate unless the price names a reasoning rate). A price without a cache rate charges those tokens at
@@ -21,6 +22,7 @@
  *
  * Pure: nothing here reads a binding.
  */
+import type { ModelWriteIn } from "@commissary/contract/routing";
 import { additionRecord, type CatalogAdditions } from "../registry/catalog-additions.ts";
 import type {
   ModelsDevCatalog,
@@ -240,9 +242,27 @@ export interface PriceSources {
   readonly overrides: ReadonlyArray<PriceOverride>;
   /** The bundled catalog additions: prices of models models.dev does not list. */
   readonly additions?: CatalogAdditions;
+  /** The org's write-ins by provider key (`models.write-ins`): a write-in without a price of its own is priced as its `like`. */
+  readonly writeIns?: Readonly<Record<string, ReadonlyArray<ModelWriteIn>>>;
 }
 
-/** The price of `model` under `provider`: the org's override, else the catalog's; `undefined` when neither has one. */
+/** The `like` of the write-in `model` under `provider`, when it names one. */
+const writeInLike = (
+  sources: PriceSources,
+  provider: string,
+  model: string,
+): string | undefined => {
+  const writeIns = sources.writeIns ?? {};
+  const entries = Object.hasOwn(writeIns, provider) ? writeIns[provider] : undefined;
+  const like = entries?.find((entry) => normal(entry.name) === model)?.like?.trim();
+
+  return like === undefined || like === "" || normal(like) === model ? undefined : like;
+};
+
+/**
+ * The price of `model` under `provider`: the org's override, else the catalog's, else (for a write-in) the price of the
+ * model it is like; `undefined` when none has one.
+ */
 export const findPrice = (
   sources: PriceSources,
   provider: string,
@@ -259,9 +279,14 @@ export const findPrice = (
       (entry) => normal(entry.provider) === key && normal(entry.model) === withoutDate(id),
     );
 
-  return override === undefined
-    ? catalogPrice(sources.docs, provider, model, sources.additions)
-    : priceOfOverride(override);
+  if (override !== undefined) return priceOfOverride(override);
+  const listed = catalogPrice(sources.docs, provider, model, sources.additions);
+
+  if (listed !== undefined) return listed;
+  const like = writeInLike(sources, key, id);
+
+  // One step only: the `like` is a catalog model, never another write-in's.
+  return like === undefined ? undefined : findPrice({ ...sources, writeIns: {} }, provider, like);
 };
 
 /** The rates that apply to an attempt whose input is `inputTokens` long. */

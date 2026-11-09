@@ -114,6 +114,7 @@ oauth:
     ]);
     expect(result.aliases).toEqual({ claude: [{ name: "claude-sonnet-4-6", alias: "s46" }] });
     expect(result.excluded).toEqual({ codex: ["gpt-5*"] });
+    expect(result.write_ins).toEqual({});
   });
 });
 
@@ -398,6 +399,55 @@ describe("routingView prefixes and configured models", () => {
     expect(model(result, "mine")?.routes[0]).toMatchObject({
       via: "config",
       upstream: "claude-sonnet-4-6",
+    });
+  });
+});
+
+describe("routingView write-ins", () => {
+  const WRITE_IN = `
+models:
+  write-ins:
+    claude:
+      - { name: claude-fable-5-2, like: claude-fable-5-1 }
+`;
+
+  it("a write-in is a route of every catalog credential of the provider, and the map is echoed", () => {
+    const result = view(
+      [
+        source("a.json", "claude"),
+        source("claude:key", "claude", { source: "config", authKind: "apikey" }),
+      ],
+      WRITE_IN,
+    );
+
+    const written = model(result, "claude-fable-5-2");
+
+    expect(written?.listed).toBe(true);
+    expect(written?.routes.map((route) => [route.source, route.via, route.upstream])).toEqual([
+      ["file", "write-in", "claude-fable-5-2"],
+      ["config", "write-in", "claude-fable-5-2"],
+    ]);
+    expect(model(result, "claude-fable-5-1")?.routes[0]?.via).toBe("catalog");
+    expect(result.write_ins).toEqual({
+      claude: [{ name: "claude-fable-5-2", like: "claude-fable-5-1" }],
+    });
+  });
+
+  it("an alias of a write-in is an alias route", () => {
+    const result = view(
+      [source("a.json", "claude")],
+      `${WRITE_IN}
+oauth:
+  model-alias:
+    claude:
+      - { name: claude-fable-5-2, alias: fable }
+`,
+    );
+
+    expect(model(result, "claude-fable-5-2")).toBeUndefined();
+    expect(model(result, "fable")?.routes[0]).toMatchObject({
+      via: "alias",
+      upstream: "claude-fable-5-2",
     });
   });
 });

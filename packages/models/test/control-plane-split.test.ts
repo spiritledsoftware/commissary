@@ -22,6 +22,7 @@ const MODELS_TABLES = [
   "config_key_groups",
   "config_model_aliases",
   "config_model_exclusions",
+  "config_model_write_ins",
   "config_payload_rules",
   "config_price_overrides",
   "config_provider_keys",

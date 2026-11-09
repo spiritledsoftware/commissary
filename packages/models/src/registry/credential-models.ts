@@ -9,13 +9,15 @@
  *
  * Differences: plugin models are not supported; Antigravity uses the static catalog (the account-specific
  * `fetchAvailableModels` list belongs to the Antigravity slice); config entries are already attached to the
- * credential (`ModelSource.models`), so Go's config-entry lookup by index/key is not needed.
+ * credential (`ModelSource.models`), so Go's config-entry lookup by index/key is not needed. Workers addition: the
+ * org's write-ins (`models.write-ins`) join every list that comes from the catalog, before exclusions.
  */
 import type { Types } from "effect";
 import {
   type Config,
   isOpenCodeProtocol,
   type ModelEntry,
+  type ModelWriteIn,
   type OAuthModelAlias,
   type OAuthModelSetting,
   type ThinkingSupport as ConfigThinking,
@@ -54,7 +56,7 @@ import { type GrantFilter, grantsReach } from "./grant-filter.ts";
 import type { ModelSource } from "./source.ts";
 
 export interface AssemblyOptions {
-  readonly config: Pick<Config, "oauth" | "routing" | "upstream">;
+  readonly config: Pick<Config, "models" | "oauth" | "routing" | "upstream">;
   readonly catalogs: ModelCatalogs;
   /** Unix seconds used as `created` of config-defined models (Go uses `time.Now().Unix()`). */
   readonly nowSeconds: number;
@@ -464,6 +466,107 @@ const buildSystemOneConfigModels = (
   });
 };
 
+// --- write-ins -----------------------------------------------------------------------------------------------------
+
+/** The org's write-ins for `provider` (a provider key as stored, lower-case). */
+export const writeInsFor = (
+  config: Pick<Config, "models">,
+  provider: string,
+): ReadonlyArray<ModelWriteIn> => {
+  const map = config.models["write-ins"];
+
+  return Object.hasOwn(map, provider) ? (map[provider] ?? []) : [];
+};
+
+/**
+ * One write-in's record. With a `like` the catalog knows (the credential's own list first, then the provider's
+ * catalog), it is a copy of that model's record under the write-in's id: limits, modalities and thinking settings are
+ * checked as for the model it is like. Without one it is user-defined (thinking passes through unchecked, like a
+ * configured model), owned and typed like the provider's other models.
+ */
+const writeInModel = (
+  entry: ModelWriteIn,
+  catalog: ReadonlyArray<ModelInfo>,
+  provider: string,
+  options: AssemblyOptions,
+): ModelInfo => {
+  const likeId = (entry.like ?? "").trim();
+
+  const like =
+    likeId === ""
+      ? undefined
+      : (catalog.find((model) => model.id.toLowerCase() === likeId.toLowerCase()) ??
+        lookupStaticModelInfoByChannel(options.catalogs, likeId, provider));
+
+  const displayName = entry["display-name"] ?? entry.name;
+
+  if (like !== undefined) {
+    const out: Types.Mutable<ModelInfo> = cloneModelInfo(like);
+    out.id = entry.name;
+    delete out.metadataModelId;
+    // The like's description is about the like.
+    delete out.description;
+    out.displayName = displayName;
+    out.created = options.nowSeconds;
+    out.writeIn = true;
+
+    if (out.name !== undefined && out.name !== "")
+      out.name = rewriteName(out.name, like.id, entry.name);
+
+    return out;
+  }
+
+  const template = catalog[0];
+
+  const out: Types.Mutable<ModelInfo> = {
+    id: entry.name,
+    object: "model",
+    created: options.nowSeconds,
+    ownedBy: template?.ownedBy || provider,
+    type: template?.type || provider,
+    displayName,
+    userDefined: true,
+    writeIn: true,
+  };
+
+  const name = template?.name ?? "";
+
+  if (name !== "" && template !== undefined) {
+    const rewritten = rewriteName(name, template.id, entry.name);
+
+    if (rewritten !== name) out.name = rewritten;
+  }
+
+  return out;
+};
+
+/**
+ * `catalog` (a credential's models from the catalog) with the org's write-ins for `provider` that it does not list
+ * (Workers addition, no Go counterpart). A write-in the catalog lists is skipped: the catalog's record wins, so a
+ * write-in stops mattering once the catalog catches up.
+ */
+export const withWriteIns = (
+  catalog: ReadonlyArray<ModelInfo>,
+  provider: string,
+  options: AssemblyOptions,
+): ModelInfo[] => {
+  const entries = writeInsFor(options.config, provider);
+
+  if (entries.length === 0) return [...catalog];
+  const known = new Set(catalog.map((model) => model.id.trim().toLowerCase()));
+  const out = [...catalog];
+
+  for (const entry of entries) {
+    const key = entry.name.trim().toLowerCase();
+
+    if (key === "" || known.has(key)) continue;
+    known.add(key);
+    out.push(writeInModel(entry, catalog, provider, options));
+  }
+
+  return out;
+};
+
 // --- filters and rewrites ------------------------------------------------------------------------------------------
 
 /** `applyExcludedModels`: case-insensitive wildcard patterns against the lower-cased id. */
@@ -718,12 +821,16 @@ const CODEX_TIERS = new Map<string, Section>([
   ["free", "codex-free"],
 ]);
 
-/** Base list of a non-compat credential, before aliases/settings/prefix; `undefined` = unsupported provider. */
+/**
+ * Base list of a non-compat credential, before aliases/settings/prefix; `undefined` = unsupported provider. A list
+ * that comes from the catalog takes the org's write-ins for the provider too; a configured `models` list does not.
+ */
 const baseModels = (source: ModelSource, options: AssemblyOptions): ModelInfo[] | undefined => {
   const { catalogs } = options;
   const provider = source.provider.trim().toLowerCase();
   const configured = source.models ?? [];
   const excluded = source.excludedModels;
+  const catalog = (models: ReadonlyArray<ModelInfo>) => withWriteIns(models, provider, options);
 
   switch (provider) {
     case "gemini":
@@ -731,57 +838,64 @@ const baseModels = (source: ModelSource, options: AssemblyOptions): ModelInfo[] 
       return applyExcludedModels(
         configured.length > 0
           ? buildConfigModels(configured, "google", "gemini", "gemini", options)
-          : sectionModels(catalogs, "gemini"),
+          : catalog(sectionModels(catalogs, "gemini")),
         excluded,
       );
     case "vertex":
       return applyExcludedModels(
         configured.length > 0
           ? buildConfigModels(configured, "google", "vertex", "vertex", options)
-          : sectionModels(catalogs, "vertex"),
+          : catalog(sectionModels(catalogs, "vertex")),
         excluded,
       );
     case "aistudio":
-      return applyExcludedModels(sectionModels(catalogs, "aistudio"), excluded);
+      return applyExcludedModels(catalog(sectionModels(catalogs, "aistudio")), excluded);
     case "antigravity":
       return applyExcludedModels(
-        applyAntigravityHints(sectionModels(catalogs, "antigravity"), source.antigravityHints),
+        catalog(
+          applyAntigravityHints(sectionModels(catalogs, "antigravity"), source.antigravityHints),
+        ),
         excluded,
       );
     case "claude":
       return applyExcludedModels(
         configured.length > 0
           ? buildConfigModels(configured, "anthropic", "claude", "claude", options)
-          : sectionModels(catalogs, "claude"),
+          : catalog(sectionModels(catalogs, "claude")),
         excluded,
       );
     case "codex": {
-      if (source.authKind === "apikey")
-        return applyExcludedModels(buildCodexConfigModels(configured, options), excluded);
+      if (source.authKind === "apikey") {
+        // Without configured models a Codex key serves the Pro plan's catalog.
+        const models = buildCodexConfigModels(configured, options);
+
+        return applyExcludedModels(configured.length > 0 ? models : catalog(models), excluded);
+      }
+
       const tier = CODEX_TIERS.get((source.planType ?? "").toLowerCase()) ?? "codex-pro";
 
-      return applyExcludedModels(sectionModels(catalogs, tier), excluded);
+      return applyExcludedModels(catalog(sectionModels(catalogs, tier)), excluded);
     }
 
     case "kimi":
     case "kimi-ai":
     case "kimi.ai":
     case "kimi.com":
-      return applyExcludedModels(sectionModels(catalogs, "kimi"), excluded);
+      return applyExcludedModels(catalog(sectionModels(catalogs, "kimi")), excluded);
     case "xai":
       return applyExcludedModels(
         configured.length > 0
           ? buildConfigModels(configured, "xai", "xai", "xai", options)
-          : sectionModels(catalogs, "xai"),
+          : catalog(sectionModels(catalogs, "xai")),
         excluded,
       );
     case "devin":
-      return applyExcludedModels(sectionModels(catalogs, "devin"), excluded);
+      return applyExcludedModels(catalog(sectionModels(catalogs, "devin")), excluded);
     case "meta":
       return applyExcludedModels(
         configured.length > 0
           ? buildConfigModels(configured, "meta", "meta", "meta", options)
-          : sectionModels(catalogs, "meta"),
+          : catalog(sectionModels(catalogs, "meta")),
         excluded,
       );
     case TYPESAFE:
@@ -789,7 +903,7 @@ const baseModels = (source: ModelSource, options: AssemblyOptions): ModelInfo[] 
       return applyExcludedModels(
         configured.length > 0
           ? buildSystemOneConfigModels(configured, provider, options)
-          : sectionModels(catalogs, provider),
+          : catalog(sectionModels(catalogs, provider)),
         excluded,
       );
     case OPENCODE_ZEN:
@@ -797,15 +911,17 @@ const baseModels = (source: ModelSource, options: AssemblyOptions): ModelInfo[] 
       return applyExcludedModels(
         configured.length > 0
           ? buildOpenCodeConfigModels(configured, provider, options)
-          : defaultCatalogModels(
-              catalogs.modelsDev,
-              provider,
-              openCodeSystemOneModels(catalogs, provider),
-              openCodeCloakMode({
+          : catalog(
+              defaultCatalogModels(
+                catalogs.modelsDev,
                 provider,
-                disabled: options.config.upstream.opencode["disable-cloaking"],
-                mode: source.cloakMode,
-              }) !== "never",
+                openCodeSystemOneModels(catalogs, provider),
+                openCodeCloakMode({
+                  provider,
+                  disabled: options.config.upstream.opencode["disable-cloaking"],
+                  mode: source.cloakMode,
+                }) !== "never",
+              ),
             ),
         excluded,
       );

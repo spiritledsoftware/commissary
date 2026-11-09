@@ -407,7 +407,8 @@ client -> (Cloudflare Access bypass on a single host) -> API Worker
 - **Storage** (ADR 0025): the `ControlPlane` DO's Models part (`models/control-plane-part.ts`) keeps the org's configuration as
   config entries in SQLite (`ConfigStore`, `models/config/store.ts`; the pure mapping between a `Config` and its rows is
   `models/config/entries.ts`). Every setting (by dotted path, e.g. `routing.strategy`), every provider key group, every provider key
-  (its id is its credential id), every channel's model aliases, every channel's model exclusions and every payload rule
+  (its id is its credential id), every channel's model aliases, every channel's model exclusions, every provider's model
+  write-ins and every payload rule
   is a row of its own with a `revision`, `updated_at` and `updated_by`. One change counter per org (`config_changes`)
   moves on every write and is the config `version`; each entry a write changes takes the counter's new value as its
   revision. A missing entry has revision 0, and so has a setting at its default, which is not stored. Since the counter
@@ -979,6 +980,20 @@ evaluated per isolate and cached for 5 s (`ModelRegistry.snapshot`, `RegistrySna
   tier, config `models:`), exclusions, OAuth aliases (`fork`, display names, per-credential first), `oauth.settings`
   context length, prefixes (`force-model-prefix`). OpenAI-compatibility models keep duplicate aliases (model pools) and skip
   exclusions/aliases like Go.
+- **Write-ins** (`models.write-ins`, `withWriteIns` in `credential-models.ts`; Workers addition, no Go counterpart): an
+  org's stop-gap for a model the catalog does not list yet (one released today), per provider key as stored (`claude`,
+  `codex`, `kimi.com`, ...): `[{name, like?, display-name?}]`. Every credential of that provider whose base list comes
+  from the catalog serves them: accounts, and provider keys without a `models:` list (a key with one keeps exactly its
+  list); OpenAI-compatible endpoints have their own lists. They join the base list after the catalog's models and before
+  exclusions, so exclusions, aliases, `oauth.settings` and prefixes treat them as catalog models. A write-in whose name
+  the credential's catalog list already has (case-insensitive) is skipped: the catalog's record wins, like a catalog
+  addition under models.dev (ADR 0020), so a write-in stops mattering once the catalog catches up. With `like` (a model
+  of the credential's list, else of the provider's catalog) the record is a copy of that model's under the write-in's
+  id: context length, output limit, modalities and thinking settings are checked as for it. Without one, or with a
+  `like` the catalog does not know, it is user-defined (`userDefined`: thinking settings pass through unchecked, as for
+  a configured model), owned and typed like the provider's first catalog model. Records carry `writeIn` (runtime only),
+  the routing view's `via: "write-in"`. The normaliser trims names, drops blank ones, keeps the first of a name and drops
+  a `like` naming the write-in itself.
 - **Grants in the registry** (ADR 0023, `grant-filter.ts`): the snapshot knows every model (routing and the pick enforce
   grants themselves); `RegistrySnapshot.visibleTo(memberId)` is the registry as one caller may use it. It builds a snapshot
   of its own from the same sources under the member's `Reach`: `assembleCredentialModels` drops the models of a shared
@@ -1011,11 +1026,11 @@ evaluated per isolate and cached for 5 s (`ModelRegistry.snapshot`, `RegistrySna
   stale fallback: failures answer 502), so an edit shows on the next read (other isolates follow within the config and
   snapshot TTLs). `routingView(snapshot, now)` assembles every credential twice (`assembleCredentialModels`: as registered,
   and enabled without exclusions); each model of the second list is a route (`auth_index`, `upstream` = `metadataModelId`,
-  `via` catalog/config/alias, `prefix`). State: `disabled` (credential off), `excluded` (missing from the registered list;
+  `via` catalog/config/alias/write-in, `prefix`). State: `disabled` (credential off), `excluded` (missing from the registered list;
   `reason` = first matching pattern, `rule_scope` channel/account/key), else read from the credential state like
   `projectModel` (`quota` / `cooling` with `until`, `unavailable`, `available`). `listed` and `providers` come from the
   index, so they equal `/v1/models`; a model whose only routes are cooling is unlisted but still shown. The body also carries
-  `oauth.model-alias`, `oauth.excluded-models`, `force_model_prefix`, per-channel account counts, `config_version` and `revisions` (the revision of each
+  `oauth.model-alias`, `oauth.excluded-models`, `models.write-ins` (`write_ins`), `force_model_prefix`, per-channel account counts, `config_version` and `revisions` (the revision of each
   channel's rules by channel, the `If-Match` value of rule edits, see _Config entries_ below). Contract: `@commissary/contract/routing`.
 - Fixtures: `go run ./tools/fixturegen/registry` drives the real Go handlers (`OpenAIModels`, `ClaudeModels`,
   `GeminiModels`, `GeminiGetHandler`, `WriteModelListResponse` detail mode) against a real `registry.ModelRegistry` and records
@@ -1396,13 +1411,15 @@ management key is not ported, and the port's per-org management keys (_Managemen
     itself tell a right guess from a wrong one. So a refused write reads the same whether a typed value, key or alias
     name equals a stored secret or not.
   - Model rules (`model-rules-routes.ts`, contract `routing.ts`; Workers addition, Go's panel writes `oauth-model-alias` and
-    `oauth-excluded-models` through `/config` paths): `PUT|DELETE /model-rules/aliases/:channel` and
-    `/model-rules/exclusions/:channel` replace or remove one channel's whole list, which is one entry. The request names the
+    `oauth-excluded-models` through `/config` paths and has no write-ins): `PUT|DELETE /model-rules/aliases/:channel`,
+    `/model-rules/exclusions/:channel` and `/model-rules/write-ins/:channel` (`models.write-ins`, table
+    `config_model_write_ins`) replace or remove one channel's whole list, which is one entry. The request names the
     revision it was based on in `If-Match` (`12`, `"12"` or `W/"12"`; `0` for a channel without rules): a missing or
     malformed header is `400 invalid_if_match`, a channel changed since `409 conflict`, a `DELETE` of a channel without
     rules `404 not_found`, and a list of which the normaliser would keep nothing `422 invalid_config`. The channel is the
     config's key, trimmed and lower-cased. The answer is `{status, version, revision}` with the channel's new revision (`0`
-    after a delete). `GET /routing/models` carries `revisions: {aliases: {channel: rev}, exclusions: {channel: rev}}` (read
+    after a delete). `GET /routing/models` carries `revisions: {aliases: {channel: rev}, exclusions: {channel: rev},
+    write_ins: {channel: rev}}` (read
     first, so a write landing in between makes the edit answer `409` instead of overwriting a change the view did not show).
   - Price overrides (`price-routes.ts`, contract `prices.ts`; Workers addition): an org's price for a provider and model,
     one entry each, see _Usage accounting and observability_ (Cost). They are not part of the config document, so
@@ -1624,9 +1641,11 @@ management key is not ported, and the port's per-org management keys (_Managemen
   cooldowns with clear; a catalog line under the title ("Catalog refreshed 2 h ago · from models.dev", "shipped copy" while
   nothing is stored, the host of a custom address) with a **Refresh catalog** button that calls `POST /models/catalog/refresh` and says the outcome inline
   (models added/removed, already up to date, the failure reason, "already running"); the button is off, with the reason, while
-  the source is Embedded copy or Off; `/models/rules` edits the channel rules `oauth-model-alias` and `oauth-excluded-models`, one
-  section per channel with a live count of the models a pattern matches; reads `GET /routing/models` and writes one
-  channel's list with `PUT`/`DELETE /model-rules/aliases|exclusions/:channel` carrying the channel's revision from the
+  the source is Embedded copy or Off; `/models/rules` (Model rules) edits the channel rules `oauth-model-alias`,
+  `oauth-excluded-models` and `models.write-ins`, one section per channel with a live count of the models a pattern
+  matches, and under each write-in whether the catalog lists it now (it can go) or no credential takes the provider's
+  catalog; the write-in form suggests the provider's catalog models for `like`; reads `GET /routing/models` and writes one
+  channel's list with `PUT`/`DELETE /model-rules/aliases|exclusions|write-ins/:channel` carrying the channel's revision from the
   view's `revisions` as `If-Match`; on `409` the edit is planned again once on a fresh read, and a second refusal or a
   changed entry offers a reload); Settings (`/settings`: the settings that apply on Workers in sections, Routing,
   Retries & cooldowns, Requests & streaming, Payload rules, Images & video, Providers, Model catalog (one source field), Admin access,
@@ -1882,7 +1901,9 @@ once; a 401 retry keeps the rejected attempt's failed record, a failed-over cred
   without a trailing `-YYYYMMDD`). `PRICE_PROVIDERS` maps a provider key to the models.dev providers whose prices
   apply (`claude` → `anthropic`, `codex` → `openai`, `gemini`/`gemini-interactions` → `google`, `vertex` →
   `google-vertex`+`google`, `antigravity` → `google`+`anthropic`, `xai`, `meta`, `opencode-zen` → `opencode`,
-  `opencode-go`); subscription accounts cost the same as provider keys (API-equivalent). Devin, Kimi (models.dev lists only
+  `opencode-go`); subscription accounts cost the same as provider keys (API-equivalent). A write-in with neither price
+  takes the price of its `like` (override first, then catalog; one step, never another write-in's), so Spend limits
+  count it; one without a `like` is unpriced until an override names it. Devin, Kimi (models.dev lists only
   its zero-priced subscription plan) and OpenAI-compatible endpoints have no catalog price: their models are unpriced
   until an override names them. Rates are US dollars per million tokens
   and one token at $1 per million is one micro-dollar, so the cost is the sum of tokens × rate rounded once; a missing

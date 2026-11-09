@@ -32,6 +32,7 @@ import {
   DisableImageGeneration,
   RoutingStrategy,
 } from "@commissary/contract/settings";
+import { ModelWriteIn } from "@commissary/contract/routing";
 
 // --- field helpers -------------------------------------------------------------------------------------------------
 
@@ -92,6 +93,9 @@ export const OAuthModelSetting = Schema.Struct({
 });
 
 export type OAuthModelSetting = typeof OAuthModelSetting.Type;
+
+// `models.write-ins` entries are shared with the Models page's rules (@commissary/contract/routing).
+export { ModelWriteIn };
 
 // --- sections ------------------------------------------------------------------------------------------------------
 
@@ -262,6 +266,13 @@ export const Config = Schema.Struct({
     "codex-catalog": text(),
     /** No effect (accepted so existing documents import unchanged): Devin models are catalog additions. */
     "devin-catalog": text(),
+    /**
+     * Provider key -> models the org adds to that provider's catalog until the catalog lists them (Workers addition,
+     * `registry/credential-models.ts`): every credential of the provider whose models come from the catalog serves them.
+     */
+    "write-ins": Schema.Record(Schema.String, Schema.Array(ModelWriteIn)).pipe(
+      Schema.withDecodingDefaultKey(Effect.succeed({})),
+    ),
   }),
   access: section({
     /** Legacy client API keys (migration only; Cloudflare Access is the real authentication). */
