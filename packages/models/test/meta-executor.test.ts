@@ -1,7 +1,7 @@
 // Meta (Muse) executor against a mocked `/responses` upstream: request shaping, SSE aggregation, error rules and
 // credential resolution.
 import { claudeSignature } from "./support/signatures.ts";
-import { Effect } from "effect";
+import { Clock, Effect, Stream } from "effect";
 import { describe, expect, it } from "vitest";
 import { metaCreds, requireMetaToken } from "../src/executor/meta/credentials.ts";
 import {
@@ -231,8 +231,25 @@ describe("Meta executor", () => {
     const call = h.calls[0];
     expect(call?.url).toBe("https://meta.test/v1/responses");
     expect(call?.headers["authorization"]).toBe("Bearer meta-key-1");
-    expect(call?.headers["user-agent"]).toContain("muse-build/1.3.0");
-    expect(call?.headers["x-client-id"]).toBe("tbh:tui");
+    expect(call?.headers["user-agent"]).toMatch(
+      /^muse-build\/1\.4\.14 \(non-interactive; [a-z]+-[a-z0-9_]+; build dec7d7497fecdad135ec5835a8161dbc92e55b58\)$/,
+    );
+    expect(call?.headers["x-client-id"]).toBe("tbh:exec");
+    const sessionId = call?.headers["x-tbh-session-id"] ?? "";
+    expect(sessionId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+
+    for (const name of [
+      "x-meta-ai-gateway-session-id",
+      "x-tbh-thread-id",
+      "x-tbh-root-session-id",
+    ]) {
+      expect(call?.headers[name]).toBe(sessionId);
+    }
+
+    expect(call?.headers["x-tbh-agent-role"]).toBe("main");
+    expect(call?.headers).not.toHaveProperty("x-tbh-contributor-mode");
     expect(call?.headers["accept"]).toBe("text/event-stream");
     expect(call?.headers["cache-control"]).toBe("no-cache");
 
@@ -253,7 +270,11 @@ describe("Meta executor", () => {
     }
 
     expect(body["instructions"]).toBe("");
-    expect(body["tools"]).toEqual([{ type: "web_search" }]);
+    expect(body["tools"]).toMatchObject([
+      { type: "web_search" },
+      { type: "namespace", name: "muse" },
+    ]);
+    expect((body["tools"] as Item[])[0]).toEqual({ type: "web_search" });
     // Foreign reasoning blobs are replayed; recognisable other-provider signatures are dropped.
     const reasoning = body.input.filter((item) => item["type"] === "reasoning");
     expect(reasoning.some((item) => item["encrypted_content"] === "opaque-muse-state")).toBe(true);
@@ -493,6 +514,368 @@ describe("Meta executor", () => {
       response: { usage: { input_tokens: 1, output_tokens: 0, total_tokens: 1 } },
     });
     expect(h.calls).toHaveLength(0);
+  });
+});
+
+const ping = { type: "response.subscription_usage", subscription: { tier: "1234567890123456" } };
+
+describe("subscription usage telemetry", () => {
+  const upstream = () =>
+    new Response(
+      [
+        `event: response.subscription_usage\ndata: ${JSON.stringify(ping)}\n\n`,
+        `event: response.created\ndata: ${JSON.stringify({ type: "response.created", response: { id: "r" } })}\n\n`,
+        `data: ${JSON.stringify({ subscription: { tier: "1234567890123456" } })}\n\n`,
+        `event: response.subscription_usage\ndata: ${JSON.stringify(ping)}\n\n`,
+        `event: response.completed\ndata: ${JSON.stringify(completed([message("hello")]))}\n\n`,
+        `event: response.subscription_usage\ndata: ${JSON.stringify(ping)}\n\n`,
+      ].join(""),
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    );
+
+  it("drops subscription_usage frames (event and bare data) from streams", async () => {
+    const h = await harness(metaKey(), upstream, undefined, true);
+
+    const collected = await collectStream(
+      executor,
+      h,
+      { model: "muse-spark", payload: json(responsesRequest()) },
+      responsesOptions(true),
+    );
+
+    const joined = collected.chunks.join("");
+    expect(collected.error).toBeUndefined();
+    expect(joined).not.toContain("subscription");
+    expect(joined).not.toContain("1234567890123456");
+    expect(joined).toContain("response.created");
+    expect(joined).toContain("hello");
+  });
+
+  it("drops the event line held for an error frame, as Go emits it only after the error check", async () => {
+    const h = await harness(
+      metaKey(),
+      () =>
+        new Response(
+          `event: response.created\n${`data: ${JSON.stringify({ type: "response.created", response: { id: "r" } })}`}\n\n` +
+            `event: error\ndata: ${JSON.stringify({ type: "error", error: { code: 502, message: "boom" } })}\n\n`,
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        ),
+      undefined,
+      true,
+    );
+
+    const collected = await collectStream(
+      executor,
+      h,
+      { model: "muse-spark", payload: json(responsesRequest()) },
+      responsesOptions(true),
+    );
+
+    expect(collected.error?.status).toBe(502);
+    expect(collected.chunks.join("")).toContain("response.created");
+    expect(collected.chunks.join("")).not.toContain("event: error");
+  });
+
+  it("drops them from the aggregated non-stream answer", async () => {
+    const h = await harness(metaKey(), upstream);
+
+    const response = await execute(
+      executor,
+      h,
+      { model: "muse-spark", payload: json(responsesRequest()) },
+      responsesOptions(),
+    );
+
+    expect(response.payload).not.toContain("subscription");
+    expect(response.payload).toContain("hello");
+  });
+});
+
+/** A mocked upstream whose frames arrive at virtual times; the executor reads the same virtual clock. */
+interface Frame {
+  readonly at: number;
+  readonly text?: string;
+  readonly fail?: boolean;
+}
+
+describe("TTFT (Go meta_executor_ttft_test.go, virtual clock)", () => {
+  const created = { type: "response.created", response: { id: "r", model: "muse-spark-1.3" } };
+  const frame = (event: Json) => `data: ${JSON.stringify(event)}\n\n`;
+  const telemetry = { ...ping, model: "subscription-telemetry" };
+
+  const metadata =
+    `event: response.subscription_usage\n${frame(telemetry)}` +
+    frame(created) +
+    frame({
+      type: "response.output_item.added",
+      item: { type: "reasoning", encrypted_content: "opaque", summary: [] },
+    }) +
+    frame({ type: "response.output_text.delta", delta: "" });
+
+  const text = frame({ type: "response.output_text.delta", output_index: 0, delta: "hello" });
+
+  const terminal = completed([message("hello")], { model: "muse-spark-1.3" });
+  const done = `data: ${JSON.stringify(terminal)}\n\n`;
+
+  const emptyTerminal = (type: string) =>
+    frame({
+      type,
+      response: { id: "r", status: "completed", output: [], usage: { input_tokens: 0 } },
+    });
+
+  /** What the last streamed run delivered to the client. */
+  let output = "";
+
+  const run = async (
+    frames: ReadonlyArray<Frame>,
+    options: { nonstream?: boolean; status?: number } = {},
+  ) => {
+    let now = 0;
+    const base = Clock.Clock.defaultValue();
+
+    const clock: Clock.Clock = Object.assign(Object.create(base) as Clock.Clock, {
+      currentTimeMillis: Effect.sync(() => now),
+      currentTimeMillisUnsafe: () => now,
+    });
+
+    const h = await harness(
+      metaKey(),
+      () => {
+        // Headers arrive at 10ms; every frame is delivered at its own time, one pull at a time.
+        now = 10;
+        const queue = [...frames];
+
+        const body = new ReadableStream<Uint8Array>(
+          {
+            pull(controller) {
+              const next = queue.shift();
+
+              if (next === undefined) return controller.close();
+              now = next.at;
+
+              if (next.fail === true) return controller.error(new Error("boom"));
+              controller.enqueue(new TextEncoder().encode(next.text ?? ""));
+            },
+          },
+          { highWaterMark: 0 },
+        );
+
+        return new Response(body, {
+          status: options.status ?? 200,
+          headers: { "content-type": "text/event-stream" },
+        });
+      },
+      undefined,
+      options.nonstream !== true,
+    );
+
+    const program = Effect.gen(function* () {
+      const request = { model: "muse-spark", payload: json(responsesRequest()) };
+
+      if (options.nonstream === true) {
+        yield* executor.execute(h.context, request, responsesOptions(false));
+      } else {
+        const result = yield* executor.executeStream(h.context, request, responsesOptions(true));
+        output = (yield* Stream.runCollect(result.chunks)).join("");
+      }
+    }).pipe(Effect.exit, Effect.provideService(Clock.Clock, clock), Effect.provide(h.layers));
+
+    await Effect.runPromise(program);
+
+    return h.usage.finish(now);
+  };
+
+  const content = (event: string): ReadonlyArray<Frame> => [
+    { at: 100, text: metadata },
+    { at: 1000, text: event },
+    { at: 1100, text: done },
+  ];
+
+  it.each([
+    ["text", text, "hello"],
+    [
+      "reasoning summary",
+      frame({ type: "response.reasoning_summary_text.delta", summary_index: 0, delta: "thinking" }),
+      "thinking",
+    ],
+    [
+      "function arguments",
+      frame({ type: "response.function_call_arguments.delta", delta: '{"query":"hi"}' }),
+      "query",
+    ],
+    [
+      "done-only reasoning summary",
+      frame({
+        type: "response.output_item.done",
+        output_index: 0,
+        item: { type: "reasoning", summary: [{ type: "summary_text", text: "done-only-summary" }] },
+      }),
+      "done-only-summary",
+    ],
+    [
+      "done-only reasoning content",
+      frame({
+        type: "response.output_item.done",
+        output_index: 0,
+        item: {
+          type: "reasoning",
+          content: [{ type: "reasoning_text", text: "done-only-content" }],
+        },
+      }),
+      "done-only-content",
+    ],
+  ])("takes the first effective token frame (%s)", async (_name, event, delivered) => {
+    expect((await run(content(event)))?.ttftMs).toBe(1000);
+    // The client gets the content, and never the subscription telemetry interleaved with it.
+    expect(output).toContain(delivered);
+    expect(output).not.toContain("subscription");
+  });
+
+  it.each([
+    ["empty reasoning done", { type: "reasoning", summary: [{ type: "summary_text", text: "" }] }],
+    ["encrypted-only reasoning done", { type: "reasoning", summary: [], encrypted_content: "x" }],
+  ])("does not take %s as a token; the terminal event does", async (_name, item) => {
+    const event = frame({ type: "response.output_item.done", output_index: 0, item });
+    expect((await run(content(event)))?.ttftMs).toBe(1100);
+  });
+
+  it("takes a terminal event that arrives without any delta", async () => {
+    const record = await run([
+      { at: 100, text: metadata },
+      { at: 1000, text: done },
+    ]);
+
+    expect(record?.ttftMs).toBe(1000);
+  });
+
+  it.each(["response.completed", "response.incomplete"])(
+    "takes an empty %s as the first effective frame",
+    async (type) => {
+      const record = await run([
+        { at: 100, text: metadata },
+        { at: 1000, text: emptyTerminal(type) },
+      ]);
+
+      expect(record?.ttftMs).toBe(1000);
+    },
+  );
+
+  it.each([
+    [
+      "response.failed",
+      frame({ type: "response.failed", response: { error: { message: "upstream failed" } } }),
+    ],
+    ["error", frame({ type: "error", error: { code: 502, message: "upstream failed" } })],
+  ])("takes a %s event as the first frame and fails the attempt", async (_name, event) => {
+    const record = await run([
+      { at: 100, text: metadata },
+      { at: 1000, text: event },
+    ]);
+
+    expect(record?.ttftMs).toBe(1000);
+    expect(record?.failed).toBe(true);
+  });
+
+  it("keeps the first-packet fallback when the body fails before any token", async () => {
+    const record = await run([
+      { at: 100, text: metadata },
+      { at: 1000, fail: true },
+    ]);
+
+    // Go times the first body byte (100ms); the port records the response headers (10ms), as the Codex executor does.
+    expect(record?.ttftMs).toBe(10);
+    expect(record?.failed).toBe(true);
+  });
+
+  it("keeps the fallback for an HTTP error", async () => {
+    const record = await run([{ at: 100, text: '{"error":{"message":"rate limited"}}' }], {
+      status: 429,
+    });
+
+    expect(record?.ttftMs).toBe(10);
+    expect(record?.failed).toBe(true);
+  });
+
+  it("times a non-stream call at the response headers (Go: first body byte)", async () => {
+    const record = await run(content(text), { nonstream: true });
+    expect(record?.ttftMs).toBe(10);
+  });
+
+  it("does not take the response model from subscription telemetry", async () => {
+    const record = await run(content(text));
+    // Only the Responses events set it (created and completed), never the telemetry's `model`.
+    expect(record?.responseModel).toBe("muse-spark-1.3");
+  });
+});
+
+describe("contributor header and muse namespace", () => {
+  const send = async (model: string, extra: Record<string, unknown> = {}, yaml?: string) => {
+    const h = await harness(metaKey(), () => sse([completed([message("x")])]), yaml);
+
+    await execute(
+      executor,
+      h,
+      { model, payload: json(responsesRequest({ model, ...extra })) },
+      responsesOptions(),
+    );
+
+    return h.calls[0];
+  };
+
+  it("sends X-Tbh-Contributor-Mode only for -contributor models", async () => {
+    expect((await send("muse-spark"))?.headers["x-tbh-contributor-mode"]).toBeUndefined();
+    expect((await send("muse-spark-contributor"))?.headers["x-tbh-contributor-mode"]).toBe("1");
+    expect((await send("Muse-Spark-Contributor(high)"))?.headers["x-tbh-contributor-mode"]).toBe(
+      "1",
+    );
+  });
+
+  it("decides on the effective model after payload rules", async () => {
+    const yaml = `payload:\n  override:\n    - models: [{ name: "muse*", protocol: meta }]\n      params:\n        model: muse-spark-contributor\n`;
+    expect((await send("muse-spark", {}, yaml))?.headers["x-tbh-contributor-mode"]).toBe("1");
+  });
+
+  it("appends the canonical muse namespace to tool-bearing requests only", async () => {
+    const fn = { type: "function", name: "lookup", parameters: { type: "object" } };
+    const call = await send("muse-spark", { tools: [fn] });
+    const tools = (JSON.parse(call?.text ?? "{}") as { tools: Item[] }).tools;
+    expect(tools).toHaveLength(2);
+    expect(tools[0]).toMatchObject({ type: "function", name: "lookup" });
+
+    expect(tools[1]).toMatchObject({
+      type: "namespace",
+      name: "muse",
+      description: "Muse Code tool set.",
+      tools: [{ type: "function", name: "submit_reminder_decision", strict: true }],
+    });
+
+    const none = JSON.parse((await send("muse-spark"))?.text ?? "{}") as Record<string, unknown>;
+    expect(none).not.toHaveProperty("tools");
+
+    const empty = JSON.parse((await send("muse-spark", { tools: [] }))?.text ?? "{}") as {
+      tools?: unknown[];
+    };
+
+    expect(empty.tools ?? []).toEqual([]);
+  });
+
+  it("keeps a caller's muse namespace and lets payload rules stay final", async () => {
+    const own = { type: "namespace", name: "muse", tools: [] };
+
+    const kept = JSON.parse((await send("muse-spark", { tools: [own] }))?.text ?? "{}") as {
+      tools: Item[];
+    };
+
+    expect(kept.tools).toEqual([own]);
+
+    const yaml = `payload:\n  override:\n    - models: [{ name: "muse*", protocol: meta }]\n      params:\n        tools: []\n`;
+    const fn = { type: "function", name: "lookup", parameters: { type: "object" } };
+
+    const ruled = JSON.parse((await send("muse-spark", { tools: [fn] }, yaml))?.text ?? "{}") as {
+      tools: Item[];
+    };
+
+    expect(ruled.tools).toEqual([]);
   });
 });
 

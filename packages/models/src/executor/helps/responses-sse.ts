@@ -27,6 +27,7 @@ import {
   type TranslatorRegistry,
 } from "@commissary/translation";
 import { responseModelOf } from "../../usage/record.ts";
+import { isResponsesTokenEvent } from "../../usage/ttft.ts";
 import {
   ensureResponsesUsageDetails,
   OutputItemCollector,
@@ -65,7 +66,25 @@ export interface ResponsesSseInput {
   ) => ExecutionError | undefined;
   /** Error message (408) of an answer without `response.completed`/`response.incomplete`. */
   readonly stallMessage: string;
+  /** A fresh stateful line filter per answer (Meta drops `response.subscription_usage` frames). */
+  readonly lineFilter?: () => SseLineFilter;
 }
+
+/**
+ * Stateful SSE line filter. `push` returns the lines to keep now; an `event:` line is held back until its data line is
+ * known to be wanted. A kept data line leaves the held line in place: the stream releases it with `takeHeld` once the
+ * data line has passed the upstream error check (an error frame drops it, as in Go). `flush` returns what is still held
+ * at EOF.
+ */
+export interface SseLineFilter {
+  push(line: string): string[];
+  takeHeld(): string[];
+  flush(): string[];
+}
+
+/** Every line of a whole answer through the filter, then its EOF flush (the non-stream path has no error ordering). */
+const filterAll = (filter: SseLineFilter | undefined, lines: string[]): string[] =>
+  filter === undefined ? lines : [...lines.flatMap((line) => filter.push(line)), ...filter.flush()];
 
 const transportError = (error: HttpClientError.HttpClientError) =>
   new ExecutionError({
@@ -112,7 +131,7 @@ export const collectResponsesSse = Effect.fnUntraced(function* (
   const nowMs = yield* Clock.currentTimeMillis;
   let completed: JsonObject | undefined;
 
-  for (const line of data.split("\n")) {
+  for (const line of filterAll(input.lineFilter?.(), data.split("\n"))) {
     if (!line.startsWith("data:")) continue;
     const payload = line.slice(5).trim();
     const parsed = tryParseJson(payload);
@@ -218,39 +237,86 @@ export const streamResponsesSse = (input: ResponsesSseInput): StreamResult => {
 
   let stopped = false;
 
-  const lines = splitLines(response.stream).pipe(
-    Stream.mapError(transportError),
-    Stream.mapEffect((line) =>
-      Effect.gen(function* () {
-        if (stopped) return { chunks: [] };
+  const filter = input.lineFilter?.();
 
-        if (!line.startsWith("data:")) return emit(line);
-        const payload = line.slice(5).trim();
-        const event = tryParseJson(payload);
-        context.usage.observeResponseModel(responseModelOf(event));
-        const failure = input.eventError(event, payload, yield* Clock.currentTimeMillis);
+  /** Held `event:` lines and the data line that released them, emitted in order; the first failure ends the batch. */
+  const emitAll = (lines: string[]): StepResult => {
+    const chunks: string[] = [];
 
-        if (failure !== undefined) return yield* failure;
+    for (const line of lines) {
+      const step = emit(line);
+      chunks.push(...step.chunks);
 
-        switch (asString(get(event, "type"))) {
-          case "response.output_item.done":
-            collector.collect(event);
-            break;
-          case "response.completed":
-          case "response.incomplete": {
-            if (!isJsonObject(event)) break;
-            const detail = parseCodexUsage(event);
+      if (step.error !== undefined) return { chunks, error: step.error };
+    }
 
-            if (detail !== undefined) context.usage.publish(detail);
-            patchCodexCompletedOutput(event, collector);
+    return { chunks };
+  };
 
-            return emit(`data: ${JSON.stringify(event)}`);
-          }
+  const processLine = (line: string) =>
+    Effect.gen(function* () {
+      if (stopped) return { chunks: [] };
+
+      if (!line.startsWith("data:")) return emit(line);
+      const payload = line.slice(5).trim();
+      const event = tryParseJson(payload);
+
+      // The effective TTFT is the first token event, observed before translation or failure publication.
+      if (!context.usage.ttftObserved)
+        context.usage.observeTokenEvent(
+          yield* Clock.currentTimeMillis,
+          isResponsesTokenEvent(line),
+        );
+      context.usage.observeResponseModel(responseModelOf(event));
+      const failure = input.eventError(event, payload, yield* Clock.currentTimeMillis);
+
+      // A failing frame drops the `event:` line held for it (Go emits it only after this check).
+      if (failure !== undefined) return yield* failure;
+      const held = filter?.takeHeld() ?? [];
+
+      switch (asString(get(event, "type"))) {
+        case "response.output_item.done":
+          collector.collect(event);
+          break;
+        case "response.completed":
+        case "response.incomplete": {
+          if (!isJsonObject(event)) break;
+          const detail = parseCodexUsage(event);
+
+          if (detail !== undefined) context.usage.publish(detail);
+          patchCodexCompletedOutput(event, collector);
+
+          return emitAll([...held, `data: ${JSON.stringify(event)}`]);
         }
+      }
 
-        return emit(`data: ${payload}`);
-      }),
+      return emitAll([...held, `data: ${payload}`]);
+    });
+
+  /** One batch of lines through `processLine`; the first failure ends it. */
+  const processAll = (batch: string[]) =>
+    Effect.gen(function* () {
+      const chunks: string[] = [];
+
+      for (const line of batch) {
+        const step = yield* processLine(line);
+        chunks.push(...step.chunks);
+
+        if (step.error !== undefined) return { chunks, error: step.error } satisfies StepResult;
+      }
+
+      return { chunks } satisfies StepResult;
+    });
+
+  const lines = Stream.concat(
+    splitLines(response.stream).pipe(
+      Stream.mapError(transportError),
+      Stream.mapEffect((line) => processAll(filter === undefined ? [line] : filter.push(line))),
     ),
+    Stream.suspend(() =>
+      filter === undefined ? Stream.empty : Stream.fromEffect(processAll(filter.flush())),
+    ),
+  ).pipe(
     Stream.tap((step) =>
       Effect.sync(() => {
         if (step.error !== undefined) stopped = true;

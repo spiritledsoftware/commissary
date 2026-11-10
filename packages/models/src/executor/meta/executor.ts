@@ -3,12 +3,15 @@
  *
  * Go source: internal/runtime/executor/meta_executor.go, meta_executor_execute.go (Execute, `translateMetaCompleted`,
  * `applyMetaAPIHeaders`, `wrapMetaUpstreamError`, `metaAsCompletedEvent`), meta_executor_stream.go (ExecuteStream).
- * The upstream always streams (non-stream callers get the aggregated terminal event). The lazy DCA -> provider-key mint is
- * done by the conductor through `ControlPlane.ensureFresh` before the attempt (`withCredentialRefresh`).
+ * The upstream always streams (non-stream callers get the aggregated terminal event). The lazy DCA -> provider-key mint
+ * is done by the conductor through `ControlPlane.ensureFresh` before the attempt (`withCredentialRefresh`).
  *
  * `CountTokens` counts the prepared body locally with `o200k_base`. The apply_patch Responses bridge wraps the event
- * flow (`helps/apply-patch-responses.ts`). The request shaping and the SSE response handling are shared with the
- * OpenCode executor (`helps/responses-request.ts`, `helps/responses-sse.ts`). Not ported: outbound proxies.
+ * flow (`helps/apply-patch-responses.ts`). `response.subscription_usage` telemetry is dropped from streams and
+ * aggregated answers (`subscription-usage.ts`); the Muse namespace is appended to tool-bearing requests
+ * (`muse-tools.ts`); the 1.4.14 client identity headers are in `identity.ts`. The request shaping and the SSE response
+ * handling are shared with the OpenCode executor (`helps/responses-request.ts`, `helps/responses-sse.ts`). Not ported:
+ * outbound proxies.
  */
 import { Clock, Effect } from "effect";
 import {
@@ -35,7 +38,9 @@ import type {
   ExecutorResponse,
   ProviderExecutor,
 } from "../types.ts";
-import { META_CLIENT_ID, META_USER_AGENT, requireMetaToken } from "./credentials.ts";
+import { requireMetaToken } from "./credentials.ts";
+import { metaIdentityHeaders } from "./identity.ts";
+import { makeSubscriptionUsageFilter } from "./subscription-usage.ts";
 import { metaStreamEventError, wrapMetaUpstreamError } from "./errors.ts";
 import { buildResponsesUsageJson, countCodexInputTokens } from "../helps/token-count.ts";
 import { getCodec } from "@commissary/translation/tokenizer";
@@ -58,24 +63,34 @@ const transportError = (error: HttpClientError.HttpClientError) =>
     cause: error,
   });
 
-/** `applyMetaAPIHeaders`. */
-export const metaHeaders = (
-  credential: CredentialSnapshot,
-  token: string,
-  stream: boolean,
-  clientHeaders: Headers,
-  sessionId: string | undefined,
-): Record<string, string> => {
-  const headers: Record<string, string> = {};
-  headers["content-type"] = "application/json";
-  headers["authorization"] = `Bearer ${token}`;
-  headers["user-agent"] = META_USER_AGENT;
-  headers["x-client-id"] = META_CLIENT_ID;
-  headers["accept"] = stream ? "text/event-stream" : "application/json";
+export interface MetaHeadersInput {
+  readonly credential: CredentialSnapshot;
+  readonly token: string;
+  readonly stream: boolean;
+  readonly clientHeaders: Headers;
+  readonly sessionId: string | undefined;
+  /** The effective model after the payload rules (decides the contributor header). */
+  readonly model: string;
+  readonly nowMs: number;
+}
 
-  if (stream) headers["cache-control"] = "no-cache";
+/** `applyMetaAPIHeaders`: content type, bearer token, the Muse client identity, then custom/client headers. */
+export const metaHeaders = (input: MetaHeadersInput): Record<string, string> => {
+  const { credential, token, stream, clientHeaders, sessionId, model, nowMs } = input;
 
-  return applyCustomHeaders(headers, credential, clientHeaders, sessionId);
+  const headers = {
+    "content-type": "application/json",
+    authorization: `Bearer ${token}`,
+    ...metaIdentityHeaders(model, nowMs),
+    accept: stream ? "text/event-stream" : "application/json",
+  };
+
+  return applyCustomHeaders(
+    stream ? { ...headers, "cache-control": "no-cache" } : headers,
+    credential,
+    clientHeaders,
+    sessionId,
+  );
 };
 
 export const makeMetaExecutor = (executorOptions: MetaExecutorOptions = {}): ProviderExecutor => {
@@ -97,6 +112,8 @@ export const makeMetaExecutor = (executorOptions: MetaExecutorOptions = {}): Pro
     context: ExecutionContext,
     request: ExecutorRequest,
     options: ExecutorOptions,
+    /** Streams take the effective TTFT from the first token event; non-stream answers from the first byte. */
+    ttft: "first-byte" | "token-event",
   ) {
     yield* unsupported(options);
 
@@ -117,13 +134,15 @@ export const makeMetaExecutor = (executorOptions: MetaExecutorOptions = {}): Pro
     const httpRequest = HttpClientRequest.post(url).pipe(
       HttpClientRequest.bodyText(JSON.stringify(prepared.body), "application/json"),
       HttpClientRequest.setHeaders(
-        metaHeaders(
-          context.credential,
-          creds.token,
-          true,
-          options.headers,
-          options.metadata.sessionId,
-        ),
+        metaHeaders({
+          credential: context.credential,
+          token: creds.token,
+          stream: true,
+          clientHeaders: options.headers,
+          sessionId: options.metadata.sessionId,
+          model: prepared.effectiveModel,
+          nowMs: yield* Clock.currentTimeMillis,
+        }),
       ),
     );
 
@@ -134,7 +153,8 @@ export const makeMetaExecutor = (executorOptions: MetaExecutorOptions = {}): Pro
         Effect.mapError(transportError),
       );
 
-    context.usage.markFirstByte(yield* Clock.currentTimeMillis);
+    if (ttft === "token-event") context.usage.recordFirstPacket(yield* Clock.currentTimeMillis);
+    else context.usage.markFirstByte(yield* Clock.currentTimeMillis);
 
     if (response.status < 200 || response.status >= 300) {
       const text = yield* response.text.pipe(Effect.orElseSucceed(() => ""));
@@ -163,6 +183,7 @@ export const makeMetaExecutor = (executorOptions: MetaExecutorOptions = {}): Pro
     response: sent.response,
     eventError: metaStreamEventError,
     stallMessage: STREAM_STALL,
+    lineFilter: makeSubscriptionUsageFilter,
   });
 
   const execute = Effect.fnUntraced(function* (
@@ -170,7 +191,7 @@ export const makeMetaExecutor = (executorOptions: MetaExecutorOptions = {}): Pro
     request: ExecutorRequest,
     options: ExecutorOptions,
   ) {
-    const sent = yield* send(context, request, options);
+    const sent = yield* send(context, request, options, "first-byte");
 
     return yield* collectResponsesSse(sse(context, request, options, sent));
   });
@@ -180,7 +201,7 @@ export const makeMetaExecutor = (executorOptions: MetaExecutorOptions = {}): Pro
     request: ExecutorRequest,
     options: ExecutorOptions,
   ) {
-    const sent = yield* send(context, request, options);
+    const sent = yield* send(context, request, options, "token-event");
 
     return streamResponsesSse(sse(context, request, options, sent));
   });

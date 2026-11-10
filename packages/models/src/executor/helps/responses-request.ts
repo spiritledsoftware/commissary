@@ -14,7 +14,7 @@
  */
 import { modelIsCompat, translateRequestForExecutor } from "./translate.ts";
 import { Effect } from "effect";
-import { cloneJson, del, type Json } from "@commissary/json";
+import { cloneJson, del, get, type Json } from "@commissary/json";
 import { Formats } from "@commissary/translation/formats";
 import type { TranslatorRegistry } from "@commissary/translation";
 import { ExecutionError } from "../errors.ts";
@@ -36,6 +36,8 @@ import {
 
 export interface ResponsesPrepared {
   readonly baseModel: string;
+  /** The `model` of the body after the payload rules (the base model when a rule blanked it). */
+  readonly effectiveModel: string;
   readonly body: Json;
   /** The translated body before the payload rules (translator response context). */
   readonly translated: Json;
@@ -50,8 +52,8 @@ export interface ResponsesShaping {
   readonly provider: string;
   /** Protocol the payload rules match against (Meta passes its executor identifier, as Go does). */
   readonly payloadProtocol: string;
-  /** Provider tool sanitising, run after the reasoning sanitising (Meta: `SanitizeMetaWebSearchTools`). */
-  readonly sanitizeTools?: (body: Json) => Json;
+  /** Provider tool preparation, run after the reasoning sanitising (Meta: web_search sanitising, muse namespace). */
+  readonly prepareTools?: (body: Json) => Json;
 }
 
 export const prepareResponsesRequest = Effect.fnUntraced(function* (
@@ -138,7 +140,7 @@ export const prepareResponsesRequest = Effect.fnUntraced(function* (
   body = normalizeCodexInstructions(body, false);
   body = sanitizeReasoningEncryptedContent(body, true);
 
-  if (shaping.sanitizeTools !== undefined) body = shaping.sanitizeTools(body);
+  if (shaping.prepareTools !== undefined) body = shaping.prepareTools(body);
   const translatedForResponse = cloneJson(body);
   body = finalizePayload(
     context.config,
@@ -156,8 +158,12 @@ export const prepareResponsesRequest = Effect.fnUntraced(function* (
     body,
   );
 
+  const effective = get(body, "model");
+
   return {
     baseModel,
+    effectiveModel:
+      typeof effective === "string" && effective.trim() !== "" ? effective.trim() : baseModel,
     body,
     translated: translatedForResponse,
     from,
