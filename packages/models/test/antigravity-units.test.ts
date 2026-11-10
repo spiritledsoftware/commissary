@@ -13,8 +13,10 @@ import {
 } from "../src/executor/antigravity/state.ts";
 import {
   parseCreditsReply,
+  probeCredits,
   shouldAttemptCreditsFallback,
 } from "../src/executor/antigravity/credits.ts";
+import type { CredentialSnapshot } from "../src/executor/picker.ts";
 import { ExecutionError } from "../src/executor/errors.ts";
 import {
   decideAntigravity429,
@@ -128,6 +130,9 @@ describe("429 decisions and retry delays", () => {
       "soft_retry",
     );
     expect(decideAntigravity429(body("QUOTA_EXHAUSTED")).kind).toBe("full_quota_exhausted");
+    expect(decideAntigravity429(body("INSUFFICIENT_G1_CREDITS_BALANCE")).kind).toBe(
+      "full_quota_exhausted",
+    );
     expect(decideAntigravity429(body("RATE_LIMIT_EXCEEDED")).kind).toBe("soft_retry");
     expect(decideAntigravity429(body("RATE_LIMIT_EXCEEDED", "2s")).kind).toBe(
       "instant_retry_same_auth",
@@ -457,6 +462,27 @@ describe("state and credits", () => {
     expect(await state.claimCreditsRefresh(second, now + 1)).toBe(false);
   });
 
+  it("probes the credits balance on the daily endpoint without an Accept header", async () => {
+    const calls: Array<UpstreamCall> = [];
+    const credential = { attributes: {}, metadata: {} } as unknown as CredentialSnapshot;
+
+    await Effect.runPromise(
+      probeCredits(
+        credential,
+        "tok",
+        "antigravity/hub/2.29.0",
+        makeKvAntigravityState(orgKv(env.CACHE, GLOBAL_ORG)),
+        1,
+      ).pipe(Effect.provide(mockHttpClient(calls, () => Response.json({})))),
+    );
+
+    expect(calls[0]?.url).toBe(
+      "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
+    );
+    expect(calls[0]?.headers["accept"]).toBeUndefined();
+    expect(calls[0]?.headers["user-agent"]).toBe("antigravity/hub/2.29.0");
+  });
+
   it("parses the loadCodeAssist credits reply", () => {
     const reply = {
       paidTier: {
@@ -498,7 +524,14 @@ describe("version", () => {
   });
 
   it("builds user agents like Go", () => {
-    expect(antigravityRequestUserAgent("", "2.9.1")).toBe("antigravity/hub/2.9.1 darwin/arm64");
+    expect(ANTIGRAVITY_FALLBACK_VERSION).toBe("2.29.0");
+    expect(antigravityRequestUserAgent("", "2.29.0")).toBe(
+      "antigravity/hub/2.29.0 (aidev_client; os_type=darwin; arch=arm64; cl=1013060670)",
+    );
+    // Unknown releases keep their online version without claiming another build's changelist.
+    expect(antigravityRequestUserAgent("", "2.30.0")).toBe(
+      "antigravity/hub/2.30.0 (aidev_client; os_type=darwin; arch=arm64)",
+    );
     expect(
       antigravityRequestUserAgent(
         "antigravity/hub/2.1.0 linux/x64 google-api-nodejs-client/10.3.0",

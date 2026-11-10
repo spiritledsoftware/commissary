@@ -105,7 +105,9 @@ describe("antigravity executor: non-stream", () => {
     const call = h.calls[0];
     expect(call?.url).toBe("https://daily-cloudcode-pa.googleapis.com/v1internal:generateContent");
     expect(call?.headers["authorization"]).toBe("Bearer ya29.token");
-    expect(call?.headers["user-agent"]).toBe("antigravity/hub/2.9.1 darwin/arm64");
+    expect(call?.headers["user-agent"]).toBe(
+      "antigravity/hub/2.29.0 (aidev_client; os_type=darwin; arch=arm64; cl=1013060670)",
+    );
     expect(call?.headers["x-extra"]).toBe("yes");
     expect(call?.headers["accept"]).toBeUndefined();
     expect(call?.headers["x-goog-api-client"]).toBeUndefined();
@@ -153,7 +155,9 @@ describe("antigravity executor: non-stream", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(h.calls[0]?.url).toBe("https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist");
+    expect(h.calls[0]?.url).toBe(
+      "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
+    );
     expect(JSON.parse(h.calls[1]?.body ?? "{}").project).toBe("found-proj");
   });
 

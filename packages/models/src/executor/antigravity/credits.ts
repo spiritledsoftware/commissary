@@ -84,7 +84,6 @@ export const probeCredits = (
     const request = HttpClientRequest.post(url).pipe(
       HttpClientRequest.setHeaders({
         authorization: `Bearer ${accessToken}`,
-        accept: "*/*",
         "content-type": "application/json",
         "user-agent": userAgent,
       }),

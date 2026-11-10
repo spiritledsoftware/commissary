@@ -5,7 +5,7 @@
  * Go source: auth_files_provider_oauth.go (`RequestAntigravityToken`), internal/auth/antigravity/{auth,constants,
  * filename}.go (`BuildAuthURL`, `ExchangeCodeForTokens`, `FetchUserInfo`, `FetchProjectID`, `OnboardUser`),
  * internal/misc/antigravity_version.go (user agents). Docs: config-management-oauth.md §3.2.3.
- * Deviation: the client version is the Go fallback (`2.9.1`); the Hub manifest is not polled on Workers.
+ * Deviation: the client version is the Go fallback (`2.29.0`); the Hub manifest is not polled on Workers.
  */
 import { Effect } from "effect";
 import { type HttpClient, HttpClientRequest } from "effect/http";
@@ -15,6 +15,10 @@ import {
   ANTIGRAVITY_TOKEN_URL,
 } from "../../credentials/refresh/antigravity.ts";
 import { isJsonObject, type Json, type JsonObject } from "@commissary/json";
+import {
+  ANTIGRAVITY_FALLBACK_VERSION,
+  antigravityUserAgent,
+} from "../../executor/antigravity/version.ts";
 import { encodeQuery } from "../encoding.ts";
 import { call, parseJsonObject, rfc3339, seconds, str } from "./http.ts";
 import { type CallbackFlow, type FlowFailure, flowFailure } from "./types.ts";
@@ -31,9 +35,9 @@ export const ANTIGRAVITY_REDIRECT_URI = "http://localhost:51121/oauth-callback";
 
 const API_VERSION = "v1internal";
 
-const CLIENT_VERSION = "2.9.1";
+const CLIENT_VERSION = ANTIGRAVITY_FALLBACK_VERSION;
 
-const SHORT_USER_AGENT = `antigravity/hub/${CLIENT_VERSION} darwin/arm64`;
+const SHORT_USER_AGENT = antigravityUserAgent(CLIENT_VERSION);
 
 const NODE_USER_AGENT = `${SHORT_USER_AGENT} google-api-nodejs-client/10.3.0`;
 
@@ -45,6 +49,7 @@ const SCOPES = [
   "https://www.googleapis.com/auth/cloud-platform",
   "https://www.googleapis.com/auth/userinfo.email",
   "https://www.googleapis.com/auth/userinfo.profile",
+  "https://www.googleapis.com/auth/aicode",
   "https://www.googleapis.com/auth/cclog",
   "https://www.googleapis.com/auth/experimentsandconfigs",
 ];
@@ -88,11 +93,12 @@ const jsonPost = (
   userAgent: string,
   body: Json,
   extra: Record<string, string> = {},
+  accept = true,
 ) =>
   HttpClientRequest.post(url).pipe(
     HttpClientRequest.setHeaders({
       authorization: `Bearer ${accessToken}`,
-      accept: "*/*",
+      ...(accept ? { accept: "*/*" } : {}),
       "user-agent": userAgent,
       ...extra,
     }),
@@ -138,10 +144,17 @@ const onboardUser = (
 /** `FetchProjectID`: `loadCodeAssist`, falling back to onboarding the user. Non-fatal for the login. */
 export const fetchProjectId = (accessToken: string) =>
   Effect.gen(function* () {
-    const url = `${ANTIGRAVITY_API_ENDPOINT}/${API_VERSION}:loadCodeAssist`;
+    const url = `${ANTIGRAVITY_DAILY_API_ENDPOINT}/${API_VERSION}:loadCodeAssist`;
 
     const reply = yield* call(
-      jsonPost(url, accessToken, SHORT_USER_AGENT, { metadata: { ideType: "ANTIGRAVITY" } }),
+      jsonPost(
+        url,
+        accessToken,
+        SHORT_USER_AGENT,
+        { metadata: { ideType: "ANTIGRAVITY" } },
+        {},
+        false,
+      ),
     );
 
     if (reply.status < 200 || reply.status >= 300) {

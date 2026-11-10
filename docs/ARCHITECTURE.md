@@ -2501,17 +2501,19 @@ Ported from `antigravity_executor*.go`, `internal/translator/antigravity/*`, `in
   again with `PickRequest.ignoreCooldown` (cooling credentials stay selectable), skips credentials whose stored balance is known to be empty and
   asks the executor for `enabledCreditTypes: ["GOOGLE_ONE_AI"]` through `ExecutorOptions.metadata.antigravityCredits`
   (`attemptOptions`). `INSUFFICIENT_G1_CREDITS_BALANCE` marks the credential out of credits (KV `ag:credits:<id>`, 30 min); the balance probe
-  (`loadCodeAssist`, prod endpoint, `waitUntil`; one probe per credential per 10 min, claimed atomically with a create-if-absent
+  (`loadCodeAssist`, daily endpoint, no `Accept`, `waitUntil`; one probe per credential per 10 min, claimed atomically with a create-if-absent
   write in the `SessionState` DO, not KV) refreshes it. The round walks every Antigravity credential once in the Go order
   (`findAllAntigravityCreditsCandidateAuths`): known-available balances first, then unknown ones (optimistic), each group sorted by credential id;
   known-empty credentials are skipped without an attempt (the conductor collects them with repeated `pick`s and releases the skipped leases
   as connection-lifecycle failures).
-- **Cron** (`models/scheduled-tasks.ts`): `antigravity-version` polls the Hub manifest into KV `antigravity:version` (`2.9.1` fallback, 6 h TTL; executors read it
+- **Cron** (`models/scheduled-tasks.ts`): `antigravity-version` polls the Hub manifest into KV `antigravity:version` (`2.29.0` fallback, 6 h TTL; executors read it
   through a 60 s isolate cache) and `antigravity-models` probes `fetchAvailableModels` for every enabled credential (first endpoint only, global
   user agent, failures keep the last good list and back off 2-30 min with jitter) into KV `ag:models:<id>`. The registry snapshot attaches
   the stored entitlements to the credential's `ModelSource` (`antigravityHints`): registered models = static list intersected with the fetched
   ids, `webSearchModelIds` set `supportsWebSearch`; credentials without a record serve the static list (like Go before the probe finishes).
   The Go 1-minute scan is replaced by the 3 h cron (= the Go catalog TTL).
+  Deviation (Go `02e9e852`): Go keys its in-memory catalog cache on the User-Agent version; here the KV record carries no
+  version, and the next cron tick (3 h) re-probes with the then-current user agent, so a version change needs no explicit invalidation.
 
 The **reasoning-replay ledger** (Gemini-family models) and the Interactions **continuation sessions** run on the `SessionState` DO, see
 _SessionState Durable Object_.
@@ -3447,7 +3449,7 @@ Port of the management OAuth handlers (`auth_files_provider_oauth.go`, `auth_fil
   never containing code/state/tokens/errors); everything else is a neutral 400. The state of a login names its org
   (`orgScopedName`: `org.<org>.<hex>`, a bare state is `global`'s), so the callback asks only that org's ControlPlane.
 
-Deviations from Go: the Antigravity login uses the Go fallback client version `2.9.1` (the executor reads the polled Hub version, see
+Deviations from Go: the Antigravity login uses the Go fallback client version `2.29.0` (the executor reads the polled Hub version, see
 _Antigravity provider_) and project discovery runs inside the login (non-fatal; the executor repeats it when `project_id` is missing); a transport failure or 5xx of one xAI/Kimi poll keeps waiting instead of ending the login; Codex
 exchange errors include the (scrubbed) upstream status/body like Go but cap it at 512 chars; device-flow states carry a random
 suffix (`xai-<ms>-<hex>`); Kimi stores the normalised `domain`; Claude's uTLS/ordered-header fingerprint cannot be reproduced (see

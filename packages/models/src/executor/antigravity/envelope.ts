@@ -59,11 +59,11 @@ export const requestBaseUrl = (
   metadata: JsonObject,
 ): string => customBaseUrl(attributes, metadata) || ANTIGRAVITY_BASE_URL_DAILY;
 
-/** `antigravityLoadCodeAssistBaseURL`: `loadCodeAssist` defaults to the prod endpoint. */
+/** `antigravityLoadCodeAssistBaseURL`: `loadCodeAssist` uses the request endpoint (daily by default). */
 export const loadCodeAssistBaseUrl = (
   attributes: Readonly<Record<string, string>>,
   metadata: JsonObject,
-): string => customBaseUrl(attributes, metadata) || ANTIGRAVITY_BASE_URL_PROD;
+): string => requestBaseUrl(attributes, metadata);
 
 /** The configured per-credential user agent (`antigravityConfiguredUserAgent`). */
 export const configuredUserAgent = (

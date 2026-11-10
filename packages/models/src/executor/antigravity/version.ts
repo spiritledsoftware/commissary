@@ -1,10 +1,10 @@
 /**
  * Antigravity client version, user agents and the Hub manifest poller.
  *
- * Go source: internal/misc/antigravity_version.go. Cloud Code rejects newer models for clients older than 2.9.0, so the
- * fallback must stay >= 2.9.0. The latest version comes from the Hub updater manifest: the cron task
+ * Go source: internal/misc/antigravity_version.go. Cloud Code rejects newer models for clients older than 2.23.0, so the
+ * fallback must stay >= 2.23.0. The latest version comes from the Hub updater manifest: the cron task
  * (`models/scheduled-tasks.ts`) writes it to KV `CACHE` (`antigravity:version`), executors read it through a short
- * per-isolate cache and fall back to `2.9.1` when the entry is missing or older than the 6 h TTL.
+ * per-isolate cache and fall back to `2.29.0` when the entry is missing or older than the 6 h TTL.
  */
 import { Effect } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
@@ -13,9 +13,19 @@ import { type DeploymentKv, deploymentKey } from "@commissary/core";
 import { ModelsEnv } from "../../env.ts";
 import { deploymentKvOf } from "../../kv.ts";
 
-export const ANTIGRAVITY_FALLBACK_VERSION = "2.9.1";
+export const ANTIGRAVITY_FALLBACK_VERSION = "2.29.0";
 
-export const ANTIGRAVITY_HUB_PLATFORM = "darwin/arm64";
+export const ANTIGRAVITY_HUB_PLATFORM = "os_type=darwin; arch=arm64";
+
+/**
+ * `antigravityHubChangelists`: changelists belong to specific Hub releases. Update the fallback version and its entry
+ * together; unknown releases keep their online version without claiming another build's changelist.
+ */
+export const ANTIGRAVITY_HUB_CHANGELISTS: ReadonlyMap<string, string> = new Map([
+  ["2.23.0", "998057262"],
+  ["2.24.0", "1000335682"],
+  ["2.29.0", "1013060670"],
+]);
 
 export const ANTIGRAVITY_VERSION_TTL_MS = 6 * 60 * 60 * 1000;
 
@@ -51,8 +61,12 @@ export const parseManifestVersion = (manifest: string): string | undefined => {
   return undefined;
 };
 
-export const antigravityUserAgent = (version: string): string =>
-  `antigravity/hub/${version} ${ANTIGRAVITY_HUB_PLATFORM}`;
+export const antigravityUserAgent = (version: string): string => {
+  const changelist = ANTIGRAVITY_HUB_CHANGELISTS.get(version);
+  const metadata = `aidev_client; ${ANTIGRAVITY_HUB_PLATFORM}${changelist === undefined ? "" : `; cl=${changelist}`}`;
+
+  return `antigravity/hub/${version} (${metadata})`;
+};
 
 const isAntigravityFamily = (lower: string): boolean =>
   lower.startsWith("antigravity/hub/") || lower.startsWith("antigravity/");
@@ -127,7 +141,7 @@ export const resetAntigravityVersionCache = (): void => {
   readCache = undefined;
 };
 
-/** The version executors put into user agents (KV read-through, fallback `2.9.1`). */
+/** The version executors put into user agents (KV read-through, fallback `2.29.0`). */
 export const currentAntigravityVersion = (
   kv: DeploymentKv | undefined,
   now: number,
