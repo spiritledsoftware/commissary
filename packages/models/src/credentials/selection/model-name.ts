@@ -35,6 +35,53 @@ export const canonicalModelKey = (model: string): string => {
   return name === "" ? trimmed : name;
 };
 
+/** `canonicalModelLookupKey` (CLIProxyAPI 098af7d5): the canonical key folded to lower case, for case-insensitive lookups. */
+export const canonicalModelLookupKey = (model: string): string =>
+  canonicalModelKey(model).toLowerCase();
+
+/** `sameCanonicalModelKey`: two spellings of one model; empty never matches. */
+export const sameCanonicalModelKey = (left: string, right: string): boolean => {
+  const key = canonicalModelLookupKey(left);
+
+  return key !== "" && key === canonicalModelLookupKey(right);
+};
+
+/**
+ * The key of `model`'s state in a per-model record (`modelStates`): the exact canonical key when stored, else a stored
+ * spelling that differs only in case (the stored casing is kept). Of several spellings, the longest-cooling one wins.
+ */
+export const findModelStateKey = <T extends { readonly nextRetryAfter: number }>(
+  states: Readonly<Record<string, T>>,
+  model: string,
+): string | undefined => {
+  const key = canonicalModelKey(model);
+
+  if (key === "") return undefined;
+
+  if (Object.hasOwn(states, key)) return key;
+  const lookup = key.toLowerCase();
+  let found: string | undefined;
+
+  for (const [stateModel, state] of Object.entries(states)) {
+    if (canonicalModelLookupKey(stateModel) !== lookup) continue;
+
+    if (found === undefined || state.nextRetryAfter > (states[found]?.nextRetryAfter ?? 0))
+      found = stateModel;
+  }
+
+  return found;
+};
+
+/** `existingModelState`: the state of `model` under any spelling. */
+export const findModelState = <T extends { readonly nextRetryAfter: number }>(
+  states: Readonly<Record<string, T>>,
+  model: string,
+): T | undefined => {
+  const key = findModelStateKey(states, model);
+
+  return key === undefined ? undefined : states[key];
+};
+
 /** `preserveResolvedModelSuffix`: re-attach the request's suffix unless the resolved name has its own. */
 export const preserveResolvedSuffix = (resolved: string, request: ModelSuffix): string => {
   const name = resolved.trim();

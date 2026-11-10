@@ -22,7 +22,7 @@ import {
 import { servesMember } from "../ownership.ts";
 import { availabilityBlock, isBlockedForModel } from "./availability.ts";
 import { grantedRoute } from "./grants.ts";
-import { canonicalModelKey } from "./model-name.ts";
+import { canonicalModelLookupKey } from "./model-name.ts";
 import { type ModelRoute, resolveModelRoute, type RoutingContext } from "./routing.ts";
 import type { CredentialEntry } from "./pick.ts";
 
@@ -122,14 +122,14 @@ export const retryRoundAvailability = (
     return { eligible: retryRoundStateEligible(state.lastError, true), next: block.next };
   }
 
-  const key = canonicalModelKey(model);
+  const key = canonicalModelLookupKey(model);
   const states = Object.entries(state.modelStates);
 
   if (key !== "" && states.length > 0) {
     let matchedBlocked = false;
 
     for (const [stateModel, modelState] of states) {
-      if (canonicalModelKey(stateModel) !== key) continue;
+      if (canonicalModelLookupKey(stateModel) !== key) continue;
 
       if (modelState.status === "disabled") return { eligible: false, next: 0 };
 

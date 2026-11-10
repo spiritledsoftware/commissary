@@ -1,7 +1,8 @@
 /**
  * Request-time credential preparation and the 401 -> refresh -> retry-once loop, shared by all executors.
  *
- * Go source: sdk/cliproxy/auth/conductor_refresh.go (`tryRefreshAfterUnauthorized`), conductor_execution.go
+ * Go source: sdk/cliproxy/auth/conductor_refresh.go (`tryRefreshAfterUnauthorized`, which skips 401s that a configured
+ * request-scoped error rule matched), conductor_execution.go
  * (`prepareRequestAuth`, `PrepareRequestAuth`; credentials.md §9.3-9.5). The token work lives in the ControlPlane
  * (`ensureFresh`, `refreshNow`: serialised per credential, persisted before returning); this module is the Worker side:
  *  - `ensureFresh` first for credentials whose snapshot cannot be used as is (Vertex without a minted token, Meta
@@ -21,6 +22,7 @@ import { toExecutorSnapshot } from "../control-plane-picker.ts";
 import { ExecutionError, withErrorFields } from "../errors.ts";
 import type { CredentialSnapshot } from "../picker.ts";
 import type { ExecutionContext } from "../types.ts";
+import { matchRequestScopedAction, requestScopedRules } from "../classify.ts";
 import { type ModelsBindings, ModelsEnv, modelsPartOf } from "../../env.ts";
 
 /** The slice of the ControlPlane RPC surface used here (tests substitute their own). */
@@ -184,7 +186,16 @@ export const withCredentialRefresh = <A, R>(
     if (Result.isSuccess(first)) return first.success;
     const error = first.failure;
 
-    if (error.status !== 401) return yield* error;
+    if (error.status !== 401 || error.requestScoped === true) return yield* error;
+
+    // A 401 a configured request-scoped rule matched is the rule's to handle (CLIProxyAPI 4138edb1): the token is
+    // neither condemned nor refreshed, whatever the rule's action.
+    if (
+      matchRequestScopedAction(requestScopedRules(current.config, current.credential), error) !==
+      undefined
+    ) {
+      return yield* error;
+    }
 
     const rejected = accessTokenOf(current.credential.metadata);
 

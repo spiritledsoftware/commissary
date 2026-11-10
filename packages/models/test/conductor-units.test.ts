@@ -1,7 +1,7 @@
 // Unit tests for the conductor building blocks: session extraction, force-mapping rewrite, executor snapshots,
 // Worker-side error classification / report building and the live thinking layer.
 import { assert, describe, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Layer } from "effect";
 import { toExecutorSnapshot } from "../src/executor/control-plane-picker.ts";
 import {
   failureReport,
@@ -12,7 +12,11 @@ import {
   successReport,
 } from "../src/executor/classify.ts";
 import { ExecutionError } from "../src/executor/errors.ts";
-import { CredentialRefresher, needsPreparation } from "../src/executor/helps/credential-refresh.ts";
+import {
+  CredentialRefresher,
+  needsPreparation,
+  withCredentialRefresh,
+} from "../src/executor/helps/credential-refresh.ts";
 import type { CredentialSnapshot } from "../src/executor/picker.ts";
 import { makeLiveThinking } from "../src/executor/thinking.ts";
 import { compatModelInfo } from "../src/handlers/model-capabilities.ts";
@@ -22,7 +26,9 @@ import { extractSessionInfo, normalizeExplicitId } from "../src/handlers/session
 import { builtinTranslators } from "@commissary/translation";
 import { Formats } from "@commissary/translation/formats";
 import type { JsonObject } from "@commissary/json";
+import { cred } from "./support/credentials.ts";
 import { loadConfig } from "./support/pool.ts";
+import { toSnapshot } from "../src/credentials/summary.ts";
 import { CurrentOrg, GLOBAL_ORG } from "@commissary/core";
 import { envContext } from "./support/context.ts";
 
@@ -431,6 +437,75 @@ oauth:
     );
   });
 
+  it("count_tokens: 501 and unsupported-capability codes are availability-neutral (CLIProxyAPI 1c537211)", () => {
+    const report = (status: number, message: string, extra: Record<string, unknown> = {}) =>
+      failureReport(new ExecutionError({ status, message, ...extra }), {
+        provider: "kiro",
+        countTokens: true,
+      });
+
+    assert.isTrue(report(501, "501 Not Implemented").availabilityNeutral);
+    assert.isTrue(
+      report(501, "count-tokens are not implemented yet", { code: "not_implemented" })
+        .availabilityNeutral,
+    );
+
+    // Without an HTTP answer only the typed unsupported codes count (hyphens and spaces fold to underscores).
+    for (const code of [
+      "not_implemented",
+      "count_tokens_unsupported",
+      "count-tokens-not-supported",
+      "Unsupported Operation",
+      "unsupported_capability",
+      "method_not_implemented",
+    ]) {
+      assert.isTrue(report(0, "unsupported", { code }).availabilityNeutral, code);
+    }
+
+    assert.isUndefined(report(0, "boom", { code: "something_else" }).availabilityNeutral);
+    // Explicit model-not-found, credential failures and quota stay availability matters.
+    assert.isUndefined(
+      report(501, "model claude-missing was not found", { code: "model_not_found" })
+        .availabilityNeutral,
+    );
+    assert.isUndefined(
+      report(401, "unauthorized", { code: "not_implemented" }).availabilityNeutral,
+    );
+    assert.isUndefined(report(429, "rate limit", { code: "not_implemented" }).availabilityNeutral);
+    assert.isUndefined(report(500, "boom").availabilityNeutral);
+    assert.isUndefined(report(501, "x", { code: "force_cooldown" }).availabilityNeutral);
+    assert.isUndefined(report(501, "x", { credentialScoped: true }).availabilityNeutral);
+    // Outside count_tokens a 501 is a plain failure.
+    assert.isUndefined(
+      failureReport(new ExecutionError({ status: 501, message: "x" }), { provider: "kiro" })
+        .availabilityNeutral,
+    );
+  });
+
+  it("responses/compact: an Anthropic credit-balance 400 is a credential failure, not neutral (CLIProxyAPI d00267c3)", () => {
+    const body =
+      '{"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API."}}';
+
+    assert.isUndefined(
+      failureReport(new ExecutionError({ status: 400, message: body }), {
+        provider: "claude",
+        compact: true,
+      }).availabilityNeutral,
+    );
+    assert.isFalse(
+      isCompactRequestFault(
+        new ExecutionError({ status: 400, message: body }),
+        "responses/compact",
+      ),
+    );
+    assert.isTrue(
+      isCompactRequestFault(
+        new ExecutionError({ status: 400, message: "bad" }),
+        "responses/compact",
+      ),
+    );
+  });
+
   it("count_tokens: a generic 404 is availability-neutral, model-not-found is not; no quota snapshot", () => {
     const report = (message: string) =>
       failureReport(new ExecutionError({ status: 404, message }), {
@@ -660,6 +735,94 @@ describe("credential preparation rules (needsPreparation)", () => {
       needsPreparation(oauth("vertex", { type: "vertex", access_token: "minted" }), NOW),
     );
   });
+});
+
+describe("401 refresh under request-scoped error rules (CLIProxyAPI 4138edb1)", () => {
+  const rule = (action: string) =>
+    `
+oauth:
+  request-scoped-errors:
+    claude:
+      - { status: 401, match: ["marker"], action: ${action} }
+`;
+
+  const run = (yaml: string, body: string) =>
+    Effect.gen(function* () {
+      const config = yield* Effect.promise(() => loadConfig(yaml));
+      const refreshes: Array<string | undefined> = [];
+      let attempts = 0;
+
+      const refresher = Layer.succeed(
+        CredentialRefresher,
+        CredentialRefresher.of({
+          ensureFresh: () => Effect.die("not prepared"),
+          refreshNow: (_id, rejected) =>
+            Effect.sync(() => {
+              refreshes.push(rejected);
+
+              return {
+                ok: true as const,
+                refreshed: true,
+                credential: toSnapshot(
+                  cred("claude-a", {
+                    provider: "claude",
+                    metadata: { access_token: "new-token", refresh_token: "r" },
+                  }),
+                ),
+              };
+            }),
+        }),
+      );
+
+      const result = yield* Effect.result(
+        withCredentialRefresh(
+          {
+            credential: snapshot({
+              kind: "oauth",
+              metadata: { access_token: "old-token", refresh_token: "r" },
+            }),
+            config,
+            // SAFETY: the attempt below never reads the usage reporter.
+            usage: undefined as never,
+          },
+          () =>
+            Effect.suspend(() => {
+              attempts += 1;
+
+              return attempts === 1
+                ? Effect.fail(new ExecutionError({ status: 401, message: body }))
+                : Effect.succeed("repeated");
+            }),
+        ).pipe(Effect.provide(refresher)),
+      );
+
+      return { result, refreshes, attempts };
+    }).pipe(
+      Effect.provideService(CurrentOrg, GLOBAL_ORG),
+      Effect.provideContext(envContext({} as Cloudflare.Env)),
+    );
+
+  it.effect.each(["stop", "continue", "stop-and-cooldown", "continue-and-cooldown"])(
+    "a 401 matched by a '%s' rule neither rejects the token nor refreshes",
+    (action) =>
+      Effect.gen(function* () {
+        const { result, refreshes, attempts } = yield* run(rule(action), '{"error":"marker"}');
+
+        assert.strictEqual(result._tag, "Failure");
+        assert.deepStrictEqual(refreshes, []);
+        assert.strictEqual(attempts, 1);
+      }),
+  );
+
+  it.effect("a 401 no rule matches still refreshes with the rejected token and repeats once", () =>
+    Effect.gen(function* () {
+      const { result, refreshes, attempts } = yield* run(rule("stop"), '{"error":"other"}');
+
+      assert.strictEqual(result._tag, "Success");
+      assert.deepStrictEqual(refreshes, ["old-token"]);
+      assert.strictEqual(attempts, 2);
+    }),
+  );
 });
 
 describe("CredentialRefresher over the ControlPlane", () => {

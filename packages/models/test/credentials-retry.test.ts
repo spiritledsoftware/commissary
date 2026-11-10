@@ -317,3 +317,77 @@ describe("cooldown persistence (always on: an eviction is not a restart)", () =>
     expect(restarted.pool.pick({ providers: providers(["a"]), model: "m" }).ok).toBe(true);
   });
 });
+
+describe("in-flight successes do not clear a newer cooldown (CLIProxyAPI 35af74f9)", () => {
+  const quota = {
+    success: false as const,
+    httpStatus: 429,
+    error: { message: "slow down", retryable: true, httpStatus: 429 },
+    retryAfterMs: 60_000,
+  };
+
+  it("a success dispatched before the 429 leaves the model cooling; one dispatched after clears it", async () => {
+    const { pool, clock } = await makePool(config(group("a")));
+    const request = { providers: providers(["a"]), model: "m" };
+    const early = ok(pool.pick(request));
+    const failing = ok(pool.pick(request));
+
+    pool.report(failing.lease, quota);
+    expect(pool.pick(request).ok).toBe(false);
+
+    // The early request was dispatched before the cooldown: it proves nothing about recovery.
+    pool.report(early.lease, { success: true });
+    expect(pool.pick(request).ok).toBe(false);
+    expect(pool.list()[0]).toMatchObject({ success: 1, failed: 1, unavailable: true });
+
+    // A dispatch after the cooldown (credits fallback ignores it) is a real recovery.
+    clock.advance(1000);
+    const late = ok(pool.pick({ ...request, ignoreCooldown: true }));
+    pool.report(late.lease, { success: true });
+    expect(pool.pick(request).ok).toBe(true);
+  });
+
+  it("many in-flight successes cannot reopen an exhausted credential before it recovers", async () => {
+    const { pool, clock } = await makePool(config(group("a")));
+    const request = { providers: providers(["a"]), model: "m" };
+    const inflight = [1, 2, 3, 4].map(() => ok(pool.pick(request)));
+    const failing = ok(pool.pick(request));
+
+    pool.report(failing.lease, quota);
+
+    for (const lease of inflight) {
+      pool.report(lease.lease, { success: true });
+      expect(pool.pick(request).ok).toBe(false);
+    }
+
+    clock.advance(61_000);
+    expect(pool.pick(request).ok).toBe(true);
+  });
+
+  it("a credential-scoped 429 keeps every model cooling against stale successes", async () => {
+    const { pool } = await makePool(config(group("a", "", "{ name: m }, { name: n }")));
+    const requestN = { providers: providers(["a"]), model: "n" };
+    const early = ok(pool.pick(requestN));
+    const failing = ok(pool.pick({ providers: providers(["a"]), model: "m" }));
+
+    pool.report(failing.lease, { ...quota, credentialScoped: true });
+    expect(pool.pick(requestN).ok).toBe(false);
+    pool.report(early.lease, { success: true });
+    expect(pool.pick(requestN).ok).toBe(false);
+  });
+
+  it("a restart forgets the dispatch order: a restored cooldown is cleared by any success", async () => {
+    const store = new MemoryPoolStore();
+    const clock = new TestNow();
+    const yaml = config(group("a"));
+    const first = await makePool(yaml, { store, clock });
+    const request = { providers: providers(["a"]), model: "m" };
+    const failing = ok(first.pool.pick(request));
+    first.pool.report(failing.lease, quota);
+
+    const restarted = await makePool(yaml, { store, clock });
+    const restored = ok(restarted.pool.pick({ ...request, ignoreCooldown: true }));
+    restarted.pool.report(restored.lease, { success: true });
+    expect(restarted.pool.pick(request).ok).toBe(true);
+  });
+});

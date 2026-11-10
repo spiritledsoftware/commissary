@@ -533,6 +533,147 @@ describe("classification", () => {
   });
 });
 
+describe("Anthropic credit balance 400 (CLIProxyAPI d00267c3)", () => {
+  const creditBody =
+    '{"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."}}';
+
+  it("is a payment failure, not a request fault; ordinary invalid_request_error 400s stay request faults", () => {
+    expect(isRequestFault(400, creditBody)).toBe(false);
+    expect(isRequestInvalidError({ status: 400, message: creditBody })).toBe(false);
+    expect(shouldSkipCredentialCooldown({ status: 400, message: creditBody })).toBe(false);
+    expect(
+      isRequestFault(
+        400,
+        '{"type":"error","error":{"type":"invalid_request_error","message":"messages: at least one message is required"}}',
+      ),
+    ).toBe(true);
+    // Only a 400 with a JSON body qualifies.
+    expect(isRequestFault(422, creditBody)).toBe(true);
+    expect(isRequestFault(400, "Your credit balance is too low")).toBe(true);
+  });
+
+  it("cools the model for 30 minutes", () => {
+    const state = mark(emptyState(), "claude-sonnet-4-6", fail(400, creditBody));
+
+    expect(state.modelStates["claude-sonnet-4-6"]).toMatchObject({
+      unavailable: true,
+      status: "error",
+      nextRetryAfter: NOW + 30 * MIN,
+    });
+  });
+
+  it("cools the credential for 30 minutes as payment_required at credential level", () => {
+    const state = mark(emptyState(), "", fail(400, creditBody));
+
+    expect(state.statusMessage).toBe("payment_required");
+    expect(state.nextRetryAfter).toBe(NOW + 30 * MIN);
+    expect(state.unavailable).toBe(true);
+  });
+
+  it("an ordinary 400 never cools", () => {
+    const state = mark(emptyState(), "m", fail(400, '{"error":{"type":"invalid_request_error"}}'));
+
+    expect(state.modelStates.m).toBeUndefined();
+  });
+});
+
+describe("model keys are case-insensitive (CLIProxyAPI 098af7d5)", () => {
+  it("one model state serves every spelling and keeps the stored casing", () => {
+    let state = mark(emptyState(), "Claude-Sonnet-4-6", fail(500));
+    expect(Object.keys(state.modelStates)).toEqual(["Claude-Sonnet-4-6"]);
+
+    // A later failure under another spelling extends the same state instead of opening a second one.
+    state = mark(state, "claude-sonnet-4-6", fail(500, "again", { retryAfterMs: 5 * MIN }), {
+      now: NOW + 1000,
+    });
+    expect(Object.keys(state.modelStates)).toEqual(["Claude-Sonnet-4-6"]);
+    expect(state.modelStates["Claude-Sonnet-4-6"]?.nextRetryAfter).toBe(NOW + 1000 + 5 * MIN);
+
+    for (const spelling of ["claude-sonnet-4-6", "CLAUDE-SONNET-4-6(high)", "Claude-Sonnet-4-6"])
+      expect(blocked(state, spelling, NOW + 2000)).toBe(true);
+    expect(blocked(state, "claude-opus-4-1", NOW + 2000)).toBe(false);
+  });
+
+  it("a success under another spelling clears the cooldown", () => {
+    let state = mark(emptyState(), "Claude-Sonnet-4-6", fail(500));
+    state = mark(state, "claude-sonnet-4-6", { success: true }, { now: NOW + 1000 });
+
+    expect(Object.keys(state.modelStates)).toEqual(["Claude-Sonnet-4-6"]);
+    expect(state.modelStates["Claude-Sonnet-4-6"]).toMatchObject({
+      unavailable: false,
+      nextRetryAfter: 0,
+    });
+    expect(blocked(state, "CLAUDE-SONNET-4-6", NOW + 2000)).toBe(false);
+  });
+});
+
+describe("stale in-flight successes (CLIProxyAPI 35af74f9)", () => {
+  const marks = (credentialMark: number, ...models: Array<[string, number]>) => ({
+    credential: credentialMark,
+    models: new Map(models),
+  });
+
+  const markSeq = (
+    state: CredentialState,
+    model: string,
+    result: ReportResult,
+    executionSeq: number | undefined,
+    cooldownMarks: ReturnType<typeof marks>,
+    now = NOW + 1000,
+  ) =>
+    markResult({
+      credential: { provider: "claude", metadata: {} },
+      state,
+      now,
+      model,
+      result,
+      settings: DEFAULT_COOLDOWN_SETTINGS,
+      ...(executionSeq === undefined ? {} : { executionSeq }),
+      cooldownMarks,
+    });
+
+  it("a success dispatched at or before the cooldown's mark keeps the model cooldown but still counts", () => {
+    const cooling = mark(emptyState(), "m", fail(429, "q", { retryAfterMs: HOUR }));
+    const before = cooling.modelStates.m;
+
+    for (const seq of [4, 5]) {
+      const next = markSeq(cooling, "m", { success: true }, seq, marks(0, ["m", 5]));
+      expect(next.modelStates.m).toEqual(before);
+      expect(next).toMatchObject({ success: 1, failed: 1, unavailable: true });
+      expect(blocked(next, "m", NOW + 2000)).toBe(true);
+    }
+  });
+
+  it("a later dispatch, an unstamped success or an expired cooldown clears as before", () => {
+    const cooling = mark(emptyState(), "m", fail(429, "q", { retryAfterMs: HOUR }));
+    const later = markSeq(cooling, "m", { success: true }, 6, marks(0, ["m", 5]));
+    expect(later.modelStates.m).toMatchObject({ unavailable: false, nextRetryAfter: 0 });
+    const unstamped = markSeq(cooling, "m", { success: true }, undefined, marks(0, ["m", 5]));
+    expect(unstamped.modelStates.m).toMatchObject({ unavailable: false, nextRetryAfter: 0 });
+    // No mark recorded (restart): any success clears.
+    const restored = markSeq(cooling, "m", { success: true }, 1, marks(0));
+    expect(restored.modelStates.m).toMatchObject({ unavailable: false, nextRetryAfter: 0 });
+    // The cooldown ran out: the old dispatch is no longer protected.
+    const expired = markSeq(cooling, "m", { success: true }, 1, marks(0, ["m", 5]), NOW + 2 * HOUR);
+    expect(expired.modelStates.m).toMatchObject({ unavailable: false, nextRetryAfter: 0 });
+  });
+
+  it("marks are looked up case-insensitively", () => {
+    const cooling = mark(emptyState(), "Claude-X", fail(429, "q", { retryAfterMs: HOUR }));
+    const next = markSeq(cooling, "claude-x", { success: true }, 3, marks(0, ["claude-x", 5]));
+    expect(next.modelStates["Claude-X"]?.unavailable).toBe(true);
+  });
+
+  it("a credential-level cooldown survives a stale credential-level success", () => {
+    const cooling = mark(emptyState(), "", fail(429, "q", { retryAfterMs: HOUR }));
+    const stale = markSeq(cooling, "", { success: true }, 3, marks(5));
+    expect(stale).toMatchObject({ unavailable: true, nextRetryAfter: NOW + HOUR });
+    expect(stale.quota.exceeded).toBe(true);
+    const fresh = markSeq(cooling, "", { success: true }, 6, marks(5));
+    expect(fresh).toMatchObject({ unavailable: false, nextRetryAfter: 0 });
+  });
+});
+
 describe("provider-specific request errors (issue #185)", () => {
   it("an upstream 400 or 422 may be specific to one provider", () => {
     expect(isProviderSpecificRequestError({ status: 400, message: "bad" })).toBe(true);

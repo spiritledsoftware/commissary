@@ -17,6 +17,12 @@ export const ErrorCode = {
   connectionLifecycle: "connection_lifecycle",
   transientTransport: "transient_transport",
   forceCooldown: "force_cooldown",
+  /**
+   * An accepted upstream stream that ended without a terminal frame, synthesised locally (CLIProxyAPI f013eb66,
+   * `ErrorCodeStreamTruncated`). The public status stays 502, but the credential does not cool and the generation is
+   * not replayed on another credential.
+   */
+  streamTruncated: "stream_truncated",
   modelNotFound: "model_not_found",
 } as const;
 
@@ -151,6 +157,21 @@ const isDevinRequestPermissionDenied = (status: number, body: string): boolean =
 };
 
 /**
+ * `clienterror.IsCreditBalanceTooLow` (CLIProxyAPI d00267c3): Anthropic answers an exhausted API credit balance with a
+ * 400 whose JSON error message starts with "Your credit balance is too low".
+ */
+export const isCreditBalanceTooLow = (status: number, body: string): boolean => {
+  if (status !== 400) return false;
+  const root = parseJsonObject(body);
+
+  if (root === undefined) return false;
+
+  return ["error.message", "message", "response.error.message", "body.error.message"].some((path) =>
+    lower(stringAt(root, path)).startsWith("your credit balance is too low"),
+  );
+};
+
+/**
  * `clienterror.IsRequestFault`: the failure is caused by the request, so credentials are neither rotated nor
  * penalised. 402/429 always count against the credential; 401 `authentication_error` is a credential failure.
  */
@@ -161,6 +182,9 @@ export const isRequestFault = (status: number, body: string): boolean => {
     return false;
 
   if (isClaudeThreadNotFound(status, body)) return true;
+
+  // A depleted Anthropic API key fails over like any other payment failure.
+  if (isCreditBalanceTooLow(status, body)) return false;
 
   if (isDevinRequestPermissionDenied(status, body)) return true;
 
@@ -515,7 +539,8 @@ export const isTransientTransportError = (error: ClassifiableError): boolean =>
  * errors, Cloudflare challenges and invalid grants stay credential matters.
  */
 export const isRequestInvalidError = (error: ClassifiableError): boolean => {
-  if (error.code === ErrorCode.requestScoped) return true;
+  if (error.code === ErrorCode.requestScoped || error.code === ErrorCode.streamTruncated)
+    return true;
 
   if (isCloudflareChallengeError(error)) return false;
 
@@ -545,8 +570,8 @@ export const isRequestScopedResult = (error: ClassifiableError): boolean =>
   isRequestInvalidError(error);
 
 /**
- * `shouldSkipCredentialCooldown`: request-scoped, connection-lifecycle and transient-transport failures never cool a
- * credential (unless forced).
+ * `shouldSkipCredentialCooldown`: request-scoped, connection-lifecycle, transient-transport and stream-truncated
+ * failures never cool a credential (unless forced).
  */
 export const shouldSkipCredentialCooldown = (error: ClassifiableError | undefined): boolean => {
   if (error === undefined) return false;
@@ -554,6 +579,7 @@ export const shouldSkipCredentialCooldown = (error: ClassifiableError | undefine
   if (error.code === ErrorCode.forceCooldown) return false;
 
   return (
+    error.code === ErrorCode.streamTruncated ||
     isRequestScopedResult(error) ||
     isConnectionLifecycleError(error) ||
     isTransientTransportError(error)

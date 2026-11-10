@@ -2,7 +2,8 @@
  * Result handling: the cooldown / quota state machine behind `ControlPlane.report`.
  *
  * Go source: sdk/cliproxy/auth/conductor_cooldown.go (MarkResult, applyAuthFailureState, updateAggregatedAvailability,
- * quotaCooldownAfterFailure, nextQuotaCooldown, recoverableFailureRetryAfterWithHint), quota_signals.go.
+ * quotaCooldownAfterFailure, nextQuotaCooldown, recoverableFailureRetryAfterWithHint, existingModelState, ensureModelState,
+ * isModelStateActiveCooldown, isAuthActiveCooldown, the execution-sequence guard of CLIProxyAPI 35af74f9), quota_signals.go.
  * Docs: credentials.md §8.1-8.2.
  *
  * Pure: `markResult` takes the previous {@link CredentialState}, the clock and the settings and returns the next
@@ -17,13 +18,18 @@ import type {
   QuotaState,
 } from "../model.ts";
 import { redactSecrets } from "../redact.ts";
-import { canonicalModelKey } from "../selection/model-name.ts";
+import {
+  canonicalModelKey,
+  canonicalModelLookupKey,
+  findModelStateKey,
+} from "../selection/model-name.ts";
 import { hasUnauthorizedFailure } from "../selection/availability.ts";
 import type { ReportResult } from "../selection/types.ts";
 import {
   type ClassifiableError,
   ErrorCode,
   isCloudflareChallengeError,
+  isCreditBalanceTooLow,
   isInvalidGrantError,
   isModelSupportError,
   shouldSkipCredentialCooldown,
@@ -194,7 +200,8 @@ const applyCooldownFields = (
 };
 
 const ensureModelState = (state: Draft, model: string): DraftModel => {
-  const existing = state.modelStates[model];
+  // Any spelling of the model shares one state, which keeps the casing it was first stored under.
+  const existing = state.modelStates[findModelStateKey(state.modelStates, model) ?? model];
 
   if (existing !== undefined) return existing;
 
@@ -376,6 +383,9 @@ const applyCredentialFailure = (
   } else if (isInvalidGrantError(classified)) {
     state.statusMessage = "invalid_grant";
     state.nextRetryAfter = disableCooling ? 0 : now + HARD_COOLDOWN_MS;
+  } else if (isCreditBalanceTooLow(status, classified.message)) {
+    state.statusMessage = "payment_required";
+    state.nextRetryAfter = disableCooling ? 0 : now + HARD_COOLDOWN_MS;
   } else {
     switch (status) {
       case 401:
@@ -471,6 +481,33 @@ const applyCredentialFailure = (
 
 // --- MarkResult -----------------------------------------------------------------------------------------------------
 
+/**
+ * The dispatch watermarks of the cooldowns on one credential (CLIProxyAPI 35af74f9, `cooldownRecordedSeq`): the
+ * pool's dispatch counter when the cooldown was recorded. Runtime only, so a restart forgets them and a restored
+ * cooldown is clearable by any success. Models are keyed by `canonicalModelLookupKey`; `0` / absent = none recorded.
+ */
+export interface CooldownMarks {
+  readonly credential: number;
+  readonly models: ReadonlyMap<string, number>;
+}
+
+/** `isModelStateActiveCooldown`. */
+export const modelCooldownActive = (
+  model: Pick<ModelState, "status" | "nextRetryAfter" | "quota">,
+  now: number,
+): boolean =>
+  model.status === "disabled" ||
+  model.nextRetryAfter > now ||
+  model.quota.nextRecoverAt > now ||
+  (model.quota.exceeded && model.quota.nextRecoverAt === 0);
+
+/** `isAuthActiveCooldown`: a live cooldown recorded at credential level. */
+export const credentialCooldownActive = (state: CredentialState, now: number): boolean =>
+  state.status !== "disabled" &&
+  (state.nextRetryAfter > now ||
+    state.quota.nextRecoverAt > now ||
+    (state.quota.exceeded && state.quota.nextRecoverAt === 0));
+
 export interface MarkInput {
   readonly credential: Pick<Credential, "provider" | "metadata">;
   readonly state: CredentialState;
@@ -479,6 +516,12 @@ export interface MarkInput {
   readonly model: string;
   readonly result: ReportResult;
   readonly settings: CooldownSettings;
+  /**
+   * The pool's dispatch sequence of the attempt and the watermarks of the cooldowns recorded so far: a success
+   * dispatched at or before a live cooldown's watermark predates it and cannot clear it. Absent / `0`: unknown (exempt).
+   */
+  readonly executionSeq?: number | undefined;
+  readonly cooldownMarks?: CooldownMarks | undefined;
 }
 
 /** The error of a failed result as the Go `*Error` (request-scoped marker folded into the code). */
@@ -517,7 +560,9 @@ export const markResult = (input: MarkInput): CredentialState => {
   const retryAfterMs = result.retryAfterMs;
 
   let modelState: DraftModel | undefined =
-    modelKey === "" ? undefined : state.modelStates[modelKey];
+    modelKey === ""
+      ? undefined
+      : state.modelStates[findModelStateKey(state.modelStates, modelKey) ?? modelKey];
 
   state.recentRequests = recordRecentRequest(state.recentRequests, now, result.success);
 
@@ -530,6 +575,20 @@ export const markResult = (input: MarkInput): CredentialState => {
     return state;
   }
 
+  // A success dispatched before a cooldown was recorded says nothing about recovery: it must not clear that cooldown.
+  const sequence = input.executionSeq ?? 0;
+  const marks = input.cooldownMarks;
+
+  const retainedCooldown =
+    sequence > 0 &&
+    marks !== undefined &&
+    !wasTerminalUnauthorized &&
+    (modelKey === ""
+      ? credentialCooldownActive(state, now) && marks.credential > 0 && sequence <= marks.credential
+      : modelState !== undefined &&
+        modelCooldownActive(modelState, now) &&
+        sequence <= (marks.models.get(canonicalModelLookupKey(modelKey)) ?? 0));
+
   if (result.success) {
     if (wasTerminalUnauthorized) {
       if (modelKey !== "") {
@@ -538,6 +597,8 @@ export const markResult = (input: MarkInput): CredentialState => {
       }
     } else if (state.quota.reason === "credential_quota" && state.quota.nextRecoverAt > now) {
       // Retain the active credential-scoped cooldown.
+    } else if (retainedCooldown) {
+      // Retain a cooldown recorded after this attempt was dispatched.
     } else if (modelKey !== "") {
       modelState = ensureModelState(state, modelKey);
       resetModelState(modelState, now);
@@ -598,7 +659,10 @@ export const markResult = (input: MarkInput): CredentialState => {
             nextRecoverAt: next,
             backoffLevel: level,
           });
-        } else if (isInvalidGrantError(classified)) {
+        } else if (
+          isInvalidGrantError(classified) ||
+          isCreditBalanceTooLow(status, classified.message)
+        ) {
           model.nextRetryAfter = disableCooling ? 0 : now + HARD_COOLDOWN_MS;
         } else {
           switch (status) {

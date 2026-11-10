@@ -5,7 +5,7 @@
  * (`cooldownReason`). The Go registry stores the projection the conductor pushes after every result; on Workers the
  * projection is derived on demand from the credential state the ControlPlane keeps.
  */
-import { canonicalModelKey } from "../credentials/selection/model-name.ts";
+import { canonicalModelKey, findModelState } from "../credentials/selection/model-name.ts";
 import type { ModelInfo } from "./model-info.ts";
 import type { ModelSource } from "./source.ts";
 
@@ -64,7 +64,7 @@ export const projectModel = (
     keys.push(canonicalModelKey(model.metadataModelId));
 
   const modelState = keys
-    .map((key) => state.modelStates[key])
+    .map((key) => findModelState(state.modelStates, key))
     .find((candidate) => candidate !== undefined);
 
   let suspended = source.disabled || state.status === "disabled";

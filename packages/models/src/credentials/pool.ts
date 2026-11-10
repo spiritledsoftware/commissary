@@ -19,14 +19,26 @@ import type { JsonObject } from "@commissary/json";
 import { resetCooldownState } from "./cooldown-reset.ts";
 import { type StoredCredential, deriveFileCredential, sanitizeAliases } from "./derive.ts";
 import { parseAuthFile, type ImportFailureReason } from "./import.ts";
-import { type CooldownSettings, coolingDisabledFor, markResult } from "./cooldown/mark-result.ts";
+import {
+  type CooldownSettings,
+  classifiable,
+  coolingDisabledFor,
+  credentialCooldownActive,
+  markResult,
+  modelCooldownActive,
+  resultError,
+} from "./cooldown/mark-result.ts";
 import { shouldSkipCredentialCooldown } from "./cooldown/classify.ts";
 import { type Credential, type CredentialState, emptyState } from "./model.ts";
 import { MerklePrefixMatcher } from "../session-routing/matcher.ts";
 import type { SpendPolicy } from "@commissary/state/spend";
 import { SessionCache } from "./selection/affinity.ts";
 import { spendLimitReached } from "./selection/failures.ts";
-import { canonicalModelKey } from "./selection/model-name.ts";
+import {
+  canonicalModelKey,
+  canonicalModelLookupKey,
+  findModelState,
+} from "./selection/model-name.ts";
 import { rotateRoute } from "./selection/routing.ts";
 import {
   knownPrefixes,
@@ -138,6 +150,11 @@ interface View {
   readonly credentials: ReadonlyMap<string, Credential>;
 }
 
+interface MutableCooldownMarks {
+  credential: number;
+  models: Map<string, number>;
+}
+
 /** Rotates alias pools: successive requests start on different upstream models. */
 const POOL_OFFSET_WRAP = 2_000_000_000;
 
@@ -156,6 +173,9 @@ export class CredentialPool {
   readonly #lcp = new MerklePrefixMatcher();
   readonly #poolOffsets = new Map<string, number>();
   readonly #states: Map<string, CredentialState>;
+  /** Dispatch counter stamped on every lease, and the counter value when each live cooldown was recorded (35af74f9). */
+  #dispatchSeq = 0;
+  readonly #cooldownMarks = new Map<string, MutableCooldownMarks>();
   #view: View | undefined;
 
   constructor(options: PoolOptions) {
@@ -351,6 +371,7 @@ export class CredentialPool {
       provider: credential.provider,
       model: stateModel,
       issuedAt: now,
+      seq: ++this.#dispatchSeq,
       ...(outcome.affinityKeys.length === 0 ? {} : { affinityKeys: outcome.affinityKeys }),
       ...(outcome.lcp === undefined ? {} : { lcp: outcome.lcp }),
       ...(spend.length === 0 ? {} : { spend }),
@@ -401,8 +422,11 @@ export class CredentialPool {
       model: result.model ?? lease.model,
       result,
       settings: view.cooldown,
+      executionSeq: lease.seq,
+      cooldownMarks: this.#cooldownMarks.get(credential.id),
     });
 
+    this.#recordCooldownMarks(credential.id, result.model ?? lease.model, result, next, now);
     this.#states.set(credential.id, next);
     this.#store.saveState(credential.id, next);
 
@@ -474,6 +498,50 @@ export class CredentialPool {
     }
 
     return this.refreshTarget(id);
+  }
+
+  /**
+   * Stamps the cooldown a failure just recorded with the current dispatch counter, so successes of picks made
+   * before it cannot clear it, and drops the stamps of cooldowns that ended (`cooldownRecordedSeq`).
+   */
+  #recordCooldownMarks(
+    id: string,
+    model: string,
+    result: ReportResult,
+    next: CredentialState,
+    now: number,
+  ): void {
+    const marks = this.#cooldownMarks.get(id) ?? { credential: 0, models: new Map() };
+
+    const failure =
+      result.success || result.availabilityNeutral === true ? undefined : resultError(result);
+
+    if (failure !== undefined && !shouldSkipCredentialCooldown(classifiable(failure))) {
+      const seq = this.#dispatchSeq;
+      const key = canonicalModelLookupKey(model);
+
+      if (key === "") marks.credential = seq;
+      else marks.models.set(key, seq);
+
+      // A credential-scoped 429 cools every model of the credential at once.
+      if (failure.httpStatus === 429 && result.credentialScoped === true) {
+        marks.credential = seq;
+
+        for (const stateModel of Object.keys(next.modelStates))
+          marks.models.set(canonicalModelLookupKey(stateModel), seq);
+      }
+    }
+
+    if (!credentialCooldownActive(next, now)) marks.credential = 0;
+
+    for (const key of marks.models.keys()) {
+      const state = findModelState(next.modelStates, key);
+
+      if (state === undefined || !modelCooldownActive(state, now)) marks.models.delete(key);
+    }
+
+    if (marks.credential === 0 && marks.models.size === 0) this.#cooldownMarks.delete(id);
+    else this.#cooldownMarks.set(id, marks);
   }
 
   /** The error as the affinity selector sees it: request-scoped and transport failures keep bindings. */

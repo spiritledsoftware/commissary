@@ -132,6 +132,11 @@ export const Lease = Schema.Struct({
   /** Model key for cooldown state (canonical, no thinking suffix). */
   model: Schema.String,
   issuedAt: Schema.Number,
+  /**
+   * The pool's dispatch sequence of this pick (monotonic per Durable Object instance, CLIProxyAPI 35af74f9
+   * `ExecutionSeq`): a success whose pick predates a cooldown cannot clear it. Absent: unknown (exempt).
+   */
+  seq: optional(Schema.Int),
   /** Opaque session-affinity cache keys bound by this pick. */
   affinityKeys: optional(Schema.Array(Schema.String)),
   /** The Spend scopes with a limit that the attempt's Cost is charged to (`ReportResult.costMicros`); absent: none. */

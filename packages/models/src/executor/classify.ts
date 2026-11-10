@@ -14,8 +14,10 @@ import {
   ErrorCode,
   isCloudflareChallengeError,
   isConnectionLifecycleError,
+  isCreditBalanceTooLow,
   isExplicitModelNotFound,
   isInvalidGrantError,
+  isModelSupportMessage,
   isProviderSpecificRequestError,
   isRequestFault,
   isRequestInvalidError,
@@ -198,6 +200,10 @@ export const successReport = (context: ReportContext): ReportResult => ({
 
 /** `resultErrorFromError`: the code a failed attempt is reported with. */
 const resultCode = (error: ExecutionError, classified: ClassifiableError): string | undefined => {
+  // A truncated accepted stream keeps its own code so the ControlPlane skips the cooldown (credential failures aside).
+  if (error.code === ErrorCode.streamTruncated && error.credentialScoped !== true)
+    return ErrorCode.streamTruncated;
+
   if (isExplicitModelNotFound(classified)) return ErrorCode.modelNotFound;
 
   if (isRequestInvalidError(classified)) return ErrorCode.requestScoped;
@@ -220,12 +226,51 @@ const compactNeutral = (
   if (
     error.credentialScoped === true ||
     isCloudflareChallengeError(classified) ||
-    isInvalidGrantError(classified)
+    isInvalidGrantError(classified) ||
+    isCreditBalanceTooLow(classified.status, classified.message)
   ) {
     return false;
   }
 
   return ![401, 402, 403, 429].includes(classified.status);
+};
+
+/** Codes (hyphens and spaces folded to underscores) with which an executor says it has no count_tokens. */
+const COUNT_TOKENS_UNSUPPORTED_CODES = new Set([
+  "not_implemented",
+  "count_tokens_unsupported",
+  "count_tokens_not_supported",
+  "unsupported_operation",
+  "unsupported_capability",
+  "method_not_implemented",
+]);
+
+/**
+ * `isCountTokensEndpointNotFoundError` (CLIProxyAPI 1c537211): upstreams without a count_tokens route answer a generic
+ * 404 or a 501, and executors without one a typed unsupported code. Explicit model-not-found and credential failures
+ * (challenge, invalid grant, credit balance, model support, quota, auth) keep their cooldowns.
+ */
+const countTokensUnsupported = (error: ExecutionError, classified: ClassifiableError): boolean => {
+  if (isExplicitModelNotFound(classified)) return false;
+
+  if (classified.status === 404) return true;
+
+  if (
+    error.credentialScoped === true ||
+    isCloudflareChallengeError(classified) ||
+    isInvalidGrantError(classified) ||
+    isCreditBalanceTooLow(classified.status, classified.message) ||
+    isModelSupportMessage(classified.message)
+  ) {
+    return false;
+  }
+
+  if (classified.status === 501) return true;
+
+  if (classified.status !== 0) return false;
+  const code = (error.code ?? "").trim().toLowerCase().replaceAll("-", "_").replaceAll(" ", "_");
+
+  return COUNT_TOKENS_UNSUPPORTED_CODES.has(code);
 };
 
 /** Builds the `report` payload of a failed attempt (request-scoped actions, compact neutrality, signals). */
@@ -240,10 +285,8 @@ export const failureReport = (error: ExecutionError, context: ReportContext): Re
 
   const neutral =
     (context.compact === true && compactNeutral(error, classified, code)) ||
-    // `isCountTokensEndpointNotFoundError`: upstreams without a count_tokens route answer a generic 404.
     (context.countTokens === true &&
-      classified.status === 404 &&
-      !isExplicitModelNotFound(classified) &&
+      countTokensUnsupported(error, classified) &&
       code !== ErrorCode.forceCooldown);
 
   return {
@@ -272,7 +315,8 @@ export const isCompactRequestFault = (error: ExecutionError, alt: string): boole
   if (
     error.credentialScoped === true ||
     isCloudflareChallengeError(classified) ||
-    isInvalidGrantError(classified)
+    isInvalidGrantError(classified) ||
+    isCreditBalanceTooLow(classified.status, classified.message)
   ) {
     return false;
   }

@@ -14,7 +14,11 @@
  */
 import type { Types } from "effect";
 import type { OAuthModelAlias } from "../config/schema.ts";
-import { canonicalModelKey, matchWildcard } from "../credentials/selection/model-name.ts";
+import {
+  canonicalModelKey,
+  findModelState,
+  matchWildcard,
+} from "../credentials/selection/model-name.ts";
 import type {
   ModelRoute,
   OAuthModelAliasWire,
@@ -74,7 +78,10 @@ const runtimeState = (source: ModelSource, model: ModelInfo, now: number): Runti
 
   if (model.metadataModelId !== undefined && model.metadataModelId !== "")
     keys.push(canonicalModelKey(model.metadataModelId));
-  const modelState = keys.map((key) => state.modelStates[key]).find((entry) => entry !== undefined);
+
+  const modelState = keys
+    .map((key) => findModelState(state.modelStates, key))
+    .find((entry) => entry !== undefined);
 
   if (modelState !== undefined) {
     const reason = cooldownReason(modelState.statusMessage, modelState.quota, modelState.lastError);

@@ -562,6 +562,17 @@ Port of `internal/thinking`, keeping the "canonical `ThinkingConfig` → central
   (`ReportResult.model`, `route.pooled`) and `pick` drops cooling upstream models (a credential without any usable one is
   skipped). Persistence: counters, the last error and the cooldown fields (credential and per-model) are always saved,
   as plain `credential_state` rows instead of the Go `.cds` files; `routing.cooldown.save-cooldown-status` has no effect.
+  Cooldown refinements (CLIProxyAPI d00267c3, f013eb66, 4138edb1, 35af74f9, 098af7d5, 1c537211):
+  an Anthropic 400 "Your credit balance is too low" is a payment failure (30 min, failover, affinity rebind) rather than a
+  request fault, also under `responses/compact`; an accepted OpenAI-compatible stream that ends without a terminal frame
+  carries `stream_truncated` (502 to the client, no cooldown, no replay on another credential); a 401 matched by a
+  request-scoped error rule skips the token refresh whatever the rule's action (Commissary rejects the token only inside
+  `refreshNow`, so Go's `MarkResult` guard has no counterpart); count_tokens 501s and typed unsupported-capability codes
+  are availability-neutral like a generic 404. Every lease carries the pool's dispatch sequence (`Lease.seq`); the pool
+  remembers the sequence when each live cooldown was recorded (in memory only, so a restart makes restored cooldowns
+  clearable by any success) and a success whose pick predates the cooldown does not clear it. Model-state lookups ignore case
+  and keep the stored casing (`findModelState`); Go also migrates alias cooldowns to the resolved upstream key when the
+  OAuth model aliases change, which Commissary does not (its state key is the resolved selection model of each pick).
 - **Retry planning** (`selection/retry.ts`, `retryAllowed` + `closestCooldownWait`): per-credential `request_retry`,
   `max-retry-interval`, the 10 s floor for an already-attempted 429 credential. `PickRequest.retryRound`/`requestRetry`
   make credentials with an exhausted budget age out of later rounds. Alias pools count as available when any upstream model

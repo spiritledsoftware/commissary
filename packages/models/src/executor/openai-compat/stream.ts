@@ -8,6 +8,7 @@
 import { asInt, get, type Json, tryParseJson } from "@commissary/json";
 import { Formats, type Format } from "@commissary/translation/formats";
 import type { ResponseContext, TranslatorRegistry } from "@commissary/translation";
+import { ErrorCode } from "../../credentials/cooldown/classify.ts";
 import { ExecutionError } from "../errors.ts";
 
 /** Go `helps.ApplyPatchUpstreamErrorMessage` (retained tool-input translation failure). */
@@ -232,7 +233,14 @@ export class OpenAICompatStreamReader {
       }
 
       // Without a translator-confirmed terminal state a Responses stream that ends without [DONE] failed.
-      return this.#fail(gatewayError("upstream stream closed before [DONE]"), chunks);
+      return this.#fail(
+        new ExecutionError({
+          status: 502,
+          message: "upstream stream closed before [DONE]",
+          code: ErrorCode.streamTruncated,
+        }),
+        chunks,
+      );
     }
 
     // Other protocols tolerate providers that omit [DONE].
