@@ -16,8 +16,13 @@ import { responsesStreamErrorChunk, responsesStreamFailedChunk } from "../../htt
 import { SSE_KEEP_ALIVE } from "@commissary/translation/sse";
 import { statusText } from "../../http/status.ts";
 import {
+  annotateImageGenerationError,
+  statusFromErrorTypeAndCode,
+} from "../../http/upstream-error.ts";
+import {
   asInt,
   asString,
+  cloneJson,
   get,
   isJsonArray,
   isJsonObject,
@@ -423,7 +428,28 @@ const payloadErrorStatus = (payload: Json): number => {
     if (candidate >= 400 && candidate <= 599) return candidate;
   }
 
-  return 502;
+  return payloadErrorStatusFromType(payload);
+};
+
+/** `responsesSSEPayloadErrorStatus` (8fb60326): the status implied by the error's type/code when none is given. */
+const payloadErrorStatusFromType = (payload: Json): number => {
+  const field = (path: string): string => asString(get(payload, path)).trim();
+
+  return statusFromErrorTypeAndCode(
+    field("error.type") || field("response.error.type"),
+    field("error.code") || field("response.error.code"),
+  );
+};
+
+/** `responsesAnnotateImageGenerationComplexityPayload`: the first of `error` / `response.error` that needs guidance. */
+const annotateImageGenerationPayload = (payload: Json): Json => {
+  for (const path of ["error", "response.error"]) {
+    const annotated = annotateImageGenerationError(get(payload, path));
+
+    if (annotated !== undefined) return set(cloneJson(payload), `${path}.message`, annotated);
+  }
+
+  return payload;
 };
 
 export interface ResponsesFramerOptions {
@@ -453,8 +479,14 @@ export const responsesFramer = (options: ResponsesFramerOptions): StreamFramer =
 
   const repairErrorPayload = (payload: Json): string => {
     const status = payloadErrorStatus(payload);
-    const text = responsesStreamErrorText(JSON.stringify(payload), status);
+
+    const text = responsesStreamErrorText(
+      JSON.stringify(annotateImageGenerationPayload(payload)),
+      status,
+    );
+
     const failureEvent = options.codexClient ? "response.failed" : "error";
+
     terminalEvent = failureEvent;
     let seq = 0;
     const payloadSeq = get(payload, "sequence_number");

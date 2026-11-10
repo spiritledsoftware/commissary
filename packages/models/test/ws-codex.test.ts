@@ -155,6 +155,34 @@ describe("Responses WebSocket over an upstream WebSocket (Codex)", () => {
     client.close();
   });
 
+  it("rejects a forced hosted image_generation judged by the built handshake headers", async () => {
+    // The lite flag comes from a credential `header:` attribute, which only the handshake headers carry.
+    const s = setup([
+      wsCredential({
+        attributes: {
+          plan_type: "plus",
+          websockets: "true",
+          "header:X-OpenAI-Internal-Codex-Responses-Lite": "true",
+        },
+      }),
+    ]);
+
+    const client = await s.connect();
+    client.send({
+      type: "response.create",
+      model: "gpt-5.4",
+      input: [{ type: "message", role: "user", content: "draw" }],
+      tools: [{ type: "image_generation" }],
+      tool_choice: { type: "image_generation" },
+    });
+
+    const message = JSON.stringify(await client.nextJson());
+
+    expect(message).toContain("/v1/images/generations");
+    expect(s.mock.dials).toHaveLength(0);
+    client.close();
+  });
+
   it("keeps the upstream socket for the session and passes continuations through", async () => {
     const s = setup([wsCredential()], {
       onConnection: (connection) => {

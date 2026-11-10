@@ -70,7 +70,22 @@ import {
   isThinkingSignatureInvalid,
   newCodexStatusError,
 } from "./errors.ts";
-import { buildCodexHeaders, codexBaseUrl, isNativeCodexRequest } from "./headers.ts";
+import {
+  buildCodexHeaders,
+  buildCodexWebsocketHeaders,
+  codexBaseUrl,
+  codexUsesProviderKey,
+  isNativeCodexRequest,
+} from "./headers.ts";
+import {
+  type AutoInjection,
+  injectionBaseline,
+  type LiteRouteInput,
+  recordAutoInjection,
+  retractAutoInjectedImageGeneration,
+  stripHostedImageComplexity,
+  validateHostedImageGeneration,
+} from "./hosted-images.ts";
 import {
   buildImagesApiResponse,
   CODEX_IMAGE_SOURCE_FORMAT,
@@ -112,7 +127,7 @@ import {
   replayScopeFromRequest,
 } from "./replay.ts";
 import { modelOverrideHeaders } from "../helps/model-headers.ts";
-import { resolveCodexModelIsCompat } from "./compat.ts";
+import { configuredUpstreamNames, resolveCodexModelIsCompat } from "./compat.ts";
 import { bootstrapTimeoutMs, isGrokClientHeaders } from "./bootstrap.ts";
 import { CodexStreamReader } from "./stream.ts";
 import {
@@ -142,6 +157,7 @@ const transportError = (error: HttpClientError.HttpClientError) =>
 
 export interface PreparedRequest {
   readonly url: string;
+  /** Upstream request headers; for a WebSocket turn the handshake headers. */
   readonly headers: Record<string, string>;
   /** Final business payload (after payload rules). */
   readonly body: Json;
@@ -173,6 +189,18 @@ export const makeCodexExecutor = (executorOptions: CodexExecutorOptions = {}): P
 
     return modelHeaderOverrides !== undefined ? { modelHeaderOverrides } : {};
   };
+
+  /** The inputs beyond the body that decide Responses-Lite routing. */
+  const liteRoute = (
+    context: ExecutionContext,
+    request: ExecutorRequest,
+    options: ExecutorOptions,
+  ): LiteRouteInput => ({
+    credential: context.credential,
+    headers: options.headers,
+    sessionId: options.metadata.sessionId,
+    overrideHeaders: overrides(request, parseSuffix(request.model).modelName),
+  });
 
   const replayStore = executorOptions.replayStore ?? defaultReplayStore;
 
@@ -338,8 +366,15 @@ export const makeCodexExecutor = (executorOptions: CodexExecutorOptions = {}): P
 
     body = normalizeCodexInstructions(body, nativeOutput);
 
+    let autoInjection: AutoInjection | undefined;
+
     if (!mode.compact && context.config.multimedia["disable-image-generation"] === false) {
-      body = ensureImageGenerationTool(body, baseModel, context.credential, options.headers);
+      const baseline = injectionBaseline(body);
+
+      body = ensureImageGenerationTool(body, request.model, liteRoute(context, request, options));
+      autoInjection = recordAutoInjection(baseline, body);
+
+      if (!codexUsesProviderKey(context.credential)) body = stripHostedImageComplexity(body);
     }
 
     body = sanitizeReasoningEncryptedContent(body, isCompat, isCompat);
@@ -384,14 +419,32 @@ export const makeCodexExecutor = (executorOptions: CodexExecutorOptions = {}): P
     if (cacheId !== "") body = setIfDifferent(body, "prompt_cache_key", cacheId);
     body = sanitizeCodexInputItemIds(body);
     body = finalize(context, options, baseModel, request.model, to, original.body, body);
+    body = retractAutoInjectedImageGeneration(
+      body,
+      autoInjection,
+      request.model,
+      liteRoute(context, request, options),
+    );
 
     const effort = asString(get(body, "reasoning.effort"));
     context.usage.setReasoningEffort(effort !== "" ? effort : undefined);
 
-    // The WebSocket transport builds its own handshake headers (`websocket.ts`).
+    // The WebSocket transport dials with the handshake headers (no content type, beta header): built once here.
     const headers =
       mode.websocket === true
-        ? {}
+        ? buildCodexWebsocketHeaders({
+            credential: context.credential,
+            config: context.config,
+            clientHeaders: options.headers,
+            cacheId,
+            nativeRequest: nativeOutput,
+            body,
+            baseModel,
+            ...(options.metadata.sessionId !== undefined
+              ? { sessionId: options.metadata.sessionId }
+              : {}),
+            ...overrideField(request, baseModel),
+          })
         : buildCodexHeaders({
             credential: context.credential,
             config: context.config,
@@ -406,6 +459,18 @@ export const makeCodexExecutor = (executorOptions: CodexExecutorOptions = {}): P
             routingHint: true,
             ...overrideField(request, baseModel),
           });
+
+    // Go validates execute, stream and the WebSocket paths, not compaction.
+    if (!mode.compact) {
+      const hostedImageError = validateHostedImageGeneration({
+        body,
+        headers: new Headers(headers),
+        passthrough: context.config.multimedia["disable-image-generation"] === "passthrough",
+        nativeCodex: !codexUsesProviderKey(context.credential),
+      });
+
+      if (hostedImageError !== undefined) return yield* hostedImageError;
+    }
 
     const url = `${codexBaseUrl(context.credential)}${mode.compact ? "/responses/compact" : "/responses"}`;
 
@@ -428,7 +493,6 @@ export const makeCodexExecutor = (executorOptions: CodexExecutorOptions = {}): P
   const websocketDeps = {
     prepare,
     replayStore,
-    modelHeaderOverrides: overrides,
     translateNonStream: (prepared: PreparedRequest, request: ExecutorRequest, completed: Json) => {
       const out = registry.translateNonStream(
         prepared.responseFormat,
@@ -723,7 +787,13 @@ export const makeCodexExecutor = (executorOptions: CodexExecutorOptions = {}): P
     options: ExecutorOptions,
   ) => {
     const requestPath = options.metadata.requestPath;
-    const endpoint = directImageEndpoint(request.payload, request.model, requestPath);
+
+    const endpoint = directImageEndpoint(
+      request.payload,
+      request.model,
+      requestPath,
+      options.metadata.requestedModel,
+    );
 
     return { requestPath, endpoint };
   };
@@ -741,7 +811,13 @@ export const makeCodexExecutor = (executorOptions: CodexExecutorOptions = {}): P
     endpoint: string,
     stream: boolean,
   ) => {
-    const model = directImageModel(request.payload, request.model);
+    const model = directImageModel(
+      request.payload,
+      request.model,
+      options.metadata.requestedModel,
+      configuredUpstreamNames(context.config, context.credential),
+    );
+
     let body = prepareDirectImageBody(request.payload, model, stream);
     body = finalize(
       context,

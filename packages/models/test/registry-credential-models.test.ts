@@ -220,6 +220,12 @@ describe("assembleCredentialModels: catalog providers", () => {
       "acme/gpt-image-2.5-sunburst",
       "gpt-image-2.5",
       "acme/gpt-image-2.5",
+      "gpt-image-2.6-flare",
+      "acme/gpt-image-2.6-flare",
+      "gpt-image-2.6-sunburst",
+      "acme/gpt-image-2.6-sunburst",
+      "gpt-image-2.6",
+      "acme/gpt-image-2.6",
     ]);
     expect(assembled?.models.find((entry) => entry.id === "acme/main")?.metadataModelId).toBe(
       "gpt-5.5",

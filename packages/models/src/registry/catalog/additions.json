@@ -1557,7 +1557,10 @@
           "gpt-image-2",
           "gpt-image-2.5-flare",
           "gpt-image-2.5-sunburst",
-          "gpt-image-2.5"
+          "gpt-image-2.5",
+          "gpt-image-2.6-flare",
+          "gpt-image-2.6-sunburst",
+          "gpt-image-2.6"
         ],
         "team": [
           "gpt-5.5",
@@ -1573,7 +1576,10 @@
           "gpt-image-2",
           "gpt-image-2.5-flare",
           "gpt-image-2.5-sunburst",
-          "gpt-image-2.5"
+          "gpt-image-2.5",
+          "gpt-image-2.6-flare",
+          "gpt-image-2.6-sunburst",
+          "gpt-image-2.6"
         ],
         "plus": [
           "gpt-5.5",
@@ -1589,7 +1595,10 @@
           "gpt-image-2",
           "gpt-image-2.5-flare",
           "gpt-image-2.5-sunburst",
-          "gpt-image-2.5"
+          "gpt-image-2.5",
+          "gpt-image-2.6-flare",
+          "gpt-image-2.6-sunburst",
+          "gpt-image-2.6"
         ],
         "pro": [
           "gpt-5.5",
@@ -1605,7 +1614,10 @@
           "gpt-image-2",
           "gpt-image-2.5-flare",
           "gpt-image-2.5-sunburst",
-          "gpt-image-2.5"
+          "gpt-image-2.5",
+          "gpt-image-2.6-flare",
+          "gpt-image-2.6-sunburst",
+          "gpt-image-2.6"
         ]
       },
       "facts": {},
@@ -1669,6 +1681,33 @@
           "created": 1704067200,
           "displayName": "GPT Image 2.5",
           "version": "gpt-image-2.5"
+        },
+        {
+          "id": "gpt-image-2.6-flare",
+          "object": "model",
+          "ownedBy": "openai",
+          "type": "openai",
+          "created": 1704067200,
+          "displayName": "GPT Image 2.6 Flare",
+          "version": "gpt-image-2.6-flare"
+        },
+        {
+          "id": "gpt-image-2.6-sunburst",
+          "object": "model",
+          "ownedBy": "openai",
+          "type": "openai",
+          "created": 1704067200,
+          "displayName": "GPT Image 2.6 Sunburst",
+          "version": "gpt-image-2.6-sunburst"
+        },
+        {
+          "id": "gpt-image-2.6",
+          "object": "model",
+          "ownedBy": "openai",
+          "type": "openai",
+          "created": 1704067200,
+          "displayName": "GPT Image 2.6",
+          "version": "gpt-image-2.6"
         },
         {
           "id": "gpt-6-luna",

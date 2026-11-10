@@ -109,6 +109,12 @@ const configModelIsCompat = (
   return false;
 };
 
+/** The upstream model names configured on a provider-key credential's entry (an entry without a name uses its alias). */
+export const configuredUpstreamNames = (config: Config, credential: CredentialSnapshot): string[] =>
+  (resolveCodexKeyConfig(config, credential)?.models ?? []).map((model) =>
+    model.name.trim() !== "" ? model.name : (model.alias ?? ""),
+  );
+
 /**
  * `resolveCodexModelIsCompat`: the resolved model info wins; without one the credential's config entry decides (a
  * non-empty `models` list is authoritative), then the generic provider-key capability lookup.
