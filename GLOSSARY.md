@@ -441,6 +441,11 @@ _Avoid_: thread, session state
 Sending a session's later requests to the credential that served it before.
 _Avoid_: sticky routing, binding
 
+**Pinned credential**:
+The one credential a request must use, such as a Responses WebSocket continuation or a video retrieval. Unlike session
+affinity, it never fails over to another credential.
+_Avoid_: sticky credential, bound credential
+
 **Payload rule**:
 An org-defined change to the body sent upstream. Payload rules are applied after every other change Commissary makes.
 _Avoid_: payload (on its own), payload config
@@ -459,7 +464,7 @@ compaction.
 _Avoid_: encrypted summary
 
 **Responses WebSocket**:
-A client's long-lived connection that carries a series of OpenAI Responses turns.
+A client's long-lived connection that carries a series of OpenAI Responses requests.
 _Avoid_: socket session
 
 ### Health and limits
