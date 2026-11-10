@@ -15,6 +15,7 @@
  */
 import { Data } from "effect";
 import { asString, cloneJson, type Json, type JsonObject } from "@commissary/json";
+import { recognizedCompactionResponseId } from "../../../executor/helps/compaction.ts";
 import { parseSuffix } from "@commissary/translation/thinking";
 import {
   inputContainsFullTranscript,
@@ -55,6 +56,8 @@ export interface SocketState {
   observedCompaction: { readonly modelKey: string; readonly authId: string } | undefined;
   /** Provider of the credential that served the previous turn. */
   lastProvider: string;
+  /** The previous turn was a local compaction: its response id is not known upstream (Go `localCompactionBoundary`). */
+  localBoundary: boolean;
 }
 
 export const newSocketState = (): SocketState => ({
@@ -69,6 +72,7 @@ export const newSocketState = (): SocketState => ({
   upstreamWebsocketAuthId: "",
   observedCompaction: undefined,
   lastProvider: "",
+  localBoundary: false,
 });
 
 /** `responsesWebsocketProviderSetForModel` model key: the base model without its `(thinking)` suffix. */
@@ -182,6 +186,14 @@ export const planTurn = (state: SocketState, payload: JsonObject): Plan => {
     else error = result.error;
   } else if (state.lastRequest === undefined && previousResponseId !== "") {
     error = previousResponseNotFoundError();
+  } else if (
+    previousResponseId !== "" &&
+    (state.localBoundary || recognizedCompactionResponseId(previousResponseId)) &&
+    previousResponseId !== state.lastResponseId.trim()
+  ) {
+    // A response a local compaction minted lives in no upstream: only the one that just ended can be continued, from
+    // the transcript the boundary recorded (`localCompactionBoundary`, Go 61f1ad5e).
+    error = previousResponseNotFoundError();
   } else {
     apply(
       normalizeRequest(
@@ -241,6 +253,7 @@ export const commitPrewarm = (
   state.lastResponseId = "";
   state.lastPendingToolCallIds = [];
   state.pendingPrewarmId = prewarmId;
+  state.localBoundary = false;
 };
 
 export interface TurnOutcome {
@@ -250,6 +263,8 @@ export interface TurnOutcome {
   readonly selected:
     | { readonly authId: string; readonly provider: string; readonly websockets: boolean }
     | undefined;
+  /** The executor answered without the upstream socket (local compaction): the socket goes to HTTP mode. */
+  readonly local?: boolean;
   readonly completedOutput: Json[];
   readonly completedResponseId: string;
   readonly pendingToolCallIds: string[];
@@ -292,13 +307,40 @@ export const commitLoss = (
   if (selected?.websockets === true) pinToUpstreamSocket(state, selected, outcome.modelName);
 };
 
+/**
+ * `responsesWebsocketLocalCompactionBoundaryRequest`: the transcript root after a local compaction. The history is in the
+ * compaction item the turn answered with, so the request keeps its settings and loses its input.
+ */
+export const localBoundaryRequest = (request: JsonObject): JsonObject => {
+  const out: JsonObject = {};
+
+  for (const [key, value] of Object.entries(request))
+    if (key !== "type" && key !== "previous_response_id") out[key] = value;
+
+  out["input"] = [];
+
+  return cloneJson(out);
+};
+
 /** State changes after a turn completed without error (Go: the tail of the main loop body). */
 export const commitTurn = (state: SocketState, outcome: TurnOutcome): void => {
   state.pendingPrewarmId = "";
   const selected = outcome.selected;
-  const mode: UpstreamMode = selected?.websockets === true ? "websocket" : "http";
+  const local = outcome.local === true;
+  const mode: UpstreamMode = selected?.websockets === true && !local ? "websocket" : "http";
   state.upstreamMode = mode;
   state.lastProvider = selected?.provider ?? "";
+  state.localBoundary = local;
+
+  // A local compaction keeps a WebSocket-capable credential's pin (`rememberPinnedAuth`): the next full create redials
+  // on it, and the upstream socket it owned is gone.
+  if (local && selected?.websockets === true) {
+    state.pinned = {
+      authId: selected.authId,
+      provider: selected.provider,
+      modelKey: modelKeyOf(outcome.modelName),
+    };
+  }
 
   if (mode === "websocket" && selected !== undefined) {
     pinToUpstreamSocket(state, selected, outcome.modelName);

@@ -319,6 +319,9 @@ export const makeCodexWebsocketStream =
             websocket?.duplex !== undefined &&
             context.config.upstream.codex["response-steering"]
           ) {
+            // The handler no longer infers this from the credential: it reads what the executor did.
+            if (websocket.report !== undefined) websocket.report.duplex = true;
+
             return yield* startCodexDuplex({
               prepare: deps.prepare,
               replayStore: deps.replayStore,

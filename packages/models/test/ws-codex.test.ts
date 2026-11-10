@@ -12,8 +12,12 @@ import {
 } from "./support/pipeline.ts";
 import { connectClient, mockUpstream, type MockUpstreamOptions } from "./support/websocket.ts";
 import { xaiPicker, type XaiPickerLog } from "./support/xai.ts";
-import { Effect } from "effect";
+import { Effect, Layer } from "effect";
 import { codexSessionStore } from "../src/executor/websocket/session.ts";
+import { unsealCompaction } from "../src/executor/helps/compaction.ts";
+import { ModelProviders } from "../src/handlers/model-providers.ts";
+import { jsonResponse } from "./support/pipeline.ts";
+import { errorOf } from "./support/websocket.ts";
 
 const created = {
   type: "response.created",
@@ -52,6 +56,7 @@ const setup = (
   upstream: MockUpstreamOptions = {},
   respond: UpstreamResponder = () => sseResponse([]),
   configOverride: Config = config,
+  modelProviders: typeof codexModels = codexModels,
 ) => {
   const log: XaiPickerLog = { picks: [], reports: [] };
   const mock = mockUpstream(upstream);
@@ -60,7 +65,7 @@ const setup = (
     config: configOverride,
     respond,
     credentialPicker: xaiPicker(credentials, log),
-    modelProviders: codexModels,
+    modelProviders,
     websocketConnector: mock.layer,
   });
 
@@ -792,6 +797,149 @@ describe("stream bootstrap buffering on the upstream WebSocket", () => {
       input: [{ type: "message", role: "user", content: "hi" }],
     });
     expect((await client.nextJson())["type"]).toBe("response.created");
+    await client.until("response.completed");
+    client.close();
+  });
+});
+
+describe("local compaction over the Responses WebSocket (Kimi, a credential without websockets)", () => {
+  const kimi: CredentialSnapshot = {
+    id: "kimi-1",
+    provider: "kimi",
+    kind: "oauth",
+    label: "kimi",
+    attributes: { base_url: "https://api.kimi.com/coding", domain: "kimi.com" },
+    metadata: { access_token: "kimi-token", device_id: "dev-1" },
+  };
+
+  const kimiModels = Layer.succeed(
+    ModelProviders,
+    ModelProviders.of({
+      providersFor: () => Effect.succeed(["kimi"]),
+      firstAvailableModel: Effect.succeed("kimi-k2.8"),
+    }),
+  );
+
+  const reply = (id: string) => ({
+    id,
+    object: "response",
+    status: "completed",
+    model: "kimi-for-coding",
+    output: [{ ...MESSAGE_ITEM, id: `msg_${id}`, status: "completed" }],
+    usage: { input_tokens: 9, output_tokens: 3, total_tokens: 12 },
+  });
+
+  /** A normal turn streams; the summary of a compaction is one non-stream request. */
+  const respond: UpstreamResponder = (call) => {
+    const body = JSON.parse(call.body) as { stream?: boolean };
+
+    if (body.stream !== true)
+      return jsonResponse({
+        ...reply("resp_summary"),
+        output: [
+          {
+            id: "msg_s",
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "the summary" }],
+          },
+        ],
+      });
+    const id = `resp_${call.body.length}`;
+
+    return sseResponse([
+      `data: ${JSON.stringify({ type: "response.created", response: { id, status: "in_progress" } })}\n\n`,
+      `data: ${JSON.stringify({ type: "response.completed", response: reply(id) })}\n\n`,
+    ]);
+  };
+
+  const userMessage = (text: string) => ({
+    type: "message",
+    role: "user",
+    content: [{ type: "input_text", text }],
+  });
+
+  const assistantMessage = {
+    type: "message",
+    role: "assistant",
+    content: [{ type: "output_text", text: "OK" }],
+  };
+
+  const trigger = {
+    type: "response.create",
+    model: "kimi-k2.8",
+    input: [userMessage("secret history"), assistantMessage, { type: "compaction_trigger" }],
+  };
+
+  const compact = async (s: ReturnType<typeof setup>) => {
+    const client = await s.connect();
+    client.send({ type: "response.create", model: "kimi-k2.8", input: [userMessage("hello")] });
+    await client.until("response.completed");
+    client.send(trigger);
+    const completed = await client.until("response.completed");
+
+    return { client, completed };
+  };
+
+  it("answers a compaction_trigger locally and continues from the expanded summary", async () => {
+    const s = setup([kimi], {}, respond, config, kimiModels);
+    const { client, completed } = await compact(s);
+
+    const output = (completed["response"] as { id: string; output: Array<Record<string, string>> })
+      .output;
+
+    expect(output[0]?.["type"]).toBe("compaction");
+    expect(await unsealCompaction(output[0]?.["encrypted_content"] ?? "")).toBe("the summary");
+    // One turn, then the summary request: no upstream socket, no compaction_trigger upstream.
+    expect(s.mock.dials).toHaveLength(0);
+    expect(s.calls).toHaveLength(2);
+    expect(s.calls[1]?.body).not.toContain("compaction_trigger");
+
+    const id = (completed["response"] as { id: string }).id;
+    expect(id).toMatch(/^resp_ag_compact_/);
+    client.send({
+      type: "response.create",
+      model: "kimi-k2.8",
+      previous_response_id: id,
+      input: [userMessage("next")],
+    });
+    await client.until("response.completed");
+    expect(s.calls).toHaveLength(3);
+
+    const input = (
+      JSON.parse(s.calls[2]?.body ?? "{}") as { input: Array<Record<string, unknown>> }
+    ).input;
+
+    expect(input).toHaveLength(2);
+    expect(JSON.stringify(input[0])).toContain(
+      "Context summary from previous turns:\\nthe summary",
+    );
+    expect(input[1]).toMatchObject({ role: "user" });
+    expect(s.calls[2]?.body).not.toContain("secret history");
+    expect(s.calls[2]?.body).not.toContain("previous_response_id");
+    client.close();
+  });
+
+  it("answers a synthetic previous_response_id that is not the last response with the 409 frame and keeps the socket", async () => {
+    const s = setup([kimi], {}, respond, config, kimiModels);
+    const { client } = await compact(s);
+
+    const calls = s.calls.length;
+
+    client.send({
+      type: "response.create",
+      model: "kimi-k2.8",
+      previous_response_id: "resp_ag_compact_000",
+      input: [userMessage("next")],
+    });
+
+    const frame = await client.until("error");
+    expect(frame["status"]).toBe(409);
+    expect(errorOf(frame).code).toBe("previous_response_not_found");
+    expect(s.calls).toHaveLength(calls);
+
+    // The socket is still open: the right id continues.
+    client.send({ type: "response.create", model: "kimi-k2.8", input: [userMessage("again")] });
     await client.until("response.completed");
     client.close();
   });
