@@ -157,6 +157,7 @@ const transportError = (error: HttpClientError.HttpClientError) =>
 
 export interface PreparedRequest {
   readonly url: string;
+  /** Upstream request headers; for a WebSocket turn the handshake headers. */
   readonly headers: Record<string, string>;
   /** Final business payload (after payload rules). */
   readonly body: Json;
@@ -428,10 +429,22 @@ export const makeCodexExecutor = (executorOptions: CodexExecutorOptions = {}): P
     const effort = asString(get(body, "reasoning.effort"));
     context.usage.setReasoningEffort(effort !== "" ? effort : undefined);
 
-    // The WebSocket transport builds its own handshake headers (`websocket.ts`).
+    // The WebSocket transport dials with the handshake headers (no content type, beta header): built once here.
     const headers =
       mode.websocket === true
-        ? {}
+        ? buildCodexWebsocketHeaders({
+            credential: context.credential,
+            config: context.config,
+            clientHeaders: options.headers,
+            cacheId,
+            nativeRequest: nativeOutput,
+            body,
+            baseModel,
+            ...(options.metadata.sessionId !== undefined
+              ? { sessionId: options.metadata.sessionId }
+              : {}),
+            ...overrideField(request, baseModel),
+          })
         : buildCodexHeaders({
             credential: context.credential,
             config: context.config,
@@ -449,26 +462,9 @@ export const makeCodexExecutor = (executorOptions: CodexExecutorOptions = {}): P
 
     // Go validates execute, stream and the WebSocket paths, not compaction.
     if (!mode.compact) {
-      const validationHeaders =
-        mode.websocket === true
-          ? buildCodexWebsocketHeaders({
-              credential: context.credential,
-              config: context.config,
-              clientHeaders: options.headers,
-              cacheId,
-              nativeRequest: nativeOutput,
-              body,
-              baseModel,
-              ...(options.metadata.sessionId !== undefined
-                ? { sessionId: options.metadata.sessionId }
-                : {}),
-              ...overrideField(request, baseModel),
-            })
-          : headers;
-
       const hostedImageError = validateHostedImageGeneration({
         body,
-        headers: new Headers(validationHeaders),
+        headers: new Headers(headers),
         passthrough: context.config.multimedia["disable-image-generation"] === "passthrough",
         nativeCodex: !codexUsesProviderKey(context.credential),
       });
@@ -497,7 +493,6 @@ export const makeCodexExecutor = (executorOptions: CodexExecutorOptions = {}): P
   const websocketDeps = {
     prepare,
     replayStore,
-    modelHeaderOverrides: overrides,
     translateNonStream: (prepared: PreparedRequest, request: ExecutorRequest, completed: Json) => {
       const out = registry.translateNonStream(
         prepared.responseFormat,

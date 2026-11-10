@@ -988,6 +988,12 @@ ${params}
     expect(tools).toBeUndefined();
   });
 
+  it("retracts nothing when no payload rules are configured", async () => {
+    const tools = await call("requests: {}", { model: "gpt-6-sol", input: "hi" });
+
+    expect(tools).toEqual([{ type: "image_generation", output_format: "png" }]);
+  });
+
   it("keeps the injected tool when the rule does not make the payload incompatible", async () => {
     const tools = await call(rule('          "metadata.via": "rule"'), {
       model: "gpt-6-sol",

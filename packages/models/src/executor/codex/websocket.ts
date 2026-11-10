@@ -59,7 +59,7 @@ import {
   parseCodexRetryAfterMs,
 } from "./errors.ts";
 import type { PreparedRequest } from "./executor.ts";
-import { buildCodexWebsocketHeaders, codexBaseUrl } from "./headers.ts";
+import { codexBaseUrl } from "./headers.ts";
 import {
   ensureResponsesUsageDetails,
   hasMeaningfulOutputDelta,
@@ -253,9 +253,6 @@ export interface CodexWebsocketDeps {
     request: ExecutorRequest,
     completed: Json,
   ) => string | undefined;
-  readonly modelHeaderOverrides?:
-    | ((request: ExecutorRequest, model: string) => Readonly<Record<string, string>> | undefined)
-    | undefined;
   readonly store?: UpstreamSessionStore;
 }
 
@@ -270,19 +267,6 @@ const turnInputOf = (
   const websocket = options.metadata.websocket;
   const modelLevelCooling = context.config.upstream.codex["model-level-cooling"];
   const url = websocketUrl(`${codexBaseUrl(context.credential)}/responses`);
-  const overrides = deps.modelHeaderOverrides?.(request, prepared.baseModel);
-
-  const headers = buildCodexWebsocketHeaders({
-    credential: context.credential,
-    config: context.config,
-    clientHeaders: options.headers,
-    cacheId: prepared.cacheId,
-    nativeRequest: prepared.nativeOutput,
-    body: prepared.body,
-    baseModel: prepared.baseModel,
-    ...(options.metadata.sessionId !== undefined ? { sessionId: options.metadata.sessionId } : {}),
-    ...(overrides !== undefined ? { modelHeaderOverrides: overrides } : {}),
-  });
 
   const frame = frameCodexWebsocketBody(prepared.body);
 
@@ -291,7 +275,7 @@ const turnInputOf = (
     sessionId: websocket?.sessionId,
     authId: context.credential.id,
     url,
-    headers,
+    headers: prepared.headers,
     frame: () => frame,
     requireUpstream: websocket?.requireUpstream === true,
     label: "codex",

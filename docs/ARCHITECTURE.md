@@ -842,7 +842,7 @@ Core contracts every provider slice implements (Go references in each module hea
   tool is auto-injected unless the request is lite (`client_metadata` mirror, client header, credential `header:` attributes or the model's
   `override_header`) or the model is lite (GPT-6, or `use_responses_lite` in the bundled Codex client catalog) _and_ carries a reasoning configuration.
   An untouched injected tool is retracted again after the payload rules when they make the payload lite-routed, `spark`, or reasoning on a lite model
-  (unless a rule selects the tool through `tool_choice`). After the final payload and the outbound headers (the WebSocket handshake headers on that
+  (unless a rule selects the tool through `tool_choice`). Difference from Go: Commissary compares the injected tool before and after the rules, while Go tracks rule writes, so a rule that writes back exactly the injected tool, or rewrites `tool_choice` to the same value, retracts here but keeps the tool in Go. After the final payload and the outbound headers (the WebSocket handshake headers on that
   path; not on `/responses/compact`) are built, a native (non-provider-key)
   Codex request on a lite route that _forces_ the hosted tool (`tool_choice` `image_generation`, `required` with only that tool declared, or
   `allowed_tools` required with only it) is refused with a request-scoped 400 pointing at `/v1/images/*`; `disable-image-generation: passthrough`

@@ -1,10 +1,11 @@
 // Parity backlog (#29 part 2) for Codex: `resolveCodexModelIsCompat` config fallback and models.json override headers.
+import { Effect, Result } from "effect";
 import { describe, expect, it } from "vitest";
 import { resolveCodexModelIsCompat } from "../src/executor/codex/compat.ts";
 import { makeCodexExecutor } from "../src/executor/codex/executor.ts";
 import { modelOverrideHeaders } from "../src/executor/helps/model-headers.ts";
 import type { ThinkingModelInfo } from "@commissary/translation/thinking";
-import { providerKeyCredential } from "./support/codex.ts";
+import { oauthCredential, providerKeyCredential } from "./support/codex.ts";
 import { execute, harness, json, loadConfig, options } from "./support/executor-run.ts";
 import { get, type Json, tryParseJson } from "@commissary/json";
 
@@ -117,6 +118,57 @@ describe("models.json override_header", () => {
     );
     expect(h.calls[0]?.headers["x-forced"]).toBe("yes");
     expect(h.calls[0]?.headers["user-agent"]).toBe("custom-agent");
+  });
+});
+
+describe("Responses-Lite routing from the model's override_header", () => {
+  const lookup = (id: string): ThinkingModelInfo | undefined =>
+    id === "gpt-5.4"
+      ? { id, config: { overrideHeader: { "X-OpenAI-Internal-Codex-Responses-Lite": "true" } } }
+      : undefined;
+
+  const completed = `data: ${JSON.stringify({ type: "response.completed", response: { id: "r", status: "completed", output: [], usage: {} } })}\n\n`;
+
+  const run = async (payload: Json) => {
+    const h = await harness(oauthCredential(), () => new Response(completed, { status: 200 }));
+
+    const result = await Effect.runPromise(
+      Effect.result(
+        makeCodexExecutor()
+          .execute(
+            h.context,
+            { model: "gpt-5.4", payload, modelLookup: lookup },
+            options({
+              sourceFormat: "openai-response",
+              metadata: { ...options().metadata, requestPath: "/v1/responses" },
+            }),
+          )
+          .pipe(Effect.provide(h.layers)),
+      ),
+    );
+
+    return { h, result };
+  };
+
+  it("does not auto-inject the hosted tool", async () => {
+    const { h, result } = await run(json({ model: "gpt-5.4", input: "hi" }));
+
+    expect(Result.isSuccess(result)).toBe(true);
+    expect(get(tryParseJson(h.calls[0]!.text), "tools")).toBeUndefined();
+  });
+
+  it("rejects a forced hosted image_generation before any upstream call", async () => {
+    const { h, result } = await run(
+      json({
+        model: "gpt-5.4",
+        input: "draw",
+        tools: [{ type: "image_generation" }],
+        tool_choice: { type: "image_generation" },
+      }),
+    );
+
+    expect(Result.isFailure(result)).toBe(true);
+    expect(h.calls).toHaveLength(0);
   });
 });
 
