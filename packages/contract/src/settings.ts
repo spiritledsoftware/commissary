@@ -129,6 +129,8 @@ export const SETTINGS_TREE = {
         /** IANA time zone, `Local` or empty (UTC). */
         timezone: Schema.String,
         "stabilize-device-profile": Tristate,
+        /** Entrypoint labels (e.g. `t3-code`) treated as native Claude Code next to the built-in ones. */
+        "native-entrypoints": Strings,
       },
     },
     xai: { "inject-x-search": Schema.Boolean },

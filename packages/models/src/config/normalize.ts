@@ -46,6 +46,11 @@ export const normalizeHeaders = (
   return Object.keys(clean).length === 0 ? undefined : clean;
 };
 
+/** `normalizeClaudeEntrypointNames`: trims, lowercases and deduplicates entrypoint labels, dropping empty ones. */
+export const normalizeEntrypointNames = (names: readonly string[]): string[] => [
+  ...new Set(names.flatMap((name) => name.trim().toLowerCase() || [])),
+];
+
 /** Trims, lowercases and deduplicates model exclusion patterns (first occurrence wins). */
 export const normalizeExcludedModels = (
   models: readonly string[] | undefined,
@@ -490,6 +495,9 @@ export const normalizeConfig = (config: Config): Config => {
         ...config.upstream.claude,
         "header-defaults": {
           ...config.upstream.claude["header-defaults"],
+          "native-entrypoints": normalizeEntrypointNames(
+            config.upstream.claude["header-defaults"]["native-entrypoints"],
+          ),
           ...trimValues({
             "user-agent": config.upstream.claude["header-defaults"]["user-agent"],
             "package-version": config.upstream.claude["header-defaults"]["package-version"],

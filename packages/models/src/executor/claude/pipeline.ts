@@ -79,6 +79,7 @@ import {
   claudeCreds,
   DEFAULT_BASE_URL,
   isAnthropicUpstreamBase,
+  isEffectiveConfirmedClaudeCode,
   isMinimalCloak,
   resolveClaudeKeyConfig,
   resolveFingerprintPolicy,
@@ -325,12 +326,19 @@ const commonContext = (input: PrepareInput, path: string, countTokens: boolean):
   const fingerprint = resolveFingerprintPolicy(config, credential, providerKey);
   const originalPayload = options.originalRequest ?? request.payload;
 
-  const confirmed = detectClaudeCodeRequest(
+  const detection = detectClaudeCodeRequest(
     options.headers,
     originalPayload,
     countTokens,
     defaultDeviceProfile(config).userAgent,
-  ).confirmed;
+    config.upstream.claude["header-defaults"]["native-entrypoints"],
+  );
+
+  // Under `cloak_mode: never` a caller with the strong signals of an unlisted entrypoint is confirmed as well.
+  const confirmed = isEffectiveConfirmedClaudeCode(
+    detection,
+    resolveWirePolicy(config, credential, providerKey, detection.confirmed).policy,
+  );
 
   const sessionId = fingerprint.profileClaudeCodeCLI
     ? agentSessionUuid({

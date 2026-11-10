@@ -293,6 +293,10 @@ describe("management settings", () => {
         { upstream: { claude: { "header-defaults": { "user-agent": " claude-cli " } } } },
         "upstream.claude.header-defaults.user-agent",
       ],
+      [
+        { upstream: { claude: { "header-defaults": { "native-entrypoints": [" T3-Code "] } } } },
+        "upstream.claude.header-defaults.native-entrypoints",
+      ],
     ];
 
     for (const [patch, path] of cases) {
@@ -320,6 +324,7 @@ describe("management settings", () => {
       },
       { routing: { cooldown: { "transient-error-cooldown-seconds": -1 } } },
       { upstream: { claude: { "cloak-level": "minimal" } } },
+      { upstream: { claude: { "header-defaults": { "native-entrypoints": ["t3-code"] } } } },
     ] satisfies Json[]) {
       const saved = await save(patch);
 
@@ -332,6 +337,9 @@ describe("management settings", () => {
     expect(view.values.multimedia["disable-image-generation"]).toBe("chat");
     expect(view.values.routing.cooldown["transient-error-cooldown-seconds"]).toBe(-1);
     expect(view.values.upstream.claude["cloak-level"]).toBe("minimal");
+    expect(view.values.upstream.claude["header-defaults"]["native-entrypoints"]).toEqual([
+      "t3-code",
+    ]);
   });
 
   it("refuses bodies without revisions or patch object", async () => {

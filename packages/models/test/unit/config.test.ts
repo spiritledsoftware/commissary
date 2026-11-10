@@ -70,6 +70,7 @@ upstream:
   claude:
     header-defaults:
       user-agent: "  claude-cli/2.1.321  "
+      native-entrypoints: [" T3-Code ", "", "t3-code", "custom-ide"]
 api-keys:
   claude:
     - name: anthropic
@@ -134,6 +135,7 @@ describe("config schema and normalisation", () => {
       assert.strictEqual(config.upstream.codex["stream-bootstrap-timeout"], "0");
       assert.deepStrictEqual(config.requests.payload.default, []);
       assert.deepStrictEqual(config["api-keys"].claude, []);
+      assert.deepStrictEqual(config.upstream.claude["header-defaults"]["native-entrypoints"], []);
       assert.isUndefined(config.oauth.providers.antigravity["signature-cache-enabled"]);
     }),
   );
@@ -153,6 +155,11 @@ describe("config schema and normalisation", () => {
         config.upstream.claude["header-defaults"]["user-agent"],
         "claude-cli/2.1.321",
       );
+      // internal/config/claude_header_defaults_test.go: trimmed, lower-cased, deduplicated, empty dropped.
+      assert.deepStrictEqual(config.upstream.claude["header-defaults"]["native-entrypoints"], [
+        "t3-code",
+        "custom-ide",
+      ]);
       assert.strictEqual(config.multimedia["disable-image-generation"], "chat");
       assert.strictEqual(config.observability.usage["redis-usage-queue-retention-seconds"], 3600);
 

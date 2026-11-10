@@ -146,6 +146,8 @@ const claudeHeaderDefaults = section({
   timeout: text(),
   timezone: text(),
   "stabilize-device-profile": optional(Schema.Boolean),
+  /** Extra Claude Code entrypoint labels (e.g. `t3-code`) treated as native next to `cli`, `sdk-cli`, `sdk-ts` and `claude-vscode`. */
+  "native-entrypoints": list(Schema.String),
 });
 
 const upstream = section({

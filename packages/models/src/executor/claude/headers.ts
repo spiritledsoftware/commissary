@@ -3,7 +3,9 @@
  *
  * Go source: internal/runtime/executor/claude_executor_request.go (applyClaudeHeadersWithNativeProfile, including the
  * binding-controls beta that follows `thinking.block_binding`, copyClaudeCallerFingerprintHeaders),
- * helps/claude_device_profile.go (ApplyClaudeLegacyDeviceHeaders, defaultClaudeDeviceProfile). Workers `fetch` cannot control header order or casing and the TLS fingerprint is
+ * helps/claude_device_profile.go (ApplyClaudeLegacyDeviceHeaders, ApplyClaudeDeviceProfileHeaders,
+ * defaultClaudeDeviceProfile). Under `cloak_mode: never` a confirmed caller keeps its own device headers, ahead of
+ * `stabilize-device-profile` pinning. Workers `fetch` cannot control header order or casing and the TLS fingerprint is
  * Cloudflare's (see README.md), so only names and values are reproduced. With `stabilize-device-profile` the
  * device headers come from the stabilised profile (`device-profile.ts`) instead of the legacy copy-or-baseline rules.
  * At the `minimal` cloak level (a Commissary addition) none of the CLI identity headers are sent.
@@ -44,8 +46,11 @@ import {
   isProbeOrHelperRequest,
   isSubagentRequest,
   plausibleClaudeCodeUserAgent,
+  plausiblePackageVersion,
+  plausibleRuntimeVersion,
   subagentRequests1h,
 } from "./classify.ts";
+import { withRequestFields } from "./user-agent.ts";
 
 const DEFAULT_PACKAGE_VERSION = "0.128.0";
 
@@ -431,16 +436,9 @@ export const buildClaudeHeaders = (input: HeaderInput) => {
   const profile = defaultDeviceProfile(config);
   let usedIncomingUserAgent = false;
 
-  if (input.stabilizeDeviceProfile === true) {
-    const stabilized = confirmedClaudeCode ? (input.stabilizedProfile ?? profile) : profile;
-    headers["user-agent"] = stabilized.userAgent;
-    headers["x-stainless-package-version"] = stabilized.packageVersion;
-    headers["x-stainless-runtime-version"] = stabilized.runtimeVersion;
-    headers["x-stainless-os"] = stabilized.os;
-    headers["x-stainless-arch"] = stabilized.arch;
-    usedIncomingUserAgent = true;
-  } else if (confirmedClaudeCode) {
-    // Legacy device headers (`ApplyClaudeLegacyDeviceHeaders`).
+  // Legacy device headers (`ApplyClaudeLegacyDeviceHeaders`): the confirmed caller's own, when plausible. Newer package
+  // and runtime versions are kept unless header-defaults configures one (and `allowNewer` is off).
+  const applyLegacyDeviceHeaders = (allowNewer: boolean): void => {
     const ensureValid = (
       name: string,
       fallback: string,
@@ -460,16 +458,21 @@ export const buildClaudeHeaders = (input: HeaderInput) => {
       headers[name] = fallback;
     };
 
-    ensureValid(
-      "x-stainless-runtime-version",
-      profile.runtimeVersion,
-      (value) => value === profile.runtimeVersion,
+    const configured = (key: "runtime-version" | "package-version"): boolean =>
+      !allowNewer && (defaults[key] ?? "").trim() !== "";
+
+    ensureValid("x-stainless-runtime-version", profile.runtimeVersion, (value) =>
+      configured("runtime-version")
+        ? value === profile.runtimeVersion
+        : plausibleRuntimeVersion(value, profile.runtimeVersion),
     );
-    ensureValid(
-      "x-stainless-package-version",
-      profile.packageVersion,
-      (value) => value === profile.packageVersion,
+
+    ensureValid("x-stainless-package-version", profile.packageVersion, (value) =>
+      configured("package-version")
+        ? value === profile.packageVersion
+        : plausiblePackageVersion(value, profile.packageVersion),
     );
+
     ensureValid("x-stainless-os", profile.os);
     ensureValid("x-stainless-arch", profile.arch);
     const clientUserAgent = headerValue(incoming, "user-agent");
@@ -478,6 +481,24 @@ export const buildClaudeHeaders = (input: HeaderInput) => {
       headers["user-agent"] = clientUserAgent;
       usedIncomingUserAgent = true;
     }
+  };
+
+  if (input.wire.explicitNever && confirmedClaudeCode) {
+    applyLegacyDeviceHeaders(true);
+  } else if (input.stabilizeDeviceProfile === true) {
+    const stabilized = confirmedClaudeCode ? (input.stabilizedProfile ?? profile) : profile;
+
+    // A confirmed caller's request-only User-Agent fields (`workload/cron`) ride on the stable identity.
+    headers["user-agent"] = confirmedClaudeCode
+      ? withRequestFields(stabilized.userAgent, headerValue(incoming, "user-agent"))
+      : stabilized.userAgent;
+    headers["x-stainless-package-version"] = stabilized.packageVersion;
+    headers["x-stainless-runtime-version"] = stabilized.runtimeVersion;
+    headers["x-stainless-os"] = stabilized.os;
+    headers["x-stainless-arch"] = stabilized.arch;
+    usedIncomingUserAgent = true;
+  } else if (confirmedClaudeCode) {
+    applyLegacyDeviceHeaders(false);
   }
 
   if (!usedIncomingUserAgent) {

@@ -214,6 +214,10 @@ const COPY = {
   "upstream.claude.header-defaults.stabilize-device-profile": flag(
     "Pin one device profile per account",
   ),
+  "upstream.claude.header-defaults.native-entrypoints": {
+    label: "Native entrypoints",
+    hint: "One per line, such as t3-code. Clients with these Claude Code entrypoints pass through uncloaked, next to cli, sdk-cli, sdk-ts and claude-vscode.",
+  },
   "upstream.codex.disable-codex-cloaking": flag(
     "Send the client's own User-Agent and Originator to Codex",
     "Off sends the official Codex ones.",
