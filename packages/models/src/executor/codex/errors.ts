@@ -18,7 +18,10 @@ import {
 } from "@commissary/json";
 import { statusText } from "../../http/status.ts";
 import { ExecutionError } from "../errors.ts";
-import { annotateImageGenerationError } from "./hosted-images.ts";
+import {
+  annotateImageGenerationError,
+  statusFromErrorTypeAndCode,
+} from "../../http/upstream-error.ts";
 
 export const CODEX_INCOMPLETE_STREAM_MESSAGE =
   "stream error: stream disconnected before completion: stream closed before response.completed";
@@ -315,28 +318,7 @@ const terminalFailureStatus = (body: Json): number => {
   const type = str(body, "error.type").toLowerCase();
   const code = str(body, "error.code").toLowerCase();
 
-  if (code === "cyber_policy") return 400;
-
-  if (type === "not_found_error" || code === "not_found" || code === "model_not_found") return 404;
-
-  if (type === "authentication_error" || code === "invalid_api_key" || code === "unauthorized")
-    return 401;
-
-  if (type === "permission_error" || code === "forbidden" || code === "permission_denied")
-    return 403;
-
-  if (type === "rate_limit_error" || code === "rate_limit_exceeded") return 429;
-
-  if (
-    type === "invalid_request_error" ||
-    type === "bad_request_error" ||
-    type === "image_generation_user_error" ||
-    code === "invalid_value" ||
-    code === "invalid_request_error"
-  )
-    return 400;
-
-  return 502;
+  return statusFromErrorTypeAndCode(type, code);
 };
 
 const errorIsContextLength = (body: Json): boolean => {

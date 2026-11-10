@@ -25,7 +25,12 @@ import { uuidV5Oid } from "../helps/uuid.ts";
 import type { CredentialSnapshot } from "../picker.ts";
 import { parseSuffix } from "@commissary/translation/thinking";
 import { isCodexResponsesLiteRequest } from "./headers.ts";
-import { codexModelUsesResponsesLite, requestHasReasoningForHostedImage } from "./hosted-images.ts";
+import {
+  codexModelUsesResponsesLite,
+  type LiteRouteInput,
+  requestHasReasoningForHostedImage,
+  responsesLiteRequestForAuth,
+} from "./hosted-images.ts";
 import { claudeCodeExecutionScope } from "./replay.ts";
 
 /** `helps.SetStringIfDifferent` / `SetBoolIfDifferent`. */
@@ -68,24 +73,26 @@ const isFreePlan = (credential: CredentialSnapshot): boolean =>
   (credential.attributes["plan_type"] ?? "").trim().toLowerCase() === "free";
 
 /**
- * `ensureImageGenerationTool`: appends `{"type":"image_generation","output_format":"png"}` when absent. Skipped on
- * Responses-Lite requests, and on lite models that carry a reasoning configuration (714f0526: lite models without
+ * `ensureImageGenerationTool`: appends `{"type":"image_generation","output_format":"png"}` when absent. `model` is the
+ * requested model, suffix included. Skipped on Responses-Lite requests (body, client header, credential `header:`
+ * attributes and model `override_header`), and on lite models that carry a reasoning configuration (714f0526: lite models without
  * reasoning get the tool, since the hosted tool only rejects `complexity` alongside reasoning effort).
  */
 export const ensureImageGenerationTool = (
   body: Json,
-  baseModel: string,
-  credential: CredentialSnapshot,
-  headers: Headers,
+  model: string,
+  route: LiteRouteInput,
 ): Json => {
+  const modelName = parseSuffix(model).modelName.trim();
+
   if (
-    isCodexResponsesLiteRequest(body, headers) ||
-    (codexModelUsesResponsesLite(baseModel) &&
-      requestHasReasoningForHostedImage(body, baseModel)) ||
-    baseModel.endsWith("spark") ||
-    isFreePlan(credential)
+    isFreePlan(route.credential) ||
+    responsesLiteRequestForAuth(body, route) ||
+    (codexModelUsesResponsesLite(modelName) && requestHasReasoningForHostedImage(body, model)) ||
+    modelName.toLowerCase().endsWith("spark")
   )
     return body;
+
   const tools = get(body, "tools");
 
   if (!isJsonArray(tools))

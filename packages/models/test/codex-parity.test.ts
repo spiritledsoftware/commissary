@@ -6,7 +6,7 @@ import { modelOverrideHeaders } from "../src/executor/helps/model-headers.ts";
 import type { ThinkingModelInfo } from "@commissary/translation/thinking";
 import { providerKeyCredential } from "./support/codex.ts";
 import { execute, harness, json, loadConfig, options } from "./support/executor-run.ts";
-import type { Json } from "@commissary/json";
+import { get, type Json, tryParseJson } from "@commissary/json";
 
 const compatYaml = `
 api-keys:
@@ -186,65 +186,72 @@ api-keys:
               alias: gpt-image-2
 `;
 
-  it.each([
-    [
-      "a custom configured upstream",
-      "gpt-image-2",
-      "openai/gpt-image-2-cpr",
-      "openai/gpt-image-2-cpr",
-      "openai/gpt-image-2-cpr",
-    ],
-    [
-      "a prefixed builtin upstream",
-      "gpt-image-2",
-      "openai/gpt-image-2",
-      "openai/gpt-image-2",
-      "openai/gpt-image-2",
-    ],
-    [
-      "a case-sensitive upstream",
-      "gpt-image-2",
-      "OpenAI/GPT-Image-2",
-      "OpenAI/GPT-Image-2",
-      "OpenAI/GPT-Image-2",
-    ],
-    ["another builtin upstream", "gpt-image-2", "gpt-image-1.5", "gpt-image-1.5", "gpt-image-1.5"],
-    [
-      "a routing-like configured prefix",
-      "gpt-image-2",
-      "codex/gpt-image-2",
-      "codex/gpt-image-2",
-      "codex/gpt-image-2",
-    ],
-    [
-      "a thinking suffix on the configured upstream",
-      "tenant/gpt-image-2(high)",
-      "OpenAI/GPT-Image-2(high)",
-      "OpenAI/GPT-Image-2",
-      "OpenAI/GPT-Image-2",
-    ],
-    [
-      "an unconfigured resolved model",
-      "gpt-image-2",
-      "openai/gpt-image-2-cpr",
-      "",
-      "openai/gpt-image-2-cpr",
-    ],
-    [
-      "a legacy builtin prefix without an upstream",
-      "codex/gpt-image-1.5(high)",
-      "codex/gpt-image-1.5(high)",
-      "",
-      "gpt-image-1.5",
-    ],
-    [
-      "a legacy builtin case without an upstream",
-      "CODEX/GPT-Image-2(high)",
-      "CODEX/GPT-Image-2(high)",
-      "",
-      "gpt-image-2",
-    ],
-  ])("%s", async (_name, requested, resolved, configured, want) => {
+  interface Case {
+    readonly requested: string;
+    readonly resolved: string;
+    /** The credential's configured upstream model; empty for none. */
+    readonly configured: string;
+    readonly want: string;
+  }
+
+  const cases = {
+    "a custom configured upstream": {
+      requested: "gpt-image-2",
+      resolved: "openai/gpt-image-2-cpr",
+      configured: "openai/gpt-image-2-cpr",
+      want: "openai/gpt-image-2-cpr",
+    },
+    "a prefixed builtin upstream": {
+      requested: "gpt-image-2",
+      resolved: "openai/gpt-image-2",
+      configured: "openai/gpt-image-2",
+      want: "openai/gpt-image-2",
+    },
+    "a case-sensitive upstream": {
+      requested: "gpt-image-2",
+      resolved: "OpenAI/GPT-Image-2",
+      configured: "OpenAI/GPT-Image-2",
+      want: "OpenAI/GPT-Image-2",
+    },
+    "another builtin upstream": {
+      requested: "gpt-image-2",
+      resolved: "gpt-image-1.5",
+      configured: "gpt-image-1.5",
+      want: "gpt-image-1.5",
+    },
+    "a routing-like configured prefix": {
+      requested: "gpt-image-2",
+      resolved: "codex/gpt-image-2",
+      configured: "codex/gpt-image-2",
+      want: "codex/gpt-image-2",
+    },
+    "a thinking suffix on the configured upstream": {
+      requested: "tenant/gpt-image-2(high)",
+      resolved: "OpenAI/GPT-Image-2(high)",
+      configured: "OpenAI/GPT-Image-2",
+      want: "OpenAI/GPT-Image-2",
+    },
+    "an unconfigured resolved model": {
+      requested: "gpt-image-2",
+      resolved: "openai/gpt-image-2-cpr",
+      configured: "",
+      want: "openai/gpt-image-2-cpr",
+    },
+    "a legacy builtin prefix without an upstream": {
+      requested: "codex/gpt-image-1.5(high)",
+      resolved: "codex/gpt-image-1.5(high)",
+      configured: "",
+      want: "gpt-image-1.5",
+    },
+    "a legacy builtin case without an upstream": {
+      requested: "CODEX/GPT-Image-2(high)",
+      resolved: "CODEX/GPT-Image-2(high)",
+      configured: "",
+      want: "gpt-image-2",
+    },
+  } satisfies Record<string, Case>;
+
+  it.each(Object.entries(cases))("%s", async (_name, { requested, resolved, configured, want }) => {
     for (const path of ["/v1/images/generations", "/v1/images/edits"]) {
       const h = await harness(
         providerKeyCredential(),
@@ -274,7 +281,7 @@ api-keys:
       expect(call.url).toBe(
         `https://codex.example.test/v1${path === "/v1/images/edits" ? "/images/edits" : "/images/generations"}`,
       );
-      expect((JSON.parse(call.text) as { model: string }).model).toBe(want);
+      expect(get(tryParseJson(call.text), "model")).toBe(want);
     }
   });
 });

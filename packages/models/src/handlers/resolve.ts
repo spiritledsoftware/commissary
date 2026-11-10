@@ -11,6 +11,7 @@ import { ExecutionError } from "../executor/errors.ts";
 import { EntryOnlyFormats } from "@commissary/translation/formats";
 import { parseSuffix } from "@commissary/translation/thinking";
 import { unknownModelBody } from "../credentials/selection/failures.ts";
+import { OPENAI_IMAGE_MODEL_IDS } from "../registry/openai-image-models.ts";
 import { ModelProviders } from "./model-providers.ts";
 
 export interface ResolvedModel {
@@ -27,14 +28,7 @@ export interface ResolveOptions {
 }
 
 const IMAGE_ONLY_MODELS = new Set([
-  "gpt-image-1.5",
-  "gpt-image-2",
-  "gpt-image-2.5-flare",
-  "gpt-image-2.5-sunburst",
-  "gpt-image-2.5",
-  "gpt-image-2.6-flare",
-  "gpt-image-2.6-sunburst",
-  "gpt-image-2.6",
+  ...OPENAI_IMAGE_MODEL_IDS,
   "grok-imagine-image",
   "grok-imagine-image-quality",
   "grok-imagine-image-2.0",

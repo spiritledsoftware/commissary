@@ -4,15 +4,21 @@
  * Go source: internal/runtime/executor/helps/codex_hosted_images.go (CodexModelUsesResponsesLite,
  * CodexRequestHasReasoningForHostedImageDoc, ValidateCodexHostedImageGenerationDoc, codexRequestForcesImageGenerationDoc),
  * codex_executor_request.go (normalizeCodexImageGenerationToolsDoc). Commits 714f0526, 8fb60326, d1e5cc60.
- *
- * Differences from Go: Commissary has no SIWC route, so "native Codex" is every non-provider-key credential; the lite
- * route is read from the model, the client header/metadata mirror and the outbound headers, not from credential
- * `header:` attributes or models.json `override_header` (the outbound headers already carry both).
  */
-import { asString, del, get, isJsonArray, isJsonObject, type Json } from "@commissary/json";
+import {
+  asString,
+  cloneJson,
+  del,
+  get,
+  isJsonArray,
+  isJsonObject,
+  type Json,
+} from "@commissary/json";
 import { parseSuffix } from "@commissary/translation/thinking";
 import { ExecutionError } from "../errors.ts";
 import { codexClientModelUsesResponsesLite } from "../../registry/catalog.ts";
+import { customHeaders } from "../helps/custom-headers.ts";
+import type { CredentialSnapshot } from "../picker.ts";
 import { isCodexResponsesLiteRequest } from "./headers.ts";
 
 /** `CodexModelUsesResponsesLite`: GPT-6 models and catalog models marked `use_responses_lite`. */
@@ -135,26 +141,6 @@ export const validateHostedImageGeneration = (input: {
 };
 
 /**
- * 8fb60326: an `image_generation_user_error` about `complexity` gets remediation guidance appended (Go
- * `codexTerminalErrorBody` and `responsesAnnotateImageGenerationComplexityPayload`). Returns the new message, or
- * `undefined` when the error needs none.
- */
-export const annotateImageGenerationError = (error: Json | undefined): string | undefined => {
-  if (asString(get(error, "type")).trim().toLowerCase() !== "image_generation_user_error")
-    return undefined;
-  const message = asString(get(error, "message")).trim();
-  const param = asString(get(error, "param")).trim().toLowerCase();
-
-  if (
-    (param !== "complexity" && !message.toLowerCase().includes("complexity")) ||
-    message.includes("/v1/images/generations")
-  )
-    return undefined;
-
-  return `${message} (Set tool_choice to {"type":"image_generation"}, use a compatible Responses model such as gpt-5.4-mini, or call /v1/images/generations directly.)`;
-};
-
-/**
  * `normalizeCodexImageGenerationToolsDoc`: `/responses` binds the hosted tool to gpt-image-2-codex, which rejects the
  * `complexity` parameter; it is removed from declared image_generation tools.
  */
@@ -180,4 +166,151 @@ export const stripHostedImageComplexity = (body: Json): Json => {
   }
 
   return body;
+};
+
+const LITE_HEADER = "x-openai-internal-codex-responses-lite";
+
+/** What decides whether a request reaches Codex as Responses-Lite besides its body. */
+export interface LiteRouteInput {
+  readonly credential: CredentialSnapshot;
+  /** The client's request headers. */
+  readonly headers: Headers;
+  readonly sessionId?: string | undefined;
+  /** models.json `override_header` of the model. */
+  readonly overrideHeaders?: Readonly<Record<string, string>> | undefined;
+}
+
+/**
+ * `CodexResponsesLiteRequestForAuthDoc`: the `client_metadata` mirror, else the client header, overridden by the
+ * credential's `header:` attributes and then by the model's `override_header`.
+ */
+export const responsesLiteRequestForAuth = (body: Json, route: LiteRouteInput): boolean => {
+  if (isCodexResponsesLiteRequest(body, new Headers())) return true;
+  let effective = (route.headers.get(LITE_HEADER) ?? "").trim();
+
+  for (const [name, value] of customHeaders(route.credential, route.headers, route.sessionId)) {
+    if (name.trim().toLowerCase() === LITE_HEADER && value.trim() !== "") effective = value.trim();
+  }
+
+  for (const [name, value] of Object.entries(route.overrideHeaders ?? {})) {
+    if (name.trim().toLowerCase() === LITE_HEADER) effective = value.trim();
+  }
+
+  return effective.toLowerCase() === "true";
+};
+
+/** `docToolChoiceSelectsImageGeneration`. */
+const toolChoiceSelectsImageGeneration = (choice: Json | undefined): boolean => {
+  if (typeof choice === "string") return choice.trim().toLowerCase() === "image_generation";
+
+  if (!isJsonObject(choice)) return false;
+
+  switch (asString(get(choice, "type")).trim().toLowerCase()) {
+    case "image_generation":
+      return true;
+    case "tool":
+      return asString(get(choice, "name")).trim().toLowerCase() === "image_generation";
+    case "allowed_tools": {
+      const allowed = get(choice, "tools");
+
+      return (
+        isJsonArray(allowed) &&
+        allowed.some(
+          (tool) => asString(get(tool, "type")).trim().toLowerCase() === "image_generation",
+        )
+      );
+    }
+
+    default:
+      return false;
+  }
+};
+
+const lastHostedToolIndex = (body: Json): number => {
+  const tools = get(body, "tools");
+
+  return isJsonArray(tools) ? tools.findLastIndex(isHostedImageTool) : -1;
+};
+
+/** The auto-injected tool as it was before the payload rules ran. */
+export interface AutoInjection {
+  readonly tool: Json;
+  readonly toolChoice: Json | undefined;
+  readonly hadEmptyTools: boolean;
+}
+
+/** What the body looked like before auto-injection, to tell an injected tool from the client's own. */
+export interface InjectionBaseline {
+  readonly hadHostedTool: boolean;
+  readonly hadEmptyTools: boolean;
+}
+
+export const injectionBaseline = (body: Json): InjectionBaseline => {
+  const tools = get(body, "tools");
+
+  return {
+    hadHostedTool: lastHostedToolIndex(body) >= 0,
+    hadEmptyTools: isJsonArray(tools) && tools.length === 0,
+  };
+};
+
+/** `autoInjectedToolIdx`: the injected tool after `ensureImageGenerationTool` ran; `undefined` when none was added. */
+export const recordAutoInjection = (
+  baseline: InjectionBaseline,
+  body: Json,
+): AutoInjection | undefined => {
+  const index = lastHostedToolIndex(body);
+
+  if (baseline.hadHostedTool || index < 0) return undefined;
+  const tool = get(body, `tools.${index}`);
+  const choice = get(body, "tool_choice");
+
+  if (tool === undefined) return undefined;
+
+  return {
+    tool: cloneJson(tool),
+    toolChoice: choice === undefined ? undefined : cloneJson(choice),
+    hadEmptyTools: baseline.hadEmptyTools,
+  };
+};
+
+/**
+ * 714f0526 (`codexConfiguredPayloadIncompatibleWithAutoImageGenDoc`, retract): after the payload rules, an untouched
+ * auto-injected hosted tool is removed again when the configured payload is lite-routed, targets a `spark` model or
+ * sets reasoning on a lite model. A rule that rewrote `tool_choice` to select the hosted tool keeps it.
+ */
+export const retractAutoInjectedImageGeneration = (
+  body: Json,
+  injection: AutoInjection | undefined,
+  fallbackModel: string,
+  route: LiteRouteInput,
+): Json => {
+  if (injection === undefined) return body;
+  const index = lastHostedToolIndex(body);
+
+  if (index < 0 || JSON.stringify(get(body, `tools.${index}`)) !== JSON.stringify(injection.tool))
+    return body;
+  const choice = get(body, "tool_choice");
+
+  if (
+    JSON.stringify(choice) !== JSON.stringify(injection.toolChoice) &&
+    toolChoiceSelectsImageGeneration(choice)
+  )
+    return body;
+  const configuredModel = asString(get(body, "model")).trim() || fallbackModel.trim();
+  const modelName = parseSuffix(configuredModel).modelName.trim();
+
+  const incompatible =
+    responsesLiteRequestForAuth(body, route) ||
+    modelName.toLowerCase().endsWith("spark") ||
+    (codexModelUsesResponsesLite(modelName) &&
+      requestHasReasoningForHostedImage(body, configuredModel));
+
+  if (!incompatible) return body;
+  const tools = get(body, "tools");
+
+  if (isJsonArray(tools) && tools.length === 1 && !injection.hadEmptyTools)
+    return del(body, "tools");
+
+  return del(body, `tools.${index}`);
 };

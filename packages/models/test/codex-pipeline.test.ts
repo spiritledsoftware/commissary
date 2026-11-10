@@ -18,7 +18,7 @@ import {
   type UpstreamResponder,
 } from "./support/pipeline.ts";
 import type { CredentialSnapshot } from "../src/executor/picker.ts";
-import type { Json } from "@commissary/json";
+import { get, type Json, tryParseJson } from "@commissary/json";
 
 const YAML = `
 requests:
@@ -768,7 +768,7 @@ describe("images", () => {
   });
 });
 
-const hostedTools = (body: string): Json => (JSON.parse(body) as { tools?: Json }).tools as Json;
+const hostedTools = (body: string): Json | undefined => get(tryParseJson(body), "tools");
 
 // d1e5cc60 (+ 714f0526, 8fb60326): hosted image_generation on Codex Responses-Lite routes.
 describe("hosted image_generation on Responses-Lite routes", () => {
@@ -910,8 +910,8 @@ describe("hosted image_generation on Responses-Lite routes", () => {
     expect(hostedTools(p.calls[0]!.body)).toEqual([
       { type: "image_generation", output_format: "png" },
     ]);
-    expect((JSON.parse(p.calls[1]!.body) as { tools?: Json }).tools).toBeUndefined();
-    expect((JSON.parse(p.calls[2]!.body) as { tools?: Json }).tools).toBeUndefined();
+    expect(hostedTools(p.calls[1]!.body)).toBeUndefined();
+    expect(hostedTools(p.calls[2]!.body)).toBeUndefined();
   });
 
   it("strips the unsupported complexity parameter from declared hosted tools", async () => {
@@ -956,6 +956,113 @@ describe("hosted image_generation on Responses-Lite routes", () => {
     const text = await response.text();
     expect(text).toContain("/v1/images/generations");
     expect(text).toContain("gpt-5.4-mini");
+  });
+});
+
+describe("auto-injected hosted tool after payload rules (714f0526)", () => {
+  const rule = (params: string) => `
+requests:
+  payload:
+    override:
+      - models: [{ name: "gpt-6-sol", protocol: codex }]
+        params:
+${params}
+`;
+
+  const call = async (yaml: string, body: Json) => {
+    const p = pipeline(() => sseResponse(TEXT_STREAM), { config: await loadConfig(yaml) });
+
+    const response = await p.call("/v1/responses", postJson(body));
+
+    expect(response.status).toBe(200);
+
+    return get(tryParseJson(p.calls[0]!.body), "tools");
+  };
+
+  it("retracts the injected tool when a rule sets reasoning effort on a lite model", async () => {
+    const tools = await call(rule('          "reasoning.effort": "high"'), {
+      model: "gpt-6-sol",
+      input: "hi",
+    });
+
+    expect(tools).toBeUndefined();
+  });
+
+  it("keeps the injected tool when the rule does not make the payload incompatible", async () => {
+    const tools = await call(rule('          "metadata.via": "rule"'), {
+      model: "gpt-6-sol",
+      input: "hi",
+    });
+
+    expect(tools).toEqual([{ type: "image_generation", output_format: "png" }]);
+  });
+
+  it("keeps the client's own tools and removes only the injected one", async () => {
+    const tools = await call(rule('          "reasoning.effort": "high"'), {
+      model: "gpt-6-sol",
+      input: "hi",
+      tools: [{ type: "function", name: "lookup", parameters: { type: "object" } }],
+    });
+
+    expect(tools).toEqual([{ type: "function", name: "lookup", parameters: { type: "object" } }]);
+  });
+
+  it("keeps the tool when a rule selects it through tool_choice", async () => {
+    const tools = await call(
+      rule(
+        '          "reasoning.effort": "high"\n          "tool_choice": { type: allowed_tools, mode: auto, tools: [{ type: image_generation }] }',
+      ),
+      { model: "gpt-6-sol", input: "hi" },
+    );
+
+    expect(tools).toEqual([{ type: "image_generation", output_format: "png" }]);
+  });
+});
+
+describe("lite routing from credential and model headers", () => {
+  const LITE = "header:X-OpenAI-Internal-Codex-Responses-Lite";
+
+  it("a credential header attribute stops the injection and makes the forced request fail", async () => {
+    const credentials = [oauthCredential({ attributes: { [LITE]: "true" } })];
+    const p = pipeline(() => sseResponse(TEXT_STREAM), { credentials });
+
+    const plain = await p.call("/v1/responses", postJson({ model: "gpt-5.4", input: "hi" }));
+
+    expect(plain.status).toBe(200);
+    expect(hostedTools(p.calls[0]!.body)).toBeUndefined();
+
+    const forced = await p.call(
+      "/v1/responses",
+      postJson({
+        model: "gpt-5.4",
+        input: "draw",
+        tools: [{ type: "image_generation" }],
+        tool_choice: { type: "image_generation" },
+      }),
+    );
+
+    expect(forced.status).toBe(400);
+  });
+});
+
+describe("compaction is not validated", () => {
+  it("forwards a forced hosted tool on a lite model to /responses/compact", async () => {
+    const p = pipeline(() =>
+      jsonResponse({ id: "resp_c", object: "response.compaction", output: [] }),
+    );
+
+    const response = await p.call(
+      "/v1/responses/compact",
+      postJson({
+        model: "gpt-6-sol",
+        input: "hi",
+        tools: [{ type: "image_generation" }],
+        tool_choice: { type: "image_generation" },
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(p.calls).toHaveLength(1);
   });
 });
 

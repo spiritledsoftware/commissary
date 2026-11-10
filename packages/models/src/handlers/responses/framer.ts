@@ -11,11 +11,14 @@
  * `response.completed` is rebuilt from the `response.output_item.done` items; nothing is written after a terminal
  * event. The stream ends with a bare newline and no `[DONE]`.
  */
-import { annotateImageGenerationError } from "../../executor/codex/hosted-images.ts";
 import { ExecutionError } from "../../executor/errors.ts";
 import { responsesStreamErrorChunk, responsesStreamFailedChunk } from "../../http/errors.ts";
 import { SSE_KEEP_ALIVE } from "@commissary/translation/sse";
 import { statusText } from "../../http/status.ts";
+import {
+  annotateImageGenerationError,
+  statusFromErrorTypeAndCode,
+} from "../../http/upstream-error.ts";
 import {
   asInt,
   asString,
@@ -430,32 +433,12 @@ const payloadErrorStatus = (payload: Json): number => {
 
 /** `responsesSSEPayloadErrorStatus` (8fb60326): the status implied by the error's type/code when none is given. */
 const payloadErrorStatusFromType = (payload: Json): number => {
-  const field = (path: string): string => asString(get(payload, path)).trim().toLowerCase();
-  const type = field("error.type") || field("response.error.type");
-  const code = field("error.code") || field("response.error.code");
+  const field = (path: string): string => asString(get(payload, path)).trim();
 
-  if (code === "cyber_policy") return 400;
-
-  if (type === "not_found_error" || code === "not_found" || code === "model_not_found") return 404;
-
-  if (type === "authentication_error" || code === "invalid_api_key" || code === "unauthorized")
-    return 401;
-
-  if (type === "permission_error" || code === "forbidden" || code === "permission_denied")
-    return 403;
-
-  if (type === "rate_limit_error" || code === "rate_limit_exceeded") return 429;
-
-  if (
-    type === "invalid_request_error" ||
-    type === "bad_request_error" ||
-    type === "image_generation_user_error" ||
-    code === "invalid_value" ||
-    code === "invalid_request_error"
-  )
-    return 400;
-
-  return 502;
+  return statusFromErrorTypeAndCode(
+    field("error.type") || field("response.error.type"),
+    field("error.code") || field("response.error.code"),
+  );
 };
 
 /** `responsesAnnotateImageGenerationComplexityPayload`: the first of `error` / `response.error` that needs guidance. */

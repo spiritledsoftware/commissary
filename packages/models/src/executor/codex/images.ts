@@ -21,6 +21,7 @@ import {
 } from "@commissary/json";
 import { sseEventData } from "@commissary/translation";
 import { parseSuffix } from "@commissary/translation/thinking";
+import { OPENAI_IMAGE_MODEL_IDS } from "../../registry/openai-image-models.ts";
 import type { OutputItemCollector } from "./output.ts";
 
 export const CODEX_IMAGE_SOURCE_FORMAT = "openai-image";
@@ -33,16 +34,7 @@ const GENERATIONS_PATH = "/v1/images/generations";
 
 const EDITS_PATH = "/v1/images/edits";
 
-const DIRECT_MODELS = new Set([
-  "gpt-image-1.5",
-  CODEX_DEFAULT_IMAGE_TOOL_MODEL,
-  "gpt-image-2.5-flare",
-  "gpt-image-2.5-sunburst",
-  "gpt-image-2.5",
-  "gpt-image-2.6-flare",
-  "gpt-image-2.6-sunburst",
-  "gpt-image-2.6",
-]);
+const DIRECT_MODELS = new Set(OPENAI_IMAGE_MODEL_IDS);
 
 /** `codexIsImagesEndpointPath`. */
 export const isImagesEndpointPath = (rawPath: string): boolean => {

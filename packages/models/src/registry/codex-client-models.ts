@@ -10,6 +10,7 @@
  */
 import { isJsonObject, type Json, type JsonObject } from "@commissary/json";
 import { compareStrings } from "./compare.ts";
+import { OPENAI_IMAGE_MODEL_IDS } from "./openai-image-models.ts";
 import type { ModelInfo, ThinkingSupport } from "./model-info.ts";
 
 export interface CodexClientModelsInput {
@@ -75,14 +76,7 @@ const FALLBACK_INSTRUCTIONS =
 
 const NON_CHAT_IDS = new Set([
   "grok-imagine-image-quality",
-  "gpt-image-1.5",
-  "gpt-image-2",
-  "gpt-image-2.5-flare",
-  "gpt-image-2.5-sunburst",
-  "gpt-image-2.5",
-  "gpt-image-2.6-flare",
-  "gpt-image-2.6-sunburst",
-  "gpt-image-2.6",
+  ...OPENAI_IMAGE_MODEL_IDS,
   "grok-imagine-image",
   "grok-imagine-image-2.0",
   "grok-imagine-video",

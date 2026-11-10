@@ -29,6 +29,7 @@ import {
   type JsonObject,
   tryParseJson,
 } from "@commissary/json";
+import { OPENAI_IMAGE_MODEL_IDS } from "../../registry/openai-image-models.ts";
 import { ModelProviders } from "../model-providers.ts";
 import { CODEX_DEFAULT_IMAGE_TOOL_MODEL } from "../../executor/codex/images.ts";
 import {
@@ -54,16 +55,7 @@ import {
   XAI_IMAGE_MODEL_NAMES,
 } from "./xai-images.ts";
 
-const CODEX_IMAGE_MODELS = [
-  "gpt-image-1.5",
-  "gpt-image-2",
-  "gpt-image-2.5-flare",
-  "gpt-image-2.5-sunburst",
-  "gpt-image-2.5",
-  "gpt-image-2.6-flare",
-  "gpt-image-2.6-sunburst",
-  "gpt-image-2.6",
-];
+const CODEX_IMAGE_MODELS = OPENAI_IMAGE_MODEL_IDS;
 
 /** `imagesModelBase`: text after the last `/`, lower case. */
 const imagesModelBase = (model: string): string => {
