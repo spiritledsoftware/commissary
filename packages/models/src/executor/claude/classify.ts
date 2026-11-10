@@ -280,6 +280,15 @@ export const isFable52Model = (model: string): boolean => {
   );
 };
 
+/** Same shape as {@link isFable52Model}; kept apart so Mythos 5.2's progress display and per-turn betas stay as they are. */
+export const isMythos52Model = (model: string): boolean => {
+  const m = canonicalModel(model);
+
+  return ["claude-mythos-5-2", "claude-mythos-5.2"].some(
+    (prefix) => m === prefix || m.startsWith(`${prefix}-`) || m.startsWith(`${prefix}[`),
+  );
+};
+
 export const isSonnet5Model = (model: string): boolean => {
   const m = canonicalModel(model);
 
@@ -305,6 +314,20 @@ export const isFable51Model = (model: string): boolean => {
 
   return false;
 };
+
+/**
+ * `isClaudePreservedThinkingModel`: the models that check replayed signed thinking against the creation-time prefix.
+ * The set is the one Anthropic's preserved-thinking docs list (https://platform.claude.com/docs/en/build-with-claude/preserved-thinking):
+ * Opus 5.5, Sonnet 5.5, Haiku 5.5, Fable 5.1 and 5.2, Mythos 5.1 and 5.2. It deliberately differs from Go, which leaves
+ * Mythos out (`isFable51Model` already covers Mythos 5.1).
+ */
+export const isPreservedThinkingModel = (model: string): boolean =>
+  isOpus55Model(model) ||
+  isSonnet55Model(model) ||
+  isHaiku55Model(model) ||
+  isFable51Model(model) ||
+  isFable52Model(model) ||
+  isMythos52Model(model);
 
 /** `claudeModelUsesProgressDisplay`: Claude Code 2.1.321 added Fable 5.2 and Haiku 5.5. */
 export const usesProgressDisplay = (model: string): boolean =>

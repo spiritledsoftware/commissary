@@ -256,6 +256,7 @@ export const claudeCodeCLIBetas = (
 
   const thinkingType = str(get(body, "thinking.type"));
 
+  // Cloaked bodies get the beta here; `headers.ts` (`withThinkingBindingBeta`) is the authority for it in every mode.
   if (
     requested.has(BETA.thinkingBinding) ||
     get(body, "thinking.block_binding") !== undefined ||
@@ -365,13 +366,21 @@ export const withoutBeta = (betas: string, remove: string): string =>
     .filter((beta) => beta !== "" && beta !== remove)
     .join(",");
 
-export const withExtendedCacheTTLBeta = (betas: string): string => {
+/** `withClaudeBetaAppended`: `beta` appended to the comma-separated list unless it is already there. */
+const withBetaAppended = (betas: string, beta: string): string => {
   const parts = splitBetas(betas);
 
-  if (!parts.includes(BETA.extendedCacheTTL)) parts.push(BETA.extendedCacheTTL);
+  if (!parts.includes(beta)) parts.push(beta);
 
   return parts.join(",");
 };
+
+export const withExtendedCacheTTLBeta = (betas: string): string =>
+  withBetaAppended(betas, BETA.extendedCacheTTL);
+
+/** The binding beta for a body carrying `thinking.block_binding`; `headers.ts` applies it in every fingerprint mode. */
+export const withThinkingBindingBeta = (betas: string): string =>
+  withBetaAppended(betas, BETA.thinkingBinding);
 
 const ADVISOR_BEFORE = new Set<string>([
   BETA.advancedToolUse,

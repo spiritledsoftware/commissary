@@ -13,6 +13,9 @@ export const setModelInfoLookup = (next: ModelInfoLookup): void => {
   lookup = next;
 };
 
+/** The installed process-wide lookup, so a test can put it back after installing its own. */
+export const getModelInfoLookup = (): ModelInfoLookup => lookup;
+
 /**
  * Runs the synchronous `fn` with `next` installed (when given) and restores the previous lookup afterwards. The
  * request pipeline passes the registry snapshot of the current attempt (`ExecutorRequest.modelLookup`) this way.

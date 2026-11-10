@@ -732,7 +732,11 @@ const modelRejectsAssistantPrefill = (modelName: string): boolean => {
 
   if (tokens[0] === "fable") return true;
 
-  if (tokens.length < 2 || (tokens[0] !== "opus" && tokens[0] !== "sonnet")) return false;
+  if (
+    tokens.length < 2 ||
+    (tokens[0] !== "opus" && tokens[0] !== "sonnet" && tokens[0] !== "haiku")
+  )
+    return false;
 
   const parseVersion = (token: string | undefined): number => {
     // Eight-digit snapshot dates must never be treated as versions.

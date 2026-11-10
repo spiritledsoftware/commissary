@@ -1,28 +1,19 @@
 // End-to-end tests (workerd) of the Claude provider: POST /v1/messages and /v1/messages/count_tokens through Access,
 // model resolution, the credential picker, the Claude executor (request shaping, cloaking, CCH signing, aliases,
 // error classification) and a mocked upstream.
-import { Effect, Layer } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Config } from "../src/config/schema.ts";
 import { normalizeCchInput } from "../src/executor/claude/signing.ts";
 import { xxh64 } from "../src/executor/claude/xxhash64.ts";
-import { canonicalModelKey } from "../src/credentials/selection/model-name.ts";
-import { ExecutionError } from "../src/executor/errors.ts";
-import { ModelProviders } from "../src/handlers/model-providers.ts";
-import {
-  CredentialPicker,
-  type AttemptResult,
-  type CredentialSnapshot,
-} from "../src/executor/picker.ts";
 import { asString, type JsonObject } from "@commissary/json";
 import { setModelInfoLookup } from "@commissary/translation";
+import { oauthCredential, oauthPipeline, type Harness } from "./support/claude-oauth.ts";
 import {
   jsonResponse,
   loadConfig,
   makePipeline,
   postJson,
   sseResponse,
-  type UpstreamResponder,
 } from "./support/pipeline.ts";
 
 const API_KEY_YAML = `
@@ -104,92 +95,6 @@ const streamEvents = (toolName?: string): JsonObject[] => [
   },
   { type: "message_stop" },
 ];
-
-const oauthCredential = (overrides: Partial<CredentialSnapshot> = {}): CredentialSnapshot => ({
-  id: "claude-oauth-1",
-  provider: "claude",
-  kind: "oauth",
-  label: "dev@example.com",
-  attributes: {},
-  metadata: {
-    access_token: "sk-ant-oat01-secret",
-    account_uuid: "11111111-2222-4333-8444-555555555555",
-  },
-  ...overrides,
-});
-
-interface Harness {
-  readonly pipeline: ReturnType<typeof makePipeline>;
-  readonly reports: Array<AttemptResult>;
-}
-
-const oauthPipeline = (
-  respond: UpstreamResponder,
-  config: Config,
-  credential: CredentialSnapshot = oauthCredential(),
-): Harness => {
-  const reports: Array<AttemptResult> = [];
-
-  const picker = Layer.succeed(
-    CredentialPicker,
-    CredentialPicker.of({
-      pick: (request) => {
-        if ((request.excludedIds ?? []).includes(credential.id)) {
-          return Effect.fail(
-            new ExecutionError({
-              status: 503,
-              code: "auth_not_found",
-              message: "no auth available",
-            }),
-          );
-        }
-
-        const lease = {
-          id: "lease-1",
-          credentialId: credential.id,
-          credentialVersion: 1,
-          provider: credential.provider,
-          model: canonicalModelKey(request.model),
-          issuedAt: 0,
-        };
-
-        return Effect.succeed({
-          credential,
-          leaseId: lease.id,
-          lease,
-          route: {
-            requestedModel: request.model,
-            routeModel: request.model,
-            upstreamModels: [request.model],
-            originalAlias: request.model,
-            forceMapping: false,
-            stateModel: canonicalModelKey(request.model),
-            pooled: false,
-          },
-        });
-      },
-      report: (_lease, result) => Effect.sync(() => void reports.push(result)),
-      planRetry: () => Effect.succeed({ retry: false }),
-    }),
-  );
-
-  const providers = Layer.succeed(
-    ModelProviders,
-    ModelProviders.of({
-      providersFor: (model) => Effect.succeed(model.startsWith("claude-") ? ["claude"] : []),
-      firstAvailableModel: Effect.succeed("claude-sonnet-4-5"),
-    }),
-  );
-
-  const pipeline = makePipeline({
-    config,
-    respond,
-    credentialPicker: picker,
-    modelProviders: providers,
-  });
-
-  return { pipeline, reports };
-};
 
 let providerKeyConfig: Config;
 
