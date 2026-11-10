@@ -7,7 +7,7 @@ import { expect, it } from "vitest";
 import type { Json } from "@commissary/json";
 import { builtinTranslators } from "../../src/translator/builtin.ts";
 import { makeTranslationState, type RequestEnvelope } from "../../src/translator/registry.ts";
-import { PORTED_MAX_TOKENS_AHEAD_OF_FIXTURES } from "./translator-ported-ahead.ts";
+import { portedMaxTokens } from "./translator-ported-ahead.ts";
 import { expandEmbeddedJson } from "./structural.ts";
 
 export interface TranslatorFixtureCase {
@@ -128,7 +128,7 @@ const checkTranslatorFixture = (
 
   expect(envelope.error?.message).toBe(c.requestError);
   const expected = parseJson(portedSinceGeneration(c.translatedRequest));
-  const maxTokens = PORTED_MAX_TOKENS_AHEAD_OF_FIXTURES.get(`${c.from}->${c.to} ${c.name}`);
+  const maxTokens = portedMaxTokens(`${c.from}->${c.to} ${c.name}`);
 
   // A case whose golden predates a ported change expects the new `max_tokens` (see translator-ported-ahead.ts).
   if (

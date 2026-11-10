@@ -6,7 +6,9 @@ import type { Config } from "../src/config/schema.ts";
 import { normalizeCchInput } from "../src/executor/claude/signing.ts";
 import { xxh64 } from "../src/executor/claude/xxhash64.ts";
 import { asString, type JsonObject } from "@commissary/json";
-import { getModelInfoLookup, setModelInfoLookup } from "@commissary/translation";
+import { setModelInfoLookup } from "@commissary/translation";
+import { Effect, Layer } from "effect";
+import { ModelCapabilities } from "../src/handlers/model-capabilities.ts";
 import {
   catalogCapabilities,
   oauthCredential,
@@ -1364,17 +1366,17 @@ requests:
           max_tokens: 16384
 `;
 
-  let previousLookup: ReturnType<typeof getModelInfoLookup>;
+  // The catalog's output limit of the model (`maxCompletionTokens`), handed to the pipeline per request like the
+  // registry snapshot's lookup (`ExecutorRequest.modelLookup`), so no process-wide lookup is touched.
+  const lookup = (id: string) =>
+    id === "claude-sonnet-4-5" ? { id, maxCompletionTokens: 64000 } : undefined;
 
-  beforeAll(() => {
-    previousLookup = getModelInfoLookup();
-    // The catalog's output limit of the model (`maxCompletionTokens`), as the registry snapshot supplies it.
-    setModelInfoLookup((id) =>
-      id === "claude-sonnet-4-5" ? { id, maxCompletionTokens: 64000 } : undefined,
-    );
-  });
-
-  afterAll(() => setModelInfoLookup(previousLookup));
+  const limits = Layer.succeed(
+    ModelCapabilities,
+    ModelCapabilities.of({
+      thinking: (model) => Effect.succeed({ modelInfo: lookup(model), lookup }),
+    }),
+  );
 
   const upstreamMaxTokens = async (
     yaml: string,
@@ -1383,6 +1385,7 @@ requests:
   ): Promise<number | undefined> => {
     const p = makePipeline({
       config: await loadConfig(yaml),
+      modelCapabilities: limits,
       respond: () => sseResponse(sse(streamEvents())),
     });
 

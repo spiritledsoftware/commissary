@@ -21,4 +21,19 @@ const ROWS: ReadonlyArray<readonly [string, number]> = [
   ["openai->claude response: non-stream refusal", 64000],
 ];
 
-export const PORTED_MAX_TOKENS_AHEAD_OF_FIXTURES: ReadonlyMap<string, number> = new Map(ROWS);
+const PORTED_MAX_TOKENS_AHEAD_OF_FIXTURES: ReadonlyMap<string, number> = new Map(ROWS);
+
+const used = new Set<string>();
+
+/** The `max_tokens` the case `key` now produces, when its golden predates the port. */
+export const portedMaxTokens = (key: string): number | undefined => {
+  const maxTokens = PORTED_MAX_TOKENS_AHEAD_OF_FIXTURES.get(key);
+
+  if (maxTokens !== undefined) used.add(key);
+
+  return maxTokens;
+};
+
+/** The entries no case consumed: stale once the fixtures are regenerated or a case is renamed. */
+export const unusedMaxTokensAheadEntries = (): string[] =>
+  [...PORTED_MAX_TOKENS_AHEAD_OF_FIXTURES.keys()].filter((key) => !used.has(key));

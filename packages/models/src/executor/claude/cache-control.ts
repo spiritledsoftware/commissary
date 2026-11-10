@@ -190,13 +190,15 @@ export const enforceCacheControlLimit = (body: JsonObject, maxBlocks: number): J
 const isBlankText = (block: Json | undefined): boolean =>
   isObj(block) && str(block.type) === "text" && str(block.text).trim() === "";
 
-/** Anthropic rejects `cache_control` on an empty text block and on thinking blocks (df07b1e5). */
+/**
+ * Anthropic rejects `cache_control` on an empty text block and on thinking blocks (df07b1e5). Unlike the translators'
+ * copy, a block without a `type` cannot host it either (Go `claudeContentBlockCanHostCacheControl`).
+ */
 const contentBlockCanHostCacheControl = (block: Json | undefined): boolean => {
   if (!isObj(block)) return false;
 
   switch (str(block.type)) {
     case "":
-      return true;
     case "thinking":
     case "redacted_thinking":
       return false;

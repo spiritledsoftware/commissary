@@ -31,7 +31,7 @@ import {
 } from "../../../common/claude-util.ts";
 import { generateClaudeToolCallId } from "../../../common/request.ts";
 import { sanitizeClaudeToolId } from "../../../common/tool-names.ts";
-import { exists, isArr, isObj, isStr, str } from "../../../common/gjson.ts";
+import { exists, isArr, isBlankText, isObj, isStr, str } from "../../../common/gjson.ts";
 import { UserTurnDrops } from "../../../common/parts.ts";
 import {
   extractResponsesCallID,
@@ -80,12 +80,10 @@ const convertRequest = (
 
   const out: JsonObject = {
     model: "",
-    max_tokens: 32000,
+    max_tokens: defaultClaudeMaxTokensForModel(modelName),
     messages: [],
     metadata: { user_id: deriveClaudeUserID(root) },
   };
-
-  out.max_tokens = defaultClaudeMaxTokensForModel(modelName);
 
   const effortValue = get(root, "reasoning.effort");
 
@@ -167,7 +165,7 @@ const convertRequest = (
   const systemBlocks: JsonObject[] = [];
 
   const appendSystemText = (text: string, cacheSource?: Json): void => {
-    if (text.trim() === "") return;
+    if (isBlankText(text)) return;
     const block: JsonObject = { type: "text", text };
 
     if (cacheSource !== undefined) attachCacheControl(block, cacheSource);
@@ -195,7 +193,7 @@ const convertRequest = (
               const text = str(get(part, "text"));
 
               // A blank part is dropped (Anthropic answers 400 to it); its cache_control moves to the block before.
-              if (text.trim() === "") moveBlankPartCacheControl(systemBlocks, startIdx, part);
+              if (isBlankText(text)) moveBlankPartCacheControl(systemBlocks, startIdx, part);
               else appendSystemText(text, part);
               break;
             }
@@ -298,7 +296,7 @@ const convertRequest = (
 
   if (exists(inputValue)) {
     if (isArr(inputValue)) inputItems = normalizeResponsesToolCallOutputs(inputValue);
-    else if (isStr(inputValue) && inputValue.trim() !== "")
+    else if (isStr(inputValue) && !isBlankText(inputValue))
       appendParts("user", [{ type: "text", text: inputValue }]);
   }
 
@@ -342,7 +340,7 @@ const convertRequest = (
                 const text = get(part, "text");
 
                 if (exists(text)) {
-                  if (str(text).trim() === "") {
+                  if (isBlankText(str(text))) {
                     moveBlankPartCacheControl(partsJSON, 0, part);
                   } else {
                     const contentPart: JsonObject = { type: "text", text: str(text) };
@@ -360,7 +358,7 @@ const convertRequest = (
                 const text = get(part, "refusal");
 
                 if (exists(text)) {
-                  if (str(text).trim() === "") {
+                  if (isBlankText(str(text))) {
                     moveBlankPartCacheControl(partsJSON, 0, part);
                   } else {
                     const contentPart: JsonObject = { type: "text", text: str(text) };
@@ -409,7 +407,7 @@ const convertRequest = (
                 break;
             }
           }
-        } else if (isStr(parts) && parts.trim() !== "") {
+        } else if (isStr(parts) && !isBlankText(parts)) {
           partsJSON.push({ type: "text", text: parts });
         }
 
@@ -623,7 +621,7 @@ const convertRequest = (
     const choice = out.tool_choice;
 
     if (isObj(choice)) {
-      if (str(choice.type) !== "none") choice.disable_parallel_tool_use = true;
+      choice.disable_parallel_tool_use = true;
     } else {
       out.tool_choice = { type: "auto", disable_parallel_tool_use: true };
     }

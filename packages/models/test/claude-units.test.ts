@@ -17,7 +17,11 @@ import {
   normalizeCacheControlTTL,
   upgradeCacheControlTTL,
 } from "../src/executor/claude/cache-control.ts";
-import { computeFingerprint, generateBillingHeader } from "../src/executor/claude/cloaking.ts";
+import {
+  computeFingerprint,
+  generateBillingHeader,
+  injectCurrentDate,
+} from "../src/executor/claude/cloaking.ts";
 import {
   AliasResolver,
   AliasRestoreError,
@@ -546,6 +550,51 @@ describe("cache control", () => {
     expect(blocks(0)[0]?.cache_control).toEqual(eph);
     expect(blocks(1)[0]?.cache_control).toBeUndefined();
     expect(messages[2]?.content).toBe("   ");
+  });
+
+  it("does not stamp an untyped last block, but the one before it", () => {
+    const body: JsonObject = {
+      messages: [
+        { role: "user", content: [{ type: "text", text: "question" }, { text: "no type" }] },
+      ],
+    };
+
+    ensureCacheControl(body);
+    const content = (body.messages as JsonObject[])[0]?.content as JsonObject[];
+    expect(content[0]?.cache_control).toEqual(eph);
+    expect(content[1]?.cache_control).toBeUndefined();
+  });
+
+  it("never stamps the empty fallback user message of a system-only request", () => {
+    const body: JsonObject = {
+      system: [{ type: "text", text: "You are a helpful assistant." }],
+      messages: [{ role: "user", content: [{ type: "text", text: "" }] }],
+    };
+
+    ensureCacheControl(body);
+    expect((body.system as JsonObject[])[0]?.cache_control).toEqual(eph);
+    const content = (body.messages as JsonObject[])[0]?.content as JsonObject[];
+    expect(content[0]?.cache_control).toBeUndefined();
+  });
+
+  it("skips empty text blocks when the cloaking injects the current date", () => {
+    const body: JsonObject = {
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "" },
+            { type: "text", text: "Actual user prompt" },
+          ],
+        },
+      ],
+    };
+
+    injectCurrentDate(body, "2026-10-20", false);
+    // The date reminder is inserted first, so the blocks shift by one.
+    const content = (body.messages as JsonObject[])[0]?.content as JsonObject[];
+    expect(content[1]?.cache_control).toBeUndefined();
+    expect(content[2]?.cache_control).toEqual(eph);
   });
 
   it("puts the system breakpoint on the last non-empty block, and counts only those as a cacheable system", () => {

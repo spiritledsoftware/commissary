@@ -4,7 +4,7 @@
  * Go source: internal/translator/common/cache_control.go.
  */
 import { cloneJson, get, type Json, type JsonObject } from "@commissary/json";
-import { exists, isArr, isObj, str } from "./gjson.ts";
+import { exists, isArr, isBlankText, isObj, str } from "./gjson.ts";
 
 /** Only `{"type":"ephemeral"}` style objects are propagated. */
 export const isValidCacheControl = (cc: Json | undefined): cc is JsonObject =>
@@ -21,7 +21,7 @@ const canHostCacheControl = (block: Json | undefined): boolean => {
     case "redacted_thinking":
       return false;
     case "text":
-      return str(block.text).trim() !== "";
+      return !isBlankText(str(block.text));
     default:
       return true;
   }
@@ -74,7 +74,7 @@ export const attachMessageCacheControl = (msg: JsonObject, src: Json | undefined
     return msg;
   }
 
-  if (typeof content !== "string" || content.trim() === "") return msg;
+  if (typeof content !== "string" || isBlankText(content)) return msg;
   msg.content = [{ type: "text", text: content, cache_control: cloneJson(cc) }];
 
   return msg;

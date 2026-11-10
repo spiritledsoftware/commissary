@@ -8,6 +8,7 @@ import {
   convertClaudeResponseToOpenAIResponses,
   convertClaudeResponseToOpenAIResponsesNonStream,
 } from "../src/translator/claude/openai/responses/response.ts";
+import { claudeSignature } from "./support/claude-signature.ts";
 import { str } from "../src/translator/common/gjson.ts";
 import { makeTranslationState, type ResponseContext } from "../src/translator/registry.ts";
 
@@ -291,6 +292,167 @@ describe("pause_turn", () => {
           { type: "message", role: "user", content: [{ type: "input_text", text: "q" }] },
           search("query a"),
           { type: "message", role: "user", content: [{ type: "input_text", text: "again" }] },
+          search("query b"),
+        ],
+      },
+      true,
+    );
+
+    const queries = assistantBlocks(request)
+      .filter((block) => get(block, "type") === "server_tool_use")
+      .map((block) => get(block, "input.query"));
+
+    expect(queries).toEqual(["query a", "query b"]);
+  });
+});
+
+describe("pause_turn across several turns", () => {
+  const searchBlocks = (id: string, query: string, index: number): JsonObject[] => [
+    {
+      type: "content_block_start",
+      index,
+      content_block: { type: "server_tool_use", id, name: "web_search", input: {} },
+    },
+    {
+      type: "content_block_delta",
+      index,
+      delta: { type: "input_json_delta", partial_json: JSON.stringify({ query }) },
+    },
+    { type: "content_block_stop", index },
+  ];
+
+  const result = (id: string, index: number): JsonObject[] => [
+    {
+      type: "content_block_start",
+      index,
+      content_block: {
+        type: "web_search_tool_result",
+        tool_use_id: id,
+        content: [
+          {
+            type: "web_search_result",
+            url: "https://example.com/a",
+            title: "A",
+            encrypted_content: "ENC",
+          },
+        ],
+      },
+    },
+    { type: "content_block_stop", index },
+  ];
+
+  const pause = (): JsonObject[] => [
+    { type: "message_delta", delta: { stop_reason: "pause_turn" }, usage: { output_tokens: 5 } },
+    { type: "message_stop" },
+  ];
+
+  const start = (id: string): JsonObject => ({
+    type: "message_start",
+    message: { id, usage: { input_tokens: 10, output_tokens: 0 } },
+  });
+
+  it("keeps only the latest search unanswered after two pauses", () => {
+    const first = terminal([
+      start("msg_p1"),
+      ...searchBlocks("srvtoolu_a", "query a", 0),
+      ...pause(),
+    ]);
+
+    // The continuation answers search A and pauses again on search B.
+    const second = terminal([
+      start("msg_p2"),
+      ...result("srvtoolu_a", 0),
+      ...searchBlocks("srvtoolu_b", "query b", 1),
+      ...pause(),
+    ]);
+
+    expect(second.event).toBe("response.completed");
+    expect(get(second.response, "end_turn")).toBe(false);
+
+    const blocks = assistantBlocks(
+      convertOpenAIResponsesRequestToClaude(
+        "claude-test",
+        history(first.response, second.response),
+        true,
+      ),
+    );
+
+    expect(types(blocks)).toBe("server_tool_use,web_search_tool_result,server_tool_use");
+    expect(get(blocks[0], "id")).toBe("srvtoolu_a");
+    expect(get(blocks[2], "id")).toBe("srvtoolu_b");
+    expect(get(blocks[2], "input.query")).toBe("query b");
+  });
+
+  it("keeps a paused turn after a completed search on a model that rejects prefill", () => {
+    const { event, response } = terminal([
+      start("msg_ws"),
+      ...searchBlocks("srvtoolu_1", "lindorm vector", 0),
+      ...result("srvtoolu_1", 1),
+      ...pause(),
+    ]);
+
+    expect(event).toBe("response.completed");
+    expect(get(response, "end_turn")).toBe(false);
+
+    const request = convertOpenAIResponsesRequestToClaude(
+      "claude-opus-5-5",
+      history(response),
+      true,
+    );
+
+    expect(get(request, "messages") as Json[]).toHaveLength(2);
+    expect(types(assistantBlocks(request))).toBe("server_tool_use,web_search_tool_result");
+  });
+
+  it("still drops a completed thinking-plus-text trailing assistant on such a model", () => {
+    const request = convertOpenAIResponsesRequestToClaude(
+      "claude-sonnet-4-6",
+      {
+        model: "claude-sonnet-4-6",
+        input: [
+          { type: "message", role: "user", content: [{ type: "input_text", text: "hello" }] },
+          {
+            type: "reasoning",
+            encrypted_content: claudeSignature(),
+            summary: [{ type: "summary_text", text: "thought" }],
+          },
+          {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "prefill text" }],
+          },
+        ],
+      },
+      false,
+    );
+
+    const messages = get(request, "messages") as Json[];
+
+    expect(messages).toHaveLength(1);
+    expect(get(messages[0], "role")).toBe("user");
+  });
+
+  it("does not merge a repeated search id across a tool output either", () => {
+    const search = (query: string): Json => ({
+      id: "ws_srvtoolu_x",
+      type: "web_search_call",
+      status: "completed",
+      action: { type: "search", query },
+    });
+
+    const request = convertOpenAIResponsesRequestToClaude(
+      "claude-test",
+      {
+        model: "claude-test",
+        tools: [
+          { type: "web_search" },
+          { type: "function", name: "f", parameters: { type: "object", properties: {} } },
+        ],
+        input: [
+          { type: "message", role: "user", content: [{ type: "input_text", text: "q" }] },
+          search("query a"),
+          { type: "function_call", call_id: "call_1", name: "f", arguments: "{}" },
+          { type: "function_call_output", call_id: "call_1", output: "ok" },
           search("query b"),
         ],
       },

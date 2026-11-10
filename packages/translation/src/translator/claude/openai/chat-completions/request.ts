@@ -27,15 +27,12 @@ import {
 } from "../../../common/claude-util.ts";
 import { generateClaudeToolCallId } from "../../../common/request.ts";
 import { sanitizeClaudeToolId } from "../../../common/tool-names.ts";
-import { exists, isArr, isObj, str, toArray, trimmed } from "../../../common/gjson.ts";
+import { exists, isArr, isBlankText, isObj, str, toArray, trimmed } from "../../../common/gjson.ts";
 import { UserTurnDrops } from "../../../common/parts.ts";
 
 /** The first value that exists and is not JSON null (a client sending `"max_tokens": null` omitted it). */
 const firstExisting = (...values: Array<Json | undefined>): Json | undefined =>
   values.find((value) => value !== undefined && value !== null);
-
-/** An empty or whitespace-only text part: Anthropic answers 400 to it. */
-const isBlankText = (value: string): boolean => value.trim() === "";
 
 /** `ConvertOpenAIRequestToClaude`. */
 export const convertOpenAIRequestToClaude = (
