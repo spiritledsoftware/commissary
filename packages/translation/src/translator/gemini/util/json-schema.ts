@@ -6,7 +6,9 @@
  * (Walk). The Go code rewrites a JSON string through gjson/sjson paths; this port keeps the same path based passes on
  * a parsed document (`Doc`) using the gjson/sjson engine of `@commissary/json`. Pass one single schema, never a request.
  *
- * Differences: hint texts embed `JSON.stringify` of objects/arrays (Go keeps the original raw text).
+ * Differences: hint texts embed `JSON.stringify` of objects/arrays (Go keeps the original raw text). Local reference
+ * inlining lives in `common/schema-refs.ts` (shared with the executors); a property literally named `const` is not
+ * converted to an `enum` of its parent (Go would fabricate `properties.enum`).
  */
 import {
   asString,
@@ -18,6 +20,14 @@ import {
   type JsonObject,
   set,
 } from "@commissary/json";
+import {
+  inlineLocalRefsForClean,
+  isLiteralValueKeyword,
+  mergeHint,
+  refName,
+  SCHEMA_NAME_MAP_KEYWORDS,
+} from "../../common/schema-refs.ts";
+import { normalizeJsonSchemaNumericConstraints } from "../../common/schema.ts";
 
 export const PLACEHOLDER_REASON_DESCRIPTION = "Brief explanation of why you are calling this tool";
 
@@ -28,6 +38,8 @@ interface CleanOptions {
   readonly removeToolTitle?: boolean;
   readonly removeGeminiMetadata?: boolean;
   readonly flattenUnions?: boolean;
+  /** Forces multi-branch anyOf/oneOf down to the single strongest branch (a route whose upstream rejects them). */
+  readonly flattenMultiBranchUnions?: boolean;
   readonly forceEnumStringType?: boolean;
   readonly dropAllEnums?: boolean;
   readonly dropBooleanEnums?: boolean;
@@ -95,14 +107,6 @@ const trimSuffix = (path: string, suffix: string): string => {
 const joinPath = (base: string, suffix: string): string =>
   base === "" ? suffix : `${base}.${suffix}`;
 
-const NAME_MAP_KEYWORDS = new Set([
-  "properties",
-  "patternProperties",
-  "dependentSchemas",
-  "$defs",
-  "definitions",
-]);
-
 /** Whether `path` addresses a map keyed by author-chosen names (odd trailing run of name-map keywords). */
 const isPropertyDefinition = (path: string): boolean => {
   const segments = splitPath(path);
@@ -110,7 +114,7 @@ const isPropertyDefinition = (path: string): boolean => {
 
   for (let i = segments.length - 1; i >= 0; i--) {
     // SAFETY: the index is in bounds (loop bound or length check above); the cast only drops the `undefined` added by noUncheckedIndexedAccess.
-    if (!NAME_MAP_KEYWORDS.has(unescapeKey(segments[i] as string))) break;
+    if (!SCHEMA_NAME_MAP_KEYWORDS.has(unescapeKey(segments[i] as string))) break;
     trailing++;
   }
 
@@ -144,15 +148,6 @@ const setRawAt = (doc: Doc, path: string, value: Json): void => {
   else setAt(doc, path, value);
 };
 
-const mergeHint = (existing: string, hint: string): string => {
-  if (existing === "") return hint;
-
-  if (existing === hint || existing.startsWith(`${hint} (`) || existing.includes(`(${hint})`))
-    return existing;
-
-  return `${existing} (${hint})`;
-};
-
 const appendHint = (doc: Doc, parentPath: string, hint: string): void => {
   const path = descriptionPath(parentPath);
   setAt(doc, path, mergeHint(asString(getAt(doc, path)), hint));
@@ -180,7 +175,11 @@ const mergeDescriptionRaw = (schema: Json, parentDesc: string): Json => {
   }
 };
 
-/** `Walk`: every path whose key equals `field` (arrays are walked with index keys). */
+/**
+ * `WalkSchema`: every path whose key equals `field` (arrays are walked with index keys). Literal values (`default`,
+ * `example`, `examples`, `const`, `enum`) are client data, not subschemas, so the walk does not descend into them (the
+ * keyword itself is still recorded); under a name map such a key is a property name, whose subschema is walked.
+ */
 const walk = (value: Json | undefined, path: string, field: string, paths: string[]): void => {
   const entries: Array<[string, Json]> = isJsonArray(value)
     ? value.map((item, index): [string, Json] => [String(index), item])
@@ -192,6 +191,8 @@ const walk = (value: Json | undefined, path: string, field: string, paths: strin
     const childPath = path === "" ? escapeKey(key) : `${path}.${escapeKey(key)}`;
 
     if (key === field) paths.push(childPath);
+
+    if (isLiteralValueKeyword(key) && !isPropertyDefinition(path)) continue;
     walk(child, childPath, field, paths);
   }
 };
@@ -218,6 +219,9 @@ const findPathsByFields = (doc: Doc, fields: ReadonlyArray<string>): Map<string,
       const childPath = path === "" ? escapeKey(key) : `${path}.${escapeKey(key)}`;
 
       if (wanted.has(key)) out.set(key, [...(out.get(key) ?? []), childPath]);
+
+      // Literal values are client data; schema-looking keys inside them are not keywords.
+      if (isLiteralValueKeyword(key) && !isPropertyDefinition(path)) continue;
       visit(child, childPath);
     }
   };
@@ -324,12 +328,12 @@ const stringArray = (value: Json | undefined): string[] =>
 
 type RepairSchemaListResult = { out: Json[]; modified: boolean };
 
-const repairSchemaList = (list: Json[], addItems: boolean): RepairSchemaListResult => {
+const repairSchemaList = (list: Json[]): RepairSchemaListResult => {
   let modified = false;
 
   const out = list.map((item) => {
     if (isJsonObject(item)) {
-      const repaired = repairSchemaNode(item, addItems);
+      const repaired = repairSchemaNode(item);
 
       if (repaired.modified) modified = true;
 
@@ -350,7 +354,7 @@ const repairSchemaList = (list: Json[], addItems: boolean): RepairSchemaListResu
 
 type RepairPropertyMapResult = { out: JsonObject; promoted: string[]; modified: boolean };
 
-const repairPropertyMap = (props: JsonObject, addItems: boolean): RepairPropertyMapResult => {
+const repairPropertyMap = (props: JsonObject): RepairPropertyMapResult => {
   const out: JsonObject = {};
   const promoted: string[] = [];
   let modified = false;
@@ -377,7 +381,7 @@ const repairPropertyMap = (props: JsonObject, addItems: boolean): RepairProperty
       if (required) promoted.push(key);
     }
 
-    const repaired = repairSchemaNode(child, addItems);
+    const repaired = repairSchemaNode(child);
 
     if (repaired.modified) modified = true;
     out[key] = repaired.node;
@@ -390,7 +394,7 @@ const repairPropertyMap = (props: JsonObject, addItems: boolean): RepairProperty
 
 type RepairSchemaNodeResult = { node: JsonObject; modified: boolean };
 
-function repairSchemaNode(node: JsonObject, addItems: boolean): RepairSchemaNodeResult {
+function repairSchemaNode(node: JsonObject): RepairSchemaNodeResult {
   let modified = false;
   const clone: JsonObject = { ...node };
 
@@ -402,7 +406,7 @@ function repairSchemaNode(node: JsonObject, addItems: boolean): RepairSchemaNode
     }
 
     if (Object.keys(bare).length > 0) {
-      const repaired = repairPropertyMap(bare, addItems);
+      const repaired = repairPropertyMap(bare);
 
       for (const k of Object.keys(bare)) delete clone[k];
       const existing = clone["properties"];
@@ -425,13 +429,10 @@ function repairSchemaNode(node: JsonObject, addItems: boolean): RepairSchemaNode
 
   const props = clone["properties"];
 
+  // Declared properties are repaired without inferring a type before references are expanded: final sanitization
+  // handles native object and array schemas once refs and conjunctions are resolved.
   if (isJsonObject(props)) {
-    if (!Object.hasOwn(clone, "type")) {
-      clone["type"] = "object";
-      modified = true;
-    }
-
-    const repaired = repairPropertyMap(props, addItems);
+    const repaired = repairPropertyMap(props);
 
     if (repaired.modified) {
       clone["properties"] = repaired.out;
@@ -444,31 +445,17 @@ function repairSchemaNode(node: JsonObject, addItems: boolean): RepairSchemaNode
     }
   }
 
-  if (addItems) {
-    if (isArrayDeclaredType(clone["type"])) {
-      if (!Object.hasOwn(clone, "items")) {
-        clone["items"] = { type: "string" };
-        modified = true;
-      }
-    } else if (Object.hasOwn(clone, "items")) {
-      if (clone["type"] === null || clone["type"] === undefined || clone["type"] === "") {
-        clone["type"] = "array";
-        modified = true;
-      }
-    }
-  }
-
   const items = clone["items"];
 
   if (isJsonObject(items)) {
-    const repaired = repairSchemaNode(items, addItems);
+    const repaired = repairSchemaNode(items);
 
     if (repaired.modified) {
       clone["items"] = repaired.node;
       modified = true;
     }
   } else if (isJsonArray(items)) {
-    const repaired = repairSchemaList(items, addItems);
+    const repaired = repairSchemaList(items);
 
     if (repaired.modified) {
       clone["items"] = repaired.out;
@@ -482,7 +469,7 @@ function repairSchemaNode(node: JsonObject, addItems: boolean): RepairSchemaNode
   const additional = clone["additionalProperties"];
 
   if (isJsonObject(additional)) {
-    const repaired = repairSchemaNode(additional, addItems);
+    const repaired = repairSchemaNode(additional);
 
     if (repaired.modified) {
       clone["additionalProperties"] = repaired.node;
@@ -493,7 +480,7 @@ function repairSchemaNode(node: JsonObject, addItems: boolean): RepairSchemaNode
   const pattern = clone["patternProperties"];
 
   if (isJsonObject(pattern)) {
-    const repaired = repairPropertyMap(pattern, addItems);
+    const repaired = repairPropertyMap(pattern);
 
     if (repaired.modified) {
       clone["patternProperties"] = repaired.out;
@@ -516,7 +503,7 @@ function repairSchemaNode(node: JsonObject, addItems: boolean): RepairSchemaNode
     const sub = clone[key];
 
     if (isJsonObject(sub)) {
-      const repaired = repairSchemaNode(sub, addItems);
+      const repaired = repairSchemaNode(sub);
 
       if (repaired.modified) {
         clone[key] = repaired.node;
@@ -532,7 +519,7 @@ function repairSchemaNode(node: JsonObject, addItems: boolean): RepairSchemaNode
     const list = clone[key];
 
     if (isJsonArray(list)) {
-      const repaired = repairSchemaList(list, addItems);
+      const repaired = repairSchemaList(list);
 
       if (repaired.modified) {
         clone[key] = repaired.out;
@@ -550,7 +537,7 @@ function repairSchemaNode(node: JsonObject, addItems: boolean): RepairSchemaNode
 
     for (const [dk, dv] of Object.entries(defs)) {
       if (isJsonObject(dv)) {
-        const repaired = repairSchemaNode(dv, addItems);
+        const repaired = repairSchemaNode(dv);
         out[dk] = repaired.node;
 
         if (repaired.modified) {
@@ -572,7 +559,7 @@ function repairSchemaNode(node: JsonObject, addItems: boolean): RepairSchemaNode
   return { node: clone, modified };
 }
 
-const normalizeMalformedSchemaObjects = (doc: Doc, addItems: boolean): void => {
+const normalizeMalformedSchemaObjects = (doc: Doc): void => {
   const root = doc.root;
 
   if (root === true) {
@@ -587,7 +574,7 @@ const normalizeMalformedSchemaObjects = (doc: Doc, addItems: boolean): void => {
     const inner = root["schema"];
 
     if (isJsonObject(inner)) {
-      const repaired = repairSchemaNode(inner, addItems);
+      const repaired = repairSchemaNode(inner);
 
       if (repaired.modified) doc.root = { schema: repaired.node };
 
@@ -601,118 +588,22 @@ const normalizeMalformedSchemaObjects = (doc: Doc, addItems: boolean): void => {
     }
   }
 
-  const repaired = repairSchemaNode(root, addItems);
+  const repaired = repairSchemaNode(root);
 
   if (repaired.modified) doc.root = repaired.node;
 };
 
 // --- $ref handling -------------------------------------------------------------------------------------------------------
 
-const resolveJsonPointer = (
-  root: Json,
-  ref: string,
-): { found: true; value: Json } | { found: false } => {
-  let current: Json = root;
-
-  for (const rawPart of ref.slice(2).split("/")) {
-    const part = rawPart.replaceAll("~1", "/").replaceAll("~0", "~");
-
-    if (isJsonObject(current)) {
-      if (!Object.hasOwn(current, part)) return { found: false };
-      // SAFETY: `Object.hasOwn(current, part)` was checked above, so the key is present; the cast only drops the `undefined` added by noUncheckedIndexedAccess.
-      current = current[part] as Json;
-    } else if (isJsonArray(current)) {
-      if (!/^-?\d+$/.test(part)) return { found: false };
-      const index = Number(part);
-
-      if (index < 0 || index >= current.length) return { found: false };
-      // SAFETY: the index is in bounds (loop bound or length check above); the cast only drops the `undefined` added by noUncheckedIndexedAccess.
-      current = current[index] as Json;
-    } else {
-      return { found: false };
-    }
-  }
-
-  return { found: true, value: current };
-};
-
-const refName = (ref: string): string => {
-  const index = ref.lastIndexOf("/");
-
-  if (index >= 0 && index + 1 < ref.length)
-    return ref
-      .slice(index + 1)
-      .replaceAll("~1", "/")
-      .replaceAll("~0", "~");
-
-  return ref;
-};
-
-const cyclicRefFallback = (node: JsonObject, target: Json, ref: string): JsonObject => {
-  const out: JsonObject = {};
-
-  if (isJsonObject(target)) {
-    for (const key of ["type", "nullable", "description"])
-      if (Object.hasOwn(target, key))
-        // SAFETY: `Object.hasOwn(target, key)` was checked above, so the key is present; the cast only drops the `undefined` added by noUncheckedIndexedAccess.
-        out[key] = target[key] as Json;
-  }
-
-  for (const [key, value] of Object.entries(node)) if (key !== "$ref") out[key] = value;
-  const hint = `See: ${refName(ref)}`;
-  const description = out["description"];
-  out["description"] =
-    typeof description === "string" && description !== "" ? mergeHint(description, hint) : hint;
-
-  return out;
-};
-
-const resolveLocalRefs = (root: Json, value: Json, active: Set<string>): Json => {
-  if (isJsonArray(value)) return value.map((item) => resolveLocalRefs(root, item, active));
-
-  if (!isJsonObject(value)) return value;
-  const ref = value["$ref"];
-
-  if (typeof ref === "string" && ref.startsWith("#/")) {
-    const target = resolveJsonPointer(root, ref);
-
-    if (target.found) {
-      if (active.has(ref)) return cyclicRefFallback(value, target.value, ref);
-      active.add(ref);
-      const resolvedTarget = resolveLocalRefs(root, target.value, active);
-      active.delete(ref);
-
-      if (isJsonObject(resolvedTarget)) {
-        const out: JsonObject = { ...resolvedTarget };
-
-        for (const [key, item] of Object.entries(value)) {
-          if (key !== "$ref") out[key] = resolveLocalRefs(root, item, active);
-        }
-
-        return out;
-      }
-    }
-  }
-
-  const out: JsonObject = {};
-
-  for (const [key, item] of Object.entries(value)) out[key] = resolveLocalRefs(root, item, active);
-
-  return out;
-};
-
-const inlineLocalRefs = (doc: Doc): void => {
-  if (!JSON.stringify(doc.root).includes('"$ref"')) return;
-  doc.root = resolveLocalRefs(doc.root, doc.root, new Set());
-};
-
 const convertRefsToHints = (doc: Doc, preserveSiblings: boolean): void => {
   const paths = findPaths(doc, "$ref");
   sortByDepth(paths);
 
   for (const p of paths) {
-    const defName = refName(asString(getAt(doc, p)));
     const parentPath = trimSuffix(p, ".$ref");
+
+    if (isPropertyDefinition(parentPath)) continue; // a property literally named "$ref", not a reference keyword
+    const defName = refName(asString(getAt(doc, p)));
     let hint = `See: ${defName}`;
 
     if (!preserveSiblings) {
@@ -734,7 +625,7 @@ const convertConstToEnum = (doc: Doc): void => {
   for (const p of findPaths(doc, "const")) {
     const value = getAt(doc, p);
 
-    if (value === undefined) continue;
+    if (value === undefined || isPropertyDefinition(trimSuffix(p, ".const"))) continue;
     const enumPath = `${trimSuffix(p, ".const")}.enum`;
 
     if (getAt(doc, enumPath) === undefined) setAt(doc, enumPath, [value]);
@@ -976,60 +867,212 @@ const selectBest = (items: Json[]): SelectBestResult => {
   return { bestIdx, types };
 };
 
-const flattenAnyOfOneOf = (doc: Doc): void => {
-  for (const key of ["anyOf", "oneOf"]) {
-    const paths = findPaths(doc, key);
-    sortByDepth(paths);
+/** A required-only union branch (`{"required":["a"]}`) declares no shape of its own. */
+const isRequiredOnlyUnionBranch = (item: Json): boolean => {
+  if (!isJsonObject(item) || !isJsonArray(item["required"])) return false;
 
-    for (const p of paths) {
-      const arr = getAt(doc, p);
+  return !["type", "properties", "items", "enum", "anyOf", "oneOf", "allOf"].some(
+    (key) => item[key] !== undefined,
+  );
+};
 
-      if (!isJsonArray(arr) || arr.length === 0) continue;
-      const parentPath = trimSuffix(p, `.${key}`);
-      const parent = parentPath === "" ? doc.root : getAt(doc, parentPath);
-      const items = arr;
+/** Gives a required-only branch the parent's declarations of the properties it requires, so it stands alone. */
+const materializeRequiredOnlyBranch = (
+  item: JsonObject,
+  parentProps: Json | undefined,
+): JsonObject | undefined => {
+  if (!isJsonObject(parentProps)) return undefined;
+  const required = stringArray(item["required"]);
 
-      if (isJsonObject(get(parent, "properties"))) {
-        let hasNull = false;
+  if (required.length === 0) return undefined;
+  const properties: JsonObject = {};
 
-        for (const item of items) {
-          if (asString(get(item, "type")) === "null") hasNull = true;
-          const branchProps = get(item, "properties");
+  for (const name of required) {
+    const declaration = parentProps[name];
 
-          if (isJsonObject(branchProps)) {
-            for (const [propKey, propVal] of Object.entries(branchProps)) {
-              mergeMissingSchemaAtPath(
-                doc,
-                joinPath(parentPath, `properties.${escapeKey(propKey)}`),
-                propVal,
-              );
-            }
-          }
+    if (!Object.hasOwn(parentProps, name) || declaration === undefined) return undefined;
+    properties[name] = structuredClone(declaration);
+  }
+
+  return { ...item, properties, type: "object" };
+};
+
+const isNullOnlyBranch = (item: JsonObject): boolean => {
+  if (item["properties"] !== undefined || item["items"] !== undefined) return false;
+  const type = item["type"];
+
+  if (typeof type === "string") return type === "null";
+
+  return isJsonArray(type) && type.length > 0 && type.every((elem) => asString(elem) === "null");
+};
+
+interface UnionBranches {
+  /** The standalone branches that survive: not null, not unsatisfiable (`false`). */
+  readonly nonNull: Json[];
+  readonly hasNull: boolean;
+  /** Whether a branch was dropped or rewritten (`true`, `false`, a required-only branch). */
+  readonly hasFiltered: boolean;
+}
+
+const partitionUnionBranches = (items: Json[], parentProps: Json | undefined): UnionBranches => {
+  const nonNull: Json[] = [];
+  let hasNull = false;
+  let hasFiltered = false;
+
+  for (const item of items) {
+    if (item === true) {
+      nonNull.push({});
+      hasFiltered = true;
+      continue;
+    }
+
+    if (!isJsonObject(item)) {
+      hasFiltered = true;
+      continue;
+    }
+
+    if (isNullOnlyBranch(item)) {
+      hasNull = true;
+      continue;
+    }
+
+    if (isRequiredOnlyUnionBranch(item)) {
+      const materialized = materializeRequiredOnlyBranch(item, parentProps);
+
+      if (materialized !== undefined) nonNull.push(materialized);
+      hasFiltered = true;
+      continue;
+    }
+
+    nonNull.push(item);
+  }
+
+  return { nonNull, hasNull, hasFiltered };
+};
+
+/**
+ * `flattenAnyOfOneOf`. Multi-branch unions (2+ standalone non-null branches) are preserved so non-first branches are
+ * not lost; on the native Gemini/Antigravity Schema carrier (`!preserveOneOf`) `oneOf` becomes `anyOf`, which the
+ * protobuf Schema supports and `oneOf` it rejects. A null branch becomes `nullable: true`. `flattenMultiBranch` forces the
+ * single strongest branch instead, for the route whose upstream rejects nested multi-branch unions.
+ */
+interface FlattenUnionsOptions {
+  /** Standard JSON Schema carrier: `oneOf` stays `oneOf` and a sibling `anyOf`/`oneOf` pair is kept. */
+  readonly preserveOneOf: boolean;
+  /** Force multi-branch unions down to the single strongest branch. */
+  readonly flattenMultiBranch: boolean;
+}
+
+const flattenAnyOfOneOf = (doc: Doc, options: FlattenUnionsOptions): void => {
+  const { preserveOneOf, flattenMultiBranch } = options;
+  const byField = findPathsByFields(doc, ["oneOf", "anyOf"]);
+  const paths = [...(byField.get("oneOf") ?? []), ...(byField.get("anyOf") ?? [])];
+  sortByDepth(paths);
+
+  for (const p of paths) {
+    const key = p === "oneOf" || p.endsWith(".oneOf") ? "oneOf" : "anyOf";
+    const arr = getAt(doc, p);
+
+    if (!isJsonArray(arr) || arr.length === 0) continue;
+    const parentPath = trimSuffix(p, `.${key}`);
+
+    if (isPropertyDefinition(parentPath)) continue;
+    const parent = parentPath === "" ? doc.root : getAt(doc, parentPath);
+
+    // A node declaring both anyOf and oneOf on a native Schema carrier cannot keep a second union (protobuf Schema has a
+    // single anyOf): anyOf stays primary and the oneOf constraint becomes a description hint. Routes that flatten
+    // multi-branch unions skip this: the primary union is flattened away too.
+    if (
+      key === "oneOf" &&
+      !flattenMultiBranch &&
+      !preserveOneOf &&
+      isJsonArray(get(parent, "anyOf"))
+    ) {
+      appendHint(doc, parentPath, `oneOf: ${JSON.stringify(arr)}`);
+      delAt(doc, p);
+      continue;
+    }
+
+    const parentProps = get(parent, "properties");
+    const { nonNull, hasNull, hasFiltered } = partitionUnionBranches(arr, parentProps);
+    // An earlier union-preserving pass may already have recorded the null branch as nullable:true on this node
+    // (translator -> executor chain); that marker is part of the schema contract and survives flattening.
+    const nullable = hasNull || get(parent, "nullable") === true;
+
+    if (nonNull.length >= 2 && !flattenMultiBranch) {
+      const targetKey = key === "oneOf" && !preserveOneOf ? "anyOf" : key;
+
+      if (targetKey !== key || hasNull || hasFiltered) {
+        setAt(doc, joinPath(parentPath, targetKey), nonNull);
+
+        if (targetKey !== key) delAt(doc, p);
+      }
+
+      if (hasNull) {
+        setAt(doc, joinPath(parentPath, "nullable"), true);
+        appendHint(doc, parentPath, "(nullable)");
+      }
+
+      continue;
+    }
+
+    // A parent that already defines properties keeps them: branch properties merge into it and the union keyword goes.
+    if (isJsonObject(parentProps)) {
+      for (const item of nonNull) {
+        const branchProps = get(item, "properties");
+
+        if (!isJsonObject(branchProps)) continue;
+
+        for (const [propKey, propVal] of Object.entries(branchProps)) {
+          mergeMissingSchemaAtPath(
+            doc,
+            joinPath(parentPath, `properties.${escapeKey(propKey)}`),
+            propVal,
+          );
         }
+      }
 
-        if (hasNull) setAt(doc, joinPath(parentPath, "nullable"), true);
+      if (nullable) setAt(doc, joinPath(parentPath, "nullable"), true);
 
-        if (asString(get(parent, "type")) === "")
-          setAt(doc, joinPath(parentPath, "type"), "object");
+      if (asString(get(parent, "type")) === "") setAt(doc, joinPath(parentPath, "type"), "object");
+      delAt(doc, p);
+      continue;
+    }
+
+    const parentDesc = asString(getAt(doc, descriptionPath(parentPath)));
+
+    if (nonNull.length === 0) {
+      if (!hasNull) {
         delAt(doc, p);
         continue;
       }
 
-      const parentDesc = asString(getAt(doc, descriptionPath(parentPath)));
-      const { bestIdx, types } = selectBest(items);
-      // SAFETY: the index is in bounds (loop bound or length check above); the cast only drops the `undefined` added by noUncheckedIndexedAccess.
-      let selected: Json = structuredClone(items[bestIdx] as Json);
-      const hasNull = items.some((item) => asString(get(item, "type")) === "null");
-
-      if (hasNull && asString(get(items[bestIdx], "type")) !== "null" && isJsonObject(selected)) {
-        selected = set(selected, "nullable", true);
-      }
-
-      if (parentDesc !== "") selected = mergeDescriptionRaw(selected, parentDesc);
-
-      if (types.length > 1) selected = appendHintRaw(selected, `Accepts: ${types.join(" | ")}`);
-      setRawAt(doc, parentPath, selected);
+      const nullOnly: Json = { type: "null" };
+      setRawAt(
+        doc,
+        parentPath,
+        parentDesc === "" ? nullOnly : mergeDescriptionRaw(nullOnly, parentDesc),
+      );
+      continue;
     }
+
+    let candidates = arr;
+
+    if (hasFiltered || nonNull.length >= 2) {
+      candidates = hasNull ? [...nonNull, { type: "null" }] : nonNull;
+    }
+
+    const { types: allTypes } = selectBest(candidates);
+    // The strongest non-null branch (ties keep the first).
+    let selected: Json = structuredClone(nonNull[selectBest(nonNull).bestIdx] ?? nonNull[0] ?? {});
+
+    if (nullable && isJsonObject(selected)) selected = set(selected, "nullable", true);
+
+    if (parentDesc !== "") selected = mergeDescriptionRaw(selected, parentDesc);
+
+    if (allTypes.length > 1) selected = appendHintRaw(selected, `Accepts: ${allTypes.join(" | ")}`);
+    else if (nullable) selected = appendHintRaw(selected, "(nullable)");
+    setRawAt(doc, parentPath, selected);
   }
 };
 
@@ -1130,6 +1173,8 @@ const removeExtensionFields = (doc: Doc): void => {
         continue;
       }
 
+      // Literal values are client data; x-* keys inside them are not schema extensions.
+      if (isLiteralValueKeyword(key) && !isPropertyDefinition(path)) continue;
       visit(child, childPath);
     }
   };
@@ -1156,6 +1201,9 @@ const removeUnsupportedKeywords = (doc: Doc, options: CleanOptions): void => {
     "$dynamicAnchor",
     "propertyNames",
     "patternProperties",
+    "dependentRequired",
+    "dependentSchemas",
+    "dependencies",
     "if",
     "then",
     "else",
@@ -1165,10 +1213,15 @@ const removeUnsupportedKeywords = (doc: Doc, options: CleanOptions): void => {
     "prefill",
     "deprecated",
     "encrypted",
+    "discriminator",
+    "readOnly",
+    "writeOnly",
     "additionalItems",
     "unevaluatedProperties",
     "unevaluatedItems",
     "contentSchema",
+    "contentMediaType",
+    "contentEncoding",
   ];
 
   if (options.antigravitySemantics === true) keywords.push("not");
@@ -1276,7 +1329,12 @@ const cleanupRequiredFields = (doc: Doc): void => {
   }
 };
 
-const sanitizeArrayItems = (doc: Doc): void => {
+/**
+ * Normalizes native Schema arrays (a node declaring `items` is an array; `items` of a non-array is dropped) and, with
+ * `addMissing`, gives array-typed nodes that still lack `items` after reference inlining the `{"type":"string"}`
+ * placeholder Gemini requires. A node still holding a `$ref` is left alone.
+ */
+const sanitizeArrayItems = (doc: Doc, addMissing: boolean): void => {
   const paths = findPaths(doc, "items");
   sortByDepth(paths);
 
@@ -1290,8 +1348,29 @@ const sanitizeArrayItems = (doc: Doc): void => {
     if (t === "") setAt(doc, typePath, "array");
     else if (t.toLowerCase() !== "array") delAt(doc, p);
   }
+
+  if (!addMissing) return;
+  const typePaths = findPaths(doc, "type");
+  sortByDepth(typePaths);
+
+  for (const p of typePaths) {
+    const parentPath = trimSuffix(p, ".type");
+
+    if (isPropertyDefinition(parentPath) || !isArrayDeclaredType(getAt(doc, p))) continue;
+
+    if (
+      getAt(doc, joinPath(parentPath, "items")) !== undefined ||
+      getAt(doc, joinPath(parentPath, "$ref")) !== undefined
+    )
+      continue;
+    setAt(doc, joinPath(parentPath, "items"), { type: "string" });
+  }
 };
 
+const hasSchemaConjunction = (doc: Doc): boolean =>
+  findPaths(doc, "allOf").some((path) => isJsonArray(getAt(doc, path)));
+
+/** Normalizes native Schema object declarations (skipped for JSON Schema conjunctions, see `cleanJsonSchema`). */
 const sanitizeObjectProperties = (doc: Doc): void => {
   const paths = findPaths(doc, "properties");
   sortByDepth(paths);
@@ -1321,6 +1400,13 @@ const addEmptySchemaPlaceholder = (doc: Doc): void => {
     const req = getAt(doc, reqPath);
     const hasRequired = isJsonArray(req) && req.length > 0;
 
+    // A preserved union already constrains the node; a placeholder property would contradict its branches.
+    if (
+      isJsonArray(getAt(doc, joinPath(parentPath, "anyOf"))) ||
+      isJsonArray(getAt(doc, joinPath(parentPath, "oneOf")))
+    )
+      continue;
+
     const needsPlaceholder =
       props === undefined || (isJsonObject(props) && Object.keys(props).length === 0);
 
@@ -1347,9 +1433,13 @@ const addEmptySchemaPlaceholder = (doc: Doc): void => {
 
 const cleanJsonSchema = (schema: Json, options: CleanOptions): Json => {
   const doc: Doc = { root: structuredClone(schema) };
-  normalizeMalformedSchemaObjects(doc, options.addMissingArrayItems === true);
+  // Array placeholders and array type inference wait for `sanitizeArrayItems` (after references are inlined and allOf
+  // and unions are resolved), so a synthetic placeholder never clobbers items from a $ref target or an allOf branch.
+  normalizeMalformedSchemaObjects(doc);
+  doc.root = normalizeJsonSchemaNumericConstraints(doc.root);
 
-  if (options.antigravitySemantics === true) inlineLocalRefs(doc);
+  // Every cleaner removes $defs/definitions later, so local references are expanded for every route.
+  doc.root = inlineLocalRefsForClean(doc.root);
   convertRefsToHints(doc, options.antigravitySemantics === true);
   convertConstToEnum(doc);
   convertEnumValuesToStrings(doc, options.forceEnumStringType === true);
@@ -1367,11 +1457,26 @@ const cleanJsonSchema = (schema: Json, options: CleanOptions): Json => {
 
   if (options.antigravitySemantics === true) moveNotToDescription(doc);
 
-  mergeConditionals(doc);
-  mergeAllOf(doc);
+  // Once a JSON Schema contains a conjunction, local shape assumptions are unsafe in ancestors, siblings and
+  // descendants alike, so the shape-rewriting passes are skipped for the whole document.
+  const preserveConjunctions =
+    options.preserveStandardConstraints === true && hasSchemaConjunction(doc);
 
-  if (options.flattenUnions === true) flattenAnyOfOneOf(doc);
-  flattenTypeArrays(doc, options.antigravitySemantics === true);
+  mergeConditionals(doc);
+
+  // The JSON Schema carrier keeps conjunctions, including $ref sibling conflicts.
+  if (options.preserveStandardConstraints !== true) mergeAllOf(doc);
+
+  if (!preserveConjunctions) {
+    if (options.flattenUnions === true) {
+      flattenAnyOfOneOf(doc, {
+        preserveOneOf: options.preserveStandardConstraints === true,
+        flattenMultiBranch: options.flattenMultiBranchUnions === true,
+      });
+    }
+
+    flattenTypeArrays(doc, options.antigravitySemantics === true);
+  }
 
   removeUnsupportedKeywords(doc, options);
 
@@ -1382,9 +1487,11 @@ const cleanJsonSchema = (schema: Json, options: CleanOptions): Json => {
     removeKeywords(doc, ["title"]);
   }
 
-  cleanupRequiredFields(doc);
-  sanitizeArrayItems(doc);
-  sanitizeObjectProperties(doc);
+  if (!preserveConjunctions) {
+    cleanupRequiredFields(doc);
+    sanitizeObjectProperties(doc);
+    sanitizeArrayItems(doc, options.addMissingArrayItems === true);
+  }
 
   if (options.addPlaceholder === true) addEmptySchemaPlaceholder(doc);
 
@@ -1411,19 +1518,35 @@ export const cleanJsonSchemaForGeminiJsonSchema = (schema: Json): Json =>
     preserveStandardConstraints: true,
   });
 
-/** `CleanJSONSchemaForAntigravityTool`. */
+const cleanAntigravityTool = (
+  schema: Json,
+  options: { readonly requirePlaceholder: boolean; readonly flattenMultiBranchUnions: boolean },
+): Json =>
+  cleanJsonSchema(schema, {
+    addPlaceholder: options.requirePlaceholder,
+    addMissingArrayItems: true,
+    antigravitySemantics: true,
+    removeToolTitle: !options.requirePlaceholder,
+    flattenUnions: true,
+    flattenMultiBranchUnions: options.flattenMultiBranchUnions,
+    dropAllEnums: true,
+  });
+
+/** `CleanJSONSchemaForAntigravityTool`: multi-branch unions are preserved (Gemini models accept them). */
 export const cleanJsonSchemaForAntigravityTool = (
   schema: Json,
   requirePlaceholder: boolean,
-): Json =>
-  cleanJsonSchema(schema, {
-    addPlaceholder: requirePlaceholder,
-    addMissingArrayItems: true,
-    antigravitySemantics: true,
-    removeToolTitle: !requirePlaceholder,
-    flattenUnions: true,
-    dropAllEnums: true,
-  });
+): Json => cleanAntigravityTool(schema, { requirePlaceholder, flattenMultiBranchUnions: false });
+
+/**
+ * `CleanJSONSchemaForAntigravityClaudeTool`: the Antigravity tool cleaner for Claude models. The Antigravity Claude
+ * backend turns function declarations into Claude `custom.input_schema` and rejects nested multi-branch unions with
+ * "JSON schema is invalid", so they flatten to the single strongest branch (CLIProxyAPI #3662 and its follow-up).
+ */
+export const cleanJsonSchemaForAntigravityClaudeTool = (
+  schema: Json,
+  requirePlaceholder: boolean,
+): Json => cleanAntigravityTool(schema, { requirePlaceholder, flattenMultiBranchUnions: true });
 
 /** `CleanJSONSchemaForAntigravity`. */
 export const cleanJsonSchemaForAntigravity = (schema: Json): Json =>

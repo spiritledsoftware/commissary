@@ -18,6 +18,7 @@ import {
   set,
 } from "@commissary/json";
 import { compatibleAntigravityClaudeThinkingSignature } from "../../../signature/claude.ts";
+import { normalizeJsonSchemaNumericConstraints } from "../../common/schema.ts";
 import { TranslationError } from "../../registry.ts";
 import { contentHasGeminiFunctionResponse } from "../../gemini/common/contents.ts";
 import { attachDefaultSafetySettings } from "../../gemini/common/safety.ts";
@@ -284,10 +285,16 @@ const normalizeTools = (root: Json, nameMap: ReadonlyMap<string, string> | undef
           if (typeof declaration["name"] !== "string" || mapped !== original)
             declaration["name"] = mapped;
 
-          if (Object.hasOwn(declaration, "parameters")) {
-            // SAFETY: `Object.hasOwn(declaration, "parameters")` was checked above, so the key is present; the cast only drops the `undefined` added by noUncheckedIndexedAccess.
-            declaration["parametersJsonSchema"] = declaration["parameters"] as Json;
+          const parameters = declaration["parameters"];
+          const parametersJsonSchema = declaration["parametersJsonSchema"];
+
+          // String-encoded numeric constraints become numbers: the JSON Schema carrier needs them as such.
+          if (parameters !== undefined) {
+            declaration["parametersJsonSchema"] = normalizeJsonSchemaNumericConstraints(parameters);
             delete declaration["parameters"];
+          } else if (parametersJsonSchema !== undefined) {
+            declaration["parametersJsonSchema"] =
+              normalizeJsonSchemaNumericConstraints(parametersJsonSchema);
           }
         }
 

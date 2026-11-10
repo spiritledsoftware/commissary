@@ -14,6 +14,7 @@ import {
   type JsonObject,
 } from "@commissary/json";
 import { convertBudgetToLevel } from "../../../thinking/convert.ts";
+import { normalizeJsonSchemaNumericConstraints } from "../../common/schema.ts";
 import { getStr, isArr, isObj, raw, str } from "../common/read.ts";
 
 /** `IsGeminiThoughtPart` (common/gemini.go). */
@@ -408,7 +409,8 @@ export const convertGeminiRequestToOpenAI = (
 
         const parameters = get(funcDecl, "parameters") ?? get(funcDecl, "parametersJsonSchema");
 
-        if (parameters !== undefined) fn.parameters = cloneJson(parameters);
+        if (parameters !== undefined)
+          fn.parameters = cloneJson(normalizeJsonSchemaNumericConstraints(parameters));
         toolItems.push({ type: "function", function: fn });
       }
     }

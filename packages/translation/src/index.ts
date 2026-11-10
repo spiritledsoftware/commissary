@@ -95,8 +95,11 @@ export {
   sanitizeOrphanResponsesToolOutputs,
 } from "./translator/common/responses.ts";
 
+export { inlineLocalRefs } from "./translator/common/schema-refs.ts";
+
 export {
   hasUnsupportedUnicodePropertyEscape,
+  normalizeJsonSchemaNumericConstraints,
   SCHEMA_MAP_KEYWORDS,
   SCHEMA_VALUE_KEYWORDS,
 } from "./translator/common/schema.ts";
@@ -127,6 +130,7 @@ export { textSignatureKeys } from "./translator/gemini/openai/responses/trailing
 export { hasResponsesWebSearchTool } from "./translator/gemini/openai/responses/web-search.ts";
 
 export {
+  cleanJsonSchemaForAntigravityClaudeTool,
   cleanJsonSchemaForAntigravityResponse,
   cleanJsonSchemaForAntigravityTool,
 } from "./translator/gemini/util/json-schema.ts";

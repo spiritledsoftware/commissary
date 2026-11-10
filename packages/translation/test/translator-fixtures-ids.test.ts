@@ -3,10 +3,14 @@
 // both sides before comparing) and cases that depend on the thinking summary hooks (`needs: ["thinking-summary"]`,
 // the real hooks are applied here). Everything else must match the Go output exactly.
 import { describe, expect, it } from "vitest";
-import type { Json } from "@commissary/json";
+import { isJsonObject, type Json } from "@commissary/json";
 import { builtinTranslators } from "../src/translator/builtin.ts";
 import { makeTranslationState, type SummaryHooks } from "../src/translator/registry.ts";
-import { portedChunkEdit, staleGoldenEditEntries } from "./support/translator-ported-ahead.ts";
+import {
+  portedChunkEdit,
+  portedRequestEdit,
+  staleGoldenEditEntries,
+} from "./support/translator-ported-ahead.ts";
 import {
   applySummaryConfigForModel,
   extractTranslatedSummaryConfig,
@@ -105,7 +109,11 @@ describe("translator golden fixtures with generated ids", () => {
           );
 
           expect(envelope.error?.message).toBe(c.requestError);
-          expect(envelope.body).toEqual(parseJson(c.translatedRequest));
+          const expected = parseJson(c.translatedRequest);
+
+          // A golden that predates the C7 schema cleaning expects the edited request (translator-ported-ahead.ts).
+          if (isJsonObject(expected)) portedRequestEdit(`${c.from}->${c.to} ${c.name}`, expected);
+          expect(envelope.body).toEqual(expected);
 
           const context = () => ({
             model: c.model,

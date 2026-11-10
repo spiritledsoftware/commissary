@@ -247,7 +247,7 @@ describe("envelope", () => {
       },
     };
 
-    sanitizeRequestSchemas(payload, true);
+    sanitizeRequestSchemas(payload, { useAntigravitySchema: true });
     // The schema keyword is rewritten, the replayed call arguments are not.
     expect(get(payload, "request.tools.0.functionDeclarations.0.parameters")).toBeDefined();
     expect(

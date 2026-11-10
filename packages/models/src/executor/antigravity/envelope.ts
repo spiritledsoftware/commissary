@@ -19,6 +19,7 @@ import {
 } from "@commissary/json";
 import {
   renameKey,
+  cleanJsonSchemaForAntigravityClaudeTool,
   cleanJsonSchemaForAntigravityResponse,
   cleanJsonSchemaForAntigravityTool,
   lookupModelInfo,
@@ -145,14 +146,21 @@ export const geminiToAntigravity = (
 
 const DECLARATION_KEYS = ["functionDeclarations", "function_declarations"] as const;
 
-const DECLARATION_SCHEMA_KEYS = [
-  "parameters",
-  "parametersJsonSchema",
-  "parameters_json_schema",
-  "response",
-  "responseJsonSchema",
-  "response_json_schema",
-] as const;
+/**
+ * The schema keys of a function declaration. Only the input `parameters` become Claude `custom.input_schema` upstream
+ * (and need Claude's union flattening); the others describe the function's return value.
+ */
+const DECLARATION_SCHEMA_KEYS: ReadonlyArray<{
+  readonly key: string;
+  readonly parameters: boolean;
+}> = [
+  { key: "parameters", parameters: true },
+  { key: "parametersJsonSchema", parameters: true },
+  { key: "parameters_json_schema", parameters: true },
+  { key: "response", parameters: false },
+  { key: "responseJsonSchema", parameters: false },
+  { key: "response_json_schema", parameters: false },
+];
 
 const GENERATION_CONTAINERS = ["request.generationConfig", "request.generation_config"] as const;
 
@@ -176,21 +184,31 @@ export const needsSchemaSanitization = (payload: Json): boolean => {
  * `cleanNestedSchema`: the cleaner skips placeholder insertion for a top-level schema, but Claude's VALIDATED mode
  * needs every tool schema to declare a property, so the schema is cleaned nested one level down.
  */
-const cleanNestedToolSchema = (schema: Json, useAntigravitySchema: boolean): Json => {
-  const wrapped: Json = { schema: structuredClone(schema) };
-  const cleaned = cleanJsonSchemaForAntigravityTool(wrapped, useAntigravitySchema);
+const cleanNestedToolSchema = (
+  schema: Json,
+  options: { readonly useAntigravitySchema: boolean; readonly flattenUnions: boolean },
+): Json => {
+  const { useAntigravitySchema, flattenUnions } = options;
 
-  return (
-    get(cleaned, "schema") ??
-    cleanJsonSchemaForAntigravityTool(structuredClone(schema), useAntigravitySchema)
-  );
+  const clean = flattenUnions
+    ? cleanJsonSchemaForAntigravityClaudeTool
+    : cleanJsonSchemaForAntigravityTool;
+
+  const wrapped: Json = { schema: structuredClone(schema) };
+  const cleaned = clean(wrapped, useAntigravitySchema);
+
+  return get(cleaned, "schema") ?? clean(structuredClone(schema), useAntigravitySchema);
 };
 
 /**
  * `sanitizeAntigravityRequestSchemas`: cleans only the locations that hold a JSON schema (never functionCall args of
  * the conversation history, which would corrupt replayed tool calls).
  */
-export const sanitizeRequestSchemas = (payload: Json, useAntigravitySchema: boolean): Json => {
+export const sanitizeRequestSchemas = (
+  payload: Json,
+  options: { readonly useAntigravitySchema: boolean; readonly isClaudeModel?: boolean },
+): Json => {
+  const { useAntigravitySchema, isClaudeModel = false } = options;
   const tools = get(payload, "request.tools");
 
   if (isJsonArray(tools)) {
@@ -208,11 +226,18 @@ export const sanitizeRequestSchemas = (payload: Json, useAntigravitySchema: bool
           if (exists(declaration, "parametersJsonSchema"))
             renameKey(declaration, "parametersJsonSchema", "parameters");
 
-          for (const key of DECLARATION_SCHEMA_KEYS) {
+          for (const { key, parameters } of DECLARATION_SCHEMA_KEYS) {
             const schema = declaration[key];
 
-            if (isJsonObject(schema))
-              declaration[key] = cleanNestedToolSchema(schema, useAntigravitySchema);
+            // Only declaration parameter schemas become Claude `custom.input_schema` upstream, which rejects nested
+            // multi-branch unions (CLIProxyAPI 5efe9758); function return schemas keep their unions like every other
+            // response-side schema, and Gemini models (which share the Antigravity schema group) accept them too.
+            if (isJsonObject(schema)) {
+              declaration[key] = cleanNestedToolSchema(schema, {
+                useAntigravitySchema,
+                flattenUnions: isClaudeModel && parameters,
+              });
+            }
           }
         }
       }
@@ -258,7 +283,12 @@ export const constrainRequestPayload = (modelName: string, payload: Json): Json 
     modelName.includes("gemini-3-pro") ||
     modelName.includes("gemini-3.1-pro");
 
-  if (needsSchemaSanitization(payload)) sanitizeRequestSchemas(payload, useAntigravitySchema);
+  if (needsSchemaSanitization(payload)) {
+    sanitizeRequestSchemas(payload, {
+      useAntigravitySchema,
+      isClaudeModel: modelName.includes("claude"),
+    });
+  }
 
   if (modelName.includes("claude")) {
     if (!promptStructuredOutput)

@@ -15,6 +15,7 @@ import {
 } from "@commissary/json";
 import type { ResponseContext, ResponseTransform } from "../../registry.ts";
 import { contentHasGeminiFunctionResponse, geminiTokenCountJson } from "../common/contents.ts";
+import { normalizeJsonSchemaNumericConstraints } from "../../common/schema.ts";
 import { attachDefaultSafetySettings } from "../common/safety.ts";
 import { sanitizeGeminiRequestThoughtSignatures } from "../common/signature.ts";
 
@@ -51,10 +52,17 @@ const normalizeTools = (body: Json): void => {
     if (!isJsonArray(declarations)) continue;
 
     for (const declaration of declarations) {
-      if (isJsonObject(declaration) && exists(declaration, "parameters")) {
-        // SAFETY: `exists(declaration, "parameters")` was checked above, so the key is present; the cast only drops the `undefined` added by noUncheckedIndexedAccess.
-        declaration["parametersJsonSchema"] = declaration["parameters"] as Json;
+      if (!isJsonObject(declaration)) continue;
+      const parameters = declaration["parameters"];
+      const parametersJsonSchema = declaration["parametersJsonSchema"];
+
+      // String-encoded numeric constraints become numbers: the JSON Schema carrier needs them as such.
+      if (parameters !== undefined) {
+        declaration["parametersJsonSchema"] = normalizeJsonSchemaNumericConstraints(parameters);
         delete declaration["parameters"];
+      } else if (parametersJsonSchema !== undefined) {
+        declaration["parametersJsonSchema"] =
+          normalizeJsonSchemaNumericConstraints(parametersJsonSchema);
       }
     }
   }
@@ -134,8 +142,25 @@ export const convertGeminiRequestToGemini = (
 
   sanitizeGeminiRequestThoughtSignatures(body, "contents");
 
-  if (exists(body, "generationConfig.responseSchema"))
-    renameKey(body, "generationConfig.responseSchema", "generationConfig.responseJsonSchema");
+  const responseSchema = get(body, "generationConfig.responseSchema");
+
+  if (responseSchema !== undefined) {
+    set(
+      body,
+      "generationConfig.responseJsonSchema",
+      normalizeJsonSchemaNumericConstraints(responseSchema),
+    );
+    del(body, "generationConfig.responseSchema");
+  } else {
+    const responseJsonSchema = get(body, "generationConfig.responseJsonSchema");
+
+    if (responseJsonSchema !== undefined)
+      set(
+        body,
+        "generationConfig.responseJsonSchema",
+        normalizeJsonSchemaNumericConstraints(responseJsonSchema),
+      );
+  }
 
   backfillEmptyFunctionResponseNames(body);
 
