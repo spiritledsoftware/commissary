@@ -36,6 +36,7 @@ import {
 } from "../../common/schema.ts";
 import { compatibleSignatureForProvider } from "../../../signature/provider.ts";
 import { UserTurnDrops } from "../../common/parts.ts";
+import { inlineToolAdditionDefinitions } from "../../common/claude-tool-addition.ts";
 
 /** `toolResultImagePlaceholder`: keeps the OpenAI tool message non-empty for image-only tool results. */
 const TOOL_RESULT_IMAGE_PLACEHOLDER =
@@ -262,6 +263,23 @@ const convertClaudeToolResultContent = (content: Json | undefined): ToolResultCo
   }
 
   return { text: raw(content), images: [] };
+};
+
+const convertClaudeToolToOpenAI = (tool: Json): Json => {
+  const fn: JsonObject = {
+    name: getStr(tool, "name"),
+    description: getStr(tool, "description"),
+  };
+
+  const inputSchema = get(tool, "input_schema");
+
+  if (present(inputSchema)) {
+    fn.parameters = normalizeObjectSchemaProperties(cloneJson(inputSchema));
+  } else {
+    fn.parameters = { type: "object", properties: {} };
+  }
+
+  return { type: "function", function: fn };
 };
 
 const convertClaudeRequestToOpenAIImpl = (
@@ -553,28 +571,37 @@ const convertClaudeRequestToOpenAIImpl = (
 
   const tools = get(root, "tools");
 
+  // A tool a `tool_addition` block introduces mid-conversation joins the tools (upstream 12d97cfe).
+  const midConversationToolDefs = inlineToolAdditionDefinitions(root).filter(
+    (definition) => getStr(definition, "name") !== "",
+  );
+
+  const toolItems: Json[] = [];
+  const toolIndexByName = new Map<string, number>();
+
   if (isArr(tools)) {
-    const toolItems: Json[] = [];
-
     for (const tool of tools) {
-      const fn: JsonObject = {
-        name: getStr(tool, "name"),
-        description: getStr(tool, "description"),
-      };
+      const name = getStr(tool, "name");
 
-      const inputSchema = get(tool, "input_schema");
-
-      if (present(inputSchema)) {
-        fn.parameters = normalizeObjectSchemaProperties(cloneJson(inputSchema));
-      } else {
-        fn.parameters = { type: "object", properties: {} };
-      }
-
-      toolItems.push({ type: "function", function: fn });
+      if (name !== "") toolIndexByName.set(name, toolItems.length);
+      toolItems.push(convertClaudeToolToOpenAI(tool));
     }
-
-    if (toolItems.length > 0) out.tools = toolItems;
   }
+
+  for (const definition of midConversationToolDefs) {
+    const name = getStr(definition, "name");
+    const converted = convertClaudeToolToOpenAI(definition);
+    const index = toolIndexByName.get(name);
+
+    if (index === undefined) {
+      toolIndexByName.set(name, toolItems.length);
+      toolItems.push(converted);
+    } else {
+      toolItems[index] = converted;
+    }
+  }
+
+  if (toolItems.length > 0) out.tools = toolItems;
 
   const toolChoice = get(root, "tool_choice");
 

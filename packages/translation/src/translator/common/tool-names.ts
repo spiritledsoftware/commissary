@@ -3,11 +3,13 @@
  *
  * Go source: internal/util/translator.go (FixJSON, CanonicalToolName, ToolNameMapFromClaudeRequest, MapToolName,
  * SanitizedFunctionNameMap, MapSanitizedFunctionName, DisambiguatedToolNameMap, SanitizedToolNameMap,
- * RestoreSanitizedToolName), internal/util/claude_tool_id.go (SanitizeClaudeToolID).
+ * RestoreSanitizedToolName), internal/util/claude_tool_id.go (SanitizeClaudeToolID). `ToolNameMapFromClaudeRequest` also
+ * lists the definitions of mid-conversation `tool_addition` blocks (12d97cfe).
  */
 import { createHash } from "node:crypto";
 import { asString, get, isJsonArray, type Json } from "@commissary/json";
 import { sanitizeFunctionName } from "../gemini/util/claude.ts";
+import { inlineToolAdditionDefinitions } from "./claude-tool-addition.ts";
 
 /**
  * `FixJSON`: converts single-quoted strings to double-quoted ones (best effort) so partially malformed tool
@@ -128,12 +130,14 @@ export const canonicalToolName = (name: string): string =>
 
 /** `ToolNameMapFromClaudeRequest`: canonical name -> original client name. */
 export const toolNameMapFromClaudeRequest = (request: Json | undefined): NameMap => {
-  const tools = get(request, "tools");
+  const topLevel = get(request, "tools");
+  const inline = inlineToolAdditionDefinitions(request);
 
-  if (!isJsonArray(tools)) return undefined;
+  if (!isJsonArray(topLevel) && inline.length === 0) return undefined;
   const out = new Map<string, string>();
 
-  for (const tool of tools) {
+  // Tools a `tool_addition` block introduces mid-conversation are declared tools too (upstream 12d97cfe).
+  for (const tool of [...(isJsonArray(topLevel) ? topLevel : []), ...inline]) {
     let name = asString(get(tool, "name")).trim();
 
     if (name === "") name = asString(get(tool, "function.name")).trim();

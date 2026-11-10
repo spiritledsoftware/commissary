@@ -4,6 +4,10 @@
  * Go source: internal/translator/codex/claude/codex_claude_request.go (ConvertClaudeRequestToCodex and helpers).
  * `convertClaudeRequestToCodexWithCompat` keeps assistant thinking blocks with empty or unknown-format signatures for
  * `is-compat` models. Tool `input` is re-serialised compactly (Go forwards the raw text).
+ *
+ * Deferred tools (upstream 12d97cfe, 374056f2): a mid-conversation `tool_addition` block and a `tool_reference`
+ * discovery become `additional_tools` input items where they occur, `defer_loading` tools stay out of the top-level
+ * `tools` (so the prompt-cache prefix never moves), and the short-name map names the non-deferred tools first.
  */
 import { createHash } from "node:crypto";
 import {
@@ -77,6 +81,7 @@ export const buildShortNameMap = (names: readonly string[]): Map<string, string>
   };
 
   for (const name of names) {
+    if (map.has(name)) continue;
     const unique = makeUnique(shortenNameIfNeeded(name));
     used.add(unique);
     map.set(name, unique);
@@ -85,12 +90,142 @@ export const buildShortNameMap = (names: readonly string[]): Map<string, string>
   return map;
 };
 
+const isClaudeWebSearchToolType = (toolType: string): boolean =>
+  toolType === "web_search_20250305" || toolType === "web_search_20260209";
+
+/** A `tool_reference` block's tool name (`tool_name`, else `name`). */
+const toolReferenceName = (part: Json | undefined): string => {
+  const name = asString(get(part, "tool_name"));
+
+  return name === "" ? asString(get(part, "name")) : name;
+};
+
+/** A `tool_addition` block's tool: an inline definition, or the name of a tool declared elsewhere. */
+interface ToolAdditionTarget {
+  readonly definition?: Json;
+  readonly reference?: string;
+}
+
+const toolAdditionTarget = (part: Json): ToolAdditionTarget => {
+  const tool = get(part, "tool");
+  const definition = get(tool, "definition");
+
+  switch (asString(get(tool, "type"))) {
+    case "tool_definition":
+      return isJsonObject(definition) ? { definition } : {};
+    case "tool_reference": {
+      const name = asString(get(tool, "name"));
+
+      return { reference: name === "" ? asString(get(tool, "tool_name")) : name };
+    }
+
+    default:
+      return isJsonObject(definition) ? { definition } : {};
+  }
+};
+
+/** The `tool_reference` names a message part carries (`tool_search_tool_result` and `tool_result` nest them). */
+const partReferenceNames = (part: Json): string[] => {
+  switch (asString(get(part, "type"))) {
+    case "tool_reference":
+      return [toolReferenceName(part)];
+    case "tool_search_tool_result": {
+      const refs = get(part, "content.tool_references");
+
+      return isJsonArray(refs)
+        ? refs
+            .filter((ref) => asString(get(ref, "type")) === "tool_reference")
+            .map(toolReferenceName)
+        : [];
+    }
+
+    case "tool_result": {
+      const nested = get(part, "content");
+
+      return isJsonArray(nested)
+        ? nested
+            .filter((entry) => asString(get(entry, "type")) === "tool_reference")
+            .map(toolReferenceName)
+        : [];
+    }
+
+    default:
+      return [];
+  }
+};
+
+/**
+ * `collectClaudeDeclaredToolNames`: the tool names in shortening order. Non-deferred tools come first, then tools in
+ * the order the conversation introduces them (a `tool_addition` definition, or a discovery of a deferred tool), then
+ * the deferred tools never discovered. A deferred tool added later therefore never changes an earlier short name.
+ */
+const collectDeclaredToolNames = (request: Json | undefined): string[] => {
+  const names: string[] = [];
+  const deferredNames: string[] = [];
+  const deferredSet = new Set<string>();
+  const tools = get(request, "tools");
+
+  if (isJsonArray(tools)) {
+    for (const tool of tools) {
+      const name = asString(get(tool, "name"));
+
+      if (name === "") continue;
+
+      if (asBool(get(tool, "defer_loading"))) {
+        deferredNames.push(name);
+        deferredSet.add(name);
+        continue;
+      }
+
+      names.push(name);
+    }
+  }
+
+  const appendDeferredRef = (refName: string): void => {
+    const name = refName.trim();
+
+    if (deferredSet.has(name)) names.push(name);
+  };
+
+  const messages = get(request, "messages");
+
+  if (isJsonArray(messages)) {
+    for (const message of messages) {
+      const content = get(message, "content");
+
+      if (!isJsonArray(content)) continue;
+
+      if (asString(get(message, "role")) === "system") {
+        for (const part of content) {
+          if (asString(get(part, "type")) !== "tool_addition") continue;
+          const { definition, reference } = toolAdditionTarget(part);
+
+          if (reference !== undefined) {
+            appendDeferredRef(reference);
+          } else if (
+            definition !== undefined &&
+            !isClaudeWebSearchToolType(asString(get(definition, "type")))
+          ) {
+            const name = asString(get(definition, "name"));
+
+            if (name !== "") names.push(name);
+          }
+        }
+
+        continue;
+      }
+
+      for (const part of content)
+        for (const name of partReferenceNames(part)) appendDeferredRef(name);
+    }
+  }
+
+  return [...names, ...deferredNames];
+};
+
 /** `buildReverseMapFromClaudeOriginalToShort`: original -> short names of the request's tools. */
 export const buildOriginalToShortMap = (original: Json | undefined): Map<string, string> => {
-  const tools = get(original, "tools");
-
-  if (!isJsonArray(tools)) return new Map();
-  const names = tools.map((tool) => asString(get(tool, "name"))).filter((name) => name !== "");
+  const names = collectDeclaredToolNames(original);
 
   return names.length > 0 ? buildShortNameMap(names) : new Map();
 };
@@ -112,9 +247,6 @@ const normalizeCodexServiceTier = (value: Json | undefined): string => {
 
   return tier === "fast" || tier === "priority" ? "priority" : "";
 };
-
-const isClaudeWebSearchToolType = (toolType: string): boolean =>
-  toolType === "web_search_20250305" || toolType === "web_search_20260209";
 
 const convertClaudeToolChoiceToCodex = (
   toolChoice: Json | undefined,
@@ -337,6 +469,115 @@ export const convertClaudeRequestToCodexWithCompat = (
   _stream: boolean,
 ): Json => convertClaudeRequest(modelName, request, true);
 
+/** `convertClaudeFunctionToolToCodex`: a Claude tool definition as a Codex function tool. */
+const convertClaudeFunctionToolToCodex = (
+  source: Json,
+  toolNameMap: ReadonlyMap<string, string>,
+): Json => {
+  let tool = cloneJson(source);
+
+  if (get(source, "type") !== "function") tool = set(tool, "type", "function");
+  const nameValue = get(source, "name");
+
+  if (nameValue !== undefined) {
+    const originalName = asString(nameValue);
+    const name = toolNameMap.get(originalName) ?? shortenNameIfNeeded(originalName);
+
+    if (typeof nameValue !== "string" || name !== originalName) tool = set(tool, "name", name);
+  }
+
+  tool = set(tool, "parameters", normalizeToolParameters(get(source, "input_schema")));
+
+  for (const path of ["input_schema", "parameters.$schema", "cache_control", "defer_loading"]) {
+    if (get(tool, path) !== undefined) tool = del(tool, path);
+  }
+
+  if (get(tool, "strict") !== false) tool = set(tool, "strict", false);
+
+  return tool;
+};
+
+/** The tools a conversation has declared or introduced so far, by name (Go `declaredToolsByName`). */
+interface DeferredToolState {
+  readonly declared: Map<string, Json>;
+  /** Names already sent to the model: the non-deferred top-level tools plus every tool introduced mid-conversation. */
+  readonly emitted: Set<string>;
+}
+
+const makeDeferredToolState = (tools: Json | undefined): DeferredToolState => {
+  const declared = new Map<string, Json>();
+  const emitted = new Set<string>();
+
+  if (isJsonArray(tools)) {
+    for (const tool of tools) {
+      const name = asString(get(tool, "name")).trim();
+
+      if (name !== "" && !declared.has(name)) declared.set(name, tool);
+
+      if (
+        isClaudeWebSearchToolType(asString(get(tool, "type"))) ||
+        asBool(get(tool, "defer_loading"))
+      )
+        continue;
+
+      if (name !== "") emitted.add(name);
+    }
+  }
+
+  return { declared, emitted };
+};
+
+/**
+ * `convertClaudeSystemAdditionalTools`: `tool_addition` blocks of a `role: system` message as one `additional_tools`
+ * input item (undefined when nothing is introduced). A reference to a tool already sent is skipped.
+ */
+const convertSystemAdditionalTools = (
+  content: Json | undefined,
+  state: DeferredToolState,
+  toolNameMap: ReadonlyMap<string, string>,
+): Json | undefined => {
+  if (!isJsonArray(content)) return undefined;
+  const toolItems: Json[] = [];
+  const indexByName = new Map<string, number>();
+
+  for (const part of content) {
+    if (asString(get(part, "type")) !== "tool_addition") continue;
+    const target = toolAdditionTarget(part);
+    let definition = target.definition;
+    const isReference = target.reference !== undefined;
+
+    if (definition !== undefined) {
+      const name = asString(get(definition, "name"));
+
+      if (name !== "") state.declared.set(name, definition);
+    } else if (target.reference !== undefined && target.reference !== "") {
+      definition = state.declared.get(target.reference);
+    }
+
+    if (!isJsonObject(definition) || isClaudeWebSearchToolType(asString(get(definition, "type"))))
+      continue;
+    const name = asString(get(definition, "name")).trim();
+
+    if (name === "") continue;
+
+    if (isReference && state.emitted.has(name)) continue;
+    state.emitted.add(name);
+    const converted = convertClaudeFunctionToolToCodex(definition, toolNameMap);
+    const index = indexByName.get(name);
+
+    if (index === undefined) {
+      indexByName.set(name, toolItems.length);
+      toolItems.push(converted);
+    } else {
+      toolItems[index] = converted;
+    }
+  }
+
+  return toolItems.length === 0
+    ? undefined
+    : { type: "additional_tools", role: "developer", tools: toolItems };
+};
+
 const convertClaudeRequest = (
   modelName: string,
   request: Json,
@@ -347,6 +588,8 @@ const convertClaudeRequest = (
   const toolNameMap = buildOriginalToShortMap(request);
   template = set(template, "model", modelName);
   const inputItems: Json[] = [];
+  const deferredTools = makeDeferredToolState(get(request, "tools"));
+  let hasAdditionalTools = false;
 
   // System prompt -> developer message (Claude Code attribution blocks are dropped).
   const system = get(request, "system");
@@ -392,6 +635,19 @@ const convertClaudeRequest = (
           else inputItems.push(item);
         }
 
+        const additionalTools = convertSystemAdditionalTools(
+          get(message, "content"),
+          deferredTools,
+          toolNameMap,
+        );
+
+        if (additionalTools !== undefined) {
+          hasAdditionalTools = true;
+
+          if (pendingToolUseIds.length > 0) pendingSystemReminders.push(additionalTools);
+          else inputItems.push(additionalTools);
+        }
+
         continue;
       }
 
@@ -406,6 +662,36 @@ const convertClaudeRequest = (
       // Counts only what this turn itself sends, not system reminders flushed beside it.
       let turnSendable = 0;
       let bufferedSendable = 0;
+      // Deferred tools this turn discovered, sent as one additional_tools item once the turn moves past the discovery.
+      let turnDiscoveredTools: Json[] = [];
+
+      const appendDiscoveredToolByReference = (reference: string) => {
+        const refName = reference.trim();
+        const definition = refName === "" ? undefined : deferredTools.declared.get(refName);
+
+        if (
+          !isJsonObject(definition) ||
+          isClaudeWebSearchToolType(asString(get(definition, "type")))
+        )
+          return;
+        const name = asString(get(definition, "name")).trim();
+
+        if (name === "" || deferredTools.emitted.has(name)) return;
+        deferredTools.emitted.add(name);
+        turnDiscoveredTools.push(convertClaudeFunctionToolToCodex(definition, toolNameMap));
+      };
+
+      const flushTurnDiscoveredTools = () => {
+        if (turnDiscoveredTools.length === 0) return;
+        hasAdditionalTools = true;
+        turnSendable++;
+        inputItems.push({
+          type: "additional_tools",
+          role: "developer",
+          tools: turnDiscoveredTools,
+        });
+        turnDiscoveredTools = [];
+      };
 
       const flushReminders = () => {
         if (pendingSystemReminders.length > 0) {
@@ -493,13 +779,16 @@ const convertClaudeRequest = (
 
           switch (contentType) {
             case "text":
+              flushTurnDiscoveredTools();
               flushReminders();
               appendTextContent(asString(get(part, "text")));
               break;
             case "thinking":
+              flushTurnDiscoveredTools();
               appendReasoningContent(part);
               break;
             case "image": {
+              flushTurnDiscoveredTools();
               flushReminders();
               const imagePart = claudeImageInputPart(get(part, "source"));
 
@@ -515,6 +804,7 @@ const convertClaudeRequest = (
 
             case "document":
             case "container_upload": {
+              flushTurnDiscoveredTools();
               flushReminders();
               const dataUrl = claudeDocumentDataUrl(part);
 
@@ -533,6 +823,7 @@ const convertClaudeRequest = (
             }
 
             case "tool_use": {
+              flushTurnDiscoveredTools();
               flushMessage();
               const id = asString(get(part, "id"));
 
@@ -548,6 +839,17 @@ const convertClaudeRequest = (
               break;
             }
 
+            case "tool_reference":
+              flushReminders();
+              flushMessage();
+              appendDiscoveredToolByReference(toolReferenceName(part));
+              break;
+            case "tool_search_tool_result":
+              flushReminders();
+              flushMessage();
+
+              for (const name of partReferenceNames(part)) appendDiscoveredToolByReference(name);
+              break;
             case "tool_result": {
               flushMessage();
 
@@ -560,21 +862,52 @@ const convertClaudeRequest = (
 
               if (isJsonArray(content)) {
                 const items: Json[] = [];
+                let hasRichItems = false;
+                // Discovered tools are sent under their short names, so the references the model reads say the same.
+                let rewritten: Json[] | undefined;
 
-                for (const entry of content) {
+                for (const [index, entry] of content.entries()) {
                   const entryType = asString(get(entry, "type"));
 
                   if (entryType === "image") {
                     const source = get(entry, "source");
                     const image = source === undefined ? undefined : toolResultImagePart(source);
 
-                    if (image !== undefined) items.push(image);
+                    if (image !== undefined) {
+                      items.push(image);
+                      hasRichItems = true;
+                    }
+
+                    rewritten?.push(entry);
                   } else if (entryType === "text") {
                     items.push({ type: "input_text", text: asString(get(entry, "text")) });
+                    hasRichItems = true;
+                    rewritten?.push(entry);
+                  } else if (entryType === "tool_reference") {
+                    const field =
+                      asString(get(entry, "tool_name")).trim() === "" ? "name" : "tool_name";
+
+                    const refName = asString(get(entry, field)).trim();
+                    appendDiscoveredToolByReference(refName);
+                    let reference = entry;
+                    const short = toolNameMap.get(refName);
+
+                    if (short !== undefined && short !== refName) {
+                      reference = set(cloneJson(entry), field, short);
+                      rewritten ??= content.slice(0, index);
+                    }
+
+                    rewritten?.push(reference);
+                    items.push({ type: "input_text", text: JSON.stringify(reference) });
+                  } else {
+                    rewritten?.push(entry);
                   }
                 }
 
-                output["output"] = items.length > 0 ? items : asString(content);
+                if (hasRichItems) output["output"] = items;
+                else if (rewritten !== undefined && rewritten.length === content.length)
+                  output["output"] = JSON.stringify(rewritten);
+                else output["output"] = asString(content);
               } else {
                 output["output"] = asString(content);
               }
@@ -587,6 +920,7 @@ const convertClaudeRequest = (
         }
 
         flushMessage();
+        flushTurnDiscoveredTools();
         flushReminders();
       } else if (typeof messageContents === "string") {
         appendTextContent(messageContents);
@@ -605,10 +939,10 @@ const convertClaudeRequest = (
   let hasWebSearchTool = false;
   const toolItems: Json[] = [];
 
-  if (isJsonArray(tools)) {
+  if (isJsonArray(tools) || hasAdditionalTools) {
     const webSearchToolNames = new Set<string>();
 
-    for (const tool of tools) {
+    for (const tool of isJsonArray(tools) ? tools : []) {
       if (!isClaudeWebSearchToolType(asString(get(tool, "type")))) continue;
       const name = asString(get(tool, "name"));
 
@@ -620,6 +954,16 @@ const convertClaudeRequest = (
       "tool_choice",
       convertClaudeToolChoiceToCodex(get(request, "tool_choice"), toolNameMap, webSearchToolNames),
     );
+  }
+
+  if (isJsonArray(tools)) {
+    // A deferred tool stays out of the top-level tools unless tool_choice forces it and it was not yet sent.
+    const forcedChoice = get(request, "tool_choice");
+
+    const forcedToolName =
+      isJsonObject(forcedChoice) && asString(get(forcedChoice, "type")) === "tool"
+        ? asString(get(forcedChoice, "name")).trim()
+        : "";
 
     for (const toolResult of tools) {
       if (isClaudeWebSearchToolType(asString(get(toolResult, "type")))) {
@@ -628,26 +972,14 @@ const convertClaudeRequest = (
         continue;
       }
 
-      let tool = cloneJson(toolResult);
+      if (asBool(get(toolResult, "defer_loading"))) {
+        const name = asString(get(toolResult, "name")).trim();
 
-      if (get(toolResult, "type") !== "function") tool = set(tool, "type", "function");
-      const nameValue = get(toolResult, "name");
-
-      if (nameValue !== undefined) {
-        const originalName = asString(nameValue);
-        const name = toolNameMap.get(originalName) ?? shortenNameIfNeeded(originalName);
-
-        if (typeof nameValue !== "string" || name !== originalName) tool = set(tool, "name", name);
+        if (deferredTools.emitted.has(name) || forcedToolName === "" || name !== forcedToolName)
+          continue;
       }
 
-      tool = set(tool, "parameters", normalizeToolParameters(get(toolResult, "input_schema")));
-
-      for (const path of ["input_schema", "parameters.$schema", "cache_control", "defer_loading"]) {
-        if (get(tool, path) !== undefined) tool = del(tool, path);
-      }
-
-      if (get(tool, "strict") !== false) tool = set(tool, "strict", false);
-      toolItems.push(tool);
+      toolItems.push(convertClaudeFunctionToolToCodex(toolResult, toolNameMap));
     }
   }
 
