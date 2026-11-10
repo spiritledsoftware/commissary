@@ -305,6 +305,8 @@ const synthesizeKey = (
   if (family === "claude") {
     if (entry["rebuild-mid-system-message"] === true)
       attributes.rebuild_mid_system_message = "true";
+
+    if (entry["native-tool-search"] === true) attributes.native_tool_search = "true";
     const profile = (entry["fingerprint-profile"] ?? "").trim().toLowerCase();
 
     if (profile !== "") attributes.fingerprint_profile = profile;

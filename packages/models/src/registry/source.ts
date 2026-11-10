@@ -5,6 +5,7 @@
  * headers. Go counterpart: the `coreauth.Auth` fields read by `registerModelsForAuth`
  * (sdk/cliproxy/service_models.go) and `clientModelProjectionForAuth` (sdk/cliproxy/auth/conductor_models.go).
  */
+import { isAnthropicUpstreamBase } from "../executor/claude/credentials.ts";
 import { CLOAK_MODE_ATTRIBUTE } from "../executor/opencode/providers.ts";
 import type { ModelEntry, OAuthModelAlias } from "../config/schema.ts";
 import type { AntigravityModelHints } from "./antigravity-hints.ts";
@@ -29,6 +30,12 @@ export interface ModelSource {
   readonly compat: boolean;
   readonly excludedModels: ReadonlyArray<string>;
   readonly modelAliases: ReadonlyArray<OAuthModelAlias>;
+  /**
+   * Claude credentials only: the credential can take native tool search for a model that supports it: Anthropic's own
+   * origin (no base URL, or `api.anthropic.com`), or a key with the `native_tool_search` attribute. Derived, so the
+   * source carries neither the base URL nor the attribute.
+   */
+  readonly nativeToolSearchOrigin?: boolean;
   /** OpenCode Zen keys: the key's `cloak.mode` (`cloak_mode` attribute), which decides whether free models register. */
   readonly cloakMode?: string;
   /** Config provider keys: the `models` list of the owning entry/group. */
@@ -37,6 +44,16 @@ export interface ModelSource {
   readonly antigravityHints?: AntigravityModelHints;
   readonly state: Omit<CredentialState, "rejectedAccessToken">;
 }
+
+const claudeNativeToolSearchOrigin = (credential: Credential): boolean => {
+  const base = (credential.attributes.base_url ?? "").trim();
+
+  return (
+    base === "" ||
+    isAnthropicUpstreamBase(base) ||
+    (credential.attributes.native_tool_search ?? "").trim().toLowerCase() === "true"
+  );
+};
 
 /** `openAICompatInfoFromAuth` (sdk/cliproxy/service_auth.go) reduced to the yes/no answer. */
 const isCompat = (credential: Pick<Credential, "provider" | "attributes">): boolean =>
@@ -60,6 +77,9 @@ export const toModelSource = (credential: Credential, state: CredentialState): M
     ...(credential.owner === undefined ? {} : { owner: credential.owner }),
     ...(planType === "" ? {} : { planType }),
     ...(cloakMode === "" ? {} : { cloakMode }),
+    ...(executorKey(credential) === "claude"
+      ? { nativeToolSearchOrigin: claudeNativeToolSearchOrigin(credential) }
+      : {}),
     compat: isCompat(credential),
     excludedModels: credential.excludedModels,
     modelAliases: credential.modelAliases,

@@ -60,6 +60,7 @@ const DEFAULTS: SettingsValues = {
     },
     claude: {
       "model-level-cooling": false,
+      "tool-search": false,
       "disable-claude-cloak-mode": false,
       "cloak-level": "full",
       "disable-cloaking-model-list": false,

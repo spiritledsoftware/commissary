@@ -1215,6 +1215,52 @@ Ported from `internal/runtime/executor/claude_executor*.go`, `internal/translato
   context management) -> MCP tool aliasing -> cache-control policy -> tool property-name fallback -> preserved-thinking
   binding (below) -> payload rules -> CCH signing (`cch=` is `xxh64` over the normalised final body; only the five hex
   digits change) -> HTTP. Signing is the last step so it covers payload-rule output.
+- **Native tool search** (`claude/tool-search.ts`, `translation/translator/claude/openai/responses/tool-search.ts`; Go
+  `claude_executor.go` `SupportsNativeToolSearch`, `claude_openai-responses_tool_search.go`, CLIProxyAPI `58c0f6a2`, `a68ad134`,
+  `aeec5e97`, `52992659`, `8eed08ef`, `956c3da1`, `29bd0415`, `97ba1e89`, `77e3d0d3`, `ae33711c`, `11f04c20`, `03a3cfec`,
+  `48ad3487`): a Codex client declares `{"type":"tool_search","execution":"client"}`, hides its deferred tools and replays
+  `tool_search_call` / `tool_search_output` items. Native tool search carries that to Claude as the function `tool_search`
+  (`query` required), the call and output as a `tool_use` / `tool_result` pair whose result lists `tool_reference` blocks (never
+  the server-side `tool_search_tool_result`; tools already declared directly are not referenced, no match is a text
+  summary), and every discovered tool as a `defer_loading` tool appended to `tools[]` in discovery order, without
+  `cache_control` (Anthropic answers 400 to both on one tool). A Claude `tool_use` of `tool_search` comes back as a
+  `tool_search_call` item (stream and non-stream, no argument events; a completed call whose arguments are not an object is
+  `incomplete`), and a discovered tool's call as a namespaced `function_call`. The translator reads the decision from a
+  request option (`nativeToolSearch`, `RequestOptions`) and the response translator from `ResponseContext.nativeToolSearch`,
+  never from the request body, because a user function named `tool_search` must stay a `function_call`.
+  - **Per attempt** (`nativeToolSearchFor`, `commonContext`; the result is on `PreparedClaudeRequest` and reaches `messages`,
+    `count_tokens` and the local count): `upstream.claude.tool-search` is on (default off), the plain Claude executor serves it
+    (not a delegating profile such as Kimi), the upstream model after aliasing does not predate tool search
+    (`claudeModelLacksToolSearch` in `classify.ts`: `claude-3*`, `claude-2*`, `claude-instant*`, Opus 4/4.1 and Sonnet 4 with
+    their dated ids; a deny-list, so unknown and new names count as supported, where an allow-list would silently switch the
+    feature off for every new model; Anthropic's own list reads "Opus 4.1 and earlier"), and the credential is Anthropic's
+    own (`api.anthropic.com`, or OAuth, which Claude Code itself sends deferred tools over) or carries `native-tool-search`
+    (key field, synthesised to the `native_tool_search` attribute like `rebuild-mid-system-message`, also honoured on an
+    account's auth file; for gateways behind a custom `base-url`, which Anthropic's docs do not cover). Failover can move a
+    request from a native credential to one that is not, so nothing is pinned or stored: the next attempt decides again.
+    Not native: OpenCode `messages`, Kimi (it sends Responses to Chat Completions), and a model that predates tool search.
+  - **Off means dropped**: with the flag false the translator drops the client's `tool_search` declarations (top level and in
+    `additional_tools`, named ones too, where Go passes a named one through raw) and every `tool_search_*` item, which is the
+    output Go's `StripResponsesToolSearch` leaves; the golden fixtures stay green because none carries them. A user function
+    named `tool_search` is never touched, and while it owns the name nothing is deferred.
+  - **Deferred anchor** (Go `97ba1e89`): one constant `defer_loading` tool `tool_search_deferred_anchor` is declared between the
+    declared and the discovered tools from the first native request on, so each discovery only appends to `tools[]`. It rests
+    on Go's measured finding that the cache is lost when a request goes from no deferred tool to one; Anthropic's docs do not
+    say so. Under the documented rules it is one more deferred definition, never in the cached prefix, so it is harmless.
+    It yields to a client tool that already has its name.
+  - **Betas** are unchanged: tool search is GA, but the cloaked path keeps adding `advanced-tool-use-2025-11-20` when
+    `defer_loading` is present (Claude Code's measured beta set); an uncloaked API key forwards the caller's betas.
+  - **Codex catalog**: `supports_search_tool` is true for a Claude model only when the org switch is on, every provider
+    serving it is `claude` and every credential serving it is native for its upstream model after aliasing
+    (`RegistrySnapshot.nativeToolSearchCapability`, a per-credential bit on the model source; cooldown and suspension are
+    ignored so the catalog does not flap, disabled credentials are left out). It is evaluated within the caller's view
+    (ADR 0023), so two members of one org can get different answers; Go uses every credential. After the switch flips a
+    Codex client's cached catalog can lag; a request in that window falls back to the dropping translation, and tools
+    discovered earlier are missing for that turn.
+  - **Claude client to Codex / Chat** (CLIProxyAPI `12d97cfe`, `374056f2`; ungated bug fixes): a mid-conversation
+    `tool_addition` block and a `tool_reference` become `additional_tools` input items at their position, `defer_loading`
+    tools stay out of the top-level Codex `tools`, and the short-name map names non-deferred tools first so a later discovery
+    never renames an earlier tool; Claude to Chat merges `tool_addition` definitions into `tools`.
 - **Tool property names** (`claude/tool-property-names.ts`, also on `count_tokens`): Claude 400s a tool whose
   `input_schema` has a property key outside `^[a-zA-Z0-9_.-]{1,64}$` (`not[labels]`). Such a client tool, in `tools[]` or
   an inline `tool_addition` definition, is sent with `{"type":"object"}` and its original schema (compact JSON) appended
@@ -1453,6 +1499,17 @@ Port of `internal/translator/openai/{claude,gemini,openai,interactions}` plus th
 `openai_compat_executor.go` and `openai_images_handlers.go`. `translator/openai/register.ts` registers (client -> provider):
 claude/gemini/openai-response -> openai, interactions <-> openai (Chat Completions) and interactions <-> openai-response;
 `handlers/openai/routes.ts` already converts Responses-shaped bodies sent to `/v1/chat/completions`.
+
+- **Client `tool_search`** (`openai/openai/responses/tool-search.ts`, `tools.ts`; Go `openai_openai-responses_tool_search.go`, CLIProxyAPI
+  `8c9a7851`): ungated and always on, the Codex `tool_search` becomes the Chat function `tool_search` (renamed `tool_search_1`... when
+  the user declares a function of that name), tools a `tool_search_output` loaded stay declared on every later request, the
+  replayed call/output pair becomes a function call and a tool message, and a call to the function comes back as a client
+  `tool_search_call` item with object arguments (`tsc_` id; no function-argument events; `incomplete` when the arguments are not an
+  object). Kimi gets it because its Responses requests go to Chat Completions. Gemini and Antigravity do the same
+  (`gemini/openai/responses/tool-search.ts`, CLIProxyAPI `77fd91e8`, `90c447d3`; `defer_loading` tools stay hidden until a
+  search loads them), and the Codex outbound id sanitiser rewrites legacy `ts_` and bare `tool_search_call` ids to `tsc_`. These
+  targets do not change catalog advertising (every discovery appends to `tools[]` and moves the cached prefix); xAI keeps
+  removing `tool_search`, and Devin forwards it raw (Codex format), not bridged.
 
 - **Layout**: one directory per Go package; the helpers of Go's `translator/common` live in `translator/common/` (apply_patch
   bridge, Responses tool descriptors, tool-name fixing, user-turn-drop policy, file data, ...); `openai/common/read.ts` only adds

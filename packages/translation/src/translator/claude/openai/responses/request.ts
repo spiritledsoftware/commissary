@@ -38,8 +38,10 @@ import {
   normalizeResponsesToolCallOutputs,
 } from "../../../common/responses.ts";
 import {
+  clientToolSearchWins,
   ClaudeToolNames,
   CLAUDE_RESPONSES_REDACTED_THINKING_PREFIX,
+  DISCOVERED_TOOL_PRIORITY,
   isUnsupportedOpenAIBuiltinToolType,
   qualifyResponsesNamespaceToolName,
   responsesToolDescriptors,
@@ -48,6 +50,14 @@ import {
   responsesToolWinners,
   type ToolDescriptor,
 } from "./tools.ts";
+import {
+  deferredAnchorTool,
+  stripClientToolSearch,
+  toolSearchCallToClaude,
+  toolSearchOutputContent,
+  toolSearchOutputText,
+  toolSearchToolToClaude,
+} from "./tool-search.ts";
 import { attachClaudeCitations, ResponsesWebSearchHistory } from "./web-search.ts";
 import type { TranslateRequestOptions } from "../../../registry.ts";
 
@@ -82,7 +92,10 @@ const convertRequest = (
   // Go `topLevelSystemItemsFor` falls back to its legacy-model list; here the executor owns that list and an absent
   // option means every item stays top-level (OpenCode and the other callers outside the Claude executor).
   const topLevelSystemItems = options?.topLevelSystemItems !== false;
-  const root = normalizeCodexAgentMessages(inputRoot);
+  const nativeToolSearch = options?.nativeToolSearch === true;
+  // Without native tool search the client's `tool_search` is dropped: declarations and history items.
+  const normalized = normalizeCodexAgentMessages(inputRoot);
+  const root = nativeToolSearch ? normalized : stripClientToolSearch(normalized);
   const drops = new UserTurnDrops();
 
   const out: JsonObject = {
@@ -207,7 +220,13 @@ const convertRequest = (
     }
   }
 
-  const names = ClaudeToolNames.build(root);
+  const names = ClaudeToolNames.build(root, nativeToolSearch);
+  const winners = responsesToolWinners(root, nativeToolSearch);
+
+  // Native tool search declares discovered tools as deferred and replays search results as tool_reference blocks. It
+  // is off when a same-named user function owns the `tool_search` name.
+  const nativeReferences =
+    nativeToolSearch && clientToolSearchWins(responsesToolDescriptors(root, nativeToolSearch));
 
   let messageBlocks: Message[] = [];
   // Anthropic accepts a `role: "system"` turn only after a user message and before an assistant message or the end of
@@ -522,6 +541,43 @@ const convertRequest = (
         break;
       }
 
+      case "tool_search_call": {
+        if (!nativeToolSearch) break;
+        const converted = toolSearchCallToClaude(item, names.claudeName("tool_search"));
+
+        if (converted === undefined) break;
+        emittedRawToolUses.add(converted.rawCallId);
+        appendToolUse(converted.toolUse);
+        break;
+      }
+
+      case "tool_search_output": {
+        if (!nativeToolSearch) break;
+        const rawID = str(get(item, "call_id")).trim();
+
+        if (rawID !== "") {
+          if (emittedToolResults.has(rawID)) break;
+          emittedToolResults.add(rawID);
+        }
+
+        // An output without a paired search call would be an orphan tool_result, which Claude rejects.
+        if (rawID === "" || !emittedRawToolUses.has(rawID)) {
+          appendParts("user", [{ type: "text", text: toolSearchOutputText(item, names) }]);
+          break;
+        }
+
+        appendParts("user", [
+          {
+            type: "tool_result",
+            tool_use_id: sanitizeClaudeToolId(rawID),
+            content: nativeReferences
+              ? toolSearchOutputContent(item, names, winners)
+              : toolSearchOutputText(item, names),
+          },
+        ]);
+        break;
+      }
+
       default:
         break;
     }
@@ -556,9 +612,10 @@ const convertRequest = (
 
   const includedToolNames = new Set<string>();
   const toolItems: JsonObject[] = [];
-  const winners = responsesToolWinners(root);
+  // The deferred anchor goes between declared and discovered tools, so each discovery only appends to tools[].
+  let anchorIndex = -1;
 
-  for (const descriptor of responsesToolDescriptors(root)) {
+  for (const descriptor of responsesToolDescriptors(root, nativeToolSearch)) {
     const winner = winners.get(descriptor.name);
 
     if (winner === undefined || winner.order !== descriptor.order) continue;
@@ -566,6 +623,14 @@ const convertRequest = (
     const converted = toolDescriptorToClaude(descriptor, claudeName);
 
     if (converted === undefined) continue;
+
+    if (nativeReferences && descriptor.sourcePriority === DISCOVERED_TOOL_PRIORITY) {
+      if (anchorIndex < 0) anchorIndex = toolItems.length;
+      // Anthropic rejects cache_control on a deferred tool (400).
+      delete converted.cache_control;
+      converted.defer_loading = true;
+    }
+
     const toolName = str(converted.name);
 
     if (toolName !== "") {
@@ -576,7 +641,14 @@ const convertRequest = (
     toolItems.push(converted);
   }
 
-  const toolNameMap = responsesToolNameMap(root, includedToolNames);
+  if (nativeReferences) {
+    const anchor = deferredAnchorTool(toolItems);
+
+    if (anchor !== undefined)
+      toolItems.splice(anchorIndex < 0 ? toolItems.length : anchorIndex, 0, anchor);
+  }
+
+  const toolNameMap = responsesToolNameMap(root, includedToolNames, nativeToolSearch);
 
   if (toolItems.length > 0) out.tools = toolItems;
 
@@ -1039,6 +1111,8 @@ const toolDescriptorToClaude = (
   let overrideName = claudeName;
 
   if (overrideName === "" && !descriptor.direct) overrideName = descriptor.name;
+
+  if (descriptor.clientSearch) return toolSearchToolToClaude(descriptor.tool, claudeName);
 
   switch (descriptor.toolType) {
     case "function":

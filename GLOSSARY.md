@@ -407,6 +407,12 @@ _Avoid_: retry
 A pass over the available credentials that ends when one succeeds. Rounds are separated by waiting for a cooldown to end.
 _Avoid_: retry (on its own)
 
+**Native tool search**:
+Carrying a client's own tool search (Codex's `tool_search`) to Claude as tools the model loads only when a search returns
+them, so the prompt cache survives each discovery. It is off unless the org turns it on, and only Anthropic's own API or a
+Claude provider key marked for it receives it.
+_Avoid_: tool search (alone), deferred loading
+
 **Bootstrap**:
 The start of a streamed answer, up to its first content. Until then a failure can still fail over to another
 credential.

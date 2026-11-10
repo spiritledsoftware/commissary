@@ -58,6 +58,11 @@ export interface TranslateRequestOptions {
    * executor decides it per attempt (Go `WithTopLevelSystemItems`).
    */
   readonly topLevelSystemItems?: boolean;
+  /**
+   * Responses -> Claude: carry the client's `tool_search` natively (deferred tools and `tool_reference` blocks) instead of
+   * dropping it. The Claude executor decides it per attempt (credential, upstream model, org switch).
+   */
+  readonly nativeToolSearch?: boolean;
 }
 
 /**
@@ -109,6 +114,12 @@ export interface ResponseContext {
    * not a Gemini-entry request. Only the Antigravity Gemini response translator reads it.
    */
   readonly alt?: string;
+  /**
+   * Whether the request was translated with native tool search (a Claude upstream that carries the client's
+   * `tool_search` natively). The Responses <- Claude response translator reads it; it never guesses from the request,
+   * because a user function named `tool_search` must map to `function_call`.
+   */
+  readonly nativeToolSearch?: boolean;
 }
 
 /** One upstream line -> zero or more complete client chunks. */

@@ -197,6 +197,10 @@ const COPY = {
       },
     ],
   },
+  "upstream.claude.tool-search": flag(
+    "Let Codex search deferred tools on Claude",
+    "Off by default. Only Anthropic's own API, or a Claude key marked for it, gets the search; other Claude keys leave it out. Turning it on also changes which Codex models offer search.",
+  ),
   "upstream.claude.disable-cloaking-model-list": flag(
     "List Claude's own model ids instead of cloaked ones",
   ),

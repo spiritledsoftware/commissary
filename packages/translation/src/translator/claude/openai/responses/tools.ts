@@ -3,6 +3,10 @@
  *
  * Go source: internal/translator/claude/openai/responses/claude_openai-responses_request.go (descriptor helpers) and
  * claude_openai-responses_tool_names.go.
+ *
+ * `nativeToolSearch` (Go `toolSearch`) is the per-attempt decision of native tool search (see `./tool-search.ts`). Off,
+ * the client `tool_search` declaration is not a tool at all. On, it is the function `tool_search`, tools a
+ * `tool_search_output` loaded join the declared ones (priority 2) and `defer_loading` tools stay hidden until then.
  */
 import { createHash } from "node:crypto";
 import { asBool, get, type Json } from "@commissary/json";
@@ -21,7 +25,12 @@ export interface ToolDescriptor {
   readonly sourcePriority: number;
   readonly direct: boolean;
   readonly order: number;
+  /** The client's `tool_search` declaration, which only exists with native tool search. */
+  readonly clientSearch: boolean;
 }
+
+/** Source priority of tools a `tool_search_output` loaded: after every declared tool, in discovery order. */
+export const DISCOVERED_TOOL_PRIORITY = 2;
 
 export const responsesToolName = (tool: Json | undefined): string => {
   const name = str(get(tool, "name")).trim();
@@ -40,7 +49,7 @@ interface ToolSource {
   readonly priority: number;
 }
 
-const toolSources = (root: Json | undefined): ToolSource[] => {
+const toolSources = (root: Json | undefined, nativeToolSearch: boolean): ToolSource[] => {
   const sources: ToolSource[] = [];
   const tools = get(root, "tools");
 
@@ -54,22 +63,58 @@ const toolSources = (root: Json | undefined): ToolSource[] => {
 
       if (isArr(nested)) sources.push({ tools: nested, priority: 1 });
     }
+
+    if (nativeToolSearch) {
+      for (const item of input) {
+        if (str(get(item, "type")) !== "tool_search_output") continue;
+        const discovered = get(item, "tools");
+
+        if (isArr(discovered))
+          sources.push({ tools: discovered, priority: DISCOVERED_TOOL_PRIORITY });
+      }
+    }
   }
 
   return sources;
 };
 
-export const responsesToolDescriptors = (root: Json | undefined): ToolDescriptor[] => {
-  const descriptors: ToolDescriptor[] = [];
+/** A `tool_search` declaration the client executes itself (hosted search cannot run on Claude). */
+export const isClientToolSearchDeclaration = (tool: Json | undefined): boolean =>
+  str(get(tool, "type")).trim() === "tool_search" &&
+  str(get(tool, "execution")).trim() === "client";
 
+/**
+ * Whether the client `tool_search` declaration owns the `tool_search` name. A same-named user function that wins
+ * leaves no search tool, so deferred tools must stay declared.
+ */
+export const clientToolSearchWins = (descriptors: readonly ToolDescriptor[]): boolean => {
+  let winner: ToolDescriptor | undefined;
+
+  for (const descriptor of descriptors) {
+    if (descriptor.name !== "tool_search") continue;
+
+    if (winner === undefined || precedes(descriptor, winner)) winner = descriptor;
+  }
+
+  return winner?.clientSearch === true;
+};
+
+/** Appends the descriptors of one `tools` array (Go `appendResponsesToolDescriptors`). */
+export const appendToolDescriptors = (
+  descriptors: ToolDescriptor[],
+  tools: readonly Json[],
+  sourcePriority: number,
+  nativeToolSearch: boolean,
+): void => {
   const append = (
     tool: Json,
     name: string,
     childName: string,
     namespace: string,
     toolType: string,
-    sourcePriority: number,
+    priority: number,
     direct: boolean,
+    clientSearch = false,
   ): void => {
     if (name === "") return;
     descriptors.push({
@@ -78,71 +123,93 @@ export const responsesToolDescriptors = (root: Json | undefined): ToolDescriptor
       namespace,
       toolType,
       tool,
-      sourcePriority,
+      sourcePriority: priority,
       direct,
       order: descriptors.length,
+      clientSearch,
     });
   };
 
-  for (const source of toolSources(root)) {
-    for (const tool of source.tools) {
-      const toolType = str(get(tool, "type")).trim();
+  for (const tool of tools) {
+    const toolType = str(get(tool, "type")).trim();
 
-      switch (toolType) {
-        case "":
-        case "function":
-          append(tool, responsesToolName(tool), "", "", "function", source.priority, true);
-          break;
-        case "custom":
-          append(tool, responsesToolName(tool), "", "", "custom", source.priority, true);
-          break;
-        case "namespace": {
-          const namespaceName = str(get(tool, "name")).trim();
-          const children = get(tool, "tools");
+    switch (toolType) {
+      case "":
+      case "function":
+        append(tool, responsesToolName(tool), "", "", "function", sourcePriority, true);
+        break;
+      case "custom":
+        append(tool, responsesToolName(tool), "", "", "custom", sourcePriority, true);
+        break;
+      case "namespace": {
+        const namespaceName = str(get(tool, "name")).trim();
+        const children = get(tool, "tools");
 
-          if (!isArr(children)) break;
+        if (!isArr(children)) break;
 
-          for (const child of children) {
-            const childName = responsesToolName(child);
+        for (const child of children) {
+          const childName = responsesToolName(child);
 
-            if (childName === "") continue;
-            const qualified = qualifyResponsesNamespaceToolName(namespaceName, childName);
-            const childType = str(get(child, "type")).trim();
+          if (childName === "") continue;
+          const qualified = qualifyResponsesNamespaceToolName(namespaceName, childName);
+          const childType = str(get(child, "type")).trim();
 
-            if (childType === "" || childType === "function")
-              append(
-                child,
-                qualified,
-                childName,
-                namespaceName,
-                "function",
-                source.priority,
-                false,
-              );
-            else if (childType === "custom")
-              append(child, qualified, childName, namespaceName, "custom", source.priority, false);
-          }
-
-          break;
+          if (childType === "" || childType === "function")
+            append(child, qualified, childName, namespaceName, "function", sourcePriority, false);
+          else if (childType === "custom")
+            append(child, qualified, childName, namespaceName, "custom", sourcePriority, false);
         }
 
-        case "web_search": {
-          const external = get(tool, "external_web_access");
-
-          if (exists(external) && !asBool(external)) break;
-          let name = str(get(tool, "name")).trim();
-
-          if (name === "") name = "web_search";
-          append(tool, name, "", "", "web_search", source.priority, true);
-          break;
-        }
-
-        default:
-          if (isUnsupportedOpenAIBuiltinToolType(toolType)) break;
-          append(tool, str(get(tool, "name")).trim(), "", "", toolType, source.priority, true);
+        break;
       }
+
+      case "tool_search":
+        if (isClientToolSearchDeclaration(tool)) {
+          // Without native tool search the client's search is not a tool Claude can run.
+          if (nativeToolSearch)
+            append(tool, "tool_search", "", "", "tool_search", sourcePriority, true, true);
+        } else if (!nativeToolSearch) {
+          append(tool, str(get(tool, "name")).trim(), "", "", toolType, sourcePriority, true);
+        }
+
+        break;
+      case "web_search": {
+        const external = get(tool, "external_web_access");
+
+        if (exists(external) && !asBool(external)) break;
+        let name = str(get(tool, "name")).trim();
+
+        if (name === "") name = "web_search";
+        append(tool, name, "", "", "web_search", sourcePriority, true);
+        break;
+      }
+
+      default:
+        if (isUnsupportedOpenAIBuiltinToolType(toolType)) break;
+        append(tool, str(get(tool, "name")).trim(), "", "", toolType, sourcePriority, true);
     }
   }
+};
+
+export const responsesToolDescriptors = (
+  root: Json | undefined,
+  nativeToolSearch = false,
+): ToolDescriptor[] => {
+  let descriptors: ToolDescriptor[] = [];
+
+  for (const source of toolSources(root, nativeToolSearch))
+    appendToolDescriptors(descriptors, source.tools, source.priority, nativeToolSearch);
+
+  if (!clientToolSearchWins(descriptors)) return descriptors;
+
+  // With a client tool search, declared defer_loading tools stay hidden until a tool_search_output loads them.
+  descriptors = descriptors
+    .filter(
+      (descriptor) =>
+        descriptor.sourcePriority === DISCOVERED_TOOL_PRIORITY ||
+        !asBool(get(descriptor.tool, "defer_loading")),
+    )
+    .map((descriptor, order) => ({ ...descriptor, order }));
 
   return descriptors;
 };
@@ -156,10 +223,13 @@ const precedes = (left: ToolDescriptor, right: ToolDescriptor): boolean => {
   return left.order < right.order;
 };
 
-export const responsesToolWinners = (root: Json | undefined): Map<string, ToolDescriptor> => {
+export const responsesToolWinners = (
+  root: Json | undefined,
+  nativeToolSearch = false,
+): Map<string, ToolDescriptor> => {
   const winners = new Map<string, ToolDescriptor>();
 
-  for (const descriptor of responsesToolDescriptors(root)) {
+  for (const descriptor of responsesToolDescriptors(root, nativeToolSearch)) {
     const current = winners.get(descriptor.name);
 
     if (current === undefined || precedes(descriptor, current))
@@ -172,10 +242,11 @@ export const responsesToolWinners = (root: Json | undefined): Map<string, ToolDe
 export const responsesToolNameMap = (
   root: Json | undefined,
   accepted: ReadonlySet<string>,
+  nativeToolSearch = false,
 ): Map<string, string> => {
   const toolNameMap = new Map<string, string>();
-  const descriptors = responsesToolDescriptors(root);
-  const winners = responsesToolWinners(root);
+  const descriptors = responsesToolDescriptors(root, nativeToolSearch);
+  const winners = responsesToolWinners(root, nativeToolSearch);
 
   for (const descriptor of descriptors) {
     const winner = winners.get(descriptor.name);
@@ -215,13 +286,14 @@ export class ClaudeToolNames {
 
   static build(
     root: Json | undefined,
-    winners: Map<string, ToolDescriptor> = responsesToolWinners(root),
+    nativeToolSearch = false,
+    winners: Map<string, ToolDescriptor> = responsesToolWinners(root, nativeToolSearch),
   ): ClaudeToolNames {
     const names = new ClaudeToolNames();
     const taken = new Set<string>();
     const declared: string[] = [];
 
-    for (const descriptor of responsesToolDescriptors(root)) {
+    for (const descriptor of responsesToolDescriptors(root, nativeToolSearch)) {
       const winner = winners.get(descriptor.name);
 
       if (winner === undefined || winner.order !== descriptor.order) continue;
@@ -328,10 +400,13 @@ const historyToolIdentities = (root: Json | undefined): string[] => {
 };
 
 /** Names (Responses identity and Claude name) of declared custom tools. */
-export const responsesCustomToolNames = (request: Json | undefined): Set<string> => {
+export const responsesCustomToolNames = (
+  request: Json | undefined,
+  nativeToolSearch = false,
+): Set<string> => {
   const names = new Set<string>();
-  const winners = responsesToolWinners(request);
-  const toolNames = ClaudeToolNames.build(request, winners);
+  const winners = responsesToolWinners(request, nativeToolSearch);
+  const toolNames = ClaudeToolNames.build(request, nativeToolSearch, winners);
 
   for (const [name, descriptor] of winners) {
     if (descriptor.toolType !== "custom") continue;
@@ -350,12 +425,17 @@ export type SplitResponsesQualifiedFunctionCallResult = { name: string; namespac
 export const splitResponsesQualifiedFunctionCall = (
   request: Json | undefined,
   qualifiedName: string,
+  nativeToolSearch = false,
 ): SplitResponsesQualifiedFunctionCallResult => {
   qualifiedName = qualifiedName.trim();
 
   if (qualifiedName === "") return { name: "", namespace: "" };
-  const winners = responsesToolWinners(request);
-  const identity = ClaudeToolNames.build(request, winners).identity(qualifiedName);
+  const winners = responsesToolWinners(request, nativeToolSearch);
+
+  const identity = ClaudeToolNames.build(request, nativeToolSearch, winners).identity(
+    qualifiedName,
+  );
+
   const descriptor = winners.get(identity);
 
   if (descriptor === undefined) return { name: identity, namespace: "" };

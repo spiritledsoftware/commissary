@@ -333,3 +333,55 @@ oauth:
     }
   });
 });
+
+describe("native tool search in the Codex catalog through the Worker", () => {
+  const GATE = "upstream:\n  claude:\n    tool-search: true\n";
+
+  const searchFlag = async (sources: ReturnType<typeof source>[]): Promise<boolean | undefined> => {
+    const snapshot = buildSnapshot({ config: configOf(GATE), catalogs, now: NOW, sources });
+
+    const handler = makeHandler(
+      Layer.succeed(
+        ModelRegistry,
+        ModelRegistry.of({ snapshot: Effect.succeed(snapshot), fresh: Effect.succeed(snapshot) }),
+      ),
+    );
+
+    try {
+      const response = await caller(handler)("/v1/models?client_version=0.150.0");
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as { models: Array<Record<string, unknown>> };
+
+      const entry = body.models.find((model) => model.slug === "claude-sonnet-4-5-20250929");
+
+      return entry?.supports_search_tool === true;
+    } finally {
+      await handler.dispose();
+    }
+  };
+
+  const native = (id: string, overrides: Partial<ReturnType<typeof source>> = {}) =>
+    source(id, "claude", { nativeToolSearchOrigin: true, ...overrides });
+
+  it("is true for a caller reaching only native credentials", async () => {
+    expect(await searchFlag([native("claude-a")])).toBe(true);
+  });
+
+  it("is false for a caller who also reaches a non-native custom-base-URL key", async () => {
+    expect(
+      await searchFlag([
+        native("claude-a"),
+        native("claude-gw", { nativeToolSearchOrigin: false }),
+      ]),
+    ).toBe(false);
+  });
+
+  it("does not change with another member's private non-native credential", async () => {
+    expect(
+      await searchFlag([
+        native("claude-a"),
+        native("claude-private", { nativeToolSearchOrigin: false, owner: "someone-else" }),
+      ]),
+    ).toBe(true);
+  });
+});

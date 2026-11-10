@@ -91,6 +91,7 @@ import {
 } from "./credentials.ts";
 import { buildClaudeHeaders, cachedSessionId, defaultDeviceProfile } from "./headers.ts";
 import { type ClaudeUpstreamProfile, upstreamModelOf } from "./profile.ts";
+import { nativeToolSearchFor } from "./tool-search.ts";
 import { agentSessionUuid, applyCLIIdentity, IdentityError } from "./identity.ts";
 import { remapToolNames, DEFAULT_ALIAS_SECRET } from "./mcp-alias.ts";
 import { sanitizeForClaudeUpstream } from "./sanitize.ts";
@@ -153,6 +154,8 @@ export interface PreparedClaudeRequest {
   readonly fastRequest: boolean;
   readonly oauthCredential: boolean;
   readonly firstParty: boolean;
+  /** Whether this attempt translated the request with native tool search; the response translators read it. */
+  readonly nativeToolSearch: boolean;
   /** alias -> client tool name for this request (empty without aliasing). */
   readonly reverseMap: ReadonlyMap<string, string>;
   /** Session continuity started for this request (undefined when none, or diagnostics were rewritten by rules). */
@@ -330,6 +333,8 @@ interface Common {
   readonly keepSystemItemsInPlace: boolean;
   /** The request names its own session (`options.metadata.sessionId`), so a session-keyed store can find it again. */
   readonly hasCallerSession: boolean;
+  /** Native tool search for this attempt (`tool-search.ts`); every translation of the request carries it. */
+  readonly nativeToolSearch: boolean;
 }
 
 /**
@@ -398,6 +403,12 @@ const commonContext = (input: PrepareInput, path: string, countTokens: boolean):
     originalPayload,
     keepSystemItemsInPlace: keepSystemItemsInPlace(input, baseModel, wire),
     hasCallerSession: (options.metadata.sessionId ?? "").trim() !== "",
+    nativeToolSearch: nativeToolSearchFor({
+      config,
+      credential,
+      profile: input.services.profile,
+      upstreamModel: upstreamModelOf(input.services.profile, baseModel),
+    }),
   };
 };
 
@@ -422,6 +433,7 @@ export const prepareMessagesRequest = Effect.fnUntraced(function* (input: Prepar
     sessionId,
     originalPayload,
     parsedUrl,
+    nativeToolSearch,
   } = c;
 
   const from = options.sourceFormat;
@@ -496,6 +508,7 @@ export const prepareMessagesRequest = Effect.fnUntraced(function* (input: Prepar
           config,
           isCompat,
           topLevelSystemItems: !c.keepSystemItemsInPlace,
+          nativeToolSearch,
         },
       ),
     );
@@ -770,6 +783,7 @@ export const prepareMessagesRequest = Effect.fnUntraced(function* (input: Prepar
       fastRequest: firstParty && isFastRequest(finalBody, headers),
       oauthCredential: fingerprint.authIsOAuthToken,
       firstParty,
+      nativeToolSearch,
       reverseMap,
       continuity: rules.touched.has("diagnostics") ? undefined : continuity,
       promptId: cloak.promptId,
@@ -798,6 +812,7 @@ export const prepareCountTokensRequest = Effect.fnUntraced(function* (input: Pre
     sessionId,
     originalPayload,
     parsedUrl,
+    nativeToolSearch,
   } = c;
 
   const from = options.sourceFormat;
@@ -818,6 +833,7 @@ export const prepareCountTokensRequest = Effect.fnUntraced(function* (input: Pre
           config,
           isCompat,
           topLevelSystemItems: !c.keepSystemItemsInPlace,
+          nativeToolSearch,
         },
       ),
     );
@@ -979,7 +995,7 @@ export const prepareLocalCountBody = Effect.fnUntraced(function* (input: Prepare
   const { services, config, credential, request, options } = input;
   const thinking = yield* Thinking;
   const c = yield* attempt(() => commonContext(input, "/v1/messages/count_tokens", true));
-  const { baseModel } = c;
+  const { baseModel, nativeToolSearch } = c;
   const from = options.sourceFormat;
   const to = Formats.Claude;
   const isCompat = modelIsCompat(config, credential, request);
@@ -994,7 +1010,7 @@ export const prepareLocalCountBody = Effect.fnUntraced(function* (input: Prepare
         thinking.summary,
         // Local estimation sends nothing upstream, so in-place turns gain no cache benefit: keep the top-level shape its
         // request validation accepts (Go `CountTokens`).
-        { headers: options.headers, config, isCompat, topLevelSystemItems: true },
+        { headers: options.headers, config, isCompat, topLevelSystemItems: true, nativeToolSearch },
       ),
     );
 
