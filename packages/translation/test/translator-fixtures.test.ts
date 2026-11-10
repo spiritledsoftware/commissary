@@ -9,6 +9,7 @@ import {
   unusedChunkEditEntries,
   unusedMaxTokensAheadEntries,
   unusedParallelToolCallsAheadEntries,
+  unusedRequestEditEntries,
   unusedResponseAheadEntries,
 } from "./support/translator-ported-ahead.ts";
 import { catalogLookup } from "./support/thinking.ts";
@@ -40,6 +41,7 @@ describe("translator golden fixtures", () => {
     expect(unusedResponseAheadEntries()).toEqual([]);
     expect(unusedParallelToolCallsAheadEntries()).toEqual([]);
     expect(unusedChunkEditEntries(false)).toEqual([]);
+    expect(unusedRequestEditEntries()).toEqual([]);
   });
 
   it("found fixture files", () => {

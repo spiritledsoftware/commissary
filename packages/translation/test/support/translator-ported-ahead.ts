@@ -16,6 +16,8 @@ import type { Json, JsonObject } from "@commissary/json";
  * - `portedChunkEdits` (ticket C6, Go `3f5d3a16`, `c5251b57`, `dfe0a0ef`): small edits to the golden stream chunks of the
  *   Gemini/Antigravity -> OpenAI Chat cases: Antigravity drops `delta.tool_calls: null`, a usage-only chunk keeps the
  *   stream's response id, and the parts of one chunk concatenate instead of the last overwriting the earlier ones.
+ * - `portedRequestEdit` (ticket C6, Go `80aa2b1d`): the OpenAI -> Antigravity request of `tool_choice: "none"` keeps its
+ *   `request.tools` (the fixture still drops them).
  * - `portedParallelToolCalls` (ticket B2, Go `99d1698f`): the `parallel_tool_calls` a Codex-bound request case must now
  *   produce. An explicit `false` from the client survives instead of being forced to `true`; Go changed this case's
  *   input to `null` to keep covering the forced default, while the fixture still sends `false`.
@@ -343,3 +345,33 @@ export const unusedChunkEditEntries = (ids: boolean): string[] =>
   [...CHUNK_EDITS.keys()].filter(
     (key) => ID_CASE_EDITS.has(key) === ids && !usedChunkEdits.has(key),
   );
+
+/** The golden request a case now produces; edits the parsed expected request in place. */
+type RequestEdit = (request: JsonObject) => void;
+
+const REQUEST_EDITS: ReadonlyMap<string, RequestEdit> = new Map([
+  [
+    "openai->antigravity request: tool_choice none removes tools; thinking config keys normalised",
+    (request) => {
+      // SAFETY: the golden of this case is an object whose `request` member is an object.
+      (request["request"] as JsonObject)["tools"] = [
+        { functionDeclarations: [{ name: "t", parametersJsonSchema: { type: "object" } }] },
+      ];
+    },
+  ],
+]);
+
+const usedRequestEdits = new Set<string>();
+
+/** Applies the case's request edit to its parsed golden request, when its golden predates the C6 port. */
+export const portedRequestEdit = (key: string, expected: JsonObject): void => {
+  const edit = REQUEST_EDITS.get(key);
+
+  if (edit === undefined) return;
+  usedRequestEdits.add(key);
+  edit(expected);
+};
+
+/** The request-edit entries no case consumed. */
+export const unusedRequestEditEntries = (): string[] =>
+  [...REQUEST_EDITS.keys()].filter((key) => !usedRequestEdits.has(key));

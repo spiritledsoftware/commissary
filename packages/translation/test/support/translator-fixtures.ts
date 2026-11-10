@@ -11,6 +11,7 @@ import {
   portedChunkEdit,
   portedMaxTokens,
   portedParallelToolCalls,
+  portedRequestEdit,
   portedResponse,
 } from "./translator-ported-ahead.ts";
 import { expandEmbeddedJson } from "./structural.ts";
@@ -133,6 +134,9 @@ const checkTranslatorFixture = (
 
   expect(envelope.error?.message).toBe(c.requestError);
   const expected = parseJson(portedSinceGeneration(c.translatedRequest));
+
+  if (typeof expected === "object" && expected !== null && !Array.isArray(expected))
+    portedRequestEdit(`${c.from}->${c.to} ${c.name}`, expected);
   const maxTokens = portedMaxTokens(`${c.from}->${c.to} ${c.name}`);
 
   // A case whose golden predates a ported change expects the new `max_tokens` (see translator-ported-ahead.ts).
