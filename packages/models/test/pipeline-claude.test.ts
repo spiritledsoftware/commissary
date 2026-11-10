@@ -1070,3 +1070,123 @@ api-keys:
     expect(bad.status).toBe(400);
   });
 });
+
+// Claude 400s a tool whose input_schema has a property key outside ^[a-zA-Z0-9_.-]{1,64}$ (CLIProxyAPI f0c9c2d0).
+describe("Tool schemas with property names Claude rejects", () => {
+  const rejectedSchema = {
+    type: "object",
+    properties: {
+      "not[labels]": { type: "string", description: "Labels to exclude" },
+      state: { type: "string" },
+    },
+    required: ["not[labels]"],
+  };
+
+  const request = (): JsonObject => ({
+    model: "claude-sonnet-4-5",
+    max_tokens: 32,
+    messages: [
+      { role: "user", content: "list" },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "toolu_1",
+            name: "list_merge_requests",
+            input: { "not[labels]": "bug", state: "opened" },
+          },
+        ],
+      },
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "[]" }],
+      },
+    ],
+    tools: [
+      {
+        name: "list_merge_requests",
+        description: "List merge requests.",
+        strict: true,
+        input_schema: rejectedSchema,
+      },
+      {
+        name: "get_project",
+        description: "Get a project.",
+        input_schema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+      },
+    ],
+  });
+
+  const toolWith = (body: JsonObject, prefix: string): JsonObject =>
+    (body.tools as JsonObject[]).find((tool) => asString(tool.description).startsWith(prefix))!;
+
+  const expectEmbedded = (body: JsonObject): void => {
+    const reported = toolWith(body, "List merge requests.");
+    expect(reported.input_schema).toEqual({ type: "object" });
+    expect("strict" in reported).toBe(false);
+    expect(reported.description).toBe(
+      `List merge requests.\n\nThe input object must conform to the following JSON Schema. Use its property names exactly as written, including any characters such as brackets:\n${JSON.stringify(rejectedSchema)}`,
+    );
+    const project = toolWith(body, "Get a project.");
+    expect(project.description).toBe("Get a project.");
+    expect(project.input_schema).toEqual(
+      request().tools && (request().tools as JsonObject[])[1]!.input_schema,
+    );
+    // History keeps the original argument names.
+    const history = (body.messages as JsonObject[])[1]!.content as JsonObject[];
+    expect(history[0]!.input).toEqual({ "not[labels]": "bug", state: "opened" });
+  };
+
+  it("embeds the schema in the description on a Messages request", async () => {
+    const p = makePipeline({ config: providerKeyConfig, respond: () => jsonResponse(message()) });
+    afterAll(p.dispose);
+    expect((await p.call("/v1/messages", postJson({ ...request(), model: "sonnet" }))).status).toBe(
+      200,
+    );
+    expectEmbedded(JSON.parse(p.calls[0]!.body) as JsonObject);
+  });
+
+  it("embeds the schema before the MCP tool alias is applied", async () => {
+    const h = oauthPipeline(() => jsonResponse(message()), await loadConfig(""));
+    afterAll(h.pipeline.dispose);
+    expect((await h.pipeline.call("/v1/messages", postJson(request()))).status).toBe(200);
+    const body = lastBody(h);
+    expectEmbedded(body);
+    expect(toolWith(body, "List merge requests.").name).not.toBe("list_merge_requests");
+  });
+
+  it("embeds the schema on a count_tokens request", async () => {
+    const p = makePipeline({
+      config: providerKeyConfig,
+      respond: () => jsonResponse({ input_tokens: 12 }),
+    });
+
+    afterAll(p.dispose);
+    const countRequest = { ...request(), model: "sonnet" };
+    expect((await p.call("/v1/messages/count_tokens", postJson(countRequest))).status).toBe(200);
+    expectEmbedded(JSON.parse(p.calls[0]!.body) as JsonObject);
+  });
+
+  it("lets payload rules overwrite the embedded description", async () => {
+    const config = await loadConfig(`
+api-keys:
+  claude:
+    - keys: [{ api-key: sk-ant-api03-test }]
+      models: [{ name: claude-sonnet-4-5 }]
+requests:
+  payload:
+    override:
+      - models: [{ name: "claude-sonnet-4-5", protocol: claude }]
+        params:
+          tools.0.description: configured
+`);
+
+    const p = makePipeline({ config, respond: () => jsonResponse(message()) });
+    afterAll(p.dispose);
+    expect((await p.call("/v1/messages", postJson(request()))).status).toBe(200);
+    const tool = (JSON.parse(p.calls[0]!.body) as JsonObject).tools as JsonObject[];
+    expect(tool[0]!.description).toBe("configured");
+    expect(tool[0]!.input_schema).toEqual({ type: "object" });
+  });
+});
