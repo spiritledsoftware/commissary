@@ -426,12 +426,9 @@ function repairSchemaNode(node: JsonObject): RepairSchemaNodeResult {
 
   const props = clone["properties"];
 
+  // Declared properties are repaired without inferring a type before references are expanded: final sanitization
+  // handles native object and array schemas once refs and conjunctions are resolved.
   if (isJsonObject(props)) {
-    if (!Object.hasOwn(clone, "type")) {
-      clone["type"] = "object";
-      modified = true;
-    }
-
     const repaired = repairPropertyMap(props);
 
     if (repaired.modified) {
@@ -1215,6 +1212,10 @@ const sanitizeArrayItems = (doc: Doc, addMissing: boolean): void => {
   }
 };
 
+const hasSchemaConjunction = (doc: Doc): boolean =>
+  findPaths(doc, "allOf").some((path) => isJsonArray(getAt(doc, path)));
+
+/** Normalizes native Schema object declarations (skipped for JSON Schema conjunctions, see `cleanJsonSchema`). */
 const sanitizeObjectProperties = (doc: Doc): void => {
   const paths = findPaths(doc, "properties");
   sortByDepth(paths);
@@ -1293,11 +1294,20 @@ const cleanJsonSchema = (schema: Json, options: CleanOptions): Json => {
 
   if (options.antigravitySemantics === true) moveNotToDescription(doc);
 
-  mergeConditionals(doc);
-  mergeAllOf(doc);
+  // Once a JSON Schema contains a conjunction, local shape assumptions are unsafe in ancestors, siblings and
+  // descendants alike, so the shape-rewriting passes are skipped for the whole document.
+  const preserveConjunctions =
+    options.preserveStandardConstraints === true && hasSchemaConjunction(doc);
 
-  if (options.flattenUnions === true) flattenAnyOfOneOf(doc);
-  flattenTypeArrays(doc, options.antigravitySemantics === true);
+  mergeConditionals(doc);
+
+  // The JSON Schema carrier keeps conjunctions, including $ref sibling conflicts.
+  if (options.preserveStandardConstraints !== true) mergeAllOf(doc);
+
+  if (!preserveConjunctions) {
+    if (options.flattenUnions === true) flattenAnyOfOneOf(doc);
+    flattenTypeArrays(doc, options.antigravitySemantics === true);
+  }
 
   removeUnsupportedKeywords(doc, options);
 
@@ -1308,9 +1318,11 @@ const cleanJsonSchema = (schema: Json, options: CleanOptions): Json => {
     removeKeywords(doc, ["title"]);
   }
 
-  cleanupRequiredFields(doc);
-  sanitizeObjectProperties(doc);
-  sanitizeArrayItems(doc, options.addMissingArrayItems === true);
+  if (!preserveConjunctions) {
+    cleanupRequiredFields(doc);
+    sanitizeObjectProperties(doc);
+    sanitizeArrayItems(doc, options.addMissingArrayItems === true);
+  }
 
   if (options.addPlaceholder === true) addEmptySchemaPlaceholder(doc);
 

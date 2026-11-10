@@ -340,11 +340,98 @@ const resolveSchemaEntry = (
   return resolveLocalRefs(root, item, active, state, forClean);
 };
 
-/** Combines a resolved reference target with the node's own resolved siblings. */
-const mergeInlinedRefSchemas = (target: JsonObject, siblings: JsonObject): JsonObject => ({
-  ...target,
-  ...siblings,
-});
+const jsonEqual = (a: Json, b: Json): boolean => {
+  if (a === b) return true;
+
+  if (isJsonArray(a)) {
+    return (
+      isJsonArray(b) && a.length === b.length && a.every((item, i) => jsonEqual(item, b[i] ?? null))
+    );
+  }
+
+  if (!isJsonObject(a) || !isJsonObject(b)) return false;
+  const keys = Object.keys(a);
+
+  return (
+    keys.length === Object.keys(b).length &&
+    keys.every((key) => Object.hasOwn(b, key) && jsonEqual(a[key] ?? null, b[key] ?? null))
+  );
+};
+
+/** Whether `node` declares `key` with a value other than null (Go's `node[key] != nil`). */
+const declares = (node: JsonObject, key: string): boolean =>
+  node[key] !== undefined && node[key] !== null;
+
+/** Assertions that depend on adjacent keywords of their own schema, so even equal values must not cross a reference. */
+const SCOPED_ASSERTION_PAIRS: ReadonlyArray<readonly [string, string]> = [
+  ["additionalProperties", "properties"],
+  ["additionalProperties", "patternProperties"],
+  ["additionalProperties", "additionalProperties"],
+  ["items", "prefixItems"],
+  ["contains", "contains"],
+  ["contains", "minContains"],
+  ["contains", "maxContains"],
+];
+
+/** Annotations do not relax validation constraints, so a sibling may override the target's. */
+const ANNOTATION_KEYWORDS: ReadonlySet<string> = new Set([
+  "title",
+  "description",
+  "default",
+  "example",
+  "examples",
+  "$comment",
+  "deprecated",
+  "readOnly",
+  "writeOnly",
+]);
+
+/**
+ * Replaces `$ref` with an `allOf` applicator without moving its siblings: a sibling `unevaluatedProperties` or
+ * `unevaluatedItems` must still see the annotations the target produces, while the target's own evaluation scope stays
+ * isolated.
+ */
+const conjoinInlinedRefSchemas = (target: JsonObject, siblings: JsonObject): JsonObject => {
+  const existing = siblings["allOf"];
+
+  return { ...siblings, allOf: [target, ...(isJsonArray(existing) ? existing : [])] };
+};
+
+/**
+ * Combines a resolved reference target with the node's own resolved siblings. Both complete schemas are kept (as an
+ * `allOf`) when assertions collide: merging only the conflicting keyword would change the scope of `properties`,
+ * `additionalProperties` and the other interacting keywords.
+ */
+const mergeInlinedRefSchemas = (target: JsonObject, siblings: JsonObject): JsonObject => {
+  if (
+    Object.keys(siblings).length > 0 &&
+    (declares(target, "unevaluatedProperties") || declares(target, "unevaluatedItems"))
+  )
+    return conjoinInlinedRefSchemas(target, siblings);
+
+  for (const [first, second] of SCOPED_ASSERTION_PAIRS) {
+    if (
+      (declares(target, first) && declares(siblings, second)) ||
+      (declares(siblings, first) && declares(target, second))
+    )
+      return conjoinInlinedRefSchemas(target, siblings);
+  }
+
+  const out: JsonObject = { ...target };
+
+  for (const [key, value] of Object.entries(siblings)) {
+    if (!ANNOTATION_KEYWORDS.has(key)) {
+      const previous = target[key];
+
+      if (previous !== undefined && !jsonEqual(previous, value))
+        return conjoinInlinedRefSchemas(target, siblings);
+    }
+
+    out[key] = value;
+  }
+
+  return out;
+};
 
 const resolveLocalRefs = (
   root: Json,
@@ -437,8 +524,17 @@ const resolveSchemaRoot = (root: Json, state: RefState, forClean: boolean): Json
       }
 
       if (expanded !== undefined) {
-        const { $ref: _ref, ...siblings } = out;
+        // Document declarations stay outside any generated allOf branch.
+        const siblings: JsonObject = {};
+
+        for (const [key, value] of Object.entries(out)) {
+          if (key !== "$ref" && key !== "$defs" && key !== "definitions" && key !== "$schema")
+            siblings[key] = value;
+        }
+
         out = mergeInlinedRefSchemas(expanded, siblings);
+
+        if (root["$schema"] !== undefined) out["$schema"] = root["$schema"];
       } else {
         out = resolveRefFallback(root, out, target.value, ref, new Set(), state, forClean);
       }
