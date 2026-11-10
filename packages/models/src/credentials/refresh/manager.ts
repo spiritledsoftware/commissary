@@ -343,7 +343,11 @@ export class RefreshManager {
   // --- internals ------------------------------------------------------------------------------------------------
 
   #unchanged(target: RefreshTarget): RefreshResult {
-    return { ok: true, refreshed: false, credential: toSnapshot(this.decorate(target.credential)) };
+    return {
+      ok: true,
+      refreshed: false,
+      credential: toSnapshot(this.decorate(target.credential), target.state),
+    };
   }
 
   /** `markRejectedAccessToken`: only when the token carries no expiry information of its own. */
@@ -531,7 +535,7 @@ export class RefreshManager {
       return {
         ok: true,
         refreshed: true,
-        credential: toSnapshot(this.decorate(committed.credential)),
+        credential: toSnapshot(this.decorate(committed.credential), committed.state),
       };
     } catch {
       // Go: "persist refreshed auth failed". The rotated token is lost; the next refresh will report invalid_grant.

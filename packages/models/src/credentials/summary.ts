@@ -185,14 +185,38 @@ export const summarizeCredential = (
 const stringField = (value: Json | undefined): string =>
   typeof value === "string" ? value.trim() : "";
 
-/** Credential plus resolved executor key and base URL: the data an executor needs to call the upstream. */
-export const toSnapshot = (credential: Credential): CredentialSnapshot => {
+/** The quota resets of a Devin credential's `quota.signals` (what its executor reads), `undefined` when none was observed. */
+const devinQuotaResets = (state: CredentialState): CredentialSnapshot["quotaSignals"] => {
+  const signals = state.quota.signals;
+  const daily = signals?.["daily_quota_reset_at"];
+  const weekly = signals?.["weekly_quota_reset_at"];
+
+  if (daily === undefined && weekly === undefined) return undefined;
+
+  return {
+    ...(daily === undefined ? {} : { daily_quota_reset_at: daily }),
+    ...(weekly === undefined ? {} : { weekly_quota_reset_at: weekly }),
+  };
+};
+
+/**
+ * Credential plus resolved executor key and base URL: the data an executor needs to call the upstream. Every snapshot
+ * handed to an executor goes through here (a pick, and each result of the request-time refresh), so a Devin credential
+ * always carries its observed quota resets when its `state` is given.
+ */
+export const toSnapshot = (credential: Credential, state?: CredentialState): CredentialSnapshot => {
   const baseUrl =
     credential.attributes.base_url?.trim() || stringField(credential.metadata.base_url);
+
+  const executor = executorKey(credential);
+
+  const quotaSignals =
+    executor === "devin" && state !== undefined ? devinQuotaResets(state) : undefined;
 
   return {
     ...credential,
     ...(baseUrl === "" ? {} : { baseUrl }),
-    executor: executorKey(credential),
+    executor,
+    ...(quotaSignals === undefined ? {} : { quotaSignals }),
   };
 };

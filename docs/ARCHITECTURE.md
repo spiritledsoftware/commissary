@@ -2156,6 +2156,26 @@ Devin's models are catalog additions (`devin/<id>` records, no source to fetch);
 the registry snapshot (`modelLookup`, ids `devin/<id>`) before the embedded catalog. Not ported: the Kimi
 `X-Msh-Device-Name/Model` of the real host, request/response debug logs, the developer-only `cmd/fetch_devin_models` live catalog probe.
 
+Upstream sync D3 (CLIProxyAPI `eb6e25ab`..`02ee3139`). Model UIDs: `swe-2-lightning` keeps the effort before the suffix
+(`swe-2-high-lightning`, complete lightning UIDs pass through), `<level>-fast` and a bare `fast` select the upstream `-fast` variant
+(`models.ts`); `swe-2-flash`, `swe-2-lightning`, `nemotron-3-5-super` and `gpt-6-1-terra` are catalog additions. Usage: the total input is
+uncached + cache read + cache write (`devinTotalInputTokens`), and a Claude stream's `message_start` is not seeded with the request
+estimate (the executor marks the translation state's `claudeInputTokensHandled`, because the registry seeds every Claude client otherwise).
+A Claude request's last mid-conversation effort directive (`effort-directive.ts`, Go `thinking.ClaudeEffortDirective`) picks the variant
+over the translated top-level effort, below a model suffix. Responses `reasoning` items sealed by Devin (`encrypted_content` starting
+`sealed.v1.`) go back as thought steps. Embedded `exec_command`/`write_stdin` phrases are rewritten in every tool description whatever the
+tool is called (the Codex code-mode `exec` tool), in both the Responses translator and the wire encoder. A Devin `permission_denied` 403 about
+the MCP configuration or the content policy is a request fault (`isRequestFault`): no retry, no cooldown. A 429 saying the daily or weekly
+usage quota is exhausted (`quota.ts`, HTTP error or trailer) is credential-scoped and retries at the reset time the `devin-user-status` cron
+observed; for that, every executor snapshot of a Devin credential, a pick and each result of the request-time refresh alike (`toSnapshot(credential, state)`), carries its `quotaSignals` (the two reset times; Go reads `auth.Quota.Signals`). Not ported
+from `b946d54e`: the conductor's early release of a quota cooldown when a refresh sees the quota restored, with its shadow layers for
+model-level cooldowns (Commissary's status cron does not touch cooldowns). Bare Codex patches: a custom `apply_patch` call whose arguments
+arrive as `invalid_json_str` is held back and, after a clean EOS trailer, wrapped into `{"input": ...}` when it is a complete, well-framed patch
+(`apply-patch-recovery.ts`; truncated streams, trailer errors, mixed argument sources and malformed patches still fail with the sanitised
+502). The log-only apply_patch diagnostics of `b4f59d70` and `02ee3139` (byte counts, prefix shapes, JSON control character error classes)
+are not ported. The golden translator fixtures predate the tool description rewrite; `portedSinceGeneration` in
+`packages/translation/test/support/translator-fixtures.ts` accepts it until the fixtures are regenerated (ticket F2).
+
 ## OpenCode Zen and OpenCode Go (`models/executor/opencode/`, `models/registry/opencode-*.ts`)
 
 No Go counterpart: CLIProxyAPI reaches OpenCode only through an `openai-compatibility` entry (chat only). The Workers port has two

@@ -98,6 +98,17 @@ const normalizeChunk = (text: string): Json => {
 };
 
 /**
+ * Upstream changes ported since the committed fixtures were generated (ticket F2 regenerates them and removes this).
+ * CLIProxyAPI e25b7daf rewrites the exec_command phrase of every Devin-bound tool description, not only of tools named
+ * `exec_command`; the fixtures still hold the older Go output for other tool names.
+ */
+const portedSinceGeneration = (translatedRequest: string): string =>
+  translatedRequest.replaceAll(
+    "returning output or a session ID for ongoing interaction",
+    "returning output or an session ID for ongoing interaction",
+  );
+
+/**
  * Runs one case: `translateRequest` translates the request (the registry, or the Worker's executor-level rewrites),
  * the built-in translators the responses and token counts.
  */
@@ -115,7 +126,9 @@ const checkTranslatorFixture = (
   const envelope = translateRequest(c, requestEnvelope);
 
   expect(envelope.error?.message).toBe(c.requestError);
-  expect(expandEmbeddedJson(envelope.body)).toEqual(parseJson(c.translatedRequest));
+  expect(expandEmbeddedJson(envelope.body)).toEqual(
+    parseJson(portedSinceGeneration(c.translatedRequest)),
+  );
 
   if (c.responseLines !== undefined) {
     const context = {

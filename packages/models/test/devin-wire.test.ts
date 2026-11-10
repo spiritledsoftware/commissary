@@ -188,6 +188,44 @@ describe("model UID resolution (parity with ResolveDevinChatModelUID)", () => {
   }
 });
 
+describe("model UID resolution: swe-2, lightning and fast variants (Go devin_models_test.go)", () => {
+  // The expected UIDs are the cases of upstream commits a3c84a37 (catalog additions), 3dae075d (lightning) and
+  // ecbaa6c7 (fast variants).
+  const cases: ReadonlyArray<readonly [string, string, string]> = [
+    ["swe-2-flash-high", "", "swe-2-flash-high"],
+    ["swe-2-flash", "", "swe-2-flash-high"],
+    ["swe-2-flash", "medium", "swe-2-flash-medium"],
+    ["swe-2-flash(max)", "", "swe-2-flash-max"],
+    ["devin/swe-2-flash:medium", "", "swe-2-flash-medium"],
+    ["devin/swe-2-lightning", "", "swe-2-high-lightning"],
+    ["devin/swe-2-lightning(medium)", "", "swe-2-medium-lightning"],
+    ["devin/swe-2-lightning:max", "", "swe-2-max-lightning"],
+    ["devin/swe-2-lightning", "medium", "swe-2-medium-lightning"],
+    ["devin/swe-2-lightning(max)", "medium", "swe-2-max-lightning"],
+    ["devin/swe-2-high-lightning", "", "swe-2-high-lightning"],
+    ["devin/swe-2-medium-lightning", "", "swe-2-medium-lightning"],
+    ["devin/swe-2-high-lightning(max)", "", "swe-2-high-lightning"],
+    ["devin/swe-2-lightning(low)", "", "swe-2-medium-lightning"],
+    ["devin/swe-2-lightning(high-fast)", "", "swe-2-high-lightning"],
+    ["devin/claude-opus-5-5(high-fast)", "", "claude-opus-5-5-high-fast"],
+    ["devin/claude-opus-5-5(max-fast)", "", "claude-opus-5-5-max-fast"],
+    ["devin/claude-opus-5-5", "high-fast", "claude-opus-5-5-high-fast"],
+    ["devin/claude-opus-5-5(fast)", "", "claude-opus-5-5-medium-fast"],
+    ["devin/claude-opus-5-5", "fast", "claude-opus-5-5-medium-fast"],
+    ["devin/claude-opus-5-5(high)", "", "claude-opus-5-5-high"],
+    ["devin/claude-haiku-4-5(high-fast)", "", "MODEL_PRIVATE_11"],
+    // The catalog additions resolve through their own thinking levels.
+    ["devin/nemotron-3-5-super", "", "nemotron-3-5-super-high"],
+    ["devin/gpt-6-1-terra(max)", "", "gpt-6-1-terra-max"],
+  ];
+
+  for (const [model, level, uid] of cases) {
+    it(`${model} level=${level || "-"} -> ${uid}`, () => {
+      expect(resolveDevinChatModelUid(model, level, 0, devinLevelLookup)).toBe(uid);
+    });
+  }
+});
+
 describe("system prompt sanitising (parity with SanitizeDevinSystemPrompt)", () => {
   for (const expected of fixtures.systemPrompts) {
     it(expected.name, () => {

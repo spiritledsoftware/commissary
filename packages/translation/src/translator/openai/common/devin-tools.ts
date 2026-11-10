@@ -23,10 +23,10 @@ export const isDevinCodexAppAutomationUpdate = (namespace: string, toolName: str
   return equalFold(cleanTool, "mcp__codex_app__automation_update");
 };
 
-export const obfuscateExecCommandDescription = (desc: string): string => {
-  if (desc.includes(EXEC_OBFUSCATED)) return desc;
-
-  if (desc.includes(EXEC_TARGET)) return desc.replaceAll(EXEC_TARGET, EXEC_OBFUSCATED);
+export const obfuscateExecCommandDescription = (description: string): string => {
+  const desc = description.includes(EXEC_TARGET)
+    ? description.replaceAll(EXEC_TARGET, EXEC_OBFUSCATED)
+    : description;
 
   return desc.replace(
     /returning output or a session ID for ongoing interaction/gi,
@@ -34,10 +34,10 @@ export const obfuscateExecCommandDescription = (desc: string): string => {
   );
 };
 
-export const obfuscateWriteStdinDescription = (desc: string): string => {
-  if (desc.includes(STDIN_OBFUSCATED)) return desc;
-
-  if (desc.includes(STDIN_TARGET)) return desc.replaceAll(STDIN_TARGET, STDIN_OBFUSCATED);
+export const obfuscateWriteStdinDescription = (description: string): string => {
+  const desc = description.includes(STDIN_TARGET)
+    ? description.replaceAll(STDIN_TARGET, STDIN_OBFUSCATED)
+    : description;
 
   return desc.replace(
     /Writes characters to an existing unified exec session and returns recent output(\.?)/gi,
@@ -45,17 +45,9 @@ export const obfuscateWriteStdinDescription = (desc: string): string => {
   );
 };
 
-/** `SanitizeDevinToolDescription`. */
-export const sanitizeDevinToolDescription = (toolName: string, desc: string): string => {
-  if (desc === "") return desc;
-  const cleanTool = toolName.trim().toLowerCase();
-  let out = desc;
-
-  if (cleanTool === "exec_command" || cleanTool.endsWith("__exec_command"))
-    out = obfuscateExecCommandDescription(out);
-
-  if (cleanTool === "write_stdin" || cleanTool.endsWith("__write_stdin"))
-    out = obfuscateWriteStdinDescription(out);
-
-  return out;
-};
+/**
+ * `SanitizeDevinToolDescription`. Clients embed exec_command and write_stdin descriptions inside other tools (the Codex
+ * code-mode `exec` tool), and Devin rejects those phrases whatever the tool is called, so every description is rewritten.
+ */
+export const sanitizeDevinToolDescription = (desc: string): string =>
+  desc === "" ? desc : obfuscateWriteStdinDescription(obfuscateExecCommandDescription(desc));

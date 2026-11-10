@@ -9,6 +9,7 @@ import type { JsonObject } from "@commissary/json";
 import { parseUserStatus } from "../src/oauth/flows/devin-status.ts";
 import { scheduledTasks } from "../src/scheduled-tasks.ts";
 import { recordingClient, type RecordedCall } from "./support/executor-run.ts";
+import { makePool, MemoryPoolStore } from "./support/pool.ts";
 import fixtures from "./fixtures/devin-status.json";
 
 const fromHex = (hex: string): Uint8Array =>
@@ -152,6 +153,42 @@ describe("Devin GetUserStatus refresh (Go parity)", () => {
       plan: "Free",
       daily_quota_remaining_percent: "100%",
     });
+  });
+
+  it("hands a Devin credential's observed quota signals to the executor with the pick", async () => {
+    const store = new MemoryPoolStore();
+
+    for (const name of ["devin-a", "devin-b"]) {
+      store.upsert(`${name}.json`, "devin", {
+        type: "devin",
+        api_key: `devin-session-token$${name}`,
+        email: `${name}@example.com`,
+      });
+    }
+
+    // Only `devin-a` was refreshed by the status cron.
+    store.states.set("devin-a.json", {
+      ...emptyState(),
+      quota: {
+        ...emptyState().quota,
+        signals: { weekly_quota_reset_at: "2026-11-12T00:00:00Z" },
+      },
+    });
+
+    const harness = await makePool("requests: {}", { store });
+    const picked = new Map<string, Record<string, string> | undefined>();
+    const tried: string[] = [];
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const result = harness.pool.pick({ providers: ["devin"], model: "swe-2", tried });
+
+      if (!result.ok) throw new Error(`pick failed: ${result.failure.code}`);
+      tried.push(result.credential.id);
+      picked.set(result.credential.id, result.credential.quotaSignals);
+    }
+
+    expect(picked.get("devin-a.json")).toEqual({ weekly_quota_reset_at: "2026-11-12T00:00:00Z" });
+    expect(picked.get("devin-b.json")).toBeUndefined();
   });
 
   it("is scheduled as a cron task", () => {

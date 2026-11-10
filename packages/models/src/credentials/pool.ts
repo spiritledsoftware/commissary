@@ -358,7 +358,7 @@ export class CredentialPool {
 
     return {
       ok: true,
-      credential: toSnapshot(this.#decorate(credential)),
+      credential: toSnapshot(this.#decorate(credential), this.#state(credential.id)),
       route: {
         requestedModel: route.requestedModel,
         routeModel: route.routeModel,

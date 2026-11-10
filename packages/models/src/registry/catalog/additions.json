@@ -2766,6 +2766,65 @@
           ]
         },
         {
+          "id": "devin/swe-2-flash",
+          "object": "model",
+          "ownedBy": "cognition",
+          "type": "devin",
+          "created": 0,
+          "displayName": "SWE-2 Flash",
+          "contextLength": 262144,
+          "maxCompletionTokens": 64000,
+          "supportedInputModalities": [
+            "text"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "thinking": {
+            "levels": [
+              "medium",
+              "high",
+              "max"
+            ]
+          },
+          "inputTokenLimit": 262144,
+          "outputTokenLimit": 64000,
+          "supportedGenerationMethods": [
+            "generateContent",
+            "countTokens"
+          ]
+        },
+        {
+          "id": "devin/swe-2-lightning",
+          "object": "model",
+          "ownedBy": "cognition",
+          "type": "devin",
+          "created": 0,
+          "displayName": "SWE-2 Lightning",
+          "contextLength": 262144,
+          "maxCompletionTokens": 64000,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "thinking": {
+            "levels": [
+              "medium",
+              "high",
+              "max"
+            ]
+          },
+          "inputTokenLimit": 262144,
+          "outputTokenLimit": 64000,
+          "supportedGenerationMethods": [
+            "generateContent",
+            "countTokens"
+          ]
+        },
+        {
           "id": "devin/claude-opus-4-7",
           "object": "model",
           "ownedBy": "anthropic",
@@ -4020,6 +4079,68 @@
           ],
           "supportedOutputModalities": [
             "text"
+          ]
+        },
+        {
+          "id": "devin/gpt-6-1-terra",
+          "object": "model",
+          "ownedBy": "openai",
+          "type": "devin",
+          "created": 0,
+          "displayName": "GPT-6.1 Terra",
+          "contextLength": 1000000,
+          "maxCompletionTokens": 64000,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "thinking": {
+            "levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          },
+          "inputTokenLimit": 1000000,
+          "outputTokenLimit": 64000,
+          "supportedGenerationMethods": [
+            "generateContent",
+            "countTokens"
+          ]
+        },
+        {
+          "id": "devin/nemotron-3-5-super",
+          "object": "model",
+          "ownedBy": "nvidia",
+          "type": "devin",
+          "created": 0,
+          "displayName": "Nemotron 3.5 Super",
+          "contextLength": 1048576,
+          "maxCompletionTokens": 64000,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "thinking": {
+            "levels": [
+              "none",
+              "medium",
+              "high"
+            ]
+          },
+          "inputTokenLimit": 1048576,
+          "outputTokenLimit": 64000,
+          "supportedGenerationMethods": [
+            "generateContent",
+            "countTokens"
           ]
         }
       ]

@@ -55,20 +55,23 @@ import {
   nextSessionTurnIndex,
   resolveSessionIds,
 } from "./credentials.ts";
+import { claudeEffortDirective } from "./effort-directive.ts";
 import { checkDevinUserTurns, parseInteractionsPayload } from "./interactions.ts";
 import { resolveDevinChatModelUid } from "./models.ts";
 import { devinPayloadDefaultsSource, finalizeDevinPayload } from "./payload.ts";
-import { DevinAggregator, DevinStreamAssembler } from "./stream.ts";
+import { DevinAggregator, type DevinApplyPatchTool, DevinStreamAssembler } from "./stream.ts";
 import {
   buildGetChatMessageRequest,
   CONNECT_FLAG_END_STREAM,
   DEVIN_CHAT_PATH,
   type DevinUsage,
+  devinTotalInputTokens,
   generateSentryTrace,
   parseDevinFrame,
   parseTrailerError,
   wrapConnectEnvelope,
 } from "./wire.ts";
+import { devinQuotaScopedError } from "./quota.ts";
 import { devinLevelLookup, devinMaxCompletionTokens } from "./catalog.ts";
 
 export const DEVIN_PROVIDER = "devin";
@@ -107,7 +110,7 @@ export const devinUsageDetail = (usage: DevinUsage | undefined): UsageDetail => 
     };
   }
 
-  const input = usage.promptTokens + usage.cachedTokens;
+  const input = devinTotalInputTokens(usage);
 
   return {
     inputTokens: input,
@@ -141,6 +144,18 @@ interface StreamStep {
    */
   readonly failureEvents?: ReadonlyArray<string>;
 }
+
+/** The client's custom `apply_patch` tool, for recovering bare patches. */
+const applyPatchToolOf = (original: Json | undefined): DevinApplyPatchTool => ({
+  requested: applyPatchRequested(original),
+  isTool: (name) => isApplyPatchUpstreamTool(original, name),
+});
+
+/** A quota-exhausted 429 made credential-scoped, retrying at the reset time the credential's status refresh observed. */
+const quotaScoped = (context: ExecutionContext, error: ExecutionError) =>
+  Effect.map(Clock.currentTimeMillis, (now) =>
+    devinQuotaScopedError(error, context.credential.quotaSignals, now),
+  );
 
 /** `registry.LookupDevinModel` through the attempt's registry snapshot: catalog ids are namespaced `devin/<id>`. */
 const lookupDevinInfo = (request: ExecutorRequest, modelId: string) => {
@@ -217,9 +232,13 @@ export const makeDevinExecutor = (executorOptions: DevinExecutorOptions = {}): P
     if (modelMax > 0 && (maxTokens > modelMax || maxTokens <= 0)) maxTokens = modelMax;
 
     // The cron-refreshed catalog (registry snapshot) wins over the embedded one, like Go's active devin catalog.
+    // Translation drops Claude effort directives and keeps the top-level effort, which clients that send directives pin
+    // to a prompt-cache placeholder: the last directive is the effort of the turn.
+    const directive = from === Formats.Claude ? claudeEffortDirective(request.payload) : "";
+
     const chatModelUid = resolveDevinChatModelUid(
       request.model,
-      parsed.thinkingLevel,
+      directive !== "" ? directive : parsed.thinkingLevel,
       parsed.budgetTokens,
       executorOptions.levelsOf ??
         ((id) => lookupDevinInfo(request, id)?.thinking?.levels ?? levelsOf(id)),
@@ -312,11 +331,14 @@ export const makeDevinExecutor = (executorOptions: DevinExecutorOptions = {}): P
 
       const text = new TextDecoder().decode(bytes.slice(0, MAX_ERROR_BODY_BYTES));
 
-      const error = devinStatusError(
-        response.status,
-        new Headers(response.headers),
-        text,
-        yield* Clock.currentTimeMillis,
+      const error = yield* quotaScoped(
+        context,
+        devinStatusError(
+          response.status,
+          new Headers(response.headers),
+          text,
+          yield* Clock.currentTimeMillis,
+        ),
       );
 
       context.usage.fail(error.status, error.message);
@@ -359,7 +381,7 @@ export const makeDevinExecutor = (executorOptions: DevinExecutorOptions = {}): P
       return failure;
     };
 
-    const aggregator = new DevinAggregator();
+    const aggregator = new DevinAggregator(applyPatchToolOf(original));
     yield* Effect.gen(function* () {
       const body = yield* response.arrayBuffer.pipe(
         Effect.mapError((error) => readError(`devin upstream read failed: ${error.reason._tag}`)),
@@ -384,7 +406,12 @@ export const makeDevinExecutor = (executorOptions: DevinExecutorOptions = {}): P
           const trailer = parseTrailerError(payload);
 
           if (trailer !== undefined) {
-            return yield* new ExecutionError({ status: trailer.status, message: trailer.message });
+            const failed = yield* quotaScoped(
+              context,
+              new ExecutionError({ status: trailer.status, message: trailer.message }),
+            );
+
+            return yield* failed;
           }
 
           sawEos = true;
@@ -409,7 +436,7 @@ export const makeDevinExecutor = (executorOptions: DevinExecutorOptions = {}): P
     const aggregate = aggregator.finish(request.model);
 
     // A tool call whose arguments never became valid JSON is a corrupt patch when it is the declared apply_patch tool.
-    if (aggregate.legacyToolNames.some((name) => isApplyPatchUpstreamTool(original, name))) {
+    if (aggregate.invalidJsonToolNames.some((name) => isApplyPatchUpstreamTool(original, name))) {
       return yield* consumeFailure(applyPatchGatewayError());
     }
 
@@ -442,8 +469,8 @@ export const makeDevinExecutor = (executorOptions: DevinExecutorOptions = {}): P
     readonly assembler: DevinStreamAssembler;
     stopped = false;
 
-    constructor(model: string, responseFormat: string) {
-      this.assembler = new DevinStreamAssembler(model, responseFormat);
+    constructor(model: string, responseFormat: string, applyPatch: DevinApplyPatchTool) {
+      this.assembler = new DevinStreamAssembler(model, responseFormat, undefined, applyPatch);
     }
 
     feed(bytes: Uint8Array): Effect.Effect<StreamStep> {
@@ -532,8 +559,18 @@ export const makeDevinExecutor = (executorOptions: DevinExecutorOptions = {}): P
     const prepared = yield* prepare(context, request, options, true);
     const response = yield* send(context, prepared);
     const responseFormat = responseFormatOf(options);
-    const state = new FrameState(request.model, responseFormat);
+
+    const state = new FrameState(
+      request.model,
+      responseFormat,
+      applyPatchToolOf(options.originalRequest ?? request.payload),
+    );
+
     const translation = responseContext(request, options);
+
+    // Devin frames carry authoritative cache-aware usage: `message_start` is not seeded with an input estimate (Go passes
+    // no `ClaudeInputTokenState`; the registry applies one to every Claude client unless the state marks it handled).
+    translation.state.claudeInputTokensHandled = true;
 
     const frameInteractions = (json: string): string[] =>
       responseFormat === Formats.Interactions
@@ -546,6 +583,15 @@ export const makeDevinExecutor = (executorOptions: DevinExecutorOptions = {}): P
     if (responseFormat === Formats.OpenAIResponse && applyPatchRequested(original)) {
       registry.translateStream(responseFormat, Formats.Interactions, translation, "");
     }
+
+    /** A trailer error about the account's daily or weekly quota is credential-scoped (`devinTrailerStatusError`). */
+    const scopeStepError = (step: StreamStep): Effect.Effect<StreamStep> => {
+      const { error } = step;
+
+      if (error === undefined) return Effect.succeed(step);
+
+      return Effect.map(quotaScoped(context, error), (scoped) => ({ ...step, error: scoped }));
+    };
 
     const translate = (step: StreamStep): Stream.Stream<string, ExecutionError> => {
       const chunks: string[] = [];
@@ -599,7 +645,9 @@ export const makeDevinExecutor = (executorOptions: DevinExecutorOptions = {}): P
       Stream.mapAccumEffect(
         () => state,
         (frames, bytes: Uint8Array) =>
-          Effect.map(frames.feed(bytes), (step) => [frames, [step]] as const),
+          Effect.flatMap(frames.feed(bytes), (step) =>
+            scopeStepError(step).pipe(Effect.map((scoped) => [frames, [scoped]] as const)),
+          ),
         { onHalt: (frames) => [frames.end()] },
       ),
       Stream.takeUntil((step) => step.stop),
