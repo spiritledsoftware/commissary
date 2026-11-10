@@ -33,6 +33,7 @@ import {
   SCHEMA_MAP_KEYWORDS,
   SCHEMA_VALUE_KEYWORDS,
 } from "../../common/schema.ts";
+import { isCodexCommentarySignatureMarker } from "../../../signature/claude-messages.ts";
 import { isValidGrokEncryptedContent } from "../../../signature/grok.ts";
 import {
   compatibleSignatureForProvider,
@@ -430,9 +431,30 @@ const convertClaudeRequest = (
         if (text !== "") bufferedSendable++;
       };
 
+      // A relayed commentary block becomes its own assistant message item with phase "commentary".
+      const appendCommentaryContent = (part: Json) => {
+        const text = asString(get(part, "thinking"));
+
+        if (text === "") return;
+        flushMessage();
+        inputItems.push({
+          type: "message",
+          role: "assistant",
+          phase: "commentary",
+          content: [{ type: "output_text", text }],
+        });
+      };
+
       const appendReasoningContent = (part: Json) => {
         if (messageRole !== "assistant") return;
         const rawSignature = asString(get(part, "signature"));
+
+        if (isCodexCommentarySignatureMarker(rawSignature)) {
+          appendCommentaryContent(part);
+
+          return;
+        }
+
         let signature = compatibleSignatureForProvider("gpt", rawSignature);
 
         if (

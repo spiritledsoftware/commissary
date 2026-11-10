@@ -1022,6 +1022,31 @@ describe("history sanitising", () => {
   });
 });
 
+describe("commentary marker restore", () => {
+  it("turns a marked thinking block into text for a non-Claude upstream model, leaving other signatures alone", () => {
+    const body: JsonObject = {
+      model: "kimi-k2.5",
+      messages: [
+        {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "COMMENTARY_SENTINEL", signature: "cpa:commentary:v1" },
+            { type: "thinking", thinking: "reason", signature: "skip_thought_signature_validator" },
+            { type: "text", text: "FINAL_SENTINEL" },
+          ],
+        },
+      ],
+    };
+
+    sanitizeForClaudeUpstream(body, "kimi-k2.5", false);
+    expect((body.messages as JsonObject[])[0]?.content).toEqual([
+      { type: "text", text: "COMMENTARY_SENTINEL" },
+      { type: "thinking", thinking: "reason", signature: "skip_thought_signature_validator" },
+      { type: "text", text: "FINAL_SENTINEL" },
+    ]);
+  });
+});
+
 describe("Responses reasoning replay", () => {
   it("replays a decodable Claude signature as a thinking block and drops foreign ones unless compat mode keeps them", async () => {
     const {

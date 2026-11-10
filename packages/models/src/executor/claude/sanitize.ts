@@ -8,6 +8,7 @@
 import type { JsonObject } from "@commissary/json";
 import { isArr, isObj, str } from "@commissary/translation";
 import {
+  restoreCodexCommentaryMarkers,
   sanitizeClaudeMessagesForClaudeUpstream,
   signatureProviderFromModelName,
 } from "@commissary/translation/signature";
@@ -33,6 +34,12 @@ export const sanitizeForClaudeUpstream = (
   baseModel: string,
   preserveEmptyThinkingBlocks: boolean,
 ): void => {
+  // The internal commentary marker must never reach any upstream, so its restore runs unconditionally, independent of
+  // the provider signature gate below (non-Claude model names skip that entirely).
+  const { payload, restored } = restoreCodexCommentaryMarkers(body);
+
+  if (restored > 0 && isObj(payload)) Object.assign(body, payload);
+
   if (signatureProviderFromModelName(baseModel) === "claude" || preserveEmptyThinkingBlocks) {
     sanitizeClaudeMessagesForClaudeUpstream(body, baseModel, preserveEmptyThinkingBlocks);
   }

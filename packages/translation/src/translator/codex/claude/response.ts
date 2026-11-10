@@ -4,6 +4,8 @@
  * Go source: internal/translator/codex/claude/codex_claude_response.go (ConvertCodexResponseToClaude,
  * ...NonStream, ClaudeTokenCount) and codex_claude_response_web_search.go. The per-request state mirrors
  * `ConvertCodexResponseToClaudeParams`. One call returns the concatenation of all SSE events for one upstream line.
+ * Commentary-phase messages (commits 376015c3, 531721bf) are relayed as thinking blocks signed with the internal
+ * commentary marker, which `codex/claude/request.ts` restores on replay.
  */
 import {
   asInt,
@@ -17,6 +19,7 @@ import {
 } from "@commissary/json";
 import { claudeInputTokensJson, sseEventLines } from "../../common/bytes.ts";
 import { sanitizeClaudeToolId } from "../../common/tool-names.ts";
+import { CODEX_COMMENTARY_SIGNATURE_MARKER } from "../../../signature/claude-messages.ts";
 import type { ResponseContext } from "../../registry.ts";
 import { buildShortNameMap, shortenCodexCallIdIfNeeded } from "./request.ts";
 
@@ -42,6 +45,8 @@ export interface ConvertCodexResponseToClaudeParams {
   thinkingBlockOpen: boolean;
   thinkingSignature: string;
   thinkingSummarySeen: boolean;
+  /** A commentary-phase message item is open: its text streams as a thinking block. */
+  commentaryMessageOpen: boolean;
   webSearchToolUseIds: Set<string>;
   webSearchToolResultIds: Set<string>;
   lastWebSearchToolUseId: string;
@@ -60,6 +65,7 @@ const newParams = (): ConvertCodexResponseToClaudeParams => ({
   thinkingBlockOpen: false,
   thinkingSignature: "",
   thinkingSummarySeen: false,
+  commentaryMessageOpen: false,
   webSearchToolUseIds: new Set(),
   webSearchToolResultIds: new Set(),
   lastWebSearchToolUseId: "",
@@ -124,11 +130,20 @@ const finalizeThinkingBlock = (p: ConvertCodexResponseToClaudeParams): string =>
   if (!p.thinkingBlockOpen) return "";
   let out = "";
 
-  if (p.thinkingSignature !== "") {
+  // A commentary block carries the internal marker, never a pending reasoning signature.
+  let signature = "";
+
+  if (p.commentaryMessageOpen) signature = CODEX_COMMENTARY_SIGNATURE_MARKER;
+  else if (p.thinkingSignature !== "") {
+    signature = p.thinkingSignature;
+    p.thinkingSignature = "";
+  }
+
+  if (signature !== "") {
     out += event("content_block_delta", {
       type: "content_block_delta",
       index: p.blockIndex,
-      delta: { type: "signature_delta", signature: p.thinkingSignature },
+      delta: { type: "signature_delta", signature },
     });
   }
 
@@ -138,6 +153,10 @@ const finalizeThinkingBlock = (p: ConvertCodexResponseToClaudeParams): string =>
 
   return out;
 };
+
+/** `finalizeCodexCommentaryBlock`: closes the thinking block that carries a commentary message. */
+const finalizeCommentaryBlock = (p: ConvertCodexResponseToClaudeParams): string =>
+  p.commentaryMessageOpen && p.thinkingBlockOpen ? finalizeThinkingBlock(p) : "";
 
 const finalizeSignatureOnlyThinkingBlock = (p: ConvertCodexResponseToClaudeParams): string => {
   if (p.thinkingSignature === "") return "";
@@ -807,6 +826,8 @@ export const convertCodexResponseToClaude = (
       break;
     case "response.reasoning_summary_part.added":
       out += stopTextBlock(p);
+      out += finalizeCommentaryBlock(p);
+      p.commentaryMessageOpen = false;
 
       // One thinking block spans the whole reasoning item; only output_item.done carries the final signature.
       if (p.thinkingBlockOpen) out += appendThinkingDelta(p, SUMMARY_PART_SEPARATOR);
@@ -815,6 +836,8 @@ export const convertCodexResponseToClaude = (
       break;
     case "response.reasoning_summary_text.delta":
       out += stopTextBlock(p);
+      out += finalizeCommentaryBlock(p);
+      p.commentaryMessageOpen = false;
       out += startThinkingBlock(p);
       out += appendThinkingDelta(p, asString(get(root, "delta")));
       break;
@@ -822,12 +845,23 @@ export const convertCodexResponseToClaude = (
       // Intentionally does not close the thinking block (see above).
       break;
     case "response.content_part.added":
-      out += finalizeThinkingBlock(p);
+      if (asString(get(root, "part.type")) === "output_text") {
+        if (p.commentaryMessageOpen) out += startThinkingBlock(p);
+        else out += finalizeThinkingBlock(p) + startTextBlock(p);
+      } else {
+        out += finalizeThinkingBlock(p);
+      }
 
-      if (asString(get(root, "part.type")) === "output_text") out += startTextBlock(p);
       break;
     case "response.output_text.delta":
       p.hasTextDelta = true;
+
+      if (p.commentaryMessageOpen) {
+        out += startThinkingBlock(p);
+        out += appendThinkingDelta(p, asString(get(root, "delta")));
+        break;
+      }
+
       out += finalizeThinkingBlock(p);
       out += startTextBlock(p);
       out += event("content_block_delta", {
@@ -837,7 +871,8 @@ export const convertCodexResponseToClaude = (
       });
       break;
     case "response.content_part.done":
-      if (asString(get(root, "part.type")) === "output_text") out += stopTextBlock(p);
+      if (asString(get(root, "part.type")) === "output_text")
+        out += p.commentaryMessageOpen ? finalizeCommentaryBlock(p) : stopTextBlock(p);
       break;
     case "response.web_search_call.searching":
     case "response.web_search_call.completed":
@@ -887,9 +922,17 @@ export const convertCodexResponseToClaude = (
       const item = get(root, "item");
 
       switch (asString(get(item, "type"))) {
+        case "message":
+          // Each message item streams its own text; a later item's done fallback must not be skipped.
+          out += finalizeThinkingBlock(p);
+          out += stopTextBlock(p);
+          p.hasTextDelta = false;
+          p.commentaryMessageOpen = asString(get(item, "phase")) === "commentary";
+          break;
         case "function_call": {
           out += finalizeThinkingBlock(p);
           out += stopTextBlock(p);
+          p.commentaryMessageOpen = false;
           const call = recordFunctionCall(p, root, item);
           updateFunctionCallIdentity(p, call, root, item);
 
@@ -902,6 +945,7 @@ export const convertCodexResponseToClaude = (
           out += stopTextBlock(p);
           // A previous reasoning item that never reported output_item.done must not leak its open block.
           out += finalizeThinkingBlock(p);
+          p.commentaryMessageOpen = false;
           p.thinkingSummarySeen = false;
           // Fallback only: a pre-content snapshot, never the final value.
           p.thinkingSignature = asString(get(item, "encrypted_content"));
@@ -919,29 +963,55 @@ export const convertCodexResponseToClaude = (
 
       switch (asString(get(item, "type"))) {
         case "message": {
-          if (p.hasTextDelta) return [out];
-          const content = get(item, "content");
+          const commentary =
+            p.commentaryMessageOpen || asString(get(item, "phase")) === "commentary";
 
-          if (!isJsonArray(content)) return [out];
-          let text = "";
+          try {
+            if (p.hasTextDelta) {
+              if (commentary) out += finalizeCommentaryBlock(p);
 
-          for (const part of content) {
-            if (asString(get(part, "type")) !== "output_text") continue;
-            const partText = asString(get(part, "text"));
+              return [out];
+            }
 
-            if (partText !== "") text += partText;
+            const content = get(item, "content");
+
+            if (!isJsonArray(content)) return [out];
+            let text = "";
+
+            for (const part of content) {
+              if (asString(get(part, "type")) !== "output_text") continue;
+              const partText = asString(get(part, "text"));
+
+              if (partText !== "") text += partText;
+            }
+
+            if (text === "") return [out];
+
+            if (commentary) {
+              // Whole on done, nothing streamed: emit it as thinking.
+              out += finalizeThinkingBlock(p);
+              out += stopTextBlock(p);
+              p.commentaryMessageOpen = true;
+              out += startThinkingBlock(p);
+              out += appendThinkingDelta(p, text);
+              out += finalizeCommentaryBlock(p);
+
+              return [out];
+            }
+
+            out += finalizeThinkingBlock(p);
+            out += startTextBlock(p);
+            out += event("content_block_delta", {
+              type: "content_block_delta",
+              index: p.blockIndex,
+              delta: { type: "text_delta", text },
+            });
+            out += stopTextBlock(p);
+          } finally {
+            p.commentaryMessageOpen = false;
+            p.hasTextDelta = false;
           }
 
-          if (text === "") return [out];
-          out += finalizeThinkingBlock(p);
-          out += startTextBlock(p);
-          out += event("content_block_delta", {
-            type: "content_block_delta",
-            index: p.blockIndex,
-            delta: { type: "text_delta", text },
-          });
-          out += stopTextBlock(p);
-          p.hasTextDelta = true;
           break;
         }
 
@@ -959,6 +1029,8 @@ export const convertCodexResponseToClaude = (
 
         case "reasoning": {
           out += stopTextBlock(p);
+          out += finalizeCommentaryBlock(p);
+          p.commentaryMessageOpen = false;
           const signature = asString(get(item, "encrypted_content"));
 
           if (signature !== "") p.thinkingSignature = signature;
@@ -1094,18 +1166,29 @@ export const convertCodexResponseToClaudeNonStream = (
           const content = get(item, "content");
 
           if (content === undefined) break;
+          // A commentary message is the model's preamble, not its answer: relay it as marked thinking.
+          const commentary = asString(get(item, "phase")) === "commentary";
+
+          const textBlock = (text: string): Json =>
+            commentary
+              ? {
+                  type: "thinking",
+                  thinking: text,
+                  signature: CODEX_COMMENTARY_SIGNATURE_MARKER,
+                }
+              : { type: "text", text };
 
           if (isJsonArray(content)) {
             for (const part of content) {
               if (asString(get(part, "type")) !== "output_text") continue;
               const text = asString(get(part, "text"));
 
-              if (text !== "") blocks.push({ type: "text", text });
+              if (text !== "") blocks.push(textBlock(text));
             }
           } else {
             const text = asString(content);
 
-            if (text !== "") blocks.push({ type: "text", text });
+            if (text !== "") blocks.push(textBlock(text));
           }
 
           break;
