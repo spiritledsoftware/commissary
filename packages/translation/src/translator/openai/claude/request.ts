@@ -36,6 +36,7 @@ import {
 } from "../../common/schema.ts";
 import { compatibleSignatureForProvider } from "../../../signature/provider.ts";
 import { UserTurnDrops } from "../../common/parts.ts";
+import { restoreCodexCommentaryMarkers } from "../../../signature/claude-messages.ts";
 
 /** `toolResultImagePlaceholder`: keeps the OpenAI tool message non-empty for image-only tool results. */
 const TOOL_RESULT_IMAGE_PLACEHOLDER =
@@ -266,10 +267,12 @@ const convertClaudeToolResultContent = (content: Json | undefined): ToolResultCo
 
 const convertClaudeRequestToOpenAIImpl = (
   modelName: string,
-  root: Json,
+  input: Json,
   stream: boolean,
   preserveThinkingBlocks: boolean,
 ): Json => {
+  // The internal commentary marker is restored as assistant text before any thinking handling.
+  const root = restoreCodexCommentaryMarkers(input).payload;
   const drops = new UserTurnDrops();
   const out: JsonObject = { model: modelName, messages: [] };
 

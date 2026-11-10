@@ -20,7 +20,12 @@ export {
   withSignatureContext,
 } from "./cache.ts";
 
-export { sanitizeClaudeMessagesForClaudeUpstream } from "./claude-messages.ts";
+export {
+  CODEX_COMMENTARY_SIGNATURE_MARKER,
+  isCodexCommentarySignatureMarker,
+  restoreCodexCommentaryMarkers,
+  sanitizeClaudeMessagesForClaudeUpstream,
+} from "./claude-messages.ts";
 
 export { isValidGptReasoningSignature } from "./gpt.ts";
 

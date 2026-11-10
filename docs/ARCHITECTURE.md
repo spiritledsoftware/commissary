@@ -1270,6 +1270,12 @@ Deviations from Go (all deliberate, documented in code headers):
   synchronous `applyCloaking`).
 - Signature handling is the full `internal/signature` port (`translation/signature/`, see "Signature validation"):
   `sanitizeClaudeMessagesForClaudeUpstream` runs before the Claude upstream request.
+- Codex commentary: a `phase: "commentary"` message becomes a thinking block signed with the internal marker `cpa:commentary:v1`
+  (stream and non-stream; a commentary block never takes a reasoning item's signature). On replay `codex/claude/request.ts`
+  restores it as an assistant `phase: "commentary"` message; every other Claude request translator and the Claude upstream
+  sanitizer first call `restoreCodexCommentaryMarkers` (`signature/claude-messages.ts`), which turns marked blocks into plain
+  text, so the marker never reaches an upstream. Unlike Go it returns a copy and never mutates the caller's request. The opt-in
+  that shows commentary to clients (`show-codex-commentary`) and Go's reasoning-text-on-done fallback are not ported here.
 - OpenAI Responses -> Claude: the Codex `apply_patch` custom tool is a strict `{"input": ...}` function upstream and the
   response translator (`claude/openai/responses/response.ts`) decodes it into `custom_tool_call` events
   (`ApplyPatchCallState`, identity/snapshot validation, `response.failed` + 502 on malformed input). Go's log-only invariant

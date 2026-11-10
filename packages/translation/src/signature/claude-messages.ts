@@ -25,6 +25,69 @@ import {
   signatureProviderFromModelName,
 } from "./provider.ts";
 
+/**
+ * `CodexCommentarySignatureMarker`: the Commissary-internal marker carried in the `signature` of the Claude thinking
+ * block that relays a Codex commentary message. It is not a provider signature and must never reach an upstream.
+ */
+export const CODEX_COMMENTARY_SIGNATURE_MARKER = "cpa:commentary:v1";
+
+/** `IsCodexCommentarySignatureMarker`: exactly the marker, ignoring surrounding whitespace. */
+export const isCodexCommentarySignatureMarker = (rawSignature: string): boolean =>
+  rawSignature.trim() === CODEX_COMMENTARY_SIGNATURE_MARKER;
+
+export interface CommentaryRestore {
+  readonly payload: Json;
+  readonly restored: number;
+}
+
+/**
+ * `RestoreCodexCommentaryMarkers`: rewrites every marked thinking block as a plain text block, independent of provider
+ * signature policy. Blocks with empty thinking text are dropped, and a message left with no content is removed. Unlike
+ * Go it never mutates `payload`: the input is returned as is when nothing is marked, else a copy with new `messages`.
+ */
+export const restoreCodexCommentaryMarkers = (payload: Json): CommentaryRestore => {
+  const messages = get(payload, "messages");
+
+  if (!isJsonArray(messages) || !isJsonObject(payload)) return { payload, restored: 0 };
+  let restored = 0;
+  const kept: Json[] = [];
+
+  for (const message of messages) {
+    const content = get(message, "content");
+
+    if (!isJsonObject(message) || !isJsonArray(content)) {
+      kept.push(message);
+      continue;
+    }
+
+    let modified = false;
+    const parts: Json[] = [];
+
+    for (const part of content) {
+      if (
+        asString(get(part, "type")) !== "thinking" ||
+        !isCodexCommentarySignatureMarker(asString(get(part, "signature")))
+      ) {
+        parts.push(part);
+        continue;
+      }
+
+      restored++;
+      modified = true;
+      const text = asString(get(part, "thinking"));
+
+      if (text !== "") parts.push({ type: "text", text });
+    }
+
+    if (!modified) kept.push(message);
+    else if (parts.length > 0) kept.push({ ...message, content: parts });
+  }
+
+  return restored === 0
+    ? { payload, restored }
+    : { payload: { ...payload, messages: kept }, restored };
+};
+
 export interface ClaudeMessagesSignatureSanitizeOptions {
   readonly targetProvider: SignatureProvider;
   readonly targetModel?: string;
@@ -217,6 +280,23 @@ export const sanitizeClaudeMessagesSignaturesForTarget = (
 
       if (partType !== "thinking" || !isJsonObject(part)) {
         keptParts.push(part);
+        continue;
+      }
+
+      const markedSignature = asString(get(part, "signature"));
+
+      if (isCodexCommentarySignatureMarker(markedSignature)) {
+        // Not a provider signature: restore its text as a plain assistant text block.
+        const text = asString(get(part, "thinking"));
+
+        if (text !== "") {
+          keptParts.push({ type: "text", text });
+          report.droppedSignatures++;
+        } else {
+          report.droppedBlocks++;
+        }
+
+        messageModified = true;
         continue;
       }
 
