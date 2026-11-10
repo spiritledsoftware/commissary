@@ -15,6 +15,7 @@ import { AccessPrincipal, isSharedAgentRun, usageRunOf } from "@commissary/auth"
 import { ConfigReader } from "../config/reader.ts";
 import type { Config } from "../config/schema.ts";
 import { ExecutionError, withErrorFields } from "../executor/errors.ts";
+import { isUpstreamTurnError } from "../executor/websocket/session.ts";
 import { CredentialPicker, type CredentialSnapshot } from "../executor/picker.ts";
 import type { ExecutionMetadata, ExecutorOptions, WebsocketExecution } from "../executor/types.ts";
 import { filterUpstreamHeaders } from "../http/headers.ts";
@@ -400,9 +401,11 @@ export const executeStream = Effect.fnUntraced(function* (input: ExecutionInput)
 
     if (result.ok) return result.value;
 
+    // A lost upstream socket is never replayed: the request may be running upstream (`conductor_stream.go`).
     if (
       !result.bootstrap ||
       retries >= maxBootstrapRetries ||
+      isUpstreamTurnError(result.error) ||
       !bootstrapEligible(result.error.status)
     ) {
       return yield* finalError(prepared, result.error);

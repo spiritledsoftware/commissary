@@ -73,7 +73,7 @@ const retentionRank = (name: string): number => {
 };
 
 /** `http.CanonicalHeaderKey` for lower-case header names (`anthropic-ratelimit-x` -> `Anthropic-Ratelimit-X`). */
-const canonicalName = (name: string): string =>
+export const canonicalName = (name: string): string =>
   name
     .split("-")
     .map((part) => (part === "" ? part : part[0]?.toUpperCase() + part.slice(1)))

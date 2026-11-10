@@ -11,12 +11,16 @@ import { harness, json, options } from "./support/executor-run.ts";
 import { loadConfig, makePipeline, sseResponse } from "./support/pipeline.ts";
 import {
   connectClient,
+  errorOf,
+  eventually,
   mockUpstream,
   type MockUpstreamOptions,
+  scripted,
+  settled,
+  type TestClient,
   type UpstreamConnection,
 } from "./support/websocket.ts";
 import { xaiPicker, type XaiPickerLog } from "./support/xai.ts";
-import type { Json } from "@commissary/json";
 
 const created = (id: string, extra: Record<string, unknown> = {}) => ({
   type: "response.created",
@@ -86,40 +90,8 @@ const setup = (
   return { ...p, log, mock, connect };
 };
 
-/** Polls (event-loop turns, no fixed delay) until the condition holds. */
-const eventually = async (condition: () => boolean): Promise<void> => {
-  for (let turn = 0; turn < 2000 && !condition(); turn++)
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  expect(condition()).toBe(true);
-};
-
 const frames = (connection: UpstreamConnection | undefined) =>
   (connection?.received ?? []).map((text) => JSON.parse(text) as Record<string, unknown>);
-
-/** Scripted upstream: `script(frame, index, connection)` answers each frame Commissary writes. */
-const scripted =
-  (
-    script: (
-      frame: Record<string, unknown>,
-      index: number,
-      send: (event: Json) => void,
-      connection: UpstreamConnection,
-    ) => void,
-  ) =>
-  (connection: UpstreamConnection): void => {
-    void (async () => {
-      for (let index = 0; ; index++) {
-        const text = await connection.next();
-        script(
-          JSON.parse(text) as Record<string, unknown>,
-          index,
-          (event) =>
-            connection.server.send(typeof event === "string" ? event : JSON.stringify(event)),
-          connection,
-        );
-      }
-    })();
-  };
 
 describe("response steering (full duplex)", () => {
   it("keeps the socket open across responses and writes follow-up creates straight upstream", async () => {
@@ -456,28 +428,37 @@ describe("non-stream execution over the upstream WebSocket", () => {
   });
 });
 
-const errorOf = (frame: Record<string, unknown>) =>
-  frame["error"] as { code?: string; event_id?: string; message?: string };
+/** Round trips with unknown ids until the request in flight has ended (then no response can be targeted any more). */
+const requestEnded = async (client: TestClient): Promise<void> => {
+  for (let turn = 0; turn < 500; turn++) {
+    client.send({ type: "response.interrupt", response_id: "resp_none" });
+    const answer = await client.until("error");
 
-/** Lets queued socket events and fibers run: the client frames sent so far are read and queued by the handler. */
-const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 25));
+    if (errorOf(answer).message?.includes("no active upstream websocket") === true) return;
+  }
+
+  throw new Error("the request did not end");
+};
 
 describe("upstream socket loss on a steering socket (CLIProxyAPI f73e66ac)", () => {
   it("fences a frame queued behind the lost request: answered not sent, never written upstream", async () => {
-    let dropped = false;
-
     const s = setup([wsCredential()], {
-      onConnection: scripted((_frame, _index, send, connection) => {
-        if (dropped) return send(created("resp_2"));
-        dropped = true;
-        void settle().then(() => connection.drop());
-      }),
+      // The first connection never answers; the second one does.
+      onConnection: (connection) => {
+        if (s.mock.connections.length > 1)
+          scripted((_frame, _index, send) => send(created("resp_2")))(connection);
+        else scripted(() => undefined)(connection);
+      },
     });
 
     const client = await s.connect();
     client.send({ ...create("one"), event_id: "evt-1" });
     // The duplex consumes no follow-up before the first response is established: this one waits in the queue.
     client.send({ ...create("two"), event_id: "evt-2" });
+    await settled(client);
+    // The first create is upstream (the socket is dialled) and unanswered: the loss comes before any output.
+    await eventually(() => frames(s.mock.connections[0]).length === 1);
+    s.mock.connections[0]?.drop();
 
     const lost = await client.nextJson();
     expect(lost).toMatchObject({ type: "error", status: 502 });
@@ -499,10 +480,8 @@ describe("upstream socket loss on a steering socket (CLIProxyAPI f73e66ac)", () 
 
   it("reports the creates the executor had already taken next to the loss", async () => {
     const s = setup([wsCredential()], {
-      onConnection: scripted((frame, index, send, connection) => {
+      onConnection: scripted((_frame, index, send) => {
         if (index === 0) send(created("resp_1"));
-        else void settle().then(() => connection.drop());
-        expect(frame["type"]).toBe("response.create");
       }),
     });
 
@@ -510,6 +489,9 @@ describe("upstream socket loss on a steering socket (CLIProxyAPI f73e66ac)", () 
     client.send(create("one"));
     await client.until("response.created");
     client.send({ ...create("two", { previous_response_id: "resp_1" }), event_id: "evt-2" });
+    // The executor took the follow-up and wrote it upstream; its response never starts.
+    await eventually(() => frames(s.mock.connections[0]).length === 2);
+    s.mock.connections[0]?.drop();
 
     const lost = await client.nextJson();
     expect(errorOf(lost)).toMatchObject({ code: "upstream_websocket_lost" });
@@ -523,10 +505,9 @@ describe("upstream socket loss on a steering socket (CLIProxyAPI f73e66ac)", () 
 
   it("writes nothing for a loss between two responses and answers a response.interrupt that targets none", async () => {
     const s = setup([wsCredential()], {
-      onConnection: scripted((_frame, index, send, connection) => {
+      onConnection: scripted((_frame, index, send) => {
         send(created(`resp_${index + 1}`));
         send(done(`resp_${index + 1}`));
-        void connection;
       }),
     });
 
@@ -542,18 +523,15 @@ describe("upstream socket loss on a steering socket (CLIProxyAPI f73e66ac)", () 
 
     // The finished response's own interrupt is dropped silently.
     client.send({ type: "response.interrupt", response_id: "resp_1" });
-    await settle();
-    expect(client.messages).toHaveLength(3);
+    expect(await settled(client)).toEqual([]);
 
     s.mock.connections[0]?.drop();
-    await settle();
-    expect(client.messages).toHaveLength(3);
+    await requestEnded(client);
+    // The loss between two responses was not reported to the client.
+    expect(client.messages.filter((text) => text.includes("upstream_websocket_lost"))).toEqual([]);
 
     client.send(create("two"));
-    expect(await client.nextJson()).toMatchObject({
-      type: "response.created",
-      response: { id: "resp_1" },
-    });
+    expect(await client.until("response.created")).toMatchObject({ response: { id: "resp_1" } });
     expect(s.mock.dials).toHaveLength(2);
     client.close();
   });

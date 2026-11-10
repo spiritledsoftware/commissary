@@ -10,6 +10,16 @@
 import { Schema } from "effect";
 import type { OutboundRefused } from "@commissary/core";
 
+/** What happened to an operation that lost its outcome together with a lost upstream WebSocket (Go `Abandoned`). */
+export const AbandonedOperation = Schema.Struct({
+  /** `event_id` of the client frame it came from (the error frame is correlated to it); empty = none. */
+  eventId: Schema.String,
+  /** Never written upstream (`upstream_websocket_not_sent`), a continuation that needs the lost socket (409), or sent and lost. */
+  outcome: Schema.Literals(["not_sent", "continuation", "lost"]),
+});
+
+export type AbandonedOperation = typeof AbandonedOperation.Type;
+
 export class ExecutionError extends Schema.TaggedError<ExecutionError>()("ExecutionError", {
   /** HTTP status for the client (Go `StatusCode()`; 500 when unknown, 499 when the client went away). */
   status: Schema.Number,
@@ -34,6 +44,8 @@ export class ExecutionError extends Schema.TaggedError<ExecutionError>()("Execut
   headers: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   /** Safe headers for the client regardless of passthrough (e.g. `Retry-After` of cooldown errors). */
   safeHeaders: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  /** `upstream_websocket_lost` only: the other operations of the downstream socket that lose their outcome with it. */
+  abandoned: Schema.optional(Schema.Array(AbandonedOperation)),
   cause: Schema.optional(Schema.Defect()),
 }) {}
 
@@ -81,6 +93,7 @@ export const withErrorFields = (
     direct: boolean;
     headers: Record<string, string>;
     safeHeaders: Record<string, string>;
+    abandoned: ReadonlyArray<AbandonedOperation>;
     cause: unknown;
   }>,
 ): ExecutionError =>
@@ -95,6 +108,7 @@ export const withErrorFields = (
     ...(error.direct === undefined ? {} : { direct: error.direct }),
     ...(error.headers === undefined ? {} : { headers: error.headers }),
     ...(error.safeHeaders === undefined ? {} : { safeHeaders: error.safeHeaders }),
+    ...(error.abandoned === undefined ? {} : { abandoned: error.abandoned }),
     ...(error.cause === undefined ? {} : { cause: error.cause }),
     ...fields,
   });

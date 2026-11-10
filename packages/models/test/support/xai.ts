@@ -43,12 +43,16 @@ export interface XaiPickerLog {
     readonly credentialId: string;
     readonly result: AttemptResult;
   }>;
+  /** `hasAlternative` calls: what was excluded and how many attempts had been reported by then. */
+  readonly probes?: Array<{ readonly excluded: ReadonlyArray<string>; readonly reported: number }>;
 }
 
 /** Serves `credentials` in order, honouring `excludedIds` and `pinnedId`. */
 export const xaiPicker = (
   credentials: ReadonlyArray<CredentialSnapshot>,
   log: XaiPickerLog = { picks: [], reports: [] },
+  /** `retryAfterMs`: the recovery time `planRetry` knows (the conductor turns it into a trusted `Retry-After`). */
+  options: { readonly retryAfterMs?: number } = {},
 ): Layer.Layer<CredentialPicker, never, ConfigReader> =>
   Layer.succeed(
     CredentialPicker,
@@ -106,11 +110,23 @@ export const xaiPicker = (
           () =>
             void log.reports.push({ leaseId: lease.id, credentialId: lease.credentialId, result }),
         ),
-      planRetry: () => Effect.succeed({ retry: false }),
-      hasAlternative: (request) =>
+      planRetry: () =>
         Effect.succeed(
-          credentials.some((candidate) => !(request.excludedIds ?? []).includes(candidate.id)),
+          options.retryAfterMs === undefined
+            ? { retry: false }
+            : { retry: false, retryAfterMs: options.retryAfterMs },
         ),
+      hasAlternative: (request) =>
+        Effect.sync(() => {
+          log.probes?.push({
+            excluded: [...(request.excludedIds ?? [])],
+            reported: log.reports.length,
+          });
+
+          return credentials.some(
+            (candidate) => !(request.excludedIds ?? []).includes(candidate.id),
+          );
+        }),
     }),
   );
 

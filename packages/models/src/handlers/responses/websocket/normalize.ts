@@ -13,6 +13,7 @@
  * item metadata keys (`type`, `id`, `call_id`) are matched case-insensitively like `encoding/json` does, and the
  * synthetic warm-up ids use the injected clock/uuid.
  */
+import { previousResponseNotFoundError as upstreamPreviousResponseNotFoundError } from "../../../executor/websocket/session.ts";
 import {
   asString,
   cloneJson,
@@ -76,11 +77,11 @@ export const stripReplayOutputOnlyFields = (item: JsonObject): JsonObject => {
 };
 
 /** `previous_response_not_found`: a continuation the socket cannot serve. */
-export const previousResponseNotFoundError = (): WsRequestError => ({
-  status: 409,
-  message:
-    '{"error":{"message":"Previous response is not available on this websocket; resend the full conversation input without previous_response_id","type":"invalid_request_error","code":"previous_response_not_found","param":"previous_response_id"}}',
-});
+export const previousResponseNotFoundError = (): WsRequestError => {
+  const { status, message } = upstreamPreviousResponseNotFoundError();
+
+  return { status, message };
+};
 
 // --- item helpers -----------------------------------------------------------------------------------------------
 

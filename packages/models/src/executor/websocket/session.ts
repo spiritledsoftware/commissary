@@ -22,7 +22,12 @@
  */
 import { Duration, Effect, Option, Queue, Result, Scope, Semaphore } from "effect";
 import { checkOutboundUrl, CurrentOutboundPolicy } from "@commissary/core";
-import { ExecutionError, outboundRefusedError, withErrorFields } from "../errors.ts";
+import {
+  type AbandonedOperation,
+  ExecutionError,
+  outboundRefusedError,
+  withErrorFields,
+} from "../errors.ts";
 import {
   HandshakeError,
   UpstreamMessage,
@@ -93,29 +98,16 @@ export const notSentError = (): ExecutionError =>
     requestScoped: true,
   });
 
-/** What happened to an operation that lost its outcome together with the running request (Go `Abandoned`). */
-export interface AbandonedOperation {
-  /** `event_id` of the client frame it came from (the error frame is correlated to it); empty = none. */
-  readonly eventId: string;
-  /** Never written upstream (`upstream_websocket_not_sent`), a continuation that needs the lost socket (409), or sent and lost. */
-  readonly outcome: "not_sent" | "continuation" | "lost";
-}
-
-/** Carried as the `cause` of a loss error: the other operations that lose their outcome with it. */
-export class AbandonedOperations {
-  constructor(readonly operations: ReadonlyArray<AbandonedOperation>) {}
-}
+export type { AbandonedOperation };
 
 export const withAbandoned = (
   error: ExecutionError,
   operations: ReadonlyArray<AbandonedOperation>,
 ): ExecutionError =>
-  operations.length === 0
-    ? error
-    : withErrorFields(error, { cause: new AbandonedOperations(operations) });
+  operations.length === 0 ? error : withErrorFields(error, { abandoned: operations });
 
 export const abandonedOf = (error: ExecutionError): ReadonlyArray<AbandonedOperation> =>
-  error.cause instanceof AbandonedOperations ? error.cause.operations : [];
+  error.abandoned ?? [];
 
 /** `IsUpstreamWebsocketTurnError`: an error the client socket survives (the downstream handler does not close it). */
 export const isUpstreamTurnError = (error: { readonly code?: string | undefined }): boolean =>

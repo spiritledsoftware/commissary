@@ -4,7 +4,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Config } from "../src/config/schema.ts";
 import type { CredentialSnapshot } from "../src/executor/picker.ts";
-import { asString, type Json, type JsonObject } from "@commissary/json";
+import { asString, type JsonObject } from "@commissary/json";
 import { codexSessionStore } from "../src/executor/websocket/session.ts";
 import { codexModels, oauthCredential } from "./support/codex.ts";
 import {
@@ -15,9 +15,12 @@ import {
 } from "./support/pipeline.ts";
 import {
   connectClient,
+  errorOf,
+  eventually,
   mockUpstream,
   type MockUpstreamOptions,
-  type UpstreamConnection,
+  scripted,
+  settled,
 } from "./support/websocket.ts";
 import { xaiPicker, type XaiPickerLog } from "./support/xai.ts";
 
@@ -89,14 +92,15 @@ const setup = (
   upstream: MockUpstreamOptions = {},
   respond: UpstreamResponder = () => sseResponse([]),
   configOverride: Config = config,
+  pickerOptions: { readonly retryAfterMs?: number } = {},
 ) => {
-  const log: XaiPickerLog = { picks: [], reports: [] };
+  const log: XaiPickerLog = { picks: [], reports: [], probes: [] };
   const mock = mockUpstream(upstream);
 
   const p = makePipeline({
     config: configOverride,
     respond,
-    credentialPicker: xaiPicker(credentials, log),
+    credentialPicker: xaiPicker(credentials, log, pickerOptions),
     modelProviders: codexModels,
     websocketConnector: mock.layer,
   });
@@ -109,54 +113,16 @@ const setup = (
   return { ...p, log, mock, connect };
 };
 
-/** Scripted upstream: `script(frame, index, send, connection)` answers each frame Commissary writes to a connection. */
-const scripted =
-  (
-    script: (
-      frame: Record<string, unknown>,
-      index: number,
-      send: (event: Json) => void,
-      connection: UpstreamConnection,
-    ) => void,
-  ) =>
-  (connection: UpstreamConnection): void => {
-    void (async () => {
-      for (let index = 0; ; index++) {
-        const text = await connection.next();
-        script(
-          JSON.parse(text) as Record<string, unknown>,
-          index,
-          (event) => connection.server.send(JSON.stringify(event)),
-          connection,
-        );
-      }
-    })();
-  };
-
-/** Lets queued socket events and fibers run: the client frames sent so far are read and queued by the handler. */
-const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 25));
-
-const eventually = async (condition: () => boolean): Promise<void> => {
-  for (let turn = 0; turn < 2000 && !condition(); turn++)
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  expect(condition()).toBe(true);
-};
-
-const errorOf = (frame: Record<string, unknown>) =>
-  frame["error"] as { code?: string; event_id?: string; message?: string; type?: string };
-
 const authTokens = (mock: ReturnType<typeof mockUpstream>) =>
   mock.dials.map((dial) => dial.headers["authorization"]);
 
 describe("upstream socket loss", () => {
   it("keeps the client socket open after a loss mid-response: 502 frame, redial on the same credential, 409 for a continuation", async () => {
     const s = setup([wsCredential()], {
-      onConnection: scripted((frame, _index, send, connection) => {
+      onConnection: scripted((frame, _index, send) => {
         if (frame["event_id"] === "evt-1") {
           send(created("resp_1"));
           send(item());
-          // The frames above are delivered before the socket goes away.
-          void settle().then(() => connection.drop());
         } else {
           send(created("resp_2"));
           send(done("resp_2"));
@@ -168,6 +134,8 @@ describe("upstream socket loss", () => {
     client.send(create("evt-1"));
     expect((await client.nextJson())["type"]).toBe("response.created");
     expect((await client.nextJson())["type"]).toBe("response.output_item.done");
+    // Both frames reached the client: now the upstream goes away.
+    s.mock.connections[0]?.drop();
 
     const lost = await client.nextJson();
     expect(lost).toMatchObject({ type: "error", status: 502 });
@@ -230,8 +198,10 @@ describe("upstream socket loss", () => {
     client.send(create("evt-1"));
     await client.until("response.completed");
 
-    s.mock.connections[0]?.server.close(1001, "going away");
-    await eventually(() => codexSessionStore.ids().some((id) => codexSessionStore.peek(id)?.lost));
+    const upstream = s.mock.connections[0];
+    upstream?.server.close(1001, "going away");
+    // The close handshake is complete: the handler's side of the socket has seen it end.
+    await eventually(() => upstream?.closed !== undefined);
 
     client.send(create("evt-2"));
     // Nothing was written for the idle loss: the first frame is the next response's.
@@ -249,17 +219,16 @@ describe("upstream socket loss", () => {
     "answers %s queued behind a request that loses its socket and never sends it upstream",
     async (_name, extra, status, code) => {
       const s = setup([wsCredential()], {
-        onConnection: scripted((_frame, _index, send, connection) => {
-          send(created("resp_1"));
-          // The client frame queued behind the running request is read before the socket drops.
-          void settle().then(() => connection.drop());
-        }),
+        onConnection: scripted((_frame, _index, send) => send(created("resp_1"))),
       });
 
       const client = await s.connect();
       client.send(create("evt-1"));
       expect((await client.nextJson())["type"]).toBe("response.created");
       client.send(create("evt-2", extra));
+      // The frame queued behind the running request has been read before the socket drops.
+      await settled(client);
+      s.mock.connections[0]?.drop();
 
       const lost = await client.nextJson();
       expect(errorOf(lost)).toMatchObject({ code: "upstream_websocket_lost", event_id: "evt-1" });
@@ -274,15 +243,13 @@ describe("upstream socket loss", () => {
 
   it("leaves other upstream closes as they were: no error frame, the client socket closes", async () => {
     const s = setup([wsCredential()], {
-      onConnection: scripted((_frame, _index, send, connection) => {
-        send(created("resp_1"));
-        void settle().then(() => connection.server.close(1001, "going away"));
-      }),
+      onConnection: scripted((_frame, _index, send) => send(created("resp_1"))),
     });
 
     const client = await s.connect();
     client.send(create("evt-1"));
     expect((await client.nextJson())["type"]).toBe("response.created");
+    s.mock.connections[0]?.server.close(1001, "going away");
     expect((await client.closed).code).toBe(1011);
     expect(client.messages.map((text) => JSON.parse(text).type)).toEqual(["response.created"]);
   });
@@ -292,15 +259,22 @@ describe("upstream socket loss", () => {
 const pinnedContinuation = async (
   credentials: ReadonlyArray<CredentialSnapshot>,
   failure: JsonObject,
+  pickerOptions: { readonly retryAfterMs?: number } = {},
 ) => {
-  const s = setup(credentials, {
-    onConnection: scripted((_frame, index, send) => {
-      if (index === 0) {
-        send(created("resp_1"));
-        send(done("resp_1"));
-      } else send(failure);
-    }),
-  });
+  const s = setup(
+    credentials,
+    {
+      onConnection: scripted((_frame, index, send) => {
+        if (index === 0) {
+          send(created("resp_1"));
+          send(done("resp_1"));
+        } else send(failure);
+      }),
+    },
+    () => sseResponse([]),
+    config,
+    pickerOptions,
+  );
 
   const client = await s.connect();
   client.send(create("evt-1"));
@@ -324,6 +298,30 @@ describe("terminal 429 on a pinned continuation", () => {
     expect((await client.closed).code).toBe(1011);
   });
 
+  it("prefers the trusted Retry-After (the cooldown's) over the raw upstream one", async () => {
+    const { client } = await pinnedContinuation(
+      [wsCredential()],
+      quotaError({ headers: { "retry-after": "999", "x-codex-primary-used-percent": "100" } }),
+      { retryAfterMs: 30_000 },
+    );
+
+    const frame = await client.nextJson();
+    expect(frame["headers"]).toEqual({
+      "Retry-After": "30",
+      "X-Codex-Primary-Used-Percent": "100",
+    });
+    expect((await client.closed).code).toBe(1011);
+  });
+
+  it("reports the failed attempt, so its cooldown, before it asks whether another credential could serve a replay", async () => {
+    const { s, client } = await pinnedContinuation([wsCredential(), second], quotaError());
+    await client.closed;
+
+    // Two attempts were reported (the first request, the failed continuation) when the probe ran, and it left the pinned one out.
+    expect(s.log.probes).toEqual([{ excluded: ["codex-oauth-1"], reported: 2 }]);
+    expect(s.log.reports[1]?.result).toMatchObject({ success: false, httpStatus: 429 });
+  });
+
   it("asks the client to replay (1012) when another credential could serve it", async () => {
     const { client } = await pinnedContinuation([wsCredential(), second], quotaError());
     expect(await client.closed).toEqual({ code: 1012, reason: "upstream requires HTTP replay" });
@@ -338,6 +336,52 @@ describe("terminal 429 on a pinned continuation", () => {
     });
 
     expect(await client.closed).toEqual({ code: 1012, reason: "upstream requires HTTP replay" });
+  });
+});
+
+describe("a lost request is never replayed by the conductor", () => {
+  const dropOnFirstFrame = {
+    onConnection: scripted((_frame: Record<string, unknown>, _index: number, _send, connection) =>
+      connection.drop(),
+    ),
+  };
+
+  it("does not repeat it for requests.streaming.bootstrap-retries", async () => {
+    const retries = await loadConfig("requests:\n  streaming:\n    bootstrap-retries: 2\n");
+    const s = setup([wsCredential(), second], dropOnFirstFrame, () => sseResponse([]), retries);
+
+    const client = await s.connect();
+    client.send(create("evt-1"));
+    expect(errorOf(await client.nextJson())).toMatchObject({ code: "upstream_websocket_lost" });
+    expect(await settled(client)).toEqual([]);
+    expect(s.mock.dials).toHaveLength(1);
+    expect(s.log.reports).toHaveLength(1);
+    client.close();
+  });
+
+  it("is not turned into a retry by a request-scoped error rule", async () => {
+    const withRule = oauthCredential({
+      id: "codex-oauth-ruled",
+      attributes: { plan_type: "plus", websockets: "true" },
+      metadata: {
+        access_token: "access-token-1",
+        account_id: "acct_123",
+        request_scoped_errors: [
+          { status: 502, match: ["upstream_websocket_lost"], action: "continue" },
+        ],
+      },
+    });
+
+    const s = setup([withRule, second], dropOnFirstFrame);
+
+    const client = await s.connect();
+    client.send(create("evt-1"));
+    expect(errorOf(await client.nextJson())).toMatchObject({ code: "upstream_websocket_lost" });
+    expect(await settled(client)).toEqual([]);
+    // The create ran once: the rule did not fail it over to the other credential.
+    expect(s.mock.dials).toHaveLength(1);
+    expect(s.log.reports).toHaveLength(1);
+    client.close();
   });
 });
 
@@ -420,27 +464,6 @@ const sse = (events: JsonObject[]) =>
   sseResponse(
     events.map((event) => `event: ${asString(event["type"])}\ndata: ${JSON.stringify(event)}\n\n`),
   );
-
-describe("an error event from an HTTP provider's stream", () => {
-  it("reaches the attempt as the upstream error, so its classification and cooldown are recorded", async () => {
-    // A second credential is available: nothing may fail over once the first payload reached the client.
-    const s = setup([oauthCredential(), oauthCredential({ id: "codex-oauth-2" })], {}, () =>
-      sse([created("resp_1"), item(), quotaError({ status: 429 })]),
-    );
-
-    const client = await s.connect();
-    client.send(create("evt-1"));
-    expect((await client.nextJson())["type"]).toBe("response.created");
-    expect((await client.nextJson())["type"]).toBe("response.output_item.done");
-    expect(await client.nextJson()).toMatchObject({ type: "error", status: 429 });
-    expect((await client.closed).code).toBe(1011);
-
-    await eventually(() => s.log.reports.length === 1);
-    // Exactly one upstream attempt, reported with the upstream status, not as a status-less error.
-    expect(s.calls).toHaveLength(1);
-    expect(s.log.reports[0]?.result).toMatchObject({ success: false, httpStatus: 429 });
-  });
-});
 
 describe("replayed upstream output (CLIProxyAPI 9037d543)", () => {
   it("drops the output-only content_token_count from the replayed output of the previous HTTP request", async () => {
@@ -576,7 +599,7 @@ describe("response.interrupt", () => {
       const rejected = await client.nextJson();
       expect(rejected).toMatchObject({ type: "error", status: 400 });
       gate.end();
-      await settle();
+      expect(await settled(client)).toEqual([]);
       expect(typesOf(client.messages)).not.toContain("response.incomplete");
     });
 
@@ -591,8 +614,12 @@ describe("response.interrupt", () => {
       await client.until("response.completed");
 
       client.send(interrupt("resp_1"));
-      await settle();
-      expect(typesOf(client.messages)).toEqual(["response.created", "response.completed"]);
+      // Nothing was written for it: the reader answered the sentinel right behind it.
+      expect(await settled(client)).toEqual([]);
+      expect(typesOf(client.messages.slice(0, 2))).toEqual([
+        "response.created",
+        "response.completed",
+      ]);
     });
   });
 
@@ -615,7 +642,8 @@ describe("response.interrupt", () => {
         }
       });
 
-      await settle();
+      // The create is upstream, so the request is in flight and no response has started.
+      await eventually(() => s.mock.connections[0]?.received.length === 1);
       client.send(interrupt("resp_1"));
       expect(await client.until("response.incomplete")).toMatchObject({
         response: { id: "resp_1" },
@@ -624,6 +652,26 @@ describe("response.interrupt", () => {
         "response.create",
         "response.interrupt",
       ]);
+    });
+
+    it("is forwarded when it names the running response", async () => {
+      const { s, client } = await start((frame, _index, send) => {
+        if (frame["type"] === "response.create") send(created("resp_1"));
+        else {
+          send({
+            type: "response.incomplete",
+            response: { id: "resp_1", incomplete_details: { reason: "interrupted" }, output: [] },
+          });
+        }
+      });
+
+      await client.until("response.created");
+      client.send({ ...interrupt("resp_1"), mode: "abort" });
+      await client.until("response.incomplete");
+      expect(JSON.parse(s.mock.connections[0]?.received[1] ?? "{}")).toEqual({
+        ...interrupt("resp_1"),
+        mode: "abort",
+      });
     });
 
     it("is a 400 for an id that is not the running response, and is not forwarded", async () => {
@@ -644,7 +692,7 @@ describe("response.interrupt", () => {
 
       await client.until("response.completed");
       client.send(interrupt("resp_1"));
-      await settle();
+      expect(await settled(client)).toEqual([]);
       // The late interrupt left no trace: the next request starts clean on the same upstream socket.
       client.send(create("evt-2"));
       expect((await client.nextJson())["type"]).toBe("response.created");
@@ -653,19 +701,23 @@ describe("response.interrupt", () => {
         "response.create",
         "response.create",
       ]);
-      expect(typesOf(client.messages)).not.toContain("error");
     });
+
+    /** The session of the request in flight loses its socket without the request having noticed yet. */
+    const detachSocket = (lost: boolean): void => {
+      for (const id of codexSessionStore.ids()) {
+        const session = codexSessionStore.peek(id);
+
+        if (session?.active !== true) continue;
+        session.socket = undefined;
+        session.lost = lost;
+      }
+    };
 
     it("has no local fallback when the upstream socket is gone", async () => {
       const { s, client } = await start((_frame, _index, send) => send(created("resp_1")));
       await client.until("response.created");
-
-      // The session lost its socket without the request having noticed yet.
-      for (const id of codexSessionStore.ids()) {
-        const session = codexSessionStore.peek(id);
-
-        if (session !== undefined) session.socket = undefined;
-      }
+      detachSocket(false);
 
       client.send(interrupt("resp_1"));
       const rejected = await client.nextJson();
@@ -673,6 +725,17 @@ describe("response.interrupt", () => {
       expect(errorOf(rejected).message).toContain("no active upstream websocket");
       expect(typesOf(client.messages)).not.toContain("response.incomplete");
       expect(s.mock.connections[0]?.received).toHaveLength(1);
+    });
+
+    it("answers with the loss when the socket it needed was lost", async () => {
+      const { client } = await start((_frame, _index, send) => send(created("resp_1")));
+      await client.until("response.created");
+      detachSocket(true);
+
+      client.send(interrupt("resp_1"));
+      const rejected = await client.nextJson();
+      expect(rejected).toMatchObject({ type: "error", status: 400 });
+      expect(errorOf(rejected).code).toBe("upstream_websocket_lost");
     });
   });
 

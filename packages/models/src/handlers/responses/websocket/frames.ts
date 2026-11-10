@@ -11,6 +11,7 @@
  */
 import { statusText } from "../../../http/status.ts";
 import { openAIErrorBody } from "../../../http/errors.ts";
+import { canonicalName } from "../../../credentials/cooldown/quota-signals.ts";
 import { isRequestInvalid } from "../../../executor/classify.ts";
 import { ExecutionError } from "../../../executor/errors.ts";
 import { isReplayRequired } from "../../../executor/websocket/session.ts";
@@ -129,12 +130,7 @@ export const shouldExposeError = (error: ExecutionError): boolean =>
   isRequestInvalid(error);
 
 /** `http.CanonicalHeaderKey`: `retry-after` -> `Retry-After`. */
-const canonicalHeader = (name: string): string =>
-  name
-    .trim()
-    .split("-")
-    .map((part) => part.slice(0, 1).toUpperCase() + part.slice(1).toLowerCase())
-    .join("-");
+const canonicalHeader = (name: string): string => canonicalName(name.trim().toLowerCase());
 
 /**
  * The frame's top-level `headers`: the error's safe headers (the trusted `Retry-After` of a cooldown) plus the raw

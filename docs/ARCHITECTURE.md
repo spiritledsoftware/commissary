@@ -547,10 +547,14 @@ Port of `internal/thinking`, keeping the "canonical `ThinkingConfig` → central
   metadata, resolved base URL/headers, and the requested -> upstream model mapping) or `{ ok: false, failure }`
   (`model_cooldown` 429 + body, `auth_unavailable` 503, `auth_not_found`, `provider_not_found`). `report(lease, result)`
   runs the cooldown/quota state machine (below); `planRetry(query)` answers whether another retry round is worth starting
-  and how long to wait; `hasAlternative(request)` answers read-only whether `pick` would find a credential other than the
-  excluded ones now (same grants, Spend limits and cooldowns; no lease, a throwaway rotation and affinity runtime).
-  Management methods: `listCredentials` (redacted), `upsertCredential` (re-login merge, credentials.md §11),
-  `importAuthFile`, `removeCredential`, `setCredentialDisabled`.
+  and how long to wait; `hasAlternative(request)` answers read-only whether `pick` would find a credential other than
+  the excluded ones now (same grants, Spend limits and cooldowns; no lease, a throwaway rotation and affinity runtime).
+  **Deploys** (`docs/DEVELOPMENT.md`, "State RPC: expand, then contract"): `hasAlternative` is a new method, so the
+  change is expand only. The state Worker deploys first and answers it; a caller from before it never asks. An API
+  Worker that meets a ControlPlane from before it (a rolling deploy) gets a failed call, which the picker reads as "no
+  alternative": a pinned 429 is exposed instead of replayed, as with a single credential. Management methods:
+  `listCredentials` (redacted), `upsertCredential` (re-login merge, credentials.md §11), `importAuthFile`,
+  `removeCredential`, `setCredentialDisabled`.
 - **Results, cooldowns and quota** (`credentials/cooldown/`, port of `conductor_cooldown.go` `MarkResult`): `markResult`
   is a pure function over `CredentialState` with an injected clock. Per-(credential, model) cooldowns: 401/402/403 30 min,
   404 and model-support errors 12 h (or `Retry-After`), 429 `Retry-After` (>= 10 s) or the 1 s·2^n ladder (once per open
@@ -655,13 +659,14 @@ Core contracts every provider slice implements (Go references in each module hea
   chunks. All failures are `ExecutionError` (status, upstream body as message, `retryAfterMs`, `credentialScoped`,
   `requestScoped`, `terminalAuth`, `direct`, `code`). Order inside executors: translate -> `Thinking.apply` -> provider shaping -> `applyPayloadRules` (last) -> `HttpClient` (tracing
   propagation disabled so no `traceparent` reaches providers). Shared helpers live in `executor/helps/`.
-- **Credential selection**: `CredentialPicker { pick, report, planRetry, hasAlternative }` (`executor/picker.ts`, contract documented
-  there). The default implementation (`control-plane-picker.ts`) is a thin adapter over the ControlPlane RPC; it maps the
-  DO snapshot to the executor view (`kind`, `header:<Name>` attributes, `base_url`) and turns pick failures into
-  `ExecutionError`s (`model_cooldown` keeps its JSON body and `Retry-After`). `static-picker.ts` is a config-only stand-in
-  for tests (`makePipeline` uses it; `packages/models/test/support/pool.ts` runs the real `CredentialPool` in-process with an injected
-  clock). The route returned by `pick` (`PickedRoute`: upstream model pool, `originalAlias`, `forceMapping`, `pooled`) is
-  computed in the DO; `executor/models.ts` is only used by the static picker.
+- **Credential selection**: `CredentialPicker { pick, report, planRetry, hasAlternative }` (`executor/picker.ts`,
+  contract documented there). The default implementation (`control-plane-picker.ts`) is a thin adapter over the
+  ControlPlane RPC; it maps the DO snapshot to the executor view (`kind`, `header:<Name>` attributes, `base_url`) and
+  turns pick failures into `ExecutionError`s (`model_cooldown` keeps its JSON body and `Retry-After`).
+  `static-picker.ts` is a config-only stand-in for tests (`makePipeline` uses it; `packages/models/test/support/pool.ts`
+  runs the real `CredentialPool` in-process with an injected clock). The route returned by `pick` (`PickedRoute`:
+  upstream model pool, `originalAlias`, `forceMapping`, `pooled`) is computed in the DO; `executor/models.ts` is only
+  used by the static picker.
 - **Handlers (`models/handlers/`)**: `execute.ts` runs resolve (`ModelProviders` service: the model registry;
   `ModelProviders.configLayer` serves tests without one) -> pick -> executor -> report -> usage (one record per attempt via `UsageSink`, published when the
   stream ends). `respond.ts` peeks the first stream chunk inside the request scope (the web handler keeps the scope
@@ -802,16 +807,18 @@ Core contracts every provider slice implements (Go references in each module hea
 - **Multi-agent v2, orphan delegation, `is-compat`** (slice #26, see "Codex client rewriting and compat variants"): the executor
   optimises collaboration tools/namespace (`optimizeCodexMultiAgentV2RequestForAuth`, restored in stream, non-stream and WebSocket
   events) and compat models use the `claude -> codex` compat transform.
-- **Stream bootstrap buffering** (`upstream.codex.stream-bootstrap-buffering` / `-timeout`, `bootstrap.ts` + `stream.ts`/`websocket.ts`): frames that
-  carry nothing observable (handshake preamble, keepalives, empty `*.added` frames; a closed allow-list like Go's
-  `isCodexBootstrapBufferableEvent`) are held until the first real event, within 48 upstream lines (WebSocket: messages read), 1 MiB and the
-  optional timeout (Go duration or whole seconds, `0`/`none`/... = unlimited; the clock is the Effect clock on the WebSocket path, the reader's
-  injected `nowMs` on SSE). An overload/rate-limit/capacity rejection inside the HTTP 200 stream (or any upstream `error` frame on the WebSocket)
-  fails the attempt with a 503 before anything reaches the client, so the conductor fails over to the next credential; other terminal
-  failures flush the held handshake and are delivered in-stream, except a terminal `response.failed` usage limit (`usage_limit_reached`) on the
-  WebSocket, which fails the attempt over like an `error` frame (a 429 with its own `resets_at` cooldown, CLIProxyAPI 86a1aabf; the SSE path
-  fails over only on overloads, as in Go); a clean EOF while holding fails the attempt without releasing. `grok-pager` /
-  `grok-shell` clients get `keepalive` events as `: keepalive` SSE comments (`TransformKeepaliveSSELine`).
+- **Stream bootstrap buffering** (`upstream.codex.stream-bootstrap-buffering` / `-timeout`, `bootstrap.ts` +
+  `stream.ts`/`websocket.ts`): frames that carry nothing observable (handshake preamble, keepalives, empty `*.added`
+  frames; a closed allow-list like Go's `isCodexBootstrapBufferableEvent`) are held until the first real event, within
+  48 upstream lines (WebSocket: messages read), 1 MiB and the optional timeout (Go duration or whole seconds,
+  `0`/`none`/... = unlimited; the clock is the Effect clock on the WebSocket path, the reader's injected `nowMs` on
+  SSE). An overload/rate-limit/capacity rejection inside the HTTP 200 stream (or any upstream `error` frame on the
+  WebSocket) fails the attempt with a 503 before anything reaches the client, so the conductor fails over to the next
+  credential; other terminal failures flush the held handshake and are delivered in-stream, except a terminal
+  `response.failed` usage limit (`usage_limit_reached`) on the WebSocket, which fails the attempt over like an `error`
+  frame (a 429 with its own `resets_at` cooldown, CLIProxyAPI 86a1aabf; the SSE path fails over only on overloads, as in
+  Go); a clean EOF while holding fails the attempt without releasing. `grok-pager` / `grok-shell` clients get
+  `keepalive` events as `: keepalive` SSE comments (`TransformKeepaliveSSELine`).
 
 - **models.json header overrides** (`helps/model-headers.ts`): `config.override_header` of the executed model is read from the attempt's
   registry snapshot (`ExecutorRequest.modelLookup(model, "")`, `ThinkingModelInfo.config.overrideHeader`) and forced onto every
@@ -941,69 +948,81 @@ upgrade request like any other (default-deny prefixes); the principal is capture
   WebSocket and the running turn keep the object awake anyway and outbound sockets cannot hibernate; it would only add an RPC hop
   per frame. The cost is that an isolate restart (deploy) drops live sockets; clients reconnect and replay full input, which is
   also what happens when Go restarts. The `SessionState` object holds no socket state.
-- **Loop** (`socket.ts`): one fiber per socket, started with `Effect.runForkWith(context)` from the upgrade handler (the services of the
-  request are captured once; every request runs in its own `Effect.scoped`; a **Request** is one exchange on the socket). A second fiber
-  is the only reader of the client socket so `response.interrupt` reaches the running upstream socket (or cancels a local HTTP request)
-  without waiting behind the response. Closing the client socket interrupts the fiber: the attempt is reported as a
-  connection-lifecycle failure (no cooldown) and the upstream execution sessions are closed. Requests call `executeStream` (the normal conductor: pick, failover, usage, refresh) with
-  `ExecutionInput.websocket = { sessionId, requireUpstream }`, `onSelected` (the credential of each attempt) and `pinnedId`;
-  `preferWebsockets` makes `pick` prefer Codex credentials with `websockets`.
+- **Loop** (`socket.ts`): one fiber per socket, started with `Effect.runForkWith(context)` from the upgrade handler (the
+  services of the request are captured once; every request runs in its own `Effect.scoped`; a **Request** is one
+  exchange on the socket). A second fiber is the only reader of the client socket so `response.interrupt` reaches the
+  running upstream socket (or cancels a local HTTP request) without waiting behind the response. Closing the client
+  socket interrupts the fiber: the attempt is reported as a connection-lifecycle failure (no cooldown) and the upstream
+  execution sessions are closed. Requests call `executeStream` (the normal conductor: pick, failover, usage, refresh)
+  with `ExecutionInput.websocket = { sessionId, requireUpstream }`, `onSelected` (the credential of each attempt) and
+  `pinnedId`; `preferWebsockets` makes `pick` prefer Codex credentials with `websockets`.
 - **Per-frame planning** (`plan.ts`, `normalize.ts`; pure): `response.create` / `response.append` become executable bodies. Without
   an upstream socket the transcript is rebuilt locally (previous input + previous output + new input, compaction/replacement
   detection, call-id and item-id dedupe; `generate:false` warm-ups answered with synthetic `response.created`/`response.completed`
   `resp_prewarm_<uuid>`). After a turn that ran on a credential with `websockets` (Codex/xAI) the socket pins that credential and later
   frames pass through (`previous_response_id` kept, state upstream); a model change drops the pin. A continuation that needs the live
   upstream socket but cannot have it closes the client with 1012 "upstream requires HTTP replay" (the client replays full input).
-- **A client socket outlives its upstream socket** (CLIProxyAPI f73e66ac; also for xAI). Once the create frame was handed to the upstream
-  socket of a session, a transport loss (close 1006 or a socket `error`; any other close code and the idle deadline stay
-  `transient_transport`) fails the request with a request-scoped 502 `upstream_websocket_lost`: never replayed (the upstream may be running
-  it), no failover, no cooldown, and the client socket stays open. The error frame is non-closing, carries `error.event_id` of the client
-  frame and the credential stays pinned, so the next full `response.create` redials on it. A loss between requests writes nothing and
-  marks the session `lost`; a continuation that needs the lost socket is answered with a non-closing 409 `previous_response_not_found`
-  (an upstream socket Commissary detached itself is not "lost": that continuation keeps today's 1012 close). **Input fence**: the reader
-  fiber stamps each queued frame with an input epoch that only a loss mid-request advances; at the hand-off to whoever runs a frame (the
-  main loop, and the wrapped `duplexInput.next` for steering) a frame read under an older epoch is answered `upstream_websocket_not_sent`
-  (409 for a continuation) with its `event_id` and never reaches upstream. The steering executor adds the creates it had already taken
-  to the loss error as abandoned operations (a lost one per sent create, not-sent for the queued ones); steers are not listed. 1012 remains
-  for a pin dropped by a model change, a pinned continuation's 401, a pinned continuation's 429 when another credential could serve the
-  replay, and a continuation that needs an upstream socket that was detached rather than lost.
-- **Terminal errors**: request-shape errors, terminal auth and terminal 429 / `usage_limit_reached` / `model_cooldown` failures (type or
-  code at `error.*`, top level, `response.error.*` or `body.error.*`) are exposed as a Responses `error` frame, then the socket closes
-  1011; a quota or cooldown error with a 5xx status is coerced to 429. The frame is Go's shape: top-level `status` and `headers` (the
-  trusted `Retry-After` of the cooldown error plus the raw upstream headers, canonical-cased; a raw `Retry-After` never overrides a trusted
-  one) and `error`. Other credential and transport failures close silently (1011) like Go; 1009 (message too big) and replay-required map
-  to their own close codes. An `error` event the handler stops on fails the attempt with the upstream error itself (so the conductor's classification
-  decides the cooldown, ADR 0008); any other stop of the downstream is a request-scoped 500 "downstream forward failed" (`execute.ts`
-  `toExecutionError`). **Pinned continuation**: a 401 asks for the replay (1012); a 429, quota or cooldown failure asks
-  `hasAlternativeTarget` (`handlers/execute.ts`: `prepare`, then the picker's `hasAlternative` with the request's pick minus its pin and
-  session, excluding the pinned id): replay (1012) when another credential could serve it, else the error is exposed (the client would
-  replay into the same 429).
-- **Interrupts**: all state lives in `socket.ts`: the running response id (`response.created` .. its terminal event, closed before the
-  terminal payload is written), a ring of the last 64 finished response ids (an interrupt for one is dropped silently) and whether the
-  request runs on a Codex upstream socket. On such a request the frame is forwarded when it can only target the running response (or any
-  id before `response.created`: the upstream validates) and is never resolved locally, also when the socket is gone (400 with the loss
-  message when it was lost, else "no active upstream websocket"); an unknown id while a response runs, or between responses of a steering
-  socket, is a 400. On a request over HTTP (and for xAI, whose sockets take no interrupt) it is resolved locally with a
-  `response.incomplete` while the response runs; another id than the running one is a 400, and after the terminal event the local
-  path is closed (a 400, no fabricated `response.incomplete`). Without a request in flight an unknown id is a 400.
+- **A client socket outlives its upstream socket** (CLIProxyAPI f73e66ac; also for xAI). Once the create frame was
+  handed to the upstream socket of a session, a transport loss (close 1006 or a socket `error`; any other close code and
+  the idle deadline stay `transient_transport`) fails the request with a request-scoped 502 `upstream_websocket_lost`:
+  never replayed (the upstream may be running it), no failover, no cooldown, and the client socket stays open. The error
+  frame is non-closing, carries `error.event_id` of the client frame and the credential stays pinned, so the next full
+  `response.create` redials on it. The conductor treats a loss like any request-scoped failure and more:
+  `bootstrap-retries` never repeats it and request-scoped error rules never apply to it (Go: `conductor_stream.go`,
+  `conductor_request_scoped_errors.go`), so a create is never run twice. A loss between requests writes nothing and
+  marks the session `lost`; a continuation that needs the lost socket is answered with a non-closing 409
+  `previous_response_not_found` (an upstream socket Commissary detached itself is not "lost": that continuation keeps
+  today's 1012 close). **Input fence**: the reader fiber stamps each queued frame with an input epoch that only a loss
+  mid-request advances; at the hand-off to whoever runs a frame (the main loop, and the wrapped `duplexInput.next` for
+  steering) a frame read under an older epoch is answered `upstream_websocket_not_sent` (409 for a continuation) with
+  its `event_id` and never reaches upstream. The steering executor adds the creates it had already taken to the loss
+  error as abandoned operations (a lost one per sent create, not-sent for the queued ones); steers are not listed. 1012
+  remains for a pin dropped by a model change, a pinned continuation's 401, a pinned continuation's 429 when another
+  credential could serve the replay, and a continuation that needs an upstream socket that was detached rather than
+  lost.
+- **Terminal errors**: request-shape errors, terminal auth and terminal 429 / `usage_limit_reached` / `model_cooldown`
+  failures (type or code at `error.*`, top level, `response.error.*` or `body.error.*`) are exposed as a Responses
+  `error` frame, then the socket closes 1011; a quota or cooldown error with a 5xx status is coerced to 429. The frame
+  is Go's shape: top-level `status` and `headers` (the trusted `Retry-After` of the cooldown error plus the raw upstream
+  headers, canonical-cased; a raw `Retry-After` never overrides a trusted one) and `error`. Other credential and
+  transport failures close silently (1011) like Go; 1009 (message too big) and replay-required map to their own close
+  codes. An `error` event the handler stops on fails the attempt with the upstream error itself (so the conductor's
+  classification decides the cooldown, ADR 0008); any other stop of the downstream is a request-scoped 500 "downstream
+  forward failed" (`execute.ts` `toExecutionError`). An `error` event without a status is a 500 (`errorFromPayload`),
+  which counts as a transient failure for the cooldown (`routing.cooldown.transient-error-cooldown-seconds`). **Pinned
+  continuation**: a 401 asks for the replay (1012); a 429, quota or cooldown failure asks `hasAlternativeTarget`
+  (`handlers/execute.ts`: `prepare`, then the picker's `hasAlternative` with the request's pick minus its pin and
+  session, excluding the pinned id): replay (1012) when another credential could serve it, else the error is exposed
+  (the client would replay into the same 429).
+- **Interrupts**: all state lives in `socket.ts`: the running response id (`response.created` .. its terminal event,
+  closed before the terminal payload is written), a ring of the last 64 finished response ids (an interrupt for one is
+  dropped silently) and whether the request runs on a Codex upstream socket. On such a request the frame is forwarded
+  when it can only target the running response (or any id before `response.created`: the upstream validates) and is
+  never resolved locally, also when the socket is gone (400 with the loss message when it was lost, else "no active
+  upstream websocket"); an unknown id while a response runs, or between responses of a steering socket, is a 400. On a
+  request over HTTP (and for xAI, whose sockets take no interrupt) it is resolved locally with a `response.incomplete`
+  while the response runs; another id than the running one is a 400, and after the terminal event the local path is
+  closed (a 400, no fabricated `response.incomplete`). Without a request in flight an unknown id is a 400.
 - **Tool-call repair** (`tool-cache.ts`): orphaned `function_call(_output)` items of replayed input are re-attached from per-session
   caches (256 entries, per isolate, keyed by caller scope + the client's session key, released with the last socket).
-- **Upstream transport** (`executor/websocket/`): `UpstreamWebSocketConnector` dials with `fetch` + `Upgrade: websocket` (30 s handshake
-  timeout, `wss:` URLs are fetched as `https:`); tests substitute in-memory sockets through `makeClientApiRoutes({ websocketConnector })`.
-  `UpstreamSessionStore` keeps one retained socket per execution session (= downstream socket id), serialises requests with a
-  semaphore, reuses the socket while the target `(credential id, URL)` is unchanged, redials once when a send fails, applies the 5 minute
-  idle read deadline (`Effect.timeout`, testable with `TestClock`), maps binary frames, close codes and drops to errors, and
-  invalidates a socket whose turn ended before its terminal event. A session socket that the upstream drops is `lost` (see above; Go's
-  `UpstreamDisconnectChan`, which closed the client, is gone). Requests without a session use an ephemeral socket closed after the turn.
-  The Worker holds at most
-  one upstream socket per client socket; it counts towards the 6 simultaneous outbound connections of the invocation.
-- **Codex** (`codex/websocket.ts`): the HTTP `prepare` in websocket mode (`previous_response_id`, `generate`, `stream_options` kept;
-  payload rules last) then framing only (`type: "response.create"`). Handshake headers follow `applyCodexWebsocketHeaders`
-  (`OpenAI-Beta: responses_websockets=2026-02-06`, `session_id`/`Conversation_id`, turn-state/metadata passthrough, routing hint).
-  Events are forwarded as bare JSON (Go skips response translation for downstream sockets): `response.done` -> `response.completed`,
-  rebuilt `response.output`, usage detail objects, replay cache update, `error` frames and terminal failures classified like the SSE path
-  (`websocket_connection_limit_reached` retries immediately on another credential; a terminal usage limit fails over during bootstrap
-  buffering, see "Stream bootstrap buffering").
+- **Upstream transport** (`executor/websocket/`): `UpstreamWebSocketConnector` dials with `fetch` + `Upgrade: websocket`
+  (30 s handshake timeout, `wss:` URLs are fetched as `https:`); tests substitute in-memory sockets through
+  `makeClientApiRoutes({ websocketConnector })`. `UpstreamSessionStore` keeps one retained socket per execution session
+  (= downstream socket id), serialises requests with a semaphore, reuses the socket while the target `(credential id,
+  URL)` is unchanged, redials once when a send fails, applies the 5 minute idle read deadline (`Effect.timeout`,
+  testable with `TestClock`), maps binary frames, close codes and drops to errors, and invalidates a socket whose turn
+  ended before its terminal event. A session socket that the upstream drops is `lost` (see above; Go's
+  `UpstreamDisconnectChan`, which closed the client, is gone). Requests without a session use an ephemeral socket closed
+  after the turn. The Worker holds at most one upstream socket per client socket; it counts towards the 6 simultaneous
+  outbound connections of the invocation.
+- **Codex** (`codex/websocket.ts`): the HTTP `prepare` in websocket mode (`previous_response_id`, `generate`,
+  `stream_options` kept; payload rules last) then framing only (`type: "response.create"`). Handshake headers follow
+  `applyCodexWebsocketHeaders` (`OpenAI-Beta: responses_websockets=2026-02-06`, `session_id`/`Conversation_id`,
+  turn-state/metadata passthrough, routing hint). Events are forwarded as bare JSON (Go skips response translation for
+  downstream sockets): `response.done` -> `response.completed`, rebuilt `response.output`, usage detail objects, replay
+  cache update, `error` frames and terminal failures classified like the SSE path (`websocket_connection_limit_reached`
+  retries immediately on another credential; a terminal usage limit fails over during bootstrap buffering, see "Stream
+  bootstrap buffering").
 - **xAI** (`xai/websocket.ts`, `websocket-ids.ts`): official API base URL only (the CLI chat proxy answers 405 to upgrades), frame =
   prepared body with `type: response.create`, no `stream`/`stream_options`/`background`, `store: true`, no `instructions` on
   continuations, payload rules on that body and `type` re-forced afterwards. Downstream response ids are mapped to upstream ids
@@ -1012,18 +1031,20 @@ upgrade request like any other (default-deny prefixes); the principal is capture
 - **Fallback to HTTP**: credentials without `websockets` (or other providers) run each turn over the ordinary HTTP executors, with the
   transcript rebuilt locally; a downstream WebSocket never needs an upstream one.
 
-Deviations from Go / not ported: no WebSocket ping keep-alives (`streaming.keepalive-seconds` is ignored: the Workers WebSocket API
-cannot send ping frames); terminal failures close with 1011/1012/1009 instead of dropping the TCP connection; credential pinning only
-covers WebSocket-capable credentials and the decision to pass through is based on the previously pinned credential instead of the global
-credential list; no request-log timelines. The loss contract (the client socket stays open) also covers xAI, where Go's is Codex only;
-a failed upstream send is redialled once (Go treats it as a loss: on Workers a `send` that throws has queued nothing); the interrupt
-state is the handler's, with a ring of 64 finished ids (Go: an unbounded set per upstream connection) that also covers requests over HTTP
-and survives a redial, and an interrupt for another id than the running one of an HTTP request is a 400 (Go accepts any id); Home failover
-(f73e66ac, b5e6027c) is not ported (ADR 0015). Response steering / full duplex and non-stream execution over WebSocket are ported
-(see the Codex section). The multi-agent v2 tool preparation and orphan delegation rewrite run on
-each planned frame (`handlers/responses/codex-prepare.ts`), the executors do the rest. Upgrades whose `Origin` is not the Worker's own host are refused by the Access gate (Go: `CheckOrigin` always true; the
-Access cookie makes cross-site WebSocket hijacking possible, see Authentication). CPU limits for
-long-lived sockets follow the Workers platform rules (`limits.cpu_ms`).
+Deviations from Go / not ported: no WebSocket ping keep-alives (`streaming.keepalive-seconds` is ignored: the Workers
+WebSocket API cannot send ping frames); terminal failures close with 1011/1012/1009 instead of dropping the TCP
+connection; credential pinning only covers WebSocket-capable credentials and the decision to pass through is based on
+the previously pinned credential instead of the global credential list; no request-log timelines. The loss contract (the
+client socket stays open) also covers xAI, where Go's is Codex only; a failed upstream send is redialled once (Go treats
+it as a loss: on Workers a `send` that throws has queued nothing); the interrupt state is the handler's, with a ring of
+64 finished ids (Go: an unbounded set per upstream connection) that also covers requests over HTTP and survives a
+redial, and an interrupt for another id than the running one of an HTTP request is a 400 (Go accepts any id); Home
+failover (f73e66ac, b5e6027c) is not ported (ADR 0015). Response steering / full duplex and non-stream execution over
+WebSocket are ported (see the Codex section). The multi-agent v2 tool preparation and orphan delegation rewrite run on
+each planned frame (`handlers/responses/codex-prepare.ts`), the executors do the rest. Upgrades whose `Origin` is not
+the Worker's own host are refused by the Access gate (Go: `CheckOrigin` always true; the Access cookie makes cross-site
+WebSocket hijacking possible, see Authentication). CPU limits for long-lived sockets follow the Workers platform rules
+(`limits.cpu_ms`).
 
 ## Model registry and `/models` endpoints (`models/registry/`)
 
