@@ -98,6 +98,24 @@ export const ensureImageGenerationTool = (
   return body;
 };
 
+/** The smallest integer `max_output_tokens` the ChatGPT Codex backend accepts; smaller ones answer 400. */
+export const CODEX_MIN_OUTPUT_TOKENS = 16;
+
+/**
+ * `normalizeCodexOutputBudgetDoc` (bfac8586): raises a positive integer `max_output_tokens` below 16 on the translated
+ * body to the Codex minimum, whatever the source format. Missing, non-numeric, non-integral and non-positive budgets
+ * are left for the upstream to reject. Runs before the payload rules so overrides and filters stay final.
+ */
+export const normalizeCodexOutputBudget = (body: Json): Json => {
+  const budget = get(body, "max_output_tokens");
+
+  if (typeof budget !== "number" || !Number.isInteger(budget)) return body;
+
+  if (budget < 1 || budget >= CODEX_MIN_OUTPUT_TOKENS) return body;
+
+  return set(body, "max_output_tokens", CODEX_MIN_OUTPUT_TOKENS);
+};
+
 /** `normalizeCodexParallelToolCalls`. */
 export const normalizeParallelToolCalls = (body: Json, headers: Headers): Json => {
   if (isCodexResponsesLiteRequest(body, headers))

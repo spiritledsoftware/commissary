@@ -4,7 +4,7 @@
  * Go source: internal/translator/common/responses.go.
  */
 import { del, get, type Json, type JsonObject, set } from "@commissary/json";
-import { isObj, str } from "./gjson.ts";
+import { isArr, isObj, str } from "./gjson.ts";
 
 /** `ExtractResponsesCallID`: call_id -> tool_call_id -> callId -> id (excluding `fco_` output item ids). */
 export const extractResponsesCallID = (node: Json | undefined): string => {
@@ -21,6 +21,16 @@ export const extractResponsesCallID = (node: Json | undefined): string => {
 
 const isOutputType = (type: string): boolean =>
   type === "function_call_output" || type === "custom_tool_call_output";
+
+/** `isCodexDelegationToolOutput`: Codex Desktop's `codex_app` thread tools, which other code rewrites by namespace. */
+const isCodexDelegationToolOutput = (item: Json | undefined): boolean => {
+  if (str(get(item, "type")).trim() !== "function_call_output") return false;
+
+  if (str(get(item, "namespace")).trim() !== "codex_app") return false;
+  const name = str(get(item, "name")).trim();
+
+  return name === "create_thread" || name === "send_message_to_thread";
+};
 
 /**
  * `NormalizeResponsesToolCallOutputs`: assigns missing call ids to tool outputs by explicit id, then function name,
@@ -90,6 +100,7 @@ export const normalizeResponsesToolCallOutputs = (items: readonly Json[]): Json[
             (out, idx) =>
               !used[idx] &&
               extractResponsesCallID(out) === "" &&
+              !isCodexDelegationToolOutput(out) &&
               str(get(out, "name")).trim() !== "" &&
               str(get(out, "name")).trim() === expectedName,
           );
@@ -106,7 +117,8 @@ export const normalizeResponsesToolCallOutputs = (items: readonly Json[]): Json[
           const expectedName = pendingCallNames.get(pendingID) ?? "";
 
           const outIdx = outputs.findIndex((out, idx) => {
-            if (used[idx] || extractResponsesCallID(out) !== "") return false;
+            if (used[idx] || extractResponsesCallID(out) !== "" || isCodexDelegationToolOutput(out))
+              return false;
             const outName = str(get(out, "name")).trim();
 
             return outName === "" || expectedName === "" || outName === expectedName;
@@ -143,6 +155,141 @@ export const normalizeResponsesToolCallOutputs = (items: readonly Json[]): Json[
   }
 
   return normalized;
+};
+
+/** `responsesToolOutputExplicitCallID`: the first non-blank string of call_id, tool_call_id, callId. */
+const explicitOutputCallId = (item: Json): string => {
+  for (const key of ["call_id", "tool_call_id", "callId"]) {
+    const value = get(item, key);
+
+    if (typeof value === "string" && value.trim() !== "") return value.trim();
+  }
+
+  return "";
+};
+
+/** `extractOrphanResponsesToolOutputParts`: the text lines of an output and its non-text parts, kept as they are. */
+interface OrphanOutputParts {
+  readonly text: string;
+  readonly extra: Json[];
+}
+
+const orphanOutputParts = (output: Json | undefined): OrphanOutputParts => {
+  if (output === undefined || output === null) return { text: "", extra: [] };
+
+  if (typeof output === "string") return { text: output.trim(), extra: [] };
+
+  if (isArr(output)) {
+    const lines: string[] = [];
+    const extra: Json[] = [];
+
+    for (const part of output) {
+      if (typeof part === "string") {
+        if (part.trim() !== "") lines.push(part.trim());
+        continue;
+      }
+
+      if (!isObj(part)) continue;
+      let matchedText = false;
+
+      for (const key of ["text", "input_text", "output_text"]) {
+        const value = part[key];
+
+        if (typeof value !== "string") continue;
+        matchedText = true;
+
+        if (value.trim() !== "") lines.push(value.trim());
+        break;
+      }
+
+      if (!matchedText) extra.push(part);
+    }
+
+    if (lines.length > 0 || extra.length > 0) return { text: lines.join("\n"), extra };
+  }
+
+  // A scalar, an object or an array without usable parts: its JSON text (re-serialised, not the client's bytes).
+  return { text: JSON.stringify(output).trim(), extra: [] };
+};
+
+/** `setOrphanResponsesToolOutputMessageDoc`: the user message that replaces an orphan tool output. */
+const orphanOutputMessage = (item: Json): JsonObject => {
+  const name = str(get(item, "name")).trim() || "tool";
+  const { text, extra } = orphanOutputParts(get(item, "output"));
+
+  return {
+    type: "message",
+    role: "user",
+    content: [
+      { type: "input_text", text: `Tool output from ${name}:\n${text === "" ? "(empty)" : text}` },
+      ...extra,
+    ],
+  };
+};
+
+/**
+ * `SanitizeOrphanResponsesToolOutputsInputDoc` (05e668cf): pairs tool outputs missing a call id with the calls before
+ * them when possible and rewrites the remaining standalone `function_call_output` / `custom_tool_call_output` items
+ * without one into user messages. Codex Desktop injects Companion Page context that way, and strict upstreams answer
+ * those items with 400 ("call_id is required"). `codex_app` delegation outputs are left for the orphan delegation
+ * rewrite. Mutates `input` in place; true when something changed.
+ */
+export const sanitizeOrphanResponsesToolOutputs = (input: Json | undefined): boolean => {
+  if (!isArr(input) || input.length === 0) return false;
+  const normalized = normalizeResponsesToolCallOutputs(input);
+  let changed = false;
+  let pendingMissingOutputType = "";
+
+  for (let i = 0; i < input.length; i++) {
+    const item = normalized[i];
+
+    if (!isObj(item)) {
+      pendingMissingOutputType = "";
+      continue;
+    }
+
+    const itemType = str(get(item, "type")).trim();
+
+    if (itemType === "function_call" || itemType === "custom_tool_call") {
+      pendingMissingOutputType = extractResponsesCallID(item) === "" ? `${itemType}_output` : "";
+      continue;
+    }
+
+    if (!isOutputType(itemType) || isCodexDelegationToolOutput(item)) {
+      pendingMissingOutputType = "";
+      continue;
+    }
+
+    const resolved = explicitOutputCallId(item);
+
+    if (resolved !== "") {
+      pendingMissingOutputType = "";
+
+      const source = input[i];
+
+      if (isObj(source) && str(get(source, "call_id")).trim() !== resolved) {
+        source["call_id"] = resolved;
+        changed = true;
+      }
+
+      continue;
+    }
+
+    if (
+      pendingMissingOutputType === itemType &&
+      str(get(item, "name")).trim() === "" &&
+      str(get(item, "id")).trim() === ""
+    ) {
+      pendingMissingOutputType = "";
+      continue;
+    }
+
+    pendingMissingOutputType = "";
+    input[i] = orphanOutputMessage(item);
+    changed = true;
+  }
+
+  return changed;
 };
 
 /** `SetResponsesToolCallIdentity`: writes a resolved Responses tool name and namespace (mutates `item`). */

@@ -5,7 +5,8 @@
  * internal/client/codex/tool-schema/tool_schema.go (NormalizeCodexToolIntegerTypes). Bodies are parsed JSON mutated
  * in place.
  *  - {@link normalizeCodexToolSchemas}: collapses pure-constant `oneOf`/`anyOf` unions (>= 8 branches, e.g. MCP enums)
- *    into `enum` and drops regex patterns upstream validators reject. Runs inside the Codex executor.
+ *    into `enum`, drops regex patterns upstream validators reject and numeric bounds outside int64 (the backend
+ *    answers those with HTTP 500, 57d005fe). Runs inside the Codex executor.
  *  - {@link normalizeCodexToolIntegerTypes}: `number` -> `integer` for the numeric fields of the Codex CLI's own
  *    tools; part of the payload barrier for Codex clients targeting non-Codex executors (see `payload.ts`).
  */
@@ -43,7 +44,24 @@ export const isCodexUserAgent = (headers: HeaderInput | undefined): boolean =>
 // Schema simplification
 // ---------------------------------------------------------------------------------------------------------------
 
-/** `stripIncompatiblePatterns`: schema-aware removal of unsupported `pattern`s; true when something was removed. */
+const NUMERIC_BOUND_KEYWORDS = [
+  "minimum",
+  "maximum",
+  "exclusiveMinimum",
+  "exclusiveMaximum",
+] as const;
+
+const INT64_LIMIT = 2 ** 63;
+
+/**
+ * `isNumericBoundOutOfInt64`, on a parsed double. Go reads the number's source text; a parsed body keeps only the
+ * double, so a bound that rounds to 2^63 (`9223372036854775807` and up) counts as out of range, and a non-integral
+ * bound beyond 2^53 cannot exist. Both only ever over-strip a bound the backend would see as the int64 extreme.
+ */
+const isOutOfInt64 = (bound: Json | undefined): boolean =>
+  typeof bound === "number" && !(bound >= -INT64_LIMIT && bound < INT64_LIMIT);
+
+/** `stripIncompatiblePatterns`: schema-aware removal of unsupported `pattern`s and out-of-int64 bounds; true when something was removed. */
 const stripIncompatiblePatterns = (value: Json | undefined): boolean => {
   let changed = false;
 
@@ -59,6 +77,13 @@ const stripIncompatiblePatterns = (value: Json | undefined): boolean => {
   if (typeof pattern === "string" && hasUnsupportedUnicodePropertyEscape(pattern)) {
     delete value["pattern"];
     changed = true;
+  }
+
+  for (const boundKey of NUMERIC_BOUND_KEYWORDS) {
+    if (isOutOfInt64(value[boundKey])) {
+      delete value[boundKey];
+      changed = true;
+    }
   }
 
   const patternProperties = value["patternProperties"];

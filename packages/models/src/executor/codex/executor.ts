@@ -97,6 +97,7 @@ import {
 import {
   ensureImageGenerationTool,
   normalizeCodexInstructions,
+  normalizeCodexOutputBudget,
   normalizeParallelToolCalls,
   promptCacheId,
   sanitizeReasoningEncryptedContent,
@@ -293,7 +294,8 @@ export const makeCodexExecutor = (executorOptions: CodexExecutorOptions = {}): P
     );
 
     let body = yield* thinking.apply({
-      body: translated.body,
+      // The compaction endpoint is not Codex's /responses and has no floor (Go skips it too).
+      body: mode.compact ? translated.body : normalizeCodexOutputBudget(translated.body),
       model: request.model,
       from,
       to,

@@ -726,6 +726,17 @@ Core contracts every provider slice implements (Go references in each module hea
   canonical `reasoning_effort`, assistant tool-call turns get a `" "` `reasoning_content` placeholder (DeepSeek-style
   upstreams reject them without one) or lose a blank one; payload rules run afterwards and can override or filter it. The
   compat request translator adds the same placeholder from the Claude body and the model suffixes.
+- **Codex request hygiene** (B2, Go `bfac8586`, `606e667a`, `57d005fe`, `99d1698f`, `b0debb35`, `05e668cf`), with three differences from Go:
+  - _Output budget floor_: `normalizeCodexOutputBudget` (`executor/codex/request.ts`) raises an integer `max_output_tokens` of 1..15 to 16 on the
+    translated body in `prepare` (HTTP and WebSocket), before the payload rules, and not for `/responses/compact` (Go skips it too). Of the
+    Codex translators only Interactions carries the field into the body (Responses and Chat drop it, Claude never sets it; forwarding is #395), so
+    that is the one source the clamp changes today. Commissary has no Codex inference-verification ping to move to 16.
+  - _int64 bounds_: `minimum`/`maximum`/`exclusiveMinimum`/`exclusiveMaximum` outside int64 are stripped from tool schemas only (not from
+    `default`/`enum` data). Go reads the number's source text; a parsed body keeps a double, so a bound that rounds to 2^63 (`9223372036854775807`)
+    is stripped too, and a non-integral bound beyond 2^53 cannot exist.
+  - _Orphan tool outputs_: `sanitizeOrphanResponsesToolOutputs` (`translation/common/responses.ts`) runs in the Responses -> Codex translator and in
+    `codex-prepare.ts` (Responses, Compact and WebSocket frames, after the orphan delegation rewrite). The text of a non-array output that has
+    no text is the re-serialised JSON, where Go keeps the client's raw bytes.
 - **Sessions**: `handlers/session.ts` ports `session.ExtractSessionInfo` (headers, Claude `metadata.user_id`, body fields)
   and feeds `PickRequest.session` together with the Access `callerScope`. Requests without an explicit marker are bound by
   content (`models/session-routing/`, `routing.ts` = `prepareSessionRouting`, only when `routing.session-affinity` is on):

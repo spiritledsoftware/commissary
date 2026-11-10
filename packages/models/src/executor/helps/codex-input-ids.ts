@@ -3,7 +3,8 @@
  *
  * Go source: internal/runtime/executor/helps/codex_input_ids.go (SanitizeCodexInputItemIDs). Item ids get a type
  * prefix, encrypted reasoning items with ids over 64 characters are dropped and other overlong ids are shortened
- * deterministically (sha256 suffix) without colliding with existing ids.
+ * deterministically (sha256 suffix) without colliding with existing ids. Characters outside `[A-Za-z0-9_-]` (base64
+ * `+` and `/`, for one) become `_`, also in the prefix kept by a hash-shortened id (606e667a).
  */
 import { createHash } from "node:crypto";
 import { asString, get, isJsonArray, isJsonObject, type Json } from "@commissary/json";
@@ -24,6 +25,12 @@ const OCCUPIED = 1;
 
 const PRESERVED = 2;
 
+const SEEN = 4;
+
+const DUPLICATE = 8;
+
+const PORTABLE = /^[A-Za-z0-9_-]+$/;
+
 const runeLength = (text: string): number => {
   let count = 0;
 
@@ -34,7 +41,12 @@ const runeLength = (text: string): number => {
 
 const runes = (text: string): string[] => Array.from(text);
 
-const normalizeItemId = (item: Json, id: string): string => {
+/** `sanitizeCodexInputItemIDChars`. */
+const sanitizeChars = (id: string): string =>
+  id === "" || PORTABLE.test(id) ? id : id.replace(/[^A-Za-z0-9_-]/gu, "_");
+
+/** `normalizeCodexInputItemIDPrefix`: the type prefix only, characters untouched. */
+const normalizeItemIdPrefix = (item: Json, id: string): string => {
   const prefix = PREFIXES.get(asString(get(item, "type")));
 
   if (prefix === undefined) return id;
@@ -42,6 +54,13 @@ const normalizeItemId = (item: Json, id: string): string => {
   if (id === "" || id.startsWith(prefix)) return id;
 
   return `${prefix}_${id}`;
+};
+
+/** Overlong ids keep their raw characters: the hash is taken over them and the kept prefix is sanitised later. */
+const normalizeItemId = (item: Json, id: string): string => {
+  const normalized = normalizeItemIdPrefix(item, id);
+
+  return runeLength(normalized) > ID_LIMIT ? normalized : sanitizeChars(normalized);
 };
 
 const shouldDropEncryptedReasoning = (item: Json): boolean => {
@@ -60,7 +79,7 @@ const withHashSuffix = (id: string, attempt: number): string => {
   const characters = runes(id);
   const prefixLength = Math.min(characters.length, ID_LIMIT - suffix.length);
 
-  return characters.slice(0, prefixLength).join("") + suffix;
+  return sanitizeChars(characters.slice(0, prefixLength).join("")) + suffix;
 };
 
 const shorten = (id: string, attempt: number): string =>
@@ -81,11 +100,14 @@ export const sanitizeCodexInputItemIds = <T extends Json>(body: T): T => {
     const id = normalizeItemId(item, itemId);
     let state = states.get(id) ?? 0;
 
+    if ((state & SEEN) !== 0) state |= DUPLICATE;
+    state |= SEEN;
+
     if (id === itemId) state |= PRESERVED;
 
     if (runeLength(id) <= ID_LIMIT) state |= OCCUPIED;
 
-    if (state !== 0) states.set(id, state);
+    states.set(id, state);
   }
 
   const mapped = new Map<string, string>();
@@ -104,22 +126,31 @@ export const sanitizeCodexInputItemIds = <T extends Json>(body: T): T => {
     if (typeof itemId === "string" && isJsonObject(item)) {
       let id = normalizeItemId(item, itemId);
 
-      if (id !== itemId && ((states.get(id) ?? 0) & PRESERVED) !== 0) {
-        let collisionId = collisionMapped.get(id);
+      if (id !== itemId && ((states.get(id) ?? 0) & (PRESERVED | DUPLICATE)) !== 0) {
+        const collisionKey = `${id}\u0000${itemId}`;
+        let collisionId = collisionMapped.get(collisionKey);
 
-        if (collisionId === undefined) {
+        if (collisionId !== undefined) {
+          id = collisionId;
+        } else if (((states.get(id) ?? 0) & PRESERVED) === 0) {
+          // The first distinct original to claim a normalised id keeps it.
+          collisionMapped.set(collisionKey, id);
+          states.set(id, (states.get(id) ?? 0) | PRESERVED);
+        } else {
+          const rawNormalized = normalizeItemIdPrefix(item, itemId);
+
           for (let attempt = 0; ; attempt++) {
-            const candidate = withHashSuffix(id, attempt);
+            const candidate = withHashSuffix(rawNormalized, attempt);
 
             if (((states.get(candidate) ?? 0) & OCCUPIED) !== 0) continue;
             collisionId = candidate;
-            collisionMapped.set(id, candidate);
-            states.set(candidate, (states.get(candidate) ?? 0) | OCCUPIED);
+            collisionMapped.set(collisionKey, candidate);
+            states.set(candidate, (states.get(candidate) ?? 0) | OCCUPIED | PRESERVED);
             break;
           }
-        }
 
-        id = collisionId;
+          id = collisionId;
+        }
       }
 
       if (runeLength(id) > ID_LIMIT) {

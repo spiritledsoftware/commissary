@@ -88,7 +88,10 @@ export {
   type ResponsesToolDescriptor,
 } from "./translator/common/responses-tools.ts";
 
-export { extractResponsesCallID } from "./translator/common/responses.ts";
+export {
+  extractResponsesCallID,
+  sanitizeOrphanResponsesToolOutputs,
+} from "./translator/common/responses.ts";
 
 export {
   hasUnsupportedUnicodePropertyEscape,

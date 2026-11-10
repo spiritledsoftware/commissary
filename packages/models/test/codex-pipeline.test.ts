@@ -590,6 +590,85 @@ describe("POST /v1/responses/compact", () => {
   });
 });
 
+describe("orphan tool outputs without a call_id (05e668cf)", () => {
+  const ORPHAN_INPUT = [
+    { type: "message", role: "user", content: [{ type: "input_text", text: "hello" }] },
+    {
+      type: "function_call_output",
+      id: "fco_1",
+      name: "codex_apps_open_page",
+      namespace: "agent",
+      output: '{"page_id":null}',
+    },
+    {
+      type: "custom_tool_call_output",
+      id: "fco_2",
+      name: "custom_ctx",
+      output: [
+        { type: "input_text", text: "part one" },
+        { type: "input_text", text: "part two" },
+        { type: "input_image", image_url: "https://example.com/page.png" },
+      ],
+    },
+    { type: "function_call", call_id: "call_ok", name: "shell", arguments: "{}" },
+    { type: "function_call_output", call_id: "call_ok", output: "ok" },
+    { type: "function_call_output", call_id: " ", output: "blank id" },
+    { type: "function_call", call_id: "call_pair", name: "shell", arguments: "{}" },
+    { type: "function_call_output", output: "paired without call_id" },
+  ];
+
+  const check = (input: Array<Record<string, unknown>>) => {
+    expect(input).toHaveLength(ORPHAN_INPUT.length);
+    expect(input[1]).toEqual({
+      type: "message",
+      role: "user",
+      content: [
+        { type: "input_text", text: 'Tool output from codex_apps_open_page:\n{"page_id":null}' },
+      ],
+    });
+    expect(input[2]).toEqual({
+      type: "message",
+      role: "user",
+      content: [
+        { type: "input_text", text: "Tool output from custom_ctx:\npart one\npart two" },
+        { type: "input_image", image_url: "https://example.com/page.png" },
+      ],
+    });
+    expect(input[4]).toMatchObject({ type: "function_call_output", call_id: "call_ok" });
+    expect(input[5]).toMatchObject({
+      type: "message",
+      content: [{ type: "input_text", text: "Tool output from tool:\nblank id" }],
+    });
+    expect(input[7]).toMatchObject({ type: "function_call_output", call_id: "call_pair" });
+  };
+
+  it("rewrites them to user messages on /v1/responses", async () => {
+    const p = pipeline(() => sseResponse(TEXT_STREAM.concat([])));
+
+    const response = await p.call(
+      "/v1/responses",
+      postJson({ model: "gpt-5.4", stream: false, input: ORPHAN_INPUT }),
+    );
+
+    expect(response.status).toBe(200);
+    check(JSON.parse(p.calls[0]!.body).input);
+  });
+
+  it("rewrites them on /v1/responses/compact, which skips the Codex translator", async () => {
+    const p = pipeline(() =>
+      jsonResponse({ id: "resp_c", object: "response.compaction", output: [] }),
+    );
+
+    const response = await p.call(
+      "/v1/responses/compact",
+      postJson({ model: "gpt-5.4", stream: false, input: ORPHAN_INPUT }),
+    );
+
+    expect(response.status).toBe(200);
+    check(JSON.parse(p.calls[0]!.body).input);
+  });
+});
+
 describe("images", () => {
   const IMAGE = { created: 1767225600, data: [{ b64_json: "QUJD" }], usage: { total_tokens: 5 } };
 

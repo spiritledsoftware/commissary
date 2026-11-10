@@ -151,6 +151,77 @@ describe("tool schema normalisation", () => {
     expect(get(properties, "name")).toEqual({ type: "string" });
   });
 
+  it("strips numeric bounds outside int64 from schemas only (57d005fe)", () => {
+    // Parsed from text like the request body: the literals exceed double precision.
+    const body = JSON.parse(`{
+      "tools": [{
+        "type": "function",
+        "name": "emulate_process",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "seed": { "type": "integer", "minimum": 0, "maximum": 18446744073709552000 },
+            "over": {
+              "type": "integer",
+              "minimum": -10000000000000000000,
+              "maximum": 9223372036854775808,
+              "exclusiveMinimum": -10000000000000000000,
+              "exclusiveMaximum": 9223372036854775808
+            },
+            "min_limit": { "type": "integer", "minimum": -9223372036854775808 },
+            "floats": {
+              "type": "number",
+              "minimum": -0.5,
+              "maximum": 3.14,
+              "exclusiveMinimum": 0.25,
+              "exclusiveMaximum": 99.95
+            },
+            "scientific": {
+              "type": "number",
+              "minimum": 1e5,
+              "maximum": 1e100,
+              "exclusiveMinimum": -1.8446744073709552e+19,
+              "exclusiveMaximum": 18446744073709552000.0
+            },
+            "user_data": {
+              "type": "object",
+              "default": { "maximum": 18446744073709552000 },
+              "enum": [{ "maximum": 18446744073709552000 }]
+            },
+            "maximum": { "type": "integer", "minimum": 0 }
+          },
+          "$defs": { "uint64_id": { "type": "integer", "maximum": 18446744073709551615 } }
+        }
+      }]
+    }`) as Json;
+
+    normalizeCodexToolSchemas(body);
+
+    const params = get(body, "tools.0.parameters");
+    const properties = get(params, "properties");
+
+    expect(get(properties, "seed")).toEqual({ type: "integer", minimum: 0 });
+    expect(get(properties, "over")).toEqual({ type: "integer" });
+    expect(get(properties, "min_limit.minimum")).toBe(-9223372036854775808);
+    expect(get(properties, "floats")).toEqual({
+      type: "number",
+      minimum: -0.5,
+      maximum: 3.14,
+      exclusiveMinimum: 0.25,
+      exclusiveMaximum: 99.95,
+    });
+    expect(get(properties, "scientific")).toEqual({ type: "number", minimum: 1e5 });
+    // Example data under default/enum and a property that is merely named "maximum" are left alone.
+    expect(get(properties, "user_data.default.maximum")).toBe(18446744073709552000);
+    expect(get(properties, "user_data.enum.0.maximum")).toBe(18446744073709552000);
+    expect(get(properties, "maximum")).toEqual({ type: "integer", minimum: 0 });
+    expect(get(params, "$defs.uint64_id")).toEqual({ type: "integer" });
+
+    const once = JSON.stringify(body);
+    normalizeCodexToolSchemas(body);
+    expect(JSON.stringify(body)).toBe(once);
+  });
+
   it("drops the union when an identical enum already exists", () => {
     const body: Json = {
       tools: [
@@ -262,6 +333,78 @@ describe("helpers", () => {
     expect(ids[2]).toHaveLength(64);
     expect(ids[2]).toMatch(/^msg_a+_[0-9a-f]{16}$/);
     expect(ids[3]).toBe("keep");
+  });
+
+  it("replaces characters outside [A-Za-z0-9_-] in item ids, also in a hash-shortened prefix (606e667a)", () => {
+    const overlongPlusSlash = `msg_${"A".repeat(30)}+/${"A".repeat(414)}`;
+    const overlongSlashPlus = `msg_${"A".repeat(30)}/+${"A".repeat(414)}`;
+    const overlongUnprefixed = `${"A".repeat(30)}+/${"A".repeat(414)}`;
+    const overlongTailPlus = `msg_${"B".repeat(100)}+${"B".repeat(100)}`;
+    const overlongTailSlash = `msg_${"B".repeat(100)}/${"B".repeat(100)}`;
+    const portable = /^[A-Za-z0-9_-]+$/;
+
+    const make = () => ({
+      input: [
+        { type: "message", role: "assistant", id: overlongPlusSlash },
+        { type: "message", role: "assistant", id: overlongSlashPlus },
+        { type: "message", role: "assistant", id: overlongUnprefixed },
+        { type: "message", role: "assistant", id: overlongTailPlus },
+        { type: "message", role: "assistant", id: overlongTailSlash },
+        { type: "message", role: "assistant", id: "msg_short+id/with=chars" },
+        { type: "message", role: "assistant", id: "msg_short_id_with_chars" },
+        { type: "function_call", id: "call:0+1/2", call_id: "call-1" },
+      ],
+    });
+
+    const body = make();
+    sanitizeCodexInputItemIds(body as unknown as Json);
+    const ids = body.input.map((item) => item.id);
+    const prefixes = ["msg_", "msg_", "msg_", "msg_", "msg_", "msg_", "msg_", "fc_"];
+
+    ids.forEach((id, index) => {
+      expect(id, `input.${index}.id`).toMatch(portable);
+      expect(id.length).toBeLessThanOrEqual(64);
+      expect(id.startsWith(prefixes[index]!)).toBe(true);
+    });
+    expect(new Set(ids).size).toBe(ids.length);
+    // Sanitises to the preserved existing id below it, so it takes a hash suffix.
+    expect(ids[5]).toMatch(/^msg_short_id_with_chars_[0-9a-f]{16}$/);
+    expect(ids[6]).toBe("msg_short_id_with_chars");
+
+    // Idempotent and deterministic.
+    const again = make();
+    sanitizeCodexInputItemIds(again as unknown as Json);
+    expect(again.input.map((item) => item.id)).toEqual(ids);
+    sanitizeCodexInputItemIds(body as unknown as Json);
+    expect(body.input.map((item) => item.id)).toEqual(ids);
+
+    const repeated = {
+      input: [
+        { type: "message", id: overlongPlusSlash },
+        { type: "message", id: overlongPlusSlash },
+        { type: "message", id: "msg_short+repeat/id" },
+        { type: "message", id: "msg_short+repeat/id" },
+      ],
+    };
+
+    sanitizeCodexInputItemIds(repeated as unknown as Json);
+    expect(repeated.input[0]!.id).toBe(repeated.input[1]!.id);
+    expect(repeated.input[0]!.id).toMatch(portable);
+    expect(repeated.input[2]!.id).toBe("msg_short_repeat_id");
+    expect(repeated.input[3]!.id).toBe("msg_short_repeat_id");
+  });
+
+  it("keeps distinct ids that sanitise to the same text apart", () => {
+    const body = {
+      input: [
+        { type: "message", id: "msg_a+b" },
+        { type: "message", id: "msg_a/b" },
+      ],
+    };
+
+    sanitizeCodexInputItemIds(body as unknown as Json);
+    expect(body.input[0]!.id).toBe("msg_a_b");
+    expect(body.input[1]!.id).toMatch(/^msg_a_b_[0-9a-f]{16}$/);
   });
 
   it("derives name-based uuids like google/uuid", () => {
@@ -652,5 +795,113 @@ describe("Codex executor replay round trip (Claude source)", () => {
     const outcome = await Effect.runPromise(Effect.result(Stream.runCollect(result.chunks)));
     expect(outcome._tag).toBe("Failure");
     expect(usage.failed).toBe(true);
+  });
+});
+
+describe("Codex output budget floor (bfac8586)", () => {
+  // Only an Interactions source carries a budget into the Codex body; the other translators drop it (#395).
+  const send = async (yaml: string, generationConfig: Json): Promise<Record<string, unknown>> => {
+    const config = await loadConfig(yaml);
+    const bodies: Array<Record<string, unknown>> = [];
+
+    const client = Layer.succeed(
+      HttpClient.HttpClient,
+      HttpClient.make((request) =>
+        Effect.promise(async () => {
+          bodies.push(
+            JSON.parse(new TextDecoder().decode((request.body as { body: Uint8Array }).body)),
+          );
+
+          return HttpClientResponse.fromWeb(
+            request,
+            new Response(
+              `data: ${JSON.stringify({ type: "response.completed", response: { id: "r", status: "completed", output: [], usage: {} } })}\n\n`,
+            ),
+          );
+        }),
+      ),
+    );
+
+    const usage = new UsageReporter({
+      requestId: "r",
+      provider: "codex",
+      executorType: "codex",
+      model: "gpt-5.4",
+      alias: "gpt-5.4",
+      endpoint: "POST /v1beta/interactions",
+      principalId: "user:x",
+      orgId: GLOBAL_ORG,
+      authId: "a",
+      authType: "oauth",
+      source: "s",
+      stream: false,
+      serviceTier: "auto",
+      requestedAt: 0,
+    });
+
+    await Effect.runPromise(
+      makeCodexExecutor()
+        .execute(
+          { credential: oauthCredential(), config, usage },
+          {
+            model: "gpt-5.4",
+            payload: { model: "gpt-5.4", input: "hi", generation_config: generationConfig },
+          },
+          {
+            stream: false,
+            alt: "",
+            headers: new Headers(),
+            query: new URLSearchParams(),
+            originalRequest: undefined,
+            sourceFormat: "interactions",
+            metadata: {
+              requestPath: "/v1beta/interactions",
+              requestedModel: "gpt-5.4",
+              serviceTier: "auto",
+              generate: true,
+              callerScope: "s",
+            },
+          },
+        )
+        .pipe(Effect.provide(Layer.mergeAll(client, Thinking.live))),
+    );
+
+    return bodies[0]!;
+  };
+
+  it.each([
+    [1, 16],
+    [5, 16],
+    [15, 16],
+    [16, 16],
+    [17, 17],
+    [4096, 4096],
+    // Zero, negative and fractional budgets are left for the upstream to reject.
+    [0, 0],
+    [-3, -3],
+    [1.5, 1.5],
+  ])("translates max_output_tokens %s to %s", async (requested, expected) => {
+    const body = await send("requests: {}", { max_output_tokens: requested });
+    expect(body["max_output_tokens"]).toBe(expected);
+  });
+
+  it("leaves a non-numeric budget and an absent one alone", async () => {
+    expect((await send("requests: {}", { max_output_tokens: "5" }))["max_output_tokens"]).toBe("5");
+    expect(await send("requests: {}", { temperature: 0.5 })).not.toHaveProperty(
+      "max_output_tokens",
+    );
+  });
+
+  it("runs before the payload rules, which keep the last word", async () => {
+    const yaml = `
+requests:
+  payload:
+    override:
+      - models: [{ name: "gpt-5.4", protocol: codex }]
+        params:
+          "max_output_tokens": 3
+`;
+
+    expect((await send(yaml, { max_output_tokens: 5 }))["max_output_tokens"]).toBe(3);
   });
 });

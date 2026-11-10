@@ -14,6 +14,7 @@ import {
   type JsonObject,
   set,
 } from "@commissary/json";
+import { sanitizeOrphanResponsesToolOutputs } from "../../common/responses.ts";
 
 const deleteFields = (body: JsonObject, ...paths: string[]): void => {
   for (const path of paths) if (get(body, path) !== undefined) del(body, path);
@@ -150,7 +151,11 @@ export const convertOpenAIResponsesRequestToCodex = (
 
   setRequiredBool(body, "stream", true);
   setRequiredBool(body, "store", false);
-  setRequiredBool(body, "parallel_tool_calls", true);
+  // An explicit false survives; null, absent and anything else default to true (99d1698f).
+  const parallelToolCalls = get(body, "parallel_tool_calls");
+
+  if (parallelToolCalls !== false) setRequiredBool(body, "parallel_tool_calls", true);
+
   setRequiredInclude(body);
   // Codex Responses rejects token limit fields.
   deleteFields(body, "max_output_tokens", "max_completion_tokens", "temperature", "top_p");
@@ -182,6 +187,7 @@ export const convertOpenAIResponsesRequestToCodex = (
   convertSystemRoleToDeveloper(body);
   normalizeBuiltinTools(body);
   normalizeEmptyFunctionCallArguments(body);
+  sanitizeOrphanResponsesToolOutputs(get(body, "input"));
 
   return body;
 };
