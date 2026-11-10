@@ -522,6 +522,10 @@ export const applyModelPrefixes = (
 
     if (clone.metadataModelId === undefined || clone.metadataModelId === "")
       clone.metadataModelId = baseId;
+
+    // 908e95d9: keep Gemini `name` in step with the id so listings and detail lookups see the prefix.
+    if (clone.name !== undefined && clone.name !== "")
+      clone.name = rewriteName(clone.name, baseId, clone.id);
     add(clone);
   }
 

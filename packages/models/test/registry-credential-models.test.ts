@@ -10,6 +10,7 @@ import {
   oauthModelAliasChannel,
 } from "../src/registry/credential-models.ts";
 import { embeddedCatalogs, sectionModels } from "../src/registry/catalog.ts";
+import { geminiDetail, geminiList } from "../src/registry/listings.ts";
 import type { ModelInfo } from "../src/registry/model-info.ts";
 import { ids, options, source } from "./support/registry-sources.ts";
 
@@ -96,6 +97,38 @@ describe("applyModelPrefixes", () => {
     expect(prefixed?.metadataModelId).toBe("gpt-6-astra");
     expect(prefixed?.nativeCapabilities).toEqual(webSearch);
     expect(prefixed?.nativeCapabilities).not.toBe(models[1]?.nativeCapabilities);
+  });
+
+  it("rewrites Gemini names under the prefix and serves them through the Gemini listings", () => {
+    // Go: TestApplyModelPrefixes_RewritesModelInfoNameForGeminiEndpoints (908e95d9).
+    const out = applyModelPrefixes(
+      [
+        model("gemini-4-argon", { name: "models/gemini-4-argon", displayName: "Gemini 4 Argon" }),
+        model("gemini-3.8-flash", { name: "gemini-3.8-flash" }),
+        model("no-name"),
+      ],
+      "gcp",
+      false,
+    );
+
+    const byId = (id: string) => out.find((entry) => entry.id === id);
+
+    expect(byId("gemini-4-argon")?.name).toBe("models/gemini-4-argon");
+    expect(byId("gcp/gemini-4-argon")?.name).toBe("models/gcp/gemini-4-argon");
+    expect(byId("gcp/gemini-4-argon")?.displayName).toBe("Gemini 4 Argon");
+    expect(byId("gcp/gemini-3.8-flash")?.name).toBe("gcp/gemini-3.8-flash");
+    expect(byId("gcp/no-name")?.name).toBeUndefined();
+
+    const listed = geminiList(out).models;
+
+    const names = Array.isArray(listed)
+      ? listed.map((entry) => (entry as { name?: string }).name)
+      : [];
+
+    expect(names).toContain("models/gcp/gemini-4-argon");
+
+    expect(names.filter((n) => n === "models/gemini-4-argon")).toHaveLength(1);
+    expect(geminiDetail(out, "gcp/gemini-4-argon")?.name).toBe("models/gcp/gemini-4-argon");
   });
 
   it("force-model-prefix hides the plain ids (unless prefix equals the id)", () => {
