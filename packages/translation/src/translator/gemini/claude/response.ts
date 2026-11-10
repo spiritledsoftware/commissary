@@ -19,6 +19,7 @@ import {
   tryParseJson,
 } from "@commissary/json";
 import type { ResponseContext, ResponseTransform } from "../../registry.ts";
+import { ToolInputTracker } from "../../common/claude-tool-input.ts";
 import {
   cleanClaudeToolArgumentsWithTranslated,
   claudeToolIsParameterless,
@@ -47,14 +48,8 @@ interface Params {
   inputTokens: number;
   outputTokens: number;
   cachedTokens: number;
-  /** Client-facing name of the open tool_use block. */
-  currentToolName: string;
-  /** Whether the open tool_use block was declared parameterless. */
-  currentToolIsParameterless: boolean;
-  /** Whether cleaned input JSON was already emitted for the open tool_use block. */
-  currentToolInputEmitted: boolean;
-  /** Whether an empty `{}` input_json_delta is deferred until the tool_use block completes. */
-  currentToolPendingEmpty: boolean;
+  /** The input_json_delta bookkeeping of the open tool_use block. */
+  tool: ToolInputTracker;
 }
 
 /** Process-wide tool_use id counter, shared by the stream and non-stream conversions (58257007). */
@@ -144,10 +139,7 @@ export const convertGeminiResponseToClaude = (
       inputTokens: 0,
       outputTokens: 0,
       cachedTokens: 0,
-      currentToolName: "",
-      currentToolIsParameterless: false,
-      currentToolInputEmitted: false,
-      currentToolPendingEmpty: false,
+      tool: new ToolInputTracker(),
     } satisfies Params;
   }
 
@@ -157,11 +149,10 @@ export const convertGeminiResponseToClaude = (
 
   /** Emits the deferred empty `{}` input once the tool_use block completes without other input (e1fb2521). */
   const flushPendingToolInput = (): void => {
-    if (p.responseType === 3 && p.currentToolPendingEmpty && !p.currentToolInputEmitted) {
-      output += blockDelta(p.responseIndex, { type: "input_json_delta", partial_json: "{}" });
-      p.currentToolInputEmitted = true;
-      p.currentToolPendingEmpty = false;
-    }
+    const deferred = p.responseType === 3 ? p.tool.flush() : undefined;
+
+    if (deferred !== undefined)
+      output += blockDelta(p.responseIndex, { type: "input_json_delta", partial_json: deferred });
   };
 
   if (line === "[DONE]") {
@@ -329,24 +320,9 @@ export const convertGeminiResponseToClaude = (
 
         if (p.responseType === 3 && upstreamToolName === "") {
           if (args !== undefined) {
-            let partialJson = cleaned(p.currentToolName);
+            const partialJson = p.tool.next(cleaned(p.tool.name));
 
-            if (p.currentToolIsParameterless) {
-              if (p.currentToolInputEmitted) {
-                partialJson = "";
-              } else {
-                p.currentToolInputEmitted = true;
-                p.currentToolPendingEmpty = false;
-              }
-            } else if (partialJson === "{}") {
-              if (!p.currentToolInputEmitted) p.currentToolPendingEmpty = true;
-              partialJson = "";
-            } else if (partialJson !== "") {
-              p.currentToolInputEmitted = true;
-              p.currentToolPendingEmpty = false;
-            }
-
-            if (partialJson !== "" || !p.currentToolPendingEmpty) {
+            if (partialJson !== undefined) {
               output += blockDelta(p.responseIndex, {
                 type: "input_json_delta",
                 partial_json: partialJson,
@@ -373,13 +349,10 @@ export const convertGeminiResponseToClaude = (
           p.responseIndex++;
         }
 
-        p.currentToolName = clientToolName;
-        p.currentToolIsParameterless = claudeToolIsParameterless(
+        p.tool.begin(
           clientToolName,
-          context.originalRequest,
+          claudeToolIsParameterless(clientToolName, context.originalRequest),
         );
-        p.currentToolInputEmitted = false;
-        p.currentToolPendingEmpty = false;
         toolUseIdCounter++;
         output += blockStart(p.responseIndex, {
           type: "tool_use",
@@ -389,19 +362,9 @@ export const convertGeminiResponseToClaude = (
         });
 
         if (args !== undefined) {
-          let partialJson = cleaned(clientToolName);
+          const partialJson = p.tool.next(cleaned(clientToolName));
 
-          if (p.currentToolIsParameterless) {
-            if (p.currentToolInputEmitted) partialJson = "";
-            else p.currentToolInputEmitted = true;
-          } else if (partialJson === "{}") {
-            p.currentToolPendingEmpty = true;
-            partialJson = "";
-          } else if (partialJson !== "") {
-            p.currentToolInputEmitted = true;
-          }
-
-          if (partialJson !== "" || !p.currentToolPendingEmpty) {
+          if (partialJson !== undefined) {
             output += blockDelta(p.responseIndex, {
               type: "input_json_delta",
               partial_json: partialJson,

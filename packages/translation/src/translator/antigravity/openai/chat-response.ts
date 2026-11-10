@@ -18,9 +18,9 @@ import {
 import type { ResponseContext, ResponseTransform } from "../../registry.ts";
 import {
   convertGeminiResponseToOpenAINonStream,
-  isContentFilterFinishReason,
   usageFields,
 } from "../../gemini/openai/chat-response.ts";
+import { functionCallId, isContentFilterFinishReason } from "../../common/gemini-response.ts";
 import {
   disambiguatedToolNameMap,
   type NameMap,
@@ -40,18 +40,6 @@ interface Params {
   pendingUsageMetadata: Json | undefined;
   sanitizedNameMap: NameMap | null;
 }
-
-let functionCallIdCounter = 0;
-
-/** The upstream functionCall `id` when present (da21f1e5), else a unique `name-<unix nano>-<counter>`. */
-const functionCallId = (name: string, upstreamId?: Json): string => {
-  const explicit = asString(upstreamId).trim();
-
-  if (explicit !== "") return explicit;
-  functionCallIdCounter++;
-
-  return `${name}-${Date.now()}000000-${functionCallIdCounter}`;
-};
 
 const paramsOf = (context: ResponseContext): Params => {
   if (context.state.value === undefined) {

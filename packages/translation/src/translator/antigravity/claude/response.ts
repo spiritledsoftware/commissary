@@ -22,6 +22,7 @@ import { bytesToBinaryString, decodeBase64Std } from "../../../signature/base64.
 import { cacheSignature, getModelGroup } from "../../../signature/cache.ts";
 import { signatureProviderFromModelName } from "../../../signature/provider.ts";
 import { sseEventLines, claudeInputTokensJson } from "../../common/bytes.ts";
+import { ToolInputTracker } from "../../common/claude-tool-input.ts";
 import {
   claudeToolIsParameterless,
   cleanClaudeToolArgumentsWithTranslated,
@@ -97,14 +98,8 @@ interface Params {
   currentThinkingText: string;
   currentThinkingSigned: boolean;
   toolNameMap: NameMap;
-  /** Client-facing name of the open tool_use block. */
-  currentToolName: string;
-  /** Whether the open tool_use block was declared parameterless. */
-  currentToolIsParameterless: boolean;
-  /** Whether cleaned input JSON was already emitted for the open tool_use block. */
-  currentToolInputEmitted: boolean;
-  /** Whether an empty `{}` input_json_delta is deferred until the tool_use block completes. */
-  currentToolPendingEmpty: boolean;
+  /** The input_json_delta bookkeeping of the open tool_use block. */
+  tool: ToolInputTracker;
 }
 
 let toolUseIdCounter = 0;
@@ -161,18 +156,14 @@ const appendFinalEvents = (params: Params, force: boolean): string => {
   if (!params.hasContent) return "";
   let output = "";
 
-  if (
-    params.responseType === 3 &&
-    params.currentToolPendingEmpty &&
-    !params.currentToolInputEmitted
-  ) {
+  const deferred = params.responseType === 3 ? params.tool.flush() : undefined;
+
+  if (deferred !== undefined) {
     output += sseEventLines(
       "content_block_delta",
-      deltaEvent(params.responseIndex, { type: "input_json_delta", partial_json: "{}" }),
+      deltaEvent(params.responseIndex, { type: "input_json_delta", partial_json: deferred }),
       3,
     );
-    params.currentToolInputEmitted = true;
-    params.currentToolPendingEmpty = false;
   }
 
   if (params.responseType !== 0) {
@@ -239,10 +230,7 @@ const paramsOf = (context: ResponseContext): Params => {
       currentThinkingText: "",
       currentThinkingSigned: false,
       toolNameMap: disambiguatedToolNameMap(context.originalRequest),
-      currentToolName: "",
-      currentToolIsParameterless: false,
-      currentToolInputEmitted: false,
-      currentToolPendingEmpty: false,
+      tool: new ToolInputTracker(),
     };
 
     context.state.value = fresh;
@@ -320,17 +308,13 @@ export const convertAntigravityResponseToClaude = (
 
   /** Emits the deferred empty `{}` input once the tool_use block completes without other input (e1fb2521). */
   const flushPendingToolInput = (): void => {
-    if (
-      params.responseType === 3 &&
-      params.currentToolPendingEmpty &&
-      !params.currentToolInputEmitted
-    ) {
+    const deferred = params.responseType === 3 ? params.tool.flush() : undefined;
+
+    if (deferred !== undefined) {
       appendEvent(
         "content_block_delta",
-        deltaEvent(params.responseIndex, { type: "input_json_delta", partial_json: "{}" }),
+        deltaEvent(params.responseIndex, { type: "input_json_delta", partial_json: deferred }),
       );
-      params.currentToolInputEmitted = true;
-      params.currentToolPendingEmpty = false;
     }
   };
 
@@ -597,26 +581,11 @@ export const convertAntigravityResponseToClaude = (
         const args = get(functionCall, "args");
 
         // A continuation part (no name) extends the open tool_use block instead of starting a new one.
-        if (params.responseType === 3 && fcName === "" && params.currentToolName !== "") {
+        if (params.responseType === 3 && fcName === "" && params.tool.name !== "") {
           if (args !== undefined) {
-            let partialJson = cleaned(params.currentToolName);
+            const partialJson = params.tool.next(cleaned(params.tool.name));
 
-            if (params.currentToolIsParameterless) {
-              if (params.currentToolInputEmitted) {
-                partialJson = "";
-              } else {
-                params.currentToolInputEmitted = true;
-                params.currentToolPendingEmpty = false;
-              }
-            } else if (partialJson === "{}") {
-              if (!params.currentToolInputEmitted) params.currentToolPendingEmpty = true;
-              partialJson = "";
-            } else if (partialJson !== "") {
-              params.currentToolInputEmitted = true;
-              params.currentToolPendingEmpty = false;
-            }
-
-            if (partialJson !== "" || !params.currentToolPendingEmpty) {
+            if (partialJson !== undefined) {
               appendEvent(
                 "content_block_delta",
                 deltaEvent(params.responseIndex, {
@@ -647,13 +616,7 @@ export const convertAntigravityResponseToClaude = (
           params.responseIndex++;
         }
 
-        params.currentToolName = fcName;
-        params.currentToolIsParameterless = claudeToolIsParameterless(
-          fcName,
-          context.originalRequest,
-        );
-        params.currentToolInputEmitted = false;
-        params.currentToolPendingEmpty = false;
+        params.tool.begin(fcName, claudeToolIsParameterless(fcName, context.originalRequest));
         toolUseIdCounter++;
         const fallbackId = `${fcName}-${Date.now()}000000-${toolUseIdCounter}`;
 
@@ -678,19 +641,9 @@ export const convertAntigravityResponseToClaude = (
         );
 
         if (args !== undefined) {
-          let partialJson = cleaned(fcName);
+          const partialJson = params.tool.next(cleaned(fcName));
 
-          if (params.currentToolIsParameterless) {
-            if (params.currentToolInputEmitted) partialJson = "";
-            else params.currentToolInputEmitted = true;
-          } else if (partialJson === "{}") {
-            params.currentToolPendingEmpty = true;
-            partialJson = "";
-          } else if (partialJson !== "") {
-            params.currentToolInputEmitted = true;
-          }
-
-          if (partialJson !== "" || !params.currentToolPendingEmpty) {
+          if (partialJson !== undefined) {
             appendEvent(
               "content_block_delta",
               deltaEvent(params.responseIndex, {

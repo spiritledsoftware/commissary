@@ -17,7 +17,7 @@ import {
   set,
 } from "@commissary/json";
 import { unwrapApplyPatchInput } from "../../../common/apply-patch.ts";
-import { isContentFilterFinishReason } from "../chat-response.ts";
+import { isContentFilterFinishReason } from "../../../common/gemini-response.ts";
 import type { ResponsesToolIdentity } from "../../../common/responses-tools.ts";
 
 // --- identifiers -------------------------------------------------------------------------------------------------------
