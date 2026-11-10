@@ -10,7 +10,7 @@
 import { Data, Duration, Effect, Fiber, Pull, Result, type Scope, Stream } from "effect";
 import { HttpServerResponse } from "effect/http";
 import type { ExecutionError } from "../executor/errors.ts";
-import { claudeErrorBody, openAIErrorBody } from "../http/errors.ts";
+import { claudeCooldownRetryAfter, claudeErrorBody, openAIErrorBody } from "../http/errors.ts";
 import {
   filterUpstreamHeaders,
   isCPAReservedResponseHeader,
@@ -113,7 +113,7 @@ export const errorResponse = (
 
   const body =
     protocol === "claude"
-      ? claudeErrorBody(status, text)
+      ? claudeErrorBody(status, text, claudeCooldownRetryAfter(error))
       : openAIErrorBody(status, text, error.terminalAuth === true ? { terminalAuth: true } : {});
 
   headers["content-type"] = "application/json";

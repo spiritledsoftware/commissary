@@ -1190,7 +1190,11 @@ Ported from `internal/runtime/executor/claude_executor*.go`, `internal/translato
   payload rules still run afterwards and can force a tool again.
 - **Responses**: Claude upstream always streams for non-stream clients; tool aliases are restored in non-stream bodies
   and stream lines; `ExecutionError` classification (`ratelimit.ts`) separates credential-scoped (unified-limit 429/401),
-  request-scoped (Fast mode entitlement) and model-level failures for the picker.
+  request-scoped (Fast mode entitlement) and model-level failures for the picker. An explicit per-minute 429 with no
+  quota status headers cools for its short `Retry-After` and ignores the unified reset (`parseRateLimitResetForError`);
+  unlike Go, a repeated or differently cased `Retry-After` is not rejected as ambiguous, because `Headers` merges them
+  (a merged value fails to parse and keeps the conservative result). Model-cooldown 429s add ` (reset after <d>)` to
+  the Claude error message (`claudeCooldownRetryAfter`).
 - **Translators**: OpenAI chat, OpenAI Responses, Gemini and Interactions clients -> Claude, each with request and
   response (stream/non-stream/token-count) functions, golden-tested against Go through the translator corpus.
   `claude -> claude` has no translator (registry fallback forces `model`). Model capabilities (adaptive levels,

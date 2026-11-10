@@ -31,6 +31,7 @@ import {
   classifyUpstreamError,
   headersIndicateUnifiedRejection,
   parseRateLimitResetMs,
+  parseRateLimitResetForError,
 } from "../src/executor/claude/ratelimit.ts";
 import { sanitizeForClaudeUpstream } from "../src/executor/claude/sanitize.ts";
 import { claudeSignature } from "./support/signatures.ts";
@@ -699,6 +700,140 @@ describe("rate limit classification", () => {
     });
 
     expect(headersIndicateUnifiedRejection(h)).toBe(false);
+  });
+
+  // Go 0130d6f3: a Fable-only 7d or overage rejection that omits the 5h headers stays model-scoped.
+  describe("Fable-only rejection without 5h headers", () => {
+    const fableOnly = (extra: Record<string, string> = {}) =>
+      headers({
+        "retry-after": "546534",
+        "anthropic-ratelimit-unified-status": "rejected",
+        "anthropic-ratelimit-unified-representative-claim": "seven_day_overage_included",
+        "anthropic-ratelimit-unified-7d-status": "allowed",
+        "anthropic-ratelimit-unified-7d-utilization": "0.62",
+        "anthropic-ratelimit-unified-7d_oi-status": "rejected",
+        "anthropic-ratelimit-unified-overage-status": "rejected",
+        "anthropic-ratelimit-unified-reset": String((NOW + 6 * 24 * 3600_000) / 1000),
+        ...extra,
+      });
+
+    it("is not a credential rejection and has no weekly cooldown", () => {
+      expect(headersIndicateUnifiedRejection(fableOnly())).toBe(false);
+      expect(parseRateLimitResetMs(fableOnly(), NOW, () => 5)).toBeUndefined();
+      expect(classifyUpstreamError(429, fableOnly(), "{}", false, NOW)).toMatchObject({
+        credentialScoped: false,
+      });
+    });
+
+    it.each(["", " ", "invalid", "NaN", "-0.1", "1.0", "1.05"])(
+      "keeps present 5h utilization %j credential-scoped",
+      (value) => {
+        const h = fableOnly({ "anthropic-ratelimit-unified-5h-utilization": value });
+
+        expect(headersIndicateUnifiedRejection(h)).toBe(true);
+      },
+    );
+
+    it("keeps healthy 5h utilization model-scoped", () => {
+      const h = fableOnly({ "anthropic-ratelimit-unified-5h-utilization": "0.00" });
+
+      expect(headersIndicateUnifiedRejection(h)).toBe(false);
+    });
+  });
+
+  // Go db1bab01 (ParseClaudeRateLimitResetForError): explicit per-minute 429s ignore the unified reset.
+  describe("per-minute rate limit", () => {
+    const perMinute = (
+      message = "This request would exceed the requests per minute rate limit. Please try again later.",
+    ) => JSON.stringify({ type: "error", error: { type: "rate_limit_error", message } });
+
+    const base = (extra: Record<string, string> = {}) =>
+      headers({
+        "retry-after": "30",
+        "anthropic-ratelimit-unified-reset": String((NOW + 4 * 3600_000) / 1000),
+        ...extra,
+      });
+
+    const conservative = 4 * 3600_000 + 1000;
+    const short = 31_000;
+
+    it("honours a short Retry-After instead of the hours-long unified reset", () => {
+      expect(parseRateLimitResetForError(base(), perMinute(), NOW, () => 1)).toBe(short);
+      expect(
+        parseRateLimitResetForError(
+          base(),
+          perMinute(
+            "  THIS REQUEST WOULD EXCEED THE INPUT TOKENS PER MINUTE RATE LIMIT. PLEASE TRY AGAIN LATER.\n",
+          ),
+          NOW,
+          () => 1,
+        ),
+      ).toBe(short);
+      expect(
+        parseRateLimitResetForError(
+          base({ "retry-after": new Date(NOW + 30_000).toUTCString() }),
+          perMinute(),
+          NOW,
+          () => 1,
+        ),
+      ).toBe(short);
+      expect(
+        parseRateLimitResetForError(
+          base({ "anthropic-ratelimit-unified-status": "" }),
+          perMinute(),
+          NOW,
+          () => 1,
+        ),
+      ).toBe(short);
+    });
+
+    it.each([
+      [
+        "a different error type",
+        base(),
+        JSON.stringify({
+          error: {
+            type: "api_error",
+            message:
+              "This request would exceed the requests per minute rate limit. Please try again later.",
+          },
+        }),
+      ],
+      [
+        "another message",
+        base(),
+        perMinute("exceeded the requests per minute rate limit, and your quota"),
+      ],
+      ["an empty body", base(), ""],
+      ["a status header", base({ "anthropic-ratelimit-unified-status": "rejected" }), perMinute()],
+      ["an invalid Retry-After", base({ "retry-after": "invalid" }), perMinute()],
+      ["a zero Retry-After", base({ "retry-after": "0" }), perMinute()],
+      [
+        "a Retry-After beyond the window",
+        base({ "retry-after": String(8 * 24 * 3600 + 3600 + 1) }),
+        perMinute(),
+      ],
+    ])("keeps the conservative result for %s", (_name, h, body) => {
+      expect(parseRateLimitResetForError(h, body, NOW, () => 1)).toBe(conservative);
+    });
+
+    it("keeps no cooldown for an overage-only rejection", () => {
+      const h = base({
+        "anthropic-ratelimit-unified-status": "rejected",
+        "anthropic-ratelimit-unified-5h-status": "allowed",
+        "anthropic-ratelimit-unified-7d-status": "allowed",
+        "anthropic-ratelimit-unified-overage-status": "rejected",
+      });
+
+      expect(parseRateLimitResetForError(h, perMinute(), NOW, () => 1)).toBeUndefined();
+    });
+
+    it("applies to the classified 429", () => {
+      const error = classifyUpstreamError(429, base(), perMinute(), false, NOW);
+
+      expect(error.retryAfterMs).toBeGreaterThanOrEqual(short - 1000);
+      expect(error.retryAfterMs).toBeLessThanOrEqual(60_000);
+    });
   });
 
   it("classifies 429s as credential-scoped, entitlement (request-scoped) or model-level", () => {

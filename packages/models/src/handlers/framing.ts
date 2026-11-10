@@ -11,7 +11,7 @@
  * `responses/framer.ts`.
  */
 import { ExecutionError } from "../executor/errors.ts";
-import { claudeErrorBody, openAIErrorBody } from "../http/errors.ts";
+import { claudeCooldownRetryAfter, claudeErrorBody, openAIErrorBody } from "../http/errors.ts";
 import { SSE_KEEP_ALIVE, sseData, sseEvent } from "@commissary/translation/sse";
 import { statusText } from "../http/status.ts";
 import { get, isJsonArray, tryParseJson } from "@commissary/json";
@@ -86,7 +86,10 @@ export const claudeFramer = (): StreamFramer => ({
   terminalError: (error) => {
     const status = statusOf(error);
 
-    return sseEvent("error", claudeErrorBody(status, errorText(error, status)));
+    return sseEvent(
+      "error",
+      claudeErrorBody(status, errorText(error, status), claudeCooldownRetryAfter(error)),
+    );
   },
   closeError: () => undefined,
   done: () => "",

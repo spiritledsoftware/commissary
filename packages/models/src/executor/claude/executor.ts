@@ -84,7 +84,7 @@ import {
 import {
   classifyUpstreamError,
   headersIndicateUnifiedRejection,
-  parseRateLimitResetMs,
+  parseRateLimitResetForError,
 } from "./ratelimit.ts";
 import {
   ClaudeStreamReader,
@@ -183,7 +183,9 @@ const upstreamFailure = (
     direct.delete("content-encoding");
     direct.delete("content-length");
     const credentialScoped = status === 429 && headersIndicateUnifiedRejection(headers);
-    const retryAfterMs = status === 429 ? parseRateLimitResetMs(headers, now) : undefined;
+
+    const retryAfterMs =
+      status === 429 ? parseRateLimitResetForError(headers, body, now) : undefined;
 
     return new ExecutionError({
       status,

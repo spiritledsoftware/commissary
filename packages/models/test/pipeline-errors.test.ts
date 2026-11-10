@@ -1,10 +1,12 @@
 // Error bodies per protocol (Go: handlers.go BuildErrorResponseBodyWithError, claude/code_handlers.go,
 // openai_responses_stream_error.go) and related HTTP helpers.
 import { describe, expect, it } from "vitest";
+import { claudeFramer } from "../src/handlers/framing.ts";
 import { ExecutionError } from "../src/executor/errors.ts";
 import { enrichSelectionError } from "../src/handlers/execute.ts";
 import { decodeRequestBody, RequestBodyDecodeError } from "../src/http/body.ts";
 import {
+  claudeCooldownRetryAfter,
   claudeErrorBody,
   openAIErrorBody,
   responsesStreamErrorChunk,
@@ -102,6 +104,67 @@ describe("claudeErrorBody", () => {
         details: { error_code: "thread_not_found" },
       },
     });
+  });
+});
+
+const cooldown = (seconds: number, status = 429) =>
+  new ExecutionError({
+    status,
+    code: "model_cooldown",
+    message: JSON.stringify({
+      error: {
+        code: "model_cooldown",
+        message:
+          "All credentials for model claude-sonnet-4-5-20250929 are cooling down via provider claude",
+      },
+    }),
+    safeHeaders: { "retry-after": String(seconds) },
+  });
+
+const messageOf = (body: string): string => JSON.parse(body).error.message;
+
+// Go e458999b: a 429 model-cooldown error says when it resets (code_handlers.go toClaudeErrorWithRetryAfter).
+describe("Claude model-cooldown reset hint", () => {
+  it.each([
+    [8250, "2h17m30s"],
+    [61, "1m1s"],
+    [9223372037, "9223372037s"],
+  ])("appends the Retry-After %i s as (reset after %s)", (seconds, shown) => {
+    const error = cooldown(seconds);
+
+    const body = claudeErrorBody(429, error.message, claudeCooldownRetryAfter(error));
+
+    expect(messageOf(body)).toBe(
+      `All credentials for model claude-sonnet-4-5-20250929 are cooling down via provider claude (reset after ${shown})`,
+    );
+  });
+
+  it("reaches the committed stream error event", () => {
+    const frame = claudeFramer().terminalError(cooldown(8250));
+
+    expect(frame).toContain("(reset after 2h17m30s)");
+  });
+
+  it("leaves other errors unchanged", () => {
+    const ordinary = new ExecutionError({
+      status: 429,
+      message: '{"error":{"type":"rate_limit_error","message":"upstream quota exceeded"}}',
+      safeHeaders: { "retry-after": "300" },
+    });
+
+    expect(
+      messageOf(claudeErrorBody(429, ordinary.message, claudeCooldownRetryAfter(ordinary))),
+    ).toBe("upstream quota exceeded");
+    const zero = cooldown(0);
+
+    expect(
+      messageOf(claudeErrorBody(429, zero.message, claudeCooldownRetryAfter(zero))),
+    ).not.toContain("reset after");
+    const unavailable = cooldown(60, 503);
+
+    expect(
+      messageOf(claudeErrorBody(503, unavailable.message, claudeCooldownRetryAfter(unavailable))),
+    ).not.toContain("reset after");
   });
 });
 
