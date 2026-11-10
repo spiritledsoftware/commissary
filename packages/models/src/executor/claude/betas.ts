@@ -10,8 +10,10 @@ import { payloadHas1hTTL } from "./cache-control.ts";
 import {
   hasPerTurnEffort,
   hasPerTurnTiming,
+  isHaiku55Model,
   isHaikuModel,
   isProbeOrHelperRequest,
+  isQuotaProbeRequest,
   isSonnet5Model,
   isSubagentRequest,
   usesLegacySystemReminder,
@@ -45,12 +47,13 @@ export const BETA = {
   cacheDiagnosis: "cache-diagnosis-2026-04-07",
   redactThinking: "redact-thinking-2026-02-12",
   afkMode: "afk-mode-2026-01-31",
+  thinkingTokenCount: "thinking-token-count-2026-05-13",
+  messageThreads: "message-threads-2026-08-12",
 } as const;
 
 const CONSTANT_BETAS: readonly string[] = [
   "interleaved-thinking-2025-05-14",
   BETA.redactThinking,
-  "thinking-token-count-2026-05-13",
   "context-management-2025-06-27",
   "prompt-caching-scope-2026-01-05",
 ];
@@ -134,8 +137,10 @@ export const requestSupportsEffort = (body: JsonObject | undefined): boolean => 
   if (body === undefined || Object.keys(body).length === 0) return true;
 
   if (isProbeOrHelperRequest(body)) return false;
+  const model = str(body.model).trim();
 
-  if (isHaikuModel(str(body.model).trim())) return false;
+  // Haiku 5.5 is the first Haiku that Claude Code 2.1.321 sends effort for.
+  if (isHaikuModel(model) && !isHaiku55Model(model)) return false;
 
   return str(get(body, "thinking.type")).trim().toLowerCase() !== "disabled";
 };
@@ -164,13 +169,23 @@ export const hasAdvisorTool = (body: JsonObject): boolean =>
 const usesFastMode = (body: JsonObject, requested: Set<string>): boolean =>
   requested.has(BETA.fastMode) || str(body.speed).trim().toLowerCase() === "fast";
 
-/** `claudeCodeCLIBetas`. */
+/**
+ * `claudeCodeCLIBetas`, as Claude Code 2.1.321 assembles it (measured upstream 2026-11-09): mid-conversation-system
+ * only when requested, thinking-token-count after advisor-tool and never on quota probes, effort ahead of
+ * dangerous-tool-use, claude-code after prompt-caching-scope on Haiku 5.5 and absent from quota probes, and
+ * message-threads for bodies carrying a `thread` object.
+ */
 export const claudeCodeCLIBetas = (
   body: JsonObject,
   requested: Set<string>,
   oauthToken: boolean,
 ): string => {
-  const betas: string[] = [BETA.claudeCode];
+  const betas: string[] = [];
+  const model = str(body.model);
+  const quotaProbe = isQuotaProbeRequest(body);
+  const claudeCodeAfterScope = isHaiku55Model(model);
+
+  if (!quotaProbe && !claudeCodeAfterScope) betas.push(BETA.claudeCode);
 
   if (oauthToken) betas.push(BETA.oauth);
 
@@ -182,11 +197,12 @@ export const claudeCodeCLIBetas = (
     betas.push(beta);
   }
 
-  const model = str(body.model);
+  if (!quotaProbe && claudeCodeAfterScope) betas.push(BETA.claudeCode);
+
   const perTurnControl = requested.has(BETA.perTurnControl) || hasPerTurnEffort(model);
 
   if (!usesLegacySystemReminder(body)) {
-    betas.push(BETA.midConvSystem);
+    if (requested.has(BETA.midConvSystem)) betas.push(BETA.midConvSystem);
 
     if (perTurnControl) betas.push(BETA.perTurnControl);
 
@@ -203,16 +219,18 @@ export const claudeCodeCLIBetas = (
 
   if (requested.has(BETA.advisorTool) || hasAdvisorTool(body)) betas.push(BETA.advisorTool);
 
+  if (!quotaProbe || requested.has(BETA.thinkingTokenCount)) betas.push(BETA.thinkingTokenCount);
+
   if (requested.has(BETA.advancedToolUse) || usesAdvancedToolUse(body))
     betas.push(BETA.advancedToolUse);
 
   if (!usesLegacySystemReminder(body) && includeMidConvClearAt(body, requested))
     betas.push(BETA.midConvSystemClearAt);
 
+  if (requestSupportsEffort(body)) betas.push(BETA.effort);
+
   if (requested.has(BETA.dangerousToolUse) || get(body, "safeguards") !== undefined)
     betas.push(BETA.dangerousToolUse);
-
-  if (requestSupportsEffort(body)) betas.push(BETA.effort);
   const probeOrHelper = isProbeOrHelperRequest(body);
 
   if (
@@ -277,6 +295,8 @@ export const claudeCodeCLIBetas = (
   }
 
   if (isObj(body.diagnostics)) betas.push(BETA.cacheDiagnosis);
+
+  if (requested.has(BETA.messageThreads) || isObj(body.thread)) betas.push(BETA.messageThreads);
 
   return betas.join(",");
 };

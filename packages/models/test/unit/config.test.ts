@@ -69,7 +69,7 @@ upstream:
     stream-bootstrap-timeout: "20s"
   claude:
     header-defaults:
-      user-agent: "  claude-cli/2.1.280  "
+      user-agent: "  claude-cli/2.1.321  "
 api-keys:
   claude:
     - name: anthropic
@@ -151,7 +151,7 @@ describe("config schema and normalisation", () => {
       assert.strictEqual(config.upstream.codex["stream-bootstrap-timeout"], "20s");
       assert.strictEqual(
         config.upstream.claude["header-defaults"]["user-agent"],
-        "claude-cli/2.1.280",
+        "claude-cli/2.1.321",
       );
       assert.strictEqual(config.multimedia["disable-image-generation"], "chat");
       assert.strictEqual(config.observability.usage["redis-usage-queue-retention-seconds"], 3600);

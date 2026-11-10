@@ -9,6 +9,7 @@ import {
   extractAndRemoveBetas,
   requestedBetas,
   withAdvisorToolBeta,
+  withoutBeta,
 } from "../src/executor/claude/betas.ts";
 import {
   enforceCacheControlLimit,
@@ -63,7 +64,7 @@ describe("CCH signing", () => {
     system: [
       {
         type: "text",
-        text: "x-anthropic-billing-header: cc_version=2.1.280.abc; cc_entrypoint=cli;",
+        text: "x-anthropic-billing-header: cc_version=2.1.321.abc; cc_entrypoint=cli;",
       },
     ],
     messages: [{ role: "user", content: "hi" }],
@@ -129,10 +130,12 @@ describe("CCH signing", () => {
 
 describe("cloaking helpers", () => {
   it("computes the billing fingerprint from UTF-16 positions 4, 7 and 20", () => {
-    expect(computeFingerprint("", "2.1.280")).toBe(
-      computeFingerprint("0000000000000000000000", "2.1.280").slice(0, 3),
+    expect(computeFingerprint("", "2.1.321")).toBe(
+      computeFingerprint("0000000000000000000000", "2.1.321").slice(0, 3),
     );
-    expect(computeFingerprint("hello world, this is a test", "2.1.280")).toMatch(/^[0-9a-f]{3}$/);
+    expect(computeFingerprint("hello world, this is a test", "2.1.321")).toMatch(/^[0-9a-f]{3}$/);
+    // The Claude Code 2.1.321 capture of the prompt "say ok" carried cc_version=2.1.321.20d.
+    expect(computeFingerprint("say ok", "2.1.321")).toBe("20d");
     expect(computeFingerprint("abcdefghij", "1.0.0")).toBe(
       computeFingerprint("xxxxefxhxx", "1.0.0"),
     );
@@ -141,7 +144,7 @@ describe("cloaking helpers", () => {
   it("builds the billing header with optional tags", () => {
     const text = generateBillingHeader({
       cchSigning: true,
-      version: "2.1.280",
+      version: "2.1.321",
       messageText: "hello",
       entrypoint: "",
       workload: "w",
@@ -152,7 +155,7 @@ describe("cloaking helpers", () => {
     });
 
     expect(text).toMatch(
-      /^x-anthropic-billing-header: cc_version=2\.1\.280\.[0-9a-f]{3}; cc_entrypoint=cli; cch=00000; cc_workload=w; cc_is_subagent=true; cc_prev_req=req_1; cc_prompt_id=p; cc_turn_origin=human;$/,
+      /^x-anthropic-billing-header: cc_version=2\.1\.321\.[0-9a-f]{3}; cc_entrypoint=cli; cch=00000; cc_workload=w; cc_is_subagent=true; cc_prev_req=req_1; cc_prompt_id=p; cc_turn_origin=human;$/,
     );
   });
 
@@ -292,15 +295,15 @@ describe("betas", () => {
       true,
     ).split(",");
 
-    expect(betas.slice(0, 7)).toEqual([
+    expect(betas.slice(0, 6)).toEqual([
       BETA.claudeCode,
       BETA.oauth,
       "interleaved-thinking-2025-05-14",
       BETA.redactThinking,
-      "thinking-token-count-2026-05-13",
       "context-management-2025-06-27",
       "prompt-caching-scope-2026-01-05",
     ]);
+    expect(betas).toContain(BETA.thinkingTokenCount);
     // legacy model: no mid-conversation system betas; effort and the OAuth extended cache ttl are present
     expect(betas).not.toContain(BETA.midConvSystem);
     expect(betas).toContain(BETA.effort);
@@ -320,7 +323,7 @@ describe("betas", () => {
       false,
     ).split(",");
 
-    expect(betas).toContain(BETA.midConvSystem);
+    expect(betas).not.toContain(BETA.midConvSystem);
     expect(betas).toContain(BETA.midConvToolChanges);
     expect(betas).toContain(BETA.fastMode);
     expect(betas).toContain(BETA.serverSideFallback);
@@ -328,6 +331,132 @@ describe("betas", () => {
     expect(betas).toContain(BETA.cacheDiagnosis);
     expect(betas).toContain(BETA.context1M);
     expect(betas).not.toContain(BETA.oauth);
+  });
+
+  // Captures of native Claude Code 2.1.321 (Go: internal/runtime/executor/claude_executor_cli_2321_test.go): an
+  // interactive cli main-thread turn with OAuth in an auto-mode session, hence afk-mode.
+  const cli2321Betas = [
+    "claude-code-20250219",
+    "oauth-2025-04-20",
+    "interleaved-thinking-2025-05-14",
+    "context-management-2025-06-27",
+    "prompt-caching-scope-2026-01-05",
+    "per-turn-control-2026-07-01",
+    "mid-conversation-tool-changes-2026-07-01",
+    "inline-tools-2026-09-15",
+    "advisor-tool-2026-03-01",
+    "thinking-token-count-2026-05-13",
+    "advanced-tool-use-2025-11-20",
+    "mid-conversation-system-clear-at-2026-08-21",
+    "effort-2025-11-24",
+    "dangerous-tool-use-2026-09-03",
+    "thinking-binding-controls-2026-08-01",
+    "thinking-display-updates-2026-08-18",
+    "afk-mode-2026-01-31",
+    "extended-cache-ttl-2025-04-11",
+    "cache-diagnosis-2026-04-07",
+    "message-threads-2026-08-12",
+  ].join(",");
+
+  // Only the fields of the captured main-thread body that gate betas.
+  const cli2321Body = (model: string, display: string): JsonObject => ({
+    model,
+    max_tokens: 128000,
+    messages: [
+      { role: "user", content: [{ type: "text", text: "say ok" }] },
+      {
+        role: "system",
+        content: [
+          { type: "text", text: "tools changed" },
+          {
+            type: "tool_addition",
+            tool: {
+              type: "tool_definition",
+              definition: { name: "mcp__docs__guide", input_schema: { type: "object" } },
+            },
+          },
+        ],
+      },
+    ],
+    system: [
+      { type: "text", text: "You are Claude Code, Anthropic's official CLI for Claude." },
+      {
+        type: "text",
+        text: "prompt",
+        cache_control: { type: "ephemeral", ttl: "1h", scope: "global" },
+      },
+    ],
+    tools: [
+      { name: "Read", input_schema: { type: "object" } },
+      { name: "DeferredToolPlaceholder", input_schema: { type: "object" }, defer_loading: true },
+      { type: "advisor_20260301", name: "advisor", model: "claude-opus-5-5", defer_loading: true },
+    ],
+    thinking: { type: "adaptive", display },
+    context_management: { edits: [{ type: "clear_thinking_20251015", keep: "all" }] },
+    safeguards: { type: "dangerous_tool_use" },
+    output_config: { effort: "medium" },
+    thread: { type: "create" },
+    diagnostics: { previous_message_id: null },
+    metadata: { user_id: "user" },
+    stream: true,
+  });
+
+  it.each([
+    ["claude-fable-5-2", "updates", cli2321Betas],
+    ["claude-fable-5-1", "updates", cli2321Betas],
+    ["claude-opus-5-5", "updates", cli2321Betas],
+    ["claude-sonnet-5-5", "updates", cli2321Betas],
+    // Haiku 5.5 moves claude-code behind prompt-caching-scope.
+    [
+      "claude-haiku-5-5",
+      "updates",
+      cli2321Betas.replace(
+        "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,",
+        "oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,claude-code-20250219,",
+      ),
+    ],
+    // The sdk-cli entrypoint sends thinking.display=omitted.
+    ["claude-fable-5-2", "omitted", withoutBeta(cli2321Betas, BETA.thinkingDisplayUpdates)],
+  ])("matches the Claude Code 2.1.321 capture for %s (display %s)", (model, display, native) => {
+    const request = cli2321Body(model, display);
+
+    expect(claudeCodeCLIBetas(request, requestedBetas(native, []), true)).toBe(native);
+    // Without caller betas the list is the same minus afk-mode, which only auto-mode sessions send.
+    expect(claudeCodeCLIBetas(request, new Set(), true)).toBe(withoutBeta(native, BETA.afkMode));
+  });
+
+  it.each([
+    ["claude-fable-5-2", true],
+    ["claude-fable-5-2[1m]", true],
+    ["claude-fable-5-1", true],
+    ["claude-opus-5-5", true],
+    ["claude-sonnet-5-5", true],
+    ["claude-mythos-5-2", true],
+    ["claude-haiku-5-5", false],
+    ["claude-fable-5", false],
+  ])("gates the per-turn timing beta on the 2.1.321 catalog for %s", (model, want) => {
+    const betas = claudeCodeCLIBetas(
+      body({ model, output_config: { timing: { type: "enabled" } } }),
+      new Set(),
+      false,
+    ).split(",");
+
+    expect(betas.includes(BETA.perTurnTiming)).toBe(want);
+  });
+
+  it("matches the Claude Code 2.1.321 quota probe capture", () => {
+    const native =
+      "oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,context-management-2025-06-27,prompt-caching-scope-2026-01-05";
+
+    const probe = body({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 1,
+      messages: [{ role: "user", content: "quota" }],
+      metadata: { user_id: "user" },
+    });
+
+    expect(claudeCodeCLIBetas(probe, requestedBetas(native, []), true)).toBe(native);
+    expect(claudeCodeCLIBetas(probe, new Set(), true)).toBe(native);
   });
 
   it("skips redact-thinking when a display is set and effort for haiku", () => {

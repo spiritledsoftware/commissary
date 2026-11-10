@@ -1,6 +1,6 @@
 // Go workspace for tools/fixturegen only (the project itself is TypeScript): run fixture generators from the
 // repository root, e.g. `go run ./tools/fixturegen/translator`. Needs the reference checkout (tools/sync-reference-repos.sh).
-go 1.26.0
+go 1.26.10
 
 use (
 	./.repos/CLIProxyAPI
