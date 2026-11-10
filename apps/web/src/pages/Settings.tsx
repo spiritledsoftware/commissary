@@ -240,6 +240,7 @@ const Body = ({
               {field("upstream.claude.cloak-level")}
               {field("upstream.claude.disable-cloaking-model-list")}
               {field("upstream.claude.header-defaults.stabilize-device-profile")}
+              {field("upstream.claude.header-defaults.native-entrypoints")}
               <p className={styles["hint"]}>Headers sent when the client sends none of its own:</p>
               <div className={styles["pair"]}>
                 {field("upstream.claude.header-defaults.user-agent")}

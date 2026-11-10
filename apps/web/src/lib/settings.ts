@@ -129,6 +129,12 @@ export const FIELDS: ReadonlyArray<FieldSpec> = [
     "Claude device profile",
     false,
   ),
+  field(
+    "providers",
+    "upstream.claude.header-defaults.native-entrypoints",
+    "words",
+    "Claude native entrypoints",
+  ),
   field("providers", "upstream.codex.disable-codex-cloaking", "bool", "Codex cloaking"),
   field("providers", "upstream.codex.stream-bootstrap-buffering", "bool", "Codex stream start"),
   field("providers", "upstream.codex.stream-bootstrap-timeout", "bootstrap", "Codex hold limit"),

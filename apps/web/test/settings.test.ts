@@ -72,6 +72,7 @@ const DEFAULTS: SettingsValues = {
         timeout: "",
         timezone: "",
         "stabilize-device-profile": null,
+        "native-entrypoints": [],
       },
     },
     xai: { "inject-x-search": false },

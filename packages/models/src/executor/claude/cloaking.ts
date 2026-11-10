@@ -137,6 +137,18 @@ export interface ForwardedBlock {
   readonly cacheControl: JsonObject | undefined;
 }
 
+/** `isClaudeCodeIdentitySystemText`: the identity lines of Claude Code and of its Agent SDK (trimmed). */
+export const isClaudeCodeIdentityText = (text: string): boolean => {
+  const trimmed = text.trim();
+
+  return (
+    trimmed === CLAUDE_CODE_IDENTITY ||
+    trimmed ===
+      "You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK." ||
+    trimmed === "You are a Claude agent, built on Anthropic's Claude Agent SDK."
+  );
+};
+
 export const collectForwardedBlocks = (system: Json | undefined): ForwardedBlock[] => {
   const blocks: ForwardedBlock[] = [];
 
@@ -144,7 +156,7 @@ export const collectForwardedBlocks = (system: Json | undefined): ForwardedBlock
     if (
       text.trim() === "" ||
       isClaudeCodeAttributionSystemText(text) ||
-      text === CLAUDE_CODE_IDENTITY
+      isClaudeCodeIdentityText(text)
     )
       return;
     blocks.push({ text, cacheControl });

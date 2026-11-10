@@ -2,7 +2,8 @@
  * Request classification helpers: Claude Code client detection, probe/helper/subagent requests, model families.
  *
  * Go source: internal/runtime/executor/helps/claude_client_detection.go (DetectClaudeCodeRequest, simplified: the
- * measured Haiku "helper profile" shapes are not ported), helps/claude_diagnostics.go (IsClaudeProbeOrHelperRequest,
+ * measured Haiku "helper profile" shapes are not ported, so `ConfirmedShape` is the strong signals alone),
+ * helps/claude_device_profile.go (plausibleClaude*Version), helps/claude_diagnostics.go (IsClaudeProbeOrHelperRequest,
  * IsClaudeQuotaProbeRequest, IsClaudeSubagentRequest, ClaudeSubagentRequests1h, IsClaudeNewPromptTurn,
  * ExtractClaudeBillingTags),
  * claude_executor_request.go / claude_executor_cloaking.go (model family predicates).
@@ -10,50 +11,85 @@
 import { get, isJsonObject, tryParseJson, type Json, type JsonObject } from "@commissary/json";
 import { isArr, isObj, str, toArray } from "@commissary/translation";
 import { payloadHas1hTTL } from "./cache-control.ts";
+import {
+  PACKAGE_VERSION,
+  parseClaudeCodeUserAgent,
+  parseCliVersion,
+  parseSemver,
+  RUNTIME_VERSION,
+  compareVersions,
+  type Version,
+} from "./user-agent.ts";
 
 export const DEFAULT_USER_AGENT = "claude-cli/2.1.321 (external, cli)";
 
 export const headerValue = (headers: Headers | undefined, name: string): string =>
   headers?.get(name)?.trim() ?? "";
 
-const NATIVE_ENTRYPOINTS = new Set(["cli", "sdk-cli", "claude-vscode"]);
+/**
+ * Only product surfaces with verified wire behaviour pass through by default; any other first-party-looking
+ * entrypoint is cloaked until it is allowlisted in `header-defaults.native-entrypoints`.
+ */
+const NATIVE_ENTRYPOINTS = new Set(["cli", "sdk-cli", "sdk-ts", "claude-vscode"]);
 
-const NATIVE_USER_AGENT =
-  /^claude-cli\/[0-9]+\.[0-9]+\.[0-9]+\s+\(external,\s*[^,)]+(?:,\s*agent-sdk\/[0-9]+\.[0-9]+\.[0-9]+)?\)$/i;
+/**
+ * `isNativeClaudeEntrypoint`: the built-in set plus the configured labels. `entrypoint` comes from a parsed User-Agent
+ * (lower-cased) and `nativeEntrypoints` from the normalised config.
+ */
+export const isNativeEntrypoint = (
+  entrypoint: string,
+  nativeEntrypoints: readonly string[] = [],
+): boolean =>
+  entrypoint !== "" &&
+  (NATIVE_ENTRYPOINTS.has(entrypoint) || nativeEntrypoints.includes(entrypoint));
 
-const USER_AGENT_DETAILS = /^claude-cli\/\S+\s+\(external,\s*([^,)]+)(?:,\s*agent-sdk\/([^,)]+))?/i;
-
-const parseVersion = (userAgent: string): [number, number, number] | undefined => {
-  const match = /^claude-cli\/(\d+)\.(\d+)\.(\d+)/.exec(userAgent);
-
-  return match === null ? undefined : [Number(match[1]), Number(match[2]), Number(match[3])];
-};
+/** `isNativeClaudeXApp`: `cli-bg` is a Claude Code background session. */
+const isNativeXApp = (value: string): boolean => value === "cli" || value === "cli-bg";
 
 /** Claude Code CLI version used in the billing header (`DefaultClaudeVersion`). */
 export const defaultClaudeVersion = (userAgent: string): string => {
-  const version = parseVersion(userAgent) ?? parseVersion(DEFAULT_USER_AGENT);
+  const version = parseCliVersion(userAgent) ?? parseCliVersion(DEFAULT_USER_AGENT);
 
   return (version ?? [2, 1, 321]).join(".");
 };
 
-/** `plausibleClaudeCodeUserAgent`: native pattern with the baseline's major.minor and a patch >= baseline. */
+/** `plausibleClaudeCLIVersion`: the baseline is a floor for patch releases of its major.minor line. */
+const plausibleCliVersion = (candidate: Version, baseline: Version): boolean =>
+  candidate[0] === baseline[0] && candidate[1] === baseline[1] && candidate[2] >= baseline[2];
+
+/** `plausibleClaudeCodeUserAgent`: a well-formed UA with the baseline's major.minor and a patch >= baseline. */
 export const plausibleClaudeCodeUserAgent = (
   userAgent: string,
   baselineUserAgent: string,
 ): boolean => {
-  const ua = userAgent.trim();
-
-  if (!/^claude-cli\//i.test(ua) || !NATIVE_USER_AGENT.test(ua)) return false;
-  const candidate = parseVersion(ua);
-  const baseline = parseVersion(baselineUserAgent);
+  const parsed = parseClaudeCodeUserAgent(userAgent);
+  const baseline = parseCliVersion(baselineUserAgent);
 
   return (
-    candidate !== undefined &&
-    baseline !== undefined &&
-    candidate[0] === baseline[0] &&
-    candidate[1] === baseline[1] &&
-    candidate[2] >= baseline[2]
+    parsed !== undefined && baseline !== undefined && plausibleCliVersion(parsed.version, baseline)
   );
+};
+
+/**
+ * `plausibleClaudePackageVersion` / `plausibleClaudeRuntimeVersion`: a Stainless `package` (`0.128.0`) or `runtime`
+ * (`v26.12.1`) version at or above the baseline; equal to it when either side is not a semantic version.
+ */
+export const plausibleStainlessVersion = (
+  kind: "package" | "runtime",
+  candidate: string,
+  baseline: string,
+): boolean => {
+  const value = candidate.trim();
+  const base = baseline.trim();
+
+  if (!(kind === "runtime" ? RUNTIME_VERSION : PACKAGE_VERSION).test(value)) return false;
+  const semver = (text: string) => parseSemver(kind === "runtime" ? text.replace(/^v/, "") : text);
+  const parsed = semver(value);
+  const floor = semver(base);
+
+  return parsed === undefined || floor === undefined
+    ? value === base
+    : compareVersions(parsed, floor) >= 0;
 };
 
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -75,7 +111,13 @@ export const isValidUserID = (userID: string): boolean => {
 };
 
 export interface ClaudeCodeDetection {
+  /** The strong signals hold and the entrypoint is native. */
   readonly confirmed: boolean;
+  /**
+   * The strong signals hold, whatever the entrypoint: under `cloak_mode: never` such a caller keeps its own headers
+   * (`isEffectiveConfirmedClaudeCode`).
+   */
+  readonly strongSignals: boolean;
   readonly nativeClient: boolean;
   readonly entrypoint: string;
 }
@@ -86,12 +128,17 @@ export const detectClaudeCodeRequest = (
   payload: Json | undefined,
   countTokens: boolean,
   baselineUserAgent: string = DEFAULT_USER_AGENT,
+  nativeEntrypoints: readonly string[] = [],
 ): ClaudeCodeDetection => {
-  const userAgent = headerValue(headers, "user-agent");
-  const match = USER_AGENT_DETAILS.exec(userAgent);
-  const entrypoint = match === null ? "" : (match[1] ?? "").trim().toLowerCase();
-  const xAppCli = headerValue(headers, "x-app") === "cli";
-  const uaOk = plausibleClaudeCodeUserAgent(userAgent, baselineUserAgent);
+  const userAgent = parseClaudeCodeUserAgent(headerValue(headers, "user-agent"));
+  const entrypoint = userAgent?.entrypoint ?? "";
+  const xAppCli = isNativeXApp(headerValue(headers, "x-app"));
+  const baseline = parseCliVersion(baselineUserAgent);
+
+  const uaOk =
+    userAgent !== undefined &&
+    baseline !== undefined &&
+    plausibleCliVersion(userAgent.version, baseline);
 
   const betasPresent = (headers?.get("anthropic-beta") ?? "")
     .split(",")
@@ -99,11 +146,12 @@ export const detectClaudeCodeRequest = (
 
   const metadataUserId = get(payload, "metadata.user_id");
   const metadataOk = typeof metadataUserId === "string" && isValidUserID(metadataUserId);
-  const nativeClient = NATIVE_ENTRYPOINTS.has(entrypoint);
+  const nativeClient = isNativeEntrypoint(entrypoint, nativeEntrypoints);
   const strong = xAppCli && uaOk && betasPresent && (countTokens || metadataOk);
 
   return {
     confirmed: strong && nativeClient,
+    strongSignals: strong,
     nativeClient,
     entrypoint: entrypoint === "" ? "cli" : entrypoint,
   };

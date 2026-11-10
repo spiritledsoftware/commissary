@@ -79,11 +79,13 @@ import {
   claudeCreds,
   DEFAULT_BASE_URL,
   isAnthropicUpstreamBase,
+  isEffectiveConfirmedClaudeCode,
   isMinimalCloak,
   resolveClaudeKeyConfig,
   resolveFingerprintPolicy,
   resolveWirePolicy,
   type FingerprintPolicy,
+  type WireResolution,
 } from "./credentials.ts";
 import { buildClaudeHeaders, cachedSessionId, defaultDeviceProfile } from "./headers.ts";
 import { type ClaudeUpstreamProfile, upstreamModelOf } from "./profile.ts";
@@ -312,6 +314,8 @@ interface Common {
   readonly firstParty: boolean;
   readonly fingerprint: FingerprintPolicy;
   readonly confirmed: boolean;
+  /** Resolved once per request: the stabilised-profile and cloak decisions read the same policy. */
+  readonly wire: WireResolution;
   readonly sessionId: string;
   readonly originalPayload: Json;
 }
@@ -325,12 +329,18 @@ const commonContext = (input: PrepareInput, path: string, countTokens: boolean):
   const fingerprint = resolveFingerprintPolicy(config, credential, providerKey);
   const originalPayload = options.originalRequest ?? request.payload;
 
-  const confirmed = detectClaudeCodeRequest(
+  const detection = detectClaudeCodeRequest(
     options.headers,
     originalPayload,
     countTokens,
     defaultDeviceProfile(config).userAgent,
-  ).confirmed;
+    config.upstream.claude["header-defaults"]["native-entrypoints"],
+  );
+
+  // Under `cloak_mode: never` a caller with the strong signals of an unlisted entrypoint is confirmed as well. Such a
+  // policy never cloaks, so resolving it with the detected value is the same as with the effective one.
+  const wire = resolveWirePolicy(config, credential, providerKey, detection.confirmed);
+  const confirmed = isEffectiveConfirmedClaudeCode(detection, wire.policy);
 
   const sessionId = fingerprint.profileClaudeCodeCLI
     ? agentSessionUuid({
@@ -349,6 +359,7 @@ const commonContext = (input: PrepareInput, path: string, countTokens: boolean):
     firstParty: isAnthropicUpstreamBase(baseURL),
     fingerprint,
     confirmed,
+    wire,
     sessionId,
     originalPayload,
   };
@@ -371,6 +382,7 @@ export const prepareMessagesRequest = Effect.fnUntraced(function* (input: Prepar
     firstParty,
     fingerprint,
     confirmed,
+    wire,
     sessionId,
     originalPayload,
     parsedUrl,
@@ -378,7 +390,6 @@ export const prepareMessagesRequest = Effect.fnUntraced(function* (input: Prepar
 
   const from = options.sourceFormat;
   const to = Formats.Claude;
-  const wire = yield* attempt(() => resolveWirePolicy(config, credential, providerKey, confirmed));
   // The `minimal` cloak level sends none of Claude Code's own parts: no billing block (so no CCH), no MCP aliases, no CLI
   // identity metadata, no diagnostics.
   const minimalCloak = isMinimalCloak(wire.policy);
@@ -492,8 +503,9 @@ export const prepareMessagesRequest = Effect.fnUntraced(function* (input: Prepar
   const needsAliasState = mcpAlias && threadContinuationNeedsAliasState(threadBody);
   const stabilizeProfile = deviceProfileStabilizationEnabled(config);
 
+  // `cloak_mode: never` keeps the caller's own device headers (headers.ts): the store is not consulted.
   const stabilizedProfile =
-    stabilizeProfile && confirmed
+    stabilizeProfile && confirmed && !wire.policy.explicitNever
       ? yield* services.deviceProfiles.resolve(credential, providerKey, options.headers, config)
       : undefined;
 
@@ -726,6 +738,7 @@ export const prepareCountTokensRequest = Effect.fnUntraced(function* (input: Pre
     firstParty,
     fingerprint,
     confirmed,
+    wire,
     sessionId,
     originalPayload,
     parsedUrl,
@@ -778,13 +791,14 @@ export const prepareCountTokensRequest = Effect.fnUntraced(function* (input: Pre
   if (rebuildMidSystemEnabled(config, credential)) rebuildMidSystemMessagesToTopLevel(body);
   const stabilizeProfile = deviceProfileStabilizationEnabled(config);
 
+  // `cloak_mode: never` keeps the caller's own device headers (headers.ts): the store is not consulted.
   const stabilizedProfile =
-    stabilizeProfile && confirmed
+    stabilizeProfile && confirmed && !wire.policy.explicitNever
       ? yield* services.deviceProfiles.resolve(credential, providerKey, options.headers, config)
       : undefined;
 
   return yield* attempt(() => {
-    const { policy, settings } = resolveWirePolicy(config, credential, providerKey, confirmed);
+    const { policy, settings } = wire;
     const cloaked = policy.cloak;
     // As for Messages: `minimal` ignores strict mode and sensitive words and sends no MCP aliases.
     const minimalCloak = isMinimalCloak(policy);

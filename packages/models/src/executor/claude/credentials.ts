@@ -9,6 +9,7 @@
 import type { ClaudeCloakLevel } from "@commissary/contract/settings";
 import type { ProviderKeyEntry, ProviderKeyGroup, Config } from "../../config/schema.ts";
 import type { CredentialSnapshot } from "../picker.ts";
+import type { ClaudeCodeDetection } from "./classify.ts";
 
 export const DEFAULT_BASE_URL = "https://api.anthropic.com";
 
@@ -153,9 +154,25 @@ export interface WirePolicy {
   readonly profileClaudeCodeCLI: boolean;
   readonly confirmedClaudeCode: boolean;
   readonly cloak: boolean;
+  /**
+   * The mode resolved to `never` (the credential's `cloak_mode`/`cloak.mode`, or the global `disable-claude-cloak-mode`
+   * when nothing is set per credential) and the credential is not one that already keeps the caller's headers: a
+   * caller with the strong signals is confirmed whatever its entrypoint and keeps its own device headers.
+   */
+  readonly explicitNever: boolean;
   /** Only meaningful when {@link cloak} is set. */
   readonly level: CloakLevel;
 }
+
+/**
+ * `isEffectiveConfirmedClaudeCode`: a confirmed native client, or (under `explicitNever`) any caller with the strong
+ * signals, whatever its entrypoint.
+ */
+export const isEffectiveConfirmedClaudeCode = (
+  detection: Pick<ClaudeCodeDetection, "confirmed" | "strongSignals">,
+  policy: Pick<WirePolicy, "cloak" | "explicitNever">,
+): boolean =>
+  detection.confirmed || (!policy.cloak && policy.explicitNever && detection.strongSignals);
 
 /** The request is cloaked at the `minimal` level: nothing of Claude Code's beyond what the subscription checks. */
 export const isMinimalCloak = (policy: WirePolicy): boolean =>
@@ -192,13 +209,17 @@ export const resolveWirePolicy = (
   let sensitiveWords: ReadonlyArray<string> = attrWords;
   let cacheUserID = attrCache;
   let level: CloakLevel = attrLevel ?? config.upstream.claude["cloak-level"];
+  let explicitMode = attrMode.trim().toLowerCase();
 
   if (attrMode !== "") cloakMode = attrMode;
 
   if (cloakCfg !== undefined) {
     const mode = (cloakCfg.mode ?? "").trim();
 
-    if (mode !== "") cloakMode = mode;
+    if (mode !== "") {
+      cloakMode = mode;
+      explicitMode = mode.toLowerCase();
+    }
 
     if (cloakCfg["strict-mode"] === true) strictMode = true;
 
@@ -225,10 +246,13 @@ export const resolveWirePolicy = (
     attrCache;
 
   let cloak = (fp.profileClaudeCodeCLI || cloakConfigured) && !confirmedClaudeCode;
+  const mode = cloakMode.trim().toLowerCase();
+
+  // A credential that is not Claude Code CLI-profiled and sets `never` already keeps the caller's headers (Go `uncloak`).
+  const uncloak =
+    !fp.profileClaudeCodeCLI && (explicitMode === "never" || explicitMode === "uncloak");
 
   if (!confirmedClaudeCode) {
-    const mode = cloakMode.trim().toLowerCase();
-
     if (mode === "always") cloak = true;
     else if (mode === "never") cloak = false;
   }
@@ -239,6 +263,7 @@ export const resolveWirePolicy = (
       profileClaudeCodeCLI: fp.profileClaudeCodeCLI,
       confirmedClaudeCode,
       cloak,
+      explicitNever: mode === "never" && !uncloak,
       level,
     },
     settings: { strictMode, sensitiveWords, cacheUserID },
