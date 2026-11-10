@@ -21,12 +21,11 @@ import { type StoredCredential, deriveFileCredential, sanitizeAliases } from "./
 import { parseAuthFile, type ImportFailureReason } from "./import.ts";
 import {
   type CooldownSettings,
-  classifiable,
+  type CooledKeys,
   coolingDisabledFor,
   credentialCooldownActive,
-  markResult,
+  markResultDetailed,
   modelCooldownActive,
-  resultError,
 } from "./cooldown/mark-result.ts";
 import { shouldSkipCredentialCooldown } from "./cooldown/classify.ts";
 import { type Credential, type CredentialState, emptyState } from "./model.ts";
@@ -173,8 +172,12 @@ export class CredentialPool {
   readonly #lcp = new MerklePrefixMatcher();
   readonly #poolOffsets = new Map<string, number>();
   readonly #states: Map<string, CredentialState>;
-  /** Dispatch counter stamped on every lease, and the counter value when each live cooldown was recorded (35af74f9). */
-  #dispatchSeq = 0;
+  /**
+   * Dispatch counter stamped on every lease, and the counter value when each live cooldown was recorded (35af74f9).
+   * Seeded from the clock (1000 slots per ms) so a restarted instance numbers above the leases an earlier one issued:
+   * leases live in Worker requests that outlive a ControlPlane restart.
+   */
+  #dispatchSeq: number;
   readonly #cooldownMarks = new Map<string, MutableCooldownMarks>();
   #view: View | undefined;
 
@@ -189,6 +192,7 @@ export class CredentialPool {
     this.#privateKeys = options.privateKeys ?? (() => ({ version: 0, configs: [] }));
     this.#spend = options.spend;
     this.#states = options.store.loadStates();
+    this.#dispatchSeq = this.#now() * 1000;
   }
 
   /** Rebuilds the derived credential set when the config or the stored credentials changed. */
@@ -235,6 +239,7 @@ export class CredentialPool {
     for (const id of this.#states.keys()) {
       if (!credentials.has(id)) {
         this.#states.delete(id);
+        this.#cooldownMarks.delete(id);
         this.#store.deleteState(id);
         this.#invalidateBindings(id);
       }
@@ -415,18 +420,20 @@ export class CredentialPool {
     const now = this.#now();
     const previous = this.#state(credential.id);
 
-    const next = markResult({
+    const { state: next, cooled } = markResultDetailed({
       credential,
       state: previous,
       now,
       model: result.model ?? lease.model,
       result,
       settings: view.cooldown,
-      executionSeq: lease.seq,
-      cooldownMarks: this.#cooldownMarks.get(credential.id),
+      dispatch:
+        lease.seq === undefined
+          ? undefined
+          : { seq: lease.seq, marks: this.#cooldownMarks.get(credential.id) },
     });
 
-    this.#recordCooldownMarks(credential.id, result.model ?? lease.model, result, next, now);
+    this.#recordCooldownMarks(credential.id, cooled, next, now);
     this.#states.set(credential.id, next);
     this.#store.saveState(credential.id, next);
 
@@ -504,33 +511,13 @@ export class CredentialPool {
    * Stamps the cooldown a failure just recorded with the current dispatch counter, so successes of picks made
    * before it cannot clear it, and drops the stamps of cooldowns that ended (`cooldownRecordedSeq`).
    */
-  #recordCooldownMarks(
-    id: string,
-    model: string,
-    result: ReportResult,
-    next: CredentialState,
-    now: number,
-  ): void {
+  #recordCooldownMarks(id: string, cooled: CooledKeys, next: CredentialState, now: number): void {
     const marks = this.#cooldownMarks.get(id) ?? { credential: 0, models: new Map() };
+    const seq = this.#dispatchSeq;
 
-    const failure =
-      result.success || result.availabilityNeutral === true ? undefined : resultError(result);
+    if (cooled.credential) marks.credential = seq;
 
-    if (failure !== undefined && !shouldSkipCredentialCooldown(classifiable(failure))) {
-      const seq = this.#dispatchSeq;
-      const key = canonicalModelLookupKey(model);
-
-      if (key === "") marks.credential = seq;
-      else marks.models.set(key, seq);
-
-      // A credential-scoped 429 cools every model of the credential at once.
-      if (failure.httpStatus === 429 && result.credentialScoped === true) {
-        marks.credential = seq;
-
-        for (const stateModel of Object.keys(next.modelStates))
-          marks.models.set(canonicalModelLookupKey(stateModel), seq);
-      }
-    }
+    for (const model of cooled.models) marks.models.set(canonicalModelLookupKey(model), seq);
 
     if (!credentialCooldownActive(next, now)) marks.credential = 0;
 
@@ -598,6 +585,7 @@ export class CredentialPool {
     if (target === undefined) return undefined;
     const reset = resetCooldownState(target.state, this.#now());
     this.#states.set(id, reset.state);
+    this.#cooldownMarks.delete(id);
     this.#store.saveState(id, reset.state);
 
     return { models: reset.models };
@@ -626,6 +614,7 @@ export class CredentialPool {
     // Replaced material starts a fresh life: stale tokens must not keep a cooldown or a session binding.
     if (outcome.credentialsChanged && !outcome.created) {
       this.#states.delete(parsed.id);
+      this.#cooldownMarks.delete(parsed.id);
       this.#store.deleteState(parsed.id);
       this.#invalidateBindings(parsed.id);
     }
@@ -645,6 +634,7 @@ export class CredentialPool {
 
     if (removed) {
       this.#states.delete(id);
+      this.#cooldownMarks.delete(id);
       this.#invalidateBindings(id);
       this.#invalidate();
     }
@@ -663,6 +653,7 @@ export class CredentialPool {
 
     for (const id of removed) {
       this.#states.delete(id);
+      this.#cooldownMarks.delete(id);
       this.#invalidateBindings(id);
     }
 

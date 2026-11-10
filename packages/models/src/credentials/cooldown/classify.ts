@@ -534,6 +534,12 @@ export const isTransientTransportError = (error: ClassifiableError): boolean =>
   error.code === ErrorCode.transientTransport ||
   (error.status === 0 && isTransientTransportMessage(error.message));
 
+/** Failures of the credential itself that no request-fault rule may hide: a challenge, an invalid grant, a depleted credit balance. */
+export const isCredentialFailure = (error: ClassifiableError): boolean =>
+  isCloudflareChallengeError(error) ||
+  isInvalidGrantError(error) ||
+  isCreditBalanceTooLow(error.status, error.message);
+
 /**
  * `isRequestInvalidError`: a client request error that must neither rotate nor penalise credentials. Model-support
  * errors, Cloudflare challenges and invalid grants stay credential matters.

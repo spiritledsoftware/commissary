@@ -376,6 +376,34 @@ describe("in-flight successes do not clear a newer cooldown (CLIProxyAPI 35af74f
     expect(pool.pick(requestN).ok).toBe(false);
   });
 
+  it("a lease issued before a restart cannot clear a cooldown recorded after it", async () => {
+    const store = new MemoryPoolStore();
+    const clock = new TestNow();
+    const yaml = config(group("a"));
+    const first = await makePool(yaml, { store, clock });
+    const request = { providers: providers(["a"]), model: "m" };
+    const oldLeases = Array.from({ length: 50 }, () => ok(first.pool.pick(request)));
+
+    clock.advance(5000);
+    const restarted = await makePool(yaml, { store, clock });
+    const failing = ok(restarted.pool.pick(request));
+    restarted.pool.report(failing.lease, quota);
+
+    for (const old of oldLeases) restarted.pool.report(old.lease, { success: true });
+    expect(restarted.pool.pick(request).ok).toBe(false);
+  });
+
+  it("a failure reported under another spelling of the model keeps its mark", async () => {
+    const { pool } = await makePool(config(group("a")));
+    const request = { providers: providers(["a"]), model: "m" };
+    const early = ok(pool.pick(request));
+    const failing = ok(pool.pick(request));
+
+    pool.report(failing.lease, { ...quota, model: "M" });
+    pool.report(early.lease, { success: true, model: "m" });
+    expect(pool.pick(request).ok).toBe(false);
+  });
+
   it("a restart forgets the dispatch order: a restored cooldown is cleared by any success", async () => {
     const store = new MemoryPoolStore();
     const clock = new TestNow();

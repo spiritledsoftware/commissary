@@ -628,8 +628,9 @@ describe("stale in-flight successes (CLIProxyAPI 35af74f9)", () => {
       model,
       result,
       settings: DEFAULT_COOLDOWN_SETTINGS,
-      ...(executionSeq === undefined ? {} : { executionSeq }),
-      cooldownMarks,
+      ...(executionSeq === undefined
+        ? {}
+        : { dispatch: { seq: executionSeq, marks: cooldownMarks } }),
     });
 
   it("a success dispatched at or before the cooldown's mark keeps the model cooldown but still counts", () => {

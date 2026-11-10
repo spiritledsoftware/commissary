@@ -12,11 +12,9 @@ import type { Config, RequestScopedErrorRule } from "../config/schema.ts";
 import {
   type ClassifiableError,
   ErrorCode,
-  isCloudflareChallengeError,
   isConnectionLifecycleError,
-  isCreditBalanceTooLow,
+  isCredentialFailure,
   isExplicitModelNotFound,
-  isInvalidGrantError,
   isModelSupportMessage,
   isProviderSpecificRequestError,
   isRequestFault,
@@ -223,12 +221,7 @@ const compactNeutral = (
 ): boolean => {
   if (code === ErrorCode.forceCooldown) return false;
 
-  if (
-    error.credentialScoped === true ||
-    isCloudflareChallengeError(classified) ||
-    isInvalidGrantError(classified) ||
-    isCreditBalanceTooLow(classified.status, classified.message)
-  ) {
+  if (error.credentialScoped === true || isCredentialFailure(classified)) {
     return false;
   }
 
@@ -257,9 +250,7 @@ const countTokensUnsupported = (error: ExecutionError, classified: ClassifiableE
 
   if (
     error.credentialScoped === true ||
-    isCloudflareChallengeError(classified) ||
-    isInvalidGrantError(classified) ||
-    isCreditBalanceTooLow(classified.status, classified.message) ||
+    isCredentialFailure(classified) ||
     isModelSupportMessage(classified.message)
   ) {
     return false;
@@ -312,12 +303,7 @@ export const isCompactRequestFault = (error: ExecutionError, alt: string): boole
   if (alt !== "responses/compact") return false;
   const classified = classifiable(error);
 
-  if (
-    error.credentialScoped === true ||
-    isCloudflareChallengeError(classified) ||
-    isInvalidGrantError(classified) ||
-    isCreditBalanceTooLow(classified.status, classified.message)
-  ) {
+  if (error.credentialScoped === true || isCredentialFailure(classified)) {
     return false;
   }
 

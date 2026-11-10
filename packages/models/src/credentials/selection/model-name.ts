@@ -39,18 +39,18 @@ export const canonicalModelKey = (model: string): string => {
 export const canonicalModelLookupKey = (model: string): string =>
   canonicalModelKey(model).toLowerCase();
 
-/** `sameCanonicalModelKey`: two spellings of one model; empty never matches. */
-export const sameCanonicalModelKey = (left: string, right: string): boolean => {
-  const key = canonicalModelLookupKey(left);
-
-  return key !== "" && key === canonicalModelLookupKey(right);
-};
+const coolsUntil = (state?: {
+  readonly nextRetryAfter: number;
+  readonly quota: { readonly nextRecoverAt: number };
+}): number => Math.max(state?.nextRetryAfter ?? 0, state?.quota.nextRecoverAt ?? 0);
 
 /**
  * The key of `model`'s state in a per-model record (`modelStates`): the exact canonical key when stored, else a stored
  * spelling that differs only in case (the stored casing is kept). Of several spellings, the longest-cooling one wins.
  */
-export const findModelStateKey = <T extends { readonly nextRetryAfter: number }>(
+export const findModelStateKey = <
+  T extends { readonly nextRetryAfter: number; readonly quota: { readonly nextRecoverAt: number } },
+>(
   states: Readonly<Record<string, T>>,
   model: string,
 ): string | undefined => {
@@ -65,15 +65,16 @@ export const findModelStateKey = <T extends { readonly nextRetryAfter: number }>
   for (const [stateModel, state] of Object.entries(states)) {
     if (canonicalModelLookupKey(stateModel) !== lookup) continue;
 
-    if (found === undefined || state.nextRetryAfter > (states[found]?.nextRetryAfter ?? 0))
-      found = stateModel;
+    if (found === undefined || coolsUntil(state) > coolsUntil(states[found])) found = stateModel;
   }
 
   return found;
 };
 
 /** `existingModelState`: the state of `model` under any spelling. */
-export const findModelState = <T extends { readonly nextRetryAfter: number }>(
+export const findModelState = <
+  T extends { readonly nextRetryAfter: number; readonly quota: { readonly nextRecoverAt: number } },
+>(
   states: Readonly<Record<string, T>>,
   model: string,
 ): T | undefined => {

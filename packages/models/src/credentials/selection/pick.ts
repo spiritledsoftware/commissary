@@ -27,7 +27,7 @@ import {
   providerNotFound,
 } from "./failures.ts";
 import { grantedRoute } from "./grants.ts";
-import { canonicalModelKey } from "./model-name.ts";
+import { canonicalModelKey, canonicalModelLookupKey } from "./model-name.ts";
 import { effectiveRequestRetry } from "./retry.ts";
 import { resolveModelRoute, type ModelRoute, type RoutingContext } from "./routing.ts";
 import type { RotationState } from "./strategies.ts";
@@ -304,7 +304,7 @@ export const selectCredential = (input: SelectionInput): SelectionOutcome => {
   // 3. Priority tier + strategy (+ optional Codex websocket preference).
   const providerLabel = [...providers].toSorted().join(",");
   const modelKey = canonicalModelKey(request.model);
-  const rotationKey = `${providerLabel}:${modelKey}`;
+  const rotationKey = `${providerLabel}:${canonicalModelLookupKey(request.model)}`;
 
   const strategyPick = (candidates: ReadonlyArray<Candidate>): Candidate | undefined => {
     let list = candidates;
