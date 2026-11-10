@@ -288,28 +288,29 @@ describe("upstream socket loss", () => {
   });
 });
 
+/** A socket whose first request completed on a pinned credential and whose continuation the upstream fails with `failure`. */
+const pinnedContinuation = async (
+  credentials: ReadonlyArray<CredentialSnapshot>,
+  failure: JsonObject,
+) => {
+  const s = setup(credentials, {
+    onConnection: scripted((_frame, index, send) => {
+      if (index === 0) {
+        send(created("resp_1"));
+        send(done("resp_1"));
+      } else send(failure);
+    }),
+  });
+
+  const client = await s.connect();
+  client.send(create("evt-1"));
+  await client.until("response.completed");
+  client.send(create("evt-2", { previous_response_id: "resp_1", input: [] }));
+
+  return { s, client };
+};
+
 describe("terminal 429 on a pinned continuation", () => {
-  const pinnedContinuation = async (
-    credentials: ReadonlyArray<CredentialSnapshot>,
-    failure: JsonObject,
-  ) => {
-    const s = setup(credentials, {
-      onConnection: scripted((_frame, index, send) => {
-        if (index === 0) {
-          send(created("resp_1"));
-          send(done("resp_1"));
-        } else send(failure);
-      }),
-    });
-
-    const client = await s.connect();
-    client.send(create("evt-1"));
-    await client.until("response.completed");
-    client.send(create("evt-2", { previous_response_id: "resp_1", input: [] }));
-
-    return { s, client };
-  };
-
   it("exposes the 429 with the trusted Retry-After and closes 1011 when no other credential could serve a replay", async () => {
     const { client } = await pinnedContinuation([wsCredential()], quotaError());
     const frame = await client.nextJson();

@@ -456,12 +456,13 @@ describe("non-stream execution over the upstream WebSocket", () => {
   });
 });
 
+const errorOf = (frame: Record<string, unknown>) =>
+  frame["error"] as { code?: string; event_id?: string; message?: string };
+
+/** Lets queued socket events and fibers run: the client frames sent so far are read and queued by the handler. */
+const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 25));
+
 describe("upstream socket loss on a steering socket (CLIProxyAPI f73e66ac)", () => {
-  const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 25));
-
-  const errorOf = (frame: Record<string, unknown>) =>
-    frame["error"] as { code?: string; event_id?: string; message?: string };
-
   it("fences a frame queued behind the lost request: answered not sent, never written upstream", async () => {
     let dropped = false;
 

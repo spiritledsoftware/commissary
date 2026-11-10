@@ -6,7 +6,8 @@
  * buildResponsesWebsocketErrorPayload, shouldExposeResponsesUpstreamError, collectResponsesWebsocketOutputItem,
  * restoreResponsesWebsocketCompletionOutput, responseCompletedOutputFromPayload, recordPendingToolCallIDsFromPayload,
  * completeResponsesWebsocketLocalInterrupt), openai_responses_websocket.go (websocketClosePayloadForUpstreamError,
- * truncateWebsocketCloseReason), openai_responses_websocket_timeline.go (responsesWebsocketErrorMessageFromPayload).
+ * truncateWebsocketCloseReason), openai_responses_websocket_timeline.go (responsesWebsocketErrorMessageFromPayload);
+ * b5e6027c (isResponsesWebsocketQuotaOrCooldownError, exposed 429 frames with the trusted Retry-After).
  */
 import { statusText } from "../../../http/status.ts";
 import { openAIErrorBody } from "../../../http/errors.ts";

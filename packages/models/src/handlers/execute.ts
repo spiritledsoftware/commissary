@@ -142,7 +142,7 @@ export const enrichSelectionError = (
  * The error a stream's exit reports for the attempt: an `ExecutionError` as it is; any other failure (a consumer's own
  * stop that is not an upstream error) is the downstream's, not the credential's. Interrupts and defects have none.
  */
-const toExecutionError = (cause: Cause.Cause<unknown>): ExecutionError | undefined => {
+export const toExecutionError = (cause: Cause.Cause<unknown>): ExecutionError | undefined => {
   const failure = cause.reasons.find(Cause.isFailReason);
 
   if (failure === undefined) return undefined;
