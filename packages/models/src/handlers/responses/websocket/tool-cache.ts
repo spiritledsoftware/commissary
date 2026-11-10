@@ -26,6 +26,7 @@ import {
   dedupeInputItems,
   isToolCallOutputType,
   isToolCallType,
+  stripReplayOutputOnlyFields,
   toInputItem,
 } from "./normalize.ts";
 
@@ -171,9 +172,9 @@ export class ToolCacheTurn {
     this.recordRawItem(item.itemType, item.callId, item.raw);
   }
 
-  /** `recordResponse`: complete tool calls of a response event. */
+  /** `recordResponse`: complete tool calls of a response event (upstream output: its replay-unsafe fields are dropped). */
   recordResponse(payload: Json): void {
-    for (const item of toolCallsOfPayload(payload))
+    for (const item of toolCallsOfPayload(payload).map(stripReplayOutputOnlyFields))
       this.recordRawItem(asString(item["type"]), asString(item["call_id"]), item);
   }
 
@@ -214,7 +215,7 @@ export const recordToolCallsFromPayload = (
 ): void => {
   if (sessionKey.trim() === "") return;
 
-  for (const item of toolCallsOfPayload(payload))
+  for (const item of toolCallsOfPayload(payload).map(stripReplayOutputOnlyFields))
     caches.calls.record(sessionKey, asString(item["call_id"]), item);
 };
 
