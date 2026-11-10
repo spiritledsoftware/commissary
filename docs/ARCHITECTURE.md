@@ -721,6 +721,11 @@ Core contracts every provider slice implements (Go references in each module hea
   through `ModelCapabilities.registryLayer` (the credential's own registration first - prefix/alias/config `models` aware -
   then `snapshot.lookupModelInfo`) and hands them to the executor as `ExecutorRequest.modelInfo` plus
   `modelLookup = snapshot.lookupModelInfo`, which executors pass to `Thinking.apply`.
+  For a Claude client on an `is-compat` Chat Completions model, `Thinking.live` ends with Go's
+  `reconcileClaudeOpenAICompatToolCallReasoning` (CLIProxyAPI `0e0cab0d`): once the suffix and capability rules have left a
+  canonical `reasoning_effort`, assistant tool-call turns get a `" "` `reasoning_content` placeholder (DeepSeek-style
+  upstreams reject them without one) or lose a blank one; payload rules run afterwards and can override or filter it. The
+  compat request translator adds the same placeholder from the Claude body and the model suffixes.
 - **Sessions**: `handlers/session.ts` ports `session.ExtractSessionInfo` (headers, Claude `metadata.user_id`, body fields)
   and feeds `PickRequest.session` together with the Access `callerScope`. Requests without an explicit marker are bound by
   content (`models/session-routing/`, `routing.ts` = `prepareSessionRouting`, only when `routing.session-affinity` is on):

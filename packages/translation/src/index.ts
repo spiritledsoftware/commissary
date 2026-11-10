@@ -22,6 +22,11 @@ export {
 export { builtinTranslators } from "./translator/builtin.ts";
 
 export {
+  isReasoningEffortActive,
+  REASONING_CONTENT_PLACEHOLDER,
+} from "./translator/openai/claude/request.ts";
+
+export {
   getModelInfoLookup,
   lookupModelInfo,
   setModelInfoLookup,

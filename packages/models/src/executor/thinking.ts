@@ -9,11 +9,13 @@
  * applier); {@link Thinking.noop} passes bodies through (tests that do not care about thinking).
  */
 import { Context, Effect, Layer } from "effect";
-import { type Json, cloneJson } from "@commissary/json";
+import { type Json, cloneJson, del, get, isJsonArray, set } from "@commissary/json";
 import type { Format } from "@commissary/translation/formats";
 import {
   builtinTranslators,
+  isReasoningEffortActive,
   noopSummaryHooks,
+  REASONING_CONTENT_PLACEHOLDER,
   type SummaryHooks,
   summaryHooks,
   TranslatorRegistry,
@@ -91,6 +93,48 @@ const translatedSummaryConfig = (
   return current;
 };
 
+/** `shouldReconcileClaudeOpenAICompatToolCallReasoning`: a Claude client talking to a compat Chat Completions model. */
+const shouldReconcileClaudeCompatToolCallReasoning = (request: ThinkingRequest): boolean =>
+  request.modelInfo?.isCompat === true &&
+  lowerFormat(request.from) === "claude" &&
+  lowerFormat(request.to) === "openai";
+
+/**
+ * `reconcileClaudeOpenAICompatToolCallReasoningDoc`: after thinking resolution (suffix, capability normalisation) the
+ * body's `reasoning_effort` is canonical. Active: assistant tool-call turns without non-blank reasoning get the single
+ * space placeholder; inactive: a blank `reasoning_content` on them is dropped. Payload rules run afterwards.
+ */
+export const reconcileClaudeCompatToolCallReasoning = (body: Json): Json => {
+  const messages = get(body, "messages");
+
+  if (!isJsonArray(messages)) return body;
+  const active = isReasoningEffortActive(get(body, "reasoning_effort"));
+  let out = body;
+
+  messages.forEach((message, index) => {
+    const role = get(message, "role");
+
+    if (typeof role !== "string" || role.trim() !== "assistant") return;
+    const toolCalls = get(message, "tool_calls");
+
+    if (!isJsonArray(toolCalls) || toolCalls.length === 0) return;
+    const reasoning = get(message, "reasoning_content");
+    const path = `messages.${index}.reasoning_content`;
+    const text = typeof reasoning === "string" ? reasoning : "";
+
+    if (active) {
+      if (reasoning === undefined || (text.trim() === "" && text !== REASONING_CONTENT_PLACEHOLDER))
+        out = set(out, path, REASONING_CONTENT_PLACEHOLDER);
+
+      return;
+    }
+
+    if (reasoning !== undefined && text.trim() === "") out = del(out, path);
+  });
+
+  return out;
+};
+
 export class Thinking extends Context.Service<
   Thinking,
   {
@@ -142,7 +186,13 @@ export function makeLiveThinking(translators: TranslatorRegistry) {
         );
       }
 
-      return Effect.succeed(result.body ?? request.body);
+      const resolved = result.body ?? request.body;
+
+      return Effect.succeed(
+        shouldReconcileClaudeCompatToolCallReasoning(request)
+          ? reconcileClaudeCompatToolCallReasoning(resolved)
+          : resolved,
+      );
     },
   });
 }

@@ -11,6 +11,31 @@ import { tokenFixtures as fixtures } from "@commissary/translation/testing";
 const start = (n: number) =>
   `event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":${n}}}}\n\n`;
 
+/**
+ * Golden stream scenarios whose recorded steps predate an upstream change Commissary has ported, by scenario name:
+ * the events each step (by index) must now emit (ticket C3, Go `9a7db8e3`). `message_delta` and `message_stop` wait
+ * for the trailing usage-only chunk or `[DONE]` instead of firing on the chunk that carries `finish_reason`, so in
+ * "openai upstream" they move from step 2 to the `[DONE]` step. Regenerating `tokens.json` at `d1ea84f4` gives the
+ * steps below. The fixture stays untouched; F2 (#388) regenerates it and deletes this table.
+ */
+const AHEAD_OF_FIXTURE: ReadonlyMap<string, ReadonlyMap<number, ReadonlyArray<string>>> = new Map([
+  [
+    "openai upstream",
+    new Map([
+      [2, ['event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n']],
+      [
+        3,
+        [
+          'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":11,"output_tokens":3}}\n\n',
+          'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+        ],
+      ],
+    ]),
+  ],
+]);
+
+const usedAhead = new Set<string>();
+
 describe("Claude input token estimate", () => {
   it("counts Claude requests like helps.CountClaudeInputTokens", () => {
     expect(fixtures.claude.length).toBeGreaterThan(5);
@@ -37,13 +62,21 @@ describe("Claude input token estimate", () => {
         state,
       };
 
-      for (const step of scenario.steps) {
+      const ahead = AHEAD_OF_FIXTURE.get(scenario.name);
+
+      if (ahead !== undefined) usedAhead.add(scenario.name);
+
+      scenario.steps.forEach((step, index) => {
         expect(
           builtinTranslators.translateStream("claude", scenario.upstream, context, step.in),
-        ).toEqual(step.out);
-      }
+        ).toEqual(ahead?.get(index) ?? step.out);
+      });
     });
   }
+
+  it("consumed every ahead-of-fixture entry", () => {
+    expect([...AHEAD_OF_FIXTURE.keys()].filter((key) => !usedAhead.has(key))).toEqual([]);
+  });
 
   it("leaves Claude upstreams and non-Claude clients alone", () => {
     const start =

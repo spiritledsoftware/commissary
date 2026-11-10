@@ -15,6 +15,12 @@ import {
 } from "@commissary/json";
 import { claudeOutputEffort } from "../../../thinking/claude-effort-directive.ts";
 import { convertBudgetToLevel } from "../../../thinking/convert.ts";
+import {
+  parseLevelSuffix,
+  parseNumericSuffix,
+  parseSpecialSuffix,
+  parseSuffix,
+} from "../../../thinking/suffix.ts";
 import { getThinkingText } from "../../../thinking/text.ts";
 import { alignOpenAIToolCallMessages } from "../common/openai-tools.ts";
 import { getStr, isArr, isObj, present, raw, str } from "../common/read.ts";
@@ -337,6 +343,12 @@ const convertClaudeRequestToOpenAIImpl = (
     if (effort !== "") out.reasoning_effort = effort;
   }
 
+  const reasoningActive = isClaudeRequestReasoningActive(
+    out.reasoning_effort,
+    modelName,
+    getStr(root, "model"),
+  );
+
   let messageItems: Json[] = [];
 
   const systemContentItems: Json[] = [];
@@ -512,7 +524,13 @@ const convertClaudeRequestToOpenAIImpl = (
               content: hasContent ? contentItems : "",
             };
 
-            if (hasReasoning) msgJson.reasoning_content = reasoningContent;
+            if (hasReasoning) {
+              msgJson.reasoning_content = reasoningContent;
+            } else if (hasToolCalls && preserveThinkingBlocks && reasoningActive) {
+              // Tool-call turn without replayable thinking text: compat thinking upstreams (DeepSeek, Moonshot/Kimi)
+              // require reasoning_content on it while reasoning is active.
+              msgJson.reasoning_content = REASONING_CONTENT_PLACEHOLDER;
+            }
 
             if (hasToolCalls) msgJson.tool_calls = toolCalls;
             messageItems.push(msgJson);
@@ -599,6 +617,50 @@ const convertClaudeRequestToOpenAIImpl = (
   if (err !== undefined) throw err;
 
   return out;
+};
+
+/** `isThinkingSuffixActive`: whether a `model(suffix)` turns reasoning on (`[active, recognised]`). */
+const thinkingSuffixActive = (model: string): readonly [boolean, boolean] => {
+  const suffix = parseSuffix(model.trim());
+
+  if (!suffix.hasSuffix) return [false, false];
+  const mode = parseSpecialSuffix(suffix.rawSuffix);
+
+  if (mode !== undefined) return [mode !== "none", true];
+  const budget = parseNumericSuffix(suffix.rawSuffix);
+
+  if (budget !== undefined) return [budget > 0, true];
+  const level = parseLevelSuffix(suffix.rawSuffix);
+
+  if (level !== undefined) return [level !== "none", true];
+
+  return [false, false];
+};
+
+/** The `reasoning_content` the compat translator and the thinking reconciliation put on tool-call turns without thinking. */
+export const REASONING_CONTENT_PLACEHOLDER = " ";
+
+/** Whether a canonical `reasoning_effort` turns reasoning on (anything but empty, `none`, `0` or `false`). */
+export const isReasoningEffortActive = (effort: Json | undefined): boolean => {
+  if (typeof effort !== "string") return false;
+  const resolved = effort.trim().toLowerCase();
+
+  return resolved !== "" && resolved !== "none" && resolved !== "0" && resolved !== "false";
+};
+
+/** `isClaudeRequestReasoningActive`: model suffixes win over the body, then the translated `reasoning_effort`. */
+const isClaudeRequestReasoningActive = (
+  effort: Json | undefined,
+  modelName: string,
+  payloadModel: string,
+): boolean => {
+  for (const model of [modelName, payloadModel]) {
+    const [active, recognised] = thinkingSuffixActive(model);
+
+    if (recognised) return active;
+  }
+
+  return isReasoningEffortActive(effort);
 };
 
 /** `ConvertClaudeRequestToOpenAI`. */

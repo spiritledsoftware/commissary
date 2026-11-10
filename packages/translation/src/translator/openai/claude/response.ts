@@ -1,7 +1,8 @@
 /**
  * OpenAI Chat Completions provider -> Claude Messages client (response).
  *
- * Go source: internal/translator/openai/claude/openai_claude_response.go.
+ * Go source: internal/translator/openai/claude/openai_claude_response.go (upstream c449529e, 9a7db8e3, 6044c5d1,
+ * 69637a66).
  */
 import { asInt, get, type Json, type JsonObject } from "@commissary/json";
 import { sseEvent } from "../../../sse.ts";
@@ -47,6 +48,8 @@ export interface ClaudeStreamParams {
   messageStarted: boolean;
   messageStopSent: boolean;
   toolCallBlockIndexes: Map<number, number>;
+  /** Chunk-local tool_calls array position -> accumulator key, when the upstream omits `tool_calls[].index`. */
+  omittedToolCallIndexes: Map<number, number>;
   textContentBlockIndex: number;
   thinkingContentBlockIndex: number;
   nextContentBlockIndex: number;
@@ -75,6 +78,7 @@ const newParams = (): ClaudeStreamParams => ({
   messageStarted: false,
   messageStopSent: false,
   toolCallBlockIndexes: new Map(),
+  omittedToolCallIndexes: new Map(),
   textContentBlockIndex: -1,
   thinkingContentBlockIndex: -1,
   nextContentBlockIndex: 0,
@@ -139,6 +143,15 @@ const mapOpenAIFinishReasonToAnthropic = (reason: string): string => {
   }
 };
 
+/** `mapOpenAINonStreamFinishReasonToAnthropic`: tool calls win unless the output was cut off or filtered. */
+const mapOpenAINonStreamFinishReasonToAnthropic = (
+  openAIReason: string,
+  hasToolCall: boolean,
+): string =>
+  hasToolCall && openAIReason !== "length" && openAIReason !== "content_filter"
+    ? "tool_use"
+    : mapOpenAIFinishReasonToAnthropic(openAIReason);
+
 interface OpenAIUsage {
   inputTokens: number;
   outputTokens: number;
@@ -168,6 +181,17 @@ const extractOpenAIUsage = (usage: Json | undefined): OpenAIUsage => {
   if (inputTokens < 0) inputTokens = 0;
 
   return { inputTokens, outputTokens, cachedTokens, cacheWriteTokens };
+};
+
+/** `extractOpenAIContentPartThinkingText`: the text of a typed `thinking`/`reasoning` content part. */
+const extractOpenAIContentPartThinkingText = (part: Json): string => {
+  for (const field of ["thinking", "reasoning", "reasoning_content", "text"]) {
+    const texts = collectOpenAIReasoningTexts(get(part, field));
+
+    if (texts.length > 0) return texts.join("");
+  }
+
+  return "";
 };
 
 const hasValidToolCallArguments = (param: ClaudeStreamParams): boolean => {
@@ -426,6 +450,188 @@ const cachedUsage = (param: ClaudeStreamParams): OpenAIUsage => ({
   cacheWriteTokens: param.usageCacheWriteTokens,
 });
 
+/** `emitStreamingThinkingDelta`. Anthropic rejects whitespace-only thinking blocks, so whitespace may only extend an open one. */
+const emitStreamingThinkingDelta = (
+  param: ClaudeStreamParams,
+  reasoningText: string,
+  results: string[],
+): void => {
+  if (reasoningText === "") return;
+
+  if (param.openToolCallIndex !== -1) {
+    const last = param.interleavedContentChunks[param.interleavedContentChunks.length - 1];
+
+    if (last !== undefined && last.type === "thinking") last.text += reasoningText;
+    else if (reasoningText.trim() !== "")
+      param.interleavedContentChunks.push({ type: "thinking", text: reasoningText });
+
+    return;
+  }
+
+  if (!param.thinkingContentBlockStarted && reasoningText.trim() === "") return;
+  stopTextContentBlock(param, results);
+
+  if (!param.thinkingContentBlockStarted) {
+    if (param.thinkingContentBlockIndex === -1) {
+      param.thinkingContentBlockIndex = param.nextContentBlockIndex;
+      param.nextContentBlockIndex++;
+    }
+
+    results.push(
+      ev("content_block_start", {
+        type: "content_block_start",
+        index: param.thinkingContentBlockIndex,
+        content_block: { type: "thinking", thinking: "" },
+      }),
+    );
+    param.thinkingContentBlockStarted = true;
+  }
+
+  results.push(
+    ev("content_block_delta", {
+      type: "content_block_delta",
+      index: param.thinkingContentBlockIndex,
+      delta: { type: "thinking_delta", thinking: reasoningText },
+    }),
+  );
+};
+
+/** `emitStreamingTextDelta`. */
+const emitStreamingTextDelta = (
+  param: ClaudeStreamParams,
+  text: string,
+  results: string[],
+): void => {
+  if (text === "") return;
+
+  if (param.openToolCallIndex !== -1) {
+    // A tool call block is open on the wire: buffer the text so content blocks stay strictly sequential.
+    const last = param.interleavedContentChunks[param.interleavedContentChunks.length - 1];
+
+    if (last !== undefined && last.type === "text") last.text += text;
+    else param.interleavedContentChunks.push({ type: "text", text });
+    param.contentAccumulatorLength += text.length;
+
+    return;
+  }
+
+  if (!param.textContentBlockStarted) {
+    stopThinkingContentBlock(param, results);
+
+    if (param.textContentBlockIndex === -1) {
+      param.textContentBlockIndex = param.nextContentBlockIndex;
+      param.nextContentBlockIndex++;
+    }
+
+    results.push(
+      ev("content_block_start", {
+        type: "content_block_start",
+        index: param.textContentBlockIndex,
+        content_block: { type: "text", text: "" },
+      }),
+    );
+    param.textContentBlockStarted = true;
+  }
+
+  results.push(
+    ev("content_block_delta", {
+      type: "content_block_delta",
+      index: param.textContentBlockIndex,
+      delta: { type: "text_delta", text },
+    }),
+  );
+  param.contentAccumulatorLength += text.length;
+};
+
+const toolUseBlockFor = (toolCall: Json, toolNameMap: NameMap): Json => ({
+  type: "tool_use",
+  id: sanitizeClaudeToolId(getStr(toolCall, "id")),
+  name: mapToolName(toolNameMap, getStr(toolCall, "function.name")),
+  input: toolUseInput(getStr(toolCall, "function.arguments")),
+});
+
+/** `appendOpenAINonStreamingMessageContent`: a string or typed-part `message.content` -> Claude content blocks. */
+const appendOpenAINonStreamingMessageContent = (
+  contentResult: Json | undefined,
+  toolNameMap: NameMap,
+  blocks: Json[],
+): boolean => {
+  let hasToolCall = false;
+
+  if (contentResult === undefined) return hasToolCall;
+
+  if (isArr(contentResult)) {
+    let text = "";
+    let thinking = "";
+
+    const flushText = (): void => {
+      if (text.length === 0) return;
+      blocks.push({ type: "text", text });
+      text = "";
+    };
+
+    const flushThinking = (): void => {
+      if (thinking.length === 0) return;
+      blocks.push({ type: "thinking", thinking });
+      thinking = "";
+    };
+
+    for (const item of contentResult) {
+      switch (getStr(item, "type")) {
+        case "text": {
+          const partText = getStr(item, "text");
+
+          if (partText !== "") {
+            flushThinking();
+            text += partText;
+          }
+
+          break;
+        }
+
+        case "tool_calls": {
+          flushThinking();
+          flushText();
+          const toolCalls = get(item, "tool_calls");
+
+          if (isArr(toolCalls)) {
+            for (const toolCall of toolCalls) {
+              hasToolCall = true;
+              blocks.push(toolUseBlockFor(toolCall, toolNameMap));
+            }
+          }
+
+          break;
+        }
+
+        case "reasoning":
+        case "thinking": {
+          const thinkingText = extractOpenAIContentPartThinkingText(item);
+
+          // Whitespace may only extend an open thinking block (Anthropic rejects blank ones).
+          if (thinking.length > 0 || thinkingText.trim() !== "") {
+            flushText();
+            thinking += thinkingText;
+          }
+
+          break;
+        }
+
+        default:
+          flushThinking();
+          flushText();
+      }
+    }
+
+    flushThinking();
+    flushText();
+  } else if (typeof contentResult === "string" && contentResult !== "") {
+    blocks.push({ type: "text", text: contentResult });
+  }
+
+  return hasToolCall;
+};
+
 /** `convertOpenAIStreamingChunkToAnthropic`. */
 const convertOpenAIStreamingChunkToAnthropic = (
   rootJson: Json,
@@ -462,83 +668,33 @@ const convertOpenAIStreamingChunkToAnthropic = (
       param.messageStarted = true;
     }
 
-    for (const reasoningText of collectOpenAIObjectReasoningTexts(delta)) {
-      if (reasoningText === "") continue;
-
-      if (param.openToolCallIndex !== -1) {
-        const last = param.interleavedContentChunks[param.interleavedContentChunks.length - 1];
-
-        if (last !== undefined && last.type === "thinking") last.text += reasoningText;
-        else param.interleavedContentChunks.push({ type: "thinking", text: reasoningText });
-      } else {
-        stopTextContentBlock(param, results);
-
-        if (!param.thinkingContentBlockStarted) {
-          if (param.thinkingContentBlockIndex === -1) {
-            param.thinkingContentBlockIndex = param.nextContentBlockIndex;
-            param.nextContentBlockIndex++;
-          }
-
-          results.push(
-            ev("content_block_start", {
-              type: "content_block_start",
-              index: param.thinkingContentBlockIndex,
-              content_block: { type: "thinking", thinking: "" },
-            }),
-          );
-          param.thinkingContentBlockStarted = true;
-        }
-
-        results.push(
-          ev("content_block_delta", {
-            type: "content_block_delta",
-            index: param.thinkingContentBlockIndex,
-            delta: { type: "thinking_delta", thinking: reasoningText },
-          }),
-        );
-      }
-    }
+    for (const reasoningText of collectOpenAIObjectReasoningTexts(delta))
+      emitStreamingThinkingDelta(param, reasoningText, results);
 
     const content = get(delta, "content");
 
-    if (content !== undefined && str(content) !== "") {
-      const text = str(content);
-
-      if (param.openToolCallIndex !== -1) {
-        // A tool call block is open on the wire: buffer the text so content blocks stay strictly sequential.
-        const last = param.interleavedContentChunks[param.interleavedContentChunks.length - 1];
-
-        if (last !== undefined && last.type === "text") last.text += text;
-        else param.interleavedContentChunks.push({ type: "text", text });
-        param.contentAccumulatorLength += text.length;
-      } else {
-        if (!param.textContentBlockStarted) {
-          stopThinkingContentBlock(param, results);
-
-          if (param.textContentBlockIndex === -1) {
-            param.textContentBlockIndex = param.nextContentBlockIndex;
-            param.nextContentBlockIndex++;
-          }
-
-          results.push(
-            ev("content_block_start", {
-              type: "content_block_start",
-              index: param.textContentBlockIndex,
-              content_block: { type: "text", text: "" },
-            }),
-          );
-          param.textContentBlockStarted = true;
+    if (isArr(content)) {
+      for (const part of content) {
+        if (typeof part === "string") {
+          emitStreamingTextDelta(param, part, results);
+          continue;
         }
 
-        results.push(
-          ev("content_block_delta", {
-            type: "content_block_delta",
-            index: param.textContentBlockIndex,
-            delta: { type: "text_delta", text },
-          }),
-        );
-        param.contentAccumulatorLength += text.length;
+        switch (getStr(part, "type")) {
+          case "thinking":
+          case "reasoning":
+            emitStreamingThinkingDelta(param, extractOpenAIContentPartThinkingText(part), results);
+            break;
+          case "text":
+            emitStreamingTextDelta(param, getStr(part, "text"), results);
+            break;
+          default:
+            // Unknown parts pass through as their raw JSON text (gjson `String()`).
+            emitStreamingTextDelta(param, part === null ? "" : JSON.stringify(part), results);
+        }
       }
+    } else if (typeof content === "string") {
+      emitStreamingTextDelta(param, content, results);
     }
 
     const toolCalls = get(delta, "tool_calls");
@@ -546,8 +702,33 @@ const convertOpenAIStreamingChunkToAnthropic = (
     if (isArr(toolCalls)) {
       if (param.toolCallsAccumulator === undefined) param.toolCallsAccumulator = new Map();
       toolCalls.forEach((toolCall, arrayIndex) => {
+        const idValue = get(toolCall, "id");
+        const incomingId = typeof idValue === "string" ? idValue : "";
         const indexValue = get(toolCall, "index");
-        const index = indexValue !== undefined ? asInt(indexValue) : arrayIndex;
+        let index: number;
+
+        if (indexValue !== undefined) {
+          index = asInt(indexValue);
+        } else {
+          // The upstream omits tool_calls[].index: a new id at the same array position starts a new call.
+          index = param.omittedToolCallIndexes.get(arrayIndex) ?? arrayIndex;
+          const existing = param.toolCallsAccumulator?.get(index);
+
+          if (
+            existing !== undefined &&
+            incomingId !== "" &&
+            existing.id !== "" &&
+            existing.id !== incomingId
+          ) {
+            let nextIndex = index + 1;
+
+            for (const key of param.toolCallsAccumulator?.keys() ?? [])
+              if (key >= nextIndex) nextIndex = key + 1;
+            index = nextIndex;
+            param.omittedToolCallIndexes.set(arrayIndex, index);
+          }
+        }
+
         let accumulator = param.toolCallsAccumulator?.get(index);
 
         if (accumulator === undefined) {
@@ -556,9 +737,7 @@ const convertOpenAIStreamingChunkToAnthropic = (
         }
 
         // Only accept JSON-string, non-empty ids so malformed upstream fields cannot overwrite a valid id.
-        const id = get(toolCall, "id");
-
-        if (typeof id === "string" && id !== "") accumulator.id = id;
+        if (incomingId !== "" && !accumulator.startEmitted) accumulator.id = incomingId;
 
         const fn = get(toolCall, "function");
 
@@ -628,7 +807,9 @@ const convertOpenAIStreamingChunkToAnthropic = (
       param.contentAccumulatorLength > 0 ||
       param.interleavedContentChunks.length > 0);
 
-  if (!param.messageDeltaSent && (param.finishReason !== "" || isTrailingUsageChunk) && hasUsage) {
+  // A chunk with finish_reason and preliminary usage must not end the message: the authoritative counts (such as
+  // cached_tokens) can arrive in the trailing usage-only chunk, and [DONE] closes a stream without one.
+  if (!param.messageDeltaSent && isTrailingUsageChunk) {
     finalizeOpenAIAnthropicContentBlocks(param, results);
     emitAnthropicMessageDelta(param, results, cachedUsage(param));
     emitMessageStopIfNeeded(param, results);
@@ -695,32 +876,33 @@ const convertOpenAINonStreamingToAnthropic = (root: Json): string[] => {
     const contentBlocks: Json[] = [];
 
     for (const reasoningText of collectOpenAIObjectReasoningTexts(get(choice, "message"))) {
-      if (reasoningText === "") continue;
+      if (reasoningText.trim() === "") continue;
       contentBlocks.push({ type: "thinking", thinking: reasoningText });
     }
 
-    const content = get(choice, "message.content");
+    let hasToolCall = appendOpenAINonStreamingMessageContent(
+      get(choice, "message.content"),
+      undefined,
+      contentBlocks,
+    );
 
-    if (content !== undefined && str(content) !== "")
-      contentBlocks.push({ type: "text", text: str(content) });
     const toolCalls = get(choice, "message.tool_calls");
 
     if (isArr(toolCalls)) {
       for (const toolCall of toolCalls) {
-        contentBlocks.push({
-          type: "tool_use",
-          id: sanitizeClaudeToolId(getStr(toolCall, "id")),
-          name: getStr(toolCall, "function.name"),
-          input: toolUseInput(getStr(toolCall, "function.arguments")),
-        });
+        hasToolCall = true;
+        contentBlocks.push(toolUseBlockFor(toolCall, undefined));
       }
     }
 
     if (contentBlocks.length > 0) out.content = contentBlocks;
     const finishReason = get(choice, "finish_reason");
 
-    if (finishReason !== undefined)
-      out.stop_reason = mapOpenAIFinishReasonToAnthropic(str(finishReason));
+    if (finishReason !== undefined || hasToolCall)
+      out.stop_reason = mapOpenAINonStreamFinishReasonToAnthropic(
+        finishReason === undefined ? "" : str(finishReason),
+        hasToolCall,
+      );
   }
 
   const usage = get(root, "usage");
@@ -796,103 +978,32 @@ export const convertOpenAIResponseToClaudeNonStream = (
   };
 
   let hasToolCall = false;
-  let stopReasonSet = false;
+  let finishReason = "";
   const blocks: Json[] = [];
-
-  const toolUseBlock = (toolCall: Json): Json => ({
-    type: "tool_use",
-    id: sanitizeClaudeToolId(getStr(toolCall, "id")),
-    name: mapToolName(toolNameMap, getStr(toolCall, "function.name")),
-    input: toolUseInput(getStr(toolCall, "function.arguments")),
-  });
 
   const choices = get(root, "choices");
 
   if (isArr(choices) && choices.length > 0) {
     // SAFETY: the enclosing condition checks choices.length > 0.
     const choice = choices[0] as Json;
-    const finishReason = get(choice, "finish_reason");
-
-    if (finishReason !== undefined) {
-      out.stop_reason = mapOpenAIFinishReasonToAnthropic(str(finishReason));
-      stopReasonSet = true;
-    }
+    finishReason = str(get(choice, "finish_reason"));
 
     const message = get(choice, "message");
 
     if (message !== undefined) {
-      const contentResult = get(message, "content");
-
-      if (contentResult !== undefined) {
-        if (isArr(contentResult)) {
-          let text = "";
-          let thinking = "";
-
-          const flushText = (): void => {
-            if (text.length === 0) return;
-            blocks.push({ type: "text", text });
-            text = "";
-          };
-
-          const flushThinking = (): void => {
-            if (thinking.length === 0) return;
-            blocks.push({ type: "thinking", thinking });
-            thinking = "";
-          };
-
-          for (const item of contentResult) {
-            switch (getStr(item, "type")) {
-              case "text":
-                flushThinking();
-                text += getStr(item, "text");
-                break;
-              case "tool_calls": {
-                flushThinking();
-                flushText();
-                const toolCalls = get(item, "tool_calls");
-
-                if (isArr(toolCalls)) {
-                  for (const tc of toolCalls) {
-                    hasToolCall = true;
-                    blocks.push(toolUseBlock(tc));
-                  }
-                }
-
-                break;
-              }
-
-              case "reasoning": {
-                flushText();
-                const t = get(item, "text");
-
-                if (t !== undefined) thinking += str(t);
-                break;
-              }
-
-              default:
-                flushThinking();
-                flushText();
-            }
-          }
-
-          flushThinking();
-          flushText();
-        } else if (typeof contentResult === "string") {
-          if (contentResult !== "") blocks.push({ type: "text", text: contentResult });
-        }
-      }
-
       for (const reasoningText of collectOpenAIObjectReasoningTexts(message)) {
-        if (reasoningText === "") continue;
+        if (reasoningText.trim() === "") continue;
         blocks.push({ type: "thinking", thinking: reasoningText });
       }
 
+      if (appendOpenAINonStreamingMessageContent(get(message, "content"), toolNameMap, blocks))
+        hasToolCall = true;
       const toolCalls = get(message, "tool_calls");
 
       if (isArr(toolCalls)) {
         for (const toolCall of toolCalls) {
           hasToolCall = true;
-          blocks.push(toolUseBlock(toolCall));
+          blocks.push(toolUseBlockFor(toolCall, toolNameMap));
         }
       }
     }
@@ -903,7 +1014,7 @@ export const convertOpenAIResponseToClaudeNonStream = (
 
   if (respUsage !== undefined) out.usage = usageOut(extractOpenAIUsage(respUsage));
 
-  if (!stopReasonSet) out.stop_reason = hasToolCall ? "tool_use" : "end_turn";
+  out.stop_reason = mapOpenAINonStreamFinishReasonToAnthropic(finishReason, hasToolCall);
 
   return JSON.stringify(out);
 };
