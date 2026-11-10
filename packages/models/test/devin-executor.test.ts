@@ -351,6 +351,77 @@ describe("Devin executor behaviour", () => {
   });
 });
 
+const system = (effort: string) => ({ role: "system", content: [], output_config: { effort } });
+
+const claudeChatModelUid = async (requestModel: string, payload: Json): Promise<string> => {
+  const h = await harness(devinCredential(), () => framesResponse([{ flag: 2, hex: "7b7d" }]));
+
+  await execute(
+    executor,
+    h,
+    { model: requestModel, payload: json(payload) },
+    options({
+      sourceFormat: "claude",
+      metadata: { ...options().metadata, requestPath: "/v1/messages" },
+    }),
+  );
+
+  const view = devinPayloadView((h.calls[0] as { bytes: Uint8Array }).bytes.subarray(5)) as {
+    model: string;
+  };
+
+  return view.model;
+};
+
+describe("Devin Claude effort directives (CLIProxyAPI 061ffe6f)", () => {
+  const model = "devin/claude-opus-5-5";
+
+  const topLevelOnly = {
+    model,
+    max_tokens: 1024,
+    thinking: { type: "adaptive" },
+    output_config: { effort: "low" },
+    messages: [{ role: "user", content: "hi" }],
+  };
+
+  const withDirectives = {
+    ...topLevelOnly,
+    messages: [
+      system("medium"),
+      { role: "user", content: "first" },
+      { role: "assistant", content: "ok" },
+      system("high"),
+      { role: "user", content: "hi" },
+    ],
+  };
+
+  const disabledWithDirective = {
+    model,
+    max_tokens: 1024,
+    thinking: { type: "disabled" },
+    messages: [system("high"), { role: "user", content: "hi" }],
+  };
+
+  it("selects the variant of the top-level effort when there is no directive", async () => {
+    expect(await claudeChatModelUid(model, topLevelOnly)).toBe("claude-opus-5-5-low");
+  });
+
+  it("lets the last directive win over the top-level placeholder", async () => {
+    expect(await claudeChatModelUid(model, withDirectives)).toBe("claude-opus-5-5-high");
+  });
+
+  it("keeps the model suffix above a directive", async () => {
+    expect(await claudeChatModelUid(`${model}(medium)`, withDirectives)).toBe(
+      "claude-opus-5-5-medium",
+    );
+  });
+
+  it("does not let a historical directive pick a variant when thinking is disabled", async () => {
+    // `none` is not a level of the model: the default effort stands, never the directive's `high`.
+    expect(await claudeChatModelUid(model, disabledWithDirective)).toBe("claude-opus-5-5-medium");
+  });
+});
+
 describe("Devin tool descriptions (CLIProxyAPI e25b7daf)", () => {
   it("rewrites the exec_command and write_stdin phrases embedded in the Codex code-mode exec tool", async () => {
     const description =

@@ -55,6 +55,7 @@ import {
   nextSessionTurnIndex,
   resolveSessionIds,
 } from "./credentials.ts";
+import { claudeEffortDirective } from "./effort-directive.ts";
 import { checkDevinUserTurns, parseInteractionsPayload } from "./interactions.ts";
 import { resolveDevinChatModelUid } from "./models.ts";
 import { devinPayloadDefaultsSource, finalizeDevinPayload } from "./payload.ts";
@@ -218,9 +219,13 @@ export const makeDevinExecutor = (executorOptions: DevinExecutorOptions = {}): P
     if (modelMax > 0 && (maxTokens > modelMax || maxTokens <= 0)) maxTokens = modelMax;
 
     // The cron-refreshed catalog (registry snapshot) wins over the embedded one, like Go's active devin catalog.
+    // Translation drops Claude effort directives and keeps the top-level effort, which clients that send directives pin
+    // to a prompt-cache placeholder: the last directive is the effort of the turn.
+    const directive = from === Formats.Claude ? claudeEffortDirective(request.payload) : "";
+
     const chatModelUid = resolveDevinChatModelUid(
       request.model,
-      parsed.thinkingLevel,
+      directive !== "" ? directive : parsed.thinkingLevel,
       parsed.budgetTokens,
       executorOptions.levelsOf ??
         ((id) => lookupDevinInfo(request, id)?.thinking?.levels ?? levelsOf(id)),
