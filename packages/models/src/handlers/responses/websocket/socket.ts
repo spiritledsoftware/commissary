@@ -49,7 +49,7 @@ import {
   shouldExposeError,
   truncateCloseReason,
 } from "./frames.ts";
-import { isCodexResponsesClient } from "../framer.ts";
+import { isCodexResponsesClient, isPrivateResponsesEvent } from "../framer.ts";
 import { syntheticPrewarmPayloads } from "./normalize.ts";
 import {
   commitPrewarm,
@@ -135,6 +135,7 @@ export const runResponsesSocket = <R>(
     Effect.gen(function* () {
       const { io, sessionId } = deps;
       const state: SocketState = newSocketState();
+      const codexClient = isCodexResponsesClient(deps.headers);
       const commands = yield* Queue.bounded<string, Cause.Done>(16);
       let interruptSignal: Deferred.Deferred<string> | undefined;
       let closed = false;
@@ -258,7 +259,8 @@ export const runResponsesSocket = <R>(
                 const type = asString(payload["type"]);
 
                 // Moderation metadata is private to Codex clients (CLIProxyAPI ae65e26d).
-                if (type === "response.metadata" && !isCodexResponsesClient(deps.headers)) continue;
+                if (type === "response.metadata" && isPrivateResponsesEvent(type, codexClient))
+                  continue;
 
                 if (type === "response.created") {
                   responseStarted = true;

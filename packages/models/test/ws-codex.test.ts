@@ -116,44 +116,44 @@ describe("Responses WebSocket over an upstream WebSocket (Codex)", () => {
   });
 
   it.each([
-    ["a standard client", {}, false],
-    ["a Codex client (user agent)", { "user-agent": "codex_cli_rs/1.0" }, true],
-    ["a Codex client (originator)", { originator: "codex_cli_rs" }, true],
-  ])(
-    "forwards response.metadata to %s only when it is a Codex client",
-    async (_name, headers, keeps) => {
-      // CLIProxyAPI ae65e26d: moderation metadata is private to Codex clients.
-      const s = setup([wsCredential()], {
-        onConnection: (connection) => {
-          void (async () => {
-            await connection.next();
-            connection.server.send(JSON.stringify(created));
-            connection.server.send(
-              JSON.stringify({ type: "response.metadata", metadata: { moderation: {} } }),
-            );
-            connection.server.send(JSON.stringify(done()));
-          })();
-        },
-      });
+    ["a standard client", {}, ["response.created", "response.completed"]],
+    [
+      "a Codex client (user agent)",
+      { "user-agent": "codex_cli_rs/1.0" },
+      ["response.created", "response.metadata", "response.completed"],
+    ],
+    [
+      "a Codex client (originator)",
+      { originator: "codex_cli_rs" },
+      ["response.created", "response.metadata", "response.completed"],
+    ],
+  ])("forwards response.metadata to %s as expected", async (_name, headers, expected) => {
+    // CLIProxyAPI ae65e26d: moderation metadata is private to Codex clients.
+    const s = setup([wsCredential()], {
+      onConnection: (connection) => {
+        void (async () => {
+          await connection.next();
+          connection.server.send(JSON.stringify(created));
+          connection.server.send(
+            JSON.stringify({ type: "response.metadata", metadata: { moderation: {} } }),
+          );
+          connection.server.send(JSON.stringify(done()));
+        })();
+      },
+    });
 
-      const client = await s.connect(headers);
-      client.send({
-        type: "response.create",
-        model: "gpt-5.4",
-        input: [{ type: "message", role: "user", content: "hi" }],
-      });
-      const types = [(await client.nextJson())["type"]];
+    const client = await s.connect(headers);
+    client.send({
+      type: "response.create",
+      model: "gpt-5.4",
+      input: [{ type: "message", role: "user", content: "hi" }],
+    });
+    const types: unknown[] = [];
 
-      if (keeps) types.push((await client.nextJson())["type"]);
-      types.push((await client.nextJson())["type"]);
-      expect(types).toEqual(
-        keeps
-          ? ["response.created", "response.metadata", "response.completed"]
-          : ["response.created", "response.completed"],
-      );
-      client.close();
-    },
-  );
+    for (let i = 0; i < expected.length; i++) types.push((await client.nextJson())["type"]);
+    expect(types).toEqual(expected);
+    client.close();
+  });
 
   it("keeps the upstream socket for the session and passes continuations through", async () => {
     const s = setup([wsCredential()], {

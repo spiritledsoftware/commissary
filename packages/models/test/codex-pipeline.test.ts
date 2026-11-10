@@ -313,6 +313,7 @@ describe("POST /v1/responses (stream)", () => {
     const events = [
       frame({ type: "codex.rate_limits", rate_limits: { allowed: true } }),
       frame({ type: "codex.response.metadata", metadata: {} }),
+      frame({ type: "response.metadata", metadata: { moderation: {} } }),
       ...TEXT_STREAM,
     ];
 
@@ -326,6 +327,7 @@ describe("POST /v1/responses (stream)", () => {
     ).text();
 
     expect(plain).not.toContain("codex.");
+    expect(plain).not.toContain("response.metadata");
     const official = pipeline(() => sseResponse(events));
 
     const codex = await (
@@ -339,6 +341,7 @@ describe("POST /v1/responses (stream)", () => {
     ).text();
 
     expect(codex).toContain("codex.response.metadata");
+    expect(codex).toContain('"type":"response.metadata"');
     expect(codex).not.toContain("codex.rate_limits");
   });
 

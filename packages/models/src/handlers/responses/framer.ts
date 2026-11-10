@@ -2,12 +2,14 @@
  * Responses SSE frame assembler (downstream framing for `/v1/responses`).
  *
  * Go source: sdk/api/handlers/openai/openai_responses_handlers.go (responsesSSEFramer and its helpers,
- * responsesStreamErrorText, sanitizeResponsesStreamErrorMessage, isCodexResponsesClientRequest). Executor chunks may
- * be single lines or partial frames: they are buffered into complete frames; private events (`responsesapi.*`,
- * `codex.*`, and `response.metadata` for non-Codex clients) are filtered; JSON split across chunk boundaries is
- * recovered and field names split mid-token are held back (ae65e26d); error payloads become one normalised `error`/`response.failed` frame; an empty
- * `response.output` of the final `response.completed` is rebuilt from the `response.output_item.done` items; nothing
- * is written after a terminal event. The stream ends with a bare newline and no `[DONE]`.
+ * responsesStreamErrorText, sanitizeResponsesStreamErrorMessage, isCodexResponsesClientRequest; since ae65e26d also
+ * responsesSSERecoverJSONFrame, responsesSSEAppendChunk, responsesSSEChunkField, responsesSSEHasEmptyEventData and
+ * responsesSSEDataEndsInsideJSONString). Executor chunks may be single lines or partial frames: they are buffered into
+ * complete frames; private events (`responsesapi.*`, `codex.*`, and `response.metadata` for non-Codex clients) are
+ * filtered; JSON split across chunk boundaries is recovered and field names split mid-token are held back; error
+ * payloads become one normalised `error`/`response.failed` frame; an empty `response.output` of the final
+ * `response.completed` is rebuilt from the `response.output_item.done` items; nothing is written after a terminal
+ * event. The stream ends with a bare newline and no `[DONE]`.
  */
 import { ExecutionError } from "../../executor/errors.ts";
 import { responsesStreamErrorChunk, responsesStreamFailedChunk } from "../../http/errors.ts";
@@ -35,6 +37,9 @@ const TERMINAL_EVENTS = new Set([
   "response.error",
   "error",
 ]);
+
+/** Single-newline removals tried when recovering a frame; mirrors the cap in Go's `responsesSSERecoverJSONFrame`. */
+const RECOVERY_ATTEMPTS = 8;
 
 const ERROR_MESSAGE_LIMIT = 2048;
 
@@ -338,9 +343,52 @@ const lastLine = (text: string): string => text.slice(text.lastIndexOf("\n") + 1
 
 const isValidJson = (text: string): boolean => tryParseJson(text) !== undefined;
 
-/** gjson reads `type` even from a truncated object; the filter must not let a malformed private frame through. */
-const lenientPayloadType = (payload: string): string =>
-  /^\s*\{[^]*?"type"\s*:\s*"([^"\\]*)"/.exec(payload)?.[1] ?? "";
+/**
+ * gjson reads the top-level `type` even from a truncated object, so a malformed private frame is still filtered. This
+ * scans the object tracking depth and strings and stops at the first top-level `type` string value.
+ */
+export const topLevelPayloadType = (payload: string): string => {
+  let depth = 0;
+  let i = 0;
+
+  while (i < payload.length) {
+    const char = payload.charAt(i);
+
+    if (char === '"') {
+      let end = i + 1;
+
+      while (end < payload.length && payload.charAt(end) !== '"')
+        end += payload.charAt(end) === "\\" ? 2 : 1;
+      const text = payload.slice(i + 1, end);
+      i = end + 1;
+
+      if (depth === 1 && text === "type") {
+        const rest = /^\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(payload.slice(i));
+
+        if (rest !== null) return rest[1] ?? "";
+      }
+
+      continue;
+    }
+
+    if (char === "{" || char === "[") depth++;
+    else if (char === "}" || char === "]") depth--;
+    i++;
+  }
+
+  return "";
+};
+
+/** A private Codex event that standard Responses clients must not see (`response.metadata` is not a public event). */
+export const isPrivateResponsesEvent = (name: string, codexClient: boolean): boolean => {
+  if (name === "" || ERROR_EVENTS.has(name)) return false;
+
+  if (name.startsWith("responsesapi.")) return true;
+
+  if (codexClient) return name === "codex.rate_limits";
+
+  return name.startsWith("codex.") || name === "response.metadata";
+};
 
 /** `writeResponsesSSEChunk`'s trailing separator. */
 const terminate = (frame: string): string => {
@@ -399,23 +447,9 @@ export const responsesFramer = (options: ResponsesFramerOptions): StreamFramer =
   // `closeError` runs before `done`/`terminalError`; frames it flushes are delivered with the next write.
   let pendingFlush = "";
 
-  const shouldFilterPrivateEvent = (streamEvent: string, payloadType: string): boolean => {
-    const check = (raw: string): boolean => {
-      const name = raw.trim();
-
-      if (name === "" || ERROR_EVENTS.has(name)) return false;
-
-      if (name.startsWith("responsesapi.")) return true;
-
-      if (options.codexClient) return name === "codex.rate_limits";
-
-      // `response.metadata` carries the Codex backend's prompt-moderation flags: not a public Responses event, and
-      // clients that parse a closed event list fail the turn on it. Codex clients still receive it.
-      return name.startsWith("codex.") || name === "response.metadata";
-    };
-
-    return check(streamEvent) || check(payloadType);
-  };
+  const shouldFilterPrivateEvent = (streamEvent: string, payloadType: string): boolean =>
+    isPrivateResponsesEvent(streamEvent.trim(), options.codexClient) ||
+    isPrivateResponsesEvent(payloadType.trim(), options.codexClient);
 
   const repairErrorPayload = (payload: Json): string => {
     const status = payloadErrorStatus(payload);
@@ -506,7 +540,7 @@ export const responsesFramer = (options: ResponsesFramerOptions): StreamFramer =
     const payload = tryParseJson(payloadText);
 
     if (payload === undefined)
-      return shouldFilterPrivateEvent(streamEvent, lenientPayloadType(payloadText)) ? "" : frame;
+      return shouldFilterPrivateEvent(streamEvent, topLevelPayloadType(payloadText)) ? "" : frame;
     const payloadType = asString(get(payload, "type"));
 
     if (shouldFilterPrivateEvent(streamEvent, payloadType)) return "";
@@ -558,7 +592,7 @@ export const responsesFramer = (options: ResponsesFramerOptions): StreamFramer =
         : undefined;
     };
 
-    for (const pos of positions.slice(0, 8)) {
+    for (const pos of positions.slice(0, RECOVERY_ATTEMPTS)) {
       const recovered = attempt(frame.slice(0, pos) + frame.slice(pos + 1));
 
       if (recovered !== undefined) return recovered;

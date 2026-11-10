@@ -172,32 +172,47 @@ describe("response.metadata filtering across fragmented frames", () => {
     expect(framer.chunk("\n\n")).toBe("event: custom\ndata:\n\n");
   });
 
-  it("does not split a metadata payload at a field-looking string inside its JSON", () => {
-    for (const marker of [
-      "data: private",
-      "event: private",
-      "id: private",
-      "retry: private",
-      ": private",
-      'escaped " data: private',
-      "escaped \\ event: private",
-    ])
-      for (const codex of [false, true]) {
-        const body = `{"type":"response.metadata","metadata":{"marker":${JSON.stringify(marker)}}}`;
+  // [marker as it appears in the JSON, where the chunk boundary falls (the field-looking text), the JSON-encoded marker]
+  const fieldLooking: ReadonlyArray<readonly [string, string, string]> = [
+    ["data: private", "data: private", '"data: private"'],
+    ["event: private", "event: private", '"event: private"'],
+    ["id: private", "id: private", '"id: private"'],
+    ["retry: private", "retry: private", '"retry: private"'],
+    [": private", ": private", '": private"'],
+    ['escaped " data: private', "data: private", '"escaped \\" data: private"'],
+    ["escaped \\ event: private", "event: private", '"escaped \\\\ event: private"'],
+  ];
+
+  for (const [marker, boundary, encoded] of fieldLooking)
+    for (const codex of [false, true])
+      it(`does not split metadata at ${JSON.stringify(marker)} inside its JSON (${codex ? "codex" : "standard"})`, () => {
+        const body = `{"type":"response.metadata","metadata":{"marker":${encoded}}}`;
         const frame = `data: ${body}\n\n`;
-        const needle = marker.replace('escaped " ', "");
-        const field = frame.indexOf(needle.startsWith("escaped") ? "event: private" : needle);
-        expect(field).toBeGreaterThan(0);
+        const field = frame.indexOf(boundary);
         const got = run([frame.slice(0, field), frame.slice(field), COMPLETED], codex);
 
-        if (codex) expect(got, marker).toContain(body);
+        if (codex) expect(got).toContain(body);
         else {
-          expect(got, marker).not.toContain("response.metadata");
-          expect(got, marker).not.toContain("private");
+          expect(got).not.toContain("response.metadata");
+          expect(got).not.toContain("private");
         }
 
-        expect(got, marker).toContain("response.completed");
-      }
+        expect(got).toContain("response.completed");
+      });
+
+  it("reads only the top-level type of a truncated payload", () => {
+    // Nested `type` before the top-level one: still private.
+    const nestedFirst =
+      'data: {"item":{"type":"message"},"type":"response.metadata","metadata":{"marker":"private"}\n\n';
+
+    // Nested `type` that looks private, but the top-level type is public: kept.
+    const nestedPrivate =
+      'data: {"metadata":{"type":"response.metadata"},"type":"response.output_text.delta","delta":"kept"\n\n';
+
+    const hidden = run([nestedFirst, COMPLETED]);
+    expect(hidden).not.toContain("response.metadata");
+    expect(hidden).not.toContain("private");
+    expect(run([nestedPrivate, COMPLETED])).toContain("kept");
   });
 
   it("filters a malformed private payload", () => {
@@ -212,14 +227,19 @@ describe("response.metadata filtering across fragmented frames", () => {
 });
 
 describe("recovery of JSON split across chunk boundaries", () => {
-  const cases: ReadonlyArray<readonly [string, ReadonlyArray<string>]> = [
+  // [name, chunks, marker the Codex client must read back, whether a genuine `: keepalive` comment must survive]
+  const cases: ReadonlyArray<readonly [string, ReadonlyArray<string>, string, boolean]> = [
     [
       "multiline-json",
       ['data: {"type"', ':"response.metadata",\ndata: "metadata":{"marker":"private"}}\n\n'],
+      "private",
+      false,
     ],
     [
       "multiple-colons",
       ['data: {"type"', ':"response.metadata","metadata"', ':{"marker":"private"}}\n\n'],
+      "private",
+      false,
     ],
     [
       "real-comment",
@@ -227,10 +247,14 @@ describe("recovery of JSON split across chunk boundaries", () => {
         'data: {"type"',
         ':"response.metadata",\n: keepalive\ndata: "metadata":{"marker":"private"}}\n\n',
       ],
+      "private",
+      true,
     ],
     [
       "split-data-field",
       ["data", ': {"type":"response.metadata","metadata":{"marker":"private"}}\n\n'],
+      "private",
+      false,
     ],
     [
       "multiple-colons-with-comment",
@@ -239,6 +263,8 @@ describe("recovery of JSON split across chunk boundaries", () => {
         ':"response.metadata",\n: keepalive\ndata: "metadata"',
         ':{"marker":"private"}}\n\n',
       ],
+      "private",
+      true,
     ],
     [
       "separate-comment-with-split-key",
@@ -248,18 +274,24 @@ describe("recovery of JSON split across chunk boundaries", () => {
         'data: :"response.metadata","metadata"',
         ':{"marker":"private"}}\n\n',
       ],
+      "private",
+      true,
     ],
     [
       "colon-before-string-field",
       ['data: {"type":"response.metadata","metadata":{"marker"', ':"', 'data: private"}}\n\n'],
+      "data: private",
+      false,
     ],
     [
       "empty-comment",
       ['data: {"type"', ":", 'data: :"response.metadata","metadata":{"marker":"private"}}\n\n'],
+      "private",
+      false,
     ],
   ];
 
-  for (const [name, chunks] of cases) {
+  for (const [name, chunks, expectedMarker, keepsComment] of cases) {
     it(`drops the private metadata for standard clients (${name})`, () => {
       const got = run([...chunks, COMPLETED]);
       expect(got).not.toContain("response.metadata");
@@ -277,12 +309,11 @@ describe("recovery of JSON split across chunk boundaries", () => {
         .map((line) => line.slice(5).trim())
         .join("\n");
 
-      const marker = name === "colon-before-string-field" ? "data: private" : "private";
       const parsed = JSON.parse(data) as { type: string; metadata: { marker: string } };
       expect(parsed.type).toBe("response.metadata");
-      expect(parsed.metadata.marker).toBe(marker);
+      expect(parsed.metadata.marker).toBe(expectedMarker);
 
-      if (chunks.join("").includes(": keepalive")) expect(got).toContain(": keepalive");
+      if (keepsComment) expect(got).toContain(": keepalive");
       expect(got).toContain("response.completed");
     });
   }

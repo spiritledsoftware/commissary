@@ -722,12 +722,15 @@ Core contracts every provider slice implements (Go references in each module hea
 - **Handlers**: `POST /v1/responses`, `/v1/responses/compact` and `/backend-api/codex/{responses,responses/compact}` share
   `responses/routes.ts`; the Responses frame assembler (`responses/framer.ts`) buffers partial frames, filters private
   `responsesapi.*`/`codex.*` events and `response.metadata` (moderation flags; Codex clients keep both
-  `codex.response.metadata` and `response.metadata`, the WebSocket forwarder applies the same rule), recovers JSON split across
-  chunk boundaries, rebuilds an empty `response.output`, normalises error payloads (redacting secrets) and ends with a bare newline. `/v1/images/{generations,
-  edits}` (`handlers/openai/images.ts`) serve the Codex `gpt-image-*` models (multipart edits become JSON in the handler;
-  free-plan credentials are excluded through `ExecutionInput.disallowFreeAuth`). `/v1/alpha/search` and
-  `/backend-api/codex/alpha/search` (`handlers/codex/alpha-search.ts`) forward the sanitised body to
-  `.../alpha/search`, selecting only OAuth credentials or provider keys with `alpha-search` (`executor/policy-picker.ts`).
+  `codex.response.metadata` and `response.metadata`, and the WebSocket forwarder applies the same rule through
+  `isPrivateResponsesEvent`), recovers JSON split across chunk boundaries, rebuilds an empty `response.output`,
+  normalises error payloads (redacting secrets) and ends with a bare newline. The image-stream frame recovery of
+  upstream ae65e26d (`sseFrameAccumulator`) has no counterpart: `executor/codex/images.ts` works on parsed events, not
+  raw SSE chunks. `/v1/images/{generations,edits}` (`handlers/openai/images.ts`) serve the Codex `gpt-image-*` models
+  (multipart edits become JSON in the handler; free-plan credentials are excluded through
+  `ExecutionInput.disallowFreeAuth`). `/v1/alpha/search` and `/backend-api/codex/alpha/search`
+  (`handlers/codex/alpha-search.ts`) forward the sanitised body to `.../alpha/search`, selecting only OAuth credentials
+  or provider keys with `alpha-search` (`executor/policy-picker.ts`).
 - **Multi-agent v2, orphan delegation, `is-compat`** (slice #26, see "Codex client rewriting and compat variants"): the executor
   optimises collaboration tools/namespace (`optimizeCodexMultiAgentV2RequestForAuth`, restored in stream, non-stream and WebSocket
   events) and compat models use the `claude -> codex` compat transform.
