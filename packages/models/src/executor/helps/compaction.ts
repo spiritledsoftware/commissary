@@ -1,14 +1,20 @@
 /**
- * Responses compaction capsules shared by the Claude and Antigravity executors.
+ * Responses compaction shared by every executor that compacts locally (Claude, Antigravity, Codex `is-compat`,
+ * OpenAI-compatible, Kimi, Meta, Devin) and by Codex's capsule expansion.
  *
  * Go source: internal/runtime/executor/helps/antigravity_compaction.go (capsule format, summary prompt, response and
- * stream builders) and internal/runtime/executor/claude_executor_compaction.go (Claude request/usage helpers).
+ * stream builders, expansion, status check) and internal/runtime/executor/claude_executor_compaction.go (Claude
+ * request/usage helpers); the local flow is the shared form of codex_executor_execute.go (`executeCodexResponsesCompaction`),
+ * openai_compat_executor.go, kimi_executor.go, meta_executor_execute.go and devin_executor_compaction.go.
  *
  * A capsule is `cpa-ag-compact-v1:` + base64url(no padding)(`nonce(12) || AES-256-GCM(key = SHA-256("CLIProxyAPI"),
  * plaintext = {"summary","model","created_at"})`), produced and opened with WebCrypto. The key is the fixed Go secret
  * on purpose: capsules must stay interchangeable with the Go server and between Workers deployments.
  */
+import { Effect, Stream } from "effect";
 import { sseEvent } from "@commissary/translation/sse";
+import { Formats } from "@commissary/translation/formats";
+import { parseSuffix } from "@commissary/translation/thinking";
 import {
   asInt,
   asString,
@@ -20,10 +26,18 @@ import {
   type Json,
   type JsonObject,
   set,
+  tryParseJson,
 } from "@commissary/json";
 import { parseOpenAIUsage } from "../../usage/record.ts";
+import { ExecutionError } from "../errors.ts";
+import type { ExecutorOptions, ExecutorRequest, ExecutorResponse, StreamResult } from "../types.ts";
+import { previousResponseNotFoundError } from "../websocket/session.ts";
 
 export const COMPACTION_CAPSULE_PREFIX = "cpa-ag-compact-v1:";
+
+const COMPACTION_ITEM_ID_PREFIX = "cmp_ag_compact_";
+
+const COMPACTION_RESPONSE_ID_PREFIX = "resp_ag_compact_";
 
 const KEY_SECRET = "CLIProxyAPI";
 
@@ -43,6 +57,16 @@ const summaryPrompt = (): JsonObject => ({
 /** `RecognizedAntigravityCompactionCapsule`. */
 export const recognizedCompactionCapsule = (encryptedContent: string): boolean =>
   encryptedContent.trim().startsWith(COMPACTION_CAPSULE_PREFIX);
+
+/** `RecognizedResponsesCompactionResponseID`: the id of a response a local compaction minted. */
+export const recognizedCompactionResponseId = (responseId: string): boolean =>
+  responseId.trim().startsWith(COMPACTION_RESPONSE_ID_PREFIX);
+
+/** `isRecognizedCPACompactionItem`: a `compaction` item minted by a local compaction (capsule prefix or item id). */
+export const recognizedCompactionItem = (item: Json): boolean =>
+  asString(get(item, "type")) === "compaction" &&
+  (recognizedCompactionCapsule(asString(get(item, "encrypted_content"))) ||
+    asString(get(item, "id")).trim().startsWith(COMPACTION_ITEM_ID_PREFIX));
 
 const inputItems = (payload: Json | undefined): ReadonlyArray<Json> => {
   const input = get(payload, "input");
@@ -181,7 +205,9 @@ export const sealCompaction = async (
 };
 
 /** `UnsealAntigravityCompaction`: the summary text, or an `Error` carrying the Go message. */
-export const unsealCompaction = async (encryptedContent: string): Promise<string> => {
+export const unsealCompaction = async (sealedContent: string): Promise<string> => {
+  const encryptedContent = sealedContent.trim();
+
   if (!encryptedContent.startsWith(COMPACTION_CAPSULE_PREFIX))
     throw new Error("unrecognized compaction capsule format");
   let ciphertext: Uint8Array;
@@ -230,12 +256,11 @@ export const unsealCompaction = async (encryptedContent: string): Promise<string
   return isJsonObject(data) ? asString(data["summary"]) : "";
 };
 
-/**
- * `ExpandAntigravityCompactionCapsules`: `compaction` items become developer messages carrying the summary. Returns
- * the payload unchanged (same object) when nothing was expanded; a new object otherwise. Rejects with
- * `invalid compaction capsule: ...` when a capsule cannot be opened.
- */
-export const expandCompactionCapsules = async (payload: Json): Promise<Json> => {
+/** Expands the `compaction` items `selected` accepts into developer messages; the other items stay as they are. */
+const expandSelectedCapsules = async (
+  payload: Json,
+  selected: (item: Json) => boolean,
+): Promise<Json> => {
   const input = get(payload, "input");
 
   if (!isJsonArray(input)) return payload;
@@ -243,7 +268,7 @@ export const expandCompactionCapsules = async (payload: Json): Promise<Json> => 
   const expanded: Json[] = [];
 
   for (const item of input) {
-    if (asString(get(item, "type")) !== "compaction") {
+    if (asString(get(item, "type")) !== "compaction" || !selected(item)) {
       expanded.push(item);
       continue;
     }
@@ -276,6 +301,114 @@ export const expandCompactionCapsules = async (payload: Json): Promise<Json> => 
   return out;
 };
 
+/**
+ * `ExpandAntigravityCompactionCapsules`: `compaction` items become developer messages carrying the summary. Returns
+ * the payload unchanged (same object) when nothing was expanded; a new object otherwise. Rejects with
+ * `invalid compaction capsule: ...` when a capsule cannot be opened.
+ */
+export const expandCompactionCapsules = (payload: Json): Promise<Json> =>
+  expandSelectedCapsules(payload, () => true);
+
+/**
+ * `ExpandRecognizedAntigravityCompactionCapsules`: like {@link expandCompactionCapsules}, but a `compaction` item no local
+ * compaction minted (OpenAI's own, a foreign provider's) stays as it is.
+ */
+export const expandRecognizedCompactionCapsules = (payload: Json): Promise<Json> =>
+  expandSelectedCapsules(payload, recognizedCompactionItem);
+
+/**
+ * `DropForeignResponsesCompactionItems`: `compaction` items no local compaction minted cannot be read by another
+ * provider and are dropped (Go logs a warning). Returns the payload itself when nothing was dropped.
+ */
+export const dropForeignCompactionItems = (payload: Json): Json => {
+  const input = get(payload, "input");
+
+  if (!isJsonArray(input)) return payload;
+
+  const kept = input.filter(
+    (item) => asString(get(item, "type")) !== "compaction" || recognizedCompactionItem(item),
+  );
+
+  if (kept.length === input.length) return payload;
+  const out = cloneJson(payload);
+  set(out, "input", kept);
+
+  return out;
+};
+
+type ExpandedRequest = {
+  readonly request: ExecutorRequest;
+  readonly options: ExecutorOptions;
+};
+
+/** `payload` and `originalRequest` through `transform`; when they are one object they stay one object. */
+const transformRequestPair = async (
+  request: ExecutorRequest,
+  options: ExecutorOptions,
+  transform: (payload: Json) => Promise<Json>,
+): Promise<ExpandedRequest> => {
+  const payload = await transform(request.payload);
+  const { originalRequest } = options;
+
+  const original =
+    originalRequest === undefined
+      ? undefined
+      : originalRequest === request.payload
+        ? payload
+        : await transform(originalRequest);
+
+  return {
+    request: payload === request.payload ? request : { ...request, payload },
+    options: original === originalRequest ? options : { ...options, originalRequest: original },
+  };
+};
+
+/**
+ * `ExpandResponsesCompactionCapsules`: foreign `compaction` items are dropped and the capsules of the request and of
+ * the original request become developer context (before translation and token counting). Rejects with
+ * `invalid compaction capsule: ...` on an unreadable capsule.
+ */
+export const expandResponsesCompactionCapsules = (
+  request: ExecutorRequest,
+  options: ExecutorOptions,
+): Promise<ExpandedRequest> =>
+  transformRequestPair(request, options, (payload) =>
+    expandCompactionCapsules(dropForeignCompactionItems(payload)),
+  );
+
+/**
+ * `ExpandRecognizedResponsesCompactionCapsules`: only the capsules a local compaction minted are expanded; a native
+ * `compaction` item (Codex's, going to OpenAI) stays.
+ */
+export const expandRecognizedResponsesCompactionCapsules = (
+  request: ExecutorRequest,
+  options: ExecutorOptions,
+): Promise<ExpandedRequest> =>
+  transformRequestPair(request, options, expandRecognizedCompactionCapsules);
+
+/**
+ * The capsule expansion of an executor entry point. `drop-foreign` is for a route that cannot read a foreign
+ * `compaction` item; `recognized-only` for one that forwards native items (Codex, a `/responses/compact` endpoint).
+ */
+export const expandCompaction = (
+  request: ExecutorRequest,
+  options: ExecutorOptions,
+  mode: "drop-foreign" | "recognized-only",
+): Effect.Effect<ExpandedRequest, ExecutionError> =>
+  Effect.tryPromise({
+    try: () =>
+      mode === "drop-foreign"
+        ? expandResponsesCompactionCapsules(request, options)
+        : expandRecognizedResponsesCompactionCapsules(request, options),
+    // An unreadable capsule is the client's fault: a request-scoped 400 (no cooldown, no failover).
+    catch: (error) =>
+      new ExecutionError({
+        status: 400,
+        message: error instanceof Error ? error.message : String(error),
+        requestScoped: true,
+      }),
+  });
+
 /** `ExtractAntigravitySummaryText`: Responses, Gemini/Antigravity, Claude or Chat Completions response bodies. */
 export const extractSummaryText = (response: Json): string => {
   const output = get(response, "output");
@@ -289,7 +422,9 @@ export const extractSummaryText = (response: Json): string => {
 
       if (isJsonArray(content)) {
         for (const part of content) {
-          if (asString(get(part, "type")) !== "output_text") continue;
+          const partType = asString(get(part, "type"));
+
+          if (partType !== "output_text" && partType !== "text") continue;
           const text = asString(get(part, "text"));
 
           if (text !== "") parts.push(text);
@@ -345,9 +480,20 @@ export const extractSummaryText = (response: Json): string => {
 // Response builders
 // ---------------------------------------------------------------------------------------------------------------------
 
-const usageNode = (inputTokens: number, outputTokens: number, totalTokens: number): JsonObject => ({
-  input_tokens_details: { cached_tokens: 0 },
-  output_tokens_details: { reasoning_tokens: 0 },
+/** The token counts a summary reports beyond input, output and total. */
+export interface CompactionUsageDetails {
+  readonly cached?: number;
+  readonly reasoning?: number;
+}
+
+const usageNode = (
+  inputTokens: number,
+  outputTokens: number,
+  totalTokens: number,
+  details: CompactionUsageDetails = {},
+): JsonObject => ({
+  input_tokens_details: { cached_tokens: details.cached ?? 0 },
+  output_tokens_details: { reasoning_tokens: details.reasoning ?? 0 },
   input_tokens: inputTokens,
   output_tokens: outputTokens,
   total_tokens: totalTokens,
@@ -364,6 +510,7 @@ export const buildCompactionResponse = (
   outputTokens: number,
   totalTokens: number,
   nowMs: number,
+  details: CompactionUsageDetails = {},
 ): JsonObject => ({
   object: "response.compaction",
   status: "completed",
@@ -378,7 +525,7 @@ export const buildCompactionResponse = (
       encrypted_content: capsule,
     },
   ],
-  usage: usageNode(inputTokens, outputTokens, totalTokens),
+  usage: usageNode(inputTokens, outputTokens, totalTokens, details),
 });
 
 /** `BuildAntigravityCompactionStreamChunks`: five SSE frames. */
@@ -389,6 +536,7 @@ export const buildCompactionStreamChunks = (
   outputTokens: number,
   totalTokens: number,
   nowMs: number,
+  details: CompactionUsageDetails = {},
 ): string[] => {
   const now = Math.floor(nowMs / 1000);
   const responseId = `resp_ag_compact_${unixNano(nowMs)}`;
@@ -422,7 +570,7 @@ export const buildCompactionStreamChunks = (
     completed_at: now,
     model: modelName,
     output: [item("completed")],
-    usage: usageNode(inputTokens, outputTokens, totalTokens),
+    usage: usageNode(inputTokens, outputTokens, totalTokens, details),
   };
 
   const frame = (name: string, payload: JsonObject): string =>
@@ -463,19 +611,322 @@ export interface ResponsesSummaryUsage {
   readonly input: number;
   readonly output: number;
   readonly total: number;
+  readonly cached: number;
+  readonly reasoning: number;
 }
 
-/** Usage of a Responses-format summary answer (`usage.input_tokens` ...), falling back to `ParseOpenAIUsage`. */
+/**
+ * `ExtractResponsesCompactionUsage`: usage of a Responses-format summary answer (`usage.input_tokens` ...), falling back
+ * to `ParseOpenAIUsage`.
+ */
 export const responsesSummaryUsage = (payload: Json, rawText: string): ResponsesSummaryUsage => {
   const input = asInt(get(payload, "usage.input_tokens"));
   const output = asInt(get(payload, "usage.output_tokens"));
   const total = asInt(get(payload, "usage.total_tokens"));
 
-  if (total === 0 && input === 0) {
+  if (total === 0 && input === 0 && output === 0) {
     const usage = parseOpenAIUsage(rawText);
 
-    return { input: usage.inputTokens, output: usage.outputTokens, total: usage.totalTokens };
+    return {
+      input: usage.inputTokens,
+      output: usage.outputTokens,
+      total: usage.totalTokens,
+      cached: usage.cachedTokens,
+      reasoning: usage.reasoningTokens,
+    };
   }
 
-  return { input, output, total };
+  return {
+    input,
+    output,
+    total,
+    cached: asInt(get(payload, "usage.input_tokens_details.cached_tokens")),
+    reasoning: asInt(get(payload, "usage.output_tokens_details.reasoning_tokens")),
+  };
 };
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Local compaction: the summary request, its checks and the synthetic answer
+// ---------------------------------------------------------------------------------------------------------------------
+
+/** `HasResponsesCompactionTriggerRequest`: the payload or the original request carries a `compaction_trigger` item. */
+export const hasResponsesCompactionTriggerRequest = (
+  request: ExecutorRequest,
+  options: ExecutorOptions,
+): boolean =>
+  hasResponsesCompactionTrigger(request.payload) ||
+  hasResponsesCompactionTrigger(options.originalRequest);
+
+/** `ResponsesCompactionSourcePayload`: the payload that carries the trigger or the request history. */
+export const compactionSourcePayload = (
+  request: ExecutorRequest,
+  options: ExecutorOptions,
+): Json => {
+  let payload: Json = request.payload;
+  const original = options.originalRequest;
+
+  if (
+    original !== undefined &&
+    !hasResponsesCompactionTrigger(payload) &&
+    hasResponsesCompactionTrigger(original)
+  ) {
+    payload = original;
+  }
+
+  if ((payload === undefined || payload === null) && original !== undefined) payload = original;
+
+  return payload;
+};
+
+/** `HasResponsesCompactionConversationInput`: `input` carries at least one item that is not a control item. */
+export const hasCompactionConversationInput = (payload: Json | undefined): boolean => {
+  const input = get(payload, "input");
+
+  if (typeof input === "string") return input.trim() !== "";
+
+  if (!isJsonArray(input)) return false;
+
+  return input.some((item) => !isControlItem(item));
+};
+
+/**
+ * The request-scoped 502 of a summary that cannot be sealed: incomplete, failed or without text. Another credential
+ * would usually fail the same way at the same cost, so there is no cooldown and no failover (a difference from Go,
+ * which answers a plain 502 or, on Claude and Antigravity, a 500).
+ */
+export const compactionSummaryError = (message: string): ExecutionError =>
+  new ExecutionError({ status: 502, message, requestScoped: true });
+
+/**
+ * `validateCodexLocalCompactionSource` for every local route: the history a `previous_response_id` or a
+ * `response.append` refers to is not in the request, so a capsule sealed from it would silently lose it. An empty
+ * conversation has nothing to summarise. Over a downstream WebSocket the answer is the non-closing 409
+ * `previous_response_not_found` frame; over HTTP a request-scoped 400.
+ */
+export const checkCompactionSource = (
+  source: Json,
+  options: ExecutorOptions,
+): ExecutionError | undefined => {
+  const previous = asString(get(source, "previous_response_id")).trim();
+  const requestType = asString(get(source, "type")).trim();
+
+  if (previous !== "" || requestType === "response.append") {
+    return options.metadata.websocket !== undefined
+      ? previousResponseNotFoundError()
+      : new ExecutionError({
+          status: 400,
+          message:
+            "local summary compaction requires full conversation input without previous_response_id",
+          requestScoped: true,
+        });
+  }
+
+  if (!hasCompactionConversationInput(source)) {
+    return new ExecutionError({
+      status: 400,
+      message: "local summary compaction requires non-empty conversation input",
+      requestScoped: true,
+    });
+  }
+
+  return undefined;
+};
+
+/**
+ * `rejectSyntheticCompactionPreviousResponseID`: a `previous_response_id` that names a response a local compaction
+ * minted refers to nothing upstream. Over a downstream WebSocket the answer is the 409 frame, over HTTP a 400.
+ */
+export const rejectSyntheticPreviousResponseId = (
+  payload: Json,
+  options: ExecutorOptions,
+): ExecutionError | undefined => {
+  if (!recognizedCompactionResponseId(asString(get(payload, "previous_response_id"))))
+    return undefined;
+
+  return options.metadata.websocket !== undefined
+    ? previousResponseNotFoundError()
+    : new ExecutionError({
+        status: 400,
+        message:
+          "previous_response_id references a local compaction response; resend full conversation input without previous_response_id",
+        requestScoped: true,
+      });
+};
+
+/**
+ * `ValidateResponsesCompactionSummaryStatus`: the failure message of a summary that did not finish with status
+ * `completed`, `undefined` when it did.
+ */
+export const compactionSummaryStatusError = (summary: Json | undefined): string | undefined => {
+  let status = asString(get(summary, "status")).trim().toLowerCase();
+
+  if (status === "") status = asString(get(summary, "response.status")).trim().toLowerCase();
+
+  if (status !== "completed")
+    return `compaction summary response status is "${status === "" ? "missing" : status}", want "completed"`;
+  const eventType = asString(get(summary, "type")).trim().toLowerCase();
+
+  if (eventType === "response.incomplete" || eventType === "response.failed")
+    return `compaction summary response terminal event is "${eventType}"`;
+
+  for (const path of [
+    "incomplete_details",
+    "response.incomplete_details",
+    "error",
+    "response.error",
+  ]) {
+    const node = get(summary, path);
+
+    if (node !== undefined && node !== null) return `compaction summary response contains ${path}`;
+  }
+
+  const output = get(summary, "output");
+
+  if (isJsonArray(output)) {
+    for (const item of output) {
+      const itemStatus = asString(get(item, "status")).trim().toLowerCase();
+
+      if (itemStatus !== "" && itemStatus !== "completed")
+        return `compaction summary output item status is "${itemStatus}", want "completed"`;
+    }
+  }
+
+  return undefined;
+};
+
+/**
+ * `BuildResponsesCompactionResponseFromSummary`: a Responses-format summary sealed into a `response.compaction` body.
+ * Fails with the request-scoped 502 when the summary is incomplete or has no text.
+ */
+export const sealCompactionSummary = (
+  modelName: string,
+  summaryBody: string,
+  nowMs: number,
+): Effect.Effect<JsonObject, ExecutionError> =>
+  Effect.gen(function* () {
+    const summary = tryParseJson(summaryBody);
+    const statusError = compactionSummaryStatusError(summary);
+
+    if (statusError !== undefined) return yield* compactionSummaryError(statusError);
+
+    const text = yield* Effect.try({
+      try: () => extractSummaryText(summary ?? null),
+      catch: (error) =>
+        compactionSummaryError(
+          `extract summary: ${error instanceof Error ? error.message : String(error)}`,
+        ),
+    });
+
+    const capsule = yield* Effect.tryPromise({
+      try: () => sealCompaction(text, modelName),
+      catch: (error) =>
+        new ExecutionError({ status: 500, message: `seal compaction capsule: ${String(error)}` }),
+    });
+
+    const usage = responsesSummaryUsage(summary ?? null, summaryBody);
+
+    return buildCompactionResponse(
+      modelName,
+      capsule,
+      usage.input,
+      usage.output,
+      usage.total,
+      nowMs,
+      {
+        cached: usage.cached,
+        reasoning: usage.reasoning,
+      },
+    );
+  });
+
+/**
+ * `BuildResponsesCompactionStreamChunksFromResponse`: the sealed `response.compaction` answer as the synthetic Responses
+ * stream a streaming client expects.
+ */
+export const compactionStreamFromResponse = (
+  modelName: string,
+  response: ExecutorResponse,
+  nowMs: number,
+): Effect.Effect<StreamResult, ExecutionError> =>
+  Effect.gen(function* () {
+    const parsed = tryParseJson(response.payload);
+    const capsule = asString(get(parsed, "output.0.encrypted_content"));
+
+    if (asString(get(parsed, "output.0.type")) !== "compaction" || capsule === "")
+      return yield* compactionSummaryError("extract summary: compaction item missing");
+
+    const chunks = buildCompactionStreamChunks(
+      modelName,
+      capsule,
+      asInt(get(parsed, "usage.input_tokens")),
+      asInt(get(parsed, "usage.output_tokens")),
+      asInt(get(parsed, "usage.total_tokens")),
+      nowMs,
+      {
+        cached: asInt(get(parsed, "usage.input_tokens_details.cached_tokens")),
+        reasoning: asInt(get(parsed, "usage.output_tokens_details.reasoning_tokens")),
+      },
+    );
+
+    const headers = new Headers(response.headers);
+    headers.set("Content-Type", "text/event-stream");
+
+    return { headers, chunks: Stream.fromIterable(chunks) } satisfies StreamResult;
+  });
+
+/** What a route hands the shared local compaction. */
+export interface LocalCompactionInput<R> {
+  /** The request after {@link expandCompaction}. */
+  readonly request: ExecutorRequest;
+  readonly options: ExecutorOptions;
+  /**
+   * The route's own non-stream Responses turn (not its public `execute`: the summary must not meet the compaction
+   * check again, and Codex's WebSocket dispatch). It publishes the usage of the attempt.
+   */
+  readonly summaryTurn: (
+    request: ExecutorRequest,
+    options: ExecutorOptions,
+  ) => Effect.Effect<ExecutorResponse, ExecutionError, R>;
+}
+
+/**
+ * Local compaction (`executeCodexResponsesCompaction`, `executeOpenAICompatResponsesCompaction`, ...): the request's own
+ * model summarises the history and the summary is sealed into a capsule. The answer is the `response.compaction` body;
+ * {@link compactionStreamFromResponse} turns it into a stream.
+ *
+ * It reports on a downstream WebSocket that the request ran without the upstream socket. Nothing reaches the client
+ * before the summary is sealed, so a failed attempt can fail over to the next credential and run it all again.
+ */
+export const executeLocalCompaction = <R>(
+  input: LocalCompactionInput<R>,
+): Effect.Effect<ExecutorResponse, ExecutionError, R> =>
+  Effect.gen(function* () {
+    const { request, options } = input;
+    const report = options.metadata.websocket?.report;
+
+    if (report !== undefined) report.local = true;
+    const source = compactionSourcePayload(request, options);
+    const sourceError = checkCompactionSource(source, options);
+
+    if (sourceError !== undefined) return yield* sourceError;
+    const baseModel = parseSuffix(request.model).modelName;
+
+    const summaryRequest: ExecutorRequest = {
+      ...request,
+      payload: prepareCompactionSummaryPayload(source),
+    };
+
+    const summaryOptions: ExecutorOptions = {
+      ...options,
+      alt: "",
+      stream: false,
+      originalRequest: undefined,
+      sourceFormat: Formats.OpenAIResponse,
+      responseFormat: Formats.OpenAIResponse,
+    };
+
+    const summary = yield* input.summaryTurn(summaryRequest, summaryOptions);
+    const body = yield* sealCompactionSummary(baseModel, summary.payload, Date.now());
+
+    return { payload: JSON.stringify(body), headers: summary.headers } satisfies ExecutorResponse;
+  });

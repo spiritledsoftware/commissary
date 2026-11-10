@@ -46,6 +46,18 @@ export interface WebsocketDuplex {
   readonly authEnabled?: (credentialId: string) => boolean;
 }
 
+/**
+ * How the current attempt of a downstream WebSocket request ran, reported by the executor (Go
+ * `MarkLocalWebsocketTurn`, `codexDuplexStream`). The handler resets it when a credential is selected, so it always
+ * describes the last attempt.
+ */
+export interface WebsocketReport {
+  /** The request was answered without the upstream socket (local compaction): the socket stays in HTTP mode. */
+  local: boolean;
+  /** The executor started a duplex stream: it owns the socket and a response ends no stream. */
+  duplex: boolean;
+}
+
 /** Go `WithDownstreamWebsocket` / `ExecutionSessionMetadataKey` / `WithRequiredUpstreamWebsocket`. */
 export interface WebsocketExecution {
   /** Id of the downstream socket: the execution session that owns the upstream sockets. */
@@ -54,6 +66,8 @@ export interface WebsocketExecution {
   readonly requireUpstream: boolean;
   /** Present when the handler lets the Codex executor own the socket (response steering). */
   readonly duplex?: WebsocketDuplex;
+  /** Filled by the executor; the handler reads it after the attempt (and while it runs, for an interrupt). */
+  readonly report?: WebsocketReport;
 }
 
 /** Typed subset of Go `Options.Metadata` (sdk/api/handlers/handlers.go requestExecutionMetadata). */
