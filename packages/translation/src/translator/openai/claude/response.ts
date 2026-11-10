@@ -891,12 +891,7 @@ const convertOpenAINonStreamingToAnthropic = (root: Json): string[] => {
     if (isArr(toolCalls)) {
       for (const toolCall of toolCalls) {
         hasToolCall = true;
-        contentBlocks.push({
-          type: "tool_use",
-          id: sanitizeClaudeToolId(getStr(toolCall, "id")),
-          name: getStr(toolCall, "function.name"),
-          input: toolUseInput(getStr(toolCall, "function.arguments")),
-        });
+        contentBlocks.push(toolUseBlockFor(toolCall, undefined));
       }
     }
 

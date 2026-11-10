@@ -97,6 +97,8 @@ interface SseEvent {
   readonly payload: Json;
 }
 
+const text = (value: Json | undefined): string => (typeof value === "string" ? value : "");
+
 const streamRequest: Json = { stream: true };
 
 const runStream = (...chunks: string[]): SseEvent[] => {
@@ -122,8 +124,6 @@ const runStream = (...chunks: string[]): SseEvent[] => {
     );
 };
 
-const text = (value: Json | undefined): string => (typeof value === "string" ? value : "");
-
 const ofType = (events: SseEvent[], type: string): SseEvent[] =>
   events.filter((event) => event.type === type);
 
@@ -145,7 +145,15 @@ const blockTexts = (events: SseEvent[]): string[] => {
 
 const finishChunk = `{"id":"c1","model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`;
 
-const nonStream = (message: string, finishReason = `"stop"`): Json => {
+const baseContext = (): ResponseContext => ({
+  model: "m",
+  originalRequest: undefined,
+  translatedRequest: undefined,
+  state: makeTranslationState(),
+});
+
+/** The Claude body of a non-stream response through both entry points: the non-stream and the stream transform. */
+const nonStream = (message: string, finishReason = `"stop"`): [Json, Json] => {
   const body = `{"id":"c1","model":"m","choices":[{"index":0,"message":${message},"finish_reason":${finishReason}}]}`;
 
   const viaNonStream = JSON.parse(
@@ -159,17 +167,8 @@ const nonStream = (message: string, finishReason = `"stop"`): Json => {
     )[0] ?? "{}",
   ) as Json;
 
-  expect(viaStreamEntry).toEqual(viaNonStream);
-
-  return viaNonStream;
+  return [viaNonStream, viaStreamEntry];
 };
-
-const baseContext = (): ResponseContext => ({
-  model: "m",
-  originalRequest: undefined,
-  translatedRequest: undefined,
-  state: makeTranslationState(),
-});
 
 const toolCallMessage = (id: string, args: string): string =>
   `{"role":"assistant","content":null,"tool_calls":[{"id":"${id}","type":"function","function":{"name":"get_weather","arguments":${JSON.stringify(args)}}}]}`;
@@ -181,7 +180,8 @@ describe("non-stream stop reason with tool calls (c449529e)", () => {
     ["finish_reason length", `"length"`, "max_tokens"],
     ["finish_reason content_filter", `"content_filter"`, "end_turn"],
   ])("tool_calls with %s", (_name, finish, expected) => {
-    expect(get(nonStream(toolCallMessage("call_1", "{}"), finish), "stop_reason")).toBe(expected);
+    for (const out of nonStream(toolCallMessage("call_1", "{}"), finish))
+      expect(get(out, "stop_reason")).toBe(expected);
   });
 
   it("tool_calls with an omitted finish_reason maps to tool_use", () => {
@@ -192,9 +192,8 @@ describe("non-stream stop reason with tool calls (c449529e)", () => {
   });
 
   it("an empty tool_calls array stays end_turn", () => {
-    expect(
-      get(nonStream(`{"role":"assistant","content":"Done","tool_calls":[]}`), "stop_reason"),
-    ).toBe("end_turn");
+    for (const out of nonStream(`{"role":"assistant","content":"Done","tool_calls":[]}`))
+      expect(get(out, "stop_reason")).toBe("end_turn");
   });
 });
 
@@ -307,19 +306,21 @@ describe("typed thinking content-part arrays (6044c5d1)", () => {
       `{"role":"assistant","content":[{"type":"thinking","thinking":[{"type":"text","text":"First "},{"type":"text","text":"thought."}],"closed":true},{"type":"text","text":"hello"}]}`,
     );
 
-    expect(get(parts, "content")).toEqual([
-      { type: "thinking", thinking: "First thought." },
-      { type: "text", text: "hello" },
-    ]);
+    for (const out of parts)
+      expect(get(out, "content")).toEqual([
+        { type: "thinking", thinking: "First thought." },
+        { type: "text", text: "hello" },
+      ]);
 
     const top = nonStream(
       `{"role":"assistant","content":"Final answer","reasoning_content":"Step by step"}`,
     );
 
-    expect(get(top, "content")).toEqual([
-      { type: "thinking", thinking: "Step by step" },
-      { type: "text", text: "Final answer" },
-    ]);
+    for (const out of top)
+      expect(get(out, "content")).toEqual([
+        { type: "thinking", thinking: "Step by step" },
+        { type: "text", text: "Final answer" },
+      ]);
   });
 });
 
@@ -379,13 +380,15 @@ describe("whitespace-only reasoning never opens a thinking block (69637a66)", ()
       ["thinking:a b", "text:Hi"],
     ],
   ])("non-stream: %s", (_name, message, want) => {
-    const blocks = get(nonStream(message), "content") as Json[];
+    for (const out of nonStream(message)) {
+      const blocks = get(out, "content") as Json[];
 
-    expect(
-      blocks.map(
-        (block) =>
-          `${text(get(block, "type"))}:${text(get(block, "thinking")) + text(get(block, "text"))}`,
-      ),
-    ).toEqual(want);
+      expect(
+        blocks.map(
+          (block) =>
+            `${text(get(block, "type"))}:${text(get(block, "thinking")) + text(get(block, "text"))}`,
+        ),
+      ).toEqual(want);
+    }
   });
 });

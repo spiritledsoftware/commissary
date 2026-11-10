@@ -13,7 +13,9 @@ import { type Json, cloneJson, del, get, isJsonArray, set } from "@commissary/js
 import type { Format } from "@commissary/translation/formats";
 import {
   builtinTranslators,
+  isReasoningEffortActive,
   noopSummaryHooks,
+  REASONING_CONTENT_PLACEHOLDER,
   type SummaryHooks,
   summaryHooks,
   TranslatorRegistry,
@@ -106,13 +108,13 @@ export const reconcileClaudeCompatToolCallReasoning = (body: Json): Json => {
   const messages = get(body, "messages");
 
   if (!isJsonArray(messages)) return body;
-  const effort = get(body, "reasoning_effort");
-  const resolved = typeof effort === "string" ? effort.trim().toLowerCase() : "";
-  const active = resolved !== "" && resolved !== "none" && resolved !== "0" && resolved !== "false";
+  const active = isReasoningEffortActive(get(body, "reasoning_effort"));
   let out = body;
 
   messages.forEach((message, index) => {
-    if (get(message, "role") !== "assistant") return;
+    const role = get(message, "role");
+
+    if (typeof role !== "string" || role.trim() !== "assistant") return;
     const toolCalls = get(message, "tool_calls");
 
     if (!isJsonArray(toolCalls) || toolCalls.length === 0) return;
@@ -121,8 +123,8 @@ export const reconcileClaudeCompatToolCallReasoning = (body: Json): Json => {
     const text = typeof reasoning === "string" ? reasoning : "";
 
     if (active) {
-      if (reasoning === undefined || (text.trim() === "" && text !== " "))
-        out = set(out, path, " ");
+      if (reasoning === undefined || (text.trim() === "" && text !== REASONING_CONTENT_PLACEHOLDER))
+        out = set(out, path, REASONING_CONTENT_PLACEHOLDER);
 
       return;
     }

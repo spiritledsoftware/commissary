@@ -529,7 +529,7 @@ const convertClaudeRequestToOpenAIImpl = (
             } else if (hasToolCalls && preserveThinkingBlocks && reasoningActive) {
               // Tool-call turn without replayable thinking text: compat thinking upstreams (DeepSeek, Moonshot/Kimi)
               // require reasoning_content on it while reasoning is active.
-              msgJson.reasoning_content = " ";
+              msgJson.reasoning_content = REASONING_CONTENT_PLACEHOLDER;
             }
 
             if (hasToolCalls) msgJson.tool_calls = toolCalls;
@@ -637,6 +637,17 @@ const thinkingSuffixActive = (model: string): readonly [boolean, boolean] => {
   return [false, false];
 };
 
+/** The `reasoning_content` the compat translator and the thinking reconciliation put on tool-call turns without thinking. */
+export const REASONING_CONTENT_PLACEHOLDER = " ";
+
+/** Whether a canonical `reasoning_effort` turns reasoning on (anything but empty, `none`, `0` or `false`). */
+export const isReasoningEffortActive = (effort: Json | undefined): boolean => {
+  if (typeof effort !== "string") return false;
+  const resolved = effort.trim().toLowerCase();
+
+  return resolved !== "" && resolved !== "none" && resolved !== "0" && resolved !== "false";
+};
+
 /** `isClaudeRequestReasoningActive`: model suffixes win over the body, then the translated `reasoning_effort`. */
 const isClaudeRequestReasoningActive = (
   effort: Json | undefined,
@@ -649,10 +660,7 @@ const isClaudeRequestReasoningActive = (
     if (recognised) return active;
   }
 
-  if (typeof effort !== "string") return false;
-  const resolved = effort.trim().toLowerCase();
-
-  return resolved !== "" && resolved !== "none" && resolved !== "0" && resolved !== "false";
+  return isReasoningEffortActive(effort);
 };
 
 /** `ConvertClaudeRequestToOpenAI`. */

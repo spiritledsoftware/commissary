@@ -1,9 +1,12 @@
 // Claude client -> OpenAI-compatible executor: placeholder reasoning_content on tool-call turns, reconciled after
 // thinking resolution so suffixes and payload rules govern it (Go: internal/runtime/executor/
 // openai_compat_executor_reasoning_test.go; upstream 0e0cab0d).
+import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 import { get, type Json } from "@commissary/json";
 import { makeOpenAICompatExecutor } from "../src/executor/openai-compat/executor.ts";
+import { Thinking } from "../src/executor/thinking.ts";
+import type { ThinkingModelInfo } from "@commissary/translation/thinking";
 import { credential, execute, harness, json, options } from "./support/executor-run.ts";
 
 const MODEL = "deepseek-v4-flash";
@@ -120,5 +123,92 @@ describe("OpenAI-compatible executor: Claude tool-call reasoning placeholder", (
         rules("filter", '\n          - "messages.1.reasoning_content"'),
       ),
     ).toBeUndefined();
+  });
+});
+
+// Go `TestApplyRequestThinkingReconcilesClaudeOpenAICompatToolCallReasoning`: the reconciliation runs inside
+// `Thinking.apply`, after suffix and capability resolution.
+describe("Thinking.apply: Claude compat tool-call reasoning reconciliation", () => {
+  const toolCall = `"tool_calls":[{"id":"call_1","type":"function","function":{"name":"Read","arguments":"{}"}}]`;
+
+  const withPlaceholder = `{"model":"${MODEL}","reasoning_effort":"low","messages":[{"role":"assistant","content":"","reasoning_content":" ",${toolCall}}]}`;
+  const withoutReasoning = `{"model":"${MODEL}","reasoning_effort":"none","messages":[{"role":"assistant","content":"",${toolCall}}]}`;
+  const withRealReasoning = `{"model":"${MODEL}","reasoning_effort":"low","messages":[{"role":"assistant","content":"","reasoning_content":"actual thought",${toolCall}}]}`;
+
+  const apply = (
+    model: string,
+    source: string,
+    translated: string,
+    modelInfo: ThinkingModelInfo,
+  ): Promise<Json> =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const thinking = yield* Thinking;
+
+        return yield* thinking.apply({
+          body: JSON.parse(translated) as Json,
+          model,
+          from: "claude",
+          to: "openai",
+          provider: "openai-compatible-mock",
+          source: JSON.parse(source) as Json,
+          originalSource: JSON.parse(source) as Json,
+          modelInfo,
+        });
+      }).pipe(Effect.provide(Thinking.live)),
+    );
+
+  const reasoningOf = (body: Json): Json | undefined => get(body, "messages.0.reasoning_content");
+
+  it("strips reasoning_effort and the placeholder for a model without thinking support", async () => {
+    const out = await apply(
+      MODEL,
+      `{"model":"${MODEL}","thinking":{"type":"enabled","budget_tokens":1024}}`,
+      withPlaceholder,
+      { id: MODEL, isCompat: true },
+    );
+
+    expect(reasoningOf(out)).toBeUndefined();
+  });
+
+  it("clamps none to the active level for a model that disallows zero and injects the placeholder", async () => {
+    const out = await apply(
+      MODEL,
+      `{"model":"${MODEL}","thinking":{"type":"disabled"}}`,
+      withoutReasoning,
+      {
+        id: MODEL,
+        isCompat: true,
+        thinking: { levels: ["low", "medium", "high"], zeroAllowed: false },
+      },
+    );
+
+    expect(reasoningOf(out)).toBe(" ");
+  });
+
+  it("keeps real reasoning when a suffix disables thinking", async () => {
+    const out = await apply(
+      `${MODEL}(none)`,
+      `{"model":"${MODEL}(none)","thinking":{"type":"enabled","budget_tokens":1024}}`,
+      withRealReasoning,
+      {
+        id: MODEL,
+        isCompat: true,
+        thinking: { levels: ["none", "low", "medium", "high"], zeroAllowed: true },
+      },
+    );
+
+    expect(reasoningOf(out)).toBe("actual thought");
+  });
+
+  it("leaves a non-compat model untouched", async () => {
+    const out = await apply(
+      `${MODEL}(high)`,
+      `{"model":"${MODEL}(high)","thinking":{"type":"disabled"}}`,
+      withoutReasoning,
+      { id: MODEL, isCompat: false, thinking: { levels: ["low", "medium", "high"] } },
+    );
+
+    expect(reasoningOf(out)).toBeUndefined();
   });
 });
