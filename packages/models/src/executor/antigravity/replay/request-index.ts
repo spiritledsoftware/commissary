@@ -123,7 +123,13 @@ export interface IndexedContent {
   readonly parts: ReadonlyArray<Json>;
 }
 
-/** Prefix hashes of the replay context (system instruction, tools, tool config, then each content). */
+/** Version tag of the OpenAI chat context hash: legacy and non-OpenAI ledger entries keep matching the old way. */
+const OPENAI_CHAT_CONTEXT_PREFIX = "openai-chat-v1:";
+
+/**
+ * Prefix hashes of the replay context (system instruction, tools, tool config, then each content). The OpenAI chat
+ * variant leaves the tools and tool config out so a turn's replay is not bound to the current tool policy (80aa2b1d).
+ */
 class ContextFingerprints {
   readonly #valid: boolean;
   readonly #contents: ReadonlyArray<IndexedContent>;
@@ -131,7 +137,12 @@ class ContextFingerprints {
   readonly #sums: string[];
   #wrote = false;
 
-  constructor(payload: Json, contents: ReadonlyArray<IndexedContent>, valid: boolean) {
+  constructor(
+    payload: Json,
+    contents: ReadonlyArray<IndexedContent>,
+    valid: boolean,
+    includeToolPolicy: boolean,
+  ) {
     this.#valid = valid;
     this.#contents = contents;
 
@@ -141,7 +152,11 @@ class ContextFingerprints {
       return;
     }
 
-    for (const path of ["request.systemInstruction", "request.tools", "request.toolConfig"]) {
+    const paths = includeToolPolicy
+      ? ["request.systemInstruction", "request.tools", "request.toolConfig"]
+      : ["request.systemInstruction"];
+
+    for (const path of paths) {
       const value = get(payload, path);
 
       if (value === undefined) continue;
@@ -207,8 +222,11 @@ export class RequestIndex {
   readonly #functionCallsById = new Map<string, IndexedPart>();
   readonly #functionResponseContentById = new Map<string, number>();
   readonly #fingerprints: ContextFingerprints;
+  readonly #payload: Json;
+  #openAIChatFingerprints: ContextFingerprints | undefined;
 
   constructor(payload: Json) {
+    this.#payload = payload;
     const contents = get(payload, "request.contents");
     this.validContents = isJsonArray(contents);
 
@@ -241,7 +259,7 @@ export class RequestIndex {
       });
     }
 
-    this.#fingerprints = new ContextFingerprints(payload, this.contents, this.validContents);
+    this.#fingerprints = new ContextFingerprints(payload, this.contents, this.validContents, true);
   }
 
   functionCallPartLocation(callId: string): IndexedPart | undefined {
@@ -256,9 +274,24 @@ export class RequestIndex {
     return this.#fingerprints.at(beforeContentIndex);
   }
 
+  /** `openAIChatContextFingerprint`: system instruction and preceding contents, not the tool declarations or choice. */
+  openAIChatContextFingerprint(contentIndex: number): string {
+    this.#openAIChatFingerprints ??= new ContextFingerprints(
+      this.#payload,
+      this.contents,
+      this.validContents,
+      false,
+    );
+
+    return OPENAI_CHAT_CONTEXT_PREFIX + this.#openAIChatFingerprints.at(contentIndex);
+  }
+
   /** `contextMatches`: items without a context hash always match. */
   contextMatches(item: Json, contentIndex: number): boolean {
     const expected = asString(get(item, "contextHash")).trim();
+
+    if (expected.startsWith(OPENAI_CHAT_CONTEXT_PREFIX))
+      return expected === this.openAIChatContextFingerprint(contentIndex);
 
     return expected === "" || expected === this.contextFingerprint(contentIndex);
   }

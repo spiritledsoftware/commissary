@@ -15,6 +15,7 @@ import {
   type Json,
   stableStringify,
 } from "@commissary/json";
+import { extractSessionInfo } from "../../../handlers/session.ts";
 import { claudeCodeExecutionScope } from "../../codex/replay.ts";
 import { stableSessionId } from "../envelope.ts";
 
@@ -126,6 +127,11 @@ const clientSessionKey = (input: ReplayScopeInput): string => {
 
     if (value !== "") return `prompt-cache:${value}`;
   }
+
+  // Explicit session aliases (ingress extraction) before the inferred root (80aa2b1d).
+  const alias = extractSessionInfo(input.headers, undefined)?.sessionId ?? "";
+
+  if (alias !== "") return `client:${alias}`;
 
   return input.derivedSessionId.trim() === "" ? "" : `derived:${input.derivedSessionId.trim()}`;
 };
