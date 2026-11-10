@@ -2167,7 +2167,7 @@ over the translated top-level effort, below a model suffix. Responses `reasoning
 tool is called (the Codex code-mode `exec` tool), in both the Responses translator and the wire encoder. A Devin `permission_denied` 403 about
 the MCP configuration or the content policy is a request fault (`isRequestFault`): no retry, no cooldown. A 429 saying the daily or weekly
 usage quota is exhausted (`quota.ts`, HTTP error or trailer) is credential-scoped and retries at the reset time the `devin-user-status` cron
-observed; for that, a pick hands the executor the Devin credential's `quotaSignals` (Go reads them from `auth.Quota.Signals`). Not ported
+observed; for that, every executor snapshot of a Devin credential, a pick and each result of the request-time refresh alike (`toSnapshot(credential, state)`), carries its `quotaSignals` (the two reset times; Go reads `auth.Quota.Signals`). Not ported
 from `b946d54e`: the conductor's early release of a quota cooldown when a refresh sees the quota restored, with its shadow layers for
 model-level cooldowns (Commissary's status cron does not touch cooldowns). Bare Codex patches: a custom `apply_patch` call whose arguments
 arrive as `invalid_json_str` is held back and, after a clean EOS trailer, wrapped into `{"input": ...}` when it is a complete, well-framed patch
