@@ -27,6 +27,7 @@ import {
   refName,
   SCHEMA_NAME_MAP_KEYWORDS,
 } from "../../common/schema-refs.ts";
+import { normalizeJsonSchemaNumericConstraints } from "../../common/schema.ts";
 
 export const PLACEHOLDER_REASON_DESCRIPTION = "Brief explanation of why you are calling this tool";
 
@@ -1427,6 +1428,7 @@ const cleanJsonSchema = (schema: Json, options: CleanOptions): Json => {
   // Array placeholders and array type inference wait for `sanitizeArrayItems` (after references are inlined and allOf
   // and unions are resolved), so a synthetic placeholder never clobbers items from a $ref target or an allOf branch.
   normalizeMalformedSchemaObjects(doc);
+  doc.root = normalizeJsonSchemaNumericConstraints(doc.root);
 
   // Every cleaner removes $defs/definitions later, so local references are expanded for every route.
   doc.root = inlineLocalRefsForClean(doc.root);

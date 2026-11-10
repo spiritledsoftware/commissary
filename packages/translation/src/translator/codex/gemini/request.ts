@@ -16,6 +16,7 @@ import {
   set,
 } from "@commissary/json";
 import { convertBudgetToLevel } from "../../../thinking/convert.ts";
+import { normalizeJsonSchemaNumericConstraints } from "../../common/schema.ts";
 import { buildShortNameMap, shortenNameIfNeeded } from "../claude/request.ts";
 
 /** `translatorcommon.IsGeminiThoughtPart`. */
@@ -134,7 +135,7 @@ const messageWithPart = (role: string, part: Json): JsonObject => ({
 
 /** `cleanGeminiCodexToolParameters`: drops `$schema` and forbids additional properties unless set to false. */
 const cleanToolParameters = (parameters: Json): Json => {
-  const cleaned = cloneJson(parameters);
+  const cleaned = cloneJson(normalizeJsonSchemaNumericConstraints(parameters));
 
   if (!isJsonObject(cleaned)) return cleaned;
 

@@ -17,6 +17,7 @@ import {
   type JsonObject,
   set,
 } from "@commissary/json";
+import { normalizeJsonSchemaNumericConstraints } from "../../common/schema.ts";
 import { reorderGeminiUserParts, setGeminiFunctionResponseResult } from "../common/contents.ts";
 import {
   geminiPartIsSendable,
@@ -108,7 +109,7 @@ const functionToolEntry = (source: Json): JsonObject => {
   if (description !== undefined) entry["description"] = asString(description);
   const params = get(source, "parameters") ?? get(source, "parametersJsonSchema");
 
-  if (params !== undefined) entry["parameters"] = params;
+  if (params !== undefined) entry["parameters"] = normalizeJsonSchemaNumericConstraints(params);
 
   return entry;
 };

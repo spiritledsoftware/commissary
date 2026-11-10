@@ -14,6 +14,7 @@ import {
 import { lookupModelInfo } from "../../model-info.ts";
 import { ClaudeMessageAccumulator } from "../../common/claude-messages.ts";
 import { deriveClaudeUserID } from "../../common/claude-user-id.ts";
+import { normalizeJsonSchemaNumericConstraints } from "../../common/schema.ts";
 import { sanitizeClaudeFunctionName } from "../../common/claude-util.ts";
 import { exists, isArr, isObj, str, trimmed } from "../../common/gjson.ts";
 import { isGeminiThoughtPart } from "../../common/gemini-parts.ts";
@@ -379,7 +380,8 @@ const SCHEMA = "http://json-schema.org/draft-07/schema#";
 
 const normalizeClaudeToolSchema = (parameters: Json): Json => {
   if (!isObj(parameters)) return parameters;
-  const cleaned: JsonObject = { ...parameters };
+  const normalized = normalizeJsonSchemaNumericConstraints(parameters);
+  const cleaned: JsonObject = { ...(isObj(normalized) ? normalized : parameters) };
 
   if (cleaned.additionalProperties !== false) cleaned.additionalProperties = false;
 
