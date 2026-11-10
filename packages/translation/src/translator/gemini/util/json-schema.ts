@@ -37,6 +37,8 @@ interface CleanOptions {
   readonly removeToolTitle?: boolean;
   readonly removeGeminiMetadata?: boolean;
   readonly flattenUnions?: boolean;
+  /** Forces multi-branch anyOf/oneOf down to the single strongest branch (a route whose upstream rejects them). */
+  readonly flattenMultiBranchUnions?: boolean;
   readonly forceEnumStringType?: boolean;
   readonly dropAllEnums?: boolean;
   readonly dropBooleanEnums?: boolean;
@@ -864,60 +866,204 @@ const selectBest = (items: Json[]): SelectBestResult => {
   return { bestIdx, types };
 };
 
-const flattenAnyOfOneOf = (doc: Doc): void => {
-  for (const key of ["anyOf", "oneOf"]) {
-    const paths = findPaths(doc, key);
-    sortByDepth(paths);
+/** A required-only union branch (`{"required":["a"]}`) declares no shape of its own. */
+const isRequiredOnlyUnionBranch = (item: Json): boolean => {
+  if (!isJsonObject(item) || !isJsonArray(item["required"])) return false;
 
-    for (const p of paths) {
-      const arr = getAt(doc, p);
+  return !["type", "properties", "items", "enum", "anyOf", "oneOf", "allOf"].some(
+    (key) => item[key] !== undefined,
+  );
+};
 
-      if (!isJsonArray(arr) || arr.length === 0) continue;
-      const parentPath = trimSuffix(p, `.${key}`);
-      const parent = parentPath === "" ? doc.root : getAt(doc, parentPath);
-      const items = arr;
+/** Gives a required-only branch the parent's declarations of the properties it requires, so it stands alone. */
+const materializeRequiredOnlyBranch = (
+  item: JsonObject,
+  parentProps: Json | undefined,
+): JsonObject | undefined => {
+  if (!isJsonObject(parentProps)) return undefined;
+  const required = stringArray(item["required"]);
 
-      if (isJsonObject(get(parent, "properties"))) {
-        let hasNull = false;
+  if (required.length === 0) return undefined;
+  const properties: JsonObject = {};
 
-        for (const item of items) {
-          if (asString(get(item, "type")) === "null") hasNull = true;
-          const branchProps = get(item, "properties");
+  for (const name of required) {
+    const declaration = parentProps[name];
 
-          if (isJsonObject(branchProps)) {
-            for (const [propKey, propVal] of Object.entries(branchProps)) {
-              mergeMissingSchemaAtPath(
-                doc,
-                joinPath(parentPath, `properties.${escapeKey(propKey)}`),
-                propVal,
-              );
-            }
-          }
+    if (!Object.hasOwn(parentProps, name) || declaration === undefined) return undefined;
+    properties[name] = structuredClone(declaration);
+  }
+
+  return { ...item, properties, type: "object" };
+};
+
+const isNullOnlyBranch = (item: JsonObject): boolean => {
+  if (item["properties"] !== undefined || item["items"] !== undefined) return false;
+  const type = item["type"];
+
+  if (typeof type === "string") return type === "null";
+
+  return isJsonArray(type) && type.length > 0 && type.every((elem) => asString(elem) === "null");
+};
+
+interface UnionBranches {
+  /** The standalone branches that survive: not null, not unsatisfiable (`false`). */
+  readonly nonNull: Json[];
+  readonly hasNull: boolean;
+  /** Whether a branch was dropped or rewritten (`true`, `false`, a required-only branch). */
+  readonly hasFiltered: boolean;
+}
+
+const partitionUnionBranches = (items: Json[], parentProps: Json | undefined): UnionBranches => {
+  const nonNull: Json[] = [];
+  let hasNull = false;
+  let hasFiltered = false;
+
+  for (const item of items) {
+    if (item === true) {
+      nonNull.push({});
+      hasFiltered = true;
+      continue;
+    }
+
+    if (!isJsonObject(item)) {
+      hasFiltered = true;
+      continue;
+    }
+
+    if (isNullOnlyBranch(item)) {
+      hasNull = true;
+      continue;
+    }
+
+    if (isRequiredOnlyUnionBranch(item)) {
+      const materialized = materializeRequiredOnlyBranch(item, parentProps);
+
+      if (materialized !== undefined) nonNull.push(materialized);
+      hasFiltered = true;
+      continue;
+    }
+
+    nonNull.push(item);
+  }
+
+  return { nonNull, hasNull, hasFiltered };
+};
+
+/**
+ * `flattenAnyOfOneOf`. Multi-branch unions (2+ standalone non-null branches) are preserved so non-first branches are
+ * not lost; on the native Gemini/Antigravity Schema carrier (`!preserveOneOf`) `oneOf` becomes `anyOf`, which the
+ * protobuf Schema supports and `oneOf` it rejects. A null branch becomes `nullable: true`. `flattenMultiBranch` forces the
+ * single strongest branch instead, for the route whose upstream rejects nested multi-branch unions.
+ */
+const flattenAnyOfOneOf = (doc: Doc, preserveOneOf: boolean, flattenMultiBranch: boolean): void => {
+  const byField = findPathsByFields(doc, ["oneOf", "anyOf"]);
+  const paths = [...(byField.get("oneOf") ?? []), ...(byField.get("anyOf") ?? [])];
+  sortByDepth(paths);
+
+  for (const p of paths) {
+    const key = p === "oneOf" || p.endsWith(".oneOf") ? "oneOf" : "anyOf";
+    const arr = getAt(doc, p);
+
+    if (!isJsonArray(arr) || arr.length === 0) continue;
+    const parentPath = trimSuffix(p, `.${key}`);
+
+    if (isPropertyDefinition(parentPath)) continue;
+    const parent = parentPath === "" ? doc.root : getAt(doc, parentPath);
+
+    // A node declaring both anyOf and oneOf on a native Schema carrier cannot keep a second union (protobuf Schema has a
+    // single anyOf): anyOf stays primary and the oneOf constraint becomes a description hint. Routes that flatten
+    // multi-branch unions skip this: the primary union is flattened away too.
+    if (
+      key === "oneOf" &&
+      !flattenMultiBranch &&
+      !preserveOneOf &&
+      isJsonArray(get(parent, "anyOf"))
+    ) {
+      appendHint(doc, parentPath, `oneOf: ${JSON.stringify(arr)}`);
+      delAt(doc, p);
+      continue;
+    }
+
+    const parentProps = get(parent, "properties");
+    const { nonNull, hasNull, hasFiltered } = partitionUnionBranches(arr, parentProps);
+    // An earlier union-preserving pass may already have recorded the null branch as nullable:true on this node
+    // (translator -> executor chain); that marker is part of the schema contract and survives flattening.
+    const nullable = hasNull || get(parent, "nullable") === true;
+
+    if (nonNull.length >= 2 && !flattenMultiBranch) {
+      const targetKey = key === "oneOf" && !preserveOneOf ? "anyOf" : key;
+
+      if (targetKey !== key || hasNull || hasFiltered) {
+        setAt(doc, joinPath(parentPath, targetKey), nonNull);
+
+        if (targetKey !== key) delAt(doc, p);
+      }
+
+      if (hasNull) {
+        setAt(doc, joinPath(parentPath, "nullable"), true);
+        appendHint(doc, parentPath, "(nullable)");
+      }
+
+      continue;
+    }
+
+    // A parent that already defines properties keeps them: branch properties merge into it and the union keyword goes.
+    if (isJsonObject(parentProps)) {
+      for (const item of nonNull) {
+        const branchProps = get(item, "properties");
+
+        if (!isJsonObject(branchProps)) continue;
+
+        for (const [propKey, propVal] of Object.entries(branchProps)) {
+          mergeMissingSchemaAtPath(
+            doc,
+            joinPath(parentPath, `properties.${escapeKey(propKey)}`),
+            propVal,
+          );
         }
+      }
 
-        if (hasNull) setAt(doc, joinPath(parentPath, "nullable"), true);
+      if (nullable) setAt(doc, joinPath(parentPath, "nullable"), true);
 
-        if (asString(get(parent, "type")) === "")
-          setAt(doc, joinPath(parentPath, "type"), "object");
+      if (asString(get(parent, "type")) === "") setAt(doc, joinPath(parentPath, "type"), "object");
+      delAt(doc, p);
+      continue;
+    }
+
+    const parentDesc = asString(getAt(doc, descriptionPath(parentPath)));
+
+    if (nonNull.length === 0) {
+      if (!hasNull) {
         delAt(doc, p);
         continue;
       }
 
-      const parentDesc = asString(getAt(doc, descriptionPath(parentPath)));
-      const { bestIdx, types } = selectBest(items);
-      // SAFETY: the index is in bounds (loop bound or length check above); the cast only drops the `undefined` added by noUncheckedIndexedAccess.
-      let selected: Json = structuredClone(items[bestIdx] as Json);
-      const hasNull = items.some((item) => asString(get(item, "type")) === "null");
-
-      if (hasNull && asString(get(items[bestIdx], "type")) !== "null" && isJsonObject(selected)) {
-        selected = set(selected, "nullable", true);
-      }
-
-      if (parentDesc !== "") selected = mergeDescriptionRaw(selected, parentDesc);
-
-      if (types.length > 1) selected = appendHintRaw(selected, `Accepts: ${types.join(" | ")}`);
-      setRawAt(doc, parentPath, selected);
+      const nullOnly: Json = { type: "null" };
+      setRawAt(
+        doc,
+        parentPath,
+        parentDesc === "" ? nullOnly : mergeDescriptionRaw(nullOnly, parentDesc),
+      );
+      continue;
     }
+
+    let candidates = arr;
+
+    if (hasFiltered || nonNull.length >= 2) {
+      candidates = hasNull ? [...nonNull, { type: "null" }] : nonNull;
+    }
+
+    const { types: allTypes } = selectBest(candidates);
+    // The strongest non-null branch (ties keep the first).
+    let selected: Json = structuredClone(nonNull[selectBest(nonNull).bestIdx] ?? nonNull[0] ?? {});
+
+    if (nullable && isJsonObject(selected)) selected = set(selected, "nullable", true);
+
+    if (parentDesc !== "") selected = mergeDescriptionRaw(selected, parentDesc);
+
+    if (allTypes.length > 1) selected = appendHintRaw(selected, `Accepts: ${allTypes.join(" | ")}`);
+    else if (nullable) selected = appendHintRaw(selected, "(nullable)");
+    setRawAt(doc, parentPath, selected);
   }
 };
 
@@ -1245,6 +1391,13 @@ const addEmptySchemaPlaceholder = (doc: Doc): void => {
     const req = getAt(doc, reqPath);
     const hasRequired = isJsonArray(req) && req.length > 0;
 
+    // A preserved union already constrains the node; a placeholder property would contradict its branches.
+    if (
+      isJsonArray(getAt(doc, joinPath(parentPath, "anyOf"))) ||
+      isJsonArray(getAt(doc, joinPath(parentPath, "oneOf")))
+    )
+      continue;
+
     const needsPlaceholder =
       props === undefined || (isJsonObject(props) && Object.keys(props).length === 0);
 
@@ -1305,7 +1458,14 @@ const cleanJsonSchema = (schema: Json, options: CleanOptions): Json => {
   if (options.preserveStandardConstraints !== true) mergeAllOf(doc);
 
   if (!preserveConjunctions) {
-    if (options.flattenUnions === true) flattenAnyOfOneOf(doc);
+    if (options.flattenUnions === true) {
+      flattenAnyOfOneOf(
+        doc,
+        options.preserveStandardConstraints === true,
+        options.flattenMultiBranchUnions === true,
+      );
+    }
+
     flattenTypeArrays(doc, options.antigravitySemantics === true);
   }
 
@@ -1349,10 +1509,10 @@ export const cleanJsonSchemaForGeminiJsonSchema = (schema: Json): Json =>
     preserveStandardConstraints: true,
   });
 
-/** `CleanJSONSchemaForAntigravityTool`. */
-export const cleanJsonSchemaForAntigravityTool = (
+const cleanAntigravityTool = (
   schema: Json,
   requirePlaceholder: boolean,
+  flattenMultiBranchUnions: boolean,
 ): Json =>
   cleanJsonSchema(schema, {
     addPlaceholder: requirePlaceholder,
@@ -1360,8 +1520,25 @@ export const cleanJsonSchemaForAntigravityTool = (
     antigravitySemantics: true,
     removeToolTitle: !requirePlaceholder,
     flattenUnions: true,
+    flattenMultiBranchUnions,
     dropAllEnums: true,
   });
+
+/** `CleanJSONSchemaForAntigravityTool`: multi-branch unions are preserved (Gemini models accept them). */
+export const cleanJsonSchemaForAntigravityTool = (
+  schema: Json,
+  requirePlaceholder: boolean,
+): Json => cleanAntigravityTool(schema, requirePlaceholder, false);
+
+/**
+ * `CleanJSONSchemaForAntigravityClaudeTool`: the Antigravity tool cleaner for Claude models. The Antigravity Claude
+ * backend turns function declarations into Claude `custom.input_schema` and rejects nested multi-branch unions with
+ * "JSON schema is invalid", so they flatten to the single strongest branch (CLIProxyAPI #3662 and its follow-up).
+ */
+export const cleanJsonSchemaForAntigravityClaudeTool = (
+  schema: Json,
+  requirePlaceholder: boolean,
+): Json => cleanAntigravityTool(schema, requirePlaceholder, true);
 
 /** `CleanJSONSchemaForAntigravity`. */
 export const cleanJsonSchemaForAntigravity = (schema: Json): Json =>

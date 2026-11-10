@@ -129,6 +129,7 @@ export { textSignatureKeys } from "./translator/gemini/openai/responses/trailing
 export { hasResponsesWebSearchTool } from "./translator/gemini/openai/responses/web-search.ts";
 
 export {
+  cleanJsonSchemaForAntigravityClaudeTool,
   cleanJsonSchemaForAntigravityResponse,
   cleanJsonSchemaForAntigravityTool,
 } from "./translator/gemini/util/json-schema.ts";

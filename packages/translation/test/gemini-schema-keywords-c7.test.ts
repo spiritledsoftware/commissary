@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { get, type Json } from "@commissary/json";
 import {
   cleanJsonSchemaForAntigravity,
+  cleanJsonSchemaForAntigravityClaudeTool,
   cleanJsonSchemaForAntigravityResponse,
   cleanJsonSchemaForAntigravityTool,
   cleanJsonSchemaForGemini,
@@ -15,12 +16,20 @@ import {
 const CLEANERS: ReadonlyArray<readonly [string, (schema: Json) => Json]> = [
   ["Antigravity", cleanJsonSchemaForAntigravity],
   ["AntigravityTool", (schema) => cleanJsonSchemaForAntigravityTool(schema, false)],
+  ["AntigravityClaudeTool", (schema) => cleanJsonSchemaForAntigravityClaudeTool(schema, false)],
   ["AntigravityResponse", cleanJsonSchemaForAntigravityResponse],
   ["Gemini", cleanJsonSchemaForGemini],
   ["GeminiJSONSchema", cleanJsonSchemaForGeminiJsonSchema],
 ];
 
 const exists = (value: Json, path: string): boolean => get(value, path) !== undefined;
+
+/** The Antigravity Claude tool cleaner flattens multi-branch unions (5efe9758), so it is exempt from branch counts. */
+const branchCount = (value: Json, path: string): number => {
+  const union = get(value, path);
+
+  return Array.isArray(union) ? union.length : 0;
+};
 
 describe("readOnly / writeOnly (154d5144)", () => {
   const input: Json = {
@@ -129,8 +138,13 @@ describe("contentMediaType / contentEncoding (a43026d7)", () => {
     },
   };
 
-  it.each(CLEANERS)("%s removes the keywords and keeps same-named properties", (_name, clean) => {
+  it.each(CLEANERS)("%s removes the keywords and keeps same-named properties", (name, clean) => {
     const got = clean(input);
+
+    if (name !== "AntigravityClaudeTool") {
+      expect(branchCount(got, "properties.value.anyOf")).toBe(2);
+      expect(get(got, "properties.value.anyOf.1.type")).toBe("string");
+    }
 
     for (const path of [
       "contentMediaType",
@@ -198,8 +212,13 @@ describe("discriminator (e9ba5c50)", () => {
     discriminator: { propertyName: "target" },
   };
 
-  it.each(CLEANERS)("%s removes the keyword and keeps same-named properties", (_name, clean) => {
+  it.each(CLEANERS)("%s removes the keyword and keeps same-named properties", (name, clean) => {
     const got = clean(input);
+
+    if (name !== "AntigravityClaudeTool") {
+      expect(branchCount(got, "properties.target.anyOf")).toBe(2);
+      expect(branchCount(got, "properties.deliverables.items.anyOf")).toBe(2);
+    }
 
     for (const path of [
       "discriminator",
