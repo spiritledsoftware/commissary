@@ -136,6 +136,7 @@ const USAGE_BUCKET_PATHS = [
   "input_tokens_details.cache_creation_tokens",
   "completion_tokens_details.reasoning_tokens",
   "output_tokens_details.reasoning_tokens",
+  "reasoning_tokens",
 ] as const;
 
 export const hasUsageFields = (node: Json | undefined): node is Json =>
@@ -158,6 +159,8 @@ export const parseOpenAIUsageNode = (node: Json): UsageDetail => {
     node,
     "completion_tokens_details.reasoning_tokens",
     "output_tokens_details.reasoning_tokens",
+    // Flat dialect (SGLang): `usage.reasoning_tokens` at the top level.
+    "reasoning_tokens",
   );
 
   const cacheCreation = first(
