@@ -104,6 +104,24 @@ api-keys:
     expect(one!.attributes.base_url).toBe("https://api.anthropic.com");
   });
 
+  // Go ae33711c: a Claude key's `native-tool-search` is the `native_tool_search` attribute the executor and catalog read.
+  it("writes the native_tool_search attribute of a Claude key that sets native-tool-search", () => {
+    const [flagged, plain] = synthesizeConfigCredentials(
+      config(`
+claude-api-key:
+  - api-key: k1
+    base-url: https://gateway.example
+    native-tool-search: true
+  - api-key: k2
+    base-url: https://gateway.example
+`),
+      0,
+    );
+
+    expect(flagged!.attributes.native_tool_search).toBe("true");
+    expect(plain!.attributes.native_tool_search).toBeUndefined();
+  });
+
   it("changes the identity when a hashed field changes", () => {
     const yaml = (extra: string) =>
       `claude-api-key:\n  - api-key: k\n    base-url: https://a.example\n${extra}`;
