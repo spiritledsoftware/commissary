@@ -253,6 +253,35 @@ export const convertImagenToGeminiResponse = (
   });
 };
 
+/**
+ * Go `geminiPromptBlockErrorMessage` (3f5d3a16): a candidate-less response whose `promptFeedback.blockReason` is set
+ * is an upstream refusal of the prompt, surfaced as a 502 instead of an empty 200.
+ */
+const promptBlockMessage = (root: Json | undefined): string | undefined => {
+  if (root === undefined) return undefined;
+
+  for (const node of [root, get(root, "response")]) {
+    const candidates = get(node, "candidates");
+
+    if (Array.isArray(candidates) && candidates.length > 0) return undefined;
+  }
+
+  for (const node of [root, get(root, "response")]) {
+    const reason = get(node, "promptFeedback.blockReason");
+    const trimmed = typeof reason === "string" ? reason.trim() : "";
+
+    if (trimmed === "") continue;
+    const detail = get(node, "promptFeedback.blockReasonMessage");
+    const detailText = typeof detail === "string" ? detail.trim() : "";
+
+    return detailText === ""
+      ? `upstream blocked the prompt: ${trimmed}`
+      : `upstream blocked the prompt: ${trimmed} - ${detailText}`;
+  }
+
+  return undefined;
+};
+
 export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => {
   const registry = variant.translators ?? builtinTranslators;
   const to = Formats.Gemini;
@@ -581,6 +610,15 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
 
     if (prepared.continuation !== undefined) yield* prepared.continuation.observe(parsed);
 
+    const blocked = native ? undefined : promptBlockMessage(parsed);
+
+    if (blocked !== undefined) {
+      context.usage.publish(parseGeminiUsageBody(parsed));
+      context.usage.fail(502, blocked);
+
+      return yield* new ExecutionError({ status: 502, message: blocked });
+    }
+
     const out = translating(attempt, () =>
       registry.translateNonStream(
         responseFormatOf(options),
@@ -671,12 +709,19 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
 
           if (payload !== undefined && !sawFinish && hasFinishSignal(payload)) sawFinish = true;
 
-          return payload === undefined ? Stream.empty : translated(payload);
+          if (payload === undefined) return Stream.empty;
+          const blocked = promptBlockMessage(tryParseJson(payload));
+
+          if (blocked !== undefined)
+            return Stream.fail(new ExecutionError({ status: 502, message: blocked }));
+
+          return translated(payload);
         }),
       ),
       Stream.suspend(() =>
-        // Only Claude clients fail a truncated stream (Go): they would otherwise see a clean `message_stop`.
-        responseFormat === Formats.Claude && !sawFinish
+        // Claude and OpenAI chat clients fail a truncated stream (Go 4f2e5270, 3f5d3a16): they would otherwise see a
+        // clean `message_stop` / `[DONE]`.
+        (responseFormat === Formats.Claude || responseFormat === Formats.OpenAI) && !sawFinish
           ? Stream.fail(
               new ExecutionError({
                 status: 502,

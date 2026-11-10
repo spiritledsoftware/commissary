@@ -398,6 +398,74 @@ describe("OpenAI Responses client -> Gemini credential", () => {
     expect(h.records[0]?.detail.totalTokens).toBe(3);
   });
 
+  describe("prompt blocks and truncated OpenAI streams (Go 3f5d3a16)", () => {
+    const BLOCKED = {
+      promptFeedback: { blockReason: "PROHIBITED_CONTENT", blockReasonMessage: "nope" },
+      usageMetadata: { promptTokenCount: 5, totalTokenCount: 5 },
+    };
+
+    it("answers a candidate-less non-stream prompt block with 502 and keeps its usage", async () => {
+      const h = harness(() => jsonResponse(BLOCKED));
+      afterAll(h.dispose);
+
+      const response = await h.call(
+        "/v1/chat/completions",
+        postJson({ model: "gemini-2.5-pro", messages: [{ role: "user", content: "hi" }] }),
+      );
+
+      expect(response.status).toBe(502);
+      expect(await response.text()).toContain(
+        "upstream blocked the prompt: PROHIBITED_CONTENT - nope",
+      );
+      expect(h.records[0]).toMatchObject({
+        failed: true,
+        fail: { statusCode: 502 },
+        detail: { inputTokens: 5 },
+      });
+    });
+
+    it("fails a streamed prompt block with 502 before translating it", async () => {
+      const h = harness(() => sseResponse([`data: ${JSON.stringify(BLOCKED)}\n\n`]));
+
+      afterAll(h.dispose);
+
+      const response = await h.call(
+        "/v1/chat/completions",
+        postJson({
+          model: "gemini-2.5-pro",
+          stream: true,
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      );
+
+      const text = await response.text();
+      expect(text).not.toContain("[DONE]");
+      expect(h.records[0]).toMatchObject({ failed: true, fail: { statusCode: 502 } });
+    });
+
+    it("fails an OpenAI chat stream that closes before any finishReason", async () => {
+      const h = harness(() =>
+        sseResponse([
+          `data: ${JSON.stringify({ candidates: [{ content: { parts: [{ text: "Hi" }] }, index: 0 }], responseId: "r" })}\n\n`,
+        ]),
+      );
+
+      afterAll(h.dispose);
+
+      const response = await h.call(
+        "/v1/chat/completions",
+        postJson({
+          model: "gemini-2.5-pro",
+          stream: true,
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      );
+
+      expect(await response.text()).not.toContain("[DONE]");
+      expect(h.records[0]).toMatchObject({ failed: true, fail: { statusCode: 502 } });
+    });
+  });
+
   describe("Claude clients (Go 4f2e5270)", () => {
     const chunk = (text: string, finishReason?: string) =>
       `data: ${JSON.stringify({
