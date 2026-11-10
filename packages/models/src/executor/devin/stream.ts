@@ -7,10 +7,17 @@
  * Rules kept from Go: text after tool calls is buffered until the tools close (Responses clients need tools first);
  * thought steps stay open until text or tools arrive so late signatures can still target them; a failure before any
  * content is suppressed (the caller turns it into an HTTP error); the stream must end with the EOS trailer.
+ * A custom `apply_patch` call whose arguments arrive as `invalid_json_str` is held back until the clean end of the
+ * stream: a complete bare patch is then wrapped into JSON arguments (`apply-patch-recovery.ts`), anything else is
+ * delivered as invalid arguments, which the executor's apply_patch guards fail.
  */
 import { randomUUID } from "node:crypto";
 import { asString, type JsonObject, parseJsonOrText } from "@commissary/json";
 import { Formats } from "@commissary/translation/formats";
+import {
+  canBeDevinBareApplyPatchPrefix,
+  recoverDevinBareApplyPatch,
+} from "./apply-patch-recovery.ts";
 import {
   applyDimensionUsage,
   type DevinFrame,
@@ -27,10 +34,24 @@ export const newInteractionId = (): string => `interaction_${randomUUID().slice(
 
 type Event = JsonObject;
 
+/** The client's custom `apply_patch` tool, which bare patches in `invalid_json_str` are recovered for. */
+export interface DevinApplyPatchTool {
+  /** The client declared the custom `apply_patch` tool. */
+  readonly requested: boolean;
+  /** The upstream function `name` is that tool. */
+  readonly isTool: (name: string) => boolean;
+}
+
 interface ToolSlot {
   readonly stepIndex: number;
   id: string;
   name: string;
+  /** Some argument chunk was valid JSON. */
+  hasJson: boolean;
+  /** Some argument chunk was `invalid_json_str`. */
+  invalidJson: boolean;
+  /** Invalid chunks of an apply_patch call, held back until the stream's end. */
+  invalidArgs: string;
 }
 
 /** Streaming TextDecoder per text kind: multi-byte characters split across frames are re-joined (`UTF8SplitBuffer`). */
@@ -95,13 +116,16 @@ export class DevinStreamAssembler {
   readonly #responseSignatures = new Map<number, string>();
   #postToolContent: string[] = [];
   #sawEos = false;
+  readonly #applyPatch: DevinApplyPatchTool | undefined;
 
   constructor(
     readonly model: string,
     readonly responseFormat: string,
     interactionId: string = newInteractionId(),
+    applyPatch?: DevinApplyPatchTool,
   ) {
     this.interactionId = interactionId;
+    this.#applyPatch = applyPatch;
   }
 
   /** Text may stream independently of queued thoughts/tools only for OpenAI formats. */
@@ -232,7 +256,14 @@ export class DevinStreamAssembler {
       if (this.#toolCallCount >= MAX_DEVIN_TOOL_CALLS) return;
       this.#toolCallCount++;
       const index = this.#stepIndex++;
-      slot = { stepIndex: index, id: call.id, name: call.name };
+      slot = {
+        stepIndex: index,
+        id: call.id,
+        name: call.name,
+        hasJson: false,
+        invalidJson: false,
+        invalidArgs: "",
+      };
       this.#slots.set(index, slot);
 
       if (call.id !== "") this.#slotById.set(call.id, slot);
@@ -256,12 +287,98 @@ export class DevinStreamAssembler {
       if (updated) this.#emit(startEvent(slot));
     }
 
-    if (argsChunk !== "") {
-      const delta: Event = { type: "arguments_delta", arguments: argsChunk };
+    this.#emitArguments(slot, call, argsChunk);
+  }
 
-      if (call.arguments === "" && call.invalidJsonStr !== "") delta["invalid_json_str"] = true;
-      this.#emit({ event_type: "step.delta", index: slot.stepIndex, delta });
+  #emitArgumentsDelta(stepIndex: number, text: string, invalidJson: boolean): void {
+    const delta: Event = { type: "arguments_delta", arguments: text };
+
+    if (invalidJson) delta["invalid_json_str"] = true;
+    this.#emit({ event_type: "step.delta", index: stepIndex, delta });
+  }
+
+  /** Whether `name` (empty while the late tool name is pending) is the client's custom apply_patch tool. */
+  #maybeApplyPatch(name: string): boolean {
+    const patch = this.#applyPatch;
+
+    return patch !== undefined && patch.requested && (name === "" || patch.isTool(name));
+  }
+
+  /** Releases the held-back invalid chunks of `slot` as invalid arguments. */
+  #flushInvalidArguments(slot: ToolSlot): void {
+    const buffered = slot.invalidArgs;
+    slot.invalidArgs = "";
+    this.#emitArgumentsDelta(slot.stepIndex, buffered, true);
+  }
+
+  /**
+   * The arguments of one tool-call chunk. A bare patch (apply_patch arguments that are not JSON) is held back while it
+   * can still become a complete patch, so the end of the stream can decide whether to recover it.
+   */
+  #emitArguments(slot: ToolSlot, call: DevinToolCallDelta, argsChunk: string): void {
+    if (call.arguments !== "") slot.hasJson = true;
+
+    if (call.invalidJsonStr !== "") slot.invalidJson = true;
+
+    // The late tool name arrived for a buffered call: release the arguments of an ordinary tool, or of a patch that can
+    // no longer be a bare one.
+    if (slot.invalidJson && slot.invalidArgs !== "" && slot.name !== "") {
+      if (
+        this.#applyPatch === undefined ||
+        !this.#applyPatch.requested ||
+        !this.#applyPatch.isTool(slot.name)
+      ) {
+        slot.invalidJson = false;
+        this.#flushInvalidArguments(slot);
+      } else if (slot.hasJson || !canBeDevinBareApplyPatchPrefix(slot.invalidArgs)) {
+        this.#flushInvalidArguments(slot);
+
+        return;
+      }
     }
+
+    if (call.invalidJsonStr !== "" && this.#maybeApplyPatch(slot.name)) {
+      slot.invalidArgs += call.invalidJsonStr;
+
+      if (slot.name !== "" && (slot.hasJson || !canBeDevinBareApplyPatchPrefix(slot.invalidArgs)))
+        this.#flushInvalidArguments(slot);
+
+      return;
+    }
+
+    if (call.arguments !== "" && slot.invalidJson && this.#maybeApplyPatch(slot.name)) {
+      slot.invalidArgs += call.arguments;
+
+      if (slot.name !== "") this.#flushInvalidArguments(slot);
+
+      return;
+    }
+
+    if (argsChunk !== "")
+      this.#emitArgumentsDelta(
+        slot.stepIndex,
+        argsChunk,
+        call.arguments === "" && call.invalidJsonStr !== "",
+      );
+  }
+
+  /**
+   * The held-back arguments of a call at the end of the stream: after a clean end a complete bare patch is wrapped into
+   * JSON arguments; everything else is released as invalid arguments (a truncated stream, a trailer error, mixed
+   * argument sources and malformed patches fail closed).
+   */
+  #releaseInvalidArguments(slot: ToolSlot): void {
+    const raw = slot.invalidArgs;
+    slot.invalidArgs = "";
+    const patch = this.#applyPatch;
+
+    const wrapped =
+      this.#sawEos && !slot.hasJson && slot.name !== "" && patch?.isTool(slot.name) === true
+        ? recoverDevinBareApplyPatch(raw)
+        : undefined;
+
+    if (wrapped === undefined) this.#emitArgumentsDelta(slot.stepIndex, raw, true);
+    else this.#emitArgumentsDelta(slot.stepIndex, wrapped, false);
   }
 
   /** Feeds one decoded frame; returns the Interactions events it produced. */
@@ -348,10 +465,9 @@ export class DevinStreamAssembler {
     if (this.#pending.length > 0 || this.#thoughtStarted) this.#flushPending();
 
     if (this.#slots.size > 0) {
-      for (const index of [...this.#slots.values()]
-        .map((slot) => slot.stepIndex)
-        .toSorted((a, b) => a - b)) {
-        this.#stepStop(index);
+      for (const slot of [...this.#slots.values()].toSorted((a, b) => a.stepIndex - b.stepIndex)) {
+        if (slot.invalidJson && slot.invalidArgs !== "") this.#releaseInvalidArguments(slot);
+        this.#stepStop(slot.stepIndex);
       }
 
       this.#slots.clear();
@@ -435,7 +551,10 @@ interface ToolBuilder {
   id: string;
   name: string;
   args: string;
+  /** Some argument chunk was `invalid_json_str`. */
   legacy: boolean;
+  /** Some argument chunk was valid JSON. */
+  hasJson: boolean;
 }
 
 export interface DevinAggregate {
@@ -460,6 +579,8 @@ const concat = (parts: ReadonlyArray<Uint8Array>): string => {
 
 /** `consumeDevinFramesToInteractions` over already decoded frames (the caller validated the trailer). */
 export class DevinAggregator {
+  constructor(readonly applyPatch?: DevinApplyPatchTool) {}
+
   #thinking: Uint8Array[] = [];
   #signature: Uint8Array[] = [];
   #preText: Uint8Array[] = [];
@@ -496,7 +617,7 @@ export class DevinAggregator {
       if (index < 0) {
         if (this.#tools.length >= MAX_DEVIN_TOOL_CALLS) continue;
         index = this.#tools.length;
-        builder = { id: call.id, name: call.name, args: "", legacy: false };
+        builder = { id: call.id, name: call.name, args: "", legacy: false, hasJson: false };
         this.#tools.push(builder);
 
         if (call.id !== "") this.#toolIndexById.set(call.id, index);
@@ -516,7 +637,9 @@ export class DevinAggregator {
 
       this.#lastTool = index;
 
-      if (call.arguments === "" && call.invalidJsonStr !== "") builder.legacy = true;
+      if (call.arguments !== "") builder.hasJson = true;
+
+      if (call.invalidJsonStr !== "") builder.legacy = true;
 
       if (chunk !== "") builder.args += chunk;
     }
@@ -560,6 +683,17 @@ export class DevinAggregator {
     }
 
     const legacyToolNames: string[] = [];
+
+    // A complete bare patch of the declared apply_patch tool is recovered (the caller saw the clean EOS trailer).
+    for (const tool of this.#tools) {
+      if (!tool.legacy || tool.hasJson || this.applyPatch?.isTool(tool.name) !== true) continue;
+      const wrapped = recoverDevinBareApplyPatch(tool.args);
+
+      if (wrapped !== undefined) {
+        tool.args = wrapped;
+        tool.legacy = false;
+      }
+    }
 
     for (const tool of this.#tools) {
       if (tool.id === "" && tool.name === "" && tool.args === "") continue;

@@ -57,7 +57,11 @@ export {
   normalizeApplyPatchResponsesRequest,
 } from "./translator/common/apply-patch-responses.ts";
 
-export { isApplyPatchCustomTool, unwrapApplyPatchInput } from "./translator/common/apply-patch.ts";
+export {
+  isApplyPatchCustomTool,
+  unwrapApplyPatchInput,
+  wrapApplyPatchInput,
+} from "./translator/common/apply-patch.ts";
 
 export { sseEventData } from "./translator/common/bytes.ts";
 

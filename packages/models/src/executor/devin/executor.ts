@@ -59,7 +59,7 @@ import { claudeEffortDirective } from "./effort-directive.ts";
 import { checkDevinUserTurns, parseInteractionsPayload } from "./interactions.ts";
 import { resolveDevinChatModelUid } from "./models.ts";
 import { devinPayloadDefaultsSource, finalizeDevinPayload } from "./payload.ts";
-import { DevinAggregator, DevinStreamAssembler } from "./stream.ts";
+import { DevinAggregator, type DevinApplyPatchTool, DevinStreamAssembler } from "./stream.ts";
 import {
   buildGetChatMessageRequest,
   CONNECT_FLAG_END_STREAM,
@@ -144,6 +144,12 @@ interface StreamStep {
    */
   readonly failureEvents?: ReadonlyArray<string>;
 }
+
+/** The client's custom `apply_patch` tool, for recovering bare patches. */
+const applyPatchToolOf = (original: Json | undefined): DevinApplyPatchTool => ({
+  requested: applyPatchRequested(original),
+  isTool: (name) => isApplyPatchUpstreamTool(original, name),
+});
 
 /** `registry.LookupDevinModel` through the attempt's registry snapshot: catalog ids are namespaced `devin/<id>`. */
 const lookupDevinInfo = (request: ExecutorRequest, modelId: string) => {
@@ -367,7 +373,7 @@ export const makeDevinExecutor = (executorOptions: DevinExecutorOptions = {}): P
       return failure;
     };
 
-    const aggregator = new DevinAggregator();
+    const aggregator = new DevinAggregator(applyPatchToolOf(original));
     yield* Effect.gen(function* () {
       const body = yield* response.arrayBuffer.pipe(
         Effect.mapError((error) => readError(`devin upstream read failed: ${error.reason._tag}`)),
@@ -454,8 +460,8 @@ export const makeDevinExecutor = (executorOptions: DevinExecutorOptions = {}): P
     readonly assembler: DevinStreamAssembler;
     stopped = false;
 
-    constructor(model: string, responseFormat: string) {
-      this.assembler = new DevinStreamAssembler(model, responseFormat);
+    constructor(model: string, responseFormat: string, applyPatch: DevinApplyPatchTool) {
+      this.assembler = new DevinStreamAssembler(model, responseFormat, undefined, applyPatch);
     }
 
     feed(bytes: Uint8Array): Effect.Effect<StreamStep> {
@@ -544,8 +550,15 @@ export const makeDevinExecutor = (executorOptions: DevinExecutorOptions = {}): P
     const prepared = yield* prepare(context, request, options, true);
     const response = yield* send(context, prepared);
     const responseFormat = responseFormatOf(options);
-    const state = new FrameState(request.model, responseFormat);
+
+    const state = new FrameState(
+      request.model,
+      responseFormat,
+      applyPatchToolOf(options.originalRequest ?? request.payload),
+    );
+
     const translation = responseContext(request, options);
+
     // Devin frames carry authoritative cache-aware usage: `message_start` is not seeded with an input estimate (Go passes
     // no `ClaudeInputTokenState`; the registry applies one to every Claude client unless the state marks it handled).
     translation.state.claudeInputTokensHandled = true;
