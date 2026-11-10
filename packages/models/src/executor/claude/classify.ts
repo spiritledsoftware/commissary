@@ -3,7 +3,7 @@
  *
  * Go source: internal/runtime/executor/helps/claude_client_detection.go (DetectClaudeCodeRequest, simplified: the
  * measured Haiku "helper profile" shapes are not ported), helps/claude_diagnostics.go (IsClaudeProbeOrHelperRequest,
- * IsClaudeSubagentRequest, ClaudeSubagentRequests1h, IsClaudeNewPromptTurn, ExtractClaudeBillingTags),
+ * IsClaudeQuotaProbeRequest, IsClaudeSubagentRequest, ClaudeSubagentRequests1h, IsClaudeNewPromptTurn, ExtractClaudeBillingTags),
  * claude_executor_request.go / claude_executor_cloaking.go (model family predicates).
  */
 import { get, isJsonObject, tryParseJson, type Json, type JsonObject } from "@commissary/json";

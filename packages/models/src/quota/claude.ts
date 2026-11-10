@@ -10,10 +10,12 @@
  * unknown top-level windows (`{utilization, resets_at}` objects) are listed too; dollar-denominated pools
  * (`limit_dollars`/`used_dollars`/`remaining_dollars`) are skipped; `limits[]` entries of kind `weekly_scoped` become
  * `seven_day_<model>` windows (the panel only reads the Fable one). The plan is the panel's `plan_*` key without the
- * prefix (`team`, `max`, `pro`, `free`).
+ * prefix (`team`, `max`, `pro`, `free`). The user agent is the executor's Claude Code baseline (`DEFAULT_USER_AGENT`), not
+ * the panel's pinned one.
  */
 import type { Json, JsonObject } from "@commissary/json";
 import type { QuotaWindow } from "@commissary/contract/credentials";
+import { DEFAULT_USER_AGENT } from "../executor/claude/classify.ts";
 import {
   FIVE_HOURS,
   WEEK,
@@ -32,7 +34,7 @@ export const CLAUDE_PROFILE_URL = "https://api.anthropic.com/api/oauth/profile";
 
 /** `CLAUDE_REQUEST_HEADERS` without the bearer token. */
 export const CLAUDE_HEADERS = {
-  "user-agent": "claude-cli/2.1.321 (external, cli)",
+  "user-agent": DEFAULT_USER_AGENT,
   "content-type": "application/json",
   "anthropic-beta": "oauth-2025-04-20",
 } as const;

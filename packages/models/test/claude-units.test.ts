@@ -333,7 +333,7 @@ describe("betas", () => {
     expect(betas).not.toContain(BETA.oauth);
   });
 
-  // Captures of native Claude Code 2.1.321 (Go: claude_executor_cli_2321_test.go): an interactive cli main-thread
+  // Captures of native Claude Code 2.1.321 (Go: internal/runtime/executor/claude_executor_cli_2321_test.go): an interactive cli main-thread
   // turn with OAuth in an auto-mode session, hence afk-mode.
   const cli2321Betas = [
     "claude-code-20250219",
