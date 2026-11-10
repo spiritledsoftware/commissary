@@ -6,7 +6,9 @@
  * (Walk). The Go code rewrites a JSON string through gjson/sjson paths; this port keeps the same path based passes on
  * a parsed document (`Doc`) using the gjson/sjson engine of `@commissary/json`. Pass one single schema, never a request.
  *
- * Differences: hint texts embed `JSON.stringify` of objects/arrays (Go keeps the original raw text).
+ * Differences: hint texts embed `JSON.stringify` of objects/arrays (Go keeps the original raw text). Local reference
+ * inlining lives in `common/schema-refs.ts` (shared with the executors); a property literally named `const` is not
+ * converted to an `enum` of its parent (Go would fabricate `properties.enum`).
  */
 import {
   asString,
@@ -18,6 +20,13 @@ import {
   type JsonObject,
   set,
 } from "@commissary/json";
+import {
+  inlineLocalRefsForClean,
+  isLiteralValueKeyword,
+  mergeHint,
+  refName,
+  SCHEMA_NAME_MAP_KEYWORDS,
+} from "../../common/schema-refs.ts";
 
 export const PLACEHOLDER_REASON_DESCRIPTION = "Brief explanation of why you are calling this tool";
 
@@ -95,15 +104,6 @@ const trimSuffix = (path: string, suffix: string): string => {
 const joinPath = (base: string, suffix: string): string =>
   base === "" ? suffix : `${base}.${suffix}`;
 
-const NAME_MAP_KEYWORDS = new Set([
-  "properties",
-  "patternProperties",
-  "dependentSchemas",
-  "dependencies",
-  "$defs",
-  "definitions",
-]);
-
 /** Whether `path` addresses a map keyed by author-chosen names (odd trailing run of name-map keywords). */
 const isPropertyDefinition = (path: string): boolean => {
   const segments = splitPath(path);
@@ -111,7 +111,7 @@ const isPropertyDefinition = (path: string): boolean => {
 
   for (let i = segments.length - 1; i >= 0; i--) {
     // SAFETY: the index is in bounds (loop bound or length check above); the cast only drops the `undefined` added by noUncheckedIndexedAccess.
-    if (!NAME_MAP_KEYWORDS.has(unescapeKey(segments[i] as string))) break;
+    if (!SCHEMA_NAME_MAP_KEYWORDS.has(unescapeKey(segments[i] as string))) break;
     trailing++;
   }
 
@@ -145,15 +145,6 @@ const setRawAt = (doc: Doc, path: string, value: Json): void => {
   else setAt(doc, path, value);
 };
 
-const mergeHint = (existing: string, hint: string): string => {
-  if (existing === "") return hint;
-
-  if (existing === hint || existing.startsWith(`${hint} (`) || existing.includes(`(${hint})`))
-    return existing;
-
-  return `${existing} (${hint})`;
-};
-
 const appendHint = (doc: Doc, parentPath: string, hint: string): void => {
   const path = descriptionPath(parentPath);
   setAt(doc, path, mergeHint(asString(getAt(doc, path)), hint));
@@ -181,7 +172,11 @@ const mergeDescriptionRaw = (schema: Json, parentDesc: string): Json => {
   }
 };
 
-/** `Walk`: every path whose key equals `field` (arrays are walked with index keys). */
+/**
+ * `WalkSchema`: every path whose key equals `field` (arrays are walked with index keys). Literal values (`default`,
+ * `example`, `examples`, `const`, `enum`) are client data, not subschemas, so the walk does not descend into them (the
+ * keyword itself is still recorded); under a name map such a key is a property name, whose subschema is walked.
+ */
 const walk = (value: Json | undefined, path: string, field: string, paths: string[]): void => {
   const entries: Array<[string, Json]> = isJsonArray(value)
     ? value.map((item, index): [string, Json] => [String(index), item])
@@ -193,6 +188,8 @@ const walk = (value: Json | undefined, path: string, field: string, paths: strin
     const childPath = path === "" ? escapeKey(key) : `${path}.${escapeKey(key)}`;
 
     if (key === field) paths.push(childPath);
+
+    if (isLiteralValueKeyword(key) && !isPropertyDefinition(path)) continue;
     walk(child, childPath, field, paths);
   }
 };
@@ -219,6 +216,9 @@ const findPathsByFields = (doc: Doc, fields: ReadonlyArray<string>): Map<string,
       const childPath = path === "" ? escapeKey(key) : `${path}.${escapeKey(key)}`;
 
       if (wanted.has(key)) out.set(key, [...(out.get(key) ?? []), childPath]);
+
+      // Literal values are client data; schema-looking keys inside them are not keywords.
+      if (isLiteralValueKeyword(key) && !isPropertyDefinition(path)) continue;
       visit(child, childPath);
     }
   };
@@ -325,12 +325,12 @@ const stringArray = (value: Json | undefined): string[] =>
 
 type RepairSchemaListResult = { out: Json[]; modified: boolean };
 
-const repairSchemaList = (list: Json[], addItems: boolean): RepairSchemaListResult => {
+const repairSchemaList = (list: Json[]): RepairSchemaListResult => {
   let modified = false;
 
   const out = list.map((item) => {
     if (isJsonObject(item)) {
-      const repaired = repairSchemaNode(item, addItems);
+      const repaired = repairSchemaNode(item);
 
       if (repaired.modified) modified = true;
 
@@ -351,7 +351,7 @@ const repairSchemaList = (list: Json[], addItems: boolean): RepairSchemaListResu
 
 type RepairPropertyMapResult = { out: JsonObject; promoted: string[]; modified: boolean };
 
-const repairPropertyMap = (props: JsonObject, addItems: boolean): RepairPropertyMapResult => {
+const repairPropertyMap = (props: JsonObject): RepairPropertyMapResult => {
   const out: JsonObject = {};
   const promoted: string[] = [];
   let modified = false;
@@ -378,7 +378,7 @@ const repairPropertyMap = (props: JsonObject, addItems: boolean): RepairProperty
       if (required) promoted.push(key);
     }
 
-    const repaired = repairSchemaNode(child, addItems);
+    const repaired = repairSchemaNode(child);
 
     if (repaired.modified) modified = true;
     out[key] = repaired.node;
@@ -391,7 +391,7 @@ const repairPropertyMap = (props: JsonObject, addItems: boolean): RepairProperty
 
 type RepairSchemaNodeResult = { node: JsonObject; modified: boolean };
 
-function repairSchemaNode(node: JsonObject, addItems: boolean): RepairSchemaNodeResult {
+function repairSchemaNode(node: JsonObject): RepairSchemaNodeResult {
   let modified = false;
   const clone: JsonObject = { ...node };
 
@@ -403,7 +403,7 @@ function repairSchemaNode(node: JsonObject, addItems: boolean): RepairSchemaNode
     }
 
     if (Object.keys(bare).length > 0) {
-      const repaired = repairPropertyMap(bare, addItems);
+      const repaired = repairPropertyMap(bare);
 
       for (const k of Object.keys(bare)) delete clone[k];
       const existing = clone["properties"];
@@ -432,7 +432,7 @@ function repairSchemaNode(node: JsonObject, addItems: boolean): RepairSchemaNode
       modified = true;
     }
 
-    const repaired = repairPropertyMap(props, addItems);
+    const repaired = repairPropertyMap(props);
 
     if (repaired.modified) {
       clone["properties"] = repaired.out;
@@ -445,31 +445,17 @@ function repairSchemaNode(node: JsonObject, addItems: boolean): RepairSchemaNode
     }
   }
 
-  if (addItems) {
-    if (isArrayDeclaredType(clone["type"])) {
-      if (!Object.hasOwn(clone, "items")) {
-        clone["items"] = { type: "string" };
-        modified = true;
-      }
-    } else if (Object.hasOwn(clone, "items")) {
-      if (clone["type"] === null || clone["type"] === undefined || clone["type"] === "") {
-        clone["type"] = "array";
-        modified = true;
-      }
-    }
-  }
-
   const items = clone["items"];
 
   if (isJsonObject(items)) {
-    const repaired = repairSchemaNode(items, addItems);
+    const repaired = repairSchemaNode(items);
 
     if (repaired.modified) {
       clone["items"] = repaired.node;
       modified = true;
     }
   } else if (isJsonArray(items)) {
-    const repaired = repairSchemaList(items, addItems);
+    const repaired = repairSchemaList(items);
 
     if (repaired.modified) {
       clone["items"] = repaired.out;
@@ -483,7 +469,7 @@ function repairSchemaNode(node: JsonObject, addItems: boolean): RepairSchemaNode
   const additional = clone["additionalProperties"];
 
   if (isJsonObject(additional)) {
-    const repaired = repairSchemaNode(additional, addItems);
+    const repaired = repairSchemaNode(additional);
 
     if (repaired.modified) {
       clone["additionalProperties"] = repaired.node;
@@ -494,7 +480,7 @@ function repairSchemaNode(node: JsonObject, addItems: boolean): RepairSchemaNode
   const pattern = clone["patternProperties"];
 
   if (isJsonObject(pattern)) {
-    const repaired = repairPropertyMap(pattern, addItems);
+    const repaired = repairPropertyMap(pattern);
 
     if (repaired.modified) {
       clone["patternProperties"] = repaired.out;
@@ -517,7 +503,7 @@ function repairSchemaNode(node: JsonObject, addItems: boolean): RepairSchemaNode
     const sub = clone[key];
 
     if (isJsonObject(sub)) {
-      const repaired = repairSchemaNode(sub, addItems);
+      const repaired = repairSchemaNode(sub);
 
       if (repaired.modified) {
         clone[key] = repaired.node;
@@ -533,7 +519,7 @@ function repairSchemaNode(node: JsonObject, addItems: boolean): RepairSchemaNode
     const list = clone[key];
 
     if (isJsonArray(list)) {
-      const repaired = repairSchemaList(list, addItems);
+      const repaired = repairSchemaList(list);
 
       if (repaired.modified) {
         clone[key] = repaired.out;
@@ -551,7 +537,7 @@ function repairSchemaNode(node: JsonObject, addItems: boolean): RepairSchemaNode
 
     for (const [dk, dv] of Object.entries(defs)) {
       if (isJsonObject(dv)) {
-        const repaired = repairSchemaNode(dv, addItems);
+        const repaired = repairSchemaNode(dv);
         out[dk] = repaired.node;
 
         if (repaired.modified) {
@@ -573,7 +559,7 @@ function repairSchemaNode(node: JsonObject, addItems: boolean): RepairSchemaNode
   return { node: clone, modified };
 }
 
-const normalizeMalformedSchemaObjects = (doc: Doc, addItems: boolean): void => {
+const normalizeMalformedSchemaObjects = (doc: Doc): void => {
   const root = doc.root;
 
   if (root === true) {
@@ -588,7 +574,7 @@ const normalizeMalformedSchemaObjects = (doc: Doc, addItems: boolean): void => {
     const inner = root["schema"];
 
     if (isJsonObject(inner)) {
-      const repaired = repairSchemaNode(inner, addItems);
+      const repaired = repairSchemaNode(inner);
 
       if (repaired.modified) doc.root = { schema: repaired.node };
 
@@ -602,118 +588,22 @@ const normalizeMalformedSchemaObjects = (doc: Doc, addItems: boolean): void => {
     }
   }
 
-  const repaired = repairSchemaNode(root, addItems);
+  const repaired = repairSchemaNode(root);
 
   if (repaired.modified) doc.root = repaired.node;
 };
 
 // --- $ref handling -------------------------------------------------------------------------------------------------------
 
-const resolveJsonPointer = (
-  root: Json,
-  ref: string,
-): { found: true; value: Json } | { found: false } => {
-  let current: Json = root;
-
-  for (const rawPart of ref.slice(2).split("/")) {
-    const part = rawPart.replaceAll("~1", "/").replaceAll("~0", "~");
-
-    if (isJsonObject(current)) {
-      if (!Object.hasOwn(current, part)) return { found: false };
-      // SAFETY: `Object.hasOwn(current, part)` was checked above, so the key is present; the cast only drops the `undefined` added by noUncheckedIndexedAccess.
-      current = current[part] as Json;
-    } else if (isJsonArray(current)) {
-      if (!/^-?\d+$/.test(part)) return { found: false };
-      const index = Number(part);
-
-      if (index < 0 || index >= current.length) return { found: false };
-      // SAFETY: the index is in bounds (loop bound or length check above); the cast only drops the `undefined` added by noUncheckedIndexedAccess.
-      current = current[index] as Json;
-    } else {
-      return { found: false };
-    }
-  }
-
-  return { found: true, value: current };
-};
-
-const refName = (ref: string): string => {
-  const index = ref.lastIndexOf("/");
-
-  if (index >= 0 && index + 1 < ref.length)
-    return ref
-      .slice(index + 1)
-      .replaceAll("~1", "/")
-      .replaceAll("~0", "~");
-
-  return ref;
-};
-
-const cyclicRefFallback = (node: JsonObject, target: Json, ref: string): JsonObject => {
-  const out: JsonObject = {};
-
-  if (isJsonObject(target)) {
-    for (const key of ["type", "nullable", "description"])
-      if (Object.hasOwn(target, key))
-        // SAFETY: `Object.hasOwn(target, key)` was checked above, so the key is present; the cast only drops the `undefined` added by noUncheckedIndexedAccess.
-        out[key] = target[key] as Json;
-  }
-
-  for (const [key, value] of Object.entries(node)) if (key !== "$ref") out[key] = value;
-  const hint = `See: ${refName(ref)}`;
-  const description = out["description"];
-  out["description"] =
-    typeof description === "string" && description !== "" ? mergeHint(description, hint) : hint;
-
-  return out;
-};
-
-const resolveLocalRefs = (root: Json, value: Json, active: Set<string>): Json => {
-  if (isJsonArray(value)) return value.map((item) => resolveLocalRefs(root, item, active));
-
-  if (!isJsonObject(value)) return value;
-  const ref = value["$ref"];
-
-  if (typeof ref === "string" && ref.startsWith("#/")) {
-    const target = resolveJsonPointer(root, ref);
-
-    if (target.found) {
-      if (active.has(ref)) return cyclicRefFallback(value, target.value, ref);
-      active.add(ref);
-      const resolvedTarget = resolveLocalRefs(root, target.value, active);
-      active.delete(ref);
-
-      if (isJsonObject(resolvedTarget)) {
-        const out: JsonObject = { ...resolvedTarget };
-
-        for (const [key, item] of Object.entries(value)) {
-          if (key !== "$ref") out[key] = resolveLocalRefs(root, item, active);
-        }
-
-        return out;
-      }
-    }
-  }
-
-  const out: JsonObject = {};
-
-  for (const [key, item] of Object.entries(value)) out[key] = resolveLocalRefs(root, item, active);
-
-  return out;
-};
-
-const inlineLocalRefs = (doc: Doc): void => {
-  if (!JSON.stringify(doc.root).includes('"$ref"')) return;
-  doc.root = resolveLocalRefs(doc.root, doc.root, new Set());
-};
-
 const convertRefsToHints = (doc: Doc, preserveSiblings: boolean): void => {
   const paths = findPaths(doc, "$ref");
   sortByDepth(paths);
 
   for (const p of paths) {
-    const defName = refName(asString(getAt(doc, p)));
     const parentPath = trimSuffix(p, ".$ref");
+
+    if (isPropertyDefinition(parentPath)) continue; // a property literally named "$ref", not a reference keyword
+    const defName = refName(asString(getAt(doc, p)));
     let hint = `See: ${defName}`;
 
     if (!preserveSiblings) {
@@ -735,7 +625,7 @@ const convertConstToEnum = (doc: Doc): void => {
   for (const p of findPaths(doc, "const")) {
     const value = getAt(doc, p);
 
-    if (value === undefined) continue;
+    if (value === undefined || isPropertyDefinition(trimSuffix(p, ".const"))) continue;
     const enumPath = `${trimSuffix(p, ".const")}.enum`;
 
     if (getAt(doc, enumPath) === undefined) setAt(doc, enumPath, [value]);
@@ -1131,6 +1021,8 @@ const removeExtensionFields = (doc: Doc): void => {
         continue;
       }
 
+      // Literal values are client data; x-* keys inside them are not schema extensions.
+      if (isLiteralValueKeyword(key) && !isPropertyDefinition(path)) continue;
       visit(child, childPath);
     }
   };
@@ -1285,7 +1177,12 @@ const cleanupRequiredFields = (doc: Doc): void => {
   }
 };
 
-const sanitizeArrayItems = (doc: Doc): void => {
+/**
+ * Normalizes native Schema arrays (a node declaring `items` is an array; `items` of a non-array is dropped) and, with
+ * `addMissing`, gives array-typed nodes that still lack `items` after reference inlining the `{"type":"string"}`
+ * placeholder Gemini requires. A node still holding a `$ref` is left alone.
+ */
+const sanitizeArrayItems = (doc: Doc, addMissing: boolean): void => {
   const paths = findPaths(doc, "items");
   sortByDepth(paths);
 
@@ -1298,6 +1195,23 @@ const sanitizeArrayItems = (doc: Doc): void => {
 
     if (t === "") setAt(doc, typePath, "array");
     else if (t.toLowerCase() !== "array") delAt(doc, p);
+  }
+
+  if (!addMissing) return;
+  const typePaths = findPaths(doc, "type");
+  sortByDepth(typePaths);
+
+  for (const p of typePaths) {
+    const parentPath = trimSuffix(p, ".type");
+
+    if (isPropertyDefinition(parentPath) || !isArrayDeclaredType(getAt(doc, p))) continue;
+
+    if (
+      getAt(doc, joinPath(parentPath, "items")) !== undefined ||
+      getAt(doc, joinPath(parentPath, "$ref")) !== undefined
+    )
+      continue;
+    setAt(doc, joinPath(parentPath, "items"), { type: "string" });
   }
 };
 
@@ -1356,9 +1270,12 @@ const addEmptySchemaPlaceholder = (doc: Doc): void => {
 
 const cleanJsonSchema = (schema: Json, options: CleanOptions): Json => {
   const doc: Doc = { root: structuredClone(schema) };
-  normalizeMalformedSchemaObjects(doc, options.addMissingArrayItems === true);
+  // Array placeholders and array type inference wait for `sanitizeArrayItems` (after references are inlined and allOf
+  // and unions are resolved), so a synthetic placeholder never clobbers items from a $ref target or an allOf branch.
+  normalizeMalformedSchemaObjects(doc);
 
-  if (options.antigravitySemantics === true) inlineLocalRefs(doc);
+  // Every cleaner removes $defs/definitions later, so local references are expanded for every route.
+  doc.root = inlineLocalRefsForClean(doc.root);
   convertRefsToHints(doc, options.antigravitySemantics === true);
   convertConstToEnum(doc);
   convertEnumValuesToStrings(doc, options.forceEnumStringType === true);
@@ -1392,8 +1309,8 @@ const cleanJsonSchema = (schema: Json, options: CleanOptions): Json => {
   }
 
   cleanupRequiredFields(doc);
-  sanitizeArrayItems(doc);
   sanitizeObjectProperties(doc);
+  sanitizeArrayItems(doc, options.addMissingArrayItems === true);
 
   if (options.addPlaceholder === true) addEmptySchemaPlaceholder(doc);
 

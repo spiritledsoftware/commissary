@@ -95,6 +95,8 @@ export {
   sanitizeOrphanResponsesToolOutputs,
 } from "./translator/common/responses.ts";
 
+export { inlineLocalRefs } from "./translator/common/schema-refs.ts";
+
 export {
   hasUnsupportedUnicodePropertyEscape,
   SCHEMA_MAP_KEYWORDS,

@@ -17,7 +17,8 @@ import { isJsonArray, isJsonObject, type Json, type JsonObject } from "@commissa
  *   Gemini/Antigravity -> OpenAI Chat cases: Antigravity drops `delta.tool_calls: null`, a usage-only chunk keeps the
  *   stream's response id, and the parts of one chunk concatenate instead of the last overwriting the earlier ones.
  * - `portedRequestEdit` (ticket C6, Go `80aa2b1d`): the OpenAI -> Antigravity request of `tool_choice: "none"` keeps its
- *   `request.tools` (the fixture still drops them).
+ *   `request.tools` (the fixture still drops them). (Ticket C7, Go `c558d320`): the Claude -> Gemini schema-cleaning
+ *   cases inline the local `$ref` of a tool property instead of degrading it to a `See: Loc` hint.
  * - `portedParallelToolCalls` (ticket B2, Go `99d1698f`): the `parallel_tool_calls` a Codex-bound request case must now
  *   produce. An explicit `false` from the client survives instead of being forced to `true`; Go changed this case's
  *   input to `null` to keep covering the forced default, while the fixture still sends `false`.
@@ -352,7 +353,18 @@ export const portedChunkEdit = (key: string, line: number): ((chunk: string) => 
       : applyEdit(edit, chunk, key);
 };
 
+/** The `loc` property of the `claude->gemini` schema-cleaning cases: its local `$ref` is inlined now (C7, `c558d320`). */
+const inlinedLocRef: GoldenEdit = setPath(
+  ["tools", 0, "functionDeclarations", 0, "parametersJsonSchema", "properties", "loc"],
+  { type: "object", properties: { lat: { type: "number" } } },
+);
+
 const REQUEST_EDITS: ReadonlyMap<string, GoldenEdit> = new Map([
+  ...[
+    "request: system, multimodal user turn, tool round trip, schema cleaning, strict tool choice, thinking budget",
+    "stream: thinking with signature, text, two tool calls, usage and finish",
+    "non-stream: thinking, text, tool calls, cached usage",
+  ].map((name): readonly [string, GoldenEdit] => [`claude->gemini ${name}`, inlinedLocRef]),
   [
     "openai->antigravity request: tool_choice none removes tools; thinking config keys normalised",
     setPath(
