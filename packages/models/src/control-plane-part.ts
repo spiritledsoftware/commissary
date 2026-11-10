@@ -658,6 +658,14 @@ export class ModelsPart extends RpcTarget implements ControlPlanePart {
   }
 
   /**
+   * Whether a credential other than the ones `request.tried` names could serve `request` now: a read-only probe of
+   * {@link pick} (no lease, no cursor or affinity change).
+   */
+  hasAlternative(request: PickRequest): boolean {
+    return this.#pool.hasAlternative(decodePickRequest(request));
+  }
+
+  /**
    * Reports the outcome of the attempt that used `lease` (counters, cooldown/quota state machine, session affinity).
    */
   report(lease: Lease, result: ReportResult): ReportOutcome {

@@ -114,6 +114,31 @@ describe("ControlPlane report -> cooldown (Workers pool)", () => {
     expect(await stub.models().planRetry({ ...query, round: 1 })).toEqual({ retry: false });
   });
 
+  it("hasAlternative answers over RPC: another credential, not a cooling or excluded one", async () => {
+    const stub = plane();
+    await stub.models().importAuthFile("claude-a.json", claudeFile(), {}, FULL_ACCESS);
+    const request = { providers: ["claude"], model: "claude-sonnet-4-5" };
+    expect(await stub.models().hasAlternative({ ...request, tried: ["claude-a.json"] })).toBe(
+      false,
+    );
+
+    await stub
+      .models()
+      .importAuthFile("claude-b.json", claudeFile({ email: "b@x.com" }), {}, FULL_ACCESS);
+
+    expect(await stub.models().hasAlternative({ ...request, tried: ["claude-a.json"] })).toBe(true);
+
+    const lease = picked(
+      await stub.models().pick({ ...request, pinnedAuthId: "claude-b.json" }),
+    ).lease;
+
+    await stub.models().report(lease, fail(429, { retryAfterMs: 90_000 }));
+
+    expect(await stub.models().hasAlternative({ ...request, tried: ["claude-a.json"] })).toBe(
+      false,
+    );
+  });
+
   it("keeps cooldowns across Durable Object evictions, whatever save-cooldown-status says", async () => {
     for (const yaml of [
       "routing: { cooldown: { save-cooldown-status: true } }",

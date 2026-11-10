@@ -16,6 +16,9 @@
  *  - `report` must be called exactly once per attempt with the lease so cooldown/quota bookkeeping and affinity stay
  *    consistent. It never fails (bookkeeping errors are logged by the implementation).
  *  - `planRetry` answers whether another retry round is worthwhile and how long to wait first.
+ *  - `hasAlternative` answers whether `pick` would find a credential for the request now, leaving out `excludedIds`. It
+ *    is read-only: no lease, and no rotation or affinity state moves. It does not fail; an unreachable store is `false`.
+ *    Session identities of the request are ignored.
  *  - Snapshots must be treated as read-only; secrets in `attributes`/`metadata` must never be logged.
  */
 import { Context, type Effect } from "effect";
@@ -149,5 +152,8 @@ export class CredentialPicker extends Context.Service<
     readonly planRetry: (
       query: RetryQuery,
     ) => Effect.Effect<RetryPlan, never, ModelsEnv | CurrentOrg>;
+    readonly hasAlternative: (
+      request: PickRequest,
+    ) => Effect.Effect<boolean, never, ModelsEnv | CurrentOrg>;
   }
 >()("commissary/executor/CredentialPicker") {}

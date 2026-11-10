@@ -147,6 +147,7 @@ describe("model-cooldown 429 reset hint", () => {
         Effect.fail(pickFailureError(modelCooldown("claude-sonnet-4-5", "claude", 8_250_000))),
       report: () => Effect.void,
       planRetry: () => Effect.succeed({ retry: false }),
+      hasAlternative: () => Effect.succeed(false),
     }),
   );
 

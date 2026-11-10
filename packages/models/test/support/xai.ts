@@ -107,6 +107,10 @@ export const xaiPicker = (
             void log.reports.push({ leaseId: lease.id, credentialId: lease.credentialId, result }),
         ),
       planRetry: () => Effect.succeed({ retry: false }),
+      hasAlternative: (request) =>
+        Effect.succeed(
+          credentials.some((candidate) => !(request.excludedIds ?? []).includes(candidate.id)),
+        ),
     }),
   );
 

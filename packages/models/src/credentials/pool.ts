@@ -401,6 +401,41 @@ export class CredentialPool {
   }
 
   /**
+   * Whether `request` (its `tried` ids are the credentials to leave out) could be served by any credential now: the
+   * selection of {@link pick} (grants, Spend limits, cooldowns) against a throwaway rotation and affinity runtime, so no
+   * lease is taken and no cursor, binding or LCP sequence moves. Session identities are ignored.
+   */
+  hasAlternative(request: PickRequest): boolean {
+    const view = this.#current();
+    const now = this.#now();
+    const entries: CredentialEntry[] = [];
+
+    for (const credential of view.credentials.values())
+      entries.push({ credential, state: this.#state(credential.id) });
+
+    const caller = {
+      memberId: request.memberId,
+      apiKeyId: request.apiKeyId,
+      agentId: request.agentId,
+    };
+
+    const gate = this.#spend?.gate(caller, now);
+
+    if (gate?.refuse !== undefined) return false;
+    const { session: _session, lcp: _lcp, fallbackSession: _fallback, ...probe } = request;
+
+    return selectCredential({
+      credentials: entries,
+      request: probe,
+      settings: view.settings,
+      runtime: { rotation: new RotationState(), affinity: new SessionCache() },
+      reach: this.#callerReach(request),
+      now,
+      ...(gate === undefined ? {} : { spend: gate }),
+    }).ok;
+  }
+
+  /**
    * Records the outcome of an attempt: counters, last error, the cooldown/quota state machine (`markResult`) and
    * session-affinity effects.
    */

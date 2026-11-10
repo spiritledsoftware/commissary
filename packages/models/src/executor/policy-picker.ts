@@ -20,6 +20,7 @@ export const withCredentialPolicy = (
 ): PickerService => ({
   report: base.report,
   planRetry: base.planRetry,
+  hasAlternative: base.hasAlternative,
   pick: (request) =>
     Effect.gen(function* () {
       const excluded = [...(request.excludedIds ?? [])];

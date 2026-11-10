@@ -22,6 +22,7 @@ type ModelsPartMethod =
   | "writeGrant"
   | "grantTable"
   | "pick"
+  | "hasAlternative"
   | "report"
   | "listModelSources"
   | "planRetry"
