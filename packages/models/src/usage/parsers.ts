@@ -10,7 +10,9 @@ import { get, isJsonObject, type Json, tryParseJson } from "@commissary/json";
 import {
   independentTokenBreakdown,
   inconsistentTokenBreakdown,
+  isValidTokenBreakdown,
   separateReasoningTokenBreakdown,
+  subsetTokenBreakdown,
 } from "./accounting.ts";
 import {
   emptyUsageDetail,
@@ -316,8 +318,128 @@ const pick = (next: number, previous: number): number =>
   next === 0 && previous > 0 ? previous : next;
 
 /**
+ * `detailInputIncludesCache`: whether a complete breakdown counts the cache inside `inputTokens` (subset: `true`) or
+ * next to it (independent: `false`); `undefined` when the detail does not say.
+ */
+const inputIncludesCache = (detail: UsageDetail): boolean | undefined => {
+  const cacheSum = safeSum(detail.cacheReadTokens, detail.cacheCreationTokens);
+
+  if (cacheSum === undefined || (cacheSum === 0 && detail.cachedTokens < 0)) return undefined;
+  const cache = cacheSum === 0 ? detail.cachedTokens : cacheSum;
+  const b = detail.tokenBreakdown;
+
+  if (cache <= 0 || !isValidTokenBreakdown(b) || b.quality !== "complete") return undefined;
+
+  if (
+    b.input.totalTokens === detail.inputTokens &&
+    b.input.uncachedTokens === detail.inputTokens - cache
+  )
+    return true;
+  const independentTotal = safeSum(detail.inputTokens, cache);
+
+  if (
+    independentTotal !== undefined &&
+    b.input.totalTokens === independentTotal &&
+    b.input.uncachedTokens === detail.inputTokens
+  )
+    return false;
+
+  return undefined;
+};
+
+/**
+ * `detailOutputExcludesReasoning`: whether a complete breakdown keeps reasoning next to `outputTokens` (separate:
+ * `true`) or inside it (`false`); `undefined` when the detail does not say.
+ */
+const outputExcludesReasoning = (detail: UsageDetail): boolean | undefined => {
+  const b = detail.tokenBreakdown;
+
+  if (detail.reasoningTokens <= 0 || !isValidTokenBreakdown(b)) return undefined;
+
+  if (b.quality !== "complete" || b.output.reasoningTokens !== detail.reasoningTokens)
+    return undefined;
+
+  if (detail.outputTokens > 0) {
+    const separateTotal = safeSum(detail.outputTokens, detail.reasoningTokens);
+
+    if (
+      separateTotal !== undefined &&
+      b.output.totalTokens === separateTotal &&
+      b.output.nonReasoningTokens === detail.outputTokens
+    )
+      return true;
+
+    if (
+      b.output.totalTokens === detail.outputTokens &&
+      b.output.nonReasoningTokens === detail.outputTokens - detail.reasoningTokens
+    )
+      return false;
+
+    return undefined;
+  }
+
+  if (
+    b.output.totalTokens === detail.reasoningTokens &&
+    b.output.nonReasoningTokens === 0 &&
+    detail.totalTokens === b.totalTokens
+  )
+    return true;
+
+  return undefined;
+};
+
+type MergedBuckets = Pick<
+  UsageDetail,
+  | "inputTokens"
+  | "outputTokens"
+  | "reasoningTokens"
+  | "cachedTokens"
+  | "cacheReadTokens"
+  | "cacheCreationTokens"
+>;
+
+/**
+ * Finishes a merge whose semantics are known: the total is the update's, raised to the buckets' `expected` sum, and an
+ * overflowing sum (`undefined`) leaves an inconsistent breakdown.
+ */
+const withSemanticBreakdown = (
+  buckets: MergedBuckets,
+  reportedTotal: number,
+  expected: number | undefined,
+  breakdown: typeof subsetTokenBreakdown,
+  tierField: { readonly responseServiceTier?: string },
+): UsageDetail => {
+  if (expected === undefined) {
+    return {
+      ...buckets,
+      totalTokens: reportedTotal,
+      tokenBreakdown: inconsistentTokenBreakdown(reportedTotal, 0),
+      ...tierField,
+    };
+  }
+
+  const totalTokens = reportedTotal === 0 || reportedTotal < expected ? expected : reportedTotal;
+
+  return {
+    ...buckets,
+    totalTokens,
+    tokenBreakdown: breakdown(
+      buckets.inputTokens,
+      buckets.cacheReadTokens,
+      buckets.cacheCreationTokens,
+      buckets.outputTokens,
+      buckets.reasoningTokens,
+      totalTokens,
+    ),
+    ...tierField,
+  };
+};
+
+/**
  * `MergeStreamUsageDetail`: protocols that report usage in several events (Claude `message_start` + `message_delta`,
- * Interactions) keep the earlier non-zero buckets that the update leaves at zero.
+ * Interactions) keep the earlier non-zero buckets that the update leaves at zero. The merged breakdown keeps the
+ * semantics the events were parsed with (separate reasoning, cache inside input) and falls back to the independent
+ * cache and inclusive reasoning rules of the Claude stream only when neither event says.
  */
 export const mergeStreamUsageDetail = (existing: UsageDetail, update: UsageDetail): UsageDetail => {
   const inputTokens = pick(update.inputTokens, existing.inputTokens);
@@ -335,6 +457,40 @@ export const mergeStreamUsageDetail = (existing: UsageDetail, update: UsageDetai
     update.totalTokens === 0 || update.totalTokens < calculated ? calculated : update.totalTokens;
 
   const tier = update.responseServiceTier ?? existing.responseServiceTier;
+  const tierField = tier === undefined ? {} : { responseServiceTier: tier };
+  const knownOutput = outputExcludesReasoning(update) ?? outputExcludesReasoning(existing);
+  const knownInput = inputIncludesCache(update) ?? inputIncludesCache(existing);
+
+  const buckets = {
+    inputTokens,
+    outputTokens,
+    reasoningTokens,
+    cachedTokens,
+    cacheReadTokens,
+    cacheCreationTokens,
+  };
+
+  // Separate reasoning (Interactions, Gemini): `outputTokens` excludes the reasoning.
+  if (knownOutput === true || (knownInput === true && knownOutput === undefined)) {
+    return withSemanticBreakdown(
+      buckets,
+      update.totalTokens,
+      safeSum(inputTokens, outputTokens, reasoningTokens),
+      separateReasoningTokenBreakdown,
+      tierField,
+    );
+  }
+
+  // Subset (OpenAI style): the cache is inside `inputTokens`, the reasoning inside `outputTokens`.
+  if (knownInput === true) {
+    return withSemanticBreakdown(
+      buckets,
+      update.totalTokens,
+      safeSum(inputTokens, outputTokens),
+      subsetTokenBreakdown,
+      tierField,
+    );
+  }
 
   return {
     inputTokens,

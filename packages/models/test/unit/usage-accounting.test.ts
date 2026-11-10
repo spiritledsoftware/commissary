@@ -292,6 +292,29 @@ describe("OpenAI-style parsers", () => {
     });
   });
 
+  it("reads the flat reasoning_tokens dialect (SGLang, e198f3cd)", () => {
+    const parsed = parseOpenAIUsage(
+      '{"usage":{"prompt_tokens":241114,"total_tokens":242270,"completion_tokens":1156,"prompt_tokens_details":{"cached_tokens":240896},"reasoning_tokens":530}}',
+    );
+
+    expect(parsed).toMatchObject({
+      inputTokens: 241114,
+      outputTokens: 1156,
+      totalTokens: 242270,
+      cachedTokens: 240896,
+      cacheReadTokens: 240896,
+      reasoningTokens: 530,
+    });
+    expect(isValidTokenBreakdown(parsed.tokenBreakdown)).toBe(true);
+    expect(parsed.tokenBreakdown?.output.reasoningTokens).toBe(530);
+
+    const stream = parseOpenAIStreamUsage(
+      'data: {"id":"x","object":"chat.completion.chunk","usage":{"prompt_tokens":10,"completion_tokens":6,"total_tokens":16,"reasoning_tokens":4}}',
+    );
+
+    expect(stream?.reasoningTokens).toBe(4);
+  });
+
   it("total-only usage is unclassified", () => {
     const parsed = parseOpenAIUsage('{"usage":{"total_tokens":42}}');
     expect(parsed.totalTokens).toBe(42);
@@ -614,6 +637,52 @@ describe("Interactions parsers", () => {
       totalTokens: 6,
       responseServiceTier: "priority",
     });
+  });
+});
+
+describe("Interactions stream merge keeps separate-reasoning semantics (8289ec4c)", () => {
+  const initial = parseInteractionsUsage(
+    '{"usage":{"input_tokens":100,"cache_read_tokens":20,"output_tokens":0,"reasoning_tokens":0,"total_tokens":100}}',
+  );
+
+  const final = parseInteractionsUsage(
+    '{"usage":{"input_tokens":100,"cache_read_tokens":20,"output_tokens":30,"reasoning_tokens":10,"total_tokens":140}}',
+  );
+
+  const partial = parseInteractionsUsage('{"usage":{"output_tokens":30,"reasoning_tokens":10}}');
+
+  it.each([
+    ["cumulative initial and final snapshots", mergeStreamUsageDetail(initial, final)],
+    ["identical final snapshots", mergeStreamUsageDetail(final, final)],
+    ["partial delta after the initial snapshot", mergeStreamUsageDetail(initial, partial)],
+  ])("%s", (_name, merged) => {
+    expect(merged).toMatchObject({
+      inputTokens: 100,
+      cacheReadTokens: 20,
+      outputTokens: 30,
+      reasoningTokens: 10,
+      totalTokens: 140,
+    });
+    expect(merged.tokenBreakdown).toEqual({
+      schemaVersion: 2,
+      quality: "complete",
+      totalTokens: 140,
+      input: { totalTokens: 100, uncachedTokens: 80, cacheReadTokens: 20, cacheWriteTokens: 0 },
+      output: { totalTokens: 40, nonReasoningTokens: 30, reasoningTokens: 10 },
+      unclassifiedTokens: 0,
+    });
+  });
+
+  it("keeps an inconsistent Claude delta inconsistent", () => {
+    const start = parseClaudeUsage(
+      '{"usage":{"input_tokens":100,"cache_read_input_tokens":20,"output_tokens":0}}',
+    );
+
+    const delta = parseClaudeUsage(
+      '{"usage":{"cache_read_input_tokens":20,"output_tokens":10,"output_tokens_details":{"thinking_tokens":20}}}',
+    );
+
+    expect(mergeStreamUsageDetail(start, delta).tokenBreakdown?.quality).toBe("inconsistent");
   });
 });
 

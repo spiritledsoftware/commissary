@@ -218,6 +218,48 @@ describe("Claude Messages client -> OpenAI-compatible upstream", () => {
     expect(text).toContain('"text":"Hel"');
     expect(JSON.parse(p.calls[0]!.body).stream_options).toEqual({ include_usage: true });
   });
+
+  it("keeps the usage seen before a stream failure on the failed record (97dd3a4a)", async () => {
+    const p = pipeline(() =>
+      sseResponse([
+        chunk({ role: "assistant", content: "Hel" }),
+        chunk({}, null, {
+          choices: [],
+          usage: {
+            prompt_tokens: 5,
+            completion_tokens: 2,
+            total_tokens: 7,
+            reasoning_tokens: 1,
+          },
+        }),
+        'data: {"error":{"type":"server_error","code":"overloaded","message":"secret prompt text"}}\n\n',
+      ]),
+    );
+
+    afterAll(p.dispose);
+
+    const response = await p.call(
+      "/v1/messages",
+      postJson({
+        model: "alias-model",
+        max_tokens: 20,
+        stream: true,
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    );
+
+    await response.text();
+    const record = p.records[0];
+    expect(record?.failed).toBe(true);
+    expect(record?.detail).toMatchObject({
+      inputTokens: 5,
+      outputTokens: 2,
+      reasoningTokens: 1,
+      totalTokens: 7,
+    });
+    // ADR 0027: the failure keeps status, type and code, never the body.
+    expect(JSON.stringify(record?.fail)).not.toContain("secret");
+  });
 });
 
 describe("Responses client -> OpenAI-compatible upstream", () => {

@@ -1983,8 +1983,15 @@ once; a 401 retry keeps the rejected attempt's failed record, a failed-over cred
   aistudio, antigravity, vertex, interactions; `candidatesTokenCount` excludes thoughts), otherwise unclassified. Parsers
   attach the protocol's own breakdown (`record.ts` OpenAI/Responses/Codex, `parsers.ts` Claude, Gemini, Interactions,
   Antigravity + `mergeStreamUsageDetail`); `UsageReporter.finish` guarantees a valid breakdown on every record.
+  `mergeStreamUsageDetail` keeps the semantics the merged events were parsed with (separate reasoning or cache inside
+  input, read off their breakdowns) and falls back to the independent (Claude) rules only when neither says. Its
+  separate-reasoning and subset branches are Go parity: today's callers only merge Claude-style events, so they are
+  unreachable from them. OpenAI-style
+  usage also reads SGLang's flat `usage.reasoning_tokens`. A failed attempt's record keeps the usage observed before the
+  failure (one reporter holds both the detail and the failure, so Go's `StreamUsageBuffer.PublishFailure` has no
+  counterpart); Go's other structured usage detail (modality, image params, cached image/audio) is deferred to #390.
   Executors feed the reporter with `publish` (latest wins, tier-only updates keep the token detail, an earlier response
-  tier survives) or `publishMerged` (Claude/Interactions events that complement each other). Go's int64 overflow checks
+  tier survives) or `publishMerged` (events that complement each other; only the Claude reader and OpenCode Messages use it, the native Interactions stream uses `publish`). Go's int64 overflow checks
   become safe-integer checks. Executors must use these parsers: a hand-rolled `UsageDetail` without a breakdown is
   re-derived from the raw buckets, which is wrong for Claude (reasoning inside output).
 - **`reasoning_effort`**: the Claude executor, and OpenCode's Messages path, record it from the final upstream body after
