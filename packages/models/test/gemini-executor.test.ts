@@ -397,6 +397,7 @@ describe("OpenAI Responses client -> Gemini credential", () => {
     expect(text).toContain("event: response.completed");
     expect(h.records[0]?.detail.totalTokens).toBe(3);
   });
+
   describe("Claude clients (Go 4f2e5270)", () => {
     const chunk = (text: string, finishReason?: string) =>
       `data: ${JSON.stringify({

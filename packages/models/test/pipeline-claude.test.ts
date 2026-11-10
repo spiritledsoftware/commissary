@@ -265,6 +265,36 @@ describe("Provider key credential (caller-owned mode)", () => {
       });
     }
 
+    it("closes an unterminated error event once and ends it with a blank line", async () => {
+      const event = '{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}';
+
+      const { text } = await run(
+        [...sse(streamEvents()).slice(0, 2), `event: error\ndata: ${event}`],
+        "claude",
+      );
+
+      expect(text.endsWith(`event: error\ndata: ${event}\n\n`)).toBe(true);
+
+      expect(text.match(/event: error/g)).toHaveLength(1);
+    });
+
+    it("does not count a message_stop inside another multi-line event as completion", async () => {
+      const frames = [
+        ...sse(streamEvents()).slice(0, 2),
+        'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":\ndata: {"type":"message_stop"}}\n\n',
+      ];
+
+      const { records } = await run(frames, "claude");
+      expect(records[0]).toMatchObject({ failed: true, fail: { statusCode: 502 } });
+    });
+
+    it("accepts a bare JSON message from a provider that ignores stream", async () => {
+      const { text, records } = await run([JSON.stringify(message())], "claude");
+      expect(text).toContain("msg_01");
+      expect(text).not.toContain("event: error");
+      expect(records[0]).toMatchObject({ failed: false });
+    });
+
     it("still forwards the error event to a Claude client", async () => {
       const frames = [
         ...sse(streamEvents()).slice(0, 2),
@@ -273,6 +303,7 @@ describe("Provider key credential (caller-owned mode)", () => {
 
       const { text } = await run(frames, "claude");
       expect(text).toContain("overloaded_error");
+      expect(text.match(/event: error/g)).toHaveLength(1);
     });
   });
 

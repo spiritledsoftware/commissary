@@ -64,6 +64,7 @@ describe("claudeErrorBody", () => {
     [402, "billing_error"],
     [403, "permission_error"],
     [404, "not_found_error"],
+    [409, "conflict_error"],
     [413, "request_too_large"],
     [429, "rate_limit_error"],
     [408, "timeout_error"],

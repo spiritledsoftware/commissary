@@ -122,7 +122,67 @@ describe("framers", () => {
     expect(framer.terminalError(new ExecutionError({ status: 529, message: "busy" }))).toBe(
       'event: error\ndata: {"type":"error","error":{"type":"overloaded_error","message":"busy"}}\n\n',
     );
-    expect(framer.emptyBody).toBe("");
+    expect(framer.emptyBody).toContain("message_stop");
+  });
+
+  describe("claude framer event boundaries and completion (Go 4f2e5270)", () => {
+    const bad = new ExecutionError({ status: 502, message: "cut" });
+    const errorEvent = '{"type":"error","error":{"type":"api_error","message":"failed"}}';
+
+    it("starts the terminal error on a fresh line after a partial line", () => {
+      const framer = claudeFramer();
+      framer.chunk('event: content_block_delta\ndata: {"type":"content_block_delta"');
+      expect(framer.terminalError(bad)).toMatch(/^\n\nevent: error\ndata: /);
+    });
+
+    it("inserts the blank line after a single newline", () => {
+      const framer = claudeFramer();
+      framer.chunk('event: content_block_delta\ndata: {"type":"content_block_delta"}\n');
+      expect(framer.terminalError(bad)).toMatch(/^\nevent: error\ndata: /);
+    });
+
+    it.each(["", "\n"])(
+      "terminates an error event cut after %j and writes nothing more",
+      (suffix) => {
+        const framer = claudeFramer();
+        framer.chunk(`event: error\ndata: ${errorEvent}${suffix}`);
+        expect(framer.closeError()).toBeUndefined();
+        expect(framer.terminalError(bad)).toBe(suffix === "" ? "\n\n" : "\n");
+      },
+    );
+
+    it.each(["", "\n"])("terminates a message_stop cut after %j on close", (suffix) => {
+      const framer = claudeFramer();
+      framer.chunk(`event: message_stop\ndata: {"type":"message_stop"}${suffix}`);
+      expect(framer.closeError()).toBeUndefined();
+      expect(framer.done()).toBe(suffix === "" ? "\n\n" : "\n");
+    });
+
+    it("reads message_stop across a multi-line data event and ignores one inside another event", () => {
+      const split = claudeFramer();
+      split.chunk('event: message_stop\ndata: {"type":\n');
+      split.chunk('data: "message_stop"}\n\n');
+      expect(split.closeError()).toBeUndefined();
+
+      const nested = claudeFramer();
+      nested.chunk('event: content_block_delta\ndata: {"type":"content_block_delta","delta":\n');
+      nested.chunk('data: {"type":"message_stop"}}\n\n');
+      expect(nested.closeError()?.status).toBe(502);
+    });
+
+    it("fails a truncated error-event header and a stream without message_stop", () => {
+      const framer = claudeFramer();
+      framer.chunk("event: error\n");
+      expect(framer.closeError()?.message).toBe("upstream stream closed before message_stop");
+      expect(framer.terminalError(bad)).toContain('event: error\ndata: {"type":"error"');
+    });
+
+    it("accepts a bare completed message JSON without framing", () => {
+      const framer = claudeFramer();
+      framer.chunk('{"type":"message","id":"msg_1","stop_reason":"end_turn"}');
+      expect(framer.closeError()).toBeUndefined();
+      expect(framer.done()).toBe("");
+    });
   });
 
   it("gemini honours alt", () => {

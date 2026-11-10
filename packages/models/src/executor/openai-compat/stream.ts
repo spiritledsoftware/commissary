@@ -9,6 +9,7 @@ import { asInt, get, type Json, tryParseJson } from "@commissary/json";
 import { Formats, type Format } from "@commissary/translation/formats";
 import type { ResponseContext, TranslatorRegistry } from "@commissary/translation";
 import { ErrorCode } from "../../credentials/cooldown/classify.ts";
+import { chunkHasFinishReason } from "../../handlers/framing.ts";
 import { ExecutionError } from "../errors.ts";
 
 /** Go `helps.ApplyPatchUpstreamErrorMessage` (retained tool-input translation failure). */
@@ -161,17 +162,7 @@ export class OpenAICompatStreamReader {
       if (dataError !== undefined) return this.#fail(dataError, [], true);
 
       // Go `openAICompatChunkHasFinishReason` (4f2e5270).
-      const choices = get(tryParseJson(payload), "choices");
-
-      if (
-        Array.isArray(choices) &&
-        choices.some((choice) => {
-          const reason = get(choice, "finish_reason");
-
-          return typeof reason === "string" && reason.trim() !== "";
-        })
-      )
-        this.#sawFinishReason = true;
+      if (!this.#sawFinishReason && chunkHasFinishReason(payload)) this.#sawFinishReason = true;
     }
 
     this.options.onFrame?.(payload);
@@ -259,7 +250,14 @@ export class OpenAICompatStreamReader {
 
     // A Claude client would otherwise get a clean `message_stop` for a truncated stream (Go 4f2e5270).
     if (responseFormat === Formats.Claude && !this.#sawFinishReason)
-      return this.#fail(gatewayError("upstream stream closed before [DONE]"), chunks);
+      return this.#fail(
+        new ExecutionError({
+          status: 502,
+          message: "upstream stream closed before finish_reason",
+          code: ErrorCode.streamTruncated,
+        }),
+        chunks,
+      );
 
     // Other protocols tolerate providers that omit [DONE].
     chunks.push(...this.#translate("data: [DONE]"));

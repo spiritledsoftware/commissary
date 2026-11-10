@@ -4,7 +4,7 @@
  * Go source: sdk/api/handlers/handlers.go (BuildErrorResponseBodyWithError, ErrorResponse),
  * sdk/api/handlers/claude/code_handlers.go (toClaudeError, claudeErrorDetailFromText, claudeErrorTypeFromStatus),
  * internal/clienterror/client_error.go (IsClaudeThreadNotFound), sdk/api/handlers/openai_responses_stream_error.go
- * (BuildOpenAIResponsesStreamErrorChunk, BuildOpenAIResponsesStreamFailedChunk).
+ * (BuildOpenAIResponsesStreamErrorChunk, BuildOpenAIResponsesStreamFailedChunk, applyOpenAIResponsesNestedErrorCode: 43f27e3a).
  *
  * Gemini and Interactions handlers reuse the OpenAI-shaped body.
  */
@@ -128,6 +128,8 @@ export const claudeErrorTypeFromStatus = (status: number): string => {
       return "permission_error";
     case 404:
       return "not_found_error";
+    case 409:
+      return "conflict_error";
     case 413:
       return "request_too_large";
     case 429:
@@ -295,7 +297,7 @@ const withOverflowCode = (error: JsonObject): JsonObject => {
     typeof m === "string" &&
     m.startsWith("prompt is too long")
   )
-    error["code"] = "context_length_exceeded";
+    return { ...error, code: "context_length_exceeded" };
 
   return error;
 };

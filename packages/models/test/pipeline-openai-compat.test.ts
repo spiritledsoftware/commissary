@@ -101,6 +101,8 @@ const pipeline = (respond: Parameters<typeof makePipeline>[0]["respond"]) =>
 
 describe("Claude Messages client -> OpenAI-compatible upstream", () => {
   describe("streams without [DONE] (Go 4f2e5270)", () => {
+    const [roleFrame, helloFrame, loFrame, finishFrame] = STREAM;
+
     const ask = async (frames: string[]) => {
       const p = pipeline(() => sseResponse(frames));
       afterAll(p.dispose);
@@ -119,12 +121,12 @@ describe("Claude Messages client -> OpenAI-compatible upstream", () => {
     };
 
     it("fails a truncated stream that never reported a finish_reason with 502", async () => {
-      const { records } = await ask(STREAM.slice(0, 3));
+      const { records } = await ask([roleFrame!, helloFrame!, loFrame!]);
       expect(records[0]).toMatchObject({ failed: true, fail: { statusCode: 502 } });
     });
 
     it("tolerates a missing [DONE] after a finish_reason", async () => {
-      const { text, records } = await ask(STREAM.slice(0, 4));
+      const { text, records } = await ask([roleFrame!, helloFrame!, loFrame!, finishFrame!]);
       expect(text).toContain("message_stop");
       expect(records[0]).toMatchObject({ failed: false });
     });

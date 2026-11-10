@@ -665,7 +665,7 @@ Core contracts every provider slice implements (Go references in each module hea
   `ModelProviders.configLayer` serves tests without one) -> pick -> executor -> report -> usage (one record per attempt via `UsageSink`, published when the
   stream ends). `respond.ts` peeks the first stream chunk inside the request scope (the web handler keeps the scope
   open for streamed bodies) so pre-stream failures become real HTTP errors, then frames with a per-protocol
-  `StreamFramer` (`framing.ts`), with optional keep-alives. Error bodies per protocol are in `models/http/errors.ts`. Non-stream answers of Claude, OpenAI chat/completions,
+  `StreamFramer` (`framing.ts`), with optional keep-alives. Error bodies per protocol are in `models/http/errors.ts`. Truncated streams (Go `4f2e5270`) fail instead of finishing cleanly: the Claude reader (`claude/stream.ts`, also OpenCode Messages) fails EOF before `message_stop` and an upstream `error` event with a 502; Gemini/Vertex (and OpenCode Gemini, which shares `gemini/google.ts`) streams for Claude clients fail without a `finishReason`/`blockReason`, and OpenAI-compatible streams for Claude clients without a `finish_reason` or `[DONE]`. The Claude framer then writes no second `event: error` after an upstream one, closes partial events (`ensureSSEEventBoundary`) and fails any stream or empty body that lacks `message_stop`. Kimi's chat stream needed no change (a transport error already ends the Effect stream before the synthetic `[DONE]`). Non-stream answers of Claude, OpenAI chat/completions,
   Gemini/Interactions, images and OpenAI-shaped video retrieval go through `withNonStreamKeepAlive` (`requests.nonstream-keepalive-interval`):
   nothing is committed before the first interval, so a timely answer keeps its real status; afterwards a blank line is written per interval and
   the final body (errors included) follows under a committed `200 application/json`, like Go. Video content downloads and `/v1/responses` are
@@ -1225,11 +1225,6 @@ Ported from `internal/runtime/executor/claude_executor*.go`, `internal/translato
 
 Deviations from Go (all deliberate, documented in code headers):
 
-- **Truncated and failed upstream streams** (Go `4f2e5270`): the Claude reader (`claude/stream.ts`, also used by OpenCode Messages)
-  fails EOF before `message_stop` and a mid-stream `error` event with a 502 after flushing what was read; Gemini/Vertex streams
-  for Claude clients fail without a `finishReason`/`blockReason` and OpenAI-compatible streams for Claude clients without a
-  `finish_reason` or `[DONE]`. Kimi's chat stream needed no change: a transport error already ends the Effect stream before the
-  synthetic `[DONE]` and is recorded by `tapError`.
 - No uTLS/HTTP-2 fingerprinting (Workers limitation); `wire-policy` is dropped on import.
 - **Preserved-thinking binding set and thinking types** (`claude/classify.ts` `isPreservedThinkingModel`): the model set follows
   Anthropic's preserved-thinking docs and so includes Mythos 5.1/5.2, which Go leaves out; the binding is injected only for an
