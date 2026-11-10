@@ -49,6 +49,7 @@ import {
   detectClaudeCodeRequest,
   extractBillingTags,
   isProbeOrHelperRequest,
+  isLegacySystemReminderModel,
   isSubagentRequest,
   subagentRequests1h,
   usesLegacySystemReminder,
@@ -318,7 +319,35 @@ interface Common {
   readonly wire: WireResolution;
   readonly sessionId: string;
   readonly originalPayload: Json;
+  /**
+   * Whether the Responses translator keeps every system-level input item top-level (`translateRequestForExecutor`'s
+   * `topLevelSystemItems`). Decided once per attempt, here, because it depends on the credential (wire policy, rebuild
+   * opt-in) and on the upstream model: Go `pinResponsesSystemItemPlacement`.
+   */
+  readonly topLevelSystemItems: boolean;
 }
+
+/**
+ * Mid-session system items stay in place (`role: "system"` after the next user message) only on the cloaked Claude Code
+ * wire, which sends the mid-conversation system beta, for a model that accepts the turn. Strict mode drops every caller
+ * system instruction, a mid-system rebuild folds the turns into `system`, and an uncloaked request forwards the caller's
+ * betas unchanged: all keep the top-level path. `minimal` keeps items in place even under strict mode, which it ignores
+ * (deliberate difference from Go, ARCHITECTURE.md).
+ */
+const keepsSystemItemsTopLevel = (
+  input: PrepareInput,
+  baseModel: string,
+  wire: WireResolution,
+): boolean => {
+  const strict = wire.settings.strictMode && !isMinimalCloak(wire.policy);
+
+  return !(
+    wire.policy.cloak &&
+    !strict &&
+    !isLegacySystemReminderModel(upstreamModelOf(input.services.profile, baseModel)) &&
+    !rebuildMidSystemEnabled(input.config, input.credential)
+  );
+};
 
 const commonContext = (input: PrepareInput, path: string, countTokens: boolean): Common => {
   const { config, credential, request, options } = input;
@@ -362,6 +391,7 @@ const commonContext = (input: PrepareInput, path: string, countTokens: boolean):
     wire,
     sessionId,
     originalPayload,
+    topLevelSystemItems: keepsSystemItemsTopLevel(input, baseModel, wire),
   };
 };
 
@@ -455,7 +485,7 @@ export const prepareMessagesRequest = Effect.fnUntraced(function* (input: Prepar
         to,
         { format: from, model: baseModel, stream: upstreamStream, body },
         thinking.summary,
-        { headers: options.headers, config, isCompat },
+        { headers: options.headers, config, isCompat, topLevelSystemItems: c.topLevelSystemItems },
       ),
     );
 
@@ -757,7 +787,7 @@ export const prepareCountTokensRequest = Effect.fnUntraced(function* (input: Pre
         to,
         { format: from, model: baseModel, stream, body },
         thinking.summary,
-        { headers: options.headers, config, isCompat },
+        { headers: options.headers, config, isCompat, topLevelSystemItems: c.topLevelSystemItems },
       ),
     );
 
@@ -931,7 +961,9 @@ export const prepareLocalCountBody = Effect.fnUntraced(function* (input: Prepare
         to,
         { format: from, model: baseModel, stream: from !== to, body },
         thinking.summary,
-        { headers: options.headers, config, isCompat },
+        // Local estimation sends nothing upstream, so in-place turns gain no cache benefit: keep the top-level shape its
+        // request validation accepts (Go `CountTokens`).
+        { headers: options.headers, config, isCompat, topLevelSystemItems: true },
       ),
     );
 

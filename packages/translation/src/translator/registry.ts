@@ -48,11 +48,34 @@ export interface RequestEnvelope {
   readonly error?: TranslationError;
 }
 
-/** Client body -> provider body. May throw {@link TranslationError}. The body is a private copy and may be mutated. */
-export type RequestTransform = (model: string, body: Json, stream: boolean) => Json;
+/** What the caller of {@link TranslatorRegistry.translateRequest} decided about this attempt, for transforms that care. */
+export interface TranslateRequestOptions {
+  /** The executed model has `is-compat`: selects the registered compat variant of the transform. */
+  readonly compat?: boolean;
+  /**
+   * Responses -> Claude: every system-level input item becomes a top-level system block (`true`, and the default when
+   * absent) instead of mid-session text-only items staying in place as `role: "system"` turns (`false`). The Claude
+   * executor decides it per attempt (Go `WithTopLevelSystemItems`).
+   */
+  readonly topLevelSystemItems?: boolean;
+}
+
+/**
+ * Client body -> provider body. May throw {@link TranslationError}. The body is a private copy and may be mutated.
+ * `options` are the request's, for the few transforms that read them.
+ */
+export type RequestTransform = (
+  model: string,
+  body: Json,
+  stream: boolean,
+  options?: TranslateRequestOptions,
+) => Json;
 
 /** Envelope-aware variant (Go `RequestEnvelopeTransform`). */
-export type RequestEnvelopeTransform = (envelope: RequestEnvelope) => RequestEnvelope;
+export type RequestEnvelopeTransform = (
+  envelope: RequestEnvelope,
+  options?: TranslateRequestOptions,
+) => RequestEnvelope;
 
 /** Per-request mutable translator state (Go `param *any`). Allocate one per upstream attempt. */
 export interface TranslationState extends ClaudeInputTokenState {
@@ -126,9 +149,12 @@ const key = (client: Format, provider: Format) => `${client}\u0000${provider}`;
 
 const wrapRequestTransform =
   (request: RequestTransform): RequestEnvelopeTransform =>
-  (envelope) => {
+  (envelope, options) => {
     try {
-      return { ...envelope, body: request(envelope.model, envelope.body, envelope.stream) };
+      return {
+        ...envelope,
+        body: request(envelope.model, envelope.body, envelope.stream, options),
+      };
     } catch (error) {
       if (error instanceof TranslationError) {
         return { ...envelope, ...(error.body !== undefined ? { body: error.body } : {}), error };
@@ -222,7 +248,7 @@ export class TranslatorRegistry {
     provider: Format,
     envelope: RequestEnvelope,
     hooks: SummaryHooks = noopSummaryHooks,
-    options: { readonly compat?: boolean } = {},
+    options: TranslateRequestOptions = {},
   ): RequestEnvelope {
     // The internal Codex commentary marker is restored as assistant text before any thinking handling, for every
     // Claude-source request whose target is not Codex (which restores it as a commentary message itself); this also
@@ -243,7 +269,7 @@ export class TranslatorRegistry {
 
     if (transform !== undefined) {
       const summary = hooks.extract(input.body, client, provider);
-      const out = transform(input);
+      const out = transform(input, options);
 
       if (out.error !== undefined) return { ...out, format: provider };
 

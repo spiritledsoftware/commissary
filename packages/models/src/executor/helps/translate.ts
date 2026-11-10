@@ -31,6 +31,12 @@ export interface RequestRewriteContext {
   readonly config: Config;
   /** The executed model has `is-compat`. */
   readonly isCompat?: boolean;
+  /**
+   * Responses -> Claude only: whether every system-level input item stays a top-level system block (`true`) or
+   * mid-session text-only items stay in place as `role: "system"` turns (`false`). Absent means top level. The Claude
+   * executor decides it per attempt (`pipeline.ts`).
+   */
+  readonly topLevelSystemItems?: boolean;
 }
 
 /**
@@ -65,5 +71,10 @@ export const translateRequestForExecutor = (
     }
   }
 
-  return registry.translateRequest(from, to, { ...envelope, body }, hooks, { compat });
+  return registry.translateRequest(from, to, { ...envelope, body }, hooks, {
+    compat,
+    ...(context.topLevelSystemItems === undefined
+      ? {}
+      : { topLevelSystemItems: context.topLevelSystemItems }),
+  });
 };

@@ -1661,3 +1661,51 @@ describe("Effort directive after a compaction (cloaked)", () => {
     },
   );
 });
+
+// Go beb43359: a top-level `cache_control` (automatic caching) moves onto the last cacheable block of a cloaked
+// request, so it neither duplicates the rolling breakpoint nor pushes the total past four.
+describe("Top-level cache_control", () => {
+  const count = (value: JsonObject): number =>
+    JSON.stringify(value).split('"cache_control"').length - 1;
+
+  const request = (): JsonObject => ({
+    model: "claude-opus-4-8",
+    max_tokens: 32,
+    cache_control: { type: "ephemeral", ttl: "1h" },
+    system: [{ type: "text", text: "Caller system prompt", cache_control: { type: "ephemeral" } }],
+    messages: [{ role: "user", content: [{ type: "text", text: "What time is it?" }] }],
+  });
+
+  it("is materialized onto the last message block of a cloaked request and removed", async () => {
+    const h = oauthPipeline(() => jsonResponse(message()), await loadConfig(""));
+    afterAll(h.pipeline.dispose);
+    expect((await h.pipeline.call("/v1/messages", postJson(request()))).status).toBe(200);
+
+    const body = lastBody(h);
+    expect(body).not.toHaveProperty("cache_control");
+    expect(count(body)).toBeLessThanOrEqual(4);
+    const content = (body.messages as JsonObject[])[0]?.content as JsonObject[];
+    expect(content.filter((block) => block.cache_control !== undefined)).toHaveLength(1);
+    expect(content.at(-1)?.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
+  });
+
+  it("is left alone on a caller-owned request that already carries it", async () => {
+    const p = makePipeline({ config: providerKeyConfig, respond: () => jsonResponse(message()) });
+    afterAll(p.dispose);
+
+    await p.call(
+      "/v1/messages",
+      postJson({
+        model: "sonnet",
+        max_tokens: 8,
+        cache_control: { type: "ephemeral" },
+        system: "caller system",
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    );
+
+    const body = JSON.parse(p.calls[0]!.body) as JsonObject;
+    expect(body.cache_control).toEqual({ type: "ephemeral" });
+    expect(count(body)).toBe(1);
+  });
+});

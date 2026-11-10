@@ -49,6 +49,7 @@ import {
   type ToolDescriptor,
 } from "./tools.ts";
 import { attachClaudeCitations, ResponsesWebSearchHistory } from "./web-search.ts";
+import type { TranslateRequestOptions } from "../../../registry.ts";
 
 const first = (...values: Array<Json | undefined>): Json | undefined =>
   values.find((value) => value !== undefined);
@@ -58,14 +59,16 @@ export const convertOpenAIResponsesRequestToClaude = (
   modelName: string,
   input: Json,
   stream: boolean,
-): Json => convertRequest(modelName, input, stream, false);
+  options?: TranslateRequestOptions,
+): Json => convertRequest(modelName, input, stream, false, options);
 
 /** `ConvertOpenAIResponsesRequestToClaudeWithCompat`. */
 export const convertOpenAIResponsesRequestToClaudeWithCompat = (
   modelName: string,
   input: Json,
   stream: boolean,
-): Json => convertRequest(modelName, input, stream, true);
+  options?: TranslateRequestOptions,
+): Json => convertRequest(modelName, input, stream, true, options);
 
 type Message = JsonObject;
 
@@ -74,7 +77,11 @@ const convertRequest = (
   inputRoot: Json,
   stream: boolean,
   preserveEmptyThinkingBlocks: boolean,
+  options: TranslateRequestOptions | undefined,
 ): Json => {
+  // Go `topLevelSystemItemsFor` falls back to its legacy-model list; here the executor owns that list and an absent
+  // option means every item stays top-level (OpenCode and the other callers outside the Claude executor).
+  const topLevelSystemItems = options?.topLevelSystemItems !== false;
   const root = normalizeCodexAgentMessages(inputRoot);
   const drops = new UserTurnDrops();
 
@@ -161,69 +168,51 @@ const convertRequest = (
 
   if (get(root, "service_tier") === "priority") out.speed = "fast";
 
-  // System-level inputs become top-level Claude system blocks in source order; the executor decides final placement.
+  // System-level inputs become top-level Claude system blocks in source order, except that, when the executor asks for
+  // it, a text-only message item after the conversation started stays in place as a `role: "system"` turn right after
+  // the next user message (it is queued until a user message is emitted).
   const systemBlocks: JsonObject[] = [];
-
-  const appendSystemText = (text: string, cacheSource?: Json): void => {
-    if (isBlankText(text)) return;
-    const block: JsonObject = { type: "text", text };
-
-    if (cacheSource !== undefined) attachCacheControl(block, cacheSource);
-    systemBlocks.push(block);
-  };
 
   const instructions = get(root, "instructions");
 
-  if (isStr(instructions)) appendSystemText(instructions);
+  if (isStr(instructions)) pushSystemText(systemBlocks, instructions);
   const inputValue = get(root, "input");
+  const systemEntries: SystemInputEntry[] = [];
+  const systemEntryByItem = new Map<number, SystemInputEntry>();
 
   if (isArr(inputValue)) {
-    for (const item of inputValue) {
-      if (!isSystemLevelRole(str(get(item, "role")))) continue;
-      const startIdx = systemBlocks.length;
-      const content = get(item, "content");
+    let conversationStarted = false;
 
-      if (isStr(content)) appendSystemText(content);
-      else if (isArr(content)) {
-        for (const part of content) {
-          switch (str(get(part, "type"))) {
-            case "input_text":
-            case "output_text":
-            case "text": {
-              const text = str(get(part, "text"));
-
-              // A blank part is dropped (Anthropic answers 400 to it); its cache_control moves to the block before.
-              if (isBlankText(text)) moveBlankPartCacheControl(systemBlocks, startIdx, part);
-              else appendSystemText(text, part);
-              break;
-            }
-
-            default: {
-              const block = systemUnsupportedBlock(part);
-
-              if (block !== undefined) systemBlocks.push(block);
-            }
-          }
-        }
+    for (const [itemIndex, item] of inputValue.entries()) {
+      if (!isSystemLevelRole(str(get(item, "role")))) {
+        conversationStarted = true;
+        continue;
       }
 
-      if (exists(get(item, "cache_control")) && systemBlocks.length > startIdx) {
-        // SAFETY: the index is in bounds (loop bound or length check above); the cast only drops the `undefined` added by noUncheckedIndexedAccess.
-        const last = systemBlocks[systemBlocks.length - 1] as JsonObject;
+      const blocks = systemItemBlocks(item);
 
-        if (!exists(last.cache_control)) attachCacheControl(last, item);
-      }
+      const entry: SystemInputEntry = {
+        blocks,
+        eligible:
+          !topLevelSystemItems &&
+          conversationStarted &&
+          isMessageItem(item) &&
+          blocks.length > 0 &&
+          blocks.every((block) => str(block.type) === "text"),
+        emitted: false,
+      };
+
+      systemEntries.push(entry);
+      systemEntryByItem.set(itemIndex, entry);
     }
   }
-
-  const formatResult = first(get(root, "text.format"), get(root, "response_format"));
-  const formatInstruction = buildClaudeStructuredOutputInstruction(formatResult);
-
-  if (formatInstruction !== "") appendSystemText(formatInstruction);
 
   const names = ClaudeToolNames.build(root);
 
   let messageBlocks: Message[] = [];
+  // Anthropic accepts a `role: "system"` turn only after a user message and before an assistant message or the end of
+  // the messages: queued items go right after the next user message that is emitted.
+  let pendingSystemEntries: SystemInputEntry[] = [];
   let pendingRole = "";
   let pendingParts: JsonObject[] = [];
   let pendingToolUseParts: JsonObject[] = [];
@@ -245,6 +234,15 @@ const convertRequest = (
       const msg: Message = { role: pendingRole, content: [] };
       msg.content = collapseSingleText(parts);
       messageBlocks.push(msg);
+
+      if (pendingRole === "user") {
+        for (const entry of pendingSystemEntries) {
+          messageBlocks.push({ role: "system", content: entry.blocks });
+          entry.emitted = true;
+        }
+
+        pendingSystemEntries = [];
+      }
     }
 
     pendingRole = "";
@@ -318,7 +316,13 @@ const convertRequest = (
   const webSearchHistory = new ResponsesWebSearchHistory(inputItems);
 
   for (const [itemIndex, item] of inputItems.entries()) {
-    if (isSystemLevelRole(str(get(item, "role")))) continue;
+    if (isSystemLevelRole(str(get(item, "role")))) {
+      const entry = systemEntryByItem.get(itemIndex);
+
+      if (entry?.eligible === true) pendingSystemEntries.push(entry);
+      continue;
+    }
+
     let typ = str(get(item, "type"));
 
     if (typ === "" && str(get(item, "role")) !== "") typ = "message";
@@ -524,6 +528,16 @@ const convertRequest = (
   }
 
   flushPendingMessage();
+
+  // Every system-level item not emitted as an in-place turn (leading ones, ineligible ones and queued ones no user
+  // message followed) becomes a top-level block in source order; the structured-output instruction stays last.
+  for (const entry of systemEntries) if (!entry.emitted) systemBlocks.push(...entry.blocks);
+  pendingSystemEntries = [];
+  const formatResult = first(get(root, "text.format"), get(root, "response_format"));
+  const formatInstruction = buildClaudeStructuredOutputInstruction(formatResult);
+
+  if (formatInstruction !== "") pushSystemText(systemBlocks, formatInstruction);
+
   const hadMessages = messageBlocks.length > 0;
 
   if (!preserveEmptyThinkingBlocks) messageBlocks = stripTrailingThinkingBlocks(messageBlocks);
@@ -648,6 +662,71 @@ const collapseSingleText = (parts: JsonObject[]): Json => {
   }
 
   return parts;
+};
+
+interface SystemInputEntry {
+  readonly blocks: JsonObject[];
+  /** May become an in-place `role: "system"` turn. */
+  readonly eligible: boolean;
+  emitted: boolean;
+}
+
+/** Only a message item can become a `role: "system"` turn. */
+const isMessageItem = (item: Json): boolean => {
+  const type = str(get(item, "type"));
+
+  return type === "" || type === "message";
+};
+
+const pushSystemText = (target: JsonObject[], text: string, cacheSource?: Json): void => {
+  if (isBlankText(text)) return;
+  const block: JsonObject = { type: "text", text };
+
+  if (cacheSource !== undefined) attachCacheControl(block, cacheSource);
+  target.push(block);
+};
+
+/**
+ * One system-level input item as Claude system blocks (`responsesSystemItemToClaudeBlocks`): a text block per non-blank
+ * text part, a blank part's cache_control moved to the block before, the item's cache_control on its last block, and a
+ * typed marker for each unsupported part so the executor can report it instead of dropping it.
+ */
+const systemItemBlocks = (item: Json): JsonObject[] => {
+  const blocks: JsonObject[] = [];
+  const content = get(item, "content");
+
+  if (isStr(content)) pushSystemText(blocks, content);
+  else if (isArr(content)) {
+    for (const part of content) {
+      switch (str(get(part, "type"))) {
+        case "input_text":
+        case "output_text":
+        case "text": {
+          const text = str(get(part, "text"));
+
+          // A blank part is dropped (Anthropic answers 400 to it); its cache_control moves to the block before.
+          if (isBlankText(text)) moveBlankPartCacheControl(blocks, 0, part);
+          else pushSystemText(blocks, text, part);
+          break;
+        }
+
+        default: {
+          const block = systemUnsupportedBlock(part);
+
+          if (block !== undefined) blocks.push(block);
+        }
+      }
+    }
+  }
+
+  if (exists(get(item, "cache_control")) && blocks.length > 0) {
+    // SAFETY: `blocks` is non-empty (checked above); the cast only drops the `undefined` added by noUncheckedIndexedAccess.
+    const last = blocks[blocks.length - 1] as JsonObject;
+
+    if (!exists(last.cache_control)) attachCacheControl(last, item);
+  }
+
+  return blocks;
 };
 
 const isSystemLevelRole = (role: string): boolean => {
