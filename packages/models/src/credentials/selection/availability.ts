@@ -7,7 +7,7 @@
  */
 import { accessTokenExpiry } from "../expiry.ts";
 import type { Credential, CredentialState } from "../model.ts";
-import { canonicalModelKey } from "./model-name.ts";
+import { canonicalModelLookupKey } from "./model-name.ts";
 
 export type BlockReason = "none" | "disabled" | "cooldown" | "other";
 
@@ -91,12 +91,12 @@ export const isBlockedForModel = (
       );
     }
 
-    const key = canonicalModelKey(model);
+    const key = canonicalModelLookupKey(model);
     let matched = false;
     let result: Block = FREE;
 
     for (const [stateModel, modelState] of states) {
-      if (canonicalModelKey(stateModel) !== key) continue;
+      if (canonicalModelLookupKey(stateModel) !== key) continue;
       matched = true;
 
       if (modelState.status === "disabled") return { blocked: true, reason: "disabled", next: 0 };

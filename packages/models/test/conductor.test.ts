@@ -823,7 +823,10 @@ describe("alias pools and force-mapping", () => {
 const chunk = (text: string) =>
   `data: {"id":"c","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"content":"${text}"}}]}\n\n`;
 
-const collect = (run: Run, input = chatInput("m", { stream: true })) =>
+const collect = (
+  run: Run,
+  input: Parameters<typeof executeStream>[0] = chatInput("m", { stream: true }),
+) =>
   run.exec(
     Effect.scoped(
       executeStream(input).pipe(
@@ -932,6 +935,99 @@ describe("streaming", () => {
         assert.isTrue(Exit.isFailure(exit));
         assert.strictEqual(none.calls.length, 1);
       }),
+  );
+});
+
+describe("incomplete compat streams keep out of cooldown (CLIProxyAPI f013eb66)", () => {
+  const responsesStream = {
+    entryProtocol: Formats.OpenAIResponse,
+    model: "m",
+    body: { model: "m", input: "hi", stream: true },
+    alt: "",
+    request: fakeRequest(),
+  };
+
+  it.effect("a partial stream without [DONE] answers 502 on every request and cools nothing", () =>
+    Effect.gen(function* () {
+      const run = yield* setup(config(group("a") + group("b") + group("c")), () =>
+        sseResponse([chunk("partial")]),
+      );
+
+      for (let request = 0; request < 4; request += 1) {
+        const error = yield* failure(collect(run, responsesStream));
+        assert.strictEqual(error.status, 502);
+        assert.include(error.message, "closed before [DONE]");
+      }
+
+      // One upstream call per request: no replay on another credential, no credential in a cooldown.
+      assert.strictEqual(run.calls.length, 4);
+      assert.deepStrictEqual(
+        run.harness.pool.list().map((item) => item.unavailable),
+        [false, false, false],
+      );
+    }),
+  );
+
+  it.effect("an empty 200 stream without [DONE] is not replayed on another credential", () =>
+    Effect.gen(function* () {
+      const run = yield* setup(config(group("a") + group("b") + group("c")), () => sseResponse([]));
+
+      const error = yield* failure(collect(run, responsesStream));
+      assert.strictEqual(error.status, 502);
+      assert.include(error.message, "closed before [DONE]");
+      assert.strictEqual(run.calls.length, 1);
+      assert.deepStrictEqual(
+        run.harness.pool.list().map((item) => item.unavailable),
+        [false, false, false],
+      );
+    }),
+  );
+
+  it.effect("a real HTTP 502 still cools the credential and fails over (control)", () =>
+    Effect.gen(function* () {
+      const run = yield* setup(config(group("a") + group("b")), () => upstreamError(502));
+
+      yield* failure(collect(run, responsesStream));
+      assert.strictEqual(run.calls.length, 2);
+      assert.deepStrictEqual(
+        run.harness.pool.list().map((item) => item.unavailable),
+        [true, true],
+      );
+    }),
+  );
+});
+
+describe("Anthropic credit balance 400 fails over (CLIProxyAPI d00267c3)", () => {
+  const CREDIT =
+    '{"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."}}';
+
+  it.effect("moves on to the next credential and cools the depleted one for 30 minutes", () =>
+    Effect.gen(function* () {
+      const run = yield* setup(config(group("a") + group("b")), (call) =>
+        keyOf(call) === "a" ? upstreamError(400, CREDIT) : jsonResponse(CHAT_OK),
+      );
+
+      yield* run.exec(executeNonStream(chatInput()));
+      yield* run.exec(executeNonStream(chatInput()));
+      assert.deepStrictEqual(run.calls.map(keyOf), ["a", "b", "b"]);
+      const a = run.harness.pool.list().find((item) => item.label === "a");
+      assert.strictEqual(a?.unavailable, true);
+    }),
+  );
+
+  it.effect("an ordinary 400 still ends the request without a cooldown", () =>
+    Effect.gen(function* () {
+      const run = yield* setup(config(group("a")), () =>
+        upstreamError(
+          400,
+          '{"type":"error","error":{"type":"invalid_request_error","message":"messages: at least one message is required"}}',
+        ),
+      );
+
+      const error = yield* failure(run.exec(executeNonStream(chatInput())));
+      assert.strictEqual(error.status, 400);
+      assert.strictEqual(run.harness.pool.list()[0]?.unavailable, false);
+    }),
   );
 });
 

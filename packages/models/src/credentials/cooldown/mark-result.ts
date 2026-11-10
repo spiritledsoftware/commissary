@@ -2,7 +2,8 @@
  * Result handling: the cooldown / quota state machine behind `ControlPlane.report`.
  *
  * Go source: sdk/cliproxy/auth/conductor_cooldown.go (MarkResult, applyAuthFailureState, updateAggregatedAvailability,
- * quotaCooldownAfterFailure, nextQuotaCooldown, recoverableFailureRetryAfterWithHint), quota_signals.go.
+ * quotaCooldownAfterFailure, nextQuotaCooldown, recoverableFailureRetryAfterWithHint, existingModelState, ensureModelState,
+ * isModelStateActiveCooldown, isAuthActiveCooldown, the execution-sequence guard of CLIProxyAPI 35af74f9), quota_signals.go.
  * Docs: credentials.md §8.1-8.2.
  *
  * Pure: `markResult` takes the previous {@link CredentialState}, the clock and the settings and returns the next
@@ -17,13 +18,18 @@ import type {
   QuotaState,
 } from "../model.ts";
 import { redactSecrets } from "../redact.ts";
-import { canonicalModelKey } from "../selection/model-name.ts";
+import {
+  canonicalModelKey,
+  canonicalModelLookupKey,
+  findModelStateKey,
+} from "../selection/model-name.ts";
 import { hasUnauthorizedFailure } from "../selection/availability.ts";
 import type { ReportResult } from "../selection/types.ts";
 import {
   type ClassifiableError,
   ErrorCode,
   isCloudflareChallengeError,
+  isCreditBalanceTooLow,
   isInvalidGrantError,
   isModelSupportError,
   shouldSkipCredentialCooldown,
@@ -194,7 +200,8 @@ const applyCooldownFields = (
 };
 
 const ensureModelState = (state: Draft, model: string): DraftModel => {
-  const existing = state.modelStates[model];
+  // Any spelling of the model shares one state, which keeps the casing it was first stored under.
+  const existing = state.modelStates[findModelStateKey(state.modelStates, model) ?? model];
 
   if (existing !== undefined) return existing;
 
@@ -376,6 +383,9 @@ const applyCredentialFailure = (
   } else if (isInvalidGrantError(classified)) {
     state.statusMessage = "invalid_grant";
     state.nextRetryAfter = disableCooling ? 0 : now + HARD_COOLDOWN_MS;
+  } else if (isCreditBalanceTooLow(status, classified.message)) {
+    state.statusMessage = "payment_required";
+    state.nextRetryAfter = disableCooling ? 0 : now + HARD_COOLDOWN_MS;
   } else {
     switch (status) {
       case 401:
@@ -471,6 +481,33 @@ const applyCredentialFailure = (
 
 // --- MarkResult -----------------------------------------------------------------------------------------------------
 
+/**
+ * The dispatch watermarks of the cooldowns on one credential (CLIProxyAPI 35af74f9, `cooldownRecordedSeq`): the
+ * pool's dispatch counter when the cooldown was recorded. Runtime only, so a restart forgets them and a restored
+ * cooldown is clearable by any success. Models are keyed by `canonicalModelLookupKey`; `0` / absent = none recorded.
+ */
+export interface CooldownMarks {
+  readonly credential: number;
+  readonly models: ReadonlyMap<string, number>;
+}
+
+/** `isModelStateActiveCooldown`. */
+export const modelCooldownActive = (
+  model: Pick<ModelState, "status" | "nextRetryAfter" | "quota">,
+  now: number,
+): boolean =>
+  model.status === "disabled" ||
+  model.nextRetryAfter > now ||
+  model.quota.nextRecoverAt > now ||
+  (model.quota.exceeded && model.quota.nextRecoverAt === 0);
+
+/** `isAuthActiveCooldown`: a live cooldown recorded at credential level. */
+export const credentialCooldownActive = (state: CredentialState, now: number): boolean =>
+  state.status !== "disabled" &&
+  (state.nextRetryAfter > now ||
+    state.quota.nextRecoverAt > now ||
+    (state.quota.exceeded && state.quota.nextRecoverAt === 0));
+
 export interface MarkInput {
   readonly credential: Pick<Credential, "provider" | "metadata">;
   readonly state: CredentialState;
@@ -479,6 +516,24 @@ export interface MarkInput {
   readonly model: string;
   readonly result: ReportResult;
   readonly settings: CooldownSettings;
+  /**
+   * The attempt's dispatch order against the cooldowns recorded so far: a success dispatched at or before a live
+   * cooldown's watermark predates it and cannot clear it. Absent / `seq` 0: unknown (exempt).
+   */
+  readonly dispatch?:
+    | { readonly seq: number; readonly marks: CooldownMarks | undefined }
+    | undefined;
+}
+
+/** What a result cooled: the pool stamps these with its dispatch counter. Models are as given (not case-folded). */
+export interface CooledKeys {
+  readonly credential: boolean;
+  readonly models: ReadonlyArray<string>;
+}
+
+export interface MarkOutcome {
+  readonly state: CredentialState;
+  readonly cooled: CooledKeys;
 }
 
 /** The error of a failed result as the Go `*Error` (request-scoped marker folded into the code). */
@@ -508,8 +563,13 @@ export const classifiable = (error: CredentialError): ClassifiableError => ({
 });
 
 /** `MarkResult` for one attempt. Returns the new state (the input is not modified). */
-export const markResult = (input: MarkInput): CredentialState => {
+export const markResult = (input: MarkInput): CredentialState => markResultDetailed(input).state;
+
+/** {@link markResult} plus the keys the result put into a cooldown. */
+export const markResultDetailed = (input: MarkInput): MarkOutcome => {
   const { now, result, settings } = input;
+  const cooledModels: string[] = [];
+  let cooledCredential = false;
   const state = cloneState(input.state);
   const modelKey = canonicalModelKey(input.model);
   const error = resultError(result);
@@ -517,7 +577,9 @@ export const markResult = (input: MarkInput): CredentialState => {
   const retryAfterMs = result.retryAfterMs;
 
   let modelState: DraftModel | undefined =
-    modelKey === "" ? undefined : state.modelStates[modelKey];
+    modelKey === ""
+      ? undefined
+      : state.modelStates[findModelStateKey(state.modelStates, modelKey) ?? modelKey];
 
   state.recentRequests = recordRecentRequest(state.recentRequests, now, result.success);
 
@@ -527,8 +589,22 @@ export const markResult = (input: MarkInput): CredentialState => {
   if (result.availabilityNeutral === true) {
     state.updatedAt = now;
 
-    return state;
+    return { state, cooled: { credential: false, models: [] } };
   }
+
+  // A success dispatched before a cooldown was recorded says nothing about recovery: it must not clear that cooldown.
+  const sequence = input.dispatch?.seq ?? 0;
+  const marks = input.dispatch?.marks;
+
+  const retainedCooldown =
+    sequence > 0 &&
+    marks !== undefined &&
+    !wasTerminalUnauthorized &&
+    (modelKey === ""
+      ? credentialCooldownActive(state, now) && marks.credential > 0 && sequence <= marks.credential
+      : modelState !== undefined &&
+        modelCooldownActive(modelState, now) &&
+        sequence <= (marks.models.get(canonicalModelLookupKey(modelKey)) ?? 0));
 
   if (result.success) {
     if (wasTerminalUnauthorized) {
@@ -538,6 +614,8 @@ export const markResult = (input: MarkInput): CredentialState => {
       }
     } else if (state.quota.reason === "credential_quota" && state.quota.nextRecoverAt > now) {
       // Retain the active credential-scoped cooldown.
+    } else if (retainedCooldown) {
+      // Retain a cooldown recorded after this attempt was dispatched.
     } else if (modelKey !== "") {
       modelState = ensureModelState(state, modelKey);
       resetModelState(modelState, now);
@@ -559,6 +637,7 @@ export const markResult = (input: MarkInput): CredentialState => {
 
     if (modelKey !== "") {
       if (!shouldSkipCredentialCooldown(classified)) {
+        cooledModels.push(modelKey);
         modelState = ensureModelState(state, modelKey);
         const model = modelState;
         model.unavailable = true;
@@ -598,7 +677,10 @@ export const markResult = (input: MarkInput): CredentialState => {
             nextRecoverAt: next,
             backoffLevel: level,
           });
-        } else if (isInvalidGrantError(classified)) {
+        } else if (
+          isInvalidGrantError(classified) ||
+          isCreditBalanceTooLow(status, classified.message)
+        ) {
           model.nextRetryAfter = disableCooling ? 0 : now + HARD_COOLDOWN_MS;
         } else {
           switch (status) {
@@ -624,6 +706,13 @@ export const markResult = (input: MarkInput): CredentialState => {
                 disableCooling,
                 wasTerminalUnauthorized,
               );
+
+              // A credential-scoped 429 cools every model of the credential at once.
+              if (result.credentialScoped === true && !disableCooling) {
+                cooledCredential = true;
+                cooledModels.push(...Object.keys(state.modelStates));
+              }
+
               break;
             case 408:
             case 500:
@@ -690,6 +779,7 @@ export const markResult = (input: MarkInput): CredentialState => {
         disableCooling,
         settings,
       );
+      cooledCredential = !shouldSkipCredentialCooldown(classified);
     }
   }
 
@@ -709,7 +799,7 @@ export const markResult = (input: MarkInput): CredentialState => {
       observeResponseHeaders(modelState.quota, input.credential.provider, result.headers, now);
   }
 
-  return state;
+  return { state, cooled: { credential: cooledCredential, models: cooledModels } };
 };
 
 /** The 429 row, including credential-wide propagation for credential-scoped limits. */

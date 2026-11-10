@@ -19,14 +19,25 @@ import type { JsonObject } from "@commissary/json";
 import { resetCooldownState } from "./cooldown-reset.ts";
 import { type StoredCredential, deriveFileCredential, sanitizeAliases } from "./derive.ts";
 import { parseAuthFile, type ImportFailureReason } from "./import.ts";
-import { type CooldownSettings, coolingDisabledFor, markResult } from "./cooldown/mark-result.ts";
+import {
+  type CooldownSettings,
+  type CooledKeys,
+  coolingDisabledFor,
+  credentialCooldownActive,
+  markResultDetailed,
+  modelCooldownActive,
+} from "./cooldown/mark-result.ts";
 import { shouldSkipCredentialCooldown } from "./cooldown/classify.ts";
 import { type Credential, type CredentialState, emptyState } from "./model.ts";
 import { MerklePrefixMatcher } from "../session-routing/matcher.ts";
 import type { SpendPolicy } from "@commissary/state/spend";
 import { SessionCache } from "./selection/affinity.ts";
 import { spendLimitReached } from "./selection/failures.ts";
-import { canonicalModelKey } from "./selection/model-name.ts";
+import {
+  canonicalModelKey,
+  canonicalModelLookupKey,
+  findModelState,
+} from "./selection/model-name.ts";
 import { rotateRoute } from "./selection/routing.ts";
 import {
   knownPrefixes,
@@ -138,6 +149,11 @@ interface View {
   readonly credentials: ReadonlyMap<string, Credential>;
 }
 
+interface MutableCooldownMarks {
+  credential: number;
+  models: Map<string, number>;
+}
+
 /** Rotates alias pools: successive requests start on different upstream models. */
 const POOL_OFFSET_WRAP = 2_000_000_000;
 
@@ -156,6 +172,13 @@ export class CredentialPool {
   readonly #lcp = new MerklePrefixMatcher();
   readonly #poolOffsets = new Map<string, number>();
   readonly #states: Map<string, CredentialState>;
+  /**
+   * Dispatch counter stamped on every lease, and the counter value when each live cooldown was recorded (35af74f9).
+   * Seeded from the clock (1000 slots per ms) so a restarted instance numbers above the leases an earlier one issued:
+   * leases live in Worker requests that outlive a ControlPlane restart.
+   */
+  #dispatchSeq: number;
+  readonly #cooldownMarks = new Map<string, MutableCooldownMarks>();
   #view: View | undefined;
 
   constructor(options: PoolOptions) {
@@ -169,6 +192,7 @@ export class CredentialPool {
     this.#privateKeys = options.privateKeys ?? (() => ({ version: 0, configs: [] }));
     this.#spend = options.spend;
     this.#states = options.store.loadStates();
+    this.#dispatchSeq = this.#now() * 1000;
   }
 
   /** Rebuilds the derived credential set when the config or the stored credentials changed. */
@@ -215,6 +239,7 @@ export class CredentialPool {
     for (const id of this.#states.keys()) {
       if (!credentials.has(id)) {
         this.#states.delete(id);
+        this.#cooldownMarks.delete(id);
         this.#store.deleteState(id);
         this.#invalidateBindings(id);
       }
@@ -351,6 +376,7 @@ export class CredentialPool {
       provider: credential.provider,
       model: stateModel,
       issuedAt: now,
+      seq: ++this.#dispatchSeq,
       ...(outcome.affinityKeys.length === 0 ? {} : { affinityKeys: outcome.affinityKeys }),
       ...(outcome.lcp === undefined ? {} : { lcp: outcome.lcp }),
       ...(spend.length === 0 ? {} : { spend }),
@@ -394,15 +420,20 @@ export class CredentialPool {
     const now = this.#now();
     const previous = this.#state(credential.id);
 
-    const next = markResult({
+    const { state: next, cooled } = markResultDetailed({
       credential,
       state: previous,
       now,
       model: result.model ?? lease.model,
       result,
       settings: view.cooldown,
+      dispatch:
+        lease.seq === undefined
+          ? undefined
+          : { seq: lease.seq, marks: this.#cooldownMarks.get(credential.id) },
     });
 
+    this.#recordCooldownMarks(credential.id, cooled, next, now);
     this.#states.set(credential.id, next);
     this.#store.saveState(credential.id, next);
 
@@ -476,6 +507,30 @@ export class CredentialPool {
     return this.refreshTarget(id);
   }
 
+  /**
+   * Stamps the cooldown a failure just recorded with the current dispatch counter, so successes of picks made
+   * before it cannot clear it, and drops the stamps of cooldowns that ended (`cooldownRecordedSeq`).
+   */
+  #recordCooldownMarks(id: string, cooled: CooledKeys, next: CredentialState, now: number): void {
+    const marks = this.#cooldownMarks.get(id) ?? { credential: 0, models: new Map() };
+    const seq = this.#dispatchSeq;
+
+    if (cooled.credential) marks.credential = seq;
+
+    for (const model of cooled.models) marks.models.set(canonicalModelLookupKey(model), seq);
+
+    if (!credentialCooldownActive(next, now)) marks.credential = 0;
+
+    for (const key of marks.models.keys()) {
+      const state = findModelState(next.modelStates, key);
+
+      if (state === undefined || !modelCooldownActive(state, now)) marks.models.delete(key);
+    }
+
+    if (marks.credential === 0 && marks.models.size === 0) this.#cooldownMarks.delete(id);
+    else this.#cooldownMarks.set(id, marks);
+  }
+
   /** The error as the affinity selector sees it: request-scoped and transport failures keep bindings. */
   #affinityError(result: ReportResult, state: CredentialState) {
     const error = state.lastError;
@@ -530,6 +585,7 @@ export class CredentialPool {
     if (target === undefined) return undefined;
     const reset = resetCooldownState(target.state, this.#now());
     this.#states.set(id, reset.state);
+    this.#cooldownMarks.delete(id);
     this.#store.saveState(id, reset.state);
 
     return { models: reset.models };
@@ -558,6 +614,7 @@ export class CredentialPool {
     // Replaced material starts a fresh life: stale tokens must not keep a cooldown or a session binding.
     if (outcome.credentialsChanged && !outcome.created) {
       this.#states.delete(parsed.id);
+      this.#cooldownMarks.delete(parsed.id);
       this.#store.deleteState(parsed.id);
       this.#invalidateBindings(parsed.id);
     }
@@ -577,6 +634,7 @@ export class CredentialPool {
 
     if (removed) {
       this.#states.delete(id);
+      this.#cooldownMarks.delete(id);
       this.#invalidateBindings(id);
       this.#invalidate();
     }
@@ -595,6 +653,7 @@ export class CredentialPool {
 
     for (const id of removed) {
       this.#states.delete(id);
+      this.#cooldownMarks.delete(id);
       this.#invalidateBindings(id);
     }
 
