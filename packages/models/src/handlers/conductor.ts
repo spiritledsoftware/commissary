@@ -19,7 +19,12 @@
 import { Clock, Duration, Effect, Option, Random, Result, Scope } from "effect";
 import type { Config } from "../config/schema.ts";
 import type { RetryPlan } from "../credentials/selection/retry.ts";
-import { ExecutionError, outboundRefusedError, withErrorFields } from "../executor/errors.ts";
+import {
+  ExecutionError,
+  outboundRefusedError,
+  safeRetryAfter,
+  withErrorFields,
+} from "../executor/errors.ts";
 import {
   failureReport,
   isCompactRequestFault,
@@ -256,7 +261,7 @@ const withRetryAfter = (
   if (error.status !== 429 && error.status !== 503 && error.status !== 529) return error;
   const existing = error.safeHeaders ?? {};
 
-  if (existing["retry-after"] !== undefined || existing["Retry-After"] !== undefined) return error;
+  if (safeRetryAfter(error) !== undefined) return error;
 
   return withErrorFields(error, {
     safeHeaders: {

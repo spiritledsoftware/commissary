@@ -16,6 +16,8 @@ import {
   type JsonObject,
 } from "@commissary/json";
 import { statusText } from "./status.ts";
+import { safeRetryAfter } from "../executor/errors.ts";
+import { formatDurationSeconds } from "./duration.ts";
 
 type JsonRecord = JsonObject;
 
@@ -198,11 +200,45 @@ export const isClaudeThreadNotFound = (status: number, text: string): boolean =>
   return lower.includes("thread state") && lower.includes("previous_message_id");
 };
 
-/** Claude Messages error body: `{"type":"error","error":{"type","message"[,"details":{"error_code"}]}}`. */
-export const claudeErrorBody = (status: number, text: string): string => {
+/**
+ * `toClaudeError`'s Retry-After for a model-cooldown 429: the trusted `Retry-After` of the cooldown error (Go reads it
+ * from the safe headers), `undefined` for every other error.
+ */
+export const claudeCooldownRetryAfter = (error: {
+  readonly status: number;
+  readonly code?: string | undefined;
+  readonly safeHeaders?: Readonly<Record<string, string>> | undefined;
+}): string | undefined =>
+  error.status === 429 && error.code === "model_cooldown" ? safeRetryAfter(error) : undefined;
+
+/** `reset after <Go duration>` for a positive whole-second Retry-After; huge values keep the raw seconds. */
+const resetAfterHint = (retryAfter: string): string => {
+  if (!/^[+]?\d+$/.test(retryAfter)) return "";
+  const seconds = BigInt(retryAfter);
+
+  // Go's `strconv.ParseInt` fails above int64 max: no hint then.
+  if (seconds <= 0n || seconds > 9223372036854775807n) return "";
+
+  return ` (reset after ${
+    seconds <= 9223372036n ? formatDurationSeconds(Number(seconds)) : `${retryAfter}s`
+  })`;
+};
+
+/**
+ * Claude Messages error body: `{"type":"error","error":{"type","message"[,"details":{"error_code"}]}}`.
+ * `cooldownRetryAfter` (from `claudeCooldownRetryAfter`) appends ` (reset after Ns)` to a model-cooldown message.
+ */
+export const claudeErrorBody = (
+  status: number,
+  text: string,
+  cooldownRetryAfter?: string,
+): string => {
   const effectiveStatus = status <= 0 ? 500 : status;
   const errText = text.trim() === "" ? statusText(effectiveStatus) : text;
-  const detail = claudeErrorDetailFromText(effectiveStatus, errText);
+  let detail = claudeErrorDetailFromText(effectiveStatus, errText);
+
+  if (cooldownRetryAfter !== undefined && effectiveStatus === 429)
+    detail = { ...detail, message: detail.message + resetAfterHint(cooldownRetryAfter) };
 
   return JSON.stringify({
     type: "error",

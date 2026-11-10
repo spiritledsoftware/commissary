@@ -37,6 +37,11 @@ export class ExecutionError extends Schema.TaggedError<ExecutionError>()("Execut
   cause: Schema.optional(Schema.Defect()),
 }) {}
 
+/** The error's safe `Retry-After` value (either casing), `undefined` when absent. */
+export const safeRetryAfter = (error: {
+  readonly safeHeaders?: Readonly<Record<string, string>> | undefined;
+}): string | undefined => error.safeHeaders?.["retry-after"] ?? error.safeHeaders?.["Retry-After"];
+
 /** Convenience constructor for plain status errors (Go `statusErr{code, msg}`). */
 export const statusError = (status: number, message: string): ExecutionError =>
   new ExecutionError({ status, message });

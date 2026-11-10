@@ -3,7 +3,8 @@
  *
  * Go source: internal/runtime/executor/helps/claude_ratelimit.go (ClaudeHeadersIndicateUnifiedRateLimitRejection,
  * isOverageOrFableOnlyRejection, ParseClaudeRateLimitReset), claude_executor_request.go
- * (classifyClaudeUpstreamErrorWithCooling, claudeBodyIndicatesFastModeCredits).
+ * (classifyClaudeUpstreamErrorWithCooling, claudeBodyIndicatesFastModeCredits), claude_executor_fast_error.go.
+ * ParseClaudeRateLimitResetForError (upstream db1bab01) and the omitted-5h Fable-only branch (0130d6f3) are ported.
  */
 import { randomInt } from "node:crypto";
 import { asString, get, tryParseJson } from "@commissary/json";
@@ -59,6 +60,16 @@ const overageOrFableOnlyRejection = (
     shared7dAllowed &&
     status5h === "" &&
     utilizationHealthy(h(headers, "anthropic-ratelimit-unified-5h-utilization"))
+  )
+    return true;
+
+  // A rejected Fable-only response omits 5h utilization altogether when the 5h window is unused; a present but
+  // empty or malformed value stays credential-scoped.
+  if (
+    shared7dAllowed &&
+    status5h === "" &&
+    unifiedStatus === "rejected" &&
+    !headers.has("anthropic-ratelimit-unified-5h-utilization")
   )
     return true;
 
@@ -201,6 +212,62 @@ export const parseRateLimitResetMs = (
   return latest - now + fuzzSeconds() * 1000;
 };
 
+const QUOTA_STATUS_HEADERS = [
+  "anthropic-ratelimit-unified-status",
+  "anthropic-ratelimit-unified-5h-status",
+  "anthropic-ratelimit-unified-7d-status",
+  "anthropic-ratelimit-unified-7d_oi-status",
+  "anthropic-ratelimit-unified-overage-status",
+];
+
+const PER_MINUTE_MESSAGES = new Set([
+  "this request would exceed the requests per minute rate limit. please try again later.",
+  "this request would exceed the input tokens per minute rate limit. please try again later.",
+  "this request would exceed the output tokens per minute rate limit. please try again later.",
+]);
+
+/** `claudeBodyIsExplicitPerMinuteRateLimit`: the body is exactly one complete per-minute message (no substring match). */
+const bodyIsExplicitPerMinuteRateLimit = (body: string): boolean => {
+  const parsed = tryParseJson(body);
+
+  return (
+    asString(get(parsed, "error.type")) === "rate_limit_error" &&
+    PER_MINUTE_MESSAGES.has(lower(asString(get(parsed, "error.message"))))
+  );
+};
+
+/**
+ * `ParseClaudeRateLimitResetForError`: `parseRateLimitResetMs` with one body-aware exception. An explicit per-minute
+ * error carries no quota window, so the unclassified unified reset must not stretch its short Retry-After into an
+ * hours-long cooldown. Applies only when no status header declares a quota window and Retry-After is a usable value.
+ * `fuzzSeconds` is injectable so tests can pin the 1-30 s fuzz, as in `parseRateLimitResetMs`.
+ * (Go also rejects repeated or differently cased Retry-After keys as ambiguous; `Headers` merges them, so a repeated
+ * value fails to parse and falls back to the conservative result.)
+ */
+export const parseRateLimitResetForError = (
+  headers: Headers,
+  body: string,
+  now: number,
+  fuzzSeconds?: () => number,
+): number | undefined => {
+  const conservative = () => parseRateLimitResetMs(headers, now, fuzzSeconds);
+
+  if (
+    !bodyIsExplicitPerMinuteRateLimit(body) ||
+    QUOTA_STATUS_HEADERS.some((name) => h(headers, name).trim() !== "")
+  )
+    return conservative();
+  const retryAt = parseRetryAfter(h(headers, "retry-after"), now);
+
+  if (retryAt === undefined || retryAt <= now || retryAt - now > MAX_WINDOW_MS)
+    return conservative();
+  const narrowed = new Headers(headers);
+
+  narrowed.delete("anthropic-ratelimit-unified-reset");
+
+  return parseRateLimitResetMs(narrowed, now, fuzzSeconds);
+};
+
 /** `claudeBodyIndicatesFastModeCredits`. */
 export const bodyIndicatesFastModeCredits = (body: string): boolean => {
   const parsed = tryParseJson(body);
@@ -224,7 +291,7 @@ export const classifyUpstreamError = (
   now: number,
 ): ExecutionError => {
   const retryAfterMs =
-    status >= 400 && status < 600 ? parseRateLimitResetMs(headers, now) : undefined;
+    status >= 400 && status < 600 ? parseRateLimitResetForError(headers, body, now) : undefined;
 
   const base = {
     status,
