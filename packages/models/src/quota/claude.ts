@@ -32,7 +32,7 @@ export const CLAUDE_PROFILE_URL = "https://api.anthropic.com/api/oauth/profile";
 
 /** `CLAUDE_REQUEST_HEADERS` without the bearer token. */
 export const CLAUDE_HEADERS = {
-  "user-agent": "claude-cli/2.1.280 (external, cli)",
+  "user-agent": "claude-cli/2.1.321 (external, cli)",
   "content-type": "application/json",
   "anthropic-beta": "oauth-2025-04-20",
 } as const;

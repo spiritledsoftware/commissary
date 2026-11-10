@@ -43,7 +43,7 @@ requests:
         params:
           temperature: 0.3
           metadata.marker: from-payload-rule
-          system.0.text: "x-anthropic-billing-header: cc_version=2.1.280.rul; cc_entrypoint=cli; cch=00000;"
+          system.0.text: "x-anthropic-billing-header: cc_version=2.1.321.rul; cc_entrypoint=cli; cch=00000;"
 `;
 
 const message = (extra: JsonObject = {}): JsonObject => ({
@@ -572,8 +572,8 @@ describe("OAuth credential (Claude Code cloaking)", () => {
     expect(call.headers["x-app"]).toBe("cli");
     expect(call.headers["anthropic-version"]).toBe("2023-06-01");
     expect(call.headers["anthropic-dangerous-direct-browser-access"]).toBe("true");
-    expect(call.headers["user-agent"]).toBe("claude-cli/2.1.280 (external, cli)");
-    expect(call.headers["x-stainless-package-version"]).toBe("0.112.1");
+    expect(call.headers["user-agent"]).toBe("claude-cli/2.1.321 (external, cli)");
+    expect(call.headers["x-stainless-package-version"]).toBe("0.128.0");
     expect(call.headers["x-claude-code-session-id"]).toMatch(/^[0-9a-f-]{36}$/);
     expect(call.headers["x-client-request-id"]).toMatch(/^[0-9a-f-]{36}$/);
     const betas = call.headers["anthropic-beta"]!.split(",");
@@ -583,12 +583,14 @@ describe("OAuth credential (Claude Code cloaking)", () => {
       "interleaved-thinking-2025-05-14",
     ]);
     expect(betas).toContain("extended-cache-ttl-2025-04-11");
-    expect(betas).toContain("mid-conversation-system-2026-04-07");
+    // Claude Code 2.1.321 sends mid-conversation-system only when the caller asks for it.
+    expect(betas).toContain("mid-conversation-tool-changes-2026-07-01");
+    expect(betas).not.toContain("mid-conversation-system-2026-04-07");
 
     const body = lastBody(h);
     const system = body.system as JsonObject[];
     expect(system[0]?.text).toMatch(
-      /^x-anthropic-billing-header: cc_version=2\.1\.280\.[0-9a-f]{3}; cc_entrypoint=cli; cch=[0-9a-f]{5}; cc_prompt_id=[0-9a-f-]{36}; cc_turn_origin=human;$/,
+      /^x-anthropic-billing-header: cc_version=2\.1\.321\.[0-9a-f]{3}; cc_entrypoint=cli; cch=[0-9a-f]{5}; cc_prompt_id=[0-9a-f-]{36}; cc_turn_origin=human;$/,
     );
     expect(system[1]).toEqual({
       type: "text",
@@ -672,7 +674,7 @@ describe("OAuth credential (Claude Code cloaking)", () => {
     // The rule replaced the billing block text (written after the CCH placeholder step): the signature is recomputed.
     const system = body.system as JsonObject[];
     expect(system[0]?.text).toMatch(
-      /^x-anthropic-billing-header: cc_version=2\.1\.280\.rul; cc_entrypoint=cli; cch=[0-9a-f]{5};$/,
+      /^x-anthropic-billing-header: cc_version=2\.1\.321\.rul; cc_entrypoint=cli; cch=[0-9a-f]{5};$/,
     );
     const cch = /cch=([0-9a-f]{5});/.exec(call.body)![1]!;
     expect(cch).not.toBe("00000");
@@ -848,7 +850,9 @@ describe("OAuth credential, minimal cloak level", () => {
 
     const betas = call.headers["anthropic-beta"]!.split(",");
     expect(betas).toContain("oauth-2025-04-20");
-    expect(betas).toContain("mid-conversation-system-2026-04-07");
+    // Claude Code 2.1.321 sends mid-conversation-system only when the caller asks for it.
+    expect(betas).toContain("mid-conversation-tool-changes-2026-07-01");
+    expect(betas).not.toContain("mid-conversation-system-2026-04-07");
     expect(betas).not.toContain("claude-code-20250219");
     expect(call.headers["user-agent"]).toBe("pi-coding-agent/1.3.0");
     expect(call.headers["anthropic-version"]).toBe("2023-06-01");

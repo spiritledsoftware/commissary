@@ -17,9 +17,9 @@
     "apiKey": "",
     "headers": null,
     "want": {
-     "userAgent": "claude-cli/2.1.280 (external, cli)",
-     "packageVersion": "0.112.1",
-     "runtimeVersion": "v26.3.0",
+     "userAgent": "claude-cli/2.1.321 (external, cli)",
+     "packageVersion": "0.128.0",
+     "runtimeVersion": "v26.12.1",
      "os": "MacOS",
      "arch": "arm64"
     }
@@ -28,14 +28,14 @@
     "authId": "a1",
     "apiKey": "",
     "headers": {
-     "User-Agent": "claude-cli/2.1.280 (external, cli)",
+     "User-Agent": "claude-cli/2.1.321 (external, cli)",
      "X-Stainless-Arch": "x86",
      "X-Stainless-Os": "Windows"
     },
     "want": {
-     "userAgent": "claude-cli/2.1.280 (external, cli)",
-     "packageVersion": "0.112.1",
-     "runtimeVersion": "v26.3.0",
+     "userAgent": "claude-cli/2.1.321 (external, cli)",
+     "packageVersion": "0.128.0",
+     "runtimeVersion": "v26.12.1",
      "os": "MacOS",
      "arch": "arm64"
     }
@@ -45,9 +45,9 @@
     "apiKey": "",
     "headers": null,
     "want": {
-     "userAgent": "claude-cli/2.1.280 (external, cli)",
-     "packageVersion": "0.112.1",
-     "runtimeVersion": "v26.3.0",
+     "userAgent": "claude-cli/2.1.321 (external, cli)",
+     "packageVersion": "0.128.0",
+     "runtimeVersion": "v26.12.1",
      "os": "MacOS",
      "arch": "arm64"
     }
@@ -57,9 +57,9 @@
     "apiKey": "",
     "headers": null,
     "want": {
-     "userAgent": "claude-cli/2.1.280 (external, cli)",
-     "packageVersion": "0.112.1",
-     "runtimeVersion": "v26.3.0",
+     "userAgent": "claude-cli/2.1.321 (external, cli)",
+     "packageVersion": "0.128.0",
+     "runtimeVersion": "v26.12.1",
      "os": "MacOS",
      "arch": "arm64"
     }
@@ -83,12 +83,12 @@
     "authId": "a1",
     "apiKey": "",
     "headers": {
-     "User-Agent": "claude-cli/2.1.280 (external, cli)"
+     "User-Agent": "claude-cli/2.1.321 (external, cli)"
     },
     "want": {
-     "userAgent": "claude-cli/2.1.280 (external, cli)",
-     "packageVersion": "0.112.1",
-     "runtimeVersion": "v26.3.0",
+     "userAgent": "claude-cli/2.1.321 (external, cli)",
+     "packageVersion": "0.128.0",
+     "runtimeVersion": "v26.12.1",
      "os": "MacOS",
      "arch": "arm64"
     }
@@ -97,12 +97,12 @@
     "authId": "a1",
     "apiKey": "",
     "headers": {
-     "User-Agent": "claude-cli/2.1.280 (external, sdk-cli)"
+     "User-Agent": "claude-cli/2.1.321 (external, sdk-cli)"
     },
     "want": {
-     "userAgent": "claude-cli/2.1.280 (external, sdk-cli)",
-     "packageVersion": "0.112.1",
-     "runtimeVersion": "v26.3.0",
+     "userAgent": "claude-cli/2.1.321 (external, sdk-cli)",
+     "packageVersion": "0.128.0",
+     "runtimeVersion": "v26.12.1",
      "os": "MacOS",
      "arch": "arm64"
     }
@@ -112,9 +112,9 @@
     "apiKey": "",
     "headers": null,
     "want": {
-     "userAgent": "claude-cli/2.1.280 (external, cli)",
-     "packageVersion": "0.112.1",
-     "runtimeVersion": "v26.3.0",
+     "userAgent": "claude-cli/2.1.321 (external, cli)",
+     "packageVersion": "0.128.0",
+     "runtimeVersion": "v26.12.1",
      "os": "MacOS",
      "arch": "arm64"
     }
@@ -123,12 +123,12 @@
     "authId": "a1",
     "apiKey": "",
     "headers": {
-     "User-Agent": "claude-cli/2.1.280 (external, claude-vscode)"
+     "User-Agent": "claude-cli/2.1.321 (external, claude-vscode)"
     },
     "want": {
-     "userAgent": "claude-cli/2.1.280 (external, claude-vscode)",
-     "packageVersion": "0.112.1",
-     "runtimeVersion": "v26.3.0",
+     "userAgent": "claude-cli/2.1.321 (external, claude-vscode)",
+     "packageVersion": "0.128.0",
+     "runtimeVersion": "v26.12.1",
      "os": "MacOS",
      "arch": "arm64"
     }
@@ -137,12 +137,12 @@
     "authId": "a1",
     "apiKey": "",
     "headers": {
-     "User-Agent": "claude-cli/2.1.280 (external, claude-desktop)"
+     "User-Agent": "claude-cli/2.1.321 (external, claude-desktop)"
     },
     "want": {
-     "userAgent": "claude-cli/2.1.280 (external, claude-desktop)",
-     "packageVersion": "0.112.1",
-     "runtimeVersion": "v26.3.0",
+     "userAgent": "claude-cli/2.1.321 (external, claude-desktop)",
+     "packageVersion": "0.128.0",
+     "runtimeVersion": "v26.12.1",
      "os": "MacOS",
      "arch": "arm64"
     }
@@ -151,12 +151,12 @@
     "authId": "a1",
     "apiKey": "",
     "headers": {
-     "User-Agent": "claude-cli/2.1.280 (external, sdk-cli, agent-sdk/0.1.5)"
+     "User-Agent": "claude-cli/2.1.321 (external, sdk-cli, agent-sdk/0.1.5)"
     },
     "want": {
-     "userAgent": "claude-cli/2.1.280 (external, sdk-cli)",
-     "packageVersion": "0.112.1",
-     "runtimeVersion": "v26.3.0",
+     "userAgent": "claude-cli/2.1.321 (external, sdk-cli)",
+     "packageVersion": "0.128.0",
+     "runtimeVersion": "v26.12.1",
      "os": "MacOS",
      "arch": "arm64"
     }
@@ -165,12 +165,12 @@
     "authId": "a1",
     "apiKey": "",
     "headers": {
-     "User-Agent": "claude-cli/2.1.280 (external, SDK-CLI)"
+     "User-Agent": "claude-cli/2.1.321 (external, SDK-CLI)"
     },
     "want": {
-     "userAgent": "claude-cli/2.1.280 (external, sdk-cli)",
-     "packageVersion": "0.112.1",
-     "runtimeVersion": "v26.3.0",
+     "userAgent": "claude-cli/2.1.321 (external, sdk-cli)",
+     "packageVersion": "0.128.0",
+     "runtimeVersion": "v26.12.1",
      "os": "MacOS",
      "arch": "arm64"
     }
@@ -194,12 +194,12 @@
     "authId": "a1",
     "apiKey": "",
     "headers": {
-     "User-Agent": "claude-cli/2.1.280 (external, cli)"
+     "User-Agent": "claude-cli/2.1.321 (external, cli)"
     },
     "want": {
-     "userAgent": "claude-cli/2.1.280 (external, cli)",
-     "packageVersion": "0.112.1",
-     "runtimeVersion": "v26.3.0",
+     "userAgent": "claude-cli/2.1.321 (external, cli)",
+     "packageVersion": "0.128.0",
+     "runtimeVersion": "v26.12.1",
      "os": "MacOS",
      "arch": "arm64"
     }
@@ -208,12 +208,12 @@
     "authId": "a1",
     "apiKey": "",
     "headers": {
-     "User-Agent": "claude-cli/2.1.281 (external, cli)"
+     "User-Agent": "claude-cli/2.1.322 (external, cli)"
     },
     "want": {
-     "userAgent": "claude-cli/2.1.280 (external, cli)",
-     "packageVersion": "0.112.1",
-     "runtimeVersion": "v26.3.0",
+     "userAgent": "claude-cli/2.1.321 (external, cli)",
+     "packageVersion": "0.128.0",
+     "runtimeVersion": "v26.12.1",
      "os": "MacOS",
      "arch": "arm64"
     }
@@ -225,9 +225,9 @@
      "User-Agent": "claude-cli/2.2.0 (external, cli)"
     },
     "want": {
-     "userAgent": "claude-cli/2.1.280 (external, cli)",
-     "packageVersion": "0.112.1",
-     "runtimeVersion": "v26.3.0",
+     "userAgent": "claude-cli/2.1.321 (external, cli)",
+     "packageVersion": "0.128.0",
+     "runtimeVersion": "v26.12.1",
      "os": "MacOS",
      "arch": "arm64"
     }
@@ -236,12 +236,12 @@
     "authId": "a1",
     "apiKey": "",
     "headers": {
-     "User-Agent": "claude-cli/2.1.279 (external, cli)"
+     "User-Agent": "claude-cli/2.1.320 (external, cli)"
     },
     "want": {
-     "userAgent": "claude-cli/2.1.280 (external, cli)",
-     "packageVersion": "0.112.1",
-     "runtimeVersion": "v26.3.0",
+     "userAgent": "claude-cli/2.1.321 (external, cli)",
+     "packageVersion": "0.128.0",
+     "runtimeVersion": "v26.12.1",
      "os": "MacOS",
      "arch": "arm64"
     }
@@ -250,13 +250,13 @@
     "authId": "a1",
     "apiKey": "",
     "headers": {
-     "User-Agent": "claude-cli/2.1.280 (external, cli)",
+     "User-Agent": "claude-cli/2.1.321 (external, cli)",
      "X-Stainless-Package-Version": "0.99.0"
     },
     "want": {
-     "userAgent": "claude-cli/2.1.280 (external, cli)",
-     "packageVersion": "0.112.1",
-     "runtimeVersion": "v26.3.0",
+     "userAgent": "claude-cli/2.1.321 (external, cli)",
+     "packageVersion": "0.128.0",
+     "runtimeVersion": "v26.12.1",
      "os": "MacOS",
      "arch": "arm64"
     }
@@ -265,13 +265,13 @@
     "authId": "a1",
     "apiKey": "",
     "headers": {
-     "User-Agent": "claude-cli/2.1.280 (external, cli)",
+     "User-Agent": "claude-cli/2.1.321 (external, cli)",
      "X-Stainless-Runtime-Version": "v1.0.0"
     },
     "want": {
-     "userAgent": "claude-cli/2.1.280 (external, cli)",
-     "packageVersion": "0.112.1",
-     "runtimeVersion": "v26.3.0",
+     "userAgent": "claude-cli/2.1.321 (external, cli)",
+     "packageVersion": "0.128.0",
+     "runtimeVersion": "v26.12.1",
      "os": "MacOS",
      "arch": "arm64"
     }
@@ -280,14 +280,14 @@
     "authId": "a1",
     "apiKey": "",
     "headers": {
-     "User-Agent": "claude-cli/2.1.280 (external, cli)",
+     "User-Agent": "claude-cli/2.1.321 (external, cli)",
      "X-Stainless-Package-Version": "bogus",
      "X-Stainless-Runtime-Version": "node"
     },
     "want": {
-     "userAgent": "claude-cli/2.1.280 (external, cli)",
-     "packageVersion": "0.112.1",
-     "runtimeVersion": "v26.3.0",
+     "userAgent": "claude-cli/2.1.321 (external, cli)",
+     "packageVersion": "0.128.0",
+     "runtimeVersion": "v26.12.1",
      "os": "MacOS",
      "arch": "arm64"
     }
@@ -299,9 +299,9 @@
      "User-Agent": "curl/8.0"
     },
     "want": {
-     "userAgent": "claude-cli/2.1.280 (external, cli)",
-     "packageVersion": "0.112.1",
-     "runtimeVersion": "v26.3.0",
+     "userAgent": "claude-cli/2.1.321 (external, cli)",
+     "packageVersion": "0.128.0",
+     "runtimeVersion": "v26.12.1",
      "os": "MacOS",
      "arch": "arm64"
     }
@@ -310,12 +310,12 @@
     "authId": "a1",
     "apiKey": "",
     "headers": {
-     "User-Agent": "claude-cli/2.1.280"
+     "User-Agent": "claude-cli/2.1.321"
     },
     "want": {
-     "userAgent": "claude-cli/2.1.280 (external, cli)",
-     "packageVersion": "0.112.1",
-     "runtimeVersion": "v26.3.0",
+     "userAgent": "claude-cli/2.1.321 (external, cli)",
+     "packageVersion": "0.128.0",
+     "runtimeVersion": "v26.12.1",
      "os": "MacOS",
      "arch": "arm64"
     }
@@ -324,12 +324,12 @@
     "authId": "a1",
     "apiKey": "",
     "headers": {
-     "User-Agent": "claude-cli/2.1.280 (external, cli) extra"
+     "User-Agent": "claude-cli/2.1.321 (external, cli) extra"
     },
     "want": {
-     "userAgent": "claude-cli/2.1.280 (external, cli)",
-     "packageVersion": "0.112.1",
-     "runtimeVersion": "v26.3.0",
+     "userAgent": "claude-cli/2.1.321 (external, cli)",
+     "packageVersion": "0.128.0",
+     "runtimeVersion": "v26.12.1",
      "os": "MacOS",
      "arch": "arm64"
     }
@@ -353,12 +353,12 @@
     "authId": "",
     "apiKey": "sk-one",
     "headers": {
-     "User-Agent": "claude-cli/2.1.280 (external, sdk-cli)"
+     "User-Agent": "claude-cli/2.1.321 (external, sdk-cli)"
     },
     "want": {
-     "userAgent": "claude-cli/2.1.280 (external, sdk-cli)",
-     "packageVersion": "0.112.1",
-     "runtimeVersion": "v26.3.0",
+     "userAgent": "claude-cli/2.1.321 (external, sdk-cli)",
+     "packageVersion": "0.128.0",
+     "runtimeVersion": "v26.12.1",
      "os": "MacOS",
      "arch": "arm64"
     }
@@ -367,12 +367,12 @@
     "authId": "",
     "apiKey": "sk-one",
     "headers": {
-     "User-Agent": "claude-cli/2.1.280 (external, cli)"
+     "User-Agent": "claude-cli/2.1.321 (external, cli)"
     },
     "want": {
-     "userAgent": "claude-cli/2.1.280 (external, cli)",
-     "packageVersion": "0.112.1",
-     "runtimeVersion": "v26.3.0",
+     "userAgent": "claude-cli/2.1.321 (external, cli)",
+     "packageVersion": "0.128.0",
+     "runtimeVersion": "v26.12.1",
      "os": "MacOS",
      "arch": "arm64"
     }
@@ -382,9 +382,9 @@
     "apiKey": "sk-one",
     "headers": null,
     "want": {
-     "userAgent": "claude-cli/2.1.280 (external, cli)",
-     "packageVersion": "0.112.1",
-     "runtimeVersion": "v26.3.0",
+     "userAgent": "claude-cli/2.1.321 (external, cli)",
+     "packageVersion": "0.128.0",
+     "runtimeVersion": "v26.12.1",
      "os": "MacOS",
      "arch": "arm64"
     }
@@ -394,9 +394,9 @@
     "apiKey": "sk-two",
     "headers": null,
     "want": {
-     "userAgent": "claude-cli/2.1.280 (external, cli)",
-     "packageVersion": "0.112.1",
-     "runtimeVersion": "v26.3.0",
+     "userAgent": "claude-cli/2.1.321 (external, cli)",
+     "packageVersion": "0.128.0",
+     "runtimeVersion": "v26.12.1",
      "os": "MacOS",
      "arch": "arm64"
     }
@@ -405,12 +405,12 @@
     "authId": "",
     "apiKey": "",
     "headers": {
-     "User-Agent": "claude-cli/2.1.280 (external, cli)"
+     "User-Agent": "claude-cli/2.1.321 (external, cli)"
     },
     "want": {
-     "userAgent": "claude-cli/2.1.280 (external, cli)",
-     "packageVersion": "0.112.1",
-     "runtimeVersion": "v26.3.0",
+     "userAgent": "claude-cli/2.1.321 (external, cli)",
+     "packageVersion": "0.128.0",
+     "runtimeVersion": "v26.12.1",
      "os": "MacOS",
      "arch": "arm64"
     }
@@ -420,9 +420,9 @@
     "apiKey": "",
     "headers": null,
     "want": {
-     "userAgent": "claude-cli/2.1.280 (external, cli)",
-     "packageVersion": "0.112.1",
-     "runtimeVersion": "v26.3.0",
+     "userAgent": "claude-cli/2.1.321 (external, cli)",
+     "packageVersion": "0.128.0",
+     "runtimeVersion": "v26.12.1",
      "os": "MacOS",
      "arch": "arm64"
     }
@@ -432,9 +432,9 @@
     "apiKey": " sk-one ",
     "headers": null,
     "want": {
-     "userAgent": "claude-cli/2.1.280 (external, cli)",
-     "packageVersion": "0.112.1",
-     "runtimeVersion": "v26.3.0",
+     "userAgent": "claude-cli/2.1.321 (external, cli)",
+     "packageVersion": "0.128.0",
+     "runtimeVersion": "v26.12.1",
      "os": "MacOS",
      "arch": "arm64"
     }
@@ -470,7 +470,7 @@
     "authId": "a1",
     "apiKey": "",
     "headers": {
-     "User-Agent": "claude-cli/2.1.280 (external, cli)"
+     "User-Agent": "claude-cli/2.1.321 (external, cli)"
     },
     "want": {
      "userAgent": "claude-cli/2.2.0 (external, cli)",

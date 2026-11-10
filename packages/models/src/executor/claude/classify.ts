@@ -10,7 +10,7 @@ import { get, isJsonObject, tryParseJson, type Json, type JsonObject } from "@co
 import { isArr, isObj, str, toArray } from "@commissary/translation";
 import { payloadHas1hTTL } from "./cache-control.ts";
 
-export const DEFAULT_USER_AGENT = "claude-cli/2.1.280 (external, cli)";
+export const DEFAULT_USER_AGENT = "claude-cli/2.1.321 (external, cli)";
 
 export const headerValue = (headers: Headers | undefined, name: string): string =>
   headers?.get(name)?.trim() ?? "";
@@ -32,7 +32,7 @@ const parseVersion = (userAgent: string): [number, number, number] | undefined =
 export const defaultClaudeVersion = (userAgent: string): string => {
   const version = parseVersion(userAgent) ?? parseVersion(DEFAULT_USER_AGENT);
 
-  return (version ?? [2, 1, 280]).join(".");
+  return (version ?? [2, 1, 321]).join(".");
 };
 
 /** `plausibleClaudeCodeUserAgent`: native pattern with the baseline's major.minor and a patch >= baseline. */
@@ -197,6 +197,9 @@ const isTitleHelperRequest = (body: JsonObject): boolean => {
 export const isProbeOrHelperRequest = (body: JsonObject): boolean =>
   isProbeRequest(body) || isTitleHelperRequest(body);
 
+/** `IsClaudeQuotaProbeRequest`: the `max_tokens: 1` quota probe alone, without the title helper. */
+export const isQuotaProbeRequest = (body: JsonObject): boolean => isProbeRequest(body);
+
 /** `IsClaudeSubagentRequest`. */
 export const isSubagentRequest = (headers: Headers | undefined, body: JsonObject): boolean => {
   if (headerValue(headers, "x-claude-code-agent-id") !== "") return true;
@@ -258,6 +261,24 @@ export const isSonnet55Model = (model: string): boolean => {
   );
 };
 
+/** `isClaudeHaiku55Model`. */
+export const isHaiku55Model = (model: string): boolean => {
+  const m = canonicalModel(model);
+
+  return ["claude-haiku-5-5", "claude-haiku-5.5"].some(
+    (prefix) => m === prefix || m.startsWith(`${prefix}-`) || m.startsWith(`${prefix}[`),
+  );
+};
+
+/** `isClaudeFable52Model`. */
+export const isFable52Model = (model: string): boolean => {
+  const m = canonicalModel(model);
+
+  return ["claude-fable-5-2", "claude-fable-5.2"].some(
+    (prefix) => m === prefix || m.startsWith(`${prefix}-`) || m.startsWith(`${prefix}[`),
+  );
+};
+
 export const isSonnet5Model = (model: string): boolean => {
   const m = canonicalModel(model);
 
@@ -284,14 +305,35 @@ export const isFable51Model = (model: string): boolean => {
   return false;
 };
 
+/** `claudeModelUsesProgressDisplay`: Claude Code 2.1.321 added Fable 5.2 and Haiku 5.5. */
 export const usesProgressDisplay = (model: string): boolean =>
-  isOpus55Model(model) || isFable51Model(model) || isSonnet5Model(model) || isSonnet55Model(model);
+  isOpus55Model(model) ||
+  isFable51Model(model) ||
+  isFable52Model(model) ||
+  isSonnet5Model(model) ||
+  isSonnet55Model(model) ||
+  isHaiku55Model(model);
 
+/** `claudeModelHasPerTurnEffort`: the 2.1.321 catalog's `per_turn_effort` models. */
 export const hasPerTurnEffort = (model: string): boolean =>
-  isOpus55Model(model) || canonicalModel(model).startsWith("claude-fable-5-1");
+  isOpus55Model(model) ||
+  canonicalModel(model).startsWith("claude-fable-5-1") ||
+  isFable52Model(model) ||
+  isSonnet55Model(model) ||
+  isHaiku55Model(model);
 
-export const hasPerTurnTiming = (model: string): boolean =>
-  hasPerTurnEffort(model) || canonicalModel(model).startsWith("claude-mythos-5-1");
+/** `claudeModelHasPerTurnTiming`: the catalog's `per_turn_timing` models (Haiku 5.5 has none). */
+export const hasPerTurnTiming = (model: string): boolean => {
+  if (isHaiku55Model(model)) return false;
+  const m = canonicalModel(model);
+
+  return (
+    hasPerTurnEffort(m) ||
+    m.startsWith("claude-mythos-5-1") ||
+    m.startsWith("claude-mythos-5-2") ||
+    m.startsWith("claude-mythos-5.2")
+  );
+};
 
 const LEGACY_SYSTEM_REMINDER_MODELS = new Set([
   "claude-3-5-haiku-20241022",

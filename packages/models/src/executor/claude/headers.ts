@@ -46,9 +46,9 @@ import {
   subagentRequests1h,
 } from "./classify.ts";
 
-const DEFAULT_PACKAGE_VERSION = "0.112.1";
+const DEFAULT_PACKAGE_VERSION = "0.128.0";
 
-const DEFAULT_RUNTIME_VERSION = "v26.3.0";
+const DEFAULT_RUNTIME_VERSION = "v26.12.1";
 
 const DEFAULT_OS = "MacOS";
 

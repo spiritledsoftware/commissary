@@ -36,7 +36,7 @@ const ok = (extra: JsonObject = {}) =>
   });
 
 const NATIVE_HEADERS = {
-  "user-agent": "claude-cli/2.1.280 (external, cli)",
+  "user-agent": "claude-cli/2.1.321 (external, cli)",
   "x-app": "cli",
   "anthropic-beta": "claude-code-20250219",
 };
@@ -205,8 +205,8 @@ describe("device profile stabiliser (stabilize-device-profile)", () => {
 
   const withSdk = (extra: Record<string, string>) => ({
     ...NATIVE_HEADERS,
-    "x-stainless-package-version": "0.112.1",
-    "x-stainless-runtime-version": "v26.3.0",
+    "x-stainless-package-version": "0.128.0",
+    "x-stainless-runtime-version": "v26.12.1",
     ...extra,
   });
 
@@ -248,16 +248,16 @@ describe("device profile stabiliser (stabilize-device-profile)", () => {
     const config = await loadConfig(STABLE + claudeKeyConfig());
     const baseline = await resolve({ id: "c1" }, "k", new Headers(), config);
     expect(baseline).toEqual({
-      userAgent: "claude-cli/2.1.280 (external, cli)",
-      packageVersion: "0.112.1",
-      runtimeVersion: "v26.3.0",
+      userAgent: "claude-cli/2.1.321 (external, cli)",
+      packageVersion: "0.128.0",
+      runtimeVersion: "v26.12.1",
       os: "MacOS",
       arch: "arm64",
     });
 
     const headers = new Headers(
       withSdk({
-        "user-agent": "claude-cli/2.1.280 (external, sdk-cli)",
+        "user-agent": "claude-cli/2.1.321 (external, sdk-cli)",
         "x-stainless-os": "Linux",
         "x-stainless-arch": "x64",
       }),
@@ -265,7 +265,7 @@ describe("device profile stabiliser (stabilize-device-profile)", () => {
 
     const sdk = await resolve({ id: "c1" }, "k", headers, config);
     expect(sdk).toMatchObject({
-      userAgent: "claude-cli/2.1.280 (external, sdk-cli)",
+      userAgent: "claude-cli/2.1.321 (external, sdk-cli)",
       os: "MacOS",
       arch: "arm64",
     });
@@ -284,13 +284,13 @@ describe("device profile stabiliser (stabilize-device-profile)", () => {
     const config = await loadConfig(STABLE);
 
     for (const headers of [
-      withSdk({ "user-agent": "claude-cli/2.1.281 (external, cli)" }),
+      withSdk({ "user-agent": "claude-cli/2.1.322 (external, cli)" }),
       withSdk({ "x-stainless-package-version": "0.200.0" }),
       withSdk({ "x-stainless-runtime-version": "v99.0.0" }),
       { ...NATIVE_HEADERS, "user-agent": "curl/8.0" },
     ]) {
       const resolved = await resolve({ id: "c" }, "k", new Headers(headers), config);
-      expect(resolved.userAgent).toBe("claude-cli/2.1.280 (external, cli)");
+      expect(resolved.userAgent).toBe("claude-cli/2.1.321 (external, cli)");
     }
   });
 
@@ -314,24 +314,24 @@ describe("device profile stabiliser (stabilize-device-profile)", () => {
       config,
     );
 
-    expect(resolved).toMatchObject({ packageVersion: "0.112.1", runtimeVersion: "v26.3.0" });
+    expect(resolved).toMatchObject({ packageVersion: "0.128.0", runtimeVersion: "v26.12.1" });
   });
 
   it("the executor sends the stabilised profile to the upstream, the baseline to unconfirmed clients", async () => {
     const confirmed = await sentProfile(
       withSdk({
-        "user-agent": "claude-cli/2.1.280 (external, sdk-cli)",
+        "user-agent": "claude-cli/2.1.321 (external, sdk-cli)",
         "x-stainless-os": "Linux",
         "x-stainless-arch": "x64",
       }),
     );
 
     expect(confirmed).toEqual({
-      userAgent: "claude-cli/2.1.280 (external, sdk-cli)",
+      userAgent: "claude-cli/2.1.321 (external, sdk-cli)",
       os: "MacOS",
       arch: "arm64",
-      packageVersion: "0.112.1",
-      runtimeVersion: "v26.3.0",
+      packageVersion: "0.128.0",
+      runtimeVersion: "v26.12.1",
     });
 
     const unconfirmed = await sentProfile(
@@ -341,7 +341,7 @@ describe("device profile stabiliser (stabilize-device-profile)", () => {
     );
 
     expect(unconfirmed).toMatchObject({
-      userAgent: "claude-cli/2.1.280 (external, cli)",
+      userAgent: "claude-cli/2.1.321 (external, cli)",
       os: "MacOS",
       arch: "arm64",
     });
