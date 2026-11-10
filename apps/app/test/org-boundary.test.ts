@@ -232,9 +232,10 @@ describe("OAuth logins", () => {
 
   it("the public callback reaches the ControlPlane of the org that started the login", async () => {
     const inGlobal = await startIn(global);
-    expect(inGlobal.state).toMatch(/^[0-9a-f]{32}$/);
+    // Claude's state is 256-bit base64url (ea0b4712).
+    expect(inGlobal.state).toMatch(/^[A-Za-z0-9_-]{43}$/);
     const inAcme = await startIn(acme);
-    expect(inAcme.state).toMatch(new RegExp(`^org\\.${ACME}\\.[0-9a-f]{32}$`));
+    expect(inAcme.state).toMatch(new RegExp(`^org\\.${ACME}\\.[A-Za-z0-9_-]{43}$`));
 
     // The browser callback has no Access identity; the state alone names the org.
     const callback = await global.call(
