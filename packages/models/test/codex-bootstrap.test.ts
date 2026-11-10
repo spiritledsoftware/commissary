@@ -311,6 +311,7 @@ describe("bootstrap helpers", () => {
     expect(isBootstrapBufferableEvent("", "  ", undefined)).toBe(true);
     expect(empty("keepalive")).toBe(true);
     expect(empty("codex.rate_limits")).toBe(true);
+    expect(empty("response.metadata")).toBe(true);
     expect(empty("response.output_text.delta")).toBe(false);
     expect(
       empty("response.output_item.added", {
@@ -439,6 +440,31 @@ describe("bootstrap failover through the conductor", () => {
     expect(
       outcome.records.map((record) => record.failed).toSorted((a, b) => Number(a) - Number(b)),
     ).toEqual([false, true]);
+  });
+
+  it("fails an overload after a response.metadata frame over before any frame reaches the client", async () => {
+    // Captured from upstream on 2026-10-21 (CLIProxyAPI 9e79552f).
+    const moderation = data({
+      type: "response.metadata",
+      response_id: "r1",
+      sequence_number: 2,
+      metadata: { openai_chatgpt_moderation_metadata: { prompt: { omnimod: {} } } },
+    });
+
+    const outcome = await run(
+      "upstream:\n  codex:\n    stream-bootstrap-buffering: true\n",
+      (call) =>
+        bearer(call) === "tok-a"
+          ? frames(created, inProgress, moderation, overload)
+          : frames(created, delta, completed),
+    );
+
+    expect(outcome.result._tag).toBe("Success");
+    const out = Result.isSuccess(outcome.result) ? outcome.result.success.join("") : "";
+    expect(out).toContain("response.completed");
+    expect(out).not.toContain("response.metadata");
+    expect(out).not.toContain("server_is_overloaded");
+    expect(outcome.calls.map(bearer).toSorted()).toEqual(["tok-a", "tok-b"]);
   });
 
   it("without buffering the rejection is delivered in-stream (no failover)", async () => {

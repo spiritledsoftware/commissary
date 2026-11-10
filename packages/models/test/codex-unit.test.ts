@@ -92,6 +92,18 @@ describe("Responses frame assembler", () => {
     expect(early.closeError()?.message).toContain("last event: response.created");
   });
 
+  it("drops response.metadata for standard clients and keeps it for Codex clients", () => {
+    const metadata =
+      'event: response.metadata\ndata: {"type":"response.metadata","metadata":{"marker":"private"}}\n\n';
+
+    const dataOnly = 'data: {"type":"response.metadata","metadata":{"marker":"private"}}\n\n';
+    const standard = responsesFramer({ codexClient: false });
+
+    expect(standard.chunk(metadata)).toBe("");
+    expect(standard.chunk(dataOnly)).toBe("");
+    expect(responsesFramer({ codexClient: true }).chunk(metadata)).toBe(metadata);
+  });
+
   it("keeps partial frames until they are valid and flushes them on close", () => {
     const framer = responsesFramer({ codexClient: false });
     expect(framer.chunk('data: {"type":"response.output_text.delta"')).toBe("");

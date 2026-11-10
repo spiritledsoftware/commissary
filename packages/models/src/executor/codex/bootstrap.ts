@@ -157,6 +157,7 @@ export const isBootstrapBufferableEvent = (
     case "response.in_progress":
     case "codex.rate_limits":
     case "codex.response.metadata":
+    case "response.metadata":
     case "keepalive":
       return true;
     case "response.output_item.added":
