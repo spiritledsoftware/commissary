@@ -147,6 +147,9 @@ export const thinkingFromModelsDev = (
     if (out.dynamicAllowed === undefined && fact.dynamicAllowed !== undefined)
       out.dynamicAllowed = fact.dynamicAllowed;
 
+    if (out.disableType === undefined && fact.disableType !== undefined)
+      out.disableType = fact.disableType;
+
     if (out.levels === undefined && fact.levels !== undefined) out.levels = [...fact.levels];
   }
 

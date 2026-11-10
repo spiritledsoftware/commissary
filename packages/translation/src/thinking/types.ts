@@ -64,6 +64,8 @@ export interface ModelThinkingSupport {
   readonly max?: number | undefined;
   readonly zeroAllowed?: boolean | undefined;
   readonly dynamicAllowed?: boolean | undefined;
+  /** Claude `thinking.type` that turns thinking off for this model; absent means `disabled` (`between_tools` on claude-sonnet-5-5). */
+  readonly disableType?: string | undefined;
   readonly levels?: readonly string[] | undefined;
 }
 

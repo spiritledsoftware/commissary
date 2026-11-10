@@ -475,6 +475,30 @@ Port of `internal/thinking`, keeping the "canonical `ThinkingConfig` → central
   `registry.ModelInfo`); the model registry slice supplies richer records and the lookup.
 - Summary helpers (`extractSummaryConfig`, `applySummaryConfigForProvider`, `applyTranslatedSummaryToClaude`, …) are
   exported for the translator registry (Go calls them from `TranslateRequestEnvelope`).
+- **Turning thinking off** (Go `ad9e456d`, ticket C1). The way a Claude model turns thinking off is a catalog fact, not
+  a level choice: `ModelThinkingSupport.disableType` (`catalog/additions.json` `facts`, `thinking.disableType`; Go
+  `ThinkingSupport.DisableType`) is the `thinking.type` the Claude applier writes for mode `none` or a zero budget,
+  `disabled` when absent. `claude-sonnet-5-5` rejects `disabled` and needs `between_tools`. Neither type accepts other
+  thinking fields, so the applier replaces the whole `thinking` object and drops `output_config.effort` (`between_tools`
+  only takes effort `high` or below). A model whose catalog entry has `zeroAllowed: false` and levels (`claude-opus-5-5`,
+  `claude-fable-5`, `claude-fable-5-1`) cannot be turned off: validation falls back to its lowest canonical level (the
+  lowest of an unordered list, ignoring `none`/`auto`; for every target, as in Go), and an off request keeps
+  `thinking.display: omitted` so cloaking does not add progress updates. Configured models that override the levels
+  keep the catalog's `disableType`. Dated and bracketed Claude variants (`claude-sonnet-5-5-20261001`,
+  `claude-opus-5-5[1m]`) resolve to their family's catalog entry in the static lookups. Adaptive-only Claude models
+  (Opus 4.7/4.8, Fable 5/5.1) have no budget range in the additions, so budgets map to an effort level.
+- **Standalone `output_config.effort`** (Go `009f8d7a`, `e6931d51`): a Claude request with an effort and no `thinking`
+  object reaches OpenAI and Codex targets as `reasoning_effort` / `reasoning.effort`, and a Claude-to-Claude request
+  keeps the model's thinking default (no validation, only a suffix or an explicit summary changes it).
+- **Usage effort** (Go `fb30a9e8`): the `reasoning_effort` of a Claude request is the last mid-conversation effort
+  directive (`claudeEffortDirective`: a `role: system` message with `output_config.effort`, unless thinking is
+  `disabled` or `between_tools`), not the top-level placeholder clients keep fixed for prompt caching; a suffix still
+  wins and `between_tools` reads as `none`.
+- **`thinking.display: updates`** (Go `13fdcc5e`) is an enabled summary mode and survives an enabled summary being
+  re-applied (a disabled one still writes `omitted`).
+- The thinking golden fixtures predate these changes: until F2 regenerates them, the fixture tests skip the cases the
+  ported behaviour changes (`*AheadOfFixture` in `packages/translation/test/support/thinking.ts`), and
+  `packages/translation/test/thinking-disable.test.ts` covers them.
 - Fixtures: `go run ./tools/fixturegen/thinking` → `packages/translation/test/fixtures/thinking.json` (~2.7 MB; includes the Go
   static model catalog used by the lookup). Known Go quirk not mirrored: gjson reads _unparsable_ source JSON
   leniently in `extractCodexConfig`; the Workers port only handles parsed bodies.

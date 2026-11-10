@@ -80,6 +80,7 @@ export const convertGeminiRequestToClaude = (
       const mi = lookupModelInfo(modelName, "claude");
       const supportsAdaptive = (mi?.thinking?.levels?.length ?? 0) > 0;
       const supportsMax = supportsAdaptive && hasLevel(mi?.thinking?.levels, "max");
+      const supportsDynamic = supportsAdaptive && mi?.thinking?.dynamicAllowed === true;
 
       const setThinking = (type: string): JsonObject => {
         const current = isObj(out.thinking) ? out.thinking : {};
@@ -112,8 +113,12 @@ export const convertGeminiRequestToClaude = (
           if (level === "none") {
             setThinking("disabled");
             clearEffort();
+          } else if (level === "auto" && supportsDynamic) {
+            setThinking("adaptive");
+            clearEffort();
           } else if (level !== "") {
-            level = mapToClaudeEffort(level, supportsMax) ?? level;
+            if (!hasLevel(mi?.thinking?.levels, level))
+              level = mapToClaudeEffort(level, supportsMax) ?? level;
             setThinking("adaptive");
             setEffort(level);
           }
@@ -142,11 +147,15 @@ export const convertGeminiRequestToClaude = (
             if (budget === 0) {
               setThinking("disabled");
               clearEffort();
+            } else if (budget === -1 && supportsDynamic) {
+              setThinking("adaptive");
+              clearEffort();
             } else {
               let level = convertBudgetToLevel(budget);
 
               if (level !== undefined) {
-                level = mapToClaudeEffort(level, supportsMax) ?? level;
+                if (!hasLevel(mi?.thinking?.levels, level))
+                  level = mapToClaudeEffort(level, supportsMax) ?? level;
                 setThinking("adaptive");
                 setEffort(level);
               }

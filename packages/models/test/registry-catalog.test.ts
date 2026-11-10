@@ -88,6 +88,7 @@ describe("catalogsFromText (KV contents -> catalogs)", () => {
 
 describe("static lookups", () => {
   const catalogs = embeddedCatalogs();
+  const thinking = (id: string) => lookupStaticModelInfo(catalogs, id)?.thinking;
 
   it("channels map to their sections", () => {
     expect(staticModelsByChannel(catalogs, "Grok")?.map((model) => model.id)).toEqual(
@@ -104,6 +105,41 @@ describe("static lookups", () => {
     expect(lookupStaticModelInfoByChannel(catalogs, "devin/swe-2", "claude")).toBeUndefined();
     expect(lookupStaticModelInfo(catalogs, "devin/swe-2")?.id).toBe("devin/swe-2");
     expect(lookupStaticModelInfo(catalogs, "")).toBeUndefined();
+  });
+
+  it("dated and bracketed Claude variants share their catalog entry", () => {
+    for (const id of [
+      "claude-sonnet-5-5[1m]",
+      "claude-sonnet-5-5-20261001",
+      "claude-sonnet-5-5-20261001[1m]",
+    ]) {
+      expect(lookupStaticModelInfo(catalogs, id)?.id, id).toBe("claude-sonnet-5-5");
+      expect(lookupStaticModelInfoByChannel(catalogs, id, "claude")?.id, id).toBe(
+        "claude-sonnet-5-5",
+      );
+    }
+
+    expect(
+      lookupStaticModelInfoByChannel(catalogs, "claude-sonnet-5-5[1m]", "gemini"),
+    ).toBeUndefined();
+    expect(lookupStaticModelInfo(catalogs, "claude-nope-1[1m]")).toBeUndefined();
+    expect(lookupStaticModelInfo(catalogs, "gpt-6-astra[1m]")).toBeUndefined();
+  });
+
+  it("Claude models that cannot be turned off, and the one that needs between_tools", () => {
+    for (const id of ["claude-opus-5-5", "claude-fable-5", "claude-fable-5-1"])
+      expect(thinking(id)?.zeroAllowed, id).toBe(false);
+
+    for (const id of ["claude-opus-5", "claude-sonnet-5", "claude-sonnet-5-5"])
+      expect(thinking(id)?.zeroAllowed, id).toBe(true);
+
+    expect(thinking("claude-sonnet-5-5")?.disableType).toBe("between_tools");
+    expect(thinking("claude-opus-5")?.disableType).toBeUndefined();
+
+    // Adaptive-only models take no budget.
+    for (const id of ["claude-opus-4-7", "claude-opus-4-8", "claude-fable-5", "claude-fable-5-1"]) {
+      expect(thinking(id)?.min, id).toBeUndefined();
+    }
   });
 
   it("the bundled models.dev snapshot is valid", () => {

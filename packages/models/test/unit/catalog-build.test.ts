@@ -385,6 +385,18 @@ describe("coverage of what the Go server serves", () => {
     return Object.values(doc[spec.source].models).find((model) => mapId(model.id) === id);
   };
 
+  /**
+   * Thinking fields Go changed after the pin and Commissary ported (ad9e456d: Opus 4.7/4.8 and Fable 5/5.1 take no
+   * budget, Fable 5/5.1 and Opus 5.5 reject `thinking.type=disabled`), by `section/id`.
+   */
+  const PORTED_THINKING_CHANGES = new Map<string, ReadonlyArray<string>>([
+    ["claude/claude-opus-4-7", ["min", "max", "dynamicAllowed"]],
+    ["claude/claude-opus-4-8", ["min", "max", "dynamicAllowed"]],
+    ["claude/claude-fable-5", ["min", "max", "zeroAllowed", "dynamicAllowed"]],
+    ["claude/claude-fable-5-1", ["min", "max", "zeroAllowed", "dynamicAllowed"]],
+    ["claude/claude-opus-5-5", ["zeroAllowed"]],
+  ]);
+
   it("every pinned runtime field is still served, unless models.dev has its own value for it", () => {
     const differences: string[] = [];
 
@@ -401,6 +413,9 @@ describe("coverage of what the Go server serves", () => {
         // models.dev saying the model does not reason is its own value for the whole thinking support.
         for (const field of entry?.reasoning === false ? [] : THINKING_FIELDS) {
           if (own[field] !== undefined) continue;
+
+          if (PORTED_THINKING_CHANGES.get(`${section}/${pinned.id}`)?.includes(field) === true)
+            continue;
           const want = JSON.stringify(pinned.thinking?.[field]);
           const got = JSON.stringify(model.thinking?.[field]);
 

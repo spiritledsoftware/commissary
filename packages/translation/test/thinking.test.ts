@@ -15,6 +15,8 @@ import {
   type ThinkingModelInfo,
   UNSPECIFIED_SUMMARY,
 } from "../src/thinking/index.ts";
+import { builtinTranslators } from "../src/translator/builtin.ts";
+import { summaryHooks } from "../src/translator/summary-hooks.ts";
 import { catalogLookup } from "./support/thinking.ts";
 
 // Ports of the Go unit tests in internal/thinking (summary_test.go, claude_enabled_effort_test.go,
@@ -185,6 +187,32 @@ describe("ExtractSummaryConfig", () => {
       `{"thinking":{"type":"adaptive","display":"summarized"}}`,
       "enabled",
       "auto",
+    ],
+    [
+      "claude updates",
+      "claude",
+      `{"thinking":{"type":"adaptive","display":"updates"}}`,
+      "enabled",
+      "auto",
+    ],
+    [
+      "claude updates without type is invalid",
+      "claude",
+      `{"thinking":{"display":"updates"}}`,
+      "unspecified",
+    ],
+    [
+      "claude enabled updates without budget is valid",
+      "claude",
+      `{"thinking":{"type":"enabled","display":"updates"}}`,
+      "enabled",
+      "auto",
+    ],
+    [
+      "claude enabled updates with zero budget is invalid",
+      "claude",
+      `{"thinking":{"type":"enabled","budget_tokens":0,"display":"updates"}}`,
+      "unspecified",
     ],
     [
       "claude omitted",
@@ -429,9 +457,25 @@ describe("ApplySummaryConfig", () => {
       "summarized",
     ],
     [
+      "claude enabled preserves existing updates",
+      "claude",
+      `{"thinking":{"type":"adaptive","display":"updates"}}`,
+      summary("enabled"),
+      "thinking.display",
+      "updates",
+    ],
+    [
       "claude disabled",
       "claude",
       `{"thinking":{"type":"enabled","budget_tokens":2048}}`,
+      summary("disabled"),
+      "thinking.display",
+      "omitted",
+    ],
+    [
+      "claude disabled overrides existing updates",
+      "claude",
+      `{"thinking":{"type":"adaptive","display":"updates"}}`,
       summary("disabled"),
       "thinking.display",
       "omitted",
@@ -1682,5 +1726,25 @@ describe("configured provider-key model definitions", () => {
       expect(str(native.body, "input.0.reasoning.effort")).toBe("low");
       expect(str(native.body, "reasoning.summary")).toBe("auto");
     }
+  });
+});
+
+// ports of internal/thinking tests added with Go 13fdcc5e (thinking.display "updates")
+describe("Claude thinking.display updates", () => {
+  it("reaches Antigravity as includeThoughts", () => {
+    const source = parse(
+      `{"model":"gemini-3.8-flash-high","max_tokens":4096,"thinking":{"type":"adaptive","display":"updates"},"messages":[{"role":"user","content":"Hello, think first."}]}`,
+    );
+
+    const translated = builtinTranslators.translateRequest(
+      "claude",
+      "antigravity",
+      { format: "claude", model: "gemini-3.8-flash-high", stream: false, body: source },
+      summaryHooks,
+    );
+
+    expect(get(translated.body, "request.generationConfig.thinkingConfig.includeThoughts")).toBe(
+      true,
+    );
   });
 });

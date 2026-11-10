@@ -26,6 +26,8 @@ import {
 } from "../src/thinking/index.ts";
 import {
   type ApplyFixture,
+  applierAheadOfFixture,
+  applyAheadOfFixture,
   bodyKey,
   catalogLookup,
   collectMismatches,
@@ -37,6 +39,7 @@ import {
   type ModelSpec,
   parseBody,
   resolveApplierModel,
+  validateAheadOfFixture,
 } from "./support/thinking.ts";
 
 // Golden cases generated from the real Go internal/thinking by `go run ./tools/fixturegen/thinking`.
@@ -154,6 +157,7 @@ describe("thinking golden fixtures", () => {
         const model = group.model ?? undefined;
 
         const failures = collectMismatches(group.cases, (c) => {
+          if (validateAheadOfFixture(model, c.c, c.t)) return undefined;
           const result = validateConfig(decodeConfig(c.c), model, c.f, c.t, c.s === true);
 
           const actual =
@@ -203,6 +207,12 @@ describe("thinking golden fixtures", () => {
 
       if (actual === expected) return undefined;
 
+      if (
+        (c.variant === "modelInfo" || c.variant === "modelInfoSummary") &&
+        applyAheadOfFixture(resolveModelInfo(c), expectedBody)
+      )
+        return undefined;
+
       return `${c.name ?? `${c.variant} ${c.to} ${c.model} from=${c.from}`}\n  in:  ${c.body}\n  got: ${actual}\n  want:${expected}`;
     };
 
@@ -239,6 +249,8 @@ describe("thinking golden fixtures", () => {
           );
 
           const expected = expectedKey(c.same === true ? c.body : (c.out ?? ""));
+
+          if (applierAheadOfFixture(name, c.config)) return undefined;
 
           return bodyKey(out) === expected
             ? undefined

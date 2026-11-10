@@ -4,6 +4,8 @@
  */
 export { applyThinking, type ApplyThinkingOptions, type ApplyThinkingResult } from "./apply.ts";
 
+export { claudeEffortDirective } from "./claude-effort-directive.ts";
+
 export {
   extractConfigurationUpdateConfig,
   isResponsesFormat,

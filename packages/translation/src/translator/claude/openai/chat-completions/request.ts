@@ -80,7 +80,10 @@ const convertRequest = (
             out.thinking = { type: "adaptive" };
             break;
           default: {
-            const mapped = mapToClaudeEffort(effort, supportsMax);
+            // A level the model advertises is sent as is; others are mapped to the nearest Claude effort.
+            const mapped = hasLevel(mi?.thinking?.levels, effort)
+              ? undefined
+              : mapToClaudeEffort(effort, supportsMax);
 
             if (mapped !== undefined) effort = mapped;
             out.thinking = { type: "adaptive" };

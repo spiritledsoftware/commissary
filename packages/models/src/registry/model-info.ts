@@ -15,6 +15,8 @@ export interface ThinkingSupport {
   readonly max?: number;
   readonly zeroAllowed?: boolean;
   readonly dynamicAllowed?: boolean;
+  /** Claude `thinking.type` that turns thinking off; absent means `disabled` (`between_tools` on claude-sonnet-5-5). */
+  readonly disableType?: string;
   readonly levels?: readonly string[];
 }
 
@@ -73,6 +75,7 @@ const WireThinking = Schema.Struct({
   max: optionalNull(Schema.Number),
   zero_allowed: optionalNull(Schema.Boolean),
   dynamic_allowed: optionalNull(Schema.Boolean),
+  disable_type: optionalNull(Schema.String),
   levels: optionalNull(Strings),
 });
 
@@ -152,6 +155,7 @@ export const fromWire = (wire: WireModel): ModelInfo => {
     put(thinking, "max", wire.thinking.max);
     put(thinking, "zeroAllowed", wire.thinking.zero_allowed);
     put(thinking, "dynamicAllowed", wire.thinking.dynamic_allowed);
+    put(thinking, "disableType", wire.thinking.disable_type);
     put(thinking, "levels", wire.thinking.levels);
     info.thinking = thinking;
   }

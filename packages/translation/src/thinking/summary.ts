@@ -98,6 +98,7 @@ const claudeSummaryConfig = (body: Json | undefined, path: string): Found => {
 
   switch (normalize(value)) {
     case "summarized":
+    case "updates":
       return ENABLED_AUTO;
     case "omitted":
       return DISABLED;
@@ -444,7 +445,15 @@ export const applySummaryConfigForProvider = (
 
       if (!claudeThinkingAcceptsDisplay(result)) return result;
 
-      return setPath(result, "thinking.display", enabled ? "summarized" : "omitted");
+      // An existing `updates` display is an enabled mode of its own; keep it rather than overwriting it with `summarized`.
+      const display = get(result, "thinking.display");
+
+      const keepUpdates =
+        enabled && typeof display === "string" && normalize(display) === "updates";
+
+      if (!enabled) return setPath(result, "thinking.display", "omitted");
+
+      return setPath(result, "thinking.display", keepUpdates ? "updates" : "summarized");
     }
 
     case "gemini":

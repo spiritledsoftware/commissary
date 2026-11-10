@@ -126,7 +126,9 @@ const convertRequest = (
           delete t.budget_tokens;
           dropEffort();
         } else {
-          effort = mapToClaudeEffort(effort, supportsMax) ?? effort;
+          // A level the model advertises is sent as is; others are mapped to the nearest Claude effort.
+          if (!hasLevel(mi?.thinking?.levels, effort))
+            effort = mapToClaudeEffort(effort, supportsMax) ?? effort;
           const t = thinking();
           t.type = "adaptive";
           delete t.budget_tokens;

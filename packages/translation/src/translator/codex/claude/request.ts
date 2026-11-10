@@ -669,6 +669,12 @@ const convertClaudeRequest = (
         break;
       }
     }
+  } else if (thinkingConfig === undefined) {
+    // Claude output_config.effort is independent of thinking activation: keep it when thinking is omitted.
+    const value = get(request, "output_config.effort");
+    const effort = typeof value === "string" ? value.trim().toLowerCase() : "";
+
+    if (effort !== "") reasoningEffort = effort;
   }
 
   template = set(template, "reasoning.effort", reasoningEffort);

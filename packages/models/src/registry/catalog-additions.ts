@@ -35,6 +35,8 @@ const Thinking = Schema.Struct({
   max: optional(Schema.Number),
   zeroAllowed: optional(Schema.Boolean),
   dynamicAllowed: optional(Schema.Boolean),
+  /** The Claude `thinking.type` that turns thinking off, when it is not `disabled`. */
+  disableType: optional(Schema.String),
   levels: optional(Strings),
 });
 

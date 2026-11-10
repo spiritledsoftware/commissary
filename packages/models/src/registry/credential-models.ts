@@ -163,10 +163,15 @@ const resolveThinking = (
 ): ThinkingSupport | undefined => {
   const base = parseModelSuffix(name.trim()).modelName.trim();
   const configured = normalizeThinkingSupport(support);
+  const catalog = lookupStaticModelInfo(catalogs, base)?.thinking;
 
-  if (configured !== undefined) return configured;
+  if (configured === undefined) return catalog;
 
-  return lookupStaticModelInfo(catalogs, base)?.thinking;
+  // Configured levels replace the catalog entry, but the way a known model turns thinking off is an upstream API
+  // fact, not a level choice.
+  return configured.disableType === undefined && catalog?.disableType !== undefined
+    ? { ...configured, disableType: catalog.disableType }
+    : configured;
 };
 
 /** `buildConfigModels`: de-duplicated by lower-cased alias. */

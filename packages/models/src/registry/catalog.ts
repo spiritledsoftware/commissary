@@ -250,7 +250,28 @@ export const staticModelsByChannel = (
   }
 };
 
-/** Exact id within one channel's models. */
+/**
+ * The catalog ids a Claude model variant may belong to (Go `claudeFamilyModelIDs`): without a `[...]` context suffix,
+ * then also without a `-YYYYMMDD` date. Dated and bracketed variants (`claude-sonnet-5-5-20261001`,
+ * `claude-opus-5-5[1m]`) share the capabilities of their catalog entry.
+ */
+const claudeFamilyModelIds = (modelId: string): string[] => {
+  if (!modelId.startsWith("claude-")) return [];
+  const ids: string[] = [];
+  let base = modelId;
+  const bracket = base.indexOf("[");
+
+  if (bracket > 0 && base.endsWith("]")) {
+    base = base.slice(0, bracket);
+    ids.push(base);
+  }
+
+  if (/-\d{8}$/.test(base)) ids.push(base.slice(0, -9));
+
+  return ids;
+};
+
+/** Exact id within one channel's models; a Claude variant falls back to its family's entry. */
 export const lookupStaticModelInfoByChannel = (
   catalogs: ModelCatalogs,
   modelId: string,
@@ -259,7 +280,16 @@ export const lookupStaticModelInfoByChannel = (
   const id = modelId.trim();
 
   if (id === "") return undefined;
-  const found = staticModelsByChannel(catalogs, channel)?.find((model) => model.id === id);
+  const models = staticModelsByChannel(catalogs, channel);
+  let found = models?.find((model) => model.id === id);
+
+  if (found === undefined && channel.trim().toLowerCase() === "claude") {
+    for (const familyId of claudeFamilyModelIds(id)) {
+      found = models?.find((model) => model.id === familyId);
+
+      if (found !== undefined) break;
+    }
+  }
 
   return found === undefined ? undefined : cloneModelInfo(found);
 };
@@ -290,6 +320,13 @@ export const lookupStaticModelInfo = (
 
   for (const list of lists) {
     const found = list.find((model) => model.id === modelId);
+
+    if (found !== undefined) return cloneModelInfo(found);
+  }
+
+  // Dated and bracketed Claude variants share the capabilities of their catalog entry.
+  for (const familyId of claudeFamilyModelIds(modelId)) {
+    const found = models.claude.find((model) => model.id === familyId);
 
     if (found !== undefined) return cloneModelInfo(found);
   }
