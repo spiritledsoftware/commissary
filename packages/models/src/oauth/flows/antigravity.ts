@@ -27,8 +27,6 @@ export const ANTIGRAVITY_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/aut
 
 export const ANTIGRAVITY_USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo?alt=json";
 
-export const ANTIGRAVITY_API_ENDPOINT = "https://cloudcode-pa.googleapis.com";
-
 export const ANTIGRAVITY_DAILY_API_ENDPOINT = "https://daily-cloudcode-pa.googleapis.com";
 
 export const ANTIGRAVITY_REDIRECT_URI = "http://localhost:51121/oauth-callback";
@@ -92,15 +90,14 @@ const jsonPost = (
   accessToken: string,
   userAgent: string,
   body: Json,
-  extra: Record<string, string> = {},
-  accept = true,
+  options: { readonly extra?: Record<string, string>; readonly accept?: boolean } = {},
 ) =>
   HttpClientRequest.post(url).pipe(
     HttpClientRequest.setHeaders({
       authorization: `Bearer ${accessToken}`,
-      ...(accept ? { accept: "*/*" } : {}),
+      ...(options.accept === false ? {} : { accept: "*/*" }),
       "user-agent": userAgent,
-      ...extra,
+      ...options.extra,
     }),
     HttpClientRequest.bodyJsonUnsafe(body),
   );
@@ -120,7 +117,9 @@ const onboardUser = (
 
     for (let attempt = 1; attempt <= ONBOARD_ATTEMPTS; attempt++) {
       const reply = yield* call(
-        jsonPost(url, accessToken, NODE_USER_AGENT, body, { "x-goog-api-client": GOOG_API_CLIENT }),
+        jsonPost(url, accessToken, NODE_USER_AGENT, body, {
+          extra: { "x-goog-api-client": GOOG_API_CLIENT },
+        }),
       );
 
       if (reply.status !== 200)
@@ -152,8 +151,7 @@ export const fetchProjectId = (accessToken: string) =>
         accessToken,
         SHORT_USER_AGENT,
         { metadata: { ideType: "ANTIGRAVITY" } },
-        {},
-        false,
+        { accept: false },
       ),
     );
 

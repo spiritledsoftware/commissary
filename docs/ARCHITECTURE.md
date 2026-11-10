@@ -2502,9 +2502,10 @@ Ported from `antigravity_executor*.go`, `internal/translator/antigravity/*`, `in
   asks the executor for `enabledCreditTypes: ["GOOGLE_ONE_AI"]` through `ExecutorOptions.metadata.antigravityCredits`
   (`attemptOptions`). `INSUFFICIENT_G1_CREDITS_BALANCE` marks the credential out of credits (KV `ag:credits:<id>`, 30 min); the balance probe
   (`loadCodeAssist`, daily endpoint, no `Accept`, `waitUntil`; one probe per credential per 10 min, claimed atomically with a create-if-absent
-  write in the `SessionState` DO, not KV) refreshes it. The round walks every Antigravity credential once in the Go order
+  write in the `SessionState` DO, not KV) refreshes it. A record whose `updatedAt` is 10 min old or more is no longer trusted (Go `IsAntigravityCreditsHintFresh`): the probe runs again
+  and an out-of-credits record that old counts as unknown, so the credential is retried before the 30 min KV expiry. The round walks every Antigravity credential once in the Go order
   (`findAllAntigravityCreditsCandidateAuths`): known-available balances first, then unknown ones (optimistic), each group sorted by credential id;
-  known-empty credentials are skipped without an attempt (the conductor collects them with repeated `pick`s and releases the skipped leases
+  known-empty credentials (fresh records only) are skipped without an attempt (the conductor collects them with repeated `pick`s and releases the skipped leases
   as connection-lifecycle failures).
 - **Cron** (`models/scheduled-tasks.ts`): `antigravity-version` polls the Hub manifest into KV `antigravity:version` (`2.29.0` fallback, 6 h TTL; executors read it
   through a 60 s isolate cache) and `antigravity-models` probes `fetchAvailableModels` for every enabled credential (first endpoint only, global

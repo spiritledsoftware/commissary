@@ -15,7 +15,7 @@ import { deploymentKvOf } from "../../kv.ts";
 
 export const ANTIGRAVITY_FALLBACK_VERSION = "2.29.0";
 
-export const ANTIGRAVITY_HUB_PLATFORM = "os_type=darwin; arch=arm64";
+export const ANTIGRAVITY_HUB_METADATA = "os_type=darwin; arch=arm64";
 
 /**
  * `antigravityHubChangelists`: changelists belong to specific Hub releases. Update the fallback version and its entry
@@ -63,7 +63,7 @@ export const parseManifestVersion = (manifest: string): string | undefined => {
 
 export const antigravityUserAgent = (version: string): string => {
   const changelist = ANTIGRAVITY_HUB_CHANGELISTS.get(version);
-  const metadata = `aidev_client; ${ANTIGRAVITY_HUB_PLATFORM}${changelist === undefined ? "" : `; cl=${changelist}`}`;
+  const metadata = `aidev_client; ${ANTIGRAVITY_HUB_METADATA}${changelist === undefined ? "" : `; cl=${changelist}`}`;
 
   return `antigravity/hub/${version} (${metadata})`;
 };

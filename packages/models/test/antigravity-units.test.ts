@@ -48,6 +48,7 @@ import {
 } from "../src/executor/antigravity/stream.ts";
 import {
   ANTIGRAVITY_FALLBACK_VERSION,
+  ANTIGRAVITY_HUB_CHANGELISTS,
   ANTIGRAVITY_VERSION_KEY,
   antigravityRequestUserAgent,
   antigravityVersionFromUserAgent,
@@ -462,6 +463,27 @@ describe("state and credits", () => {
     expect(await state.claimCreditsRefresh(second, now + 1)).toBe(false);
   });
 
+  it("sends the credits probe to a custom base_url", async () => {
+    const calls: Array<UpstreamCall> = [];
+
+    const credential = {
+      attributes: { base_url: "https://custom.example/" },
+      metadata: {},
+    } as unknown as CredentialSnapshot;
+
+    await Effect.runPromise(
+      probeCredits(
+        credential,
+        "tok",
+        "ua",
+        makeKvAntigravityState(orgKv(env.CACHE, GLOBAL_ORG)),
+        1,
+      ).pipe(Effect.provide(mockHttpClient(calls, () => Response.json({})))),
+    );
+
+    expect(calls[0]?.url).toBe("https://custom.example/v1internal:loadCodeAssist");
+  });
+
   it("probes the credits balance on the daily endpoint without an Accept header", async () => {
     const calls: Array<UpstreamCall> = [];
     const credential = { attributes: {}, metadata: {} } as unknown as CredentialSnapshot;
@@ -524,7 +546,16 @@ describe("version", () => {
   });
 
   it("builds user agents like Go", () => {
-    expect(ANTIGRAVITY_FALLBACK_VERSION).toBe("2.29.0");
+    expect(ANTIGRAVITY_HUB_CHANGELISTS.get(ANTIGRAVITY_FALLBACK_VERSION)).toBeDefined();
+
+    for (const configured of [
+      "antigravity/hub/2.24.0 darwin/arm64",
+      "antigravity/hub/2.24.0 (aidev_client; os_type=darwin; arch=arm64; cl=1000335682)",
+      "antigravity/hub/2.24.0 (aidev_client; os_type=darwin; arch=arm64; cl=1000335682) google-api-nodejs-client/10.3.0",
+    ]) {
+      expect(antigravityVersionFromUserAgent(configured, "2.29.0")).toBe("2.24.0");
+    }
+
     expect(antigravityRequestUserAgent("", "2.29.0")).toBe(
       "antigravity/hub/2.29.0 (aidev_client; os_type=darwin; arch=arm64; cl=1013060670)",
     );

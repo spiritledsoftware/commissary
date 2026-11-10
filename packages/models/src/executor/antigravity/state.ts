@@ -32,6 +32,10 @@ export interface CreditsRecord {
 export const creditsAvailable = (record: CreditsRecord | undefined): boolean =>
   record === undefined || record.creditAmount >= record.minCreditAmount;
 
+/** `IsAntigravityCreditsHintFresh`: a record older than the refresh interval is re-validated, not trusted. */
+export const creditsRecordFresh = (record: CreditsRecord, now: number): boolean =>
+  now - record.updatedAt < CREDITS_REFRESH_INTERVAL_MS;
+
 const hashModel = (model: string): string =>
   createHash("sha256").update(model, "utf8").digest("hex").slice(0, 16);
 

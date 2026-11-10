@@ -12,7 +12,7 @@ import type { Config } from "../../config/schema.ts";
 import { asString, get, isJsonArray, type Json, set, tryParseJson } from "@commissary/json";
 import { ExecutionError } from "../errors.ts";
 import type { CredentialSnapshot } from "../picker.ts";
-import { loadCodeAssistBaseUrl } from "./envelope.ts";
+import { requestBaseUrl } from "./envelope.ts";
 import { type AntigravityState, type CreditsRecord } from "./state.ts";
 
 /** `antigravityCreditsRetryEnabled`. */
@@ -79,7 +79,7 @@ export const probeCredits = (
   Effect.gen(function* () {
     if (accessToken === "") return;
     const client = yield* HttpClient.HttpClient;
-    const url = `${loadCodeAssistBaseUrl(credential.attributes, credential.metadata)}/v1internal:loadCodeAssist`;
+    const url = `${requestBaseUrl(credential.attributes, credential.metadata)}/v1internal:loadCodeAssist`;
 
     const request = HttpClientRequest.post(url).pipe(
       HttpClientRequest.setHeaders({

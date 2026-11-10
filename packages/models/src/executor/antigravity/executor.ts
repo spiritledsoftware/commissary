@@ -97,6 +97,7 @@ import {
   sealCompaction,
 } from "../helps/compaction.ts";
 import { resolveGroundingUrlsInPayload, shouldResolveGroundingUrls } from "./grounding.ts";
+import { creditsRecordFresh } from "./state.ts";
 import { creditsEnabled, injectEnabledCreditTypes, probeCredits } from "./credits.ts";
 import { NO_REPLAY_SCOPE, type ReplayAccumulator, type ReplayScope } from "./replay/accumulator.ts";
 import { defaultReplayLedger, type ReplayLedger } from "./replay/ledger.ts";
@@ -367,7 +368,9 @@ export const makeAntigravityExecutor = (
       if (!creditsEnabled(context.config) || coolingDisabled(context)) return;
       const now = yield* Clock.currentTimeMillis;
 
-      if ((yield* Effect.promise(() => state.credits(context.credential.id))) !== undefined) return;
+      const known = yield* Effect.promise(() => state.credits(context.credential.id));
+
+      if (known !== undefined && creditsRecordFresh(known, now)) return;
 
       if (!(yield* Effect.promise(() => state.claimCreditsRefresh(context.credential.id, now))))
         return;

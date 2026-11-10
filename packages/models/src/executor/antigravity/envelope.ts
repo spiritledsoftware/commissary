@@ -26,8 +26,6 @@ import {
 
 export const ANTIGRAVITY_BASE_URL_DAILY = "https://daily-cloudcode-pa.googleapis.com";
 
-export const ANTIGRAVITY_BASE_URL_PROD = "https://cloudcode-pa.googleapis.com";
-
 export const ANTIGRAVITY_GENERATE_PATH = "/v1internal:generateContent";
 
 export const ANTIGRAVITY_STREAM_PATH = "/v1internal:streamGenerateContent";
@@ -58,12 +56,6 @@ export const requestBaseUrl = (
   attributes: Readonly<Record<string, string>>,
   metadata: JsonObject,
 ): string => customBaseUrl(attributes, metadata) || ANTIGRAVITY_BASE_URL_DAILY;
-
-/** `antigravityLoadCodeAssistBaseURL`: `loadCodeAssist` uses the request endpoint (daily by default). */
-export const loadCodeAssistBaseUrl = (
-  attributes: Readonly<Record<string, string>>,
-  metadata: JsonObject,
-): string => requestBaseUrl(attributes, metadata);
 
 /** The configured per-credential user agent (`antigravityConfiguredUserAgent`). */
 export const configuredUserAgent = (
