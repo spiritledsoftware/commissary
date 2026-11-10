@@ -2,7 +2,8 @@
  * Responses tool declarations <-> Chat Completions function tools.
  *
  * Go sources: internal/translator/openai/openai/responses/{openai_openai-responses_tools.go,
- * responses_tool_index.go,shell_tool.go}.
+ * responses_tool_index.go,shell_tool.go,openai_openai-responses_tool_search.go}. A client-executed `tool_search` is bridged
+ * as the function `tool_search` (8c9a7851); the tools its `tool_search_output` items loaded stay declared.
  */
 import { cloneJson, get, type Json, type JsonObject, set } from "@commissary/json";
 import {
@@ -10,8 +11,16 @@ import {
   applyPatchParameters,
   isApplyPatchCustomTool,
 } from "../../../common/apply-patch.ts";
-import { getStr, isArr, str } from "../../common/read.ts";
-import { setResponsesToolCallIdentity } from "../../../common/responses.ts";
+import { getStr, isArr, isObj, str } from "../../common/read.ts";
+import { extractResponsesCallID, setResponsesToolCallIdentity } from "../../../common/responses.ts";
+import {
+  isResponsesClientToolSearchDeclaration,
+  isResponsesClientToolSearchItem,
+  RESPONSES_TOOL_SEARCH_CALL_TYPE,
+  RESPONSES_TOOL_SEARCH_FUNCTION_NAME,
+  RESPONSES_TOOL_SEARCH_OUTPUT_TYPE,
+  RESPONSES_TOOL_SEARCH_TYPE,
+} from "../../../common/responses-tools.ts";
 
 /** Chat Completions function-name limit enforced by strict upstreams. */
 export const RESPONSES_CHAT_TOOL_NAME_LIMIT = 64;
@@ -25,6 +34,8 @@ export interface ResponsesToolDeclaration {
   readonly namespace: string;
   readonly custom: boolean;
   readonly shell: boolean;
+  /** A client `tool_search`, bridged as a function. */
+  readonly search: boolean;
 }
 
 const encoder = new TextEncoder();
@@ -105,6 +116,7 @@ export const collectResponsesToolDeclarations = (
   const emit = (tool: Json, namespaceName: string): void => {
     let custom = false;
     let shell = false;
+    let search = false;
 
     switch (getStr(tool, "type").trim()) {
       case "":
@@ -117,6 +129,10 @@ export const collectResponsesToolDeclarations = (
         if (namespaceName !== "" || getStr(tool, "environment.type") !== "local") return;
         shell = true;
         break;
+      case RESPONSES_TOOL_SEARCH_TYPE:
+        if (namespaceName !== "" || !isResponsesClientToolSearchDeclaration(tool)) return;
+        search = true;
+        break;
       default:
         return;
     }
@@ -124,6 +140,7 @@ export const collectResponsesToolDeclarations = (
     let localName = responsesToolName(tool);
 
     if (shell) localName = LOCAL_SHELL;
+    else if (search) localName = RESPONSES_TOOL_SEARCH_FUNCTION_NAME;
 
     if (localName === "") return;
     declarations.push({
@@ -133,6 +150,7 @@ export const collectResponsesToolDeclarations = (
       namespace: namespaceName,
       custom,
       shell,
+      search,
     });
   };
 
@@ -161,15 +179,20 @@ export const collectResponsesToolDeclarations = (
 
   if (isArr(input)) {
     for (const item of input) {
-      if (getStr(item, "type") === "additional_tools") scan(get(item, "tools"));
+      const type = getStr(item, "type");
+
+      if (type === "additional_tools") scan(get(item, "tools"));
+      // Tools a client search loaded stay declared on every later request, so the model can call them.
+      else if (type === RESPONSES_TOOL_SEARCH_OUTPUT_TYPE && isResponsesClientToolSearchItem(item))
+        scan(get(item, "tools"));
     }
   }
 
-  // Reserve user identities before assigning the synthetic shell name.
+  // Reserve user identities before assigning the synthetic shell and tool_search names.
   const reserved = new Set<string>();
 
   for (const d of declarations) {
-    if (!d.shell) {
+    if (!d.shell && !d.search) {
       reserved.add(d.localName);
       reserved.add(d.chatName);
       reserved.add(rawResponsesNamespaceQualifiedName(d.namespace, d.localName));
@@ -180,10 +203,18 @@ export const collectResponsesToolDeclarations = (
 
   for (let suffix = 1; reserved.has(shellName); suffix++) shellName = `${LOCAL_SHELL}_${suffix}`;
 
+  let searchName = RESPONSES_TOOL_SEARCH_FUNCTION_NAME;
+
+  for (let suffix = 1; reserved.has(searchName); suffix++)
+    searchName = `${RESPONSES_TOOL_SEARCH_FUNCTION_NAME}_${suffix}`;
+
   for (const d of declarations) {
     if (d.shell) {
       d.localName = shellName;
       d.chatName = shellName;
+    } else if (d.search) {
+      d.localName = searchName;
+      d.chatName = searchName;
     }
   }
 
@@ -332,6 +363,28 @@ const convertResponsesShellToolToOpenAIChat = (name: string): JsonObject => ({
   },
 });
 
+const TOOL_SEARCH_DEFAULT_PARAMETERS = (): JsonObject => ({
+  type: "object",
+  properties: { query: { type: "string" } },
+  required: ["query"],
+});
+
+/** `convertResponsesToolSearchToolToOpenAIChat`. */
+const convertResponsesToolSearchToolToOpenAIChat = (tool: Json, name: string): JsonObject => {
+  const description = responsesToolDescription(tool);
+  const declared = responsesToolParameters(tool);
+
+  return {
+    type: "function",
+    function: {
+      name,
+      description:
+        description !== "" ? description : "Search for deferred tools and load the matching tools.",
+      parameters: isObj(declared) ? cloneJson(declared) : TOOL_SEARCH_DEFAULT_PARAMETERS(),
+    },
+  };
+};
+
 /** `responsesToolIndex`: scoped to one request; history and declarations are scanned once. */
 export class ResponsesToolIndex {
   readonly declarations: ResponsesToolDeclaration[];
@@ -428,7 +481,9 @@ export class ResponsesToolIndex {
         ? convertResponsesCustomToolToOpenAIChat(d.tool, d.chatName)
         : d.shell
           ? convertResponsesShellToolToOpenAIChat(d.chatName)
-          : convertResponsesFunctionToolToOpenAIChat(d.tool, d.chatName);
+          : d.search
+            ? convertResponsesToolSearchToolToOpenAIChat(d.tool, d.chatName)
+            : convertResponsesFunctionToolToOpenAIChat(d.tool, d.chatName);
 
       if (tool !== undefined) {
         merged.push(tool);
@@ -448,6 +503,131 @@ export class ResponsesToolIndex {
 
   isShell(name: string): boolean {
     return this.byChat.get(name)?.shell === true;
+  }
+
+  isToolSearch(name: string): boolean {
+    return this.byChat.get(name)?.search === true;
+  }
+
+  toolSearchName(): string {
+    for (const d of this.declarations) if (d.search) return d.chatName;
+
+    return "";
+  }
+
+  /**
+   * `toolSearchHistory`: replayed client `tool_search_call` / `tool_search_output` items as the function call pair the
+   * Chat conversion already groups and pairs. Hosted (server) search items are left alone. Returns the same array
+   * when nothing changed.
+   */
+  toolSearchHistory(items: readonly Json[]): Json[] {
+    let name = "";
+
+    const resolveName = (): string => {
+      if (name !== "") return name;
+      name = this.toolSearchName();
+
+      if (name !== "") return name;
+
+      // History of a search the client no longer declares: reserve a replay-only name.
+      const reserved = new Set<string>([
+        ...this.byChat.keys(),
+        ...this.byRaw.keys(),
+        ...this.byLocal.keys(),
+      ]);
+
+      for (const item of items) {
+        const kind = getStr(item, "type");
+
+        if (kind === "function_call" || kind === "custom_tool_call")
+          reserved.add(this.canonicalName(getStr(item, "name")));
+      }
+
+      name = RESPONSES_TOOL_SEARCH_FUNCTION_NAME;
+
+      for (let suffix = 1; reserved.has(name); suffix++)
+        name = `${RESPONSES_TOOL_SEARCH_FUNCTION_NAME}_${suffix}`;
+
+      return name;
+    };
+
+    let out: Json[] | undefined;
+
+    items.forEach((item, i) => {
+      const type = getStr(item, "type");
+
+      if (
+        (type !== RESPONSES_TOOL_SEARCH_CALL_TYPE && type !== RESPONSES_TOOL_SEARCH_OUTPUT_TYPE) ||
+        !isResponsesClientToolSearchItem(item)
+      ) {
+        out?.push(item);
+
+        return;
+      }
+
+      out ??= items.slice(0, i);
+      out.push(
+        type === RESPONSES_TOOL_SEARCH_CALL_TYPE
+          ? this.toolSearchCallAsFunctionCall(item, resolveName())
+          : this.toolSearchOutputAsFunctionCallOutput(item),
+      );
+    });
+
+    return out ?? [...items];
+  }
+
+  private toolSearchCallAsFunctionCall(item: Json, searchName: string): JsonObject {
+    const call: JsonObject = {
+      type: "function_call",
+      call_id: extractResponsesCallID(item),
+      name: searchName,
+      arguments: "{}",
+    };
+
+    const args = get(item, "arguments");
+
+    if (typeof args === "string" && args.trim() !== "") call.arguments = args;
+    else if (isObj(args)) call.arguments = JSON.stringify(args);
+
+    return call;
+  }
+
+  private toolSearchOutputAsFunctionCallOutput(item: Json): JsonObject {
+    const names: string[] = [];
+    const seen = new Set<string>();
+
+    const append = (name: string): void => {
+      if (name === "" || seen.has(name)) return;
+      seen.add(name);
+      names.push(name);
+    };
+
+    const tools = get(item, "tools");
+
+    for (const tool of isArr(tools) ? tools : []) {
+      if (getStr(tool, "type").trim() === "namespace") {
+        const namespaceName = getStr(tool, "name").trim();
+        const children = get(tool, "tools");
+
+        for (const child of isArr(children) ? children : []) {
+          const childName = responsesToolName(child);
+
+          if (childName !== "") append(this.namespaceName(namespaceName, childName));
+        }
+      } else {
+        const name = responsesToolName(tool);
+
+        if (name !== "") append(this.canonicalName(name));
+      }
+    }
+
+    const status = getStr(item, "status").trim();
+
+    return {
+      type: "function_call_output",
+      call_id: extractResponsesCallID(item),
+      output: JSON.stringify({ status: status === "" ? "completed" : status, tools: names }),
+    };
   }
 
   shellName(): string {

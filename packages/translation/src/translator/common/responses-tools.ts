@@ -3,9 +3,10 @@
  *
  * Go source: internal/util/responses_tools.go (QualifyResponsesNamespaceToolName, CollectResponsesToolDescriptors,
  * CollectResponsesToolWinners, UnwrapResponsesCustomToolInput, ResponsesToolIdentity, ResponsesToolDescription). The
- * Gemini declaration builders of that file live in `translator/gemini/openai/responses/tools.ts`.
+ * Gemini declaration builders of that file live in `translator/gemini/openai/responses/tools.ts`. Client-executed
+ * `tool_search` (declaration, `tool_search_call` / `tool_search_output` items) is recognised here (77fd91e8).
  */
-import { asString, get, isJsonArray, type Json } from "@commissary/json";
+import { asBool, asString, get, isJsonArray, type Json } from "@commissary/json";
 import { isApplyPatchCustomTool } from "./apply-patch.ts";
 
 /** Resolved identity of a tool in OpenAI Responses format (`util.ResponsesToolIdentity`). */
@@ -15,7 +16,40 @@ export interface ResponsesToolIdentity {
   readonly custom: boolean;
   /** Resolved from the winning original declaration, never from the upstream name. */
   readonly applyPatch: boolean;
+  /** The function shim standing in for a client-executed `tool_search` declaration. */
+  readonly toolSearch?: boolean;
 }
+
+/** The Responses tool type of deferred tool discovery. */
+export const RESPONSES_TOOL_SEARCH_TYPE = "tool_search";
+
+/** The function name a client `tool_search` takes for providers without native support. */
+export const RESPONSES_TOOL_SEARCH_FUNCTION_NAME = "tool_search";
+
+/**
+ * The internal forward-map key of the client `tool_search` shim. The NUL byte cannot appear in a JSON identifier, so
+ * it never collides with a user-declared tool name.
+ */
+export const RESPONSES_CLIENT_TOOL_SEARCH_KEY = "\u0000client_tool_search";
+
+export const RESPONSES_TOOL_SEARCH_CALL_TYPE = "tool_search_call";
+
+export const RESPONSES_TOOL_SEARCH_OUTPUT_TYPE = "tool_search_output";
+
+/** Source priority of tools a `tool_search_output` loaded: after declared and `additional_tools` ones. */
+export const RESPONSES_DISCOVERED_TOOL_PRIORITY = 2;
+
+/** A `tool_search` declaration the client executes itself. */
+export const isResponsesClientToolSearchDeclaration = (tool: Json | undefined): boolean =>
+  asString(get(tool, "type")).trim() === RESPONSES_TOOL_SEARCH_TYPE &&
+  asString(get(tool, "execution")).trim() === "client";
+
+/** A `tool_search_call` / `tool_search_output` item of client-executed search (hosted search sets `server`). */
+export const isResponsesClientToolSearchItem = (item: Json | undefined): boolean => {
+  const execution = asString(get(item, "execution")).trim();
+
+  return execution === "" || execution === "client";
+};
 
 export interface ResponsesToolDescriptor {
   /** Qualified name (e.g. `functions__exec`). */
@@ -24,11 +58,13 @@ export interface ResponsesToolDescriptor {
   readonly namespace: string;
   readonly toolType: string;
   readonly tool: Json;
-  /** 0 for top-level tools, 1 for `additional_tools` input items. */
+  /** 0 for top-level tools, 1 for `additional_tools` input items, 2 for `tool_search_output` items. */
   readonly sourcePriority: number;
   /** Declared directly (not as a namespace child). */
   readonly direct: boolean;
   readonly order: number;
+  /** A client-executed `tool_search` declaration. */
+  readonly clientSearch: boolean;
 }
 
 /** `QualifyResponsesNamespaceToolName`. */
@@ -65,6 +101,7 @@ export { responsesToolParameters as responsesToolParametersOf } from "../openai/
 
 const toolSources = (
   root: Json | undefined,
+  includeClientToolSearch: boolean,
 ): Array<{ readonly tools: Json[]; readonly priority: number }> => {
   const sources: Array<{ readonly tools: Json[]; readonly priority: number }> = [];
   const tools = get(root, "tools");
@@ -79,16 +116,35 @@ const toolSources = (
 
       if (isJsonArray(extra)) sources.push({ tools: extra, priority: 1 });
     }
+
+    if (includeClientToolSearch) {
+      for (const item of input) {
+        if (
+          asString(get(item, "type")) !== RESPONSES_TOOL_SEARCH_OUTPUT_TYPE ||
+          !isResponsesClientToolSearchItem(item)
+        )
+          continue;
+        const discovered = get(item, "tools");
+
+        if (isJsonArray(discovered))
+          sources.push({ tools: discovered, priority: RESPONSES_DISCOVERED_TOOL_PRIORITY });
+      }
+    }
   }
 
   return sources;
 };
 
-/** `CollectResponsesToolDescriptors`. */
+/**
+ * `CollectResponsesToolDescriptors`. With `includeClientToolSearch` (Gemini only) the client `tool_search` declaration
+ * is a descriptor, tools a `tool_search_output` loaded join at priority 2, and, when a client search exists, the
+ * `defer_loading` tools it has not loaded yet are left out.
+ */
 export const collectResponsesToolDescriptors = (
   root: Json | undefined,
+  includeClientToolSearch = false,
 ): ResponsesToolDescriptor[] => {
-  const descriptors: ResponsesToolDescriptor[] = [];
+  let descriptors: ResponsesToolDescriptor[] = [];
 
   const append = (
     tool: Json,
@@ -98,6 +154,7 @@ export const collectResponsesToolDescriptors = (
     toolType: string,
     sourcePriority: number,
     direct: boolean,
+    clientSearch = false,
   ) => {
     if (name === "") return;
     descriptors.push({
@@ -109,6 +166,7 @@ export const collectResponsesToolDescriptors = (
       sourcePriority,
       direct,
       order: descriptors.length,
+      clientSearch,
     });
   };
 
@@ -138,7 +196,7 @@ export const collectResponsesToolDescriptors = (
     }
   };
 
-  for (const source of toolSources(root)) {
+  for (const source of toolSources(root, includeClientToolSearch)) {
     for (const tool of source.tools) {
       switch (asString(get(tool, "type")).trim()) {
         case "":
@@ -157,14 +215,50 @@ export const collectResponsesToolDescriptors = (
         case "namespace":
           appendNamespaceChildren(tool, source.priority);
           break;
+        case RESPONSES_TOOL_SEARCH_TYPE:
+          if (
+            includeClientToolSearch &&
+            source.priority < RESPONSES_DISCOVERED_TOOL_PRIORITY &&
+            isResponsesClientToolSearchDeclaration(tool)
+          ) {
+            append(
+              tool,
+              RESPONSES_TOOL_SEARCH_FUNCTION_NAME,
+              RESPONSES_TOOL_SEARCH_FUNCTION_NAME,
+              "",
+              RESPONSES_TOOL_SEARCH_TYPE,
+              source.priority,
+              true,
+              true,
+            );
+          }
+
+          break;
       }
     }
   }
 
+  if (!includeClientToolSearch || !descriptors.some((descriptor) => descriptor.clientSearch))
+    return descriptors;
+
+  // A deferred tool stays hidden until a search loads it.
+  descriptors = descriptors
+    .filter(
+      (descriptor) =>
+        descriptor.clientSearch ||
+        descriptor.sourcePriority === RESPONSES_DISCOVERED_TOOL_PRIORITY ||
+        !asBool(get(descriptor.tool, "defer_loading")),
+    )
+    .map((descriptor, order) => ({ ...descriptor, order }));
+
   return descriptors;
 };
 
-const precedes = (left: ResponsesToolDescriptor, right: ResponsesToolDescriptor): boolean => {
+/** `responsesToolDescriptorPrecedes`: declared before additional, direct before namespace child, then discovery order. */
+export const responsesToolDescriptorPrecedes = (
+  left: ResponsesToolDescriptor,
+  right: ResponsesToolDescriptor,
+): boolean => {
   if (left.sourcePriority !== right.sourcePriority)
     return left.sourcePriority < right.sourcePriority;
 
@@ -182,7 +276,7 @@ export const collectResponsesToolWinners = (
   for (const descriptor of collectResponsesToolDescriptors(root)) {
     const current = winners.get(descriptor.name);
 
-    if (current === undefined || precedes(descriptor, current))
+    if (current === undefined || responsesToolDescriptorPrecedes(descriptor, current))
       winners.set(descriptor.name, descriptor);
   }
 
