@@ -46,6 +46,8 @@ const unique = (name: string) =>
 
 const models = {
   "claude-sonnet-4-5": ["antigravity"],
+  "claude-opus-5-5": ["antigravity"],
+  "claude-sonnet-5-5": ["antigravity"],
   "gemini-2.5-flash": ["antigravity"],
   "gemini-3-pro-high": ["antigravity"],
 };
@@ -224,6 +226,169 @@ describe("antigravity executor: non-stream", () => {
     expect(sent.request.generationConfig.maxOutputTokens).toBe(100);
     expect(sent.request.tools[0].functionDeclarations[0].parameters).toBeDefined();
     expect(sent.request.tools[0].functionDeclarations[0].parametersJsonSchema).toBeUndefined();
+  });
+});
+
+// CLIProxyAPI 1d45a5f3: Claude 5.5 rejects the forced tool use behind native structured output, so the schema is sent
+// as a system prompt and forced function calling is downgraded to AUTO.
+const ruleYaml = (kind: "override" | "filter", params: string): string => `
+oauth:
+  providers:
+    antigravity:
+      sensitive-words: ["secret"]
+requests:
+  payload:
+    ${kind}:
+      - models: [{ name: "claude-*", protocol: antigravity }]
+        params:${params}
+`;
+
+describe("antigravity executor: Claude 5.5 structured output", () => {
+  const schema = {
+    type: "object",
+    properties: { title: { type: "string" }, description: { type: "string" } },
+    required: ["title", "description"],
+    additionalProperties: false,
+  };
+
+  const tool = {
+    type: "function",
+    function: {
+      name: "get_time",
+      description: "Get the current time.",
+      parameters: {
+        type: "object",
+        properties: { timezone: { type: "string" } },
+        required: ["timezone"],
+      },
+    },
+  };
+
+  const chat = (model: string): JsonObject => ({
+    model,
+    messages: [
+      { role: "system", content: "keep the secret safe" },
+      { role: "user", content: "Provide title and description for: fix bug" },
+    ],
+    response_format: {
+      type: "json_schema",
+      json_schema: { name: "codex_output_schema", strict: true, schema },
+    },
+    tools: [tool],
+    tool_choice: "required",
+  });
+
+  it.each(["claude-opus-5-5", "claude-sonnet-5-5"])(
+    "sends the schema of %s as prompt text, keeps the tools and no forced mode",
+    async (model) => {
+      resetMemoryAntigravityState();
+      const h = harness(() => sse([upstream([{ text: "{}" }])]));
+      afterAll(h.dispose);
+
+      const response = await h.call("/v1/chat/completions", postJson(chat(model)));
+      expect(response.status).toBe(200);
+
+      const sent = JSON.parse(h.calls[0]?.body ?? "{}");
+      const parts = sent.request.systemInstruction.parts as Array<{ text: string }>;
+      // The original system text (obfuscated) stays first; the schema instruction follows, complete.
+      expect(parts[0]?.text).toBe("keep the s\u200Becret safe");
+      expect(parts.map((part) => part.text).join("\n")).toContain(JSON.stringify(schema));
+      expect(sent.request.generationConfig.responseSchema).toBeUndefined();
+      expect(sent.request.generationConfig.responseJsonSchema).toBeUndefined();
+      expect(sent.request.generationConfig.responseMimeType).toBeUndefined();
+      expect(sent.request.tools[0].functionDeclarations[0].name).toBe("get_time");
+      expect(sent.request.toolConfig.functionCallingConfig.mode).toBe("AUTO");
+    },
+  );
+
+  it("keeps the native schema and VALIDATED for other Claude models", async () => {
+    resetMemoryAntigravityState();
+    const h = harness(() => sse([upstream([{ text: "{}" }])]));
+    afterAll(h.dispose);
+
+    const response = await h.call("/v1/chat/completions", postJson(chat("claude-sonnet-4-5")));
+    expect(response.status).toBe(200);
+    const sent = JSON.parse(h.calls[0]?.body ?? "{}");
+    expect(sent.request.toolConfig.functionCallingConfig.mode).toBe("VALIDATED");
+    const generation = sent.request.generationConfig;
+    expect(generation.responseSchema ?? generation.responseJsonSchema).toBeDefined();
+  });
+
+  // Payload rules stay the final mutation: the built-in conversion neither undoes them nor survives them.
+  const longChat = (): JsonObject => ({
+    ...chat("claude-opus-5-5"),
+    messages: [
+      { role: "system", content: "keep the secret safe" },
+      { role: "user", content: "first" },
+      { role: "assistant", content: "second" },
+      { role: "user", content: "third" },
+    ],
+  });
+
+  it("lets an override rule set the system instruction, tool mode and MIME type after the conversion", async () => {
+    const ruled = await loadConfig(
+      ruleYaml(
+        "override",
+        `
+          systemInstruction:
+            parts: [{ text: "configured system" }]
+          toolConfig.functionCallingConfig.mode: NONE
+          generationConfig.responseMimeType: configured/mime`,
+      ),
+    );
+
+    const h = harness(() => sse([upstream([{ text: "{}" }])]), { config: ruled });
+    afterAll(h.dispose);
+
+    expect((await h.call("/v1/chat/completions", postJson(longChat()))).status).toBe(200);
+    const sent = JSON.parse(h.calls[0]?.body ?? "{}");
+    expect(sent.request.systemInstruction.parts).toEqual([{ text: "configured system" }]);
+    expect(sent.request.toolConfig.functionCallingConfig.mode).toBe("NONE");
+    expect(sent.request.generationConfig.responseMimeType).toBe("configured/mime");
+  });
+
+  it("lets a filter rule remove what the conversion built, once", async () => {
+    const ruled = await loadConfig(
+      ruleYaml(
+        "filter",
+        `
+          - systemInstruction
+          - toolConfig
+          - contents.0`,
+      ),
+    );
+
+    const h = harness(() => sse([upstream([{ text: "{}" }])]), { config: ruled });
+    afterAll(h.dispose);
+
+    expect((await h.call("/v1/chat/completions", postJson(longChat()))).status).toBe(200);
+    const sent = JSON.parse(h.calls[0]?.body ?? "{}");
+    expect(sent.request.systemInstruction).toBeUndefined();
+    expect(sent.request.toolConfig).toBeUndefined();
+    // Four turns with the system one, the first content filtered out: applied once, not again after the conversion.
+    expect(sent.request.contents).toHaveLength(2);
+  });
+
+  it("counts the schema as prompt text", async () => {
+    const h = harness(() => jsonResponse({ totalTokens: 42 }));
+    afterAll(h.dispose);
+
+    const response = await h.call(
+      "/v1beta/models/claude-opus-5-5:countTokens",
+      postJson({
+        contents: [{ role: "user", parts: [{ text: "hello" }] }],
+        generationConfig: { responseMimeType: "application/json", responseSchema: schema },
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    const call = h.calls[0];
+    expect(call?.url).toBe("https://daily-cloudcode-pa.googleapis.com/v1internal:countTokens");
+    const sent = JSON.parse(call?.body ?? "{}");
+    const parts = sent.request.systemInstruction.parts as Array<{ text: string }>;
+    expect(parts.map((part) => part.text).join("\n")).toContain(JSON.stringify(schema));
+    expect(sent.request.generationConfig?.responseSchema).toBeUndefined();
+    expect(sent.request.generationConfig?.responseMimeType).toBeUndefined();
   });
 });
 

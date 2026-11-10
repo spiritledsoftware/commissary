@@ -3,9 +3,9 @@
  *
  * Go source: internal/runtime/executor/claude_executor_execute.go and claude_executor_stream.go (Execute /
  * ExecuteStream), claude_executor_tokens.go (countTokensUpstream). Order (ARCHITECTURE.md "Request pipeline"):
- * translate -> upstream model -> Thinking.apply -> cloaking -> provider shaping (context management, diagnostics,
- * max tokens, sampling, cache control, tool aliases, tool property-name fallback, sanitising, identity, CCH
- * placeholder, preserved-thinking binding) -> user payload rules
+ * translate -> upstream model -> forced tool_choice rewrite on Claude 5.5 -> Thinking.apply -> cloaking -> provider
+ * shaping (context management, diagnostics, max tokens, sampling, cache control, tool aliases, tool property-name
+ * fallback, sanitising, identity, CCH placeholder, preserved-thinking binding) -> user payload rules
  * (the last semantic mutation) -> betas extraction / `prompt_cache_options` removal -> serialise + CCH signature.
  * Nothing after the payload rules changes business fields except the caller-betas extraction and the signature.
  */
@@ -15,6 +15,7 @@ import {
 } from "../helps/translate.ts";
 import { Effect } from "effect";
 import { applyPayloadRules } from "../../config/payload/index.ts";
+import { normalizeClaudeToolChoice } from "../helps/claude-tool-choice.ts";
 import type { Config } from "../../config/schema.ts";
 import { cloneJson, get, isJsonObject, type Json, type JsonObject } from "@commissary/json";
 import {
@@ -181,6 +182,22 @@ const disableThinkingIfToolChoiceForced = (body: JsonObject): void => {
 
     if (Object.keys(outputConfig).length === 0) delete body.output_config;
   }
+};
+
+/**
+ * Puts the routed upstream model on the translated body, then, before thinking preparation, rewrites a forced
+ * `tool_choice` on Claude 5.5 (`claude-tool-choice.ts`). The rewrite is for the Claude provider only: a delegating
+ * profile (Kimi) keeps its own tool-choice contract. Every entry point that prepares a body goes through here.
+ */
+const routeToUpstreamModel = (
+  body: JsonObject,
+  services: PipelineServices,
+  baseModel: string,
+): void => {
+  const upstreamModel = upstreamModelOf(services.profile, baseModel);
+  body.model = upstreamModel;
+
+  if (services.profile === undefined) normalizeClaudeToolChoice(body, upstreamModel);
 };
 
 /** `normalizeClaudeSamplingForUpstream`. */
@@ -439,7 +456,7 @@ export const prepareMessagesRequest = Effect.fnUntraced(function* (input: Prepar
     options.originalRequest === undefined ? translated : translate(options.originalRequest);
 
   if (!isObj(translated.body)) return yield* requestScoped(400, "invalid Claude request body");
-  translated.body.model = upstreamModelOf(services.profile, baseModel);
+  routeToUpstreamModel(translated.body, services, baseModel);
 
   const thinkingBody = yield* thinking.apply({
     body: translated.body,
@@ -739,7 +756,7 @@ export const prepareCountTokensRequest = Effect.fnUntraced(function* (input: Pre
     options.originalRequest === undefined ? translated : translate(options.originalRequest);
 
   if (!isObj(translated.body)) return yield* requestScoped(400, "invalid Claude request body");
-  translated.body.model = upstreamModelOf(services.profile, baseModel);
+  routeToUpstreamModel(translated.body, services, baseModel);
 
   const thinkingBody = yield* thinking.apply({
     body: translated.body,
@@ -910,6 +927,9 @@ export const prepareLocalCountBody = Effect.fnUntraced(function* (input: Prepare
 
   const originalTranslated =
     options.originalRequest === undefined ? translated : translate(options.originalRequest);
+
+  // As for Messages: the routed model on the body (the binding reads it), then the forced-tool rewrite.
+  if (isObj(translated.body)) routeToUpstreamModel(translated.body, services, baseModel);
 
   const thinkingBody = yield* thinking.apply({
     body: translated.body,

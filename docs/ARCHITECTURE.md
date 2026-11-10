@@ -1153,11 +1153,11 @@ Ported from `internal/runtime/executor/claude_executor*.go`, `internal/translato
   through consumer subscriptions or misrepresent the client. Cloaking at either level misrepresents the client, so
   using it is at the deployment's own risk. The panel says the same next to the cloak settings and when a Claude account
   is connected.
-- **Request order** (matches the Go executor and the payload-rules barrier): translate -> thinking -> sanitise ->
-  cloaking (system relocation, billing block, identity, date reminder, user_id, context management) ->
-  MCP tool aliasing -> cache-control policy -> tool property-name fallback -> preserved-thinking binding (below) -> payload rules -> CCH signing (`cch=` is
-  `xxh64` over the normalised
-  final body; only the five hex digits change) -> HTTP. Signing is the last step so it covers payload-rule output.
+- **Request order** (matches the Go executor and the payload-rules barrier): translate -> forced tool-choice rewrite
+  (below) -> thinking -> sanitise -> cloaking (system relocation, billing block, identity, date reminder, user_id,
+  context management) -> MCP tool aliasing -> cache-control policy -> tool property-name fallback -> preserved-thinking
+  binding (below) -> payload rules -> CCH signing (`cch=` is `xxh64` over the normalised final body; only the five hex
+  digits change) -> HTTP. Signing is the last step so it covers payload-rule output.
 - **Tool property names** (`claude/tool-property-names.ts`, also on `count_tokens`): Claude 400s a tool whose
   `input_schema` has a property key outside `^[a-zA-Z0-9_.-]{1,64}$` (`not[labels]`). Such a client tool, in `tools[]` or
   an inline `tool_addition` definition, is sent with `{"type":"object"}` and its original schema (compact JSON) appended
@@ -1175,7 +1175,19 @@ Ported from `internal/runtime/executor/claude_executor*.go`, `internal/translato
   - **Warning (#400)**: Sonnet 5.5, Haiku 5.5, Fable 5.2 and Mythos 5.2 thinking is account-bound. Without
     `routing.session-affinity`, rotating credentials within a session silently drops the earlier reasoning (the binding only
     makes the upstream drop it instead of failing the request).
-  - **Known gap (A3, #355)**: Haiku 5.5 with a forced `tool_choice` gets no binding, like every other model here.
+  - **Known gap (D4.1)**: Haiku 5.5 with a forced `tool_choice` still gets no binding. Go skips the binding on forced tool use
+    (kept here), and its forced-tool rewrite below covers Opus 5.5 and Sonnet 5.5 only, so Haiku 5.5 stays forced: its
+    `disableThinkingIfToolChoiceForced` removes `thinking`, and signed history with a prefix mismatch can still 400. Opus 5.5 and
+    Sonnet 5.5 are no longer affected, because their forced choice is rewritten to `auto` before the binding step runs.
+- **Forced tool choice on Claude 5.5** (`helps/claude-tool-choice.ts`; Go `NormalizeClaudeToolChoice`, CLIProxyAPI `1d45a5f3`): Opus 5.5
+  and Sonnet 5.5 reject forced tool use, so `tool_choice` `any`/`tool` becomes `auto` (the tool `name` is dropped,
+  `disable_parallel_tool_use` stays), on `messages`, `count_tokens` and the local count body, right after the upstream model is
+  set and before thinking preparation. `thinking`, `output_config.effort` and signed history therefore survive
+  `disableThinkingIfToolChoiceForced` (a no-op on `auto`), and the preserved-thinking binding applies to these requests. The
+  model is the routed upstream model (not the client's alias or the body's `model`), matched by Go's pattern: `claude-opus-5-5` or
+  `claude-sonnet-5-5`, an optional `-high`/`-reasoning`, an 8-digit date and a `[context]` suffix, a thinking `(suffix)` ignored.
+  Haiku 5.5 is outside it (open decision, see D4.1). A delegating profile (Kimi) keeps its own contract and is not rewritten, and
+  payload rules still run afterwards and can force a tool again.
 - **Responses**: Claude upstream always streams for non-stream clients; tool aliases are restored in non-stream bodies
   and stream lines; `ExecutionError` classification (`ratelimit.ts`) separates credential-scoped (unified-limit 429/401),
   request-scoped (Fast mode entitlement) and model-level failures for the picker.
@@ -2548,12 +2560,16 @@ Ported from `antigravity_executor*.go`, `internal/translator/antigravity/*`, `in
   `waitUntil`. Every store failure is swallowed. `antigravity.signature-cache-enabled` / `signature-bypass-strict` switch cache and bypass mode.
 - **Executor** (`executor/executor.ts`): per attempt `validate Claude signatures -> prefetch -> translate -> thinking -> sensitive words ->
   Gemini signature sanitising (+ function-response role normalisation) -> credits flag -> boundary user turns -> envelope (project, requestType,
-  requestId, sessionId) -> model shaping (maxOutputTokens cap/removal, schema cleaning at schema locations only, Claude `VALIDATED`) ->
+  requestId, sessionId) -> model shaping (Claude 5.5 structured output as a prompt, maxOutputTokens cap/removal, schema cleaning at schema locations only, Claude `VALIDATED`) ->
   payload rules (root `request`, always last) -> fetch`. Daily endpoint unless `base_url` is set (no cross-tier fallback), header whitelist
   (`Content-Type`, `Authorization`, short `User-Agent`, `header:*` attributes). Claude, `gemini-3-pro` and `gemini-3.1-flash-image` models
   stream upstream and the SSE is merged for non-stream callers (`stream.ts`); streams filter usage (non-terminal usage becomes
   `cpaUsageMetadata`, the stop-chunk bookkeeping is per stream), join JSON split over several lines, map in-stream `error` objects to status
-  errors and synthesise the terminal event only after a clean EOF. `countTokens` posts the bare request. The conductor refreshes the token
+  errors and synthesise the terminal event only after a clean EOF. `countTokens` posts the bare request. For Claude Opus 5.5 and Sonnet 5.5, which reject the forced tool use behind a native response schema
+  (`executor/structured-output.ts`, Go `PrepareAntigravityClaudeStructuredOutput`, CLIProxyAPI `1d45a5f3`), an object schema in
+  `generationConfig` (or `generation_config`) is appended to the system instruction as prompt text, the native schema and MIME fields are
+  removed (other fields stay), `ANY`/`VALIDATED` function calling falls back to `AUTO` and `VALIDATED` is not restored; `countTokens`
+  counts the prompt form too. The conductor refreshes the token
   (`needsPreparation`/401 loop); a credential without `project_id` is completed through `loadCodeAssist`/`onboardUser` (the OAuth flow code) and
   persisted with `patchCredentialMetadata`.
 - **429 handling** (`errors.ts`, `state.ts`): the Go decision table (`decideAntigravity429`) and `ParseRetryDelay`; a rate limit with a delay

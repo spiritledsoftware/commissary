@@ -31,6 +31,7 @@ import {
   constrainRequestPayload,
   stableSessionId,
 } from "../src/executor/antigravity/envelope.ts";
+import { prepareClaudeStructuredOutput } from "../src/executor/antigravity/structured-output.ts";
 import {
   normalizeFunctionResponseRoles,
   usesReasoningReplay,
@@ -258,6 +259,292 @@ describe("envelope", () => {
     expect(get(gemini, "request.generationConfig.maxOutputTokens")).toBeUndefined();
     const claude = constrainRequestPayload("claude-sonnet-4-5", structuredClone(payload));
     expect(get(claude, "request.toolConfig.functionCallingConfig.mode")).toBe("VALIDATED");
+  });
+});
+
+const payloadOf = (request: Json): Json => ({ request: structuredClone(request) });
+
+/** The system instruction's text parts joined, as a prompt. */
+const promptOf = (payload: Json, key = "request.systemInstruction"): string =>
+  ((get(payload, key + ".parts") as Json[] | undefined) ?? [])
+    .map((part) => asString(get(part, "text")))
+    .join("\n");
+
+// CLIProxyAPI 1d45a5f3 (antigravity_issue7000_test.go, antigravity_issue7000_boundary_test.go): Claude 5.5 rejects the
+// forced tool use behind native structured output, so the schema moves into the system instruction as a prompt.
+describe("Claude 5.5 structured output on Antigravity", () => {
+  // A schema whose literals ("anthropic", "json_schema", "response_schema") must reach the prompt unmodified.
+  const LITERAL_SCHEMA = {
+    type: "object",
+    properties: {
+      anthropic: { type: "string", enum: ["anthropic", "json_schema"], const: "anthropic" },
+      response_schema: { $ref: "#/$defs/anthropic" },
+    },
+    $defs: { anthropic: { type: "string" } },
+    required: ["anthropic"],
+    additionalProperties: false,
+  };
+
+  const LITERAL_SCHEMA_JSON =
+    '{"type":"object","properties":{"anthropic":{"type":"string","enum":["anthropic","json_schema"],"const":"anthropic"},"response_schema":{"$ref":"#/$defs/anthropic"}},"$defs":{"anthropic":{"type":"string"}},"required":["anthropic"],"additionalProperties":false}';
+
+  const lookupTool = {
+    functionDeclarations: [
+      {
+        name: "lookup",
+        parameters: { type: "object", properties: { q: { type: "string" } }, required: ["q"] },
+      },
+    ],
+  };
+
+  const NATIVE_KEYS = [
+    "responseSchema",
+    "responseJsonSchema",
+    "response_schema",
+    "response_json_schema",
+    "responseMimeType",
+    "response_mime_type",
+  ];
+
+  /** A request with unrelated settings in both containers and function calling in the given spelling and mode. */
+  const structuredRequest = (
+    systemKey: string,
+    toolContainer: string,
+    callingKey: string,
+    mode: string,
+  ): Json =>
+    payloadOf({
+      generationConfig: { temperature: 0.25 },
+      generation_config: { stopSequences: ["STOP"] },
+      [systemKey]: { role: "system", parts: [{ text: "keep system" }] },
+      contents: [{ role: "user", parts: [{ text: "keep history" }] }],
+      tools: [lookupTool],
+      [toolContainer]: {
+        [callingKey]: {
+          mode,
+          allowedFunctionNames: ["lookup"],
+          allowed_function_names: ["lookup"],
+          streamFunctionCallArguments: true,
+        },
+      },
+    });
+
+  const withNativeSchema = (payload: Json, container: string, schemaKey: string): Json => {
+    const config = get(payload, "request." + container) as Record<string, Json>;
+    config[schemaKey] = structuredClone(LITERAL_SCHEMA);
+    config.responseMimeType = "application/json";
+    config.response_mime_type = "application/json";
+
+    return payload;
+  };
+
+  // Every schema alias in both containers, each with a different tool-config spelling, and forced function calling.
+  it.each([
+    [
+      "generationConfig",
+      "responseSchema",
+      "toolConfig",
+      "functionCallingConfig",
+      "systemInstruction",
+    ],
+    [
+      "generationConfig",
+      "responseJsonSchema",
+      "tool_config",
+      "functionCallingConfig",
+      "systemInstruction",
+    ],
+    [
+      "generationConfig",
+      "response_schema",
+      "toolConfig",
+      "function_calling_config",
+      "systemInstruction",
+    ],
+    [
+      "generationConfig",
+      "response_json_schema",
+      "tool_config",
+      "function_calling_config",
+      "systemInstruction",
+    ],
+    [
+      "generation_config",
+      "responseSchema",
+      "toolConfig",
+      "functionCallingConfig",
+      "system_instruction",
+    ],
+    [
+      "generation_config",
+      "responseJsonSchema",
+      "tool_config",
+      "functionCallingConfig",
+      "system_instruction",
+    ],
+    [
+      "generation_config",
+      "response_schema",
+      "toolConfig",
+      "function_calling_config",
+      "system_instruction",
+    ],
+    [
+      "generation_config",
+      "response_json_schema",
+      "tool_config",
+      "function_calling_config",
+      "system_instruction",
+    ],
+  ])(
+    "moves the %s.%s schema into the prompt and downgrades %s.%s",
+    (container, schemaKey, toolContainer, callingKey, systemKey) => {
+      const payload = withNativeSchema(
+        structuredRequest(systemKey, toolContainer, callingKey, "ANY"),
+        container,
+        schemaKey,
+      );
+
+      expect(prepareClaudeStructuredOutput("claude-opus-5-5-high", payload)).toBe(true);
+
+      // The schema is in the prompt, complete and unmodified, after the original system text.
+      expect(promptOf(payload, "request." + systemKey)).toContain(LITERAL_SCHEMA_JSON);
+      expect(get(payload, "request." + systemKey + ".parts.0.text")).toBe("keep system");
+      expect(get(payload, "request." + systemKey + ".role")).toBe("system");
+
+      // Everything else stays.
+      expect(get(payload, "request.generationConfig.temperature")).toBe(0.25);
+      expect(get(payload, "request.generation_config.stopSequences.0")).toBe("STOP");
+      expect(get(payload, "request.contents.0.parts.0.text")).toBe("keep history");
+      expect(get(payload, "request.tools.0.functionDeclarations.0.name")).toBe("lookup");
+
+      for (const config of ["generationConfig", "generation_config"]) {
+        for (const key of NATIVE_KEYS) {
+          expect(get(payload, "request." + config + "." + key)).toBeUndefined();
+        }
+      }
+
+      const calling = "request." + toolContainer + "." + callingKey;
+      expect(get(payload, calling + ".mode")).toBe("AUTO");
+      expect(get(payload, calling + ".allowedFunctionNames")).toBeUndefined();
+      expect(get(payload, calling + ".allowed_function_names")).toBeUndefined();
+      expect(get(payload, calling + ".streamFunctionCallArguments")).toBe(true);
+    },
+  );
+
+  it.each([
+    ["AUTO", "AUTO", true],
+    ["NONE", "NONE", true],
+    ["ANY", "AUTO", false],
+    ["VALIDATED", "AUTO", false],
+    ["any", "AUTO", false],
+  ])(
+    "function calling mode %s becomes %s (allowlist kept: %s)",
+    (mode, wantMode, keepsAllowlist) => {
+      const payload = withNativeSchema(
+        structuredRequest("systemInstruction", "toolConfig", "functionCallingConfig", mode),
+        "generationConfig",
+        "responseSchema",
+      );
+
+      expect(prepareClaudeStructuredOutput("claude-opus-5-5", payload)).toBe(true);
+      const calling = "request.toolConfig.functionCallingConfig";
+      expect(get(payload, calling + ".mode")).toBe(wantMode);
+      expect(get(payload, calling + ".allowedFunctionNames") !== undefined).toBe(keepsAllowlist);
+      expect(get(payload, calling + ".allowed_function_names") !== undefined).toBe(keepsAllowlist);
+      expect(get(payload, calling + ".streamFunctionCallArguments")).toBe(true);
+    },
+  );
+
+  it("converts once: a second call finds no schema and appends nothing", () => {
+    const payload = withNativeSchema(
+      structuredRequest("systemInstruction", "toolConfig", "functionCallingConfig", "ANY"),
+      "generationConfig",
+      "responseSchema",
+    );
+
+    expect(prepareClaudeStructuredOutput("claude-opus-5-5", payload)).toBe(true);
+    const once = structuredClone(payload);
+    expect(prepareClaudeStructuredOutput("claude-opus-5-5", payload)).toBe(false);
+    expect(payload).toEqual(once);
+    expect(get(payload, "request.systemInstruction.parts.0.text")).toBe("keep system");
+    expect(get(payload, "request.systemInstruction.parts.2")).toBeUndefined();
+  });
+
+  it("creates the system instruction when the request has none", () => {
+    const payload = payloadOf({
+      generationConfig: {
+        responseSchema: { type: "object" },
+        responseMimeType: "application/json",
+      },
+    });
+
+    expect(prepareClaudeStructuredOutput("claude-sonnet-5-5", payload)).toBe(true);
+    expect(promptOf(payload)).toContain('{"type":"object"}');
+    expect(get(payload, "request.systemInstruction.role")).toBeUndefined();
+    expect(get(payload, "request.generationConfig.responseMimeType")).toBeUndefined();
+  });
+
+  it.each([
+    ["claude-opus-5-5", true],
+    ["claude-sonnet-5-5-high", true],
+    ["claude-opus-5-5-reasoning", true],
+    ["claude-sonnet-5-5(high)", true],
+    ["claude-opus-5-5-20261001", true],
+    ["claude-sonnet-5-5[1m]", true],
+    ["claude-opus-5-5-20261001[1m](high)", true],
+    ["claude-opus-5-50-high", false],
+    ["claude-sonnet-5-50", false],
+    ["claude-opus-4-6", false],
+    ["claude-haiku-5-5", false],
+    ["gemini-3.8-flash-high", false],
+    ["other/claude-opus-5-5-high", false],
+  ])("converts the schema only for model %s (%s)", (model, convert) => {
+    const payload = payloadOf({
+      generationConfig: {
+        responseSchema: { type: "object", properties: { title: { type: "string" } } },
+        responseMimeType: "application/json",
+      },
+    });
+
+    expect(prepareClaudeStructuredOutput(model, payload)).toBe(convert);
+    expect(get(payload, "request.generationConfig.responseSchema") === undefined).toBe(convert);
+    expect(promptOf(payload) !== "").toBe(convert);
+  });
+
+  it("leaves a request without an object schema alone, and VALIDATED stays for it", () => {
+    for (const generationConfig of [
+      { temperature: 0.4 },
+      { responseMimeType: "text/plain" },
+      { responseSchema: "not an object" },
+    ]) {
+      const payload = payloadOf({
+        generationConfig,
+        systemInstruction: { parts: [{ text: "unchanged" }] },
+        toolConfig: { functionCallingConfig: { mode: "ANY", allowedFunctionNames: ["lookup"] } },
+      });
+
+      expect(prepareClaudeStructuredOutput("claude-opus-5-5-high", payload)).toBe(false);
+      expect(promptOf(payload)).toBe("unchanged");
+      constrainRequestPayload("claude-opus-5-5-high", payload);
+      expect(get(payload, "request.toolConfig.functionCallingConfig.mode")).toBe("VALIDATED");
+    }
+  });
+
+  it("does not restore VALIDATED after the schema became a prompt", () => {
+    const payload = payloadOf({
+      generationConfig: { responseSchema: { type: "object" } },
+      tools: [lookupTool],
+      toolConfig: { functionCallingConfig: { mode: "ANY", allowedFunctionNames: ["lookup"] } },
+    });
+
+    constrainRequestPayload("claude-opus-5-5-high", payload);
+    expect(get(payload, "request.toolConfig.functionCallingConfig.mode")).toBe("AUTO");
+    // A request without any tool config keeps none instead of gaining VALIDATED.
+    const bare = payloadOf({ generationConfig: { responseSchema: { type: "object" } } });
+    constrainRequestPayload("claude-sonnet-5-5", bare);
+    expect(get(bare, "request.toolConfig")).toBeUndefined();
+    expect(promptOf(bare)).toContain('{"type":"object"}');
   });
 });
 
