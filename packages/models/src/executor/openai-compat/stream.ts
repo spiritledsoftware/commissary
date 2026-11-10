@@ -9,7 +9,7 @@ import { asInt, get, type Json, tryParseJson } from "@commissary/json";
 import { Formats, type Format } from "@commissary/translation/formats";
 import type { ResponseContext, TranslatorRegistry } from "@commissary/translation";
 import { ErrorCode } from "../../credentials/cooldown/classify.ts";
-import { chunkHasFinishReason } from "../../handlers/framing.ts";
+import { chunkHasFinishReason } from "../helps/finish-reason.ts";
 import { ExecutionError } from "../errors.ts";
 
 /** Go `helps.ApplyPatchUpstreamErrorMessage` (retained tool-input translation failure). */

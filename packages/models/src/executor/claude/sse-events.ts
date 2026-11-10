@@ -28,7 +28,8 @@ export class ClaudeEventObserver {
         break;
 
       case "error":
-        if (hasDataPrefix) this.errorPayload ??= text;
+        // Go `observeJSONPayload`: an `error` payload counts with or without the `data:` prefix.
+        this.errorPayload ??= text;
         break;
 
       case "message":

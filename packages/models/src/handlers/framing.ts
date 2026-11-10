@@ -10,12 +10,12 @@
  * The Responses framer (partial-frame assembler, private event filtering, `response.output` repair) is in
  * `responses/framer.ts`.
  */
+import { chunkHasFinishReason } from "../executor/helps/finish-reason.ts";
 import { ClaudeEventObserver } from "../executor/claude/sse-events.ts";
 import { ExecutionError } from "../executor/errors.ts";
 import { claudeCooldownRetryAfter, claudeErrorBody, openAIErrorBody } from "../http/errors.ts";
 import { SSE_KEEP_ALIVE, sseData, sseEvent } from "@commissary/translation/sse";
 import { statusText } from "../http/status.ts";
-import { get, isJsonArray, tryParseJson } from "@commissary/json";
 
 export interface StreamFramer {
   /** Frames one executor chunk. */
@@ -37,21 +37,7 @@ const errorText = (error: ExecutionError, status: number): string =>
 
 const statusOf = (error: ExecutionError): number => (error.status > 0 ? error.status : 500);
 
-/** `chunkHasFinishReason`: some choice carries a non-empty, non-null `finish_reason`. */
-export const chunkHasFinishReason = (chunk: string): boolean => {
-  let text = chunk.trim();
-
-  if (text.startsWith("data:")) text = text.slice(5).trim();
-  const choices = get(tryParseJson(text), "choices");
-
-  if (!isJsonArray(choices)) return false;
-
-  return choices.some((choice) => {
-    const reason = get(choice, "finish_reason");
-
-    return reason !== undefined && reason !== null && reason !== "";
-  });
-};
+export { chunkHasFinishReason };
 
 /** OpenAI Chat Completions (and legacy Completions): `data: <json>\n\n`, terminated by `data: [DONE]`. */
 export const openAIFramer = (): StreamFramer => {

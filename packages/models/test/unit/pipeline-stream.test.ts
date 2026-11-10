@@ -177,6 +177,13 @@ describe("framers", () => {
       expect(framer.terminalError(bad)).toContain('event: error\ndata: {"type":"error"');
     });
 
+    it("counts a bare JSON error line as the error event", () => {
+      const framer = claudeFramer();
+      framer.chunk(errorEvent);
+      expect(framer.closeError()).toBeUndefined();
+      expect(framer.terminalError(bad)).toBe("\n\n");
+    });
+
     it("accepts a bare completed message JSON without framing", () => {
       const framer = claudeFramer();
       framer.chunk('{"type":"message","id":"msg_1","stop_reason":"end_turn"}');
