@@ -24,6 +24,8 @@ export const DEFAULT_XAI_VIDEOS_MODEL = "grok-imagine-video";
 
 const XAI_VIDEOS_15_MODEL = "grok-imagine-video-1.5";
 
+const XAI_VIDEOS_15_LITE_MODEL = "grok-imagine-video-1.5-lite";
+
 const XAI_VIDEOS_15_PREVIEW_ALIAS = "grok-imagine-video-1.5-preview";
 
 const DEFAULT_SECONDS = "4";
@@ -40,9 +42,12 @@ export const isXaiVideosModel = (model: string): boolean => {
   const { prefix, base } = modelParts(model);
 
   if (
-    ![DEFAULT_XAI_VIDEOS_MODEL, XAI_VIDEOS_15_MODEL, XAI_VIDEOS_15_PREVIEW_ALIAS].includes(
-      base.toLowerCase(),
-    )
+    ![
+      DEFAULT_XAI_VIDEOS_MODEL,
+      XAI_VIDEOS_15_MODEL,
+      XAI_VIDEOS_15_LITE_MODEL,
+      XAI_VIDEOS_15_PREVIEW_ALIAS,
+    ].includes(base.toLowerCase())
   ) {
     return false;
   }
@@ -64,6 +69,8 @@ export const canonicalXaiVideosModel = (model: string): string => {
   if (isSoraVideosModel(model)) return DEFAULT_XAI_VIDEOS_MODEL;
   const base = videosModelBase(model);
 
+  if (base === XAI_VIDEOS_15_LITE_MODEL) return XAI_VIDEOS_15_LITE_MODEL;
+
   return base === XAI_VIDEOS_15_MODEL || base === XAI_VIDEOS_15_PREVIEW_ALIAS
     ? XAI_VIDEOS_15_MODEL
     : DEFAULT_XAI_VIDEOS_MODEL;
@@ -75,6 +82,8 @@ export const routingXaiVideosModel = (model: string): string => {
   const base = videosModelBase(model);
 
   if (base === XAI_VIDEOS_15_MODEL) return XAI_VIDEOS_15_MODEL;
+
+  if (base === XAI_VIDEOS_15_LITE_MODEL) return XAI_VIDEOS_15_LITE_MODEL;
 
   if (base === XAI_VIDEOS_15_PREVIEW_ALIAS) return XAI_VIDEOS_15_PREVIEW_ALIAS;
 
@@ -144,7 +153,8 @@ const aspectRatio = (raw: string): string => {
 const resolutionOf = (raw: string): string => {
   const value = raw.trim().toLowerCase();
 
-  return value === "480p" || value === "720p" ? value : "";
+  // 1080p is billed by grok-imagine-video-1.5-lite (c69cdd93).
+  return value === "480p" || value === "720p" || value === "1080p" ? value : "";
 };
 
 const inputImageUrl = (body: Json): string | { readonly error: string } => {

@@ -82,7 +82,9 @@ export const executeImages = Effect.fnUntraced(function* (
   finalize: FinalizeBody,
 ) {
   const model = mediaModel(request);
-  const payload = finalize(model, request.payload, normalizeImageRefs(cloneJson(request.payload)));
+  // The baseline for `default` rules is what the client sent, not the handler's defaults (826bb167).
+  const original = normalizeImageRefs(cloneJson(options.originalRequest ?? request.payload));
+  const payload = finalize(model, original, normalizeImageRefs(cloneJson(request.payload)));
 
   const url = joinUrl(
     xaiChatBaseUrl(context.credential),
@@ -107,7 +109,11 @@ export const executeImages = Effect.fnUntraced(function* (
   const text = yield* response.text.pipe(Effect.mapError(transportError));
   publishModel(context, text);
 
-  return { payload: text, headers: new Headers(response.headers) } satisfies ExecutorResponse;
+  return {
+    payload: text,
+    headers: new Headers(response.headers),
+    finalizedResponseFormat: asString(get(payload, "response_format")).trim(),
+  } satisfies ExecutorResponse;
 });
 
 export const executeVideos = Effect.fnUntraced(function* (

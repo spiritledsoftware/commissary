@@ -23,6 +23,9 @@ import {
 } from "./support/pipeline.ts";
 import { xaiKey, xaiModels, xaiOauth, xaiPicker, type XaiPickerLog } from "./support/xai.ts";
 import { type EnvServices, envContext } from "./support/context.ts";
+import type { Json } from "@commissary/json";
+import type { ConfigReader } from "../src/config/reader.ts";
+import { ModelProviders } from "../src/handlers/model-providers.ts";
 
 let config: Config;
 
@@ -187,6 +190,183 @@ describe("images (xai models on /v1/images/*)", () => {
   });
 });
 
+/** Providers for exactly the `registered` ids (Go `registry.GetModelProviders`). */
+const registeredModels = (registered: ReadonlyArray<string>) =>
+  Layer.succeed(
+    ModelProviders,
+    ModelProviders.of({
+      providersFor: (model) => Effect.succeed(registered.includes(model) ? ["xai"] : []),
+      firstAvailableModel: Effect.undefined,
+    }),
+  );
+
+const pipelineWith = async (
+  yaml: string,
+  respond: UpstreamResponder,
+  modelProviders: Layer.Layer<ModelProviders, never, ConfigReader>,
+) => {
+  const log: XaiPickerLog = { picks: [], reports: [] };
+
+  const p = makePipeline({
+    config: await loadConfig(yaml),
+    respond,
+    credentialPicker: xaiPicker([xaiKey({ id: "xai-key-img" })], log),
+    modelProviders,
+  });
+
+  afterAll(p.dispose);
+
+  return { ...p, log };
+};
+
+describe("image model prefixes (45ccd9c3, 8a3e7622)", () => {
+  const FORCE = "routing:\n  force-model-prefix: true\n";
+  const image = "grok-imagine-image-2.0";
+
+  const run = async (
+    yaml: string,
+    registered: ReadonlyArray<string>,
+    model: string,
+    path = "/v1/images/generations",
+  ) => {
+    const p = await pipelineWith(
+      yaml,
+      () => jsonResponse(IMAGE_RESPONSE),
+      registeredModels(registered),
+    );
+
+    const body = path.endsWith("edits")
+      ? { model, prompt: "p", images: [{ image_url: "https://img.test/a.png" }] }
+      : { model, prompt: "p" };
+
+    const response = await p.call(path, postJson(body));
+
+    return { response, picks: p.log.picks, calls: p.calls };
+  };
+
+  it("routes a registered custom credential prefix and sends the canonical model upstream", async () => {
+    for (const path of ["/v1/images/generations", "/v1/images/edits"]) {
+      const { response, picks, calls } = await run(
+        FORCE,
+        [`my-xai/${image}`],
+        `my-xai/${image}`,
+        path,
+      );
+
+      expect(response.status).toBe(200);
+      expect(picks[0]?.model).toBe(`my-xai/${image}`);
+      expect(JSON.parse(calls[0]!.body).model).toBe(image);
+    }
+  });
+
+  it("keeps a built-in prefix when a credential registers it, case aside", async () => {
+    const { response, picks } = await run(FORCE, [`xai/${image}`], `XAI/Grok-Imagine-Image-2.0`);
+    expect(response.status).toBe(200);
+    expect(picks[0]?.model).toBe(`xai/${image}`);
+  });
+
+  it("falls back to the unprefixed model for built-in aliases, even under force-model-prefix", async () => {
+    for (const yaml of ["", FORCE]) {
+      for (const alias of ["xai", "x-ai", "grok"]) {
+        const { response, picks } = await run(yaml, [image], `${alias}/${image}`);
+        expect(response.status).toBe(200);
+        expect(picks[0]?.model).toBe(image);
+      }
+    }
+  });
+
+  it("rejects a built-in alias when only a custom prefix is registered under force-model-prefix", async () => {
+    const { response, picks } = await run(FORCE, [`my-xai/${image}`], `xai/${image}`);
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain(`unknown provider for model xai/${image}`);
+    expect(picks).toHaveLength(0);
+  });
+
+  it("rejects an unregistered custom prefix as an unsupported model", async () => {
+    const { response } = await run("", [image], `nobody/${image}`);
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain("is not supported on /v1/images/generations");
+  });
+});
+
+describe("image payload rules (826bb167)", () => {
+  const DEFAULTS = `payload:
+  default:
+    - models: [{ name: "grok-imagine-*", protocol: openai }]
+      params:
+        response_format: url
+        aspect_ratio: "16:9"
+        resolution: 2k
+`;
+
+  const run = async (path: string, body: Json) => {
+    const p = await pipelineWith(DEFAULTS, () => jsonResponse(IMAGE_RESPONSE), xaiModels);
+    const response = await p.call(path, postJson(body));
+
+    return { response, upstream: JSON.parse(p.calls[0]!.body) as Record<string, unknown> };
+  };
+
+  it("applies default rules to the fields the client omitted and formats the answer by the finalized response_format", async () => {
+    const { response, upstream } = await run("/v1/images/generations", {
+      model: "grok-imagine-image",
+      prompt: "a cat",
+    });
+
+    expect(upstream).toMatchObject({
+      response_format: "url",
+      aspect_ratio: "16:9",
+      resolution: "2k",
+    });
+    const body = (await response.json()) as { data: Array<Record<string, string>> };
+    expect(body.data[0]).toEqual({
+      url: "data:image/jpeg;base64,aGVsbG8=",
+      revised_prompt: "a cat",
+    });
+  });
+
+  it("keeps what the client set, including values equal to the handler defaults", async () => {
+    const { response, upstream } = await run("/v1/images/generations", {
+      model: "grok-imagine-image",
+      prompt: "a cat",
+      response_format: "b64_json",
+      aspect_ratio: "1:1",
+      resolution: "1k",
+    });
+
+    expect(upstream).toMatchObject({
+      response_format: "b64_json",
+      aspect_ratio: "1:1",
+      resolution: "1k",
+    });
+    expect(
+      ((await response.json()) as { data: Array<Record<string, string>> }).data[0],
+    ).toHaveProperty("b64_json");
+  });
+
+  it("applies default rules on edits and to streamed results", async () => {
+    const edit = await run("/v1/images/edits", {
+      model: "grok-imagine-image",
+      prompt: "p",
+      images: [{ image_url: "https://img.test/a.png" }],
+    });
+
+    expect(edit.upstream).toMatchObject({
+      response_format: "url",
+      aspect_ratio: "16:9",
+      resolution: "2k",
+    });
+
+    const stream = await run("/v1/images/generations", {
+      model: "grok-imagine-image",
+      prompt: "p",
+      stream: true,
+    });
+
+    expect(stream.upstream).toMatchObject({ response_format: "url" });
+    expect(await stream.response.text()).toContain('"url":"data:image/jpeg;base64,aGVsbG8="');
+  });
+});
+
 const VIDEO_CREATED = { request_id: "req_1" };
 
 const VIDEO_DONE = {
@@ -329,6 +509,56 @@ describe("videos", () => {
 
     const variant = await p.call("/openai/v1/videos/req_77/content?variant=thumbnail");
     expect(variant.status).toBe(400);
+  });
+
+  it("serves Grok Imagine Video 1.5 Lite at 1080p and reports the bound model on retrieve (f0ddc38f, c69cdd93)", async () => {
+    const p = pipeline(
+      (call) =>
+        call.method === "POST"
+          ? jsonResponse({ request_id: "req_lite", status: "pending" })
+          : jsonResponse({ status: "done", video: { url: "https://cdn.example.test/lite.mp4" } }),
+      [xaiKey({ id: "xai-key-lite" })],
+    );
+
+    for (const model of ["grok-imagine-video-1.5-lite", "xai/grok-imagine-video-1.5-lite"]) {
+      const created = await p.call(
+        "/openai/v1/videos",
+        postJson({ model, prompt: "a wave", resolution: "1080p" }),
+      );
+
+      expect(created.status).toBe(200);
+      expect(await created.json()).toMatchObject({
+        id: "req_lite",
+        model: "grok-imagine-video-1.5-lite",
+      });
+    }
+
+    expect(p.calls.map((call) => JSON.parse(call.body))).toEqual([
+      expect.objectContaining({ model: "grok-imagine-video-1.5-lite", resolution: "1080p" }),
+      expect.objectContaining({ model: "grok-imagine-video-1.5-lite", resolution: "1080p" }),
+    ]);
+
+    const native = await p.call(
+      "/v1/videos/generations",
+      postJson({ model: "grok/grok-imagine-video-1.5-lite", prompt: "p" }),
+    );
+
+    expect(native.status).toBe(200);
+    expect(JSON.parse(p.calls[2]!.body).model).toBe("grok-imagine-video-1.5-lite");
+
+    const retrieved = await p.call("/openai/v1/videos/req_lite");
+    expect(await retrieved.json()).toMatchObject({
+      id: "req_lite",
+      model: "grok-imagine-video-1.5-lite",
+      status: "completed",
+    });
+
+    const foreign = await p.call(
+      "/openai/v1/videos",
+      postJson({ model: "codex/grok-imagine-video-1.5-lite", prompt: "p" }),
+    );
+
+    expect(foreign.status).toBe(400);
   });
 
   it("answers OpenAI validation errors with failed video objects", async () => {

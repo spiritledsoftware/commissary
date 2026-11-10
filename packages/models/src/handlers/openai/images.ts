@@ -42,11 +42,15 @@ import { currentConfig, type ClientApiServices, readRequestBody } from "../reque
 import { errorResponse, jsonResponse, streamResponse, withNonStreamKeepAlive } from "../respond.ts";
 import {
   buildEditRequest,
+  buildGenerationsOriginalRequest,
   buildGenerationsRequest,
   buildImagesApiResponse as buildXaiImagesApiResponse,
   buildImagesStreamFrames,
+  canonicalModel as canonicalXaiImagesModel,
   collectImages,
-  isXaiImagesModel,
+  hasXaiImageBase,
+  isXaiVendorAlias,
+  modelParts,
   XAI_IMAGE_MODEL_NAMES,
 } from "./xai-images.ts";
 
@@ -240,7 +244,79 @@ const multipartEditToJson = async (form: FormData): Promise<JsonObject> => {
   return out;
 };
 
+/**
+ * `registeredXAIImagesModel`: `model` (or its lower-cased form) when a credential of the xai provider registers it.
+ * The registry is the caller's view, so a model they cannot reach is not registered.
+ */
+const registeredXaiImagesModel = (providers: ModelProviders["Service"], model: string) =>
+  Effect.gen(function* () {
+    const id = model.trim();
+
+    if (id === "") return undefined;
+
+    for (const candidate of [id, id.toLowerCase()]) {
+      const found = yield* providers
+        .providersFor(candidate)
+        .pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []));
+
+      if (found.some((provider) => provider.trim().toLowerCase() === "xai")) return candidate;
+    }
+
+    return undefined;
+  });
+
+/**
+ * `isXAIImagesModel`: a known Grok image model, bare, with a built-in vendor prefix (`xai/`, `x-ai/`, `grok/`) or with
+ * a prefix a credential registers (45ccd9c3).
+ */
+const isXaiImagesModel = (providers: ModelProviders["Service"], model: string) =>
+  Effect.gen(function* () {
+    const { prefix } = modelParts(model);
+
+    if (!hasXaiImageBase(model)) return false;
+
+    if (prefix.trim() === "" || isXaiVendorAlias(prefix)) return true;
+
+    const prefixed = `${prefix}/${canonicalXaiImagesModel(model)}`;
+
+    return (
+      (yield* registeredXaiImagesModel(providers, prefixed)) !== undefined ||
+      (yield* registeredXaiImagesModel(providers, model)) !== undefined
+    );
+  });
+
+/**
+ * `routingXAIImagesModel` (45ccd9c3, 8a3e7622): the model credential selection uses. Deviation: Go also keeps the
+ * prefix when the auth manager runs in home mode, which Commissary does not have.
+ */
+const routingXaiImagesModel = (
+  providers: ModelProviders["Service"],
+  model: string,
+  force: boolean,
+) =>
+  Effect.gen(function* () {
+    const canonical = canonicalXaiImagesModel(model);
+    const { prefix } = modelParts(model);
+
+    if (prefix === "") return canonical;
+    const prefixed = `${prefix}/${canonical}`;
+    const registeredPrefixed = yield* registeredXaiImagesModel(providers, prefixed);
+
+    if (registeredPrefixed !== undefined) return registeredPrefixed;
+    const registeredModel = yield* registeredXaiImagesModel(providers, model);
+
+    if (registeredModel !== undefined) return registeredModel;
+
+    // Built-in vendor aliases may fall back to an unprefixed credential even when prefixes are forced.
+    if (force && !isXaiVendorAlias(prefix)) return prefixed;
+
+    return (yield* registeredXaiImagesModel(providers, canonical)) === undefined
+      ? prefixed
+      : canonical;
+  });
+
 interface XaiImagesInput {
+  readonly providers: ModelProviders["Service"];
   readonly edits: boolean;
   readonly body: Json;
   readonly model: string;
@@ -257,22 +333,33 @@ interface XaiImagesInput {
 const handleXai = (input: XaiImagesInput) =>
   Effect.gen(function* () {
     const { body, edits, model, stream, onError } = input;
-    const responseFormat = asString(get(body, "response_format")).trim() || "b64_json";
+    const rawResponseFormat = asString(get(body, "response_format")).trim();
+    const requestedFormat = rawResponseFormat || "b64_json";
     let xaiRequest: JsonObject;
+    let originalRequest: JsonObject;
 
     if (edits) {
       const images = collectImages(body);
 
       if (images.length === 0) return badRequest("image is required");
-      xaiRequest = buildEditRequest(body, model, responseFormat, images);
+      xaiRequest = buildEditRequest(body, model, requestedFormat, images);
+      originalRequest = buildEditRequest(body, model, rawResponseFormat, images);
     } else {
-      xaiRequest = buildGenerationsRequest(body, model, responseFormat);
+      xaiRequest = buildGenerationsRequest(body, model, requestedFormat);
+      originalRequest = buildGenerationsOriginalRequest(body, model, rawResponseFormat);
     }
+
+    const routingModel = yield* routingXaiImagesModel(
+      input.providers,
+      model,
+      input.config.routing["force-model-prefix"],
+    );
 
     const execution: ExecutionInput = {
       entryProtocol: "openai-image",
-      model: asString(xaiRequest["model"]),
+      model: routingModel,
       body: xaiRequest,
+      originalRequest,
       alt: "",
       request: input.request,
       allowImageModel: true,
@@ -287,7 +374,7 @@ const handleXai = (input: XaiImagesInput) =>
         Effect.flatMap((output) => {
           const frames = buildImagesStreamFrames(
             output.payload,
-            responseFormat,
+            output.finalizedResponseFormat ?? requestedFormat,
             prefix,
             nowSeconds,
           );
@@ -314,7 +401,12 @@ const handleXai = (input: XaiImagesInput) =>
         const result = yield* Effect.result(executeNonStream(execution));
 
         if (Result.isFailure(result)) return onError(result.failure);
-        const out = buildXaiImagesApiResponse(result.success.payload, responseFormat, nowSeconds);
+
+        const out = buildXaiImagesApiResponse(
+          result.success.payload,
+          result.success.finalizedResponseFormat ?? requestedFormat,
+          nowSeconds,
+        );
 
         if (out instanceof ExecutionError) return onError(out);
 
@@ -386,12 +478,11 @@ const handle = (edits: boolean) =>
     let model = (formModel !== "" ? formModel : asString(get(body, "model"))).trim();
 
     if (model === "") model = CODEX_DEFAULT_IMAGE_TOOL_MODEL;
-    const xai = isXaiImagesModel(model);
+    const providers = yield* ModelProviders;
+    const xai = yield* isXaiImagesModel(providers, model);
     let compat = false;
 
     if (!xai && !isCodexImagesToolModel(model)) {
-      const providers = yield* ModelProviders;
-
       const type =
         providers.modelType === undefined
           ? undefined
@@ -405,7 +496,8 @@ const handle = (edits: boolean) =>
     if (asString(get(body, "prompt")).trim() === "") return badRequest("prompt is required");
     const stream = formStream || get(body, "stream") === true;
 
-    if (xai) return yield* handleXai({ edits, body, model, stream, request, config, onError });
+    if (xai)
+      return yield* handleXai({ providers, edits, body, model, stream, request, config, onError });
 
     // `buildOpenAICompatImagesJSONRequest`: model set, `stream: true` or removed.
     const payload: JsonObject = { ...(isJsonObject(body) ? body : {}), model };

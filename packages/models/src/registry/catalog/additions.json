@@ -1262,6 +1262,18 @@
           "description": "xAI Grok video generation model."
         },
         {
+          "id": "grok-imagine-video-1.5-lite",
+          "object": "model",
+          "ownedBy": "xai",
+          "type": "xai",
+          "created": 1787702400,
+          "displayName": "Grok Imagine Video 1.5 Lite",
+          "name": "grok-imagine-video-1.5-lite",
+          "description": "xAI Grok Imagine Video 1.5 Lite supports text-to-video and image-to-video generation. Output pricing per second: $0.02 at 480p, $0.03 at 720p, and $0.14 at 1080p.",
+          "supportedInputModalities": ["text", "image"],
+          "supportedOutputModalities": ["video"]
+        },
+        {
           "id": "grok-imagine-video-1.5-preview",
           "object": "model",
           "ownedBy": "xai",

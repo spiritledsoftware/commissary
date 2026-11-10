@@ -16,6 +16,7 @@ import {
   XAI_DISCOVERY_URL,
 } from "../../credentials/refresh/xai.ts";
 import type { JsonObject } from "@commissary/json";
+import { sha256Hex } from "../encoding.ts";
 import { call, clipBody, parseJsonObject, rfc3339, seconds, str, tryCall } from "./http.ts";
 import { type DeviceFlow, flowFailure } from "./types.ts";
 
@@ -36,13 +37,27 @@ const sanitizeSegment = (value: string): string =>
     .replace(/[^A-Za-z0-9@._-]/g, "-")
     .replace(/^-+|-+$/g, "");
 
-export const xaiFileName = (email: string, subject: string, now: number): string => {
-  const cleanEmail = sanitizeSegment(email);
+/**
+ * `CredentialFileName` (d65840fb): readable name plus a hash of the identity, so accounts that sanitise alike do not
+ * overwrite each other. The email is trimmed and lower-cased (the hash covers it only, so a later login without a
+ * subject keeps the file); the subject is used when there is no email. Deviation: Go's migration of pre-hash files
+ * on re-login (`FindMatchingLegacyCredential`) is not ported.
+ */
+export const xaiFileName = async (email: string, subject: string, now: number): Promise<string> => {
+  const normalizedEmail = email.trim().toLowerCase();
 
-  if (cleanEmail !== "") return `xai-${cleanEmail}.json`;
-  const cleanSubject = sanitizeSegment(subject);
+  if (normalizedEmail !== "") {
+    const sanitized = sanitizeSegment(normalizedEmail) || "account";
 
-  return cleanSubject !== "" ? `xai-${cleanSubject}.json` : `xai-${now}.json`;
+    return `xai-${sanitized.slice(0, 120)}-${await sha256Hex(`email\0${normalizedEmail}`, 8)}.json`;
+  }
+
+  const cleanSubject = subject.trim();
+
+  if (cleanSubject === "") return `xai-${now}.json`;
+  const sanitized = sanitizeSegment(cleanSubject) || "account";
+
+  return `xai-${sanitized.slice(0, 120)}-${await sha256Hex(`subject\0${cleanSubject}`, 8)}.json`;
 };
 
 const formPost = (url: string, params: Record<string, string>) =>
@@ -181,7 +196,10 @@ export const xaiFlow = (): DeviceFlow => ({
 
       return {
         _tag: "done" as const,
-        record: { fileName: xaiFileName(email, subject, now), metadata },
+        record: {
+          fileName: yield* Effect.promise(() => xaiFileName(email, subject, now)),
+          metadata,
+        },
       };
     }),
 });

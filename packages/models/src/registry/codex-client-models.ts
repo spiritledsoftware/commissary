@@ -84,6 +84,7 @@ const NON_CHAT_IDS = new Set([
   "grok-imagine-image-2.0",
   "grok-imagine-video",
   "grok-imagine-video-1.5",
+  "grok-imagine-video-1.5-lite",
   "grok-imagine-video-1.5-preview",
   "grok-tts",
   "grok-voice-tts-1.0",

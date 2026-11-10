@@ -44,18 +44,18 @@ export const modelParts = (model: string): { readonly prefix: string; readonly b
     : { prefix: "", base: trimmed };
 };
 
-/** `isXAIImagesModel`: a known Grok image model, bare or prefixed with `xai/`, `x-ai/` or `grok/`. */
-export const isXaiImagesModel = (model: string): boolean => {
-  const { prefix, base } = modelParts(model);
+/** `isXAIVendorAlias`: the built-in vendor prefixes. */
+export const isXaiVendorAlias = (prefix: string): boolean =>
+  ["xai", "x-ai", "grok"].includes(prefix.trim().toLowerCase());
 
-  if (!XAI_IMAGE_MODELS.includes(base.toLowerCase())) return false;
-
-  return ["", "xai", "x-ai", "grok"].includes(prefix.toLowerCase());
-};
+/** `isXAIImagesBaseModel` over the base of `model`; the prefix is not looked at. */
+export const hasXaiImageBase = (model: string): boolean =>
+  XAI_IMAGE_MODELS.includes(modelParts(model).base.toLowerCase());
 
 export const XAI_IMAGE_MODEL_NAMES: ReadonlyArray<string> = XAI_IMAGE_MODELS;
 
-const canonicalModel = (model: string): string => {
+/** `canonicalXAIImagesModel`: the base model without prefix, as xAI names it. */
+export const canonicalModel = (model: string): string => {
   const base = modelParts(model).base.toLowerCase();
 
   return base === XAI_IMAGES_QUALITY_MODEL || base === XAI_IMAGES_20_MODEL
@@ -139,12 +139,15 @@ interface BaseRequest {
   readonly n: number;
 }
 
+/** `buildXAIImagesOriginalBaseRequest`: an empty `responseFormat` stays absent (the request is un-defaulted). */
 const baseRequest = (input: BaseRequest): JsonObject => {
   const request: JsonObject = {
     model: canonicalModel(input.model),
     prompt: input.prompt.trim(),
-    response_format: normalizeResponseFormat(input.responseFormat),
   };
+
+  if (input.responseFormat.trim() !== "")
+    request["response_format"] = normalizeResponseFormat(input.responseFormat);
 
   if (input.aspectRatio !== "") request["aspect_ratio"] = input.aspectRatio;
 
@@ -185,6 +188,28 @@ export const buildGenerationsRequest = (
   });
 };
 
+/**
+ * `buildXAIImagesGenerationsOriginalRequest`: the request without the handler's defaults, so `default` payload rules
+ * can tell what the client omitted (826bb167). `responseFormat` is the client's, `""` when omitted.
+ */
+export const buildGenerationsOriginalRequest = (
+  body: Json,
+  model: string,
+  responseFormat: string,
+): JsonObject => {
+  const size = text(body, "size");
+
+  return baseRequest({
+    model,
+    prompt: text(body, "prompt"),
+    responseFormat,
+    aspectRatio: aspectRatioFromSize(size, aspectRatio(asString(get(body, "aspect_ratio")), "")),
+    resolution: resolution(asString(get(body, "resolution")), size, ""),
+    quality: text(body, "quality"),
+    n: numberField(body, "n"),
+  });
+};
+
 const imageRef = (url: string): JsonObject => ({ type: "image_url", url: url.trim() });
 
 /** `collectXAIImagesFromJSON`: `image` / `images[]` as strings or `{image_url|url}` objects. */
@@ -214,7 +239,10 @@ export const collectImages = (body: Json): string[] => {
   return images;
 };
 
-/** `buildXAIImagesEditRequest` with the options of `xaiImagesEditOptionsFromJSON`. */
+/**
+ * `buildXAIImagesEditRequest` with the options of `xaiImagesEditOptionsFromJSON`; with an empty `responseFormat` it is
+ * `buildXAIImagesEditOriginalRequest` (no `response_format`).
+ */
 export const buildEditRequest = (
   body: Json,
   model: string,

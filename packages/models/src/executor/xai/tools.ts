@@ -2,7 +2,7 @@
  * xAI Responses tool declarations: flattening, namespace folding and schema fixes.
  *
  * Go source: internal/runtime/executor/xai_executor_request.go (normalizeXAITools*, normalizeXAITool,
- * buildXAINamespaceDispatcherTool, promoteXAIAdditionalTools, collectXAINamespaceToolRefs*, qualifyXAINamespaceToolName,
+ * buildXAINamespaceDispatcherTool, promoteXAIAdditionalTools, xaiDeduplicatedToolName, collectXAINamespaceToolRefs*, qualifyXAINamespaceToolName,
  * xaiShouldFoldNamespaceTools, xaiSupportsNativeImageGeneration, collectXAIClientDeclaredToolKeys) and
  * xai_executor_response.go (normalizeXAIObjectRootUnionBranchTypes, xaiFunctionParametersNeedSimplification,
  * isXAICodexAppAutomationUpdate, xaiRequestHasNativeXSearch). All functions mutate the parsed body in place.
@@ -32,6 +32,8 @@ export interface NamespaceToolRef {
   readonly namespace: string;
   readonly name: string;
   readonly isDispatcher: boolean;
+  /** Dispatcher refs only: the child tool names of the winning declarations (0c61b12c). */
+  readonly children?: ReadonlySet<string>;
 }
 
 /** Qualified tool name (or folded namespace name) -> reference. */
@@ -113,7 +115,8 @@ export const supportsNativeImageGeneration = (model: string): boolean => {
 // Folding decision
 // ---------------------------------------------------------------------------------------------------------------
 
-const countFlattened = (tools: Json | undefined): number => {
+/** `xaiCountFlattenedToolsWithSeen`: function names seen in `seen` (qualified for namespace children) count once. */
+const countFlattened = (tools: Json | undefined, seen: Set<string>): number => {
   if (!isJsonArray(tools)) return 0;
   let count = 0;
 
@@ -121,12 +124,44 @@ const countFlattened = (tools: Json | undefined): number => {
     switch (asString(get(tool, "type"))) {
       case "namespace": {
         const nested = get(tool, "tools");
-        count += isJsonArray(nested) ? nested.length : 1;
+
+        if (!isJsonArray(nested)) {
+          count++;
+          break;
+        }
+
+        const namespaceName = asString(get(tool, "name"));
+
+        for (const child of nested) {
+          if (asString(get(child, "type")) === "tool_search") continue;
+          const qualified = qualifyNamespaceToolName(namespaceName, asString(get(child, "name")));
+
+          if (qualified !== "") {
+            if (seen.has(qualified)) continue;
+            seen.add(qualified);
+          }
+
+          count++;
+        }
+
         break;
       }
 
       case "tool_search":
         break;
+      case "function":
+      case "custom": {
+        const name = trimmed(tool, "name");
+
+        if (name !== "") {
+          if (seen.has(name)) break;
+          seen.add(name);
+        }
+
+        count++;
+        break;
+      }
+
       default:
         count++;
     }
@@ -141,11 +176,12 @@ export const totalFlattenedToolsCount = (
   willInjectXSearch: boolean,
   hostedOnly: boolean,
 ): number => {
-  let count = countFlattened(get(body, "tools"));
+  const seen = new Set<string>();
+  let count = countFlattened(get(body, "tools"), seen);
 
   for (const item of arrayAt(body, "input")) {
     if (asString(get(item, "type")) === "additional_tools")
-      count += countFlattened(get(item, "tools"));
+      count += countFlattened(get(item, "tools"), seen);
   }
 
   if (willInjectXSearch && !requestHasNativeXSearch(body) && !hostedOnly) count++;
@@ -163,21 +199,54 @@ export const collectNamespaceToolRefs = (
   shouldFold: boolean,
 ): Map<string, NamespaceToolRef> => {
   const refs = new Map<string, NamespaceToolRef>();
+  // Names already taken by a function or an earlier namespace; the first declaration wins.
+  const claimed = new Set<string>();
+  const childSets = new Map<string, Set<string>>();
 
   for (const list of toolLists(body)) {
     for (const tool of list) {
-      if (asString(get(tool, "type")) !== "namespace") continue;
+      const toolType = trimmed(tool, "type");
+
+      if (toolType === "function" || toolType === "custom") {
+        const name = trimmed(tool, "name");
+
+        if (name === "") continue;
+        claimed.add(name);
+        const existing = refs.get(name);
+
+        if (shouldFold && existing !== undefined && !existing.isDispatcher) refs.delete(name);
+        continue;
+      }
+
+      if (toolType !== "namespace") continue;
       const namespace = trimmed(tool, "name");
 
       if (namespace === "") continue;
 
-      if (shouldFold) refs.set(namespace, { namespace, name: "", isDispatcher: true });
+      if (shouldFold && !claimed.has(namespace)) {
+        claimed.add(namespace);
+        const children = new Set<string>();
+        childSets.set(namespace, children);
+        refs.set(namespace, { namespace, name: "", isDispatcher: true, children });
+      }
 
       for (const nested of arrayAt(tool, "tools")) {
+        if (asString(get(nested, "type")) === "tool_search") continue;
         const name = trimmed(nested, "name");
         const qualified = qualifyNamespaceToolName(namespace, name);
 
         if (qualified === "") continue;
+
+        if (shouldFold) {
+          if (refs.get(namespace)?.isDispatcher === true) childSets.get(namespace)?.add(name);
+
+          if (!claimed.has(qualified) && !refs.has(qualified))
+            refs.set(qualified, { namespace, name, isDispatcher: false });
+          continue;
+        }
+
+        if (claimed.has(qualified)) continue;
+        claimed.add(qualified);
         refs.set(qualified, { namespace, name, isDispatcher: false });
       }
     }
@@ -230,19 +299,45 @@ export const collectClientDeclaredToolKeys = (body: Json): Set<string> => {
 
 const EMPTY_OBJECT_SCHEMA = '{"type":"object","properties":{}}';
 
-/** `buildXAINamespaceDispatcherTool`. */
-const buildDispatcherTool = (tool: Json): Json | undefined => {
+/** `collectXAINamespaceDeclarationsByName`: every declaration of a namespace, top-level first. */
+const collectNamespaceDeclarations = (body: Json): Map<string, Json[]> => {
+  const byName = new Map<string, Json[]>();
+
+  for (const list of toolLists(body)) {
+    for (const tool of list) {
+      if (asString(get(tool, "type")) !== "namespace") continue;
+      const name = trimmed(tool, "name");
+
+      if (name === "") continue;
+      byName.set(name, [...(byName.get(name) ?? []), tool]);
+    }
+  }
+
+  return byName;
+};
+
+/** `buildXAINamespaceDispatcherTool`: children of repeated declarations merge, first declaration wins. */
+const buildDispatcherTool = (tool: Json, extraDeclarations: readonly Json[]): Json | undefined => {
   const namespaceName = trimmed(tool, "name");
 
   if (namespaceName === "") return undefined;
-  const description = trimmed(tool, "description");
+  let description = trimmed(tool, "description");
   const names: string[] = [];
   const entries: string[] = [];
+  const seenChildren = new Set<string>();
+  const children: Json[] = [];
 
-  for (const child of arrayAt(tool, "tools")) {
+  for (const declaration of [tool, ...extraDeclarations]) {
+    if (description === "") description = trimmed(declaration, "description");
+    children.push(...arrayAt(declaration, "tools"));
+  }
+
+  for (const child of children) {
+    if (asString(get(child, "type")) === "tool_search") continue;
     const childName = trimmed(child, "name");
 
-    if (childName === "") continue;
+    if (childName === "" || seenChildren.has(childName)) continue;
+    seenChildren.add(childName);
     names.push(childName);
     const childDescription = trimmed(child, "description");
     let params = get(child, "parameters");
@@ -394,6 +489,9 @@ const normalizeRootUnionBranchTypes = (tool: JsonObject): boolean => {
   return changed;
 };
 
+/** `xaiUnsupportedWebSearchFields`: web_search options the xAI Responses API rejects with "Argument not supported". */
+const UNSUPPORTED_WEB_SEARCH_FIELDS = ["external_web_access", "search_context_size"] as const;
+
 interface NormalizedTool {
   /** `undefined` = the tool is dropped. */
   readonly tool: Json | undefined;
@@ -451,9 +549,12 @@ const normalizeTool = (
     changed = true;
   }
 
-  if (toolType === "web_search" && get(tool, "external_web_access") !== undefined) {
-    delete copy["external_web_access"];
-    changed = true;
+  if (toolType === "web_search") {
+    for (const field of UNSUPPORTED_WEB_SEARCH_FIELDS) {
+      if (copy[field] === undefined) continue;
+      delete copy[field];
+      changed = true;
+    }
   }
 
   if (toolType === "function" && schemaParameters === undefined) {
@@ -487,23 +588,57 @@ const normalizeTool = (
   return { tool: copy, changed };
 };
 
+/** `xaiDeduplicatedToolName`: the name key of tools that must not repeat; hosted tools have none. */
+const deduplicatedToolName = (tool: Json): string => {
+  switch (trimmed(tool, "type")) {
+    case "function":
+    case "custom":
+    case "namespace":
+      return trimmed(tool, "name");
+    default:
+      return "";
+  }
+};
+
 /** `normalizeXAIToolArray`. */
 const normalizeToolArray = (
   tools: Json[],
   keepImageGeneration: boolean,
   shouldFold: boolean,
+  namespaceDecls: ReadonlyMap<string, Json[]>,
 ): { readonly tools: Json[]; readonly changed: boolean } | undefined => {
   const filtered: Json[] = [];
+  const seenNames = new Set<string>();
   let changed = false;
+
+  /** Appends unless an earlier tool already carries the name; a dropped duplicate counts as a change. */
+  const appendUnique = (tool: Json): void => {
+    const name = deduplicatedToolName(tool);
+
+    if (name !== "") {
+      if (seenNames.has(name)) {
+        changed = true;
+
+        return;
+      }
+
+      seenNames.add(name);
+    }
+
+    filtered.push(tool);
+  };
 
   for (const tool of tools) {
     if (asString(get(tool, "type")) === "namespace") {
       changed = true;
 
       if (shouldFold) {
-        const dispatcher = buildDispatcherTool(tool);
+        const dispatcher = buildDispatcherTool(
+          tool,
+          namespaceDecls.get(trimmed(tool, "name")) ?? [],
+        );
 
-        if (dispatcher !== undefined) filtered.push(dispatcher);
+        if (dispatcher !== undefined) appendUnique(dispatcher);
         continue;
       }
 
@@ -515,7 +650,7 @@ const normalizeToolArray = (
         if (result === undefined) return undefined;
         changed = changed || result.changed;
 
-        if (result.tool !== undefined) filtered.push(result.tool);
+        if (result.tool !== undefined) appendUnique(result.tool);
       }
 
       continue;
@@ -526,7 +661,7 @@ const normalizeToolArray = (
     if (result === undefined) return undefined;
     changed = changed || result.changed;
 
-    if (result.tool !== undefined) filtered.push(result.tool);
+    if (result.tool !== undefined) appendUnique(result.tool);
   }
 
   return { tools: filtered, changed };
@@ -538,11 +673,15 @@ export const normalizeTools = (body: Json, shouldFold: boolean): Json => {
   const keepImageGeneration = supportsNativeImageGeneration(asString(get(body, "model")));
   const updates: Array<readonly [path: string, tools: Json[]]> = [];
 
+  const namespaceDecls = shouldFold
+    ? collectNamespaceDeclarations(body)
+    : new Map<string, Json[]>();
+
   const plan = (path: string): boolean => {
     const tools = get(body, path);
 
     if (!isJsonArray(tools)) return true;
-    const result = normalizeToolArray(tools, keepImageGeneration, shouldFold);
+    const result = normalizeToolArray(tools, keepImageGeneration, shouldFold, namespaceDecls);
 
     if (result === undefined) return false;
 
@@ -586,7 +725,24 @@ export const promoteAdditionalTools = (body: Json): Json => {
   if (remaining.length === input.length) return body;
   set(body, "input", remaining);
 
-  if (promoted.length > 0) set(body, "tools", [...arrayAt(body, "tools"), ...promoted]);
+  if (promoted.length > 0) {
+    // First wins: top-level tools stay authoritative over historical copies.
+    const seen = new Set<string>();
+    const merged: Json[] = [];
+
+    for (const tool of [...arrayAt(body, "tools"), ...promoted]) {
+      const name = deduplicatedToolName(tool);
+
+      if (name !== "") {
+        if (seen.has(name)) continue;
+        seen.add(name);
+      }
+
+      merged.push(tool);
+    }
+
+    set(body, "tools", merged);
+  }
 
   return body;
 };
