@@ -22,6 +22,7 @@ export {
 export { builtinTranslators } from "./translator/builtin.ts";
 
 export {
+  getModelInfoLookup,
   lookupModelInfo,
   setModelInfoLookup,
   withModelInfoLookup,

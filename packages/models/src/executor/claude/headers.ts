@@ -2,8 +2,8 @@
  * Claude upstream request headers (identity profile, `anthropic-beta`, auth).
  *
  * Go source: internal/runtime/executor/claude_executor_request.go (applyClaudeHeadersWithNativeProfile, including the
- * binding-controls beta that follows `thinking.block_binding`, copyClaudeCallerFingerprintHeaders), helps/claude_device_profile.go (ApplyClaudeLegacyDeviceHeaders,
- * defaultClaudeDeviceProfile). Workers `fetch` cannot control header order or casing and the TLS fingerprint is
+ * binding-controls beta that follows `thinking.block_binding`, copyClaudeCallerFingerprintHeaders),
+ * helps/claude_device_profile.go (ApplyClaudeLegacyDeviceHeaders, defaultClaudeDeviceProfile). Workers `fetch` cannot control header order or casing and the TLS fingerprint is
  * Cloudflare's (see README.md), so only names and values are reproduced. With `stabilize-device-profile` the
  * device headers come from the stabilised profile (`device-profile.ts`) instead of the legacy copy-or-baseline rules.
  * At the `minimal` cloak level (a Commissary addition) none of the CLI identity headers are sent.

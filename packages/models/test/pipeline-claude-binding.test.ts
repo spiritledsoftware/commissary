@@ -12,7 +12,11 @@ import { makeSessionStateToolAliasStore } from "../src/executor/claude/thread.ts
 import { makeClaudeExecutor } from "../src/executor/claude/executor.ts";
 import { Thinking } from "../src/executor/thinking.ts";
 import type { JsonObject } from "@commissary/json";
-import { builtinTranslators, setModelInfoLookup } from "@commissary/translation";
+import {
+  builtinTranslators,
+  getModelInfoLookup,
+  setModelInfoLookup,
+} from "@commissary/translation";
 import { claudeSignature } from "./support/signatures.ts";
 import { oauthPipeline } from "./support/claude-oauth.ts";
 import { credential, execute, harness, options } from "./support/executor-run.ts";
@@ -49,6 +53,7 @@ api-keys:
         - api-key: sk-ant-api03-test
       models:
 ${[...PRESERVED, ...OTHERS].map((name) => `        - name: ${name}`).join("\n")}
+        - name: "claude-fable-5-2[1m]"
 ${rules}`;
 
 const message = (): JsonObject => ({
@@ -162,6 +167,57 @@ describe("omitted thinking", () => {
     expect(sent.betas).toContain(BINDING_BETA);
   });
 
+  it("binds a streamed request and keeps the beta on it", async () => {
+    const config = await loadConfig(keyYaml());
+
+    const events = [
+      {
+        type: "message_start",
+        message: {
+          id: "msg_01",
+          type: "message",
+          role: "assistant",
+          model: "claude-opus-5-5",
+          content: [],
+          usage: { input_tokens: 11, output_tokens: 1 },
+        },
+      },
+      { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 2 } },
+      { type: "message_stop" },
+    ];
+
+    const p = makePipeline({
+      config,
+      respond: () =>
+        sseResponse(
+          events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`),
+        ),
+    });
+
+    try {
+      const response = await p.call(
+        "/v1/messages",
+        postJson({ ...history("claude-opus-5-5"), stream: true }),
+      );
+
+      expect(response.status).toBe(200);
+      await response.text();
+      const call = p.calls[0]!;
+      const sent = JSON.parse(call.body) as JsonObject;
+      expect(sent.stream).toBe(true);
+      expect(sent.thinking).toEqual({ type: "adaptive", block_binding: DROP });
+      expect(betasOf(call)).toContain(BINDING_BETA);
+    } finally {
+      await p.dispose();
+    }
+  });
+
+  it("binds a context-window suffixed model name", async () => {
+    const sent = await send(history("claude-fable-5-2[1m]"));
+    expect(sent.body.thinking).toEqual({ type: "adaptive", block_binding: DROP });
+    expect(sent.betas).toContain(BINDING_BETA);
+  });
+
   it("leaves the body alone without signed blocks", async () => {
     const plain = await send(history("claude-opus-5-5", {}, []));
     expect(plain.body.thinking).toBeUndefined();
@@ -243,6 +299,8 @@ describe("forced tool choice", () => {
 
 describe("thinking chosen by the thinking pipeline", () => {
   it("only adds block_binding to what a model suffix produced", async () => {
+    const previous = getModelInfoLookup();
+
     setModelInfoLookup((id) =>
       id === "claude-opus-5-5"
         ? { id, thinking: { levels: ["low", "medium", "high"] } }
@@ -252,13 +310,13 @@ describe("thinking chosen by the thinking pipeline", () => {
     try {
       const unsigned = await send(history("claude-opus-5-5(high)", {}, []));
       const signed = await send(history("claude-opus-5-5(high)"));
-      const chosen = unsigned.body.thinking as JsonObject;
-      // The suffix did produce a thinking configuration to preserve.
-      expect(chosen).toBeDefined();
-      expect(signed.body.thinking).toEqual({ ...chosen, block_binding: DROP });
-      expect(signed.body.output_config).toEqual(unsigned.body.output_config);
+      // The suffix produced adaptive thinking at high effort; the binding is the only addition.
+      expect(unsigned.body.thinking).toEqual({ type: "adaptive" });
+      expect(unsigned.body.output_config).toEqual({ effort: "high" });
+      expect(signed.body.thinking).toEqual({ type: "adaptive", block_binding: DROP });
+      expect(signed.body.output_config).toEqual({ effort: "high" });
     } finally {
-      setModelInfoLookup(() => undefined);
+      setModelInfoLookup(previous);
     }
   });
 });
@@ -354,6 +412,16 @@ describe("the beta follows the final body in every fingerprint mode", () => {
     device_id: "a".repeat(64),
     account_uuid: "",
     session_id: "11111111-2222-4333-8444-555555555555",
+  });
+
+  it("is added to a confirmed Claude Code passthrough with an API key", async () => {
+    const sent = await send(body({ metadata: { user_id: userId } }), {
+      headers: CLAUDE_CODE_HEADERS,
+    });
+
+    expect(sent.betas).toContain("interleaved-thinking-2025-05-14");
+    expect(sent.betas).toContain(BINDING_BETA);
+    expect(sent.call.headers["user-agent"]).toBe("claude-cli/2.1.321 (external, cli)");
   });
 
   it.each([
