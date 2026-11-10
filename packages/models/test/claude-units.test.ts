@@ -754,7 +754,8 @@ describe("rate limit classification", () => {
         ...extra,
       });
 
-    const conservative = 4 * 3600_000 + 1000;
+    // Fuzz is pinned to 1 s: the 4 h unified reset keeps 14_401_000 ms; the 30 s Retry-After gives 31_000 ms.
+    const conservative = 14_401_000;
     const short = 31_000;
 
     it("honours a short Retry-After instead of the hours-long unified reset", () => {

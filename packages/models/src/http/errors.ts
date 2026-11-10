@@ -16,7 +16,8 @@ import {
   type JsonObject,
 } from "@commissary/json";
 import { statusText } from "./status.ts";
-import { formatDurationSeconds } from "../credentials/selection/failures.ts";
+import { safeRetryAfter } from "../executor/errors.ts";
+import { formatDurationSeconds } from "./duration.ts";
 
 type JsonRecord = JsonObject;
 
@@ -208,16 +209,15 @@ export const claudeCooldownRetryAfter = (error: {
   readonly code?: string | undefined;
   readonly safeHeaders?: Readonly<Record<string, string>> | undefined;
 }): string | undefined =>
-  error.status === 429 && error.code === "model_cooldown"
-    ? (error.safeHeaders?.["retry-after"] ?? error.safeHeaders?.["Retry-After"])
-    : undefined;
+  error.status === 429 && error.code === "model_cooldown" ? safeRetryAfter(error) : undefined;
 
 /** `reset after <Go duration>` for a positive whole-second Retry-After; huge values keep the raw seconds. */
 const resetAfterHint = (retryAfter: string): string => {
   if (!/^[+]?\d+$/.test(retryAfter)) return "";
   const seconds = BigInt(retryAfter);
 
-  if (seconds <= 0n) return "";
+  // Go's `strconv.ParseInt` fails above int64 max: no hint then.
+  if (seconds <= 0n || seconds > 9223372036854775807n) return "";
 
   return ` (reset after ${
     seconds <= 9223372036n ? formatDurationSeconds(Number(seconds)) : `${retryAfter}s`

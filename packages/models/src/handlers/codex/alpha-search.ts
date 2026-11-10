@@ -18,7 +18,7 @@ import {
 import { routeServices, CurrentOrg } from "@commissary/core";
 import { AccessPrincipal } from "@commissary/auth";
 import { CODEX_DEFAULT_BASE_URL, codexCreds } from "../../executor/codex/headers.ts";
-import { ExecutionError } from "../../executor/errors.ts";
+import { ExecutionError, safeRetryAfter } from "../../executor/errors.ts";
 import { applyCustomHeaders } from "../../executor/helps/custom-headers.ts";
 import { failureReport, successReport } from "../../executor/classify.ts";
 import { withCredentialRefresh } from "../../executor/helps/credential-refresh.ts";
@@ -138,7 +138,7 @@ const handle = Effect.gen(function* () {
     const failure = picked.failure;
     // No credential was picked, so no upstream attempt was made: the request did no work and is not counted.
     yield* uncountRequest(counted.success);
-    const retryAfter = failure.safeHeaders?.["retry-after"] ?? failure.safeHeaders?.["Retry-After"];
+    const retryAfter = safeRetryAfter(failure);
 
     return errorJson(
       failure.status > 0 ? failure.status : 503,

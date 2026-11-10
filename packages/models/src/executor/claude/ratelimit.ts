@@ -240,6 +240,7 @@ const bodyIsExplicitPerMinuteRateLimit = (body: string): boolean => {
  * `ParseClaudeRateLimitResetForError`: `parseRateLimitResetMs` with one body-aware exception. An explicit per-minute
  * error carries no quota window, so the unclassified unified reset must not stretch its short Retry-After into an
  * hours-long cooldown. Applies only when no status header declares a quota window and Retry-After is a usable value.
+ * `fuzzSeconds` is injectable so tests can pin the 1-30 s fuzz, as in `parseRateLimitResetMs`.
  * (Go also rejects repeated or differently cased Retry-After keys as ambiguous; `Headers` merges them, so a repeated
  * value fails to parse and falls back to the conservative result.)
  */

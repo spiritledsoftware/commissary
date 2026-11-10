@@ -9,7 +9,7 @@
  */
 import { Data, Duration, Effect, Fiber, Pull, Result, type Scope, Stream } from "effect";
 import { HttpServerResponse } from "effect/http";
-import type { ExecutionError } from "../executor/errors.ts";
+import { safeRetryAfter, type ExecutionError } from "../executor/errors.ts";
 import { claudeCooldownRetryAfter, claudeErrorBody, openAIErrorBody } from "../http/errors.ts";
 import {
   filterUpstreamHeaders,
@@ -62,7 +62,7 @@ const systemOneErrorResponse = (
     }
   }
 
-  const retryAfter = error.safeHeaders?.["retry-after"] ?? error.safeHeaders?.["Retry-After"];
+  const retryAfter = safeRetryAfter(error);
 
   if (retryAfter !== undefined) headers["retry-after"] ??= retryAfter;
   const parsed = parseUpstreamSystemOneError(status, error.message);
@@ -99,7 +99,7 @@ export const errorResponse = (
     return HttpServerResponse.text(error.message, { status, headers });
   }
 
-  const retryAfter = error.safeHeaders?.["retry-after"] ?? error.safeHeaders?.["Retry-After"];
+  const retryAfter = safeRetryAfter(error);
 
   if (retryAfter !== undefined) headers["retry-after"] = retryAfter;
 

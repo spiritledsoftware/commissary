@@ -107,6 +107,9 @@ describe("claudeErrorBody", () => {
   });
 });
 
+const COOLDOWN_MESSAGE =
+  "All credentials for model claude-sonnet-4-5-20250929 are cooling down via provider claude";
+
 const cooldown = (seconds: number, status = 429) =>
   new ExecutionError({
     status,
@@ -114,8 +117,7 @@ const cooldown = (seconds: number, status = 429) =>
     message: JSON.stringify({
       error: {
         code: "model_cooldown",
-        message:
-          "All credentials for model claude-sonnet-4-5-20250929 are cooling down via provider claude",
+        message: COOLDOWN_MESSAGE,
       },
     }),
     safeHeaders: { "retry-after": String(seconds) },
@@ -134,18 +136,18 @@ describe("Claude model-cooldown reset hint", () => {
 
     const body = claudeErrorBody(429, error.message, claudeCooldownRetryAfter(error));
 
-    expect(messageOf(body)).toBe(
-      `All credentials for model claude-sonnet-4-5-20250929 are cooling down via provider claude (reset after ${shown})`,
-    );
+    expect(messageOf(body)).toBe(`${COOLDOWN_MESSAGE} (reset after ${shown})`);
   });
 
   it("reaches the committed stream error event", () => {
     const frame = claudeFramer().terminalError(cooldown(8250));
 
-    expect(frame).toContain("(reset after 2h17m30s)");
+    expect(messageOf(frame.replace(/^event: error\ndata: /, "").trim())).toBe(
+      `${COOLDOWN_MESSAGE} (reset after 2h17m30s)`,
+    );
   });
 
-  it("leaves other errors unchanged", () => {
+  it("leaves an ordinary upstream 429 message unchanged", () => {
     const ordinary = new ExecutionError({
       status: 429,
       message: '{"error":{"type":"rate_limit_error","message":"upstream quota exceeded"}}',
@@ -155,16 +157,29 @@ describe("Claude model-cooldown reset hint", () => {
     expect(
       messageOf(claudeErrorBody(429, ordinary.message, claudeCooldownRetryAfter(ordinary))),
     ).toBe("upstream quota exceeded");
+  });
+
+  it("adds no hint for a zero delay", () => {
     const zero = cooldown(0);
 
-    expect(
-      messageOf(claudeErrorBody(429, zero.message, claudeCooldownRetryAfter(zero))),
-    ).not.toContain("reset after");
+    expect(messageOf(claudeErrorBody(429, zero.message, claudeCooldownRetryAfter(zero)))).toBe(
+      COOLDOWN_MESSAGE,
+    );
+  });
+
+  it("adds no hint for a Retry-After above int64", () => {
+    const huge = cooldown(0);
+    const body = claudeErrorBody(429, huge.message, "9223372036854775808");
+
+    expect(messageOf(body)).toBe(COOLDOWN_MESSAGE);
+  });
+
+  it("adds no hint for other statuses", () => {
     const unavailable = cooldown(60, 503);
 
     expect(
       messageOf(claudeErrorBody(503, unavailable.message, claudeCooldownRetryAfter(unavailable))),
-    ).not.toContain("reset after");
+    ).toBe(COOLDOWN_MESSAGE);
   });
 });
 
