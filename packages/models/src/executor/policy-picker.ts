@@ -5,7 +5,7 @@
  * the `WithDisallowFreeAuth` option of the image handlers. Credentials the policy rejects are excluded and the pick is
  * retried; the rejected leases are reported as request-scoped failures so no cooldown is applied.
  */
-import { Effect, Result } from "effect";
+import { Effect } from "effect";
 import { ExecutionError } from "./errors.ts";
 import { CredentialPicker, type CredentialSnapshot } from "./picker.ts";
 
@@ -20,29 +20,9 @@ export const withCredentialPolicy = (
 ): PickerService => ({
   report: base.report,
   planRetry: base.planRetry,
-  // The base probe cannot say whether the credential it would find passes the policy: once it says there is one, pick the
-  // way `pick` does and give each lease back as request-scoped (no cooldown), until one is allowed.
-  hasAlternative: (request) =>
-    Effect.gen(function* () {
-      if (!(yield* base.hasAlternative(request))) return false;
-      const excluded = [...(request.excludedIds ?? [])];
-
-      for (let attempt = 0; attempt < MAX_REJECTIONS; attempt++) {
-        const picked = yield* Effect.result(base.pick({ ...request, excludedIds: excluded }));
-
-        if (Result.isFailure(picked)) return false;
-        yield* base.report(picked.success.lease, {
-          success: false,
-          requestScoped: true,
-          error: { message: unavailableMessage, retryable: false, code: "request_scoped" },
-        });
-
-        if (allows(picked.success.credential)) return true;
-        excluded.push(picked.success.credential.id);
-      }
-
-      return false;
-    }),
+  // The probe must stay read-only and cannot tell whether the credential it would find passes the policy: conservatively
+  // "no alternative" (only alpha search wraps a picker this way, never the Responses WebSocket).
+  hasAlternative: () => Effect.succeed(false),
   pick: (request) =>
     Effect.gen(function* () {
       const excluded = [...(request.excludedIds ?? [])];
