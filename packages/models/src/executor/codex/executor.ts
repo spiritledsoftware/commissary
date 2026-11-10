@@ -70,7 +70,13 @@ import {
   isThinkingSignatureInvalid,
   newCodexStatusError,
 } from "./errors.ts";
-import { buildCodexHeaders, codexBaseUrl, isNativeCodexRequest } from "./headers.ts";
+import {
+  buildCodexHeaders,
+  codexBaseUrl,
+  codexUsesProviderKey,
+  isNativeCodexRequest,
+} from "./headers.ts";
+import { stripHostedImageComplexity, validateHostedImageGeneration } from "./hosted-images.ts";
 import {
   buildImagesApiResponse,
   CODEX_IMAGE_SOURCE_FORMAT,
@@ -112,7 +118,7 @@ import {
   replayScopeFromRequest,
 } from "./replay.ts";
 import { modelOverrideHeaders } from "../helps/model-headers.ts";
-import { resolveCodexModelIsCompat } from "./compat.ts";
+import { resolveCodexKeyConfig, resolveCodexModelIsCompat } from "./compat.ts";
 import { bootstrapTimeoutMs, isGrokClientHeaders } from "./bootstrap.ts";
 import { CodexStreamReader } from "./stream.ts";
 import {
@@ -340,6 +346,8 @@ export const makeCodexExecutor = (executorOptions: CodexExecutorOptions = {}): P
 
     if (!mode.compact && context.config.multimedia["disable-image-generation"] === false) {
       body = ensureImageGenerationTool(body, baseModel, context.credential, options.headers);
+
+      if (!codexUsesProviderKey(context.credential)) body = stripHostedImageComplexity(body);
     }
 
     body = sanitizeReasoningEncryptedContent(body, isCompat, isCompat);
@@ -406,6 +414,18 @@ export const makeCodexExecutor = (executorOptions: CodexExecutorOptions = {}): P
             routingHint: true,
             ...overrideField(request, baseModel),
           });
+
+    // The WebSocket handshake headers are built later; the client's native lite header is what they would carry.
+    const hostedImageError = validateHostedImageGeneration({
+      body,
+      headers: new Headers(
+        mode.websocket === true ? (nativeOutput ? options.headers : {}) : headers,
+      ),
+      passthrough: context.config.multimedia["disable-image-generation"] === "passthrough",
+      nativeCodex: !codexUsesProviderKey(context.credential),
+    });
+
+    if (hostedImageError !== undefined) return yield* hostedImageError;
 
     const url = `${codexBaseUrl(context.credential)}${mode.compact ? "/responses/compact" : "/responses"}`;
 
@@ -723,7 +743,13 @@ export const makeCodexExecutor = (executorOptions: CodexExecutorOptions = {}): P
     options: ExecutorOptions,
   ) => {
     const requestPath = options.metadata.requestPath;
-    const endpoint = directImageEndpoint(request.payload, request.model, requestPath);
+
+    const endpoint = directImageEndpoint(
+      request.payload,
+      request.model,
+      requestPath,
+      options.metadata.requestedModel,
+    );
 
     return { requestPath, endpoint };
   };
@@ -734,6 +760,12 @@ export const makeCodexExecutor = (executorOptions: CodexExecutorOptions = {}): P
     return model !== "" && model.toLowerCase().startsWith("gpt-") ? model : CODEX_IMAGES_MAIN_MODEL;
   };
 
+  /** The credential's configured upstream model names (an entry without a name uses its alias). */
+  const configuredUpstreamNames = (context: ExecutionContext): string[] =>
+    (resolveCodexKeyConfig(context.config, context.credential)?.models ?? []).map((model) =>
+      model.name.trim() !== "" ? model.name : (model.alias ?? ""),
+    );
+
   const prepareDirectImage = (
     context: ExecutionContext,
     request: ExecutorRequest,
@@ -741,7 +773,13 @@ export const makeCodexExecutor = (executorOptions: CodexExecutorOptions = {}): P
     endpoint: string,
     stream: boolean,
   ) => {
-    const model = directImageModel(request.payload, request.model);
+    const model = directImageModel(
+      request.payload,
+      request.model,
+      options.metadata.requestedModel,
+      configuredUpstreamNames(context),
+    );
+
     let body = prepareDirectImageBody(request.payload, model, stream);
     body = finalize(
       context,

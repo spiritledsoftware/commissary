@@ -18,6 +18,7 @@ import {
 } from "@commissary/json";
 import { statusText } from "../../http/status.ts";
 import { ExecutionError } from "../errors.ts";
+import { annotateImageGenerationError } from "./hosted-images.ts";
 
 export const CODEX_INCOMPLETE_STREAM_MESSAGE =
   "stream error: stream disconnected before completion: stream closed before response.completed";
@@ -248,6 +249,10 @@ const terminalErrorBody = (event: Json | undefined, path: string): JsonObject | 
     if (type !== "") body = set(body, "error.message", type);
   }
 
+  const annotated = annotateImageGenerationError(get(body, "error"));
+
+  if (annotated !== undefined) body = set(body, "error.message", annotated);
+
   return isJsonObject(body) ? body : undefined;
 };
 
@@ -322,7 +327,14 @@ const terminalFailureStatus = (body: Json): number => {
 
   if (type === "rate_limit_error" || code === "rate_limit_exceeded") return 429;
 
-  if (type === "invalid_request_error" || type === "bad_request_error") return 400;
+  if (
+    type === "invalid_request_error" ||
+    type === "bad_request_error" ||
+    type === "image_generation_user_error" ||
+    code === "invalid_value" ||
+    code === "invalid_request_error"
+  )
+    return 400;
 
   return 502;
 };

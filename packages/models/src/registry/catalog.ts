@@ -7,7 +7,7 @@
  * (`refresh.ts`, `catalog-store.ts`). The additions are never fetched: a refreshed document is merged with the bundled
  * additions. Static lookups (`lookupStaticModelInfo*`) read the same catalogs.
  */
-import { isJsonObject, type Json, type JsonObject } from "@commissary/json";
+import { asString, get, isJsonObject, type Json, type JsonObject } from "@commissary/json";
 import additionsJson from "./catalog/additions.json";
 import codexClientJson from "./catalog/codex_client_models.json";
 import modelsDevJson from "./catalog/models-dev.json";
@@ -177,6 +177,26 @@ const bundledCodexClient = (): Json => {
   }
 
   return embeddedCodexClient;
+};
+
+/**
+ * `registry.CodexClientModelUsesResponsesLite` (8fb60326): whether the bundled Codex client catalog marks `slug`
+ * `use_responses_lite`. The catalog is bundled, so the answer does not depend on a models.dev refresh.
+ */
+export const codexClientModelUsesResponsesLite = (slug: string): boolean => {
+  const wanted = slug.trim().toLowerCase();
+
+  if (wanted === "") return false;
+  const models = get(bundledCodexClient(), "models");
+
+  return (
+    Array.isArray(models) &&
+    models.some(
+      (model) =>
+        asString(get(model, "slug")).trim().toLowerCase() === wanted &&
+        get(model, "use_responses_lite") === true,
+    )
+  );
 };
 
 /** The catalogs built from a models.dev document and the bundled additions. */

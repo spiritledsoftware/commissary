@@ -4,7 +4,8 @@
  * Go source: internal/runtime/executor/codex_openai_images.go. Models `gpt-image-*` use the direct
  * `{base}/images/{generations,edits}` endpoints; other models go through a Responses request with the
  * `image_generation` tool and the result items are converted to an Images API response. Multipart edit requests are
- * converted to JSON by the handler (`handlers/openai/images.ts`), so the executor only sees JSON bodies.
+ * converted to JSON by the handler (`handlers/openai/images.ts`), so the executor only sees JSON bodies. 7a7d37ec adds
+ * the `gpt-image-2.6*` ids; 51bde0ff keeps a configured upstream model name on the wire.
  */
 import {
   asInt,
@@ -38,6 +39,9 @@ const DIRECT_MODELS = new Set([
   "gpt-image-2.5-flare",
   "gpt-image-2.5-sunburst",
   "gpt-image-2.5",
+  "gpt-image-2.6-flare",
+  "gpt-image-2.6-sunburst",
+  "gpt-image-2.6",
 ]);
 
 /** `codexIsImagesEndpointPath`. */
@@ -62,9 +66,16 @@ const imageBaseModel = (model: string): string => {
   return name.toLowerCase();
 };
 
-/** `codexDirectOpenAIImageModel`: the payload model, else the route model, when it is a direct image model. */
-export const directImageModel = (payload: Json, routeModel: string): string => {
-  for (const model of [asString(get(payload, "model")), routeModel]) {
+/**
+ * `codexDirectOpenAIImageRouteModel` (51bde0ff): the first of the requested model, the payload model and the resolved
+ * model whose base name is a direct image model. It only decides whether the request is a direct image request.
+ */
+export const directImageRouteModel = (
+  payload: Json,
+  routeModel: string,
+  requestedModel = "",
+): string => {
+  for (const model of [requestedModel, asString(get(payload, "model")), routeModel]) {
     const base = imageBaseModel(model);
 
     if (DIRECT_MODELS.has(base)) return base;
@@ -73,13 +84,43 @@ export const directImageModel = (payload: Json, routeModel: string): string => {
   return "";
 };
 
+/**
+ * `directOpenAIImageModel` (51bde0ff): the model on the wire. The resolved model wins; a configured upstream name (or
+ * alias without a name) is explicit and kept verbatim, otherwise a builtin image model is normalised (legacy
+ * routing prefixes and suffixes stripped).
+ */
+export const directImageModel = (
+  payload: Json,
+  routeModel: string,
+  requestedModel = "",
+  upstreamNames: ReadonlyArray<string> = [],
+): string => {
+  const route = directImageRouteModel(payload, routeModel, requestedModel);
+
+  if (route === "") return "";
+  const model = parseSuffix(routeModel).modelName.trim();
+
+  if (model === "") return route;
+
+  if (
+    upstreamNames.some(
+      (name) => parseSuffix(name).modelName.trim().toLowerCase() === model.toLowerCase(),
+    )
+  )
+    return model;
+  const base = imageBaseModel(model);
+
+  return DIRECT_MODELS.has(base) ? base : model;
+};
+
 /** `codexDirectOpenAIImageEndpoint`. */
 export const directImageEndpoint = (
   payload: Json,
   routeModel: string,
   requestPath: string,
+  requestedModel = "",
 ): string => {
-  if (directImageModel(payload, routeModel) === "") return "";
+  if (directImageRouteModel(payload, routeModel, requestedModel) === "") return "";
   const path = requestPath.trim();
 
   if (path.endsWith(GENERATIONS_PATH)) return "/images/generations";

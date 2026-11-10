@@ -838,7 +838,19 @@ Core contracts every provider slice implements (Go references in each module hea
 - **Non-stream over WebSocket** (`makeCodexWebsocketExecute`, Go `CodexWebsocketsExecutor.Execute`): a non-stream execution carrying
   `metadata.websocket` on a `websockets` credential reads the upstream events until the first terminal one and answers with the
   translated completed response (same session/socket rules, replay-required for continuations without a live socket).
-- **Not ported (follow-ups)**: the Responses-tool image path being reachable only for non-`gpt-image` models (ported but not routed).
+- **Hosted `image_generation` on Responses-Lite** (`executor/codex/hosted-images.ts`, Go `helps/codex_hosted_images.go`, 714f0526/8fb60326/d1e5cc60): the
+  tool is auto-injected unless the request is lite (header or `client_metadata` mirror) or the model is lite (GPT-6, or `use_responses_lite` in the
+  bundled Codex client catalog) _and_ carries a reasoning configuration. After the final payload and headers are built, a native (non-provider-key)
+  Codex request on a lite route that _forces_ the hosted tool (`tool_choice` `image_generation`, `required` with only that tool declared, or
+  `allowed_tools` required with only it) is refused with a request-scoped 400 pointing at `/v1/images/*`; `disable-image-generation: passthrough`
+  skips the check. `complexity` is stripped from declared hosted tools, and `image_generation_user_error` terminal failures map to 400 (with guidance for
+  `complexity` errors; the Responses framer does the same for streamed payloads). Differences from Go: there is no SIWC route (native = every
+  non-provider-key credential), and credential `header:` attributes / models.json `override_header` reach the check only through the built outbound
+  headers (the WebSocket handshake uses the client's native lite header).
+- **Direct image model** (51bde0ff): a configured upstream model name of the credential's `api-keys.codex` entry is sent verbatim as the Images API
+  `model`; only an unconfigured model is normalised to the builtin `gpt-image-*` id.
+- **Not ported (follow-ups)**: the Responses-tool image path being reachable only for non-`gpt-image` models (ported but not routed). It is
+  therefore not the route d1e5cc60 validates: that check guards `/responses` requests carrying a hosted tool, which `/v1/images/*` never builds.
 
 ## xAI provider and media endpoints (`models/executor/xai/`, `models/handlers/openai/{videos,speech,xai-*}.ts`)
 

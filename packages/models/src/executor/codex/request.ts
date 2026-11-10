@@ -25,6 +25,7 @@ import { uuidV5Oid } from "../helps/uuid.ts";
 import type { CredentialSnapshot } from "../picker.ts";
 import { parseSuffix } from "@commissary/translation/thinking";
 import { isCodexResponsesLiteRequest } from "./headers.ts";
+import { codexModelUsesResponsesLite, requestHasReasoningForHostedImage } from "./hosted-images.ts";
 import { claudeCodeExecutionScope } from "./replay.ts";
 
 /** `helps.SetStringIfDifferent` / `SetBoolIfDifferent`. */
@@ -66,7 +67,11 @@ const isFreePlan = (credential: CredentialSnapshot): boolean =>
   credential.provider.trim().toLowerCase() === "codex" &&
   (credential.attributes["plan_type"] ?? "").trim().toLowerCase() === "free";
 
-/** `ensureImageGenerationTool`: appends `{"type":"image_generation","output_format":"png"}` when absent. */
+/**
+ * `ensureImageGenerationTool`: appends `{"type":"image_generation","output_format":"png"}` when absent. Skipped on
+ * Responses-Lite requests, and on lite models that carry a reasoning configuration (714f0526: lite models without
+ * reasoning get the tool, since the hosted tool only rejects `complexity` alongside reasoning effort).
+ */
 export const ensureImageGenerationTool = (
   body: Json,
   baseModel: string,
@@ -75,6 +80,8 @@ export const ensureImageGenerationTool = (
 ): Json => {
   if (
     isCodexResponsesLiteRequest(body, headers) ||
+    (codexModelUsesResponsesLite(baseModel) &&
+      requestHasReasoningForHostedImage(body, baseModel)) ||
     baseModel.endsWith("spark") ||
     isFreePlan(credential)
   )

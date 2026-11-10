@@ -171,3 +171,110 @@ describe("image tool usage (PublishAdditionalModel)", () => {
     expect(await run({ input_tokens: 0, output_tokens: 0, total_tokens: 0 }, [])).toEqual([]);
   });
 });
+
+// 51bde0ff: the direct Images API call keeps the resolved upstream model; only a model without a configured upstream
+// is normalised to the builtin image model (the legacy routing-prefix behaviour).
+describe("direct image requests keep the configured upstream model (51bde0ff)", () => {
+  const yamlFor = (configured: string) => `
+api-keys:
+  codex:
+    - base-url: https://codex.example.test/v1
+      keys:
+        - api-key: sk-codex-1
+          models:
+            - name: ${configured}
+              alias: gpt-image-2
+`;
+
+  it.each([
+    [
+      "a custom configured upstream",
+      "gpt-image-2",
+      "openai/gpt-image-2-cpr",
+      "openai/gpt-image-2-cpr",
+      "openai/gpt-image-2-cpr",
+    ],
+    [
+      "a prefixed builtin upstream",
+      "gpt-image-2",
+      "openai/gpt-image-2",
+      "openai/gpt-image-2",
+      "openai/gpt-image-2",
+    ],
+    [
+      "a case-sensitive upstream",
+      "gpt-image-2",
+      "OpenAI/GPT-Image-2",
+      "OpenAI/GPT-Image-2",
+      "OpenAI/GPT-Image-2",
+    ],
+    ["another builtin upstream", "gpt-image-2", "gpt-image-1.5", "gpt-image-1.5", "gpt-image-1.5"],
+    [
+      "a routing-like configured prefix",
+      "gpt-image-2",
+      "codex/gpt-image-2",
+      "codex/gpt-image-2",
+      "codex/gpt-image-2",
+    ],
+    [
+      "a thinking suffix on the configured upstream",
+      "tenant/gpt-image-2(high)",
+      "OpenAI/GPT-Image-2(high)",
+      "OpenAI/GPT-Image-2",
+      "OpenAI/GPT-Image-2",
+    ],
+    [
+      "an unconfigured resolved model",
+      "gpt-image-2",
+      "openai/gpt-image-2-cpr",
+      "",
+      "openai/gpt-image-2-cpr",
+    ],
+    [
+      "a legacy builtin prefix without an upstream",
+      "codex/gpt-image-1.5(high)",
+      "codex/gpt-image-1.5(high)",
+      "",
+      "gpt-image-1.5",
+    ],
+    [
+      "a legacy builtin case without an upstream",
+      "CODEX/GPT-Image-2(high)",
+      "CODEX/GPT-Image-2(high)",
+      "",
+      "gpt-image-2",
+    ],
+  ])("%s", async (_name, requested, resolved, configured, want) => {
+    for (const path of ["/v1/images/generations", "/v1/images/edits"]) {
+      const h = await harness(
+        providerKeyCredential(),
+        () => new Response('{"created":1,"data":[{"b64_json":"AA=="}]}', { status: 200 }),
+        configured === "" ? undefined : yamlFor(configured),
+      );
+
+      await execute(
+        makeCodexExecutor(),
+        h,
+        {
+          model: resolved,
+          payload: json({
+            model: requested,
+            prompt: "diagnostic",
+            images: [{ image_url: "data:image/png;base64,AA==" }],
+          }),
+        },
+        options({
+          sourceFormat: "openai-image",
+          metadata: { ...options().metadata, requestPath: path, requestedModel: requested },
+        }),
+      );
+
+      const call = h.calls[0]!;
+
+      expect(call.url).toBe(
+        `https://codex.example.test/v1${path === "/v1/images/edits" ? "/images/edits" : "/images/generations"}`,
+      );
+      expect((JSON.parse(call.text) as { model: string }).model).toBe(want);
+    }
+  });
+});

@@ -695,6 +695,20 @@ describe("images", () => {
     expect(call.headers["accept"]).toBe("application/json");
   });
 
+  it.each([
+    "gpt-image-2.6",
+    "gpt-image-2.6-flare",
+    "gpt-image-2.6-sunburst",
+    "codex/gpt-image-2.6",
+  ])("accepts the gpt-image-2.6 model %s", async (model) => {
+    const p = pipeline(() => jsonResponse(IMAGE));
+
+    const response = await p.call("/v1/images/generations", postJson({ model, prompt: "a cat" }));
+
+    expect(response.status).toBe(200);
+    expect(p.calls[0]!.url).toBe("https://chatgpt.com/backend-api/codex/images/generations");
+  });
+
   it("multipart edits are converted to JSON and free-plan credentials are skipped", async () => {
     const form = new FormData();
     form.set("prompt", "make it blue");
@@ -751,6 +765,227 @@ describe("images", () => {
     expect(
       (await p.call("/v1/images/generations", postJson({ model: "dall-e-3", prompt: "x" }))).status,
     ).toBe(400);
+  });
+});
+
+const hostedTools = (body: string): Json => (JSON.parse(body) as { tools?: Json }).tools as Json;
+
+// d1e5cc60 (+ 714f0526, 8fb60326): hosted image_generation on Codex Responses-Lite routes.
+describe("hosted image_generation on Responses-Lite routes", () => {
+  const FORCED = {
+    tools: [{ type: "image_generation" }],
+    tool_choice: { type: "image_generation" },
+  };
+
+  it.each(["gpt-6-sol", "gpt-5.6-sol", "codex/gpt-6-astra"])(
+    "rejects a forced hosted image_generation on the lite model %s with a request-scoped 400",
+    async (model) => {
+      const p = pipeline(() => sseResponse(TEXT_STREAM));
+
+      const response = await p.call("/v1/responses", postJson({ model, input: "draw", ...FORCED }));
+
+      expect(response.status).toBe(400);
+      const text = await response.text();
+      expect(text).toContain("/v1/images/generations");
+      expect(text).toContain("/v1/images/edits");
+      expect(p.calls).toHaveLength(0);
+      expect(p.log.reports[0]?.result).toMatchObject({ success: false, httpStatus: 400 });
+      expect(p.log.reports[0]?.result.credentialScoped).not.toBe(true);
+    },
+  );
+
+  it.each([
+    [
+      "required with only image_generation declared",
+      { tools: [{ type: "image_generation" }], tool_choice: "required" },
+    ],
+    [
+      "allowed_tools required",
+      {
+        tools: [{ type: "function", name: "lookup" }, { type: "image_generation" }],
+        tool_choice: {
+          type: "allowed_tools",
+          mode: "required",
+          tools: [{ type: "image_generation" }],
+        },
+      },
+    ],
+  ])("rejects %s", async (_name, fields) => {
+    const p = pipeline(() => sseResponse(TEXT_STREAM));
+
+    const response = await p.call(
+      "/v1/responses",
+      postJson({ model: "gpt-6-sol", input: "draw", ...fields }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(p.calls).toHaveLength(0);
+  });
+
+  it.each([
+    ["tool_choice omitted", { tools: [{ type: "image_generation" }] }],
+    ["tool_choice auto", { tools: [{ type: "image_generation" }], tool_choice: "auto" }],
+    [
+      "required with another tool declared",
+      {
+        tools: [{ type: "image_generation" }, { type: "function", name: "lookup" }],
+        tool_choice: "required",
+      },
+    ],
+  ])("lets %s through on a lite model", async (_name, fields) => {
+    const p = pipeline(() => sseResponse(TEXT_STREAM));
+
+    const response = await p.call(
+      "/v1/responses",
+      postJson({ model: "gpt-6-sol", input: "draw", ...fields }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(p.calls).toHaveLength(1);
+  });
+
+  it("rejects when the lite route is selected by the header, but not on a legacy model", async () => {
+    const p = pipeline(() => sseResponse(TEXT_STREAM));
+
+    const lite = await p.call(
+      "/v1/responses",
+      postJson(
+        { model: "gpt-5.4", input: "draw", ...FORCED },
+        { "X-OpenAI-Internal-Codex-Responses-Lite": "true" },
+      ),
+    );
+
+    expect(lite.status).toBe(400);
+
+    const legacy = await p.call(
+      "/v1/responses",
+      postJson({ model: "gpt-5.4", input: "draw", ...FORCED }),
+    );
+
+    expect(legacy.status).toBe(200);
+  });
+
+  it("forwards the request on a provider-key credential", async () => {
+    const p = pipeline(() => sseResponse(TEXT_STREAM), { credentials: [providerKeyCredential()] });
+
+    const response = await p.call(
+      "/v1/responses",
+      postJson({ model: "gpt-6-sol", input: "draw", ...FORCED }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(p.calls).toHaveLength(1);
+  });
+
+  it("forwards the request under disable-image-generation: passthrough", async () => {
+    const p = pipeline(() => sseResponse(TEXT_STREAM), {
+      config: await loadConfig("multimedia:\n  disable-image-generation: passthrough\n"),
+    });
+
+    const response = await p.call(
+      "/v1/responses",
+      postJson({ model: "gpt-6-sol", input: "draw", ...FORCED }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(hostedTools(p.calls[0]!.body)).toEqual([{ type: "image_generation" }]);
+  });
+
+  it("injects the hosted tool on a lite model without reasoning, not with reasoning effort", async () => {
+    const p = pipeline(() => sseResponse(TEXT_STREAM));
+
+    await p.call("/v1/responses", postJson({ model: "gpt-6-sol", input: "hi" }));
+    await p.call(
+      "/v1/responses",
+      postJson({ model: "gpt-6-sol", input: "hi", reasoning: { effort: "high" } }),
+    );
+    await p.call(
+      "/v1/responses",
+      postJson(
+        { model: "gpt-6-sol", input: "hi" },
+        { "X-OpenAI-Internal-Codex-Responses-Lite": "true" },
+      ),
+    );
+
+    expect(hostedTools(p.calls[0]!.body)).toEqual([
+      { type: "image_generation", output_format: "png" },
+    ]);
+    expect((JSON.parse(p.calls[1]!.body) as { tools?: Json }).tools).toBeUndefined();
+    expect((JSON.parse(p.calls[2]!.body) as { tools?: Json }).tools).toBeUndefined();
+  });
+
+  it("strips the unsupported complexity parameter from declared hosted tools", async () => {
+    const p = pipeline(() => sseResponse(TEXT_STREAM));
+
+    await p.call(
+      "/v1/responses",
+      postJson({
+        model: "gpt-5.4",
+        input: "draw",
+        tools: [{ type: "image_generation", complexity: "high", size: "1024x1024" }],
+      }),
+    );
+
+    expect(hostedTools(p.calls[0]!.body)).toEqual([
+      { type: "image_generation", size: "1024x1024" },
+    ]);
+  });
+
+  it("maps an image_generation_user_error terminal failure to 400 with remediation guidance", async () => {
+    const p = pipeline(() =>
+      sseResponse([
+        frame(created()),
+        frame({
+          type: "response.failed",
+          response: {
+            status: "failed",
+            error: {
+              type: "image_generation_user_error",
+              code: "invalid_value",
+              message: "Complexity 'medium' is not supported for this image model.",
+              param: "complexity",
+            },
+          },
+        }),
+      ]),
+    );
+
+    const response = await p.call("/v1/responses", postJson({ model: "gpt-5.4", input: "hi" }));
+
+    expect(response.status).toBe(400);
+    const text = await response.text();
+    expect(text).toContain("/v1/images/generations");
+    expect(text).toContain("gpt-5.4-mini");
+  });
+});
+
+describe("streamed image_generation_user_error", () => {
+  it("is delivered as a 400 failure with remediation guidance", async () => {
+    const p = pipeline(() =>
+      sseResponse([
+        frame(created()),
+        frame({
+          type: "error",
+          error: {
+            type: "image_generation_user_error",
+            code: "invalid_value",
+            message: "Complexity 'medium' is not supported for this image model.",
+            param: "complexity",
+          },
+        }),
+      ]),
+    );
+
+    const response = await p.call(
+      "/v1/responses",
+      postJson({ model: "gpt-5.4", input: "hi", stream: true }),
+    );
+
+    const text = await response.text();
+
+    expect(text).toContain("event: error");
+    expect(text).toContain("/v1/images/generations");
+    expect(text).toContain("gpt-5.4-mini");
   });
 });
 
