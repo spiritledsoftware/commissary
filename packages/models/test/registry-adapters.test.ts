@@ -187,9 +187,13 @@ describe("ModelCapabilities.registryLayer", () => {
           assert.strictEqual(get(body, "output_config.effort"), "low", model);
         }
 
-        assert.deepStrictEqual(get(yield* turnOff("claude-opus-5"), "thinking"), {
-          type: "disabled",
-        });
+        // Models that can be turned off keep the plain `disabled`; the catalog says so with `zeroAllowed: true`.
+        for (const model of ["claude-opus-5", "claude-haiku-5-5", "claude-opus-4-5"])
+          assert.deepStrictEqual(
+            get(yield* turnOff(model), "thinking"),
+            { type: "disabled" },
+            model,
+          );
       }).pipe(
         Effect.provideService(CurrentOrg, GLOBAL_ORG),
         Effect.provide(ModelCapabilities.registryLayer),

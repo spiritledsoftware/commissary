@@ -271,6 +271,20 @@ const claudeFamilyModelIds = (modelId: string): string[] => {
   return ids;
 };
 
+/** The Claude model a variant id belongs to, for when no catalog entry has exactly that id. */
+const findClaudeFamilyModel = (
+  models: ReadonlyArray<ModelInfo> | undefined,
+  modelId: string,
+): ModelInfo | undefined => {
+  for (const familyId of claudeFamilyModelIds(modelId)) {
+    const found = models?.find((model) => model.id === familyId);
+
+    if (found !== undefined) return found;
+  }
+
+  return undefined;
+};
+
 /** Exact id within one channel's models; a Claude variant falls back to its family's entry. */
 export const lookupStaticModelInfoByChannel = (
   catalogs: ModelCatalogs,
@@ -281,15 +295,10 @@ export const lookupStaticModelInfoByChannel = (
 
   if (id === "") return undefined;
   const models = staticModelsByChannel(catalogs, channel);
-  let found = models?.find((model) => model.id === id);
 
-  if (found === undefined && channel.trim().toLowerCase() === "claude") {
-    for (const familyId of claudeFamilyModelIds(id)) {
-      found = models?.find((model) => model.id === familyId);
-
-      if (found !== undefined) break;
-    }
-  }
+  const found =
+    models?.find((model) => model.id === id) ??
+    (channel.trim().toLowerCase() === "claude" ? findClaudeFamilyModel(models, id) : undefined);
 
   return found === undefined ? undefined : cloneModelInfo(found);
 };
@@ -325,11 +334,7 @@ export const lookupStaticModelInfo = (
   }
 
   // Dated and bracketed Claude variants share the capabilities of their catalog entry.
-  for (const familyId of claudeFamilyModelIds(modelId)) {
-    const found = models.claude.find((model) => model.id === familyId);
+  const family = findClaudeFamilyModel(models.claude, modelId);
 
-    if (found !== undefined) return cloneModelInfo(found);
-  }
-
-  return undefined;
+  return family === undefined ? undefined : cloneModelInfo(family);
 };

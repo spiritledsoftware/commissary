@@ -140,6 +140,8 @@ export interface PipelineOptions {
   readonly credentialPicker?: Layer.Layer<CredentialPicker, never, ConfigReader>;
   /** Defaults to the config-backed model lookup. */
   readonly modelProviders?: Layer.Layer<ModelProviders, never, ConfigReader>;
+  /** Defaults to the config-backed capabilities (only the models declared in config are known). */
+  readonly modelCapabilities?: Layer.Layer<ModelCapabilities, never, ConfigReader>;
   /** Upstream WebSocket dialer for the Codex/xAI transports (defaults to the real `fetch` dialer). */
   readonly websocketConnector?: Layer.Layer<UpstreamWebSocketConnector>;
   /** Extra global layers (middleware, loggers) merged next to the routes. */
@@ -166,7 +168,7 @@ export const makePipeline = (options: PipelineOptions): PipelineHarness => {
     credentialPicker: options.credentialPicker ?? StaticCredentialPickerLayer,
     // Tests configure everything through the static config: no registry, no refresh.
     modelProviders: options.modelProviders ?? ModelProviders.configLayer,
-    modelCapabilities: ModelCapabilities.configLayer,
+    modelCapabilities: options.modelCapabilities ?? ModelCapabilities.configLayer,
     credentialRefresher: CredentialRefresher.none,
     ...(options.websocketConnector !== undefined
       ? { websocketConnector: options.websocketConnector }

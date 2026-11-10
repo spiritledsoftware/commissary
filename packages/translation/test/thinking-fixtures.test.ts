@@ -26,8 +26,6 @@ import {
 } from "../src/thinking/index.ts";
 import {
   type ApplyFixture,
-  applierAheadOfFixture,
-  applyAheadOfFixture,
   bodyKey,
   catalogLookup,
   collectMismatches,
@@ -39,8 +37,8 @@ import {
   type ModelSpec,
   parseBody,
   resolveApplierModel,
-  validateAheadOfFixture,
 } from "./support/thinking.ts";
+import { aheadOfFixture, unusedAheadOfFixtureEntries } from "./support/ported-ahead.ts";
 
 // Golden cases generated from the real Go internal/thinking by `go run ./tools/fixturegen/thinking`.
 
@@ -157,7 +155,6 @@ describe("thinking golden fixtures", () => {
         const model = group.model ?? undefined;
 
         const failures = collectMismatches(group.cases, (c) => {
-          if (validateAheadOfFixture(model, c.c, c.t)) return undefined;
           const result = validateConfig(decodeConfig(c.c), model, c.f, c.t, c.s === true);
 
           const actual =
@@ -167,7 +164,9 @@ describe("thinking golden fixtures", () => {
 
           const expected = c.e ?? c.o;
 
-          return actual === expected
+          const key = `validate #${index} ${model?.id ?? "<none>"} ${c.c} ${c.f}->${c.t} suffix=${c.s === true}`;
+
+          return aheadOfFixture(key, actual, expected ?? "")
             ? undefined
             : `${c.c} ${c.f}->${c.t} suffix=${c.s === true}: ${actual} != ${expected}`;
         });
@@ -205,11 +204,12 @@ describe("thinking golden fixtures", () => {
       const actual = `${bodyKey(result.body)} ${result.error?.code ?? ""} ${result.error?.message ?? ""}`;
       const expected = `${expectedKey(expectedBody)} ${c.error?.code ?? ""} ${c.error?.message ?? ""}`;
 
-      if (actual === expected) return undefined;
-
       if (
-        (c.variant === "modelInfo" || c.variant === "modelInfoSummary") &&
-        applyAheadOfFixture(resolveModelInfo(c), expectedBody)
+        aheadOfFixture(
+          `apply ${c.variant} ${c.to} ${c.model} from=${c.from} model=${c.modelRef ?? c.modelInfo?.id ?? ""} source=${c.source ?? ""} summary=${JSON.stringify(c.summary ?? null)} ${c.body}`,
+          actual,
+          expected,
+        )
       )
         return undefined;
 
@@ -250,9 +250,9 @@ describe("thinking golden fixtures", () => {
 
           const expected = expectedKey(c.same === true ? c.body : (c.out ?? ""));
 
-          if (applierAheadOfFixture(name, c.config)) return undefined;
+          const key = `applier ${name} model=${c.model ?? ""} ${c.config} ${c.body}`;
 
-          return bodyKey(out) === expected
+          return aheadOfFixture(key, bodyKey(out), expected)
             ? undefined
             : `${name} model=${c.model ?? ""} ${c.config} ${c.body}: ${bodyKey(out)} != ${expected}`;
         });
@@ -344,5 +344,10 @@ describe("thinking golden fixtures", () => {
     });
 
     expect(failures).toEqual([]);
+  });
+
+  // Runs last: the ported-ahead entries exist only while a golden case needs them (F2 deletes them with the module).
+  it("every ported-ahead entry is used by a golden case", () => {
+    expect(unusedAheadOfFixtureEntries()).toEqual([]);
   });
 });

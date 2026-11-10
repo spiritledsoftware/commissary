@@ -27,8 +27,7 @@ const disable = (
   body: Json | undefined,
   modelInfo: ThinkingModelInfo | undefined,
 ): Json | undefined => {
-  const disableType = modelInfo?.thinking?.disableType;
-  const type = disableType === undefined || disableType === "" ? "disabled" : disableType;
+  const type = modelInfo?.thinking?.disableType ?? "disabled";
 
   return clearEffort(setPath(setPath(body, "thinking", {}), "thinking.type", type));
 };
@@ -105,22 +104,26 @@ const applyBudget = (
   return normalizeClaudeBudget(result, budget, modelInfo);
 };
 
-/** User-defined models: written without validation; level → adaptive effort, auto → enabled. */
+/**
+ * User-defined models: written without validation; level → adaptive effort, auto → enabled. Unlike Go, which passes
+ * no model here, a `disableType` on the record is honoured: configured models are user-defined for each attempt.
+ */
 const applyCompatibleClaude = (
   body: Json | undefined,
   config: ThinkingConfig,
+  modelInfo: ThinkingModelInfo | undefined,
 ): Json | undefined => {
   const root = ensureBody(body);
 
   switch (config.mode) {
     case "none":
-      return disable(root, undefined);
+      return disable(root, modelInfo);
     case "auto":
       return enableWithoutBudget(root);
     case "level":
       return config.level === "" ? root : adaptive(root, config.level);
     case "budget":
-      if (config.budget === 0) return disable(root, undefined);
+      if (config.budget === 0) return disable(root, modelInfo);
 
       return clearEffort(
         setPath(setPath(root, "thinking.type", "enabled"), "thinking.budget_tokens", config.budget),
@@ -131,7 +134,7 @@ const applyCompatibleClaude = (
 export const claudeApplier: ProviderApplier = {
   apply(body, config, modelInfo) {
     if (isUserDefinedModel(modelInfo) || modelInfo === undefined)
-      return applyCompatibleClaude(body, config);
+      return applyCompatibleClaude(body, config, modelInfo);
 
     if (modelInfo.thinking === undefined) return body;
 

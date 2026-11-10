@@ -314,6 +314,28 @@ describe("assembleCredentialModels: provider keys", () => {
     expect(custom?.explicitThinking).toBe(true);
   });
 
+  it("a configured thinking block replaces the levels but keeps how the catalog turns thinking off", () => {
+    const assembled = assembleCredentialModels(
+      source("k", "claude", {
+        authKind: "apikey",
+        source: "config",
+        models: [
+          { name: "claude-sonnet-5-5", alias: "fast", thinking: { levels: ["low", "high"] } },
+          // Dated and bracketed variants resolve to their family's entry.
+          { name: "claude-sonnet-5-5[1m]", thinking: { levels: ["low"] } },
+          { name: "claude-opus-5", alias: "plain", thinking: { levels: ["low"] } },
+        ],
+      }),
+      options(),
+    );
+
+    const [fast, bracketed, plain] = assembled?.models ?? [];
+
+    expect(fast?.thinking).toEqual({ levels: ["low", "high"], disableType: "between_tools" });
+    expect(bracketed?.thinking?.disableType).toBe("between_tools");
+    expect(plain?.thinking).toEqual({ levels: ["low"] });
+  });
+
   it("Provider-key credentials without models use the provider catalog", () => {
     const assembled = assembleCredentialModels(
       source("k", "gemini", { authKind: "apikey", source: "config" }),

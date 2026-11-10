@@ -12,7 +12,7 @@ import { Clock, Effect, Option, type Types } from "effect";
 import { EntryOnlyFormats } from "@commissary/translation/formats";
 import type { OpenCodeProtocol } from "../config/schema.ts";
 import { OPENCODE_SPECS, type OpenCodeProvider } from "../executor/opencode/providers.ts";
-import { embeddedModelsDev, modelsDevFromText } from "./catalog.ts";
+import { catalogAdditions, embeddedModelsDev, modelsDevFromText } from "./catalog.ts";
 import { usesEmbeddedCatalog } from "./catalog-source.ts";
 import { deploymentKvOf } from "../kv.ts";
 import { CATALOG_KEYS } from "./catalog-store.ts";
@@ -202,7 +202,15 @@ export const catalogModelInfo = (
   const outputModalities = model.modalities?.output ?? [];
 
   if (outputModalities.length > 0) info.supportedOutputModalities = [...outputModalities];
-  const thinking = thinkingFromModelsDev(model);
+
+  // A `messages` model is a Claude model: it fills the thinking gaps models.dev leaves from the Claude facts of the
+  // same id (how, and whether, it turns thinking off), gaps only (ADR 0020).
+  const claudeFacts =
+    protocol === "messages"
+      ? catalogAdditions().providers.claude?.facts?.[model.id]?.thinking
+      : undefined;
+
+  const thinking = thinkingFromModelsDev(model, [claudeFacts]);
 
   if (thinking !== undefined) info.thinking = thinking;
 

@@ -262,6 +262,41 @@ describe("payload rules are the final mutation", () => {
   });
 });
 
+describe("a Claude client's output_config.effort without a thinking object", () => {
+  const request = (effort: string) =>
+    postJson({
+      model: "gpt-5.4",
+      max_tokens: 20,
+      output_config: { effort },
+      messages: [{ role: "user", content: "hi" }],
+    });
+
+  const reasoningEffort = (body: string): string =>
+    (JSON.parse(body) as { reasoning: { effort: string } }).reasoning.effort;
+
+  it("reaches Codex as the reasoning effort instead of the medium default", async () => {
+    const p = pipeline(() => sseResponse(TEXT_STREAM));
+
+    expect((await p.call("/v1/messages", request(" High "))).status).toBe(200);
+    expect(reasoningEffort(p.calls[0]!.body)).toBe("high");
+  });
+
+  it("is still overridden by a payload rule, which has the last word (ADR 0011)", async () => {
+    const ruled = await loadConfig(`
+requests:
+  payload:
+    override:
+      - models: [{ name: "gpt-5.4", protocol: codex }]
+        params: { "reasoning.effort": "low" }
+`);
+
+    const p = pipeline(() => sseResponse(TEXT_STREAM), { config: ruled });
+
+    expect((await p.call("/v1/messages", request("high"))).status).toBe(200);
+    expect(reasoningEffort(p.calls[0]!.body)).toBe("low");
+  });
+});
+
 describe("POST /v1/responses (stream)", () => {
   it("frames upstream SSE lines, rebuilds an empty output and ends without [DONE]", async () => {
     // Lines arrive split at arbitrary byte boundaries.

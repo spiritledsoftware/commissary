@@ -475,30 +475,33 @@ Port of `internal/thinking`, keeping the "canonical `ThinkingConfig` → central
   `registry.ModelInfo`); the model registry slice supplies richer records and the lookup.
 - Summary helpers (`extractSummaryConfig`, `applySummaryConfigForProvider`, `applyTranslatedSummaryToClaude`, …) are
   exported for the translator registry (Go calls them from `TranslateRequestEnvelope`).
-- **Turning thinking off** (Go `ad9e456d`, ticket C1). The way a Claude model turns thinking off is a catalog fact, not
-  a level choice: `ModelThinkingSupport.disableType` (`catalog/additions.json` `facts`, `thinking.disableType`; Go
-  `ThinkingSupport.DisableType`) is the `thinking.type` the Claude applier writes for mode `none` or a zero budget,
-  `disabled` when absent. `claude-sonnet-5-5` rejects `disabled` and needs `between_tools`. Neither type accepts other
-  thinking fields, so the applier replaces the whole `thinking` object and drops `output_config.effort` (`between_tools`
-  only takes effort `high` or below). A model whose catalog entry has `zeroAllowed: false` and levels (`claude-opus-5-5`,
-  `claude-fable-5`, `claude-fable-5-1`) cannot be turned off: validation falls back to its lowest canonical level (the
-  lowest of an unordered list, ignoring `none`/`auto`; for every target, as in Go), and an off request keeps
-  `thinking.display: omitted` so cloaking does not add progress updates. Configured models that override the levels
-  keep the catalog's `disableType`. Dated and bracketed Claude variants (`claude-sonnet-5-5-20261001`,
-  `claude-opus-5-5[1m]`) resolve to their family's catalog entry in the static lookups. Adaptive-only Claude models
-  (Opus 4.7/4.8, Fable 5/5.1) have no budget range in the additions, so budgets map to an effort level.
-- **Standalone `output_config.effort`** (Go `009f8d7a`, `e6931d51`): a Claude request with an effort and no `thinking`
-  object reaches OpenAI and Codex targets as `reasoning_effort` / `reasoning.effort`, and a Claude-to-Claude request
-  keeps the model's thinking default (no validation, only a suffix or an explicit summary changes it).
-- **Usage effort** (Go `fb30a9e8`): the `reasoning_effort` of a Claude request is the last mid-conversation effort
-  directive (`claudeEffortDirective`: a `role: system` message with `output_config.effort`, unless thinking is
-  `disabled` or `between_tools`), not the top-level placeholder clients keep fixed for prompt caching; a suffix still
-  wins and `between_tools` reads as `none`.
-- **`thinking.display: updates`** (Go `13fdcc5e`) is an enabled summary mode and survives an enabled summary being
-  re-applied (a disabled one still writes `omitted`).
-- The thinking golden fixtures predate these changes: until F2 regenerates them, the fixture tests skip the cases the
-  ported behaviour changes (`*AheadOfFixture` in `packages/translation/test/support/thinking.ts`), and
-  `packages/translation/test/thinking-disable.test.ts` covers them.
+- **Turning thinking off on a Claude target** (Go `ad9e456d`). The model's `thinking.disableType` names the
+  `thinking.type` sent (`between_tools` on `claude-sonnet-5-5`; absent means `disabled`). The off body replaces the whole
+  `thinking` object and drops `output_config.effort`; `between_tools` accepts no other thinking field and only a
+  thinking level of `high` or below. A catalog model that cannot turn thinking off (it has levels and no
+  `zeroAllowed: true`, the rule every target follows) gets its lowest canonical thinking level instead (the lowest of an
+  unordered list, ignoring `none` and `auto`; this replaces `levels[0]` on every target, as in Go), with
+  `thinking.block_binding` removed and `display: omitted`, so cloaking adds no progress updates to a request whose
+  caller asked for no thinking. The compatible (user-defined) Claude applier also honours a `disableType` on the model
+  record, and a zero budget disables there; Go passes no model to it. That keeps Go's effective behaviour for a
+  configured alias of `claude-sonnet-5-5`, because configured `models[]` entries resolve as user-defined for each
+  attempt. Known difference: Go's `ResolveModelInfo` marks them `UserDefined=false`, so they skip validation and the
+  lowest-level fallback here (#403).
+- **A Claude request's `output_config.effort` without a `thinking` object** is a thinking level for every other
+  target (Go `009f8d7a`, `e6931d51`): `extractClaudeConfig` reads it, and the OpenAI and Codex request translators map
+  it (an explicit `thinking` object, including `disabled` and `budget_tokens`, wins; a thinking suffix wins over both).
+  Claude-to-Claude without a `thinking` object or a thinking suffix passes through apart from the summary, keeping the
+  model's own default; the check sits before the user-defined and no-thinking-support branches.
+- **`between_tools` and `updates`**: `between_tools` counts as off only in usage extraction, not in
+  `extractClaudeConfig`, so unknown models keep the value the caller sent. `thinking.display: updates` is an enabled
+  summary and is kept on Claude bodies (Go `13fdcc5e`); a disabled summary still writes `omitted`.
+- The OpenAI chat and Responses translators to Claude send a thinking level the model lists as it is (`xhigh` stays), and
+  the Gemini translator turns a dynamic budget (`-1`) or level `auto` into adaptive thinking with no `effort` when the
+  model allows dynamic budgets (Go `ad9e456d`).
+- The thinking golden fixtures predate `ad9e456d` for the cases of a model that cannot be turned off and for the
+  compatible applier's zero budget. `PORTED_AHEAD_OF_FIXTURES` (`packages/translation/test/support/ported-ahead.ts`)
+  asserts the new output of each of those cases; the fixture JSON is untouched and the map goes with its regeneration
+  (F2, #388).
 - Fixtures: `go run ./tools/fixturegen/thinking` → `packages/translation/test/fixtures/thinking.json` (~2.7 MB; includes the Go
   static model catalog used by the lookup). Known Go quirk not mirrored: gjson reads _unparsable_ source JSON
   leniently in `extractCodexConfig`; the Workers port only handles parsed bodies.
@@ -947,6 +950,14 @@ evaluated per isolate and cached for 5 s (`ModelRegistry.snapshot`, `RegistrySna
     dropped), per-model `facts` models.dev lacks (thinking `dynamicAllowed`, web search, ...), per-provider `defaults`,
     `include`/`exclude` patterns and the Codex `plans` (which model ids each plan offers). Seeded once from the Go
     catalog. An addition only **fills gaps**: where models.dev has a value it wins (a wrong value is fixed at models.dev).
+    Whether a Claude-protocol model can turn thinking off, and how, comes from the additions only, since Anthropic's
+    thinking levels never include `none`: every Claude model that can carries `zeroAllowed: true` (`claude-haiku-5-5`,
+    `claude-opus-4-5`, Kimi's `kimi-for-coding`, ...), and the ones that cannot (`claude-opus-5-5`, `claude-fable-5`,
+    `-5-1`, `-5-2`) carry `zeroAllowed: false`. `disableType` is a closed literal (`between_tools`), validated by the
+    additions schema and the wire shape; it is a fact about Anthropic's API, not operator config (payload rules remain
+    the operator's override), so a configured `thinking` block for a known model keeps the catalog's `disableType`;
+    Go's yaml `disable-type` is not ported. Dated (`-YYYYMMDD`) and bracketed (`[1m]`) Claude ids resolve to their base
+    entry when no exact entry exists.
     Context length, output limit, modalities and the reasoning levels of a model models.dev lists follow models.dev, so
     some limits differ from Go's (Codex context windows grow to models.dev's figure; thinking levels come from
     `reasoning_options`, falling back to the additions' ranges). Thinking rules: a `budget_tokens` option gives a range
@@ -1914,6 +1925,10 @@ once; a 401 retry keeps the rejected attempt's failed record, a failed-over cred
   tier survives) or `publishMerged` (Claude/Interactions events that complement each other). Go's int64 overflow checks
   become safe-integer checks. Executors must use these parsers: a hand-rolled `UsageDetail` without a breakdown is
   re-derived from the raw buckets, which is wrong for Claude (reasoning inside output).
+- **`reasoning_effort`**: the Claude executor, and OpenCode's Messages path, record it from the final upstream body after
+  payload rules (`extractTranslatedReasoningEffort`). The last mid-conversation effort directive (a `role: system` turn
+  carrying `output_config.effort`) wins over the top-level value that clients keep fixed for prompt caching, and
+  `disabled` and `between_tools` record `none` (Go `fb30a9e8`); a thinking suffix still wins.
 - **TTFT** (`ttft.ts` + reporter): `markFirstByte` (non-stream: effective TTFT), `recordFirstPacket` /
   `observeTokenEvent(now, isToken)` (streams: first substantive token event, first packet as fallback). Codex streams use
   `isResponsesTokenEvent`; OpenAI-compatible and Claude executors still mark the first response byte (hook the matching
@@ -2149,6 +2164,9 @@ works, and is not migrated.
   `responses`, `@ai-sdk/anthropic` -> `messages`, `@ai-sdk/google` -> `gemini`, `@ai-sdk/openai-compatible`/`@ai-sdk/mistral` ->
   `chat`), else `chat` with a logged warning (unknown model or package). Gemini and System One exist only on Zen; on Go either
   protocol falls back to chat (and a configured `systemone` does not type the model `systemone`).
+- **Thinking facts of `messages` models**: a model of the `messages` protocol is a Claude model, so it fills the thinking
+  gaps models.dev leaves from the `claude` provider's additions for the same id (ADR 0020: gaps only), which is how
+  Zen's `claude-sonnet-5-5` gets `between_tools` and its `claude-opus-5-5` the lowest-level fallback.
 - **Paths**: `chat` -> `{base}/chat/completions` (`chat.ts`: openai-compat shaping, max-token normalisation from the entry's
   `use-max-completion-tokens`, `stream_options.include_usage`, `OpenAICompatStreamReader`); `responses` -> `{base}/responses`, always
   streamed upstream and aggregated for non-stream callers (the Responses shaping and SSE handling shared with Meta:

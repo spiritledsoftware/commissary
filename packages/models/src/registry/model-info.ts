@@ -9,6 +9,7 @@
  * instead of `=== undefined`.
  */
 import { Schema, type Types } from "effect";
+import { BETWEEN_TOOLS, type DisableType } from "@commissary/translation/thinking";
 
 export interface ThinkingSupport {
   readonly min?: number;
@@ -16,7 +17,7 @@ export interface ThinkingSupport {
   readonly zeroAllowed?: boolean;
   readonly dynamicAllowed?: boolean;
   /** Claude `thinking.type` that turns thinking off; absent means `disabled` (`between_tools` on claude-sonnet-5-5). */
-  readonly disableType?: string;
+  readonly disableType?: DisableType;
   readonly levels?: readonly string[];
 }
 
@@ -75,7 +76,7 @@ const WireThinking = Schema.Struct({
   max: optionalNull(Schema.Number),
   zero_allowed: optionalNull(Schema.Boolean),
   dynamic_allowed: optionalNull(Schema.Boolean),
-  disable_type: optionalNull(Schema.String),
+  disable_type: optionalNull(Schema.Literal(BETWEEN_TOOLS)),
   levels: optionalNull(Strings),
 });
 

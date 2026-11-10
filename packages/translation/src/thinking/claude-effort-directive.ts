@@ -5,7 +5,7 @@
  */
 import { get, type Json } from "@commissary/json";
 import { getString, normalize } from "./json.ts";
-import { autoConfig, EMPTY_CONFIG, levelConfig, noneConfig } from "./types.ts";
+import { autoConfig, BETWEEN_TOOLS, EMPTY_CONFIG, levelConfig, noneConfig } from "./types.ts";
 import type { ThinkingConfig } from "./types.ts";
 
 /**
@@ -22,7 +22,7 @@ export const claudeEffortDirective = (body: Json | undefined): string => {
 
   switch (normalize(getString(body, "thinking.type"))) {
     case "disabled":
-    case "between_tools":
+    case BETWEEN_TOOLS:
       return "";
   }
 
@@ -42,6 +42,16 @@ export const claudeEffortDirective = (body: Json | undefined): string => {
   }
 
   return effort;
+};
+
+/**
+ * A Claude request's top-level `output_config.effort`, trimmed and lowercased, or "" when absent or not a string. It
+ * names a thinking level whether or not the request has a `thinking` object.
+ */
+export const claudeOutputEffort = (body: Json | undefined): string => {
+  const value = get(body, "output_config.effort");
+
+  return typeof value === "string" ? normalize(value) : "";
 };
 
 export const extractClaudeEffortDirectiveConfig = (body: Json | undefined): ThinkingConfig => {

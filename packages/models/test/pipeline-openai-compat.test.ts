@@ -132,6 +132,32 @@ describe("Claude Messages client -> OpenAI-compatible upstream", () => {
     expect(at(body, "content.1")).toMatchObject({ name: "lookup", input: { q: 1 } });
   });
 
+  it("keeps a standalone output_config.effort as reasoning_effort, and a payload rule still overrides it", async () => {
+    const request = postJson({
+      model: "alias-model",
+      max_tokens: 20,
+      output_config: { effort: "High" },
+      messages: [{ role: "user", content: "hi" }],
+    });
+
+    const kept = pipeline(() => jsonResponse(COMPLETION));
+    afterAll(kept.dispose);
+    expect((await kept.call("/v1/messages", request)).status).toBe(200);
+    expect(at(JSON.parse(kept.calls[0]!.body), "reasoning_effort")).toBe("high");
+
+    const ruled = makePipeline({
+      config: await loadConfig(`${YAML}
+      - models: [{ name: "upstream-model", protocol: openai }]
+        params: { "reasoning_effort": "low" }
+`),
+      respond: () => jsonResponse(COMPLETION),
+    });
+
+    afterAll(ruled.dispose);
+    expect((await ruled.call("/v1/messages", request)).status).toBe(200);
+    expect(at(JSON.parse(ruled.calls[0]!.body), "reasoning_effort")).toBe("low");
+  });
+
   it("translates the stream to Messages events", async () => {
     const p = pipeline(() => sseResponse(STREAM));
     afterAll(p.dispose);

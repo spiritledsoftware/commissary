@@ -24,6 +24,7 @@
  */
 import { Result, Schema } from "effect";
 import type { Json } from "@commissary/json";
+import { BETWEEN_TOOLS } from "@commissary/translation/thinking";
 import { Cost } from "./models-dev.ts";
 
 const optional = Schema.optionalKey;
@@ -36,7 +37,7 @@ const Thinking = Schema.Struct({
   zeroAllowed: optional(Schema.Boolean),
   dynamicAllowed: optional(Schema.Boolean),
   /** The Claude `thinking.type` that turns thinking off, when it is not `disabled`. */
-  disableType: optional(Schema.String),
+  disableType: optional(Schema.Literal(BETWEEN_TOOLS)),
   levels: optional(Strings),
 });
 

@@ -12,6 +12,7 @@ import { getFirst, getString, normalize } from "./json.ts";
 import { parseSuffix, parseSuffixToConfig } from "./suffix.ts";
 import {
   autoConfig,
+  BETWEEN_TOOLS,
   budgetConfig,
   EMPTY_CONFIG,
   hasThinkingConfig,
@@ -262,7 +263,7 @@ const extractThinkingConfigForUsage = (
       return extractCodexUsageConfig(body);
     case "claude": {
       // between_tools is how claude-sonnet-5-5 turns thinking off.
-      if (getString(body, "thinking.type") === "between_tools") return noneConfig();
+      if (getString(body, "thinking.type") === BETWEEN_TOOLS) return noneConfig();
       const config = extractThinkingConfig(body, provider);
 
       if (config.mode === "none" && hasThinkingConfig(config)) return config;

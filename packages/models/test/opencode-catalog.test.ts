@@ -71,6 +71,31 @@ describe("default registered models", () => {
     expect(models.find((info) => info.id === "jev-1.13-free")?.type).toBe("systemone");
   });
 
+  it("a Messages-protocol model fills its thinking gaps from the Claude facts of the same id", () => {
+    const zen = defaultCatalogModels(embeddedModelsDev(), "opencode-zen");
+    const thinking = (id: string) => zen.find((info) => info.id === id)?.thinking;
+
+    expect(zen.find((info) => info.id === "claude-sonnet-5-5")?.type).toBe("claude");
+    expect(thinking("claude-sonnet-5-5")).toMatchObject({
+      zeroAllowed: true,
+      disableType: "between_tools",
+    });
+
+    expect(thinking("claude-opus-5-5")?.zeroAllowed).toBe(false);
+    expect(thinking("claude-haiku-5-5")?.zeroAllowed).toBe(true);
+    expect(thinking("claude-opus-4-5")?.zeroAllowed).toBe(true);
+
+    // Borrowed facts fill gaps only: the levels stay models.dev's.
+    expect(thinking("claude-opus-5-5")?.levels).toEqual(["low", "medium", "high", "xhigh", "max"]);
+  });
+
+  it("borrows nothing for the other protocols", () => {
+    const zen = defaultCatalogModels(embeddedModelsDev(), "opencode-zen");
+
+    for (const info of zen.filter((model) => model.type !== "claude"))
+      expect(info.thinking?.disableType, info.id).toBeUndefined();
+  });
+
   it("the bundled snapshot has models for both gateways", () => {
     const bundled = embeddedModelsDev();
     expect(Object.keys(bundled.opencode.models).length).toBeGreaterThan(10);

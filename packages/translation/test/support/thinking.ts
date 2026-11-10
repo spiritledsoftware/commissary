@@ -194,39 +194,3 @@ export const collectMismatches = <T>(
 
   return failures;
 };
-
-/**
- * Golden cases whose output predates an upstream change Commissary has ported ahead of the fixtures (ticket C1, Go
- * ad9e456d: a model that cannot be turned off falls back to its lowest level, on Claude too, and a zero Claude budget
- * disables thinking). `tools/fixturegen` regenerates the fixtures in F2; this module goes away with it. The ported
- * behaviour is covered by `thinking-disable.test.ts`.
- */
-const cannotBeDisabled = (model: ModelSpec | null | undefined, toClaude: boolean): boolean => {
-  const support = model?.thinking;
-  const levels = support?.levels ?? [];
-
-  return (
-    levels.length > 0 &&
-    support?.zeroAllowed !== true &&
-    (toClaude || !levels.some((level) => level.trim().toLowerCase() === "none"))
-  );
-};
-
-/** A `ValidateConfig` case asking to turn thinking off on a model that cannot be turned off. */
-export const validateAheadOfFixture = (
-  model: ModelSpec | null | undefined,
-  config: string,
-  toFormat: string,
-): boolean =>
-  cannotBeDisabled(model, toFormat === "claude") &&
-  (config === "none" || config === "level:none" || config.startsWith("budget:0"));
-
-/** An `applyThinking` case whose golden output turns thinking off (`disabled`) on a model that cannot be. */
-export const applyAheadOfFixture = (
-  model: ModelSpec | null | undefined,
-  expected: string,
-): boolean => cannotBeDisabled(model, true) && expected.includes(`"type":"disabled"`);
-
-/** A Claude applier case with a zero budget: it now replaces the whole `thinking` object, like any other off. */
-export const applierAheadOfFixture = (applier: string, config: string): boolean =>
-  applier === "claude" && config.startsWith("budget|0|");

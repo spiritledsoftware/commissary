@@ -3,7 +3,9 @@ import { Effect, Layer } from "effect";
 import type { Config } from "../../src/config/schema.ts";
 import { canonicalModelKey } from "../../src/credentials/selection/model-name.ts";
 import { ExecutionError } from "../../src/executor/errors.ts";
+import { ModelCapabilities } from "../../src/handlers/model-capabilities.ts";
 import { ModelProviders } from "../../src/handlers/model-providers.ts";
+import { embeddedCatalogs, lookupStaticModelInfo } from "../../src/registry/catalog.ts";
 import {
   CredentialPicker,
   type AttemptResult,
@@ -31,10 +33,23 @@ export interface Harness {
   readonly reports: Array<AttemptResult>;
 }
 
+/** The bundled catalog's capabilities for every model (the registry snapshot of production). */
+export const catalogCapabilities = Layer.succeed(
+  ModelCapabilities,
+  ModelCapabilities.of({
+    thinking: (model) =>
+      Effect.succeed({
+        modelInfo: lookupStaticModelInfo(embeddedCatalogs(), model),
+        lookup: (id) => lookupStaticModelInfo(embeddedCatalogs(), id),
+      }),
+  }),
+);
+
 export const oauthPipeline = (
   respond: UpstreamResponder,
   config: Config,
   credential: CredentialSnapshot = oauthCredential(),
+  modelCapabilities?: typeof catalogCapabilities,
 ): Harness => {
   const reports: Array<AttemptResult> = [];
 
@@ -94,6 +109,7 @@ export const oauthPipeline = (
     respond,
     credentialPicker: picker,
     modelProviders: providers,
+    ...(modelCapabilities === undefined ? {} : { modelCapabilities }),
   });
 
   return { pipeline, reports };

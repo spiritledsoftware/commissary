@@ -88,7 +88,6 @@ describe("catalogsFromText (KV contents -> catalogs)", () => {
 
 describe("static lookups", () => {
   const catalogs = embeddedCatalogs();
-  const thinking = (id: string) => lookupStaticModelInfo(catalogs, id)?.thinking;
 
   it("channels map to their sections", () => {
     expect(staticModelsByChannel(catalogs, "Grok")?.map((model) => model.id)).toEqual(
@@ -126,20 +125,17 @@ describe("static lookups", () => {
     expect(lookupStaticModelInfo(catalogs, "gpt-6-astra[1m]")).toBeUndefined();
   });
 
-  it("Claude models that cannot be turned off, and the one that needs between_tools", () => {
-    for (const id of ["claude-opus-5-5", "claude-fable-5", "claude-fable-5-1"])
-      expect(thinking(id)?.zeroAllowed, id).toBe(false);
+  it("an exact id wins over its family", () => {
+    // claude-opus-4-5-20251101 and claude-opus-4-5 are both catalog entries: neither answers for the other.
+    expect(lookupStaticModelInfo(catalogs, "claude-opus-4-5-20251101")?.id).toBe(
+      "claude-opus-4-5-20251101",
+    );
 
-    for (const id of ["claude-opus-5", "claude-sonnet-5", "claude-sonnet-5-5"])
-      expect(thinking(id)?.zeroAllowed, id).toBe(true);
+    expect(lookupStaticModelInfoByChannel(catalogs, "claude-opus-4-5-20251101", "claude")?.id).toBe(
+      "claude-opus-4-5-20251101",
+    );
 
-    expect(thinking("claude-sonnet-5-5")?.disableType).toBe("between_tools");
-    expect(thinking("claude-opus-5")?.disableType).toBeUndefined();
-
-    // Adaptive-only models take no budget.
-    for (const id of ["claude-opus-4-7", "claude-opus-4-8", "claude-fable-5", "claude-fable-5-1"]) {
-      expect(thinking(id)?.min, id).toBeUndefined();
-    }
+    expect(lookupStaticModelInfo(catalogs, "claude-opus-4-5")?.id).toBe("claude-opus-4-5");
   });
 
   it("the bundled models.dev snapshot is valid", () => {

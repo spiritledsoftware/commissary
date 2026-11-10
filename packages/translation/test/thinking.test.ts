@@ -6,10 +6,14 @@ import {
   applySummaryConfigForProvider,
   applyThinking,
   type ApplyThinkingOptions,
+  claudeEffortDirective,
+  EMPTY_CONFIG,
+  extractClaudeConfig,
   extractExplicitSummaryConfig,
   extractReasoningEffort,
   extractSummaryConfig,
   extractTranslatedReasoningEffort,
+  getProviderApplier,
   type SummaryConfig,
   type SummaryMode,
   type ThinkingModelInfo,
@@ -1746,5 +1750,369 @@ describe("Claude thinking.display updates", () => {
     expect(get(translated.body, "request.generationConfig.thinkingConfig.includeThoughts")).toBe(
       true,
     );
+  });
+});
+
+// Ports of the Go tests added with ad9e456d (internal/thinking/claude_issue_6698_test.go), 009f8d7a and e6931d51
+// (standalone Claude output_config.effort), and fb30a9e8 (internal/thinking/claude_effort_directive_test.go).
+
+const CLAUDE_LEVELS = ["low", "medium", "high", "xhigh", "max"];
+
+/** claude-sonnet-5-5: turns thinking off with `between_tools`. */
+const sonnet55: ThinkingModelInfo = {
+  id: "claude-sonnet-5-5",
+  type: "claude",
+  thinking: {
+    zeroAllowed: true,
+    dynamicAllowed: true,
+    disableType: "between_tools",
+    levels: CLAUDE_LEVELS,
+  },
+};
+
+/** claude-opus-5-5, claude-fable-5, claude-fable-5-1: reject `disabled`. */
+const adaptiveOnly = (id: string): ThinkingModelInfo => ({
+  id,
+  type: "claude",
+  thinking: { zeroAllowed: false, dynamicAllowed: true, levels: CLAUDE_LEVELS },
+});
+
+/** claude-opus-5 and the rest: accept `disabled`. */
+const disableable = (id: string): ThinkingModelInfo => ({
+  id,
+  type: "claude",
+  thinking: { zeroAllowed: true, dynamicAllowed: true, levels: CLAUDE_LEVELS },
+});
+
+const applyClaude = (body: string, model: string, info: ThinkingModelInfo) =>
+  applyThinking(parse(body), {
+    model,
+    fromFormat: "claude",
+    toFormat: "claude",
+    providerKey: "claude",
+    modelInfo: info,
+    lookupModelInfo: catalogLookup,
+  });
+
+const MESSAGES = `"messages":[{"role":"user","content":"hi"}]`;
+
+describe("Claude thinking off", () => {
+  const sonnetCases: ReadonlyArray<readonly [string, string, string]> = [
+    ["disabled", `{${MESSAGES},"thinking":{"type":"disabled"}}`, "claude-sonnet-5-5"],
+    [
+      "disabled with stale budget, display, block_binding and effort",
+      `{${MESSAGES},"thinking":{"type":"disabled","budget_tokens":8000,"display":"omitted","block_binding":{"prefix_mismatch_behavior":"drop_block"}},"output_config":{"effort":"xhigh"}}`,
+      "claude-sonnet-5-5",
+    ],
+    [
+      "suffix none overrides active thinking",
+      `{${MESSAGES},"thinking":{"type":"adaptive","display":"summarized","block_binding":{"prefix_mismatch_behavior":"drop_block"}},"output_config":{"effort":"max"}}`,
+      "claude-sonnet-5-5(none)",
+    ],
+    [
+      "suffix zero",
+      `{${MESSAGES},"thinking":{"type":"adaptive"},"output_config":{"effort":"high"}}`,
+      "claude-sonnet-5-5(0)",
+    ],
+    [
+      "zero budget with display and block_binding",
+      `{${MESSAGES},"thinking":{"type":"enabled","budget_tokens":0,"display":"summarized","block_binding":{"prefix_mismatch_behavior":"drop_block"}}}`,
+      "claude-sonnet-5-5",
+    ],
+  ];
+
+  it.each(sonnetCases)("claude-sonnet-5-5 uses between_tools: %s", (_name, body, model) => {
+    const { body: out, error } = applyClaude(body, model, sonnet55);
+
+    expect(error).toBeUndefined();
+    expect(JSON.stringify(get(out, "thinking"))).toBe(`{"type":"between_tools"}`);
+    expect(get(out, "output_config.effort")).toBeUndefined();
+    expect(extractTranslatedReasoningEffort(out, "claude")).toBe("none");
+  });
+
+  const fallbackModels = ["claude-opus-5-5", "claude-fable-5", "claude-fable-5-1"];
+
+  it.each(fallbackModels)("%s falls back to adaptive low with display omitted", (model) => {
+    const body = `{"model":"${model}",${MESSAGES},"thinking":{"type":"disabled","budget_tokens":8000,"display":"summarized","block_binding":{"prefix_mismatch_behavior":"drop_block"}}}`;
+    const { body: out, error } = applyClaude(body, model, adaptiveOnly(model));
+
+    expect(error).toBeUndefined();
+    expect(get(out, "thinking.type")).toBe("adaptive");
+    expect(get(out, "output_config.effort")).toBe("low");
+    expect(get(out, "thinking.display")).toBe("omitted");
+    expect(get(out, "thinking.budget_tokens")).toBeUndefined();
+    expect(get(out, "thinking.block_binding")).toBeUndefined();
+  });
+
+  it.each(["claude-opus-5", "claude-sonnet-5"])("%s keeps a bare disabled block", (model) => {
+    const body = `{"model":"${model}",${MESSAGES},"thinking":{"type":"disabled","budget_tokens":8000,"display":"summarized","block_binding":{"prefix_mismatch_behavior":"drop_block"}}}`;
+    const { body: out } = applyClaude(body, model, disableable(model));
+
+    expect(JSON.stringify(get(out, "thinking"))).toBe(`{"type":"disabled"}`);
+    expect(get(out, "output_config.effort")).toBeUndefined();
+  });
+
+  const active = `{"model":"claude-opus-5-5",${MESSAGES},"thinking":{"type":"enabled","budget_tokens":8000,"display":"summarized","block_binding":{"prefix_mismatch_behavior":"drop_block"}}}`;
+
+  it.each([
+    ["suffix none", active, "claude-opus-5-5(none)"],
+    ["suffix zero", active, "claude-opus-5-5(0)"],
+    [
+      "zero budget",
+      `{"model":"claude-opus-5-5",${MESSAGES},"thinking":{"type":"enabled","budget_tokens":0,"display":"summarized","block_binding":{"prefix_mismatch_behavior":"drop_block"}}}`,
+      "claude-opus-5-5",
+    ],
+  ])("an off request on a model that cannot be disabled: %s", (_name, body, model) => {
+    const { body: out } = applyClaude(body, model, adaptiveOnly("claude-opus-5-5"));
+
+    expect(get(out, "thinking.budget_tokens")).toBeUndefined();
+    expect(get(out, "thinking.block_binding")).toBeUndefined();
+    expect(get(out, "thinking.type")).toBe("adaptive");
+    expect(get(out, "output_config.effort")).toBe("low");
+    expect(get(out, "thinking.display")).toBe("omitted");
+  });
+
+  it.each([
+    ["high", "medium", "low"],
+    ["auto", "high", "low"],
+  ])("falls back to the lowest canonical level of %s", (...configured) => {
+    const info: ThinkingModelInfo = {
+      id: "claude-opus-5-5",
+      type: "claude",
+      thinking: { zeroAllowed: false, dynamicAllowed: true, levels: configured },
+    };
+
+    const { body: out } = applyClaude(
+      `{"model":"claude-opus-5-5",${MESSAGES},"thinking":{"type":"disabled"}}`,
+      "claude-opus-5-5",
+      info,
+    );
+
+    expect(get(out, "thinking.type")).toBe("adaptive");
+    expect(get(out, "output_config.effort")).toBe("low");
+  });
+
+  it("reports between_tools as none when recording usage", () => {
+    const body = parse(
+      `{"thinking":{"type":"between_tools"},"output_config":{"effort":"high"},${MESSAGES}}`,
+    );
+
+    expect(extractReasoningEffort(body, "claude", "claude-sonnet-5-5")).toBe("none");
+  });
+});
+
+describe("compatible (user-defined) Claude applier", () => {
+  const userDefined = (disableType?: "between_tools"): ThinkingModelInfo => ({
+    ...sonnet55,
+    userDefined: true,
+    thinking: {
+      zeroAllowed: true,
+      levels: CLAUDE_LEVELS,
+      ...(disableType === undefined ? {} : { disableType }),
+    },
+  });
+
+  it("turns thinking off with the disableType of the record, which a configured alias keeps", () => {
+    const body = `{${MESSAGES},"thinking":{"type":"disabled","budget_tokens":8000},"output_config":{"effort":"high"}}`;
+    const { body: out } = applyClaude(body, "my-alias", userDefined("between_tools"));
+
+    expect(raw(out, "thinking")).toBe(`{"type":"between_tools"}`);
+    expect(exists(out, "output_config")).toBe(false);
+  });
+
+  it("sends disabled when the record names no disableType, for none and for budget 0", () => {
+    const applier = getProviderApplier("claude");
+    const plain = userDefined();
+
+    for (const config of [
+      { mode: "none", budget: 0, level: "" },
+      { mode: "budget", budget: 0, level: "" },
+    ] as const) {
+      const out = applier?.apply(parse(`{"thinking":{"budget_tokens":5}}`), config, plain);
+
+      expect(raw(out, "thinking")).toBe(`{"type":"disabled"}`);
+    }
+
+    const between = applier?.apply(
+      parse(`{}`),
+      { mode: "budget", budget: 0, level: "" },
+      userDefined("between_tools"),
+    );
+
+    expect(raw(between, "thinking")).toBe(`{"type":"between_tools"}`);
+  });
+});
+
+describe("Claude output_config.effort without thinking", () => {
+  const request = (extra: string): string => `{"model":"m","max_tokens":1024,${MESSAGES}${extra}}`;
+
+  it("is kept on native Claude requests, leaving the model's thinking default", () => {
+    const { body: out, error } = applyClaude(
+      request(`,"output_config":{"effort":"max"}`),
+      "claude-opus-5-5",
+      adaptiveOnly("claude-opus-5-5"),
+    );
+
+    expect(error).toBeUndefined();
+    expect(get(out, "thinking")).toBeUndefined();
+    expect(get(out, "output_config.effort")).toBe("max");
+  });
+
+  it("is read as the request's effort by usage extraction", () => {
+    const body = parse(request(`,"output_config":{"effort":"medium"}`));
+
+    expect(extractReasoningEffort(body, "claude", "claude-opus-5-5")).toBe("medium");
+  });
+
+  it("still lets a suffix change native Claude thinking", () => {
+    const { body: out } = applyClaude(
+      request(`,"output_config":{"effort":"max"}`),
+      "claude-opus-5-5(low)",
+      adaptiveOnly("claude-opus-5-5"),
+    );
+
+    expect(asString(get(out, "output_config.effort"))).toBe("low");
+  });
+
+  it("is a thinking level for extractClaudeConfig, and an explicit thinking object wins", () => {
+    expect(extractClaudeConfig(parse(`{"output_config":{"effort":" High "}}`))).toEqual({
+      mode: "level",
+      budget: 0,
+      level: "high",
+    });
+
+    expect(extractClaudeConfig(parse(`{"output_config":{"effort":"none"}}`)).mode).toBe("none");
+    expect(extractClaudeConfig(parse(`{"output_config":{"effort":"auto"}}`)).mode).toBe("auto");
+    expect(extractClaudeConfig(parse(`{"output_config":{"effort":""}}`))).toEqual(EMPTY_CONFIG);
+
+    expect(
+      extractClaudeConfig(
+        parse(`{"thinking":{"type":"disabled"},"output_config":{"effort":"high"}}`),
+      ).mode,
+    ).toBe("none");
+
+    expect(
+      extractClaudeConfig(
+        parse(
+          `{"thinking":{"type":"enabled","budget_tokens":2048},"output_config":{"effort":"high"}}`,
+        ),
+      ),
+    ).toEqual({ mode: "budget", budget: 2048, level: "" });
+
+    // An unknown thinking type stays as the caller sent it.
+    expect(
+      extractClaudeConfig(
+        parse(`{"thinking":{"type":"between_tools"},"output_config":{"effort":"high"}}`),
+      ),
+    ).toEqual(EMPTY_CONFIG);
+  });
+
+  it("passes through on a model without thinking support too", () => {
+    const { body: out } = applyClaude(
+      request(`,"output_config":{"effort":"high"}`),
+      "claude-3-5-haiku-20241022",
+      { id: "claude-3-5-haiku-20241022", type: "claude" },
+    );
+
+    expect(get(out, "output_config.effort")).toBe("high");
+  });
+});
+
+describe("Claude thinking turned off on other targets", () => {
+  it("falls back to the lowest canonical level of a model that cannot be turned off", () => {
+    const info: ThinkingModelInfo = {
+      id: "gpt-6-astra",
+      type: "codex",
+      thinking: { zeroAllowed: false, levels: ["high", " Medium ", "low"] },
+    };
+
+    const { body: out } = applyWithModelInfo(
+      parse(`{"reasoning":{"effort":"high"}}`),
+      parse(`{"reasoning_effort":"none"}`),
+      "gpt-6-astra",
+      "openai",
+      "codex",
+      "codex",
+      info,
+    );
+
+    expect(str(out, "reasoning.effort")).toBe("low");
+  });
+});
+
+describe("claudeEffortDirective", () => {
+  const directive = (effort: string): string =>
+    `{"role":"system","content":[],"output_config":{"effort":${JSON.stringify(effort)}}}`;
+
+  const user = `{"role":"user","content":"hi"}`;
+
+  it.each([
+    ["no messages", `{"output_config":{"effort":"low"}}`, ""],
+    ["no directive", `{"messages":[${user}]}`, ""],
+    [
+      "last directive wins",
+      `{"messages":[${directive("medium")},${user},${directive(" HIGH ")}]}`,
+      "high",
+    ],
+    ["empty directive is ignored", `{"messages":[${directive("max")},${directive("")}]}`, "max"],
+    [
+      "non-system output_config is ignored",
+      `{"messages":[{"role":"user","content":"hi","output_config":{"effort":"high"}}]}`,
+      "",
+    ],
+    [
+      "disabled thinking ignores directives",
+      `{"thinking":{"type":"disabled"},"messages":[${directive("high")}]}`,
+      "",
+    ],
+    [
+      "between_tools thinking ignores directives",
+      `{"thinking":{"type":"between_tools"},"messages":[${directive("high")}]}`,
+      "",
+    ],
+  ])("%s", (_name, body, want) => {
+    expect(claudeEffortDirective(parse(body))).toBe(want);
+  });
+
+  const directives = `"messages":[${directive("low")},${user},${directive("high")}]`;
+
+  it.each([
+    [
+      "directive overrides top-level placeholder",
+      `{"thinking":{"type":"adaptive"},"output_config":{"effort":"low"},${directives}}`,
+      "high",
+    ],
+    [
+      "last non-empty directive wins and is normalized",
+      `{"thinking":{"type":"adaptive"},"output_config":{"effort":"low"},"messages":[${directive("medium")},${user},${directive(" HIGH ")},${directive("   ")}]}`,
+      "high",
+    ],
+    [
+      "non-system output_config does not override top-level effort",
+      `{"thinking":{"type":"adaptive"},"output_config":{"effort":"low"},"messages":[{"role":"user","content":"hi","output_config":{"effort":"high"}}]}`,
+      "low",
+    ],
+    [
+      "top-level effort without directives",
+      `{"thinking":{"type":"adaptive"},"output_config":{"effort":"medium"},"messages":[${user}]}`,
+      "medium",
+    ],
+    ["disabled thinking stays none", `{"thinking":{"type":"disabled"},${directives}}`, "none"],
+    [
+      "between_tools thinking stays none",
+      `{"thinking":{"type":"between_tools"},${directives}}`,
+      "none",
+    ],
+  ])("usage effort: %s", (_name, body, want) => {
+    expect(extractReasoningEffort(parse(body), "claude", "claude-opus-5-5")).toBe(want);
+    expect(extractTranslatedReasoningEffort(parse(body), "claude")).toBe(want);
+  });
+
+  it("lets a model suffix win over directives", () => {
+    const body = parse(
+      `{"thinking":{"type":"adaptive"},"output_config":{"effort":"low"},${directives}}`,
+    );
+
+    expect(extractReasoningEffort(body, "claude", "claude-opus-5-5(medium)")).toBe("medium");
   });
 });

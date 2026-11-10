@@ -13,6 +13,7 @@ import {
   type Json,
   type JsonObject,
 } from "@commissary/json";
+import { claudeOutputEffort } from "../../../thinking/claude-effort-directive.ts";
 import { convertBudgetToLevel } from "../../../thinking/convert.ts";
 import { getThinkingText } from "../../../thinking/text.ts";
 import { alignOpenAIToolCallMessages } from "../common/openai-tools.ts";
@@ -331,8 +332,7 @@ const convertClaudeRequestToOpenAIImpl = (
     }
   } else if (thinkingConfig === undefined) {
     // Claude output_config.effort is independent of thinking activation: keep it when thinking is omitted.
-    const effortOutput = get(root, "output_config.effort");
-    const effort = typeof effortOutput === "string" ? effortOutput.trim().toLowerCase() : "";
+    const effort = claudeOutputEffort(root);
 
     if (effort !== "") out.reasoning_effort = effort;
   }

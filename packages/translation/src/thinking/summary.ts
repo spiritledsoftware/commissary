@@ -445,15 +445,12 @@ export const applySummaryConfigForProvider = (
 
       if (!claudeThinkingAcceptsDisplay(result)) return result;
 
-      // An existing `updates` display is an enabled mode of its own; keep it rather than overwriting it with `summarized`.
+      // `updates` is an enabled display of its own: keep it rather than overwriting it with `summarized`.
       const display = get(result, "thinking.display");
 
-      const keepUpdates =
-        enabled && typeof display === "string" && normalize(display) === "updates";
+      if (enabled && typeof display === "string" && normalize(display) === "updates") return result;
 
-      if (!enabled) return setPath(result, "thinking.display", "omitted");
-
-      return setPath(result, "thinking.display", keepUpdates ? "updates" : "summarized");
+      return setPath(result, "thinking.display", enabled ? "summarized" : "omitted");
     }
 
     case "gemini":

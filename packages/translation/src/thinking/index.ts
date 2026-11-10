@@ -4,7 +4,7 @@
  */
 export { applyThinking, type ApplyThinkingOptions, type ApplyThinkingResult } from "./apply.ts";
 
-export { claudeEffortDirective } from "./claude-effort-directive.ts";
+export { claudeEffortDirective, claudeOutputEffort } from "./claude-effort-directive.ts";
 
 export {
   extractConfigurationUpdateConfig,
@@ -71,7 +71,9 @@ export { getThinkingText } from "./text.ts";
 
 export {
   autoConfig,
+  BETWEEN_TOOLS,
   budgetConfig,
+  type DisableType,
   EMPTY_CONFIG,
   hasThinkingConfig,
   isUserDefinedModel,

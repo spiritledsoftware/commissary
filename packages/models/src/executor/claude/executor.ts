@@ -56,7 +56,7 @@ import {
   sealCompaction,
 } from "../helps/compaction.ts";
 import { ensureResponsesUsageDetails } from "../codex/output.ts";
-import { parseSuffix } from "@commissary/translation/thinking";
+import { extractTranslatedReasoningEffort, parseSuffix } from "@commissary/translation/thinking";
 import {
   claudeCompactionRequested,
   claudeCompactionSourcePayload,
@@ -309,6 +309,12 @@ export const makeClaudeExecutor = (
           ),
     ]).pipe(Effect.asVoid);
 
+  /** The usage record's `reasoning_effort`, read from the final body: the last effort directive wins (fb30a9e8). */
+  const recordReasoningEffort = (context: ExecutionContext, body: Json): void => {
+    const effort = extractTranslatedReasoningEffort(body, "claude");
+    context.usage.setReasoningEffort(effort !== "" ? effort : undefined);
+  };
+
   const executeMessages = Effect.fnUntraced(function* (
     context: ExecutionContext,
     request: ExecutorRequest,
@@ -327,6 +333,8 @@ export const makeClaudeExecutor = (
       upstreamStream,
       compactionSummary,
     });
+
+    recordReasoningEffort(context, prepared.body);
 
     const response = yield* send(context, prepared, prepared.fastRequest);
     let data = yield* response.text.pipe(Effect.mapError(readError));
@@ -598,6 +606,8 @@ export const makeClaudeExecutor = (
       options,
       upstreamStream: true,
     });
+
+    recordReasoningEffort(context, prepared.body);
 
     const response = yield* send(context, prepared, prepared.fastRequest);
     const requestId = response.headers["request-id"] ?? "";
