@@ -487,6 +487,40 @@ describe("Claude parsers", () => {
     });
   });
 
+  it.each([
+    ["fast", "fast"],
+    ["standard", "standard"],
+  ])("reports usage.speed %s as the response service tier (b90190db)", (speed, want) => {
+    expect(
+      parseClaudeUsage(`{"usage":{"input_tokens":10,"output_tokens":5,"speed":"${speed}"}}`)
+        .responseServiceTier,
+    ).toBe(want);
+  });
+
+  it("has no response service tier without usage.speed", () => {
+    expect(
+      parseClaudeUsage('{"usage":{"input_tokens":10,"output_tokens":5}}').responseServiceTier,
+    ).toBeUndefined();
+  });
+
+  it.each([
+    [',"speed":"fast"', "", "fast"],
+    ["", ',"speed":"fast"', "fast"],
+    ["", "", undefined],
+  ])("keeps the speed tier across message_start %j and message_delta %j", (a, b, want) => {
+    const start = parseClaudeStreamUsage(
+      `data: {"type":"message_start","message":{"usage":{"input_tokens":20,"output_tokens":1${a}}}}`,
+    ) as UsageDetail;
+
+    const delta = parseClaudeStreamUsage(
+      `data: {"type":"message_delta","usage":{"output_tokens":15${b}}}`,
+    ) as UsageDetail;
+
+    const merged = mergeStreamUsageDetail(start, delta);
+    expect(merged).toMatchObject({ inputTokens: 20, outputTokens: 15 });
+    expect(merged.responseServiceTier).toBe(want);
+  });
+
   it("ignores non-JSON lines and events without usage", () => {
     expect(parseClaudeStreamUsage("event: ping")).toBeUndefined();
     expect(parseClaudeStreamUsage('data: {"type":"content_block_delta"}')).toBeUndefined();
