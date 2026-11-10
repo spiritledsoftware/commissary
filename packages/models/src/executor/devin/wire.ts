@@ -306,6 +306,10 @@ export interface DevinUsage {
   headers: Record<string, string>;
 }
 
+/** `devinTotalInputTokens`: the prompt is reported in three disjoint parts (uncached, cache write, cache read). */
+export const devinTotalInputTokens = (usage: DevinUsage): number =>
+  usage.promptTokens + usage.cachedTokens + usage.cacheWriteTokens;
+
 export interface DevinToolCallDelta {
   readonly id: string;
   readonly name: string;

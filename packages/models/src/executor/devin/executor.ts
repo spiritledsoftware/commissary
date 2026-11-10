@@ -64,6 +64,7 @@ import {
   CONNECT_FLAG_END_STREAM,
   DEVIN_CHAT_PATH,
   type DevinUsage,
+  devinTotalInputTokens,
   generateSentryTrace,
   parseDevinFrame,
   parseTrailerError,
@@ -107,7 +108,7 @@ export const devinUsageDetail = (usage: DevinUsage | undefined): UsageDetail => 
     };
   }
 
-  const input = usage.promptTokens + usage.cachedTokens;
+  const input = devinTotalInputTokens(usage);
 
   return {
     inputTokens: input,
@@ -534,6 +535,9 @@ export const makeDevinExecutor = (executorOptions: DevinExecutorOptions = {}): P
     const responseFormat = responseFormatOf(options);
     const state = new FrameState(request.model, responseFormat);
     const translation = responseContext(request, options);
+    // Devin frames carry authoritative cache-aware usage: `message_start` is not seeded with an input estimate (Go passes
+    // no `ClaudeInputTokenState`; the registry applies one to every Claude client unless the state marks it handled).
+    translation.state.claudeInputTokensHandled = true;
 
     const frameInteractions = (json: string): string[] =>
       responseFormat === Formats.Interactions

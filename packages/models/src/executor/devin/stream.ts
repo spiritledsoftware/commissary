@@ -16,6 +16,7 @@ import {
   type DevinFrame,
   type DevinToolCallDelta,
   type DevinUsage,
+  devinTotalInputTokens,
   mergeDevinUsage,
 } from "./wire.ts";
 
@@ -55,7 +56,7 @@ const usageObject = (usage: DevinUsage | undefined): Event => {
   const out: Event = { total_input_tokens: 0, total_output_tokens: 0, total_cached_tokens: 0 };
 
   if (usage === undefined) return out;
-  const totalInput = usage.promptTokens + usage.cachedTokens;
+  const totalInput = devinTotalInputTokens(usage);
   out["total_input_tokens"] = totalInput;
   out["total_output_tokens"] = usage.completionTokens;
   out["total_cached_tokens"] = usage.cachedTokens;

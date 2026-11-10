@@ -9,7 +9,7 @@ import { devinPayloadView } from "../src/executor/devin/payload.ts";
 import { ProtoWriter, readFields } from "../src/executor/devin/protobuf.ts";
 import type { ExecutorRequest } from "../src/executor/types.ts";
 import { ExecutionError } from "../src/executor/errors.ts";
-import { type Json, tryParseJson } from "@commissary/json";
+import { get, type Json, tryParseJson } from "@commissary/json";
 import {
   collectStream,
   credential,
@@ -348,5 +348,124 @@ describe("Devin executor behaviour", () => {
     expect(view.cascade_id).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
     );
+  });
+});
+
+/** A response frame (field 7) with the usage counters: 2 uncached prompt, 3 completion, 4 cache write, 5 cache read. */
+const usageFrame = (usage: {
+  prompt: number;
+  completion: number;
+  cacheWrite?: number;
+  cacheRead?: number;
+}): Uint8Array => {
+  const counters = new ProtoWriter().varint(2, usage.prompt).varint(3, usage.completion);
+
+  if (usage.cacheWrite !== undefined) counters.varint(4, usage.cacheWrite);
+
+  if (usage.cacheRead !== undefined) counters.varint(5, usage.cacheRead);
+
+  return envelope(0, new ProtoWriter().bytes(7, counters.toBytes()).toBytes());
+};
+
+const eosTrailer = (): Uint8Array => envelope(2, new TextEncoder().encode("{}"));
+
+const frames = (...parts: Uint8Array[]): Response =>
+  new Response(new Uint8Array(parts.flatMap((part) => [...part])), {
+    status: 200,
+    headers: { "content-type": "application/connect+proto" },
+  });
+
+describe("Devin usage (CLIProxyAPI eb6e25ab, cad1b503)", () => {
+  const hi =
+    '{"session_id":"66666666-6666-4666-8666-666666666666","input":[{"type":"user_input","content":"hi"}]}';
+
+  // Devin reports the prompt in three disjoint parts: uncached, cache write and cache read.
+  const counters = { prompt: 3, completion: 4, cacheWrite: 14361, cacheRead: 50 };
+
+  it("counts cache-write tokens in the total input of a non-stream response", async () => {
+    const h = await harness(devinCredential(), () => frames(usageFrame(counters), eosTrailer()));
+    const response = await execute(executor, h, request("swe-2", hi), interactionsOptions(false));
+    const usage = (tryParseJson(response.payload) as { usage: Record<string, number> }).usage;
+    expect(h.usage.finish(0)?.detail.inputTokens).toBe(14414);
+
+    // 3 uncached + 50 read + 14361 written.
+    expect(usage["total_input_tokens"]).toBe(14414);
+    expect(usage["cache_write_tokens"]).toBe(14361);
+    expect(usage["total_tokens"]).toBe(14418);
+  });
+
+  it("counts cache-write tokens in the total input of a streamed response and its usage record", async () => {
+    const h = await harness(
+      devinCredential(),
+      () => frames(usageFrame(counters), eosTrailer()),
+      undefined,
+      true,
+    );
+
+    const collected = await collectStream(
+      executor,
+      h,
+      request("swe-2", hi),
+      interactionsOptions(true),
+    );
+
+    const completed = normalizeChunks(collected.chunks).find(
+      (event) => (event as { event_type?: string }).event_type === "interaction.completed",
+    ) as { interaction: { usage: Record<string, number> } };
+
+    expect(completed.interaction.usage["total_input_tokens"]).toBe(14414);
+    expect(h.usage.finish(0)?.detail).toMatchObject({
+      inputTokens: 14414,
+      cacheReadTokens: 50,
+      cacheCreationTokens: 14361,
+    });
+  });
+
+  it("does not seed message_start input tokens for a Claude stream", async () => {
+    const claudeRequest = request(
+      "claude-opus-5-5",
+      '{"model":"claude-opus-5-5","stream":true,"max_tokens":64,"messages":[{"role":"user","content":"hello cache test prompt with enough words to produce non-zero tokens"}]}',
+    );
+
+    const h = await harness(
+      devinCredential(),
+      () =>
+        frames(
+          usageFrame({ prompt: 0, completion: 4, cacheWrite: 7, cacheRead: 50000 }),
+          eosTrailer(),
+        ),
+      undefined,
+      true,
+    );
+
+    const collected = await collectStream(
+      executor,
+      h,
+      claudeRequest,
+      options({
+        stream: true,
+        sourceFormat: "claude",
+        metadata: { ...options().metadata, requestPath: "/v1/messages" },
+      }),
+    );
+
+    expect(collected.error).toBeUndefined();
+
+    const events = collected.chunks.flatMap((chunk) =>
+      chunk
+        .split("\n")
+        .filter((line) => line.startsWith("data: "))
+        .map((line) => tryParseJson(line.slice(6))),
+    );
+
+    const start = events.find((event) => get(event, "type") === "message_start");
+    const delta = events.find((event) => get(event, "type") === "message_delta");
+    expect(get(start, "message.usage.input_tokens")).toBe(0);
+    expect(get(delta, "usage")).toMatchObject({
+      input_tokens: 0,
+      cache_read_input_tokens: 50000,
+      cache_creation_input_tokens: 7,
+      output_tokens: 4,
+    });
   });
 });
