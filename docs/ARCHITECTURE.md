@@ -1269,6 +1269,14 @@ claude/gemini/openai-response -> openai, interactions <-> openai (Chat Completio
   terminator now fails through `state.finalizeToolInput` (executors call it, see Devin); malformed
   Interactions event JSON is only approximated (longest valid object prefix) because gjson reads lazily; raw JSON texts that
   Go copies byte for byte (`gjson.Raw`) are re-serialised compactly.
+- **Streaming TTFT**: chat streams record the effective TTFT on the first token frame (`isChatTokenEvent`, observed per complete
+  data frame before translation), and the headers only set the first-packet fallback; non-stream calls keep the first-byte time.
+- **Meta (Muse) client identity** (`executor/meta/`): the 1.4.14 fingerprint (`muse-build/1.4.14 (non-interactive; ...)`,
+  `X-Client-Id: tbh:exec`, a fresh UUID v7 in the `X-Tbh-*` session headers per request) and the canonical `muse` tool namespace
+  appended to tool-bearing requests before the payload rules; `X-Tbh-Contributor-Mode: 1` only when the effective model (after the
+  payload rules) ends in `-contributor`. Deviations from Go: local `countTokens` does not count the appended namespace (the golden token fixtures predate it; revisit with the fixture regeneration); the UA platform is the captured `linux-x86_64` (a Worker has no host
+  OS/arch); `response.subscription_usage` frames are dropped in the Meta executor only (`subscription-usage.ts`), not also in the
+  Responses SSE framer or WebSocket forwarder of the client handlers, because Meta is the only upstream that sends them.
 - **No equivalent needed**: the Go OpenAI-compatible executor has no refresh and no reasoning replay cache (§7 of the pipeline
   research lists none for it); 401s are ordinary upstream errors for the conductor's classification.
 

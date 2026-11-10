@@ -292,6 +292,7 @@ describe("Gemini and Interactions clients through the executor", () => {
     payload: Json,
     stream: boolean,
     upstream: () => Response,
+    onUsage: (usage: UsageReporter) => void = () => {},
   ) => {
     const bodies: Json[] = [];
 
@@ -325,6 +326,7 @@ describe("Gemini and Interactions clients through the executor", () => {
       requestedAt: 0,
     });
 
+    onUsage(usage);
     const context: ExecutionContext = { credential, config, usage };
 
     const options: ExecutorOptions = {
@@ -381,6 +383,28 @@ describe("Gemini and Interactions clients through the executor", () => {
     const body: Json = JSON.parse((output as { payload: string }).payload);
     expect(JSON.stringify(at(body, "candidates.0.content.parts"))).toContain("functionCall");
     expect(at(body, "usageMetadata.totalTokenCount")).toBe(7);
+  });
+
+  it("takes the streaming TTFT from the first effective token frame, not the first frame", async () => {
+    const ttftAfter = async (frames: string[]) => {
+      let usage: UsageReporter | undefined;
+
+      await run(
+        "gemini",
+        { contents: [{ role: "user", parts: [{ text: "hi" }] }] },
+        true,
+        () => new Response(frames.join(""), { headers: { "content-type": "text/event-stream" } }),
+        (value) => (usage = value),
+      ).catch(() => undefined);
+
+      return usage?.ttftObserved;
+    };
+
+    // A role-only frame is only the first-packet fallback.
+    expect(await ttftAfter([chunk({ role: "assistant", content: "" })])).toBe(false);
+    expect(
+      await ttftAfter([chunk({ role: "assistant", content: "" }), chunk({ content: "Hel" })]),
+    ).toBe(true);
   });
 
   it("translates a Gemini stream", async () => {

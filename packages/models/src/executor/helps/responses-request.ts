@@ -14,7 +14,7 @@
  */
 import { modelIsCompat, translateRequestForExecutor } from "./translate.ts";
 import { Effect } from "effect";
-import { cloneJson, del, type Json } from "@commissary/json";
+import { cloneJson, del, get, type Json } from "@commissary/json";
 import { Formats } from "@commissary/translation/formats";
 import type { TranslatorRegistry } from "@commissary/translation";
 import { ExecutionError } from "../errors.ts";
@@ -36,6 +36,8 @@ import {
 
 export interface ResponsesPrepared {
   readonly baseModel: string;
+  /** The `model` of the body after the payload rules (the base model when a rule blanked it). */
+  readonly effectiveModel: string;
   readonly body: Json;
   /** The translated body before the payload rules (translator response context). */
   readonly translated: Json;
@@ -156,8 +158,12 @@ export const prepareResponsesRequest = Effect.fnUntraced(function* (
     body,
   );
 
+  const effective = get(body, "model");
+
   return {
     baseModel,
+    effectiveModel:
+      typeof effective === "string" && effective.trim() !== "" ? effective.trim() : baseModel,
     body,
     translated: translatedForResponse,
     from,

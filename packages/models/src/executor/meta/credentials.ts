@@ -11,10 +11,14 @@ import type { CredentialSnapshot } from "../picker.ts";
 
 export const META_DEFAULT_BASE_URL = "https://api.meta.ai/v1";
 
+/**
+ * Captured from Muse Code 1.4.14-R7309.1 on linux-x86_64. Subscription keys return 403 `client_attestation_denied`
+ * for an older `muse-build` fingerprint. Go reads the host OS/arch; a Worker has none, so the captured platform is fixed.
+ */
 export const META_USER_AGENT =
-  "muse-build/1.3.0 (interactive; macos-aarch64; build ac7280f2aca67769d1455a8847bb502b617d50f6)";
+  "muse-build/1.4.14 (non-interactive; linux-x86_64; build dec7d7497fecdad135ec5835a8161dbc92e55b58)";
 
-export const META_CLIENT_ID = "tbh:tui";
+export const META_CLIENT_ID = "tbh:exec";
 
 const text = (value: Json | undefined): string => (typeof value === "string" ? value.trim() : "");
 

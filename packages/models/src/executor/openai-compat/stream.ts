@@ -94,6 +94,8 @@ export interface OpenAICompatStreamOptions {
   /** Provider format of the upstream (`openai`). */
   readonly providerFormat: Format;
   readonly context: ResponseContext;
+  /** Called with each complete, valid upstream data frame before translation (TTFT token-event observation). */
+  readonly onFrame?: (payload: string) => void;
 }
 
 export class OpenAICompatStreamReader {
@@ -157,6 +159,7 @@ export class OpenAICompatStreamReader {
       if (dataError !== undefined) return this.#fail(dataError, [], true);
     }
 
+    this.options.onFrame?.(payload);
     const chunks = this.#translate(`data: ${payload}`);
 
     if (this.options.context.state.toolInputError !== undefined) {

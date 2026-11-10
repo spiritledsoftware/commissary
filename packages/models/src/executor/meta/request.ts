@@ -2,13 +2,15 @@
  * Meta `/responses` request shaping.
  *
  * Go source: internal/runtime/executor/meta_executor_execute.go (`prepareResponsesRequest`),
- * helps/meta_tools.go (`SanitizeMetaWebSearchTools`). The shared Responses shaping (translate -> thinking ->
+ * helps/meta_tools.go (`SanitizeMetaWebSearchTools`), helps/meta_muse_tools.go
+ * (`EnsureMetaMuseToolNamespace`, run before the payload rules). The shared Responses shaping (translate -> thinking ->
  * model/stream fields -> instructions -> reasoning sanitising -> tool sanitising -> payload rules) lives in
  * `helps/responses-request.ts`; Meta adds its web-search tool sanitising and passes its executor identifier as the
  * payload-rule protocol (as Go does).
  */
 import { get, isJsonArray, isJsonObject, type Json } from "@commissary/json";
 import type { TranslatorRegistry } from "@commissary/translation";
+import { ensureMetaMuseToolNamespace } from "./muse-tools.ts";
 import { prepareResponsesRequest, type ResponsesPrepared } from "../helps/responses-request.ts";
 import type { ExecutionContext, ExecutorOptions, ExecutorRequest } from "../types.ts";
 
@@ -48,6 +50,16 @@ export const prepareMetaRequest = (
     context,
     request,
     options,
-    { provider, payloadProtocol: provider, sanitizeTools: sanitizeMetaWebSearchTools },
+    {
+      provider,
+      payloadProtocol: provider,
+      // Deviation from Go: the namespace is an attestation detail of upstream calls; local token counting
+      // (`stream = false`) keeps counting the caller's tools until the token fixtures are regenerated (ticket F2).
+      sanitizeTools: (body) => {
+        const sanitized = sanitizeMetaWebSearchTools(body);
+
+        return stream ? ensureMetaMuseToolNamespace(sanitized) : sanitized;
+      },
+    },
     stream,
   );

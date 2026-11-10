@@ -42,6 +42,7 @@ import {
   responseModelOf,
   ssePayloadObject,
 } from "../../usage/record.ts";
+import { isChatTokenEvent } from "../../usage/ttft.ts";
 import { ExecutionError, headersRecord } from "../errors.ts";
 import { ensureResponsesUsageDetails } from "../codex/output.ts";
 import { claudeCodeExecutionScope } from "../codex/replay.ts";
@@ -405,7 +406,13 @@ export const makeOpenAICompatExecutor = (
   });
 
   /** Sends the request; non-2xx answers become `ExecutionError`s carrying the upstream body. */
-  const send = Effect.fnUntraced(function* (context: ExecutionContext, prepared: PreparedRequest) {
+  const send = Effect.fnUntraced(function* (
+    context: ExecutionContext,
+    prepared: PreparedRequest,
+    // Chat streams take the effective TTFT from the first token frame (`observeTokenEvent`); an early role or empty
+    // frame is only the first-packet fallback.
+    ttft: "first-byte" | "token-event" = "first-byte",
+  ) {
     const client = yield* HttpClient.HttpClient;
 
     const request = HttpClientRequest.post(prepared.url).pipe(
@@ -422,7 +429,8 @@ export const makeOpenAICompatExecutor = (
         Effect.mapError(transportError),
       );
 
-    context.usage.markFirstByte(yield* Clock.currentTimeMillis);
+    if (ttft === "token-event") context.usage.recordFirstPacket(yield* Clock.currentTimeMillis);
+    else context.usage.markFirstByte(yield* Clock.currentTimeMillis);
 
     if (response.status < 200 || response.status >= 300) {
       const text = yield* response.text.pipe(Effect.orElseSucceed(() => ""));
@@ -522,13 +530,17 @@ export const makeOpenAICompatExecutor = (
     if (options.sourceFormat === EntryOnlyFormats.OpenAIImage)
       return yield* executeImagesStream(context, request, options);
     const prepared = yield* prepare(context, request, options, true);
-    const response = yield* send(context, prepared);
+    const response = yield* send(context, prepared, "token-event");
 
     const reader = new OpenAICompatStreamReader({
       registry,
       responseFormat: responseFormatOf(options),
       providerFormat: to,
       context: responseContext(request, options, prepared.body),
+      onFrame: (payload) => {
+        if (!context.usage.ttftObserved)
+          context.usage.observeTokenEvent(Date.now(), isChatTokenEvent(payload));
+      },
     });
 
     const observe = (line: string) => {

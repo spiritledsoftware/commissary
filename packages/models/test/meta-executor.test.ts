@@ -231,8 +231,25 @@ describe("Meta executor", () => {
     const call = h.calls[0];
     expect(call?.url).toBe("https://meta.test/v1/responses");
     expect(call?.headers["authorization"]).toBe("Bearer meta-key-1");
-    expect(call?.headers["user-agent"]).toContain("muse-build/1.3.0");
-    expect(call?.headers["x-client-id"]).toBe("tbh:tui");
+    expect(call?.headers["user-agent"]).toMatch(
+      /^muse-build\/1\.4\.14 \(non-interactive; [a-z]+-[a-z0-9_]+; build dec7d7497fecdad135ec5835a8161dbc92e55b58\)$/,
+    );
+    expect(call?.headers["x-client-id"]).toBe("tbh:exec");
+    const sessionId = call?.headers["x-tbh-session-id"] ?? "";
+    expect(sessionId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+
+    for (const name of [
+      "x-meta-ai-gateway-session-id",
+      "x-tbh-thread-id",
+      "x-tbh-root-session-id",
+    ]) {
+      expect(call?.headers[name]).toBe(sessionId);
+    }
+
+    expect(call?.headers["x-tbh-agent-role"]).toBe("main");
+    expect(call?.headers).not.toHaveProperty("x-tbh-contributor-mode");
     expect(call?.headers["accept"]).toBe("text/event-stream");
     expect(call?.headers["cache-control"]).toBe("no-cache");
 
@@ -253,7 +270,11 @@ describe("Meta executor", () => {
     }
 
     expect(body["instructions"]).toBe("");
-    expect(body["tools"]).toEqual([{ type: "web_search" }]);
+    expect(body["tools"]).toMatchObject([
+      { type: "web_search" },
+      { type: "namespace", name: "muse" },
+    ]);
+    expect((body["tools"] as Item[])[0]).toEqual({ type: "web_search" });
     // Foreign reasoning blobs are replayed; recognisable other-provider signatures are dropped.
     const reasoning = body.input.filter((item) => item["type"] === "reasoning");
     expect(reasoning.some((item) => item["encrypted_content"] === "opaque-muse-state")).toBe(true);
@@ -493,6 +514,155 @@ describe("Meta executor", () => {
       response: { usage: { input_tokens: 1, output_tokens: 0, total_tokens: 1 } },
     });
     expect(h.calls).toHaveLength(0);
+  });
+});
+
+const ping = { type: "response.subscription_usage", subscription: { tier: "1234567890123456" } };
+
+describe("subscription usage telemetry", () => {
+  const upstream = () =>
+    new Response(
+      [
+        `event: response.subscription_usage\ndata: ${JSON.stringify(ping)}\n\n`,
+        `event: response.created\ndata: ${JSON.stringify({ type: "response.created", response: { id: "r" } })}\n\n`,
+        `data: ${JSON.stringify({ subscription: { tier: "1234567890123456" } })}\n\n`,
+        `event: response.subscription_usage\ndata: ${JSON.stringify(ping)}\n\n`,
+        `event: response.completed\ndata: ${JSON.stringify(completed([message("hello")]))}\n\n`,
+        `event: response.subscription_usage\ndata: ${JSON.stringify(ping)}\n\n`,
+      ].join(""),
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    );
+
+  it("drops subscription_usage frames (event and bare data) from streams", async () => {
+    const h = await harness(metaKey(), upstream, undefined, true);
+
+    const collected = await collectStream(
+      executor,
+      h,
+      { model: "muse-spark", payload: json(responsesRequest()) },
+      responsesOptions(true),
+    );
+
+    const joined = collected.chunks.join("");
+    expect(collected.error).toBeUndefined();
+    expect(joined).not.toContain("subscription");
+    expect(joined).not.toContain("1234567890123456");
+    expect(joined).toContain("response.created");
+    expect(joined).toContain("hello");
+  });
+
+  it("drops them from the aggregated non-stream answer", async () => {
+    const h = await harness(metaKey(), upstream);
+
+    const response = await execute(
+      executor,
+      h,
+      { model: "muse-spark", payload: json(responsesRequest()) },
+      responsesOptions(),
+    );
+
+    expect(response.payload).not.toContain("subscription");
+    expect(response.payload).toContain("hello");
+  });
+});
+
+describe("TTFT", () => {
+  const run = async (events: ReadonlyArray<unknown>) => {
+    const h = await harness(metaKey(), () => sse(events), undefined, true);
+
+    await collectStream(
+      executor,
+      h,
+      { model: "muse-spark", payload: json(responsesRequest()) },
+      responsesOptions(true),
+    );
+
+    return h.usage.ttftObserved;
+  };
+
+  const created = { type: "response.created", response: { id: "r" } };
+
+  it("does not take early metadata or empty deltas as the effective first token", async () => {
+    expect(await run([created, { type: "response.output_text.delta", delta: "" }, ping])).toBe(
+      false,
+    );
+  });
+
+  it("takes the first non-empty content delta", async () => {
+    expect(await run([created, { type: "response.output_text.delta", delta: "hi" }, ping])).toBe(
+      true,
+    );
+  });
+});
+
+describe("contributor header and muse namespace", () => {
+  const send = async (model: string, extra: Record<string, unknown> = {}, yaml?: string) => {
+    const h = await harness(metaKey(), () => sse([completed([message("x")])]), yaml);
+
+    await execute(
+      executor,
+      h,
+      { model, payload: json(responsesRequest({ model, ...extra })) },
+      responsesOptions(),
+    );
+
+    return h.calls[0];
+  };
+
+  it("sends X-Tbh-Contributor-Mode only for -contributor models", async () => {
+    expect((await send("muse-spark"))?.headers["x-tbh-contributor-mode"]).toBeUndefined();
+    expect((await send("muse-spark-contributor"))?.headers["x-tbh-contributor-mode"]).toBe("1");
+    expect((await send("Muse-Spark-Contributor(high)"))?.headers["x-tbh-contributor-mode"]).toBe(
+      "1",
+    );
+  });
+
+  it("decides on the effective model after payload rules", async () => {
+    const yaml = `payload:\n  override:\n    - models: [{ name: "muse*", protocol: meta }]\n      params:\n        model: muse-spark-contributor\n`;
+    expect((await send("muse-spark", {}, yaml))?.headers["x-tbh-contributor-mode"]).toBe("1");
+  });
+
+  it("appends the canonical muse namespace to tool-bearing requests only", async () => {
+    const fn = { type: "function", name: "lookup", parameters: { type: "object" } };
+    const call = await send("muse-spark", { tools: [fn] });
+    const tools = (JSON.parse(call?.text ?? "{}") as { tools: Item[] }).tools;
+    expect(tools).toHaveLength(2);
+    expect(tools[0]).toMatchObject({ type: "function", name: "lookup" });
+
+    expect(tools[1]).toMatchObject({
+      type: "namespace",
+      name: "muse",
+      description: "Muse Code tool set.",
+      tools: [{ type: "function", name: "submit_reminder_decision", strict: true }],
+    });
+
+    const none = JSON.parse((await send("muse-spark"))?.text ?? "{}") as Record<string, unknown>;
+    expect(none).not.toHaveProperty("tools");
+
+    const empty = JSON.parse((await send("muse-spark", { tools: [] }))?.text ?? "{}") as {
+      tools?: unknown[];
+    };
+
+    expect(empty.tools ?? []).toEqual([]);
+  });
+
+  it("keeps a caller's muse namespace and lets payload rules stay final", async () => {
+    const own = { type: "namespace", name: "muse", tools: [] };
+
+    const kept = JSON.parse((await send("muse-spark", { tools: [own] }))?.text ?? "{}") as {
+      tools: Item[];
+    };
+
+    expect(kept.tools).toEqual([own]);
+
+    const yaml = `payload:\n  override:\n    - models: [{ name: "muse*", protocol: meta }]\n      params:\n        tools: []\n`;
+    const fn = { type: "function", name: "lookup", parameters: { type: "object" } };
+
+    const ruled = JSON.parse((await send("muse-spark", { tools: [fn] }, yaml))?.text ?? "{}") as {
+      tools: Item[];
+    };
+
+    expect(ruled.tools).toEqual([]);
   });
 });
 

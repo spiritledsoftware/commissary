@@ -129,7 +129,7 @@ describe("Meta via /v1/responses", () => {
     const body = (await response.json()) as { output: Array<{ content: Array<{ text: string }> }> };
     expect(body.output[0]?.content[0]?.text).toBe("hey");
     expect(p.calls[0]?.url).toBe("https://meta.test/v1/responses");
-    expect(p.calls[0]?.headers["x-client-id"]).toBe("tbh:tui");
+    expect(p.calls[0]?.headers["x-client-id"]).toBe("tbh:exec");
     expect(p.records[0]).toMatchObject({ provider: "meta" });
   });
 

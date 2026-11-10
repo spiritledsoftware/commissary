@@ -27,6 +27,7 @@ import {
   type TranslatorRegistry,
 } from "@commissary/translation";
 import { responseModelOf } from "../../usage/record.ts";
+import { isResponsesTokenEvent } from "../../usage/ttft.ts";
 import {
   ensureResponsesUsageDetails,
   OutputItemCollector,
@@ -65,6 +66,14 @@ export interface ResponsesSseInput {
   ) => ExecutionError | undefined;
   /** Error message (408) of an answer without `response.completed`/`response.incomplete`. */
   readonly stallMessage: string;
+  /** A fresh stateful line filter per answer (Meta drops `response.subscription_usage` frames). */
+  readonly lineFilter?: () => SseLineFilter;
+}
+
+/** Stateful SSE line filter: `push` returns the lines to keep (possibly held back), `flush` the held ones at EOF. */
+export interface SseLineFilter {
+  push(line: string): string[];
+  flush(): string[];
 }
 
 const transportError = (error: HttpClientError.HttpClientError) =>
@@ -112,7 +121,10 @@ export const collectResponsesSse = Effect.fnUntraced(function* (
   const nowMs = yield* Clock.currentTimeMillis;
   let completed: JsonObject | undefined;
 
-  for (const line of data.split("\n")) {
+  const filter = input.lineFilter?.();
+  const lines = data.split("\n");
+
+  for (const line of filter === undefined ? lines : lines.flatMap((item) => filter.push(item))) {
     if (!line.startsWith("data:")) continue;
     const payload = line.slice(5).trim();
     const parsed = tryParseJson(payload);
@@ -218,8 +230,20 @@ export const streamResponsesSse = (input: ResponsesSseInput): StreamResult => {
 
   let stopped = false;
 
-  const lines = splitLines(response.stream).pipe(
+  const filter = input.lineFilter?.();
+
+  const filtered = splitLines(response.stream).pipe(
     Stream.mapError(transportError),
+    filter === undefined
+      ? (stream) => stream
+      : (stream) =>
+          Stream.concat(
+            Stream.flatMap(stream, (line) => Stream.fromIterable(filter.push(line))),
+            Stream.suspend(() => Stream.fromIterable(filter.flush())),
+          ),
+  );
+
+  const lines = filtered.pipe(
     Stream.mapEffect((line) =>
       Effect.gen(function* () {
         if (stopped) return { chunks: [] };
@@ -227,6 +251,13 @@ export const streamResponsesSse = (input: ResponsesSseInput): StreamResult => {
         if (!line.startsWith("data:")) return emit(line);
         const payload = line.slice(5).trim();
         const event = tryParseJson(payload);
+
+        // The effective TTFT is the first token event, observed before translation or failure publication.
+        if (!context.usage.ttftObserved)
+          context.usage.observeTokenEvent(
+            yield* Clock.currentTimeMillis,
+            isResponsesTokenEvent(line),
+          );
         context.usage.observeResponseModel(responseModelOf(event));
         const failure = input.eventError(event, payload, yield* Clock.currentTimeMillis);
 
