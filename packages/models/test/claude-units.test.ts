@@ -12,9 +12,13 @@ import {
   withoutBeta,
 } from "../src/executor/claude/betas.ts";
 import {
+  countCacheControls,
   enforceCacheControlLimit,
   ensureCacheControl,
   normalizeCacheControlTTL,
+  payloadHas1hTTL,
+  shouldEnsureCacheControl,
+  stripCacheControlTTL,
   upgradeCacheControlTTL,
 } from "../src/executor/claude/cache-control.ts";
 import {
@@ -492,6 +496,13 @@ describe("betas", () => {
 describe("cache control", () => {
   const eph = { type: "ephemeral" };
 
+  const firstMessageBlock = (body: JsonObject): JsonObject => {
+    const [message] = body.messages as JsonObject[];
+    const [block] = (message as JsonObject).content as JsonObject[];
+
+    return block as JsonObject;
+  };
+
   it("places breakpoints on the last system block and the last message", () => {
     const body: JsonObject = {
       system: [
@@ -687,6 +698,206 @@ describe("cache control", () => {
     normalizeCacheControlTTL(mixed);
     expect((mixed.system as JsonObject[])[1]?.cache_control).toEqual({ type: "ephemeral" });
   });
+
+  // Go be8c35f2: only an object with `type: "ephemeral"` is a marker.
+  it("ignores null, non-object and non-ephemeral markers and leaves them in the body", () => {
+    const invalid: Json[] = [null, "ephemeral", 1, [], { type: "other" }, { ttl: "1h" }];
+
+    const body: JsonObject = {
+      tools: invalid.map((cache_control, index) => ({ name: `t${index}`, cache_control })),
+      system: [{ type: "text", text: "s", cache_control: { type: "ephemeral" } }],
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "text", text: "m", cache_control: { type: "ephemeral", ttl: "1h" } }],
+        },
+      ],
+    };
+
+    const before = structuredClone(body);
+    expect(countCacheControls(body)).toBe(2);
+    enforceCacheControlLimit(body, 2);
+    expect(body.tools).toEqual(before.tools);
+    expect(body.system).toEqual(before.system);
+
+    // The invalid tool markers are neither a 5m marker nor a 1h one: the system marker is the first valid
+    // one, so the later 1h marker downgrades only because of it.
+    normalizeCacheControlTTL(body);
+    expect(body.tools).toEqual(before.tools);
+    expect(firstMessageBlock(body).cache_control).toEqual({ type: "ephemeral" });
+
+    const onlyInvalid: JsonObject = {
+      tools: [{ name: "a", cache_control: null }],
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "text", text: "m", cache_control: { type: "ephemeral", ttl: "1h" } }],
+        },
+      ],
+    };
+
+    normalizeCacheControlTTL(onlyInvalid);
+    expect(firstMessageBlock(onlyInvalid).cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
+  });
+
+  it("injects past an invalid marker instead of treating the block as already marked", () => {
+    const body: JsonObject = {
+      system: [{ type: "text", text: "rules", cache_control: null }],
+      messages: [{ role: "user", content: "hi" }],
+    };
+
+    ensureCacheControl(body);
+    expect((body.system as JsonObject[])[0]?.cache_control).toEqual(eph);
+  });
+
+  // Go beb43359: a top-level `cache_control` (automatic caching) moves onto the last cacheable block.
+  describe("top-level marker", () => {
+    it("moves onto the last cacheable message block without a duplicate rolling breakpoint", () => {
+      const body: JsonObject = {
+        cache_control: { type: "ephemeral", scope: "global" },
+        system: "Sys",
+        messages: [{ role: "user", content: "Hello" }],
+      };
+
+      ensureCacheControl(body);
+      expect(body).not.toHaveProperty("cache_control");
+      expect(body.messages).toEqual([
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "Hello", cache_control: { type: "ephemeral", scope: "global" } },
+          ],
+        },
+      ]);
+      expect(countCacheControls(body)).toBe(2);
+    });
+
+    it("keeps a block's own non-bare marker and drops the top-level field", () => {
+      const body: JsonObject = {
+        cache_control: { type: "ephemeral" },
+        system: [{ type: "text", text: "s", cache_control: { type: "ephemeral", ttl: "1h" } }],
+        messages: [
+          {
+            role: "user",
+            content: [{ type: "text", text: "m", cache_control: { type: "ephemeral", ttl: "1h" } }],
+          },
+        ],
+      };
+
+      ensureCacheControl(body);
+      expect(body).not.toHaveProperty("cache_control");
+      expect(countCacheControls(body)).toBe(2);
+    });
+
+    it("falls back to the system prompt, then to the last non-deferred tool", () => {
+      const system: JsonObject = {
+        cache_control: { type: "ephemeral", ttl: "1h" },
+        system: [
+          { type: "text", text: "a" },
+          { type: "text", text: "b" },
+        ],
+        tools: [{ name: "t" }],
+      };
+
+      ensureCacheControl(system);
+      expect(system).not.toHaveProperty("cache_control");
+      expect((system.system as JsonObject[]).map((block) => block.cache_control)).toEqual([
+        undefined,
+        { type: "ephemeral", ttl: "1h" },
+      ]);
+      expect((system.tools as JsonObject[])[0]?.cache_control).toBeUndefined();
+
+      const stringSystem: JsonObject = { cache_control: eph, system: "Sys" };
+      ensureCacheControl(stringSystem);
+      expect(stringSystem).toEqual({
+        system: [{ type: "text", text: "Sys", cache_control: eph }],
+      });
+
+      const tools: JsonObject = {
+        cache_control: eph,
+        tools: [{ name: "a" }, { name: "b" }, { name: "deferred", defer_loading: true }],
+      };
+
+      ensureCacheControl(tools);
+      expect(tools).not.toHaveProperty("cache_control");
+      expect((tools.tools as JsonObject[]).map((tool) => tool.cache_control)).toEqual([
+        undefined,
+        eph,
+        undefined,
+      ]);
+    });
+
+    it("stays when no block can host it, and an invalid one is ignored", () => {
+      const nowhere: JsonObject = { cache_control: eph, messages: [] };
+      ensureCacheControl(nowhere);
+      expect(nowhere.cache_control).toEqual(eph);
+
+      const invalid: JsonObject = { cache_control: null, system: "Sys" };
+      ensureCacheControl(invalid);
+      expect(invalid.cache_control).toBeNull();
+    });
+
+    it("counts in shouldEnsure, the limit (removed last), the TTL passes and the 1h check", () => {
+      const only: JsonObject = { cache_control: eph, messages: [{ role: "user", content: "x" }] };
+      expect(countCacheControls(only)).toBe(1);
+      expect(shouldEnsureCacheControl(only, false, false)).toBe(false);
+      expect(shouldEnsureCacheControl(only, true, false)).toBe(true);
+
+      const five: JsonObject = {
+        cache_control: eph,
+        system: [
+          { type: "text", text: "s0", cache_control: eph },
+          { type: "text", text: "s1", cache_control: eph },
+        ],
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "m0", cache_control: eph },
+              { type: "text", text: "m1", cache_control: eph },
+            ],
+          },
+        ],
+      };
+
+      enforceCacheControlLimit(five, 4);
+      expect(countCacheControls(five)).toBe(4);
+      expect(five.cache_control).toEqual(eph);
+
+      const last: JsonObject = {
+        cache_control: eph,
+        system: [{ type: "text", text: "s", cache_control: eph }],
+        tools: [{ name: "t", cache_control: eph }],
+      };
+
+      enforceCacheControlLimit(last, 1);
+      expect(countCacheControls(last)).toBe(1);
+      expect(last.cache_control).toEqual(eph);
+      enforceCacheControlLimit(last, 0);
+      expect(last).not.toHaveProperty("cache_control");
+
+      upgradeCacheControlTTL(five, "1h");
+      expect(five.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
+      expect(payloadHas1hTTL(five)).toBe(true);
+      stripCacheControlTTL(five);
+      expect(five.cache_control).toEqual(eph);
+      expect(payloadHas1hTTL(five)).toBe(false);
+      expect(payloadHas1hTTL({ cache_control: { type: "ephemeral", ttl: "1h" } })).toBe(true);
+
+      const mixed: JsonObject = {
+        cache_control: { type: "ephemeral", ttl: "1h" },
+        messages: [
+          {
+            role: "user",
+            content: [{ type: "text", text: "m0", cache_control: { type: "ephemeral" } }],
+          },
+        ],
+      };
+
+      normalizeCacheControlTTL(mixed);
+      expect(mixed.cache_control).toEqual({ type: "ephemeral" });
+    });
+  });
 });
 
 describe("MCP tool aliases", () => {
@@ -781,6 +992,33 @@ describe("MCP tool aliases", () => {
     );
 
     expect(() => ambiguous.resolve("mcp__a_b__w3_file")).toThrow(AliasRestoreError);
+  });
+
+  // Go 02fc76b1: the model keeps the caller's full `mcp__server__tool` name under the virtual server.
+  it("recovers a suffix that is exactly a declared passthrough tool name", () => {
+    const reverse = new Map([
+      ["mcp__alpha_beta__word_bash", "Bash"],
+      ["mcp__docs-search__search-pages", "mcp__docs-search__search-pages"],
+      ["mcp__docs-search__search-issues", "mcp__docs-search__search-issues"],
+    ]);
+
+    const resolver = new AliasResolver(reverse);
+    expect(resolver.resolve("mcp__alpha_beta__mcp__docs-search__search-pages")).toBe(
+      "mcp__docs-search__search-pages",
+    );
+    expect(resolver.resolve("mcp__alpha_beta__search-pages")).toBe(
+      "mcp__docs-search__search-pages",
+    );
+
+    const ambiguous = new AliasResolver(
+      new Map([
+        ["mcp__alpha_beta__word_bash", "Bash"],
+        ["mcp__a__query", "mcp__a__query"],
+        ["mcp__b__query", "mcp__b__query"],
+      ]),
+    );
+
+    expect(() => ambiguous.resolve("mcp__alpha_beta__query")).toThrow(AliasRestoreError);
   });
 });
 
