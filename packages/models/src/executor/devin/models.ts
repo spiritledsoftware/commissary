@@ -2,7 +2,8 @@
  * Devin chat model UID resolution.
  *
  * Go source: internal/runtime/executor/helps/devin_models.go (`ResolveDevinChatModelUID`, `HasDevinEffortSuffix`,
- * `NormalizeThinkingLevel`, `selectDefaultDevinEffort`, `clampEffort`). The catalog (the Devin additions of the model catalog, model
+ * `NormalizeThinkingLevel`, `selectDefaultDevinEffort`, `clampEffort`), including the lightning tier and the compound
+ * `<level>-fast` variants. The catalog (the Devin additions of the model catalog, model
  * `thinking.levels`) is reached through a lookup so the executor can use the live registry snapshot with the embedded
  * catalog as fallback.
  */
@@ -35,6 +36,13 @@ const KNOWN_SUFFIXES = [
   "-thinking",
   "-max-1m",
   "-none-1m",
+  "-minimal-lightning",
+  "-low-lightning",
+  "-medium-lightning",
+  "-high-lightning",
+  "-xhigh-lightning",
+  "-max-lightning",
+  "-none-lightning",
   "_none",
   "_minimal",
   "_low",
@@ -200,6 +208,8 @@ export const resolveDevinChatModelUid = (
     }
   }
 
+  // A compound `<level>-fast` request selects an upstream fast variant, which the normalised effort cannot express.
+  const rawLevel = thinkingLevel.trim().toLowerCase();
   const effort = normalizeDevinThinkingLevel(thinkingLevel, budgetTokens);
   const lowerBase = baseModel.toLowerCase();
   let canonicalBase = lowerBase.replaceAll(".", "-");
@@ -249,7 +259,29 @@ export const resolveDevinChatModelUid = (
     (canonicalBase !== lowerBase ? levelsOf(lowerBase) : undefined) ??
     [];
 
+  // The lightning tier keeps the effort before the suffix upstream (`swe-2-high-lightning`).
+  if (canonicalBase.endsWith("-lightning")) {
+    const stem = canonicalBase.slice(0, -"-lightning".length);
+
+    if (hasDevinEffortSuffix(stem) || allowed.length === 0) return canonicalBase;
+
+    return `${stem}-${clampEffort(effort, allowed, defaultEffortFor(stem, allowed))}-lightning`;
+  }
+
   if (allowed.length === 0) return canonicalBase;
 
-  return `${canonicalBase}-${clampEffort(effort, allowed, defaultEffortFor(canonicalBase, allowed))}`;
+  const defaultEffort = defaultEffortFor(canonicalBase, allowed);
+
+  // A strict `<level>-fast` request keeps its level (clamped to the catalog), never the plain default.
+  if (rawLevel.endsWith("-fast")) {
+    const level = rawLevel.slice(0, -"-fast".length);
+
+    if (levelIndex(level) !== -1) {
+      return `${canonicalBase}-${clampEffort(level, allowed, defaultEffort)}-fast`;
+    }
+  }
+
+  const clamped = clampEffort(effort, allowed, defaultEffort);
+
+  return effort === "fast" ? `${canonicalBase}-${clamped}-fast` : `${canonicalBase}-${clamped}`;
 };

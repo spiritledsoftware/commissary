@@ -1931,7 +1931,7 @@
           "created": 1783616400,
           "displayName": "GPT 5.6 Sol",
           "version": "gpt-5.6",
-          "description": "Our most capable model yet. GPT-5.6 Sol can tackle complex code changes, dig into research, produce polished documents, and take on your most ambitious work. Sol is highly capable at lower reasoning efforts\u2014try starting lower, then turn it up for harder jobs.",
+          "description": "Our most capable model yet. GPT-5.6 Sol can tackle complex code changes, dig into research, produce polished documents, and take on your most ambitious work. Sol is highly capable at lower reasoning efforts—try starting lower, then turn it up for harder jobs.",
           "contextLength": 921000,
           "maxCompletionTokens": 128000,
           "supportedParameters": [
@@ -2759,6 +2759,65 @@
             ]
           },
           "inputTokenLimit": 262000,
+          "outputTokenLimit": 64000,
+          "supportedGenerationMethods": [
+            "generateContent",
+            "countTokens"
+          ]
+        },
+        {
+          "id": "devin/swe-2-flash",
+          "object": "model",
+          "ownedBy": "cognition",
+          "type": "devin",
+          "created": 0,
+          "displayName": "SWE-2 Flash",
+          "contextLength": 262144,
+          "maxCompletionTokens": 64000,
+          "supportedInputModalities": [
+            "text"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "thinking": {
+            "levels": [
+              "medium",
+              "high",
+              "max"
+            ]
+          },
+          "inputTokenLimit": 262144,
+          "outputTokenLimit": 64000,
+          "supportedGenerationMethods": [
+            "generateContent",
+            "countTokens"
+          ]
+        },
+        {
+          "id": "devin/swe-2-lightning",
+          "object": "model",
+          "ownedBy": "cognition",
+          "type": "devin",
+          "created": 0,
+          "displayName": "SWE-2 Lightning",
+          "contextLength": 262144,
+          "maxCompletionTokens": 64000,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "thinking": {
+            "levels": [
+              "medium",
+              "high",
+              "max"
+            ]
+          },
+          "inputTokenLimit": 262144,
           "outputTokenLimit": 64000,
           "supportedGenerationMethods": [
             "generateContent",
@@ -4020,6 +4079,68 @@
           ],
           "supportedOutputModalities": [
             "text"
+          ]
+        },
+        {
+          "id": "devin/gpt-6-1-terra",
+          "object": "model",
+          "ownedBy": "openai",
+          "type": "devin",
+          "created": 0,
+          "displayName": "GPT-6.1 Terra",
+          "contextLength": 1000000,
+          "maxCompletionTokens": 64000,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "thinking": {
+            "levels": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          },
+          "inputTokenLimit": 1000000,
+          "outputTokenLimit": 64000,
+          "supportedGenerationMethods": [
+            "generateContent",
+            "countTokens"
+          ]
+        },
+        {
+          "id": "devin/nemotron-3-5-super",
+          "object": "model",
+          "ownedBy": "nvidia",
+          "type": "devin",
+          "created": 0,
+          "displayName": "Nemotron 3.5 Super",
+          "contextLength": 1048576,
+          "maxCompletionTokens": 64000,
+          "supportedInputModalities": [
+            "text",
+            "image"
+          ],
+          "supportedOutputModalities": [
+            "text"
+          ],
+          "thinking": {
+            "levels": [
+              "none",
+              "medium",
+              "high"
+            ]
+          },
+          "inputTokenLimit": 1048576,
+          "outputTokenLimit": 64000,
+          "supportedGenerationMethods": [
+            "generateContent",
+            "countTokens"
           ]
         }
       ]
