@@ -6,6 +6,7 @@ import { builtinTranslators } from "../src/translator/builtin.ts";
 import { setModelInfoLookup } from "../src/translator/model-info.ts";
 import { summaryHooks } from "../src/translator/summary-hooks.ts";
 import {
+  unusedChunkEditEntries,
   unusedMaxTokensAheadEntries,
   unusedParallelToolCallsAheadEntries,
   unusedResponseAheadEntries,
@@ -38,6 +39,7 @@ describe("translator golden fixtures", () => {
     expect(unusedMaxTokensAheadEntries()).toEqual([]);
     expect(unusedResponseAheadEntries()).toEqual([]);
     expect(unusedParallelToolCallsAheadEntries()).toEqual([]);
+    expect(unusedChunkEditEntries(false)).toEqual([]);
   });
 
   it("found fixture files", () => {

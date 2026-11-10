@@ -8,6 +8,7 @@ import type { Json } from "@commissary/json";
 import { builtinTranslators } from "../../src/translator/builtin.ts";
 import { makeTranslationState, type RequestEnvelope } from "../../src/translator/registry.ts";
 import {
+  portedChunkEdit,
   portedMaxTokens,
   portedParallelToolCalls,
   portedResponse,
@@ -173,7 +174,9 @@ const checkTranslatorFixture = (
     const ahead = portedResponse(`${c.from}->${c.to} ${c.name}`)?.stream;
 
     const expectedOutputs = (c.streamOutputs ?? []).map((chunks, index) =>
-      (ahead?.get(index) ?? chunks).map(normalizeChunk),
+      (ahead?.get(index) ?? chunks.map(portedChunkEdit(`${c.from}->${c.to} ${c.name}`, index))).map(
+        normalizeChunk,
+      ),
     );
 
     expect(outputs).toEqual(expectedOutputs);

@@ -26,18 +26,62 @@ interface Params {
   unixTimestamp: number;
   functionIndex: Map<number, number>;
   sawToolCall: Map<number, boolean>;
+  sawFinishReason: Map<number, boolean>;
   upstreamFinishReason: Map<number, string>;
+  modelVersion: string;
+  responseId: string;
+  pendingUsageMetadata: Json | undefined;
   sanitizedNameMap: NameMap;
 }
 
 let functionCallIdCounter = 0;
 
-/** Unique tool-call id `name-<unix nano>-<counter>` (Go uses `time.Now().UnixNano()`). */
-const functionCallId = (name: string): string => {
+/**
+ * The tool-call id: the upstream functionCall `id` when present (da21f1e5), else a unique `name-<unix nano>-<counter>`
+ * (Go uses `time.Now().UnixNano()`).
+ */
+const functionCallId = (name: string, upstreamId?: Json): string => {
+  const explicit = asString(upstreamId).trim();
+
+  if (explicit !== "") return explicit;
   functionCallIdCounter++;
 
   return `${name}-${Date.now()}000000-${functionCallIdCounter}`;
 };
+
+/** Go `isGeminiContentFilterFinishReason` (3f5d3a16). */
+export const isContentFilterFinishReason = (reason: string): boolean => {
+  switch (reason.trim().toUpperCase()) {
+    case "SAFETY":
+    case "RECITATION":
+    case "BLOCKLIST":
+    case "PROHIBITED_CONTENT":
+    case "SPII":
+    case "IMAGE_SAFETY":
+    case "MALFORMED_RESPONSE":
+    case "MALFORMED_FUNCTION_CALL":
+      return true;
+    default:
+      return false;
+  }
+};
+
+/** Go `resolveGeminiOpenAIFinishReason`. */
+interface ResolvedFinishReason {
+  finishReason: string;
+  nativeFinishReason: string;
+}
+
+const resolveFinishReason = (upstream: string, sawToolCall: boolean): ResolvedFinishReason => ({
+  finishReason: sawToolCall
+    ? "tool_calls"
+    : upstream === "MAX_TOKENS"
+      ? "max_tokens"
+      : isContentFilterFinishReason(upstream)
+        ? "content_filter"
+        : "stop",
+  nativeFinishReason: upstream === "" ? "stop" : upstream.toLowerCase(),
+});
 
 const parseCreateTime = (value: Json | undefined): number | undefined => {
   const ms = Date.parse(asString(value));
@@ -104,7 +148,11 @@ export const convertGeminiResponseToOpenAI = (
       unixTimestamp: 0,
       functionIndex: new Map(),
       sawToolCall: new Map(),
+      sawFinishReason: new Map(),
       upstreamFinishReason: new Map(),
+      modelVersion: "",
+      responseId: "",
+      pendingUsageMetadata: undefined,
       sanitizedNameMap: sanitizedToolNameMap(context.originalRequest),
     } satisfies Params;
   }
@@ -113,13 +161,48 @@ export const convertGeminiResponseToOpenAI = (
   const p = state.value as Params;
   const payload = line.startsWith("data:") ? line.slice(5).trim() : line;
 
-  if (payload === "[DONE]") return [];
+  if (payload === "[DONE]") {
+    // A finishReason cached without a terminal chunk (usage never rode with it) is emitted now, once per candidate.
+    const pending = [...p.upstreamFinishReason]
+      .flatMap(([index, reason]) =>
+        reason !== "" && p.sawFinishReason.get(index) !== true ? [index] : [],
+      )
+      .toSorted((a, b) => a - b);
+
+    return pending.map((index) => {
+      p.sawFinishReason.set(index, true);
+
+      const { finishReason, nativeFinishReason } = resolveFinishReason(
+        p.upstreamFinishReason.get(index) ?? "",
+        p.sawToolCall.get(index) === true,
+      );
+
+      const chunk = baseChunk();
+      chunk["created"] = p.unixTimestamp;
+
+      if (p.modelVersion !== "") chunk["model"] = p.modelVersion;
+
+      if (p.responseId !== "") chunk["id"] = p.responseId;
+
+      if (p.pendingUsageMetadata !== undefined) usageFields(p.pendingUsageMetadata, chunk);
+      // SAFETY: `chunk` is a fresh `baseChunk()`, whose `choices` is a one-element array of objects.
+      const choice = (chunk["choices"] as JsonObject[])[0] as JsonObject;
+      choice["index"] = index;
+      choice["finish_reason"] = finishReason;
+      choice["native_finish_reason"] = nativeFinishReason;
+
+      return JSON.stringify(chunk);
+    });
+  }
+
   const root = tryParseJson(payload);
 
   const base = baseChunk();
   const modelVersion = get(root, "modelVersion");
 
-  if (modelVersion !== undefined) base["model"] = asString(modelVersion);
+  if (modelVersion !== undefined) p.modelVersion = asString(modelVersion);
+
+  if (p.modelVersion !== "") base["model"] = p.modelVersion;
   const createTime = get(root, "createTime");
 
   if (createTime !== undefined) {
@@ -131,10 +214,20 @@ export const convertGeminiResponseToOpenAI = (
   base["created"] = p.unixTimestamp;
   const responseId = get(root, "responseId");
 
-  if (responseId !== undefined) base["id"] = asString(responseId);
+  if (responseId !== undefined) p.responseId = asString(responseId);
+
+  if (p.responseId !== "") base["id"] = p.responseId;
   const usage = get(root, "usageMetadata");
 
-  if (usage !== undefined) usageFields(usage, base);
+  if (usage !== undefined) {
+    usageFields(usage, base);
+    p.pendingUsageMetadata = undefined;
+  } else {
+    // The executor renames non-terminal usage to `cpaUsageMetadata`: keep it for a terminal chunk synthesised on [DONE].
+    const pendingUsage = get(root, "cpaUsageMetadata");
+
+    if (pendingUsage !== undefined) p.pendingUsageMetadata = structuredClone(pendingUsage);
+  }
 
   const responses: string[] = [];
   const candidates = get(root, "candidates");
@@ -164,6 +257,12 @@ export const convertGeminiResponseToOpenAI = (
       const parts = get(candidate, "content.parts");
 
       if (isJsonArray(parts)) {
+        // Text and reasoning accumulate across the chunk's parts (c5251b57).
+        let text = "";
+        let reasoning = "";
+        let hasText = false;
+        let hasReasoning = false;
+
         for (const part of parts) {
           let partText = get(part, "text");
           const functionCall = get(part, "functionCall");
@@ -178,25 +277,31 @@ export const convertGeminiResponseToOpenAI = (
 
           const hasThoughtSignature = signature !== undefined && asString(signature) !== "";
 
+          const hasTextPayload = partText !== undefined && asString(partText) !== "";
+
           const hasContentPayload =
-            partText !== undefined || functionCall !== undefined || inlineData !== undefined;
+            hasTextPayload || functionCall !== undefined || inlineData !== undefined;
 
           if (hasThoughtSignature && !hasContentPayload) continue;
 
           if (partText !== undefined) {
             setAssistantRole();
 
-            if (asBool(get(part, "thought"))) delta["reasoning_content"] = asString(partText);
-            else delta["content"] = asString(partText);
+            if (asBool(get(part, "thought"))) {
+              hasReasoning = true;
+              reasoning += asString(partText);
+            } else {
+              hasText = true;
+              text += asString(partText);
+            }
           } else if (functionCall !== undefined) {
             p.sawToolCall.set(candidateIndex, true);
-            let functionCallIndex = p.functionIndex.get(candidateIndex) ?? 0;
+            // Indices count calls across the whole stream, not within one chunk (da21f1e5).
+            const functionCallIndex = p.functionIndex.get(candidateIndex) ?? 0;
             p.functionIndex.set(candidateIndex, functionCallIndex + 1);
             let toolCalls = delta["tool_calls"];
 
-            if (isJsonArray(toolCalls)) {
-              functionCallIndex = toolCalls.length;
-            } else {
+            if (!isJsonArray(toolCalls)) {
               toolCalls = [];
               delta["tool_calls"] = toolCalls;
             }
@@ -207,7 +312,7 @@ export const convertGeminiResponseToOpenAI = (
             );
 
             const call: JsonObject = {
-              id: functionCallId(fcName),
+              id: functionCallId(fcName, get(functionCall, "id")),
               index: functionCallIndex,
               type: "function",
               function: { name: fcName, arguments: "" },
@@ -239,23 +344,37 @@ export const convertGeminiResponseToOpenAI = (
             });
           }
         }
+
+        if (hasText) delta["content"] = text;
+
+        if (hasReasoning) delta["reasoning_content"] = reasoning;
       }
 
       const upstream = p.upstreamFinishReason.get(candidateIndex) ?? "";
       const sawToolCall = p.sawToolCall.get(candidateIndex) === true;
 
       if (upstream !== "" && exists(root, "usageMetadata")) {
-        choice["finish_reason"] = sawToolCall
-          ? "tool_calls"
-          : upstream === "MAX_TOKENS"
-            ? "max_tokens"
-            : "stop";
-        choice["native_finish_reason"] = upstream.toLowerCase();
+        p.sawFinishReason.set(candidateIndex, true);
+        const reasons = resolveFinishReason(upstream, sawToolCall);
+        choice["finish_reason"] = reasons.finishReason;
+        choice["native_finish_reason"] = reasons.nativeFinishReason;
       }
 
       responses.push(JSON.stringify(template));
     }
   } else if (usage !== undefined) {
+    // A usage-only chunk carries a finishReason cached from an earlier chunk that had no usage of its own.
+    const upstream = p.upstreamFinishReason.get(0) ?? "";
+
+    if (upstream !== "" && p.sawFinishReason.get(0) !== true) {
+      p.sawFinishReason.set(0, true);
+      const reasons = resolveFinishReason(upstream, p.sawToolCall.get(0) === true);
+      // SAFETY: `base` is a fresh `baseChunk()`, whose `choices` is a one-element array of objects.
+      const choice = (base["choices"] as JsonObject[])[0] as JsonObject;
+      choice["finish_reason"] = reasons.finishReason;
+      choice["native_finish_reason"] = reasons.nativeFinishReason;
+    }
+
     responses.push(JSON.stringify(base));
   }
 
@@ -312,7 +431,9 @@ export const convertGeminiResponseToOpenAINonStream = (
       const finishReason = get(candidate, "finishReason");
 
       if (finishReason !== undefined) {
-        choice["finish_reason"] = asString(finishReason).toLowerCase();
+        choice["finish_reason"] = isContentFilterFinishReason(asString(finishReason))
+          ? "content_filter"
+          : asString(finishReason).toLowerCase();
         choice["native_finish_reason"] = asString(finishReason).toLowerCase();
       }
 
@@ -336,6 +457,16 @@ export const convertGeminiResponseToOpenAINonStream = (
           if (audioTranscription !== undefined && partText === undefined)
             partText = get(audioTranscription, "text");
 
+          const signature = get(part, "thoughtSignature") ?? get(part, "thought_signature");
+
+          const hasContentPayload =
+            (partText !== undefined && asString(partText) !== "") ||
+            functionCall !== undefined ||
+            inlineData !== undefined;
+
+          // Skip pure thoughtSignature carriers but keep any payload in the same part (c5251b57).
+          if (signature !== undefined && asString(signature) !== "" && !hasContentPayload) continue;
+
           if (partText !== undefined) {
             if (asBool(get(part, "thought"))) {
               hasReasoning = true;
@@ -353,7 +484,7 @@ export const convertGeminiResponseToOpenAINonStream = (
             );
 
             const call: JsonObject = {
-              id: functionCallId(fcName),
+              id: functionCallId(fcName, get(functionCall, "id")),
               type: "function",
               function: { name: fcName, arguments: "" },
             };

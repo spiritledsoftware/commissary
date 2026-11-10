@@ -17,6 +17,7 @@ import {
   set,
 } from "@commissary/json";
 import { unwrapApplyPatchInput } from "../../../common/apply-patch.ts";
+import { isContentFilterFinishReason } from "../chat-response.ts";
 import type { ResponsesToolIdentity } from "../../../common/responses-tools.ts";
 
 // --- identifiers -------------------------------------------------------------------------------------------------------
@@ -193,20 +194,32 @@ export const usageJson = (usage: ResponsesUsage): JsonObject => ({
   total_tokens: usage.total,
 });
 
-export const terminalState = (
-  finishReason: string,
-): {
+interface TerminalState {
   readonly eventType: string;
   readonly status: string;
   readonly incompleteDetails: JsonObject | undefined;
-} =>
-  finishReason.trim().toUpperCase() === "MAX_TOKENS"
-    ? {
-        eventType: "response.incomplete",
-        status: "incomplete",
-        incompleteDetails: { reason: "max_output_tokens" },
-      }
-    : { eventType: "response.completed", status: "completed", incompleteDetails: undefined };
+}
+
+export const terminalState = (finishReason: string): TerminalState => {
+  const reason = finishReason.trim().toUpperCase();
+
+  if (reason === "MAX_TOKENS")
+    return {
+      eventType: "response.incomplete",
+      status: "incomplete",
+      incompleteDetails: { reason: "max_output_tokens" },
+    };
+
+  // Safety, recitation and malformed finishReasons end the response incomplete (Go 3f5d3a16).
+  if (isContentFilterFinishReason(reason))
+    return {
+      eventType: "response.incomplete",
+      status: "incomplete",
+      incompleteDetails: { reason: "content_filter" },
+    };
+
+  return { eventType: "response.completed", status: "completed", incompleteDetails: undefined };
+};
 
 // --- apply_patch -------------------------------------------------------------------------------------------------------
 

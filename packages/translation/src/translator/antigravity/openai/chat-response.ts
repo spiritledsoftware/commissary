@@ -18,6 +18,7 @@ import {
 import type { ResponseContext, ResponseTransform } from "../../registry.ts";
 import {
   convertGeminiResponseToOpenAINonStream,
+  isContentFilterFinishReason,
   usageFields,
 } from "../../gemini/openai/chat-response.ts";
 import {
@@ -42,7 +43,11 @@ interface Params {
 
 let functionCallIdCounter = 0;
 
-const functionCallId = (name: string): string => {
+/** The upstream functionCall `id` when present (da21f1e5), else a unique `name-<unix nano>-<counter>`. */
+const functionCallId = (name: string, upstreamId?: Json): string => {
+  const explicit = asString(upstreamId).trim();
+
+  if (explicit !== "") return explicit;
   functionCallIdCounter++;
 
   return `${name}-${Date.now()}000000-${functionCallIdCounter}`;
@@ -78,6 +83,8 @@ const resolveFinishReason = (params: Params): ResolveFinishReasonResult => {
 
   if (params.sawToolCall) finishReason = "tool_calls";
   else if (params.upstreamFinishReason === "MAX_TOKENS") finishReason = "max_tokens";
+  else if (isContentFilterFinishReason(params.upstreamFinishReason))
+    finishReason = "content_filter";
 
   return {
     finishReason,
@@ -129,12 +136,8 @@ export const convertAntigravityResponseToOpenAI = (
 
   if (!params.sawResponse) params.sawResponse = hasAntigravityResponsePayload(raw);
 
-  const delta: JsonObject = {
-    role: null,
-    content: null,
-    reasoning_content: null,
-    tool_calls: null,
-  };
+  // `tool_calls` is omitted unless the chunk carries calls (dfe0a0ef).
+  const delta: JsonObject = { role: null, content: null, reasoning_content: null };
 
   const choice: JsonObject = { index: 0, delta, finish_reason: null, native_finish_reason: null };
 
@@ -189,6 +192,12 @@ export const convertAntigravityResponseToOpenAI = (
   const parts = get(raw, "response.candidates.0.content.parts");
 
   if (isJsonArray(parts)) {
+    // Text and reasoning accumulate across the chunk's parts (c5251b57).
+    let textContent = "";
+    let reasoningContent = "";
+    let hasTextContent = false;
+    let hasReasoningContent = false;
+
     for (const part of parts) {
       const text = get(part, "text");
       const functionCall = get(part, "functionCall");
@@ -199,23 +208,30 @@ export const convertAntigravityResponseToOpenAI = (
         thoughtSignature !== undefined && asString(thoughtSignature) !== "";
 
       const hasContentPayload =
-        text !== undefined || functionCall !== undefined || inlineData !== undefined;
+        (text !== undefined && asString(text) !== "") ||
+        functionCall !== undefined ||
+        inlineData !== undefined;
 
       // Ignore an encrypted thoughtSignature but keep any actual content in the same part.
       if (hasThoughtSignature && !hasContentPayload) continue;
 
       if (text !== undefined) {
-        if (asBool(get(part, "thought"))) delta["reasoning_content"] = asString(text);
-        else delta["content"] = asString(text);
+        if (asBool(get(part, "thought"))) {
+          hasReasoningContent = true;
+          reasoningContent += asString(text);
+        } else {
+          hasTextContent = true;
+          textContent += asString(text);
+        }
+
         delta["role"] = "assistant";
       } else if (functionCall !== undefined) {
         params.sawToolCall = true;
-        let index = params.functionIndex;
+        // Indices count calls across the whole stream, not within one chunk (80aa2b1d).
+        const index = params.functionIndex;
         params.functionIndex++;
-        const existing = delta["tool_calls"];
 
-        if (isJsonArray(existing)) index = existing.length;
-        else delta["tool_calls"] = [];
+        if (!isJsonArray(delta["tool_calls"])) delta["tool_calls"] = [];
 
         const name = restoreSanitizedToolName(
           params.sanitizedNameMap,
@@ -223,7 +239,7 @@ export const convertAntigravityResponseToOpenAI = (
         );
 
         const call: JsonObject = {
-          id: functionCallId(name),
+          id: functionCallId(name, get(functionCall, "id")),
           index,
           type: "function",
           function: { name, arguments: "" },
@@ -257,6 +273,10 @@ export const convertAntigravityResponseToOpenAI = (
         });
       }
     }
+
+    if (hasTextContent) delta["content"] = textContent;
+
+    if (hasReasoningContent) delta["reasoning_content"] = reasoningContent;
   }
 
   // Only the chunk with both finishReason and usage is terminal; [DONE] synthesises one when upstream never sends it.

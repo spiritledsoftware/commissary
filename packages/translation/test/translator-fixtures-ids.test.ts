@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import type { Json } from "@commissary/json";
 import { builtinTranslators } from "../src/translator/builtin.ts";
 import { makeTranslationState, type SummaryHooks } from "../src/translator/registry.ts";
+import { portedChunkEdit, unusedChunkEditEntries } from "./support/translator-ported-ahead.ts";
 import {
   applySummaryConfigForModel,
   extractTranslatedSummaryConfig,
@@ -121,7 +122,12 @@ describe("translator golden fixtures with generated ids", () => {
               builtinTranslators.translateStream(c.from, c.to, state, line).map(normalize),
             );
 
-            expect(outputs).toEqual((c.streamOutputs ?? []).map((chunks) => chunks.map(normalize)));
+            // A golden that predates the C6 response fixes expects the edited chunks (translator-ported-ahead.ts).
+            expect(outputs).toEqual(
+              (c.streamOutputs ?? []).map((chunks, index) =>
+                chunks.map(portedChunkEdit(`${c.from}->${c.to} ${c.name}`, index)).map(normalize),
+              ),
+            );
           }
 
           if (c.responseBodyText !== undefined) {
@@ -140,4 +146,8 @@ describe("translator golden fixtures with generated ids", () => {
       }
     });
   }
+
+  it("consumed every ported-ahead chunk edit of the generated-id cases", () => {
+    expect(unusedChunkEditEntries(true)).toEqual([]);
+  });
 });
