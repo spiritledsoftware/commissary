@@ -1300,7 +1300,7 @@ Deviations from Go (all deliberate, documented in code headers):
 - **Mid-session Responses system items** (Go `27762819`): for a Responses client, a text-only system or developer message item
   after the conversation started stays in place as a `role: "system"` turn right after the next user message (so the prompt
   prefix of earlier turns stays stable) instead of joining the top-level `system`. The executor decides it per attempt
-  (`pipeline.ts` `keepsSystemItemsTopLevel`: cloaked, not strict, an upstream model that accepts the turn, no
+  (`pipeline.ts` `keepSystemItemsInPlace`: cloaked, not strict, an upstream model that accepts the turn, no
   `rebuild-mid-system-message`) and passes `topLevelSystemItems` to the translator in the registry's request options next to
   `compat`. Local token counts are always top level. Differences from Go: `minimal` keeps items in place even with strict mode set
   (it ignores strict mode and already relocates the caller's system blocks into the conversation); an absent option means top

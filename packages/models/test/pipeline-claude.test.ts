@@ -1586,20 +1586,40 @@ requests:
     }
   });
 
-  it("normalises before the local count_tokens estimate as well", async () => {
-    const gateway = await loadConfig(`
+  it("normalises before the payload rules on the local count_tokens estimate as well", async () => {
+    // A rule writes a long non-portable id after the normaliser would have run. If the normaliser ran after the
+    // rules it would encode that id (about a third longer), and the estimate would grow with it.
+    const ruleId = `rule:${Array.from({ length: 120 }, (_, i) => "qzxjvkwpbmgfhdlsnrtc"[(i * 7) % 20]).join("")}`;
+
+    const gateway = (rules: string) =>
+      loadConfig(`
 api-keys:
   claude:
     - base-url: https://gateway.test
       keys: [{ api-key: gw-key }]
       models: [{ name: claude-sonnet-4-5 }]
-`);
+${rules}`);
 
-    const p = makePipeline({ config: gateway, respond: () => jsonResponse({}) });
-    afterAll(p.dispose);
+    const ruled = makePipeline({
+      config: await gateway(`requests:
+  payload:
+    override:
+      - models: [{ name: "claude-sonnet-4-5", protocol: claude }]
+        params:
+          messages.1.content.1.id: "${ruleId}"
+`),
+      respond: () => jsonResponse({}),
+    });
 
-    const count = async (id: string): Promise<number> => {
-      const messages = history().map((m) => JSON.parse(JSON.stringify(m).replaceAll("call:1", id)));
+    const plain = makePipeline({ config: await gateway(""), respond: () => jsonResponse({}) });
+    afterAll(ruled.dispose);
+    afterAll(plain.dispose);
+
+    const count = async (p: typeof plain, id: string): Promise<number> => {
+      const messages = history();
+      // Only the `tool_use` id changes, as the rule changes only that one.
+      const [, assistant] = messages;
+      ((assistant as JsonObject).content as JsonObject[])[1]!.id = id;
 
       const response = await p.call(
         "/v1/messages/count_tokens",
@@ -1611,8 +1631,15 @@ api-keys:
       return ((await response.json()) as { input_tokens: number }).input_tokens;
     };
 
-    // `call:1` becomes the longer `cpa_tid_v1_…`; the portable `call_1` of the same length stays as it is.
-    expect(await count("call:1")).toBeGreaterThan(await count("call_1"));
+    // The rule rewrites the id of the `tool_use` block only; the `tool_result` keeps `toolu_ok`.
+    const withRule = await count(ruled, "toolu_ok");
+    // The same id as the client's own, which the normaliser encodes.
+    const encoded = await count(plain, ruleId);
+    // The same id with a portable character, which stays as it is: what the rule's value costs untouched.
+    const untouched = await count(plain, ruleId.replace(":", "_"));
+
+    expect(Math.abs(withRule - untouched)).toBeLessThanOrEqual(4);
+    expect(encoded).toBeGreaterThan(withRule + 8);
   });
 });
 

@@ -323,28 +323,30 @@ interface Common {
   readonly sessionId: string;
   readonly originalPayload: Json;
   /**
-   * Whether the Responses translator keeps every system-level input item top-level (`translateRequestForExecutor`'s
-   * `topLevelSystemItems`). Decided once per attempt, here, because it depends on the credential (wire policy, rebuild
-   * opt-in) and on the upstream model: Go `pinResponsesSystemItemPlacement`.
+   * Whether the Responses translator keeps mid-session system items in place as `role: "system"` turns (it is told the
+   * opposite, `topLevelSystemItems`). Decided once per attempt, here, because it depends on the credential (wire
+   * policy, rebuild opt-in) and on the upstream model: Go `pinResponsesSystemItemPlacement`.
    */
-  readonly topLevelSystemItems: boolean;
+  readonly keepSystemItemsInPlace: boolean;
+  /** The request names its own session (`options.metadata.sessionId`), so a session-keyed store can find it again. */
+  readonly hasCallerSession: boolean;
 }
 
 /**
  * Mid-session system items stay in place (`role: "system"` after the next user message) only on the cloaked Claude Code
  * wire, which sends the mid-conversation system beta, for a model that accepts the turn. Strict mode drops every caller
  * system instruction, a mid-system rebuild folds the turns into `system`, and an uncloaked request forwards the caller's
- * betas unchanged: all keep the top-level path. `minimal` keeps items in place even under strict mode, which it ignores
+ * betas unchanged: none of them keeps items in place. `minimal` does even under strict mode, which it ignores
  * (deliberate difference from Go, ARCHITECTURE.md).
  */
-const keepsSystemItemsTopLevel = (
+const keepSystemItemsInPlace = (
   input: PrepareInput,
   baseModel: string,
   wire: WireResolution,
 ): boolean => {
   const strict = wire.settings.strictMode && !isMinimalCloak(wire.policy);
 
-  return !(
+  return (
     wire.policy.cloak &&
     !strict &&
     !isLegacySystemReminderModel(upstreamModelOf(input.services.profile, baseModel)) &&
@@ -394,7 +396,8 @@ const commonContext = (input: PrepareInput, path: string, countTokens: boolean):
     wire,
     sessionId,
     originalPayload,
-    topLevelSystemItems: keepsSystemItemsTopLevel(input, baseModel, wire),
+    keepSystemItemsInPlace: keepSystemItemsInPlace(input, baseModel, wire),
+    hasCallerSession: (options.metadata.sessionId ?? "").trim() !== "",
   };
 };
 
@@ -488,7 +491,12 @@ export const prepareMessagesRequest = Effect.fnUntraced(function* (input: Prepar
         to,
         { format: from, model: baseModel, stream: upstreamStream, body },
         thinking.summary,
-        { headers: options.headers, config, isCompat, topLevelSystemItems: c.topLevelSystemItems },
+        {
+          headers: options.headers,
+          config,
+          isCompat,
+          topLevelSystemItems: !c.keepSystemItemsInPlace,
+        },
       ),
     );
 
@@ -551,8 +559,6 @@ export const prepareMessagesRequest = Effect.fnUntraced(function* (input: Prepar
     planContinuity({ config, credential, body, policy: wire.policy, sessionId, now }),
   );
 
-  const hasCallerSession = (options.metadata.sessionId ?? "").trim() !== "";
-
   const [continuity, pinnedDate] =
     plan === undefined
       ? [undefined, undefined]
@@ -564,7 +570,7 @@ export const prepareMessagesRequest = Effect.fnUntraced(function* (input: Prepar
               plan.isNewPromptTurn,
               plan.explicitPromptId,
             ),
-            hasCallerSession
+            c.hasCallerSession
               ? services.datePin.resolve(
                   options.metadata.callerScope,
                   plan.sessionId,
@@ -807,7 +813,12 @@ export const prepareCountTokensRequest = Effect.fnUntraced(function* (input: Pre
         to,
         { format: from, model: baseModel, stream, body },
         thinking.summary,
-        { headers: options.headers, config, isCompat, topLevelSystemItems: c.topLevelSystemItems },
+        {
+          headers: options.headers,
+          config,
+          isCompat,
+          topLevelSystemItems: !c.keepSystemItemsInPlace,
+        },
       ),
     );
 

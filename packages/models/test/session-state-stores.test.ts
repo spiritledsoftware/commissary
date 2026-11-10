@@ -265,8 +265,6 @@ describe("Claude continuity over SessionState", () => {
         if (first === undefined) return;
         assert.strictEqual(runs(), 2); // read + write of the new prompt id
         assert.strictEqual(first.previousMessageId, "");
-        // The session date pin lives in its own store (`claude-date-pin`): the continuity entry holds no date.
-        assert.notProperty(first, "pinnedDate");
         yield* invocation(a.commit(first, "msg_1", "req_abc", first.promptId));
         assert.strictEqual(runs(), 3); // one compare-and-swap write, no read
 

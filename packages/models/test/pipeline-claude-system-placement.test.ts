@@ -3,7 +3,7 @@
 // that accepts the turn) or at the top level, and tells the translator through its request options.
 import { Effect, Result } from "effect";
 import { describe, expect, it } from "vitest";
-import { registerBuiltinTranslators, TranslatorRegistry } from "@commissary/translation";
+import { builtinTranslators, TranslatorRegistry } from "@commissary/translation";
 import { Formats } from "@commissary/translation/formats";
 import type { JsonObject } from "@commissary/json";
 import { makeClaudeExecutor } from "../src/executor/claude/executor.ts";
@@ -49,7 +49,10 @@ const respond = (call: { text: string; url: string }): Response =>
           usage: { input_tokens: 1, output_tokens: 1 },
         });
 
-/** A registry with every built-in translator that records the placement each Responses -> Claude request asks for. */
+/**
+ * The built-in translators, recording the placement each Responses -> Claude request asks for. It delegates the four
+ * methods the Claude executor calls; the package's public API stays as it is.
+ */
 class SpyRegistry extends TranslatorRegistry {
   constructor(readonly seen: Array<boolean | undefined>) {
     super();
@@ -63,12 +66,29 @@ class SpyRegistry extends TranslatorRegistry {
     if (client === Formats.OpenAIResponse && provider === Formats.Claude)
       this.seen.push(options?.topLevelSystemItems);
 
-    return super.translateRequest(...args);
+    return builtinTranslators.translateRequest(...args);
+  }
+
+  override translateStream(
+    ...args: Parameters<TranslatorRegistry["translateStream"]>
+  ): ReturnType<TranslatorRegistry["translateStream"]> {
+    return builtinTranslators.translateStream(...args);
+  }
+
+  override translateNonStream(
+    ...args: Parameters<TranslatorRegistry["translateNonStream"]>
+  ): ReturnType<TranslatorRegistry["translateNonStream"]> {
+    return builtinTranslators.translateNonStream(...args);
+  }
+
+  override translateTokenCount(
+    ...args: Parameters<TranslatorRegistry["translateTokenCount"]>
+  ): ReturnType<TranslatorRegistry["translateTokenCount"]> {
+    return builtinTranslators.translateTokenCount(...args);
   }
 }
 
-const spyRegistry = (seen: Array<boolean | undefined>): TranslatorRegistry =>
-  registerBuiltinTranslators(new SpyRegistry(seen));
+const spyRegistry = (seen: Array<boolean | undefined>): TranslatorRegistry => new SpyRegistry(seen);
 
 const responsesOptions = (overrides: Partial<ExecutorOptions> = {}): ExecutorOptions =>
   options({
@@ -228,8 +248,8 @@ describe("upstream count_tokens", () => {
   });
 });
 
-describe("failover", () => {
-  it("switches the placement with the credential of each attempt", async () => {
+describe("per-credential placement", () => {
+  it("is decided again for each attempt from that attempt's credential (two attempts, one executor)", async () => {
     const placement: Array<boolean | undefined> = [];
 
     const executor = makeClaudeExecutor({

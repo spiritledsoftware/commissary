@@ -6,7 +6,6 @@ import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 import { fixedBackend, type SessionStateBackend, SessionStateError } from "@commissary/state";
 import type { Json, JsonObject } from "@commissary/json";
-import { currentDateReminder } from "../src/executor/claude/cloaking.ts";
 import { makeMemoryContinuityStore } from "../src/executor/claude/continuity.ts";
 import {
   type DatePinStore,
@@ -95,7 +94,9 @@ const rig = (datePin?: (now: () => number) => DatePinStore): Rig => {
 const textOf = (block: JsonObject | undefined): string =>
   typeof block?.text === "string" ? block.text : "";
 
-const reminder = (date: string): string => currentDateReminder(date);
+/** A currentDate reminder as Claude Code writes it, spelled out so the test does not echo the production builder. */
+const reminder = (date: string): string =>
+  `<system-reminder>\nAs you answer the user's questions, you can use the following context:\n# currentDate\nToday's date is ${date}.\n\n      IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.\n</system-reminder>\n`;
 
 const identity = (sent: JsonObject): string[] => {
   const text = textOf((sent.system as JsonObject[])[0]);
