@@ -487,6 +487,9 @@ Port of `internal/thinking`, keeping the "canonical `ThinkingConfig` → central
   configured alias of `claude-sonnet-5-5`, because configured `models[]` entries resolve as user-defined for each
   attempt. Known difference: Go's `ResolveModelInfo` marks them `UserDefined=false`, so they skip validation and the
   lowest-level fallback here (#403).
+  The Claude executor's preserved-thinking binding (`thinking-binding.ts`) runs after the thinking stage: it finds the
+  stale caller `block_binding` already removed from an off request, may bind the adaptive fallback (a signed history on
+  a preserved-thinking model), and never binds `disabled` or `between_tools`, which accept no other thinking field.
 - **A Claude request's `output_config.effort` without a `thinking` object** is a thinking level for every other
   target (Go `009f8d7a`, `e6931d51`): `extractClaudeConfig` reads it, and the OpenAI and Codex request translators map
   it (an explicit `thinking` object, including `disabled` and `budget_tokens`, wins; a thinking suffix wins over both).

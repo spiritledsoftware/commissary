@@ -18,7 +18,7 @@ import {
   setModelInfoLookup,
 } from "@commissary/translation";
 import { claudeSignature } from "./support/signatures.ts";
-import { oauthPipeline } from "./support/claude-oauth.ts";
+import { catalogCapabilities, oauthPipeline } from "./support/claude-oauth.ts";
 import { credential, execute, harness, options } from "./support/executor-run.ts";
 import {
   jsonResponse,
@@ -672,5 +672,39 @@ describe("input_transformations", () => {
     } finally {
       await p.dispose();
     }
+  });
+});
+
+describe("a thinking-off request with signed history (the thinking stage runs before the binding)", () => {
+  const sendOff = async (model: string, thinking: JsonObject): Promise<JsonObject> => {
+    const p = makePipeline({
+      config: await loadConfig(keyYaml()),
+      respond: () => jsonResponse(message()),
+      modelCapabilities: catalogCapabilities,
+    });
+
+    try {
+      expect((await p.call("/v1/messages", postJson(history(model, { thinking })))).status).toBe(
+        200,
+      );
+
+      return JSON.parse(p.calls[0]!.body).thinking as JsonObject;
+    } finally {
+      await p.dispose();
+    }
+  };
+
+  const stale = { type: "disabled", block_binding: { prefix_mismatch_behavior: "drop_block" } };
+
+  it("binds the adaptive fallback of a model that cannot be turned off, with display omitted", async () => {
+    expect(await sendOff("claude-opus-5-5", stale)).toEqual({
+      type: "adaptive",
+      display: "omitted",
+      block_binding: DROP,
+    });
+  });
+
+  it("leaves between_tools bare: the stale binding is removed and none is added", async () => {
+    expect(await sendOff("claude-sonnet-5-5", stale)).toEqual({ type: "between_tools" });
   });
 });
