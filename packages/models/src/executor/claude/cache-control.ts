@@ -4,7 +4,12 @@
  * Go source: internal/runtime/executor/claude_executor_cloaking.go (ensureCacheControl, injectToolsCacheControl,
  * injectSystemCacheControl, injectMessagesCacheControl, enforceCacheControlLimit, upgradeClaudeCacheControlTTL,
  * stripClaudeCacheControlTTL, normalizeCacheControlTTL, isExplicitPromptCacheMode, stripPromptCacheOptions,
- * shouldEnsureCacheControl, countCacheControls). Functions mutate the parsed body in place.
+ * shouldEnsureCacheControl, countCacheControls, isValidClaudeCacheControl, materializeTopLevelCacheControlDoc).
+ * Functions mutate the parsed body in place.
+ *
+ * Only an object with `type: "ephemeral"` is a marker (be8c35f2); anything else is ignored and left in the body.
+ * A top-level `cache_control` (automatic caching) counts like a block marker, last in evaluation order, and
+ * `ensureCacheControl` moves it onto the last cacheable block (beb43359).
  */
 import { get, type Json, type JsonObject } from "@commissary/json";
 import { isArr, isObj, str } from "@commissary/translation";
@@ -19,8 +24,12 @@ export const textBlock = (text: string, cacheControl?: JsonObject): JsonObject =
 
 const ephemeral = (): JsonObject => ({ type: "ephemeral" });
 
-const hasKey = (value: Json | undefined, key: string): boolean =>
-  isObj(value) && Object.hasOwn(value, key);
+/** `isValidClaudeCacheControl`: an object with `type: "ephemeral"`. */
+export const isValidCacheControl = (value: Json | undefined): value is JsonObject =>
+  isObj(value) && value.type === "ephemeral";
+
+const hasCacheControl = (value: Json | undefined): boolean =>
+  isObj(value) && isValidCacheControl(value.cache_control);
 
 /** `isExplicitPromptCacheMode`: `prompt_cache_options.mode == "explicit"` in any payload. */
 export const isExplicitPromptCacheMode = (...payloads: ReadonlyArray<Json | undefined>): boolean =>
@@ -34,7 +43,10 @@ export const stripPromptCacheOptions = (body: JsonObject): JsonObject => {
   return body;
 };
 
-/** Every block that may carry `cache_control`, in evaluation order: tools, system, message content. */
+/**
+ * Every block that may carry `cache_control`, in evaluation order: tools, system, message content, then the body
+ * itself for a top-level marker.
+ */
 const cacheBlocks = (body: JsonObject): JsonObject[] => {
   const blocks: JsonObject[] = [];
 
@@ -48,11 +60,13 @@ const cacheBlocks = (body: JsonObject): JsonObject[] => {
   if (isArr(body.messages))
     for (const message of body.messages) if (isObj(message)) push(message.content);
 
+  blocks.push(body);
+
   return blocks;
 };
 
 export const countCacheControls = (body: JsonObject): number =>
-  cacheBlocks(body).filter((block) => hasKey(block, "cache_control")).length;
+  cacheBlocks(body).filter(hasCacheControl).length;
 
 /** `shouldEnsureCacheControl`. */
 export const shouldEnsureCacheControl = (
@@ -100,13 +114,9 @@ export const normalizeCacheControlTTL = (body: JsonObject): JsonObject => {
   let seen5m = false;
 
   for (const block of cacheBlocks(body)) {
-    if (!hasKey(block, "cache_control")) continue;
     const cc = block.cache_control;
 
-    if (!isObj(cc)) {
-      seen5m = true;
-      continue;
-    }
+    if (!isValidCacheControl(cc)) continue;
 
     if (cc.ttl !== CACHE_TTL_1H) {
       seen5m = true;
@@ -137,7 +147,7 @@ export const enforceCacheControlLimit = (body: JsonObject, maxBlocks: number): J
   const strip = (block: JsonObject): boolean => {
     if (excess <= 0) return false;
 
-    if (!hasKey(block, "cache_control")) return true;
+    if (!hasCacheControl(block)) return true;
     delete block.cache_control;
     excess--;
 
@@ -148,7 +158,7 @@ export const enforceCacheControlLimit = (body: JsonObject, maxBlocks: number): J
     if (!isArr(items)) return;
     let last = -1;
     items.forEach((item, index) => {
-      if (hasKey(item, "cache_control")) last = index;
+      if (hasCacheControl(item)) last = index;
     });
 
     if (last < 0) return;
@@ -183,6 +193,9 @@ export const enforceCacheControlLimit = (body: JsonObject, maxBlocks: number): J
   if (excess <= 0) return body;
 
   if (isArr(body.tools)) for (const item of body.tools) if (isObj(item) && !strip(item)) break;
+
+  // The top-level marker (automatic caching) goes last.
+  if (excess > 0 && isValidCacheControl(body.cache_control)) delete body.cache_control;
 
   return body;
 };
@@ -241,10 +254,21 @@ const messageEligibleForRollingCache = (message: Json): boolean => {
   return lastCacheableMessageBlockIndex(message) >= 0;
 };
 
-const injectMessagesCacheControl = (body: JsonObject): void => {
+/** Where the rolling message breakpoint goes. */
+type RollingTarget =
+  | { readonly kind: "final-system"; readonly message: JsonObject; readonly text: string }
+  | { readonly kind: "string"; readonly message: JsonObject; readonly text: string }
+  | {
+      readonly kind: "block";
+      readonly message: JsonObject;
+      readonly content: ReadonlyArray<Json>;
+      readonly index: number;
+    };
+
+const rollingMessageTarget = (body: JsonObject): RollingTarget | undefined => {
   const messages = body.messages;
 
-  if (!isArr(messages)) return;
+  if (!isArr(messages)) return undefined;
   let lastEligible = -1;
   messages.forEach((message, index) => {
     const role = str(get(message, "role"));
@@ -253,7 +277,7 @@ const injectMessagesCacheControl = (body: JsonObject): void => {
       lastEligible = index;
   });
 
-  if (lastEligible < 0) return;
+  if (lastEligible < 0) return undefined;
   const final = messages[messages.length - 1];
   const finalContent = get(final, "content");
 
@@ -262,24 +286,45 @@ const injectMessagesCacheControl = (body: JsonObject): void => {
     str(get(final, "role")) === "system" &&
     typeof finalContent === "string" &&
     finalContent.trim() !== ""
-  ) {
-    final.content = [textBlock(finalContent, ephemeral())];
-
-    return;
-  }
+  )
+    return { kind: "final-system", message: final, text: finalContent };
 
   const target = messages[lastEligible];
 
-  if (!isObj(target)) return;
+  if (!isObj(target)) return undefined;
   const content = target.content;
 
-  if (isArr(content)) {
-    if (content.some((item) => hasKey(item, "cache_control"))) return;
-    const last = content[lastCacheableMessageBlockIndex(target)];
+  if (isArr(content))
+    return {
+      kind: "block",
+      message: target,
+      content,
+      index: lastCacheableMessageBlockIndex(target),
+    };
 
-    if (isObj(last)) last.cache_control = ephemeral();
-  } else if (typeof content === "string" && content.trim() !== "") {
-    target.content = [textBlock(content, ephemeral())];
+  if (typeof content === "string" && content.trim() !== "")
+    return { kind: "string", message: target, text: content };
+
+  return undefined;
+};
+
+const injectMessagesCacheControl = (body: JsonObject): void => {
+  const target = rollingMessageTarget(body);
+
+  if (target === undefined) return;
+
+  switch (target.kind) {
+    case "final-system":
+    case "string":
+      target.message.content = [textBlock(target.text, ephemeral())];
+
+      return;
+    case "block": {
+      if (target.content.some(hasCacheControl)) return;
+      const last = target.content[target.index];
+
+      if (isObj(last)) last.cache_control = ephemeral();
+    }
   }
 };
 
@@ -290,7 +335,7 @@ const injectToolsCacheControl = (body: JsonObject): void => {
   let lastEligible = -1;
 
   for (const [index, tool] of tools.entries()) {
-    if (hasKey(tool, "cache_control")) return;
+    if (hasCacheControl(tool)) return;
 
     if (get(tool, "defer_loading") !== true) lastEligible = index;
   }
@@ -314,7 +359,7 @@ const injectSystemCacheControl = (body: JsonObject): void => {
   const system = body.system;
 
   if (isArr(system)) {
-    if (system.some((item) => hasKey(item, "cache_control"))) return;
+    if (system.some(hasCacheControl)) return;
     const last = system[lastCacheableSystemIndex(system)];
 
     if (isObj(last)) last.cache_control = ephemeral();
@@ -331,11 +376,86 @@ const hasCacheableSystem = (body: JsonObject): boolean => {
   return typeof system === "string" && system.trim() !== "";
 };
 
-/** `ensureCacheControl`: tools (only without cacheable system), system and the rolling last message. */
+const isBareEphemeral = (cacheControl: JsonObject): boolean =>
+  Object.keys(cacheControl).length === 1;
+
+/** `applyTopLevelCacheControlToBlockDoc`: the block keeps a valid marker of its own unless the top-level one is richer. */
+const moveTopLevelOnto = (body: JsonObject, block: JsonObject, top: JsonObject): void => {
+  const existing = block.cache_control;
+
+  if (!isValidCacheControl(existing) || (isBareEphemeral(existing) && !isBareEphemeral(top)))
+    block.cache_control = { ...top };
+  delete body.cache_control;
+};
+
+/**
+ * `materializeTopLevelCacheControlDoc`: moves a valid top-level `cache_control` onto the last cacheable message block,
+ * else the system prompt, else the last non-deferred tool, and removes the field. It stays when nothing can host it.
+ * Returns whether it landed in the messages (so the rolling breakpoint is not duplicated).
+ */
+const materializeTopLevelCacheControl = (body: JsonObject): boolean => {
+  const top = body.cache_control;
+
+  if (!isValidCacheControl(top)) return false;
+  const target = rollingMessageTarget(body);
+
+  if (target !== undefined) {
+    if (target.kind === "block") {
+      const block = target.content[target.index];
+
+      if (isObj(block)) {
+        moveTopLevelOnto(body, block, top);
+
+        return true;
+      }
+    } else {
+      target.message.content = [textBlock(target.text, { ...top })];
+      delete body.cache_control;
+
+      return true;
+    }
+  }
+
+  const system = body.system;
+
+  if (isArr(system)) {
+    const block = system[lastCacheableSystemIndex(system)];
+
+    if (isObj(block)) {
+      moveTopLevelOnto(body, block, top);
+
+      return false;
+    }
+  } else if (typeof system === "string" && system.trim() !== "") {
+    body.system = [textBlock(system, { ...top })];
+    delete body.cache_control;
+
+    return false;
+  }
+
+  const tools = body.tools;
+
+  if (isArr(tools)) {
+    const index = tools.findLastIndex((tool) => get(tool, "defer_loading") !== true);
+    const tool = tools[index];
+
+    if (isObj(tool)) moveTopLevelOnto(body, tool, top);
+  }
+
+  return false;
+};
+
+/**
+ * `ensureCacheControl`: the top-level marker moves onto a block, then tools (only without cacheable system), system
+ * and the rolling last message (unless the top-level marker landed there).
+ */
 export const ensureCacheControl = (body: JsonObject): JsonObject => {
+  const inMessages = materializeTopLevelCacheControl(body);
+
   if (!hasCacheableSystem(body)) injectToolsCacheControl(body);
   injectSystemCacheControl(body);
-  injectMessagesCacheControl(body);
+
+  if (!inMessages) injectMessagesCacheControl(body);
 
   return body;
 };

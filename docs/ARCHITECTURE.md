@@ -1280,9 +1280,50 @@ Deviations from Go (all deliberate, documented in code headers):
   executors: payload rules are the final mutation, nothing may rewrite the body after them. `experimental-cch-signing` is
   accepted and ignored (Go keeps it for compatibility; signing is automatic).
 - Kimi attribution stripping is in the pipeline (`stripAttributionSystem`); the continuity and thinking-replay stores live in the `SessionState` DO (see below): `begin` = one read (which
-  slides the 1 h TTL) plus one write only when the prompt id or pinned date changed, `commit` = one compare-and-swap write using
+  slides the 1 h TTL) plus one write only when the prompt id changed, `commit` = one compare-and-swap write using
   the generation carried in `ContinuityState` (`planContinuity` computes the arguments, the store is awaited before the
   synchronous `applyCloaking`).
+- **Session date pin** (`claude/date-pin.ts`, store `claude-date-pin`; Go `PinClaudeSessionDate` with a retention, CLIProxyAPI
+  `7604d3df`): the cloaked `currentDate` reminder sits in the first user message, so re-anchoring it changes the prefix of the
+  whole conversation, and Anthropic then drops every earlier signed thinking block (`prefix_binding_mismatch`, upstream #6682)
+  and the prompt cache misses. The pin therefore lives in a store of its own, keyed by org, caller scope and session, never by
+  credential, so a credential switch or an idle gap over the continuity entry's 1 h does not re-anchor it. It keeps 7 days (the
+  store's longest TTL) with no `session-date-pin-days` setting, since a knob could only shorten the pin or turn it off, and
+  "off" is the bug. The 1 h continuity entry no longer holds the date. Deliberate differences from Go: the key includes the
+  caller scope (Go is single-tenant and keys by session alone, which would let a member who knows another member's session id
+  anchor its date); the expiry is extended at most once a day (a request is one read, and a compare-and-swap write happens about
+  once a day per active session) instead of on every request; a backend failure falls back to the local date. The first request
+  of a session anchors the date of a currentDate reminder in the caller's first user message (a string, or the first text block)
+  or else the local date; a stored pin always wins over a later caller date. A leading string-form caller reminder is stripped
+  before the billing fingerprint and the prompt id are computed (array-form reminders are replaced by the injection). Requests
+  at the `minimal` level, probes, helpers and requests without a caller session (their session id is random) take no part.
+- **Mid-session Responses system items** (Go `27762819`): for a Responses client, a text-only system or developer message item
+  after the conversation started stays in place as a `role: "system"` turn right after the next user message (so the prompt
+  prefix of earlier turns stays stable) instead of joining the top-level `system`. The executor decides it per attempt
+  (`pipeline.ts` `keepSystemItemsInPlace`: cloaked, not strict, an upstream model that accepts the turn, no
+  `rebuild-mid-system-message`) and passes `topLevelSystemItems` to the translator in the registry's request options next to
+  `compat`. Local token counts are always top level. Differences from Go: `minimal` keeps items in place even with strict mode set
+  (it ignores strict mode and already relocates the caller's system blocks into the conversation); an absent option means top
+  level (Go falls back to its legacy-model list, which would put OpenCode's system items in place, and OpenCode is not a Claude
+  Code wire), so the legacy-model list (`classify.ts`) stays in the executor. As in Go, a payload rule that rewrites a modern
+  model to a legacy one leaves the in-place turns, and the final validation answers the first-party caller with a 400. Effort
+  directive turns (`role: "system"`, empty content, `output_config`) do not end the leading user run that caller system blocks are
+  inserted after (Go `2d8ec73b`, `leadingUserRunEnd`).
+- **`cache_control` validity** (`claude/cache-control.ts`; Go `be8c35f2`, `beb43359`): only an object with `type: "ephemeral"` is a
+  marker. A `null`, non-object or non-ephemeral value is ignored (not counted, not part of the TTL ordering) and left in the body,
+  not deleted. A top-level `cache_control` (automatic caching) counts like a block marker, last in evaluation order and first
+  to go over the limit of four, and `ensureCacheControl` moves it onto the last cacheable message block, else the system
+  prompt, else the last non-deferred tool (so no deferred tool carries one), and removes the field; when it lands in the messages
+  the rolling message breakpoint is not added again.
+- **Tool call ids** (`helps/tool-call-ids.ts`; Go `helps/tool_call_ids.go`, `e9c8769a`): Anthropic accepts only `[A-Za-z0-9_-]`
+  in `tool_use.id` and `tool_result.tool_use_id`. `sanitizeForClaudeUpstream` (all three Claude paths, Kimi included, before the
+  payload rules) rewrites a foreign id to `cpa_tid_v1_` + base64url(id), identically on both blocks, a pure function of the
+  transcript, so the cache prefix stays stable and nothing is stored; an encoding that collides with a legal id of the body gets a
+  `_` prefix. Devin emits the same encoding for the ids it returns (stream and non-stream) and decodes them before building the
+  next prompt. The `cpa_tid_v1_` prefix is Go's on purpose (the ADR 0018 reasoning: ids that end up in client histories keep the
+  Go format, so histories move between Go and Commissary).
+- **MCP alias recovery 0** (`mcp-alias.ts`; Go `02fc76b1`): a response tool name whose suffix after the virtual server is exactly a
+  declared passthrough `mcp__server__tool` resolves to it; ambiguous suffixes still fail closed.
 - Signature handling is the full `internal/signature` port (`translation/signature/`, see "Signature validation"):
   `sanitizeClaudeMessagesForClaudeUpstream` runs before the Claude upstream request.
 - Codex commentary: a `phase: "commentary"` message becomes a thinking block signed with the internal marker `cpa:commentary:v1`
@@ -2249,7 +2290,10 @@ Upstream sync D3 (CLIProxyAPI `eb6e25ab`..`02ee3139`). Model UIDs: `swe-2-lightn
 uncached + cache read + cache write (`devinTotalInputTokens`), and a Claude stream's `message_start` is not seeded with the request
 estimate (the executor marks the translation state's `claudeInputTokensHandled`, because the registry seeds every Claude client otherwise).
 A Claude request's last mid-conversation effort directive (`effort-directive.ts`, Go `thinking.ClaudeEffortDirective`) picks the variant
-over the translated top-level effort, below a model suffix. Responses `reasoning` items sealed by Devin (`encrypted_content` starting
+over the translated top-level effort, below a model suffix. Tool call ids Anthropic would reject (outside `[A-Za-z0-9_-]`, or already carrying the
+reserved prefix) leave as `cpa_tid_v1_<base64url>`, streamed and non-streamed, and are decoded again before the next prompt is built
+(`helps/tool-call-ids.ts`, Go `EncodeDevinToolCallID`/`RestoreDevinToolCallIDs`, CLIProxyAPI `e9c8769a`); the Go prefix is kept on purpose (ADR 0018
+reasoning), and ordinary ids and malformed or non-canonical encodings pass through untouched. Responses `reasoning` items sealed by Devin (`encrypted_content` starting
 `sealed.v1.`) go back as thought steps. Embedded `exec_command`/`write_stdin` phrases are rewritten in every tool description whatever the
 tool is called (the Codex code-mode `exec` tool), in both the Responses translator and the wire encoder. A Devin `permission_denied` 403 about
 the MCP configuration or the content policy is a request fault (`isRequestFault`): no retry, no cooldown. A 429 saying the daily or weekly
@@ -2565,7 +2609,10 @@ two orgs never share an instance.
 - **Stores** keep their interfaces; `makeInMemory*`/`makeMemory*` constructors are the same code over a memory backend (so tests
   and production share one implementation): `codex/replay.ts` (store `codex-replay`; read = 1 RPC, append = get + CAS put),
   `xai/replay.ts`, `claude/thinking-replay.ts` (the generation is the snapshot of `replaceIfUnchanged`/`deleteIfUnchanged`; Kimi
-  uses it with its own store name), `claude/continuity.ts`, `devin/credentials.ts` (`incr`, one RPC per turn),
+  uses it with its own store name), `claude/continuity.ts` (previous message and request ids and the prompt id of one credential's
+  session, 1 h sliding; it no longer holds the date), `claude/date-pin.ts` (store `claude-date-pin`, key org + caller scope + session,
+  7 d TTL, one entry; read = 1 RPC, a compare-and-swap put only for the first anchor and then at most once a day),
+  `devin/credentials.ts` (`incr`, one RPC per turn),
   `gemini/replay.ts` (batched prefetch/flush), `antigravity/replay/ledger.ts` and `gemini/antigravity-interactions.ts`.
   The Claude thinking replay and continuity interfaces became Effect-returning (they were synchronous).
 - **Antigravity reasoning replay** (`executor/antigravity/replay/`, Go `antigravity_reasoning_replay.go` +

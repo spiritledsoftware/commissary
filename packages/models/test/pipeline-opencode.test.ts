@@ -454,6 +454,38 @@ for (const gw of ["opencode-zen", "opencode-go"] as const) {
       expect(bodyOf(p.calls[0])).toMatchObject({ model: models.messages, stream: true });
     });
 
+    // OpenCode is not a Claude Code wire (ADR 0033): its Messages bodies keep every system-level item at the top level,
+    // whatever the model, because the translator's default without the executor's decision is top level.
+    it("messages model from an OpenAI Responses client: a mid-session developer item stays a top-level system block", async () => {
+      const p = await harness(gw);
+
+      const response = await p.call(
+        "/v1/responses",
+        postJson({
+          model: models.messages,
+          stream: true,
+          instructions: "Top rule",
+          input: [
+            { role: "user", content: [{ type: "input_text", text: "hi" }] },
+            { role: "assistant", content: [{ type: "output_text", text: "ok" }] },
+            { role: "developer", content: [{ type: "input_text", text: "Mid rule" }] },
+            { role: "user", content: [{ type: "input_text", text: "go" }] },
+          ],
+        }),
+      );
+
+      expect(response.status).toBe(200);
+      await response.text();
+
+      const sent = bodyOf(p.calls[0]) as {
+        system: Array<{ text: string }>;
+        messages: Array<{ role: string }>;
+      };
+
+      expect(sent.system.map((block) => block.text)).toEqual(["Top rule", "Mid rule"]);
+      expect(sent.messages.map((message) => message.role)).toEqual(["user", "assistant", "user"]);
+    });
+
     it("a config protocol override wins over the catalog", async () => {
       const config = await configFor(
         gw,

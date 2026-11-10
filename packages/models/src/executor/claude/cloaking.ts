@@ -98,10 +98,69 @@ export const generateBillingHeader = (options: BillingOptions): string => {
 const isContextReminder = (text: string): boolean =>
   text.startsWith("<system-reminder>") && text.includes("</system-reminder>");
 
+const CURRENT_DATE_REMINDER_PREFIX =
+  "<system-reminder>\nAs you answer the user's questions, you can use the following context:\n# currentDate\nToday's date is ";
+
 const isCurrentDateReminder = (text: string): boolean =>
-  text.startsWith(
-    "<system-reminder>\nAs you answer the user's questions, you can use the following context:\n# currentDate\nToday's date is ",
-  );
+  text.startsWith(CURRENT_DATE_REMINDER_PREFIX);
+
+/**
+ * `claudeCodeCurrentDateReminderDate`: the `YYYY-MM-DD` of a currentDate reminder, or `""` when the text is no such
+ * reminder or its date is not a real date.
+ */
+const currentDateReminderDate = (text: string): string => {
+  if (!text.startsWith(CURRENT_DATE_REMINDER_PREFIX)) return "";
+  const rest = text.slice(CURRENT_DATE_REMINDER_PREFIX.length);
+  const date = rest.slice(0, 10);
+
+  if (rest.length < 11 || rest[10] !== "." || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return "";
+  const parsed = new Date(`${date}T00:00:00Z`);
+
+  return Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== date ? "" : date;
+};
+
+/** `claudeCallerCurrentDateReminderDate`: the first valid caller currentDate reminder of the first user message. */
+const callerCurrentDateReminderDate = (body: JsonObject): string => {
+  const index = firstUserMessageIndex(body);
+
+  if (index < 0) return "";
+  const content = get(body, `messages.${index}.content`);
+
+  if (typeof content === "string") return currentDateReminderDate(content);
+
+  if (!isArr(content)) return "";
+
+  for (const block of content) {
+    if (str(get(block, "type")) !== "text") continue;
+    const date = currentDateReminderDate(str(get(block, "text")));
+
+    if (date !== "") return date;
+  }
+
+  return "";
+};
+
+/**
+ * `stripFirstUserClaudeCodeCurrentDateReminder`: removes a leading currentDate reminder from a string-form first user
+ * message, keeping the user text, so the injection does not duplicate it (array-form reminders are dropped by
+ * {@link injectCurrentDate}). Runs before the billing fingerprint and the prompt id read the message text.
+ */
+const stripCallerCurrentDateReminder = (body: JsonObject): void => {
+  const index = firstUserMessageIndex(body);
+
+  if (index < 0 || !isArr(body.messages)) return;
+  const message = body.messages[index];
+
+  if (!isObj(message) || typeof message.content !== "string") return;
+  const text = message.content;
+
+  if (currentDateReminderDate(text) === "") return;
+  const close = "</system-reminder>";
+  const end = text.indexOf(close);
+
+  if (end < 0) return;
+  message.content = text.slice(end + close.length).replace(/^\n+/, "");
+};
 
 export const currentDateReminder = (date: string): string =>
   `<system-reminder>\nAs you answer the user's questions, you can use the following context:\n# currentDate\nToday's date is ${date}.\n\n      IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.\n</system-reminder>\n`;
@@ -223,15 +282,38 @@ export const messageContentText = (content: Json | undefined): string => {
     .join("\n\n");
 };
 
+/** `isClaudeSystemDirectiveMessage`: `role: "system"`, `output_config` present and an empty content array. */
+const isSystemDirectiveMessage = (message: Json | undefined): boolean =>
+  isObj(message) &&
+  str(message.role) === "system" &&
+  message.output_config !== undefined &&
+  isArr(message.content) &&
+  message.content.length === 0;
+
+/**
+ * `claudeLeadingUserRunEnd` (Go 2d8ec73b): the index after the leading user run that starts at `firstUser`. Directive-only
+ * system turns are accepted by Anthropic at any position, so they do not end the run: caller system blocks must not be
+ * inserted before a later user turn because of them. Shared by the insertion, the at-end check and the placement capture.
+ */
+export const leadingUserRunEnd = (messages: readonly Json[], firstUser: number): number => {
+  let insertAt = firstUser + 1;
+
+  while (insertAt < messages.length) {
+    const message = messages[insertAt];
+
+    if (str(get(message, "role")) !== "user" && !isSystemDirectiveMessage(message)) break;
+    insertAt++;
+  }
+
+  return insertAt;
+};
+
 /** `claudeMidConversationSystemMessagesAtEnd`. */
 const midConversationSystemAtEnd = (body: JsonObject): boolean => {
   const firstUser = firstUserMessageIndex(body);
 
   if (firstUser < 0 || !isArr(body.messages)) return false;
-  let insertAt = firstUser + 1;
-
-  while (insertAt < body.messages.length && str(get(body.messages[insertAt], "role")) === "user")
-    insertAt++;
+  const insertAt = leadingUserRunEnd(body.messages, firstUser);
 
   return insertAt === body.messages.length || insertAt > firstUser + 1;
 };
@@ -246,9 +328,7 @@ const insertMidConversationSystemBlocks = (
 
   if (firstUser < 0 || blocks.length === 0 || !isArr(body.messages)) return;
   const messages = body.messages;
-  let insertAt = firstUser + 1;
-
-  while (insertAt < messages.length && str(get(messages[insertAt], "role")) === "user") insertAt++;
+  const insertAt = leadingUserRunEnd(messages, firstUser);
 
   if (messages.length - insertAt >= blocks.length) {
     const matches = blocks.every((block, index) => {
@@ -679,6 +759,8 @@ export interface CloakRequest {
   readonly sessionId: string;
   /** Session state started by {@link planContinuity} (`ContinuityStore.begin`); undefined without a session. */
   readonly continuity: ContinuityState | undefined;
+  /** The session date pin resolved for {@link planContinuity}'s plan; undefined without one (local date then). */
+  readonly pinnedDate?: string | undefined;
   readonly now: Date;
   readonly workload?: string;
 }
@@ -722,13 +804,15 @@ export interface ContinuityPlan {
   readonly sessionId: string;
   readonly isNewPromptTurn: boolean;
   readonly explicitPromptId: string;
-  /** The session date to pin on first use. */
+  /** The local date: the session date pin's first anchor unless the caller sent one. */
   readonly date: string;
+  /** The date of a currentDate reminder the caller put in its first user message (`""` when none). */
+  readonly callerDate: string;
 }
 
 /**
- * The `BeginClaudeContinuity`/`PinClaudeSessionDate` arguments of a request, or undefined when the request does not
- * take part in continuity. Split from {@link applyCloaking} (synchronous) so the store call can be awaited first.
+ * The `BeginClaudeContinuity` arguments of a request and the candidates of its session date pin, or undefined when the
+ * request takes part in neither. Split from {@link applyCloaking} (synchronous) so the store call can be awaited first.
  */
 export const planContinuity = (
   request: Pick<CloakRequest, "config" | "credential" | "body" | "policy" | "sessionId" | "now">,
@@ -746,6 +830,7 @@ export const planContinuity = (
     isNewPromptTurn: isNewPromptTurn(body),
     explicitPromptId: extractBillingTags(body).promptId,
     date: claudeCodeLocalDate(request.now, credentialTimezone(config, credential)),
+    callerDate: callerCurrentDateReminderDate(body),
   };
 };
 
@@ -777,10 +862,12 @@ export const applyCloaking = (request: CloakRequest): CloakResult => {
   const profile = defaultDeviceProfile(config);
   const version = defaultClaudeVersion(profile.userAgent);
   const probeOrHelper = isProbeOrHelperRequest(body);
+
+  if (!probeOrHelper) stripCallerCurrentDateReminder(body);
   let isSubagent = false;
   let prevReq = "";
   let promptId = "";
-  let pinnedDate = "";
+  let pinnedDate = request.pinnedDate ?? "";
   let continuityKey = "";
   let previousMessageId = "";
 
@@ -793,7 +880,6 @@ export const applyCloaking = (request: CloakRequest): CloakResult => {
 
     if (state !== undefined) {
       continuityKey = state.key;
-      pinnedDate = state.pinnedDate;
       // No execution-session metadata on plain HTTP requests: the prompt id is derived from the first user text.
       promptId =
         existing.promptId !== ""

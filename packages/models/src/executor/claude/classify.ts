@@ -429,9 +429,13 @@ const LEGACY_SYSTEM_REMINDER_MODELS = new Set([
   "claude-sonnet-4-6",
 ]);
 
-/** `claudeUsesLegacySystemReminder`: the model rejects mid-conversation `role:"system"` messages. */
+/** `util.IsClaudeLegacySystemReminderModel`: the model rejects mid-conversation `role:"system"` messages. */
+export const isLegacySystemReminderModel = (model: string): boolean =>
+  LEGACY_SYSTEM_REMINDER_MODELS.has(canonicalModel(model));
+
+/** `claudeUsesLegacySystemReminder`: the body's model rejects mid-conversation `role:"system"` messages. */
 export const usesLegacySystemReminder = (body: JsonObject): boolean =>
-  LEGACY_SYSTEM_REMINDER_MODELS.has(canonicalModel(str(body.model)));
+  isLegacySystemReminderModel(str(body.model));
 
 /** `ExtractClaudeBillingTags`: `cc_prev_req` and `cc_prompt_id` of an existing billing block. */
 export const extractBillingTags = (body: JsonObject) => {

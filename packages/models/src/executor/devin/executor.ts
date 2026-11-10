@@ -36,6 +36,7 @@ import {
 } from "../helps/apply-patch-stream.ts";
 import { applyCustomHeaders } from "../helps/custom-headers.ts";
 import { finalizePayload } from "../helps/payload.ts";
+import { decodeToolCallId } from "../helps/tool-call-ids.ts";
 import { TOOL_INPUT_ERROR_MESSAGE } from "../openai-compat/stream.ts";
 import { parseSuffix } from "@commissary/translation/thinking";
 import { Thinking } from "../thinking.ts";
@@ -57,6 +58,7 @@ import {
 } from "./credentials.ts";
 import { claudeEffortDirective } from "./effort-directive.ts";
 import { checkDevinUserTurns, parseInteractionsPayload } from "./interactions.ts";
+import type { DevinPrompt } from "./wire.ts";
 import { resolveDevinChatModelUid } from "./models.ts";
 import { devinPayloadDefaultsSource, finalizeDevinPayload } from "./payload.ts";
 import { DevinAggregator, type DevinApplyPatchTool, DevinStreamAssembler } from "./stream.ts";
@@ -95,6 +97,15 @@ const transportError = (error: HttpClientError.HttpClientError) =>
   });
 
 const readError = (message: string) => new ExecutionError({ status: 502, message });
+
+/** `RestoreDevinToolCallIDs`: decodes the ids of the history's calls and results in place. */
+const restoreToolCallIds = (prompts: ReadonlyArray<DevinPrompt>): void => {
+  for (const prompt of prompts) {
+    prompt.toolCalls = prompt.toolCalls.map((call) => ({ ...call, id: decodeToolCallId(call.id) }));
+    prompt.toolCallId = decodeToolCallId(prompt.toolCallId);
+    prompt.originalToolCallId = decodeToolCallId(prompt.originalToolCallId);
+  }
+};
 
 /** `ParseInteractionsUsage` of the aggregate Devin totals. */
 export const devinUsageDetail = (usage: DevinUsage | undefined): UsageDetail => {
@@ -249,6 +260,9 @@ export const makeDevinExecutor = (executorOptions: DevinExecutorOptions = {}): P
     const matcher = buildSensitiveWordMatcher(
       context.config.oauth.providers.devin["sensitive-words"],
     );
+
+    // Ids the executor emitted encoded go back upstream in their own namespace (Go `RestoreDevinToolCallIDs`).
+    restoreToolCallIds(turns.prompts);
 
     const wire = buildGetChatMessageRequest({
       sessionToken: providerKey,

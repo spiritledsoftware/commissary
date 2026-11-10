@@ -49,6 +49,7 @@ import {
   detectClaudeCodeRequest,
   extractBillingTags,
   isProbeOrHelperRequest,
+  isLegacySystemReminderModel,
   isSubagentRequest,
   subagentRequests1h,
   usesLegacySystemReminder,
@@ -66,6 +67,7 @@ import {
   relocateSystemForCountTokens,
 } from "./cloaking.ts";
 import { type ContinuityState, type ContinuityStore } from "./continuity.ts";
+import type { DatePinStore } from "./date-pin.ts";
 import { withoutTranslatedDefaultMaxTokens } from "./default-max-tokens.ts";
 import { type DeviceProfileStore, deviceProfileStabilizationEnabled } from "./device-profile.ts";
 import { rebuildMidSystemEnabled, rebuildMidSystemMessagesToTopLevel } from "./mid-system.ts";
@@ -114,6 +116,8 @@ const DEFAULT_MODEL_MAX_TOKENS = 1024;
 export interface PipelineServices {
   readonly registry: TranslatorRegistry;
   readonly continuity: ContinuityStore;
+  /** The session date pin: the cloaked `currentDate`, kept for 7 days across credential switches and idle gaps. */
+  readonly datePin: DatePinStore;
   readonly replay: ThinkingReplayStore;
   /** Stabilised Claude Code device profiles (`stabilize-device-profile`). */
   readonly deviceProfiles: DeviceProfileStore;
@@ -318,7 +322,37 @@ interface Common {
   readonly wire: WireResolution;
   readonly sessionId: string;
   readonly originalPayload: Json;
+  /**
+   * Whether the Responses translator keeps mid-session system items in place as `role: "system"` turns (it is told the
+   * opposite, `topLevelSystemItems`). Decided once per attempt, here, because it depends on the credential (wire
+   * policy, rebuild opt-in) and on the upstream model: Go `pinResponsesSystemItemPlacement`.
+   */
+  readonly keepSystemItemsInPlace: boolean;
+  /** The request names its own session (`options.metadata.sessionId`), so a session-keyed store can find it again. */
+  readonly hasCallerSession: boolean;
 }
+
+/**
+ * Mid-session system items stay in place (`role: "system"` after the next user message) only on the cloaked Claude Code
+ * wire, which sends the mid-conversation system beta, for a model that accepts the turn. Strict mode drops every caller
+ * system instruction, a mid-system rebuild folds the turns into `system`, and an uncloaked request forwards the caller's
+ * betas unchanged: none of them keeps items in place. `minimal` does even under strict mode, which it ignores
+ * (deliberate difference from Go, ARCHITECTURE.md).
+ */
+const keepSystemItemsInPlace = (
+  input: PrepareInput,
+  baseModel: string,
+  wire: WireResolution,
+): boolean => {
+  const strict = wire.settings.strictMode && !isMinimalCloak(wire.policy);
+
+  return (
+    wire.policy.cloak &&
+    !strict &&
+    !isLegacySystemReminderModel(upstreamModelOf(input.services.profile, baseModel)) &&
+    !rebuildMidSystemEnabled(input.config, input.credential)
+  );
+};
 
 const commonContext = (input: PrepareInput, path: string, countTokens: boolean): Common => {
   const { config, credential, request, options } = input;
@@ -362,6 +396,8 @@ const commonContext = (input: PrepareInput, path: string, countTokens: boolean):
     wire,
     sessionId,
     originalPayload,
+    keepSystemItemsInPlace: keepSystemItemsInPlace(input, baseModel, wire),
+    hasCallerSession: (options.metadata.sessionId ?? "").trim() !== "",
   };
 };
 
@@ -455,7 +491,12 @@ export const prepareMessagesRequest = Effect.fnUntraced(function* (input: Prepar
         to,
         { format: from, model: baseModel, stream: upstreamStream, body },
         thinking.summary,
-        { headers: options.headers, config, isCompat },
+        {
+          headers: options.headers,
+          config,
+          isCompat,
+          topLevelSystemItems: !c.keepSystemItemsInPlace,
+        },
       ),
     );
 
@@ -509,22 +550,36 @@ export const prepareMessagesRequest = Effect.fnUntraced(function* (input: Prepar
       ? yield* services.deviceProfiles.resolve(credential, providerKey, options.headers, config)
       : undefined;
 
-  // Session continuity is started (one store round trip) before the synchronous request shaping.
+  // Session continuity and the session date pin are started (one round trip each, in parallel, on different
+  // instances) before the synchronous request shaping. A request without a caller session (its id is random) gets no
+  // pin: nothing would ever read it again.
   const now = services.now();
 
   const plan = yield* attempt(() =>
     planContinuity({ config, credential, body, policy: wire.policy, sessionId, now }),
   );
 
-  const continuity =
+  const [continuity, pinnedDate] =
     plan === undefined
-      ? undefined
-      : yield* services.continuity.begin(
-          plan.identity,
-          plan.sessionId,
-          plan.isNewPromptTurn,
-          plan.explicitPromptId,
-          plan.date,
+      ? [undefined, undefined]
+      : yield* Effect.all(
+          [
+            services.continuity.begin(
+              plan.identity,
+              plan.sessionId,
+              plan.isNewPromptTurn,
+              plan.explicitPromptId,
+            ),
+            c.hasCallerSession
+              ? services.datePin.resolve(
+                  options.metadata.callerScope,
+                  plan.sessionId,
+                  // A date the caller sent only seeds the first anchor; a stored pin always wins.
+                  plan.callerDate === "" ? plan.date : plan.callerDate,
+                )
+              : Effect.succeed(undefined),
+          ],
+          { concurrency: 2 },
         );
 
   return yield* attempt(() => {
@@ -544,6 +599,7 @@ export const prepareMessagesRequest = Effect.fnUntraced(function* (input: Prepar
       incoming: options.headers,
       sessionId,
       continuity,
+      pinnedDate,
       now,
     });
 
@@ -757,7 +813,12 @@ export const prepareCountTokensRequest = Effect.fnUntraced(function* (input: Pre
         to,
         { format: from, model: baseModel, stream, body },
         thinking.summary,
-        { headers: options.headers, config, isCompat },
+        {
+          headers: options.headers,
+          config,
+          isCompat,
+          topLevelSystemItems: !c.keepSystemItemsInPlace,
+        },
       ),
     );
 
@@ -931,7 +992,9 @@ export const prepareLocalCountBody = Effect.fnUntraced(function* (input: Prepare
         to,
         { format: from, model: baseModel, stream: from !== to, body },
         thinking.summary,
-        { headers: options.headers, config, isCompat },
+        // Local estimation sends nothing upstream, so in-place turns gain no cache benefit: keep the top-level shape its
+        // request validation accepts (Go `CountTokens`).
+        { headers: options.headers, config, isCompat, topLevelSystemItems: true },
       ),
     );
 

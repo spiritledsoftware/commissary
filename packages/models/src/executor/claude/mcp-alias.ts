@@ -426,6 +426,10 @@ export class AliasResolver {
     }
 
     if (this.#passthroughs.length > 0) {
+      // Recovery 0 (Go 02fc76b1): the model kept the caller's full tool name, `mcp__` prefix included, under the
+      // virtual server (`mcp__<virtual>__mcp__<server>__<tool>`).
+      if (this.#passthroughs.includes(suffix)) return suffix;
+
       const reprefixed = `mcp__${suffix}`;
 
       if (this.#exact.get(reprefixed) === reprefixed) return reprefixed;

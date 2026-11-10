@@ -1508,3 +1508,231 @@ requests:
     ).toBe(4096);
   });
 });
+
+// Go e9c8769a: Anthropic accepts only [A-Za-z0-9_-] in tool call ids; a foreign id replayed in a Claude-format body is
+// rewritten to `cpa_tid_v1_<base64url>` on both blocks, before the payload rules.
+describe("Non-portable tool call ids", () => {
+  const ENCODED = "cpa_tid_v1_Y2FsbDox";
+
+  const history = (): JsonObject[] => [
+    { role: "user", content: "go" },
+    {
+      role: "assistant",
+      content: [
+        { type: "tool_use", id: "call:1", name: "get_weather", input: {} },
+        { type: "tool_use", id: "toolu_ok", name: "get_weather", input: {} },
+      ],
+    },
+    {
+      role: "user",
+      content: [
+        { type: "tool_result", tool_use_id: "call:1", content: "sunny" },
+        { type: "tool_result", tool_use_id: "toolu_ok", content: "rain" },
+      ],
+    },
+  ];
+
+  const ids = (body: JsonObject): string[] =>
+    (body.messages as JsonObject[]).flatMap((m) =>
+      Array.isArray(m.content)
+        ? (m.content as JsonObject[]).map((b) => asString(b.id ?? b.tool_use_id))
+        : [],
+    );
+
+  const RULE_YAML = `${API_KEY_YAML}
+requests:
+  payload:
+    override:
+      - models: [{ name: "claude-sonnet-4-5", protocol: claude }]
+        params:
+          messages.1.content.1.id: "rule:set"
+`;
+
+  it("encodes a native Claude-format id on tool_use.id and tool_use_id alike, portable ids untouched", async () => {
+    const p = makePipeline({ config: providerKeyConfig, respond: () => jsonResponse(message()) });
+    afterAll(p.dispose);
+
+    const response = await p.call(
+      "/v1/messages",
+      postJson({ model: "sonnet", max_tokens: 8, messages: history() }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(ids(JSON.parse(p.calls[0]!.body) as JsonObject)).toEqual([
+      ENCODED,
+      "toolu_ok",
+      ENCODED,
+      "toolu_ok",
+    ]);
+  });
+
+  it("runs before the payload rules on Messages and on upstream count_tokens", async () => {
+    const config = await loadConfig(RULE_YAML);
+    const p = makePipeline({ config, respond: () => jsonResponse({ input_tokens: 5 }) });
+    afterAll(p.dispose);
+
+    const request = postJson({ model: "sonnet", max_tokens: 8, messages: history() });
+    await p.call("/v1/messages", request);
+    await p.call("/v1/messages/count_tokens", request);
+
+    for (const call of p.calls) {
+      // The rule's own non-portable value survives: nothing normalises after the rules.
+      expect(ids(JSON.parse(call.body) as JsonObject)).toEqual([
+        ENCODED,
+        "rule:set",
+        ENCODED,
+        "toolu_ok",
+      ]);
+    }
+  });
+
+  it("normalises before the payload rules on the local count_tokens estimate as well", async () => {
+    // A rule writes a long non-portable id after the normaliser would have run. If the normaliser ran after the
+    // rules it would encode that id (about a third longer), and the estimate would grow with it.
+    const ruleId = `rule:${Array.from({ length: 120 }, (_, i) => "qzxjvkwpbmgfhdlsnrtc"[(i * 7) % 20]).join("")}`;
+
+    const gateway = (rules: string) =>
+      loadConfig(`
+api-keys:
+  claude:
+    - base-url: https://gateway.test
+      keys: [{ api-key: gw-key }]
+      models: [{ name: claude-sonnet-4-5 }]
+${rules}`);
+
+    const ruled = makePipeline({
+      config: await gateway(`requests:
+  payload:
+    override:
+      - models: [{ name: "claude-sonnet-4-5", protocol: claude }]
+        params:
+          messages.1.content.1.id: "${ruleId}"
+`),
+      respond: () => jsonResponse({}),
+    });
+
+    const plain = makePipeline({ config: await gateway(""), respond: () => jsonResponse({}) });
+    afterAll(ruled.dispose);
+    afterAll(plain.dispose);
+
+    const count = async (p: typeof plain, id: string): Promise<number> => {
+      const messages = history();
+      // Only the `tool_use` id changes, as the rule changes only that one.
+      const [, assistant] = messages;
+      ((assistant as JsonObject).content as JsonObject[])[1]!.id = id;
+
+      const response = await p.call(
+        "/v1/messages/count_tokens",
+        postJson({ model: "claude-sonnet-4-5", messages }),
+      );
+
+      expect(response.status).toBe(200);
+
+      return ((await response.json()) as { input_tokens: number }).input_tokens;
+    };
+
+    // The rule rewrites the id of the `tool_use` block only; the `tool_result` keeps `toolu_ok`.
+    const withRule = await count(ruled, "toolu_ok");
+    // The same id as the client's own, which the normaliser encodes.
+    const encoded = await count(plain, ruleId);
+    // The same id with a portable character, which stays as it is: what the rule's value costs untouched.
+    const untouched = await count(plain, ruleId.replace(":", "_"));
+
+    expect(Math.abs(withRule - untouched)).toBeLessThanOrEqual(4);
+    expect(encoded).toBeGreaterThan(withRule + 8);
+  });
+});
+
+// Go 2d8ec73b: caller system guidance goes after the leading user run, directive-only turns included.
+describe("Effort directive after a compaction (cloaked)", () => {
+  const DIRECTIVE = { role: "system", content: [], output_config: { effort: "low" } };
+
+  const request = (): JsonObject => ({
+    model: "claude-opus-4-8",
+    max_tokens: 64,
+    system: [{ type: "text", text: "caller guidance" }],
+    messages: [
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: "<conversation-checkpoint>Earlier we said hello.</conversation-checkpoint>",
+          },
+        ],
+      },
+      DIRECTIVE,
+      { role: "user", content: [{ type: "text", text: "Reply with just: ok" }] },
+    ],
+  });
+
+  const expectPlacement = (body: JsonObject): void => {
+    const messages = body.messages as JsonObject[];
+    expect(messages.map((m) => m.role)).toEqual(["user", "system", "user", "system"]);
+    expect(messages[1]).toEqual(DIRECTIVE);
+    expect(messages[3]?.content).toEqual([expect.objectContaining({ text: "caller guidance" })]);
+    expect(JSON.stringify(body.system ?? null)).not.toContain("caller guidance");
+  };
+
+  it.each(["/v1/messages", "/v1/messages/count_tokens"])(
+    "places it after the directive on %s",
+    async (path) => {
+      const h = oauthPipeline(
+        () => jsonResponse(path.endsWith("count_tokens") ? { input_tokens: 5 } : message()),
+        await loadConfig(""),
+      );
+
+      afterAll(h.pipeline.dispose);
+      expect((await h.pipeline.call(path, postJson(request()))).status).toBe(200);
+      expectPlacement(lastBody(h));
+    },
+  );
+});
+
+// Go beb43359: a top-level `cache_control` (automatic caching) moves onto the last cacheable block of a cloaked
+// request, so it neither duplicates the rolling breakpoint nor pushes the total past four.
+describe("Top-level cache_control", () => {
+  const count = (value: JsonObject): number =>
+    JSON.stringify(value).split('"cache_control"').length - 1;
+
+  const request = (): JsonObject => ({
+    model: "claude-opus-4-8",
+    max_tokens: 32,
+    cache_control: { type: "ephemeral", ttl: "1h" },
+    system: [{ type: "text", text: "Caller system prompt", cache_control: { type: "ephemeral" } }],
+    messages: [{ role: "user", content: [{ type: "text", text: "What time is it?" }] }],
+  });
+
+  it("is materialized onto the last message block of a cloaked request and removed", async () => {
+    const h = oauthPipeline(() => jsonResponse(message()), await loadConfig(""));
+    afterAll(h.pipeline.dispose);
+    expect((await h.pipeline.call("/v1/messages", postJson(request()))).status).toBe(200);
+
+    const body = lastBody(h);
+    expect(body).not.toHaveProperty("cache_control");
+    expect(count(body)).toBeLessThanOrEqual(4);
+    const content = (body.messages as JsonObject[])[0]?.content as JsonObject[];
+    expect(content.filter((block) => block.cache_control !== undefined)).toHaveLength(1);
+    expect(content.at(-1)?.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
+  });
+
+  it("is left alone on a caller-owned request that already carries it", async () => {
+    const p = makePipeline({ config: providerKeyConfig, respond: () => jsonResponse(message()) });
+    afterAll(p.dispose);
+
+    await p.call(
+      "/v1/messages",
+      postJson({
+        model: "sonnet",
+        max_tokens: 8,
+        cache_control: { type: "ephemeral" },
+        system: "caller system",
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    );
+
+    const body = JSON.parse(p.calls[0]!.body) as JsonObject;
+    expect(body.cache_control).toEqual({ type: "ephemeral" });
+    expect(count(body)).toBe(1);
+  });
+});

@@ -655,3 +655,96 @@ describe("Devin usage (CLIProxyAPI eb6e25ab, cad1b503)", () => {
     });
   });
 });
+
+// Go e9c8769a: Devin may emit ids Anthropic would reject, so non-portable ones leave as `cpa_tid_v1_<base64url>` and are
+// decoded again before the next prompt is built, without any stored mapping.
+describe("Devin tool call ids (CLIProxyAPI e9c8769a)", () => {
+  const NATIVE = ["Write:1#abc", "cpa_tid_v1_Y2FsbF8x", "call_1"];
+
+  // Expected wire ids: the encoding of an illegal id, of a native id that already carries the reserved prefix, and an
+  // ordinary legal id that stays as it is.
+  const ENCODED = ["cpa_tid_v1_V3JpdGU6MSNhYmM", "cpa_tid_v1_Y3BhX3RpZF92MV9ZMkZzYkY4eA", "call_1"];
+
+  const toolCallFrames = (): Response =>
+    frames(
+      ...NATIVE.map((id) =>
+        envelope(
+          0,
+          new ProtoWriter()
+            .bytes(
+              6,
+              new ProtoWriter().string(1, id).string(2, "Write").string(3, '{"a":1}').toBytes(),
+            )
+            .toBytes(),
+        ),
+      ),
+      eosTrailer(),
+    );
+
+  const SESSION = "88888888-8888-4888-8888-888888888888";
+
+  const asked = `{"session_id":"${SESSION}","input":[{"type":"user_input","content":"tools"}]}`;
+
+  it("encodes non-portable ids in a non-stream aggregate", async () => {
+    const h = await harness(devinCredential(), toolCallFrames);
+
+    const response = await execute(
+      executor,
+      h,
+      request("swe-2", asked),
+      interactionsOptions(false),
+    );
+
+    const steps = (
+      tryParseJson(response.payload) as {
+        steps: Array<{ type: string; id: string; call_id: string }>;
+      }
+    ).steps.filter((step) => step.type === "function_call");
+
+    expect(steps.map((step) => step.id)).toEqual(ENCODED);
+    expect(steps.map((step) => step.call_id)).toEqual(ENCODED);
+  });
+
+  it("encodes non-portable ids in streamed events", async () => {
+    const h = await harness(devinCredential(), toolCallFrames, undefined, true);
+
+    const collected = await collectStream(
+      executor,
+      h,
+      request("swe-2", asked),
+      interactionsOptions(true),
+    );
+
+    const starts = normalizeChunks(collected.chunks).filter(
+      (event) =>
+        (event as { event_type?: string }).event_type === "step.start" &&
+        (event as { step?: { type?: string } }).step?.type === "function_call",
+    ) as Array<{ step: { id: string; call_id: string } }>;
+
+    expect(starts.map((event) => event.step.id)).toEqual(ENCODED);
+    expect(starts.map((event) => event.step.call_id)).toEqual(ENCODED);
+  });
+
+  it("decodes them in the next prompt, with no state from the response that minted them", async () => {
+    const history = JSON.stringify({
+      session_id: SESSION,
+      input: [
+        { type: "user_input", content: "tools" },
+        ...ENCODED.map((id) => ({ type: "function_call", id, name: "Write", arguments: {} })),
+        ...ENCODED.map((id) => ({ type: "function_result", call_id: id, result: "ok" })),
+        { type: "user_input", content: "next" },
+      ],
+    });
+
+    const h = await harness(devinCredential(), () => framesResponse([{ flag: 2, hex: "7b7d" }]));
+    await execute(executor, h, request("swe-2", history), interactionsOptions(false));
+
+    const sent = JSON.stringify(
+      devinPayloadView((h.calls[0] as { bytes: Uint8Array }).bytes.subarray(5)),
+    );
+
+    for (const id of NATIVE) expect(sent).toContain(`"${id}"`);
+    expect(sent).not.toContain("cpa_tid_v1_V3JpdGU6MSNhYmM");
+    expect(sent).not.toContain("cpa_tid_v1_Y3BhX3RpZF92MV9ZMkZzYkY4eA");
+  });
+});

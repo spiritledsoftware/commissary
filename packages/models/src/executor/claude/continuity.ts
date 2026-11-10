@@ -1,12 +1,13 @@
 /**
- * Claude continuity store: per (credential, session) previous message/request ids, prompt id and the pinned
- * `currentDate` of the session.
+ * Claude continuity store: per (credential, session) previous message/request ids and prompt id.
  *
- * Go source: internal/runtime/executor/helps/claude_diagnostics.go (BeginClaudeContinuity, PinClaudeSessionDate,
- * CommitClaudeContinuity; TTL 1 h sliding, at most 4096 entries). Go keeps it in process memory; here it lives in the
- * `SessionState` Durable Object (one instance per session key hash, shared across isolates) behind a small interface
- * with a per-isolate in-memory fallback. A turn costs one read (which slides the TTL), one write when the prompt id
- * or date changed, and one compare-and-swap write at commit (the generation is carried in {@link ContinuityState}).
+ * Go source: internal/runtime/executor/helps/claude_diagnostics.go (BeginClaudeContinuity, CommitClaudeContinuity;
+ * TTL 1 h sliding, at most 4096 entries). Go keeps it in process memory; here it lives in the `SessionState` Durable
+ * Object (one instance per session key hash, shared across isolates) behind a small interface with a per-isolate
+ * in-memory fallback. A turn costs one read (which slides the TTL), one write when the prompt id changed, and one
+ * compare-and-swap write at commit (the generation is carried in {@link ContinuityState}). The session's pinned
+ * `currentDate` is not part of it: it must outlive this 1 h entry and a credential switch, so it has a store of its
+ * own (`date-pin.ts`).
  */
 import { createHash, randomUUID } from "node:crypto";
 import { Effect } from "effect";
@@ -34,23 +35,17 @@ export interface ContinuityState {
   readonly previousMessageId: string;
   readonly previousRequestId: string;
   readonly promptId: string;
-  /** The session's pinned `currentDate` (the date passed to `begin` on first use). */
-  readonly pinnedDate: string;
   /** Compare-and-swap token of the stored entry (0 when it could not be stored). */
   readonly generation: number;
 }
 
 export interface ContinuityStore {
-  /**
-   * Starts a request of a session: returns the stored previous ids, the active prompt id and the pinned date
-   * (`date` is pinned on first use).
-   */
+  /** Starts a request of a session: returns the stored previous ids and the active prompt id. */
   readonly begin: (
     credentialIdentity: string,
     sessionId: string,
     isNewPromptTurn: boolean,
     explicitPromptId: string,
-    date: string,
   ) => Effect.Effect<ContinuityState | undefined>;
   /** Records a completed response. */
   readonly commit: (
@@ -65,7 +60,6 @@ interface Entry {
   previousMessageId: string;
   previousRequestId: string;
   promptId: string;
-  pinnedDate: string;
 }
 
 const PROMPT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -88,7 +82,6 @@ const emptyEntry = (): Entry => ({
   previousMessageId: "",
   previousRequestId: "",
   promptId: "",
-  pinnedDate: "",
 });
 
 const parseEntry = (text: string | undefined): Entry | undefined => {
@@ -105,7 +98,6 @@ const parseEntry = (text: string | undefined): Entry | undefined => {
       previousMessageId: field(record.previousMessageId),
       previousRequestId: field(record.previousRequestId),
       promptId: field(record.promptId),
-      pinnedDate: field(record.pinnedDate),
     };
   } catch {
     return undefined;
@@ -124,7 +116,7 @@ const stateOf = (key: string, entry: Entry, generation: number): ContinuityState
 export const makeSessionStateContinuityStore = (
   backend: BackendResolver = resolveBackend(),
 ): ContinuityStore => ({
-  begin: (credentialIdentity, sessionId, isNewPromptTurn, explicitPromptId, date) => {
+  begin: (credentialIdentity, sessionId, isNewPromptTurn, explicitPromptId) => {
     const identity = credentialIdentity.trim();
     const session = sessionId.trim();
 
@@ -141,7 +133,6 @@ export const makeSessionStateContinuityStore = (
           ...emptyEntry(),
           promptId:
             explicit !== "" && isValidPromptId(explicit) ? explicit.toLowerCase() : randomUUID(),
-          pinnedDate: date,
         },
         0,
       ),
@@ -162,13 +153,8 @@ export const makeSessionStateContinuityStore = (
               entry.promptId = explicit.toLowerCase();
             else if (isNewPromptTurn || entry.promptId === "") entry.promptId = randomUUID();
 
-            if (entry.pinnedDate === "") entry.pinnedDate = date;
             next = entry;
-
-            const unchanged =
-              stored !== undefined &&
-              stored.promptId === entry.promptId &&
-              stored.pinnedDate === entry.pinnedDate;
+            const unchanged = stored !== undefined && stored.promptId === entry.promptId;
 
             return unchanged ? keepValue : putValue(JSON.stringify(entry));
           },
@@ -193,7 +179,6 @@ export const makeSessionStateContinuityStore = (
           previousMessageId: state.previousMessageId,
           previousRequestId: state.previousRequestId,
           promptId: state.promptId,
-          pinnedDate: state.pinnedDate,
         };
 
         yield* updateEntry(
