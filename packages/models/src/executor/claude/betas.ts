@@ -373,6 +373,15 @@ export const withExtendedCacheTTLBeta = (betas: string): string => {
   return parts.join(",");
 };
 
+/** `withClaudeBetaAppended` for the thinking-binding-controls beta. */
+export const withThinkingBindingBeta = (betas: string): string => {
+  const parts = splitBetas(betas);
+
+  if (!parts.includes(BETA.thinkingBinding)) parts.push(BETA.thinkingBinding);
+
+  return parts.join(",");
+};
+
 const ADVISOR_BEFORE = new Set<string>([
   BETA.advancedToolUse,
   BETA.effort,

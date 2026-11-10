@@ -1,8 +1,8 @@
 /**
  * Claude upstream request headers (identity profile, `anthropic-beta`, auth).
  *
- * Go source: internal/runtime/executor/claude_executor_request.go (applyClaudeHeadersWithNativeProfile,
- * copyClaudeCallerFingerprintHeaders), helps/claude_device_profile.go (ApplyClaudeLegacyDeviceHeaders,
+ * Go source: internal/runtime/executor/claude_executor_request.go (applyClaudeHeadersWithNativeProfile, including the
+ * binding-controls beta that follows `thinking.block_binding`, copyClaudeCallerFingerprintHeaders), helps/claude_device_profile.go (ApplyClaudeLegacyDeviceHeaders,
  * defaultClaudeDeviceProfile). Workers `fetch` cannot control header order or casing and the TLS fingerprint is
  * Cloudflare's (see README.md), so only names and values are reproduced. With `stabilize-device-profile` the
  * device headers come from the stabilised profile (`device-profile.ts`) instead of the legacy copy-or-baseline rules.
@@ -26,6 +26,7 @@ import {
   withCountTokensOAuthBeta,
   withExtendedCacheTTLBeta,
   withOAuthCredentialBetas,
+  withThinkingBindingBeta,
   withoutBeta,
 } from "./betas.ts";
 import { payloadHas1hTTL } from "./cache-control.ts";
@@ -274,6 +275,11 @@ export const buildClaudeHeaders = (input: HeaderInput) => {
     if (isHaikuModel(str(body.model).trim()) && body.fallbacks === undefined) {
       baseBetas = withoutBeta(baseBetas, BETA.serverSideFallback);
     }
+
+    // A body carrying `thinking.block_binding` is rejected upstream without the binding-controls beta, in every
+    // fingerprint mode (cloaked, caller-owned and confirmed passthrough alike) and on `count_tokens`.
+    if (get(body, "thinking.block_binding") !== undefined)
+      baseBetas = withThinkingBindingBeta(baseBetas);
 
     if (baseBetas.trim() === "") delete headers["anthropic-beta"];
     else headers["anthropic-beta"] = baseBetas;

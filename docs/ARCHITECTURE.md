@@ -1125,6 +1125,15 @@ Ported from `internal/runtime/executor/claude_executor*.go`, `internal/translato
   an inline `tool_addition` definition, is sent with `{"type":"object"}` and its original schema (compact JSON) appended
   to its description; `strict` is dropped. No name is rewritten, so history and responses need no mapping. Server tools
   and schemas Claude accepts are untouched.
+- **Preserved-thinking binding** (`claude/thinking-binding.ts`, `betas.ts`, `headers.ts`; Go `applyClaudePreservedThinkingBinding`,
+  CLIProxyAPI `911f49cb`, `e13bc9a1`): Opus 5.5, Sonnet 5.5, Haiku 5.5, Fable 5.1/5.2 and Mythos 5.1/5.2 check a replayed signed
+  thinking block against the prefix it was created under, and cloaking or relayed history reshapes that prefix, so the request
+  would 400. When the body replays a signed `thinking` (or `redacted_thinking` with data) block on one of those models, the
+  pipeline sets `thinking.block_binding.prefix_mismatch_behavior: "drop_block"` (stating `{type:"adaptive"}` when the body has no
+  `thinking`), just before the payload rules, on `messages`, `count_tokens` and the local count body. Skipped for forced tool
+  choice (`any`/`tool`), a thinking type other than `adaptive`, and a caller-supplied behaviour; payload rules still have the
+  last word. Any body carrying `thinking.block_binding` gets the `thinking-binding-controls-2026-08-01` beta, in every
+  fingerprint mode. `input_transformations` in the response pass through to the client.
 - **Responses**: Claude upstream always streams for non-stream clients; tool aliases are restored in non-stream bodies
   and stream lines; `ExecutionError` classification (`ratelimit.ts`) separates credential-scoped (unified-limit 429/401),
   request-scoped (Fast mode entitlement) and model-level failures for the picker.
@@ -1136,6 +1145,11 @@ Ported from `internal/runtime/executor/claude_executor*.go`, `internal/translato
 Deviations from Go (all deliberate, documented in code headers):
 
 - No uTLS/HTTP-2 fingerprinting (Workers limitation); `wire-policy` is dropped on import.
+- **Preserved-thinking binding set and thinking types** (`claude/classify.ts` `isPreservedThinkingModel`): the model set follows
+  Anthropic's preserved-thinking docs and so includes Mythos 5.1/5.2, which Go leaves out; the binding is injected only for an
+  absent or `adaptive` thinking type, because the docs accept `block_binding` on no other type (Go also injects for `enabled`
+  on Opus 5.5 and Fable). OpenAI Responses -> Claude also treats Haiku 5.5 as rejecting assistant prefill
+  (`translator/claude/openai/responses/request.ts`).
 - **Cloak level** (`upstream.claude.cloak-level`, `cloak_level`, `cloak.level`) is a Commissary addition (ADR 0019): Go
   has only the cloak mode and always cloaks fully, which is the `full` level.
 - **Device-profile stabiliser** (`device-profile.ts`, `upstream.claude.header-defaults.stabilize-device-profile`; Go
