@@ -47,6 +47,7 @@ import {
 } from "../helps/codex-multi-agent-v2.ts";
 import { normalizeCodexToolSchemas } from "../helps/codex-tool-schema.ts";
 import { sanitizeCodexInputItemIds } from "../helps/codex-input-ids.ts";
+import { expandCompaction } from "../helps/compaction.ts";
 import { finalizePayload } from "../helps/payload.ts";
 import { translateRequestForExecutor } from "../helps/translate.ts";
 import { buildResponsesUsageJson, countCodexInputTokens } from "../helps/token-count.ts";
@@ -281,13 +282,40 @@ export const makeCodexExecutor = (executorOptions: CodexExecutorOptions = {}): P
       body,
     );
 
-  /** Responses requests (`/responses`) and compaction (`/responses/compact`, target `openai-response`). */
-  const prepare = Effect.fnUntraced(function* (
+  /**
+   * `expandCodexResponsesCompaction`: the capsules a local compaction minted (here or on another route) become developer
+   * context before the request goes upstream; a corrupt one is a request-scoped 400. A native model forwards the other
+   * `compaction` items, OpenAI's own, untouched; an `is-compat` model cannot read them and drops them
+   * (`/responses/compact` goes to the operator's endpoint and keeps them).
+   */
+  const expandCodexCompaction = (
     context: ExecutionContext,
     request: ExecutorRequest,
     options: ExecutorOptions,
+  ) =>
+    expandCompaction(
+      request,
+      options,
+      resolveCodexModelIsCompat(
+        context.config,
+        context.credential,
+        request,
+        parseSuffix(request.model).modelName,
+      ) &&
+        options.sourceFormat === Formats.OpenAIResponse &&
+        options.alt !== "responses/compact"
+        ? "drop-foreign"
+        : "recognized-only",
+    );
+
+  /** Responses requests (`/responses`) and compaction (`/responses/compact`, target `openai-response`). */
+  const prepare = Effect.fnUntraced(function* (
+    context: ExecutionContext,
+    requested: ExecutorRequest,
+    requestedOptions: ExecutorOptions,
     mode: { readonly stream: boolean; readonly compact: boolean; readonly websocket?: boolean },
   ) {
+    const { request, options } = yield* expandCodexCompaction(context, requested, requestedOptions);
     const thinking = yield* Thinking;
     const baseModel = parseSuffix(request.model).modelName;
     const from = options.sourceFormat;
@@ -1148,9 +1176,10 @@ export const makeCodexExecutor = (executorOptions: CodexExecutorOptions = {}): P
    */
   const countTokens = Effect.fnUntraced(function* (
     context: ExecutionContext,
-    request: ExecutorRequest,
-    options: ExecutorOptions,
+    requested: ExecutorRequest,
+    requestedOptions: ExecutorOptions,
   ) {
+    const { request, options } = yield* expandCodexCompaction(context, requested, requestedOptions);
     const thinking = yield* Thinking;
     const baseModel = parseSuffix(request.model).modelName;
     const from = options.sourceFormat;

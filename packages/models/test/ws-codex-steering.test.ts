@@ -6,6 +6,7 @@ import type { Config } from "../src/config/schema.ts";
 import { makeCodexExecutor } from "../src/executor/codex/executor.ts";
 import { codexSessionStore } from "../src/executor/websocket/session.ts";
 import type { CredentialSnapshot } from "../src/executor/picker.ts";
+import { sealCompaction } from "../src/executor/helps/compaction.ts";
 import { codexModels, oauthCredential } from "./support/codex.ts";
 import { harness, json, options } from "./support/executor-run.ts";
 import { loadConfig, makePipeline, sseResponse } from "./support/pipeline.ts";
@@ -534,5 +535,71 @@ describe("upstream socket loss on a steering socket (CLIProxyAPI f73e66ac)", () 
     expect(await client.until("response.created")).toMatchObject({ response: { id: "resp_1" } });
     expect(s.mock.dials).toHaveLength(2);
     client.close();
+  });
+});
+
+describe("CPA compaction capsules on a steering socket", () => {
+  const capsule = async () => ({
+    type: "compaction",
+    id: "cmp_ag_compact_1",
+    encrypted_content: await sealCompaction("earlier work", "claude-sonnet-4-5"),
+  });
+
+  const developerSummary = {
+    type: "message",
+    role: "developer",
+    content: [{ type: "input_text", text: "Context summary from previous turns:\nearlier work" }],
+  };
+
+  it("starts duplex for a native model and expands the capsules of a create and of a steer", async () => {
+    const s = setup([wsCredential()], {
+      onConnection: scripted((frame, _index, send) => {
+        if (frame["type"] === "response.create") send(created("resp_1"));
+        else
+          send(
+            '{"type":"response.steer.accepted","steer":{"id":"s1","previous_response_id":"resp_1"}}',
+          );
+      }),
+    });
+
+    const client = await s.connect();
+    client.send(
+      create("work", {
+        input: [await capsule(), { type: "message", role: "user", content: "go" }],
+      }),
+    );
+    await client.nextJson();
+    client.send({
+      type: "response.steer",
+      previous_response_id: "resp_1",
+      input: [await capsule()],
+    });
+    expect((await client.nextJson())["type"]).toBe("response.steer.accepted");
+    const sent = frames(s.mock.connections[0]);
+    expect(sent[0]?.["input"]).toEqual([developerSummary, expect.anything()]);
+    expect(sent[1]).toMatchObject({ type: "response.steer", input: [developerSummary] });
+    expect(JSON.stringify(sent)).not.toContain("cpa-ag-compact-v1:");
+    client.close();
+  });
+
+  it("ends the socket when a steered capsule is corrupt", async () => {
+    const s = setup([wsCredential()], {
+      onConnection: scripted((_frame, _index, send) => send(created("resp_1"))),
+    });
+
+    const client = await s.connect();
+    client.send(create("work"));
+    await client.nextJson();
+
+    client.send({
+      type: "response.steer",
+      previous_response_id: "resp_1",
+      input: [
+        { type: "compaction", id: "cmp_ag_compact_9", encrypted_content: "cpa-ag-compact-v1:AAAA" },
+      ],
+    });
+
+    await client.closed;
+    expect(frames(s.mock.connections[0])).toHaveLength(1);
   });
 });
