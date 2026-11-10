@@ -5,21 +5,33 @@
  * Go source: sdk/api/handlers/openai/openai_responses_websocket.go (ResponsesWebsocket, responsesWebsocketWriter),
  * openai_responses_websocket_forward.go (forwardResponsesWebsocket, writeResponsesWebsocketTerminalError),
  * openai_responses_websocket_input.go (readResponsesWebsocketInput, responsesLocalInterrupt,
- * forwardResponsesWebsocketInterrupt), openai_responses_websocket_prewarm.go (writeResponsesWebsocketSyntheticPrewarm).
+ * forwardResponsesWebsocketInterrupt), openai_responses_websocket_prewarm.go (writeResponsesWebsocketSyntheticPrewarm);
+ * f73e66ac (the client socket outlives its upstream socket: input epoch, loss frames), b5e6027c (pinned 429, exposed
+ * quota frames), 9717e325 and d318bcc3 (late interrupts).
  *
  * The loop runs as one fiber for the lifetime of the socket; a second fiber is the only reader of the client socket so
  * a `response.interrupt` reaches the running turn immediately. Every turn runs in its own scope: closing the client socket
  * interrupts the fiber, which closes the attempt (reported as a connection-lifecycle failure, no cooldown) and the
  * upstream execution sessions of the socket.
  *
+ * A request is one exchange on the socket. An upstream socket loss (`upstream_websocket_lost`) never closes the client
+ * socket: it is answered with a non-closing error frame, the input the client had already queued is fenced (an epoch
+ * stamped by the reader fiber; a stale frame is answered "not sent" / 409 and never reaches upstream) and the pinned
+ * credential is kept, so the client's next full create redials on it.
+ *
+ * Interrupts (`response.interrupt`) are decided here from state the loop already sees in one fiber: the running response
+ * id, the ids of the last {@link FINISHED_IDS} finished responses (a late interrupt for one is dropped) and whether the
+ * request runs on a Codex upstream socket (then the frame is forwarded upstream, never resolved locally).
+ *
  * Deviations from Go: no WebSocket ping keep-alives (the Workers WebSocket API cannot send ping frames; events and the
  * upstream idle deadline keep the socket busy); terminal failures close with 1011/1012/1009 instead of dropping the TCP
- * connection; request logs/timelines are not written.
+ * connection; request logs/timelines are not written; the loss contract also covers xAI sockets; the finished ids are a
+ * ring of {@link FINISHED_IDS} that also covers requests over HTTP and survives a redial; an interrupt for another id than
+ * the running one of an HTTP request is a 400; Home failover is not ported.
  */
 import {
   type Cause,
   Clock,
-  Data,
   Deferred,
   Effect,
   Option,
@@ -34,7 +46,17 @@ import { isCodexResponsesLiteRequest } from "../../../executor/codex/headers.ts"
 import { codexWebsocketsEnabled } from "../../../executor/codex/websocket.ts";
 import type { WebsocketDuplex } from "../../../executor/types.ts";
 import type { CredentialSnapshot } from "../../../executor/picker.ts";
-import { codexSessionStore, xaiSessionStore } from "../../../executor/websocket/session.ts";
+import {
+  type AbandonedOperation,
+  abandonedOf,
+  codexSessionStore,
+  isUpstreamLost,
+  isUpstreamTurnError,
+  notSentError,
+  previousResponseNotFoundError,
+  upstreamLostError,
+  xaiSessionStore,
+} from "../../../executor/websocket/session.ts";
 import { xaiIdStates } from "../../../executor/xai/websocket-ids.ts";
 import { asString, get, isJsonObject, type JsonObject, tryParseJson } from "@commissary/json";
 import { Formats } from "@commissary/translation/formats";
@@ -44,20 +66,23 @@ import {
   closeForUpstreamError,
   errorFromPayload,
   isCompletionEvent,
+  isQuotaOrCooldownError,
   OutputCollector,
   payloadsFromChunk,
   shouldExposeError,
   truncateCloseReason,
 } from "./frames.ts";
 import { isCodexResponsesClient, isPrivateResponsesEvent } from "../framer.ts";
-import { syntheticPrewarmPayloads } from "./normalize.ts";
+import { stripReplayOutputOnlyFields, syntheticPrewarmPayloads } from "./normalize.ts";
 import {
+  commitLoss,
   commitPrewarm,
   commitTurn,
   isWebsocketProvider,
   newSocketState,
   planTurn,
   Plan,
+  requiresCurrentUpstream,
   type SocketState,
 } from "./plan.ts";
 import {
@@ -97,20 +122,32 @@ export interface SocketDeps<R> {
   readonly execute: (
     input: Omit<ExecutionInput, "request">,
   ) => Effect.Effect<StreamOutput, ExecutionError, R | Scope.Scope>;
+  /**
+   * Whether a credential other than `excludedId` could serve the request now (`hasAlternativeTarget`): asked after a
+   * pinned continuation fails with a 429, to decide between a replay and an exposed error.
+   */
+  readonly hasAlternative: (
+    input: Omit<ExecutionInput, "request">,
+    excludedId: string,
+  ) => Effect.Effect<boolean, never, R>;
   /** Wall clock (injectable for tests). */
   readonly now?: () => { readonly id: string; readonly createdAt: number };
 }
 
-class ForwardStop extends Data.TaggedError("ForwardStop")<{
-  readonly error: ExecutionError;
-  /** The error event as received (forwarded to the client as is when it is exposed). */
-  readonly payload?: JsonObject;
-}> {}
+/** Finished response ids remembered for `response.interrupt` (Go keeps an unbounded set per upstream connection). */
+export const FINISHED_IDS = 64;
+
+/** A client frame with the input epoch the reader fiber saw when it read it. */
+interface Command {
+  readonly text: string;
+  readonly epoch: number;
+}
 
 interface ForwardResult {
   /** The duplex stream ended with its socket (the downstream side is gone or closing). */
   readonly duplexClosed?: boolean;
   readonly error: ExecutionError | undefined;
+  /** The `error` event that stopped the forwarding, as received (exposed to the client as is). */
   readonly payload: JsonObject | undefined;
   readonly completedOutput: ReadonlyArray<ReturnType<OutputCollector["completedOutput"]>[number]>;
   readonly completedResponseId: string;
@@ -122,6 +159,33 @@ const takeOption = <A>(queue: Queue.Dequeue<A, Cause.Done>) =>
     Effect.map(Option.some),
     Pull.catchDone(() => Effect.succeed(Option.none<A>())),
   );
+
+/** The terminal events of a response: its interrupt window closes before the client sees them. */
+const isTerminalResponseEvent = (type: string): boolean =>
+  isCompletionEvent(type) || type === "response.incomplete" || type === "response.failed";
+
+const eventIdOf = (frame: JsonObject): string => asString(frame["event_id"]).trim();
+
+/** What a client is told about an operation that lost its outcome with the running request. */
+const abandonedError = (operation: AbandonedOperation): ExecutionError => {
+  switch (operation.outcome) {
+    case "not_sent":
+      return notSentError();
+    case "continuation":
+      return previousResponseNotFoundError();
+    case "lost":
+      return upstreamLostError();
+  }
+};
+
+/** `error.event_id`: ties an error frame to the client frame it answers. */
+const withEventId = (frame: JsonObject, eventId: string): JsonObject => {
+  const error = frame["error"];
+
+  if (eventId !== "" && isJsonObject(error)) error["event_id"] = eventId;
+
+  return frame;
+};
 
 /**
  * Runs the socket until the client closes (the commands queue ends) or a terminal failure closes it. `raw` receives every
@@ -136,22 +200,41 @@ export const runResponsesSocket = <R>(
       const { io, sessionId } = deps;
       const state: SocketState = newSocketState();
       const codexClient = isCodexResponsesClient(deps.headers);
-      const commands = yield* Queue.bounded<string, Cause.Done>(16);
+      const commands = yield* Queue.bounded<Command, Cause.Done>(16);
       let interruptSignal: Deferred.Deferred<string> | undefined;
       let closed = false;
       let hasTurnInFlight = false;
       // The selected credential's executor owns the socket (Codex response steering): a response ends no stream.
       let duplexStream = false;
+      // Advanced by an upstream loss mid-request: frames read under an older epoch predate it and are never run.
+      let epoch = 0;
 
-      const duplexInput: WebsocketDuplex | undefined =
-        deps.steering === true
-          ? {
-              next: takeOption(commands).pipe(
-                Effect.map((next) => (Option.isSome(next) ? next.value : undefined)),
-              ),
-              ...(deps.authEnabled !== undefined ? { authEnabled: deps.authEnabled } : {}),
-            }
-          : undefined;
+      // --- interrupt state: all of it lives here, where `forward` sees the events (see the module header) ----------
+      /** Id of the response that is running now (`response.created` .. its terminal event); empty between responses. */
+      let runningId = "";
+      /** The request has seen a `response.created`. */
+      let responsesStarted = false;
+      /** The request runs on a Codex upstream socket: `response.interrupt` is forwarded there, never resolved locally. */
+      let upstreamRequest = false;
+      /** A request over HTTP may still resolve an interrupt locally (closed by its terminal event). */
+      let localOpen = false;
+      const finished: string[] = [];
+
+      const rememberFinished = (id: string): void => {
+        const trimmed = id.trim();
+
+        if (trimmed === "" || finished.includes(trimmed)) return;
+        finished.push(trimmed);
+
+        if (finished.length > FINISHED_IDS) finished.shift();
+      };
+
+      /** A response ended (terminal event, local interrupt, stopping error): remembered, and no interrupt can claim it. */
+      const closeResponse = (id: string): void => {
+        rememberFinished(id !== "" ? id : runningId);
+        runningId = "";
+        localOpen = false;
+      };
 
       const write = (payload: JsonObject): void => {
         if (!closed) io.send(JSON.stringify(payload));
@@ -173,21 +256,56 @@ export const runResponsesSocket = <R>(
         closeSocket(CLOSE_INTERNAL_ERROR, shouldExposeError(error) ? "error" : "upstream error");
       };
 
-      // The upstream socket of the session dropped while no request was running: close like Go does.
-      const unsubscribe = [codexSessionStore, xaiSessionStore].map((store) =>
-        store.onDisconnect(sessionId, (error) => {
-          // Only the selected credential's duplex stream owns closure: it drains acknowledgements and pending events in order.
-          if (store === codexSessionStore && duplexStream) return;
-          terminate(error);
-        }),
-      );
+      /** `writeResponsesWebsocketPreviousResponseNotFound`: a frame read before an upstream loss is never run. */
+      const answerStale = (text: string): void => {
+        const parsed = tryParseJson(text);
+        const frame: JsonObject = isJsonObject(parsed) ? parsed : {};
+
+        write(
+          withEventId(
+            buildErrorPayload(
+              requiresCurrentUpstream(frame) ? previousResponseNotFoundError() : notSentError(),
+            ),
+            eventIdOf(frame),
+          ),
+        );
+      };
+
+      /**
+       * The hand-off of a client frame to whoever runs it: the main loop, or the steering executor through
+       * `duplexInput.next`. The checks run in order, and a frame that fails one is answered here and never handed on:
+       * first the stale-frame fence; per-request re-authorisation (B7) is the next check, after it.
+       */
+      const handOff: Effect.Effect<Option.Option<string>> = Effect.gen(function* () {
+        while (true) {
+          const next = yield* takeOption(commands);
+
+          if (Option.isNone(next)) return Option.none<string>();
+
+          if (next.value.epoch < epoch) {
+            answerStale(next.value.text);
+            continue;
+          }
+
+          return Option.some(next.value.text);
+        }
+      });
+
+      const duplexInput: WebsocketDuplex | undefined =
+        deps.steering === true
+          ? {
+              next: handOff.pipe(
+                Effect.map((next) => (Option.isSome(next) ? next.value : undefined)),
+              ),
+              ...(deps.authEnabled !== undefined ? { authEnabled: deps.authEnabled } : {}),
+            }
+          : undefined;
 
       deps.toolCaches.retain(deps.toolSessionKey);
       yield* Effect.addFinalizer(() =>
         Effect.gen(function* () {
           closed = true;
 
-          for (const stop of unsubscribe) stop();
           deps.toolCaches.release(deps.toolSessionKey);
           xaiIdStates.delete(sessionId);
           yield* codexSessionStore.close(sessionId, "downstream_closed");
@@ -196,27 +314,56 @@ export const runResponsesSocket = <R>(
       );
 
       // --- client frame reader: the only consumer of `raw`, so interrupts never wait behind a running response -----
+      const rejectInterrupt = (message: string): void =>
+        write(buildErrorPayload({ status: 400, message }));
+
+      /** The error that says why no interrupt can reach an upstream socket: its loss, else that there is none. */
+      const noUpstreamSocketMessage = (): string =>
+        codexSessionStore.peek(sessionId)?.lost === true
+          ? upstreamLostError().message
+          : "no active upstream websocket";
+
+      /**
+       * `response.interrupt` (CLIProxyAPI 9717e325, d318bcc3). A request on a Codex upstream socket gets the frame
+       * forwarded when it can only target the running response, and never the local path; a request over HTTP resolves
+       * it locally while its response runs. An id that finished is dropped silently: the client lost a race.
+       */
       const interrupt = Effect.fnUntraced(function* (frame: JsonObject, text: string) {
         const responseId = frame["response_id"];
 
         if (typeof responseId !== "string" || responseId.trim() === "") {
-          write(
-            buildErrorPayload({ status: 400, message: "response.interrupt requires response_id" }),
-          );
+          rejectInterrupt("response.interrupt requires response_id");
 
           return;
         }
 
-        if (yield* codexSessionStore.interrupt(sessionId, text)) return;
+        const id = responseId.trim();
+
+        if (finished.includes(id)) return;
+
+        if (!hasTurnInFlight) return rejectInterrupt("no active upstream websocket");
+
+        if (upstreamRequest) {
+          // Between responses of a steering socket, or while another response runs, the id targets nothing.
+          if ((runningId !== "" && id !== runningId) || (runningId === "" && responsesStarted))
+            return rejectInterrupt(
+              "response.interrupt does not target the active upstream response",
+            );
+
+          // Before `response.created` the upstream validates the id.
+          if (yield* codexSessionStore.interrupt(sessionId, text)) return;
+
+          return rejectInterrupt(noUpstreamSocketMessage());
+        }
+
+        if (!localOpen) return rejectInterrupt("no active upstream websocket");
+
+        if (runningId !== "" && id !== runningId)
+          return rejectInterrupt("response.interrupt does not target the active response");
         const signal = interruptSignal;
 
-        if (hasTurnInFlight && signal !== undefined) {
-          yield* Deferred.succeed(signal, responseId.trim());
-
-          return;
-        }
-
-        write(buildErrorPayload({ status: 400, message: "no active upstream websocket" }));
+        if (signal === undefined) return rejectInterrupt("no active upstream websocket");
+        yield* Deferred.succeed(signal, id);
       });
 
       yield* Effect.forkScoped(
@@ -232,7 +379,7 @@ export const runResponsesSocket = <R>(
               continue;
             }
 
-            yield* Queue.offer(commands, next.value);
+            yield* Queue.offer(commands, { text: next.value, epoch });
           }
         }),
       );
@@ -251,6 +398,9 @@ export const runResponsesSocket = <R>(
         let responseStarted = false;
         let completedOutput: ForwardResult["completedOutput"] = [];
         let completedResponseId = "";
+        // The `error` event that stops the forwarding: the attempt fails with its error (so the conductor classifies it
+        // and cools the credential accordingly), the event itself is what an exposed error frame carries.
+        let stopPayload: JsonObject | undefined;
 
         const consume = chunks.pipe(
           Stream.runForEach((chunk) =>
@@ -264,6 +414,8 @@ export const runResponsesSocket = <R>(
 
                 if (type === "response.created") {
                   responseStarted = true;
+                  responsesStarted = true;
+                  runningId = asString(get(payload, "response.id")).trim();
                   collector.reset();
                   completed = false;
                 }
@@ -281,9 +433,10 @@ export const runResponsesSocket = <R>(
                 const preserveErrorEvent = responseStarted && duplexStream;
 
                 if (type === "error" && !preserveErrorEvent) {
-                  const stop = new ForwardStop({ error: errorFromPayload(payload), payload });
+                  closeResponse("");
+                  stopPayload = payload;
 
-                  return yield* Effect.fail(stop);
+                  return yield* errorFromPayload(payload);
                 }
 
                 if (
@@ -295,16 +448,17 @@ export const runResponsesSocket = <R>(
                   completedResponseId = asString(get(payload, "response.id")).trim();
                 }
 
+                // The response is over: no interrupt may claim it before the client can see its terminal event.
+                if (isTerminalResponseEvent(type))
+                  closeResponse(asString(get(payload, "response.id")));
+
                 write(payload);
               }
             }),
           ),
-          Effect.mapError((error): ForwardStop =>
-            error instanceof ExecutionError ? new ForwardStop({ error }) : error,
-          ),
         );
 
-        const result: Effect.Effect<"done" | "interrupted", ForwardStop> = Effect.raceFirst(
+        const result: Effect.Effect<"done" | "interrupted", ExecutionError> = Effect.raceFirst(
           consume.pipe(Effect.as("done" as const)),
           Deferred.await(options.signal).pipe(
             Effect.tap((responseId) =>
@@ -313,6 +467,7 @@ export const runResponsesSocket = <R>(
                 const payload = collector.interruptedPayload(responseId);
                 completedOutput = collector.completedOutput(payload);
                 completedResponseId = responseId;
+                closeResponse(responseId);
                 write(payload);
               }),
             ),
@@ -323,11 +478,9 @@ export const runResponsesSocket = <R>(
         const outcome = yield* Effect.result(result);
 
         if (Result.isFailure(outcome)) {
-          const failure = outcome.failure;
-
           return {
-            error: failure.error,
-            payload: failure.payload,
+            error: outcome.failure,
+            payload: stopPayload,
             completedOutput,
             completedResponseId,
             pendingToolCallIds: collector.pending(),
@@ -368,7 +521,10 @@ export const runResponsesSocket = <R>(
         } satisfies ForwardResult;
       });
 
-      const executeTurn = Effect.fnUntraced(function* (plan: Extract<Plan, { _tag: "execute" }>) {
+      const executeTurn = Effect.fnUntraced(function* (
+        plan: Extract<Plan, { _tag: "execute" }>,
+        frame: JsonObject,
+      ) {
         const { request: planned, nativePassthrough } = plan;
 
         // Native passthrough keeps the state upstream; otherwise tool calls are repaired against the session caches.
@@ -382,43 +538,91 @@ export const runResponsesSocket = <R>(
         const nativeRequest = isCodexResponsesLiteRequest(requestJson, deps.headers);
         let selected: CredentialSnapshot | undefined;
         let pinnedAuthAttempted = false;
+        let lostWhileIdle = false;
         const pinnedId = plan.pinnedId;
+        const startEpoch = epoch;
         const signal = yield* Deferred.make<string>();
         interruptSignal = signal;
         hasTurnInFlight = true;
         duplexStream = false;
+        runningId = "";
+        responsesStarted = false;
+        // A pinned continuation runs on its Codex upstream socket; any other request resolves interrupts locally until
+        // a credential that owns an upstream socket is selected.
+        upstreamRequest = nativePassthrough && state.lastProvider === "codex";
+        localOpen = !upstreamRequest;
 
-        const replayPinnedAuthFailure = (error: ExecutionError): boolean =>
-          nativePassthrough &&
-          plan.requiresCurrentUpstream &&
-          pinnedAuthAttempted &&
-          (error.status === 401 || error.status === 429);
+        const input: Omit<ExecutionInput, "request"> = {
+          entryProtocol: Formats.OpenAIResponse,
+          model: plan.modelName,
+          body: requestJson,
+          alt: "",
+          websocket: {
+            sessionId,
+            requireUpstream: plan.requiresCurrentUpstream,
+            ...(duplexInput !== undefined ? { duplex: duplexInput } : {}),
+          },
+          ...(pinnedId !== "" ? { pinnedId } : {}),
+          onSelected: (credential) => {
+            selected = credential;
+            duplexStream =
+              deps.steering === true &&
+              credential.provider === "codex" &&
+              codexWebsocketsEnabled(credential);
+            upstreamRequest = credential.provider === "codex" && codexWebsocketsEnabled(credential);
+            localOpen = !upstreamRequest && runningId === "" && !responsesStarted;
+
+            if (pinnedId !== "" && credential.id === pinnedId) pinnedAuthAttempted = true;
+          },
+        };
+
+        /**
+         * A continuation cannot rotate credentials in place: the client replays the whole request on a new socket, unless
+         * that would meet the same 429 (b5e6027c): the probe asks whether another credential could serve the replay.
+         */
+        const replayPinnedFailure = (error: ExecutionError) =>
+          Effect.gen(function* () {
+            if (!nativePassthrough || !plan.requiresCurrentUpstream || !pinnedAuthAttempted)
+              return false;
+
+            if (error.status === 401) return true;
+
+            if (error.status === 429 || isQuotaOrCooldownError(error))
+              return yield* deps.hasAlternative(input, pinnedId);
+
+            return false;
+          });
+
+        const selectedOutcome = () =>
+          selected === undefined
+            ? undefined
+            : {
+                authId: selected.id,
+                provider: selected.provider,
+                websockets:
+                  isWebsocketProvider(selected.provider) && codexWebsocketsEnabled(selected),
+              };
+
+        /**
+         * The upstream socket was lost, or a continuation was refused because of it (`UpstreamWebsocketTurnError`): the
+         * client socket stays open. The error frame correlates to the client frame, the operations that lost their outcome
+         * with it follow, the input read before the loss is fenced and the credential stays pinned.
+         */
+        const reportTurnError = (error: ExecutionError): void => {
+          const mainEventId = !duplexStream || !responsesStarted ? eventIdOf(frame) : "";
+
+          if (!lostWhileIdle) write(withEventId(buildErrorPayload(error), mainEventId));
+
+          for (const operation of abandonedOf(error))
+            write(withEventId(buildErrorPayload(abandonedError(operation)), operation.eventId));
+
+          if (isUpstreamLost(error) && epoch === startEpoch) epoch += 1;
+          commitLoss(state, { modelName: plan.modelName, selected: selectedOutcome() });
+        };
 
         const result = yield* Effect.scoped(
           Effect.gen(function* () {
-            const started = yield* Effect.result(
-              deps.execute({
-                entryProtocol: Formats.OpenAIResponse,
-                model: plan.modelName,
-                body: requestJson,
-                alt: "",
-                websocket: {
-                  sessionId,
-                  requireUpstream: plan.requiresCurrentUpstream,
-                  ...(duplexInput !== undefined ? { duplex: duplexInput } : {}),
-                },
-                ...(pinnedId !== "" ? { pinnedId } : {}),
-                onSelected: (credential) => {
-                  selected = credential;
-                  duplexStream =
-                    deps.steering === true &&
-                    credential.provider === "codex" &&
-                    codexWebsocketsEnabled(credential);
-
-                  if (pinnedId !== "" && credential.id === pinnedId) pinnedAuthAttempted = true;
-                },
-              }),
-            );
+            const started = yield* Effect.result(deps.execute(input));
 
             if (Result.isFailure(started)) {
               return {
@@ -439,8 +643,12 @@ export const runResponsesSocket = <R>(
         ).pipe(
           Effect.ensuring(
             Effect.sync(() => {
+              // A steering socket that drops between two responses ends no request of the client's.
+              lostWhileIdle = duplexStream && responsesStarted && runningId === "";
               hasTurnInFlight = false;
               interruptSignal = undefined;
+              runningId = "";
+              localOpen = false;
             }),
           ),
         );
@@ -452,8 +660,13 @@ export const runResponsesSocket = <R>(
         }
 
         if (result.error !== undefined) {
-          // A continuation cannot rotate credentials in place: the client replays the whole turn on a new socket.
-          if (replayPinnedAuthFailure(result.error)) {
+          if (isUpstreamTurnError(result.error)) {
+            reportTurnError(result.error);
+
+            return false;
+          }
+
+          if (yield* replayPinnedFailure(result.error)) {
             closeSocket(1012, "upstream requires HTTP replay");
           } else terminate(result.error, result.payload);
 
@@ -464,16 +677,11 @@ export const runResponsesSocket = <R>(
         commitTurn(state, {
           modelName: plan.modelName,
           executedRequest: nativePassthrough ? state.lastRequest : requestJson,
-          selected:
-            selected === undefined
-              ? undefined
-              : {
-                  authId: selected.id,
-                  provider: selected.provider,
-                  websockets:
-                    isWebsocketProvider(selected.provider) && codexWebsocketsEnabled(selected),
-                },
-          completedOutput: [...result.completedOutput],
+          selected: selectedOutcome(),
+          // Upstream output is replayed as input later: its output-only fields must not travel with it (9037d543).
+          completedOutput: result.completedOutput.map((item) =>
+            isJsonObject(item) ? stripReplayOutputOnlyFields(item) : item,
+          ),
           completedResponseId: result.completedResponseId,
           pendingToolCallIds: result.pendingToolCallIds,
         });
@@ -484,7 +692,7 @@ export const runResponsesSocket = <R>(
       // --- main loop -----------------------------------------------------------------------------------------------
       while (true) {
         if (closed) return;
-        const next = yield* takeOption(commands);
+        const next = yield* handOff;
 
         if (Option.isNone(next)) return;
         const parsed = tryParseJson(next.value);
@@ -513,7 +721,7 @@ export const runResponsesSocket = <R>(
           write(created);
           write(completed);
           commitPrewarm(state, plan, asString(get(created, "response.id")));
-        } else if (yield* executeTurn(plan)) {
+        } else if (yield* executeTurn(plan, payload)) {
           return;
         }
       }

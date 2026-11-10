@@ -9,13 +9,14 @@
  * retries). The retry rounds, cooldown waits and failover live in `conductor.ts`; this module supplies what is specific
  * to non-stream and stream execution (stream bootstrap, force-mapping rewrite, per-attempt reporting).
  */
-import { Cause, Effect, Exit, Pull, Scope, Stream } from "effect";
+import { Cause, Effect, Exit, Option, Pull, Scope, Stream } from "effect";
 import type { HttpServerRequest } from "effect/http";
 import { AccessPrincipal, isSharedAgentRun, usageRunOf } from "@commissary/auth";
 import { ConfigReader } from "../config/reader.ts";
 import type { Config } from "../config/schema.ts";
 import { ExecutionError, withErrorFields } from "../executor/errors.ts";
-import type { CredentialSnapshot } from "../executor/picker.ts";
+import { isUpstreamTurnError } from "../executor/websocket/session.ts";
+import { CredentialPicker, type CredentialSnapshot } from "../executor/picker.ts";
 import type { ExecutionMetadata, ExecutorOptions, WebsocketExecution } from "../executor/types.ts";
 import { filterUpstreamHeaders } from "../http/headers.ts";
 import { get, type Json } from "@commissary/json";
@@ -26,7 +27,9 @@ import {
   attemptOptions,
   conduct,
   lifecycleError,
+  pickRequestOf,
   type Prepared,
+  retrySettings,
 } from "./conductor.ts";
 import { metered } from "./metering.ts";
 import { rewriteResponseModel, rewriteStreamChunk } from "./model-rewrite.ts";
@@ -136,10 +139,22 @@ export const enrichSelectionError = (
   return withErrorFields(error, { message, status: error.status > 0 ? error.status : 503 });
 };
 
-const toExecutionError = (cause: Cause.Cause<ExecutionError>): ExecutionError | undefined => {
+/**
+ * The error a stream's exit reports for the attempt: an `ExecutionError` as it is; any other failure (a consumer's own
+ * stop that is not an upstream error) is the downstream's, not the credential's. Interrupts and defects have none.
+ */
+export const toExecutionError = (cause: Cause.Cause<unknown>): ExecutionError | undefined => {
   const failure = cause.reasons.find(Cause.isFailReason);
 
-  return failure?.error;
+  if (failure === undefined) return undefined;
+
+  return failure.error instanceof ExecutionError
+    ? failure.error
+    : new ExecutionError({
+        status: 500,
+        message: "downstream forward failed",
+        requestScoped: true,
+      });
 };
 
 const prepare = Effect.fnUntraced(function* (input: ExecutionInput, stream: boolean) {
@@ -386,15 +401,45 @@ export const executeStream = Effect.fnUntraced(function* (input: ExecutionInput)
 
     if (result.ok) return result.value;
 
+    // A lost upstream socket is never replayed: the request may be running upstream (`conductor_stream.go`).
     if (
       !result.bootstrap ||
       retries >= maxBootstrapRetries ||
+      isUpstreamTurnError(result.error) ||
       !bootstrapEligible(result.error.status)
     ) {
       return yield* finalError(prepared, result.error);
     }
   }
 }, metered);
+
+/**
+ * Whether a credential other than `excludedId` could serve the request now (CLIProxyAPI b5e6027c,
+ * `HasAlternativeExecutionTarget`): the picker's read-only probe with the request's pick, minus its pin and session
+ * identities. Not metered, takes no lease. A request that cannot even be prepared has no alternative.
+ */
+export const hasAlternativeTarget = Effect.fnUntraced(function* (
+  input: ExecutionInput,
+  excludedId: string,
+) {
+  const prepared = yield* prepare(input, true).pipe(Effect.option);
+
+  if (Option.isNone(prepared)) return false;
+  const picker = yield* CredentialPicker;
+
+  return yield* picker.hasAlternative(
+    pickRequestOf(
+      prepared.value,
+      {
+        providers: prepared.value.providers,
+        excludedIds: [excludedId],
+        round: 0,
+        requestRetry: retrySettings(prepared.value.config).requestRetry,
+      },
+      true,
+    ),
+  );
+});
 
 /**
  * Token counting (Go `ExecuteCountWithAuthManager`): the same retry/failover conductor as non-stream execution, through

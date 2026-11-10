@@ -3,7 +3,7 @@
  * Responses bodies, transcripts are merged or replaced, warm-ups are answered locally.
  *
  * Go source: sdk/api/handlers/openai/openai_responses_websocket_requests.go (normalizeResponsesWebsocketRequest*,
- * normalizeResponseCreateRequest, normalizeResponseSubsequentRequest, shouldReplaceWebsocketTranscript,
+ * normalizeResponseCreateRequest, normalizeResponseSubsequentRequest (f4d3f061), shouldReplaceWebsocketTranscript,
  * inputSatisfiesPendingToolCalls, normalizeResponseTranscriptReplacement, mergeResponsesWebsocketInput, the dedupe
  * helpers, normalizeResponsesWebsocketPassthroughRequest), openai_responses_websocket_prewarm.go
  * (shouldHandleResponsesWebsocketPrewarmLocally, syntheticResponsesWebsocketPrewarmPayloads,
@@ -13,6 +13,7 @@
  * item metadata keys (`type`, `id`, `call_id`) are matched case-insensitively like `encoding/json` does, and the
  * synthetic warm-up ids use the injected clock/uuid.
  */
+import { previousResponseNotFoundError as upstreamPreviousResponseNotFoundError } from "../../../executor/websocket/session.ts";
 import {
   asString,
   cloneJson,
@@ -49,12 +50,38 @@ const failure = (message: string, last: JsonObject | undefined, status = 400): N
 
 const trimmed = (value: Json | undefined): string => asString(value).trim();
 
+const PASSTHROUGH_KEY = "internal_chat_message_metadata_passthrough";
+
+/**
+ * Output-only fields that another credential may reject as unknown input once an upstream item is replayed as input
+ * (`internal_chat_message_metadata_passthrough.content_token_count`, CLIProxyAPI 9037d543). Returns `item` itself when
+ * nothing is to be removed, else a copy without the field, and without the passthrough object when it is left empty.
+ * Applied only to copies of upstream output at record time; client items must round-trip unchanged.
+ */
+export const stripReplayOutputOnlyFields = (item: JsonObject): JsonObject => {
+  const passthrough = item[PASSTHROUGH_KEY];
+
+  if (!isJsonObject(passthrough) || !("content_token_count" in passthrough)) return item;
+  const remaining: JsonObject = {};
+
+  for (const [key, value] of Object.entries(passthrough))
+    if (key !== "content_token_count") remaining[key] = value;
+  const out: JsonObject = {};
+
+  for (const [key, value] of Object.entries(item)) {
+    if (key !== PASSTHROUGH_KEY) out[key] = value;
+    else if (Object.keys(remaining).length > 0) out[key] = remaining;
+  }
+
+  return out;
+};
+
 /** `previous_response_not_found`: a continuation the socket cannot serve. */
-export const previousResponseNotFoundError = (): WsRequestError => ({
-  status: 409,
-  message:
-    '{"error":{"message":"Previous response is not available on this websocket; resend the full conversation input without previous_response_id","type":"invalid_request_error","code":"previous_response_not_found","param":"previous_response_id"}}',
-});
+export const previousResponseNotFoundError = (): WsRequestError => {
+  const { status, message } = upstreamPreviousResponseNotFoundError();
+
+  return { status, message };
+};
 
 // --- item helpers -----------------------------------------------------------------------------------------------
 
@@ -382,18 +409,17 @@ export const normalizeSubsequentRequest = (
     return { ok: true, request: normalized, last: cloneJson(normalized) };
   }
 
+  let previous = trimmed(raw["previous_response_id"]);
+
+  // Whatever the upstream does with `previous_response_id`, a call without its output must not be replayed (f4d3f061).
+  if (previous === "" && !inputSatisfiesPendingToolCalls(nextInput, state.pendingToolCallIds)) {
+    const normalized = normalizeTranscriptReplacement(raw, lastRequest);
+
+    return { ok: true, request: normalized, last: cloneJson(normalized) };
+  }
+
   if (allowIncrementalInputWithPreviousResponseId) {
-    let previous = trimmed(raw["previous_response_id"]);
-
-    if (previous === "") {
-      if (!inputSatisfiesPendingToolCalls(nextInput, state.pendingToolCallIds)) {
-        const normalized = normalizeTranscriptReplacement(raw, lastRequest);
-
-        return { ok: true, request: normalized, last: cloneJson(normalized) };
-      }
-
-      previous = state.lastResponseId.trim();
-    }
+    if (previous === "") previous = state.lastResponseId.trim();
 
     if (previous !== "") {
       const normalized = inheritFromLast(

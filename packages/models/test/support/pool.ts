@@ -115,6 +115,7 @@ export const poolApi = (pool: CredentialPool): ControlPlaneApi => ({
   pick: async (request) => pool.pick(request),
   report: async (lease, result) => pool.report(lease, result),
   planRetry: async (query) => pool.planRetry(query),
+  hasAlternative: async (request) => pool.hasAlternative(request),
 });
 
 /** `CredentialPicker` over an in-process pool: the production adapter without the Durable Object. */

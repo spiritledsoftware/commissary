@@ -1,5 +1,5 @@
 /**
- * {@link CredentialPicker} over the ControlPlane Durable Object RPC (`pick`, `report`, `planRetry`).
+ * {@link CredentialPicker} over the ControlPlane Durable Object RPC (`pick`, `report`, `planRetry`, `hasAlternative`).
  *
  * Selection, cooldowns, quota and session affinity live in the DO (credentials.md §6, §8); this adapter only maps
  * between the DO wire types and the executor-facing contract. The DO stub is resolved from the per-request
@@ -30,6 +30,7 @@ export interface ControlPlaneApi {
   readonly pick: (request: WirePickRequest) => PromiseLike<WirePickResult>;
   readonly report: (lease: Lease, result: ReportResult) => PromiseLike<ReportOutcome>;
   readonly planRetry: (query: RetryQuery) => PromiseLike<RetryPlan>;
+  readonly hasAlternative: (request: WirePickRequest) => PromiseLike<boolean>;
 }
 
 type WireCredential = Extract<WirePickResult, { ok: true }>["credential"];
@@ -88,6 +89,56 @@ const unavailable = (cause: unknown) =>
     cause,
   });
 
+/** The wire form of a pick request (`pick` and `hasAlternative` share it). */
+export const toWirePickRequest = (request: PickRequest): WirePickRequest => ({
+  providers: request.providers,
+  model: request.selectionModel ?? request.model,
+  ...(request.excludedIds === undefined || request.excludedIds.length === 0
+    ? {}
+    : { tried: request.excludedIds }),
+  ...(request.retryRound === undefined ? {} : { retryRound: request.retryRound }),
+  ...(request.requestRetry === undefined ? {} : { requestRetry: request.requestRetry }),
+  ...(request.pinnedId === undefined ? {} : { pinnedAuthId: request.pinnedId }),
+  ...(request.memberId === undefined ? {} : { memberId: request.memberId }),
+  ...(request.apiKeyId === undefined ? {} : { apiKeyId: request.apiKeyId }),
+  ...(request.agentId === undefined ? {} : { agentId: request.agentId }),
+  ...(request.disallowFreeAuth === true ? { disallowFreeCodex: true } : {}),
+  ...(request.preferWebsockets === true ? { preferWebsockets: true } : {}),
+  ...(request.ignoreCooldown === true ? { ignoreCooldown: true } : {}),
+  ...(request.session === undefined
+    ? {}
+    : {
+        session: {
+          id: request.session.id,
+          callerScope: request.callerScope,
+          ...(request.session.parentId === undefined ? {} : { parentId: request.session.parentId }),
+          ...(request.session.isFork === true ? { isFork: true } : {}),
+        },
+      }),
+  ...(request.lcp === undefined
+    ? {}
+    : {
+        lcp: {
+          callerScope: request.callerScope,
+          fingerprints: request.lcp.fingerprints,
+          minPrefixLength: request.lcp.minPrefixLength,
+          tailFingerprints: request.lcp.tailFingerprints,
+          envDigest: request.lcp.envDigest,
+        },
+      }),
+  ...(request.fallbackSession === undefined
+    ? {}
+    : {
+        fallbackSession: {
+          id: request.fallbackSession.id,
+          callerScope: request.callerScope,
+          ...(request.fallbackSession.parentId === undefined
+            ? {}
+            : { parentId: request.fallbackSession.parentId }),
+        },
+      }),
+});
+
 export const makeControlPlanePicker = (api: (env: ModelsBindings, org: OrgId) => ControlPlaneApi) =>
   CredentialPicker.of({
     pick: (request: PickRequest) =>
@@ -95,56 +146,7 @@ export const makeControlPlanePicker = (api: (env: ModelsBindings, org: OrgId) =>
         const env = yield* ModelsEnv;
         const org = yield* CurrentOrg;
 
-        const wire: WirePickRequest = {
-          providers: request.providers,
-          model: request.selectionModel ?? request.model,
-          ...(request.excludedIds === undefined || request.excludedIds.length === 0
-            ? {}
-            : { tried: request.excludedIds }),
-          ...(request.retryRound === undefined ? {} : { retryRound: request.retryRound }),
-          ...(request.requestRetry === undefined ? {} : { requestRetry: request.requestRetry }),
-          ...(request.pinnedId === undefined ? {} : { pinnedAuthId: request.pinnedId }),
-          ...(request.memberId === undefined ? {} : { memberId: request.memberId }),
-          ...(request.apiKeyId === undefined ? {} : { apiKeyId: request.apiKeyId }),
-          ...(request.agentId === undefined ? {} : { agentId: request.agentId }),
-          ...(request.disallowFreeAuth === true ? { disallowFreeCodex: true } : {}),
-          ...(request.preferWebsockets === true ? { preferWebsockets: true } : {}),
-          ...(request.ignoreCooldown === true ? { ignoreCooldown: true } : {}),
-          ...(request.session === undefined
-            ? {}
-            : {
-                session: {
-                  id: request.session.id,
-                  callerScope: request.callerScope,
-                  ...(request.session.parentId === undefined
-                    ? {}
-                    : { parentId: request.session.parentId }),
-                  ...(request.session.isFork === true ? { isFork: true } : {}),
-                },
-              }),
-          ...(request.lcp === undefined
-            ? {}
-            : {
-                lcp: {
-                  callerScope: request.callerScope,
-                  fingerprints: request.lcp.fingerprints,
-                  minPrefixLength: request.lcp.minPrefixLength,
-                  tailFingerprints: request.lcp.tailFingerprints,
-                  envDigest: request.lcp.envDigest,
-                },
-              }),
-          ...(request.fallbackSession === undefined
-            ? {}
-            : {
-                fallbackSession: {
-                  id: request.fallbackSession.id,
-                  callerScope: request.callerScope,
-                  ...(request.fallbackSession.parentId === undefined
-                    ? {}
-                    : { parentId: request.fallbackSession.parentId }),
-                },
-              }),
-        };
+        const wire = toWirePickRequest(request);
 
         const result = yield* Effect.tryPromise({
           try: async () => await api(env, org).pick(wire),
@@ -198,6 +200,20 @@ export const makeControlPlanePicker = (api: (env: ModelsBindings, org: OrgId) =>
         }).pipe(
           // Without cooldown knowledge a retry would be a guess: stop retrying.
           Effect.catch(() => Effect.succeed<RetryPlan>({ retry: false })),
+        );
+      }),
+    hasAlternative: (request) =>
+      Effect.gen(function* () {
+        const env = yield* ModelsEnv;
+        const org = yield* CurrentOrg;
+        const wire = toWirePickRequest(request);
+
+        return yield* Effect.tryPromise({
+          try: async () => await api(env, org).hasAlternative(wire),
+          catch: unavailable,
+        }).pipe(
+          // Without selection knowledge there is no known alternative.
+          Effect.catch(() => Effect.succeed(false)),
         );
       }),
   });

@@ -3,7 +3,7 @@
  * `websockets` enabled.
  *
  * Go source: internal/runtime/executor/codex_websockets_executor.go (CodexAutoExecutor routing, codexWebsocketsEnabled),
- * codex_websockets_stream.go (ExecuteStream, prepareCodexWebsocketStream), codex_websockets_request.go
+ * codex_websockets_stream.go (ExecuteStream, prepareCodexWebsocketStream; usage-limit failover: 86a1aabf), codex_websockets_request.go
  * (applyCodexWebsocketHeaders), codex_websockets_connection.go (buildCodexResponsesWebsocketURL,
  * frameCodexWebsocketRequestBody), codex_websockets_errors.go (parseCodexWebsocketError, normalizeCodexWebsocketCompletion),
  * codex_websockets_session.go (sessions: see `../websocket/session.ts`).
@@ -503,7 +503,13 @@ export const makeCodexWebsocketStream =
                       );
                     }
 
-                    if (outcome.kind === "ws" && !timeoutReached) return yield* fail(outcome.error);
+                    // An `error` frame, or a terminal usage limit (CLIProxyAPI 86a1aabf): the credential is out of quota,
+                    // another one may serve the request, and nothing has reached the client yet.
+                    const usageLimit =
+                      outcome.kind === "terminal" && isCodexUsageLimitError(outcome.body);
+
+                    if ((outcome.kind === "ws" || usageLimit) && !timeoutReached)
+                      return yield* fail(outcome.error);
                     // Delivered in-stream after the held handshake.
                     yield* turn.invalidate;
 

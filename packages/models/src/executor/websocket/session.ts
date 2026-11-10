@@ -7,16 +7,27 @@
  * InterruptExecutionSession), codex_websockets_execute.go / codex_websockets_stream.go (send retry, read loop),
  * codex_websockets_errors.go (mapCodexWebsocketReadError), codex_websockets_connection.go (idle timeout).
  *
+ * Upstream socket loss (CLIProxyAPI f73e66ac, sdk/cliproxy/executor/websocket.go UpstreamWebsocketTurnError): a session
+ * socket that drops (close 1006 or a socket error) fails the running request with a request-scoped 502
+ * `upstream_websocket_lost` (never replayed, never failed over, no cooldown); the session remembers the loss (`lost`) so a
+ * continuation that needed the socket is answered 409 `previous_response_not_found` instead of asking for an HTTP replay.
+ * The downstream handler keeps its client socket open for all three (`handlers/responses/websocket/socket.ts`).
+ *
  * Differences from Go: there is no reader goroutine; a turn pulls frames from the socket's message queue under the idle
  * deadline (`Effect.timeout`, so tests drive it with `TestClock`). A socket that drops while idle is noticed through
- * `onEnd` and reported to `onDisconnect` subscribers (the downstream handler closes its socket like Go). A turn that is
- * released before its terminal event (client interrupt, error) invalidates the socket so late frames of the abandoned
- * response can never reach the next turn. Per-credential `proxy-url` is not supported on Workers, so a session target is
- * `(credential id, url)`.
+ * `onEnd` and only marks the session `lost`. A turn that is released before its terminal event (client interrupt,
+ * error) invalidates the socket so late frames of the abandoned response can never reach the next turn. A failed send
+ * is redialled once (Go treats it as a loss: on Workers a `send` that throws has queued nothing). Per-credential
+ * `proxy-url` is not supported on Workers, so a session target is `(credential id, url)`.
  */
 import { Duration, Effect, Option, Queue, Result, Scope, Semaphore } from "effect";
 import { checkOutboundUrl, CurrentOutboundPolicy } from "@commissary/core";
-import { ExecutionError, outboundRefusedError } from "../errors.ts";
+import {
+  type AbandonedOperation,
+  ExecutionError,
+  outboundRefusedError,
+  withErrorFields,
+} from "../errors.ts";
 import {
   HandshakeError,
   UpstreamMessage,
@@ -51,6 +62,62 @@ export const messageTooBigError = (): ExecutionError =>
     requestScoped: true,
   });
 
+export const UPSTREAM_LOST_CODE = "upstream_websocket_lost";
+
+export const UPSTREAM_NOT_SENT_CODE = "upstream_websocket_not_sent";
+
+export const PREVIOUS_RESPONSE_NOT_FOUND_CODE = "previous_response_not_found";
+
+/** `UpstreamWebsocketTurnError` (loss): the upstream socket dropped; the request is never replayed. */
+export const upstreamLostError = (): ExecutionError =>
+  new ExecutionError({
+    status: 502,
+    code: UPSTREAM_LOST_CODE,
+    message:
+      '{"error":{"message":"Upstream websocket disconnected. The turn was not replayed and its outcome may be unknown. Send a new response.create with full conversation input without previous_response_id.","type":"server_error","code":"upstream_websocket_lost"}}',
+    requestScoped: true,
+  });
+
+/** `UpstreamWebsocketTurnError` (FullContextRequired): a continuation that refers to a socket that was lost. */
+export const previousResponseNotFoundError = (): ExecutionError =>
+  new ExecutionError({
+    status: 409,
+    code: PREVIOUS_RESPONSE_NOT_FOUND_CODE,
+    message:
+      '{"error":{"message":"Previous response is not available on this websocket; resend the full conversation input without previous_response_id","type":"invalid_request_error","code":"previous_response_not_found","param":"previous_response_id"}}',
+    requestScoped: true,
+  });
+
+/** `UpstreamWebsocketTurnError` (NotSent): an operation that was never written upstream. */
+export const notSentError = (): ExecutionError =>
+  new ExecutionError({
+    status: 502,
+    code: UPSTREAM_NOT_SENT_CODE,
+    message:
+      '{"error":{"message":"Operation was not sent because the upstream websocket was lost. Send a new response.create with full conversation input.","type":"invalid_request_error","code":"upstream_websocket_not_sent"}}',
+    requestScoped: true,
+  });
+
+export type { AbandonedOperation };
+
+export const withAbandoned = (
+  error: ExecutionError,
+  operations: ReadonlyArray<AbandonedOperation>,
+): ExecutionError =>
+  operations.length === 0 ? error : withErrorFields(error, { abandoned: operations });
+
+export const abandonedOf = (error: ExecutionError): ReadonlyArray<AbandonedOperation> =>
+  error.abandoned ?? [];
+
+/** `IsUpstreamWebsocketTurnError`: an error the client socket survives (the downstream handler does not close it). */
+export const isUpstreamTurnError = (error: { readonly code?: string | undefined }): boolean =>
+  error.code === UPSTREAM_LOST_CODE ||
+  error.code === UPSTREAM_NOT_SENT_CODE ||
+  error.code === PREVIOUS_RESPONSE_NOT_FOUND_CODE;
+
+export const isUpstreamLost = (error: { readonly code?: string | undefined }): boolean =>
+  error.code === UPSTREAM_LOST_CODE;
+
 const transient = (message: string): ExecutionError =>
   new ExecutionError({ status: 500, code: "transient_transport", message });
 
@@ -63,7 +130,11 @@ export interface UpstreamSession {
   active: boolean;
   /** Removes the idle-drop watcher of the current socket. */
   unwatch: (() => void) | undefined;
-  readonly disconnectListeners: Set<(error: ExecutionError) => void>;
+  /**
+   * The upstream socket dropped (not invalidated by us) and none was dialled since: a continuation that needed it is
+   * answered 409 `previous_response_not_found` instead of "replay over HTTP".
+   */
+  lost: boolean;
   closed: boolean;
 }
 
@@ -75,7 +146,7 @@ const newSession = (id: string): UpstreamSession => ({
   url: "",
   active: false,
   unwatch: undefined,
-  disconnectListeners: new Set(),
+  lost: false,
   closed: false,
 });
 
@@ -107,14 +178,6 @@ export class UpstreamSessionStore {
     return [...this.sessions.keys()];
   }
 
-  /** Go `UpstreamDisconnectChan`: notified when the session's socket drops while no request is running. */
-  onDisconnect(id: string, listener: (error: ExecutionError) => void): () => void {
-    const session = this.get(id);
-    session.disconnectListeners.add(listener);
-
-    return () => void session.disconnectListeners.delete(listener);
-  }
-
   /** Detaches and closes the session's socket (`invalidateUpstreamConn`); the session itself stays. */
   invalidate(
     session: UpstreamSession,
@@ -141,7 +204,6 @@ export class UpstreamSessionStore {
       if (session === undefined) return Effect.void;
       this.sessions.delete(id);
       session.closed = true;
-      session.disconnectListeners.clear();
       const socket = session.socket;
       session.unwatch?.();
       session.unwatch = undefined;
@@ -249,16 +311,14 @@ export const openTurn = (input: OpenTurnInput): Effect.Effect<Turn, ExecutionErr
       }),
     );
 
+    // A socket that ends while it is still the session's was dropped by the upstream (ours are detached first). A running
+    // request reports it through `read`; between requests it is only remembered (`lost`).
     const watch = (socket: UpstreamSocket) => {
-      session.unwatch = socket.onEnd((message: UpstreamMessage) => {
+      session.unwatch = socket.onEnd(() => {
         if (session.socket !== socket) return;
         session.socket = undefined;
         session.unwatch = undefined;
-
-        if (session.active || session.closed) return;
-        const error = transient(`${input.label} upstream websocket disconnected (${message._tag})`);
-
-        for (const listener of session.disconnectListeners) listener(error);
+        session.lost = true;
       });
     };
 
@@ -289,6 +349,7 @@ export const openTurn = (input: OpenTurnInput): Effect.Effect<Turn, ExecutionErr
       session.socket = socket;
       session.authId = input.authId;
       session.url = input.url;
+      session.lost = false;
       watch(socket);
 
       return { socket, headers: socket.headers };
@@ -305,7 +366,8 @@ export const openTurn = (input: OpenTurnInput): Effect.Effect<Turn, ExecutionErr
         !existing.isOpen() ||
         !targetMatches(session, input.authId, input.url)
       ) {
-        return yield* replayRequiredError();
+        // A socket that was lost (not replaced) is answered like Go: the client resends the full conversation.
+        return yield* session.lost ? previousResponseNotFoundError() : replayRequiredError();
       }
 
       current = existing;
@@ -324,8 +386,13 @@ export const openTurn = (input: OpenTurnInput): Effect.Effect<Turn, ExecutionErr
     if (Result.isFailure(sent)) {
       yield* store.invalidate(session, current);
 
-      // Retry once on a fresh socket (the upstream may close between sequential requests); a continuation cannot.
-      if (input.requireUpstream) return yield* replayRequiredError();
+      // Retry once on a fresh socket (the upstream may close between sequential requests); a continuation cannot: the
+      // socket it refers to is gone.
+      if (input.requireUpstream) {
+        session.lost = true;
+
+        return yield* previousResponseNotFoundError();
+      }
 
       if (ephemeral) return yield* transient(`${input.label} websocket send failed`);
       const reopened = yield* ensure;
@@ -344,6 +411,12 @@ export const openTurn = (input: OpenTurnInput): Effect.Effect<Turn, ExecutionErr
     const idle = input.idle ?? IDLE_TIMEOUT;
     const invalidate = store.invalidate(session, socket);
 
+    const lost = (): ExecutionError => {
+      session.lost = true;
+
+      return upstreamLostError();
+    };
+
     const read: Effect.Effect<string, ExecutionError> = Effect.gen(function* () {
       while (true) {
         const message = yield* Queue.take(socket.messages).pipe(
@@ -361,9 +434,12 @@ export const openTurn = (input: OpenTurnInput): Effect.Effect<Turn, ExecutionErr
             Effect.fail(
               code === 1009
                 ? messageTooBigError()
-                : transient(`${input.label} upstream websocket closed (${code})`),
+                : code === 1006 && !ephemeral
+                  ? lost()
+                  : transient(`${input.label} upstream websocket closed (${code})`),
             ),
-          error: () => Effect.fail(transient(`${input.label} upstream websocket error`)),
+          error: () =>
+            Effect.fail(ephemeral ? transient(`${input.label} upstream websocket error`) : lost()),
         });
 
         if (text !== "") return text;
@@ -373,7 +449,11 @@ export const openTurn = (input: OpenTurnInput): Effect.Effect<Turn, ExecutionErr
     const send = (text: string): Effect.Effect<void, ExecutionError> =>
       socket
         .send(text)
-        .pipe(Effect.mapError(() => transient(`${input.label} websocket send failed`)));
+        .pipe(
+          Effect.mapError(() =>
+            ephemeral ? transient(`${input.label} websocket send failed`) : lost(),
+          ),
+        );
 
     return {
       headers,

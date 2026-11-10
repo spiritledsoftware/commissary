@@ -6,6 +6,7 @@ import {
   normalizePassthroughRequest,
   normalizeRequest,
   normalizeSubsequentRequest,
+  stripReplayOutputOnlyFields,
   syntheticPrewarmPayloads,
 } from "../../src/handlers/responses/websocket/normalize.ts";
 import {
@@ -21,10 +22,13 @@ import {
   Plan,
   planTurn,
 } from "../../src/handlers/responses/websocket/plan.ts";
+import type { JsonObject } from "@commissary/json";
 import { ExecutionError } from "../../src/executor/errors.ts";
 import {
   downstreamSessionKey,
   prepareFallbackTurn,
+  recordToolCallsFromPayload,
+  ToolCacheTurn,
   ToolCaches,
 } from "../../src/handlers/responses/websocket/tool-cache.ts";
 
@@ -124,6 +128,35 @@ describe("normalizeRequest (HTTP mode transcript)", () => {
     );
 
     expect(pending.ok && "previous_response_id" in pending.request).toBe(false);
+  });
+
+  it("replaces the transcript when pending tool calls are unanswered, also without incremental upstream input", () => {
+    // CLIProxyAPI f4d3f061: the stale turn must not be merged with its unanswered function_call.
+    const unanswered = normalizeSubsequentRequest(
+      { type: "response.create", input: [user("summary")] },
+      state({ lastResponseOutput: [call("call_1")], pendingToolCallIds: ["call_1"] }),
+      false,
+      false,
+    );
+
+    expect(unanswered).toMatchObject({
+      ok: true,
+      request: { model: "m", instructions: "sys", input: [user("summary")] },
+    });
+    expect(unanswered.ok && "previous_response_id" in unanswered.request).toBe(false);
+
+    // An answered call keeps the merged transcript.
+    const answered = normalizeSubsequentRequest(
+      { type: "response.create", input: [output("call_1")] },
+      state({ lastResponseOutput: [call("call_1")], pendingToolCallIds: ["call_1"] }),
+      false,
+      false,
+    );
+
+    expect(answered).toMatchObject({
+      ok: true,
+      request: { input: [user("one"), call("call_1"), output("call_1")] },
+    });
   });
 
   it("skips the stale merge for compaction transcripts when the target supports replay", () => {
@@ -441,6 +474,83 @@ describe("tool-call repair", () => {
         "A",
       ),
     ).toBe("A\u0000s1");
+  });
+});
+
+describe("replay strip (CLIProxyAPI 9037d543)", () => {
+  const PASSTHROUGH = "internal_chat_message_metadata_passthrough";
+  const key = "scope\u0000strip";
+
+  const upstreamCall = (passthrough: JsonObject) => ({
+    ...call("c1"),
+    id: "fc-1",
+    [PASSTHROUGH]: passthrough,
+  });
+
+  it("removes content_token_count, keeps other passthrough keys and drops an emptied object", () => {
+    const message = {
+      ...assistant("hi"),
+      [PASSTHROUGH]: { turn_id: "t1", create_time: 1.5, content_token_count: 64 },
+    };
+
+    const stripped = stripReplayOutputOnlyFields(message);
+    expect(stripped).toEqual({
+      ...assistant("hi"),
+      [PASSTHROUGH]: { turn_id: "t1", create_time: 1.5 },
+    });
+    // Pure: the input is not mutated and key order is kept.
+    expect(message[PASSTHROUGH]).toHaveProperty("content_token_count", 64);
+    expect(Object.keys(stripped)).toEqual(Object.keys(message));
+
+    expect(
+      stripReplayOutputOnlyFields({
+        ...assistant("hi"),
+        [PASSTHROUGH]: { content_token_count: 3 },
+      }),
+    ).toEqual(assistant("hi"));
+  });
+
+  it("leaves items without the field, a null passthrough and other items untouched", () => {
+    const plain = { ...assistant("hi"), [PASSTHROUGH]: { turn_id: "t" } };
+    expect(stripReplayOutputOnlyFields(plain)).toBe(plain);
+    const none = { ...assistant("hi"), [PASSTHROUGH]: null };
+    expect(stripReplayOutputOnlyFields(none)).toBe(none);
+    const bare = assistant("hi");
+    expect(stripReplayOutputOnlyFields(bare)).toBe(bare);
+  });
+
+  it("strips upstream tool calls at record time (transactional and plain) but not client items", () => {
+    const caches = new ToolCaches();
+    const turn = new ToolCacheTurn(key, caches);
+    turn.recordResponse({
+      type: "response.output_item.done",
+      item: upstreamCall({ turn_id: "tx", content_token_count: 9 }),
+    });
+    turn.commit();
+
+    const repaired = prepareFallbackTurn(caches, key, { input: [output("c1")] }).request["input"];
+    expect(repaired).toEqual([upstreamCall({ turn_id: "tx" }), output("c1")]);
+
+    const plain = new ToolCaches();
+    recordToolCallsFromPayload(plain, key, {
+      type: "response.completed",
+      response: { output: [upstreamCall({ content_token_count: 2 })] },
+    });
+
+    expect(prepareFallbackTurn(plain, key, { input: [output("c1")] }).request["input"]).toEqual([
+      { ...call("c1"), id: "fc-1" },
+      output("c1"),
+    ]);
+
+    // A client's own call round-trips through the cache unchanged.
+    const client = new ToolCaches();
+    const clientCall = upstreamCall({ content_token_count: 42, turn_id: "client" });
+    prepareFallbackTurn(client, key, { input: [clientCall, output("c1")] }).turn?.commit();
+
+    expect(prepareFallbackTurn(client, key, { input: [output("c1")] }).request["input"]).toEqual([
+      clientCall,
+      output("c1"),
+    ]);
   });
 });
 

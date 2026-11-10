@@ -20,6 +20,9 @@ export const withCredentialPolicy = (
 ): PickerService => ({
   report: base.report,
   planRetry: base.planRetry,
+  // The probe must stay read-only and cannot tell whether the credential it would find passes the policy: conservatively
+  // "no alternative" (only alpha search wraps a picker this way, never the Responses WebSocket).
+  hasAlternative: () => Effect.succeed(false),
   pick: (request) =>
     Effect.gen(function* () {
       const excluded = [...(request.excludedIds ?? [])];

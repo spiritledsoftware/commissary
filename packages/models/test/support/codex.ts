@@ -102,6 +102,10 @@ export const fixedPicker = (
       report: (lease, result) =>
         Effect.sync(() => void log.reports.push({ leaseId: lease.id, result })),
       planRetry: () => Effect.succeed({ retry: false }),
+      hasAlternative: (request) =>
+        Effect.succeed(
+          credentials.some((candidate) => !(request.excludedIds ?? []).includes(candidate.id)),
+        ),
     }),
   );
 

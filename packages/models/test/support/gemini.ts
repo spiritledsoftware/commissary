@@ -104,6 +104,7 @@ export const makeGeminiHarness = (options: GeminiHarnessOptions): GeminiHarness 
       },
       report: (_lease, result) => Effect.sync(() => void reports.push(result)),
       planRetry: () => Effect.succeed({ retry: false }),
+      hasAlternative: () => Effect.succeed(false),
     }),
   );
 

@@ -16,7 +16,7 @@ import { type Cause, Effect, Queue, Result, type Scope } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import { AccessPrincipal } from "@commissary/auth";
 import { invalidRequestBody } from "../../../http/errors.ts";
-import { executeStream, type ExecutionInput } from "../../execute.ts";
+import { executeStream, type ExecutionInput, hasAlternativeTarget } from "../../execute.ts";
 import { currentConfig } from "../../request.ts";
 import { prepareCodexResponsesRequest } from "../codex-prepare.ts";
 import { downstreamSessionKey, defaultToolCaches } from "./tool-cache.ts";
@@ -90,6 +90,8 @@ export const handleResponsesSocket = Effect.gen(function* () {
       steering,
       prepare: (payload) => prepareCodexResponsesRequest(payload, headers, true, false),
       execute: (input: Omit<ExecutionInput, "request">) => executeStream({ ...input, request }),
+      hasAlternative: (input: Omit<ExecutionInput, "request">, excludedId: string) =>
+        hasAlternativeTarget({ ...input, request }, excludedId),
     },
     raw,
   );

@@ -384,28 +384,7 @@ describe("Responses WebSocket over an upstream WebSocket (Codex)", () => {
     expect(s.records[0]?.failed).toBe(true);
   });
 
-  it("closes the client socket when the upstream drops an idle session socket", async () => {
-    const s = setup([wsCredential()], {
-      onConnection: (connection) => {
-        void (async () => {
-          await connection.next();
-          connection.server.send(
-            JSON.stringify({ type: "response.created", response: { id: "resp_1" } }),
-          );
-          connection.server.send(JSON.stringify(done()));
-        })();
-      },
-    });
-
-    const client = await s.connect();
-    client.send({ type: "response.create", model: "gpt-5.4", input: [] });
-    await client.until("response.completed");
-    s.mock.connections[0]?.server.close(1001, "going away");
-    const closed = await client.closed;
-    expect(closed.code).toBeGreaterThanOrEqual(1000);
-  });
-
-  it("exposes request-shape upstream errors, closes the socket and keeps quota errors silent", async () => {
+  it("exposes request-shape and quota upstream errors and closes the socket", async () => {
     const bad = setup([wsCredential()], {
       onConnection: (connection) => {
         void (async () => {
@@ -445,10 +424,14 @@ describe("Responses WebSocket over an upstream WebSocket (Codex)", () => {
 
     const quotaClient = await quota.connect();
     quotaClient.send({ type: "response.create", model: "gpt-5.4", input: [] });
-    // Credential/quota failures are not exposed: the client just sees the socket close and reconnects.
+    // A terminal quota failure is exposed (CLIProxyAPI b5e6027c): the client sees why, not a reconnect loop.
+    expect(await quotaClient.nextJson()).toMatchObject({
+      type: "error",
+      status: 429,
+      error: { type: "usage_limit_reached" },
+    });
     const closed = await quotaClient.closed;
     expect(closed.code).toBe(1011);
-    expect(quotaClient.messages).toEqual([]);
     expect(quota.log.reports[0]?.result.success).toBe(false);
   });
 

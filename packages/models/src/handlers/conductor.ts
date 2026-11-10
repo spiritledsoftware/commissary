@@ -42,6 +42,7 @@ import { markWorked } from "./metering.ts";
 import {
   CredentialPicker,
   type CredentialSnapshot,
+  type PickRequest,
   type PickResult,
   type PickSession,
 } from "../executor/picker.ts";
@@ -181,6 +182,42 @@ export interface Prepared {
   /** Token counting (Go `ExecuteCount`): no passive quota snapshot, generic endpoint 404s are availability-neutral. */
   readonly countTokens?: boolean;
 }
+
+/** What a pick (or a probe) of one conductor round is told besides the request itself. */
+export interface PickRound {
+  readonly providers: ReadonlyArray<string>;
+  readonly excludedIds: ReadonlyArray<string>;
+  readonly round: number;
+  readonly requestRetry: number;
+  /** Antigravity credits fallback: cooling credentials stay selectable. */
+  readonly credits?: boolean;
+}
+
+/**
+ * The picker's request for a prepared request (`pickNext`). `probe` leaves out what binds a request to one credential,
+ * the pin and the session identities: `hasAlternative` asks who else could serve it.
+ */
+export const pickRequestOf = (prepared: Prepared, pick: PickRound, probe = false): PickRequest => ({
+  providers: pick.credits === true ? ["antigravity"] : pick.providers,
+  model: prepared.routeModel,
+  ...(pick.credits === true ? { ignoreCooldown: true } : {}),
+  callerScope: prepared.callerScope,
+  ...(prepared.memberId === undefined ? {} : { memberId: prepared.memberId }),
+  ...(prepared.apiKeyId === undefined ? {} : { apiKeyId: prepared.apiKeyId }),
+  ...(prepared.agentId === undefined ? {} : { agentId: prepared.agentId }),
+  excludedIds: pick.excludedIds,
+  retryRound: pick.round,
+  requestRetry: pick.requestRetry,
+  ...(probe || prepared.session === undefined ? {} : { session: prepared.session }),
+  ...(probe || prepared.routing?.lcp === undefined ? {} : { lcp: prepared.routing.lcp }),
+  ...(probe || prepared.routing?.fallbackSession === undefined
+    ? {}
+    : { fallbackSession: prepared.routing.fallbackSession }),
+  ...(probe || prepared.pinnedId === undefined ? {} : { pinnedId: prepared.pinnedId }),
+  ...(prepared.disallowFreeAuth === true ? { disallowFreeAuth: true } : {}),
+  ...(prepared.preferWebsockets === true ? { preferWebsockets: true } : {}),
+  ...(prepared.selectionModel === undefined ? {} : { selectionModel: prepared.selectionModel }),
+});
 
 /**
  * Executor options of an attempt: the request's own options, plus the credits flag during the Antigravity credits
@@ -488,29 +525,15 @@ export const conduct = <T, R>(
 
         const pickNext = (excludedIds: ReadonlyArray<string>) =>
           Effect.result(
-            picker.pick({
-              providers: credits ? ["antigravity"] : failover.remaining(),
-              model: prepared.routeModel,
-              ...(credits ? { ignoreCooldown: true } : {}),
-              callerScope: prepared.callerScope,
-              ...(prepared.memberId === undefined ? {} : { memberId: prepared.memberId }),
-              ...(prepared.apiKeyId === undefined ? {} : { apiKeyId: prepared.apiKeyId }),
-              ...(prepared.agentId === undefined ? {} : { agentId: prepared.agentId }),
-              excludedIds,
-              retryRound: round,
-              requestRetry: settings.requestRetry,
-              ...(prepared.session === undefined ? {} : { session: prepared.session }),
-              ...(prepared.routing?.lcp === undefined ? {} : { lcp: prepared.routing.lcp }),
-              ...(prepared.routing?.fallbackSession === undefined
-                ? {}
-                : { fallbackSession: prepared.routing.fallbackSession }),
-              ...(prepared.pinnedId === undefined ? {} : { pinnedId: prepared.pinnedId }),
-              ...(prepared.disallowFreeAuth === true ? { disallowFreeAuth: true } : {}),
-              ...(prepared.preferWebsockets === true ? { preferWebsockets: true } : {}),
-              ...(prepared.selectionModel === undefined
-                ? {}
-                : { selectionModel: prepared.selectionModel }),
-            }),
+            picker.pick(
+              pickRequestOf(prepared, {
+                providers: failover.remaining(),
+                excludedIds,
+                round,
+                requestRetry: settings.requestRetry,
+                credits,
+              }),
+            ),
           );
 
         /**

@@ -43,6 +43,7 @@ import {
   knownPrefixes,
   selectCredential,
   type CredentialEntry,
+  type SelectionRuntime,
   type SelectionSettings,
 } from "./selection/pick.ts";
 import { planRetry, type RetryPlan, type RetryQuery } from "./selection/retry.ts";
@@ -314,7 +315,13 @@ export class CredentialPool {
     return caller.agentId === undefined ? this.#reach(caller.memberId) : ALLOW_ALL;
   }
 
-  pick(request: PickRequest): PickResult {
+  /** Who a request's Spend limits are charged to: a shared agent's run counts toward the agent's own (#228). */
+  #caller(request: PickRequest) {
+    return { memberId: request.memberId, apiKeyId: request.apiKeyId, agentId: request.agentId };
+  }
+
+  /** The selection of `request` against `runtime` under the caller's Spend gate (`pick` and `hasAlternative` share it). */
+  #select(request: PickRequest, runtime: SelectionRuntime) {
     const view = this.#current();
     const now = this.#now();
     const entries: CredentialEntry[] = [];
@@ -322,28 +329,33 @@ export class CredentialPool {
     for (const credential of view.credentials.values())
       entries.push({ credential, state: this.#state(credential.id) });
 
-    // A shared agent's run counts toward the agent's own Spend limits (#228); it has no member and no API key.
-    const caller = {
-      memberId: request.memberId,
-      apiKeyId: request.apiKeyId,
-      agentId: request.agentId,
-    };
-
-    const gate = this.#spend?.gate(caller, now);
+    const gate = this.#spend?.gate(this.#caller(request), now);
 
     // A limit of the request's API key without room refuses it whatever credential would serve: no cooldown, no failover.
-    if (gate?.refuse !== undefined)
-      return { ok: false, failure: spendLimitReached(gate.refuse, now) };
+    if (gate?.refuse !== undefined) return { refuse: gate.refuse, now, gate, outcome: undefined };
 
     const outcome = selectCredential({
       credentials: entries,
       request,
       settings: view.settings,
-      runtime: { rotation: this.#rotation, affinity: this.#affinity, lcp: this.#lcp },
+      runtime,
       reach: this.#callerReach(request),
       now,
       ...(gate === undefined ? {} : { spend: gate }),
     });
+
+    return { refuse: undefined, now, gate, outcome };
+  }
+
+  pick(request: PickRequest): PickResult {
+    const { refuse, now, gate, outcome } = this.#select(request, {
+      rotation: this.#rotation,
+      affinity: this.#affinity,
+      lcp: this.#lcp,
+    });
+
+    if (outcome === undefined) return { ok: false, failure: spendLimitReached(refuse, now) };
+    const caller = this.#caller(request);
 
     if (!outcome.ok) {
       // Shared credentials were kept away by a member, team or org limit: that is why nothing could serve the request.
@@ -398,6 +410,20 @@ export class CredentialPool {
       lease,
       ...(outcome.session === undefined ? {} : { session: outcome.session }),
     };
+  }
+
+  /**
+   * Whether `request` (its `tried` ids are the credentials to leave out) could be served by any credential now: the
+   * selection of {@link pick} (grants, Spend limits, cooldowns) against a throwaway rotation and affinity runtime, so no
+   * lease is taken and no cursor, binding or LCP sequence moves. Session identities are ignored.
+   */
+  hasAlternative(request: PickRequest): boolean {
+    const { session: _session, lcp: _lcp, fallbackSession: _fallback, ...probe } = request;
+
+    return (
+      this.#select(probe, { rotation: new RotationState(), affinity: new SessionCache() }).outcome
+        ?.ok === true
+    );
   }
 
   /**

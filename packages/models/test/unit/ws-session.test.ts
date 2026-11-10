@@ -216,7 +216,7 @@ describe("upstream execution sessions", () => {
   );
 
   it.effect(
-    "asks the client to replay when a continuation has no live socket or the send fails",
+    "asks the client to replay when a continuation has no live socket and answers 409 when its send fails",
     () =>
       Effect.gen(function* () {
         const store = new UpstreamSessionStore();
@@ -244,7 +244,8 @@ describe("upstream execution sessions", () => {
           Effect.flip,
         );
 
-        assert.strictEqual(failed.code, "upstream_websocket_replay_required");
+        // The retained socket turned out dead: the continuation's response is gone with it.
+        assert.strictEqual(failed.code, "previous_response_not_found");
         assert.isDefined(socket.closed);
       }),
   );
@@ -274,7 +275,7 @@ describe("upstream execution sessions", () => {
   );
 
   it.effect(
-    "maps close 1009 to a request-scoped 413, binary frames and drops to transient errors",
+    "maps close 1009 to a request-scoped 413, binary frames and other closes to transient errors",
     () =>
       Effect.gen(function* () {
         const read = (message: UpstreamMessage) =>
@@ -298,8 +299,95 @@ describe("upstream execution sessions", () => {
         assert.include(tooBig.message, "message_too_big");
         const binary = yield* read(Frames.binary());
         assert.include(binary.message, "unexpected binary message");
-        const dropped = yield* read(Frames.close({ code: 1006, reason: "" }));
-        assert.strictEqual(dropped.code, "transient_transport");
+        const goingAway = yield* read(Frames.close({ code: 1001, reason: "bye" }));
+        assert.strictEqual(goingAway.code, "transient_transport");
+        assert.strictEqual(goingAway.status, 500);
+      }),
+  );
+
+  it.effect(
+    "fails a request on a session socket that drops (close 1006 or a socket error) with a request-scoped 502 loss",
+    () =>
+      Effect.gen(function* () {
+        const dropWith = (message: UpstreamMessage, sessionId: string | undefined) =>
+          Effect.gen(function* () {
+            const socket = fakeSocket();
+            const store = new UpstreamSessionStore();
+
+            const error = yield* Effect.scoped(
+              Effect.gen(function* () {
+                const turn = yield* openTurn(input(store, { sessionId }));
+                socket.push(message);
+
+                return yield* Effect.flip(turn.read);
+              }),
+            ).pipe(Effect.provide(connector([socket])));
+
+            return { error, lost: store.peek("session-1")?.lost };
+          });
+
+        const closed = yield* dropWith(Frames.close({ code: 1006, reason: "" }), "session-1");
+        assert.strictEqual(closed.error.code, "upstream_websocket_lost");
+        assert.strictEqual(closed.error.status, 502);
+        assert.isTrue(closed.error.requestScoped);
+        assert.include(closed.error.message, "upstream_websocket_lost");
+        assert.isTrue(closed.lost);
+
+        const errored = yield* dropWith(Frames.error({ message: "boom" }), "session-1");
+        assert.strictEqual(errored.error.code, "upstream_websocket_lost");
+
+        // An ephemeral socket belongs to no downstream socket: nothing to keep alive, today's transient error.
+        const ephemeral = yield* dropWith(Frames.close({ code: 1006, reason: "" }), undefined);
+        assert.strictEqual(ephemeral.error.code, "transient_transport");
+      }),
+  );
+
+  it.effect(
+    "answers a continuation 409 when its socket was lost, 426 when we detached it, and a redial clears the loss",
+    () =>
+      Effect.gen(function* () {
+        const store = new UpstreamSessionStore();
+        const first = fakeSocket();
+        const second = fakeSocket();
+        const layer = connector([first, second]);
+
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const turn = yield* openTurn(input(store));
+            turn.complete();
+          }),
+        ).pipe(Effect.provide(layer));
+
+        first.push(Frames.close({ code: 1006, reason: "" }));
+        assert.isTrue(store.peek("session-1")?.lost);
+
+        const continuation = yield* Effect.scoped(
+          openTurn(input(store, { requireUpstream: true })),
+        ).pipe(Effect.provide(layer), Effect.flip);
+
+        assert.strictEqual(continuation.status, 409);
+        assert.strictEqual(continuation.code, "previous_response_not_found");
+        assert.isTrue(continuation.requestScoped);
+
+        // A full create redials on the same session, which clears the loss.
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const turn = yield* openTurn(input(store));
+            turn.complete();
+          }),
+        ).pipe(Effect.provide(layer));
+        assert.isFalse(store.peek("session-1")?.lost);
+
+        // A socket we detach ourselves is not lost: the continuation asks for an HTTP replay as before.
+        const session = store.get("session-1");
+        yield* store.invalidate(session);
+
+        const replay = yield* Effect.scoped(openTurn(input(store, { requireUpstream: true }))).pipe(
+          Effect.provide(layer),
+          Effect.flip,
+        );
+
+        assert.strictEqual(replay.code, "upstream_websocket_replay_required");
       }),
   );
 
@@ -335,14 +423,12 @@ describe("upstream execution sessions", () => {
   );
 
   it.effect(
-    "drops frames that arrived while the session was idle and notifies subscribers of idle drops",
+    "drops frames that arrived while the session was idle and remembers an idle drop as a loss",
     () =>
       Effect.gen(function* () {
         const store = new UpstreamSessionStore();
         const socket = fakeSocket();
         const layer = connector([socket]);
-        const drops: string[] = [];
-        store.onDisconnect("session-1", (error) => drops.push(error.message));
         yield* Effect.scoped(
           Effect.gen(function* () {
             const turn = yield* openTurn(input(store));
@@ -359,7 +445,7 @@ describe("upstream execution sessions", () => {
           }),
         ).pipe(Effect.provide(layer));
         socket.push(Frames.close({ code: 1001, reason: "bye" }));
-        assert.lengthOf(drops, 1);
+        assert.isTrue(store.peek("session-1")?.lost);
         assert.isUndefined(store.peek("session-1")?.socket);
       }),
   );

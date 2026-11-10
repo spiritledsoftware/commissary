@@ -6,10 +6,12 @@
  * buildResponsesWebsocketErrorPayload, shouldExposeResponsesUpstreamError, collectResponsesWebsocketOutputItem,
  * restoreResponsesWebsocketCompletionOutput, responseCompletedOutputFromPayload, recordPendingToolCallIDsFromPayload,
  * completeResponsesWebsocketLocalInterrupt), openai_responses_websocket.go (websocketClosePayloadForUpstreamError,
- * truncateWebsocketCloseReason), openai_responses_websocket_timeline.go (responsesWebsocketErrorMessageFromPayload).
+ * truncateWebsocketCloseReason), openai_responses_websocket_timeline.go (responsesWebsocketErrorMessageFromPayload);
+ * b5e6027c (isResponsesWebsocketQuotaOrCooldownError, exposed 429 frames with the trusted Retry-After).
  */
 import { statusText } from "../../../http/status.ts";
 import { openAIErrorBody } from "../../../http/errors.ts";
+import { canonicalName } from "../../../credentials/cooldown/quota-signals.ts";
 import { isRequestInvalid } from "../../../executor/classify.ts";
 import { ExecutionError } from "../../../executor/errors.ts";
 import { isReplayRequired } from "../../../executor/websocket/session.ts";
@@ -89,15 +91,83 @@ export const payloadsFromChunk = (chunk: string): JsonObject[] => {
 
 // --- errors --------------------------------------------------------------------------------------------------------
 
-/** `shouldExposeResponsesUpstreamError`: only request-shape (and terminal auth) failures reach the client. */
+const QUOTA_OR_COOLDOWN_TYPES = new Set(["usage_limit_reached", "model_cooldown"]);
+
+const QUOTA_PATHS = [
+  "error.type",
+  "type",
+  "response.error.type",
+  "body.error.type",
+  "error.code",
+  "code",
+  "response.error.code",
+  "body.error.code",
+] as const;
+
+/** `isResponsesWebsocketQuotaOrCooldownError`: a quota (`usage_limit_reached`) or model cooldown (`model_cooldown`) failure. */
+export const isQuotaOrCooldownError = (
+  error: Pick<ExecutionError, "message" | "code">,
+): boolean => {
+  if (error.code?.trim().toLowerCase() === "model_cooldown") return true;
+  const body = tryParseJson(error.message.trim());
+
+  return (
+    isJsonObject(body) &&
+    QUOTA_PATHS.some((path) =>
+      QUOTA_OR_COOLDOWN_TYPES.has(asString(get(body, path)).trim().toLowerCase()),
+    )
+  );
+};
+
+/**
+ * `shouldExposeResponsesUpstreamError`: request-shape and terminal auth failures, and terminal 429, quota and model
+ * cooldown failures (credential failover is exhausted by then) reach the client; the rest only closes the socket.
+ */
 export const shouldExposeError = (error: ExecutionError): boolean =>
-  error.terminalAuth === true || isRequestInvalid(error);
+  error.terminalAuth === true ||
+  error.status === 429 ||
+  isQuotaOrCooldownError(error) ||
+  isRequestInvalid(error);
+
+/** `http.CanonicalHeaderKey`: `retry-after` -> `Retry-After`. */
+const canonicalHeader = (name: string): string => canonicalName(name.trim().toLowerCase());
+
+/**
+ * The frame's top-level `headers`: the error's safe headers (the trusted `Retry-After` of a cooldown) plus the raw
+ * upstream ones, which never override a trusted `Retry-After`. Names are canonical-cased.
+ */
+const frameHeaders = (error: Pick<ExecutionError, "headers" | "safeHeaders">) => {
+  const out: Record<string, string> = {};
+  let trusted = false;
+
+  for (const [name, value] of Object.entries(error.safeHeaders ?? {})) {
+    if (name.trim() === "" || value.trim() === "") continue;
+    out[canonicalHeader(name)] = value;
+
+    if (canonicalHeader(name) === "Retry-After") trusted = true;
+  }
+
+  for (const [name, value] of Object.entries(error.headers ?? {})) {
+    if (name.trim() === "" || value.trim() === "") continue;
+
+    if (trusted && canonicalHeader(name) === "Retry-After") continue;
+    out[canonicalHeader(name)] = value;
+  }
+
+  return out;
+};
 
 /** `buildResponsesWebsocketErrorPayload`. */
 export const buildErrorPayload = (
-  error: Pick<ExecutionError, "status" | "message" | "headers" | "terminalAuth">,
+  error: Pick<
+    ExecutionError,
+    "status" | "message" | "headers" | "safeHeaders" | "terminalAuth" | "code"
+  >,
 ): JsonObject => {
-  const status = error.status > 0 ? error.status : 500;
+  let status = error.status > 0 ? error.status : 500;
+
+  // A quota or cooldown failure with a 5xx (or no) status is still a 429 for the client.
+  if ((error.status <= 0 || status >= 500) && isQuotaOrCooldownError(error)) status = 429;
   const text = error.message.trim() !== "" ? error.message : statusText(status);
 
   const body = tryParseJson(
@@ -105,9 +175,9 @@ export const buildErrorPayload = (
   );
 
   const payload: JsonObject = { type: "error", status };
+  const headers = frameHeaders(error);
 
-  if (error.headers !== undefined && Object.keys(error.headers).length > 0)
-    payload["headers"] = { ...error.headers };
+  if (Object.keys(headers).length > 0) payload["headers"] = headers;
   const errorNode = get(body, "error");
   payload["error"] =
     errorNode !== undefined ? errorNode : (body ?? { type: "server_error", message: text });

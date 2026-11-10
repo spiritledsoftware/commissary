@@ -6,6 +6,7 @@
  */
 import { Effect, Layer } from "effect";
 import { ConfigReader } from "../config/reader.ts";
+import type { Config } from "../config/schema.ts";
 import { canonicalModelKey } from "../credentials/selection/model-name.ts";
 import { configCredentials } from "./config-credentials.ts";
 import { ExecutionError } from "./errors.ts";
@@ -18,6 +19,20 @@ const servesModel = (models: ReadonlySet<string>, model: string): boolean => {
   const base = parseSuffix(model).modelName;
 
   return models.has(base) || models.has(base.toLowerCase());
+};
+
+const candidatesOf = (config: Config, request: PickRequest) => {
+  const providers = new Set(request.providers.map((provider) => provider.toLowerCase()));
+  const excluded = new Set(request.excludedIds ?? []);
+  const model = request.selectionModel ?? request.model;
+
+  return configCredentials(config).filter(
+    (entry) =>
+      providers.has(entry.credential.provider) &&
+      !excluded.has(entry.credential.id) &&
+      (request.pinnedId === undefined || entry.credential.id === request.pinnedId) &&
+      servesModel(entry.models, model),
+  );
 };
 
 export const makeStaticCredentialPicker = Effect.fnUntraced(function* () {
@@ -42,16 +57,8 @@ export const makeStaticCredentialPicker = Effect.fnUntraced(function* () {
       );
 
       const providers = new Set(request.providers.map((provider) => provider.toLowerCase()));
-      const excluded = new Set(request.excludedIds ?? []);
       const model = request.selectionModel ?? request.model;
-
-      const candidates = configCredentials(config).filter(
-        (entry) =>
-          providers.has(entry.credential.provider) &&
-          !excluded.has(entry.credential.id) &&
-          (request.pinnedId === undefined || entry.credential.id === request.pinnedId) &&
-          servesModel(entry.models, model),
-      );
+      const candidates = candidatesOf(config, request);
 
       if (candidates.length === 0) {
         return yield* new ExecutionError({
@@ -111,6 +118,11 @@ export const makeStaticCredentialPicker = Effect.fnUntraced(function* () {
         : Effect.logDebug(
             `static credential picker: attempt failed (lease ${lease.id}, status ${result.httpStatus})`,
           ),
+    hasAlternative: (request) =>
+      reader.get.pipe(
+        Effect.map(({ config }) => candidatesOf(config, request).length > 0),
+        Effect.orElseSucceed(() => false),
+      ),
     // No cooldown state: a retry round is allowed while the request-retry budget lasts.
     planRetry: (query) =>
       Effect.succeed(

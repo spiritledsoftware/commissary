@@ -25,6 +25,7 @@ import {
 import type { ReportResult } from "../credentials/selection/types.ts";
 import { type ExecutionError, headersRecord } from "./errors.ts";
 import type { CredentialSnapshot } from "./picker.ts";
+import { isUpstreamTurnError } from "./websocket/session.ts";
 
 /** Largest error text sent to the ControlPlane (upstream bodies can be huge). */
 const MAX_REPORTED_MESSAGE = 8192;
@@ -116,6 +117,8 @@ export const matchRequestScopedAction = (
   rules: ReadonlyArray<RequestScopedErrorRule>,
   error: ExecutionError,
 ): RequestScopedAction | undefined => {
+  // An upstream socket loss ends the request with its own answer: no rule may turn it into a retry (Go skips them).
+  if (isUpstreamTurnError(error)) return undefined;
   const status = error.status;
   const body = error.message;
 

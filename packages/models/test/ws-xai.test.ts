@@ -2,6 +2,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Config } from "../src/config/schema.ts";
 import type { CredentialSnapshot } from "../src/executor/picker.ts";
+import { asString, type JsonObject } from "@commissary/json";
 import {
   jsonResponse,
   loadConfig,
@@ -280,6 +281,70 @@ describe("Responses WebSocket over an upstream WebSocket (xAI)", () => {
     expect(mock.dials).toHaveLength(0);
     expect(p.calls[0]?.url).toBe("https://cli-chat-proxy.grok.com/v1/responses");
     client.close();
+  });
+});
+
+describe("an error event passed through by an HTTP provider's stream (D7)", () => {
+  // The xAI HTTP stream hands an `error` event to the client without failing: the socket handler is what stops on it, so
+  // the attempt must end with the upstream error and its cooldown, not with the handler's own stop.
+  const run = async (errorEvent: JsonObject) => {
+    const plain = await loadConfig("requests: {}");
+    const log: XaiPickerLog = { picks: [], reports: [] };
+
+    const p = makePipeline({
+      config: plain,
+      respond: () =>
+        sseResponse(
+          Array.of<JsonObject>(created("resp_http"), errorEvent).map(
+            (event) => `event: ${asString(event["type"])}\ndata: ${JSON.stringify(event)}\n\n`,
+          ),
+        ),
+      // A second credential: nothing may fail over once the first payload reached the client.
+      credentialPicker: xaiPicker([xaiOauth(), xaiOauth({ id: "xai-oauth-2" })], log),
+      modelProviders: xaiModels,
+      websocketConnector: mockUpstream().layer,
+    });
+
+    afterAll(p.dispose);
+
+    const client = connectClient(
+      await p.call("/v1/responses", { headers: { upgrade: "websocket" } }),
+    );
+
+    client.send({
+      type: "response.create",
+      model: "grok-4.3",
+      input: [{ type: "message", role: "user", content: "hi" }],
+    });
+
+    return { p, log, client };
+  };
+
+  it("records the upstream error's status, not a status-less stop, with one upstream attempt", async () => {
+    const { p, log, client } = await run({
+      type: "error",
+      status: 429,
+      error: { type: "usage_limit_reached", message: "limit" },
+    });
+
+    expect((await client.nextJson())["type"]).toBe("response.created");
+    expect(await client.nextJson()).toMatchObject({ type: "error", status: 429 });
+    expect((await client.closed).code).toBe(1011);
+    await expect.poll(() => log.reports.length).toBe(1);
+    expect(p.calls).toHaveLength(1);
+    expect(log.reports[0]?.result).toMatchObject({ success: false, httpStatus: 429 });
+  });
+
+  it("records an error event without a status as a 500", async () => {
+    const { log, client } = await run({
+      type: "error",
+      error: { type: "server_error", message: "boom" },
+    });
+
+    // Not exposed (a 500 is no request fault): the socket just closes.
+    expect((await client.closed).code).toBe(1011);
+    await expect.poll(() => log.reports.length).toBe(1);
+    expect(log.reports[0]?.result).toMatchObject({ success: false, httpStatus: 500 });
   });
 });
 

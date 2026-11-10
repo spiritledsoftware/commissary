@@ -18,6 +18,11 @@ export interface UpstreamConnection {
   closed: { code: number; reason: string } | undefined;
   /** Resolves the next frame Commissary sends (consumed in order). */
   readonly next: () => Promise<string>;
+  /**
+   * The connection drops without a closing handshake: Commissary's side sees a close with code 1006 (a Worker's
+   * `close()` cannot send it).
+   */
+  readonly drop: () => void;
 }
 
 export interface MockUpstreamOptions {
@@ -78,6 +83,10 @@ export const mockUpstream = (options: MockUpstreamOptions = {}): MockUpstream =>
               queue.length > 0
                 ? Promise.resolve(queue.shift() as string)
                 : new Promise<string>((resolve) => waiting.push(resolve)),
+            drop: () =>
+              serverSide.dispatchEvent(
+                new CloseEvent("close", { code: 1006, reason: "", wasClean: false }),
+              ),
           };
 
           server.addEventListener("message", (event) => {
@@ -167,3 +176,54 @@ export const connectClient = (response: Response): TestClient => {
     messages,
   };
 };
+
+/** The error object of an error frame. */
+export const errorOf = (frame: Record<string, unknown>) =>
+  frame["error"] as { code?: string; event_id?: string; message?: string; type?: string };
+
+/** Polls (event-loop turns, no fixed delay) until the condition holds. */
+export const eventually = async (condition: () => boolean): Promise<void> => {
+  for (let turn = 0; turn < 2000 && !condition(); turn++)
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+  if (!condition()) throw new Error("condition not met");
+};
+
+/**
+ * A round trip through the handler's reader fiber, which reads the client socket frame by frame: a `response.interrupt`
+ * without `response_id` is answered at once with a 400. When it returns, every frame sent before it has been read and
+ * queued, and nothing the earlier frames could still write remains to be written by the reader. Returns the frames that
+ * arrived in between (the sentinel's own 400 excluded).
+ */
+export const settled = async (client: TestClient): Promise<string[]> => {
+  const before = client.messages.length;
+  client.send({ type: "response.interrupt" });
+  await client.until("error");
+
+  return client.messages.slice(before, -1);
+};
+
+/** Scripted upstream: `script(frame, index, send, connection)` answers each frame Commissary writes to a connection. */
+export const scripted =
+  (
+    script: (
+      frame: Record<string, unknown>,
+      index: number,
+      send: (event: Json) => void,
+      connection: UpstreamConnection,
+    ) => void,
+  ) =>
+  (connection: UpstreamConnection): void => {
+    void (async () => {
+      for (let index = 0; ; index++) {
+        const text = await connection.next();
+        script(
+          JSON.parse(text) as Record<string, unknown>,
+          index,
+          (event) =>
+            connection.server.send(typeof event === "string" ? event : JSON.stringify(event)),
+          connection,
+        );
+      }
+    })();
+  };
