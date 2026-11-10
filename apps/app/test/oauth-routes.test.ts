@@ -117,7 +117,7 @@ describe("management oauth routes", () => {
     const started = await start("provider=claude&is_webui=true");
     expect(started).toMatchObject({ status: "ok" });
     expect(started.url.startsWith("https://claude.ai/oauth/authorize?")).toBe(true);
-    expect(started.state).toMatch(/^[0-9a-f]{32}$/);
+    expect(started.state).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(await status(started.state)).toEqual({ status: "wait" });
     expect(await status("")).toEqual({ status: "ok" });
 

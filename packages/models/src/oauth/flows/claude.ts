@@ -16,7 +16,14 @@ import {
   CLAUDE_PROFILE_URL,
   CLAUDE_TOKEN_URL,
 } from "../../credentials/refresh/claude.ts";
-import { encodeQuery, generatePkce, randomHex, sha256Hex } from "../encoding.ts";
+import {
+  base64Url,
+  encodeQuery,
+  generatePkce,
+  randomBytes,
+  randomHex,
+  sha256Hex,
+} from "../encoding.ts";
 import { call, parseJsonObject, rfc3339, seconds, str, tryCall } from "./http.ts";
 import { type CallbackFlow, type CredentialRecord, flowFailure } from "./types.ts";
 
@@ -86,12 +93,19 @@ const inspectAccount = (accessToken: string, identity: Identity) =>
     identity.organizationName = nested(body.organization, "name") || identity.organizationName;
   });
 
+/** Go `claude.GenerateState` (ea0b4712): 256 random bits as unpadded base64url, as native Claude Code sends. */
+const generateClaudeState = (): string => base64Url(randomBytes(32));
+
+/** The authorize scope adds the Console scope; the token refresh keeps `CLAUDE_OAUTH_SCOPE` (ea0b4712). */
+const CLAUDE_AUTHORIZE_SCOPE = `org:create_api_key ${CLAUDE_OAUTH_SCOPE}`;
+
 export const claudeFlow = (): CallbackFlow => ({
   kind: "callback",
   provider: "anthropic",
   timeoutMessage: "Timeout waiting for OAuth callback",
   deniedMessage: "Bad request",
   saveMessage: "Failed to save authentication tokens",
+  generateState: generateClaudeState,
   start: ({ state }) =>
     Effect.promise(async () => {
       const pkce = await generatePkce(96);
@@ -101,7 +115,7 @@ export const claudeFlow = (): CallbackFlow => ({
         client_id: CLAUDE_CLIENT_ID,
         response_type: "code",
         redirect_uri: CLAUDE_REDIRECT_URI,
-        scope: CLAUDE_OAUTH_SCOPE,
+        scope: CLAUDE_AUTHORIZE_SCOPE,
         code_challenge: pkce.codeChallenge,
         code_challenge_method: "S256",
         state,

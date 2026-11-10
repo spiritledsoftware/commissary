@@ -126,7 +126,7 @@ export const makeOAuthService = ({
     owner: string | undefined,
   ): Effect.Effect<StartResult> =>
     Effect.gen(function* () {
-      const state = orgScopedName(org, generateState());
+      const state = orgScopedName(org, (flow.generateState ?? generateState)());
       const started = yield* flow.start({ state }).pipe(Effect.result);
 
       if (Result.isFailure(started)) {

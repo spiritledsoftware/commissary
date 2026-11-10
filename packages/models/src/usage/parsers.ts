@@ -68,7 +68,12 @@ export const parseClaudeUsageNode = (node: Json): UsageDetail => {
   const input = tokenInt(get(node, "input_tokens"));
   const total = input + rawOutput + cacheRead + cacheCreation;
 
+  // b90190db: `usage.speed` ("fast" or "standard") is the tier the response was served and billed at.
+  const speed = get(node, "speed");
+  const tier = typeof speed === "string" ? speed.trim() : "";
+
   return {
+    ...(tier === "" ? {} : { responseServiceTier: tier }),
     inputTokens: input,
     outputTokens: rawOutput,
     reasoningTokens: reasoning,

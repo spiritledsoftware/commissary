@@ -36,6 +36,8 @@ export interface CallbackFlow {
   readonly deniedMessage: string;
   /** Session error when the credential could not be stored. */
   readonly saveMessage: string;
+  /** Session state generator; the shared 128-bit hex state when absent. */
+  readonly generateState?: () => string;
   readonly start: (input: { readonly state: string }) => Effect.Effect<CallbackStart, FlowFailure>;
   readonly complete: (input: {
     readonly state: string;

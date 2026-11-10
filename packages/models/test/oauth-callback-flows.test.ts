@@ -73,7 +73,11 @@ describe("claude login", () => {
         ),
       ).toBe(true);
       expect(started.url).toContain(
-        "scope=user%3Aprofile+user%3Ainference+user%3Asessions%3Aclaude_code",
+        "scope=org%3Acreate_api_key+user%3Aprofile+user%3Ainference+user%3Asessions%3Aclaude_code",
+      );
+      // Native Claude Code authorizes with the Console scope; the refresh scope is unchanged.
+      expect(parts.scope).toBe(
+        "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload",
       );
       expect(parts).toMatchObject({
         code: "true",
@@ -82,7 +86,8 @@ describe("claude login", () => {
         response_type: "code",
         state: started.state,
       });
-      expect(started.state).toMatch(/^[0-9a-f]{32}$/);
+      // 256 random bits as unpadded base64url, like native Claude Code (not the shared 128-bit hex state).
+      expect(started.state).toMatch(/^[A-Za-z0-9_-]{43}$/);
 
       const session = h.table.get(started.state);
       const verifier = asString(session?.data.code_verifier);
