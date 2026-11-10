@@ -161,6 +161,29 @@ const rememberCallName = (item: Json, namesByCallId: Map<string, string>): void 
   if (callId !== "" && name !== "") namesByCallId.set(callId, name);
 };
 
+/**
+ * `responsesReasoningToInteractions`: a Devin-sealed reasoning item goes back upstream as a thought step so the model
+ * keeps its earlier thinking across tool-call turns. Items without a Devin signature stay out: other providers cannot
+ * read them.
+ */
+const reasoningToInteractions = (item: Json): JsonObject | undefined => {
+  const signature = getStr(item, "encrypted_content").trim();
+
+  if (!signature.startsWith("sealed.v1.")) return undefined;
+  const summary = get(item, "summary");
+  const texts: string[] = [];
+
+  if (isArr(summary)) {
+    for (const part of summary) {
+      const text = getStr(part, "text");
+
+      if (text !== "") texts.push(text);
+    }
+  }
+
+  return { ...textStep("thought", texts.join("\n\n")), signature };
+};
+
 /** `responsesInputItemToInteractions`. */
 const inputItemToInteractions = (
   item: Json,
@@ -195,6 +218,8 @@ const inputItemToInteractions = (
     case "function_call_output":
     case "custom_tool_call_output":
       return functionOutputToInteractions(item, namesByCallId, forAntigravity);
+    case "reasoning":
+      return reasoningToInteractions(item);
     case "input_text":
     case "output_text":
     case "text":
