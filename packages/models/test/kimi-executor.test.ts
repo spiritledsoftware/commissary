@@ -224,7 +224,7 @@ describe("kimiReplayFamily", () => {
 });
 
 describe("tools, temperature and Responses input", () => {
-  it("normalizes namespaced tools and input tool lists (40ce0e01)", () => {
+  it("normalizes namespaced tools and input tool lists", () => {
     const body = obj({
       input: [
         { type: "message", role: "user", content: "hi" },
@@ -1089,6 +1089,35 @@ describe("Kimi Claude Messages path", () => {
     };
 
     expect(third.messages[1]?.content.map((part) => part.type)).toEqual(["tool_use"]);
+  });
+
+  it("shares cached thinking across k3.1-pro variants only", async () => {
+    const store = makeKimiReplayStore();
+    const executor = makeKimiExecutor({ replay: store });
+    let reply: unknown = anthropicMessage(thinkingContent);
+    const h = await harness(kimiCredential(), () => new Response(JSON.stringify(reply)));
+    const firstTurn = json({ ...followUp, messages: followUp.messages.slice(0, 1) });
+
+    await execute(executor, h, { model: "kimi-k3.1-pro", payload: firstTurn }, claudeOptions());
+    reply = anthropicMessage([{ type: "text", text: "done" }]);
+
+    const replayedTypes = async (model: string): Promise<string[]> => {
+      const before = h.calls.length;
+
+      await execute(executor, h, { model, payload: json(followUp) }, claudeOptions());
+
+      const sent = JSON.parse(h.calls[before]?.text ?? "{}") as {
+        messages: Array<{ content: Array<{ type: string }> }>;
+      };
+
+      return (sent.messages[1]?.content ?? []).map((part) => part.type);
+    };
+
+    // Other families neither see nor clear the k3.1-pro entry.
+    for (const model of ["kimi-k3", "kimi-k3-256k", "kimi-k2.8"])
+      expect(await replayedTypes(model)).toEqual(["tool_use"]);
+
+    expect(await replayedTypes("kimi-k3.1-pro-highspeed")).toEqual(["thinking", "tool_use"]);
   });
 
   it("caches replay content from a streamed answer", async () => {
