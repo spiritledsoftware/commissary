@@ -177,13 +177,17 @@ const normalizeParameters = (params: JsonObject): JsonObject => {
   return out;
 };
 
-const normalizeToolList = (body: JsonObject, key: string, isTools: boolean): void => {
-  const items = body[key];
-
+const normalizeToolArray = (items: Json | undefined, isTools: boolean): void => {
   if (!isJsonArray(items)) return;
 
   for (const item of items) {
     if (!isJsonObject(item)) continue;
+
+    if (isTools && asString(item["type"]).trim() === "namespace") {
+      normalizeToolArray(item["tools"], true);
+      normalizeToolArray(item["children"], true);
+    }
+
     let holder: JsonObject | undefined;
 
     if (
@@ -203,11 +207,25 @@ const normalizeToolList = (body: JsonObject, key: string, isTools: boolean): voi
   }
 };
 
-/** `normalizeKimiTools`: `tools[].function.parameters` / `.parameters` and legacy `functions[].parameters`. */
+/**
+ * `normalizeKimiTools`: `tools[].function.parameters` / `.parameters` and legacy `functions[].parameters`, the nested
+ * `tools` / `children` of `namespace` tools, and `input[].tools` of `additional_tools` / `tool_search_output` items.
+ */
 export const normalizeKimiTools = (body: Json): Json => {
   if (!isJsonObject(body)) return body;
-  normalizeToolList(body, "tools", true);
-  normalizeToolList(body, "functions", false);
+  normalizeToolArray(body["tools"], true);
+  normalizeToolArray(body["functions"], false);
+  const input = body["input"];
+
+  if (isJsonArray(input)) {
+    for (const item of input) {
+      if (!isJsonObject(item)) continue;
+      const type = asString(item["type"]).trim();
+
+      if (type === "additional_tools" || type === "tool_search_output")
+        normalizeToolArray(item["tools"], true);
+    }
+  }
 
   return body;
 };

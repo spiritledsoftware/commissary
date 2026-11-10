@@ -3,7 +3,7 @@
  *
  * Go source: internal/runtime/executor/gemini_executor.go (geminiAPIKey, resolveGeminiBaseURL, shouldExecuteNativeInteractions,
  * nativeInteractionsSourceFormat), internal/runtime/executor/gemini_vertex_executor.go (vertexCreds, vertexAPICreds,
- * vertexBaseURL, vertexInteractionsURL, isNativeVertexInteractionsAuth, shouldExecuteVertexInteractions).
+ * vertexBaseURL, vertexAPIKeyModelsURL, vertexInteractionsURL, isNativeVertexInteractionsAuth, shouldExecuteVertexInteractions).
  */
 import { Effect } from "effect";
 import type { JsonObject } from "@commissary/json";
@@ -61,13 +61,39 @@ export const geminiVariant = (identifier: "gemini" | "gemini-interactions"): Goo
 
 // --- Vertex -------------------------------------------------------------------------------------------------------------
 
-/** `vertexBaseURL`: `global` uses the bare host, other locations a regional host. */
+/**
+ * `vertexBaseURL`: `global` uses the bare host, the multi-region locations `us` and `eu` their regional endpoint (REP)
+ * host, other locations a regional host.
+ */
 export const vertexBaseUrl = (location: string): string => {
   const loc = location.trim();
+  const lower = loc.toLowerCase();
 
-  if (loc === "global") return VERTEX_DEFAULT_BASE_URL;
+  if (lower === "global") return VERTEX_DEFAULT_BASE_URL;
+
+  if (lower === "us" || lower === "eu") return `https://aiplatform.${lower}.rep.googleapis.com`;
 
   return `https://${loc === "" ? "us-central1" : loc}-aiplatform.googleapis.com`;
+};
+
+/** `vertexAPIVersionSuffix`: the base already ends in a version segment such as `v1` or `v1beta1`. */
+const endsWithApiVersion = (base: string): boolean =>
+  /^v[a-z0-9_-]*\d[a-z0-9_-]*$/.test(base.slice(base.lastIndexOf("/") + 1));
+
+/**
+ * `vertexAPIKeyModelsURL`: a base that already contains `/publishers/` is the full resource prefix (only
+ * `/{model}:{action}` follows); otherwise `/v1` is inserted unless the base ends in a version segment.
+ */
+export const vertexApiKeyModelsUrl = (baseUrl: string, model: string, action: string): string => {
+  let base = trimSlash(baseUrl.trim());
+
+  if (base === "") base = VERTEX_DEFAULT_BASE_URL;
+
+  if (base.includes("/publishers/")) return `${base}/${model}:${action}`;
+
+  if (!endsWithApiVersion(base)) base = `${base}/${VERTEX_API_VERSION}`;
+
+  return `${base}/publishers/google/models/${model}:${action}`;
 };
 
 /** `vertexInteractionsURL`. */
@@ -146,12 +172,10 @@ export const vertexVariant: GoogleVariant = {
       const { metadata } = context.credential;
 
       if (providerKey !== "") {
-        const base = trimSlash(baseUrl.trim() === "" ? VERTEX_DEFAULT_BASE_URL : baseUrl.trim());
         const project = metadataString(metadata, "project_id");
 
         return {
-          url: (action, model) =>
-            `${base}/${VERTEX_API_VERSION}/publishers/google/models/${model}:${action}`,
+          url: (action, model) => vertexApiKeyModelsUrl(baseUrl, model, action),
           interactionsUrl: (stream) => vertexInteractionsUrl(baseUrl, project, stream),
           authHeaders: { "x-goog-api-key": providerKey },
         } satisfies GoogleTarget;

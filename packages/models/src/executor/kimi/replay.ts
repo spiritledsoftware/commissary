@@ -40,11 +40,15 @@ export const makeKimiReplayStore = (now?: () => number): ThinkingReplayStore =>
 export const makeSessionStateKimiReplayStore = (): ThinkingReplayStore =>
   makeSessionStateReplayStore({ store: KIMI_STORE, ttlMs: TTL_MS });
 
-/** `kimiThinkingReplayModelFamily`: `k3` and `k3-256k` share one family. */
+/** `kimiThinkingReplayModelFamily`: `k3` and `k3-256k` share one family, `k3.1-pro` and `k3.1-pro-highspeed` another. */
 export const kimiReplayFamily = (model: string): string => {
   const normalized = normalizeKimiUpstreamModel(parseSuffix(model.trim()).modelName);
 
-  return normalized === "k3" || normalized === "k3-256k" ? "k3" : normalized;
+  if (normalized === "k3" || normalized === "k3-256k") return "k3";
+
+  if (normalized === "k3.1-pro" || normalized === "k3.1-pro-highspeed") return "k3.1-pro";
+
+  return normalized;
 };
 
 /** `xaiReasoningReplayIsolateSessionKey`: session keys are isolated per caller; no caller scope disables replay. */
