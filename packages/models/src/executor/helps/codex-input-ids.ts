@@ -8,6 +8,7 @@
  */
 import { createHash } from "node:crypto";
 import { asString, get, isJsonArray, isJsonObject, type Json } from "@commissary/json";
+import { TOOL_SEARCH_ID_PREFIX } from "@commissary/translation";
 
 const ID_LIMIT = 64;
 
@@ -18,7 +19,7 @@ const PREFIXES = new Map<string, string>(
     function_call: "fc",
     custom_tool_call: "ctc",
     custom_tool_call_output: "ctco",
-    tool_search_call: "tsc",
+    tool_search_call: TOOL_SEARCH_ID_PREFIX,
   }),
 );
 

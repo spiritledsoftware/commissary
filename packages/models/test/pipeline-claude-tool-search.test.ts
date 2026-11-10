@@ -1,14 +1,14 @@
 // Native tool search through the Claude executor (workerd): a Codex client's `tool_search` on POST /v1/responses and
 // POST /v1/messages/count_tokens, per credential (Go: internal/runtime/executor/claude_executor_tool_search_test.go,
 // claude_executor_tool_search_disabled_test.go; upstream 52992659, 29bd0415, 8eed08ef, 97ba1e89).
+import { Effect, Layer, Stream } from "effect";
 import { afterAll, describe, expect, it } from "vitest";
 import { asString, type JsonObject } from "@commissary/json";
-import { Effect, Layer } from "effect";
+import { makeClaudeExecutor } from "../src/executor/claude/executor.ts";
 import type { CredentialSnapshot } from "../src/executor/picker.ts";
 import { ModelProviders } from "../src/handlers/model-providers.ts";
-import { fixedPicker } from "./support/codex.ts";
-import { makeClaudeExecutor } from "../src/executor/claude/executor.ts";
 import { oauthPipeline } from "./support/claude-oauth.ts";
+import { fixedPicker } from "./support/codex.ts";
 import { credential, harness, options } from "./support/executor-run.ts";
 import {
   jsonResponse,
@@ -164,7 +164,8 @@ const sent = async (yaml: string, model = "sonnet", history = true): Promise<Jso
   }
 };
 
-const isNative = (body: JsonObject): boolean => names(body).includes("tool_search");
+/** The body carries the client's search as a function: native tool search. */
+const declaresToolSearch = (body: JsonObject): boolean => names(body).includes("tool_search");
 
 const mentionsToolSearch = (body: JsonObject): boolean =>
   JSON.stringify(body).includes("tool_search") ||
@@ -182,7 +183,7 @@ describe("native tool search per credential", () => {
   it("is native on an api.anthropic.com key with the gate on", async () => {
     const body = await sent(GATE + anthropicKeys());
 
-    expect(isNative(body)).toBe(true);
+    expect(declaresToolSearch(body)).toBe(true);
     expect(names(body)).toEqual([
       "exec_command",
       "tool_search",
@@ -203,7 +204,7 @@ describe("native tool search per credential", () => {
   });
 
   it("is native on a custom base URL with native-tool-search", async () => {
-    expect(isNative(await sent(GATE + gatewayKeys(true)))).toBe(true);
+    expect(declaresToolSearch(await sent(GATE + gatewayKeys(true)))).toBe(true);
   });
 
   it("is stripped on a model that predates tool search", async () => {
@@ -211,41 +212,102 @@ describe("native tool search per credential", () => {
     expect(mentionsToolSearch(body)).toBe(false);
   });
 
-  it("counts tokens with the same decision", async () => {
-    const countBody = async (yaml: string): Promise<JsonObject> => {
-      const h = await harness(
-        credential("claude", {
-          kind: "apikey",
-          attributes: { api_key: "sk-ant-api03-test", auth_kind: "apikey" },
-        }),
-        () => new Response(JSON.stringify({ input_tokens: 42 })),
-        yaml,
-      );
+  const countRequest = async (
+    key: CredentialSnapshot,
+    yaml: string,
+  ): Promise<{ readonly sent: JsonObject | undefined; readonly tokens: number }> => {
+    const h = await harness(key, () => new Response(JSON.stringify({ input_tokens: 42 })), yaml);
 
-      await Effect.runPromise(
-        makeClaudeExecutor()
-          .countTokens(
-            h.context,
-            { model: "claude-sonnet-4-5", payload: request("claude-sonnet-4-5", true) },
-            options({
-              sourceFormat: "openai-response",
-              metadata: {
-                requestPath: "/v1/responses/input_tokens",
-                requestedModel: "claude-sonnet-4-5",
-                serviceTier: "auto",
-                generate: false,
-                callerScope: "scope",
-              },
-            }),
-          )
-          .pipe(Effect.provide(h.layers)),
-      );
+    const response = await Effect.runPromise(
+      makeClaudeExecutor()
+        .countTokens(
+          h.context,
+          { model: "claude-sonnet-4-5", payload: request("claude-sonnet-4-5", true) },
+          options({
+            sourceFormat: "openai-response",
+            metadata: {
+              requestPath: "/v1/responses/input_tokens",
+              requestedModel: "claude-sonnet-4-5",
+              serviceTier: "auto",
+              generate: false,
+              callerScope: "scope",
+            },
+          }),
+        )
+        .pipe(Effect.provide(h.layers)),
+    );
 
-      return JSON.parse(h.calls[0]?.text ?? "{}") as JsonObject;
+    return {
+      sent: h.calls[0] === undefined ? undefined : (JSON.parse(h.calls[0].text) as JsonObject),
+      tokens: (JSON.parse(response.payload) as { input_tokens: number }).input_tokens,
     };
+  };
 
-    expect(isNative(await countBody(GATE))).toBe(true);
-    expect(mentionsToolSearch(await countBody("requests: {}"))).toBe(false);
+  const countKey = (attributes: Record<string, string> = {}): CredentialSnapshot =>
+    credential("claude", {
+      kind: "apikey",
+      attributes: { api_key: "sk-ant-api03-test", auth_kind: "apikey", ...attributes },
+    });
+
+  it("counts tokens upstream with the same decision", async () => {
+    const native = await countRequest(countKey(), GATE);
+    expect(declaresToolSearch(native.sent!)).toBe(true);
+    expect(mentionsToolSearch((await countRequest(countKey(), "requests: {}")).sent!)).toBe(false);
+  });
+
+  it("estimates locally with the same decision on a gateway without a count endpoint", async () => {
+    const gateway = countKey({ base_url: "https://gateway.test", native_tool_search: "true" });
+    const native = await countRequest(gateway, GATE);
+    const off = await countRequest(gateway, "requests: {}");
+
+    // Nothing goes upstream; the native body carries the search, the anchor and the discovered tool, so it is larger.
+    expect(native.sent).toBeUndefined();
+    expect(off.sent).toBeUndefined();
+    expect(native.tokens).toBeGreaterThan(off.tokens);
+  });
+});
+
+describe("a delegating profile (Kimi)", () => {
+  it("never takes native tool search, even on a flagged key with the gate on", async () => {
+    const h = await harness(
+      credential("claude", {
+        kind: "apikey",
+        attributes: {
+          api_key: "sk-ant-api03-test",
+          auth_kind: "apikey",
+          base_url: "https://api.anthropic.com",
+          native_tool_search: "true",
+        },
+      }),
+      () => sseResponse(answer()),
+      GATE,
+      true,
+    );
+
+    const delegating = makeClaudeExecutor({ profile: { normalizeModel: (model) => model } });
+
+    const result = await Effect.runPromise(
+      delegating
+        .executeStream(
+          h.context,
+          { model: "claude-sonnet-4-5", payload: request("claude-sonnet-4-5", true) },
+          options({
+            stream: true,
+            sourceFormat: "openai-response",
+            metadata: {
+              requestPath: "/v1/responses",
+              requestedModel: "claude-sonnet-4-5",
+              serviceTier: "auto",
+              generate: true,
+              callerScope: "scope",
+            },
+          }),
+        )
+        .pipe(Effect.provide(h.layers)),
+    );
+
+    await Effect.runPromise(Stream.runDrain(result.chunks).pipe(Effect.provide(h.layers)));
+    expect(mentionsToolSearch(JSON.parse(h.calls[0]!.text) as JsonObject)).toBe(false);
   });
 });
 
@@ -321,7 +383,7 @@ describe("cloaked OAuth", () => {
     for (const reference of references)
       expect(declared.has(asString(reference.tool_name))).toBe(true);
 
-    // The anchor is a tool like any other: declared, deferred and aliased with the rest.
+    // MCP aliasing renames every tool that is not `mcp__` named, the anchor included, so ANCHOR is not sent as is.
     expect(declared.has(ANCHOR)).toBe(false);
     expect(toolsOf(body).filter((tool) => tool.defer_loading === true)).toHaveLength(2);
 
@@ -407,7 +469,7 @@ describe("failover between credentials", () => {
       "gateway.test",
     ]);
 
-    expect(isNative(bodyOf(p.calls[0]!))).toBe(true);
+    expect(declaresToolSearch(bodyOf(p.calls[0]!))).toBe(true);
     expect(mentionsToolSearch(bodyOf(p.calls[1]!))).toBe(false);
   });
 });

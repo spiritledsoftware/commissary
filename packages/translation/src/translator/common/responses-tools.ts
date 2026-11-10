@@ -6,7 +6,16 @@
  * Gemini declaration builders of that file live in `translator/gemini/openai/responses/tools.ts`. Client-executed
  * `tool_search` (declaration, `tool_search_call` / `tool_search_output` items) is recognised here (77fd91e8).
  */
-import { asBool, asString, get, isJsonArray, type Json } from "@commissary/json";
+import {
+  asBool,
+  asString,
+  get,
+  isJsonArray,
+  isJsonObject,
+  type Json,
+  type JsonObject,
+  tryParseJson,
+} from "@commissary/json";
 import { isApplyPatchCustomTool } from "./apply-patch.ts";
 
 /** Resolved identity of a tool in OpenAI Responses format (`util.ResponsesToolIdentity`). */
@@ -38,6 +47,43 @@ export const RESPONSES_TOOL_SEARCH_OUTPUT_TYPE = "tool_search_output";
 
 /** Source priority of tools a `tool_search_output` loaded: after declared and `additional_tools` ones. */
 export const RESPONSES_DISCOVERED_TOOL_PRIORITY = 2;
+
+/**
+ * The id prefix of a `tool_search_call` item (`tsc_<call id>`), the one Codex accepts when a conversation moves between
+ * providers; the Codex outbound id sanitiser rewrites legacy `ts_` ids to it.
+ */
+export const TOOL_SEARCH_ID_PREFIX = "tsc";
+
+/** The item id of the `tool_search_call` for a call id. */
+export const toolSearchCallItemId = (callId: string): string =>
+  `${TOOL_SEARCH_ID_PREFIX}_${callId}`;
+
+/** A completed call whose arguments are not a JSON object is never presented as finished. */
+export const toolSearchCallStatus = (status: string, argumentsJson: string): string =>
+  status === "completed" && !isJsonObject(tryParseJson(argumentsJson.trim()))
+    ? "incomplete"
+    : status;
+
+/**
+ * The client `tool_search_call` item Codex parses: `call_id`, `execution: "client"` and an arguments object (empty
+ * unless `argumentsJson` is one). Shared by every provider that bridges the search.
+ */
+export const buildToolSearchCallItem = (
+  callId: string,
+  status: string,
+  argumentsJson: string,
+): JsonObject => {
+  const parsed = tryParseJson(argumentsJson.trim());
+
+  return {
+    id: toolSearchCallItemId(callId),
+    type: RESPONSES_TOOL_SEARCH_CALL_TYPE,
+    status: toolSearchCallStatus(status, argumentsJson),
+    execution: "client",
+    call_id: callId,
+    arguments: isJsonObject(parsed) ? parsed : {},
+  };
+};
 
 /** A `tool_search` declaration the client executes itself. */
 export const isResponsesClientToolSearchDeclaration = (tool: Json | undefined): boolean =>

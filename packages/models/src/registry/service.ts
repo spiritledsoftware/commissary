@@ -17,7 +17,7 @@ import { CurrentOrg, type OrgId } from "@commissary/core";
 import { ALLOW_ALL, type Reach, reachFromTable } from "../grants/reach.ts";
 import type { GrantTable } from "../grants/grant.ts";
 import { projectModel } from "./availability.ts";
-import { sourceTakesNativeToolSearch } from "../executor/claude/tool-search.ts";
+import { sourceTakesNativeToolSearch } from "./native-tool-search.ts";
 import { assembleCredentialModels } from "./credential-models.ts";
 import { type GrantFilter, grantFilter } from "./grant-filter.ts";
 import { CatalogStore } from "./catalog-store.ts";

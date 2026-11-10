@@ -6,50 +6,39 @@
  * 52992659, 03a3cfec), kimi_executor.go. Deliberate differences (docs/ARCHITECTURE.md "Native tool search"): the gate
  * `upstream.claude.tool-search` is per org and read from the attempt's config snapshot, the decision is made once per
  * attempt (`commonContext`) and handed to the translators as an option instead of a process-wide switch plus a strip
- * pass, and a delegating profile (Kimi) is never native.
+ * pass, a delegating profile (Kimi) is never native, and the key's flag is the `native_tool_search` attribute alone
+ * (synthesised from the `native-tool-search` key field, or set on an account's auth file; Go also reads the config entry).
+ * The catalog (`registry/native-tool-search.ts`) applies the same two predicates below, so it and the executor agree.
  */
 import type { Config } from "../../config/schema.ts";
 import type { CredentialSnapshot } from "../picker.ts";
-import type { ModelInfo } from "../../registry/model-info.ts";
-import type { ModelSource } from "../../registry/source.ts";
 import { claudeModelLacksToolSearch } from "./classify.ts";
-import { claudeCreds, isAnthropicUpstreamBase, resolveClaudeKeyConfig } from "./credentials.ts";
+import { claudeCreds, isAnthropicUpstreamBase } from "./credentials.ts";
 import type { ClaudeUpstreamProfile } from "./profile.ts";
 
 /**
- * `SupportsNativeToolSearch` without the org gate: Anthropic's own origin qualifies (OAuth credentials, which have no
- * base URL, are Anthropic's own API), a custom base URL only with the key's `native-tool-search` (the
- * `native_tool_search` attribute or its config entry), and a model that predates tool search never does.
+ * Whether a Claude credential's origin takes native tool search, whatever the model: Anthropic's own API (no base URL,
+ * which is how OAuth credentials are, or `api.anthropic.com`), or a custom `base-url` whose key carries the
+ * `native_tool_search` attribute. Anthropic's docs do not cover third-party gateways, hence the opt-in.
  */
+export const nativeToolSearchOrigin = (
+  baseUrl: string,
+  nativeToolSearchAttribute: string | undefined,
+): boolean =>
+  baseUrl.trim() === "" ||
+  isAnthropicUpstreamBase(baseUrl) ||
+  (nativeToolSearchAttribute ?? "").trim().toLowerCase() === "true";
+
+/** `SupportsNativeToolSearch` without the org gate: the credential's origin, and a model that does not predate tool search. */
 export const credentialSupportsNativeToolSearch = (
-  config: Config,
   credential: CredentialSnapshot,
   upstreamModel: string,
-): boolean => {
-  if (claudeModelLacksToolSearch(upstreamModel)) return false;
-  const baseURL = claudeCreds(credential).baseURL.trim();
-
-  if (baseURL === "" || isAnthropicUpstreamBase(baseURL)) return true;
-
-  return (
-    (credential.attributes["native_tool_search"] ?? "").trim().toLowerCase() === "true" ||
-    resolveClaudeKeyConfig(config, credential)?.entry["native-tool-search"] === true
-  );
-};
-
-/**
- * The catalog's per-credential bit: the org gate is on and the Claude credential qualifies for the model (its upstream
- * model after aliasing; a model source carries the credential's origin, not its attributes).
- */
-export const sourceTakesNativeToolSearch = (
-  config: Config,
-  source: Pick<ModelSource, "executor" | "nativeToolSearchOrigin">,
-  model: Pick<ModelInfo, "id" | "metadataModelId">,
 ): boolean =>
-  config.upstream.claude["tool-search"] &&
-  source.executor === "claude" &&
-  source.nativeToolSearchOrigin === true &&
-  !claudeModelLacksToolSearch(model.metadataModelId ?? model.id);
+  !claudeModelLacksToolSearch(upstreamModel) &&
+  nativeToolSearchOrigin(
+    claudeCreds(credential).baseURL,
+    credential.attributes["native_tool_search"],
+  );
 
 export interface NativeToolSearchInput {
   readonly config: Config;
@@ -69,4 +58,4 @@ export const nativeToolSearchFor = ({
 }: NativeToolSearchInput): boolean =>
   config.upstream.claude["tool-search"] &&
   profile === undefined &&
-  credentialSupportsNativeToolSearch(config, credential, upstreamModel);
+  credentialSupportsNativeToolSearch(credential, upstreamModel);

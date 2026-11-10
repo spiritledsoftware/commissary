@@ -39,8 +39,6 @@ import {
   type ToolDescriptor,
 } from "./tools.ts";
 
-const TOOL_SEARCH_ID_PREFIX = "tsc_";
-
 /** The name of the constant deferred tool declared with native tool search; nothing ever references it. */
 export const DEFERRED_ANCHOR_NAME = "tool_search_deferred_anchor";
 
@@ -176,30 +174,6 @@ export const toolSearchOutputContent = (
   }
 
   return references.length > 0 ? references : toolSearchOutputText(item, names);
-};
-
-/** `toolSearchCallStatus`: a completed call whose arguments are not a JSON object is never presented as finished. */
-export const toolSearchCallStatus = (status: string, args: string): string =>
-  status === "completed" && !isJsonObjectText(args) ? "incomplete" : status;
-
-const isJsonObjectText = (text: string): boolean => isJsonObject(tryParseJson(text));
-
-/** `buildResponsesToolSearchCallItem`: the `tool_search_call` item Codex parses. */
-export const buildToolSearchCallItem = (
-  callId: string,
-  status: string,
-  args: string,
-): JsonObject => {
-  const parsed = tryParseJson(args);
-
-  return {
-    id: TOOL_SEARCH_ID_PREFIX + callId,
-    type: "tool_search_call",
-    status,
-    call_id: callId,
-    execution: "client",
-    arguments: isJsonObject(parsed) ? parsed : {},
-  };
 };
 
 /** The tools without client `tool_search` declarations, or undefined when there were none. */

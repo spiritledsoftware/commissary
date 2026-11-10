@@ -60,10 +60,10 @@ import {
 } from "./response-common.ts";
 import { cacheTextSignatures } from "./trailing-signature.ts";
 import {
+  buildToolSearchCallItem,
   type ResponsesToolIdentity,
   unwrapResponsesCustomToolInput,
 } from "../../../common/responses-tools.ts";
-import { buildToolSearchCallItem, toolSearchCallItemId } from "./tool-search.ts";
 import { responsesToolReverseIdentityMap } from "./tools.ts";
 import {
   allowsResponsesWebSearchToolChoice,
@@ -1285,12 +1285,11 @@ export const convertGeminiResponseToOpenAIResponses = (
 
       if (callFinish !== "") itemStatus = terminalState(callFinish).status;
       else if (st.finishReason !== "") itemStatus = terminalState(st.finishReason).status;
-      const itemId = toolSearchCallItemId(callId);
       emit("response.output_item.added", {
         type: "response.output_item.added",
         sequence_number: nextSeq(),
         output_index: idx,
-        item: buildToolSearchCallItem(itemId, callId, "in_progress", argsJson),
+        item: buildToolSearchCallItem(callId, "in_progress", argsJson),
       });
 
       if (st.funcDone.get(idx) !== true) {
@@ -1298,7 +1297,7 @@ export const convertGeminiResponseToOpenAIResponses = (
           type: "response.output_item.done",
           sequence_number: nextSeq(),
           output_index: idx,
-          item: buildToolSearchCallItem(itemId, callId, itemStatus, argsJson),
+          item: buildToolSearchCallItem(callId, itemStatus, argsJson),
         });
         st.funcDone.set(idx, true);
       }
@@ -1491,12 +1490,7 @@ export const convertGeminiResponseToOpenAIResponses = (
           type: "response.output_item.done",
           sequence_number: nextSeq(),
           output_index: idx,
-          item: buildToolSearchCallItem(
-            toolSearchCallItemId(callId),
-            callId,
-            status,
-            buffered.length > 0 ? buffered : "{}",
-          ),
+          item: buildToolSearchCallItem(callId, status, buffered.length > 0 ? buffered : "{}"),
         });
       } else if (st.funcCustom.get(idx) === true) {
         const inputStr = st.funcInputBuf.get(idx) ?? "";
@@ -1650,12 +1644,7 @@ export const convertGeminiResponseToOpenAIResponses = (
         if (st.funcToolSearch.get(idx) === true) {
           const buffered = st.funcArgsBuf.get(idx) ?? "";
           outputs.push(
-            buildToolSearchCallItem(
-              toolSearchCallItemId(callId),
-              callId,
-              status,
-              buffered.length > 0 ? buffered : "{}",
-            ),
+            buildToolSearchCallItem(callId, status, buffered.length > 0 ? buffered : "{}"),
           );
         } else if (st.funcCustom.get(idx) === true) {
           const item: JsonObject = {

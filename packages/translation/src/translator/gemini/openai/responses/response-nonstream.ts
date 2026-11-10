@@ -45,10 +45,10 @@ import {
   usageJson,
 } from "./response-common.ts";
 import {
+  buildToolSearchCallItem,
   type ResponsesToolIdentity,
   unwrapResponsesCustomToolInput,
 } from "../../../common/responses-tools.ts";
-import { buildToolSearchCallItem, toolSearchCallItemId } from "./tool-search.ts";
 import { responsesToolReverseIdentityMap } from "./tools.ts";
 import {
   buildResponsesUrlCitationsForMessages,
@@ -364,7 +364,7 @@ export const convertGeminiResponseToOpenAIResponsesNonStream = (
       let item: JsonObject;
 
       if (identity.toolSearch === true) {
-        item = buildToolSearchCallItem(toolSearchCallItemId(callId), callId, status, argsStr);
+        item = buildToolSearchCallItem(callId, status, argsStr);
       } else if (isCustom) {
         let inputStr = unwrapResponsesCustomToolInput(argsStr);
 

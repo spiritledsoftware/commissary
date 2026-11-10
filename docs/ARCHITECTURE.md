@@ -1236,7 +1236,10 @@ Ported from `internal/runtime/executor/claude_executor*.go`, `internal/translato
     feature off for every new model; Anthropic's own list reads "Opus 4.1 and earlier"), and the credential is Anthropic's
     own (`api.anthropic.com`, or OAuth, which Claude Code itself sends deferred tools over) or carries `native-tool-search`
     (key field, synthesised to the `native_tool_search` attribute like `rebuild-mid-system-message`, also honoured on an
-    account's auth file; for gateways behind a custom `base-url`, which Anthropic's docs do not cover). Failover can move a
+    account's auth file; for gateways behind a custom `base-url`, which Anthropic's docs do not cover). The attribute is the
+    only source of the flag (Go also reads the config entry): `credentials/synthesize.ts` and `claude/config-credentials.ts`
+    always write it, and the catalog evaluates the very same predicate (`nativeToolSearchOrigin`, `registry/source.ts` puts
+    its result on the model source) so the executor and the catalog cannot disagree. Failover can move a
     request from a native credential to one that is not, so nothing is pinned or stored: the next attempt decides again.
     Not native: OpenCode `messages`, Kimi (it sends Responses to Chat Completions), and a model that predates tool search.
   - **Off means dropped**: with the flag false the translator drops the client's `tool_search` declarations (top level and in

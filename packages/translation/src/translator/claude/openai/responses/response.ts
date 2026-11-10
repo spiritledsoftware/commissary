@@ -27,6 +27,11 @@ import {
 } from "../../../common/apply-patch.ts";
 import { claudeMessagesJSONToSSE } from "../../../common/claude-native-response.ts";
 import { exists, isObj, isStr, str } from "../../../common/gjson.ts";
+import {
+  buildToolSearchCallItem,
+  toolSearchCallItemId,
+  toolSearchCallStatus,
+} from "../../../common/responses-tools.ts";
 import type { ResponseContext, ResponseTransform } from "../../../registry.ts";
 import {
   ClaudeToolNames,
@@ -36,7 +41,6 @@ import {
   responsesToolWinners,
   unwrapCustomToolInput,
 } from "./tools.ts";
-import { buildToolSearchCallItem, toolSearchCallStatus } from "./tool-search.ts";
 import {
   buildResponsesWebSearchCallItem,
   CLAUDE_WEB_SEARCH_TOOL_NAME,
@@ -1686,7 +1690,8 @@ export const convertClaudeResponseToOpenAIResponsesNonStream = (
             }
 
             if (item.itemType === "custom_tool_call") item.id = `ctc_${item.callId}`;
-            else if (item.itemType === "tool_search_call") item.id = `tsc_${item.callId}`;
+            else if (item.itemType === "tool_search_call")
+              item.id = toolSearchCallItemId(item.callId);
             else item.id = `fc_${item.callId}`;
             break;
           }
@@ -1908,11 +1913,7 @@ export const convertClaudeResponseToOpenAIResponsesNonStream = (
       }
 
       case "tool_search_call":
-        item = buildToolSearchCallItem(
-          outputItem.callId,
-          toolSearchCallStatus(itemStatus, outputItem.args),
-          outputItem.args,
-        );
+        item = buildToolSearchCallItem(outputItem.callId, itemStatus, outputItem.args);
         break;
       case "function_call": {
         let args = outputItem.args;

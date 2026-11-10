@@ -75,19 +75,12 @@ describe("nativeToolSearchFor", () => {
     expect(decide({ credential: oauth() })).toBe(true);
   });
 
-  it("needs the key's flag on a custom base URL (attribute or config entry)", () => {
+  it("needs the key's flag on a custom base URL: the attribute, which the key field is synthesised to", () => {
     const gateway = { base_url: "https://gateway.test" };
     expect(decide({ credential: key(gateway) })).toBe(false);
     expect(decide({ credential: key({ ...gateway, native_tool_search: "true" }) })).toBe(true);
     expect(decide({ credential: key({ ...gateway, native_tool_search: "TRUE" }) })).toBe(true);
-
-    const entry = config(`${GATE}api-keys:
-  claude:
-    - base-url: https://gateway.test
-      keys: [{ api-key: sk-ant-api03-test, native-tool-search: true }]
-`);
-
-    expect(decide({ config: entry, credential: key(gateway) })).toBe(true);
+    expect(decide({ credential: key({ ...gateway, native_tool_search: "false" }) })).toBe(false);
   });
 
   it("is never native for a model that predates tool search", () => {

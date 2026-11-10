@@ -5,7 +5,7 @@ import type { Config } from "../../src/config/schema.ts";
 import { emptyState } from "../../src/credentials/model.ts";
 import { embeddedCatalogs, type ModelCatalogs } from "../../src/registry/catalog.ts";
 import type { AssemblyOptions } from "../../src/registry/credential-models.ts";
-import type { ModelSource } from "../../src/registry/source.ts";
+import { type ModelSource, toModelSource } from "../../src/registry/source.ts";
 
 export const configOf = (yaml = ""): Config => Effect.runSync(parseConfigYaml(yaml));
 
@@ -36,6 +36,39 @@ export const source = (
   excludedModels: [],
   modelAliases: [],
   state: (({ rejectedAccessToken: _omitted, ...rest }) => rest)(emptyState()),
+  ...overrides,
+});
+
+/**
+ * A Claude provider key's model source, derived from its credential like the ControlPlane does (`toModelSource`):
+ * `attributes` carry `base_url` and `native_tool_search`, so the origin bit comes from a real base URL.
+ */
+export const claudeKeySource = (
+  id: string,
+  attributes: Record<string, string> = {},
+  overrides: Partial<ModelSource> = {},
+): ModelSource => ({
+  ...toModelSource(
+    {
+      id,
+      provider: "claude",
+      source: "config",
+      authKind: "apikey",
+      label: id,
+      disabled: false,
+      priority: 0,
+      weight: 0,
+      attributes: { api_key: "sk-ant-api03-test", ...attributes },
+      metadata: {},
+      headers: {},
+      excludedModels: [],
+      modelAliases: [],
+      credentialVersion: 1,
+      createdAt: 0,
+      updatedAt: 0,
+    },
+    emptyState(),
+  ),
   ...overrides,
 });
 

@@ -24,7 +24,7 @@ import {
 import { getStr, isArr, str } from "../../common/read.ts";
 import { requestModelNameOf } from "../../../common/request.ts";
 import { responsesToolInputFailure, shellCallItem, shellCallPlaceholder } from "./shell.ts";
-import { toolSearchCallItem, toolSearchCallPlaceholder } from "./tool-search.ts";
+import { buildToolSearchCallItem } from "../../../common/responses-tools.ts";
 import { pickRequestJson, ResponsesToolIndex, unwrapCustomToolInput } from "./tools.ts";
 
 interface ReasoningRecord {
@@ -283,7 +283,7 @@ const buildResponsesCompletedEvent = (st: ChatToResponsesState, nextSeq: () => n
     }
 
     if (st.toolIndex.isToolSearch(name)) {
-      outputItems.push({ index, item: toolSearchCallItem(callId, args, toolStatus) });
+      outputItems.push({ index, item: buildToolSearchCallItem(callId, toolStatus, args) });
       continue;
     }
 
@@ -541,7 +541,7 @@ const processChunk = (
           type: "response.output_item.added",
           sequence_number: nextSeq(),
           output_index: outputIndex,
-          item: toolSearchCallPlaceholder(callId),
+          item: buildToolSearchCallItem(callId, "in_progress", ""),
         }),
       );
     } else if (isCustomTool) {
@@ -909,7 +909,7 @@ const processChunk = (
             type: "response.output_item.done",
             sequence_number: nextSeq(),
             output_index: outputIndex,
-            item: toolSearchCallItem(callId, hasArgs ? buffered : "", toolStatus),
+            item: buildToolSearchCallItem(callId, toolStatus, hasArgs ? buffered : ""),
           }),
         );
         st.funcItemDone.set(key, true);
@@ -1345,7 +1345,7 @@ export const convertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream = (
             }
 
             if (toolIndex.isToolSearch(name)) {
-              outputItems.push(toolSearchCallItem(callId, args, toolStatus));
+              outputItems.push(buildToolSearchCallItem(callId, toolStatus, args));
               continue;
             }
 
