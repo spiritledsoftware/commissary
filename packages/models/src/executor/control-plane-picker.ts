@@ -59,6 +59,7 @@ export const toExecutorSnapshot = (credential: WireCredential): CredentialSnapsh
       : { prefix: credential.prefix }),
     attributes,
     metadata: credential.metadata,
+    ...(credential.quotaSignals === undefined ? {} : { quotaSignals: credential.quotaSignals }),
   };
 };
 

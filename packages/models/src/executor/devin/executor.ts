@@ -71,6 +71,7 @@ import {
   parseTrailerError,
   wrapConnectEnvelope,
 } from "./wire.ts";
+import { devinQuotaScopedError } from "./quota.ts";
 import { devinLevelLookup, devinMaxCompletionTokens } from "./catalog.ts";
 
 export const DEVIN_PROVIDER = "devin";
@@ -318,11 +319,12 @@ export const makeDevinExecutor = (executorOptions: DevinExecutorOptions = {}): P
 
       const text = new TextDecoder().decode(bytes.slice(0, MAX_ERROR_BODY_BYTES));
 
-      const error = devinStatusError(
-        response.status,
-        new Headers(response.headers),
-        text,
-        yield* Clock.currentTimeMillis,
+      const now = yield* Clock.currentTimeMillis;
+
+      const error = devinQuotaScopedError(
+        devinStatusError(response.status, new Headers(response.headers), text, now),
+        context.credential.quotaSignals,
+        now,
       );
 
       context.usage.fail(error.status, error.message);
@@ -390,7 +392,11 @@ export const makeDevinExecutor = (executorOptions: DevinExecutorOptions = {}): P
           const trailer = parseTrailerError(payload);
 
           if (trailer !== undefined) {
-            return yield* new ExecutionError({ status: trailer.status, message: trailer.message });
+            return yield* devinQuotaScopedError(
+              new ExecutionError({ status: trailer.status, message: trailer.message }),
+              context.credential.quotaSignals,
+              yield* Clock.currentTimeMillis,
+            );
           }
 
           sawEos = true;
@@ -556,6 +562,18 @@ export const makeDevinExecutor = (executorOptions: DevinExecutorOptions = {}): P
       registry.translateStream(responseFormat, Formats.Interactions, translation, "");
     }
 
+    /** A trailer error about the account's daily or weekly quota is credential-scoped (`devinTrailerStatusError`). */
+    const quotaScoped = (step: StreamStep): Effect.Effect<StreamStep> => {
+      const { error } = step;
+
+      if (error === undefined) return Effect.succeed(step);
+
+      return Effect.map(Clock.currentTimeMillis, (now) => ({
+        ...step,
+        error: devinQuotaScopedError(error, context.credential.quotaSignals, now),
+      }));
+    };
+
     const translate = (step: StreamStep): Stream.Stream<string, ExecutionError> => {
       const chunks: string[] = [];
 
@@ -608,7 +626,9 @@ export const makeDevinExecutor = (executorOptions: DevinExecutorOptions = {}): P
       Stream.mapAccumEffect(
         () => state,
         (frames, bytes: Uint8Array) =>
-          Effect.map(frames.feed(bytes), (step) => [frames, [step]] as const),
+          Effect.flatMap(frames.feed(bytes), (step) =>
+            quotaScoped(step).pipe(Effect.map((scoped) => [frames, [scoped]] as const)),
+          ),
         { onHalt: (frames) => [frames.end()] },
       ),
       Stream.takeUntil((step) => step.stop),

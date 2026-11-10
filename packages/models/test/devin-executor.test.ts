@@ -373,6 +373,87 @@ const claudeChatModelUid = async (requestModel: string, payload: Json): Promise<
   return view.model;
 };
 
+describe("Devin account-wide quota exhaustion (CLIProxyAPI b946d54e)", () => {
+  const hi =
+    '{"session_id":"77777777-7777-4777-8777-777777777777","input":[{"type":"user_input","content":"hi"}]}';
+
+  const HOUR = 3_600_000;
+  const weeklyReset = () => new Date(Date.now() + 72 * HOUR).toISOString().replace(/\.\d+Z$/, "Z");
+
+  const credentialWithSignals = () =>
+    credential("devin", {
+      attributes: { api_key: "devin-session-token$test", base_url: "https://devin.test" },
+      quotaSignals: { weekly_quota_reset_at: weeklyReset() },
+    });
+
+  const weekly = "Your weekly usage quota has been exhausted.";
+
+  const trailerBody = (message: string, code = "failed_precondition") =>
+    framesResponse([
+      {
+        flag: 2,
+        hex: toHex(new TextEncoder().encode(JSON.stringify({ error: { code, message } }))),
+      },
+    ]);
+
+  const failure = async (stream: boolean, respond: () => Response) => {
+    const h = await harness(credentialWithSignals(), respond, undefined, stream);
+    const opts = interactionsOptions(stream);
+
+    if (!stream) {
+      return Effect.runPromise(
+        Effect.flip(
+          executor.execute(h.context, request("swe-2", hi), opts).pipe(Effect.provide(h.layers)),
+        ),
+      );
+    }
+
+    const collected = await collectStream(executor, h, request("swe-2", hi), opts);
+
+    return collected.error as ExecutionError;
+  };
+
+  const expectScopedUntilReset = (error: ExecutionError) => {
+    expect(error.status).toBe(429);
+    expect(error.credentialScoped).toBe(true);
+    // 72 hours from the observation, a little less by now.
+    expect(error.retryAfterMs).toBeGreaterThan(72 * HOUR - 60_000);
+    expect(error.retryAfterMs).toBeLessThanOrEqual(72 * HOUR);
+  };
+
+  it("makes an HTTP 429 about the weekly quota credential-scoped, retrying at the observed reset", async () => {
+    for (const stream of [false, true])
+      expectScopedUntilReset(await failure(stream, () => new Response(weekly, { status: 429 })));
+  });
+
+  it("does the same for the trailer error of a non-stream and a streamed response", async () => {
+    for (const stream of [false, true])
+      expectScopedUntilReset(await failure(stream, () => trailerBody(weekly)));
+  });
+
+  it("keeps an explicit Retry-After header", async () => {
+    const error = await failure(
+      false,
+      () => new Response(weekly, { status: 429, headers: { "retry-after": "7" } }),
+    );
+
+    expect(error.credentialScoped).toBe(true);
+    expect(error.retryAfterMs).toBe(7000);
+  });
+
+  it("leaves generic rate limits and monthly quota messages model-scoped", async () => {
+    for (const message of [
+      "Rate limit exceeded. Please slow down.",
+      "User monthly ACU quota exhausted (trace ID: 12345)",
+    ]) {
+      const error = await failure(false, () => new Response(message, { status: 429 }));
+      expect(error.status).toBe(429);
+      expect(error.credentialScoped).toBeUndefined();
+      expect(error.retryAfterMs).toBeUndefined();
+    }
+  });
+});
+
 describe("Devin Claude effort directives (CLIProxyAPI 061ffe6f)", () => {
   const model = "devin/claude-opus-5-5";
 

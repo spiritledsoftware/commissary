@@ -37,6 +37,7 @@ import {
 import { planRetry, type RetryPlan, type RetryQuery } from "./selection/retry.ts";
 import { RotationState } from "./selection/strategies.ts";
 import type {
+  CredentialSnapshot,
   Lease,
   PickRequest,
   PickResult,
@@ -269,6 +270,18 @@ export class CredentialPool {
     return this.#states.get(id) ?? emptyState();
   }
 
+  /** The executor's view of a credential; a Devin credential carries its observed quota signals. */
+  #snapshot(credential: Credential): CredentialSnapshot {
+    const snapshot = toSnapshot(this.#decorate(credential));
+
+    const signals =
+      snapshot.executor === "devin" ? this.#state(credential.id).quota.signals : undefined;
+
+    return signals === undefined || Object.keys(signals).length === 0
+      ? snapshot
+      : { ...snapshot, quotaSignals: signals };
+  }
+
   /** Model-registration view of every credential (no secrets): see `registry/source.ts`. */
   modelSources(): ModelSource[] {
     const view = this.#current();
@@ -358,7 +371,7 @@ export class CredentialPool {
 
     return {
       ok: true,
-      credential: toSnapshot(this.#decorate(credential)),
+      credential: this.#snapshot(credential),
       route: {
         requestedModel: route.requestedModel,
         routeModel: route.routeModel,

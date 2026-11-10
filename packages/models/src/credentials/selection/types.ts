@@ -113,6 +113,8 @@ export const CredentialSnapshot = Schema.Struct({
   baseUrl: optional(Schema.String),
   /** Executor key used for the lookup (`kimi.com` -> `kimi`, compat -> `openai-compatible-<name>`). */
   executor: Schema.String,
+  /** The credential's observed quota signals; only Devin executors read them (reset times of the quota windows). */
+  quotaSignals: optional(Schema.Record(Schema.String, Schema.String)),
 });
 
 export type CredentialSnapshot = typeof CredentialSnapshot.Type;

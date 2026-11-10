@@ -50,6 +50,8 @@ export interface CredentialSnapshot {
   readonly attributes: Readonly<Record<string, string>>;
   /** Provider metadata (OAuth tokens, account ids, `disable_cooling`, `request_retry`, ...). */
   readonly metadata: JsonObject;
+  /** The observed quota signals of a Devin credential (the reset times of its daily and weekly quota windows). */
+  readonly quotaSignals?: Readonly<Record<string, string>>;
 }
 
 /** Session identity extracted by the handler (see `handlers/session.ts`). */
