@@ -20,9 +20,9 @@ for generator in tools/fixturegen/*/; do
 done
 
 commits="$(git -C "$reference" log --no-merges --format='- [`%h`](https://github.com/router-for-me/CLIProxyAPI/commit/%H) %s' "$ported..$head")"
-# The packages whose tests read fixtures (tools/fixturegen writes into each of them).
+# The packages whose tests read the generated fixtures.
 failing=""
-for package in packages/json packages/translation apps/app; do
+for package in packages/json packages/models packages/translation; do
   results="$(mktemp)"
   (cd "$package" && bunx vitest run --reporter=json --outputFile="$results") >/dev/null 2>&1 || true
   failing+="$(jq -r --arg root "$PWD/" '.testResults[] | select(.status != "passed") | "- `" + (.name | ltrimstr($root)) + "`"' "$results")"$'\n'
