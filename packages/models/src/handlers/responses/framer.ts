@@ -4,7 +4,8 @@
  * Go source: sdk/api/handlers/openai/openai_responses_handlers.go (responsesSSEFramer and its helpers,
  * responsesStreamErrorText, sanitizeResponsesStreamErrorMessage, isCodexResponsesClientRequest). Executor chunks may
  * be single lines or partial frames: they are buffered into complete frames; private events (`responsesapi.*`,
- * `codex.*`) are filtered; error payloads become one normalised `error`/`response.failed` frame; an empty
+ * `codex.*`, and `response.metadata` for non-Codex clients) are filtered; JSON split across chunk boundaries is
+ * recovered and field names split mid-token are held back (ae65e26d); error payloads become one normalised `error`/`response.failed` frame; an empty
  * `response.output` of the final `response.completed` is rebuilt from the `response.output_item.done` items; nothing
  * is written after a terminal event. The stream ends with a bare newline and no `[DONE]`.
  */
@@ -267,8 +268,79 @@ const needsLineBreak = (pending: string, chunk: string): boolean => {
 
   if (trimmed === "") return false;
 
-  return ["data:", "event:", "id:", "retry:", ":"].some((prefix) => trimmed.startsWith(prefix));
+  return (
+    ["data:", "event:", "id:", "retry:", ":"].some((prefix) => trimmed.startsWith(prefix)) &&
+    !dataEndsInsideJsonString(pending)
+  );
 };
+
+/**
+ * `responsesSSEDataEndsInsideJSONString`: a chunk boundary inside a JSON string is not a line break, even when the next
+ * chunk starts with something that looks like an SSE field.
+ */
+const dataEndsInsideJsonString = (chunk: string): boolean => {
+  const payload = dataPayload(chunk)?.trim();
+
+  if (payload === undefined || payload === "" || !'{["'.includes(payload.charAt(0))) return false;
+  let inString = false;
+  let escaped = false;
+
+  for (const char of payload) {
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+
+    if (inString && char === "\\") {
+      escaped = true;
+      continue;
+    }
+
+    if (char === '"') inString = !inString;
+  }
+
+  return inString;
+};
+
+/** `responsesSSEChunkField`: the field name a chunk starts with; `partial` while the name is still incomplete. */
+interface ChunkField {
+  readonly name: string;
+  readonly complete: boolean;
+  readonly partial: boolean;
+}
+
+const chunkField = (chunk: string): ChunkField => {
+  if (chunk === "") return { name: "", complete: false, partial: false };
+
+  for (let i = 0; i < chunk.length; i++) {
+    const char = chunk.charAt(i);
+
+    if (char === ":" || char === "\n" || char === "\r")
+      return { name: chunk.slice(0, i), complete: true, partial: false };
+
+    if (!/[A-Za-z0-9\-_.]/.test(char)) return { name: "", complete: false, partial: false };
+  }
+
+  return { name: "", complete: false, partial: true };
+};
+
+/** `responsesSSEHasEmptyEventData`: an `event:` with an empty `data:` so far; the payload may still be arriving. */
+const hasEmptyEventData = (chunk: string): boolean => {
+  if (!hasField(chunk, "event:")) return false;
+  const payload = dataPayload(chunk);
+
+  return payload !== undefined && payload.trim() === "";
+};
+
+const trimLeftBlank = (text: string): string => text.replace(/^[ \t\r\n]+/, "");
+
+const lastLine = (text: string): string => text.slice(text.lastIndexOf("\n") + 1).trim();
+
+const isValidJson = (text: string): boolean => tryParseJson(text) !== undefined;
+
+/** gjson reads `type` even from a truncated object; the filter must not let a malformed private frame through. */
+const lenientPayloadType = (payload: string): string =>
+  /^\s*\{[^]*?"type"\s*:\s*"([^"\\]*)"/.exec(payload)?.[1] ?? "";
 
 /** `writeResponsesSSEChunk`'s trailing separator. */
 const terminate = (frame: string): string => {
@@ -313,6 +385,11 @@ export interface ResponsesFramerOptions {
 /** Responses stream framer; stateful, one per request. */
 export const responsesFramer = (options: ResponsesFramerOptions): StreamFramer => {
   let pending = "";
+  // Held back while a chunk boundary may split an SSE field name (`data` | `: {...}`) after an empty `event:` frame.
+  let nextFramePrefix = "";
+  let nextFieldSuffix = "";
+  // Offsets in `pending` of the newlines this framer inserted at chunk boundaries; recovery removes them again.
+  let syntheticBreaks: number[] = [];
   const outputItems = new Map<number, string>();
   const outputOrder: number[] = [];
   const unindexed: string[] = [];
@@ -332,7 +409,9 @@ export const responsesFramer = (options: ResponsesFramerOptions): StreamFramer =
 
       if (options.codexClient) return name === "codex.rate_limits";
 
-      return name.startsWith("codex.");
+      // `response.metadata` carries the Codex backend's prompt-moderation flags: not a public Responses event, and
+      // clients that parse a closed event list fail the turn on it. Codex clients still receive it.
+      return name.startsWith("codex.") || name === "response.metadata";
     };
 
     return check(streamEvent) || check(payloadType);
@@ -426,7 +505,8 @@ export const responsesFramer = (options: ResponsesFramerOptions): StreamFramer =
 
     const payload = tryParseJson(payloadText);
 
-    if (payload === undefined) return frame;
+    if (payload === undefined)
+      return shouldFilterPrivateEvent(streamEvent, lenientPayloadType(payloadText)) ? "" : frame;
     const payloadType = asString(get(payload, "type"));
 
     if (shouldFilterPrivateEvent(streamEvent, payloadType)) return "";
@@ -459,64 +539,272 @@ export const responsesFramer = (options: ResponsesFramerOptions): StreamFramer =
     return frame;
   };
 
-  const writeFrame = (frame: string): string => terminate(repairFrame(frame));
+  /** `responsesSSERecoverJSONFrame`: undo chunk-boundary newlines that split a JSON payload across `data:` lines. */
+  const recoverJsonFrame = (frame: string): string => {
+    if (syntheticBreaks.length === 0) return frame;
+    const payload = dataPayload(frame);
 
-  const flush = (): string => {
-    if (pending === "" || terminalEvent !== "") return "";
+    if (payload !== undefined && isValidJson(payload)) return frame;
 
-    if (pending.trim() === "") {
-      pending = "";
+    const positions = syntheticBreaks.filter(
+      (pos) => pos >= 0 && pos < frame.length && frame[pos] === "\n",
+    );
 
-      return "";
+    const attempt = (candidate: string): string | undefined => {
+      const recovered = dataPayload(candidate);
+
+      return recovered !== undefined && isValidJson(recovered)
+        ? frameWithData(candidate, recovered)
+        : undefined;
+    };
+
+    for (const pos of positions.slice(0, 8)) {
+      const recovered = attempt(frame.slice(0, pos) + frame.slice(pos + 1));
+
+      if (recovered !== undefined) return recovered;
     }
 
-    const frame = pending;
-    pending = "";
+    if (positions.length > 1) {
+      let candidate = "";
+      let start = 0;
 
-    return canFlushWithoutDelimiter(frame) ? writeFrame(frame) : "";
+      for (const pos of positions) {
+        candidate += frame.slice(start, pos);
+        start = pos + 1;
+      }
+
+      const recovered = attempt(candidate + frame.slice(start));
+
+      if (recovered !== undefined) return recovered;
+    }
+
+    return frame;
+  };
+
+  const consumeBreaks = (consumed: number): void => {
+    syntheticBreaks = syntheticBreaks.filter((pos) => pos >= consumed).map((pos) => pos - consumed);
+  };
+
+  const appendChunk = (chunk: string): void => {
+    if (needsLineBreak(pending, chunk)) {
+      syntheticBreaks.push(pending.length);
+      pending += "\n";
+    }
+
+    pending += chunk;
+  };
+
+  const resetPending = (): void => {
+    pending = "";
+    syntheticBreaks = [];
+  };
+
+  const writeFrame = (frame: string): string => terminate(repairFrame(recoverJsonFrame(frame)));
+
+  const flush = (): string => {
+    let out = "";
+
+    if (nextFieldSuffix !== "") {
+      if (needsLineBreak(nextFramePrefix, nextFieldSuffix)) nextFramePrefix += "\n";
+      nextFramePrefix += nextFieldSuffix;
+      nextFieldSuffix = "";
+    }
+
+    if (nextFramePrefix !== "") {
+      const trimmed = trimLeftBlank(nextFramePrefix);
+
+      if (chunkField(trimmed).partial && !"data".startsWith(trimmed)) {
+        out += writeFrame(pending);
+        resetPending();
+      }
+
+      appendChunk(nextFramePrefix);
+      nextFramePrefix = "";
+    }
+
+    if (pending === "" || terminalEvent !== "") return out;
+
+    if (pending.trim() === "") {
+      resetPending();
+
+      return out;
+    }
+
+    const frame = recoverJsonFrame(pending);
+
+    if (!canFlushWithoutDelimiter(frame)) {
+      resetPending();
+
+      return out;
+    }
+
+    const written = writeFrame(frame);
+    resetPending();
+
+    return out + written;
   };
 
   return {
-    chunk: (chunk) => {
-      if (chunk === "" || terminalEvent !== "") return "";
+    chunk: (input) => {
+      if (input === "" || terminalEvent !== "") return "";
+      let chunk = input;
       let out = "";
+
+      if (nextFieldSuffix !== "") {
+        const trimmed = trimLeftBlank(chunk);
+        const tail = lastLine(nextFramePrefix);
+
+        if (chunkField(trimmed).complete && tail !== "" && !tail.startsWith("data:")) {
+          nextFramePrefix += nextFieldSuffix;
+          nextFieldSuffix = "";
+        } else {
+          nextFieldSuffix += chunk;
+
+          if (chunkField(trimLeftBlank(nextFieldSuffix)).partial) return "";
+          chunk = nextFieldSuffix;
+          nextFieldSuffix = "";
+        }
+      }
+
+      if (nextFramePrefix !== "") {
+        const payload = dataPayload(nextFramePrefix);
+        const parsed = payload === undefined ? undefined : tryParseJson(payload);
+
+        if (
+          parsed !== undefined &&
+          asString(get(parsed, "type")) === "" &&
+          !hasField(nextFramePrefix, "event:") &&
+          frameLength(nextFramePrefix) === 0
+        ) {
+          const trimmed = trimLeftBlank(chunk);
+          const field = chunkField(trimmed);
+          const tail = lastLine(nextFramePrefix);
+          let complete = field.complete;
+
+          if (complete && chunkField(tail).partial) {
+            const joined = chunkField(tail + trimmed);
+            const known = ["event", "data", "id", "retry"];
+
+            if (
+              joined.complete &&
+              (known.includes(joined.name) || (field.name !== "" && !known.includes(field.name)))
+            )
+              complete = false;
+          }
+
+          const newFieldPrefix =
+            tail.startsWith("data:") ||
+            ["event:", "data:", "id:", "retry:"].some(
+              (prefix) => trimmed.length < prefix.length && prefix.startsWith(trimmed),
+            );
+
+          if (field.partial && newFieldPrefix) {
+            nextFieldSuffix += chunk;
+
+            return "";
+          }
+
+          if (
+            complete &&
+            !nextFramePrefix.endsWith("\n") &&
+            !nextFramePrefix.endsWith("\r") &&
+            chunk[0] !== "\n" &&
+            chunk[0] !== "\r"
+          )
+            nextFramePrefix += "\n";
+        }
+
+        chunk = nextFramePrefix + chunk;
+        nextFramePrefix = "";
+      }
+
+      if (hasEmptyEventData(pending)) {
+        const trimmed = trimLeftBlank(chunk);
+        const field = chunkField(trimmed);
+
+        if (field.partial) {
+          nextFramePrefix += chunk;
+
+          return "";
+        }
+
+        let newFrame = field.complete && field.name !== "data";
+
+        if (field.complete && field.name === "data") {
+          const payload = dataPayload(trimmed) ?? "";
+          const valid = isValidJson(payload);
+          const complete = frameLength(trimmed) !== 0;
+
+          if (!valid && payload !== "[DONE]" && !complete) {
+            nextFramePrefix += chunk;
+
+            return "";
+          }
+
+          const hasEvent = hasField(trimmed, "event:");
+
+          if (valid && hasEvent && eventName(trimmed) === "" && !complete) {
+            nextFramePrefix += chunk;
+
+            return "";
+          }
+
+          newFrame =
+            payload === "[DONE]" ||
+            (valid && (asString(get(tryParseJson(payload), "type")) !== "" || hasEvent));
+
+          if (valid && !newFrame && !complete) {
+            nextFramePrefix += chunk;
+
+            return "";
+          }
+        }
+
+        if (newFrame) {
+          out += writeFrame(pending);
+          resetPending();
+
+          if (terminalEvent !== "") return out;
+        }
+      }
 
       if (startsNewDataFrame(pending, chunk)) {
         out += writeFrame(pending);
-        pending = "";
+        resetPending();
 
         if (terminalEvent !== "") return out;
       }
 
-      if (needsLineBreak(pending, chunk)) pending += "\n";
-      pending += chunk;
+      appendChunk(chunk);
 
       for (;;) {
         const length = frameLength(pending);
 
         if (length === 0) break;
         const frame = pending.slice(0, length);
-        pending = pending.slice(length);
         out += writeFrame(frame);
+        pending = pending.slice(length);
+        consumeBreaks(length);
 
         if (terminalEvent !== "") {
-          pending = "";
+          resetPending();
 
           return out;
         }
       }
 
       if (pending.trim() === "") {
-        pending = "";
+        resetPending();
 
         return out;
       }
 
-      if (pending === "" || !canEmitWithoutDelimiter(pending)) return out;
+      if (hasEmptyEventData(pending) || !canEmitWithoutDelimiter(pending)) return out;
       const frame = pending;
-      pending = "";
+      const written = writeFrame(frame);
+      resetPending();
 
-      return out + writeFrame(frame);
+      return out + written;
     },
     terminalError: (error) => {
       let out = pendingFlush + flush();

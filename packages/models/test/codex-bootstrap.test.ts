@@ -311,6 +311,7 @@ describe("bootstrap helpers", () => {
     expect(isBootstrapBufferableEvent("", "  ", undefined)).toBe(true);
     expect(empty("keepalive")).toBe(true);
     expect(empty("codex.rate_limits")).toBe(true);
+    expect(empty("response.metadata")).toBe(true);
     expect(empty("response.output_text.delta")).toBe(false);
     expect(
       empty("response.output_item.added", {

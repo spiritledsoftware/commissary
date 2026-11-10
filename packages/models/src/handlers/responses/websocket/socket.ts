@@ -49,6 +49,7 @@ import {
   shouldExposeError,
   truncateCloseReason,
 } from "./frames.ts";
+import { isCodexResponsesClient } from "../framer.ts";
 import { syntheticPrewarmPayloads } from "./normalize.ts";
 import {
   commitPrewarm,
@@ -255,6 +256,9 @@ export const runResponsesSocket = <R>(
             Effect.gen(function* () {
               for (const payload of payloadsFromChunk(chunk)) {
                 const type = asString(payload["type"]);
+
+                // Moderation metadata is private to Codex clients (CLIProxyAPI ae65e26d).
+                if (type === "response.metadata" && !isCodexResponsesClient(deps.headers)) continue;
 
                 if (type === "response.created") {
                   responseStarted = true;

@@ -721,8 +721,9 @@ Core contracts every provider slice implements (Go references in each module hea
   memory fallback when the binding is absent and `makeInMemoryReplayStore` for tests.
 - **Handlers**: `POST /v1/responses`, `/v1/responses/compact` and `/backend-api/codex/{responses,responses/compact}` share
   `responses/routes.ts`; the Responses frame assembler (`responses/framer.ts`) buffers partial frames, filters private
-  `responsesapi.*`/`codex.*` events (Codex clients keep `codex.response.metadata`), rebuilds an empty
-  `response.output`, normalises error payloads (redacting secrets) and ends with a bare newline. `/v1/images/{generations,
+  `responsesapi.*`/`codex.*` events and `response.metadata` (moderation flags; Codex clients keep both
+  `codex.response.metadata` and `response.metadata`, the WebSocket forwarder applies the same rule), recovers JSON split across
+  chunk boundaries, rebuilds an empty `response.output`, normalises error payloads (redacting secrets) and ends with a bare newline. `/v1/images/{generations,
   edits}` (`handlers/openai/images.ts`) serve the Codex `gpt-image-*` models (multipart edits become JSON in the handler;
   free-plan credentials are excluded through `ExecutionInput.disallowFreeAuth`). `/v1/alpha/search` and
   `/backend-api/codex/alpha/search` (`handlers/codex/alpha-search.ts`) forward the sanitised body to

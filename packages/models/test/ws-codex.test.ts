@@ -115,6 +115,46 @@ describe("Responses WebSocket over an upstream WebSocket (Codex)", () => {
     client.close();
   });
 
+  it.each([
+    ["a standard client", {}, false],
+    ["a Codex client (user agent)", { "user-agent": "codex_cli_rs/1.0" }, true],
+    ["a Codex client (originator)", { originator: "codex_cli_rs" }, true],
+  ])(
+    "forwards response.metadata to %s only when it is a Codex client",
+    async (_name, headers, keeps) => {
+      // CLIProxyAPI ae65e26d: moderation metadata is private to Codex clients.
+      const s = setup([wsCredential()], {
+        onConnection: (connection) => {
+          void (async () => {
+            await connection.next();
+            connection.server.send(JSON.stringify(created));
+            connection.server.send(
+              JSON.stringify({ type: "response.metadata", metadata: { moderation: {} } }),
+            );
+            connection.server.send(JSON.stringify(done()));
+          })();
+        },
+      });
+
+      const client = await s.connect(headers);
+      client.send({
+        type: "response.create",
+        model: "gpt-5.4",
+        input: [{ type: "message", role: "user", content: "hi" }],
+      });
+      const types = [(await client.nextJson())["type"]];
+
+      if (keeps) types.push((await client.nextJson())["type"]);
+      types.push((await client.nextJson())["type"]);
+      expect(types).toEqual(
+        keeps
+          ? ["response.created", "response.metadata", "response.completed"]
+          : ["response.created", "response.completed"],
+      );
+      client.close();
+    },
+  );
+
   it("keeps the upstream socket for the session and passes continuations through", async () => {
     const s = setup([wsCredential()], {
       onConnection: (connection) => {
@@ -644,6 +684,55 @@ describe("stream bootstrap buffering on the upstream WebSocket", () => {
       "Bearer access-token-1",
       "Bearer access-token-2",
     ]);
+    expect(s.log.reports.map((report) => report.result.success)).toEqual([false, true]);
+    client.close();
+  });
+
+  it("fails an overload after a response.metadata frame over without releasing the stream", async () => {
+    let connections = 0;
+
+    // Captured from upstream on 2026-10-21 (CLIProxyAPI 9e79552f): prompt-moderation metadata, then overload.
+    const metadata = {
+      type: "response.metadata",
+      response_id: "resp_1",
+      sequence_number: 2,
+      metadata: { openai_chatgpt_moderation_metadata: { prompt: { omnimod: {} } } },
+    };
+
+    const s = setup(
+      [wsCredential(), second],
+      {
+        onConnection: (connection) => {
+          connections += 1;
+
+          if (connections === 1) {
+            reply(connection, [
+              created,
+              metadata,
+              {
+                type: "response.failed",
+                response: {
+                  id: "resp_1",
+                  error: { code: "server_is_overloaded", message: "overloaded" },
+                },
+              },
+            ]);
+          } else reply(connection, [created, delta, done()]);
+        },
+      },
+      () => sseResponse([]),
+      buffering,
+    );
+
+    const client = await s.connect();
+    client.send({
+      type: "response.create",
+      model: "gpt-5.4",
+      input: [{ type: "message", role: "user", content: "hi" }],
+    });
+    expect((await client.nextJson())["type"]).toBe("response.created");
+    expect((await client.nextJson())["type"]).toBe("response.output_text.delta");
+    expect((await client.nextJson())["type"]).toBe("response.completed");
     expect(s.log.reports.map((report) => report.result.success)).toEqual([false, true]);
     client.close();
   });
