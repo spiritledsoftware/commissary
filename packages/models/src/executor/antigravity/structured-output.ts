@@ -10,7 +10,7 @@
  */
 import { asString, del, get, isJsonArray, isJsonObject, type Json, set } from "@commissary/json";
 import { buildClaudeStructuredOutputInstruction } from "@commissary/translation";
-import { isForcedToolRestrictedClaude55 } from "../helps/claude-tool-choice.ts";
+import { isClaude55Model } from "../helps/claude-55-model.ts";
 
 const CONTAINERS = ["request.generationConfig", "request.generation_config"] as const;
 
@@ -28,12 +28,15 @@ const CALLING_KEYS = ["functionCallingConfig", "function_calling_config"] as con
 /**
  * `PrepareAntigravityClaudeStructuredOutput`: for a Claude 5.5 model and a request with an object response schema,
  * appends the schema instruction to the system instruction, removes only the native output leaves (other fields and
- * aliases stay) and downgrades forced function calling to `AUTO`. Mutates `payload`; returns whether it converted,
- * which tells the request builder not to set `VALIDATED`. Run after the sensitive-word obfuscation and before schema
- * cleaning and the payload rules.
+ * aliases stay) and downgrades forced function calling to `AUTO`. Run after the sensitive-word obfuscation and before
+ * schema cleaning and the payload rules.
+ *
+ * Contract: always mutates `payload` in place and returns whether it converted (the request builder then does not set
+ * `VALIDATED`; `countTokens` ignores the result). Call it once per request: the conversion consumes the native schema,
+ * so a second call finds none, appends nothing and returns `false`, which would let `VALIDATED` come back.
  */
 export const prepareClaudeStructuredOutput = (model: string, payload: Json): boolean => {
-  if (!isForcedToolRestrictedClaude55(model)) return false;
+  if (!isClaude55Model(model)) return false;
   let schema: Json | undefined;
 
   for (const container of CONTAINERS) {

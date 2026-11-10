@@ -1153,11 +1153,11 @@ Ported from `internal/runtime/executor/claude_executor*.go`, `internal/translato
   through consumer subscriptions or misrepresent the client. Cloaking at either level misrepresents the client, so
   using it is at the deployment's own risk. The panel says the same next to the cloak settings and when a Claude account
   is connected.
-- **Request order** (matches the Go executor and the payload-rules barrier): translate -> forced tool-choice rewrite (below) -> thinking -> sanitise ->
-  cloaking (system relocation, billing block, identity, date reminder, user_id, context management) ->
-  MCP tool aliasing -> cache-control policy -> tool property-name fallback -> preserved-thinking binding (below) -> payload rules -> CCH signing (`cch=` is
-  `xxh64` over the normalised
-  final body; only the five hex digits change) -> HTTP. Signing is the last step so it covers payload-rule output.
+- **Request order** (matches the Go executor and the payload-rules barrier): translate -> forced tool-choice rewrite
+  (below) -> thinking -> sanitise -> cloaking (system relocation, billing block, identity, date reminder, user_id,
+  context management) -> MCP tool aliasing -> cache-control policy -> tool property-name fallback -> preserved-thinking
+  binding (below) -> payload rules -> CCH signing (`cch=` is `xxh64` over the normalised final body; only the five hex
+  digits change) -> HTTP. Signing is the last step so it covers payload-rule output.
 - **Tool property names** (`claude/tool-property-names.ts`, also on `count_tokens`): Claude 400s a tool whose
   `input_schema` has a property key outside `^[a-zA-Z0-9_.-]{1,64}$` (`not[labels]`). Such a client tool, in `tools[]` or
   an inline `tool_addition` definition, is sent with `{"type":"object"}` and its original schema (compact JSON) appended

@@ -231,6 +231,18 @@ describe("antigravity executor: non-stream", () => {
 
 // CLIProxyAPI 1d45a5f3: Claude 5.5 rejects the forced tool use behind native structured output, so the schema is sent
 // as a system prompt and forced function calling is downgraded to AUTO.
+const ruleYaml = (kind: "override" | "filter", params: string): string => `
+oauth:
+  providers:
+    antigravity:
+      sensitive-words: ["secret"]
+requests:
+  payload:
+    ${kind}:
+      - models: [{ name: "claude-*", protocol: antigravity }]
+        params:${params}
+`;
+
 describe("antigravity executor: Claude 5.5 structured output", () => {
   const schema = {
     type: "object",
@@ -285,7 +297,7 @@ describe("antigravity executor: Claude 5.5 structured output", () => {
       expect(sent.request.generationConfig.responseJsonSchema).toBeUndefined();
       expect(sent.request.generationConfig.responseMimeType).toBeUndefined();
       expect(sent.request.tools[0].functionDeclarations[0].name).toBe("get_time");
-      expect(["AUTO", undefined]).toContain(sent.request.toolConfig?.functionCallingConfig?.mode);
+      expect(sent.request.toolConfig.functionCallingConfig.mode).toBe("AUTO");
     },
   );
 
@@ -300,6 +312,61 @@ describe("antigravity executor: Claude 5.5 structured output", () => {
     expect(sent.request.toolConfig.functionCallingConfig.mode).toBe("VALIDATED");
     const generation = sent.request.generationConfig;
     expect(generation.responseSchema ?? generation.responseJsonSchema).toBeDefined();
+  });
+
+  // Payload rules stay the final mutation: the built-in conversion neither undoes them nor survives them.
+  const longChat = (): JsonObject => ({
+    ...chat("claude-opus-5-5"),
+    messages: [
+      { role: "system", content: "keep the secret safe" },
+      { role: "user", content: "first" },
+      { role: "assistant", content: "second" },
+      { role: "user", content: "third" },
+    ],
+  });
+
+  it("lets an override rule set the system instruction, tool mode and MIME type after the conversion", async () => {
+    const ruled = await loadConfig(
+      ruleYaml(
+        "override",
+        `
+          systemInstruction:
+            parts: [{ text: "configured system" }]
+          toolConfig.functionCallingConfig.mode: NONE
+          generationConfig.responseMimeType: configured/mime`,
+      ),
+    );
+
+    const h = harness(() => sse([upstream([{ text: "{}" }])]), { config: ruled });
+    afterAll(h.dispose);
+
+    expect((await h.call("/v1/chat/completions", postJson(longChat()))).status).toBe(200);
+    const sent = JSON.parse(h.calls[0]?.body ?? "{}");
+    expect(sent.request.systemInstruction.parts).toEqual([{ text: "configured system" }]);
+    expect(sent.request.toolConfig.functionCallingConfig.mode).toBe("NONE");
+    expect(sent.request.generationConfig.responseMimeType).toBe("configured/mime");
+  });
+
+  it("lets a filter rule remove what the conversion built, once", async () => {
+    const ruled = await loadConfig(
+      ruleYaml(
+        "filter",
+        `
+          - systemInstruction
+          - toolConfig
+          - contents.0`,
+      ),
+    );
+
+    const h = harness(() => sse([upstream([{ text: "{}" }])]), { config: ruled });
+    afterAll(h.dispose);
+
+    expect((await h.call("/v1/chat/completions", postJson(longChat()))).status).toBe(200);
+    const sent = JSON.parse(h.calls[0]?.body ?? "{}");
+    expect(sent.request.systemInstruction).toBeUndefined();
+    expect(sent.request.toolConfig).toBeUndefined();
+    // Four turns with the system one, the first content filtered out: applied once, not again after the conversion.
+    expect(sent.request.contents).toHaveLength(2);
   });
 
   it("counts the schema as prompt text", async () => {
