@@ -8,7 +8,11 @@ import {
   convertToImagenRequest,
 } from "../src/executor/gemini/google.ts";
 import { stripVertexOpenAIResponsesToolCallIds } from "../src/executor/gemini/shaping.ts";
-import { vertexBaseUrl, vertexInteractionsUrl } from "../src/executor/gemini/targets.ts";
+import {
+  vertexApiKeyModelsUrl,
+  vertexBaseUrl,
+  vertexInteractionsUrl,
+} from "../src/executor/gemini/targets.ts";
 import { credential, makeGeminiHarness } from "./support/gemini.ts";
 import {
   jsonResponse,
@@ -337,12 +341,41 @@ describe("vertex helpers", () => {
     expect(vertexBaseUrl("")).toBe("https://us-central1-aiplatform.googleapis.com");
     expect(vertexBaseUrl("global")).toBe("https://aiplatform.googleapis.com");
     expect(vertexBaseUrl("asia-east1")).toBe("https://asia-east1-aiplatform.googleapis.com");
+    expect(vertexBaseUrl("us")).toBe("https://aiplatform.us.rep.googleapis.com");
+    expect(vertexBaseUrl("EU")).toBe("https://aiplatform.eu.rep.googleapis.com");
+    expect(vertexBaseUrl("GLOBAL")).toBe("https://aiplatform.googleapis.com");
     expect(vertexInteractionsUrl("", "", false)).toBe(
       "https://aiplatform.googleapis.com/v1beta1/interactions",
     );
     expect(vertexInteractionsUrl("https://x.test/", "p1", true)).toBe(
       "https://x.test/v1beta1/projects/p1/locations/global/interactions?alt=sse",
     );
+  });
+
+  it.each([
+    ["", "https://aiplatform.googleapis.com/v1/publishers/google/models/m:generateContent"],
+    ["https://zenmux.ai", "https://zenmux.ai/v1/publishers/google/models/m:generateContent"],
+    ["https://zenmux.ai/", "https://zenmux.ai/v1/publishers/google/models/m:generateContent"],
+    ["https://zenmux.ai/v1", "https://zenmux.ai/v1/publishers/google/models/m:generateContent"],
+    [
+      "https://api.zenmux.ai/v1/publishers/google/models",
+      "https://api.zenmux.ai/v1/publishers/google/models/m:generateContent",
+    ],
+    [
+      "https://aiplatform.googleapis.com/v1/projects/279/locations/us-central1/publishers/google/models",
+      "https://aiplatform.googleapis.com/v1/projects/279/locations/us-central1/publishers/google/models/m:generateContent",
+    ],
+    [
+      "https://aiplatform.googleapis.com/v1beta1/projects/279/locations/us-central1/publishers/google/models",
+      "https://aiplatform.googleapis.com/v1beta1/projects/279/locations/us-central1/publishers/google/models/m:generateContent",
+    ],
+    [
+      "https://aiplatform.googleapis.com/v1beta1",
+      "https://aiplatform.googleapis.com/v1beta1/publishers/google/models/m:generateContent",
+    ],
+    ["  https://zenmux.ai  ", "https://zenmux.ai/v1/publishers/google/models/m:generateContent"],
+  ])("builds the API-key models URL for base %j", (base, expected) => {
+    expect(vertexApiKeyModelsUrl(base, "m", "generateContent")).toBe(expected);
   });
 
   it("strips OpenAI Responses call ids only for that source format", () => {

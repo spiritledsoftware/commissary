@@ -19,7 +19,7 @@ import {
   normalizeKimiToolMessageLinks,
   normalizeKimiTools,
 } from "../src/executor/kimi/request.ts";
-import { makeKimiReplayStore } from "../src/executor/kimi/replay.ts";
+import { kimiReplayFamily, makeKimiReplayStore } from "../src/executor/kimi/replay.ts";
 import type { JsonObject, Json } from "@commissary/json";
 import {
   collectStream,
@@ -42,6 +42,8 @@ describe("normalizeKimiUpstreamModel (Go table)", () => {
     ["k3", "k3"],
     ["kimi-k2.6", "k2.6"],
     ["kimi-k2.6[1m]", "k2.6"],
+    ["kimi-k3.1-pro", "k3.1-pro"],
+    ["kimi-k3.1-pro-highspeed(max)", "k3.1-pro-highspeed(max)"],
     ["kimi-k3(1024)", "k3(1024)"],
     ["kimi-k3[1m](1024)", "k3(1024)"],
     ["kimi-k2.6(high)", "k2.6(high)"],
@@ -209,7 +211,115 @@ describe("normalizeKimiToolMessageLinks", () => {
   });
 });
 
+describe("kimiReplayFamily", () => {
+  it("shares one family across k3 variants and across k3.1-pro variants, and isolates the rest", () => {
+    expect(kimiReplayFamily("kimi-k3")).toBe("k3");
+    expect(kimiReplayFamily("kimi-k3-256k")).toBe("k3");
+    expect(kimiReplayFamily("kimi-k3.1-pro")).toBe("k3.1-pro");
+    expect(kimiReplayFamily("kimi-k3.1-pro-highspeed")).toBe("k3.1-pro");
+    expect(kimiReplayFamily("kimi-k3.1-pro-highspeed(max)")).toBe("k3.1-pro");
+    expect(kimiReplayFamily("kimi-k3.1-pro[1m](high)")).toBe("k3.1-pro");
+    expect(kimiReplayFamily("kimi-k2.8")).toBe("kimi-for-coding");
+  });
+});
+
 describe("tools, temperature and Responses input", () => {
+  it("normalizes namespaced tools and input tool lists", () => {
+    const body = obj({
+      input: [
+        { type: "message", role: "user", content: "hi" },
+        {
+          type: "additional_tools",
+          tools: [
+            {
+              type: "namespace",
+              name: "mcp__extra",
+              tools: [
+                {
+                  type: "function",
+                  name: "extra_fn",
+                  parameters: {
+                    $defs: { val: { type: "string" } },
+                    properties: { arg: { $ref: "#/$defs/val" } },
+                  },
+                },
+              ],
+            },
+          ],
+        },
+        { type: "tool_search_output", tools: [{ type: "function", name: "f", parameters: {} }] },
+        { type: "message", tools: [{ type: "function", name: "g", parameters: {} }] },
+      ],
+      tools: [
+        {
+          type: "namespace",
+          name: "mcp__rea",
+          tools: [
+            {
+              type: "function",
+              name: "capture",
+              parameters: {
+                type: "object",
+                properties: { steps: { $ref: "#/$defs/s" } },
+                $defs: {
+                  s: { type: "array", items: { $ref: "#/$defs/n" } },
+                  n: { type: "integer" },
+                },
+              },
+            },
+          ],
+          children: [{ type: "function", name: "child", parameters: {} }],
+        },
+      ],
+    });
+
+    normalizeKimiTools(body);
+
+    expect(body["tools"]).toEqual([
+      {
+        type: "namespace",
+        name: "mcp__rea",
+        tools: [
+          {
+            type: "function",
+            name: "capture",
+            parameters: {
+              type: "object",
+              properties: { steps: { type: "array", items: { type: "integer" } } },
+            },
+          },
+        ],
+        children: [{ type: "function", name: "child", parameters: { type: "object" } }],
+      },
+    ]);
+    const input = body["input"] as Array<Record<string, unknown>>;
+
+    expect(input[1]).toEqual({
+      type: "additional_tools",
+      tools: [
+        {
+          type: "namespace",
+          name: "mcp__extra",
+          tools: [
+            {
+              type: "function",
+              name: "extra_fn",
+              parameters: { properties: { arg: { type: "string" } }, type: "object" },
+            },
+          ],
+        },
+      ],
+    });
+    expect(input[2]).toEqual({
+      type: "tool_search_output",
+      tools: [{ type: "function", name: "f", parameters: { type: "object" } }],
+    });
+    expect(input[3]).toEqual({
+      type: "message",
+      tools: [{ type: "function", name: "g", parameters: {} }],
+    });
+  });
+
   it("inlines local refs, strips definitions and defaults the object type", () => {
     const body = obj({
       tools: [
@@ -979,6 +1089,35 @@ describe("Kimi Claude Messages path", () => {
     };
 
     expect(third.messages[1]?.content.map((part) => part.type)).toEqual(["tool_use"]);
+  });
+
+  it("shares cached thinking across k3.1-pro variants only", async () => {
+    const store = makeKimiReplayStore();
+    const executor = makeKimiExecutor({ replay: store });
+    let reply: unknown = anthropicMessage(thinkingContent);
+    const h = await harness(kimiCredential(), () => new Response(JSON.stringify(reply)));
+    const firstTurn = json({ ...followUp, messages: followUp.messages.slice(0, 1) });
+
+    await execute(executor, h, { model: "kimi-k3.1-pro", payload: firstTurn }, claudeOptions());
+    reply = anthropicMessage([{ type: "text", text: "done" }]);
+
+    const replayedTypes = async (model: string): Promise<string[]> => {
+      const before = h.calls.length;
+
+      await execute(executor, h, { model, payload: json(followUp) }, claudeOptions());
+
+      const sent = JSON.parse(h.calls[before]?.text ?? "{}") as {
+        messages: Array<{ content: Array<{ type: string }> }>;
+      };
+
+      return (sent.messages[1]?.content ?? []).map((part) => part.type);
+    };
+
+    // Other families neither see nor clear the k3.1-pro entry.
+    for (const model of ["kimi-k3", "kimi-k3-256k", "kimi-k2.8"])
+      expect(await replayedTypes(model)).toEqual(["tool_use"]);
+
+    expect(await replayedTypes("kimi-k3.1-pro-highspeed")).toEqual(["thinking", "tool_use"]);
   });
 
   it("caches replay content from a streamed answer", async () => {
