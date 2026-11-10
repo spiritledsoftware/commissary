@@ -20,6 +20,7 @@ import {
   set,
 } from "@commissary/json";
 import { parseSuffix } from "../../../thinking/suffix.ts";
+import { claudeOutputEffort } from "../../../thinking/claude-effort-directive.ts";
 import { convertBudgetToLevel } from "../../../thinking/convert.ts";
 import {
   alignClaudeToolResults,
@@ -669,6 +670,11 @@ const convertClaudeRequest = (
         break;
       }
     }
+  } else if (thinkingConfig === undefined) {
+    // Claude output_config.effort is independent of thinking activation: keep it when thinking is omitted.
+    const effort = claudeOutputEffort(request);
+
+    if (effort !== "") reasoningEffort = effort;
   }
 
   template = set(template, "reasoning.effort", reasoningEffort);

@@ -5,12 +5,14 @@
  * ExtractTranslatedReasoningEffort) and internal/thinking/configuration_update.go.
  */
 import { asInt, asString, get, type Json } from "@commissary/json";
+import { extractClaudeEffortDirectiveConfig } from "./claude-effort-directive.ts";
 import { convertBudgetToLevel } from "./convert.ts";
 import { extractConfigurationUpdateConfig, isResponsesFormat } from "./configuration-update.ts";
 import { getFirst, getString, normalize } from "./json.ts";
 import { parseSuffix, parseSuffixToConfig } from "./suffix.ts";
 import {
   autoConfig,
+  BETWEEN_TOOLS,
   budgetConfig,
   EMPTY_CONFIG,
   hasThinkingConfig,
@@ -54,8 +56,12 @@ export const extractClaudeConfig = (body: Json | undefined): ThinkingConfig => {
 
   const effort = get(body, "output_config.effort");
 
-  if (thinkingType === "adaptive" || thinkingType === "auto") {
-    // Only an explicit effort counts; otherwise upstream defaults apply.
+  if (
+    get(body, "thinking") === undefined ||
+    thinkingType === "adaptive" ||
+    thinkingType === "auto"
+  ) {
+    // Only an explicit effort counts (it also applies when thinking is omitted); otherwise upstream defaults apply.
     if (typeof effort === "string") {
       const value = normalize(effort);
 
@@ -255,6 +261,18 @@ const extractThinkingConfigForUsage = (
     case "xai":
     case "openai-response":
       return extractCodexUsageConfig(body);
+    case "claude": {
+      // between_tools is how claude-sonnet-5-5 turns thinking off.
+      if (getString(body, "thinking.type") === BETWEEN_TOOLS) return noneConfig();
+      const config = extractThinkingConfig(body, provider);
+
+      if (config.mode === "none" && hasThinkingConfig(config)) return config;
+      // The last effort directive, not the cached top-level placeholder, is the turn's effort.
+      const directive = extractClaudeEffortDirectiveConfig(body);
+
+      return hasThinkingConfig(directive) ? directive : config;
+    }
+
     default:
       return extractThinkingConfig(body, provider);
   }

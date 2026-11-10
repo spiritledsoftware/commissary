@@ -338,6 +338,75 @@ describe("parseCatalogAdditions", () => {
     );
     expect(parseCatalogAdditions({ version: 2, providers: {} }).ok).toBe(false);
   });
+
+  it("accepts the one disableType and rejects any other", () => {
+    const facts = (disableType: string): JsonObject => ({
+      claude: { facts: { "claude-sonnet-5-5": { thinking: { disableType } } } },
+    });
+
+    expect(parseCatalogAdditions({ version: 1, providers: facts("between_tools") }).ok).toBe(true);
+    expect(parseCatalogAdditions({ version: 1, providers: facts("disabled") }).ok).toBe(false);
+    expect(parseCatalogAdditions({ version: 1, providers: facts("between-tools") }).ok).toBe(false);
+  });
+});
+
+describe("bundled thinking facts of Claude-protocol models", () => {
+  const catalogs = embeddedCatalogs();
+
+  const thinking = (section: Section, id: string) =>
+    sectionModels(catalogs, section).find((model) => model.id === id)?.thinking;
+
+  it.each([
+    "claude-haiku-5-5",
+    "claude-opus-4-5",
+    "claude-opus-5",
+    "claude-sonnet-5",
+    "claude-sonnet-5-5",
+  ])("%s can be turned off", (id) => {
+    expect(thinking("claude", id)?.zeroAllowed, id).toBe(true);
+  });
+
+  it.each(["claude-opus-5-5", "claude-fable-5", "claude-fable-5-1"])(
+    "%s cannot, and takes adaptive thinking only",
+    (id) => {
+      const support = thinking("claude", id);
+
+      expect(support?.zeroAllowed, id).toBe(false);
+      expect(support?.dynamicAllowed, id).toBe(true);
+      expect(support?.levels?.length, id).toBeGreaterThan(0);
+      expect(support?.min, id).toBeUndefined();
+      expect(support?.max, id).toBeUndefined();
+    },
+  );
+
+  it("claude-fable-5-2, which the bundled models.dev snapshot predates, gets its facts when models.dev lists it", () => {
+    // The live catalog is refreshed from models.dev; the additions only fill the gaps it leaves (ADR 0020).
+    const efforts = ["low", "medium", "high", "xhigh", "max"];
+
+    const document = documentText({
+      anthropic: {
+        "claude-fable-5-2": mdModel("claude-fable-5-2", {
+          reasoning_options: [{ type: "effort", values: efforts }],
+        }),
+      },
+    });
+
+    const built = buildModelsCatalog(trimmed(document), catalogAdditions());
+    const support = built.claude.find((model) => model.id === "claude-fable-5-2")?.thinking;
+
+    expect(support).toEqual({ zeroAllowed: false, dynamicAllowed: true, levels: efforts });
+  });
+
+  it("only claude-sonnet-5-5 needs between_tools", () => {
+    for (const model of sectionModels(catalogs, "claude"))
+      expect(model.thinking?.disableType, model.id).toBe(
+        model.id === "claude-sonnet-5-5" ? "between_tools" : undefined,
+      );
+  });
+
+  it("Kimi's coding model can be turned off", () => {
+    expect(thinking("kimi", "kimi-for-coding")?.zeroAllowed).toBe(true);
+  });
 });
 
 describe("coverage of what the Go server serves", () => {
@@ -385,6 +454,23 @@ describe("coverage of what the Go server serves", () => {
     return Object.values(doc[spec.source].models).find((model) => mapId(model.id) === id);
   };
 
+  /**
+   * Thinking fields Commissary corrected after the pin (Go `ad9e456d`: Fable 5 and 5.1 take no budget, and they and
+   * Opus 5.5 reject `thinking.type=disabled`), as `${section}/${id} thinking.${field}`. The pin is never regenerated
+   * (ADR 0020), so the list is permanent.
+   */
+  const CORRECTED_SINCE_PIN: ReadonlySet<string> = new Set([
+    "claude/claude-fable-5 thinking.min",
+    "claude/claude-fable-5 thinking.max",
+    "claude/claude-fable-5 thinking.zeroAllowed",
+    "claude/claude-fable-5 thinking.dynamicAllowed",
+    "claude/claude-fable-5-1 thinking.min",
+    "claude/claude-fable-5-1 thinking.max",
+    "claude/claude-fable-5-1 thinking.zeroAllowed",
+    "claude/claude-fable-5-1 thinking.dynamicAllowed",
+    "claude/claude-opus-5-5 thinking.zeroAllowed",
+  ]);
+
   it("every pinned runtime field is still served, unless models.dev has its own value for it", () => {
     const differences: string[] = [];
 
@@ -401,6 +487,8 @@ describe("coverage of what the Go server serves", () => {
         // models.dev saying the model does not reason is its own value for the whole thinking support.
         for (const field of entry?.reasoning === false ? [] : THINKING_FIELDS) {
           if (own[field] !== undefined) continue;
+
+          if (CORRECTED_SINCE_PIN.has(`${section}/${pinned.id} thinking.${field}`)) continue;
           const want = JSON.stringify(pinned.thinking?.[field]);
           const got = JSON.stringify(model.thinking?.[field]);
 

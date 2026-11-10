@@ -7,7 +7,12 @@ import { normalizeCchInput } from "../src/executor/claude/signing.ts";
 import { xxh64 } from "../src/executor/claude/xxhash64.ts";
 import { asString, type JsonObject } from "@commissary/json";
 import { setModelInfoLookup } from "@commissary/translation";
-import { oauthCredential, oauthPipeline, type Harness } from "./support/claude-oauth.ts";
+import {
+  catalogCapabilities,
+  oauthCredential,
+  oauthPipeline,
+  type Harness,
+} from "./support/claude-oauth.ts";
 import {
   jsonResponse,
   loadConfig,
@@ -695,6 +700,96 @@ describe("OAuth credential (Claude Code cloaking)", () => {
       error: { code: "request_scoped" },
     });
     expect(h.pipeline.calls[0]!.headers["anthropic-beta"]).toContain("fast-mode-2026-02-01");
+  });
+});
+
+describe("Claude thinking with the catalog's capabilities", () => {
+  const thinkingOf = (h: Harness): JsonObject => lastBody(h).thinking as JsonObject;
+
+  it("an OpenAI none on claude-sonnet-5-5 sends between_tools upstream", async () => {
+    const h = oauthPipeline(
+      () => sseResponse(sse(streamEvents())),
+      await loadConfig(""),
+      oauthCredential(),
+      catalogCapabilities,
+    );
+
+    afterAll(h.pipeline.dispose);
+
+    const response = await h.pipeline.call(
+      "/v1/chat/completions",
+      postJson({
+        model: "claude-sonnet-5-5",
+        max_tokens: 32,
+        reasoning_effort: "none",
+        messages: [{ role: "user", content: "Hello there, Claude" }],
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(thinkingOf(h)).toEqual({ type: "between_tools" });
+    expect((lastBody(h).output_config as JsonObject | undefined)?.effort).toBeUndefined();
+  });
+
+  it("a cloaked off request on claude-fable-5-1 becomes adaptive low, displayed as omitted", async () => {
+    const h = oauthPipeline(
+      () => jsonResponse(message()),
+      await loadConfig(""),
+      oauthCredential(),
+      catalogCapabilities,
+    );
+
+    afterAll(h.pipeline.dispose);
+
+    const response = await h.pipeline.call(
+      "/v1/messages",
+      postJson({
+        model: "claude-fable-5-1",
+        max_tokens: 32,
+        thinking: { type: "disabled" },
+        messages: [{ role: "user", content: "Hello there, Claude" }],
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    // Cloaking adds `display: updates` to adaptive thinking unless the caller chose; the off request chose omitted.
+    expect(thinkingOf(h)).toEqual({ type: "adaptive", display: "omitted" });
+    expect((lastBody(h).output_config as JsonObject).effort).toBe("low");
+  });
+
+  it("records the last mid-conversation effort directive, not the top-level placeholder", async () => {
+    const h = oauthPipeline(
+      () => jsonResponse(message()),
+      await loadConfig(""),
+      oauthCredential(),
+      catalogCapabilities,
+    );
+
+    afterAll(h.pipeline.dispose);
+
+    const directive = (effort: string) => ({
+      role: "system",
+      content: [],
+      output_config: { effort },
+    });
+
+    const response = await h.pipeline.call(
+      "/v1/messages",
+      postJson({
+        model: "claude-opus-5",
+        max_tokens: 32,
+        thinking: { type: "adaptive" },
+        output_config: { effort: "low" },
+        messages: [
+          directive("medium"),
+          { role: "user", content: "Hello there, Claude" },
+          directive("high"),
+        ],
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(h.pipeline.records[0]?.reasoningEffort).toBe("high");
   });
 });
 

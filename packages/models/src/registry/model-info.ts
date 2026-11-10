@@ -9,12 +9,15 @@
  * instead of `=== undefined`.
  */
 import { Schema, type Types } from "effect";
+import { BETWEEN_TOOLS, type DisableType } from "@commissary/translation/thinking";
 
 export interface ThinkingSupport {
   readonly min?: number;
   readonly max?: number;
   readonly zeroAllowed?: boolean;
   readonly dynamicAllowed?: boolean;
+  /** Claude `thinking.type` that turns thinking off; absent means `disabled` (`between_tools` on claude-sonnet-5-5). */
+  readonly disableType?: DisableType;
   readonly levels?: readonly string[];
 }
 
@@ -73,6 +76,7 @@ const WireThinking = Schema.Struct({
   max: optionalNull(Schema.Number),
   zero_allowed: optionalNull(Schema.Boolean),
   dynamic_allowed: optionalNull(Schema.Boolean),
+  disable_type: optionalNull(Schema.Literal(BETWEEN_TOOLS)),
   levels: optionalNull(Strings),
 });
 
@@ -152,6 +156,7 @@ export const fromWire = (wire: WireModel): ModelInfo => {
     put(thinking, "max", wire.thinking.max);
     put(thinking, "zeroAllowed", wire.thinking.zero_allowed);
     put(thinking, "dynamicAllowed", wire.thinking.dynamic_allowed);
+    put(thinking, "disableType", wire.thinking.disable_type);
     put(thinking, "levels", wire.thinking.levels);
     info.thinking = thinking;
   }

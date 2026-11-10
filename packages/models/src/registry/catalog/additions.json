@@ -58,16 +58,20 @@
         },
         "claude-fable-5": {
           "thinking": {
-            "min": 1024,
-            "max": 128000,
-            "zeroAllowed": true
+            "zeroAllowed": false,
+            "dynamicAllowed": true
           }
         },
         "claude-fable-5-1": {
           "thinking": {
-            "min": 1024,
-            "max": 128000,
-            "zeroAllowed": true
+            "zeroAllowed": false,
+            "dynamicAllowed": true
+          }
+        },
+        "claude-fable-5-2": {
+          "thinking": {
+            "zeroAllowed": false,
+            "dynamicAllowed": true
           }
         },
         "claude-opus-5-5": {
@@ -75,7 +79,7 @@
             "webSearch": true
           },
           "thinking": {
-            "zeroAllowed": true,
+            "zeroAllowed": false,
             "dynamicAllowed": true
           }
         },
@@ -83,6 +87,18 @@
           "nativeCapabilities": {
             "webSearch": true
           },
+          "thinking": {
+            "zeroAllowed": true,
+            "dynamicAllowed": true,
+            "disableType": "between_tools"
+          }
+        },
+        "claude-opus-4-5": {
+          "thinking": {
+            "zeroAllowed": true
+          }
+        },
+        "claude-haiku-5-5": {
           "thinking": {
             "zeroAllowed": true,
             "dynamicAllowed": true
@@ -1299,6 +1315,11 @@
     },
     "kimi": {
       "facts": {
+        "kimi-for-coding": {
+          "thinking": {
+            "zeroAllowed": true
+          }
+        },
         "kimi-k3": {
           "thinking": {
             "zeroAllowed": true

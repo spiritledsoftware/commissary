@@ -28,6 +28,19 @@ export const isLevelSupported = (
 const levelIndex = (level: string): number =>
   STANDARD_LEVEL_ORDER.findIndex((candidate) => equalFold(level, candidate));
 
+/** The lowest canonical effort level in `supported`, ignoring mode markers such as `none` and `auto`. */
+const lowestSupportedLevel = (supported: readonly string[]): string | undefined => {
+  let best = -1;
+
+  for (const candidate of supported) {
+    const index = levelIndex(candidate.trim());
+
+    if (index !== -1 && (best === -1 || index < best)) best = index;
+  }
+
+  return best === -1 ? undefined : STANDARD_LEVEL_ORDER[best];
+};
+
 const normalizeLevels = (levels: readonly string[]): string[] => levels.map(normalize);
 
 /** Providers whose thinking can be expressed as a numeric budget. */
@@ -277,9 +290,20 @@ export const validateConfig = (
   }
 
   if (config.mode === "none" && toFormat === "claude") {
-    // Claude disables explicitly via thinking.type="disabled"; keep budget 0 so the applier omits budget_tokens.
-    config.budget = 0;
-    config.level = "";
+    const lowest = support.zeroAllowed === true ? undefined : lowestSupportedLevel(levels);
+
+    if (lowest !== undefined) {
+      // Adaptive-only Claude models (claude-opus-5-5, claude-fable-5, ...) reject thinking.type="disabled". Like
+      // other models that cannot be disabled, they fall back to their lowest supported level.
+      config.mode = "level";
+      config.budget = 0;
+      config.level = lowest;
+    } else {
+      // Claude disables explicitly via thinking.type="disabled" (or the model's disableType); keep budget 0 so the
+      // applier omits budget_tokens.
+      config.budget = 0;
+      config.level = "";
+    }
   } else {
     if (config.mode === "budget" || config.mode === "auto" || config.mode === "none") {
       config.budget = clampBudget(config.budget, modelInfo);
@@ -294,7 +318,7 @@ export const validateConfig = (
       levels.length > 0 &&
       (config.budget > 0 || cannotDisableLevelModel)
     ) {
-      config.level = levels[0] ?? config.level;
+      config.level = lowestSupportedLevel(levels) ?? config.level;
     }
   }
 

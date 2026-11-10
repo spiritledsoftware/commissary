@@ -13,6 +13,12 @@ import type { Json } from "@commissary/json";
 /** Canonical mode; the string values match Go `ThinkingMode.String()`. */
 export type ThinkingMode = "budget" | "level" | "none" | "auto";
 
+/** The Claude `thinking.type` of a model that rejects `disabled` and turns thinking off with this one instead. */
+export const BETWEEN_TOOLS = "between_tools";
+
+/** The `thinking.type`s a model's `disableType` may name (a closed set: nothing else is validated upstream). */
+export type DisableType = typeof BETWEEN_TOOLS;
+
 /** Standard level names. A level can hold any string extracted from a request; validation rejects unknown ones. */
 export const Level = {
   none: "none",
@@ -64,6 +70,8 @@ export interface ModelThinkingSupport {
   readonly max?: number | undefined;
   readonly zeroAllowed?: boolean | undefined;
   readonly dynamicAllowed?: boolean | undefined;
+  /** Claude `thinking.type` that turns thinking off for this model; absent means `disabled` (`between_tools` on claude-sonnet-5-5). */
+  readonly disableType?: DisableType | undefined;
   readonly levels?: readonly string[] | undefined;
 }
 

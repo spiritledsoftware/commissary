@@ -10,7 +10,7 @@
  * five Go entry points collapse into {@link applyThinking} with options (see {@link ApplyThinkingOptions}); debug
  * logging is dropped; errors are returned, not thrown; plugin appliers do not exist.
  */
-import { cloneJson, type Json } from "@commissary/json";
+import { cloneJson, get, type Json } from "@commissary/json";
 import {
   extractConfigurationUpdateConfig,
   isResponsesFormat,
@@ -24,7 +24,7 @@ import {
   extractSourceThinkingConfig,
   extractThinkingConfig,
 } from "./extract.ts";
-import { normalize } from "./json.ts";
+import { delPath, normalize } from "./json.ts";
 import { getProviderApplier } from "./provider/index.ts";
 import { stripThinkingConfig } from "./strip.ts";
 import { parseSuffix, parseSuffixToConfig } from "./suffix.ts";
@@ -181,6 +181,10 @@ const applyUserDefinedModel = (
   return { body: summarize(applied) };
 };
 
+/** The caller asked for thinking off: mode none, or a zero budget. */
+const thinkingRequestedOff = (config: ThinkingConfig): boolean =>
+  config.mode === "none" || (config.mode === "budget" && config.budget === 0);
+
 /**
  * Applies thinking configuration to `body` (already in the target provider format), mutating it in place.
  * Passthrough (body returned unchanged, no error) for unknown providers, and for known models without thinking
@@ -270,6 +274,27 @@ export const applyThinking = (
 
   // Native Responses keeps the top-level baseline and in-turn updates as-is.
   if (nativeResponses && !suffix.hasSuffix) return { body };
+
+  if (
+    fromFormat === "claude" &&
+    providerFormat === "claude" &&
+    !suffix.hasSuffix &&
+    get(body, "thinking") === undefined
+  ) {
+    // Native Claude effort is independent of thinking activation. Preserve the model's thinking default unless a
+    // suffix or an explicit summary changes it.
+    return {
+      body: applySummaryConfigForProvider(
+        body,
+        providerFormat,
+        baseModel,
+        providerKey,
+        modelInfo,
+        summaryConfig,
+        options.lookupModelInfo,
+      ),
+    };
+  }
 
   if (modelInfo === undefined || modelInfo.userDefined === true) {
     return applyUserDefinedModel(
@@ -367,9 +392,17 @@ export const applyThinking = (
 
   // 6. Apply with the provider applier, then restore the target summary intent that was explicit before suffix
   // processing. A fully disabled amount takes precedence over visibility.
-  const applied = applier.apply(body, validation.config, modelInfo);
+  let applied = applier.apply(body, validation.config, modelInfo);
 
   if (thinkingIsFullyDisabled(validation.config) || nativeResponses) return { body: applied };
+
+  if (providerFormat === "claude" && thinkingRequestedOff(config)) {
+    // The model cannot turn thinking off, so validation fell back to its lowest level. Drop any stale
+    // block_binding from the off request and keep the caller's intent of seeing no thinking: without an explicit
+    // omitted display, cloaking would add progress updates.
+    applied = delPath(applied, "thinking.block_binding");
+    summaryConfig = { mode: "disabled", detail: "" };
+  }
 
   return {
     body: applySummaryConfigForProvider(

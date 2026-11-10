@@ -38,6 +38,7 @@ import {
   parseBody,
   resolveApplierModel,
 } from "./support/thinking.ts";
+import { aheadOfFixture, unusedAheadOfFixtureEntries } from "./support/ported-ahead.ts";
 
 // Golden cases generated from the real Go internal/thinking by `go run ./tools/fixturegen/thinking`.
 
@@ -163,7 +164,9 @@ describe("thinking golden fixtures", () => {
 
           const expected = c.e ?? c.o;
 
-          return actual === expected
+          const key = `validate #${index} ${model?.id ?? "<none>"} ${c.c} ${c.f}->${c.t} suffix=${c.s === true}`;
+
+          return aheadOfFixture(key, actual, expected ?? "")
             ? undefined
             : `${c.c} ${c.f}->${c.t} suffix=${c.s === true}: ${actual} != ${expected}`;
         });
@@ -201,7 +204,14 @@ describe("thinking golden fixtures", () => {
       const actual = `${bodyKey(result.body)} ${result.error?.code ?? ""} ${result.error?.message ?? ""}`;
       const expected = `${expectedKey(expectedBody)} ${c.error?.code ?? ""} ${c.error?.message ?? ""}`;
 
-      if (actual === expected) return undefined;
+      if (
+        aheadOfFixture(
+          `apply ${c.variant} ${c.to} ${c.model} from=${c.from} model=${c.modelRef ?? c.modelInfo?.id ?? ""} source=${c.source ?? ""} summary=${JSON.stringify(c.summary ?? null)} ${c.body}`,
+          actual,
+          expected,
+        )
+      )
+        return undefined;
 
       return `${c.name ?? `${c.variant} ${c.to} ${c.model} from=${c.from}`}\n  in:  ${c.body}\n  got: ${actual}\n  want:${expected}`;
     };
@@ -240,7 +250,9 @@ describe("thinking golden fixtures", () => {
 
           const expected = expectedKey(c.same === true ? c.body : (c.out ?? ""));
 
-          return bodyKey(out) === expected
+          const key = `applier ${name} model=${c.model ?? ""} ${c.config} ${c.body}`;
+
+          return aheadOfFixture(key, bodyKey(out), expected)
             ? undefined
             : `${name} model=${c.model ?? ""} ${c.config} ${c.body}: ${bodyKey(out)} != ${expected}`;
         });
@@ -332,5 +344,10 @@ describe("thinking golden fixtures", () => {
     });
 
     expect(failures).toEqual([]);
+  });
+
+  // Runs last: the ported-ahead entries exist only while a golden case needs them (F2 deletes them with the module).
+  it("every ported-ahead entry is used by a golden case", () => {
+    expect(unusedAheadOfFixtureEntries()).toEqual([]);
   });
 });

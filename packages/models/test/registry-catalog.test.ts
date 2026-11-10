@@ -106,6 +106,38 @@ describe("static lookups", () => {
     expect(lookupStaticModelInfo(catalogs, "")).toBeUndefined();
   });
 
+  it("dated and bracketed Claude variants share their catalog entry", () => {
+    for (const id of [
+      "claude-sonnet-5-5[1m]",
+      "claude-sonnet-5-5-20261001",
+      "claude-sonnet-5-5-20261001[1m]",
+    ]) {
+      expect(lookupStaticModelInfo(catalogs, id)?.id, id).toBe("claude-sonnet-5-5");
+      expect(lookupStaticModelInfoByChannel(catalogs, id, "claude")?.id, id).toBe(
+        "claude-sonnet-5-5",
+      );
+    }
+
+    expect(
+      lookupStaticModelInfoByChannel(catalogs, "claude-sonnet-5-5[1m]", "gemini"),
+    ).toBeUndefined();
+    expect(lookupStaticModelInfo(catalogs, "claude-nope-1[1m]")).toBeUndefined();
+    expect(lookupStaticModelInfo(catalogs, "gpt-6-astra[1m]")).toBeUndefined();
+  });
+
+  it("an exact id wins over its family", () => {
+    // claude-opus-4-5-20251101 and claude-opus-4-5 are both catalog entries: neither answers for the other.
+    expect(lookupStaticModelInfo(catalogs, "claude-opus-4-5-20251101")?.id).toBe(
+      "claude-opus-4-5-20251101",
+    );
+
+    expect(lookupStaticModelInfoByChannel(catalogs, "claude-opus-4-5-20251101", "claude")?.id).toBe(
+      "claude-opus-4-5-20251101",
+    );
+
+    expect(lookupStaticModelInfo(catalogs, "claude-opus-4-5")?.id).toBe("claude-opus-4-5");
+  });
+
   it("the bundled models.dev snapshot is valid", () => {
     expect(Object.keys(embeddedModelsDev().anthropic.models).length).toBeGreaterThan(5);
   });

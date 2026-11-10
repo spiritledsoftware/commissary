@@ -18,9 +18,10 @@
  */
 import { Effect, Stream } from "effect";
 import { splitLines } from "@commissary/translation/sse";
-import { asString, get, type Json, set, tryParseJson } from "@commissary/json";
+import { get, type Json, set, tryParseJson } from "@commissary/json";
 import { countClaudeInputTokens } from "@commissary/translation/tokenizer";
 import { Formats } from "@commissary/translation/formats";
+import { extractTranslatedReasoningEffort } from "@commissary/translation/thinking";
 import { responseModelOf, type UsageDetail } from "../../usage/record.ts";
 import { ClaudeStreamReader, validateClaudeStreamingResponse } from "../claude/stream.ts";
 import { mergeUsage, parseClaudeStreamUsage, parseClaudeUsage } from "../claude/usage.ts";
@@ -63,10 +64,12 @@ export const prepareMessagesBody = Effect.fnUntraced(function* (
   let body: Json = setIfDifferent(translated.body, "model", shaping.baseModel);
   body = setIfDifferent(body, "stream", stream);
   body = anonymizeMessagesUserId(body);
-  const effort = asString(get(body, "output_config.effort"));
+  const final = finalizeForOpenCode(shaping, Formats.Claude, translated.original, body);
+  // The final body after payload rules: the last effort directive wins over the top-level value (fb30a9e8).
+  const effort = extractTranslatedReasoningEffort(final, "claude");
   shaping.context.usage.setReasoningEffort(effort !== "" ? effort : undefined);
 
-  return finalizeForOpenCode(shaping, Formats.Claude, translated.original, body);
+  return final;
 });
 
 const send = Effect.fnUntraced(function* (attempt: OpenCodeAttempt, stream: boolean) {

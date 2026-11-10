@@ -3,10 +3,13 @@
  * (`thinking.type="adaptive"` + `output_config.effort`).
  *
  * Go source: internal/thinking/provider/claude/apply.go.
+ *
+ * Turning thinking off writes the model's `disableType` (`between_tools` on claude-sonnet-5-5, which rejects
+ * `disabled`), default `disabled`.
  */
 import { asInt, get, type Json } from "@commissary/json";
 import { convertLevelToBudget } from "../convert.ts";
-import { delIfEmptyObject, delPath, delPaths, ensureBody, setPath } from "../json.ts";
+import { delIfEmptyObject, delPath, ensureBody, setPath } from "../json.ts";
 import { isUserDefinedModel } from "../types.ts";
 import type { ProviderApplier, ThinkingConfig, ThinkingModelInfo } from "../types.ts";
 
@@ -14,12 +17,19 @@ import type { ProviderApplier, ThinkingConfig, ThinkingModelInfo } from "../type
 const clearEffort = (body: Json | undefined): Json | undefined =>
   delIfEmptyObject(delPath(body, "output_config.effort"), "output_config");
 
-const disable = (body: Json | undefined): Json | undefined => {
-  let result = setPath(body, "thinking.type", "disabled");
-  // Summary display only applies to an active thinking block.
-  result = delPaths(result, ["thinking.budget_tokens", "thinking.display"]);
+/**
+ * Turns thinking off with the type the model accepts: `disabled` for most Claude models, the model's `disableType`
+ * otherwise. Neither type accepts other thinking fields (budget_tokens, display, block_binding), and
+ * `between_tools` only accepts effort `high` or below, so the whole `thinking` object is replaced and the effort
+ * is left to the model default.
+ */
+const disable = (
+  body: Json | undefined,
+  modelInfo: ThinkingModelInfo | undefined,
+): Json | undefined => {
+  const type = modelInfo?.thinking?.disableType ?? "disabled";
 
-  return clearEffort(result);
+  return clearEffort(setPath(setPath(body, "thinking", {}), "thinking.type", type));
 };
 
 const enableWithoutBudget = (body: Json | undefined): Json | undefined =>
@@ -85,11 +95,7 @@ const applyBudget = (
   budget: number,
   modelInfo: ThinkingModelInfo,
 ): Json | undefined => {
-  if (budget === 0) {
-    return clearEffort(
-      delPath(setPath(body, "thinking.type", "disabled"), "thinking.budget_tokens"),
-    );
-  }
+  if (budget === 0) return disable(body, modelInfo);
 
   let result = setPath(body, "thinking.type", "enabled");
   result = setPath(result, "thinking.budget_tokens", budget);
@@ -98,21 +104,27 @@ const applyBudget = (
   return normalizeClaudeBudget(result, budget, modelInfo);
 };
 
-/** User-defined models: written without validation; level → adaptive effort, auto → enabled. */
+/**
+ * User-defined models: written without validation; level → adaptive effort, auto → enabled. Unlike Go, which passes
+ * no model here, a `disableType` on the record is honoured: configured models are user-defined for each attempt.
+ */
 const applyCompatibleClaude = (
   body: Json | undefined,
   config: ThinkingConfig,
+  modelInfo: ThinkingModelInfo | undefined,
 ): Json | undefined => {
   const root = ensureBody(body);
 
   switch (config.mode) {
     case "none":
-      return disable(root);
+      return disable(root, modelInfo);
     case "auto":
       return enableWithoutBudget(root);
     case "level":
       return config.level === "" ? root : adaptive(root, config.level);
     case "budget":
+      if (config.budget === 0) return disable(root, modelInfo);
+
       return clearEffort(
         setPath(setPath(root, "thinking.type", "enabled"), "thinking.budget_tokens", config.budget),
       );
@@ -122,7 +134,7 @@ const applyCompatibleClaude = (
 export const claudeApplier: ProviderApplier = {
   apply(body, config, modelInfo) {
     if (isUserDefinedModel(modelInfo) || modelInfo === undefined)
-      return applyCompatibleClaude(body, config);
+      return applyCompatibleClaude(body, config, modelInfo);
 
     if (modelInfo.thinking === undefined) return body;
 
@@ -132,7 +144,7 @@ export const claudeApplier: ProviderApplier = {
 
     switch (config.mode) {
       case "none":
-        return disable(root);
+        return disable(root, modelInfo);
       case "level": {
         if (supportsAdaptive && config.level !== "") return adaptive(root, config.level);
         // Non-adaptive models: convert the level to a budget.
