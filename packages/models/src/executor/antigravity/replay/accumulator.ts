@@ -10,6 +10,7 @@ import { createHash } from "node:crypto";
 import { Effect } from "effect";
 import {
   asBool,
+  asInt,
   asString,
   get,
   isJsonArray,
@@ -40,6 +41,8 @@ export interface ReplayScope {
   readonly modelName: string;
   readonly sessionKey: string;
   readonly snapshot: LedgerSnapshot;
+  /** The request came from an OpenAI chat client: its context hashes leave out the tool policy (80aa2b1d). */
+  readonly openAIChat?: boolean;
 }
 
 export const NO_REPLAY_SCOPE: ReplayScope = {
@@ -118,7 +121,19 @@ export class ReplayAccumulator {
 
     this.#contentIndex = contentIndex;
     this.#nextPartIndex = basePartIndex;
-    this.#responseContextHash = index.contextFingerprint(contentIndex);
+    this.#responseContextHash = scope.openAIChat
+      ? index.openAIChatContextFingerprint(contentIndex)
+      : index.contextFingerprint(contentIndex);
+
+    if (scope.openAIChat) {
+      items.forEach((item, itemIndex) => {
+        items[itemIndex] = withContextHash(
+          item,
+          index.openAIChatContextFingerprint(asInt(item["contentIndex"])),
+        );
+      });
+    }
+
     this.#overflow =
       items.length > REPLAY_MAX_ITEMS_PER_ENTRY || this.#itemBytes > REPLAY_MAX_BYTES_PER_ENTRY;
   }
@@ -187,11 +202,28 @@ export class ReplayAccumulator {
     if (payload !== undefined) this.observePayload(payload);
   }
 
+  /** `cacheAntigravityReasoningReplayFromResponse`: a non-stream body is complete even without a finishReason. */
+  observeCompleted(payload: Json): void {
+    this.observePayload(payload);
+
+    if (
+      !this.#terminal &&
+      (get(payload, "response.candidates.0") !== undefined ||
+        get(payload, "candidates.0") !== undefined)
+    )
+      this.#terminal = true;
+  }
+
   observePayload(payload: Json): void {
-    const finishReason = asString(get(payload, "response.candidates.0.finishReason")).trim();
+    // The candidates sit under `response` on the wire and at the top level in a bare Gemini body (da21f1e5).
+    const finishReason =
+      asString(get(payload, "response.candidates.0.finishReason")).trim() ||
+      asString(get(payload, "candidates.0.finishReason")).trim();
 
     if (finishReason !== "") this.#terminal = true;
-    const parts = get(payload, "response.candidates.0.content.parts");
+    let parts = get(payload, "response.candidates.0.content.parts");
+
+    if (!isJsonArray(parts)) parts = get(payload, "candidates.0.content.parts");
 
     if (!isJsonArray(parts)) return;
 
@@ -331,6 +363,9 @@ export class ReplayAccumulator {
       }
     }
 
+    // A thought of this turn carried the signature of the call that follows it (da21f1e5).
+    if (signature === "") signature = this.#claimPrecedingTurnThoughtSignature();
+
     for (const key of replayToolCallKeys(functionCall)) {
       const dedupeKey =
         signature === "" ? `${key}\u0000part:${partIndex}` : `${key}\u0000${signature}`;
@@ -361,6 +396,34 @@ export class ReplayAccumulator {
 
     if (signature !== "") this.#seenSignatures.add(signature);
     this.#lastResponseKind = "function_call";
+  }
+
+  /** `claimPrecedingTurnThoughtSignature`: the latest thought signature of this turn, unless a call already has one. */
+  #claimPrecedingTurnThoughtSignature(): string {
+    for (const item of this.#items) {
+      if (
+        item["type"] === "function_call_part" &&
+        asInt(item["contentIndex"]) === this.#contentIndex &&
+        asString(item["thoughtSignature"]).trim() !== ""
+      )
+        return "";
+    }
+
+    for (let index = this.#items.length - 1; index >= 0; index--) {
+      const item = this.#items[index];
+
+      if (
+        item?.["type"] !== "thought_signature" ||
+        asInt(item["contentIndex"]) !== this.#contentIndex ||
+        item["targetKind"] !== "thought"
+      )
+        continue;
+      const signature = asString(item["thoughtSignature"]).trim();
+
+      if (signature !== "") return signature;
+    }
+
+    return "";
   }
 
   #flushPending(targetKind: string): void {

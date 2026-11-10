@@ -6,6 +6,7 @@ import { builtinTranslators } from "../src/translator/builtin.ts";
 import { setModelInfoLookup } from "../src/translator/model-info.ts";
 import { summaryHooks } from "../src/translator/summary-hooks.ts";
 import {
+  staleGoldenEditEntries,
   unusedMaxTokensAheadEntries,
   unusedParallelToolCallsAheadEntries,
   unusedResponseAheadEntries,
@@ -23,6 +24,15 @@ const files = import.meta.glob<{ default: ReadonlyArray<TranslatorFixtureCase> }
   },
 );
 
+/** The cases that carry generated ids: `translator-fixtures-ids.test.ts` runs them. */
+const idCaseKeys: ReadonlySet<string> = new Set(
+  Object.values(files).flatMap((module) =>
+    module.default
+      .filter((c) => (c.needs ?? []).includes("id-normalization"))
+      .map((c) => `${c.from}->${c.to} ${c.name}`),
+  ),
+);
+
 describe("translator golden fixtures", () => {
   for (const [file, module] of Object.entries(files)) {
     describe(file.replace("./fixtures/translator/", ""), () => {
@@ -38,6 +48,7 @@ describe("translator golden fixtures", () => {
     expect(unusedMaxTokensAheadEntries()).toEqual([]);
     expect(unusedResponseAheadEntries()).toEqual([]);
     expect(unusedParallelToolCallsAheadEntries()).toEqual([]);
+    expect(staleGoldenEditEntries((key) => !idCaseKeys.has(key))).toEqual([]);
   });
 
   it("found fixture files", () => {

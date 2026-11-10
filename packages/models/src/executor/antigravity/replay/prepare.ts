@@ -53,7 +53,13 @@ export const prepareReplayPayload = Effect.fnUntraced(function* (
     payload,
   );
 
-  let scope: ReplayScope = { modelName: modelName.trim(), sessionKey, snapshot: UNLOADED_SNAPSHOT };
+  let scope: ReplayScope = {
+    modelName: modelName.trim(),
+    sessionKey,
+    snapshot: UNLOADED_SNAPSHOT,
+    openAIChat: options.sourceFormat === "openai",
+  };
+
   let updated: Json = structuredClone(payload);
   let replayApplied = false;
 

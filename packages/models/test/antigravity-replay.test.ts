@@ -513,6 +513,110 @@ describe("accumulator -> ledger -> request restore", () => {
   });
 });
 
+describe("OpenAI chat replay continuity (Go da21f1e5, 80aa2b1d)", () => {
+  const call = { name: "get_time", args: { tz: "UTC" } };
+
+  const secondTurn = (extra: JsonObject = {}): Json =>
+    ({
+      model: MODEL,
+      request: {
+        contents: [
+          user("time?"),
+          modelCall("get_time", { tz: "UTC" }, { id: "call_1" }),
+          toolResult("get_time", "call_1"),
+        ],
+        systemInstruction: { parts: [{ text: "sys" }] },
+        ...extra,
+      },
+    }) as unknown as Json;
+
+  it("keys the ledger by an explicit session alias header before the derived id", () => {
+    const key = (headers: Record<string, string>) =>
+      replaySessionKey(
+        {
+          modelName: MODEL,
+          originalRequest: undefined,
+          requestPayload: {},
+          headers: new Headers(headers),
+          derivedSessionId: "derived-1",
+          callerScope: "",
+        },
+        {},
+      );
+
+    expect(key({ "X-Session-Affinity": "alias-1" })).toBe("client:affinity:alias-1");
+    expect(key({})).toBe("derived:derived-1");
+  });
+
+  it("treats a non-stream candidate payload without finishReason or `response` wrapper as complete", async () => {
+    const ledger = makeInMemoryReplayLedger(() => 5_000_000);
+    const accumulator = new ReplayAccumulator(scopeOf("s"), antigravityRequest([user("time?")]));
+    accumulator.observeCompleted({
+      candidates: [
+        { content: { role: "model", parts: [{ functionCall: call, thoughtSignature: SIG }] } },
+      ],
+    });
+
+    expect(accumulator.terminal).toBe(true);
+    await run(accumulator.commit(ledger));
+    expect((await run(ledger.get(MODEL, "s"))).items).toMatchObject([
+      { type: "function_call_part", name: "get_time", thoughtSignature: SIG },
+    ]);
+  });
+
+  it("binds the thought signature of the turn to an unsigned function call", async () => {
+    const ledger = makeInMemoryReplayLedger(() => 5_000_000);
+    const accumulator = new ReplayAccumulator(scopeOf("s"), antigravityRequest([user("time?")]));
+    accumulator.observePayload(
+      upstream([
+        { thought: true, text: "Check the time.", thoughtSignature: SIG },
+        { functionCall: call },
+      ]),
+    );
+    await run(accumulator.commit(ledger));
+
+    const stored = await run(ledger.get(MODEL, "s"));
+    expect(stored.items).toContainEqual(
+      expect.objectContaining({
+        type: "function_call_part",
+        name: "get_time",
+        thoughtSignature: SIG,
+      }),
+    );
+  });
+
+  it("keeps a signature when the next turn's tool declarations and tool choice change", async () => {
+    const ledger = makeInMemoryReplayLedger(() => 5_000_000);
+    const headers = { "Session-Id": "chat-1" };
+    const tools = [{ functionDeclarations: [{ name: "get_time" }] }];
+    const first = antigravityRequest([user("time?")]);
+    (first as { request: JsonObject }).request["tools"] = tools;
+    (first as { request: JsonObject }).request["toolConfig"] = {
+      functionCallingConfig: { mode: "AUTO" },
+    };
+
+    const prepared1 = await run(
+      prepareReplayPayload(ledger, MODEL, execRequest(first), execOptions(headers), first),
+    );
+
+    const accumulator = new ReplayAccumulator(prepared1.scope, first);
+    accumulator.observePayload(upstream([{ functionCall: call, thoughtSignature: SIG }]));
+    await run(accumulator.commit(ledger));
+
+    // The follow-up turn answers with tool_choice none: the policy differs from the one the call was recorded under.
+    const second = secondTurn({
+      tools,
+      toolConfig: { functionCallingConfig: { mode: "NONE" } },
+    });
+
+    const prepared2 = await run(
+      prepareReplayPayload(ledger, MODEL, execRequest(second), execOptions(headers), second),
+    );
+
+    expect(contentsOf(prepared2.payload)[1]?.parts[0]).toMatchObject({ thoughtSignature: SIG });
+  });
+});
+
 describe("provenance repairs", () => {
   it("degrades reserved ids: the first call keeps a bypass sentinel, siblings lose the stale signature", () => {
     const reserved = geminiClaudeToolUseID("a", "f", "{}");

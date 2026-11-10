@@ -8,8 +8,10 @@ import type { Json } from "@commissary/json";
 import { builtinTranslators } from "../../src/translator/builtin.ts";
 import { makeTranslationState, type RequestEnvelope } from "../../src/translator/registry.ts";
 import {
+  portedChunkEdit,
   portedMaxTokens,
   portedParallelToolCalls,
+  portedRequestEdit,
   portedResponse,
 } from "./translator-ported-ahead.ts";
 import { expandEmbeddedJson } from "./structural.ts";
@@ -132,6 +134,9 @@ const checkTranslatorFixture = (
 
   expect(envelope.error?.message).toBe(c.requestError);
   const expected = parseJson(portedSinceGeneration(c.translatedRequest));
+
+  if (typeof expected === "object" && expected !== null && !Array.isArray(expected))
+    portedRequestEdit(`${c.from}->${c.to} ${c.name}`, expected);
   const maxTokens = portedMaxTokens(`${c.from}->${c.to} ${c.name}`);
 
   // A case whose golden predates a ported change expects the new `max_tokens` (see translator-ported-ahead.ts).
@@ -173,7 +178,9 @@ const checkTranslatorFixture = (
     const ahead = portedResponse(`${c.from}->${c.to} ${c.name}`)?.stream;
 
     const expectedOutputs = (c.streamOutputs ?? []).map((chunks, index) =>
-      (ahead?.get(index) ?? chunks).map(normalizeChunk),
+      (ahead?.get(index) ?? chunks.map(portedChunkEdit(`${c.from}->${c.to} ${c.name}`, index))).map(
+        normalizeChunk,
+      ),
     );
 
     expect(outputs).toEqual(expectedOutputs);

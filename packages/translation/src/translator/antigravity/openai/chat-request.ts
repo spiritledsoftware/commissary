@@ -174,8 +174,6 @@ const applyToolChoice = (
   if (mode === "") return;
   set(out, "request.toolConfig.functionCallingConfig.mode", mode);
 
-  if (mode === "NONE") del(out, "request.tools");
-
   if (allowedName.trim() !== "") {
     set(out, "request.toolConfig.functionCallingConfig.allowedFunctionNames", [
       mapSanitizedFunctionName(nameMap, allowedName),

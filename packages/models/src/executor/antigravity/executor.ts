@@ -651,7 +651,7 @@ export const makeAntigravityExecutor = (
       if (prepared.replay !== undefined) {
         const parsed = tryParseJson(text);
 
-        if (parsed !== undefined) prepared.replay.observePayload(parsed);
+        if (parsed !== undefined) prepared.replay.observeCompleted(parsed);
         yield* prepared.replay.commit(ledger);
       }
 

@@ -3,7 +3,15 @@
  *
  * Go source: internal/translator/openai/gemini/openai_gemini_response.go.
  */
-import { asInt, get, isJsonObject, type Json, type JsonObject, setOwn } from "@commissary/json";
+import {
+  asInt,
+  exists,
+  get,
+  isJsonObject,
+  type Json,
+  type JsonObject,
+  setOwn,
+} from "@commissary/json";
 import type { ResponseContext, ResponseTransform } from "../../registry.ts";
 import { getStr, isArr, str } from "../common/read.ts";
 
@@ -461,7 +469,11 @@ export const convertOpenAIResponseToGemini = (
 
     if (chunkOutputs.length > 0) {
       results.push(...chunkOutputs);
-      continue;
+      const chunkFinish = get(choice, "finish_reason");
+
+      // A delta that also carries a finish_reason falls through to the finish handler (bdde391d).
+      if (!exists(delta, "tool_calls") && !(typeof chunkFinish === "string" && chunkFinish !== ""))
+        continue;
     }
 
     const toolCalls = get(delta, "tool_calls");

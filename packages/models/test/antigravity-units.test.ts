@@ -186,31 +186,33 @@ describe("envelope", () => {
 
     expect(stableSessionId(payload)).toBe(stableSessionId(structuredClone(payload)));
     expect(stableSessionId(payload)).toMatch(/^-\d+$/);
-    geminiToAntigravity("claude-sonnet-4-5", payload, "proj", "", 1_700_000_000_000);
-    expect(get(payload, "project")).toBe("proj");
-    expect(get(payload, "requestType")).toBe("agent");
-    expect(get(payload, "request.safetySettings")).toBeUndefined();
-    expect(get(payload, "request.toolConfig.functionCallingConfig.mode")).toBe("AUTO");
-    expect(get(payload, "toolConfig")).toBeUndefined();
-    expect(asString(get(payload, "requestId"))).toMatch(/^agent-[0-9a-f-]{36}$/);
+    const before = structuredClone(payload);
+    const out = geminiToAntigravity("claude-sonnet-4-5", payload, "proj", "", 1_700_000_000_000);
+    expect(payload).toEqual(before);
+    expect(get(out, "project")).toBe("proj");
+    expect(get(out, "requestType")).toBe("agent");
+    expect(get(out, "request.safetySettings")).toBeUndefined();
+    expect(get(out, "request.toolConfig.functionCallingConfig.mode")).toBe("AUTO");
+    expect(get(out, "toolConfig")).toBeUndefined();
+    expect(asString(get(out, "requestId"))).toMatch(/^agent-[0-9a-f-]{36}$/);
   });
 
   it("keeps explicit and derived session ids, skips them for image and web search requests", () => {
     const explicit: Json = { request: { sessionId: "mine", contents: [] } };
-    geminiToAntigravity("gemini-3-pro", explicit, "p", "derived");
-    expect(get(explicit, "request.sessionId")).toBe("mine");
+    const explicitOut = geminiToAntigravity("gemini-3-pro", explicit, "p", "derived");
+    expect(get(explicitOut, "request.sessionId")).toBe("mine");
     const derived: Json = { request: { contents: [] } };
-    geminiToAntigravity("gemini-3-pro", derived, "p", "derived");
-    expect(get(derived, "request.sessionId")).toBe("derived");
+    const derivedOut = geminiToAntigravity("gemini-3-pro", derived, "p", "derived");
+    expect(get(derivedOut, "request.sessionId")).toBe("derived");
     const image: Json = { request: { contents: [] } };
-    geminiToAntigravity("gemini-3.1-flash-image", image, "p", "", 5);
-    expect(get(image, "requestType")).toBe("image_gen");
-    expect(asString(get(image, "requestId"))).toMatch(/^image_gen\/5\/[0-9a-f-]{36}\/12$/);
-    expect(get(image, "request.sessionId")).toBeUndefined();
+    const imageOut = geminiToAntigravity("gemini-3.1-flash-image", image, "p", "", 5);
+    expect(get(imageOut, "requestType")).toBe("image_gen");
+    expect(asString(get(imageOut, "requestId"))).toMatch(/^image_gen\/5\/[0-9a-f-]{36}\/12$/);
+    expect(get(imageOut, "request.sessionId")).toBeUndefined();
     const search: Json = { requestType: "web_search", request: { contents: [] } };
-    geminiToAntigravity("gemini-3-pro", search, "p");
-    expect(get(search, "requestId")).toBeUndefined();
-    expect(get(search, "request.sessionId")).toBeUndefined();
+    const searchOut = geminiToAntigravity("gemini-3-pro", search, "p");
+    expect(get(searchOut, "requestId")).toBeUndefined();
+    expect(get(searchOut, "request.sessionId")).toBeUndefined();
   });
 
   it("selects the daily endpoint unless a base URL is configured", () => {
