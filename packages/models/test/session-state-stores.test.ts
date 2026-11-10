@@ -6,6 +6,7 @@ import { assert, describe, it } from "@effect/vitest";
 import { Effect } from "effect";
 import { TestClock } from "effect/testing";
 import { makeSessionStateContinuityStore } from "../src/executor/claude/continuity.ts";
+import { makeSessionStateDatePinStore } from "../src/executor/claude/date-pin.ts";
 import { makeSessionStateReplayStore as makeClaudeReplayStore } from "../src/executor/claude/thinking-replay.ts";
 import {
   CODEX_REASONING_REPLAY_TURN_TYPE,
@@ -15,12 +16,13 @@ import { nextSessionTurnIndex, resetSessionTurnIndex } from "../src/executor/dev
 import { makeRequestReplayCache } from "../src/executor/gemini/replay.ts";
 import { makeSessionStateKimiReplayStore } from "../src/executor/kimi/replay.ts";
 import { makeSessionStateXaiReplayStore } from "../src/executor/xai/replay.ts";
-import { CurrentOrg, GLOBAL_ORG } from "@commissary/core";
+import { CurrentOrg, GLOBAL_ORG, newOrgId, type OrgId } from "@commissary/core";
 import {
   addressName,
   durableObjectBackend,
   fixedBackend,
   resolveBackend,
+  SessionStateError,
   type SessionAddress,
   type SessionStateBackend,
 } from "@commissary/state";
@@ -247,7 +249,7 @@ describe("Claude and Kimi thinking replay over SessionState", () => {
 
 describe("Claude continuity over SessionState", () => {
   it.effect(
-    "shares prompt id, previous ids and pinned date across invocations with few round trips",
+    "shares prompt id and previous ids across invocations, writing only when the prompt id changes",
     () =>
       Effect.gen(function* () {
         yield* startClock;
@@ -257,40 +259,49 @@ describe("Claude continuity over SessionState", () => {
         const a = makeSessionStateContinuityStore(fixedBackend(backend));
         const b = makeSessionStateContinuityStore();
 
-        const first = yield* invocation(a.begin(identity, session, true, "", "2026-01-01"));
+        const first = yield* invocation(a.begin(identity, session, true, ""));
         assert.isDefined(first);
 
         if (first === undefined) return;
-        assert.strictEqual(runs(), 2); // read + write of the new prompt id and date
+        assert.strictEqual(runs(), 2); // read + write of the new prompt id
         assert.strictEqual(first.previousMessageId, "");
-        assert.strictEqual(first.pinnedDate, "2026-01-01");
+        // The session date pin lives in its own store (`claude-date-pin`): the continuity entry holds no date.
+        assert.notProperty(first, "pinnedDate");
         yield* invocation(a.commit(first, "msg_1", "req_abc", first.promptId));
         assert.strictEqual(runs(), 3); // one compare-and-swap write, no read
 
-        // Another invocation continues the same prompt turn: ids and the pinned date survive, nothing is rewritten.
-        const second = yield* invocation(b.begin(identity, session, false, "", "2026-01-02"));
+        // Another invocation continues the same prompt turn: ids survive and nothing is rewritten.
+        const second = yield* invocation(b.begin(identity, session, false, ""));
         assert.strictEqual(second?.promptId, first.promptId);
         assert.strictEqual(second?.previousMessageId, "msg_1");
         assert.strictEqual(second?.previousRequestId, "req_abc");
-        assert.strictEqual(second?.pinnedDate, "2026-01-01");
 
-        // A new prompt turn gets a new prompt id but keeps the history and the date.
-        const third = yield* invocation(b.begin(identity, session, true, "", "2026-01-03"));
+        const raw = yield* Effect.promise(
+          async () =>
+            await workerEnv.SESSION_STATE.getByName(
+              addressName({ store: "claude-continuity", scope: "", session: second?.key ?? "" }),
+            ).run([{ op: "get", key: "state" }], Date.now()),
+        );
+
+        assert.notInclude(raw[0]?.status === "ok" ? (raw[0].value ?? "") : "", "pinnedDate");
+
+        const before = runs();
+        yield* invocation(a.begin(identity, session, false, ""));
+        assert.strictEqual(runs() - before, 1); // an unchanged prompt id is a read, never a write
+
+        // A new prompt turn gets a new prompt id but keeps the history.
+        const third = yield* invocation(b.begin(identity, session, true, ""));
         assert.notStrictEqual(third?.promptId, first.promptId);
         assert.strictEqual(third?.previousMessageId, "msg_1");
 
         // A different credential or session is a different conversation.
-        const other = yield* invocation(
-          b.begin(`id:${unique("cred")}`, session, false, "", "2026-02-01"),
-        );
+        const other = yield* invocation(b.begin(`id:${unique("cred")}`, session, false, ""));
 
         assert.strictEqual(other?.previousMessageId, "");
-        assert.strictEqual(other?.pinnedDate, "2026-02-01");
 
         yield* TestClock.adjust(61 * MINUTE);
-        const expired = yield* invocation(b.begin(identity, session, false, "", "2026-03-01"));
+        const expired = yield* invocation(b.begin(identity, session, false, ""));
         assert.strictEqual(expired?.previousMessageId, "");
-        assert.strictEqual(expired?.pinnedDate, "2026-03-01");
       }),
   );
 
@@ -302,14 +313,187 @@ describe("Claude continuity over SessionState", () => {
         const identity = `id:${unique("cred")}`;
         const session = unique("session");
         const store = makeSessionStateContinuityStore();
-        const state = yield* invocation(store.begin(identity, session, true, "", "2026-01-01"));
+        const state = yield* invocation(store.begin(identity, session, true, ""));
 
         if (state === undefined) return assert.fail("no state");
         yield* TestClock.adjust(61 * MINUTE);
         yield* invocation(store.commit(state, "msg_late", "req_x", state.promptId));
-        const fresh = yield* invocation(store.begin(identity, session, false, "", "2026-01-01"));
+        const fresh = yield* invocation(store.begin(identity, session, false, ""));
         assert.strictEqual(fresh?.previousMessageId, "");
       }),
+  );
+});
+
+describe("Claude session date pin over SessionState", () => {
+  const DAY = 24 * 60 * MINUTE;
+
+  const pin = (
+    scope: string,
+    session: string,
+    candidate: string,
+    store = makeSessionStateDatePinStore(),
+  ) => invocation(store.resolve(scope, session, candidate));
+
+  /** Counts the `put` operations that reach the Durable Object. */
+  const countingPuts = () => {
+    const inner = durableObjectBackend(workerEnv.SESSION_STATE);
+    let puts = 0;
+
+    const backend: SessionStateBackend = {
+      run: (address, ops) => {
+        puts += ops.filter((op) => op.op === "put").length;
+
+        return inner.run(address, ops);
+      },
+    };
+
+    return { backend, puts: () => puts };
+  };
+
+  it.effect("keeps the first date across invocations and an idle gap of hours", () =>
+    Effect.gen(function* () {
+      yield* startClock;
+      const session = unique("session");
+      assert.strictEqual(yield* pin("alice", session, "2026-01-01"), "2026-01-01");
+      assert.strictEqual(yield* pin("alice", session, "2026-01-02"), "2026-01-01");
+      yield* TestClock.adjust(5 * 60 * MINUTE);
+      assert.strictEqual(yield* pin("alice", session, "2026-01-03"), "2026-01-01");
+      // Another session is another conversation.
+      assert.strictEqual(yield* pin("alice", unique("session"), "2026-01-03"), "2026-01-03");
+    }),
+  );
+
+  it.effect("keeps the date until 7 days after the last activity", () =>
+    Effect.gen(function* () {
+      yield* startClock;
+      const session = unique("session");
+      assert.strictEqual(yield* pin("alice", session, "2026-01-01"), "2026-01-01");
+      yield* TestClock.adjust(7 * DAY - MINUTE);
+      assert.strictEqual(yield* pin("alice", session, "2026-01-08"), "2026-01-01");
+    }),
+  );
+
+  it.effect("re-anchors once the pin has been idle for more than 7 days", () =>
+    Effect.gen(function* () {
+      yield* startClock;
+      const session = unique("session");
+      assert.strictEqual(yield* pin("alice", session, "2026-01-01"), "2026-01-01");
+      yield* TestClock.adjust(7 * DAY + MINUTE);
+      assert.strictEqual(yield* pin("alice", session, "2026-01-09"), "2026-01-09");
+    }),
+  );
+
+  it.effect("outlives 7 days of activity every few days, with at most one put per 24 h", () =>
+    Effect.gen(function* () {
+      yield* startClock;
+      const session = unique("session");
+      const { backend, puts } = countingPuts();
+      const store = makeSessionStateDatePinStore(fixedBackend(backend));
+
+      // Day 0: several requests, one put (the anchor).
+      for (let index = 0; index < 5; index++) yield* pin("alice", session, "2026-01-01", store);
+      assert.strictEqual(puts(), 1);
+
+      // Activity every 3 days for 12 days: the TTL is extended each time, so the pin outlives the 7 days.
+      for (const day of [3, 6, 9, 12]) {
+        yield* TestClock.adjust(3 * DAY);
+        assert.strictEqual(
+          yield* pin("alice", session, `2026-01-${day + 10}`, store),
+          "2026-01-01",
+        );
+      }
+
+      assert.strictEqual(puts(), 5);
+
+      // Within one 24 h window of the last refresh nothing is written, however many requests arrive.
+      for (let index = 0; index < 5; index++) {
+        yield* TestClock.adjust(2 * 60 * MINUTE);
+        yield* pin("alice", session, "2026-02-01", store);
+      }
+
+      assert.strictEqual(puts(), 5);
+    }),
+  );
+
+  it.effect("costs one round trip while fresh and two for the first anchor", () =>
+    Effect.gen(function* () {
+      yield* startClock;
+      const session = unique("session");
+      const { backend, runs } = countingDo();
+      const store = makeSessionStateDatePinStore(fixedBackend(backend));
+      yield* pin("alice", session, "2026-01-01", store);
+      assert.strictEqual(runs(), 2); // read + compare-and-swap put at generation 0
+      yield* pin("alice", session, "2026-01-01", store);
+      assert.strictEqual(runs(), 3); // read only
+    }),
+  );
+
+  it.effect("does not share the pin with another caller scope", () =>
+    Effect.gen(function* () {
+      yield* startClock;
+      const session = unique("session");
+      assert.strictEqual(yield* pin("alice", session, "2026-01-01"), "2026-01-01");
+      assert.strictEqual(yield* pin("bob", session, "2026-01-05"), "2026-01-05");
+      assert.strictEqual(yield* pin("alice", session, "2026-01-09"), "2026-01-01");
+    }),
+  );
+
+  it.effect("does not share the pin with another org", () =>
+    Effect.gen(function* () {
+      yield* startClock;
+      const session = unique("session");
+      const other: OrgId = newOrgId();
+
+      const inOrg = <A, E>(effect: Effect.Effect<A, E>) =>
+        effect.pipe(
+          Effect.provideContext(envContext(workerEnv)),
+          Effect.provideService(CurrentOrg, other),
+        );
+
+      assert.strictEqual(yield* pin("alice", session, "2026-01-01"), "2026-01-01");
+
+      assert.strictEqual(
+        yield* inOrg(makeSessionStateDatePinStore().resolve("alice", session, "2026-01-05")),
+        "2026-01-05",
+      );
+
+      assert.strictEqual(yield* pin("alice", session, "2026-01-09"), "2026-01-01");
+
+      assert.strictEqual(
+        yield* inOrg(makeSessionStateDatePinStore().resolve("alice", session, "2026-01-09")),
+        "2026-01-05",
+      );
+    }),
+  );
+
+  it.effect("settles two concurrent first requests on one date", () =>
+    Effect.gen(function* () {
+      yield* startClock;
+      const session = unique("session");
+
+      const dates = yield* Effect.all(
+        [
+          pin("alice", session, "2026-01-01"),
+          pin("alice", session, "2026-01-02"),
+          pin("alice", session, "2026-01-03"),
+        ],
+        { concurrency: 3 },
+      );
+
+      assert.strictEqual(new Set(dates).size, 1);
+      assert.strictEqual(yield* pin("alice", session, "2026-02-01"), dates[0]);
+    }),
+  );
+
+  it.effect("falls back to the candidate date when the backend fails", () =>
+    Effect.gen(function* () {
+      const failing: SessionStateBackend = {
+        run: () => Effect.fail(new SessionStateError({ message: "unreachable" })),
+      };
+
+      const store = makeSessionStateDatePinStore(fixedBackend(failing));
+      assert.strictEqual(yield* store.resolve("alice", "s", "2026-01-01"), "2026-01-01");
+    }),
   );
 });
 

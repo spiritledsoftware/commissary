@@ -67,6 +67,7 @@ import {
   relocateSystemForCountTokens,
 } from "./cloaking.ts";
 import { type ContinuityState, type ContinuityStore } from "./continuity.ts";
+import type { DatePinStore } from "./date-pin.ts";
 import { withoutTranslatedDefaultMaxTokens } from "./default-max-tokens.ts";
 import { type DeviceProfileStore, deviceProfileStabilizationEnabled } from "./device-profile.ts";
 import { rebuildMidSystemEnabled, rebuildMidSystemMessagesToTopLevel } from "./mid-system.ts";
@@ -115,6 +116,8 @@ const DEFAULT_MODEL_MAX_TOKENS = 1024;
 export interface PipelineServices {
   readonly registry: TranslatorRegistry;
   readonly continuity: ContinuityStore;
+  /** The session date pin: the cloaked `currentDate`, kept for 7 days across credential switches and idle gaps. */
+  readonly datePin: DatePinStore;
   readonly replay: ThinkingReplayStore;
   /** Stabilised Claude Code device profiles (`stabilize-device-profile`). */
   readonly deviceProfiles: DeviceProfileStore;
@@ -539,22 +542,38 @@ export const prepareMessagesRequest = Effect.fnUntraced(function* (input: Prepar
       ? yield* services.deviceProfiles.resolve(credential, providerKey, options.headers, config)
       : undefined;
 
-  // Session continuity is started (one store round trip) before the synchronous request shaping.
+  // Session continuity and the session date pin are started (one round trip each, in parallel, on different
+  // instances) before the synchronous request shaping. A request without a caller session (its id is random) gets no
+  // pin: nothing would ever read it again.
   const now = services.now();
 
   const plan = yield* attempt(() =>
     planContinuity({ config, credential, body, policy: wire.policy, sessionId, now }),
   );
 
-  const continuity =
+  const hasCallerSession = (options.metadata.sessionId ?? "").trim() !== "";
+
+  const [continuity, pinnedDate] =
     plan === undefined
-      ? undefined
-      : yield* services.continuity.begin(
-          plan.identity,
-          plan.sessionId,
-          plan.isNewPromptTurn,
-          plan.explicitPromptId,
-          plan.date,
+      ? [undefined, undefined]
+      : yield* Effect.all(
+          [
+            services.continuity.begin(
+              plan.identity,
+              plan.sessionId,
+              plan.isNewPromptTurn,
+              plan.explicitPromptId,
+            ),
+            hasCallerSession
+              ? services.datePin.resolve(
+                  options.metadata.callerScope,
+                  plan.sessionId,
+                  // A date the caller sent only seeds the first anchor; a stored pin always wins.
+                  plan.callerDate === "" ? plan.date : plan.callerDate,
+                )
+              : Effect.succeed(undefined),
+          ],
+          { concurrency: 2 },
         );
 
   return yield* attempt(() => {
@@ -574,6 +593,7 @@ export const prepareMessagesRequest = Effect.fnUntraced(function* (input: Prepar
       incoming: options.headers,
       sessionId,
       continuity,
+      pinnedDate,
       now,
     });
 

@@ -66,6 +66,7 @@ import {
   prepareClaudeCompactionSummaryPayload,
 } from "./compaction.ts";
 import { type ContinuityStore, makeSessionStateContinuityStore } from "./continuity.ts";
+import { type DatePinStore, makeSessionStateDatePinStore } from "./date-pin.ts";
 import { type DeviceProfileStore, makeSessionStateDeviceProfileStore } from "./device-profile.ts";
 import { type ToolAliasStore, makeSessionStateToolAliasStore } from "./thread.ts";
 import { type ClaudeUpstreamProfile, restoreResponseModel } from "./profile.ts";
@@ -103,6 +104,8 @@ import { countClaudeInputTokens } from "@commissary/translation/tokenizer";
 
 const defaultContinuity = makeSessionStateContinuityStore();
 
+const defaultDatePin = makeSessionStateDatePinStore();
+
 const defaultReplay = makeSessionStateReplayStore();
 
 const defaultDeviceProfiles = makeSessionStateDeviceProfileStore();
@@ -112,6 +115,8 @@ const defaultToolAliases = makeSessionStateToolAliasStore();
 export interface ClaudeExecutorOptions {
   readonly translators?: TranslatorRegistry;
   readonly continuity?: ContinuityStore;
+  /** The session date pin (`date-pin.ts`). */
+  readonly datePin?: DatePinStore;
   readonly replay?: ThinkingReplayStore;
   readonly deviceProfiles?: DeviceProfileStore;
   readonly toolAliases?: ToolAliasStore;
@@ -214,6 +219,7 @@ export const makeClaudeExecutor = (
   const services: PipelineServices = {
     registry,
     continuity: executorOptions.continuity ?? defaultContinuity,
+    datePin: executorOptions.datePin ?? defaultDatePin,
     replay: executorOptions.replay ?? defaultReplay,
     deviceProfiles: executorOptions.deviceProfiles ?? defaultDeviceProfiles,
     toolAliases: executorOptions.toolAliases ?? defaultToolAliases,
