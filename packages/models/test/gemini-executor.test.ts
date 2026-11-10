@@ -497,6 +497,64 @@ describe("OpenAI Responses client -> Gemini credential", () => {
       expect(records[0]).toMatchObject({ failed: true, fail: { statusCode: 502 } });
     });
 
+    it("fails a MALFORMED_FUNCTION_CALL stream with 502 after its error event (Go 7f2f17d7)", async () => {
+      const { text, records } = await ask([
+        `data: ${JSON.stringify({
+          candidates: [
+            {
+              content: { role: "model", parts: [] },
+              finishReason: "MALFORMED_FUNCTION_CALL",
+              index: 0,
+            },
+          ],
+          usageMetadata: { promptTokenCount: 5, candidatesTokenCount: 1, totalTokenCount: 6 },
+          responseId: "r",
+        })}\n\n`,
+      ]);
+
+      expect(text.split("event: error\n")).toHaveLength(2);
+      expect(text).not.toContain("message_stop");
+      expect(records[0]).toMatchObject({
+        failed: true,
+        fail: { statusCode: 502 },
+        detail: { inputTokens: 5 },
+      });
+    });
+
+    it("answers a non-stream MALFORMED_FUNCTION_CALL with 502 so the client retries (Go 7f2f17d7)", async () => {
+      const h = harness(() =>
+        jsonResponse({
+          candidates: [
+            {
+              content: { role: "model", parts: [] },
+              finishReason: "MALFORMED_FUNCTION_CALL",
+              index: 0,
+            },
+          ],
+          usageMetadata: { promptTokenCount: 5, candidatesTokenCount: 1, totalTokenCount: 6 },
+        }),
+      );
+
+      afterAll(h.dispose);
+
+      const response = await h.call(
+        "/v1/messages",
+        postJson({
+          model: "gemini-2.5-pro",
+          max_tokens: 16,
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      );
+
+      expect(response.status).toBe(502);
+      expect(await response.text()).toContain("MALFORMED_FUNCTION_CALL");
+      expect(h.records[0]).toMatchObject({
+        failed: true,
+        fail: { statusCode: 502 },
+        detail: { inputTokens: 5 },
+      });
+    });
+
     it("completes a stream that carries a finishReason", async () => {
       const { text, records } = await ask([chunk("Hi"), chunk("!", "STOP")]);
       expect(text).toContain("message_stop");

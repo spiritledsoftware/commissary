@@ -253,6 +253,19 @@ export const convertImagenToGeminiResponse = (
   });
 };
 
+/** Go `TranslatedClaudeStreamErrorPayload`: the data payload of the first `error` event among translated Claude chunks. */
+const claudeStreamErrorPayload = (chunks: ReadonlyArray<string>): string | undefined => {
+  for (const chunk of chunks) {
+    for (const line of chunk.split("\n")) {
+      const payload = jsonPayload(line);
+
+      if (payload !== undefined && get(tryParseJson(payload), "type") === "error") return payload;
+    }
+  }
+
+  return undefined;
+};
+
 /**
  * Go `geminiPromptBlockErrorMessage` (3f5d3a16): a candidate-less response whose `promptFeedback.blockReason` is set
  * is an upstream refusal of the prompt, surfaced as a 502 instead of an empty 200.
@@ -634,9 +647,20 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
       return yield* new ExecutionError({ status: 502, message: TOOL_INPUT_ERROR_MESSAGE });
     }
 
-    context.usage.publish(
-      native ? parseInteractionsUsageBody(parsed) : parseGeminiUsageBody(parsed),
-    );
+    const usage = native ? parseInteractionsUsageBody(parsed) : parseGeminiUsageBody(parsed);
+
+    // Go `TranslatedClaudeErrorPayload` (7f2f17d7): an Anthropic error body (a malformed function call) is a retryable 502.
+    if (
+      responseFormatOf(options) === Formats.Claude &&
+      get(tryParseJson(out), "type") === "error"
+    ) {
+      context.usage.publish(usage);
+      context.usage.fail(502, out);
+
+      return yield* new ExecutionError({ status: 502, message: out });
+    }
+
+    context.usage.publish(usage);
 
     return { payload: out, headers: new Headers(response.headers) } satisfies ExecutorResponse;
   });
@@ -689,8 +713,19 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
           )
         : Stream.fromIterable(chunks);
 
+    // Go `CaptureTranslatedClaudeStreamError`: the first Anthropic `error` event the translator wrote is retained and the
+    // stream fails with it once the upstream is drained (the client already got the event; its framer does not repeat it).
+    let streamError: string | undefined;
+
+    const captureError = (chunks: ReadonlyArray<string>) => {
+      if (responseFormat === Formats.Claude && streamError === undefined)
+        streamError = claudeStreamErrorPayload(chunks);
+
+      return chunks;
+    };
+
     const translated = (payload: string) =>
-      Stream.unwrap(translate(payload).pipe(Effect.map(check)));
+      Stream.unwrap(translate(payload).pipe(Effect.map(captureError), Effect.map(check)));
 
     const lines = splitLines(response.stream).pipe(Stream.mapError(transportError));
     let sawFinish = false;
@@ -718,18 +753,22 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
           return translated(payload);
         }),
       ),
-      Stream.suspend(() =>
+      Stream.suspend(() => {
+        if (streamError !== undefined)
+          return Stream.fail(new ExecutionError({ status: 502, message: streamError }));
+
         // Claude and OpenAI chat clients fail a truncated stream (Go 4f2e5270, 3f5d3a16): they would otherwise see a
         // clean `message_stop` / `[DONE]`.
-        (responseFormat === Formats.Claude || responseFormat === Formats.OpenAI) && !sawFinish
-          ? Stream.fail(
-              new ExecutionError({
-                status: 502,
-                message: "upstream stream closed before finishReason",
-              }),
-            )
-          : translated("[DONE]"),
-      ),
+        if ((responseFormat === Formats.Claude || responseFormat === Formats.OpenAI) && !sawFinish)
+          return Stream.fail(
+            new ExecutionError({
+              status: 502,
+              message: "upstream stream closed before finishReason",
+            }),
+          );
+
+        return translated("[DONE]");
+      }),
     );
   };
 
