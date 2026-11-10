@@ -99,6 +99,7 @@ const NAME_MAP_KEYWORDS = new Set([
   "properties",
   "patternProperties",
   "dependentSchemas",
+  "dependencies",
   "$defs",
   "definitions",
 ]);
@@ -1156,6 +1157,9 @@ const removeUnsupportedKeywords = (doc: Doc, options: CleanOptions): void => {
     "$dynamicAnchor",
     "propertyNames",
     "patternProperties",
+    "dependentRequired",
+    "dependentSchemas",
+    "dependencies",
     "if",
     "then",
     "else",
@@ -1165,10 +1169,15 @@ const removeUnsupportedKeywords = (doc: Doc, options: CleanOptions): void => {
     "prefill",
     "deprecated",
     "encrypted",
+    "discriminator",
+    "readOnly",
+    "writeOnly",
     "additionalItems",
     "unevaluatedProperties",
     "unevaluatedItems",
     "contentSchema",
+    "contentMediaType",
+    "contentEncoding",
   ];
 
   if (options.antigravitySemantics === true) keywords.push("not");
