@@ -54,7 +54,13 @@ import type {
   ExecutorRequest,
   WebsocketDuplex,
 } from "../types.ts";
-import { replayRequiredError, type Turn } from "../websocket/session.ts";
+import {
+  type AbandonedOperation,
+  isUpstreamLost,
+  replayRequiredError,
+  type Turn,
+  withAbandoned,
+} from "../websocket/session.ts";
 import { codexTerminalFailure, isThinkingSignatureInvalid } from "./errors.ts";
 import type { PreparedRequest } from "./executor.ts";
 import {
@@ -79,21 +85,30 @@ const MAX_OUTSTANDING = 16;
  * Connection failures must not cool the shared credential (`codexDuplexConnectionError.IsRequestScoped`): the socket still
  * fails visibly, with the status and code of its cause.
  */
-export const duplexConnectionError = (cause: ExecutionError | string): ExecutionError =>
-  typeof cause === "string"
-    ? new ExecutionError({
-        status: 500,
-        code: "transient_transport",
-        message: cause,
-        requestScoped: true,
-      })
-    : new ExecutionError({
-        status: cause.status,
-        ...(cause.code !== undefined ? { code: cause.code } : {}),
-        message: cause.message,
-        ...(cause.headers !== undefined ? { headers: cause.headers } : {}),
-        requestScoped: true,
-      });
+export const duplexConnectionError = (
+  cause: ExecutionError | string,
+  /** A lost upstream socket takes these operations with it (they are reported to the client next to the loss). */
+  abandoned: ReadonlyArray<AbandonedOperation> = [],
+): ExecutionError => {
+  if (typeof cause === "string") {
+    return new ExecutionError({
+      status: 500,
+      code: "transient_transport",
+      message: cause,
+      requestScoped: true,
+    });
+  }
+
+  const error = new ExecutionError({
+    status: cause.status,
+    ...(cause.code !== undefined ? { code: cause.code } : {}),
+    message: cause.message,
+    ...(cause.headers !== undefined ? { headers: cause.headers } : {}),
+    requestScoped: true,
+  });
+
+  return isUpstreamLost(cause) ? withAbandoned(error, abandoned) : error;
+};
 
 /** What a response needs from its request after the request itself is gone (Go: the retained `snapshot`). */
 interface Settings {
@@ -104,15 +119,22 @@ interface Settings {
   readonly instructions: Json | undefined;
   /** The client's own `instructions` (only the initial request keeps its original payload). */
   readonly originalInstructions: Json | undefined;
+  /** `event_id` of the client frame the request came from (an error about it is correlated to it). */
+  readonly eventId: string;
 }
 
-const settingsOf = (prepared: PreparedRequest, original: Json | undefined): Settings => ({
+const settingsOf = (
+  prepared: PreparedRequest,
+  original: Json | undefined,
+  eventId = "",
+): Settings => ({
   replayScope: prepared.replayScope,
   nativeOutput: prepared.nativeOutput,
   multiAgentV2: prepared.multiAgentV2,
   reasoning: get(prepared.body, "reasoning"),
   instructions: get(prepared.body, "instructions"),
   originalInstructions: get(original, "instructions"),
+  eventId,
 });
 
 /** Retained copy: reasoning and instructions only, no request history or authorization headers. */
@@ -238,6 +260,27 @@ export const startCodexDuplex = (
       return true;
     };
 
+    /**
+     * The operations the client has been told nothing about that a lost upstream socket takes with it (Go `Abandoned`):
+     * creates still queued here were never written, creates written and not yet started lost their outcome. The first
+     * response's request is the handler's own and is not listed.
+     */
+    const abandonedOperations = (): AbandonedOperation[] => [
+      ...pendingCreates.map((text): AbandonedOperation => {
+        const frame = tryParseJson(text);
+        const eventId = asString(get(frame, "event_id")).trim();
+
+        const continuation =
+          asString(get(frame, "previous_response_id")).trim() !== "" ||
+          asString(get(frame, "type")) === "response.append";
+
+        return { eventId, outcome: continuation ? "continuation" : "not_sent" };
+      }),
+      ...pending.flatMap((settings): AbandonedOperation[] =>
+        settings === initialSettings ? [] : [{ eventId: settings.eventId, outcome: "lost" }],
+      ),
+    ];
+
     const credentialEnabled = (): boolean => duplex.authEnabled?.(context.credential.id) !== false;
 
     // --- writer ---------------------------------------------------------------------------------------------------
@@ -262,7 +305,7 @@ export const startCodexDuplex = (
         const sent = yield* Effect.result(turn.send(frame));
 
         if (Result.isFailure(sent)) {
-          yield* finish(duplexConnectionError(sent.failure));
+          yield* finish(duplexConnectionError(sent.failure, abandonedOperations()));
 
           return false;
         }
@@ -333,7 +376,9 @@ export const startCodexDuplex = (
           return false;
         }
 
-        pending.push(settingsOf(prepared.success, undefined));
+        pending.push(
+          settingsOf(prepared.success, undefined, asString(get(payload, "event_id")).trim()),
+        );
 
         if (prepared.success.multiAgentV2) connectionMultiAgentV2 = true;
 
@@ -478,7 +523,8 @@ export const startCodexDuplex = (
           const read = yield* Effect.result(turn.read);
 
           if (Result.isFailure(read)) {
-            if (!finished) yield* finish(duplexConnectionError(read.failure));
+            if (!finished)
+              yield* finish(duplexConnectionError(read.failure, abandonedOperations()));
 
             return;
           }

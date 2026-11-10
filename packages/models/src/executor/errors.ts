@@ -81,6 +81,7 @@ export const withErrorFields = (
     direct: boolean;
     headers: Record<string, string>;
     safeHeaders: Record<string, string>;
+    cause: unknown;
   }>,
 ): ExecutionError =>
   new ExecutionError({

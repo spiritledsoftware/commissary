@@ -255,6 +255,43 @@ export interface TurnOutcome {
   readonly pendingToolCallIds: string[];
 }
 
+/** The socket keeps its state upstream: the credential that owns the upstream socket is pinned and no transcript is kept. */
+const pinToUpstreamSocket = (
+  state: SocketState,
+  selected: { readonly authId: string; readonly provider: string },
+  modelName: string,
+): void => {
+  state.upstreamMode = "websocket";
+  state.lastProvider = selected.provider;
+  state.upstreamWebsocketAuthId = selected.authId;
+  state.pinned = {
+    authId: selected.authId,
+    provider: selected.provider,
+    modelKey: modelKeyOf(modelName),
+  };
+  state.passthroughModelName = modelName;
+  state.lastRequest = undefined;
+  state.lastResponseOutput = [];
+  state.observedCompaction = undefined;
+  state.lastResponseId = "";
+  state.lastPendingToolCallIds = [];
+};
+
+/**
+ * An upstream socket loss (or a continuation refused because of one) ended the request without closing the client
+ * socket: the credential stays pinned, so the client's next full create reconnects on it and never on another one
+ * (the `upstream_websocket_lost` branch of the Go main loop).
+ */
+export const commitLoss = (
+  state: SocketState,
+  outcome: Pick<TurnOutcome, "modelName" | "selected">,
+): void => {
+  state.pendingPrewarmId = "";
+  const selected = outcome.selected;
+
+  if (selected?.websockets === true) pinToUpstreamSocket(state, selected, outcome.modelName);
+};
+
 /** State changes after a turn completed without error (Go: the tail of the main loop body). */
 export const commitTurn = (state: SocketState, outcome: TurnOutcome): void => {
   state.pendingPrewarmId = "";
@@ -264,18 +301,7 @@ export const commitTurn = (state: SocketState, outcome: TurnOutcome): void => {
   state.lastProvider = selected?.provider ?? "";
 
   if (mode === "websocket" && selected !== undefined) {
-    state.upstreamWebsocketAuthId = selected.authId;
-    state.pinned = {
-      authId: selected.authId,
-      provider: selected.provider,
-      modelKey: modelKeyOf(outcome.modelName),
-    };
-    state.passthroughModelName = outcome.modelName;
-    state.lastRequest = undefined;
-    state.lastResponseOutput = [];
-    state.observedCompaction = undefined;
-    state.lastResponseId = "";
-    state.lastPendingToolCallIds = [];
+    pinToUpstreamSocket(state, selected, outcome.modelName);
 
     return;
   }

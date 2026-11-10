@@ -18,6 +18,11 @@ export interface UpstreamConnection {
   closed: { code: number; reason: string } | undefined;
   /** Resolves the next frame Commissary sends (consumed in order). */
   readonly next: () => Promise<string>;
+  /**
+   * The connection drops without a closing handshake: Commissary's side sees a close with code 1006 (a Worker's
+   * `close()` cannot send it).
+   */
+  readonly drop: () => void;
 }
 
 export interface MockUpstreamOptions {
@@ -78,6 +83,10 @@ export const mockUpstream = (options: MockUpstreamOptions = {}): MockUpstream =>
               queue.length > 0
                 ? Promise.resolve(queue.shift() as string)
                 : new Promise<string>((resolve) => waiting.push(resolve)),
+            drop: () =>
+              serverSide.dispatchEvent(
+                new CloseEvent("close", { code: 1006, reason: "", wasClean: false }),
+              ),
           };
 
           server.addEventListener("message", (event) => {

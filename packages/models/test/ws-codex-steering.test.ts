@@ -98,13 +98,24 @@ const frames = (connection: UpstreamConnection | undefined) =>
 
 /** Scripted upstream: `script(frame, index, connection)` answers each frame Commissary writes. */
 const scripted =
-  (script: (frame: Record<string, unknown>, index: number, send: (event: Json) => void) => void) =>
+  (
+    script: (
+      frame: Record<string, unknown>,
+      index: number,
+      send: (event: Json) => void,
+      connection: UpstreamConnection,
+    ) => void,
+  ) =>
   (connection: UpstreamConnection): void => {
     void (async () => {
       for (let index = 0; ; index++) {
         const text = await connection.next();
-        script(JSON.parse(text) as Record<string, unknown>, index, (event) =>
-          connection.server.send(typeof event === "string" ? event : JSON.stringify(event)),
+        script(
+          JSON.parse(text) as Record<string, unknown>,
+          index,
+          (event) =>
+            connection.server.send(typeof event === "string" ? event : JSON.stringify(event)),
+          connection,
         );
       }
     })();
@@ -442,5 +453,107 @@ describe("non-stream execution over the upstream WebSocket", () => {
     const replay = await run({ sessionId: "ns-missing", requireUpstream: true });
     expect(replay.code).toBe("upstream_websocket_replay_required");
     await Effect.runPromise(codexSessionStore.close("ns-error"));
+  });
+});
+
+describe("upstream socket loss on a steering socket (CLIProxyAPI f73e66ac)", () => {
+  const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 25));
+
+  const errorOf = (frame: Record<string, unknown>) =>
+    frame["error"] as { code?: string; event_id?: string; message?: string };
+
+  it("fences a frame queued behind the lost request: answered not sent, never written upstream", async () => {
+    let dropped = false;
+
+    const s = setup([wsCredential()], {
+      onConnection: scripted((_frame, _index, send, connection) => {
+        if (dropped) return send(created("resp_2"));
+        dropped = true;
+        void settle().then(() => connection.drop());
+      }),
+    });
+
+    const client = await s.connect();
+    client.send({ ...create("one"), event_id: "evt-1" });
+    // The duplex consumes no follow-up before the first response is established: this one waits in the queue.
+    client.send({ ...create("two"), event_id: "evt-2" });
+
+    const lost = await client.nextJson();
+    expect(lost).toMatchObject({ type: "error", status: 502 });
+    expect(errorOf(lost)).toMatchObject({ code: "upstream_websocket_lost", event_id: "evt-1" });
+    const fenced = await client.nextJson();
+    expect(fenced).toMatchObject({ type: "error", status: 502 });
+    expect(errorOf(fenced)).toMatchObject({
+      code: "upstream_websocket_not_sent",
+      event_id: "evt-2",
+    });
+    expect(frames(s.mock.connections[0])).toHaveLength(1);
+
+    // The client socket is still there: a new create redials.
+    client.send(create("three"));
+    expect((await client.nextJson())["type"]).toBe("response.created");
+    expect(s.mock.dials).toHaveLength(2);
+    client.close();
+  });
+
+  it("reports the creates the executor had already taken next to the loss", async () => {
+    const s = setup([wsCredential()], {
+      onConnection: scripted((frame, index, send, connection) => {
+        if (index === 0) send(created("resp_1"));
+        else void settle().then(() => connection.drop());
+        expect(frame["type"]).toBe("response.create");
+      }),
+    });
+
+    const client = await s.connect();
+    client.send(create("one"));
+    await client.until("response.created");
+    client.send({ ...create("two", { previous_response_id: "resp_1" }), event_id: "evt-2" });
+
+    const lost = await client.nextJson();
+    expect(errorOf(lost)).toMatchObject({ code: "upstream_websocket_lost" });
+    const abandoned = await client.nextJson();
+    expect(errorOf(abandoned)).toMatchObject({
+      code: "upstream_websocket_lost",
+      event_id: "evt-2",
+    });
+    client.close();
+  });
+
+  it("writes nothing for a loss between two responses and answers a response.interrupt that targets none", async () => {
+    const s = setup([wsCredential()], {
+      onConnection: scripted((_frame, index, send, connection) => {
+        send(created(`resp_${index + 1}`));
+        send(done(`resp_${index + 1}`));
+        void connection;
+      }),
+    });
+
+    const client = await s.connect();
+    client.send(create("one"));
+    await client.until("response.completed");
+
+    // Between responses of the steering socket, an id that is not a finished response targets nothing.
+    client.send({ type: "response.interrupt", response_id: "resp_other" });
+    const rejected = await client.nextJson();
+    expect(rejected).toMatchObject({ type: "error", status: 400 });
+    expect(errorOf(rejected).message).toContain("does not target the active upstream response");
+
+    // The finished response's own interrupt is dropped silently.
+    client.send({ type: "response.interrupt", response_id: "resp_1" });
+    await settle();
+    expect(client.messages).toHaveLength(3);
+
+    s.mock.connections[0]?.drop();
+    await settle();
+    expect(client.messages).toHaveLength(3);
+
+    client.send(create("two"));
+    expect(await client.nextJson()).toMatchObject({
+      type: "response.created",
+      response: { id: "resp_1" },
+    });
+    expect(s.mock.dials).toHaveLength(2);
+    client.close();
   });
 });
