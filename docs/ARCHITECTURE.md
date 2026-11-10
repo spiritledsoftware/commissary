@@ -1258,6 +1258,21 @@ Deviations from Go (all deliberate, documented in code headers):
   response translator (`claude/openai/responses/response.ts`) decodes it into `custom_tool_call` events
   (`ApplyPatchCallState`, identity/snapshot validation, `response.failed` + 502 on malformed input). Go's log-only invariant
   diagnostics are omitted.
+- Claude default `max_tokens` (C2, Go `0d18d3b3`): a chat or Responses request without a limit gets the catalog's
+  `maxCompletionTokens` for the model (the translators' model-info lookup, not Go's registry; Fable is capped at 64000,
+  unknown models get 32000; a `null` limit counts as omitted). The Claude pipeline hands payload rules an `original` body
+  without that synthesized value (`default-max-tokens.ts`), so a `default` rule for `max_tokens` can still set it.
+- Claude stop reasons and usage (C2, Go `c2dfec28`, `d495e24c`, `aadb34f9`, `43f5386b`):
+  `model_context_window_exceeded` is `length` on chat and `incomplete`/`max_output_tokens` on Responses; `refusal` is
+  `incomplete`/`content_filter`; `pause_turn` is `completed` with `end_turn: false`, its unanswered search stays
+  `in_progress` and goes back without a result (`ResponsesWebSearchHistory`), and a paused server-tool tail is not dropped
+  as assistant prefill. Responses `parallel_tool_calls: false` sets `tool_choice.disable_parallel_tool_use`. Chat usage carries
+  `reasoning_tokens` from `thinking_tokens`. Not ported: `aadb34f9`'s handler changes (`chunkTerminalError` for chat,
+  `repairErrorPayload` keeping a `response.failed` envelope for Responses): they handle the context-window error chunk and
+  `response.failed` that `c2dfec28` and `d495e24c` made the translators stop emitting.
+- Claude empty text (C2, Go `df07b1e5`): empty or whitespace text blocks are dropped from both request translators (their
+  `cache_control` moves to the block before) and never receive a `cache_control`, in the translators' helpers and in the
+  executor's `ensureCacheControl` and current-date injection.
 - **Responses compaction capsules** (`helps/compaction.ts`, `claude/compaction.ts`; Go `helps/antigravity_compaction.go`,
   `claude_executor_compaction.go`): `responses/compact` and streaming `compaction_trigger` run a non-stream summary turn (Responses payload
   -> summary prompt appended, `tools`/`stream`/... removed; Claude keeps the tool definitions for `tool_use` history and sets

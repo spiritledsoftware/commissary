@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { builtinTranslators } from "../src/translator/builtin.ts";
 import { setModelInfoLookup } from "../src/translator/model-info.ts";
 import { summaryHooks } from "../src/translator/summary-hooks.ts";
+import { unusedMaxTokensAheadEntries } from "./support/translator-ported-ahead.ts";
 import { catalogLookup } from "./support/thinking.ts";
 import { itTranslatorFixture, type TranslatorFixtureCase } from "./support/translator-fixtures.ts";
 
@@ -28,6 +29,10 @@ describe("translator golden fixtures", () => {
       }
     });
   }
+
+  it("consumed every ported-ahead entry", () => {
+    expect(unusedMaxTokensAheadEntries()).toEqual([]);
+  });
 
   it("found fixture files", () => {
     expect(Object.keys(files).length).toBeGreaterThan(0);

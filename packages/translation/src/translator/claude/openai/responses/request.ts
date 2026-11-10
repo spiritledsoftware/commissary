@@ -21,16 +21,17 @@ import {
   applyPatchParameters,
   isApplyPatchCustomTool,
 } from "../../../common/apply-patch.ts";
-import { attachCacheControl } from "../../../common/cache-control.ts";
+import { attachCacheControl, moveBlankPartCacheControl } from "../../../common/cache-control.ts";
 import { buildClaudeStructuredOutputInstruction } from "../../../common/claude-system.ts";
 import { deriveClaudeUserID } from "../../../common/claude-user-id.ts";
 import {
+  defaultClaudeMaxTokensForModel,
   normalizeClaudeToolInputSchema,
   sanitizeClaudeFunctionName,
 } from "../../../common/claude-util.ts";
 import { generateClaudeToolCallId } from "../../../common/request.ts";
 import { sanitizeClaudeToolId } from "../../../common/tool-names.ts";
-import { exists, isArr, isObj, isStr, str } from "../../../common/gjson.ts";
+import { exists, isArr, isBlankText, isObj, isStr, str } from "../../../common/gjson.ts";
 import { UserTurnDrops } from "../../../common/parts.ts";
 import {
   extractResponsesCallID,
@@ -47,14 +48,7 @@ import {
   responsesToolWinners,
   type ToolDescriptor,
 } from "./tools.ts";
-import {
-  attachClaudeCitations,
-  convertResponsesWebSearchCallToClaudeBlocks,
-} from "./web-search.ts";
-
-const DEFAULT_MAX_TOKENS = 32000;
-
-const DEFAULT_FABLE_MAX_TOKENS = 64000;
+import { attachClaudeCitations, ResponsesWebSearchHistory } from "./web-search.ts";
 
 const first = (...values: Array<Json | undefined>): Json | undefined =>
   values.find((value) => value !== undefined);
@@ -86,12 +80,10 @@ const convertRequest = (
 
   const out: JsonObject = {
     model: "",
-    max_tokens: DEFAULT_MAX_TOKENS,
+    max_tokens: defaultClaudeMaxTokensForModel(modelName),
     messages: [],
     metadata: { user_id: deriveClaudeUserID(root) },
   };
-
-  out.max_tokens = defaultMaxTokensForModel(modelName);
 
   const effortValue = get(root, "reasoning.effort");
 
@@ -173,7 +165,7 @@ const convertRequest = (
   const systemBlocks: JsonObject[] = [];
 
   const appendSystemText = (text: string, cacheSource?: Json): void => {
-    if (text === "") return;
+    if (isBlankText(text)) return;
     const block: JsonObject = { type: "text", text };
 
     if (cacheSource !== undefined) attachCacheControl(block, cacheSource);
@@ -197,9 +189,15 @@ const convertRequest = (
           switch (str(get(part, "type"))) {
             case "input_text":
             case "output_text":
-            case "text":
-              appendSystemText(str(get(part, "text")), part);
+            case "text": {
+              const text = str(get(part, "text"));
+
+              // A blank part is dropped (Anthropic answers 400 to it); its cache_control moves to the block before.
+              if (isBlankText(text)) moveBlankPartCacheControl(systemBlocks, startIdx, part);
+              else appendSystemText(text, part);
               break;
+            }
+
             default: {
               const block = systemUnsupportedBlock(part);
 
@@ -298,7 +296,8 @@ const convertRequest = (
 
   if (exists(inputValue)) {
     if (isArr(inputValue)) inputItems = normalizeResponsesToolCallOutputs(inputValue);
-    else if (isStr(inputValue)) appendParts("user", [{ type: "text", text: inputValue }]);
+    else if (isStr(inputValue) && !isBlankText(inputValue))
+      appendParts("user", [{ type: "text", text: inputValue }]);
   }
 
   const lastToolResult = new Map<string, Json>();
@@ -316,7 +315,9 @@ const convertRequest = (
   const emittedToolResults = new Set<string>();
   const emittedRawToolUses = new Set<string>();
 
-  for (const item of inputItems) {
+  const webSearchHistory = new ResponsesWebSearchHistory(inputItems);
+
+  for (const [itemIndex, item] of inputItems.entries()) {
     if (isSystemLevelRole(str(get(item, "role")))) continue;
     let typ = str(get(item, "type"));
 
@@ -339,10 +340,14 @@ const convertRequest = (
                 const text = get(part, "text");
 
                 if (exists(text)) {
-                  const contentPart: JsonObject = { type: "text", text: str(text) };
-                  attachClaudeCitations(contentPart, get(part, "annotations"));
-                  attachCacheControl(contentPart, part);
-                  partsJSON.push(contentPart);
+                  if (isBlankText(str(text))) {
+                    moveBlankPartCacheControl(partsJSON, 0, part);
+                  } else {
+                    const contentPart: JsonObject = { type: "text", text: str(text) };
+                    attachClaudeCitations(contentPart, get(part, "annotations"));
+                    attachCacheControl(contentPart, part);
+                    partsJSON.push(contentPart);
+                  }
                 }
 
                 role = ptype === "input_text" ? "user" : "assistant";
@@ -352,10 +357,14 @@ const convertRequest = (
               case "refusal": {
                 const text = get(part, "refusal");
 
-                if (exists(text) && str(text) !== "") {
-                  const contentPart: JsonObject = { type: "text", text: str(text) };
-                  attachCacheControl(contentPart, part);
-                  partsJSON.push(contentPart);
+                if (exists(text)) {
+                  if (isBlankText(str(text))) {
+                    moveBlankPartCacheControl(partsJSON, 0, part);
+                  } else {
+                    const contentPart: JsonObject = { type: "text", text: str(text) };
+                    attachCacheControl(contentPart, part);
+                    partsJSON.push(contentPart);
+                  }
                 }
 
                 role = "assistant";
@@ -398,7 +407,7 @@ const convertRequest = (
                 break;
             }
           }
-        } else if (isStr(parts) && parts !== "") {
+        } else if (isStr(parts) && !isBlankText(parts)) {
           partsJSON.push({ type: "text", text: parts });
         }
 
@@ -424,7 +433,7 @@ const convertRequest = (
       }
 
       case "web_search_call": {
-        const blocks = convertResponsesWebSearchCallToClaudeBlocks(item);
+        const blocks = webSearchHistory.claudeBlocks(itemIndex, item);
 
         if (blocks.length > 0) appendParts("assistant", blocks);
         break;
@@ -558,16 +567,23 @@ const convertRequest = (
   if (toolItems.length > 0) out.tools = toolItems;
 
   const toolChoice = get(root, "tool_choice");
+  let toolChoiceNone = false;
+  let forcedToolFilteredOut = false;
 
   if (exists(toolChoice)) {
     if (isStr(toolChoice)) {
       if (toolChoice === "auto") out.tool_choice = { type: "auto" };
-      else if (toolChoice === "required" && includedToolNames.size > 0)
-        out.tool_choice = { type: "any" };
+      else if (toolChoice === "none") toolChoiceNone = true;
+      else if (toolChoice === "required") {
+        if (includedToolNames.size > 0) out.tool_choice = { type: "any" };
+        else forcedToolFilteredOut = true;
+      }
     } else if (isObj(toolChoice) || isArr(toolChoice)) {
-      const choiceType = str(get(toolChoice, "type"));
+      const choiceType = str(get(toolChoice, "type")).trim();
 
-      if (choiceType === "function" || choiceType === "custom") {
+      if (choiceType === "none") {
+        toolChoiceNone = true;
+      } else if (choiceType === "function" || choiceType === "custom") {
         let fn = str(get(toolChoice, "function.name"));
 
         if (fn === "") fn = str(get(toolChoice, "custom.name"));
@@ -586,7 +602,28 @@ const convertRequest = (
 
         if (includedToolNames.has(fn))
           out.tool_choice = { name: names.claudeName(fn), type: "tool" };
+        else forcedToolFilteredOut = true;
+      } else if (choiceType !== "" && choiceType !== "auto" && !includedToolNames.has(choiceType)) {
+        forcedToolFilteredOut = true;
       }
+    }
+  }
+
+  // parallel_tool_calls=false maps to Anthropic's disable_parallel_tool_use, like the Chat Completions translator.
+  // It is not added when the effective choice is none, when no tool survived conversion, or when a forced tool was
+  // filtered out (no tool_choice was produced for it).
+  if (
+    get(root, "parallel_tool_calls") === false &&
+    !toolChoiceNone &&
+    !forcedToolFilteredOut &&
+    toolItems.length > 0
+  ) {
+    const choice = out.tool_choice;
+
+    if (isObj(choice)) {
+      choice.disable_parallel_tool_use = true;
+    } else {
+      out.tool_choice = { type: "auto", disable_parallel_tool_use: true };
     }
   }
 
@@ -611,21 +648,6 @@ const collapseSingleText = (parts: JsonObject[]): Json => {
   }
 
   return parts;
-};
-
-const defaultMaxTokensForModel = (modelName: string): number => {
-  const normalized = modelName.trim().toLowerCase();
-  let maxTokens = DEFAULT_MAX_TOKENS;
-
-  if (normalized.includes("fable")) maxTokens = DEFAULT_FABLE_MAX_TOKENS;
-  const info = lookupModelInfo(modelName, "claude");
-  const cap = info?.maxCompletionTokens ?? 0;
-
-  if (cap <= 0) return maxTokens;
-
-  if (normalized.includes("fable") && cap >= maxTokens) return maxTokens;
-
-  return cap;
 };
 
 const isSystemLevelRole = (role: string): boolean => {
@@ -691,7 +713,22 @@ const dropUnsupportedAssistantPrefill = (modelName: string, messages: Message[])
 
   if (str(last.role).trim().toLowerCase() !== "assistant") return messages;
 
+  // A turn that ends on a server-tool block was paused by pause_turn: the continuation sends it back unchanged.
+  if (endsWithPausedServerTool(last)) return messages;
+
   return messages.slice(0, -1);
+};
+
+const endsWithPausedServerTool = (message: Message): boolean => {
+  const content = message.content;
+
+  if (!isArr(content) || content.length === 0) return false;
+
+  const type = str(get(content[content.length - 1], "type"))
+    .trim()
+    .toLowerCase();
+
+  return type === "server_tool_use" || type === "web_search_tool_result";
 };
 
 const stripTrailingThinkingBlocks = (messages: Message[]): Message[] => {
@@ -819,11 +856,18 @@ const applyToolResultContent = (toolResult: JsonObject, output: Json | undefined
     const partsJSON: JsonObject[] = [];
     let hasImage = false;
     let hasFile = false;
+    let droppedBlankPart = false;
 
     for (const part of output) {
       const converted = contentPartToClaude(part);
 
       if (converted === undefined) continue;
+
+      if (!contentPartHasVisibleContent(converted)) {
+        droppedBlankPart = true;
+        continue;
+      }
+
       partsJSON.push(converted);
 
       if (converted.type === "image") hasImage = true;
@@ -832,7 +876,7 @@ const applyToolResultContent = (toolResult: JsonObject, output: Json | undefined
     }
 
     if (partsJSON.length === 0) {
-      toolResult.content = JSON.stringify(output);
+      toolResult.content = droppedBlankPart ? "" : JSON.stringify(output);
 
       return;
     }

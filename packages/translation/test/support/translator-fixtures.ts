@@ -7,6 +7,7 @@ import { expect, it } from "vitest";
 import type { Json } from "@commissary/json";
 import { builtinTranslators } from "../../src/translator/builtin.ts";
 import { makeTranslationState, type RequestEnvelope } from "../../src/translator/registry.ts";
+import { portedMaxTokens } from "./translator-ported-ahead.ts";
 import { expandEmbeddedJson } from "./structural.ts";
 
 export interface TranslatorFixtureCase {
@@ -126,9 +127,19 @@ const checkTranslatorFixture = (
   const envelope = translateRequest(c, requestEnvelope);
 
   expect(envelope.error?.message).toBe(c.requestError);
-  expect(expandEmbeddedJson(envelope.body)).toEqual(
-    parseJson(portedSinceGeneration(c.translatedRequest)),
-  );
+  const expected = parseJson(portedSinceGeneration(c.translatedRequest));
+  const maxTokens = portedMaxTokens(`${c.from}->${c.to} ${c.name}`);
+
+  // A case whose golden predates a ported change expects the new `max_tokens` (see translator-ported-ahead.ts).
+  if (
+    maxTokens !== undefined &&
+    typeof expected === "object" &&
+    expected !== null &&
+    !Array.isArray(expected)
+  )
+    expected.max_tokens = maxTokens;
+
+  expect(expandEmbeddedJson(envelope.body)).toEqual(expected);
 
   if (c.responseLines !== undefined) {
     const context = {

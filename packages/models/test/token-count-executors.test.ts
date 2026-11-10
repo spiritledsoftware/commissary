@@ -85,6 +85,28 @@ const sameWithinTokenTolerance = (got: Json | undefined, want: Json | undefined)
 
 const noUpstream = () => new Response("unexpected upstream call", { status: 500 });
 
+/**
+ * Golden cases whose recorded answer predates an upstream change Commissary has ported, by provider and payload: the
+ * error each must now give (ticket C2, Go `df07b1e5`). Go drops blank text blocks, so a request of blank messages
+ * only has no messages left; the fixture (`tokens.json`) recorded `{"input_tokens":1}`. Regenerating it at
+ * `d1ea84f4` gives the error below. The fixture stays untouched; F2 (#388) regenerates it and deletes this table.
+ */
+const AHEAD_OF_FIXTURE = new Map([
+  [
+    `claude ${JSON.stringify({
+      model: "gpt-4o",
+      messages: [
+        { role: "user", content: "   " },
+        { role: "user", content: "\n" },
+        { role: "assistant", content: "" },
+      ],
+    })}`,
+    "Claude token count request messages must be a non-empty array",
+  ],
+]);
+
+const usedAhead = new Set<string>();
+
 describe("countTokens parity with the Go executors", () => {
   for (const [provider, { executor, credential: cred }] of executors) {
     const cases = fixtures.executors.filter((c) => c.provider === provider);
@@ -109,11 +131,17 @@ describe("countTokens parity with the Go executors", () => {
 
         const label = `${c.source} ${c.model} ${c.payload.slice(0, 70)}`;
 
-        if (c.error !== undefined && c.error !== "") {
-          if (Result.isSuccess(result) || !result.failure.message.includes(c.error)) {
+        const aheadKey = `${provider} ${JSON.stringify(JSON.parse(c.payload))}`;
+        const ahead = AHEAD_OF_FIXTURE.get(aheadKey);
+
+        if (ahead !== undefined) usedAhead.add(aheadKey);
+        const wantError = ahead ?? c.error;
+
+        if (wantError !== undefined && wantError !== "") {
+          if (Result.isSuccess(result) || !result.failure.message.includes(wantError)) {
             mismatches.push({
               label,
-              want: `error: ${c.error}`,
+              want: `error: ${wantError}`,
               got: Result.isSuccess(result) ? result.success.payload : result.failure.message,
             });
           }
@@ -130,6 +158,10 @@ describe("countTokens parity with the Go executors", () => {
       expect(h.calls).toHaveLength(0);
     });
   }
+
+  it("consumed every ahead-of-fixture entry", () => {
+    expect([...AHEAD_OF_FIXTURE.keys()].filter((key) => !usedAhead.has(key))).toEqual([]);
+  });
 
   it("Meta rejects a missing token like Go ensureAuth (401)", async () => {
     const h = await harness(credential("meta", { kind: "apikey" }), noUpstream);

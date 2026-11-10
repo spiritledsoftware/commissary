@@ -10,6 +10,9 @@ export const exists = (value: Json | undefined): value is Json => value !== unde
 export const str = (value: Json | undefined): string => asString(value);
 
 /** `strings.TrimSpace(result.String())`. */
+/** An empty or whitespace-only string: Anthropic answers 400 to a text block like that. */
+export const isBlankText = (value: string): boolean => value.trim() === "";
+
 export const trimmed = (value: Json | undefined): string => asString(value).trim();
 
 /** Own property of an object value (`undefined` when `value` is not an object). */

@@ -15,21 +15,24 @@ import {
   attachCacheControl,
   attachMessageCacheControl,
   attachToolMessageCacheControl,
+  moveBlankPartCacheControl,
 } from "../../../common/cache-control.ts";
 import { ClaudeMessageAccumulator } from "../../../common/claude-messages.ts";
 import { buildClaudeStructuredOutputInstruction } from "../../../common/claude-system.ts";
 import { deriveClaudeUserID } from "../../../common/claude-user-id.ts";
 import {
+  defaultClaudeMaxTokensForModel,
   normalizeClaudeToolInputSchema,
   sanitizeClaudeFunctionName,
 } from "../../../common/claude-util.ts";
 import { generateClaudeToolCallId } from "../../../common/request.ts";
 import { sanitizeClaudeToolId } from "../../../common/tool-names.ts";
-import { exists, isArr, isObj, str, toArray, trimmed } from "../../../common/gjson.ts";
+import { exists, isArr, isBlankText, isObj, str, toArray, trimmed } from "../../../common/gjson.ts";
 import { UserTurnDrops } from "../../../common/parts.ts";
 
+/** The first value that exists and is not JSON null (a client sending `"max_tokens": null` omitted it). */
 const firstExisting = (...values: Array<Json | undefined>): Json | undefined =>
-  values.find((value) => value !== undefined);
+  values.find((value) => value !== undefined && value !== null);
 
 /** `ConvertOpenAIRequestToClaude`. */
 export const convertOpenAIRequestToClaude = (
@@ -56,7 +59,7 @@ const convertRequest = (
 
   const out: JsonObject = {
     model: "",
-    max_tokens: 32000,
+    max_tokens: defaultClaudeMaxTokensForModel(modelName),
     messages: [],
     metadata: { user_id: userId },
   };
@@ -154,14 +157,19 @@ const convertRequest = (
         case "developer": {
           const systemStart = systemBlocks.length;
 
-          if (typeof content === "string" && content !== "") {
+          if (typeof content === "string" && !isBlankText(content)) {
             systemBlocks.push(attachCacheControl({ type: "text", text: content }, message));
           } else if (isArr(content)) {
             for (const part of content) {
               if (str(get(part, "type")) === "text") {
-                systemBlocks.push(
-                  attachCacheControl({ type: "text", text: str(get(part, "text")) }, part),
-                );
+                const text = str(get(part, "text"));
+
+                if (isBlankText(text)) {
+                  moveBlankPartCacheControl(systemBlocks, systemStart, part);
+                  continue;
+                }
+
+                systemBlocks.push(attachCacheControl({ type: "text", text }, part));
               }
             }
 
@@ -188,7 +196,7 @@ const convertRequest = (
             }
           }
 
-          if (typeof content === "string" && content !== "") {
+          if (typeof content === "string" && !isBlankText(content)) {
             contentBlocks.push({ type: "text", text: content });
           } else if (isArr(content)) {
             for (const part of content) {
@@ -199,7 +207,8 @@ const convertRequest = (
               } else {
                 const partType = str(get(part, "type"));
 
-                if (role === "user" && (partType === "file" || partType === "input_audio"))
+                if (partType === "text") moveBlankPartCacheControl(contentBlocks, 0, part);
+                else if (role === "user" && (partType === "file" || partType === "input_audio"))
                   drops.drop(partType);
               }
             }
@@ -417,8 +426,12 @@ const toolInput = (args: Json | undefined): Json => {
 
 const convertContentPartRaw = (part: Json | undefined): JsonObject | undefined => {
   switch (str(get(part, "type"))) {
-    case "text":
-      return { type: "text", text: str(get(part, "text")) };
+    case "text": {
+      const text = str(get(part, "text"));
+
+      return isBlankText(text) ? undefined : { type: "text", text };
+    }
+
     case "image_url":
       return convertImageURL(str(get(part, "image_url.url")));
     case "file": {
@@ -478,19 +491,24 @@ const toolResultContent = (content: Json | undefined): Json => {
 
   if (isArr(content)) {
     const parts: JsonObject[] = [];
+    let droppedBlankText = false;
 
     for (const part of content) {
       if (typeof part === "string") {
-        parts.push({ type: "text", text: part });
+        if (isBlankText(part)) droppedBlankText = true;
+        else parts.push({ type: "text", text: part });
         continue;
       }
 
       const claudePart = convertContentPartRaw(part);
 
       if (claudePart !== undefined) parts.push(claudePart);
+      else if (str(get(part, "type")) === "text") droppedBlankText = true;
     }
 
     if (parts.length > 0 || content.length === 0) return parts;
+
+    if (droppedBlankText) return "";
 
     return JSON.stringify(content);
   }

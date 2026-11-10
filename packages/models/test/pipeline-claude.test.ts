@@ -7,6 +7,8 @@ import { normalizeCchInput } from "../src/executor/claude/signing.ts";
 import { xxh64 } from "../src/executor/claude/xxhash64.ts";
 import { asString, type JsonObject } from "@commissary/json";
 import { setModelInfoLookup } from "@commissary/translation";
+import { Effect, Layer } from "effect";
+import { ModelCapabilities } from "../src/handlers/model-capabilities.ts";
 import {
   catalogCapabilities,
   oauthCredential,
@@ -1351,5 +1353,79 @@ api-keys:
     // The embedded schema text adds to the estimate; without the fallback both counts would be equal-sized schemas.
     expect(await count(request())).toBeGreaterThan(await count(plain));
     expect(p.calls).toHaveLength(0);
+  });
+});
+
+describe("Default max_tokens of translated requests (Go 0d18d3b3)", () => {
+  const RULE_YAML = `${API_KEY_YAML}
+requests:
+  payload:
+    default:
+      - models: [{ name: "claude-sonnet-4-5", protocol: claude }]
+        params:
+          max_tokens: 16384
+`;
+
+  // The catalog's output limit of the model (`maxCompletionTokens`), handed to the pipeline per request like the
+  // registry snapshot's lookup (`ExecutorRequest.modelLookup`), so no process-wide lookup is touched.
+  const lookup = (id: string) =>
+    id === "claude-sonnet-4-5" ? { id, maxCompletionTokens: 64000 } : undefined;
+
+  const limits = Layer.succeed(
+    ModelCapabilities,
+    ModelCapabilities.of({
+      thinking: (model) => Effect.succeed({ modelInfo: lookup(model), lookup }),
+    }),
+  );
+
+  const upstreamMaxTokens = async (
+    yaml: string,
+    path: string,
+    body: JsonObject,
+  ): Promise<number | undefined> => {
+    const p = makePipeline({
+      config: await loadConfig(yaml),
+      modelCapabilities: limits,
+      respond: () => sseResponse(sse(streamEvents())),
+    });
+
+    try {
+      const response = await p.call(path, postJson({ model: "sonnet", ...body }));
+      expect(response.status).toBe(200);
+      await response.text();
+
+      return (JSON.parse(p.calls[0]!.body) as { max_tokens?: number }).max_tokens;
+    } finally {
+      await p.dispose();
+    }
+  };
+
+  const chat = { messages: [{ role: "user", content: "hi" }] };
+
+  it("gives a chat request without max_tokens the model's catalog output limit", async () => {
+    expect(await upstreamMaxTokens(API_KEY_YAML, "/v1/chat/completions", chat)).toBe(64000);
+  });
+
+  it("lets a payload default rule replace the synthesized limit, but not a client's", async () => {
+    expect(await upstreamMaxTokens(RULE_YAML, "/v1/chat/completions", chat)).toBe(16384);
+
+    expect(
+      await upstreamMaxTokens(RULE_YAML, "/v1/chat/completions", {
+        ...chat,
+        max_completion_tokens: 4096,
+      }),
+    ).toBe(4096);
+
+    expect(
+      await upstreamMaxTokens(RULE_YAML, "/v1/chat/completions", { ...chat, max_tokens: null }),
+    ).toBe(16384);
+  });
+
+  it("does the same for a Responses request", async () => {
+    expect(await upstreamMaxTokens(RULE_YAML, "/v1/responses", { input: "hi" })).toBe(16384);
+
+    expect(
+      await upstreamMaxTokens(RULE_YAML, "/v1/responses", { input: "hi", max_output_tokens: 4096 }),
+    ).toBe(4096);
   });
 });

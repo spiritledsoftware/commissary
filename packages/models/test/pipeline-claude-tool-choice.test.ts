@@ -333,9 +333,8 @@ describe("OpenAI sources", () => {
           try {
             expect((await p.call(path, postJson(build(toolChoice, withSchema)))).status).toBe(200);
             const sent = JSON.parse(p.calls[0]!.body) as JsonObject;
-            // The Responses translator does not map `parallel_tool_calls: false` to `disable_parallel_tool_use`
-            // (Go does, claude_openai-responses_request.go): a translator gap outside this rewrite, so it is not pinned.
-            expect(sent.tool_choice).toEqual(source === "chat" ? AUTO : { type: "auto" });
+            // Both translators map `parallel_tool_calls: false` to `disable_parallel_tool_use`.
+            expect(sent.tool_choice).toEqual(AUTO);
             expect((sent.tools as JsonObject[])[0]?.name).toBe("lookup_weather");
             expect(sent.thinking).toEqual({ type: "adaptive" });
             expect(sent.output_config).toEqual({ effort: "high" });
