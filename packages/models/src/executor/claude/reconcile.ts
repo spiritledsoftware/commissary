@@ -24,6 +24,7 @@ import {
   collectForwardedBlocks,
   FABLE_REPORTING_OUTCOMES,
   firstUserMessageIndex,
+  leadingUserRunEnd,
   messageContentText,
   prependSystemReminderBlocks,
 } from "./cloaking.ts";
@@ -228,10 +229,7 @@ export const captureSystemPlacement = (
   const firstUser = firstUserMessageIndex(before);
 
   if (firstUser < 0) return NO_PLACEMENT;
-  let insertAt = firstUser + 1;
-
-  while (insertAt < beforeMessages.length && str(get(beforeMessages[insertAt], "role")) === "user")
-    insertAt += 1;
+  const insertAt = leadingUserRunEnd(beforeMessages, firstUser);
 
   if (insertAt + texts.length > afterMessages.length) return NO_PLACEMENT;
   const insertedRaw: string[] = [];

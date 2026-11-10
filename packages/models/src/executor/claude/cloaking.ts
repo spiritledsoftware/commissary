@@ -223,15 +223,38 @@ export const messageContentText = (content: Json | undefined): string => {
     .join("\n\n");
 };
 
+/** `isClaudeSystemDirectiveMessage`: `role: "system"`, `output_config` present and an empty content array. */
+const isSystemDirectiveMessage = (message: Json | undefined): boolean =>
+  isObj(message) &&
+  str(message.role) === "system" &&
+  message.output_config !== undefined &&
+  isArr(message.content) &&
+  message.content.length === 0;
+
+/**
+ * `claudeLeadingUserRunEnd` (Go 2d8ec73b): the index after the leading user run that starts at `firstUser`. Directive-only
+ * system turns are accepted by Anthropic at any position, so they do not end the run: caller system blocks must not be
+ * inserted before a later user turn because of them. Shared by the insertion, the at-end check and the placement capture.
+ */
+export const leadingUserRunEnd = (messages: readonly Json[], firstUser: number): number => {
+  let insertAt = firstUser + 1;
+
+  while (insertAt < messages.length) {
+    const message = messages[insertAt];
+
+    if (str(get(message, "role")) !== "user" && !isSystemDirectiveMessage(message)) break;
+    insertAt++;
+  }
+
+  return insertAt;
+};
+
 /** `claudeMidConversationSystemMessagesAtEnd`. */
 const midConversationSystemAtEnd = (body: JsonObject): boolean => {
   const firstUser = firstUserMessageIndex(body);
 
   if (firstUser < 0 || !isArr(body.messages)) return false;
-  let insertAt = firstUser + 1;
-
-  while (insertAt < body.messages.length && str(get(body.messages[insertAt], "role")) === "user")
-    insertAt++;
+  const insertAt = leadingUserRunEnd(body.messages, firstUser);
 
   return insertAt === body.messages.length || insertAt > firstUser + 1;
 };
@@ -246,9 +269,7 @@ const insertMidConversationSystemBlocks = (
 
   if (firstUser < 0 || blocks.length === 0 || !isArr(body.messages)) return;
   const messages = body.messages;
-  let insertAt = firstUser + 1;
-
-  while (insertAt < messages.length && str(get(messages[insertAt], "role")) === "user") insertAt++;
+  const insertAt = leadingUserRunEnd(messages, firstUser);
 
   if (messages.length - insertAt >= blocks.length) {
     const matches = blocks.every((block, index) => {

@@ -22,10 +22,13 @@ import {
   upgradeCacheControlTTL,
 } from "../src/executor/claude/cache-control.ts";
 import {
+  applySystemInstructions,
   computeFingerprint,
   generateBillingHeader,
   injectCurrentDate,
+  relocateSystemForCountTokens,
 } from "../src/executor/claude/cloaking.ts";
+import { captureSystemPlacement } from "../src/executor/claude/reconcile.ts";
 import {
   AliasResolver,
   AliasRestoreError,
@@ -1336,5 +1339,110 @@ describe("Responses reasoning replay", () => {
       { type: "thinking", thinking: "why", signature: "opaque" },
       { type: "text", text: "a" },
     ]);
+  });
+});
+
+// Go 2d8ec73b: an effort directive (`role: "system"`, `output_config`, empty content) is accepted at any position, so
+// it does not end the leading user run that mid-conversation system turns are inserted after.
+describe("directive-only system turns", () => {
+  const DIRECTIVE: JsonObject = { role: "system", content: [], output_config: { effort: "low" } };
+
+  const USER = (text: string): JsonObject => ({ role: "user", content: text });
+
+  const GUIDANCE: JsonObject = { type: "text", text: "caller guidance" };
+
+  const roles = (body: JsonObject): string[] =>
+    (body.messages as JsonObject[]).map((message) => message.role as string);
+
+  const instructions = (keepCallerSystemTopLevel: boolean) => ({
+    strictMode: false,
+    cchSigning: false,
+    version: "2.1.321",
+    entrypoint: "cli",
+    workload: "",
+    currentDate: "2026-10-20",
+    isSubagent: false,
+    prevReq: "",
+    promptId: "11111111-2222-4333-8444-555555555555",
+    keepCallerSystemTopLevel,
+    turnOrigin: "",
+    explicitCacheMode: false,
+  });
+
+  const withTail = (...tail: JsonObject[]): JsonObject => ({
+    model: "claude-opus-5-5",
+    system: [GUIDANCE],
+    messages: [USER("summary"), ...tail],
+  });
+
+  it.each([
+    ["compacted history", [DIRECTIVE, USER("next")], 3],
+    ["before an assistant turn", [DIRECTIVE, USER("next"), { role: "assistant", content: "a" }], 3],
+    ["several directives", [DIRECTIVE, DIRECTIVE, USER("next")], 4],
+    ["a terminal directive", [DIRECTIVE], 2],
+    [
+      "a content-bearing system turn",
+      [{ ...DIRECTIVE, content: [{ type: "text", text: "rule" }] }, USER("next")],
+      1,
+    ],
+    [
+      "an empty system turn without output_config",
+      [{ role: "system", content: [] }, USER("next")],
+      1,
+    ],
+    ["string content", [{ ...DIRECTIVE, content: "" }, USER("next")], 1],
+  ] as const)("inserts after %s", (_name, tail, insertAt) => {
+    const body = withTail(...structuredClone(tail as unknown as JsonObject[]));
+    const before = structuredClone(body.messages as JsonObject[]);
+
+    relocateSystemForCountTokens(body, false, false);
+    const after = body.messages as JsonObject[];
+    expect(after).toHaveLength(before.length + 1);
+    expect(after[insertAt]).toMatchObject({
+      role: "system",
+      content: [{ type: "text", text: "caller guidance" }],
+    });
+    expect(after.filter((_, index) => index !== insertAt)).toEqual(before);
+    expect(body).not.toHaveProperty("system");
+  });
+
+  it("is idempotent", () => {
+    const body = withTail(structuredClone(DIRECTIVE), USER("next"));
+    relocateSystemForCountTokens(body, false, false);
+    const once = structuredClone(body.messages);
+
+    body.system = [GUIDANCE];
+    relocateSystemForCountTokens(body, false, false);
+    expect(body.messages).toEqual(once);
+    expect(roles(body)).toEqual(["user", "system", "user", "system"]);
+  });
+
+  it("keeps the caller system top-level when the insertion point is the end of the conversation", () => {
+    const body = withTail(structuredClone(DIRECTIVE), USER("next"));
+
+    applySystemInstructions(body, instructions(true));
+    expect(roles(body)).toEqual(["user", "system", "user"]);
+    expect(JSON.stringify(body.system)).toContain("caller guidance");
+  });
+
+  // The literal fixture is independent of the insertion helper's decision.
+  it("captures the placement of the turn cloaking inserted after the directive", () => {
+    const before = withTail(structuredClone(DIRECTIVE), USER("next"));
+
+    const after: JsonObject = {
+      messages: [
+        USER("summary"),
+        structuredClone(DIRECTIVE),
+        USER("next"),
+        { role: "system", content: [{ type: "text", text: "caller guidance" }] },
+      ],
+    };
+
+    const state = captureSystemPlacement(before, after, true);
+    expect(state.insertAt).toBe(3);
+    expect(state.texts).toEqual(["caller guidance"]);
+    expect(state.insertedRaw).toEqual([JSON.stringify((after.messages as JsonObject[])[3])]);
+    // Nothing was inserted: the caller owns every turn.
+    expect(captureSystemPlacement(before, before, true).insertedRaw).toEqual([]);
   });
 });

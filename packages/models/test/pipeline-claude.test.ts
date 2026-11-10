@@ -1615,3 +1615,49 @@ api-keys:
     expect(await count("call:1")).toBeGreaterThan(await count("call_1"));
   });
 });
+
+// Go 2d8ec73b: caller system guidance goes after the leading user run, directive-only turns included.
+describe("Effort directive after a compaction (cloaked)", () => {
+  const DIRECTIVE = { role: "system", content: [], output_config: { effort: "low" } };
+
+  const request = (): JsonObject => ({
+    model: "claude-opus-4-8",
+    max_tokens: 64,
+    system: [{ type: "text", text: "caller guidance" }],
+    messages: [
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: "<conversation-checkpoint>Earlier we said hello.</conversation-checkpoint>",
+          },
+        ],
+      },
+      DIRECTIVE,
+      { role: "user", content: [{ type: "text", text: "Reply with just: ok" }] },
+    ],
+  });
+
+  const expectPlacement = (body: JsonObject): void => {
+    const messages = body.messages as JsonObject[];
+    expect(messages.map((m) => m.role)).toEqual(["user", "system", "user", "system"]);
+    expect(messages[1]).toEqual(DIRECTIVE);
+    expect(messages[3]?.content).toEqual([expect.objectContaining({ text: "caller guidance" })]);
+    expect(JSON.stringify(body.system ?? null)).not.toContain("caller guidance");
+  };
+
+  it.each(["/v1/messages", "/v1/messages/count_tokens"])(
+    "places it after the directive on %s",
+    async (path) => {
+      const h = oauthPipeline(
+        () => jsonResponse(path.endsWith("count_tokens") ? { input_tokens: 5 } : message()),
+        await loadConfig(""),
+      );
+
+      afterAll(h.pipeline.dispose);
+      expect((await h.pipeline.call(path, postJson(request()))).status).toBe(200);
+      expectPlacement(lastBody(h));
+    },
+  );
+});
