@@ -45,7 +45,11 @@ import {
   creditsModel,
   shouldAttemptCreditsFallback,
 } from "../executor/antigravity/credits.ts";
-import { antigravityStateFor, creditsAvailable } from "../executor/antigravity/state.ts";
+import {
+  antigravityStateFor,
+  creditsAvailable,
+  creditsRecordFresh,
+} from "../executor/antigravity/state.ts";
 import { ExecutorRegistry } from "../executor/registry.ts";
 import { parseSuffix } from "@commissary/translation/thinking";
 import type {
@@ -446,7 +450,14 @@ export const conduct = <T, R>(
           antigravityStateFor(env, org).credits(credentialId),
         );
 
-        return record === undefined ? undefined : creditsAvailable(record);
+        if (record === undefined) return undefined;
+
+        if (creditsAvailable(record)) return true;
+
+        const now = yield* Clock.currentTimeMillis;
+
+        // Go `findAllAntigravityCreditsCandidateAuths`: an out-of-credits hint older than the refresh interval is unknown.
+        return creditsRecordFresh(record, now) ? false : undefined;
       });
 
     /** One retry round: pick credentials until success, a stop condition, or nothing left. */

@@ -197,11 +197,11 @@ describe("antigravity credits fallback", () => {
   });
 
   it("walks known-available credentials first, then unknown ones, each sorted by id; known-empty ones are skipped", async () => {
-    const record = (amount: number) => ({
+    const record = (amount: number, updatedAt = Date.now()) => ({
       creditAmount: amount,
       minCreditAmount: 1,
       paidTierId: "",
-      updatedAt: 1,
+      updatedAt,
     });
 
     const outcome = await run(
@@ -216,6 +216,8 @@ describe("antigravity credits fallback", () => {
         names: ["a", "b", "c", "d", "e"],
         seed: async (state) => {
           await state.setCredits("antigravity-a.json", record(0)); // known empty: skipped
+          // Out of credits for longer than the 10 min refresh interval: unknown again, so it is retried.
+          await state.setCredits("antigravity-b.json", record(0, Date.now() - 10 * 60_000 - 1000));
           await state.setCredits("antigravity-e.json", record(5)); // known available
           await state.setCredits("antigravity-c.json", record(9)); // known available
         },

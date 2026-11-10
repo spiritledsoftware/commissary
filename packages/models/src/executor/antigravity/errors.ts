@@ -135,7 +135,8 @@ export const decideAntigravity429 = (body: string): Antigravity429Decision => {
       reason = asString(get(detail, "reason")).trim();
       const upper = reason.toUpperCase();
 
-      if (upper === "QUOTA_EXHAUSTED") return withDelay("full_quota_exhausted", reason);
+      if (upper === "QUOTA_EXHAUSTED" || upper === "INSUFFICIENT_G1_CREDITS_BALANCE")
+        return withDelay("full_quota_exhausted", reason);
 
       if (upper === "RATE_LIMIT_EXCEEDED") {
         if (retryAfterMs === undefined) return withDelay("soft_retry", reason);

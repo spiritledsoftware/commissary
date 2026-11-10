@@ -605,7 +605,7 @@ describe("codex login", () => {
 describe("antigravity login", () => {
   const TOKEN = "POST https://oauth2.googleapis.com/token";
   const USERINFO = "GET https://www.googleapis.com/oauth2/v2/userinfo?alt=json";
-  const LOAD = "POST https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist";
+  const LOAD = "POST https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist";
   const ONBOARD = "POST https://daily-cloudcode-pa.googleapis.com/v1internal:onboardUser";
 
   const tokens = {
@@ -645,7 +645,8 @@ describe("antigravity login", () => {
         prompt: "consent",
         redirect_uri: "http://localhost:51121/oauth-callback",
       });
-      expect((parts.scope ?? "").split(" ")).toHaveLength(5);
+      expect((parts.scope ?? "").split(" ")).toHaveLength(6);
+      expect(parts.scope?.split(" ")).toContain("https://www.googleapis.com/auth/aicode");
       expect(started.url.startsWith("https://accounts.google.com/o/oauth2/v2/auth?")).toBe(true);
 
       assert.deepStrictEqual(
@@ -667,6 +668,10 @@ describe("antigravity login", () => {
       });
       expect(h.requests[1]?.headers.authorization).toBe("Bearer ya29.at");
       expect(h.requests[2]?.json()).toEqual({ metadata: { ideType: "ANTIGRAVITY" } });
+      expect(h.requests[2]?.headers["user-agent"]).toBe(
+        "antigravity/hub/2.29.0 (aidev_client; os_type=darwin; arch=arm64; cl=1013060670)",
+      );
+      expect(h.requests[2]?.headers.accept).toBeUndefined();
       const { name, file } = onlyFile(h);
       expect(name).toBe("antigravity-me@gmail.com.json");
       assert.deepStrictEqual(file, {
@@ -740,7 +745,7 @@ describe("antigravity login", () => {
         const onboard = h.requests.find((request) => request.url.includes("onboardUser"));
         expect(onboard?.json()).toEqual({
           tier_id: "standard-tier",
-          metadata: { ide_type: "ANTIGRAVITY", ide_version: "2.9.1", ide_name: "antigravity" },
+          metadata: { ide_type: "ANTIGRAVITY", ide_version: "2.29.0", ide_name: "antigravity" },
         });
         expect(onboard?.headers["x-goog-api-client"]).toBe("gl-node/22.21.1");
         expect(onlyFile(h).file.project_id).toBe("proj-2");
