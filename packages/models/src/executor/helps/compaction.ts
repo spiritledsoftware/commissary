@@ -58,19 +58,27 @@ export const hasResponsesCompactionTrigger = (payload: Json | undefined): boolea
 export const hasResponsesCompactionItem = (payload: Json | undefined): boolean =>
   inputItems(payload).some((item) => asString(get(item, "type")) === "compaction");
 
+/** Input items that steer the client, not the conversation: a summary request never carries them (d576416a, d57270f4). */
+const CONTROL_ITEM_TYPES: ReadonlySet<string> = new Set([
+  "compaction_trigger",
+  "additional_tools",
+  "configuration_update",
+]);
+
+const isControlItem = (item: Json): boolean =>
+  CONTROL_ITEM_TYPES.has(asString(get(item, "type")).trim());
+
 /**
- * `PrepareAntigravityCompactionSummaryPayload`: trigger items dropped, the summary request appended, fields that do
- * not apply to a one-shot summary removed, `stream: false`. Returns a new object.
+ * `PrepareAntigravityCompactionSummaryPayload`: control items (`compaction_trigger`, `additional_tools`,
+ * `configuration_update`) dropped, the summary request appended, fields that do not apply to a one-shot summary removed
+ * (`text.format` would replace the summary with structured output), `stream: false`. Returns a new object.
  */
 export const prepareCompactionSummaryPayload = (payload: Json): Json => {
   const out = cloneJson(payload);
   const input = get(out, "input");
 
   if (isJsonArray(input)) {
-    set(out, "input", [
-      ...input.filter((item) => asString(get(item, "type")) !== "compaction_trigger"),
-      summaryPrompt(),
-    ]);
+    set(out, "input", [...input.filter((item) => !isControlItem(item)), summaryPrompt()]);
   } else if (typeof input === "string" && input !== "") {
     set(out, "input", [
       { type: "message", role: "user", content: [{ type: "input_text", text: input }] },
@@ -81,6 +89,9 @@ export const prepareCompactionSummaryPayload = (payload: Json): Json => {
   }
 
   for (const field of [
+    "type",
+    "event_id",
+    "text",
     "stream",
     "tools",
     "tool_choice",
