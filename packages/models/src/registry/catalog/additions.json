@@ -68,6 +68,12 @@
             "dynamicAllowed": true
           }
         },
+        "claude-fable-5-2": {
+          "thinking": {
+            "zeroAllowed": false,
+            "dynamicAllowed": true
+          }
+        },
         "claude-opus-5-5": {
           "nativeCapabilities": {
             "webSearch": true
@@ -200,41 +206,6 @@
           "displayName": "Claude 3.5 Haiku",
           "contextLength": 128000,
           "maxCompletionTokens": 8192
-        },
-        {
-          "id": "claude-fable-5-2",
-          "object": "model",
-          "ownedBy": "anthropic",
-          "type": "claude",
-          "created": 1794250800,
-          "displayName": "Claude Fable 5.2",
-          "description": "Claude Fable 5.2 extends Claude Fable 5 at the same input and output prices, with cache reads at a quarter of the cost, and brings stronger long-running agentic coding, multistep research, and document, spreadsheet, and slide work.",
-          "contextLength": 1000000,
-          "maxCompletionTokens": 128000,
-          "supportedInputModalities": [
-            "text",
-            "image"
-          ],
-          "supportedOutputModalities": [
-            "text"
-          ],
-          "thinking": {
-            "zeroAllowed": false,
-            "dynamicAllowed": true,
-            "levels": [
-              "low",
-              "medium",
-              "high",
-              "xhigh",
-              "max"
-            ]
-          },
-          "cost": {
-            "input": 10,
-            "output": 50,
-            "cache_read": 0.25,
-            "cache_write": 12.5
-          }
         }
       ]
     },

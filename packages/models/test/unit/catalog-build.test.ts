@@ -366,7 +366,7 @@ describe("bundled thinking facts of Claude-protocol models", () => {
     expect(thinking("claude", id)?.zeroAllowed, id).toBe(true);
   });
 
-  it.each(["claude-opus-5-5", "claude-fable-5", "claude-fable-5-1", "claude-fable-5-2"])(
+  it.each(["claude-opus-5-5", "claude-fable-5", "claude-fable-5-1"])(
     "%s cannot, and takes adaptive thinking only",
     (id) => {
       const support = thinking("claude", id);
@@ -378,6 +378,24 @@ describe("bundled thinking facts of Claude-protocol models", () => {
       expect(support?.max, id).toBeUndefined();
     },
   );
+
+  it("claude-fable-5-2, which the bundled models.dev snapshot predates, gets its facts when models.dev lists it", () => {
+    // The live catalog is refreshed from models.dev; the additions only fill the gaps it leaves (ADR 0020).
+    const efforts = ["low", "medium", "high", "xhigh", "max"];
+
+    const document = documentText({
+      anthropic: {
+        "claude-fable-5-2": mdModel("claude-fable-5-2", {
+          reasoning_options: [{ type: "effort", values: efforts }],
+        }),
+      },
+    });
+
+    const built = buildModelsCatalog(trimmed(document), catalogAdditions());
+    const support = built.claude.find((model) => model.id === "claude-fable-5-2")?.thinking;
+
+    expect(support).toEqual({ zeroAllowed: false, dynamicAllowed: true, levels: efforts });
+  });
 
   it("only claude-sonnet-5-5 needs between_tools", () => {
     for (const model of sectionModels(catalogs, "claude"))
