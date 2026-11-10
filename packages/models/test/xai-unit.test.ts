@@ -296,7 +296,9 @@ describe("tool normalisation", () => {
     expect(totalFlattenedToolsCount(body, false, false)).toBe(301);
     expect(totalFlattenedToolsCount(body, true, false)).toBe(302);
     const refs = collectNamespaceToolRefs(body, true);
-    expect(refs.get("ns1")).toEqual({ namespace: "ns1", name: "", isDispatcher: true });
+    expect(refs.get("ns1")).toMatchObject({ namespace: "ns1", name: "", isDispatcher: true });
+    expect(refs.get("ns1")?.children?.size).toBe(150);
+    expect(refs.get("ns1")?.children?.has("c149")).toBe(true);
     expect(refs.get("ns1__c3")).toEqual({ namespace: "ns1", name: "c3", isDispatcher: false });
     normalizeTools(body, true);
     expect(body.tools.map((tool) => (tool as { name: string }).name)).toEqual([
@@ -868,5 +870,218 @@ describe("inlineLocalRefs", () => {
     expect(out["a"]).toEqual({ type: "string", description: "mine" });
     expect(out["b"]).toEqual({ $ref: "#/$defs/Missing" });
     expect(out["c"]).toEqual({ $ref: "https://x.test/s" });
+  });
+});
+
+describe("web_search options (bbfd7886)", () => {
+  it("drops external_web_access and search_context_size, keeps the options xAI accepts", () => {
+    const body = {
+      model: "grok-4.3",
+      tools: [
+        {
+          type: "web_search",
+          external_web_access: true,
+          search_context_size: "high",
+          search_content_types: ["text", "image"],
+          user_location: { type: "approximate", country: "NL" },
+          filters: { allowed_domains: ["github.com"] },
+        },
+        {
+          type: "namespace",
+          name: "research",
+          tools: [{ type: "web_search", search_context_size: "low" }],
+        },
+      ],
+    };
+
+    normalizeTools(body, false);
+    expect(body.tools).toEqual([
+      {
+        type: "web_search",
+        search_content_types: ["text", "image"],
+        user_location: { type: "approximate", country: "NL" },
+        filters: { allowed_domains: ["github.com"] },
+      },
+      { type: "web_search" },
+    ]);
+  });
+});
+
+describe("additional_tools deduplication (0c61b12c)", () => {
+  const clock = (description: string, param: string) => ({
+    type: "namespace",
+    name: "clock",
+    tools: [
+      {
+        type: "function",
+        name: "sleep",
+        description,
+        parameters: { type: "object", properties: { [param]: { type: "string" } } },
+      },
+    ],
+  });
+
+  const names = (count: number, from = 0) =>
+    Array.from({ length: count }, (_, i) => ({
+      type: "function",
+      name: `tool_${from + i}`,
+      parameters: { type: "object" },
+    }));
+
+  it("keeps the top-level declaration when history repeats it", () => {
+    const body = {
+      tools: [clock("top declaration", "duration_ms")],
+      input: [
+        { type: "additional_tools", tools: [clock("history declaration", "seconds")] },
+        { role: "user", content: "hi" },
+      ],
+    };
+
+    promoteAdditionalTools(normalizeTools(body, false));
+    expect(body.tools).toHaveLength(1);
+    expect(body.tools[0]).toMatchObject({ name: "clock__sleep", description: "top declaration" });
+    expect(body.input).toEqual([{ role: "user", content: "hi" }]);
+  });
+
+  it("lets a flat top-level function win over a namespaced history copy", () => {
+    const body = {
+      tools: [{ type: "function", name: "clock__sleep", description: "flat top" }],
+      input: [{ type: "additional_tools", tools: [clock("namespaced history", "x")] }],
+    };
+
+    const refs = collectNamespaceToolRefs(body, false);
+    promoteAdditionalTools(normalizeTools(body, false));
+    expect(body.tools).toHaveLength(1);
+    expect(body.tools[0]).toMatchObject({ description: "flat top" });
+    expect(refs.has("clock__sleep")).toBe(false);
+  });
+
+  it("counts overlapping history tools once, so they do not trigger folding", () => {
+    const ns = { type: "namespace", name: "mcp__app", tools: names(120) };
+
+    const body = {
+      tools: [ns],
+      input: [{ type: "additional_tools", tools: [ns] }],
+    };
+
+    expect(totalFlattenedToolsCount(body, false, false)).toBe(120);
+    promoteAdditionalTools(normalizeTools(body, false));
+    expect(body.tools).toHaveLength(120);
+  });
+
+  it("merges a repeated namespace into one dispatcher, top-level children first", () => {
+    const history = {
+      type: "namespace",
+      name: "clock",
+      tools: [
+        {
+          type: "function",
+          name: "sleep",
+          description: "history sleep",
+          parameters: { type: "object" },
+        },
+        {
+          type: "function",
+          name: "alarm",
+          description: "history alarm",
+          parameters: { type: "object" },
+        },
+      ],
+    };
+
+    const body = {
+      tools: [
+        clock("top sleep", "duration_ms"),
+        { type: "namespace", name: "mcp__app", tools: names(120) },
+      ],
+      input: [
+        {
+          type: "additional_tools",
+          tools: [history, { type: "namespace", name: "mcp__extra", tools: names(90, 120) }],
+        },
+      ],
+    };
+
+    expect(totalFlattenedToolsCount(body, false, false)).toBe(212);
+    normalizeTools(body, true);
+    promoteAdditionalTools(body);
+    const tools = body.tools as unknown as Array<{ name: string; description: string }>;
+    expect(tools.map((tool) => tool.name)).toEqual(["clock", "mcp__app", "mcp__extra"]);
+    expect(tools[0]?.description).toContain("top sleep");
+    expect(tools[0]?.description).not.toContain("history sleep");
+    expect(tools[0]?.description).toContain("history alarm");
+  });
+
+  it("registers dispatcher refs with their children and unwraps only those children", () => {
+    const body = {
+      tools: [
+        {
+          type: "namespace",
+          name: "clock",
+          tools: [{ type: "function", name: "sleep", parameters: { type: "object" } }],
+        },
+        { type: "namespace", name: "mcp__app", tools: names(210) },
+      ],
+      input: [
+        {
+          type: "additional_tools",
+          tools: [
+            {
+              type: "namespace",
+              name: "clock__sleep",
+              tools: [{ type: "function", name: "alarm", parameters: { type: "object" } }],
+            },
+          ],
+        },
+      ],
+    };
+
+    const refs = collectNamespaceToolRefs(body, true);
+    expect(refs.get("clock__sleep")).toMatchObject({
+      namespace: "clock__sleep",
+      isDispatcher: true,
+    });
+    expect(refs.get("clock")?.children).toEqual(new Set(["sleep"]));
+
+    const pipeline = new EventPipeline({
+      namespaceTools: refs,
+      webSearchAlias: "",
+      filterInternalXSearch: false,
+      clientDeclaredTools: new Set(),
+    });
+
+    const call = (name: string, arguments_: string) =>
+      pipeline.process({
+        type: "response.output_item.done",
+        item: { type: "function_call", name, arguments: arguments_ },
+      });
+
+    expect(call("clock", '{"name":"sleep","arguments":{"duration_ms":5}}')).toMatchObject({
+      item: { namespace: "clock", name: "sleep", arguments: '{"duration_ms":5}' },
+    });
+
+    expect(call("clock__sleep", '{"name":"alarm","arguments":{"ring":true}}')).toMatchObject({
+      item: { namespace: "clock__sleep", name: "alarm", arguments: '{"ring":true}' },
+    });
+  });
+
+  it("does not restore a flat function as a folded namespace child", () => {
+    const flat = { type: "function", name: "clock__sleep", parameters: { type: "object" } };
+
+    const clockNs = {
+      type: "namespace",
+      name: "clock",
+      tools: [{ type: "function", name: "sleep", parameters: { type: "object" } }],
+    };
+
+    const big = { type: "namespace", name: "mcp__app", tools: names(210) };
+
+    for (const tools of [
+      [flat, clockNs, big],
+      [clockNs, flat, big],
+    ]) {
+      const refs = collectNamespaceToolRefs({ tools }, true);
+      expect(refs.has("clock__sleep")).toBe(false);
+    }
   });
 });

@@ -433,11 +433,7 @@ const soraGet = Effect.gen(function* () {
       yield* bind(output, videoId, model, ttlMs);
 
       return upstreamJson(
-        buildVideosRetrieveResponse(
-          videoId,
-          tryParseJson(output.payload),
-          DEFAULT_OPENAI_VIDEOS_MODEL,
-        ),
+        buildVideosRetrieveResponse(videoId, tryParseJson(output.payload), model),
         output.headers,
       );
     }),

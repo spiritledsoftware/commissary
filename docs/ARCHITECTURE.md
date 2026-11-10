@@ -857,6 +857,12 @@ WebSocket transports"). Reuses the Codex translators
 - **Multi-agent v2** input rewriting (`rewriteCodexMultiAgentV2Input`, after the stream/model fields are set) and orphan delegation
   (translation step) are shared with Codex.
 - **Not ported (follow-ups)**: for xAI image requests, mask/`input_fidelity` style Codex-only options.
+- **Deliberate differences from Go (D4)**: the credential filename of an xAI login carries the identity hash (`xai-<email>-<hash>.json`,
+  `d65840fb`), but Go's migration of pre-hash and identity-subset files on re-login (`FindMatchingLegacyCredential`, the adoption rename
+  in `sdk/auth/manager.go`) is not ported: a re-login of an existing pre-hash credential creates the hashed file next to it. Image routing
+  (`routingXaiImagesModel`) has no home-mode branch, and its registered-prefix checks see only the models the caller can reach
+  (ADR 0023), where Go reads the global registry. Go reports the post-rules `response_format` to the image handler through a metadata
+  callback; here the executor returns it as `ExecutorResponse.finalizedResponseFormat` and `ExecutionOutput` carries it on.
 
 - **`ForAPIKey` scoping**: done for every provider by `withApiKeyScope` in the executor registry (xAI included, also on the WebSocket path:
   the socket runs through the conductor). Go's xAI settings live under the shared `upstream.xai`, which `ForAPIKey` keeps, so there is

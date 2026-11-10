@@ -44,18 +44,18 @@ export const modelParts = (model: string): { readonly prefix: string; readonly b
     : { prefix: "", base: trimmed };
 };
 
-/** `isXAIImagesModel`: a known Grok image model, bare or prefixed with `xai/`, `x-ai/` or `grok/`. */
-export const isXaiImagesModel = (model: string): boolean => {
-  const { prefix, base } = modelParts(model);
+/** `isXAIVendorAlias`: the built-in vendor prefixes. */
+export const isXaiVendorAlias = (prefix: string): boolean =>
+  ["xai", "x-ai", "grok"].includes(prefix.trim().toLowerCase());
 
-  if (!XAI_IMAGE_MODELS.includes(base.toLowerCase())) return false;
-
-  return ["", "xai", "x-ai", "grok"].includes(prefix.toLowerCase());
-};
+/** `isXAIImagesBaseModel` over the base of `model`; the prefix is not looked at. */
+export const hasXaiImageBase = (model: string): boolean =>
+  XAI_IMAGE_MODELS.includes(modelParts(model).base.toLowerCase());
 
 export const XAI_IMAGE_MODEL_NAMES: ReadonlyArray<string> = XAI_IMAGE_MODELS;
 
-const canonicalModel = (model: string): string => {
+/** `canonicalXAIImagesModel`: the base model without prefix, as xAI names it. */
+export const canonicalModel = (model: string): string => {
   const base = modelParts(model).base.toLowerCase();
 
   return base === XAI_IMAGES_QUALITY_MODEL || base === XAI_IMAGES_20_MODEL
@@ -139,12 +139,15 @@ interface BaseRequest {
   readonly n: number;
 }
 
+/** `buildXAIImagesBaseRequest`; an empty `responseFormat` stays absent (`buildXAIImagesOriginalBaseRequest`, 826bb167). */
 const baseRequest = (input: BaseRequest): JsonObject => {
   const request: JsonObject = {
     model: canonicalModel(input.model),
     prompt: input.prompt.trim(),
-    response_format: normalizeResponseFormat(input.responseFormat),
   };
+
+  if (input.responseFormat.trim() !== "")
+    request["response_format"] = normalizeResponseFormat(input.responseFormat);
 
   if (input.aspectRatio !== "") request["aspect_ratio"] = input.aspectRatio;
 
@@ -165,11 +168,16 @@ const numberField = (body: Json, path: string): number => {
 
 const text = (body: Json, path: string): string => asString(get(body, path)).trim();
 
-/** `buildXAIImagesGenerationsRequest`. */
+/**
+ * `buildXAIImagesGenerationsRequest`; without `defaults` it is `buildXAIImagesGenerationsOriginalRequest`: the request
+ * minus the handler's aspect ratio and resolution defaults (and, with an empty `responseFormat`, its format), the
+ * baseline `default` payload rules compare against (826bb167).
+ */
 export const buildGenerationsRequest = (
   body: Json,
   model: string,
   responseFormat: string,
+  defaults: boolean,
 ): JsonObject => {
   const size = text(body, "size");
   const ratio = aspectRatioFromSize(size, aspectRatio(asString(get(body, "aspect_ratio")), ""));
@@ -178,8 +186,12 @@ export const buildGenerationsRequest = (
     model,
     prompt: text(body, "prompt"),
     responseFormat,
-    aspectRatio: ratio === "" ? DEFAULT_ASPECT_RATIO : ratio,
-    resolution: resolution(asString(get(body, "resolution")), size, DEFAULT_RESOLUTION),
+    aspectRatio: ratio === "" && defaults ? DEFAULT_ASPECT_RATIO : ratio,
+    resolution: resolution(
+      asString(get(body, "resolution")),
+      size,
+      defaults ? DEFAULT_RESOLUTION : "",
+    ),
     quality: text(body, "quality"),
     n: numberField(body, "n"),
   });
@@ -214,7 +226,10 @@ export const collectImages = (body: Json): string[] => {
   return images;
 };
 
-/** `buildXAIImagesEditRequest` with the options of `xaiImagesEditOptionsFromJSON`. */
+/**
+ * `buildXAIImagesEditRequest` with the options of `xaiImagesEditOptionsFromJSON`; with an empty `responseFormat` it is
+ * `buildXAIImagesEditOriginalRequest` (no `response_format`).
+ */
 export const buildEditRequest = (
   body: Json,
   model: string,

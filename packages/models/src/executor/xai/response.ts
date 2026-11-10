@@ -168,9 +168,20 @@ const unwrapDispatcherArguments = (
   const argsField = get(parsed, "arguments");
 
   if (namespaceName !== "") {
-    const ref = refs.get(qualifyNamespaceToolName(namespaceName, childName));
+    const dispatcher = refs.get(namespaceName);
 
-    if (ref !== undefined && ref.isDispatcher) return undefined;
+    if (
+      dispatcher?.isDispatcher === true &&
+      dispatcher.children !== undefined &&
+      dispatcher.children.size > 0
+    ) {
+      // The winning declarations name the children; anything else is not a call through this dispatcher.
+      if (!dispatcher.children.has(childName)) return undefined;
+    } else {
+      const ref = refs.get(qualifyNamespaceToolName(namespaceName, childName));
+
+      if (ref !== undefined && ref.isDispatcher) return undefined;
+    }
   } else {
     const isChild = [...refs.values()].some(
       (ref) => ref.isDispatcher && (ref.name === childName || ref.namespace === childName),

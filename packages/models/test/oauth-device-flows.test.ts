@@ -138,7 +138,7 @@ describe("xai login", () => {
       const started = yield* begin(h, "xai");
       assert.deepStrictEqual(yield* statusOf(h, started.state), { status: "ok" });
       const { name, file } = onlyFile(h);
-      expect(name).toBe("xai-grok@x.com.json");
+      expect(name).toBe("xai-grok@x.com-ed744a8e197a1f72.json");
       assert.deepStrictEqual(file, {
         type: "xai",
         access_token: "xai-at",
@@ -177,7 +177,7 @@ describe("xai login", () => {
 
       const bySub = make({ sub: "user/1" });
       yield* statusOf(bySub, (yield* begin(bySub, "xai")).state);
-      expect(onlyFile(bySub).name).toBe("xai-user-1.json");
+      expect(onlyFile(bySub).name).toBe("xai-user-1-1e1bd7ff51b7806c.json");
       const anonymous = make({});
       yield* statusOf(anonymous, (yield* begin(anonymous, "xai")).state);
       expect(onlyFile(anonymous).name).toBe(`xai-${T0}.json`);

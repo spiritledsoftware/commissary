@@ -70,6 +70,8 @@ export interface ExecutionOutput {
   readonly payload: string;
   /** Binary body (audio) when the executor returned one; `payload` is empty then. */
   readonly bytes?: Uint8Array | undefined;
+  /** xAI images: the `response_format` after payload rules, which the handler formats its answer by. */
+  readonly finalizedResponseFormat?: string;
   /** The credential that served the request (xAI video binding). */
   readonly credentialId: string;
   /** Filtered upstream headers when `passthrough-headers` is enabled. */
@@ -267,6 +269,9 @@ export const executeNonStreamUnmetered = Effect.fnUntraced(function* (input: Exe
             ? response.payload
             : rewriteResponseModel(response.payload, attempt.rewriteTo),
         ...(response.bytes !== undefined ? { bytes: response.bytes } : {}),
+        ...(response.finalizedResponseFormat !== undefined
+          ? { finalizedResponseFormat: response.finalizedResponseFormat }
+          : {}),
         credentialId: attempt.picked.credential.id,
         headers: upstreamHeaders(prepared.config, response.headers),
       } satisfies ExecutionOutput;

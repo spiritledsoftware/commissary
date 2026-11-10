@@ -128,6 +128,8 @@ export interface ExecutorResponse {
   readonly bytes?: Uint8Array | undefined;
   /** Upstream response headers (forwarded only with `passthrough-headers`). */
   readonly headers: Headers;
+  /** xAI images: the `response_format` left after payload rules (`FinalizedResponseFormatCallbackMetadataKey`). */
+  readonly finalizedResponseFormat?: string;
 }
 
 export interface StreamResult {

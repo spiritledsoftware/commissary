@@ -16,6 +16,7 @@ import {
   XAI_DISCOVERY_URL,
 } from "../../credentials/refresh/xai.ts";
 import type { JsonObject } from "@commissary/json";
+import { sha256Hex } from "../encoding.ts";
 import { call, clipBody, parseJsonObject, rfc3339, seconds, str, tryCall } from "./http.ts";
 import { type DeviceFlow, flowFailure } from "./types.ts";
 
@@ -29,20 +30,42 @@ const DEFAULT_INTERVAL_MS = 5_000;
 
 const MAX_ERROR_TEXT = 512;
 
-/** `sanitizeFileSegment`: `[A-Za-z0-9@._-]` kept, anything else becomes `-`, then trimmed of `-`. */
+/** Characters of the readable part of a credential filename (Go leaves room for prefix, hash and extension). */
+const MAX_SEGMENT_LENGTH = 120;
+
+/** Bytes of the SHA-256 of the identity kept in the filename. */
+const IDENTITY_HASH_BYTES = 8;
+
+const EMAIL_HASH_SALT = "email\0";
+
+const SUBJECT_HASH_SALT = "subject\0";
+
+/** `sanitizeFileSegment`: `[A-Za-z0-9@._-]` kept, anything else (per code point, like Go's rune loop) becomes `-`, then trimmed of `-`. */
 const sanitizeSegment = (value: string): string =>
   value
     .trim()
-    .replace(/[^A-Za-z0-9@._-]/g, "-")
+    .replace(/[^A-Za-z0-9@._-]/gu, "-")
     .replace(/^-+|-+$/g, "");
 
-export const xaiFileName = (email: string, subject: string, now: number): string => {
-  const cleanEmail = sanitizeSegment(email);
+const hashedFileName = async (identity: string, salt: string): Promise<string> => {
+  const sanitized = sanitizeSegment(identity) || "account";
 
-  if (cleanEmail !== "") return `xai-${cleanEmail}.json`;
-  const cleanSubject = sanitizeSegment(subject);
+  return `xai-${sanitized.slice(0, MAX_SEGMENT_LENGTH)}-${await sha256Hex(salt + identity, IDENTITY_HASH_BYTES)}.json`;
+};
 
-  return cleanSubject !== "" ? `xai-${cleanSubject}.json` : `xai-${now}.json`;
+/**
+ * `CredentialFileName` (d65840fb): readable name plus a hash of the identity, so accounts that sanitise alike do not
+ * overwrite each other. The email is trimmed and lower-cased (the hash covers it only, so a later login without a
+ * subject keeps the file); the subject is used when there is no email. Deviation: Go's migration of pre-hash files
+ * on re-login (`FindMatchingLegacyCredential`) is not ported.
+ */
+export const xaiFileName = async (email: string, subject: string, now: number): Promise<string> => {
+  const normalizedEmail = email.trim().toLowerCase();
+
+  if (normalizedEmail !== "") return hashedFileName(normalizedEmail, EMAIL_HASH_SALT);
+  const cleanSubject = subject.trim();
+
+  return cleanSubject === "" ? `xai-${now}.json` : hashedFileName(cleanSubject, SUBJECT_HASH_SALT);
 };
 
 const formPost = (url: string, params: Record<string, string>) =>
@@ -181,7 +204,10 @@ export const xaiFlow = (): DeviceFlow => ({
 
       return {
         _tag: "done" as const,
-        record: { fileName: xaiFileName(email, subject, now), metadata },
+        record: {
+          fileName: yield* Effect.promise(() => xaiFileName(email, subject, now)),
+          metadata,
+        },
       };
     }),
 });
