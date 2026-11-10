@@ -25,11 +25,11 @@ const OCCUPIED = 1;
 
 const PRESERVED = 2;
 
+// SEEN and DUPLICATE (with the per-original collision key below) and the `tsc_` prefix arrived in Go 90c447d3; this
+// port takes the former only, so C5 (#372) ports just the `tool_search_call` prefix.
 const SEEN = 4;
 
 const DUPLICATE = 8;
-
-const PORTABLE = /^[A-Za-z0-9_-]+$/;
 
 const runeLength = (text: string): number => {
   let count = 0;
@@ -42,8 +42,7 @@ const runeLength = (text: string): number => {
 const runes = (text: string): string[] => Array.from(text);
 
 /** `sanitizeCodexInputItemIDChars`. */
-const sanitizeChars = (id: string): string =>
-  id === "" || PORTABLE.test(id) ? id : id.replace(/[^A-Za-z0-9_-]/gu, "_");
+const sanitizeChars = (id: string): string => id.replace(/[^A-Za-z0-9_-]/gu, "_");
 
 /** `normalizeCodexInputItemIDPrefix`: the type prefix only, characters untouched. */
 const normalizeItemIdPrefix = (item: Json, id: string): string => {

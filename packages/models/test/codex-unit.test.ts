@@ -169,6 +169,7 @@ describe("tool schema normalisation", () => {
               "exclusiveMaximum": 9223372036854775808
             },
             "min_limit": { "type": "integer", "minimum": -9223372036854775808 },
+            "under": { "type": "integer", "minimum": -9223372036854775809 },
             "floats": {
               "type": "number",
               "minimum": -0.5,
@@ -202,7 +203,9 @@ describe("tool schema normalisation", () => {
 
     expect(get(properties, "seed")).toEqual({ type: "integer", minimum: 0 });
     expect(get(properties, "over")).toEqual({ type: "integer" });
-    expect(get(properties, "min_limit.minimum")).toBe(-9223372036854775808);
+    // -2^63 as a double re-serialises out of int64 range, so it goes too (see the doc comment on isOutOfInt64).
+    expect(get(properties, "min_limit")).toEqual({ type: "integer" });
+    expect(get(properties, "under")).toEqual({ type: "integer" });
     expect(get(properties, "floats")).toEqual({
       type: "number",
       minimum: -0.5,
@@ -335,76 +338,105 @@ describe("helpers", () => {
     expect(ids[3]).toBe("keep");
   });
 
-  it("replaces characters outside [A-Za-z0-9_-] in item ids, also in a hash-shortened prefix (606e667a)", () => {
-    const overlongPlusSlash = `msg_${"A".repeat(30)}+/${"A".repeat(414)}`;
-    const overlongSlashPlus = `msg_${"A".repeat(30)}/+${"A".repeat(414)}`;
-    const overlongUnprefixed = `${"A".repeat(30)}+/${"A".repeat(414)}`;
-    const overlongTailPlus = `msg_${"B".repeat(100)}+${"B".repeat(100)}`;
-    const overlongTailSlash = `msg_${"B".repeat(100)}/${"B".repeat(100)}`;
-    const portable = /^[A-Za-z0-9_-]+$/;
+  describe("characters outside [A-Za-z0-9_-] in item ids (606e667a)", () => {
+    const run = (input: Array<Record<string, unknown>>): unknown[] => {
+      sanitizeCodexInputItemIds({ input } as unknown as Json);
 
-    const make = () => ({
-      input: [
-        { type: "message", role: "assistant", id: overlongPlusSlash },
-        { type: "message", role: "assistant", id: overlongSlashPlus },
-        { type: "message", role: "assistant", id: overlongUnprefixed },
-        { type: "message", role: "assistant", id: overlongTailPlus },
-        { type: "message", role: "assistant", id: overlongTailSlash },
-        { type: "message", role: "assistant", id: "msg_short+id/with=chars" },
-        { type: "message", role: "assistant", id: "msg_short_id_with_chars" },
-        { type: "function_call", id: "call:0+1/2", call_id: "call-1" },
-      ],
-    });
-
-    const body = make();
-    sanitizeCodexInputItemIds(body as unknown as Json);
-    const ids = body.input.map((item) => item.id);
-    const prefixes = ["msg_", "msg_", "msg_", "msg_", "msg_", "msg_", "msg_", "fc_"];
-
-    ids.forEach((id, index) => {
-      expect(id, `input.${index}.id`).toMatch(portable);
-      expect(id.length).toBeLessThanOrEqual(64);
-      expect(id.startsWith(prefixes[index]!)).toBe(true);
-    });
-    expect(new Set(ids).size).toBe(ids.length);
-    // Sanitises to the preserved existing id below it, so it takes a hash suffix.
-    expect(ids[5]).toMatch(/^msg_short_id_with_chars_[0-9a-f]{16}$/);
-    expect(ids[6]).toBe("msg_short_id_with_chars");
-
-    // Idempotent and deterministic.
-    const again = make();
-    sanitizeCodexInputItemIds(again as unknown as Json);
-    expect(again.input.map((item) => item.id)).toEqual(ids);
-    sanitizeCodexInputItemIds(body as unknown as Json);
-    expect(body.input.map((item) => item.id)).toEqual(ids);
-
-    const repeated = {
-      input: [
-        { type: "message", id: overlongPlusSlash },
-        { type: "message", id: overlongPlusSlash },
-        { type: "message", id: "msg_short+repeat/id" },
-        { type: "message", id: "msg_short+repeat/id" },
-      ],
+      return input.map((item) => item["id"]);
     };
 
-    sanitizeCodexInputItemIds(repeated as unknown as Json);
-    expect(repeated.input[0]!.id).toBe(repeated.input[1]!.id);
-    expect(repeated.input[0]!.id).toMatch(portable);
-    expect(repeated.input[2]!.id).toBe("msg_short_repeat_id");
-    expect(repeated.input[3]!.id).toBe("msg_short_repeat_id");
-  });
+    const slashed = `msg_${"A".repeat(30)}+/${"A".repeat(414)}`;
+    const shortenedSlashed = `msg_${"A".repeat(30)}__${"A".repeat(11)}`;
 
-  it("keeps distinct ids that sanitise to the same text apart", () => {
-    const body = {
-      input: [
+    it("replaces them in a short id", () => {
+      expect(run([{ type: "message", id: "msg_short+id/with=chars" }])).toEqual([
+        "msg_short_id_with_chars",
+      ]);
+      expect(run([{ type: "function_call", id: "call:0+1/2", call_id: "c" }])).toEqual([
+        "fc_call_0_1_2",
+      ]);
+    });
+
+    it("replaces them in the prefix a hash-shortened id keeps, hashing the raw id", () => {
+      expect(run([{ type: "message", id: slashed }])).toEqual([
+        `${shortenedSlashed}_1cac09cad0a02024`,
+      ]);
+      expect(run([{ type: "message", id: `msg_${"A".repeat(30)}/+${"A".repeat(414)}` }])).toEqual([
+        `${shortenedSlashed}_6d53e474bce1ad66`,
+      ]);
+    });
+
+    it("shortens an unprefixed overlong id after prefixing it", () => {
+      expect(run([{ type: "message", id: `${"A".repeat(30)}+/${"A".repeat(414)}` }])).toEqual([
+        `${shortenedSlashed}_1cac09cad0a02024`,
+      ]);
+    });
+
+    it("leaves an overlong id with an invalid character in its tail portable", () => {
+      expect(
+        run([
+          { type: "message", id: `msg_${"B".repeat(100)}+${"B".repeat(100)}` },
+          { type: "message", id: `msg_${"B".repeat(100)}/${"B".repeat(100)}` },
+        ]),
+      ).toEqual([
+        `msg_${"B".repeat(43)}_0b3d5b4674200fe1`,
+        `msg_${"B".repeat(43)}_493f9f68cef709c1`,
+      ]);
+    });
+
+    it("gives an unprefixed id that normalises onto an existing overlong id the next hash attempt", () => {
+      expect(
+        run([
+          { type: "message", id: slashed },
+          { type: "message", id: `${"A".repeat(30)}+/${"A".repeat(414)}` },
+        ]),
+      ).toEqual([`${shortenedSlashed}_1cac09cad0a02024`, `${shortenedSlashed}_1adc76c01872f118`]);
+    });
+
+    it("keeps an existing valid id and gives a colliding sanitised one a hash suffix", () => {
+      expect(
+        run([
+          { type: "message", id: "msg_short+id/with=chars" },
+          { type: "message", id: "msg_short_id_with_chars" },
+        ]),
+      ).toEqual(["msg_short_id_with_chars_a8a2f06baadb283f", "msg_short_id_with_chars"]);
+    });
+
+    it("keeps distinct ids that sanitise to the same text apart", () => {
+      expect(
+        run([
+          { type: "message", id: "msg_a+b" },
+          { type: "message", id: "msg_a/b" },
+        ]),
+      ).toEqual(["msg_a_b", "msg_a_b_972e8bfb4654d03d"]);
+    });
+
+    it("maps a repeated original to the same id", () => {
+      expect(
+        run([
+          { type: "message", id: slashed },
+          { type: "message", id: slashed },
+          { type: "message", id: "msg_short+repeat/id" },
+          { type: "message", id: "msg_short+repeat/id" },
+        ]),
+      ).toEqual([
+        `${shortenedSlashed}_1cac09cad0a02024`,
+        `${shortenedSlashed}_1cac09cad0a02024`,
+        "msg_short_repeat_id",
+        "msg_short_repeat_id",
+      ]);
+    });
+
+    it("is idempotent", () => {
+      const input = [
+        { type: "message", id: slashed },
         { type: "message", id: "msg_a+b" },
         { type: "message", id: "msg_a/b" },
-      ],
-    };
+      ];
 
-    sanitizeCodexInputItemIds(body as unknown as Json);
-    expect(body.input[0]!.id).toBe("msg_a_b");
-    expect(body.input[1]!.id).toMatch(/^msg_a_b_[0-9a-f]{16}$/);
+      const once = run(input);
+      expect(run(input)).toEqual(once);
+    });
   });
 
   it("derives name-based uuids like google/uuid", () => {
