@@ -4,7 +4,10 @@ import { env } from "cloudflare:workers";
 import { Effect, Layer } from "effect";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import type { Json } from "@commissary/json";
+import type { ConfigReader } from "../src/config/reader.ts";
 import type { Config } from "../src/config/schema.ts";
+import { ModelProviders } from "../src/handlers/model-providers.ts";
 import type { CredentialSnapshot } from "../src/executor/picker.ts";
 import {
   currentXaiClientVersion,
@@ -23,9 +26,6 @@ import {
 } from "./support/pipeline.ts";
 import { xaiKey, xaiModels, xaiOauth, xaiPicker, type XaiPickerLog } from "./support/xai.ts";
 import { type EnvServices, envContext } from "./support/context.ts";
-import type { Json } from "@commissary/json";
-import type { ConfigReader } from "../src/config/reader.ts";
-import { ModelProviders } from "../src/handlers/model-providers.ts";
 
 let config: Config;
 
@@ -43,14 +43,18 @@ requests:
 const pipeline = (
   respond: UpstreamResponder,
   credentials: ReadonlyArray<CredentialSnapshot> = [xaiOauth()],
+  overrides: {
+    readonly config?: Config;
+    readonly modelProviders?: Layer.Layer<ModelProviders, never, ConfigReader>;
+  } = {},
 ) => {
   const log: XaiPickerLog = { picks: [], reports: [] };
 
   const p = makePipeline({
-    config,
+    config: overrides.config ?? config,
     respond,
     credentialPicker: xaiPicker(credentials, log),
-    modelProviders: xaiModels,
+    modelProviders: overrides.modelProviders ?? xaiModels,
   });
 
   afterAll(p.dispose);
@@ -200,25 +204,6 @@ const registeredModels = (registered: ReadonlyArray<string>) =>
     }),
   );
 
-const pipelineWith = async (
-  yaml: string,
-  respond: UpstreamResponder,
-  modelProviders: Layer.Layer<ModelProviders, never, ConfigReader>,
-) => {
-  const log: XaiPickerLog = { picks: [], reports: [] };
-
-  const p = makePipeline({
-    config: await loadConfig(yaml),
-    respond,
-    credentialPicker: xaiPicker([xaiKey({ id: "xai-key-img" })], log),
-    modelProviders,
-  });
-
-  afterAll(p.dispose);
-
-  return { ...p, log };
-};
-
 describe("image model prefixes (45ccd9c3, 8a3e7622)", () => {
   const FORCE = "routing:\n  force-model-prefix: true\n";
   const image = "grok-imagine-image-2.0";
@@ -229,11 +214,10 @@ describe("image model prefixes (45ccd9c3, 8a3e7622)", () => {
     model: string,
     path = "/v1/images/generations",
   ) => {
-    const p = await pipelineWith(
-      yaml,
-      () => jsonResponse(IMAGE_RESPONSE),
-      registeredModels(registered),
-    );
+    const p = pipeline(() => jsonResponse(IMAGE_RESPONSE), [xaiKey({ id: "xai-key-img" })], {
+      config: await loadConfig(yaml),
+      modelProviders: registeredModels(registered),
+    });
 
     const body = path.endsWith("edits")
       ? { model, prompt: "p", images: [{ image_url: "https://img.test/a.png" }] }
@@ -300,7 +284,10 @@ describe("image payload rules (826bb167)", () => {
 `;
 
   const run = async (path: string, body: Json) => {
-    const p = await pipelineWith(DEFAULTS, () => jsonResponse(IMAGE_RESPONSE), xaiModels);
+    const p = pipeline(() => jsonResponse(IMAGE_RESPONSE), [xaiKey({ id: "xai-key-img" })], {
+      config: await loadConfig(DEFAULTS),
+    });
+
     const response = await p.call(path, postJson(body));
 
     return { response, upstream: JSON.parse(p.calls[0]!.body) as Record<string, unknown> };

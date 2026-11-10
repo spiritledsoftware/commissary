@@ -109,10 +109,12 @@ export const executeImages = Effect.fnUntraced(function* (
   const text = yield* response.text.pipe(Effect.mapError(transportError));
   publishModel(context, text);
 
+  const finalizedFormat = asString(get(payload, "response_format")).trim();
+
   return {
     payload: text,
     headers: new Headers(response.headers),
-    finalizedResponseFormat: asString(get(payload, "response_format")).trim(),
+    ...(finalizedFormat !== "" ? { finalizedResponseFormat: finalizedFormat } : {}),
   } satisfies ExecutorResponse;
 });
 

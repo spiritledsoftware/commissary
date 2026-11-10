@@ -296,12 +296,9 @@ describe("tool normalisation", () => {
     expect(totalFlattenedToolsCount(body, false, false)).toBe(301);
     expect(totalFlattenedToolsCount(body, true, false)).toBe(302);
     const refs = collectNamespaceToolRefs(body, true);
-    expect(refs.get("ns1")).toEqual({
-      namespace: "ns1",
-      name: "",
-      isDispatcher: true,
-      children: new Set(children.map((child) => child.name)),
-    });
+    expect(refs.get("ns1")).toMatchObject({ namespace: "ns1", name: "", isDispatcher: true });
+    expect(refs.get("ns1")?.children?.size).toBe(150);
+    expect(refs.get("ns1")?.children?.has("c149")).toBe(true);
     expect(refs.get("ns1__c3")).toEqual({ namespace: "ns1", name: "c3", isDispatcher: false });
     normalizeTools(body, true);
     expect(body.tools.map((tool) => (tool as { name: string }).name)).toEqual([

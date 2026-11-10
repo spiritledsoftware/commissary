@@ -139,7 +139,7 @@ interface BaseRequest {
   readonly n: number;
 }
 
-/** `buildXAIImagesOriginalBaseRequest`: an empty `responseFormat` stays absent (the request is un-defaulted). */
+/** `buildXAIImagesBaseRequest`; an empty `responseFormat` stays absent (`buildXAIImagesOriginalBaseRequest`, 826bb167). */
 const baseRequest = (input: BaseRequest): JsonObject => {
   const request: JsonObject = {
     model: canonicalModel(input.model),
@@ -168,11 +168,16 @@ const numberField = (body: Json, path: string): number => {
 
 const text = (body: Json, path: string): string => asString(get(body, path)).trim();
 
-/** `buildXAIImagesGenerationsRequest`. */
+/**
+ * `buildXAIImagesGenerationsRequest`; without `defaults` it is `buildXAIImagesGenerationsOriginalRequest`: the request
+ * minus the handler's aspect ratio and resolution defaults (and, with an empty `responseFormat`, its format), the
+ * baseline `default` payload rules compare against (826bb167).
+ */
 export const buildGenerationsRequest = (
   body: Json,
   model: string,
   responseFormat: string,
+  defaults: boolean,
 ): JsonObject => {
   const size = text(body, "size");
   const ratio = aspectRatioFromSize(size, aspectRatio(asString(get(body, "aspect_ratio")), ""));
@@ -181,30 +186,12 @@ export const buildGenerationsRequest = (
     model,
     prompt: text(body, "prompt"),
     responseFormat,
-    aspectRatio: ratio === "" ? DEFAULT_ASPECT_RATIO : ratio,
-    resolution: resolution(asString(get(body, "resolution")), size, DEFAULT_RESOLUTION),
-    quality: text(body, "quality"),
-    n: numberField(body, "n"),
-  });
-};
-
-/**
- * `buildXAIImagesGenerationsOriginalRequest`: the request without the handler's defaults, so `default` payload rules
- * can tell what the client omitted (826bb167). `responseFormat` is the client's, `""` when omitted.
- */
-export const buildGenerationsOriginalRequest = (
-  body: Json,
-  model: string,
-  responseFormat: string,
-): JsonObject => {
-  const size = text(body, "size");
-
-  return baseRequest({
-    model,
-    prompt: text(body, "prompt"),
-    responseFormat,
-    aspectRatio: aspectRatioFromSize(size, aspectRatio(asString(get(body, "aspect_ratio")), "")),
-    resolution: resolution(asString(get(body, "resolution")), size, ""),
+    aspectRatio: ratio === "" && defaults ? DEFAULT_ASPECT_RATIO : ratio,
+    resolution: resolution(
+      asString(get(body, "resolution")),
+      size,
+      defaults ? DEFAULT_RESOLUTION : "",
+    ),
     quality: text(body, "quality"),
     n: numberField(body, "n"),
   });

@@ -42,7 +42,6 @@ import { currentConfig, type ClientApiServices, readRequestBody } from "../reque
 import { errorResponse, jsonResponse, streamResponse, withNonStreamKeepAlive } from "../respond.ts";
 import {
   buildEditRequest,
-  buildGenerationsOriginalRequest,
   buildGenerationsRequest,
   buildImagesApiResponse as buildXaiImagesApiResponse,
   buildImagesStreamFrames,
@@ -51,6 +50,7 @@ import {
   hasXaiImageBase,
   isXaiVendorAlias,
   modelParts,
+  normalizeResponseFormat,
   XAI_IMAGE_MODEL_NAMES,
 } from "./xai-images.ts";
 
@@ -255,9 +255,8 @@ const registeredXaiImagesModel = (providers: ModelProviders["Service"], model: s
     if (id === "") return undefined;
 
     for (const candidate of [id, id.toLowerCase()]) {
-      const found = yield* providers
-        .providersFor(candidate)
-        .pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []));
+      // A registry failure is the caller's 503, not an unsupported model.
+      const found = yield* providers.providersFor(candidate);
 
       if (found.some((provider) => provider.trim().toLowerCase() === "xai")) return candidate;
     }
@@ -345,8 +344,8 @@ const handleXai = (input: XaiImagesInput) =>
       xaiRequest = buildEditRequest(body, model, requestedFormat, images);
       originalRequest = buildEditRequest(body, model, rawResponseFormat, images);
     } else {
-      xaiRequest = buildGenerationsRequest(body, model, requestedFormat);
-      originalRequest = buildGenerationsOriginalRequest(body, model, rawResponseFormat);
+      xaiRequest = buildGenerationsRequest(body, model, requestedFormat, true);
+      originalRequest = buildGenerationsRequest(body, model, rawResponseFormat, false);
     }
 
     const routingModel = yield* routingXaiImagesModel(
@@ -374,7 +373,7 @@ const handleXai = (input: XaiImagesInput) =>
         Effect.flatMap((output) => {
           const frames = buildImagesStreamFrames(
             output.payload,
-            output.finalizedResponseFormat ?? requestedFormat,
+            normalizeResponseFormat(output.finalizedResponseFormat ?? requestedFormat),
             prefix,
             nowSeconds,
           );
@@ -404,7 +403,7 @@ const handleXai = (input: XaiImagesInput) =>
 
         const out = buildXaiImagesApiResponse(
           result.success.payload,
-          result.success.finalizedResponseFormat ?? requestedFormat,
+          normalizeResponseFormat(result.success.finalizedResponseFormat ?? requestedFormat),
           nowSeconds,
         );
 

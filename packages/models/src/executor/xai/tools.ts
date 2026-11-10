@@ -42,6 +42,25 @@ export type NamespaceRefs = ReadonlyMap<string, NamespaceToolRef>;
 const trimmed = (value: Json | undefined, path: string): string =>
   asString(get(value, path)).trim();
 
+/** The one way to read a tool's declared type and name (trimmed). */
+const typeOf = (tool: Json | undefined): string => trimmed(tool, "type");
+
+const nameOf = (tool: Json | undefined): string => trimmed(tool, "name");
+
+/** A `function` tool called `name`. */
+const isNamedFunctionTool = (tool: Json, name: string): boolean =>
+  typeOf(tool) === "function" && nameOf(tool) === name;
+
+/** First declaration wins: `true` when `name` is new (and now claimed) or empty, `false` for a repeat. */
+const claimFirst = (seen: Set<string>, name: string): boolean => {
+  if (name === "") return true;
+
+  if (seen.has(name)) return false;
+  seen.add(name);
+
+  return true;
+};
+
 const arrayAt = (value: Json | undefined, path: string): Json[] => {
   const found = get(value, path);
 
@@ -56,7 +75,7 @@ export const toolLists = (body: Json): Json[][] => {
   if (isJsonArray(tools)) lists.push(tools);
 
   for (const item of arrayAt(body, "input")) {
-    if (asString(get(item, "type")) !== "additional_tools") continue;
+    if (typeOf(item) !== "additional_tools") continue;
     const nested = get(item, "tools");
 
     if (isJsonArray(nested)) lists.push(nested);
@@ -80,16 +99,12 @@ export const qualifyNamespaceToolName = (namespaceName: string, toolName: string
 export const hasFunctionToolNamed = (body: Json, name: string): boolean => {
   if (name === "") return false;
 
-  return toolLists(body).some((list) =>
-    list.some(
-      (tool) => asString(get(tool, "type")) === "function" && asString(get(tool, "name")) === name,
-    ),
-  );
+  return toolLists(body).some((list) => list.some((tool) => isNamedFunctionTool(tool, name)));
 };
 
 /** `xaiRequestHasNativeXSearch`. */
 export const requestHasNativeXSearch = (body: Json): boolean =>
-  toolLists(body).some((list) => list.some((tool) => get(tool, "type") === "x_search"));
+  toolLists(body).some((list) => list.some((tool) => typeOf(tool) === "x_search"));
 
 /** `xaiSupportsNativeImageGeneration`: `grok-X.Y` with X.Y >= 4.6 (the 4.20 line is an older product). */
 export const supportsNativeImageGeneration = (model: string): boolean => {
@@ -121,7 +136,7 @@ const countFlattened = (tools: Json | undefined, seen: Set<string>): number => {
   let count = 0;
 
   for (const tool of tools) {
-    switch (asString(get(tool, "type"))) {
+    switch (typeOf(tool)) {
       case "namespace": {
         const nested = get(tool, "tools");
 
@@ -130,18 +145,13 @@ const countFlattened = (tools: Json | undefined, seen: Set<string>): number => {
           break;
         }
 
-        const namespaceName = asString(get(tool, "name"));
+        const namespaceName = nameOf(tool);
 
         for (const child of nested) {
-          if (asString(get(child, "type")) === "tool_search") continue;
-          const qualified = qualifyNamespaceToolName(namespaceName, asString(get(child, "name")));
+          if (typeOf(child) === "tool_search") continue;
+          const qualified = qualifyNamespaceToolName(namespaceName, nameOf(child));
 
-          if (qualified !== "") {
-            if (seen.has(qualified)) continue;
-            seen.add(qualified);
-          }
-
-          count++;
+          if (claimFirst(seen, qualified)) count++;
         }
 
         break;
@@ -151,14 +161,7 @@ const countFlattened = (tools: Json | undefined, seen: Set<string>): number => {
         break;
       case "function":
       case "custom": {
-        const name = trimmed(tool, "name");
-
-        if (name !== "") {
-          if (seen.has(name)) break;
-          seen.add(name);
-        }
-
-        count++;
+        if (claimFirst(seen, nameOf(tool))) count++;
         break;
       }
 
@@ -180,8 +183,7 @@ export const totalFlattenedToolsCount = (
   let count = countFlattened(get(body, "tools"), seen);
 
   for (const item of arrayAt(body, "input")) {
-    if (asString(get(item, "type")) === "additional_tools")
-      count += countFlattened(get(item, "tools"), seen);
+    if (typeOf(item) === "additional_tools") count += countFlattened(get(item, "tools"), seen);
   }
 
   if (willInjectXSearch && !requestHasNativeXSearch(body) && !hostedOnly) count++;
@@ -205,10 +207,10 @@ export const collectNamespaceToolRefs = (
 
   for (const list of toolLists(body)) {
     for (const tool of list) {
-      const toolType = trimmed(tool, "type");
+      const toolType = typeOf(tool);
 
       if (toolType === "function" || toolType === "custom") {
-        const name = trimmed(tool, "name");
+        const name = nameOf(tool);
 
         if (name === "") continue;
         claimed.add(name);
@@ -219,7 +221,7 @@ export const collectNamespaceToolRefs = (
       }
 
       if (toolType !== "namespace") continue;
-      const namespace = trimmed(tool, "name");
+      const namespace = nameOf(tool);
 
       if (namespace === "") continue;
 
@@ -231,8 +233,8 @@ export const collectNamespaceToolRefs = (
       }
 
       for (const nested of arrayAt(tool, "tools")) {
-        if (asString(get(nested, "type")) === "tool_search") continue;
-        const name = trimmed(nested, "name");
+        if (typeOf(nested) === "tool_search") continue;
+        const name = nameOf(nested);
         const qualified = qualifyNamespaceToolName(namespace, name);
 
         if (qualified === "") continue;
@@ -267,23 +269,23 @@ export const collectClientDeclaredToolKeys = (body: Json): Set<string> => {
 
   for (const list of toolLists(body)) {
     for (const tool of list) {
-      const type = trimmed(tool, "type");
+      const type = typeOf(tool);
 
       if (type === "namespace") {
-        const namespace = trimmed(tool, "name");
+        const namespace = nameOf(tool);
 
         if (namespace === "") continue;
 
         for (const nested of arrayAt(tool, "tools")) {
-          const nestedType = trimmed(nested, "type");
+          const nestedType = typeOf(nested);
 
           if (nestedType !== "function" && nestedType !== "custom") continue;
-          const name = trimmed(nested, "name");
+          const name = nameOf(nested);
 
           if (name !== "") keys.add(clientToolKey(namespace, name, effective(nestedType)));
         }
       } else if (type === "function" || type === "custom") {
-        const name = trimmed(tool, "name");
+        const name = nameOf(tool);
 
         if (name !== "") keys.add(clientToolKey("", name, effective(type)));
       }
@@ -305,8 +307,8 @@ const collectNamespaceDeclarations = (body: Json): Map<string, Json[]> => {
 
   for (const list of toolLists(body)) {
     for (const tool of list) {
-      if (asString(get(tool, "type")) !== "namespace") continue;
-      const name = trimmed(tool, "name");
+      if (typeOf(tool) !== "namespace") continue;
+      const name = nameOf(tool);
 
       if (name === "") continue;
       byName.set(name, [...(byName.get(name) ?? []), tool]);
@@ -318,7 +320,7 @@ const collectNamespaceDeclarations = (body: Json): Map<string, Json[]> => {
 
 /** `buildXAINamespaceDispatcherTool`: children of repeated declarations merge, first declaration wins. */
 const buildDispatcherTool = (tool: Json, extraDeclarations: readonly Json[]): Json | undefined => {
-  const namespaceName = trimmed(tool, "name");
+  const namespaceName = nameOf(tool);
 
   if (namespaceName === "") return undefined;
   let description = trimmed(tool, "description");
@@ -333,8 +335,8 @@ const buildDispatcherTool = (tool: Json, extraDeclarations: readonly Json[]): Js
   }
 
   for (const child of children) {
-    if (asString(get(child, "type")) === "tool_search") continue;
-    const childName = trimmed(child, "name");
+    if (typeOf(child) === "tool_search") continue;
+    const childName = nameOf(child);
 
     if (childName === "" || seenChildren.has(childName)) continue;
     seenChildren.add(childName);
@@ -504,7 +506,7 @@ const normalizeTool = (
   namespaceName: string,
   keepImageGeneration: boolean,
 ): NormalizedTool | undefined => {
-  const declaredType = asString(get(tool, "type"));
+  const declaredType = typeOf(tool);
 
   if (declaredType === "tool_search") return { tool: undefined, changed: true };
 
@@ -564,12 +566,7 @@ const normalizeTool = (
 
   if (
     toolType === "function" &&
-    parametersNeedSimplification(
-      declaredType,
-      asString(get(tool, "name")),
-      schemaParameters,
-      namespaceName,
-    )
+    parametersNeedSimplification(declaredType, nameOf(tool), schemaParameters, namespaceName)
   ) {
     copy["parameters"] = tryParseJson(SAFE_FUNCTION_PARAMETERS) ?? {};
 
@@ -578,7 +575,7 @@ const normalizeTool = (
   }
 
   if (toolType === "function" && namespaceName.trim() !== "") {
-    const qualified = qualifyNamespaceToolName(namespaceName, asString(get(tool, "name")));
+    const qualified = qualifyNamespaceToolName(namespaceName, nameOf(tool));
 
     if (qualified === "") return undefined;
     copy["name"] = qualified;
@@ -590,11 +587,11 @@ const normalizeTool = (
 
 /** `xaiDeduplicatedToolName`: the name key of tools that must not repeat; hosted tools have none. */
 const deduplicatedToolName = (tool: Json): string => {
-  switch (trimmed(tool, "type")) {
+  switch (typeOf(tool)) {
     case "function":
     case "custom":
     case "namespace":
-      return trimmed(tool, "name");
+      return nameOf(tool);
     default:
       return "";
   }
@@ -613,36 +610,22 @@ const normalizeToolArray = (
 
   /** Appends unless an earlier tool already carries the name; a dropped duplicate counts as a change. */
   const appendUnique = (tool: Json): void => {
-    const name = deduplicatedToolName(tool);
-
-    if (name !== "") {
-      if (seenNames.has(name)) {
-        changed = true;
-
-        return;
-      }
-
-      seenNames.add(name);
-    }
-
-    filtered.push(tool);
+    if (claimFirst(seenNames, deduplicatedToolName(tool))) filtered.push(tool);
+    else changed = true;
   };
 
   for (const tool of tools) {
-    if (asString(get(tool, "type")) === "namespace") {
+    if (typeOf(tool) === "namespace") {
       changed = true;
 
       if (shouldFold) {
-        const dispatcher = buildDispatcherTool(
-          tool,
-          namespaceDecls.get(trimmed(tool, "name")) ?? [],
-        );
+        const dispatcher = buildDispatcherTool(tool, namespaceDecls.get(nameOf(tool)) ?? []);
 
         if (dispatcher !== undefined) appendUnique(dispatcher);
         continue;
       }
 
-      const namespaceName = asString(get(tool, "name"));
+      const namespaceName = nameOf(tool);
 
       for (const nested of arrayAt(tool, "tools")) {
         const result = normalizeTool(nested, namespaceName, keepImageGeneration);
@@ -695,8 +678,7 @@ export const normalizeTools = (body: Json, shouldFold: boolean): Json => {
 
   if (isJsonArray(input)) {
     for (const [index, item] of input.entries()) {
-      if (asString(get(item, "type")) === "additional_tools" && !plan(`input.${index}.tools`))
-        return body;
+      if (typeOf(item) === "additional_tools" && !plan(`input.${index}.tools`)) return body;
     }
   }
 
@@ -714,7 +696,7 @@ export const promoteAdditionalTools = (body: Json): Json => {
   const promoted: Json[] = [];
 
   for (const item of input) {
-    if (asString(get(item, "type")) !== "additional_tools") {
+    if (typeOf(item) !== "additional_tools") {
       remaining.push(item);
       continue;
     }
@@ -731,14 +713,7 @@ export const promoteAdditionalTools = (body: Json): Json => {
     const merged: Json[] = [];
 
     for (const tool of [...arrayAt(body, "tools"), ...promoted]) {
-      const name = deduplicatedToolName(tool);
-
-      if (name !== "") {
-        if (seen.has(name)) continue;
-        seen.add(name);
-      }
-
-      merged.push(tool);
+      if (claimFirst(seen, deduplicatedToolName(tool))) merged.push(tool);
     }
 
     set(body, "tools", merged);
@@ -756,9 +731,9 @@ export const removeInputItemsByType = (body: Json, itemType: string): Json => {
   return set(
     body,
     "input",
-    input.filter((item) => asString(get(item, "type")) !== itemType),
+    input.filter((item) => typeOf(item) !== itemType),
   );
 };
 
 export const inputHasItemType = (body: Json, itemType: string): boolean =>
-  arrayAt(body, "input").some((item) => asString(get(item, "type")) === itemType);
+  arrayAt(body, "input").some((item) => typeOf(item) === itemType);

@@ -30,12 +30,28 @@ const DEFAULT_INTERVAL_MS = 5_000;
 
 const MAX_ERROR_TEXT = 512;
 
-/** `sanitizeFileSegment`: `[A-Za-z0-9@._-]` kept, anything else becomes `-`, then trimmed of `-`. */
+/** Characters of the readable part of a credential filename (Go leaves room for prefix, hash and extension). */
+const MAX_SEGMENT_LENGTH = 120;
+
+/** Bytes of the SHA-256 of the identity kept in the filename. */
+const IDENTITY_HASH_BYTES = 8;
+
+const EMAIL_HASH_SALT = "email\0";
+
+const SUBJECT_HASH_SALT = "subject\0";
+
+/** `sanitizeFileSegment`: `[A-Za-z0-9@._-]` kept, anything else (per code point, like Go's rune loop) becomes `-`, then trimmed of `-`. */
 const sanitizeSegment = (value: string): string =>
   value
     .trim()
-    .replace(/[^A-Za-z0-9@._-]/g, "-")
+    .replace(/[^A-Za-z0-9@._-]/gu, "-")
     .replace(/^-+|-+$/g, "");
+
+const hashedFileName = async (identity: string, salt: string): Promise<string> => {
+  const sanitized = sanitizeSegment(identity) || "account";
+
+  return `xai-${sanitized.slice(0, MAX_SEGMENT_LENGTH)}-${await sha256Hex(salt + identity, IDENTITY_HASH_BYTES)}.json`;
+};
 
 /**
  * `CredentialFileName` (d65840fb): readable name plus a hash of the identity, so accounts that sanitise alike do not
@@ -46,18 +62,10 @@ const sanitizeSegment = (value: string): string =>
 export const xaiFileName = async (email: string, subject: string, now: number): Promise<string> => {
   const normalizedEmail = email.trim().toLowerCase();
 
-  if (normalizedEmail !== "") {
-    const sanitized = sanitizeSegment(normalizedEmail) || "account";
-
-    return `xai-${sanitized.slice(0, 120)}-${await sha256Hex(`email\0${normalizedEmail}`, 8)}.json`;
-  }
-
+  if (normalizedEmail !== "") return hashedFileName(normalizedEmail, EMAIL_HASH_SALT);
   const cleanSubject = subject.trim();
 
-  if (cleanSubject === "") return `xai-${now}.json`;
-  const sanitized = sanitizeSegment(cleanSubject) || "account";
-
-  return `xai-${sanitized.slice(0, 120)}-${await sha256Hex(`subject\0${cleanSubject}`, 8)}.json`;
+  return cleanSubject === "" ? `xai-${now}.json` : hashedFileName(cleanSubject, SUBJECT_HASH_SALT);
 };
 
 const formPost = (url: string, params: Record<string, string>) =>
