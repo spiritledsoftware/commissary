@@ -228,6 +228,54 @@ describe("Provider key credential (caller-owned mode)", () => {
     expect(p.records[0]?.detail).toMatchObject({ inputTokens: 11, outputTokens: 7 });
   });
 
+  describe("truncated or failed upstream streams (Go 4f2e5270)", () => {
+    const run = async (frames: string[], stream: "claude" | "chat") => {
+      const p = makePipeline({ config: providerKeyConfig, respond: () => sseResponse(frames) });
+      afterAll(p.dispose);
+
+      const response = await p.call(
+        stream === "claude" ? "/v1/messages" : "/v1/chat/completions",
+        postJson({
+          model: "sonnet",
+          max_tokens: 8,
+          stream: true,
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      );
+
+      return { text: await response.text(), records: p.records };
+    };
+
+    for (const stream of ["claude", "chat"] as const) {
+      it(`records EOF before message_stop as a 502 failure (${stream} client)`, async () => {
+        const { records } = await run(sse(streamEvents()).slice(0, -1), stream);
+        expect(records[0]).toMatchObject({ failed: true, fail: { statusCode: 502 } });
+      });
+
+      it(`records a mid-stream error event as a failure (${stream} client)`, async () => {
+        const frames = [
+          ...sse(streamEvents()).slice(0, 3),
+          ...sse([{ type: "error", error: { type: "overloaded_error", message: "Overloaded" } }]),
+          ...sse(streamEvents()).slice(3),
+        ];
+
+        const { text, records } = await run(frames, stream);
+        expect(records[0]).toMatchObject({ failed: true, fail: { statusCode: 502 } });
+        expect(text).not.toContain('"text":"lo"');
+      });
+    }
+
+    it("still forwards the error event to a Claude client", async () => {
+      const frames = [
+        ...sse(streamEvents()).slice(0, 2),
+        ...sse([{ type: "error", error: { type: "overloaded_error", message: "Overloaded" } }]),
+      ];
+
+      const { text } = await run(frames, "claude");
+      expect(text).toContain("overloaded_error");
+    });
+  });
+
   it("translates OpenAI chat requests to Claude (upstream always streams) and back", async () => {
     const p = makePipeline({
       config: providerKeyConfig,

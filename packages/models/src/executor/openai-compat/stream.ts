@@ -103,6 +103,7 @@ export class OpenAICompatStreamReader {
   #event = "";
   #data: string[] = [];
   #seenDone = false;
+  #sawFinishReason = false;
   #failed = false;
 
   constructor(readonly options: OpenAICompatStreamOptions) {}
@@ -158,6 +159,19 @@ export class OpenAICompatStreamReader {
       const dataError = openAICompatStreamDataError(payload, event);
 
       if (dataError !== undefined) return this.#fail(dataError, [], true);
+
+      // Go `openAICompatChunkHasFinishReason` (4f2e5270).
+      const choices = get(tryParseJson(payload), "choices");
+
+      if (
+        Array.isArray(choices) &&
+        choices.some((choice) => {
+          const reason = get(choice, "finish_reason");
+
+          return typeof reason === "string" && reason.trim() !== "";
+        })
+      )
+        this.#sawFinishReason = true;
     }
 
     this.options.onFrame?.(payload);
@@ -242,6 +256,10 @@ export class OpenAICompatStreamReader {
         chunks,
       );
     }
+
+    // A Claude client would otherwise get a clean `message_stop` for a truncated stream (Go 4f2e5270).
+    if (responseFormat === Formats.Claude && !this.#sawFinishReason)
+      return this.#fail(gatewayError("upstream stream closed before [DONE]"), chunks);
 
     // Other protocols tolerate providers that omit [DONE].
     chunks.push(...this.#translate("data: [DONE]"));

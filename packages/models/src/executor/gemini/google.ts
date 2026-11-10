@@ -603,6 +603,26 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
     return { payload: out, headers: new Headers(response.headers) } satisfies ExecutorResponse;
   });
 
+  /** Go `geminiStreamHasFinishSignal` (4f2e5270): a candidate `finishReason` or a prompt `blockReason`. */
+  const hasFinishSignal = (payload: string): boolean => {
+    const root = tryParseJson(payload);
+
+    return [root, get(root, "response")].some((node) => {
+      const candidates = get(node, "candidates");
+      const block = get(node, "promptFeedback.blockReason");
+
+      return (
+        (Array.isArray(candidates) &&
+          candidates.some((c) => {
+            const reason = get(c, "finishReason");
+
+            return typeof reason === "string" && reason.trim() !== "";
+          })) ||
+        (typeof block === "string" && block.trim() !== "")
+      );
+    });
+  };
+
   /** Reads Gemini SSE lines: usage filter -> JSON payload -> translator, with a synthetic `[DONE]` at EOF. */
   const geminiStream = (
     attempt: Attempt,
@@ -635,6 +655,7 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
       Stream.unwrap(translate(payload).pipe(Effect.map(check)));
 
     const lines = splitLines(response.stream).pipe(Stream.mapError(transportError));
+    let sawFinish = false;
 
     return Stream.concat(
       lines.pipe(
@@ -648,10 +669,22 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
           const filtered = variant.vertex ? line : filterSseUsageMetadata(line);
           const payload = jsonPayload(filtered);
 
+          if (payload !== undefined && !sawFinish && hasFinishSignal(payload)) sawFinish = true;
+
           return payload === undefined ? Stream.empty : translated(payload);
         }),
       ),
-      Stream.suspend(() => translated("[DONE]")),
+      Stream.suspend(() =>
+        // Only Claude clients fail a truncated stream (Go): they would otherwise see a clean `message_stop`.
+        responseFormat === Formats.Claude && !sawFinish
+          ? Stream.fail(
+              new ExecutionError({
+                status: 502,
+                message: "upstream stream closed before finishReason",
+              }),
+            )
+          : translated("[DONE]"),
+      ),
     );
   };
 

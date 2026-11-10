@@ -280,6 +280,26 @@ const responsesErrorClass = (status: number): ResponsesErrorClass => {
   }
 };
 
+/** `applyOpenAIResponsesNestedErrorCode`: Anthropic reports input overflow by message only; Responses clients key on the code. */
+const withOverflowCode = (error: JsonObject): JsonObject => {
+  const existing = error["code"];
+
+  if (existing !== undefined && existing !== null) {
+    if (typeof existing !== "string" || existing.trim() !== "") return error;
+  }
+
+  const m = error["message"];
+
+  if (
+    error["type"] === "invalid_request_error" &&
+    typeof m === "string" &&
+    m.startsWith("prompt is too long")
+  )
+    error["code"] = "context_length_exceeded";
+
+  return error;
+};
+
 const responsesErrorDetail = (
   status: number,
   errText: string,
@@ -294,10 +314,10 @@ const responsesErrorDetail = (
   if (payload !== undefined) {
     const error = asRecord(payload["error"]);
 
-    if (error !== undefined) return error;
+    if (error !== undefined) return withOverflowCode(error);
     const responseError = asRecord(asRecord(payload["response"])?.["error"]);
 
-    if (responseError !== undefined) return responseError;
+    if (responseError !== undefined) return withOverflowCode(responseError);
     const m = nonBlank(payload["message"]);
 
     if (m !== undefined) message = m.trim();

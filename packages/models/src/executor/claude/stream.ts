@@ -3,7 +3,8 @@
  * formats, tool name / usage / replay observation and completion tracking.
  *
  * Go source: internal/runtime/executor/claude_executor_stream.go (ExecuteStream goroutine, validateClaudeStreamingResponse),
- * claude_executor_diagnostics.go (observeClaudeStreamLine).
+ * claude_executor_diagnostics.go (observeClaudeSSEEvent). Go 4f2e5270: an `error` event or EOF before `message_stop` fails the
+ * stream with 502 (usage and cooldown record it).
  */
 import { get, tryParseJson } from "@commissary/json";
 import { str, type ResponseContext, type TranslatorRegistry } from "@commissary/translation";
@@ -41,6 +42,7 @@ export class ClaudeStreamReader {
   readonly accumulator = new ReplayStreamAccumulator();
   #usage: UsageDetail | undefined;
   #done = false;
+  #streamError: ExecutionError | undefined;
   messageId = "";
   completed = false;
 
@@ -65,6 +67,14 @@ export class ClaudeStreamReader {
 
       case "message_stop":
         this.completed = true;
+        break;
+
+      case "error":
+        // Go `observeClaudeSSEEvent`: the first upstream error event becomes a 502 carrying the event payload.
+        this.#streamError ??= new ExecutionError({
+          status: 502,
+          message: line.trim().slice(5).trim(),
+        });
     }
 
     this.options.onResponseModel(responseModelOf(payload));
@@ -119,6 +129,8 @@ export class ClaudeStreamReader {
 
       if (this.completed) this.#done = true;
 
+      if (this.#streamError !== undefined && !this.completed) return this.#failWith(chunk);
+
       return { chunks: [chunk], stop: this.completed };
     }
 
@@ -142,7 +154,16 @@ export class ClaudeStreamReader {
 
     if (this.completed) this.#done = true;
 
+    if (this.#streamError !== undefined && !this.completed) return this.#failWith(...chunks);
+
     return { chunks, stop: this.completed };
+  }
+
+  #failWith(...chunks: ReadonlyArray<string>): ClaudeStreamStep {
+    this.#done = true;
+    const error = this.#streamError;
+
+    return error === undefined ? { chunks, stop: true } : { chunks, error, stop: true };
   }
 
   /** Clean EOF: flushes a pending passthrough event. */
@@ -169,6 +190,21 @@ export class ClaudeStreamReader {
           stop: true,
         };
       }
+    }
+
+    if (!this.completed && this.options.context.state.toolInputError === undefined) {
+      this.#done = true;
+
+      return {
+        chunks,
+        error:
+          this.#streamError ??
+          new ExecutionError({
+            status: 502,
+            message: "upstream stream closed before message_stop",
+          }),
+        stop: true,
+      };
     }
 
     this.#done = true;

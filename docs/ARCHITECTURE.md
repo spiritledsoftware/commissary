@@ -1225,6 +1225,11 @@ Ported from `internal/runtime/executor/claude_executor*.go`, `internal/translato
 
 Deviations from Go (all deliberate, documented in code headers):
 
+- **Truncated and failed upstream streams** (Go `4f2e5270`): the Claude reader (`claude/stream.ts`, also used by OpenCode Messages)
+  fails EOF before `message_stop` and a mid-stream `error` event with a 502 after flushing what was read; Gemini/Vertex streams
+  for Claude clients fail without a `finishReason`/`blockReason` and OpenAI-compatible streams for Claude clients without a
+  `finish_reason` or `[DONE]`. Kimi's chat stream needed no change: a transport error already ends the Effect stream before the
+  synthetic `[DONE]` and is recorded by `tapError`.
 - No uTLS/HTTP-2 fingerprinting (Workers limitation); `wire-policy` is dropped on import.
 - **Preserved-thinking binding set and thinking types** (`claude/classify.ts` `isPreservedThinkingModel`): the model set follows
   Anthropic's preserved-thinking docs and so includes Mythos 5.1/5.2, which Go leaves out; the binding is injected only for an
