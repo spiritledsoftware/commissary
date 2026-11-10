@@ -46,14 +46,7 @@ const NUMERIC_CONSTRAINT_KEYWORDS: ReadonlySet<string> = new Set([
 ]);
 
 /** Keywords whose value maps names to subschemas (the names themselves are never keywords). */
-const SUBSCHEMA_MAP_KEYWORDS: ReadonlySet<string> = new Set([
-  "properties",
-  "patternProperties",
-  "dependentSchemas",
-  "dependencies",
-  "$defs",
-  "definitions",
-]);
+const SUBSCHEMA_MAP_KEYWORDS: ReadonlySet<string> = new Set(SCHEMA_MAP_KEYWORDS);
 
 /** Keywords whose value is one subschema. */
 const SUBSCHEMA_KEYWORDS: ReadonlySet<string> = new Set([
@@ -78,13 +71,14 @@ const SUBSCHEMA_LIST_KEYWORDS: ReadonlySet<string> = new Set([
   "allOf",
 ]);
 
-/** A non-negative integer written canonically (no sign, no leading zeros) that a JSON number holds exactly. */
-const parseSchemaNonNegativeInt = (raw: string): number | undefined => {
-  if (!/^(?:0|[1-9]\d*)$/.test(raw)) return undefined;
-  const n = Number(raw);
+const INT64_MAX = 9223372036854775807n;
 
-  return Number.isSafeInteger(n) ? n : undefined;
-};
+/**
+ * A non-negative int64 written canonically (no sign, no leading zeros), as a JSON number. Like Go, anything that fits
+ * int64 converts; above 2^53 the number is the nearest double (a length bound that large constrains nothing).
+ */
+const parseSchemaNonNegativeInt = (raw: string): number | undefined =>
+  /^(?:0|[1-9]\d*)$/.test(raw) && BigInt(raw) <= INT64_MAX ? Number(raw) : undefined;
 
 const subschema = (value: Json): Json =>
   isJsonObject(value) ? normalizeNumericConstraintsNode(value) : value;

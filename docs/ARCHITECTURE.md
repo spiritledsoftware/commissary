@@ -1538,28 +1538,36 @@ Deviations from Go (all deliberate, documented in code headers):
   of gjson paths, and `{}` normalisation applies only to schemas that forbid additional properties. The Go streaming
   `partialArgs` conversion (`64316127`, Vertex `streamFunctionCallArguments`) is not ported: nothing in Commissary asks
   Vertex to stream function-call arguments.
-- **Gemini schema cleaning (C7, Go `154d5144`, `a43026d7`, `e9ba5c50`, `9126772d`, `b2fda98e`, `29150a22`, `a0fd8448`, `5efe9758`, `c558d320`, `ec06c3cb`)**:
-  the cleaners (`translator/gemini/util/json-schema.ts`) strip `readOnly`, `writeOnly`, `discriminator`, `contentMediaType`,
-  `contentEncoding`, `dependentRequired`, `dependentSchemas` and `dependencies` (the upstream answers 400 "Unknown name"), and
-  string-encoded `minLength`/`maxLength`/`minItems`/`maxItems`/`minProperties`/`maxProperties` become numbers
-  (`normalizeJsonSchemaNumericConstraints`, `translator/common/schema.ts`, also applied where a Gemini request's tool
-  parameters are converted for the Gemini, Antigravity, OpenAI, Claude, Codex and Interactions targets; schema containers
-  only, so `enum`/`default`/`examples`, `x-*` metadata and property names are untouched). Every cleaner now expands local
-  `$ref`s before stripping `$defs` (it was Antigravity only): the inliner is `translator/common/schema-refs.ts`, shared with
-  the xAI and Kimi executors (`executor/helps/inline-refs.ts` re-exports it). It spends a 256 KiB budget in sorted key order (a
-  reference past it, or a cycle, degrades to a typed `See: X` hint), resolves a `{"schema": ...}` carrier against its inner
-  schema, copies `default`/`example`/`examples`/`const`/`enum` verbatim, and keeps a `$ref` sibling that collides with its
-  target as an `allOf` conjunction instead of overriding it (annotations such as `description` still override). A document
-  that holds an `allOf` is not reshaped on the `parametersJsonSchema` route (no union or type-array flattening, `required`
-  cleanup or object/array normalisation), and `allOf` is not merged there. The missing-`items` placeholder moved to the end
-  (`sanitizeArrayItems`), after references and `allOf` resolve. Unions of two or more standalone branches are preserved
-  (`oneOf` becomes `anyOf` on the native Schema carriers; null branches become `nullable`), except that the Antigravity
-  executor flattens a Claude model's declaration _parameter_ schemas to the strongest branch
-  (`cleanJsonSchemaForAntigravityClaudeTool`): the Claude request translator stays model-unaware and keeps the union, and
-  function return schemas and Gemini models keep theirs. Differences: a property named `const` is never read as a `const`
-  keyword (Go would fabricate `properties.enum`); key order is preserved instead of Go's sorted marshal output; the
-  `claude->gemini` schema-cleaning goldens still carry the old `See: Loc` hint for an inlinable ref and are adjusted in
-  `test/support/translator-ported-ahead.ts` until F2 regenerates them.
+- **Gemini schema cleaning (C7, Go `154d5144`, `a43026d7`, `e9ba5c50`, `9126772d`, `b2fda98e`, `29150a22`, `a0fd8448`, `5efe9758`, `c558d320`, `ec06c3cb`)**
+  (`translator/gemini/util/json-schema.ts`):
+  - _Unsupported keywords_: the cleaners strip `readOnly`, `writeOnly`, `discriminator`, `contentMediaType`,
+    `contentEncoding`, `dependentRequired`, `dependentSchemas` and `dependencies` (the upstream answers 400 "Unknown
+    name"); a property that merely has one of those names stays.
+  - _Numeric constraints_: string-encoded `minLength`/`maxLength`/`minItems`/`maxItems`/`minProperties`/`maxProperties`
+    become numbers (`normalizeJsonSchemaNumericConstraints`, `translator/common/schema.ts`), first in the cleaners and where a
+    Gemini request's tool parameters are converted for the Gemini, Antigravity, OpenAI, Claude, Codex and Interactions
+    targets. Only schema containers are visited, so `enum`/`default`/`examples`, `x-*` metadata and property names are
+    untouched. Like Go any int64 converts; above 2^53 the number is the nearest double.
+  - _Reference inlining_: every cleaner expands local `$ref`s before stripping `$defs` (it was Antigravity only). The inliner
+    is `translator/common/schema-refs.ts`, shared with the xAI and Kimi executors (`executor/helps/inline-refs.ts`
+    re-exports it). It spends a 256 KiB budget in sorted key order (a reference past it, or a cycle, degrades to a typed
+    `See: X` hint), resolves a `{"schema": ...}` carrier against its inner schema and copies
+    `default`/`example`/`examples`/`const`/`enum` verbatim. The budget sizes a `true` as 4 bytes and a number by its
+    JavaScript lexeme, where Go counts 5 and its own lexeme; the bound is the same in practice.
+  - _`$ref` siblings_: a sibling that collides with its target stays an `allOf` conjunction instead of overriding it
+    (annotations such as `description` still override). A document that holds an `allOf` is not reshaped on the
+    `parametersJsonSchema` route (no union or type-array flattening, `required` cleanup or object/array normalisation) and
+    its `allOf` is not merged.
+  - _Array placeholder_: the missing-`items` placeholder moved to the end (`sanitizeArrayItems`), after references and
+    `allOf` resolve.
+  - _Unions_: unions of two or more standalone branches are preserved (`oneOf` becomes `anyOf` on the native Schema
+    carriers; null branches become `nullable`). The Antigravity executor flattens a Claude model's declaration
+    _parameter_ schemas to the strongest branch (`cleanJsonSchemaForAntigravityClaudeTool`); the Claude request translator
+    stays model-unaware and keeps the union, and function return schemas and Gemini models keep theirs.
+  - _Differences from Go_: a property named `const` is never read as a `const` keyword (Go would fabricate
+    `properties.enum`); key order is preserved instead of Go's sorted marshal output. The `claude->gemini` schema-cleaning
+    goldens still carry the old `See: Loc` hint for an inlinable ref and are adjusted in
+    `test/support/translator-ported-ahead.ts` until F2 regenerates them.
 - **Fixtures**: cases with generated ids/timestamps are tagged `needs: ["id-normalization"]` and run by
   translation's `test/translator-fixtures-ids.test.ts` (ids and `created_at` masked on both sides; thinking-summary
   cases apply the real summary hooks); everything else must match the Go output structurally

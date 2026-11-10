@@ -956,7 +956,15 @@ const partitionUnionBranches = (items: Json[], parentProps: Json | undefined): U
  * protobuf Schema supports and `oneOf` it rejects. A null branch becomes `nullable: true`. `flattenMultiBranch` forces the
  * single strongest branch instead, for the route whose upstream rejects nested multi-branch unions.
  */
-const flattenAnyOfOneOf = (doc: Doc, preserveOneOf: boolean, flattenMultiBranch: boolean): void => {
+interface FlattenUnionsOptions {
+  /** Standard JSON Schema carrier: `oneOf` stays `oneOf` and a sibling `anyOf`/`oneOf` pair is kept. */
+  readonly preserveOneOf: boolean;
+  /** Force multi-branch unions down to the single strongest branch. */
+  readonly flattenMultiBranch: boolean;
+}
+
+const flattenAnyOfOneOf = (doc: Doc, options: FlattenUnionsOptions): void => {
+  const { preserveOneOf, flattenMultiBranch } = options;
   const byField = findPathsByFields(doc, ["oneOf", "anyOf"]);
   const paths = [...(byField.get("oneOf") ?? []), ...(byField.get("anyOf") ?? [])];
   sortByDepth(paths);
@@ -1461,11 +1469,10 @@ const cleanJsonSchema = (schema: Json, options: CleanOptions): Json => {
 
   if (!preserveConjunctions) {
     if (options.flattenUnions === true) {
-      flattenAnyOfOneOf(
-        doc,
-        options.preserveStandardConstraints === true,
-        options.flattenMultiBranchUnions === true,
-      );
+      flattenAnyOfOneOf(doc, {
+        preserveOneOf: options.preserveStandardConstraints === true,
+        flattenMultiBranch: options.flattenMultiBranchUnions === true,
+      });
     }
 
     flattenTypeArrays(doc, options.antigravitySemantics === true);
@@ -1513,16 +1520,15 @@ export const cleanJsonSchemaForGeminiJsonSchema = (schema: Json): Json =>
 
 const cleanAntigravityTool = (
   schema: Json,
-  requirePlaceholder: boolean,
-  flattenMultiBranchUnions: boolean,
+  options: { readonly requirePlaceholder: boolean; readonly flattenMultiBranchUnions: boolean },
 ): Json =>
   cleanJsonSchema(schema, {
-    addPlaceholder: requirePlaceholder,
+    addPlaceholder: options.requirePlaceholder,
     addMissingArrayItems: true,
     antigravitySemantics: true,
-    removeToolTitle: !requirePlaceholder,
+    removeToolTitle: !options.requirePlaceholder,
     flattenUnions: true,
-    flattenMultiBranchUnions,
+    flattenMultiBranchUnions: options.flattenMultiBranchUnions,
     dropAllEnums: true,
   });
 
@@ -1530,7 +1536,7 @@ const cleanAntigravityTool = (
 export const cleanJsonSchemaForAntigravityTool = (
   schema: Json,
   requirePlaceholder: boolean,
-): Json => cleanAntigravityTool(schema, requirePlaceholder, false);
+): Json => cleanAntigravityTool(schema, { requirePlaceholder, flattenMultiBranchUnions: false });
 
 /**
  * `CleanJSONSchemaForAntigravityClaudeTool`: the Antigravity tool cleaner for Claude models. The Antigravity Claude
@@ -1540,7 +1546,7 @@ export const cleanJsonSchemaForAntigravityTool = (
 export const cleanJsonSchemaForAntigravityClaudeTool = (
   schema: Json,
   requirePlaceholder: boolean,
-): Json => cleanAntigravityTool(schema, requirePlaceholder, true);
+): Json => cleanAntigravityTool(schema, { requirePlaceholder, flattenMultiBranchUnions: true });
 
 /** `CleanJSONSchemaForAntigravity`. */
 export const cleanJsonSchemaForAntigravity = (schema: Json): Json =>

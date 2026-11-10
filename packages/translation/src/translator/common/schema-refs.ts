@@ -15,7 +15,14 @@
  * key order, so which references degrade never depends on the document's key order); sizes count UTF-8 bytes and mirror
  * Go's HTML escaping so the bound stays the same.
  */
-import { isJsonArray, isJsonObject, type Json, type JsonObject } from "@commissary/json";
+import {
+  isJsonArray,
+  isJsonObject,
+  jsonEquals,
+  type Json,
+  type JsonObject,
+} from "@commissary/json";
+import { SCHEMA_MAP_KEYWORDS } from "./schema.ts";
 
 /** Bounds the schema material copied into the output by one inlining pass (shared definitions fan out per reference). */
 export const MAX_INLINED_SCHEMA_BYTES = 256 * 1024;
@@ -24,14 +31,7 @@ export const MAX_INLINED_SCHEMA_BYTES = 256 * 1024;
 const MAX_FALLBACK_DESCRIPTION_BYTES = 512;
 
 /** Keywords whose value maps author-chosen names to subschemas: a key directly under one is a name, not a keyword. */
-export const SCHEMA_NAME_MAP_KEYWORDS: ReadonlySet<string> = new Set([
-  "properties",
-  "patternProperties",
-  "dependentSchemas",
-  "dependencies",
-  "$defs",
-  "definitions",
-]);
+export const SCHEMA_NAME_MAP_KEYWORDS: ReadonlySet<string> = new Set(SCHEMA_MAP_KEYWORDS);
 
 const LITERAL_VALUE_KEYWORDS: ReadonlySet<string> = new Set([
   "default",
@@ -340,24 +340,6 @@ const resolveSchemaEntry = (
   return resolveLocalRefs(root, item, active, state, forClean);
 };
 
-const jsonEqual = (a: Json, b: Json): boolean => {
-  if (a === b) return true;
-
-  if (isJsonArray(a)) {
-    return (
-      isJsonArray(b) && a.length === b.length && a.every((item, i) => jsonEqual(item, b[i] ?? null))
-    );
-  }
-
-  if (!isJsonObject(a) || !isJsonObject(b)) return false;
-  const keys = Object.keys(a);
-
-  return (
-    keys.length === Object.keys(b).length &&
-    keys.every((key) => Object.hasOwn(b, key) && jsonEqual(a[key] ?? null, b[key] ?? null))
-  );
-};
-
 /** Whether `node` declares `key` with a value other than null (Go's `node[key] != nil`). */
 const declares = (node: JsonObject, key: string): boolean =>
   node[key] !== undefined && node[key] !== null;
@@ -423,7 +405,7 @@ const mergeInlinedRefSchemas = (target: JsonObject, siblings: JsonObject): JsonO
     if (!ANNOTATION_KEYWORDS.has(key)) {
       const previous = target[key];
 
-      if (previous !== undefined && !jsonEqual(previous, value))
+      if (previous !== undefined && !jsonEquals(previous, value))
         return conjoinInlinedRefSchemas(target, siblings);
     }
 

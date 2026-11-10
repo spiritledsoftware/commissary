@@ -162,6 +162,21 @@ describe("normalizeJsonSchemaNumericConstraints", () => {
     });
   });
 
+  it("converts any int64 and leaves larger values as strings", () => {
+    expect(
+      normalizeJsonSchemaNumericConstraints({
+        minLength: "9223372036854775807",
+        maxLength: "9007199254740993",
+        minItems: "9223372036854775808",
+      }),
+    ).toEqual({
+      // The nearest doubles: above 2^53 an int64 is no longer exact.
+      minLength: Number("9223372036854775807"),
+      maxLength: Number("9007199254740993"),
+      minItems: "9223372036854775808",
+    });
+  });
+
   it("returns the input itself when nothing changes", () => {
     const schema: Json = { type: "object", properties: { a: { type: "string", minLength: 1 } } };
 
