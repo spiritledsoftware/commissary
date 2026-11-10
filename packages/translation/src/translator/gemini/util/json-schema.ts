@@ -19,7 +19,7 @@ import {
   set,
 } from "@commissary/json";
 
-const PLACEHOLDER_REASON_DESCRIPTION = "Brief explanation of why you are calling this tool";
+export const PLACEHOLDER_REASON_DESCRIPTION = "Brief explanation of why you are calling this tool";
 
 interface CleanOptions {
   readonly addPlaceholder?: boolean;

@@ -2,7 +2,9 @@
  * Gemini provider -> Claude Messages client: streaming and non-streaming response conversion.
  *
  * Go source: internal/translator/gemini/claude/gemini_claude_response.go (ConvertGeminiResponseToClaude,
- * ConvertGeminiResponseToClaudeNonStream, ClaudeTokenCount) and init.go.
+ * ConvertGeminiResponseToClaudeNonStream, ClaudeTokenCount) and init.go. Tool arguments are cleaned against the client's
+ * schemas (202b8b8c, e1fb2521, `../../common/claude-tool-args.ts`); MALFORMED_FUNCTION_CALL without a tool call is an
+ * `api_error` the client retries (7f2f17d7).
  */
 import {
   asBool,
@@ -18,8 +20,12 @@ import {
 } from "@commissary/json";
 import type { ResponseContext, ResponseTransform } from "../../registry.ts";
 import {
+  cleanClaudeToolArgumentsWithTranslated,
+  claudeToolIsParameterless,
+  mapClaudeToolName,
+} from "../../common/claude-tool-args.ts";
+import {
   restoreSanitizedToolName,
-  mapToolName,
   sanitizeClaudeToolId,
   sanitizedToolNameMap,
   toolNameMapFromClaudeRequest,
@@ -41,9 +47,27 @@ interface Params {
   inputTokens: number;
   outputTokens: number;
   cachedTokens: number;
+  /** Client-facing name of the open tool_use block. */
+  currentToolName: string;
+  /** Whether the open tool_use block was declared parameterless. */
+  currentToolIsParameterless: boolean;
+  /** Whether cleaned input JSON was already emitted for the open tool_use block. */
+  currentToolInputEmitted: boolean;
+  /** Whether an empty `{}` input_json_delta is deferred until the tool_use block completes. */
+  currentToolPendingEmpty: boolean;
 }
 
+/** Process-wide tool_use id counter, shared by the stream and non-stream conversions (58257007). */
 let toolUseIdCounter = 0;
+
+const MALFORMED_FUNCTION_CALL_ERROR = {
+  type: "error",
+  error: { type: "api_error", message: "Gemini response finished with MALFORMED_FUNCTION_CALL" },
+} as const;
+
+/** `isGeminiMalformedFunctionCall`: a malformed call that produced no tool call is retryable, not a refusal. */
+const isMalformedFunctionCall = (finishReason: string, sawToolCall: boolean): boolean =>
+  finishReason === "MALFORMED_FUNCTION_CALL" && !sawToolCall;
 
 export const resolveGeminiClaudeStopReason = (
   finishReason: string,
@@ -59,8 +83,8 @@ export const resolveGeminiClaudeStopReason = (
     case "PROHIBITED_CONTENT":
     case "SPII":
     case "BLOCKLIST":
-    case "MALFORMED_FUNCTION_CALL":
     case "IMAGE_SAFETY":
+    case "MALFORMED_RESPONSE":
       return "refusal";
     default:
       return "end_turn";
@@ -120,6 +144,10 @@ export const convertGeminiResponseToClaude = (
       inputTokens: 0,
       outputTokens: 0,
       cachedTokens: 0,
+      currentToolName: "",
+      currentToolIsParameterless: false,
+      currentToolInputEmitted: false,
+      currentToolPendingEmpty: false,
     } satisfies Params;
   }
 
@@ -127,7 +155,31 @@ export const convertGeminiResponseToClaude = (
   const p = state.value as Params;
   let output = "";
 
+  /** Emits the deferred empty `{}` input once the tool_use block completes without other input (e1fb2521). */
+  const flushPendingToolInput = (): void => {
+    if (p.responseType === 3 && p.currentToolPendingEmpty && !p.currentToolInputEmitted) {
+      output += blockDelta(p.responseIndex, { type: "input_json_delta", partial_json: "{}" });
+      p.currentToolInputEmitted = true;
+      p.currentToolPendingEmpty = false;
+    }
+  };
+
   if (line === "[DONE]") {
+    if (isMalformedFunctionCall(p.finishReason, p.sawToolCall)) {
+      if (p.responseType !== 0) {
+        flushPendingToolInput();
+        output += blockStop(p.responseIndex);
+        p.responseType = 0;
+      }
+
+      if (!p.hasFinalEvents) {
+        output += event("error", MALFORMED_FUNCTION_CALL_ERROR);
+        p.hasFinalEvents = true;
+      }
+
+      return output === "" ? [] : [output];
+    }
+
     if (p.hasFirstResponse && !p.hasContent) {
       output += blockStart(p.responseIndex, { type: "text", text: "" });
       p.responseType = 1;
@@ -136,6 +188,7 @@ export const convertGeminiResponseToClaude = (
 
     if (p.hasContent) {
       if (p.responseType !== 0) {
+        flushPendingToolInput();
         output += blockStop(p.responseIndex);
         p.responseType = 0;
       }
@@ -153,6 +206,9 @@ export const convertGeminiResponseToClaude = (
     return [];
   }
 
+  // Everything after the error event of a malformed call is dropped.
+  if (isMalformedFunctionCall(p.finishReason, p.sawToolCall) && p.hasFinalEvents) return [];
+
   const root = tryParseJson(line);
 
   const appendSignatureDelta = (signature: string): void => {
@@ -165,6 +221,7 @@ export const convertGeminiResponseToClaude = (
     if (signature === "") return;
 
     if (p.responseType !== 0) {
+      flushPendingToolInput();
       output += blockStop(p.responseIndex);
       p.responseIndex++;
       p.responseType = 0;
@@ -231,6 +288,7 @@ export const convertGeminiResponseToClaude = (
           p.hasContent = true;
         } else {
           if (p.responseType !== 0) {
+            flushPendingToolInput();
             output += blockStop(p.responseIndex);
             p.responseIndex++;
           }
@@ -253,15 +311,47 @@ export const convertGeminiResponseToClaude = (
           asString(get(functionCall, "name")),
         );
 
-        const clientToolName = mapToolName(p.toolNameMap, upstreamToolName);
+        const clientToolName = mapClaudeToolName(
+          p.toolNameMap,
+          context.originalRequest,
+          upstreamToolName,
+        );
+
         const args = get(functionCall, "args");
+
+        const cleaned = (toolName: string): string =>
+          cleanClaudeToolArgumentsWithTranslated(
+            JSON.stringify(args),
+            toolName,
+            context.originalRequest,
+            context.translatedRequest,
+          );
 
         if (p.responseType === 3 && upstreamToolName === "") {
           if (args !== undefined) {
-            output += blockDelta(p.responseIndex, {
-              type: "input_json_delta",
-              partial_json: JSON.stringify(args),
-            });
+            let partialJson = cleaned(p.currentToolName);
+
+            if (p.currentToolIsParameterless) {
+              if (p.currentToolInputEmitted) {
+                partialJson = "";
+              } else {
+                p.currentToolInputEmitted = true;
+                p.currentToolPendingEmpty = false;
+              }
+            } else if (partialJson === "{}") {
+              if (!p.currentToolInputEmitted) p.currentToolPendingEmpty = true;
+              partialJson = "";
+            } else if (partialJson !== "") {
+              p.currentToolInputEmitted = true;
+              p.currentToolPendingEmpty = false;
+            }
+
+            if (partialJson !== "" || !p.currentToolPendingEmpty) {
+              output += blockDelta(p.responseIndex, {
+                type: "input_json_delta",
+                partial_json: partialJson,
+              });
+            }
           }
 
           if (hasThoughtSignature) appendCarrierThinkingBlock(partSig);
@@ -271,16 +361,25 @@ export const convertGeminiResponseToClaude = (
         if (hasThoughtSignature) appendCarrierThinkingBlock(partSig);
 
         if (p.responseType === 3) {
+          flushPendingToolInput();
           output += blockStop(p.responseIndex);
           p.responseIndex++;
           p.responseType = 0;
         }
 
         if (p.responseType !== 0) {
+          flushPendingToolInput();
           output += blockStop(p.responseIndex);
           p.responseIndex++;
         }
 
+        p.currentToolName = clientToolName;
+        p.currentToolIsParameterless = claudeToolIsParameterless(
+          clientToolName,
+          context.originalRequest,
+        );
+        p.currentToolInputEmitted = false;
+        p.currentToolPendingEmpty = false;
         toolUseIdCounter++;
         output += blockStart(p.responseIndex, {
           type: "tool_use",
@@ -290,10 +389,24 @@ export const convertGeminiResponseToClaude = (
         });
 
         if (args !== undefined) {
-          output += blockDelta(p.responseIndex, {
-            type: "input_json_delta",
-            partial_json: JSON.stringify(args),
-          });
+          let partialJson = cleaned(clientToolName);
+
+          if (p.currentToolIsParameterless) {
+            if (p.currentToolInputEmitted) partialJson = "";
+            else p.currentToolInputEmitted = true;
+          } else if (partialJson === "{}") {
+            p.currentToolPendingEmpty = true;
+            partialJson = "";
+          } else if (partialJson !== "") {
+            p.currentToolInputEmitted = true;
+          }
+
+          if (partialJson !== "" || !p.currentToolPendingEmpty) {
+            output += blockDelta(p.responseIndex, {
+              type: "input_json_delta",
+              partial_json: partialJson,
+            });
+          }
         }
 
         p.responseType = 3;
@@ -317,6 +430,7 @@ export const convertGeminiResponseToClaude = (
           p.hasContent = true;
         } else {
           if (p.responseType !== 0) {
+            flushPendingToolInput();
             output += blockStop(p.responseIndex);
             p.responseIndex++;
           }
@@ -336,7 +450,10 @@ export const convertGeminiResponseToClaude = (
 
   const finish = get(root, "candidates.0.finishReason");
 
-  if (finish !== undefined && asString(finish) !== "") p.finishReason = asString(finish);
+  if (finish !== undefined && asString(finish) !== "") {
+    p.finishReason = asString(finish);
+    flushPendingToolInput();
+  }
 
   const usage = get(root, "usageMetadata");
 
@@ -359,6 +476,19 @@ export const convertGeminiResponseToClaude = (
     p.cachedTokens = cachedTokens;
   }
 
+  if (isMalformedFunctionCall(p.finishReason, p.sawToolCall) && !p.hasFinalEvents) {
+    if (p.responseType !== 0) {
+      flushPendingToolInput();
+      output += blockStop(p.responseIndex);
+      p.responseType = 0;
+    }
+
+    output += event("error", MALFORMED_FUNCTION_CALL_ERROR);
+    p.hasFinalEvents = true;
+
+    return [output];
+  }
+
   if (usage !== undefined && line.includes('"finishReason"') && !p.hasFinalEvents) {
     if (!p.hasContent && p.hasFirstResponse) {
       output += blockStart(p.responseIndex, { type: "text", text: "" });
@@ -368,6 +498,7 @@ export const convertGeminiResponseToClaude = (
 
     if (p.hasContent) {
       if (p.responseType !== 0) {
+        flushPendingToolInput();
         output += blockStop(p.responseIndex);
         p.responseType = 0;
       }
@@ -418,7 +549,6 @@ export const convertGeminiResponseToClaudeNonStream = (
   let text = "";
   let thinking = "";
   let thinkingSignature = "";
-  let toolIdCounter = 0;
   let hasToolCall = false;
   const blocks: Json[] = [];
 
@@ -487,14 +617,34 @@ export const convertGeminiResponseToClaudeNonStream = (
           asString(get(functionCall, "name")),
         );
 
-        const clientToolName = mapToolName(toolNameMap, upstreamToolName);
-        toolIdCounter++;
+        const clientToolName = mapClaudeToolName(
+          toolNameMap,
+          context.originalRequest,
+          upstreamToolName,
+        );
+
+        toolUseIdCounter++;
         const args = get(functionCall, "args");
+        let input: Json = {};
+
+        if (isJsonObject(args)) {
+          const cleaned = tryParseJson(
+            cleanClaudeToolArgumentsWithTranslated(
+              JSON.stringify(args),
+              clientToolName,
+              context.originalRequest,
+              context.translatedRequest,
+            ),
+          );
+
+          input = isJsonObject(cleaned) ? cleaned : args;
+        }
+
         blocks.push({
           type: "tool_use",
-          id: sanitizeClaudeToolId(`${upstreamToolName}-${toolIdCounter}`),
+          id: sanitizeClaudeToolId(`${upstreamToolName}-${toolUseIdCounter}`),
           name: clientToolName,
-          input: isJsonObject(args) ? args : {},
+          input,
         });
         continue;
       }
@@ -517,10 +667,11 @@ export const convertGeminiResponseToClaudeNonStream = (
   if (blocks.length > 0) out["content"] = blocks;
 
   const finish = get(root, "candidates.0.finishReason");
-  out["stop_reason"] = resolveGeminiClaudeStopReason(
-    finish === undefined ? "" : asString(finish),
-    hasToolCall,
-  );
+  const finishReason = finish === undefined ? "" : asString(finish);
+
+  if (isMalformedFunctionCall(finishReason, hasToolCall))
+    return JSON.stringify(MALFORMED_FUNCTION_CALL_ERROR);
+  out["stop_reason"] = resolveGeminiClaudeStopReason(finishReason, hasToolCall);
 
   if (inputTokens === 0 && outputTokens === 0 && !exists(root, "usageMetadata"))
     delete out["usage"];
