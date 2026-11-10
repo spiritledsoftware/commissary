@@ -155,8 +155,9 @@ export interface WirePolicy {
   readonly confirmedClaudeCode: boolean;
   readonly cloak: boolean;
   /**
-   * The mode resolved to `never` for a credential that would otherwise be cloaked as Claude Code (an OAuth credential or
-   * a fingerprint-profile opt-in): a caller of the confirmed shape keeps its own headers.
+   * The mode resolved to `never` (the credential's `cloak_mode`/`cloak.mode`, or the global `disable-claude-cloak-mode`
+   * when nothing is set per credential) and the credential is not one that already keeps the caller's headers: a
+   * caller with the strong signals is confirmed whatever its entrypoint and keeps its own device headers.
    */
   readonly explicitNever: boolean;
   /** Only meaningful when {@link cloak} is set. */

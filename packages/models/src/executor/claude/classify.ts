@@ -32,20 +32,16 @@ export const headerValue = (headers: Headers | undefined, name: string): string 
  */
 const NATIVE_ENTRYPOINTS = new Set(["cli", "sdk-cli", "sdk-ts", "claude-vscode"]);
 
-/** `isNativeClaudeEntrypoint`: the built-in set plus the configured labels (compared case-insensitively). */
+/**
+ * `isNativeClaudeEntrypoint`: the built-in set plus the configured labels. `entrypoint` comes from a parsed User-Agent
+ * (lower-cased) and `nativeEntrypoints` from the normalised config.
+ */
 export const isNativeEntrypoint = (
   entrypoint: string,
   nativeEntrypoints: readonly string[] = [],
-): boolean => {
-  const label = entrypoint.trim().toLowerCase();
-
-  if (label === "") return false;
-
-  return (
-    NATIVE_ENTRYPOINTS.has(label) ||
-    nativeEntrypoints.some((candidate) => candidate.trim().toLowerCase() === label)
-  );
-};
+): boolean =>
+  entrypoint !== "" &&
+  (NATIVE_ENTRYPOINTS.has(entrypoint) || nativeEntrypoints.includes(entrypoint));
 
 /** `isNativeClaudeXApp`: `cli-bg` is a Claude Code background session. */
 const isNativeXApp = (value: string): boolean => value === "cli" || value === "cli-bg";
@@ -74,30 +70,26 @@ export const plausibleClaudeCodeUserAgent = (
   );
 };
 
-/** `plausibleClaudePackageVersion`: a Stainless package version at or above the baseline. */
-export const plausiblePackageVersion = (candidate: string, baseline: string): boolean => {
+/**
+ * `plausibleClaudePackageVersion` / `plausibleClaudeRuntimeVersion`: a Stainless `package` (`0.128.0`) or `runtime`
+ * (`v26.12.1`) version at or above the baseline; equal to it when either side is not a semantic version.
+ */
+export const plausibleStainlessVersion = (
+  kind: "package" | "runtime",
+  candidate: string,
+  baseline: string,
+): boolean => {
   const value = candidate.trim();
+  const base = baseline.trim();
 
-  if (!PACKAGE_VERSION.test(value)) return false;
-  const parsed = parseSemver(value);
-  const base = parseSemver(baseline);
+  if (!(kind === "runtime" ? RUNTIME_VERSION : PACKAGE_VERSION).test(value)) return false;
+  const semver = (text: string) => parseSemver(kind === "runtime" ? text.replace(/^v/, "") : text);
+  const parsed = semver(value);
+  const floor = semver(base);
 
-  return parsed === undefined || base === undefined
-    ? value === baseline.trim()
-    : compareVersions(parsed, base) >= 0;
-};
-
-/** `plausibleClaudeRuntimeVersion`: a Stainless runtime version (`v26.12.1`) at or above the baseline. */
-export const plausibleRuntimeVersion = (candidate: string, baseline: string): boolean => {
-  const value = candidate.trim();
-
-  if (!RUNTIME_VERSION.test(value)) return false;
-  const parsed = parseSemver(value.slice(1));
-  const base = parseSemver(baseline.trim().replace(/^v/, ""));
-
-  return parsed === undefined || base === undefined
-    ? value === baseline.trim()
-    : compareVersions(parsed, base) >= 0;
+  return parsed === undefined || floor === undefined
+    ? value === base
+    : compareVersions(parsed, floor) >= 0;
 };
 
 const HEX64 = /^[0-9a-f]{64}$/;

@@ -33,7 +33,7 @@ import {
   compareVersions,
   PACKAGE_VERSION,
   parseClaudeCodeUserAgent,
-  parseCliVersion as parseVersion,
+  parseCliVersion,
   RUNTIME_VERSION,
 } from "./user-agent.ts";
 
@@ -45,10 +45,10 @@ const ENTRY_KEY = "profile";
 
 /** `shouldUpgradeClaudeDeviceProfile`: only a newer CLI version replaces the stored profile. */
 export const shouldUpgradeProfile = (candidate: DeviceProfile, current: DeviceProfile): boolean => {
-  const candidateVersion = parseVersion(candidate.userAgent);
+  const candidateVersion = parseCliVersion(candidate.userAgent);
 
   if (candidate.userAgent === "" || candidateVersion === undefined) return false;
-  const currentVersion = parseVersion(current.userAgent);
+  const currentVersion = parseCliVersion(current.userAgent);
 
   if (current.userAgent === "" || currentVersion === undefined) return true;
 
@@ -57,8 +57,8 @@ export const shouldUpgradeProfile = (candidate: DeviceProfile, current: DevicePr
 
 /** `meetsClaudeDeviceProfileBaseline`: the software tuple must equal the baseline's exactly. */
 export const meetsBaseline = (candidate: DeviceProfile, baseline: DeviceProfile): boolean => {
-  const candidateVersion = parseVersion(candidate.userAgent);
-  const baselineVersion = parseVersion(baseline.userAgent);
+  const candidateVersion = parseCliVersion(candidate.userAgent);
+  const baselineVersion = parseCliVersion(baseline.userAgent);
 
   if (candidate.userAgent === "" || candidateVersion === undefined) return false;
 

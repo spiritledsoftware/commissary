@@ -1249,9 +1249,10 @@ Deviations from Go (all deliberate, documented in code headers):
   lower-cased labels such as `t3-code`). A User-Agent may carry `(external, <entrypoint>, name/value)` extension fields: only
   `agent-sdk` is part of the stable identity a device profile stores, the other fields travel on their own request (appended
   to the stabilised UA). Newer Stainless package/runtime versions of a confirmed client are kept unless `header-defaults`
-  configures that version. Under `cloak_mode: never` on a credential that would otherwise be cloaked (an OAuth credential),
-  a caller with the strong signals (`strongSignals`, any entrypoint) keeps its own device headers ahead of
-  `stabilize-device-profile` pinning. Deliberate difference: Go's measured Haiku helper profiles (requests that omit the
+  configures that version. Where the cloak mode resolves to `never` (per credential, or the global
+  `disable-claude-cloak-mode` when none is set; API-key credentials included, except those that already keep the caller's
+  headers), a caller with the strong signals (`strongSignals`, any entrypoint) keeps its own device headers ahead of
+  `stabilize-device-profile` pinning, and the device-profile store is not consulted. Deliberate difference: Go's measured Haiku helper profiles (requests that omit the
   `claude-code-20250219` beta) are not ported, so `strongSignals` is the strong signals alone.
 - **`rebuild-mid-system-message`** (`mid-system.ts`): `role: "system"` messages are folded into `system` right after the
   thinking step (messages, count_tokens and the local estimator), enabled per `api-keys.claude` entry or the

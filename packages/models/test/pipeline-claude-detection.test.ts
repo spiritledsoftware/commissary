@@ -12,7 +12,15 @@ import {
 import { makeClaudeExecutor } from "../src/executor/claude/executor.ts";
 import { makeMemoryContinuityStore } from "../src/executor/claude/continuity.ts";
 import type { JsonObject } from "@commissary/json";
-import { credential, execute, harness, json, loadConfig, options } from "./support/executor-run.ts";
+import {
+  collectStream,
+  credential,
+  execute,
+  harness,
+  json,
+  loadConfig,
+  options,
+} from "./support/executor-run.ts";
 
 const USER_ID = JSON.stringify({
   device_id: "0".repeat(64),
@@ -65,23 +73,77 @@ const callerHeaders = (overrides: Record<string, string | undefined>): Headers =
   return headers;
 };
 
-/** Sends one request as `headers` (over NATIVE unless `bare`) and returns the upstream request headers. */
+const STREAM =
+  'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-3-5-sonnet","content":[],"usage":{"input_tokens":1,"output_tokens":0}}}\n\n' +
+  'event: message_stop\ndata: {"type":"message_stop"}\n\n';
+
+type Path = "messages" | "stream" | "count_tokens";
+
+/** Sends one request over NATIVE with `headers` on top and returns the upstream request headers. */
 const send = async (
   headers: Record<string, string | undefined>,
   yaml = "",
   cred = oauth(),
   deviceProfiles: DeviceProfileStore = makeMemoryDeviceProfileStore(),
+  path: Path = "messages",
 ): Promise<Record<string, string>> => {
-  const h = await harness(cred, () => ok(), yaml);
+  const responses: Record<Path, () => Response> = {
+    messages: ok,
+    stream: () => new Response(STREAM, { headers: { "content-type": "text/event-stream" } }),
+    count_tokens: () => Response.json({ input_tokens: 1 }),
+  };
 
-  await execute(
-    makeClaudeExecutor({ continuity: makeMemoryContinuityStore(), deviceProfiles }),
-    h,
-    { model: "claude-3-5-sonnet-20241022", payload: json(body()) },
-    options({ sourceFormat: "claude", headers: callerHeaders(headers) }),
-  );
+  const respond = responses[path];
+
+  const h = await harness(cred, respond, yaml, path === "stream");
+  const executor = makeClaudeExecutor({ continuity: makeMemoryContinuityStore(), deviceProfiles });
+  const request = { model: "claude-3-5-sonnet-20241022", payload: json(body()) };
+  const caller = callerHeaders(headers);
+
+  if (path === "stream") {
+    const collected = await collectStream(
+      executor,
+      h,
+      request,
+      options({ stream: true, sourceFormat: "claude", headers: caller }),
+    );
+
+    expect(collected.error).toBeUndefined();
+  } else if (path === "count_tokens") {
+    await Effect.runPromise(
+      executor
+        .countTokens(
+          h.context,
+          request,
+          options({
+            sourceFormat: "claude",
+            headers: caller,
+            metadata: { ...options().metadata, requestPath: "/v1/messages/count_tokens" },
+          }),
+        )
+        .pipe(Effect.provide(h.layers)),
+    );
+  } else {
+    await execute(executor, h, request, options({ sourceFormat: "claude", headers: caller }));
+  }
 
   return h.calls[0]?.headers ?? {};
+};
+
+/** A store that counts how often the executor asks it for a profile. */
+const countingStore = () => {
+  const inner = makeMemoryDeviceProfileStore();
+  const counter = { resolves: 0 };
+
+  const store: DeviceProfileStore = {
+    resolve: (...args) => {
+      counter.resolves += 1;
+
+      return inner.resolve(...args);
+    },
+  };
+
+  return { store, counter };
 };
 
 const baselineProfile = (userAgent: string) => ({
@@ -104,6 +166,23 @@ describe("x-app of Claude Code background sessions (6876a2eb)", () => {
 
     expect(sent["x-app"]).toBe("cli-bg");
     expect(isNative(sent)).toBe(true);
+  });
+
+  it.each(["stream", "count_tokens"] as const)("cli-bg passes through on %s", async (path) => {
+    const sent = await send({ "x-app": "cli-bg" }, "", oauth(), undefined, path);
+
+    expect(sent["x-app"]).toBe("cli-bg");
+    expect(isNative(sent)).toBe(true);
+  });
+
+  it("cli-bg passes through with the device profile stabilised", async () => {
+    const sent = await send(
+      { "x-app": "cli-bg" },
+      "upstream:\n  claude:\n    header-defaults:\n      stabilize-device-profile: true\n",
+    );
+
+    expect(sent["x-app"]).toBe("cli-bg");
+    expect(sent["user-agent"]).toBe(NATIVE["user-agent"]);
   });
 
   it.each(["cli-other", "web", "sdk"])("does not accept x-app %s", async (app) => {
@@ -302,6 +381,30 @@ describe("cloak_mode never (20c9095c, d2e61d19)", () => {
     expect(sent["user-agent"]).toBe(SDK_PY);
     expect(sent["x-stainless-package-version"]).toBe("0.130.0");
     expect(sent["x-stainless-os"]).toBe("Linux");
+  });
+
+  describe("leaves the device-profile store untouched", () => {
+    const STABLE =
+      "upstream:\n  claude:\n    header-defaults:\n      stabilize-device-profile: true\n";
+
+    it.each([
+      ["an unlisted entrypoint", CALLER],
+      ["a native entrypoint", {}],
+    ])("for %s", async (_name, headers) => {
+      for (const path of ["messages", "count_tokens"] as const) {
+        const { store, counter } = countingStore();
+        await send(headers, STABLE, NEVER, store, path);
+
+        expect(counter.resolves, path).toBe(0);
+      }
+    });
+
+    it("and does so for the same request without never", async () => {
+      const { store, counter } = countingStore();
+      await send({}, STABLE, oauth(), store);
+
+      expect(counter.resolves).toBe(1);
+    });
   });
 
   it("without the strong signals the request gets the baseline identity", async () => {

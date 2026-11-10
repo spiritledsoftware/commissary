@@ -216,7 +216,7 @@ const COPY = {
   ),
   "upstream.claude.header-defaults.native-entrypoints": {
     label: "Native entrypoints",
-    hint: "One per line, such as t3-code. Clients with these Claude Code entrypoints pass through uncloaked, next to cli, sdk-cli, sdk-ts and claude-vscode.",
+    hint: "One per line, lower-case, such as t3-code. A client with one of these Claude Code entrypoints counts as native, like cli, sdk-cli, sdk-ts and claude-vscode, when the strong Claude Code signals match.",
   },
   "upstream.codex.disable-codex-cloaking": flag(
     "Send the client's own User-Agent and Originator to Codex",

@@ -46,8 +46,7 @@ import {
   isProbeOrHelperRequest,
   isSubagentRequest,
   plausibleClaudeCodeUserAgent,
-  plausiblePackageVersion,
-  plausibleRuntimeVersion,
+  plausibleStainlessVersion,
   subagentRequests1h,
 } from "./classify.ts";
 import { withRequestFields } from "./user-agent.ts";
@@ -464,13 +463,13 @@ export const buildClaudeHeaders = (input: HeaderInput) => {
     ensureValid("x-stainless-runtime-version", profile.runtimeVersion, (value) =>
       configured("runtime-version")
         ? value === profile.runtimeVersion
-        : plausibleRuntimeVersion(value, profile.runtimeVersion),
+        : plausibleStainlessVersion("runtime", value, profile.runtimeVersion),
     );
 
     ensureValid("x-stainless-package-version", profile.packageVersion, (value) =>
       configured("package-version")
         ? value === profile.packageVersion
-        : plausiblePackageVersion(value, profile.packageVersion),
+        : plausibleStainlessVersion("package", value, profile.packageVersion),
     );
 
     ensureValid("x-stainless-os", profile.os);
