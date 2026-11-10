@@ -21,7 +21,6 @@ import {
 } from "../../common/claude-messages.ts";
 import { exists, isArr, isObj, str } from "../../common/gjson.ts";
 import { UserTurnDrops } from "../../common/parts.ts";
-import { restoreCodexCommentaryMarkers } from "../../../signature/claude-messages.ts";
 import { firstNonBlankString } from "../../gemini/interactions/common.ts";
 
 /** `ConvertClaudeRequestToInteractions`. */
@@ -42,13 +41,10 @@ const lower = (value: Json | undefined): string => str(value).trim().toLowerCase
 
 const convert = (
   modelName: string,
-  input: Json,
+  root: Json,
   stream: boolean,
   preserveEmptyThinkingBlocks: boolean,
 ): Json => {
-  // The internal commentary marker is restored as assistant text before any thinking handling.
-  const root = restoreCodexCommentaryMarkers(input).payload;
-
   const out: JsonObject = {
     model: firstNonBlankString(modelName, str(get(root, "model"))),
     input: [],

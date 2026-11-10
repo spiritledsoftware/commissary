@@ -826,6 +826,8 @@ export const convertCodexResponseToClaude = (
       break;
     case "response.reasoning_summary_part.added":
       out += stopTextBlock(p);
+      out += finalizeCommentaryBlock(p);
+      p.commentaryMessageOpen = false;
 
       // One thinking block spans the whole reasoning item; only output_item.done carries the final signature.
       if (p.thinkingBlockOpen) out += appendThinkingDelta(p, SUMMARY_PART_SEPARATOR);
@@ -834,6 +836,8 @@ export const convertCodexResponseToClaude = (
       break;
     case "response.reasoning_summary_text.delta":
       out += stopTextBlock(p);
+      out += finalizeCommentaryBlock(p);
+      p.commentaryMessageOpen = false;
       out += startThinkingBlock(p);
       out += appendThinkingDelta(p, asString(get(root, "delta")));
       break;

@@ -345,6 +345,47 @@ for (const gw of ["opencode-zen", "opencode-go"] as const) {
       expect(p.records[0]?.detail).toMatchObject({ inputTokens: 6, outputTokens: 4 });
     });
 
+    it("messages model from a Claude client: a replayed Codex commentary marker never reaches the upstream", async () => {
+      const p = await harness(gw);
+
+      const response = await p.call(
+        "/v1/messages",
+        postJson(
+          claudeRequest(models.messages, false, {
+            messages: [
+              { role: "user", content: "hello" },
+              {
+                role: "assistant",
+                content: [
+                  {
+                    type: "thinking",
+                    thinking: "COMMENTARY_SENTINEL",
+                    signature: "cpa:commentary:v1",
+                  },
+                  { type: "text", text: "FINAL_SENTINEL" },
+                ],
+              },
+              { role: "user", content: "next" },
+            ],
+          }),
+        ),
+      );
+
+      expect(response.status).toBe(200);
+      expect(p.calls[0]?.body).not.toContain("cpa:commentary:v1");
+      expect(bodyOf(p.calls[0])["messages"]).toMatchObject([
+        { role: "user" },
+        {
+          role: "assistant",
+          content: [
+            { type: "text", text: "COMMENTARY_SENTINEL" },
+            { type: "text", text: "FINAL_SENTINEL" },
+          ],
+        },
+        { role: "user" },
+      ]);
+    });
+
     it("messages model from an OpenAI chat client (non-stream): streamed upstream, chat answer back", async () => {
       const p = await harness(gw);
 

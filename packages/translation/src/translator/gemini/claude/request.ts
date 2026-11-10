@@ -30,7 +30,6 @@ import {
 import { convertClaudeToolResultContent, sanitizeFunctionName } from "../util/claude.ts";
 import { cleanJsonSchemaForGeminiJsonSchema } from "../util/json-schema.ts";
 import { lookupModelInfo } from "../../model-info.ts";
-import { restoreCodexCommentaryMarkers } from "../../../signature/claude-messages.ts";
 
 const GEMINI_CLAUDE_THOUGHT_SIGNATURE = "skip_thought_signature_validator";
 
@@ -58,9 +57,7 @@ const toolNameFromClaudeToolUseId = (toolUseId: string): string => {
 
 const isNumber = (value: Json | undefined): value is number => typeof value === "number";
 
-const convert = (modelName: string, input: Json, preserveEmptyThinkingBlocks: boolean): Json => {
-  // The internal commentary marker is restored as assistant text before any thinking handling.
-  const request = restoreCodexCommentaryMarkers(input).payload;
+const convert = (modelName: string, request: Json, preserveEmptyThinkingBlocks: boolean): Json => {
   const drops = new UserTurnDrops();
   const out: JsonObject = { contents: [], model: modelName };
 

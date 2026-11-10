@@ -37,7 +37,6 @@ import {
   claudeMessageSystemReminderText,
 } from "../../common/claude-messages.ts";
 import { countSendableGeminiParts, UserTurnDrops } from "../../common/parts.ts";
-import { restoreCodexCommentaryMarkers } from "../../../signature/claude-messages.ts";
 import {
   mergeAdjacentGeminiContents,
   mergeAdjacentGeminiUserContents,
@@ -353,11 +352,9 @@ const buildFunctionResponse = (
 /** `ConvertClaudeRequestToAntigravity`. */
 export const convertClaudeRequestToAntigravity = (
   modelName: string,
-  input: Json,
+  root: Json,
   _stream: boolean,
 ): Json => {
-  // The internal commentary marker is restored as assistant text before any thinking handling.
-  const root = restoreCodexCommentaryMarkers(input).payload;
   let enableThoughtTranslate = true;
 
   if (shouldBuildAntigravityWebSearchRequest(modelName, root))

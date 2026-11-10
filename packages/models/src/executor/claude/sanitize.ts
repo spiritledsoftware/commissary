@@ -36,10 +36,9 @@ export const sanitizeForClaudeUpstream = (
 ): void => {
   // The internal commentary marker must never reach any upstream, so its restore runs unconditionally, independent of
   // the provider signature gate below (non-Claude model names skip that entirely).
-  const restored = restoreCodexCommentaryMarkers(body);
+  const { payload, restored } = restoreCodexCommentaryMarkers(body);
 
-  if (restored.restored > 0 && isObj(restored.payload) && isArr(restored.payload.messages))
-    body.messages = restored.payload.messages;
+  if (restored > 0 && isObj(payload)) Object.assign(body, payload);
 
   if (signatureProviderFromModelName(baseModel) === "claude" || preserveEmptyThinkingBlocks) {
     sanitizeClaudeMessagesForClaudeUpstream(body, baseModel, preserveEmptyThinkingBlocks);

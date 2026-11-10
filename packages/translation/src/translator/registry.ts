@@ -17,6 +17,7 @@
 import { cloneJson, get, type Json, set } from "@commissary/json";
 import { applyClaudeInputTokens, type ClaudeInputTokenState } from "../tokenizer/claude-input.ts";
 import type { SummaryConfig } from "../thinking/index.ts";
+import { restoreCodexCommentaryMarkers } from "../signature/claude-messages.ts";
 import { Formats, type Format } from "./formats.ts";
 import type { ThinkingModelInfo } from "../thinking/types.ts";
 
@@ -223,7 +224,18 @@ export class TranslatorRegistry {
     hooks: SummaryHooks = noopSummaryHooks,
     options: { readonly compat?: boolean } = {},
   ): RequestEnvelope {
-    const input: RequestEnvelope = { ...envelope, body: cloneJson(envelope.body) };
+    // The internal Codex commentary marker is restored as assistant text before any thinking handling, for every
+    // Claude-source request whose target is not Codex (which restores it as a commentary message itself); this also
+    // covers Claude -> Claude, which has no transform and no signature sanitising.
+    const cloned = cloneJson(envelope.body);
+
+    const input: RequestEnvelope = {
+      ...envelope,
+      body:
+        client === Formats.Claude && provider !== Formats.Codex
+          ? restoreCodexCommentaryMarkers(cloned).payload
+          : cloned,
+    };
 
     const transform =
       (options.compat === true ? this.#compatRequests.get(key(client, provider)) : undefined) ??

@@ -7,7 +7,8 @@ import {
   restoreCodexCommentaryMarkers,
   sanitizeClaudeMessagesSignaturesForModel,
 } from "../src/signature/claude-messages.ts";
-import { convertClaudeRequestToAntigravity } from "../src/translator/antigravity/claude/request.ts";
+import { builtinTranslators } from "../src/translator/builtin.ts";
+import { Formats } from "../src/translator/formats.ts";
 import {
   convertClaudeRequestToCodex,
   convertClaudeRequestToCodexWithCompat,
@@ -16,18 +17,6 @@ import {
   convertCodexResponseToClaude,
   convertCodexResponseToClaudeNonStream,
 } from "../src/translator/codex/claude/response.ts";
-import {
-  convertClaudeRequestToGemini,
-  convertClaudeRequestToGeminiWithCompat,
-} from "../src/translator/gemini/claude/request.ts";
-import {
-  convertClaudeRequestToInteractions,
-  convertClaudeRequestToInteractionsWithCompat,
-} from "../src/translator/interactions/claude/request.ts";
-import {
-  convertClaudeRequestToOpenAI,
-  convertClaudeRequestToOpenAIWithCompat,
-} from "../src/translator/openai/claude/request.ts";
 import { makeTranslationState, type ResponseContext } from "../src/translator/registry.ts";
 
 const MARKER = "cpa:commentary:v1";
@@ -183,6 +172,46 @@ describe("Codex commentary -> Claude response", () => {
 
     expect(got.thinking).toEqual(["Reasoning step", "Commentary step"]);
     expect(got.signatures).toEqual(["enc_fallback", MARKER]);
+  });
+
+  it("closes an open commentary block when reasoning summary events arrive", () => {
+    for (const summary of [
+      `{"type":"response.reasoning_summary_part.added"}`,
+      `{"type":"response.reasoning_summary_text.delta","delta":"Thinking"}`,
+    ]) {
+      const got = collectStreamBlocks([
+        created,
+        `{"type":"response.output_item.added","item":{"type":"reasoning","encrypted_content":"pre"}}`,
+        msgAdded("commentary"),
+        delta("Looking."),
+        summary,
+        ...(summary.includes("part.added")
+          ? [`{"type":"response.reasoning_summary_text.delta","delta":"Thinking"}`]
+          : []),
+        `{"type":"response.output_item.done","item":{"type":"reasoning","encrypted_content":"enc_sig"}}`,
+        completed,
+      ]);
+
+      expect(got.thinking).toEqual(["Looking.", "Thinking"]);
+      expect(got.signatures).toEqual([MARKER, "enc_sig"]);
+    }
+  });
+
+  it("emits a second message that only arrives on output_item.done after a streamed first one", () => {
+    for (const includeSecondAdded of [true, false]) {
+      const got = collectStreamBlocks([
+        created,
+        msgAdded("commentary"),
+        delta("Checking."),
+        msgDone("commentary", "Checking."),
+        ...(includeSecondAdded ? [msgAdded("final_answer")] : []),
+        msgDone("final_answer", "All checks passed."),
+        completed,
+      ]);
+
+      expect(got.thinking).toEqual(["Checking."]);
+      expect(got.text).toEqual(["All checks passed."]);
+    }
   });
 
   it("leaves a final_answer-only stream as text", () => {
@@ -393,24 +422,37 @@ const expectRestored = (out: Json) => {
 };
 
 describe("marker restore for non-Codex targets", () => {
-  it("restores the marker as text in every Claude request translator", () => {
-    for (const convert of [
-      convertClaudeRequestToOpenAI,
-      convertClaudeRequestToOpenAIWithCompat,
-      convertClaudeRequestToGemini,
-      convertClaudeRequestToGeminiWithCompat,
-      convertClaudeRequestToInteractions,
-      convertClaudeRequestToInteractionsWithCompat,
-      convertClaudeRequestToAntigravity,
+  const translate = (provider: string, compat: boolean, body: Json): Json =>
+    builtinTranslators.translateRequest(
+      Formats.Claude,
+      provider,
+      { format: Formats.Claude, model: "test-model", stream: false, body },
+      undefined,
+      { compat },
+    ).body;
+
+  it("restores the marker as text for every Claude-source target but Codex", () => {
+    for (const provider of [
+      Formats.OpenAI,
+      Formats.Gemini,
+      Formats.Interactions,
+      Formats.Antigravity,
+      Formats.Claude,
     ])
-      expectRestored(convert("test-model", payload(), false));
+      for (const compat of [false, true]) expectRestored(translate(provider, compat, payload()));
+  });
+
+  it("leaves the marker for the Codex translator, which restores a commentary message", () => {
+    expect(JSON.stringify(translate(Formats.Codex, false, payload()))).toContain(
+      '"phase":"commentary"',
+    );
   });
 
   it("does not mutate the caller's request", () => {
     const input = payload();
     const before = JSON.stringify(input);
 
-    convertClaudeRequestToOpenAI("test-model", input, false);
+    translate(Formats.OpenAI, false, input);
     expect(JSON.stringify(input)).toBe(before);
   });
 
