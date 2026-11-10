@@ -262,7 +262,7 @@ export const buildGetChatMessageRequest = (input: DevinChatRequest): Uint8Array 
   for (const tool of input.tools) {
     if (tool.name === "" || isCodexAppAutomationUpdate("", tool.name)) continue;
     const encoded = new ProtoWriter().string(1, tool.name);
-    const description = devinWireToolDescription(tool.name, tool.description);
+    const description = devinWireToolDescription(tool.description);
 
     if (description !== "") encoded.string(2, description);
 

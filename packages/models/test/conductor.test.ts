@@ -214,6 +214,43 @@ describe("failover within a round", () => {
     }),
   );
 
+  // CLIProxyAPI e25b7daf: Devin's MCP-configuration and content-policy 403s are caused by the request payload.
+  for (const message of [
+    "devin upstream error (permission_denied): Unable to process request due to an MCP configuration issue.",
+    "devin upstream error (permission_denied): Your request was blocked by our content policy. Please remove sensitive or unsafe content from your prompt and try again.",
+  ]) {
+    it.effect(
+      `a Devin request-caused 403 is not retried and cools nothing: ${message.slice(40, 90)}`,
+      () =>
+        Effect.gen(function* () {
+          const run = yield* setup(config(group("a") + group("b")), () =>
+            upstreamError(403, message),
+          );
+
+          const error = yield* failure(run.exec(executeNonStream(chatInput())));
+          assert.strictEqual(error.status, 403);
+          assert.strictEqual(run.calls.length, 1);
+
+          for (const credential of run.harness.pool.list())
+            assert.strictEqual(credential.unavailable, false);
+        }),
+    );
+  }
+
+  it.effect("a Devin 403 about account model access still rotates to the next credential", () =>
+    Effect.gen(function* () {
+      const run = yield* setup(config(group("a") + group("b")), () =>
+        upstreamError(
+          403,
+          "devin upstream error (permission_denied): model access is not allowed for this account",
+        ),
+      );
+
+      yield* failure(run.exec(executeNonStream(chatInput())));
+      assert.deepStrictEqual(run.calls.map(keyOf).toSorted(), ["a", "b"]);
+    }),
+  );
+
   it.effect(
     "returns request faults at once without rotating or cooling (isRequestInvalidError)",
     () =>

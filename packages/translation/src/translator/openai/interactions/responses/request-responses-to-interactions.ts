@@ -321,13 +321,7 @@ const appendTools = (
     if (applyPatch) desc = applyPatchDescription(descriptor.tool);
 
     if (desc !== "") {
-      if (forDevin) {
-        desc = sanitizeDevinToolDescription(descriptor.name, desc);
-
-        if (descriptor.localName !== "" && descriptor.localName !== descriptor.name) {
-          desc = sanitizeDevinToolDescription(descriptor.localName, desc);
-        }
-      }
+      if (forDevin) desc = sanitizeDevinToolDescription(desc);
 
       item.description = desc;
     }

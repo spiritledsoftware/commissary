@@ -136,6 +136,21 @@ const isClaudeThreadNotFound = (status: number, body: string): boolean => {
 };
 
 /**
+ * `clienterror.IsDevinRequestPermissionDenied`: a Devin 403 caused by the request payload (the MCP tool configuration
+ * filter, the prompt content policy filter) rather than by the credential's permissions.
+ */
+const isDevinRequestPermissionDenied = (status: number, body: string): boolean => {
+  if (status !== 403) return false;
+  const text = body.trim().toLowerCase();
+
+  return (
+    text.includes("permission_denied") &&
+    (text.includes("unable to process request due to an mcp configuration issue") ||
+      text.includes("blocked by our content policy"))
+  );
+};
+
+/**
  * `clienterror.IsRequestFault`: the failure is caused by the request, so credentials are neither rotated nor
  * penalised. 402/429 always count against the credential; 401 `authentication_error` is a credential failure.
  */
@@ -146,6 +161,8 @@ export const isRequestFault = (status: number, body: string): boolean => {
     return false;
 
   if (isClaudeThreadNotFound(status, body)) return true;
+
+  if (isDevinRequestPermissionDenied(status, body)) return true;
 
   if (
     hasBodyValue(

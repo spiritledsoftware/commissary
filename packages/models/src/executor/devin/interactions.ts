@@ -879,7 +879,7 @@ export const parseInteractionsPayload = (
     const name = asString(get(tool, "name"));
 
     if (name === "" || isCodexAppAutomationUpdate("", name)) return;
-    const description = sanitizeDevinToolDescription(name, asString(get(tool, "description")));
+    const description = sanitizeDevinToolDescription(asString(get(tool, "description")));
     const parameters = get(tool, "parameters") ?? get(tool, "parametersJsonSchema");
     tools.push({ name, description, parameters: raw(parameters) });
   };

@@ -500,6 +500,27 @@ describe("classification", () => {
     ).toBe(true);
   });
 
+  it("Devin MCP-configuration and content-policy 403s are request faults (CLIProxyAPI e25b7daf)", () => {
+    const mcp =
+      "devin upstream error (permission_denied): Unable to process request due to an MCP configuration issue.";
+
+    const policy =
+      "devin upstream error (permission_denied): Your request was blocked by our content policy. Please remove sensitive or unsafe content from your prompt, memories, and other settings and try again.";
+
+    expect(isRequestFault(403, mcp)).toBe(true);
+    expect(isRequestFault(403, policy)).toBe(true);
+    expect(isRequestFault(403, `{"error":{"message":${JSON.stringify(mcp)}}}`)).toBe(true);
+    // The same text with another status, or a different permission failure, stays a credential matter.
+    expect(isRequestFault(502, mcp)).toBe(false);
+    expect(isRequestFault(403, mcp.replace("permission_denied", "other"))).toBe(false);
+    expect(
+      isRequestFault(
+        403,
+        "devin upstream error (permission_denied): model access is not allowed for this account",
+      ),
+    ).toBe(false);
+  });
+
   it("request-invalid excludes challenges, invalid grants and model-support errors", () => {
     expect(isRequestInvalidError({ status: 400, message: "bad" })).toBe(true);
     expect(isRequestInvalidError({ status: 400, message: "invalid_grant" })).toBe(false);

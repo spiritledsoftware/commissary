@@ -351,6 +351,40 @@ describe("Devin executor behaviour", () => {
   });
 });
 
+describe("Devin tool descriptions (CLIProxyAPI e25b7daf)", () => {
+  it("rewrites the exec_command and write_stdin phrases embedded in the Codex code-mode exec tool", async () => {
+    const description =
+      "Run JavaScript code to orchestrate/compose tool calls\n" +
+      "### exec_command\nRuns a command in a PTY, returning output or a session ID for ongoing interaction.\n" +
+      "### write_stdin\nWrites characters to an existing unified exec session and returns recent output.\n";
+
+    const payload = {
+      model: "devin/claude-opus-5-5",
+      tools: [{ type: "custom", name: "exec", description }],
+      input: "Reply with exactly: OK",
+    };
+
+    const h = await harness(devinCredential(), () => framesResponse([{ flag: 2, hex: "7b7d" }]));
+
+    await execute(
+      executor,
+      h,
+      { model: "devin/claude-opus-5-5", payload: json(payload) },
+      options({
+        sourceFormat: "openai-response",
+        originalRequest: json(payload),
+        metadata: { ...options().metadata, requestPath: "/v1/responses" },
+      }),
+    );
+
+    const wire = new TextDecoder().decode((h.calls[0] as { bytes: Uint8Array }).bytes);
+    expect(wire).not.toContain("a session ID");
+    expect(wire).not.toContain("to an existing unified");
+    expect(wire).toContain("an session ID");
+    expect(wire).toContain("to a existing unified");
+  });
+});
+
 /** A response frame (field 7) with the usage counters: 2 uncached prompt, 3 completion, 4 cache write, 5 cache read. */
 const usageFrame = (usage: {
   prompt: number;
