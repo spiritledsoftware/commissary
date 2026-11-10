@@ -231,7 +231,7 @@ export const isResponsesTokenEvent = (text: string): boolean => {
           return hasText(get(root, "item.input"));
         case "reasoning":
           return ["item.summary", "item.content"].some((field) =>
-            array(get(root, field)).some((part) => hasText(get(part, "text"))),
+            array(get(root, field)).some((part) => stringOf(get(part, "text")) !== ""),
           );
         case "message":
           return array(get(root, "item.content")).some(

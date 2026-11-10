@@ -74,25 +74,114 @@ describe("token events", () => {
     expect(isGeminiTokenEvent('data: {"error":{"message":"x"}}')).toBe(true);
   });
 
-  it("Responses: a finished reasoning item counts only with summary or content text", () => {
-    const done = (item: string) => `data: {"type":"response.output_item.done","item":${item}}`;
+  // Go f434192a TestIsResponsesTokenEvent_CompletedReasoning.
+  it.each([
+    [
+      "summary text",
+      '{"type":"response.output_item.done","item":{"type":"reasoning","summary":[{"type":"summary_text","text":"thinking"}]}}',
+      true,
+    ],
+    [
+      "content text",
+      '{"type":"response.output_item.done","item":{"type":"reasoning","content":[{"type":"reasoning_text","text":"thinking"}]}}',
+      true,
+    ],
+    [
+      "later summary part",
+      '{"type":"response.output_item.done","item":{"type":"reasoning","summary":[{"text":""},{"text":"thinking"}]}}',
+      true,
+    ],
+    [
+      "empty summary with content text",
+      '{"type":"response.output_item.done","item":{"type":"reasoning","summary":[{"text":""}],"content":[{"text":"thinking"}]}}',
+      true,
+    ],
+    [
+      "whitespace text",
+      '{"type":"response.output_item.done","item":{"type":"reasoning","summary":[{"text":" "}]}}',
+      true,
+    ],
+    [
+      "SSE text",
+      'data: {"type":"response.output_item.done","item":{"type":"reasoning","summary":[{"text":"thinking"}]}}',
+      true,
+    ],
+    [
+      "empty arrays",
+      '{"type":"response.output_item.done","item":{"type":"reasoning","summary":[],"content":[]}}',
+      false,
+    ],
+    [
+      "empty text",
+      '{"type":"response.output_item.done","item":{"type":"reasoning","summary":[{"text":""}],"content":[{"text":""}]}}',
+      false,
+    ],
+    [
+      "missing text",
+      '{"type":"response.output_item.done","item":{"type":"reasoning","summary":[{"type":"summary_text"}],"content":[{}]}}',
+      false,
+    ],
+    [
+      "null text",
+      '{"type":"response.output_item.done","item":{"type":"reasoning","summary":[{"text":null}]}}',
+      false,
+    ],
+    ["missing parts", '{"type":"response.output_item.done","item":{"type":"reasoning"}}', false],
+    [
+      "encrypted only",
+      '{"type":"response.output_item.done","item":{"type":"reasoning","summary":[],"encrypted_content":"opaque"}}',
+      false,
+    ],
+    [
+      "malformed numeric text",
+      '{"type":"response.output_item.done","item":{"type":"reasoning","summary":[{"text":123}]}}',
+      false,
+    ],
+    [
+      "malformed object text",
+      '{"type":"response.output_item.done","item":{"type":"reasoning","content":[{"text":{"value":"thinking"}}]}}',
+      false,
+    ],
+    [
+      "added stays metadata",
+      '{"type":"response.output_item.added","item":{"type":"reasoning","summary":[{"text":"thinking"}]}}',
+      false,
+    ],
+  ])("Responses completed reasoning: %s", (_name, payload, want) => {
+    expect(isResponsesTokenEvent(payload)).toBe(want);
+  });
 
-    expect(
+  it("a completed reasoning item keeps the earlier first-token time", () => {
+    const usage = new UsageReporter({
+      requestId: "r",
+      provider: "meta",
+      executorType: "meta",
+      model: "m",
+      alias: "m",
+      endpoint: "POST /x",
+      principalId: "p",
+      orgId: GLOBAL_ORG,
+      authId: "a",
+      authType: "apikey",
+      source: "s",
+      stream: true,
+      serviceTier: "auto",
+      requestedAt: 0,
+    });
+
+    usage.observeTokenEvent(
+      100,
+      isResponsesTokenEvent('{"type":"response.reasoning_summary_text.delta","delta":"thinking"}'),
+    );
+
+    usage.observeTokenEvent(
+      1100,
       isResponsesTokenEvent(
-        done('{"type":"reasoning","summary":[{"type":"summary_text","text":"x"}]}'),
+        '{"type":"response.output_item.done","item":{"type":"reasoning","summary":[{"text":"thinking"}]}}',
       ),
-    ).toBe(true);
-    expect(
-      isResponsesTokenEvent(
-        done('{"type":"reasoning","content":[{"type":"reasoning_text","text":"x"}]}'),
-      ),
-    ).toBe(true);
-    expect(
-      isResponsesTokenEvent(
-        done('{"type":"reasoning","summary":[{"type":"summary_text","text":""}]}'),
-      ),
-    ).toBe(false);
-    expect(isResponsesTokenEvent(done('{"type":"reasoning","encrypted_content":"x"}'))).toBe(false);
+    );
+
+    expect(usage.finish(1200)?.ttftMs).toBe(100);
   });
 
   it("Responses", () => {

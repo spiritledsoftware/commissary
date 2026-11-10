@@ -1281,8 +1281,8 @@ claude/gemini/openai-response -> openai, interactions <-> openai (Chat Completio
 - **Meta deviations from Go**: local `countTokens` does not count the appended namespace (the golden token fixtures
   predate it; revisit with the fixture regeneration); the UA platform is the captured `linux-x86_64` (a Worker has no host
   OS/arch); the telemetry filter lives in the Meta executor only, not also in the Responses SSE framer or WebSocket
-  forwarder of the client handlers, because Meta is the only upstream that sends it; the no-token TTFT fallback is the
-  response-header time, not the first body byte (as for Codex and xAI).
+  forwarder of the client handlers, because Meta is the only upstream that sends it; the no-token TTFT fallback and the
+  TTFT of non-stream calls are the response-header time, not the first body byte (as for Codex and xAI).
 - **No equivalent needed**: the Go OpenAI-compatible executor has no refresh and no reasoning replay cache (§7 of the pipeline
   research lists none for it); 401s are ordinary upstream errors for the conductor's classification.
 

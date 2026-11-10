@@ -623,6 +623,9 @@ describe("TTFT (Go meta_executor_ttft_test.go, virtual clock)", () => {
       response: { id: "r", status: "completed", output: [], usage: { input_tokens: 0 } },
     });
 
+  /** What the last streamed run delivered to the client. */
+  let output = "";
+
   const run = async (
     frames: ReadonlyArray<Frame>,
     options: { nonstream?: boolean; status?: number } = {},
@@ -673,7 +676,7 @@ describe("TTFT (Go meta_executor_ttft_test.go, virtual clock)", () => {
         yield* executor.execute(h.context, request, responsesOptions(false));
       } else {
         const result = yield* executor.executeStream(h.context, request, responsesOptions(true));
-        yield* Stream.runDrain(result.chunks);
+        output = (yield* Stream.runCollect(result.chunks)).join("");
       }
     }).pipe(Effect.exit, Effect.provideService(Clock.Clock, clock), Effect.provide(h.layers));
 
@@ -689,25 +692,43 @@ describe("TTFT (Go meta_executor_ttft_test.go, virtual clock)", () => {
   ];
 
   it.each([
-    ["text", text],
+    ["text", text, "hello"],
     [
       "reasoning summary",
       frame({ type: "response.reasoning_summary_text.delta", summary_index: 0, delta: "thinking" }),
+      "thinking",
     ],
     [
       "function arguments",
       frame({ type: "response.function_call_arguments.delta", delta: '{"query":"hi"}' }),
+      "query",
     ],
     [
       "done-only reasoning summary",
       frame({
         type: "response.output_item.done",
         output_index: 0,
-        item: { type: "reasoning", summary: [{ type: "summary_text", text: "done-only" }] },
+        item: { type: "reasoning", summary: [{ type: "summary_text", text: "done-only-summary" }] },
       }),
+      "done-only-summary",
     ],
-  ])("takes the first effective token frame (%s)", async (_name, event) => {
+    [
+      "done-only reasoning content",
+      frame({
+        type: "response.output_item.done",
+        output_index: 0,
+        item: {
+          type: "reasoning",
+          content: [{ type: "reasoning_text", text: "done-only-content" }],
+        },
+      }),
+      "done-only-content",
+    ],
+  ])("takes the first effective token frame (%s)", async (_name, event, delivered) => {
     expect((await run(content(event)))?.ttftMs).toBe(1000);
+    // The client gets the content, and never the subscription telemetry interleaved with it.
+    expect(output).toContain(delivered);
+    expect(output).not.toContain("subscription");
   });
 
   it.each([
@@ -775,7 +796,7 @@ describe("TTFT (Go meta_executor_ttft_test.go, virtual clock)", () => {
     expect(record?.failed).toBe(true);
   });
 
-  it("keeps first-byte timing for non-stream calls", async () => {
+  it("times a non-stream call at the response headers (Go: first body byte)", async () => {
     const record = await run(content(text), { nonstream: true });
     expect(record?.ttftMs).toBe(10);
   });
