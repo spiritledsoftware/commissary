@@ -214,6 +214,9 @@ describe("model UID resolution: swe-2, lightning and fast variants (Go devin_mod
     ["devin/claude-opus-5-5", "fast", "claude-opus-5-5-medium-fast"],
     ["devin/claude-opus-5-5(high)", "", "claude-opus-5-5-high"],
     ["devin/claude-haiku-4-5(high-fast)", "", "MODEL_PRIVATE_11"],
+    // The catalog additions resolve through their own thinking levels.
+    ["devin/nemotron-3-5-super", "", "nemotron-3-5-super-high"],
+    ["devin/gpt-6-1-terra(max)", "", "gpt-6-1-terra-max"],
   ];
 
   for (const [model, level, uid] of cases) {
@@ -221,13 +224,6 @@ describe("model UID resolution: swe-2, lightning and fast variants (Go devin_mod
       expect(resolveDevinChatModelUid(model, level, 0, devinLevelLookup)).toBe(uid);
     });
   }
-
-  it("resolves the catalog additions' thinking levels", () => {
-    expect(devinLevelLookup("swe-2-lightning")).toEqual(["medium", "high", "max"]);
-    expect(devinLevelLookup("nemotron-3-5-super")).toEqual(["none", "medium", "high"]);
-    expect(devinLevelLookup("gpt-6-1-terra")).toEqual(["low", "medium", "high", "xhigh", "max"]);
-    expect(devinLevelLookup("swe-2-flash")).toEqual(["medium", "high", "max"]);
-  });
 });
 
 describe("system prompt sanitising (parity with SanitizeDevinSystemPrompt)", () => {

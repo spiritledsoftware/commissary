@@ -19,7 +19,7 @@ import {
   type JsonObject,
 } from "@commissary/json";
 import { bytesToBinaryString, detectSignatureProvider } from "@commissary/translation/signature";
-import { UserRun } from "@commissary/translation";
+import { sanitizeDevinToolDescription, UserRun } from "@commissary/translation";
 import { uuidV5Oid } from "../helps/uuid.ts";
 import {
   DEVIN_DEFAULT_MAX_TOKENS,
@@ -29,7 +29,7 @@ import {
   type DevinToolCall,
   newDevinPrompt,
 } from "./wire.ts";
-import { isCodexAppAutomationUpdate, sanitizeDevinToolDescription } from "./tools.ts";
+import { isCodexAppAutomationUpdate } from "./tools.ts";
 
 const utf8 = new TextEncoder();
 

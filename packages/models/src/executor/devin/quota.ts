@@ -10,6 +10,12 @@ import { ExecutionError, withErrorFields } from "../errors.ts";
 
 export type DevinQuotaPeriod = "daily" | "weekly";
 
+/** The observed reset times of the quota windows (`quota.signals` of the status refresh, RFC 3339). */
+export interface DevinQuotaResets {
+  readonly daily_quota_reset_at?: string;
+  readonly weekly_quota_reset_at?: string;
+}
+
 /**
  * A reset further away than this is implausible for a daily or weekly window (a weekly window plus slack covers a
  * just-rolled-over observation) and must not pin the credential.
@@ -62,7 +68,7 @@ export const devinQuotaRetryAfterMs = (
  */
 export const devinQuotaScopedError = (
   error: ExecutionError,
-  signals: Readonly<Record<string, string>> | undefined,
+  resets: DevinQuotaResets | undefined,
   nowMs: number,
 ): ExecutionError => {
   if (error.status !== 429) return error;
@@ -72,7 +78,10 @@ export const devinQuotaScopedError = (
 
   const retryAfterMs =
     error.retryAfterMs ??
-    devinQuotaRetryAfterMs(signals?.[`${period}_quota_reset_at`] ?? "", nowMs);
+    devinQuotaRetryAfterMs(
+      (period === "daily" ? resets?.daily_quota_reset_at : resets?.weekly_quota_reset_at) ?? "",
+      nowMs,
+    );
 
   return withErrorFields(error, {
     credentialScoped: true,

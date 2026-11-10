@@ -21,7 +21,12 @@
 import { Context, type Effect } from "effect";
 import type { JsonObject } from "@commissary/json";
 import type { RetryPlan, RetryQuery } from "../credentials/selection/retry.ts";
-import type { Lease, ReportResult, ResolvedSession } from "../credentials/selection/types.ts";
+import type {
+  CredentialSnapshot as WireCredentialSnapshot,
+  Lease,
+  ReportResult,
+  ResolvedSession,
+} from "../credentials/selection/types.ts";
 import type { LcpPrepared } from "../session-routing/canonical.ts";
 import type { CurrentOrg } from "@commissary/core";
 import type { ExecutionError } from "./errors.ts";
@@ -50,8 +55,8 @@ export interface CredentialSnapshot {
   readonly attributes: Readonly<Record<string, string>>;
   /** Provider metadata (OAuth tokens, account ids, `disable_cooling`, `request_retry`, ...). */
   readonly metadata: JsonObject;
-  /** The observed quota signals of a Devin credential (the reset times of its daily and weekly quota windows). */
-  readonly quotaSignals?: Readonly<Record<string, string>>;
+  /** The observed quota resets of a Devin credential (its daily and weekly quota windows). */
+  readonly quotaSignals?: WireCredentialSnapshot["quotaSignals"];
 }
 
 /** Session identity extracted by the handler (see `handlers/session.ts`). */

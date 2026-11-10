@@ -552,7 +552,7 @@ interface ToolBuilder {
   name: string;
   args: string;
   /** Some argument chunk was `invalid_json_str`. */
-  legacy: boolean;
+  invalidJson: boolean;
   /** Some argument chunk was valid JSON. */
   hasJson: boolean;
 }
@@ -561,8 +561,8 @@ export interface DevinAggregate {
   /** The Interactions response document. */
   readonly interaction: JsonObject;
   readonly usage: DevinUsage | undefined;
-  /** Tool calls whose arguments arrived as invalid JSON (`legacy`), by name (apply_patch detection). */
-  readonly legacyToolNames: ReadonlyArray<string>;
+  /** Tool calls whose arguments arrived as invalid JSON (`invalidJson`), by name (apply_patch detection). */
+  readonly invalidJsonToolNames: ReadonlyArray<string>;
 }
 
 const concat = (parts: ReadonlyArray<Uint8Array>): string => {
@@ -617,7 +617,7 @@ export class DevinAggregator {
       if (index < 0) {
         if (this.#tools.length >= MAX_DEVIN_TOOL_CALLS) continue;
         index = this.#tools.length;
-        builder = { id: call.id, name: call.name, args: "", legacy: false, hasJson: false };
+        builder = { id: call.id, name: call.name, args: "", invalidJson: false, hasJson: false };
         this.#tools.push(builder);
 
         if (call.id !== "") this.#toolIndexById.set(call.id, index);
@@ -639,7 +639,7 @@ export class DevinAggregator {
 
       if (call.arguments !== "") builder.hasJson = true;
 
-      if (call.invalidJsonStr !== "") builder.legacy = true;
+      if (call.invalidJsonStr !== "") builder.invalidJson = true;
 
       if (chunk !== "") builder.args += chunk;
     }
@@ -682,23 +682,24 @@ export class DevinAggregator {
       });
     }
 
-    const legacyToolNames: string[] = [];
+    const invalidJsonToolNames: string[] = [];
 
     // A complete bare patch of the declared apply_patch tool is recovered (the caller saw the clean EOS trailer).
     for (const tool of this.#tools) {
-      if (!tool.legacy || tool.hasJson || this.applyPatch?.isTool(tool.name) !== true) continue;
+      if (!tool.invalidJson || tool.hasJson || this.applyPatch?.isTool(tool.name) !== true)
+        continue;
       const wrapped = recoverDevinBareApplyPatch(tool.args);
 
       if (wrapped !== undefined) {
         tool.args = wrapped;
-        tool.legacy = false;
+        tool.invalidJson = false;
       }
     }
 
     for (const tool of this.#tools) {
       if (tool.id === "" && tool.name === "" && tool.args === "") continue;
 
-      if (tool.legacy) legacyToolNames.push(tool.name);
+      if (tool.invalidJson) invalidJsonToolNames.push(tool.name);
 
       const step: JsonObject = {
         type: "function_call",
@@ -725,6 +726,6 @@ export class DevinAggregator {
     out["steps"] = steps;
     out["usage"] = usageObject(this.#usage);
 
-    return { interaction: out, usage: this.#usage, legacyToolNames };
+    return { interaction: out, usage: this.#usage, invalidJsonToolNames };
   }
 }

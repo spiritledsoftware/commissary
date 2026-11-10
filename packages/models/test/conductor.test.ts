@@ -3,7 +3,7 @@
 // injected clock and a mocked upstream (conductor_retry_round_test.go, conductor_execution_quota_test.go,
 // conductor_request_scoped_errors_test.go, conductor_stream_*_test.go, conductor_force_mapping_test.go).
 import { assert, beforeEach, describe, it } from "@effect/vitest";
-import { Context, Effect, Exit, Fiber, Layer, Result, Scope, Stream } from "effect";
+import { Clock, Context, Effect, Exit, Fiber, Layer, Result, Scope, Stream } from "effect";
 import type { HttpServerRequest } from "effect/http";
 import { TestClock } from "effect/testing";
 import { type AccessIdentity, AccessPrincipal } from "@commissary/auth";
@@ -12,6 +12,9 @@ import { resetBillingCaches } from "@commissary/billing/testing";
 import type { ConfigReader } from "../src/config/reader.ts";
 import { ExecutionError } from "../src/executor/errors.ts";
 import { CredentialRefresher } from "../src/executor/helps/credential-refresh.ts";
+import { emptyState } from "../src/credentials/model.ts";
+import { RefreshManager } from "../src/credentials/refresh/index.ts";
+import { FakeAlarm } from "./support/refresh.ts";
 import { ExecutorRegistry, makeExecutorRegistry } from "../src/executor/registry.ts";
 import type { ProviderExecutor } from "../src/executor/types.ts";
 import type { RefreshResult } from "../src/credentials/refresh/index.ts";
@@ -34,12 +37,7 @@ import {
   staticConfigReader,
   type UpstreamCall,
 } from "./support/pipeline.ts";
-import {
-  makePool,
-  type MemoryPoolStore,
-  poolPickerLayer,
-  type PoolHarness,
-} from "./support/pool.ts";
+import { makePool, MemoryPoolStore, poolPickerLayer, type PoolHarness } from "./support/pool.ts";
 import { CurrentOrg, GLOBAL_ORG } from "@commissary/core";
 import { limit, MemorySpendBook, USD } from "@commissary/state/testing";
 import { envContext } from "./support/context.ts";
@@ -1285,6 +1283,108 @@ describe("credential preparation and 401 refresh (tryRefreshAfterUnauthorized)",
 });
 
 const failure_ = <A>(effect: Effect.Effect<A, ExecutionError>) => Effect.flip(effect);
+
+describe("Devin quota exhaustion (CLIProxyAPI b946d54e)", () => {
+  const HOUR = 3_600_000;
+  const weekly = "Your weekly usage quota has been exhausted.";
+
+  const providers = Layer.succeed(
+    ModelProviders,
+    ModelProviders.of({
+      providersFor: () => Effect.succeed(["devin"]),
+      firstAvailableModel: Effect.succeed(undefined),
+    }),
+  );
+
+  /** The real request-time refresh (`RefreshManager.ensureFresh`) over the pool, as the ControlPlane runs it. */
+  const realRefresher = (harness: PoolHarness): Layer.Layer<CredentialRefresher> => {
+    const manager = new RefreshManager({
+      host: harness.pool,
+      alarm: new FakeAlarm(),
+      http: Layer.empty as never,
+      now: harness.clock.now,
+    });
+
+    return Layer.succeed(
+      CredentialRefresher,
+      CredentialRefresher.of({
+        refreshNow: (id, rejected) =>
+          Effect.promise(
+            async () =>
+              await manager.refreshNow(
+                id,
+                rejected === undefined ? {} : { rejectedAccessToken: rejected },
+              ),
+          ),
+        ensureFresh: (id) => Effect.promise(async () => await manager.ensureFresh(id)),
+      }),
+    );
+  };
+
+  /** The EOS trailer frame of a Connect-RPC response. */
+  const trailerResponse = (message: string): Response => {
+    const json = new TextEncoder().encode(
+      JSON.stringify({ error: { code: "failed_precondition", message } }),
+    );
+
+    const frame = new Uint8Array(5 + json.length);
+    frame[0] = 2;
+    new DataView(frame.buffer).setUint32(1, json.length, false);
+    frame.set(json, 5);
+
+    return new Response(frame, { status: 200 });
+  };
+
+  it.effect(
+    "a weekly-quota trailer cools the credential until the reset its status refresh observed",
+    () =>
+      Effect.gen(function* () {
+        // The executor reads time from the Effect clock (the TestClock here), the pool from its own injected clock.
+        const observedAt = yield* Clock.currentTimeMillis;
+        const reset = new Date(observedAt + 72 * HOUR).toISOString().replace(/\.\d+Z$/, "Z");
+        const store = new MemoryPoolStore();
+
+        store.upsert("devin-a.json", "devin", {
+          type: "devin",
+          api_key: "devin-session-token$a",
+        });
+
+        store.states.set("devin-a.json", {
+          ...emptyState(),
+          quota: { ...emptyState().quota, signals: { weekly_quota_reset_at: reset } },
+        });
+
+        const run = yield* setup("requests: {}", () => trailerResponse(weekly), {
+          store,
+          providers,
+          refresher: realRefresher,
+        });
+
+        const error = yield* failure(
+          run.exec(
+            executeNonStream({
+              entryProtocol: Formats.Interactions,
+              model: "swe-2",
+              body: { model: "swe-2", input: [{ type: "user_input", content: "hi" }] },
+              alt: "",
+              request: fakeRequest(),
+            }),
+          ),
+        );
+
+        assert.strictEqual(error.status, 429);
+        assert.strictEqual(run.calls.length, 1);
+        assert.isAbove(error.retryAfterMs ?? 0, 72 * HOUR - 60_000);
+        assert.isAtMost(error.retryAfterMs ?? 0, 72 * HOUR);
+
+        const credential = run.harness.pool.list()[0];
+        const cooldown = (credential?.nextRetryAfter ?? 0) - run.harness.clock.now();
+        assert.strictEqual(credential?.unavailable, true);
+        assert.isAbove(cooldown, 72 * HOUR - 60_000);
+        assert.isAtMost(cooldown, 72 * HOUR);
+      }),
+  );
+});
 
 describe("Spend limits (issue #71)", () => {
   const asMember = (memberId: string): AccessIdentity => ({

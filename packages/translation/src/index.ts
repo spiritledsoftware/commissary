@@ -65,6 +65,8 @@ export {
 
 export { sseEventData } from "./translator/common/bytes.ts";
 
+export { sanitizeDevinToolDescription } from "./translator/openai/common/devin-tools.ts";
+
 export { isClaudeCodeAttributionSystemText } from "./translator/common/claude-messages.ts";
 
 export { buildClaudeStructuredOutputInstruction } from "./translator/common/claude-system.ts";

@@ -151,6 +151,12 @@ const applyPatchToolOf = (original: Json | undefined): DevinApplyPatchTool => ({
   isTool: (name) => isApplyPatchUpstreamTool(original, name),
 });
 
+/** A quota-exhausted 429 made credential-scoped, retrying at the reset time the credential's status refresh observed. */
+const quotaScoped = (context: ExecutionContext, error: ExecutionError) =>
+  Effect.map(Clock.currentTimeMillis, (now) =>
+    devinQuotaScopedError(error, context.credential.quotaSignals, now),
+  );
+
 /** `registry.LookupDevinModel` through the attempt's registry snapshot: catalog ids are namespaced `devin/<id>`. */
 const lookupDevinInfo = (request: ExecutorRequest, modelId: string) => {
   const bare = modelId.trim().replace(/^devin\//i, "");
@@ -325,12 +331,14 @@ export const makeDevinExecutor = (executorOptions: DevinExecutorOptions = {}): P
 
       const text = new TextDecoder().decode(bytes.slice(0, MAX_ERROR_BODY_BYTES));
 
-      const now = yield* Clock.currentTimeMillis;
-
-      const error = devinQuotaScopedError(
-        devinStatusError(response.status, new Headers(response.headers), text, now),
-        context.credential.quotaSignals,
-        now,
+      const error = yield* quotaScoped(
+        context,
+        devinStatusError(
+          response.status,
+          new Headers(response.headers),
+          text,
+          yield* Clock.currentTimeMillis,
+        ),
       );
 
       context.usage.fail(error.status, error.message);
@@ -398,11 +406,12 @@ export const makeDevinExecutor = (executorOptions: DevinExecutorOptions = {}): P
           const trailer = parseTrailerError(payload);
 
           if (trailer !== undefined) {
-            return yield* devinQuotaScopedError(
+            const failed = yield* quotaScoped(
+              context,
               new ExecutionError({ status: trailer.status, message: trailer.message }),
-              context.credential.quotaSignals,
-              yield* Clock.currentTimeMillis,
             );
+
+            return yield* failed;
           }
 
           sawEos = true;
@@ -427,7 +436,7 @@ export const makeDevinExecutor = (executorOptions: DevinExecutorOptions = {}): P
     const aggregate = aggregator.finish(request.model);
 
     // A tool call whose arguments never became valid JSON is a corrupt patch when it is the declared apply_patch tool.
-    if (aggregate.legacyToolNames.some((name) => isApplyPatchUpstreamTool(original, name))) {
+    if (aggregate.invalidJsonToolNames.some((name) => isApplyPatchUpstreamTool(original, name))) {
       return yield* consumeFailure(applyPatchGatewayError());
     }
 
@@ -576,15 +585,12 @@ export const makeDevinExecutor = (executorOptions: DevinExecutorOptions = {}): P
     }
 
     /** A trailer error about the account's daily or weekly quota is credential-scoped (`devinTrailerStatusError`). */
-    const quotaScoped = (step: StreamStep): Effect.Effect<StreamStep> => {
+    const scopeStepError = (step: StreamStep): Effect.Effect<StreamStep> => {
       const { error } = step;
 
       if (error === undefined) return Effect.succeed(step);
 
-      return Effect.map(Clock.currentTimeMillis, (now) => ({
-        ...step,
-        error: devinQuotaScopedError(error, context.credential.quotaSignals, now),
-      }));
+      return Effect.map(quotaScoped(context, error), (scoped) => ({ ...step, error: scoped }));
     };
 
     const translate = (step: StreamStep): Stream.Stream<string, ExecutionError> => {
@@ -640,7 +646,7 @@ export const makeDevinExecutor = (executorOptions: DevinExecutorOptions = {}): P
         () => state,
         (frames, bytes: Uint8Array) =>
           Effect.flatMap(frames.feed(bytes), (step) =>
-            quotaScoped(step).pipe(Effect.map((scoped) => [frames, [scoped]] as const)),
+            scopeStepError(step).pipe(Effect.map((scoped) => [frames, [scoped]] as const)),
           ),
         { onHalt: (frames) => [frames.end()] },
       ),
