@@ -2,7 +2,9 @@
  * Antigravity provider -> Claude Messages client (response).
  *
  * Go source: internal/translator/antigravity/claude/antigravity_claude_response.go. Thinking signatures are cached for
- * later turns (`signature/cache.ts`); Gemini signatures travel as carrier envelopes (`carrier.ts`).
+ * later turns (`signature/cache.ts`); Gemini signatures travel as carrier envelopes (`carrier.ts`). Tool arguments are
+ * cleaned against the client's schemas (202b8b8c, e1fb2521, `../../common/claude-tool-args.ts`); safety and filter
+ * finishReasons end as a refusal (24b04548).
  */
 import {
   asBool,
@@ -10,6 +12,7 @@ import {
   asString,
   get,
   isJsonArray,
+  isJsonObject,
   type Json,
   type JsonObject,
   set,
@@ -19,6 +22,10 @@ import { bytesToBinaryString, decodeBase64Std } from "../../../signature/base64.
 import { cacheSignature, getModelGroup } from "../../../signature/cache.ts";
 import { signatureProviderFromModelName } from "../../../signature/provider.ts";
 import { sseEventLines, claudeInputTokensJson } from "../../common/bytes.ts";
+import {
+  claudeToolIsParameterless,
+  cleanClaudeToolArgumentsWithTranslated,
+} from "../../common/claude-tool-args.ts";
 import { geminiClaudeToolUseID } from "../../common/claude-util.ts";
 import { sanitizeClaudeToolId } from "../../common/tool-names.ts";
 import type { ResponseContext, ResponseTransform } from "../../registry.ts";
@@ -90,6 +97,14 @@ interface Params {
   currentThinkingText: string;
   currentThinkingSigned: boolean;
   toolNameMap: NameMap;
+  /** Client-facing name of the open tool_use block. */
+  currentToolName: string;
+  /** Whether the open tool_use block was declared parameterless. */
+  currentToolIsParameterless: boolean;
+  /** Whether cleaned input JSON was already emitted for the open tool_use block. */
+  currentToolInputEmitted: boolean;
+  /** Whether an empty `{}` input_json_delta is deferred until the tool_use block completes. */
+  currentToolPendingEmpty: boolean;
 }
 
 let toolUseIdCounter = 0;
@@ -111,10 +126,25 @@ const claudeToolUseId = (modelName: string, functionCall: Json, fallback: string
   return sanitizeClaudeToolId(fallback);
 };
 
-const resolveStopReason = (params: Params): string => {
-  if (params.hasToolUse) return "tool_use";
+/** `resolveAntigravityClaudeStopReason`: safety, filter and malformed finishReasons end as a refusal. */
+const resolveStopReason = (finishReason: string, hasToolUse: boolean): string => {
+  if (hasToolUse) return "tool_use";
 
-  return params.finishReason === "MAX_TOKENS" ? "max_tokens" : "end_turn";
+  switch (finishReason.trim().toUpperCase()) {
+    case "MAX_TOKENS":
+      return "max_tokens";
+    case "SAFETY":
+    case "RECITATION":
+    case "PROHIBITED_CONTENT":
+    case "SPII":
+    case "BLOCKLIST":
+    case "IMAGE_SAFETY":
+    case "MALFORMED_RESPONSE":
+    case "MALFORMED_FUNCTION_CALL":
+      return "refusal";
+    default:
+      return "end_turn";
+  }
 };
 
 const stop = (index: number): string => `{"type":"content_block_stop","index":${index}}`;
@@ -131,6 +161,20 @@ const appendFinalEvents = (params: Params, force: boolean): string => {
   if (!params.hasContent) return "";
   let output = "";
 
+  if (
+    params.responseType === 3 &&
+    params.currentToolPendingEmpty &&
+    !params.currentToolInputEmitted
+  ) {
+    output += sseEventLines(
+      "content_block_delta",
+      deltaEvent(params.responseIndex, { type: "input_json_delta", partial_json: "{}" }),
+      3,
+    );
+    params.currentToolInputEmitted = true;
+    params.currentToolPendingEmpty = false;
+  }
+
   if (params.responseType !== 0) {
     output += sseEventLines("content_block_stop", stop(params.responseIndex), 3);
     params.responseType = 0;
@@ -139,7 +183,11 @@ const appendFinalEvents = (params: Params, force: boolean): string => {
   let usageOutputTokens = params.candidatesTokenCount + params.thoughtsTokenCount;
 
   if (usageOutputTokens === 0 && params.totalTokenCount > 0) {
-    usageOutputTokens = Math.max(params.totalTokenCount - params.promptTokenCount, 0);
+    // promptTokenCount excludes the cache for input_tokens while totalTokenCount includes it: add it back (912a038b).
+    usageOutputTokens = Math.max(
+      params.totalTokenCount - (params.promptTokenCount + params.cachedTokenCount),
+      0,
+    );
   }
 
   const usage: JsonObject = {
@@ -149,7 +197,10 @@ const appendFinalEvents = (params: Params, force: boolean): string => {
 
   const delta: JsonObject = {
     type: "message_delta",
-    delta: { stop_reason: resolveStopReason(params), stop_sequence: null },
+    delta: {
+      stop_reason: resolveStopReason(params.finishReason, params.hasToolUse),
+      stop_sequence: null,
+    },
     usage,
   };
 
@@ -188,6 +239,10 @@ const paramsOf = (context: ResponseContext): Params => {
       currentThinkingText: "",
       currentThinkingSigned: false,
       toolNameMap: disambiguatedToolNameMap(context.originalRequest),
+      currentToolName: "",
+      currentToolIsParameterless: false,
+      currentToolInputEmitted: false,
+      currentToolPendingEmpty: false,
     };
 
     context.state.value = fresh;
@@ -263,8 +318,25 @@ export const convertAntigravityResponseToClaude = (
     params.hasContent = true;
   };
 
+  /** Emits the deferred empty `{}` input once the tool_use block completes without other input (e1fb2521). */
+  const flushPendingToolInput = (): void => {
+    if (
+      params.responseType === 3 &&
+      params.currentToolPendingEmpty &&
+      !params.currentToolInputEmitted
+    ) {
+      appendEvent(
+        "content_block_delta",
+        deltaEvent(params.responseIndex, { type: "input_json_delta", partial_json: "{}" }),
+      );
+      params.currentToolInputEmitted = true;
+      params.currentToolPendingEmpty = false;
+    }
+  };
+
   const closeCurrentBlock = (): void => {
     if (params.responseType === 0) return;
+    flushPendingToolInput();
     appendEvent("content_block_stop", stop(params.responseIndex));
     params.responseIndex++;
     params.responseType = 0;
@@ -433,6 +505,7 @@ export const convertAntigravityResponseToClaude = (
               params.hasContent = true;
             } else {
               if (params.responseType !== 0) {
+                flushPendingToolInput();
                 appendEvent("content_block_stop", stop(params.responseIndex));
                 params.responseIndex++;
               }
@@ -477,6 +550,7 @@ export const convertAntigravityResponseToClaude = (
             params.hasContent = true;
           } else if (partText !== "") {
             if (params.responseType !== 0) {
+              flushPendingToolInput();
               appendEvent("content_block_stop", stop(params.responseIndex));
               params.responseIndex++;
             }
@@ -512,18 +586,74 @@ export const convertAntigravityResponseToClaude = (
           asString(get(functionCall, "name")),
         );
 
+        const cleaned = (toolName: string): string =>
+          cleanClaudeToolArgumentsWithTranslated(
+            JSON.stringify(get(functionCall, "args")),
+            toolName,
+            context.originalRequest,
+            context.translatedRequest,
+          );
+
+        const args = get(functionCall, "args");
+
+        // A continuation part (no name) extends the open tool_use block instead of starting a new one.
+        if (params.responseType === 3 && fcName === "" && params.currentToolName !== "") {
+          if (args !== undefined) {
+            let partialJson = cleaned(params.currentToolName);
+
+            if (params.currentToolIsParameterless) {
+              if (params.currentToolInputEmitted) {
+                partialJson = "";
+              } else {
+                params.currentToolInputEmitted = true;
+                params.currentToolPendingEmpty = false;
+              }
+            } else if (partialJson === "{}") {
+              if (!params.currentToolInputEmitted) params.currentToolPendingEmpty = true;
+              partialJson = "";
+            } else if (partialJson !== "") {
+              params.currentToolInputEmitted = true;
+              params.currentToolPendingEmpty = false;
+            }
+
+            if (partialJson !== "" || !params.currentToolPendingEmpty) {
+              appendEvent(
+                "content_block_delta",
+                deltaEvent(params.responseIndex, {
+                  type: "input_json_delta",
+                  partial_json: partialJson,
+                }),
+              );
+            }
+          }
+
+          params.hasContent = true;
+          params.hasSemanticContent = true;
+          params.lastSemanticKind = CarrierKind.Function;
+          continue;
+        }
+
         // Close an existing function call block first, then any other block.
         if (params.responseType === 3) {
+          flushPendingToolInput();
           appendEvent("content_block_stop", stop(params.responseIndex));
           params.responseIndex++;
           params.responseType = 0;
         }
 
         if (params.responseType !== 0) {
+          flushPendingToolInput();
           appendEvent("content_block_stop", stop(params.responseIndex));
           params.responseIndex++;
         }
 
+        params.currentToolName = fcName;
+        params.currentToolIsParameterless = claudeToolIsParameterless(
+          fcName,
+          context.originalRequest,
+        );
+        params.currentToolInputEmitted = false;
+        params.currentToolPendingEmpty = false;
         toolUseIdCounter++;
         const fallbackId = `${fcName}-${Date.now()}000000-${toolUseIdCounter}`;
 
@@ -546,16 +676,29 @@ export const convertAntigravityResponseToClaude = (
             content_block: contentBlock,
           }),
         );
-        const args = get(functionCall, "args");
 
         if (args !== undefined) {
-          appendEvent(
-            "content_block_delta",
-            deltaEvent(params.responseIndex, {
-              type: "input_json_delta",
-              partial_json: JSON.stringify(args),
-            }),
-          );
+          let partialJson = cleaned(fcName);
+
+          if (params.currentToolIsParameterless) {
+            if (params.currentToolInputEmitted) partialJson = "";
+            else params.currentToolInputEmitted = true;
+          } else if (partialJson === "{}") {
+            params.currentToolPendingEmpty = true;
+            partialJson = "";
+          } else if (partialJson !== "") {
+            params.currentToolInputEmitted = true;
+          }
+
+          if (partialJson !== "" || !params.currentToolPendingEmpty) {
+            appendEvent(
+              "content_block_delta",
+              deltaEvent(params.responseIndex, {
+                type: "input_json_delta",
+                partial_json: partialJson,
+              }),
+            );
+          }
         }
 
         params.responseType = 3;
@@ -569,23 +712,31 @@ export const convertAntigravityResponseToClaude = (
   const finishReason = get(raw, "response.candidates.0.finishReason");
 
   if (finishReason !== undefined) {
+    // A trailing chunk with an empty finishReason keeps the one already recorded (24b04548).
     params.hasFinishReason = true;
-    params.finishReason = asString(finishReason);
+    const trimmed = asString(finishReason).trim();
+
+    if (trimmed !== "") {
+      params.finishReason = trimmed;
+      flushPendingToolInput();
+    }
   }
 
   const usage = get(raw, "response.usageMetadata");
 
   if (usage !== undefined) {
     params.hasUsageMetadata = true;
+    const rawPromptTokenCount = asInt(get(usage, "promptTokenCount"));
     params.cachedTokenCount = asInt(get(usage, "cachedContentTokenCount"));
-    params.promptTokenCount = asInt(get(usage, "promptTokenCount")) - params.cachedTokenCount;
+    params.promptTokenCount = Math.max(rawPromptTokenCount - params.cachedTokenCount, 0);
     params.candidatesTokenCount = asInt(get(usage, "candidatesTokenCount"));
     params.thoughtsTokenCount = asInt(get(usage, "thoughtsTokenCount"));
     params.totalTokenCount = asInt(get(usage, "totalTokenCount"));
 
     if (params.candidatesTokenCount === 0 && params.totalTokenCount > 0) {
+      // totalTokenCount includes the cached part of promptTokenCount: use the raw prompt count (912a038b).
       params.candidatesTokenCount = Math.max(
-        params.totalTokenCount - params.promptTokenCount - params.thoughtsTokenCount,
+        params.totalTokenCount - rawPromptTokenCount - params.thoughtsTokenCount,
         0,
       );
     }
@@ -662,7 +813,10 @@ export const convertAntigravityResponseToClaudeNonStream = (
         antigravityTextContent(root),
         grounding,
       );
-      responseJson["stop_reason"] = "end_turn";
+      responseJson["stop_reason"] = resolveStopReason(
+        asString(get(root, "response.candidates.0.finishReason")),
+        false,
+      );
       usage["server_tool_use"] = { web_search_requests: 1 };
 
       return JSON.stringify(responseJson);
@@ -763,8 +917,24 @@ export const convertAntigravityResponseToClaudeNonStream = (
           toolBlock["signature"] = formatClaudeSignatureValue(modelName, signature);
         const args = get(functionCall, "args");
 
-        if (args !== undefined && typeof args === "object" && args !== null && !Array.isArray(args))
-          toolBlock["input"] = args;
+        if (
+          args !== undefined &&
+          typeof args === "object" &&
+          args !== null &&
+          !Array.isArray(args)
+        ) {
+          const cleaned = tryParseJson(
+            cleanClaudeToolArgumentsWithTranslated(
+              JSON.stringify(args),
+              name,
+              context.originalRequest,
+              context.translatedRequest,
+            ),
+          );
+
+          toolBlock["input"] = isJsonObject(cleaned) ? cleaned : args;
+        }
+
         blocks.push(toolBlock);
         hasSemanticContent = true;
         lastSemanticKind = CarrierKind.Function;
@@ -844,12 +1014,10 @@ export const convertAntigravityResponseToClaudeNonStream = (
 
   if (blocks.length > 0) responseJson["content"] = blocks;
 
-  let stopReason = "end_turn";
-
-  if (hasToolCall) stopReason = "tool_use";
-  else if (asString(get(root, "response.candidates.0.finishReason")) === "MAX_TOKENS")
-    stopReason = "max_tokens";
-  responseJson["stop_reason"] = stopReason;
+  responseJson["stop_reason"] = resolveStopReason(
+    asString(get(root, "response.candidates.0.finishReason")),
+    hasToolCall,
+  );
 
   if (
     promptTokens === 0 &&
