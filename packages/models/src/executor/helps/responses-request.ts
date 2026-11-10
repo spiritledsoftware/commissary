@@ -52,8 +52,8 @@ export interface ResponsesShaping {
   readonly provider: string;
   /** Protocol the payload rules match against (Meta passes its executor identifier, as Go does). */
   readonly payloadProtocol: string;
-  /** Provider tool sanitising, run after the reasoning sanitising (Meta: `SanitizeMetaWebSearchTools`). */
-  readonly sanitizeTools?: (body: Json) => Json;
+  /** Provider tool preparation, run after the reasoning sanitising (Meta: web_search sanitising, muse namespace). */
+  readonly prepareTools?: (body: Json) => Json;
 }
 
 export const prepareResponsesRequest = Effect.fnUntraced(function* (
@@ -140,7 +140,7 @@ export const prepareResponsesRequest = Effect.fnUntraced(function* (
   body = normalizeCodexInstructions(body, false);
   body = sanitizeReasoningEncryptedContent(body, true);
 
-  if (shaping.sanitizeTools !== undefined) body = shaping.sanitizeTools(body);
+  if (shaping.prepareTools !== undefined) body = shaping.prepareTools(body);
   const translatedForResponse = cloneJson(body);
   body = finalizePayload(
     context.config,

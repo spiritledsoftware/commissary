@@ -531,6 +531,8 @@ export const makeOpenAICompatExecutor = (
       return yield* executeImagesStream(context, request, options);
     const prepared = yield* prepare(context, request, options, true);
     const response = yield* send(context, prepared, "token-event");
+    // The reader is synchronous, so frames are timed with the fiber's Clock service (TestClock in tests).
+    const clock = yield* Clock.Clock;
 
     const reader = new OpenAICompatStreamReader({
       registry,
@@ -539,7 +541,10 @@ export const makeOpenAICompatExecutor = (
       context: responseContext(request, options, prepared.body),
       onFrame: (payload) => {
         if (!context.usage.ttftObserved)
-          context.usage.observeTokenEvent(Date.now(), isChatTokenEvent(payload));
+          context.usage.observeTokenEvent(
+            clock.currentTimeMillisUnsafe(),
+            isChatTokenEvent(payload),
+          );
       },
     });
 

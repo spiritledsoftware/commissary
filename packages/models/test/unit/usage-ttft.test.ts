@@ -74,6 +74,27 @@ describe("token events", () => {
     expect(isGeminiTokenEvent('data: {"error":{"message":"x"}}')).toBe(true);
   });
 
+  it("Responses: a finished reasoning item counts only with summary or content text", () => {
+    const done = (item: string) => `data: {"type":"response.output_item.done","item":${item}}`;
+
+    expect(
+      isResponsesTokenEvent(
+        done('{"type":"reasoning","summary":[{"type":"summary_text","text":"x"}]}'),
+      ),
+    ).toBe(true);
+    expect(
+      isResponsesTokenEvent(
+        done('{"type":"reasoning","content":[{"type":"reasoning_text","text":"x"}]}'),
+      ),
+    ).toBe(true);
+    expect(
+      isResponsesTokenEvent(
+        done('{"type":"reasoning","summary":[{"type":"summary_text","text":""}]}'),
+      ),
+    ).toBe(false);
+    expect(isResponsesTokenEvent(done('{"type":"reasoning","encrypted_content":"x"}'))).toBe(false);
+  });
+
   it("Responses", () => {
     expect(isResponsesTokenEvent('data: {"type":"response.created","response":{}}')).toBe(false);
     expect(isResponsesTokenEvent('data: {"type":"response.output_text.delta","delta":""}')).toBe(

@@ -229,6 +229,10 @@ export const isResponsesTokenEvent = (text: string): boolean => {
           return hasText(get(root, "item.arguments"));
         case "custom_tool_call":
           return hasText(get(root, "item.input"));
+        case "reasoning":
+          return ["item.summary", "item.content"].some((field) =>
+            array(get(root, field)).some((part) => hasText(get(part, "text"))),
+          );
         case "message":
           return array(get(root, "item.content")).some(
             (content) => hasText(get(content, "text")) || hasText(get(content, "refusal")),

@@ -389,13 +389,14 @@ describe("Gemini and Interactions clients through the executor", () => {
     const ttftAfter = async (frames: string[]) => {
       let usage: UsageReporter | undefined;
 
+      // No `[DONE]` frame, so the only token event is the one under test.
       await run(
         "gemini",
         { contents: [{ role: "user", parts: [{ text: "hi" }] }] },
         true,
         () => new Response(frames.join(""), { headers: { "content-type": "text/event-stream" } }),
         (value) => (usage = value),
-      ).catch(() => undefined);
+      );
 
       return usage?.ttftObserved;
     };

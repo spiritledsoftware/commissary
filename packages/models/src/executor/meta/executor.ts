@@ -3,13 +3,15 @@
  *
  * Go source: internal/runtime/executor/meta_executor.go, meta_executor_execute.go (Execute, `translateMetaCompleted`,
  * `applyMetaAPIHeaders`, `wrapMetaUpstreamError`, `metaAsCompletedEvent`), meta_executor_stream.go (ExecuteStream).
- * The upstream always streams (non-stream callers get the aggregated terminal event). The lazy DCA -> provider-key mint is
- * done by the conductor through `ControlPlane.ensureFresh` before the attempt (`withCredentialRefresh`).
+ * The upstream always streams (non-stream callers get the aggregated terminal event). The lazy DCA -> provider-key mint
+ * is done by the conductor through `ControlPlane.ensureFresh` before the attempt (`withCredentialRefresh`).
  *
  * `CountTokens` counts the prepared body locally with `o200k_base`. The apply_patch Responses bridge wraps the event
- * flow (`helps/apply-patch-responses.ts`). `response.subscription_usage` telemetry is dropped from streams and aggregated
- * answers (`subscription-usage.ts`); the Muse namespace is appended to tool-bearing requests (`muse-tools.ts`). The request shaping and the SSE response handling are shared with the
- * OpenCode executor (`helps/responses-request.ts`, `helps/responses-sse.ts`). Not ported: outbound proxies.
+ * flow (`helps/apply-patch-responses.ts`). `response.subscription_usage` telemetry is dropped from streams and
+ * aggregated answers (`subscription-usage.ts`); the Muse namespace is appended to tool-bearing requests
+ * (`muse-tools.ts`); the 1.4.14 client identity headers are in `identity.ts`. The request shaping and the SSE response
+ * handling are shared with the OpenCode executor (`helps/responses-request.ts`, `helps/responses-sse.ts`). Not ported:
+ * outbound proxies.
  */
 import { Clock, Effect } from "effect";
 import {
@@ -36,8 +38,8 @@ import type {
   ExecutorResponse,
   ProviderExecutor,
 } from "../types.ts";
-import { parseSuffix } from "@commissary/translation/thinking";
-import { META_CLIENT_ID, META_USER_AGENT, requireMetaToken } from "./credentials.ts";
+import { requireMetaToken } from "./credentials.ts";
+import { metaIdentityHeaders } from "./identity.ts";
 import { makeSubscriptionUsageFilter } from "./subscription-usage.ts";
 import { metaStreamEventError, wrapMetaUpstreamError } from "./errors.ts";
 import { buildResponsesUsageJson, countCodexInputTokens } from "../helps/token-count.ts";
@@ -61,57 +63,34 @@ const transportError = (error: HttpClientError.HttpClientError) =>
     cause: error,
   });
 
-/** Fresh UUID v7 (RFC 9562): 48-bit millisecond timestamp, then random bits. */
-export const uuidV7 = (nowMs: number): string => {
-  const bytes = crypto.getRandomValues(new Uint8Array(16));
-  const time = BigInt(nowMs);
+export interface MetaHeadersInput {
+  readonly credential: CredentialSnapshot;
+  readonly token: string;
+  readonly stream: boolean;
+  readonly clientHeaders: Headers;
+  readonly sessionId: string | undefined;
+  /** The effective model after the payload rules (decides the contributor header). */
+  readonly model: string;
+  readonly nowMs: number;
+}
 
-  for (let i = 0; i < 6; i++) bytes[i] = Number((time >> BigInt(8 * (5 - i))) & 0xffn);
-  // SAFETY: indexes 6 and 8 are inside the 16-byte array.
-  bytes[6] = (bytes[6]! & 0x0f) | 0x70;
-  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
-  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+/** `applyMetaAPIHeaders`: content type, bearer token, the Muse client identity, then custom/client headers. */
+export const metaHeaders = (input: MetaHeadersInput): Record<string, string> => {
+  const { credential, token, stream, clientHeaders, sessionId, model, nowMs } = input;
 
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-};
+  const headers = {
+    "content-type": "application/json",
+    authorization: `Bearer ${token}`,
+    ...metaIdentityHeaders(model, nowMs),
+    accept: stream ? "text/event-stream" : "application/json",
+  };
 
-/** `isMetaContributorModel`: the model (thinking suffix removed) ends in `-contributor`. */
-export const isMetaContributorModel = (model: string): boolean =>
-  parseSuffix(model.trim()).modelName.trim().toLowerCase().endsWith("-contributor");
-
-/**
- * `applyMetaAPIHeaders` and `applyMetaClientIdentity`: the Muse Code 1.4.14 headers. The session ids are a fresh UUID v7
- * per request so proxy traffic does not reuse one Muse session across unrelated clients. `X-Tbh-Contributor-Mode` is a
- * training opt-in, sent only for `-contributor` models (`model` is the effective model after the payload rules).
- */
-export const metaHeaders = (
-  credential: CredentialSnapshot,
-  token: string,
-  stream: boolean,
-  clientHeaders: Headers,
-  sessionId: string | undefined,
-  model: string,
-  nowMs: number,
-): Record<string, string> => {
-  const headers: Record<string, string> = {};
-  headers["content-type"] = "application/json";
-  headers["authorization"] = `Bearer ${token}`;
-  headers["user-agent"] = META_USER_AGENT;
-  headers["x-client-id"] = META_CLIENT_ID;
-
-  const tbhSession = uuidV7(nowMs);
-  headers["x-tbh-session-id"] = tbhSession;
-  headers["x-meta-ai-gateway-session-id"] = tbhSession;
-  headers["x-tbh-thread-id"] = tbhSession;
-  headers["x-tbh-root-session-id"] = tbhSession;
-  headers["x-tbh-agent-role"] = "main";
-
-  if (isMetaContributorModel(model)) headers["x-tbh-contributor-mode"] = "1";
-  headers["accept"] = stream ? "text/event-stream" : "application/json";
-
-  if (stream) headers["cache-control"] = "no-cache";
-
-  return applyCustomHeaders(headers, credential, clientHeaders, sessionId);
+  return applyCustomHeaders(
+    stream ? { ...headers, "cache-control": "no-cache" } : headers,
+    credential,
+    clientHeaders,
+    sessionId,
+  );
 };
 
 export const makeMetaExecutor = (executorOptions: MetaExecutorOptions = {}): ProviderExecutor => {
@@ -155,15 +134,15 @@ export const makeMetaExecutor = (executorOptions: MetaExecutorOptions = {}): Pro
     const httpRequest = HttpClientRequest.post(url).pipe(
       HttpClientRequest.bodyText(JSON.stringify(prepared.body), "application/json"),
       HttpClientRequest.setHeaders(
-        metaHeaders(
-          context.credential,
-          creds.token,
-          true,
-          options.headers,
-          options.metadata.sessionId,
-          prepared.effectiveModel,
-          yield* Clock.currentTimeMillis,
-        ),
+        metaHeaders({
+          credential: context.credential,
+          token: creds.token,
+          stream: true,
+          clientHeaders: options.headers,
+          sessionId: options.metadata.sessionId,
+          model: prepared.effectiveModel,
+          nowMs: yield* Clock.currentTimeMillis,
+        }),
       ),
     );
 

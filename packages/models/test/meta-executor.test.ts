@@ -1,7 +1,7 @@
 // Meta (Muse) executor against a mocked `/responses` upstream: request shaping, SSE aggregation, error rules and
 // credential resolution.
 import { claudeSignature } from "./support/signatures.ts";
-import { Effect } from "effect";
+import { Clock, Effect, Stream } from "effect";
 import { describe, expect, it } from "vitest";
 import { metaCreds, requireMetaToken } from "../src/executor/meta/credentials.ts";
 import {
@@ -551,6 +551,31 @@ describe("subscription usage telemetry", () => {
     expect(joined).toContain("hello");
   });
 
+  it("drops the event line held for an error frame, as Go emits it only after the error check", async () => {
+    const h = await harness(
+      metaKey(),
+      () =>
+        new Response(
+          `event: response.created\n${`data: ${JSON.stringify({ type: "response.created", response: { id: "r" } })}`}\n\n` +
+            `event: error\ndata: ${JSON.stringify({ type: "error", error: { code: 502, message: "boom" } })}\n\n`,
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        ),
+      undefined,
+      true,
+    );
+
+    const collected = await collectStream(
+      executor,
+      h,
+      { model: "muse-spark", payload: json(responsesRequest()) },
+      responsesOptions(true),
+    );
+
+    expect(collected.error?.status).toBe(502);
+    expect(collected.chunks.join("")).toContain("response.created");
+    expect(collected.chunks.join("")).not.toContain("event: error");
+  });
+
   it("drops them from the aggregated non-stream answer", async () => {
     const h = await harness(metaKey(), upstream);
 
@@ -566,32 +591,199 @@ describe("subscription usage telemetry", () => {
   });
 });
 
-describe("TTFT", () => {
-  const run = async (events: ReadonlyArray<unknown>) => {
-    const h = await harness(metaKey(), () => sse(events), undefined, true);
+/** A mocked upstream whose frames arrive at virtual times; the executor reads the same virtual clock. */
+interface Frame {
+  readonly at: number;
+  readonly text?: string;
+  readonly fail?: boolean;
+}
 
-    await collectStream(
-      executor,
-      h,
-      { model: "muse-spark", payload: json(responsesRequest()) },
-      responsesOptions(true),
+describe("TTFT (Go meta_executor_ttft_test.go, virtual clock)", () => {
+  const created = { type: "response.created", response: { id: "r", model: "muse-spark-1.3" } };
+  const frame = (event: Json) => `data: ${JSON.stringify(event)}\n\n`;
+  const telemetry = { ...ping, model: "subscription-telemetry" };
+
+  const metadata =
+    `event: response.subscription_usage\n${frame(telemetry)}` +
+    frame(created) +
+    frame({
+      type: "response.output_item.added",
+      item: { type: "reasoning", encrypted_content: "opaque", summary: [] },
+    }) +
+    frame({ type: "response.output_text.delta", delta: "" });
+
+  const text = frame({ type: "response.output_text.delta", output_index: 0, delta: "hello" });
+
+  const terminal = completed([message("hello")], { model: "muse-spark-1.3" });
+  const done = `data: ${JSON.stringify(terminal)}\n\n`;
+
+  const emptyTerminal = (type: string) =>
+    frame({
+      type,
+      response: { id: "r", status: "completed", output: [], usage: { input_tokens: 0 } },
+    });
+
+  const run = async (
+    frames: ReadonlyArray<Frame>,
+    options: { nonstream?: boolean; status?: number } = {},
+  ) => {
+    let now = 0;
+    const base = Clock.Clock.defaultValue();
+
+    const clock: Clock.Clock = Object.assign(Object.create(base) as Clock.Clock, {
+      currentTimeMillis: Effect.sync(() => now),
+      currentTimeMillisUnsafe: () => now,
+    });
+
+    const h = await harness(
+      metaKey(),
+      () => {
+        // Headers arrive at 10ms; every frame is delivered at its own time, one pull at a time.
+        now = 10;
+        const queue = [...frames];
+
+        const body = new ReadableStream<Uint8Array>(
+          {
+            pull(controller) {
+              const next = queue.shift();
+
+              if (next === undefined) return controller.close();
+              now = next.at;
+
+              if (next.fail === true) return controller.error(new Error("boom"));
+              controller.enqueue(new TextEncoder().encode(next.text ?? ""));
+            },
+          },
+          { highWaterMark: 0 },
+        );
+
+        return new Response(body, {
+          status: options.status ?? 200,
+          headers: { "content-type": "text/event-stream" },
+        });
+      },
+      undefined,
+      options.nonstream !== true,
     );
 
-    return h.usage.ttftObserved;
+    const program = Effect.gen(function* () {
+      const request = { model: "muse-spark", payload: json(responsesRequest()) };
+
+      if (options.nonstream === true) {
+        yield* executor.execute(h.context, request, responsesOptions(false));
+      } else {
+        const result = yield* executor.executeStream(h.context, request, responsesOptions(true));
+        yield* Stream.runDrain(result.chunks);
+      }
+    }).pipe(Effect.exit, Effect.provideService(Clock.Clock, clock), Effect.provide(h.layers));
+
+    await Effect.runPromise(program);
+
+    return h.usage.finish(now);
   };
 
-  const created = { type: "response.created", response: { id: "r" } };
+  const content = (event: string): ReadonlyArray<Frame> => [
+    { at: 100, text: metadata },
+    { at: 1000, text: event },
+    { at: 1100, text: done },
+  ];
 
-  it("does not take early metadata or empty deltas as the effective first token", async () => {
-    expect(await run([created, { type: "response.output_text.delta", delta: "" }, ping])).toBe(
-      false,
-    );
+  it.each([
+    ["text", text],
+    [
+      "reasoning summary",
+      frame({ type: "response.reasoning_summary_text.delta", summary_index: 0, delta: "thinking" }),
+    ],
+    [
+      "function arguments",
+      frame({ type: "response.function_call_arguments.delta", delta: '{"query":"hi"}' }),
+    ],
+    [
+      "done-only reasoning summary",
+      frame({
+        type: "response.output_item.done",
+        output_index: 0,
+        item: { type: "reasoning", summary: [{ type: "summary_text", text: "done-only" }] },
+      }),
+    ],
+  ])("takes the first effective token frame (%s)", async (_name, event) => {
+    expect((await run(content(event)))?.ttftMs).toBe(1000);
   });
 
-  it("takes the first non-empty content delta", async () => {
-    expect(await run([created, { type: "response.output_text.delta", delta: "hi" }, ping])).toBe(
-      true,
-    );
+  it.each([
+    ["empty reasoning done", { type: "reasoning", summary: [{ type: "summary_text", text: "" }] }],
+    ["encrypted-only reasoning done", { type: "reasoning", summary: [], encrypted_content: "x" }],
+  ])("does not take %s as a token; the terminal event does", async (_name, item) => {
+    const event = frame({ type: "response.output_item.done", output_index: 0, item });
+    expect((await run(content(event)))?.ttftMs).toBe(1100);
+  });
+
+  it("takes a terminal event that arrives without any delta", async () => {
+    const record = await run([
+      { at: 100, text: metadata },
+      { at: 1000, text: done },
+    ]);
+
+    expect(record?.ttftMs).toBe(1000);
+  });
+
+  it.each(["response.completed", "response.incomplete"])(
+    "takes an empty %s as the first effective frame",
+    async (type) => {
+      const record = await run([
+        { at: 100, text: metadata },
+        { at: 1000, text: emptyTerminal(type) },
+      ]);
+
+      expect(record?.ttftMs).toBe(1000);
+    },
+  );
+
+  it.each([
+    [
+      "response.failed",
+      frame({ type: "response.failed", response: { error: { message: "upstream failed" } } }),
+    ],
+    ["error", frame({ type: "error", error: { code: 502, message: "upstream failed" } })],
+  ])("takes a %s event as the first frame and fails the attempt", async (_name, event) => {
+    const record = await run([
+      { at: 100, text: metadata },
+      { at: 1000, text: event },
+    ]);
+
+    expect(record?.ttftMs).toBe(1000);
+    expect(record?.failed).toBe(true);
+  });
+
+  it("keeps the first-packet fallback when the body fails before any token", async () => {
+    const record = await run([
+      { at: 100, text: metadata },
+      { at: 1000, fail: true },
+    ]);
+
+    // Go times the first body byte (100ms); the port records the response headers (10ms), as the Codex executor does.
+    expect(record?.ttftMs).toBe(10);
+    expect(record?.failed).toBe(true);
+  });
+
+  it("keeps the fallback for an HTTP error", async () => {
+    const record = await run([{ at: 100, text: '{"error":{"message":"rate limited"}}' }], {
+      status: 429,
+    });
+
+    expect(record?.ttftMs).toBe(10);
+    expect(record?.failed).toBe(true);
+  });
+
+  it("keeps first-byte timing for non-stream calls", async () => {
+    const record = await run(content(text), { nonstream: true });
+    expect(record?.ttftMs).toBe(10);
+  });
+
+  it("does not take the response model from subscription telemetry", async () => {
+    const record = await run(content(text));
+    // Only the Responses events set it (created and completed), never the telemetry's `model`.
+    expect(record?.responseModel).toBe("muse-spark-1.3");
   });
 });
 

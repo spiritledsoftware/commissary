@@ -11,6 +11,14 @@ import type { SseLineFilter } from "../helps/responses-sse.ts";
 
 const SUBSCRIPTION_USAGE = "response.subscription_usage";
 
+/**
+ * State (all per answer):
+ * - `pending`: the last non-telemetry `event:` line, held until its data line passes (`takeHeld`) or another line shows
+ *   it stands alone (released ahead of that line).
+ * - `filtering`: an `event: response.subscription_usage` line was seen, so its data line is dropped (a typed data line
+ *   of another event ends it, an untyped one is telemetry unless it is invalid JSON).
+ * - `skipBlank`: the blank line that ends a dropped frame is dropped with it.
+ */
 export const makeSubscriptionUsageFilter = (): SseLineFilter => {
   let pending: string | undefined;
   let filtering = false;
@@ -87,8 +95,8 @@ export const makeSubscriptionUsageFilter = (): SseLineFilter => {
 
     skipBlank = false;
 
-    return [...takePending(), line];
+    return [line];
   };
 
-  return { push, flush: takePending };
+  return { push, takeHeld: takePending, flush: takePending };
 };
