@@ -64,6 +64,7 @@ describe("claudeErrorBody", () => {
     [402, "billing_error"],
     [403, "permission_error"],
     [404, "not_found_error"],
+    [409, "conflict_error"],
     [413, "request_too_large"],
     [429, "rate_limit_error"],
     [408, "timeout_error"],
@@ -194,6 +195,43 @@ describe("Responses stream error chunks", () => {
     expect(
       responsesStreamErrorChunk(500, '{"error":{"message":"x","code":"c"},"sequence_number":9}', 1),
     ).toBe('{"type":"error","error":{"message":"x","code":"c"},"sequence_number":9}');
+  });
+
+  it("maps an Anthropic prompt overflow to context_length_exceeded (Go 43f27e3a)", () => {
+    const overflow =
+      '{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 210000 tokens > 200000 maximum"}}';
+
+    const error = JSON.parse(responsesStreamErrorChunk(400, overflow, 0)).error;
+
+    const failed = JSON.parse(responsesStreamFailedChunk(400, overflow, 0)).response.error;
+
+    for (const detail of [error, failed]) {
+      expect(detail).toEqual({
+        type: "invalid_request_error",
+        code: "context_length_exceeded",
+        message: "prompt is too long: 210000 tokens > 200000 maximum",
+      });
+    }
+
+    const withCode = JSON.parse(
+      responsesStreamFailedChunk(
+        400,
+        '{"type":"error","error":{"type":"invalid_request_error","code":"custom_code","message":"prompt is too long: 1"}}',
+        0,
+      ),
+    ).response.error;
+
+    expect(withCode.code).toBe("custom_code");
+
+    const nested = JSON.parse(
+      responsesStreamFailedChunk(
+        400,
+        '{"response":{"error":{"type":"invalid_request_error","message":"prompt is too long: 1"}}}',
+        0,
+      ),
+    ).response.error;
+
+    expect(nested.code).toBe("context_length_exceeded");
   });
 
   it("builds response.failed events", () => {

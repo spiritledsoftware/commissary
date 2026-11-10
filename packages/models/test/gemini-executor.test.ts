@@ -397,4 +397,42 @@ describe("OpenAI Responses client -> Gemini credential", () => {
     expect(text).toContain("event: response.completed");
     expect(h.records[0]?.detail.totalTokens).toBe(3);
   });
+
+  describe("Claude clients (Go 4f2e5270)", () => {
+    const chunk = (text: string, finishReason?: string) =>
+      `data: ${JSON.stringify({
+        candidates: [
+          { content: { parts: [{ text }] }, ...(finishReason ? { finishReason } : {}), index: 0 },
+        ],
+        responseId: "r",
+      })}\n\n`;
+
+    const ask = async (frames: string[]) => {
+      const h = harness(() => sseResponse(frames));
+      afterAll(h.dispose);
+
+      const response = await h.call(
+        "/v1/messages",
+        postJson({
+          model: "gemini-2.5-pro",
+          max_tokens: 16,
+          stream: true,
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      );
+
+      return { text: await response.text(), records: h.records };
+    };
+
+    it("fails a stream that closes before any finishReason with 502", async () => {
+      const { records } = await ask([chunk("Hi")]);
+      expect(records[0]).toMatchObject({ failed: true, fail: { statusCode: 502 } });
+    });
+
+    it("completes a stream that carries a finishReason", async () => {
+      const { text, records } = await ask([chunk("Hi"), chunk("!", "STOP")]);
+      expect(text).toContain("message_stop");
+      expect(records[0]).toMatchObject({ failed: false });
+    });
+  });
 });

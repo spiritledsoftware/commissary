@@ -3,7 +3,8 @@
  * formats, tool name / usage / replay observation and completion tracking.
  *
  * Go source: internal/runtime/executor/claude_executor_stream.go (ExecuteStream goroutine, validateClaudeStreamingResponse),
- * claude_executor_diagnostics.go (observeClaudeStreamLine).
+ * claude_executor_diagnostics.go (observeClaudeSSEEvent). Go 4f2e5270: an `error` event or EOF before `message_stop` fails the
+ * stream with 502 (usage and cooldown record it).
  */
 import { get, tryParseJson } from "@commissary/json";
 import { str, type ResponseContext, type TranslatorRegistry } from "@commissary/translation";
@@ -12,6 +13,7 @@ import { responseModelOf, ssePayloadObject, type UsageDetail } from "../../usage
 import { ExecutionError } from "../errors.ts";
 import { ensureResponsesUsageDetails } from "../codex/output.ts";
 import { AliasRestoreError, restoreToolNamesInStreamLine } from "./mcp-alias.ts";
+import { ClaudeEventObserver } from "./sse-events.ts";
 import { ReplayStreamAccumulator } from "./thinking-replay.ts";
 import { mergeUsage, parseClaudeStreamUsage } from "./usage.ts";
 
@@ -38,11 +40,11 @@ export interface ClaudeStreamOptions {
 
 export class ClaudeStreamReader {
   readonly #event: string[] = [];
+  readonly #events = new ClaudeEventObserver();
   readonly accumulator = new ReplayStreamAccumulator();
   #usage: UsageDetail | undefined;
   #done = false;
   messageId = "";
-  completed = false;
 
   constructor(readonly options: ClaudeStreamOptions) {}
 
@@ -50,21 +52,23 @@ export class ClaudeStreamReader {
     return this.#done;
   }
 
+  /** A `message_stop` (or a bare completed `message`) arrived. */
+  get completed(): boolean {
+    return this.#events.completed;
+  }
+
   #observe(line: string): void {
+    this.#events.observeLine(line);
+
+    if (this.#events.bareMessageId !== "") this.messageId = this.#events.bareMessageId;
     const payload = ssePayloadObject(line);
 
     if (payload === undefined) return;
 
-    switch (str(get(payload, "type"))) {
-      case "message_start": {
-        const id = str(get(payload, "message.id")).trim();
+    if (str(get(payload, "type")) === "message_start") {
+      const id = str(get(payload, "message.id")).trim();
 
-        if (id !== "") this.messageId = id;
-        break;
-      }
-
-      case "message_stop":
-        this.completed = true;
+      if (id !== "") this.messageId = id;
     }
 
     this.options.onResponseModel(responseModelOf(payload));
@@ -78,14 +82,19 @@ export class ClaudeStreamReader {
     this.accumulator.observe(line);
   }
 
-  #fail(message: string, status = 500): ClaudeStreamStep {
+  /** Go `observeClaudeSSEEvent`: an upstream `error` event becomes a 502 carrying its payload. */
+  #streamError(): ExecutionError | undefined {
+    const payload = this.#events.errorPayload;
+
+    return payload === undefined
+      ? undefined
+      : new ExecutionError({ status: 502, message: payload });
+  }
+
+  #fail(error: ExecutionError, chunks: ReadonlyArray<string> = []): ClaudeStreamStep {
     this.#done = true;
 
-    return {
-      chunks: [],
-      error: new ExecutionError({ status, message, requestScoped: true }),
-      stop: true,
-    };
+    return { chunks, error, stop: true };
   }
 
   /** Feeds one upstream line (without terminator). */
@@ -101,7 +110,11 @@ export class ClaudeStreamReader {
     } catch (error) {
       if (error instanceof AliasRestoreError) {
         return this.#fail(
-          `restore Claude OAuth tool name from streaming response: ${error.message}`,
+          new ExecutionError({
+            status: 500,
+            message: `restore Claude OAuth tool name from streaming response: ${error.message}`,
+            requestScoped: true,
+          }),
         );
       }
 
@@ -109,45 +122,45 @@ export class ClaudeStreamReader {
     }
 
     const { registry, responseFormat, context } = this.options;
+    let chunks: ReadonlyArray<string>;
 
     if (responseFormat === "claude") {
       this.#event.push(`${restored}\n`);
 
       if (restored.trim() !== "") return { chunks: [], stop: false };
-      const chunk = this.#event.join("");
+      chunks = [this.#event.join("")];
       this.#event.length = 0;
+    } else {
+      const translated = registry.translateStream(responseFormat, "claude", context, restored);
 
-      if (this.completed) this.#done = true;
+      if (context.state.toolInputError !== undefined) {
+        return this.#fail(
+          new ExecutionError({ status: 502, message: TOOL_INPUT_ERROR_MESSAGE }),
+          translated,
+        );
+      }
 
-      return { chunks: [chunk], stop: this.completed };
+      // Go `EnsureResponsesUsageDetails` on every translated Responses chunk.
+      chunks =
+        responseFormat === "openai-response"
+          ? translated.map((chunk) => ensureResponsesUsageDetails(chunk))
+          : translated;
     }
 
-    const translated = registry.translateStream(responseFormat, "claude", context, restored);
+    const error = this.#streamError();
 
-    if (context.state.toolInputError !== undefined) {
+    if (error !== undefined && !this.completed) return this.#fail(error, chunks);
+
+    if (this.completed && (responseFormat !== "claude" || restored.trim() === ""))
       this.#done = true;
-
-      return {
-        chunks: translated,
-        error: new ExecutionError({ status: 502, message: TOOL_INPUT_ERROR_MESSAGE }),
-        stop: true,
-      };
-    }
-
-    // Go `EnsureResponsesUsageDetails` on every translated Responses chunk.
-    const chunks =
-      responseFormat === "openai-response"
-        ? translated.map((chunk) => ensureResponsesUsageDetails(chunk))
-        : translated;
-
-    if (this.completed) this.#done = true;
 
     return { chunks, stop: this.completed };
   }
 
-  /** Clean EOF: flushes a pending passthrough event. */
+  /** EOF: flushes a pending passthrough event, then fails a stream that ended without `message_stop`. */
   end(): ClaudeStreamStep {
     const chunks: string[] = [];
+    this.#events.flush();
 
     if (this.#event.length > 0 && !this.#done) {
       chunks.push(this.#event.join(""));
@@ -163,12 +176,22 @@ export class ClaudeStreamReader {
       }
 
       if (state.toolInputError !== undefined) {
-        return {
+        return this.#fail(
+          new ExecutionError({ status: 502, message: TOOL_INPUT_ERROR_MESSAGE }),
           chunks,
-          error: new ExecutionError({ status: 502, message: TOOL_INPUT_ERROR_MESSAGE }),
-          stop: true,
-        };
+        );
       }
+    }
+
+    if (!this.completed) {
+      return this.#fail(
+        this.#streamError() ??
+          new ExecutionError({
+            status: 502,
+            message: "upstream stream closed before message_stop",
+          }),
+        chunks,
+      );
     }
 
     this.#done = true;

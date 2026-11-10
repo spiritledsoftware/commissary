@@ -4,7 +4,7 @@
  * Go source: sdk/api/handlers/handlers.go (BuildErrorResponseBodyWithError, ErrorResponse),
  * sdk/api/handlers/claude/code_handlers.go (toClaudeError, claudeErrorDetailFromText, claudeErrorTypeFromStatus),
  * internal/clienterror/client_error.go (IsClaudeThreadNotFound), sdk/api/handlers/openai_responses_stream_error.go
- * (BuildOpenAIResponsesStreamErrorChunk, BuildOpenAIResponsesStreamFailedChunk).
+ * (BuildOpenAIResponsesStreamErrorChunk, BuildOpenAIResponsesStreamFailedChunk, applyOpenAIResponsesNestedErrorCode: 43f27e3a).
  *
  * Gemini and Interactions handlers reuse the OpenAI-shaped body.
  */
@@ -128,6 +128,8 @@ export const claudeErrorTypeFromStatus = (status: number): string => {
       return "permission_error";
     case 404:
       return "not_found_error";
+    case 409:
+      return "conflict_error";
     case 413:
       return "request_too_large";
     case 429:
@@ -280,6 +282,26 @@ const responsesErrorClass = (status: number): ResponsesErrorClass => {
   }
 };
 
+/** `applyOpenAIResponsesNestedErrorCode`: Anthropic reports input overflow by message only; Responses clients key on the code. */
+const withOverflowCode = (error: JsonObject): JsonObject => {
+  const existing = error["code"];
+
+  if (existing !== undefined && existing !== null) {
+    if (typeof existing !== "string" || existing.trim() !== "") return error;
+  }
+
+  const m = error["message"];
+
+  if (
+    error["type"] === "invalid_request_error" &&
+    typeof m === "string" &&
+    m.startsWith("prompt is too long")
+  )
+    return { ...error, code: "context_length_exceeded" };
+
+  return error;
+};
+
 const responsesErrorDetail = (
   status: number,
   errText: string,
@@ -294,10 +316,10 @@ const responsesErrorDetail = (
   if (payload !== undefined) {
     const error = asRecord(payload["error"]);
 
-    if (error !== undefined) return error;
+    if (error !== undefined) return withOverflowCode(error);
     const responseError = asRecord(asRecord(payload["response"])?.["error"]);
 
-    if (responseError !== undefined) return responseError;
+    if (responseError !== undefined) return withOverflowCode(responseError);
     const m = nonBlank(payload["message"]);
 
     if (m !== undefined) message = m.trim();

@@ -228,6 +228,85 @@ describe("Provider key credential (caller-owned mode)", () => {
     expect(p.records[0]?.detail).toMatchObject({ inputTokens: 11, outputTokens: 7 });
   });
 
+  describe("truncated or failed upstream streams (Go 4f2e5270)", () => {
+    const run = async (frames: string[], stream: "claude" | "chat") => {
+      const p = makePipeline({ config: providerKeyConfig, respond: () => sseResponse(frames) });
+      afterAll(p.dispose);
+
+      const response = await p.call(
+        stream === "claude" ? "/v1/messages" : "/v1/chat/completions",
+        postJson({
+          model: "sonnet",
+          max_tokens: 8,
+          stream: true,
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      );
+
+      return { text: await response.text(), records: p.records };
+    };
+
+    for (const stream of ["claude", "chat"] as const) {
+      it(`records EOF before message_stop as a 502 failure (${stream} client)`, async () => {
+        const { records } = await run(sse(streamEvents()).slice(0, -1), stream);
+        expect(records[0]).toMatchObject({ failed: true, fail: { statusCode: 502 } });
+      });
+
+      it(`records a mid-stream error event as a failure (${stream} client)`, async () => {
+        const frames = [
+          ...sse(streamEvents()).slice(0, 3),
+          ...sse([{ type: "error", error: { type: "overloaded_error", message: "Overloaded" } }]),
+          ...sse(streamEvents()).slice(3),
+        ];
+
+        const { text, records } = await run(frames, stream);
+        expect(records[0]).toMatchObject({ failed: true, fail: { statusCode: 502 } });
+        expect(text).not.toContain('"text":"lo"');
+      });
+    }
+
+    it("closes an unterminated error event once and ends it with a blank line", async () => {
+      const event = '{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}';
+
+      const { text } = await run(
+        [...sse(streamEvents()).slice(0, 2), `event: error\ndata: ${event}`],
+        "claude",
+      );
+
+      expect(text.endsWith(`event: error\ndata: ${event}\n\n`)).toBe(true);
+
+      expect(text.match(/event: error/g)).toHaveLength(1);
+    });
+
+    it("does not count a message_stop inside another multi-line event as completion", async () => {
+      const frames = [
+        ...sse(streamEvents()).slice(0, 2),
+        'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":\ndata: {"type":"message_stop"}}\n\n',
+      ];
+
+      const { records } = await run(frames, "claude");
+      expect(records[0]).toMatchObject({ failed: true, fail: { statusCode: 502 } });
+    });
+
+    it("accepts a bare JSON message from a provider that ignores stream", async () => {
+      const { text, records } = await run([JSON.stringify(message())], "claude");
+      expect(text).toContain("msg_01");
+      expect(text).not.toContain("event: error");
+      expect(records[0]).toMatchObject({ failed: false });
+    });
+
+    it("still forwards the error event to a Claude client", async () => {
+      const frames = [
+        ...sse(streamEvents()).slice(0, 2),
+        ...sse([{ type: "error", error: { type: "overloaded_error", message: "Overloaded" } }]),
+      ];
+
+      const { text } = await run(frames, "claude");
+      expect(text).toContain("overloaded_error");
+      expect(text.match(/event: error/g)).toHaveLength(1);
+    });
+  });
+
   it("translates OpenAI chat requests to Claude (upstream always streams) and back", async () => {
     const p = makePipeline({
       config: providerKeyConfig,
