@@ -95,14 +95,18 @@ const setIfDifferent = (payload: Json, path: string, value: string): void => {
   if (get(payload, path) !== value) set(payload, path, value);
 };
 
-/** `geminiToAntigravity`: completes the translator's envelope with project, request ids and request type. */
+/**
+ * `geminiToAntigravity`: completes the translator's envelope with project, request ids and request type. The result is a
+ * copy: the caller's payload is never mutated (da21f1e5, `bytes.Clone`).
+ */
 export const geminiToAntigravity = (
   modelName: string,
-  payload: Json,
+  input: Json,
   projectId: string,
   derivedSessionId = "",
   now: number = Date.now(),
 ): Json => {
+  const payload = structuredClone(input);
   setIfDifferent(payload, "model", modelName);
   setIfDifferent(payload, "userAgent", "antigravity");
   const isImageModel = modelName.includes("image");
