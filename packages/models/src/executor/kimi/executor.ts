@@ -9,8 +9,10 @@
  * model -> thinking -> shaping -> payload rules (final barrier) -> fetch.
  *
  * Multi-agent v2 / orphan delegation rewriting runs in `translateRequestForExecutor`. The `/responses` path bridges the
- * Codex `apply_patch` custom tool through the strict function (`helps/apply-patch-responses.ts`). Not ported: outbound proxies. The token refresh runs in the
- * ControlPlane (credentials/refresh/kimi.ts); 401 recovery is done by the conductor.
+ * Codex `apply_patch` custom tool through the strict function (`helps/apply-patch-responses.ts`). Responses compaction
+ * (`compaction_trigger` and `/responses/compact`) is compacted locally with the route's own Responses turn
+ * (`helps/compaction.ts`; Go 344e0ef9, which answers 501 to `/responses/compact`). Not ported: outbound proxies. The
+ * token refresh runs in the ControlPlane (credentials/refresh/kimi.ts); 401 recovery is done by the conductor.
  */
 import { translateRequestForExecutor } from "../helps/translate.ts";
 import { Clock, Effect, Result, Stream } from "effect";
@@ -41,6 +43,12 @@ import {
   ApplyPatchResponsesState,
   normalizeApplyPatchResponses,
 } from "../helps/apply-patch-responses.ts";
+import {
+  compactionStreamFromResponse,
+  executeLocalCompaction,
+  expandCompaction,
+  hasResponsesCompactionTriggerRequest,
+} from "../helps/compaction.ts";
 import { finalizePayload } from "../helps/payload.ts";
 import { TOOL_INPUT_ERROR_MESSAGE } from "../openai-compat/stream.ts";
 import { parseSuffix } from "@commissary/translation/thinking";
@@ -406,25 +414,12 @@ export const makeKimiExecutor = (executorOptions: KimiExecutorOptions = {}): Pro
     return { url: kimiResponsesUrl(context.credential), body, translated };
   });
 
-  const compactUnsupported = (options: ExecutorOptions, stream: boolean) =>
-    options.alt === "responses/compact"
-      ? Effect.fail(
-          new ExecutionError({
-            status: stream ? 400 : 501,
-            message: stream
-              ? "streaming not supported for /responses/compact"
-              : "/responses/compact not supported",
-            requestScoped: true,
-          }),
-        )
-      : Effect.void;
-
-  const executeResponses = Effect.fnUntraced(function* (
+  /** One Responses exchange with Kimi, without any compaction handling: what the summary turn of a local compaction runs. */
+  const executeResponsesTurn = Effect.fnUntraced(function* (
     context: ExecutionContext,
     request: ExecutorRequest,
     options: ExecutorOptions,
   ) {
-    yield* compactUnsupported(options, false);
     const prepared = yield* prepareResponses(context, request, options, false);
     const response = yield* post(context, prepared.url, prepared.body, options, false);
     const data = yield* response.text.pipe(Effect.mapError(transportError));
@@ -470,12 +465,11 @@ export const makeKimiExecutor = (executorOptions: KimiExecutorOptions = {}): Pro
     return { payload: out, headers: new Headers(response.headers) } satisfies ExecutorResponse;
   });
 
-  const executeResponsesStream = Effect.fnUntraced(function* (
+  const executeResponsesStreamTurn = Effect.fnUntraced(function* (
     context: ExecutionContext,
     request: ExecutorRequest,
     options: ExecutorOptions,
   ) {
-    yield* compactUnsupported(options, true);
     const prepared = yield* prepareResponses(context, request, options, true);
     const response = yield* post(context, prepared.url, prepared.body, options, true);
     const responseFormat = responseFormatOf(options);
@@ -573,6 +567,79 @@ export const makeKimiExecutor = (executorOptions: KimiExecutorOptions = {}): Pro
   });
 
   // -------------------------------------------------------------------------------------------------------------
+  // Responses compaction (Go 344e0ef9)
+  // -------------------------------------------------------------------------------------------------------------
+
+  /**
+   * Capsules a local compaction minted become context and foreign `compaction` items are dropped. A
+   * `compaction_trigger` or `/responses/compact` is compacted locally with Kimi's own Responses turn (Go answers 501 to
+   * `/responses/compact`; here a route that compacts locally does so on both entry points).
+   */
+  const localCompaction = (
+    context: ExecutionContext,
+    request: ExecutorRequest,
+    options: ExecutorOptions,
+  ) =>
+    executeLocalCompaction({
+      request,
+      options,
+      summaryTurn: (summaryRequest, summaryOptions) =>
+        executeResponsesTurn(context, summaryRequest, summaryOptions),
+    });
+
+  const executeResponses = Effect.fnUntraced(function* (
+    context: ExecutionContext,
+    requested: ExecutorRequest,
+    requestedOptions: ExecutorOptions,
+  ) {
+    const { request, options } = yield* expandCompaction(
+      requested,
+      requestedOptions,
+      "drop-foreign",
+    );
+
+    if (
+      options.alt === "responses/compact" ||
+      hasResponsesCompactionTriggerRequest(request, options)
+    )
+      return yield* localCompaction(context, request, options);
+
+    return yield* executeResponsesTurn(context, request, options);
+  });
+
+  const executeResponsesStream = Effect.fnUntraced(function* (
+    context: ExecutionContext,
+    requested: ExecutorRequest,
+    requestedOptions: ExecutorOptions,
+  ) {
+    if (requestedOptions.alt === "responses/compact") {
+      return yield* new ExecutionError({
+        status: 400,
+        message: "streaming not supported for /responses/compact",
+        requestScoped: true,
+      });
+    }
+
+    const { request, options } = yield* expandCompaction(
+      requested,
+      requestedOptions,
+      "drop-foreign",
+    );
+
+    if (hasResponsesCompactionTriggerRequest(request, options)) {
+      const sealed = yield* localCompaction(context, request, options);
+
+      return yield* compactionStreamFromResponse(
+        parseSuffix(request.model).modelName,
+        sealed,
+        Date.now(),
+      );
+    }
+
+    return yield* executeResponsesStreamTurn(context, request, options);
+  });
+
+  // -------------------------------------------------------------------------------------------------------------
   // Claude Messages (embedded Claude executor)
   // -------------------------------------------------------------------------------------------------------------
 
@@ -651,13 +718,19 @@ export const makeKimiExecutor = (executorOptions: KimiExecutorOptions = {}): Pro
   /** Anthropic `count_tokens` through the embedded Claude executor with the Messages base URL. */
   const countTokens: ProviderExecutor["countTokens"] = Effect.fnUntraced(
     function* (context, request, options) {
-      // `CountTokens`: Responses payloads are normalised through the apply_patch contract first.
-      const counted =
-        options.sourceFormat === Formats.OpenAIResponse
-          ? { ...request, payload: yield* normalizePatchRequest(request.payload) }
-          : request;
+      // `CountTokens`: Responses payloads become context (capsules expanded, foreign compaction items dropped; the Claude
+      // executor's own count does not expand) and go through the apply_patch contract first.
+      if (options.sourceFormat !== Formats.OpenAIResponse)
+        return yield* claude.countTokens(claudeContext(context), request, options);
 
-      return yield* claude.countTokens(claudeContext(context), counted, options);
+      const expanded = yield* expandCompaction(request, options, "drop-foreign");
+
+      const counted = {
+        ...expanded.request,
+        payload: yield* normalizePatchRequest(expanded.request.payload),
+      };
+
+      return yield* claude.countTokens(claudeContext(context), counted, expanded.options);
     },
   );
 

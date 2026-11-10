@@ -11,6 +11,7 @@ import {
   parseMetaRetryAfterMs,
   wrapMetaUpstreamError,
 } from "../src/executor/meta/errors.ts";
+import { sealCompaction } from "../src/executor/helps/compaction.ts";
 import { makeMetaExecutor } from "../src/executor/meta/executor.ts";
 import { sanitizeMetaWebSearchTools } from "../src/executor/meta/request.ts";
 import type { Json } from "@commissary/json";
@@ -390,19 +391,29 @@ describe("Meta executor", () => {
     expect(missing.usage.failed).toBe(true);
   });
 
-  it("answers /responses/compact with 501 and fails without a key", async () => {
-    const h = await harness(metaKey(), () => sse([completed()]));
+  it("compacts /responses/compact locally and fails without a key", async () => {
+    const h = await harness(metaKey(), () => sse([completed([message("the summary")])]));
 
-    const compact = await runFail(
-      executor.execute(
+    const compact = await execute(
+      executor,
+      h,
+      { model: "muse-spark", payload: json(responsesRequest()) },
+      { ...responsesOptions(), alt: "responses/compact" },
+    );
+
+    expect(JSON.parse(compact.payload)).toMatchObject({ object: "response.compaction" });
+    expect(h.calls).toHaveLength(1);
+
+    const streaming = await runFail(
+      executor.executeStream(
         h.context,
         { model: "muse-spark", payload: json(responsesRequest()) },
-        { ...responsesOptions(), alt: "responses/compact" },
+        { ...responsesOptions(true), alt: "responses/compact" },
       ),
       h.layers,
     );
 
-    expect(compact.status).toBe(501);
+    expect(streaming.status).toBe(400);
     const noKey = await harness(credential("meta"), () => sse([completed()]));
 
     const unauthorized = await runFail(
@@ -513,6 +524,51 @@ describe("Meta executor", () => {
     expect(JSON.parse(response.payload)).toEqual({
       response: { usage: { input_tokens: 1, output_tokens: 0, total_tokens: 1 } },
     });
+    expect(h.calls).toHaveLength(0);
+  });
+
+  it("counts the expanded payload: capsules become context, foreign compaction items are dropped", async () => {
+    const h = await harness(metaKey(), () => sse([completed()]));
+    const summary = "earlier work ".repeat(40);
+
+    const count = async (input: Json[]) => {
+      const response = await Effect.runPromise(
+        executor
+          .countTokens(
+            h.context,
+            { model: "muse-spark", payload: json({ model: "muse-spark", input }) },
+            responsesOptions(),
+          )
+          .pipe(Effect.provide(h.layers)),
+      );
+
+      return (JSON.parse(response.payload) as { response: { usage: { input_tokens: number } } })
+        .response.usage.input_tokens;
+    };
+
+    const hi = { type: "message", role: "user", content: "hi" };
+
+    const sealed = await count([
+      {
+        type: "compaction",
+        id: "cmp_ag_compact_1",
+        encrypted_content: await sealCompaction(summary, "muse-spark"),
+      },
+      { type: "compaction", id: "cmp_native", encrypted_content: "gAAAA".repeat(200) },
+      hi,
+    ]);
+
+    const written = await count([
+      {
+        type: "message",
+        role: "developer",
+        content: [{ type: "input_text", text: `Context summary from previous turns:\n${summary}` }],
+      },
+      hi,
+    ]);
+
+    expect(sealed).toBe(written);
+    expect(sealed).toBeGreaterThan(40);
     expect(h.calls).toHaveLength(0);
   });
 });

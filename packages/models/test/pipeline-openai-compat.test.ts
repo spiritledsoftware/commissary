@@ -8,8 +8,14 @@ import { makeOpenAICompatExecutor } from "../src/executor/openai-compat/executor
 import type { CredentialSnapshot } from "../src/executor/picker.ts";
 import { Thinking } from "../src/executor/thinking.ts";
 import type { ExecutionContext, ExecutorOptions } from "../src/executor/types.ts";
-import { get, type Json } from "@commissary/json";
+import { asString, get, type Json } from "@commissary/json";
 import { UsageReporter } from "../src/usage/reporter.ts";
+import { sealCompaction, unsealCompaction } from "../src/executor/helps/compaction.ts";
+import {
+  credential as executorCredential,
+  harness,
+  options as executorOptions,
+} from "./support/executor-run.ts";
 import { buildImagesApiResponse } from "../src/handlers/openai/images.ts";
 import {
   jsonResponse,
@@ -718,5 +724,196 @@ describe("buildImagesApiResponse", () => {
     expect(buildImagesApiResponse("nope", "url", 1)).toEqual({
       error: "upstream returned invalid image response JSON",
     });
+  });
+});
+
+describe("Responses compaction on an OpenAI-compatible route", () => {
+  const capsule = async () => ({
+    type: "compaction",
+    id: "cmp_ag_compact_1",
+    encrypted_content: await sealCompaction("earlier work", "upstream-model"),
+  });
+
+  const nativeItem = { type: "compaction", id: "cmp_native", encrypted_content: "gAAAA-native" };
+  const userMessage = { type: "message", role: "user", content: "continue" };
+
+  const summaryCompletion = (finish = "stop") => ({
+    ...COMPLETION,
+    choices: [
+      { index: 0, message: { role: "assistant", content: "the summary" }, finish_reason: finish },
+    ],
+  });
+
+  const capsulesIn = (text: string): string[] => [
+    ...new Set(text.match(/cpa-ag-compact-v1:[A-Za-z0-9_-]+/g) ?? []),
+  ];
+
+  const chatText = (call: { readonly body: string }): string => {
+    const messages = get(JSON.parse(call.body) as Json, "messages");
+
+    return JSON.stringify(messages);
+  };
+
+  const trigger = async (stream: boolean) => ({
+    model: "alias-model",
+    stream,
+    input: [await capsule(), nativeItem, userMessage, { type: "compaction_trigger" }],
+  });
+
+  it("answers a compaction_trigger with a sealed response from one Chat Completions summary", async () => {
+    const p = pipeline(() => jsonResponse(summaryCompletion()));
+    afterAll(p.dispose);
+
+    const response = await p.call("/v1/responses", postJson(await trigger(false)));
+    expect(response.status).toBe(200);
+    expect(p.calls).toHaveLength(1);
+    expect(p.calls[0]!.url).toBe("https://upstream.test/v1/chat/completions");
+    expect(chatText(p.calls[0]!)).toContain("Context summary from previous turns:\\nearlier work");
+    expect(chatText(p.calls[0]!)).not.toContain("gAAAA-native");
+    expect(p.calls[0]!.body).not.toContain("compaction_trigger");
+    expect(JSON.parse(p.calls[0]!.body).stream).not.toBe(true);
+    const body: Json = await response.json();
+    expect(at(body, "object")).toBe("response.compaction");
+    expect(await unsealCompaction(asString(at(body, "output.0.encrypted_content")))).toBe(
+      "the summary",
+    );
+    expect(p.records).toHaveLength(1);
+    expect(p.records[0]).toMatchObject({
+      model: "upstream-model",
+      alias: "alias-model",
+      failed: false,
+    });
+    expect(p.records[0]?.detail).toMatchObject({ inputTokens: 5, outputTokens: 2 });
+  });
+
+  it("answers a streaming compaction_trigger with the synthetic Responses stream", async () => {
+    const p = pipeline(() => jsonResponse(summaryCompletion()));
+    afterAll(p.dispose);
+
+    const response = await p.call("/v1/responses", postJson(await trigger(true)));
+    expect(response.headers.get("content-type")).toContain("text/event-stream");
+    const text = await response.text();
+    expect(text).toContain("event: response.completed");
+    expect(await unsealCompaction(capsulesIn(text)[0] ?? "")).toBe("the summary");
+    expect(p.calls).toHaveLength(1);
+    expect(JSON.parse(p.calls[0]!.body).stream).not.toBe(true);
+  });
+
+  it("sends /v1/responses/compact upstream, expanding only the capsules a local compaction minted", async () => {
+    const p = pipeline(() =>
+      jsonResponse({ id: "resp_c", object: "response.compaction", output: [], usage: {} }),
+    );
+
+    afterAll(p.dispose);
+
+    const response = await p.call(
+      "/v1/responses/compact",
+      postJson({ model: "alias-model", input: [await capsule(), nativeItem, userMessage] }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(p.calls).toHaveLength(1);
+    expect(p.calls[0]!.url).toBe("https://upstream.test/v1/responses/compact");
+    const input = at(JSON.parse(p.calls[0]!.body), "input") as Json[];
+    expect(input[0]).toMatchObject({ type: "message", role: "developer" });
+    expect(input[1]).toEqual(nativeItem);
+  });
+
+  it("drops foreign compaction items from an ordinary request", async () => {
+    const p = pipeline(() => jsonResponse(COMPLETION));
+    afterAll(p.dispose);
+
+    await p.call(
+      "/v1/responses",
+      postJson({ model: "alias-model", input: [nativeItem, await capsule(), userMessage] }),
+    );
+
+    expect(chatText(p.calls[0]!)).not.toContain("gAAAA-native");
+    expect(chatText(p.calls[0]!)).toContain("earlier work");
+  });
+
+  it("answers a summary cut off by the output budget with a request-scoped 502", async () => {
+    const p = pipeline(() => jsonResponse(summaryCompletion("length")));
+    afterAll(p.dispose);
+
+    const response = await p.call("/v1/responses", postJson(await trigger(false)));
+    expect(response.status).toBe(502);
+    expect(p.calls).toHaveLength(1);
+  });
+
+  it("answers a corrupt capsule with a 400 and no upstream call", async () => {
+    const p = pipeline(() => jsonResponse(COMPLETION));
+    afterAll(p.dispose);
+
+    const response = await p.call(
+      "/v1/responses",
+      postJson({
+        model: "alias-model",
+        input: [
+          {
+            type: "compaction",
+            id: "cmp_ag_compact_9",
+            encrypted_content: "cpa-ag-compact-v1:AAAA",
+          },
+          userMessage,
+        ],
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(p.calls).toHaveLength(0);
+  });
+
+  it("refuses a compaction source that continues a previous response", async () => {
+    const p = pipeline(() => jsonResponse(COMPLETION));
+    afterAll(p.dispose);
+
+    const response = await p.call(
+      "/v1/responses",
+      postJson({ ...(await trigger(false)), previous_response_id: "resp_1" }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(p.calls).toHaveLength(0);
+  });
+
+  it("counts the expanded payload", async () => {
+    const h = await harness(
+      executorCredential("openai-compatible-mock", {
+        kind: "apikey",
+        attributes: { base_url: "https://upstream.test/v1", api_key: "sk-test-1" },
+      }),
+      () => new Response("no", { status: 500 }),
+      YAML,
+    );
+
+    const executor = makeOpenAICompatExecutor("openai-compatible-mock");
+
+    const count = (input: Json[]) =>
+      Effect.runPromise(
+        executor
+          .countTokens(
+            h.context,
+            { model: "upstream-model", payload: { model: "upstream-model", input } },
+            executorOptions({ sourceFormat: "openai-response" }),
+          )
+          .pipe(Effect.provide(h.layers)),
+      ).then((response) => at(JSON.parse(response.payload) as Json, "input_tokens"));
+
+    const sealed = await count([await capsule(), nativeItem, userMessage]);
+
+    const written = await count([
+      {
+        type: "message",
+        role: "developer",
+        content: [
+          { type: "input_text", text: "Context summary from previous turns:\nearlier work" },
+        ],
+      },
+      userMessage,
+    ]);
+
+    expect(sealed).toBe(written);
+    expect(h.calls).toHaveLength(0);
   });
 });

@@ -10,8 +10,9 @@
  * flow (`helps/apply-patch-responses.ts`). `response.subscription_usage` telemetry is dropped from streams and
  * aggregated answers (`subscription-usage.ts`); the Muse namespace is appended to tool-bearing requests
  * (`muse-tools.ts`); the 1.4.14 client identity headers are in `identity.ts`. The request shaping and the SSE response
- * handling are shared with the OpenCode executor (`helps/responses-request.ts`, `helps/responses-sse.ts`). Not ported:
- * outbound proxies.
+ * handling are shared with the OpenCode executor (`helps/responses-request.ts`, `helps/responses-sse.ts`). Responses
+ * compaction (`compaction_trigger` and `/responses/compact`) is compacted locally with Muse's own turn
+ * (`helps/compaction.ts`; Go 344e0ef9, which answers 501 to `/responses/compact`). Not ported: outbound proxies.
  */
 import { Clock, Effect } from "effect";
 import {
@@ -23,7 +24,14 @@ import {
 import { asString, get } from "@commissary/json";
 import { builtinTranslators, type TranslatorRegistry } from "@commissary/translation";
 import { Formats } from "@commissary/translation/formats";
+import { parseSuffix } from "@commissary/translation/thinking";
 import { ExecutionError } from "../errors.ts";
+import {
+  compactionStreamFromResponse,
+  executeLocalCompaction,
+  expandCompaction,
+  hasResponsesCompactionTriggerRequest,
+} from "../helps/compaction.ts";
 import { applyCustomHeaders } from "../helps/custom-headers.ts";
 import {
   collectResponsesSse,
@@ -96,17 +104,6 @@ export const metaHeaders = (input: MetaHeadersInput): Record<string, string> => 
 export const makeMetaExecutor = (executorOptions: MetaExecutorOptions = {}): ProviderExecutor => {
   const registry = executorOptions.translators ?? builtinTranslators;
 
-  const unsupported = (options: ExecutorOptions) =>
-    options.alt === "responses/compact"
-      ? Effect.fail(
-          new ExecutionError({
-            status: 501,
-            message: "/responses/compact not supported",
-            requestScoped: true,
-          }),
-        )
-      : Effect.void;
-
   /** Prepares the body and sends it; non-2xx answers are wrapped with the Meta cooldown rules. */
   const send = Effect.fnUntraced(function* (
     context: ExecutionContext,
@@ -115,8 +112,6 @@ export const makeMetaExecutor = (executorOptions: MetaExecutorOptions = {}): Pro
     /** Streams take the effective TTFT from the first token event; non-stream answers from the first byte. */
     ttft: "first-byte" | "token-event",
   ) {
-    yield* unsupported(options);
-
     const creds = yield* Effect.try({
       try: () => requireMetaToken(context.credential),
       catch: (error) =>
@@ -186,7 +181,8 @@ export const makeMetaExecutor = (executorOptions: MetaExecutorOptions = {}): Pro
     lineFilter: makeSubscriptionUsageFilter,
   });
 
-  const execute = Effect.fnUntraced(function* (
+  /** One Responses exchange with Muse, without any compaction handling: what the summary turn of a local compaction runs. */
+  const executeTurn = Effect.fnUntraced(function* (
     context: ExecutionContext,
     request: ExecutorRequest,
     options: ExecutorOptions,
@@ -196,7 +192,7 @@ export const makeMetaExecutor = (executorOptions: MetaExecutorOptions = {}): Pro
     return yield* collectResponsesSse(sse(context, request, options, sent));
   });
 
-  const executeStream = Effect.fnUntraced(function* (
+  const executeStreamTurn = Effect.fnUntraced(function* (
     context: ExecutionContext,
     request: ExecutorRequest,
     options: ExecutorOptions,
@@ -206,12 +202,92 @@ export const makeMetaExecutor = (executorOptions: MetaExecutorOptions = {}): Pro
     return streamResponsesSse(sse(context, request, options, sent));
   });
 
-  /** `CountTokens`: the Responses body that would be sent upstream, counted locally with `o200k_base`. */
-  const countTokens: ProviderExecutor["countTokens"] = Effect.fnUntraced(function* (
+  /**
+   * Responses compaction (Go 344e0ef9): capsules a local compaction minted become context and foreign `compaction` items
+   * are dropped. A `compaction_trigger` or `/responses/compact` is compacted locally with Muse's own turn (Go answers
+   * 501 to `/responses/compact`; here a route that compacts locally does so on both entry points).
+   */
+  const localCompaction = (
     context: ExecutionContext,
     request: ExecutorRequest,
     options: ExecutorOptions,
+  ) =>
+    executeLocalCompaction({
+      request,
+      options,
+      summaryTurn: (summaryRequest, summaryOptions) =>
+        executeTurn(context, summaryRequest, summaryOptions),
+    });
+
+  const execute = Effect.fnUntraced(function* (
+    context: ExecutionContext,
+    requested: ExecutorRequest,
+    requestedOptions: ExecutorOptions,
   ) {
+    if (requestedOptions.sourceFormat !== Formats.OpenAIResponse)
+      return yield* executeTurn(context, requested, requestedOptions);
+
+    const { request, options } = yield* expandCompaction(
+      requested,
+      requestedOptions,
+      "drop-foreign",
+    );
+
+    if (
+      options.alt === "responses/compact" ||
+      hasResponsesCompactionTriggerRequest(request, options)
+    )
+      return yield* localCompaction(context, request, options);
+
+    return yield* executeTurn(context, request, options);
+  });
+
+  const executeStream = Effect.fnUntraced(function* (
+    context: ExecutionContext,
+    requested: ExecutorRequest,
+    requestedOptions: ExecutorOptions,
+  ) {
+    if (requestedOptions.sourceFormat !== Formats.OpenAIResponse)
+      return yield* executeStreamTurn(context, requested, requestedOptions);
+
+    if (requestedOptions.alt === "responses/compact") {
+      return yield* new ExecutionError({
+        status: 400,
+        message: "streaming not supported for /responses/compact",
+        requestScoped: true,
+      });
+    }
+
+    const { request, options } = yield* expandCompaction(
+      requested,
+      requestedOptions,
+      "drop-foreign",
+    );
+
+    if (hasResponsesCompactionTriggerRequest(request, options)) {
+      const sealed = yield* localCompaction(context, request, options);
+
+      return yield* compactionStreamFromResponse(
+        parseSuffix(request.model).modelName,
+        sealed,
+        Date.now(),
+      );
+    }
+
+    return yield* executeStreamTurn(context, request, options);
+  });
+
+  /** `CountTokens`: the Responses body that would be sent upstream, counted locally with `o200k_base`. */
+  const countTokens: ProviderExecutor["countTokens"] = Effect.fnUntraced(function* (
+    context: ExecutionContext,
+    requested: ExecutorRequest,
+    requestedOptions: ExecutorOptions,
+  ) {
+    const { request, options } =
+      requestedOptions.sourceFormat === Formats.OpenAIResponse
+        ? yield* expandCompaction(requested, requestedOptions, "drop-foreign")
+        : { request: requested, options: requestedOptions };
+
     yield* Effect.try({
       try: () => requireMetaToken(context.credential),
       catch: (error) =>
