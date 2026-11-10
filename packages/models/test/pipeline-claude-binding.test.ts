@@ -267,12 +267,14 @@ describe("thinking types that cannot carry a binding", () => {
 describe("forced tool choice", () => {
   const tools = [{ name: "get_weather", description: "weather", input_schema: { type: "object" } }];
 
+  // Opus 5.5 and Sonnet 5.5 never reach this step forced (the pipeline rewrites the choice to auto first, see
+  // pipeline-claude-tool-choice.test.ts); Haiku 5.5 and the other models stay forced and skip the binding.
   it.each([{ type: "any" }, { type: "tool", name: "get_weather" }])(
-    "injects nothing for tool_choice %j, with or without thinking",
+    "injects nothing for a forced tool_choice %j on Haiku 5.5, with or without thinking",
     async (toolChoice) => {
       for (const thinking of [{}, { thinking: { type: "adaptive" } }]) {
         const sent = await send(
-          history("claude-opus-5-5", { tools, tool_choice: toolChoice, ...thinking }),
+          history("claude-haiku-5-5", { tools, tool_choice: toolChoice, ...thinking }),
         );
 
         expect(sent.body.thinking).toBeUndefined();

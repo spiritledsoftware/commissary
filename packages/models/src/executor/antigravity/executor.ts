@@ -23,6 +23,7 @@ import {
   type HttpClientResponse,
 } from "effect/http";
 import { buildSensitiveWordMatcher } from "../claude/cloaking.ts";
+import { prepareClaudeStructuredOutput } from "./structured-output.ts";
 import type { Config } from "../../config/schema.ts";
 import {
   asInt,
@@ -1001,6 +1002,8 @@ export const makeAntigravityExecutor = (
       body,
       context.config.oauth.providers.antigravity["sensitive-words"],
     );
+    // The schema is counted as the prompt it is sent as (CLIProxyAPI 1d45a5f3).
+    prepareClaudeStructuredOutput(baseModel, body);
     body = sanitizeGeminiRequestSignatures(baseModel, body);
     body = ensureLeadingUserContent(baseModel, body);
 

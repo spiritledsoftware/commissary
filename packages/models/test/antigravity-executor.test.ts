@@ -46,6 +46,8 @@ const unique = (name: string) =>
 
 const models = {
   "claude-sonnet-4-5": ["antigravity"],
+  "claude-opus-5-5": ["antigravity"],
+  "claude-sonnet-5-5": ["antigravity"],
   "gemini-2.5-flash": ["antigravity"],
   "gemini-3-pro-high": ["antigravity"],
 };
@@ -224,6 +226,102 @@ describe("antigravity executor: non-stream", () => {
     expect(sent.request.generationConfig.maxOutputTokens).toBe(100);
     expect(sent.request.tools[0].functionDeclarations[0].parameters).toBeDefined();
     expect(sent.request.tools[0].functionDeclarations[0].parametersJsonSchema).toBeUndefined();
+  });
+});
+
+// CLIProxyAPI 1d45a5f3: Claude 5.5 rejects the forced tool use behind native structured output, so the schema is sent
+// as a system prompt and forced function calling is downgraded to AUTO.
+describe("antigravity executor: Claude 5.5 structured output", () => {
+  const schema = {
+    type: "object",
+    properties: { title: { type: "string" }, description: { type: "string" } },
+    required: ["title", "description"],
+    additionalProperties: false,
+  };
+
+  const tool = {
+    type: "function",
+    function: {
+      name: "get_time",
+      description: "Get the current time.",
+      parameters: {
+        type: "object",
+        properties: { timezone: { type: "string" } },
+        required: ["timezone"],
+      },
+    },
+  };
+
+  const chat = (model: string): JsonObject => ({
+    model,
+    messages: [
+      { role: "system", content: "keep the secret safe" },
+      { role: "user", content: "Provide title and description for: fix bug" },
+    ],
+    response_format: {
+      type: "json_schema",
+      json_schema: { name: "codex_output_schema", strict: true, schema },
+    },
+    tools: [tool],
+    tool_choice: "required",
+  });
+
+  it.each(["claude-opus-5-5", "claude-sonnet-5-5"])(
+    "sends the schema of %s as prompt text, keeps the tools and no forced mode",
+    async (model) => {
+      resetMemoryAntigravityState();
+      const h = harness(() => sse([upstream([{ text: "{}" }])]));
+      afterAll(h.dispose);
+
+      const response = await h.call("/v1/chat/completions", postJson(chat(model)));
+      expect(response.status).toBe(200);
+
+      const sent = JSON.parse(h.calls[0]?.body ?? "{}");
+      const parts = sent.request.systemInstruction.parts as Array<{ text: string }>;
+      // The original system text (obfuscated) stays first; the schema instruction follows, complete.
+      expect(parts[0]?.text).toBe("keep the s\u200Becret safe");
+      expect(parts.map((part) => part.text).join("\n")).toContain(JSON.stringify(schema));
+      expect(sent.request.generationConfig.responseSchema).toBeUndefined();
+      expect(sent.request.generationConfig.responseJsonSchema).toBeUndefined();
+      expect(sent.request.generationConfig.responseMimeType).toBeUndefined();
+      expect(sent.request.tools[0].functionDeclarations[0].name).toBe("get_time");
+      expect(["AUTO", undefined]).toContain(sent.request.toolConfig?.functionCallingConfig?.mode);
+    },
+  );
+
+  it("keeps the native schema and VALIDATED for other Claude models", async () => {
+    resetMemoryAntigravityState();
+    const h = harness(() => sse([upstream([{ text: "{}" }])]));
+    afterAll(h.dispose);
+
+    const response = await h.call("/v1/chat/completions", postJson(chat("claude-sonnet-4-5")));
+    expect(response.status).toBe(200);
+    const sent = JSON.parse(h.calls[0]?.body ?? "{}");
+    expect(sent.request.toolConfig.functionCallingConfig.mode).toBe("VALIDATED");
+    const generation = sent.request.generationConfig;
+    expect(generation.responseSchema ?? generation.responseJsonSchema).toBeDefined();
+  });
+
+  it("counts the schema as prompt text", async () => {
+    const h = harness(() => jsonResponse({ totalTokens: 42 }));
+    afterAll(h.dispose);
+
+    const response = await h.call(
+      "/v1beta/models/claude-opus-5-5:countTokens",
+      postJson({
+        contents: [{ role: "user", parts: [{ text: "hello" }] }],
+        generationConfig: { responseMimeType: "application/json", responseSchema: schema },
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    const call = h.calls[0];
+    expect(call?.url).toBe("https://daily-cloudcode-pa.googleapis.com/v1internal:countTokens");
+    const sent = JSON.parse(call?.body ?? "{}");
+    const parts = sent.request.systemInstruction.parts as Array<{ text: string }>;
+    expect(parts.map((part) => part.text).join("\n")).toContain(JSON.stringify(schema));
+    expect(sent.request.generationConfig?.responseSchema).toBeUndefined();
+    expect(sent.request.generationConfig?.responseMimeType).toBeUndefined();
   });
 });
 

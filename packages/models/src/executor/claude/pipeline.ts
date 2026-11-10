@@ -3,7 +3,7 @@
  *
  * Go source: internal/runtime/executor/claude_executor_execute.go and claude_executor_stream.go (Execute /
  * ExecuteStream), claude_executor_tokens.go (countTokensUpstream). Order (ARCHITECTURE.md "Request pipeline"):
- * translate -> upstream model -> Thinking.apply -> cloaking -> provider shaping (context management, diagnostics,
+ * translate -> upstream model -> forced tool_choice rewrite on Claude 5.5 -> Thinking.apply -> cloaking -> provider shaping (context management, diagnostics,
  * max tokens, sampling, cache control, tool aliases, tool property-name fallback, sanitising, identity, CCH
  * placeholder, preserved-thinking binding) -> user payload rules
  * (the last semantic mutation) -> betas extraction / `prompt_cache_options` removal -> serialise + CCH signature.
@@ -15,6 +15,7 @@ import {
 } from "../helps/translate.ts";
 import { Effect } from "effect";
 import { applyPayloadRules } from "../../config/payload/index.ts";
+import { normalizeClaudeToolChoice } from "../helps/claude-tool-choice.ts";
 import type { Config } from "../../config/schema.ts";
 import { cloneJson, get, isJsonObject, type Json, type JsonObject } from "@commissary/json";
 import {
@@ -439,7 +440,11 @@ export const prepareMessagesRequest = Effect.fnUntraced(function* (input: Prepar
     options.originalRequest === undefined ? translated : translate(options.originalRequest);
 
   if (!isObj(translated.body)) return yield* requestScoped(400, "invalid Claude request body");
-  translated.body.model = upstreamModelOf(services.profile, baseModel);
+  const upstreamModel = upstreamModelOf(services.profile, baseModel);
+  translated.body.model = upstreamModel;
+
+  // Before thinking preparation (claude-tool-choice.ts); the Claude provider only, not a delegating profile.
+  if (services.profile === undefined) normalizeClaudeToolChoice(translated.body, upstreamModel);
 
   const thinkingBody = yield* thinking.apply({
     body: translated.body,
@@ -739,7 +744,11 @@ export const prepareCountTokensRequest = Effect.fnUntraced(function* (input: Pre
     options.originalRequest === undefined ? translated : translate(options.originalRequest);
 
   if (!isObj(translated.body)) return yield* requestScoped(400, "invalid Claude request body");
-  translated.body.model = upstreamModelOf(services.profile, baseModel);
+  const upstreamModel = upstreamModelOf(services.profile, baseModel);
+  translated.body.model = upstreamModel;
+
+  // Before thinking preparation (claude-tool-choice.ts); the Claude provider only, not a delegating profile.
+  if (services.profile === undefined) normalizeClaudeToolChoice(translated.body, upstreamModel);
 
   const thinkingBody = yield* thinking.apply({
     body: translated.body,
@@ -910,6 +919,14 @@ export const prepareLocalCountBody = Effect.fnUntraced(function* (input: Prepare
 
   const originalTranslated =
     options.originalRequest === undefined ? translated : translate(options.originalRequest);
+
+  // As for Messages: the routed model on the body (the binding reads it), then the forced-tool rewrite.
+  if (isObj(translated.body)) {
+    const upstreamModel = upstreamModelOf(services.profile, baseModel);
+    translated.body.model = upstreamModel;
+
+    if (services.profile === undefined) normalizeClaudeToolChoice(translated.body, upstreamModel);
+  }
 
   const thinkingBody = yield* thinking.apply({
     body: translated.body,

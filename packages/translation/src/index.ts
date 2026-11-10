@@ -63,6 +63,8 @@ export { sseEventData } from "./translator/common/bytes.ts";
 
 export { isClaudeCodeAttributionSystemText } from "./translator/common/claude-messages.ts";
 
+export { buildClaudeStructuredOutputInstruction } from "./translator/common/claude-system.ts";
+
 export { geminiClaudeToolUseID, isGeminiClaudeToolUseID } from "./translator/common/claude-util.ts";
 
 export { isArr, isObj, str, toArray } from "./translator/common/gjson.ts";

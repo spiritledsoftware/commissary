@@ -23,6 +23,7 @@ import {
   cleanJsonSchemaForAntigravityTool,
   lookupModelInfo,
 } from "@commissary/translation";
+import { prepareClaudeStructuredOutput } from "./structured-output.ts";
 
 export const ANTIGRAVITY_BASE_URL_DAILY = "https://daily-cloudcode-pa.googleapis.com";
 
@@ -231,10 +232,12 @@ export const sanitizeRequestSchemas = (payload: Json, useAntigravitySchema: bool
 };
 
 /**
- * The model-dependent shaping of `buildRequest`: `maxOutputTokens` cap, schema cleaning, Claude `VALIDATED` function
- * calling (non-Claude models lose `maxOutputTokens`). The result still has to go through the payload rules.
+ * The model-dependent shaping of `buildRequest`: Claude 5.5 structured output as a prompt (CLIProxyAPI 1d45a5f3),
+ * `maxOutputTokens` cap, schema cleaning, Claude `VALIDATED` function calling (skipped when the schema became a
+ * prompt; non-Claude models lose `maxOutputTokens`). The result still has to go through the payload rules.
  */
 export const constrainRequestPayload = (modelName: string, payload: Json): Json => {
+  const promptStructuredOutput = prepareClaudeStructuredOutput(modelName, payload);
   const maxOut = get(payload, "request.generationConfig.maxOutputTokens");
 
   if (typeof maxOut === "number") {
@@ -253,9 +256,10 @@ export const constrainRequestPayload = (modelName: string, payload: Json): Json 
 
   if (needsSchemaSanitization(payload)) sanitizeRequestSchemas(payload, useAntigravitySchema);
 
-  if (modelName.includes("claude"))
-    set(payload, "request.toolConfig.functionCallingConfig.mode", "VALIDATED");
-  else del(payload, "request.generationConfig.maxOutputTokens");
+  if (modelName.includes("claude")) {
+    if (!promptStructuredOutput)
+      set(payload, "request.toolConfig.functionCallingConfig.mode", "VALIDATED");
+  } else del(payload, "request.generationConfig.maxOutputTokens");
 
   return payload;
 };
