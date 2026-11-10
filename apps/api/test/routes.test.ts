@@ -17,7 +17,9 @@ const expectCors = (response: Response) => {
   expect(response.headers.get("access-control-allow-methods")).toBe(
     "GET, POST, PUT, PATCH, DELETE, OPTIONS",
   );
-  expect(response.headers.get("access-control-allow-headers")).toBe("*");
+  expect(response.headers.get("access-control-allow-headers")).toBe(
+    "Authorization, Content-Type, X-Api-Key, X-Goog-Api-Key, Anthropic-Version, Anthropic-Beta",
+  );
   expect(response.headers.get("access-control-expose-headers")).toBe(
     CORS_EXPOSED_RESPONSE_HEADERS.join(", "),
   );
@@ -57,6 +59,23 @@ describe("CORS", () => {
     expect(response.status).toBe(204);
     expect(response.headers.get("access-control-allow-origin")).toBe("*");
     expectCors(response);
+  });
+
+  it("never answers Access-Control-Allow-Headers with the wildcard, and echoes requested headers on preflight", async () => {
+    // Port of internal/api/server_cors_preflight_test.go (058b803b): Fetch excludes Authorization from `*`.
+    const response = await fetchWorker("/v1/chat/completions", {
+      method: "OPTIONS",
+      headers: {
+        origin: "https://x.test",
+        "access-control-request-method": "POST",
+        "access-control-request-headers": "authorization, x-custom-sdk-header, X-API-KEY",
+      },
+    });
+
+    expect(response.status).toBe(204);
+    expect(response.headers.get("access-control-allow-headers")).toBe(
+      "Authorization, Content-Type, X-Api-Key, X-Goog-Api-Key, Anthropic-Version, Anthropic-Beta, X-Custom-Sdk-Header",
+    );
   });
 
   it("adds CORS headers to unknown routes of the client API (404)", async () => {
