@@ -1464,6 +1464,20 @@ Deviations from Go (all deliberate, documented in code headers):
   assistant messages in the request in one DO round trip before translating (`textSignatureKeys`) and flushes the entries the
   response translation stored in one write before the chunk is emitted. One DO instance per caller scope holds the entries (1 h
   TTL, 10240 per caller); a backend failure degrades to the bypass signature, never to an error.
+- **Gemini responses (C6, Go `3f5d3a16`, `c5251b57`, `202b8b8c`, `e1fb2521`, `58257007`, `7f2f17d7`, `bdde391d`)**:
+  a candidate-less `promptFeedback.blockReason` answer is a 502 `upstream blocked the prompt` (non-stream and stream, usage kept;
+  the executor checks it before translating, and a block counts as the stream's finish signal, so it never reaches the
+  `closed before finishReason` check, which now also covers OpenAI chat clients). Safety/recitation/blocklist/
+  prohibited-content/SPII/image-safety/malformed finishReasons end `content_filter` (chat) or `response.incomplete`
+  with `content_filter` (Responses); Claude clients get a `refusal`, except `MALFORMED_FUNCTION_CALL` without a tool call:
+  the translator writes an Anthropic `api_error` and the executor fails the request (non-stream) or the stream (after the
+  event; the Claude framer does not repeat it) with a retryable 502. Gemini and Antigravity chat chunks accumulate the text
+  and reasoning of all parts, skip empty signature carriers, count tool-call indices across the stream and keep upstream
+  `functionCall.id`s. Claude tool arguments are cleaned against the client's declared schemas
+  (`translator/common/claude-tool-args.ts`, one module for both providers): the schema analysis works on parsed JSON instead
+  of gjson paths, and `{}` normalisation applies only to schemas that forbid additional properties. The Go streaming
+  `partialArgs` conversion (`64316127`, Vertex `streamFunctionCallArguments`) is not ported: nothing in Commissary asks
+  Vertex to stream function-call arguments.
 - **Fixtures**: cases with generated ids/timestamps are tagged `needs: ["id-normalization"]` and run by
   translation's `test/translator-fixtures-ids.test.ts` (ids and `created_at` masked on both sides; thinking-summary
   cases apply the real summary hooks); everything else must match the Go output structurally
@@ -2776,6 +2790,15 @@ Ported from `antigravity_executor*.go`, `internal/translator/antigravity/*`, `in
   _carrier_ thinking blocks (`cpa-gemini-carrier-v1:<direction>:<kind>:<b64>`, `claude/carrier.ts`), Claude models keep R/Q-form
   signatures, and `web_search_*` tools map to native Google Search (`claude/web-search.ts`, request building and grounding -> `web_search_tool_result`
   blocks; the capability comes from the registry record, `supportsWebSearch`).
+- **Responses and replay (C6, Go `24b04548`, `912a038b`, `da21f1e5`, `80aa2b1d`)**: Claude clients get `refusal` for safety/filter/
+  malformed finishReasons (web-search paths included; a trailing empty `finishReason` keeps the recorded one) and, unlike
+  the Gemini API route, `MALFORMED_FUNCTION_CALL` stays a refusal here (as in Go); usage falls back on the raw prompt count.
+  OpenAI chat clients' replay entries carry a versioned context hash (`openai-chat-v1:`: system instruction and preceding
+  contents, not the tool declarations or choice) and `tool_choice: none` keeps `request.tools`, so a later turn under a
+  different tool policy still gets its signatures back; the thought signature of a turn binds to the unsigned call after it,
+  non-stream bodies count as complete without a `finishReason`, and explicit session alias headers key the ledger before the
+  derived id. The Go fallback to the request's API key for caller isolation is not needed: the ledger is always
+  namespaced by `metadata.callerScope`.
 - **Signatures** (`translation/signature/`): `claude.ts` ports the E/R/Q/CAIS validation including the strict protobuf-tree mode
   (`signature-bypass-strict`, default off) and `compatibleAntigravityClaudeThinkingSignature`; `provider.ts` the provider detection and
   `decideSignatureCompatibility` decision table for every target (claude, gemini, gpt, kimi, swe, grok); the Gemini envelope checks and replay sanitiser live in `gemini.ts` (re-exported by `translator/gemini/common/signature.ts`). `go run ./tools/fixturegen/signature` drives the real Go package over a corpus of
