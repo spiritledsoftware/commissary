@@ -1464,7 +1464,7 @@ Deviations from Go (all deliberate, documented in code headers):
   assistant messages in the request in one DO round trip before translating (`textSignatureKeys`) and flushes the entries the
   response translation stored in one write before the chunk is emitted. One DO instance per caller scope holds the entries (1 h
   TTL, 10240 per caller); a backend failure degrades to the bypass signature, never to an error.
-- **Gemini responses (C6, Go `3f5d3a16`, `c5251b57`, `202b8b8c`, `e1fb2521`, `58257007`, `7f2f17d7`, `bdde391d`)**:
+- **Gemini responses (C6, Go `3f5d3a16`, `c5251b57`, `202b8b8c`, `e1fb2521`, `58257007`, `7f2f17d7`, `bdde391d`, `dfe0a0ef`)**:
   a candidate-less `promptFeedback.blockReason` answer is a 502 `upstream blocked the prompt` (non-stream and stream, usage kept;
   the executor checks it before translating, and a block counts as the stream's finish signal, so it never reaches the
   `closed before finishReason` check, which now also covers OpenAI chat clients). Safety/recitation/blocklist/

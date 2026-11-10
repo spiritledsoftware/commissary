@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import type { Json } from "@commissary/json";
 import { builtinTranslators } from "../src/translator/builtin.ts";
 import { makeTranslationState, type SummaryHooks } from "../src/translator/registry.ts";
-import { portedChunkEdit, unusedChunkEditEntries } from "./support/translator-ported-ahead.ts";
+import { portedChunkEdit, staleGoldenEditEntries } from "./support/translator-ported-ahead.ts";
 import {
   applySummaryConfigForModel,
   extractTranslatedSummaryConfig,
@@ -147,7 +147,15 @@ describe("translator golden fixtures with generated ids", () => {
     });
   }
 
-  it("consumed every ported-ahead chunk edit of the generated-id cases", () => {
-    expect(unusedChunkEditEntries(true)).toEqual([]);
+  it("changed a golden with every ported-ahead edit of the generated-id cases", () => {
+    const idCaseKeys = new Set(
+      Object.values(files).flatMap((module) =>
+        module.default
+          .filter((c) => (c.needs ?? []).includes("id-normalization"))
+          .map((c) => `${c.from}->${c.to} ${c.name}`),
+      ),
+    );
+
+    expect(staleGoldenEditEntries((key) => idCaseKeys.has(key))).toEqual([]);
   });
 });

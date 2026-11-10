@@ -443,6 +443,31 @@ describe("OpenAI Responses client -> Gemini credential", () => {
       expect(h.records[0]).toMatchObject({ failed: true, fail: { statusCode: 502 } });
     });
 
+    it("completes an OpenAI chat stream whose finishReason chunk is followed by a usage-only chunk", async () => {
+      const h = harness(() =>
+        sseResponse([
+          `data: ${JSON.stringify({ candidates: [{ content: { parts: [{ text: "Hi" }] }, finishReason: "STOP", index: 0 }], responseId: "r" })}\n\n`,
+          `data: ${JSON.stringify({ usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 2, totalTokenCount: 3 }, responseId: "r" })}\n\n`,
+        ]),
+      );
+
+      afterAll(h.dispose);
+
+      const response = await h.call(
+        "/v1/chat/completions",
+        postJson({
+          model: "gemini-2.5-pro",
+          stream: true,
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      );
+
+      const text = await response.text();
+      expect(text).toContain('"finish_reason":"stop"');
+      expect(text.trimEnd().endsWith("data: [DONE]")).toBe(true);
+      expect(h.records[0]).toMatchObject({ failed: false });
+    });
+
     it("fails an OpenAI chat stream that closes before any finishReason", async () => {
       const h = harness(() =>
         sseResponse([
