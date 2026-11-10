@@ -1113,7 +1113,8 @@ Ported from `internal/runtime/executor/claude_executor*.go`, `internal/translato
   is connected.
 - **Request order** (matches the Go executor and the payload-rules barrier): translate -> thinking -> sanitise ->
   cloaking (system relocation, billing block, identity, date reminder, user_id, context management) ->
-  MCP tool aliasing -> cache-control policy -> tool property-name fallback -> payload rules -> CCH signing (`cch=` is `xxh64` over the normalised
+  MCP tool aliasing -> cache-control policy -> tool property-name fallback -> payload rules -> CCH signing (`cch=` is
+  `xxh64` over the normalised
   final body; only the five hex digits change) -> HTTP. Signing is the last step so it covers payload-rule output.
 - **Tool property names** (`claude/tool-property-names.ts`, also on `count_tokens`): Claude 400s a tool whose
   `input_schema` has a property key outside `^[a-zA-Z0-9_.-]{1,64}$` (`not[labels]`). Such a client tool, in `tools[]` or

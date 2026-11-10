@@ -1130,9 +1130,11 @@ describe("Tool schemas with property names Claude rejects", () => {
     );
     const project = toolWith(body, "Get a project.");
     expect(project.description).toBe("Get a project.");
-    expect(project.input_schema).toEqual(
-      request().tools && (request().tools as JsonObject[])[1]!.input_schema,
-    );
+    expect(project.input_schema).toEqual({
+      type: "object",
+      properties: { id: { type: "string" } },
+      required: ["id"],
+    });
     // History keeps the original argument names.
     const history = (body.messages as JsonObject[])[1]!.content as JsonObject[];
     expect(history[0]!.input).toEqual({ "not[labels]": "bug", state: "opened" });
@@ -1147,7 +1149,7 @@ describe("Tool schemas with property names Claude rejects", () => {
     expectEmbedded(JSON.parse(p.calls[0]!.body) as JsonObject);
   });
 
-  it("embeds the schema before the MCP tool alias is applied", async () => {
+  it("embeds the schema on an OAuth request with MCP tool aliasing", async () => {
     const h = oauthPipeline(() => jsonResponse(message()), await loadConfig(""));
     afterAll(h.pipeline.dispose);
     expect((await h.pipeline.call("/v1/messages", postJson(request()))).status).toBe(200);
@@ -1188,5 +1190,166 @@ requests:
     const tool = (JSON.parse(p.calls[0]!.body) as JsonObject).tools as JsonObject[];
     expect(tool[0]!.description).toBe("configured");
     expect(tool[0]!.input_schema).toEqual({ type: "object" });
+  });
+
+  const responsesRequest = (): JsonObject => ({
+    model: "claude-sonnet-4-5",
+    stream: true,
+    max_output_tokens: 64,
+    input: [{ role: "user", content: "list" }],
+    tools: [
+      {
+        type: "function",
+        name: "list_merge_requests",
+        description: "List merge requests.",
+        strict: true,
+        parameters: rejectedSchema,
+      },
+    ],
+  });
+
+  const toolCallStream = (toolName: string): string[] =>
+    sse([
+      {
+        type: "message_start",
+        message: {
+          id: "msg_01",
+          type: "message",
+          role: "assistant",
+          model: "claude-sonnet-4-5",
+          content: [],
+          usage: { input_tokens: 1, output_tokens: 0 },
+        },
+      },
+      {
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "tool_use", id: "toolu_2", name: toolName, input: {} },
+      },
+      ...["", '{"not[la', 'bels]": "fea', 'ture", "state"', ': "closed"}'].map(
+        (fragment): JsonObject => ({
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "input_json_delta", partial_json: fragment },
+        }),
+      ),
+      { type: "content_block_stop", index: 0 },
+      {
+        type: "message_delta",
+        delta: { stop_reason: "tool_use", stop_sequence: null },
+        usage: { output_tokens: 1 },
+      },
+      { type: "message_stop" },
+    ]);
+
+  const toolArgumentsOf = (text: string): JsonObject => {
+    const done = text
+      .split("\n")
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => JSON.parse(line.slice(5).trim()) as JsonObject)
+      .find((event) => event.type === "response.function_call_arguments.done");
+
+    return JSON.parse(asString(done?.arguments)) as JsonObject;
+  };
+
+  it("keeps the original property names in tool calls of a streamed Responses request", async () => {
+    const p = makePipeline({
+      config: providerKeyConfig,
+      respond: (call) => {
+        const tools = (JSON.parse(call.body) as JsonObject).tools as JsonObject[];
+
+        return sseResponse(toolCallStream(asString(tools[0]!.name)));
+      },
+    });
+
+    afterAll(p.dispose);
+
+    const response = await p.call(
+      "/v1/responses",
+      postJson({ ...responsesRequest(), model: "sonnet" }),
+    );
+
+    expect(response.status).toBe(200);
+    const upstream = (JSON.parse(p.calls[0]!.body) as JsonObject).tools as JsonObject[];
+    expect(upstream[0]!.input_schema).toEqual({ type: "object" });
+    expect(asString(upstream[0]!.description)).toContain(JSON.stringify(rejectedSchema));
+    expect("strict" in upstream[0]!).toBe(false);
+    expect(toolArgumentsOf(await response.text())).toEqual({
+      "not[labels]": "feature",
+      state: "closed",
+    });
+  });
+
+  it("keeps the original property names with OAuth and MCP aliasing", async () => {
+    const h = oauthPipeline(
+      (call) => {
+        const tools = (JSON.parse(call.body) as JsonObject).tools as JsonObject[];
+
+        return sseResponse(toolCallStream(asString(tools[0]!.name)));
+      },
+      await loadConfig(""),
+    );
+
+    afterAll(h.pipeline.dispose);
+    const response = await h.pipeline.call("/v1/responses", postJson(responsesRequest()));
+    expect(response.status).toBe(200);
+    const upstream = lastBody(h).tools as JsonObject[];
+    expect(upstream[0]!.name).not.toBe("list_merge_requests");
+    expect(upstream[0]!.input_schema).toEqual({ type: "object" });
+    expect(toolArgumentsOf(await response.text())).toEqual({
+      "not[labels]": "feature",
+      state: "closed",
+    });
+  });
+
+  it("lets an override-raw payload rule write a rejected-key input_schema", async () => {
+    const config = await loadConfig(`
+api-keys:
+  claude:
+    - keys: [{ api-key: sk-ant-api03-test }]
+      models: [{ name: claude-sonnet-4-5 }]
+requests:
+  payload:
+    override-raw:
+      - models: [{ name: "claude-sonnet-4-5", protocol: claude }]
+        params:
+          tools.0.input_schema: '{"type":"object","properties":{"configured[x]":{"type":"string"}}}'
+`);
+
+    const p = makePipeline({ config, respond: () => jsonResponse(message()) });
+    afterAll(p.dispose);
+    expect((await p.call("/v1/messages", postJson(request()))).status).toBe(200);
+    const tool = ((JSON.parse(p.calls[0]!.body) as JsonObject).tools as JsonObject[])[0]!;
+    expect(tool.input_schema).toEqual({
+      type: "object",
+      properties: { "configured[x]": { type: "string" } },
+    });
+  });
+
+  it("embeds the schema before estimating count_tokens locally", async () => {
+    const gateway = await loadConfig(`
+api-keys:
+  claude:
+    - base-url: https://gateway.test
+      keys: [{ api-key: gw-key }]
+      models: [{ name: claude-sonnet-4-5 }]
+`);
+
+    const p = makePipeline({ config: gateway, respond: () => jsonResponse({}) });
+    afterAll(p.dispose);
+    const plain = JSON.parse(JSON.stringify(request())) as JsonObject;
+    const tools = plain.tools as JsonObject[];
+    tools[0]!.input_schema = { type: "object", properties: { labels: { type: "string" } } };
+
+    const count = async (body: JsonObject): Promise<number> => {
+      const response = await p.call("/v1/messages/count_tokens", postJson(body));
+      expect(response.status).toBe(200);
+
+      return ((await response.json()) as { input_tokens: number }).input_tokens;
+    };
+
+    // The embedded schema text adds to the estimate; without the fallback both counts would be equal-sized schemas.
+    expect(await count(request())).toBeGreaterThan(await count(plain));
+    expect(p.calls).toHaveLength(0);
   });
 });

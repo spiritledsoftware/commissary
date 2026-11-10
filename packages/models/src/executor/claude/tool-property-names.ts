@@ -16,9 +16,9 @@ import { isServerToolType } from "./mcp-alias.ts";
 
 const PROPERTY_KEY_PATTERN = /^[a-zA-Z0-9_.-]{1,64}$/;
 
-export const CLAUDE_TOOL_SCHEMA_MAX_INSPECT_DEPTH = 256;
+const CLAUDE_TOOL_SCHEMA_MAX_INSPECT_DEPTH = 256;
 
-export const CLAUDE_TOOL_SCHEMA_FALLBACK_PREFIX =
+const CLAUDE_TOOL_SCHEMA_FALLBACK_PREFIX =
   "The input object must conform to the following JSON Schema. Use its property names exactly as written, including any characters such as brackets:\n";
 
 /** `claudePropertyKeyAccepted`: whether Claude accepts `name` as an `input_schema` property key. */

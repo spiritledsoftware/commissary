@@ -2,14 +2,15 @@
 import { describe, expect, it } from "vitest";
 import type { Json, JsonObject } from "@commissary/json";
 import {
-  CLAUDE_TOOL_SCHEMA_FALLBACK_PREFIX,
-  CLAUDE_TOOL_SCHEMA_MAX_INSPECT_DEPTH,
   claudePropertyKeyAccepted,
   claudeSchemaHasRejectedPropertyKey,
   normalizeClaudeToolPropertyNames,
 } from "../../src/executor/claude/tool-property-names.ts";
 
 const FALLBACK_SCHEMA = { type: "object" };
+
+const PREFIX =
+  "The input object must conform to the following JSON Schema. Use its property names exactly as written, including any characters such as brackets:\n";
 
 describe("claudePropertyKeyAccepted", () => {
   it.each([
@@ -63,10 +64,10 @@ describe("normalizeClaudeToolPropertyNames", () => {
     ).definition as JsonObject;
 
     const fallbacks: Array<[JsonObject, string]> = [
-      [tools[0]!, `List merge requests.\n\n${CLAUDE_TOOL_SCHEMA_FALLBACK_PREFIX}${rejectedSchema}`],
-      [tools[1]!, `${CLAUDE_TOOL_SCHEMA_FALLBACK_PREFIX}${nestedSchema}`],
-      [tools[2]!, `Default.\n\n${CLAUDE_TOOL_SCHEMA_FALLBACK_PREFIX}${propertyNamedDefault}`],
-      [inline, `Inline.\n\n${CLAUDE_TOOL_SCHEMA_FALLBACK_PREFIX}${inlineSchema}`],
+      [tools[0]!, `List merge requests.\n\n${PREFIX}${rejectedSchema}`],
+      [tools[1]!, `${PREFIX}${nestedSchema}`],
+      [tools[2]!, `Default.\n\n${PREFIX}${propertyNamedDefault}`],
+      [inline, `Inline.\n\n${PREFIX}${inlineSchema}`],
     ];
 
     for (const [tool, description] of fallbacks) {
@@ -95,7 +96,8 @@ describe("normalizeClaudeToolPropertyNames", () => {
   });
 
   it("falls back for schemas nested beyond the inspection depth", () => {
-    const depth = CLAUDE_TOOL_SCHEMA_MAX_INSPECT_DEPTH + 10;
+    // Go's inspection depth is 256.
+    const depth = 266;
     const schema = `${'{"not":'.repeat(depth)}{}${"}".repeat(depth)}`;
     const out = json(`{"tools":[{"name":"deep","input_schema":${schema}}]}`);
     normalizeClaudeToolPropertyNames(out);

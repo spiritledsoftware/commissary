@@ -4,7 +4,8 @@
  * Go source: internal/runtime/executor/claude_executor_execute.go and claude_executor_stream.go (Execute /
  * ExecuteStream), claude_executor_tokens.go (countTokensUpstream). Order (ARCHITECTURE.md "Request pipeline"):
  * translate -> upstream model -> Thinking.apply -> cloaking -> provider shaping (context management, diagnostics,
- * max tokens, sampling, cache control, tool aliases, tool property-name fallback, sanitising, identity, CCH placeholder) -> user payload rules
+ * max tokens, sampling, cache control, tool aliases, tool property-name fallback, sanitising, identity, CCH
+ * placeholder) -> user payload rules
  * (the last semantic mutation) -> betas extraction / `prompt_cache_options` removal -> serialise + CCH signature.
  * Nothing after the payload rules changes business fields except the caller-betas extraction and the signature.
  */
