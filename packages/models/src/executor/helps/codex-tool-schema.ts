@@ -5,7 +5,8 @@
  * internal/client/codex/tool-schema/tool_schema.go (NormalizeCodexToolIntegerTypes). Bodies are parsed JSON mutated
  * in place.
  *  - {@link normalizeCodexToolSchemas}: collapses pure-constant `oneOf`/`anyOf` unions (>= 8 branches, e.g. MCP enums)
- *    into `enum` and drops regex patterns upstream validators reject. Runs inside the Codex executor.
+ *    into `enum`, drops regex patterns upstream validators reject and numeric bounds outside int64 (the backend
+ *    answers those with HTTP 500, 57d005fe). Runs inside the Codex executor.
  *  - {@link normalizeCodexToolIntegerTypes}: `number` -> `integer` for the numeric fields of the Codex CLI's own
  *    tools; part of the payload barrier for Codex clients targeting non-Codex executors (see `payload.ts`).
  */
@@ -43,12 +44,30 @@ export const isCodexUserAgent = (headers: HeaderInput | undefined): boolean =>
 // Schema simplification
 // ---------------------------------------------------------------------------------------------------------------
 
-/** `stripIncompatiblePatterns`: schema-aware removal of unsupported `pattern`s; true when something was removed. */
-const stripIncompatiblePatterns = (value: Json | undefined): boolean => {
+const NUMERIC_BOUND_KEYWORDS = [
+  "minimum",
+  "maximum",
+  "exclusiveMinimum",
+  "exclusiveMaximum",
+] as const;
+
+const INT64_LIMIT = 2 ** 63;
+
+/**
+ * `isNumericBoundOutOfInt64`, on a parsed double. Go reads the number's source text; a parsed body keeps only the
+ * double, so a bound that rounds to 2^63 (`9223372036854775807` and up) or to -2^63 (`-9223372036854775808` and
+ * down) counts as out of range, and a non-integral bound beyond 2^53 cannot exist. The exact int64 extremes are
+ * over-stripped, and -2^63 re-serialises as `-9223372036854776000`, which the backend answers with 500 anyway.
+ */
+const isOutOfInt64 = (bound: Json | undefined): boolean =>
+  typeof bound === "number" && !(bound > -INT64_LIMIT && bound < INT64_LIMIT);
+
+/** `stripIncompatibleSchemaKeywords`: schema-aware removal of unsupported `pattern`s and out-of-int64 bounds; true when something was removed. */
+const stripIncompatibleSchemaKeywords = (value: Json | undefined): boolean => {
   let changed = false;
 
   if (isJsonArray(value)) {
-    for (const item of value) if (stripIncompatiblePatterns(item)) changed = true;
+    for (const item of value) if (stripIncompatibleSchemaKeywords(item)) changed = true;
 
     return changed;
   }
@@ -61,6 +80,13 @@ const stripIncompatiblePatterns = (value: Json | undefined): boolean => {
     changed = true;
   }
 
+  for (const boundKey of NUMERIC_BOUND_KEYWORDS) {
+    if (isOutOfInt64(value[boundKey])) {
+      delete value[boundKey];
+      changed = true;
+    }
+  }
+
   const patternProperties = value["patternProperties"];
 
   if (isJsonObject(patternProperties)) {
@@ -68,7 +94,7 @@ const stripIncompatiblePatterns = (value: Json | undefined): boolean => {
       if (hasUnsupportedUnicodePropertyEscape(key)) {
         delete patternProperties[key];
         changed = true;
-      } else if (stripIncompatiblePatterns(patternProperties[key])) {
+      } else if (stripIncompatibleSchemaKeywords(patternProperties[key])) {
         changed = true;
       }
     }
@@ -79,13 +105,15 @@ const stripIncompatiblePatterns = (value: Json | undefined): boolean => {
     const sub = value[mapKey];
 
     if (isJsonObject(sub))
-      for (const child of Object.values(sub)) if (stripIncompatiblePatterns(child)) changed = true;
+      for (const child of Object.values(sub))
+        if (stripIncompatibleSchemaKeywords(child)) changed = true;
   }
 
   for (const valueKey of SCHEMA_VALUE_KEYWORDS) {
     const sub = value[valueKey];
 
-    if ((isJsonObject(sub) || isJsonArray(sub)) && stripIncompatiblePatterns(sub)) changed = true;
+    if ((isJsonObject(sub) || isJsonArray(sub)) && stripIncompatibleSchemaKeywords(sub))
+      changed = true;
   }
 
   return changed;
@@ -185,7 +213,7 @@ const normalizePropertySchema = (prop: Json): boolean => {
 const normalizeParameters = (params: Json): boolean => {
   let changed = false;
 
-  if (stripIncompatiblePatterns(params)) changed = true;
+  if (stripIncompatibleSchemaKeywords(params)) changed = true;
 
   const properties = get(params, "properties");
 

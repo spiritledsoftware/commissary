@@ -726,6 +726,21 @@ Core contracts every provider slice implements (Go references in each module hea
   canonical `reasoning_effort`, assistant tool-call turns get a `" "` `reasoning_content` placeholder (DeepSeek-style
   upstreams reject them without one) or lose a blank one; payload rules run afterwards and can override or filter it. The
   compat request translator adds the same placeholder from the Claude body and the model suffixes.
+- **Codex request hygiene** (B2, Go `bfac8586`, `606e667a`, `57d005fe`, `99d1698f`, `b0debb35`, `05e668cf`), with three differences from Go:
+  - _Output budget floor_: `normalizeCodexOutputBudget` (`executor/codex/request.ts`) raises an integer `max_output_tokens` of 1..15 to 16 on the
+    translated body in `prepare` (HTTP and WebSocket), before the payload rules, and not for `/responses/compact` (Go skips it too). Of the
+    Codex translators only Interactions carries the field into the body (Responses and Chat drop it, Claude never sets it; forwarding is #395), so
+    that is the one source the clamp changes today. Commissary has no Codex inference-verification ping to move to 16.
+  - _int64 bounds_: `minimum`/`maximum`/`exclusiveMinimum`/`exclusiveMaximum` outside int64 are stripped from tool schemas only (not from
+    `default`/`enum` data). Go reads the number's source text; a parsed body keeps a double, so a bound that rounds to 2^63 (`9223372036854775807`)
+    or to -2^63 (`-9223372036854775808`, `-9223372036854775809`) is stripped too (the exact int64 extremes are over-stripped; -2^63 re-serialises
+    as out-of-range text anyway), and a non-integral bound beyond 2^53 cannot exist.
+  - _Input item ids_: besides the character replacement, `codex-input-ids.ts` carries the `SEEN`/`DUPLICATE` collision state and per-original collision
+    key that Go added in `90c447d3` (together with the `tsc_` prefix for `tool_search_call`, which is not ported here: C5, #372).
+  - _Orphan tool outputs_: `sanitizeOrphanResponsesToolOutputs` (`translation/common/responses.ts`) runs in the Responses -> Codex translator and in
+    `codex-prepare.ts` (HTTP Responses and Compact only, after the orphan delegation rewrite; WebSocket frames skip it as in Go, but their Codex
+    translation still applies it). The text of a non-array output that has
+    no text is the re-serialised JSON, where Go keeps the client's raw bytes.
 - **Sessions**: `handlers/session.ts` ports `session.ExtractSessionInfo` (headers, Claude `metadata.user_id`, body fields)
   and feeds `PickRequest.session` together with the Access `callerScope`. Requests without an explicit marker are bound by
   content (`models/session-routing/`, `routing.ts` = `prepareSessionRouting`, only when `routing.session-affinity` is on):

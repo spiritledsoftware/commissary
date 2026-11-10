@@ -46,7 +46,7 @@ const handle = (compact: boolean) =>
     if (body === undefined) return badRequest("request body is not valid JSON");
 
     // Official Codex clients: collaboration tools (not for compaction) and orphan delegations.
-    yield* prepareCodexResponsesRequest(body, request.headers, !compact);
+    yield* prepareCodexResponsesRequest(body, request.headers, !compact, true);
     const streamField = get(body, "stream");
 
     if (compact) {

@@ -7,6 +7,7 @@ import { setModelInfoLookup } from "../src/translator/model-info.ts";
 import { summaryHooks } from "../src/translator/summary-hooks.ts";
 import {
   unusedMaxTokensAheadEntries,
+  unusedParallelToolCallsAheadEntries,
   unusedResponseAheadEntries,
 } from "./support/translator-ported-ahead.ts";
 import { catalogLookup } from "./support/thinking.ts";
@@ -36,6 +37,7 @@ describe("translator golden fixtures", () => {
   it("consumed every ported-ahead entry", () => {
     expect(unusedMaxTokensAheadEntries()).toEqual([]);
     expect(unusedResponseAheadEntries()).toEqual([]);
+    expect(unusedParallelToolCallsAheadEntries()).toEqual([]);
   });
 
   it("found fixture files", () => {

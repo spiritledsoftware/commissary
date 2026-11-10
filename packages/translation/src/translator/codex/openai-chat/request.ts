@@ -18,6 +18,7 @@ import {
 } from "@commissary/json";
 import { unwrapApplyPatchInput } from "../../common/apply-patch.ts";
 import { UserTurnDrops } from "../../common/parts.ts";
+import { shortenCodexCallIdIfNeeded } from "../claude/request.ts";
 
 /** `sanitizeToolName`: characters outside `[a-zA-Z0-9_-]` become `_`. */
 export const sanitizeToolName = (name: string): string => {
@@ -284,7 +285,8 @@ export const convertOpenAIRequestToCodex = (
   const serviceTier = normalizeCodexServiceTier(get(body, "service_tier"));
 
   if (serviceTier !== "") out = set(out, "service_tier", serviceTier);
-  out = set(out, "parallel_tool_calls", true);
+  // An explicit false survives; null, absent and anything else default to true (99d1698f).
+  out = set(out, "parallel_tool_calls", get(body, "parallel_tool_calls") !== false);
   out = set(out, "include", ["reasoning.encrypted_content"]);
   out = set(out, "model", modelName);
 
@@ -493,6 +495,17 @@ export const convertOpenAIRequestToCodex = (
 
           for (let suffix = 1; usedCallIds.has(callId); suffix++) callId = `${base}_${suffix}`;
           usedCallIds.add(callId);
+        }
+
+        // Codex rejects call_id values longer than 64 characters (b0debb35). The hash seeds from the id, and a
+        // legal id that equals another's shortened form moves the later one on to the next attempt.
+        let shortId = shortenCodexCallIdIfNeeded(callId);
+
+        if (shortId !== callId) {
+          for (let attempt = 1; usedCallIds.has(shortId); attempt++)
+            shortId = shortenCodexCallIdIfNeeded(`${callId}_${attempt}`);
+          usedCallIds.add(shortId);
+          callId = shortId;
         }
 
         pending.push({ callId, sourceCallId, callType: resolved.callType, consumed: false });

@@ -7,7 +7,11 @@ import { expect, it } from "vitest";
 import type { Json } from "@commissary/json";
 import { builtinTranslators } from "../../src/translator/builtin.ts";
 import { makeTranslationState, type RequestEnvelope } from "../../src/translator/registry.ts";
-import { portedMaxTokens, portedResponse } from "./translator-ported-ahead.ts";
+import {
+  portedMaxTokens,
+  portedParallelToolCalls,
+  portedResponse,
+} from "./translator-ported-ahead.ts";
 import { expandEmbeddedJson } from "./structural.ts";
 
 export interface TranslatorFixtureCase {
@@ -138,6 +142,16 @@ const checkTranslatorFixture = (
     !Array.isArray(expected)
   )
     expected.max_tokens = maxTokens;
+
+  const parallel = portedParallelToolCalls(`${c.from}->${c.to} ${c.name}`);
+
+  if (
+    parallel !== undefined &&
+    typeof expected === "object" &&
+    expected !== null &&
+    !Array.isArray(expected)
+  )
+    expected.parallel_tool_calls = parallel;
 
   expect(expandEmbeddedJson(envelope.body)).toEqual(expected);
 

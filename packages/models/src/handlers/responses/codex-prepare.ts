@@ -13,31 +13,41 @@ import {
   prepareCodexMultiAgentV2Tools,
   rewriteCodexOrphanDelegationInputForConfig,
 } from "../../executor/helps/codex-multi-agent-v2.ts";
-import type { Json } from "@commissary/json";
+import { get, type Json } from "@commissary/json";
+import { sanitizeOrphanResponsesToolOutputs } from "@commissary/translation";
 import { currentConfig } from "../request.ts";
 import { ModelProviders } from "../model-providers.ts";
 
 /**
- * Mutates the parsed Responses `body` in place: orphan delegations always (config opt-in), the multi-agent v2 tool
- * preparation only when `tools` (Responses and WebSocket frames, not `/responses/compact`). Never fails: a missing
- * registry only skips the model list.
+ * Mutates the parsed Responses `body` in place: orphan delegations (config opt-in), the multi-agent v2 tool
+ * preparation only when `tools` (Responses and WebSocket frames, not `/responses/compact`) and, only when
+ * `orphanOutputs` (HTTP Responses and Compact, like Go's 05e668cf; not WebSocket frames), tool outputs without a
+ * call_id. Never fails: a missing registry only skips the model list.
  */
-export const prepareCodexResponsesRequest = (body: Json, headers: HeaderInput, tools: boolean) =>
+export const prepareCodexResponsesRequest = (
+  body: Json,
+  headers: HeaderInput,
+  tools: boolean,
+  orphanOutputs: boolean,
+) =>
   Effect.gen(function* () {
     const config = yield* Effect.orElseSucceed(currentConfig, () => undefined);
 
-    if (config === undefined) return;
+    if (config !== undefined) {
+      if (tools && codexMultiAgentV2Enabled(headers, config)) {
+        const providers = yield* ModelProviders;
 
-    if (tools && codexMultiAgentV2Enabled(headers, config)) {
-      const providers = yield* ModelProviders;
+        const source =
+          providers.spawnAgentSource === undefined
+            ? undefined
+            : yield* Effect.orElseSucceed(providers.spawnAgentSource, () => undefined);
 
-      const source =
-        providers.spawnAgentSource === undefined
-          ? undefined
-          : yield* Effect.orElseSucceed(providers.spawnAgentSource, () => undefined);
+        prepareCodexMultiAgentV2Tools(headers, body, true, source);
+      }
 
-      prepareCodexMultiAgentV2Tools(headers, body, true, source);
+      rewriteCodexOrphanDelegationInputForConfig(headers, body, config);
     }
 
-    rewriteCodexOrphanDelegationInputForConfig(headers, body, config);
+    // After the orphan delegation rewrite, which owns the `codex_app` outputs this leaves alone.
+    if (orphanOutputs) sanitizeOrphanResponsesToolOutputs(get(body, "input"));
   });

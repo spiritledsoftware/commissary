@@ -88,7 +88,7 @@ export const handleResponsesSocket = Effect.gen(function* () {
       toolSessionKey: downstreamSessionKey(headers, identity.callerScope),
       toolCaches: defaultToolCaches,
       steering,
-      prepare: (payload) => prepareCodexResponsesRequest(payload, headers, true),
+      prepare: (payload) => prepareCodexResponsesRequest(payload, headers, true, false),
       execute: (input: Omit<ExecutionInput, "request">) => executeStream({ ...input, request }),
     },
     raw,

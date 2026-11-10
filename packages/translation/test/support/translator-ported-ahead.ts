@@ -13,6 +13,9 @@ import type { JsonObject } from "@commissary/json";
  *   keep their golden output); `nonStream` replaces the whole body. `message_delta` waits for the trailing usage-only
  *   chunk or `[DONE]` instead of firing on the chunk that carries `finish_reason`, and a top-level `reasoning_content`
  *   block precedes the text block.
+ * - `portedParallelToolCalls` (ticket B2, Go `99d1698f`): the `parallel_tool_calls` a Codex-bound request case must now
+ *   produce. An explicit `false` from the client survives instead of being forced to `true`; Go changed this case's
+ *   input to `null` to keep covering the forced default, while the fixture still sends `false`.
  */
 
 const ROWS: ReadonlyArray<readonly [string, number]> = [
@@ -47,6 +50,28 @@ export const portedMaxTokens = (key: string): number | undefined => {
 /** The entries no case consumed: stale once the fixtures are regenerated or a case is renamed. */
 export const unusedMaxTokensAheadEntries = (): string[] =>
   [...PORTED_MAX_TOKENS_AHEAD_OF_FIXTURES.keys()].filter((key) => !used.has(key));
+
+const PORTED_PARALLEL_TOOL_CALLS_AHEAD_OF_FIXTURES: ReadonlyMap<string, boolean> = new Map([
+  [
+    "openai-response->codex request: string input, sampling and cache fields stripped, system role to developer",
+    false,
+  ],
+]);
+
+const usedParallel = new Set<string>();
+
+/** The `parallel_tool_calls` the case `key` now produces, when its golden predates the port. */
+export const portedParallelToolCalls = (key: string): boolean | undefined => {
+  const value = PORTED_PARALLEL_TOOL_CALLS_AHEAD_OF_FIXTURES.get(key);
+
+  if (value !== undefined) usedParallel.add(key);
+
+  return value;
+};
+
+/** The entries no case consumed. */
+export const unusedParallelToolCallsAheadEntries = (): string[] =>
+  [...PORTED_PARALLEL_TOOL_CALLS_AHEAD_OF_FIXTURES.keys()].filter((key) => !usedParallel.has(key));
 
 /** What a response case now produces; see the module comment. */
 export interface PortedResponse {
