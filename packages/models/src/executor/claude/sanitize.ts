@@ -3,7 +3,8 @@
  *
  * Go source: internal/runtime/executor/claude_executor.go (sanitizeClaudeMessagesForClaudeUpstreamWithDebug,
  * shouldSanitizeClaudeMessagesForUpstream, sanitizeClaudeWebSearchDomains). Signature handling is the full
- * `internal/signature` port (`signature/claude-messages.ts`); the report logging of Go is not ported.
+ * `internal/signature` port (`signature/claude-messages.ts`); the report logging of Go is not ported. Non-portable tool
+ * call ids are normalised last (`helps/tool-call-ids.ts`, Go helps.NormalizeClaudeToolCallIDs).
  */
 import type { JsonObject } from "@commissary/json";
 import { isArr, isObj, str } from "@commissary/translation";
@@ -12,6 +13,7 @@ import {
   sanitizeClaudeMessagesForClaudeUpstream,
   signatureProviderFromModelName,
 } from "@commissary/translation/signature";
+import { normalizeClaudeToolCallIds } from "../helps/tool-call-ids.ts";
 
 /** `sanitizeClaudeWebSearchDomains`: empty domain lists are rejected upstream. */
 export const sanitizeWebSearchDomains = (body: JsonObject): void => {
@@ -45,4 +47,5 @@ export const sanitizeForClaudeUpstream = (
   }
 
   sanitizeWebSearchDomains(body);
+  normalizeClaudeToolCallIds(body);
 };

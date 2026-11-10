@@ -88,6 +88,59 @@ describe("Kimi via /v1/chat/completions", () => {
   });
 });
 
+describe("Kimi via /v1/messages", () => {
+  // Go kimi_executor.go reaches the same Claude sanitiser as the Claude provider (e9c8769a).
+  it("normalises non-portable tool call ids on the embedded Claude path", async () => {
+    const config = await loadConfig("requests: {}");
+
+    const p = makePipeline({
+      config,
+      credentialPicker: fixedPicker([kimi]),
+      modelProviders: providers("kimi"),
+      respond: () =>
+        jsonResponse({
+          id: "msg_1",
+          type: "message",
+          role: "assistant",
+          model: "kimi-for-coding",
+          content: [{ type: "text", text: "ok" }],
+          stop_reason: "end_turn",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        }),
+    });
+
+    afterAll(p.dispose);
+
+    const response = await p.call(
+      "/v1/messages",
+      postJson({
+        model: "kimi-k2.8",
+        max_tokens: 16,
+        messages: [
+          { role: "user", content: "go" },
+          {
+            role: "assistant",
+            content: [{ type: "tool_use", id: "Bash:1#abc", name: "Bash", input: {} }],
+          },
+          {
+            role: "user",
+            content: [{ type: "tool_result", tool_use_id: "Bash:1#abc", content: "done" }],
+          },
+        ],
+      }),
+    );
+
+    expect(response.status).toBe(200);
+
+    const sent = JSON.parse(p.calls[0]?.body ?? "{}") as {
+      messages: Array<{ content: Array<{ id?: string; tool_use_id?: string }> }>;
+    };
+
+    expect(sent.messages[1]?.content[0]?.id).toBe("cpa_tid_v1_QmFzaDoxI2FiYw");
+    expect(sent.messages[2]?.content[0]?.tool_use_id).toBe("cpa_tid_v1_QmFzaDoxI2FiYw");
+  });
+});
+
 describe("Meta via /v1/responses", () => {
   it("streams the aggregated Responses answer for a non-stream client", async () => {
     const config = await loadConfig("requests: {}");

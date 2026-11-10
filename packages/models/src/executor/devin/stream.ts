@@ -9,11 +9,13 @@
  * content is suppressed (the caller turns it into an HTTP error); the stream must end with the EOS trailer.
  * A custom `apply_patch` call whose arguments arrive as `invalid_json_str` is held back until the clean end of the
  * stream: a complete bare patch is then wrapped into JSON arguments (`apply-patch-recovery.ts`), anything else is
- * delivered as invalid arguments, which the executor's apply_patch guards fail.
+ * delivered as invalid arguments, which the executor's apply_patch guards fail. Non-portable tool call ids are emitted
+ * as `cpa_tid_v1_<base64url>` (`helps/tool-call-ids.ts`); the executor decodes them before the next prompt is built.
  */
 import { randomUUID } from "node:crypto";
 import { asString, type JsonObject, parseJsonOrText } from "@commissary/json";
 import { Formats } from "@commissary/translation/formats";
+import { encodeToolCallId } from "../helps/tool-call-ids.ts";
 import {
   canBeDevinBareApplyPatchPrefix,
   recoverDevinBareApplyPatch,
@@ -221,7 +223,10 @@ export class DevinStreamAssembler {
     });
   }
 
-  #emitToolCall(call: DevinToolCallDelta): void {
+  #emitToolCall(upstreamCall: DevinToolCallDelta): void {
+    // Non-portable ids leave encoded (Go `EncodeDevinToolCallID`); the slots are keyed by the encoded id throughout.
+    const call = { ...upstreamCall, id: encodeToolCallId(upstreamCall.id) };
+
     if (this.#thoughtStarted) {
       this.#stepStop(this.#stepIndex);
       this.#thoughtStarted = false;
@@ -701,11 +706,13 @@ export class DevinAggregator {
 
       if (tool.invalidJson) invalidJsonToolNames.push(tool.name);
 
+      const id = encodeToolCallId(tool.id);
+
       const step: JsonObject = {
         type: "function_call",
         name: tool.name,
-        id: tool.id,
-        call_id: tool.id,
+        id,
+        call_id: id,
         arguments: {},
       };
 

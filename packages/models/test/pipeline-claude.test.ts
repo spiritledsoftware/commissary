@@ -1508,3 +1508,110 @@ requests:
     ).toBe(4096);
   });
 });
+
+// Go e9c8769a: Anthropic accepts only [A-Za-z0-9_-] in tool call ids; a foreign id replayed in a Claude-format body is
+// rewritten to `cpa_tid_v1_<base64url>` on both blocks, before the payload rules.
+describe("Non-portable tool call ids", () => {
+  const ENCODED = "cpa_tid_v1_Y2FsbDox";
+
+  const history = (): JsonObject[] => [
+    { role: "user", content: "go" },
+    {
+      role: "assistant",
+      content: [
+        { type: "tool_use", id: "call:1", name: "get_weather", input: {} },
+        { type: "tool_use", id: "toolu_ok", name: "get_weather", input: {} },
+      ],
+    },
+    {
+      role: "user",
+      content: [
+        { type: "tool_result", tool_use_id: "call:1", content: "sunny" },
+        { type: "tool_result", tool_use_id: "toolu_ok", content: "rain" },
+      ],
+    },
+  ];
+
+  const ids = (body: JsonObject): string[] =>
+    (body.messages as JsonObject[]).flatMap((m) =>
+      Array.isArray(m.content)
+        ? (m.content as JsonObject[]).map((b) => asString(b.id ?? b.tool_use_id))
+        : [],
+    );
+
+  const RULE_YAML = `${API_KEY_YAML}
+requests:
+  payload:
+    override:
+      - models: [{ name: "claude-sonnet-4-5", protocol: claude }]
+        params:
+          messages.1.content.1.id: "rule:set"
+`;
+
+  it("encodes a native Claude-format id on tool_use.id and tool_use_id alike, portable ids untouched", async () => {
+    const p = makePipeline({ config: providerKeyConfig, respond: () => jsonResponse(message()) });
+    afterAll(p.dispose);
+
+    const response = await p.call(
+      "/v1/messages",
+      postJson({ model: "sonnet", max_tokens: 8, messages: history() }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(ids(JSON.parse(p.calls[0]!.body) as JsonObject)).toEqual([
+      ENCODED,
+      "toolu_ok",
+      ENCODED,
+      "toolu_ok",
+    ]);
+  });
+
+  it("runs before the payload rules on Messages and on upstream count_tokens", async () => {
+    const config = await loadConfig(RULE_YAML);
+    const p = makePipeline({ config, respond: () => jsonResponse({ input_tokens: 5 }) });
+    afterAll(p.dispose);
+
+    const request = postJson({ model: "sonnet", max_tokens: 8, messages: history() });
+    await p.call("/v1/messages", request);
+    await p.call("/v1/messages/count_tokens", request);
+
+    for (const call of p.calls) {
+      // The rule's own non-portable value survives: nothing normalises after the rules.
+      expect(ids(JSON.parse(call.body) as JsonObject)).toEqual([
+        ENCODED,
+        "rule:set",
+        ENCODED,
+        "toolu_ok",
+      ]);
+    }
+  });
+
+  it("normalises before the local count_tokens estimate as well", async () => {
+    const gateway = await loadConfig(`
+api-keys:
+  claude:
+    - base-url: https://gateway.test
+      keys: [{ api-key: gw-key }]
+      models: [{ name: claude-sonnet-4-5 }]
+`);
+
+    const p = makePipeline({ config: gateway, respond: () => jsonResponse({}) });
+    afterAll(p.dispose);
+
+    const count = async (id: string): Promise<number> => {
+      const messages = history().map((m) => JSON.parse(JSON.stringify(m).replaceAll("call:1", id)));
+
+      const response = await p.call(
+        "/v1/messages/count_tokens",
+        postJson({ model: "claude-sonnet-4-5", messages }),
+      );
+
+      expect(response.status).toBe(200);
+
+      return ((await response.json()) as { input_tokens: number }).input_tokens;
+    };
+
+    // `call:1` becomes the longer `cpa_tid_v1_…`; the portable `call_1` of the same length stays as it is.
+    expect(await count("call:1")).toBeGreaterThan(await count("call_1"));
+  });
+});
