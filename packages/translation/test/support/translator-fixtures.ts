@@ -7,7 +7,7 @@ import { expect, it } from "vitest";
 import type { Json } from "@commissary/json";
 import { builtinTranslators } from "../../src/translator/builtin.ts";
 import { makeTranslationState, type RequestEnvelope } from "../../src/translator/registry.ts";
-import { portedMaxTokens } from "./translator-ported-ahead.ts";
+import { portedMaxTokens, portedResponse } from "./translator-ported-ahead.ts";
 import { expandEmbeddedJson } from "./structural.ts";
 
 export interface TranslatorFixtureCase {
@@ -155,7 +155,14 @@ const checkTranslatorFixture = (
       builtinTranslators.translateStream(c.from, c.to, context, line).map(normalizeChunk),
     );
 
-    expect(outputs).toEqual((c.streamOutputs ?? []).map((chunks) => chunks.map(normalizeChunk)));
+    // A case whose golden predates the C3 response fixes expects the new events on the lines they moved to.
+    const ahead = portedResponse(`${c.from}->${c.to} ${c.name}`)?.stream;
+
+    const expectedOutputs = (c.streamOutputs ?? []).map((chunks, index) =>
+      (ahead?.get(index) ?? chunks).map(normalizeChunk),
+    );
+
+    expect(outputs).toEqual(expectedOutputs);
   }
 
   if (c.responseBodyText !== undefined) {
@@ -169,8 +176,11 @@ const checkTranslatorFixture = (
 
     const out = builtinTranslators.translateNonStream(c.from, c.to, context, c.responseBodyText);
 
+    const expectedBody =
+      portedResponse(`${c.from}->${c.to} ${c.name}`)?.nonStream ?? c.nonStreamOutput;
+
     expect(out === undefined ? undefined : normalizeChunk(out)).toEqual(
-      c.nonStreamOutput === undefined ? undefined : normalizeChunk(c.nonStreamOutput),
+      expectedBody === undefined ? undefined : normalizeChunk(expectedBody),
     );
   }
 
