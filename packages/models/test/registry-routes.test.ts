@@ -20,7 +20,8 @@ import {
   userClaims,
 } from "@commissary/auth/testing";
 import { catalogs } from "./support/registry.ts";
-import { configOf, source } from "./support/registry-sources.ts";
+import { claudeKeySource, configOf, source } from "./support/registry-sources.ts";
+import type { ModelSource } from "../src/registry/source.ts";
 
 const key = await makeKey("models-kid");
 
@@ -331,5 +332,88 @@ oauth:
     } finally {
       await handler.dispose();
     }
+  });
+});
+
+describe("native tool search in the Codex catalog through the Worker", () => {
+  const GATE = "upstream:\n  claude:\n    tool-search: true\n";
+
+  const SONNET = "claude-sonnet-4-5-20250929";
+
+  const GATEWAY = { base_url: "https://gateway.test" };
+
+  /** The snapshot's own answer, and the answer of `/v1/models?client_version=` to a caller. */
+  const searchFlag = async (
+    sources: ModelSource[],
+    yaml = GATE,
+    slug = SONNET,
+  ): Promise<{ readonly snapshot: boolean; readonly route: boolean | undefined }> => {
+    const snapshot = buildSnapshot({ config: configOf(yaml), catalogs, now: NOW, sources });
+
+    const handler = makeHandler(
+      Layer.succeed(
+        ModelRegistry,
+        ModelRegistry.of({ snapshot: Effect.succeed(snapshot), fresh: Effect.succeed(snapshot) }),
+      ),
+    );
+
+    try {
+      const response = await caller(handler)("/v1/models?client_version=0.150.0");
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as { models: Array<Record<string, unknown>> };
+
+      return {
+        snapshot: snapshot.nativeToolSearchCapability(slug),
+        route: body.models.find((model) => model.slug === slug)?.supports_search_tool === true,
+      };
+    } finally {
+      await handler.dispose();
+    }
+  };
+
+  it("is true for a caller reaching only native credentials, whose origin comes from a real base URL", async () => {
+    expect((await searchFlag([claudeKeySource("claude-a")])).route).toBe(true);
+
+    const anthropic = claudeKeySource("claude-a", { base_url: "https://api.anthropic.com" });
+    expect((await searchFlag([anthropic])).route).toBe(true);
+
+    const flagged = claudeKeySource("gw", { ...GATEWAY, native_tool_search: "true" });
+    expect((await searchFlag([flagged])).route).toBe(true);
+  });
+
+  it("is false for a caller who also reaches a non-native custom-base-URL key", async () => {
+    const sources = [claudeKeySource("claude-a"), claudeKeySource("claude-gw", GATEWAY)];
+    expect((await searchFlag(sources)).route).toBe(false);
+  });
+
+  it("is false for a model that predates tool search, judged after aliasing", async () => {
+    const yaml = `${GATE}oauth:
+  model-alias:
+    claude:
+      - { name: claude-opus-4-1-20250805, alias: legacy-fast }
+      - { name: ${SONNET}, alias: modern-fast }
+`;
+
+    // Aliases are an OAuth account's (`oauth.model-alias`).
+    const sources = [claudeKeySource("claude-a", {}, { authKind: "oauth" })];
+    expect((await searchFlag(sources, yaml, "legacy-fast")).route).toBe(false);
+    expect((await searchFlag(sources, yaml, "modern-fast")).route).toBe(true);
+  });
+
+  it("answers within the caller's view: another member's private non-native credential does not change it", async () => {
+    const sources = [
+      claudeKeySource("claude-a"),
+      claudeKeySource("claude-private", GATEWAY, { owner: "someone-else" }),
+    ];
+
+    const answer = await searchFlag(sources);
+    // The unfiltered snapshot knows the private credential and says false; the route answers from the caller's view.
+    expect(answer.snapshot).toBe(false);
+    expect(answer.route).toBe(true);
+
+    const snapshot = buildSnapshot({ config: configOf(GATE), catalogs, now: NOW, sources });
+    expect(snapshot.visibleTo(undefined).nativeToolSearchCapability(SONNET)).toBe(true);
+    // Its owner does reach it, so for them the answer is false.
+    expect(snapshot.visibleTo("someone-else").nativeToolSearchCapability(SONNET)).toBe(false);
   });
 });

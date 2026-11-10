@@ -17,6 +17,7 @@ import { CurrentOrg, type OrgId } from "@commissary/core";
 import { ALLOW_ALL, type Reach, reachFromTable } from "../grants/reach.ts";
 import type { GrantTable } from "../grants/grant.ts";
 import { projectModel } from "./availability.ts";
+import { sourceTakesNativeToolSearch } from "./native-tool-search.ts";
 import { assembleCredentialModels } from "./credential-models.ts";
 import { type GrantFilter, grantFilter } from "./grant-filter.ts";
 import { CatalogStore } from "./catalog-store.ts";
@@ -89,6 +90,10 @@ export class RegistrySnapshot {
   /** `GetResponsesWebSearchCapability`: tri-state over every route serving the public model. */
   responsesWebSearchCapability = (modelId: string): boolean | undefined =>
     this.index.responsesWebSearchCapability(modelId);
+
+  /** Whether the catalog may advertise `tool_search` for the model: native tool search on every credential serving it. */
+  nativeToolSearchCapability = (modelId: string): boolean =>
+    this.index.nativeToolSearchCapability(modelId);
 
   readonly #memberViews = new Map<string, RegistrySnapshot>();
 
@@ -195,6 +200,7 @@ export const buildSnapshot = (input: {
       provider: assembled.provider,
       models: assembled.models,
       projection: (model) => projectModel(source, model, now),
+      nativeToolSearch: (model) => sourceTakesNativeToolSearch(config, source, model),
     });
   }
 

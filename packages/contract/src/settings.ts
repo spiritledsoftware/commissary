@@ -116,6 +116,8 @@ export const SETTINGS_TREE = {
     },
     claude: {
       "model-level-cooling": Schema.Boolean,
+      /** Native tool search: carry a Codex client's `tool_search` to Claude as deferred tools (see `GLOSSARY.md`). */
+      "tool-search": Schema.Boolean,
       "disable-claude-cloak-mode": Schema.Boolean,
       "cloak-level": ClaudeCloakLevel,
       "disable-cloaking-model-list": Schema.Boolean,

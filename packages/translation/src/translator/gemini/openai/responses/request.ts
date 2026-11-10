@@ -54,6 +54,7 @@ import {
   normalizeCarriers,
 } from "./carrier.ts";
 import { inlineDataPart, mediaFromBlock, partFromBlock } from "./media.ts";
+import { normalizeToolSearchItems } from "./tool-search.ts";
 import { restoreTextSignatures } from "./trailing-signature.ts";
 import {
   buildGeminiFunctionDeclarations,
@@ -861,7 +862,9 @@ export const convertOpenAIResponsesRequestToGemini = (
   const input = get(root, "input");
 
   if (isJsonArray(input)) {
-    const carriers = normalizeCarriers(restoreTextSignatures(modelName, input));
+    const carriers = normalizeCarriers(
+      restoreTextSignatures(modelName, normalizeToolSearchItems(input, forwardMap)),
+    );
 
     if (carriers.hasValidCarrier) useNativeLayout = true;
     const inputItems = normalizeResponsesToolCallOutputs(carriers.items);

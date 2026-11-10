@@ -78,6 +78,7 @@ export const claudeConfigCredentials = (
         ...(entry["rebuild-mid-system-message"] === true
           ? { rebuild_mid_system_message: "true" }
           : {}),
+        ...(entry["native-tool-search"] === true ? { native_tool_search: "true" } : {}),
         ...headerAttributes(group.headers),
         ...headerAttributes(entry.headers),
         ...(baseUrl !== "" ? { base_url: baseUrl } : {}),

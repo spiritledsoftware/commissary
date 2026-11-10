@@ -136,8 +136,35 @@ describe("config schema and normalisation", () => {
       assert.deepStrictEqual(config.requests.payload.default, []);
       assert.deepStrictEqual(config["api-keys"].claude, []);
       assert.deepStrictEqual(config.upstream.claude["header-defaults"]["native-entrypoints"], []);
+      assert.strictEqual(config.upstream.claude["tool-search"], false);
       assert.isUndefined(config.oauth.providers.antigravity["signature-cache-enabled"]);
     }),
+  );
+
+  // Go: config.example.yaml `upstream.claude.tool-search` and a Claude key's `native-tool-search` (77e3d0d3, ae33711c).
+  it.effect(
+    "keeps the native tool search switches of a Go document through import and storage",
+    () =>
+      Effect.gen(function* () {
+        const config = yield* parse(`
+upstream:
+  claude:
+    tool-search: true
+api-keys:
+  claude:
+    - base-url: https://gateway.example.com
+      keys:
+        - { api-key: sk-gw, native-tool-search: true }
+        - { api-key: sk-plain }
+`);
+
+        assert.strictEqual(config.upstream.claude["tool-search"], true);
+        const [group] = config["api-keys"].claude;
+        assert.strictEqual(group?.keys[0]?.["native-tool-search"], true);
+        assert.isUndefined(group?.keys[1]?.["native-tool-search"]);
+
+        assert.deepStrictEqual(Schema.decodeUnknownSync(Config)(encodeConfig(config)), config);
+      }),
   );
 
   it.effect("decodes and normalises a v8 document", () =>

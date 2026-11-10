@@ -37,6 +37,8 @@ export interface RequestRewriteContext {
    * executor decides it per attempt (`pipeline.ts`).
    */
   readonly topLevelSystemItems?: boolean;
+  /** Native tool search for this attempt: only the Responses -> Claude transform reads it. */
+  readonly nativeToolSearch?: boolean;
 }
 
 /**
@@ -76,5 +78,8 @@ export const translateRequestForExecutor = (
     ...(context.topLevelSystemItems === undefined
       ? {}
       : { topLevelSystemItems: context.topLevelSystemItems }),
+    ...(context.nativeToolSearch === undefined
+      ? {}
+      : { nativeToolSearch: context.nativeToolSearch }),
   });
 };

@@ -144,12 +144,13 @@ const gatewayError = (message: string) => new ExecutionError({ status: 502, mess
 const responseContext = (
   request: ExecutorRequest,
   options: ExecutorOptions,
-  prepared: { readonly translatedRequest: JsonObject },
+  prepared: { readonly translatedRequest: JsonObject; readonly nativeToolSearch: boolean },
 ): ResponseContext => ({
   model: request.model,
   originalRequest: options.originalRequest ?? request.payload,
   translatedRequest: prepared.translatedRequest,
   state: makeTranslationState(),
+  nativeToolSearch: prepared.nativeToolSearch,
 });
 
 /** Copies an error with changed flags (`ExecutionError` fields such as `message` are not enumerable). */

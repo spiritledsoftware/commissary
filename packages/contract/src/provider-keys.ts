@@ -127,6 +127,12 @@ const keyFields = {
   ...sharedKeyFields,
   /** Claude. */
   "rebuild-mid-system-message": optional(Schema.Boolean),
+  /**
+   * Trust this key's custom `base-url` with native tool search (`defer_loading` + `tool_reference`) for a Codex
+   * client's `tool_search`; Anthropic's own API needs no flag. Needs `upstream.claude.tool-search`. No Keys-page control,
+   * as for `rebuild-mid-system-message`: set through a Go config import.
+   */
+  "native-tool-search": optional(Schema.Boolean),
   cloak: optional(CloakConfig),
   "fingerprint-profile": optional(Schema.String),
   /** No effect on Workers: never shown, always kept. */

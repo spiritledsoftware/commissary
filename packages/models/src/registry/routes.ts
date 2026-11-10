@@ -74,6 +74,7 @@ const v1Models = (registry: Registry) =>
             lookupModelInfo: (modelId, provider = "") =>
               snapshot.lookupModelInfo(modelId, provider),
             webSearchCapability: snapshot.responsesWebSearchCapability,
+            toolSearchCapability: snapshot.nativeToolSearchCapability,
             ...(snapshot.config.client.codex["enable-apply-patch"]
               ? {
                   applyPatchCapability: (modelId: string) =>

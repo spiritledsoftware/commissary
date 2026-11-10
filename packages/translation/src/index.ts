@@ -70,6 +70,8 @@ export {
 
 export { sseEventData } from "./translator/common/bytes.ts";
 
+export { TOOL_SEARCH_ID_PREFIX } from "./translator/common/responses-tools.ts";
+
 export { sanitizeDevinToolDescription } from "./translator/openai/common/devin-tools.ts";
 
 export { isClaudeCodeAttributionSystemText } from "./translator/common/claude-messages.ts";

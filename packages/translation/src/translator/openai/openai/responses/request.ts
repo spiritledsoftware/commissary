@@ -297,6 +297,12 @@ export const convertResponsesToolChoice = (
     if (name !== "") return { type: "function", function: { name } };
   }
 
+  if (choiceType === "tool_search") {
+    const name = toolIndex.toolSearchName();
+
+    if (name !== "") return { type: "function", function: { name } };
+  }
+
   if (choiceType !== "function" && choiceType !== "custom") return cloneJson(toolChoice);
 
   let name = getStr(toolChoice, "function.name");
@@ -375,7 +381,7 @@ export const convertOpenAIResponsesRequestToOpenAIChatCompletions = (
   const input = get(root, "input");
 
   if (isArr(input)) {
-    const rawInputArray = toolIndex.shellHistory(input);
+    const rawInputArray = toolIndex.toolSearchHistory(toolIndex.shellHistory(input));
     const explicitOutputCounts = new Map<string, number>();
     let missingIdOutputsCount = 0;
 

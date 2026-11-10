@@ -10,6 +10,7 @@
  */
 import { get, isJsonObject, tryParseJson, type Json, type JsonObject } from "@commissary/json";
 import { isArr, isObj, str, toArray } from "@commissary/translation";
+import { parseSuffix } from "@commissary/translation/thinking";
 import { payloadHas1hTTL } from "./cache-control.ts";
 import {
   PACKAGE_VERSION,
@@ -436,6 +437,40 @@ export const isLegacySystemReminderModel = (model: string): boolean =>
 /** `claudeUsesLegacySystemReminder`: the body's model rejects mid-conversation `role:"system"` messages. */
 export const usesLegacySystemReminder = (body: JsonObject): boolean =>
   isLegacySystemReminderModel(str(body.model));
+
+/** Anthropic models that predate tool search: Claude Opus 4.1 and earlier do not accept `defer_loading` or `tool_reference`. */
+const TOOL_SEARCH_LEGACY_PREFIXES = ["claude-3", "claude-2", "claude-instant"];
+
+const TOOL_SEARCH_LEGACY_MODELS = new Set([
+  "claude-opus-4",
+  "claude-opus-4-0",
+  "claude-opus-4-20250514",
+  "claude-opus-4-1",
+  "claude-opus-4-1-20250805",
+  "claude-sonnet-4",
+  "claude-sonnet-4-0",
+  "claude-sonnet-4-20250514",
+]);
+
+/**
+ * `ClaudeModelLacksToolSearch` (Go helps/claude_tool_search_model.go): an Anthropic model that predates tool search. A
+ * deny-list, so a name nobody has heard of (a new model, a third-party model behind a trusted base URL) counts as
+ * supported; a model catalog addition (ADR 0020) would not fit a closed set of old models matched after aliasing.
+ * Anthropic's supported-models list matches it ("Opus 4.1 and earlier").
+ */
+export const claudeModelLacksToolSearch = (model: string): boolean => {
+  let name = canonicalModel(parseSuffix(model).modelName);
+  const bracket = name.indexOf("[");
+
+  if (bracket >= 0) name = name.slice(0, bracket).trim();
+
+  if (name === "") return false;
+
+  return (
+    TOOL_SEARCH_LEGACY_MODELS.has(name) ||
+    TOOL_SEARCH_LEGACY_PREFIXES.some((prefix) => name.startsWith(prefix))
+  );
+};
 
 /** `ExtractClaudeBillingTags`: `cc_prev_req` and `cc_prompt_id` of an existing billing block. */
 export const extractBillingTags = (body: JsonObject) => {

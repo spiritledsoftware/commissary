@@ -439,6 +439,71 @@ describe("helpers", () => {
     });
   });
 
+  it("normalises legacy tool_search_call ids to tsc_ and keeps call_id (Go 90c447d3)", () => {
+    const body = {
+      input: [
+        { type: "reasoning", id: "rs_signed", encrypted_content: "gAAAA-opaque", summary: [] },
+        { type: "tool_search_call", id: "item_tool_search_call", call_id: "call-search-1" },
+        {
+          type: "tool_search_call",
+          id: "ts_call_4000860",
+          call_id: "call_4000860",
+          execution: "client",
+          arguments: { query: "agents" },
+        },
+        { type: "tool_search_call", id: "tsc-existing", call_id: "call-search-2" },
+        {
+          type: "tool_search_output",
+          id: "tso_call_4000860",
+          call_id: "call_4000860",
+          execution: "client",
+          tools: [],
+        },
+      ],
+    };
+
+    sanitizeCodexInputItemIds(body as unknown as Json);
+    expect(body.input.map((item) => item.id)).toEqual([
+      "rs_signed",
+      "tsc_item_tool_search_call",
+      "tsc_call_4000860",
+      "tsc-existing",
+      "tso_call_4000860",
+    ]);
+    expect(body.input[2]?.call_id).toBe("call_4000860");
+    expect(body.input[4]?.call_id).toBe("call_4000860");
+  });
+
+  it.each([
+    ["ts_call_4000860", "tsc_call_4000860"],
+    ["tsc_call_4000860", "ts_call_4000860"],
+    ["ts_call_4000860", "call_4000860"],
+    ["call_4000860", "ts_call_4000860"],
+    [`ts_${"x".repeat(64)}`, "x".repeat(64)],
+    ["x".repeat(64), `ts_${"x".repeat(64)}`],
+  ])("keeps distinct tool_search_call ids %s and %s distinct and idempotent", (first, second) => {
+    const make = () => ({
+      input: [
+        { type: "tool_search_call", id: first },
+        { type: "tool_search_call", id: second },
+      ],
+    });
+
+    const body = make();
+    sanitizeCodexInputItemIds(body as unknown as Json);
+    const [id0, id1] = body.input.map((item) => item.id);
+    expect(id0).not.toBe(id1);
+    expect(id0).toMatch(/^tsc_/);
+    expect(id1).toMatch(/^tsc_/);
+
+    // Deterministic across runs, and a second pass over its own output changes nothing.
+    const again = make();
+    sanitizeCodexInputItemIds(again as unknown as Json);
+    expect(again).toEqual(body);
+    sanitizeCodexInputItemIds(body as unknown as Json);
+    expect(body).toEqual(again);
+  });
+
   it("derives name-based uuids like google/uuid", () => {
     expect(uuidV5Oid("cli-proxy-api:codex:prompt-cache:x")).toBe(
       "4e124907-d1b8-51c8-a7dc-9f524b7ce9e5",

@@ -26,6 +26,8 @@ export interface ClientRegistration {
   readonly models: ReadonlyArray<ModelInfo>;
   /** Scheduling state of one registered model (suspension/quota); absent = fully available. */
   readonly projection?: (model: ModelInfo) => ClientProjection | undefined;
+  /** Whether this credential takes a Codex client's `tool_search` natively for the model (ignores cooldowns). */
+  readonly nativeToolSearch?: (model: ModelInfo) => boolean;
 }
 
 interface Registration {
@@ -165,6 +167,7 @@ export class ModelRegistryIndex {
   readonly #models = new Map<string, Registration>();
   readonly #clientModels = new Map<string, ReadonlyArray<ModelInfo>>();
   readonly #clientProviders = new Map<string, string>();
+  readonly #clientNativeToolSearch = new Map<string, (model: ModelInfo) => boolean>();
   readonly #now: number;
 
   /** `now` (epoch ms) is the instant projections are evaluated at; availability queries take their own `now`. */
@@ -182,6 +185,9 @@ export class ModelRegistryIndex {
     this.#clientModels.set(client.id, models);
 
     if (provider !== "") this.#clientProviders.set(client.id, provider);
+
+    if (client.nativeToolSearch !== undefined)
+      this.#clientNativeToolSearch.set(client.id, client.nativeToolSearch);
 
     const projected = new Set<string>();
 
@@ -341,6 +347,32 @@ export class ModelRegistryIndex {
     }
 
     return resolveResponsesWebSearchCapability(routes);
+  }
+
+  /**
+   * Whether a Codex client's `tool_search` may be advertised for the exact public model id: every credential serving it
+   * is a Claude one that takes native tool search for it, whatever its cooldown or suspension (so the catalog does not
+   * flap). No serving credential, or any other provider, is `false`.
+   */
+  nativeToolSearchCapability(modelId: string): boolean {
+    const id = modelId.trim();
+
+    if (id === "") return false;
+    let served = false;
+
+    for (const [clientId, models] of this.#clientModels) {
+      const matching = models.filter((model) => model.id.trim() === id);
+
+      if (matching.length === 0) continue;
+      served = true;
+      const native = this.#clientNativeToolSearch.get(clientId);
+
+      if (this.#clientProviders.get(clientId) !== "claude" || native === undefined) return false;
+
+      if (!matching.every((model) => native(model))) return false;
+    }
+
+    return served;
   }
 
   /**

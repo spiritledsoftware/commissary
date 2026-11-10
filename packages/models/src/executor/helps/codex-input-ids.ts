@@ -8,6 +8,7 @@
  */
 import { createHash } from "node:crypto";
 import { asString, get, isJsonArray, isJsonObject, type Json } from "@commissary/json";
+import { TOOL_SEARCH_ID_PREFIX } from "@commissary/translation";
 
 const ID_LIMIT = 64;
 
@@ -18,6 +19,7 @@ const PREFIXES = new Map<string, string>(
     function_call: "fc",
     custom_tool_call: "ctc",
     custom_tool_call_output: "ctco",
+    tool_search_call: TOOL_SEARCH_ID_PREFIX,
   }),
 );
 
@@ -25,8 +27,8 @@ const OCCUPIED = 1;
 
 const PRESERVED = 2;
 
-// SEEN and DUPLICATE (with the per-original collision key below) and the `tsc_` prefix arrived in Go 90c447d3; this
-// port takes the former only, so C5 (#372) ports just the `tool_search_call` prefix.
+// SEEN and DUPLICATE (with the per-original collision key below) arrived in Go 90c447d3 with the `tsc_` prefix of a
+// `tool_search_call`: a replayed item from another provider's tool search (`ts_` legacy, or a bare id) is rewritten to it.
 const SEEN = 4;
 
 const DUPLICATE = 8;
@@ -46,9 +48,13 @@ const sanitizeChars = (id: string): string => id.replace(/[^A-Za-z0-9_-]/gu, "_"
 
 /** `normalizeCodexInputItemIDPrefix`: the type prefix only, characters untouched. */
 const normalizeItemIdPrefix = (item: Json, id: string): string => {
-  const prefix = PREFIXES.get(asString(get(item, "type")));
+  const type = asString(get(item, "type"));
+  const prefix = PREFIXES.get(type);
 
   if (prefix === undefined) return id;
+
+  if (type === "tool_search_call" && id.startsWith("ts_") && id.length > 3)
+    return `${prefix}_${id.slice(3)}`;
 
   if (id === "" || id.startsWith(prefix)) return id;
 

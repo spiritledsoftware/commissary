@@ -27,6 +27,11 @@ import {
 } from "../../../common/apply-patch.ts";
 import { claudeMessagesJSONToSSE } from "../../../common/claude-native-response.ts";
 import { exists, isObj, isStr, str } from "../../../common/gjson.ts";
+import {
+  buildToolSearchCallItem,
+  toolSearchCallItemId,
+  toolSearchCallStatus,
+} from "../../../common/responses-tools.ts";
 import type { ResponseContext, ResponseTransform } from "../../../registry.ts";
 import {
   ClaudeToolNames,
@@ -123,6 +128,8 @@ const responsesUsage = (u: UsageTokens): ResponsesUsageResult => {
 
 /** Go `claudeToResponsesState` (minus the apply_patch bridge). */
 interface State {
+  /** Whether the request was translated with native tool search (the translator never guesses it from the request). */
+  nativeToolSearch: boolean;
   toolWinners: Map<string, ToolDescriptor>;
   toolNames: ClaudeToolNames;
   funcItemAdded: Map<number, boolean>;
@@ -172,12 +179,13 @@ interface State {
   usage: UsageTokens;
 }
 
-const newState = (request: Json | undefined): State => {
-  const winners = responsesToolWinners(request);
+const newState = (request: Json | undefined, nativeToolSearch: boolean): State => {
+  const winners = responsesToolWinners(request, nativeToolSearch);
 
   return {
+    nativeToolSearch,
     toolWinners: winners,
-    toolNames: ClaudeToolNames.build(request, winners),
+    toolNames: ClaudeToolNames.build(request, nativeToolSearch, winners),
     funcItemAdded: new Map(),
     funcArgsSent: new Map(),
     funcBlockStopped: new Map(),
@@ -298,11 +306,17 @@ const emit = (event: string, payload: JsonObject): string =>
 
 /** `SetResponsesToolCallIdentity` through `splitResponsesQualifiedFunctionCallFromRequest`. */
 const applyNamespaceFields = (
+  st: State,
   item: JsonObject,
   request: Json | undefined,
   qualifiedName: string,
 ): void => {
-  const { name, namespace } = splitResponsesQualifiedFunctionCall(request, qualifiedName);
+  const { name, namespace } = splitResponsesQualifiedFunctionCall(
+    request,
+    qualifiedName,
+    st.nativeToolSearch,
+  );
+
   item.name = name;
 
   if (namespace !== "") item.namespace = namespace;
@@ -398,6 +412,19 @@ const isApplyPatch = (st: State, name: string): boolean => {
   );
 };
 
+/** `isToolSearch`: whether a Claude tool name maps to the client `tool_search` declaration. */
+const isToolSearch = (st: State, name: string): boolean =>
+  st.toolWinners.get(st.toolNames.identity(name))?.clientSearch === true;
+
+/** A `tool_search_call` item event; Responses has no argument deltas for it, Codex dispatches on `output_item.done`. */
+const toolSearchCallEvent = (
+  event: "response.output_item.added" | "response.output_item.done",
+  sequence: number,
+  outputIndex: number,
+  item: JsonObject,
+): string =>
+  emit(event, { type: event, sequence_number: sequence, output_index: outputIndex, item });
+
 /** `validateApplyPatchSnapshots`: equivalent JSON spellings pass, one patch input never silently replaces another. */
 const validateApplyPatchSnapshots = (previous: string, current: string): string | undefined => {
   const call = new ApplyPatchCallState("", "", "", "", 0);
@@ -484,6 +511,19 @@ const emitFuncItem = (
   const outputIndex = functionOutputIndex(st, idx);
   let item: JsonObject;
 
+  if (isToolSearch(st, name)) {
+    st.funcItemAdded.set(idx, true);
+
+    return [
+      toolSearchCallEvent(
+        "response.output_item.added",
+        nextSeq(),
+        outputIndex,
+        buildToolSearchCallItem(callId, "in_progress", ""),
+      ),
+    ];
+  }
+
   if (custom) {
     item = {
       id: `ctc_${callId}`,
@@ -517,7 +557,7 @@ const emitFuncItem = (
     };
   }
 
-  applyNamespaceFields(item, request, name);
+  applyNamespaceFields(st, item, request, name);
   st.funcItemAdded.set(idx, true);
 
   return [
@@ -531,7 +571,12 @@ const emitFuncItem = (
 };
 
 const emitPendingFuncArgs = (st: State, idx: number, nextSeq: () => number): string[] => {
-  if (st.funcItemAdded.get(idx) !== true || st.toolInputError !== undefined) return [];
+  if (
+    st.funcItemAdded.get(idx) !== true ||
+    st.toolInputError !== undefined ||
+    isToolSearch(st, st.funcNames.get(idx) ?? "")
+  )
+    return [];
   const buf = st.funcArgsBuf.get(idx);
   const sent = st.funcArgsSent.get(idx) ?? 0;
 
@@ -595,6 +640,22 @@ const finalizeFuncItem = (
   if (callId === "") callId = st.currentFcId;
   const name = st.funcNames.get(idx) ?? "";
 
+  if (isToolSearch(st, name)) {
+    const searchStatus = toolSearchCallStatus(status, buf);
+    st.funcItemStatus.set(idx, searchStatus);
+    out.push(
+      toolSearchCallEvent(
+        "response.output_item.done",
+        nextSeq(),
+        outputIndex,
+        buildToolSearchCallItem(callId, searchStatus, buf),
+      ),
+    );
+    st.inFuncBlock = false;
+
+    return out;
+  }
+
   if (custom) {
     let input: string;
     const patchCall = st.applyPatchCalls.get(idx);
@@ -648,7 +709,7 @@ const finalizeFuncItem = (
       name: "",
     };
 
-    applyNamespaceFields(item, request, name);
+    applyNamespaceFields(st, item, request, name);
     out.push(
       emit("response.output_item.done", {
         type: "response.output_item.done",
@@ -680,7 +741,7 @@ const finalizeFuncItem = (
       name: "",
     };
 
-    applyNamespaceFields(item, request, name);
+    applyNamespaceFields(st, item, request, name);
     out.push(
       emit("response.output_item.done", {
         type: "response.output_item.done",
@@ -889,7 +950,10 @@ const finalizeToolInput = (context: ResponseContext, st: State): ReadonlyArray<s
 
 const convertStreamLine = (context: ResponseContext, line: string): ReadonlyArray<string> => {
   const modelName = context.model;
-  context.state.value ??= newState(pickRequest(context.originalRequest, context.translatedRequest));
+  context.state.value ??= newState(
+    pickRequest(context.originalRequest, context.translatedRequest),
+    context.nativeToolSearch === true,
+  );
   // SAFETY: the stream state slot is only ever written with this type by this translator (initialised just above).
   const st = context.state.value as State;
 
@@ -1364,6 +1428,16 @@ const convertStreamLine = (context: ResponseContext, line: string): ReadonlyArra
         if (callId === "" && st.currentFcId !== "") callId = st.currentFcId;
         let item: JsonObject;
 
+        if (isToolSearch(st, name)) {
+          output[st.funcOutputIndices.get(idx) ?? 0] = buildToolSearchCallItem(
+            callId,
+            funcStatus,
+            args,
+          );
+
+          continue;
+        }
+
         if (custom) {
           const patchCall = st.applyPatchCalls.get(idx);
           item = {
@@ -1386,7 +1460,7 @@ const convertStreamLine = (context: ResponseContext, line: string): ReadonlyArra
           };
         }
 
-        applyNamespaceFields(item, request, name);
+        applyNamespaceFields(st, item, request, name);
         output[st.funcOutputIndices.get(idx) ?? 0] = item;
       }
 
@@ -1453,7 +1527,7 @@ export const convertClaudeResponseToOpenAIResponsesNonStream = (
   }
 
   const reqJson = pickRequest(context.originalRequest, context.translatedRequest);
-  const st = newState(reqJson);
+  const st = newState(reqJson, context.nativeToolSearch === true);
   context.state.value = st;
 
   /** A retained `apply_patch` failure: the failed response body, and the caller sees a translation failure. */
@@ -1568,7 +1642,8 @@ export const convertClaudeResponseToOpenAIResponsesNonStream = (
             let itemType = "function_call";
             const toolName = str(get(cb, "name"));
 
-            if (st.toolWinners.get(st.toolNames.identity(toolName))?.toolType === "custom")
+            if (isToolSearch(st, toolName)) itemType = "tool_search_call";
+            else if (st.toolWinners.get(st.toolNames.identity(toolName))?.toolType === "custom")
               itemType = "custom_tool_call";
             let item = blockToItem.get(idx);
 
@@ -1614,8 +1689,10 @@ export const convertClaudeResponseToOpenAIResponsesNonStream = (
               if (snapshotError !== undefined) return failNonStream(snapshotError);
             }
 
-            item.id =
-              item.itemType === "custom_tool_call" ? `ctc_${item.callId}` : `fc_${item.callId}`;
+            if (item.itemType === "custom_tool_call") item.id = `ctc_${item.callId}`;
+            else if (item.itemType === "tool_search_call")
+              item.id = toolSearchCallItemId(item.callId);
+            else item.id = `fc_${item.callId}`;
             break;
           }
 
@@ -1684,6 +1761,7 @@ export const convertClaudeResponseToOpenAIResponsesNonStream = (
               item !== undefined &&
               (item.itemType === "function_call" ||
                 item.itemType === "custom_tool_call" ||
+                item.itemType === "tool_search_call" ||
                 item.itemType === "web_search_call")
             ) {
               const pj = get(d, "partial_json");
@@ -1830,10 +1908,13 @@ export const convertClaudeResponseToOpenAIResponsesNonStream = (
           call_id: outputItem.callId,
           name: "",
         };
-        applyNamespaceFields(item, reqJson, outputItem.name);
+        applyNamespaceFields(st, item, reqJson, outputItem.name);
         break;
       }
 
+      case "tool_search_call":
+        item = buildToolSearchCallItem(outputItem.callId, itemStatus, outputItem.args);
+        break;
       case "function_call": {
         let args = outputItem.args;
 
@@ -1846,7 +1927,7 @@ export const convertClaudeResponseToOpenAIResponsesNonStream = (
           call_id: outputItem.callId,
           name: "",
         };
-        applyNamespaceFields(item, reqJson, outputItem.name);
+        applyNamespaceFields(st, item, reqJson, outputItem.name);
         break;
       }
     }

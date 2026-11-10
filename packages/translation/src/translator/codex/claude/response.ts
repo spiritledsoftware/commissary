@@ -21,7 +21,7 @@ import { claudeInputTokensJson, sseEventLines } from "../../common/bytes.ts";
 import { sanitizeClaudeToolId } from "../../common/tool-names.ts";
 import { CODEX_COMMENTARY_SIGNATURE_MARKER } from "../../../signature/claude-messages.ts";
 import type { ResponseContext } from "../../registry.ts";
-import { buildShortNameMap, shortenCodexCallIdIfNeeded } from "./request.ts";
+import { buildOriginalToShortMap, shortenCodexCallIdIfNeeded } from "./request.ts";
 
 interface CodexFunctionCallStream {
   callId: string;
@@ -297,13 +297,8 @@ const updateFunctionCallArguments = (
 /** `buildReverseMapFromClaudeOriginalShortToOriginal`. */
 const reverseNames = (original: Json | undefined): Map<string, string> => {
   const reverse = new Map<string, string>();
-  const tools = get(original, "tools");
 
-  if (!isJsonArray(tools)) return reverse;
-  const names = tools.map((tool) => asString(get(tool, "name"))).filter((name) => name !== "");
-
-  if (names.length > 0)
-    for (const [name, short] of buildShortNameMap(names)) reverse.set(short, name);
+  for (const [name, short] of buildOriginalToShortMap(original)) reverse.set(short, name);
 
   return reverse;
 };

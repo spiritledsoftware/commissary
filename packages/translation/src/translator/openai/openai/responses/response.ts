@@ -24,6 +24,7 @@ import {
 import { getStr, isArr, str } from "../../common/read.ts";
 import { requestModelNameOf } from "../../../common/request.ts";
 import { responsesToolInputFailure, shellCallItem, shellCallPlaceholder } from "./shell.ts";
+import { buildToolSearchCallItem } from "../../../common/responses-tools.ts";
 import { pickRequestJson, ResponsesToolIndex, unwrapCustomToolInput } from "./tools.ts";
 
 interface ReasoningRecord {
@@ -281,6 +282,11 @@ const buildResponsesCompletedEvent = (st: ChatToResponsesState, nextSeq: () => n
       continue;
     }
 
+    if (st.toolIndex.isToolSearch(name)) {
+      outputItems.push({ index, item: buildToolSearchCallItem(callId, toolStatus, args) });
+      continue;
+    }
+
     if (st.funcItemCustom.get(key) === true) {
       const patchCall = st.applyPatchCalls.get(key);
 
@@ -529,6 +535,15 @@ const processChunk = (
           item: shellCallPlaceholder(callId),
         }),
       );
+    } else if (st.toolIndex.isToolSearch(name)) {
+      out.push(
+        emit("response.output_item.added", {
+          type: "response.output_item.added",
+          sequence_number: nextSeq(),
+          output_index: outputIndex,
+          item: buildToolSearchCallItem(callId, "in_progress", ""),
+        }),
+      );
     } else if (isCustomTool) {
       if (st.toolIndex.isApplyPatch(name)) {
         const d = st.toolIndex.byChat.get(name);
@@ -586,7 +601,8 @@ const processChunk = (
     if (
       st.funcItemAdded.get(key) !== true ||
       st.toolInputError !== undefined ||
-      st.toolIndex.isShell(st.funcNames.get(key) ?? "")
+      st.toolIndex.isShell(st.funcNames.get(key) ?? "") ||
+      st.toolIndex.isToolSearch(st.funcNames.get(key) ?? "")
     ) {
       return;
     }
@@ -880,6 +896,20 @@ const processChunk = (
             sequence_number: nextSeq(),
             output_index: outputIndex,
             item: shell.item,
+          }),
+        );
+        st.funcItemDone.set(key, true);
+        st.funcArgsDone.set(key, true);
+        continue;
+      }
+
+      if (st.toolIndex.isToolSearch(name)) {
+        out.push(
+          emit("response.output_item.done", {
+            type: "response.output_item.done",
+            sequence_number: nextSeq(),
+            output_index: outputIndex,
+            item: buildToolSearchCallItem(callId, toolStatus, hasArgs ? buffered : ""),
           }),
         );
         st.funcItemDone.set(key, true);
@@ -1311,6 +1341,11 @@ export const convertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream = (
               }
 
               outputItems.push(shell.item);
+              continue;
+            }
+
+            if (toolIndex.isToolSearch(name)) {
+              outputItems.push(buildToolSearchCallItem(callId, toolStatus, args));
               continue;
             }
 

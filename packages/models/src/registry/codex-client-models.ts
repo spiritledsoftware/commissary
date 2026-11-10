@@ -22,6 +22,11 @@ export interface CodexClientModelsInput {
   readonly lookupModelInfo: (modelId: string, provider?: string) => ModelInfo | undefined;
   /** `GetResponsesWebSearchCapability`: `undefined` = unknown. */
   readonly webSearchCapability?: (modelId: string) => boolean | undefined;
+  /**
+   * Native tool search (Claude): whether every credential serving the exact public model takes a Codex client's
+   * `tool_search` natively (`RegistrySnapshot.nativeToolSearchCapability`, in the caller's view). Absent = never.
+   */
+  readonly toolSearchCapability?: (modelId: string) => boolean;
   /** Executor-backed `apply_patch` support for the exact public model id (config `client.codex.enable-apply-patch`). */
   readonly applyPatchCapability?: (modelId: string) => boolean;
   readonly optimizeMultiAgentV2: boolean;
@@ -534,7 +539,18 @@ const nullRequiredOptions = (entry: Entry): void => {
   entry["availability_nux"] = null;
 };
 
-/** `applyCodexClientSearchToolSupport`. */
+/** Every route serving the model is Claude and takes a Codex `tool_search` natively (Go `allCodexClientProvidersAre(claude)` + the capability). */
+const isNativeToolSearchRoute = (input: CodexClientModelsInput, id: string): boolean => {
+  const providers = providersOf(input, id);
+
+  return (
+    providers.length > 0 &&
+    providers.every((provider) => provider.trim().toLowerCase() === "claude") &&
+    input.toolSearchCapability?.(id) === true
+  );
+};
+
+/** `applyCodexClientSearchToolSupport`: pure Codex template models, or pure Claude models with native tool search. */
 const applySearchToolSupport = (
   entry: Entry,
   id: string,
@@ -542,6 +558,8 @@ const applySearchToolSupport = (
   input: CodexClientModelsInput,
 ): void => {
   if (entry["supports_search_tool"] !== true) return;
+
+  if (isNativeToolSearchRoute(input, id)) return;
 
   if (!isTemplate) {
     entry["supports_search_tool"] = false;
@@ -573,7 +591,8 @@ const applyProviderCapabilities = (
   }
 
   if (!isPureCodexProvider(input, id)) {
-    entry["supports_search_tool"] = false;
+    // A native Claude route keeps the search a template advertises; any other mixed or foreign route loses it.
+    if (!isNativeToolSearchRoute(input, id)) entry["supports_search_tool"] = false;
     entry["prefer_websockets"] = false;
     entry["service_tiers"] = [];
     nullRequiredOptions(entry);

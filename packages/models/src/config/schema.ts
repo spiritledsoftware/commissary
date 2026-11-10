@@ -162,6 +162,12 @@ const upstream = section({
   }),
   claude: section({
     "model-level-cooling": flag(false),
+    /**
+     * Native tool search: a Codex client's `tool_search` reaches Claude as deferred tools (`defer_loading` +
+     * `tool_reference`) on credentials that support it (Anthropic's own API, or a key with `native-tool-search`), and
+     * the Codex model catalog advertises search for models only those credentials serve. Off, the search is dropped.
+     */
+    "tool-search": flag(false),
     "disable-claude-cloak-mode": flag(false),
     /** How much of a cloaked request looks like Claude Code; a key's `cloak.level` or the `cloak_level` attribute override it. */
     "cloak-level": ClaudeCloakLevel.pipe(

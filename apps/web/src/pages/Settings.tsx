@@ -238,6 +238,7 @@ const Body = ({
               <p className={styles["hint"]}>{CLAUDE_CLOAKING_NOTE}</p>
               {field("upstream.claude.disable-claude-cloak-mode")}
               {field("upstream.claude.cloak-level")}
+              {field("upstream.claude.tool-search")}
               {field("upstream.claude.disable-cloaking-model-list")}
               {field("upstream.claude.header-defaults.stabilize-device-profile")}
               {field("upstream.claude.header-defaults.native-entrypoints")}

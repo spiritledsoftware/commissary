@@ -60,6 +60,7 @@ import {
 } from "./response-common.ts";
 import { cacheTextSignatures } from "./trailing-signature.ts";
 import {
+  buildToolSearchCallItem,
   type ResponsesToolIdentity,
   unwrapResponsesCustomToolInput,
 } from "../../../common/responses-tools.ts";
@@ -142,6 +143,7 @@ interface StreamState extends EvidenceState {
   funcArgsBuf: Map<number, string>;
   funcInputBuf: Map<number, string>;
   funcCustom: Map<number, boolean>;
+  funcToolSearch: Map<number, boolean>;
   funcNames: Map<number, string>;
   funcNamespaces: Map<number, string>;
   funcCallIds: Map<number, string>;
@@ -208,6 +210,7 @@ const newState = (
   funcArgsBuf: new Map(),
   funcInputBuf: new Map(),
   funcCustom: new Map(),
+  funcToolSearch: new Map(),
   funcNames: new Map(),
   funcNamespaces: new Map(),
   funcCallIds: new Map(),
@@ -1238,6 +1241,7 @@ export const convertGeminiResponseToOpenAIResponses = (
 
     const { name, namespace } = identity;
     const isCustom = identity.custom;
+    const isToolSearch = identity.toolSearch === true;
     const argsValue = get(functionCall, "args");
     const argsRaw = argsValue === undefined ? "" : JSON.stringify(argsValue);
 
@@ -1258,7 +1262,7 @@ export const convertGeminiResponseToOpenAIResponses = (
 
     if (!st.funcArgsBuf.has(idx)) st.funcArgsBuf.set(idx, "");
 
-    if (identity.applyPatch) st.funcCallIds.set(idx, evidence.upstreamId);
+    if (identity.applyPatch || isToolSearch) st.funcCallIds.set(idx, evidence.upstreamId);
 
     if ((st.funcCallIds.get(idx) ?? "") === "") st.funcCallIds.set(idx, newStreamCallId());
     // SAFETY: the entry was set on the line above when it was missing or empty.
@@ -1266,13 +1270,38 @@ export const convertGeminiResponseToOpenAIResponses = (
     st.funcNames.set(idx, name);
     st.funcNamespaces.set(idx, namespace);
     st.funcCustom.set(idx, isCustom);
+    st.funcToolSearch.set(idx, isToolSearch);
 
     const argsJson = argsValue === undefined ? "{}" : argsRaw;
 
     if ((st.funcArgsBuf.get(idx) ?? "").length === 0 && argsJson !== "")
       st.funcArgsBuf.set(idx, argsJson);
 
-    if (isCustom) {
+    if (isToolSearch) {
+      // The call is a client `tool_search_call` item: it carries its arguments as an object, so no
+      // function-argument events are emitted.
+      let itemStatus = "completed";
+      const callFinish = asString(get(root, "candidates.0.finishReason"));
+
+      if (callFinish !== "") itemStatus = terminalState(callFinish).status;
+      else if (st.finishReason !== "") itemStatus = terminalState(st.finishReason).status;
+      emit("response.output_item.added", {
+        type: "response.output_item.added",
+        sequence_number: nextSeq(),
+        output_index: idx,
+        item: buildToolSearchCallItem(callId, "in_progress", argsJson),
+      });
+
+      if (st.funcDone.get(idx) !== true) {
+        emit("response.output_item.done", {
+          type: "response.output_item.done",
+          sequence_number: nextSeq(),
+          output_index: idx,
+          item: buildToolSearchCallItem(callId, itemStatus, argsJson),
+        });
+        st.funcDone.set(idx, true);
+      }
+    } else if (isCustom) {
       let inputStr = unwrapResponsesCustomToolInput(argsJson);
       let patchCall: ApplyPatchCall | undefined;
 
@@ -1455,7 +1484,15 @@ export const convertGeminiResponseToOpenAIResponses = (
       if (st.funcDone.get(idx) === true) continue;
       const callId = st.funcCallIds.get(idx) ?? "";
 
-      if (st.funcCustom.get(idx) === true) {
+      if (st.funcToolSearch.get(idx) === true) {
+        const buffered = st.funcArgsBuf.get(idx) ?? "";
+        emit("response.output_item.done", {
+          type: "response.output_item.done",
+          sequence_number: nextSeq(),
+          output_index: idx,
+          item: buildToolSearchCallItem(callId, status, buffered.length > 0 ? buffered : "{}"),
+        });
+      } else if (st.funcCustom.get(idx) === true) {
         const inputStr = st.funcInputBuf.get(idx) ?? "";
         emit("response.custom_tool_call_input.done", {
           type: "response.custom_tool_call_input.done",
@@ -1604,7 +1641,12 @@ export const convertGeminiResponseToOpenAIResponses = (
       const callId = st.funcCallIds.get(idx);
 
       if (callId !== undefined && callId !== "") {
-        if (st.funcCustom.get(idx) === true) {
+        if (st.funcToolSearch.get(idx) === true) {
+          const buffered = st.funcArgsBuf.get(idx) ?? "";
+          outputs.push(
+            buildToolSearchCallItem(callId, status, buffered.length > 0 ? buffered : "{}"),
+          );
+        } else if (st.funcCustom.get(idx) === true) {
           const item: JsonObject = {
             id: `ctc_${callId}`,
             type: "custom_tool_call",

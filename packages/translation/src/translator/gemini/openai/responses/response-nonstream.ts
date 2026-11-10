@@ -45,6 +45,7 @@ import {
   usageJson,
 } from "./response-common.ts";
 import {
+  buildToolSearchCallItem,
   type ResponsesToolIdentity,
   unwrapResponsesCustomToolInput,
 } from "../../../common/responses-tools.ts";
@@ -358,10 +359,13 @@ export const convertGeminiResponseToOpenAIResponsesNonStream = (
 
       let callId = newNonStreamCallId();
 
-      if (identity.applyPatch && evidence.upstreamId !== "") callId = evidence.upstreamId;
+      if ((identity.applyPatch || identity.toolSearch === true) && evidence.upstreamId !== "")
+        callId = evidence.upstreamId;
       let item: JsonObject;
 
-      if (isCustom) {
+      if (identity.toolSearch === true) {
+        item = buildToolSearchCallItem(callId, status, argsStr);
+      } else if (isCustom) {
         let inputStr = unwrapResponsesCustomToolInput(argsStr);
 
         if (identity.applyPatch) {
