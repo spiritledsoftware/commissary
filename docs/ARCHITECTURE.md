@@ -1258,6 +1258,16 @@ Deviations from Go (all deliberate, documented in code headers):
   response translator (`claude/openai/responses/response.ts`) decodes it into `custom_tool_call` events
   (`ApplyPatchCallState`, identity/snapshot validation, `response.failed` + 502 on malformed input). Go's log-only invariant
   diagnostics are omitted.
+- Claude stop reasons and limits (C2, Go `0d18d3b3`, `df07b1e5`, `c2dfec28`, `d495e24c`, `aadb34f9`, `43f5386b`): the
+  default `max_tokens` of a chat or Responses request without one is the catalog's `maxCompletionTokens` for the model (the
+  translators' model-info lookup, not Go's registry; Fable capped at 64000, unknown models 32000), and the Claude pipeline
+  hands payload rules an `original` without that synthesized value (`default-max-tokens.ts`) so a `default` rule can still set it.
+  `model_context_window_exceeded` is `length` on chat and `incomplete`/`max_output_tokens` on Responses; `refusal` is
+  `incomplete`/`content_filter`; `pause_turn` is `completed` with `end_turn: false`, its unanswered search stays `in_progress` and
+  goes back without a result (`ResponsesWebSearchHistory`), and a paused server-tool tail is not dropped as prefill.
+  Empty or whitespace text blocks are dropped from both request translators and never get a `cache_control`, in the translators
+  and in the executor's `ensureCacheControl`. Go's handler-side terminal-error chunk (`aadb34f9`) is not ported: `c2dfec28` made
+  chat translate the stop reason instead of an error. Chat usage carries `reasoning_tokens` from `thinking_tokens`.
 - **Responses compaction capsules** (`helps/compaction.ts`, `claude/compaction.ts`; Go `helps/antigravity_compaction.go`,
   `claude_executor_compaction.go`): `responses/compact` and streaming `compaction_trigger` run a non-stream summary turn (Responses payload
   -> summary prompt appended, `tools`/`stream`/... removed; Claude keeps the tool definitions for `tool_use` history and sets

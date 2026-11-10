@@ -331,7 +331,10 @@ export const injectCurrentDate = (body: JsonObject, date: string, explicit: bool
   const dateBlock = textBlock(currentDateReminder(date));
 
   if (typeof content === "string") {
-    message.content = [dateBlock, textBlock(content, explicit ? undefined : ephemeral())];
+    message.content = [
+      dateBlock,
+      textBlock(content, explicit || content.trim() === "" ? undefined : ephemeral()),
+    ];
 
     return;
   }
@@ -346,7 +349,13 @@ export const injectCurrentDate = (body: JsonObject, date: string, explicit: bool
 
       if (isCurrentDateReminder(text)) continue;
 
-      if (!actualTextCached && !isContextReminder(text) && !explicit && isObj(block)) {
+      if (
+        !actualTextCached &&
+        !isContextReminder(text) &&
+        text.trim() !== "" &&
+        !explicit &&
+        isObj(block)
+      ) {
         blocks.push({ ...block, cache_control: ephemeral() });
         actualTextCached = true;
         continue;

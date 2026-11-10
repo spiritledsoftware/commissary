@@ -510,6 +510,70 @@ describe("cache control", () => {
     ]);
   });
 
+  it("skips empty and whitespace text blocks when placing the message breakpoint", () => {
+    const body: JsonObject = {
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "Reply with exactly OK." },
+            { type: "text", text: "" },
+            { type: "text", text: "  \n\t " },
+          ],
+        },
+      ],
+    };
+
+    ensureCacheControl(body);
+    const content = (body.messages as JsonObject[])[0]?.content as JsonObject[];
+    expect(content[0]?.cache_control).toEqual(eph);
+    expect(content[1]?.cache_control).toBeUndefined();
+    expect(content[2]?.cache_control).toBeUndefined();
+  });
+
+  it("falls back to an earlier message when the trailing ones hold only empty text", () => {
+    const body: JsonObject = {
+      messages: [
+        { role: "user", content: [{ type: "text", text: "Real question" }] },
+        { role: "assistant", content: [{ type: "text", text: "" }] },
+        { role: "user", content: "   " },
+      ],
+    };
+
+    ensureCacheControl(body);
+    const messages = body.messages as JsonObject[];
+    const blocks = (index: number): JsonObject[] => messages[index]?.content as JsonObject[];
+    expect(blocks(0)[0]?.cache_control).toEqual(eph);
+    expect(blocks(1)[0]?.cache_control).toBeUndefined();
+    expect(messages[2]?.content).toBe("   ");
+  });
+
+  it("puts the system breakpoint on the last non-empty block, and counts only those as a cacheable system", () => {
+    const body: JsonObject = {
+      system: [
+        { type: "text", text: "rules" },
+        { type: "text", text: " " },
+      ],
+      tools: [{ name: "t" }],
+      messages: [{ role: "user", content: "x" }],
+    };
+
+    ensureCacheControl(body);
+    expect((body.system as JsonObject[])[0]?.cache_control).toEqual(eph);
+    expect((body.system as JsonObject[])[1]?.cache_control).toBeUndefined();
+    expect((body.tools as JsonObject[])[0]?.cache_control).toBeUndefined();
+
+    const blank: JsonObject = {
+      system: [{ type: "text", text: "" }],
+      tools: [{ name: "t" }],
+      messages: [{ role: "user", content: "x" }],
+    };
+
+    ensureCacheControl(blank);
+    expect((blank.system as JsonObject[])[0]?.cache_control).toBeUndefined();
+    expect((blank.tools as JsonObject[])[0]?.cache_control).toEqual(eph);
+  });
+
   it("puts the tools breakpoint only without a cacheable system prompt", () => {
     const body: JsonObject = {
       tools: [{ name: "a" }, { name: "b", defer_loading: true }],

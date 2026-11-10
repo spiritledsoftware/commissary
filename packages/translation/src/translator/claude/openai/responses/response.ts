@@ -242,13 +242,27 @@ const reasoningCarrier = (block: Json | undefined): string => {
 const incompleteDetails = (stopReason: string): { details: Json } | undefined => {
   switch (stopReason.trim().toLowerCase()) {
     case "max_tokens":
+    case "model_context_window_exceeded":
       return { details: { reason: "max_output_tokens" } };
-    case "pause_turn":
-      return { details: null };
+    case "refusal":
+      // Safety classifiers stop the turn with a normal 200; Responses clients treat content_filter as a refusal
+      // instead of a finished answer.
+      return { details: { reason: "content_filter" } };
   }
 
   return undefined;
 };
+
+/**
+ * Anthropic's server-tool iteration pause: the turn is unfinished but valid, and the client continues it by sending
+ * the paused assistant content back, so Responses ends it as `completed` with `end_turn: false` (not an error).
+ */
+const isPauseTurn = (stopReason: string): boolean =>
+  stopReason.trim().toLowerCase() === "pause_turn";
+
+/** A paused search that never received its result stays `in_progress`, so the next request can send it back. */
+const webSearchStatus = (stopReason: string, status: string, hasResults: boolean): string =>
+  isPauseTurn(stopReason) && !hasResults ? "in_progress" : status;
 
 const outputStatus = (stopReason: string): string =>
   incompleteDetails(stopReason) !== undefined ? "incomplete" : "completed";
@@ -311,6 +325,37 @@ const functionOutputIndex = (st: State, blockIndex: number): number => {
   st.funcOutputIndices.set(blockIndex, index);
 
   return index;
+};
+
+/** Registers a web search item for the block at `idx` and returns its `output_item.added` event. */
+const startWebSearch = (st: State, idx: number, toolUseId: string, nextSeq: () => number) => {
+  const item: WebSearchItem = {
+    toolUseId,
+    outputIndex: allocateOutputIndex(st),
+    inputBuf: "",
+    results: undefined,
+    emitted: false,
+    status: "",
+  };
+
+  st.webSearchByBlock.set(idx, item);
+  st.webSearchByToolId.set(toolUseId, item);
+  st.webSearchItems.push(item);
+
+  return {
+    item,
+    added: emit("response.output_item.added", {
+      type: "response.output_item.added",
+      sequence_number: nextSeq(),
+      output_index: item.outputIndex,
+      item: {
+        id: responsesWebSearchCallID(item.toolUseId),
+        type: "web_search_call",
+        status: "in_progress",
+        action: { type: "search", query: "" },
+      },
+    }),
+  };
 };
 
 const renderWebSearch = (item: WebSearchItem): JsonObject =>
@@ -1085,39 +1130,21 @@ const convertStreamLine = (context: ResponseContext, line: string): ReadonlyArra
         out.push(...emitPendingFuncArgs(st, idx, nextSeq));
       } else if (typ === "server_tool_use") {
         if (str(get(cb, "name")) === CLAUDE_WEB_SEARCH_TOOL_NAME) {
-          const toolUseId = str(get(cb, "id"));
-
-          const item: WebSearchItem = {
-            toolUseId,
-            outputIndex: allocateOutputIndex(st),
-            inputBuf: "",
-            results: undefined,
-            emitted: false,
-            status: "",
-          };
-
-          st.webSearchByBlock.set(idx, item);
-          st.webSearchByToolId.set(toolUseId, item);
-          st.webSearchItems.push(item);
-          out.push(
-            emit("response.output_item.added", {
-              type: "response.output_item.added",
-              sequence_number: nextSeq(),
-              output_index: item.outputIndex,
-              item: {
-                id: responsesWebSearchCallID(item.toolUseId),
-                type: "web_search_call",
-                status: "in_progress",
-                action: { type: "search", query: "" },
-              },
-            }),
-          );
+          out.push(startWebSearch(st, idx, str(get(cb, "id")), nextSeq).added);
         }
       } else if (typ === "web_search_tool_result") {
-        const item = st.webSearchByToolId.get(str(get(cb, "tool_use_id")));
+        const toolUseId = str(get(cb, "tool_use_id"));
+        const item = st.webSearchByToolId.get(toolUseId);
 
-        if (item !== undefined)
+        if (item !== undefined) {
           item.results = claudeWebSearchResultsToResponses(get(cb, "content"));
+        } else if (toolUseId !== "") {
+          // A continuation after pause_turn delivers the result of a search whose server_tool_use arrived in the
+          // previous response; surface it under the same id so the client keeps the result in its history.
+          const started = startWebSearch(st, idx, toolUseId, nextSeq);
+          started.item.results = claudeWebSearchResultsToResponses(get(cb, "content"));
+          out.push(started.added);
+        }
       } else if (typ === "thinking" || typ === "redacted_thinking") {
         st.reasoningActive = true;
         st.reasoningDeltasDone = false;
@@ -1260,7 +1287,15 @@ const convertStreamLine = (context: ResponseContext, line: string): ReadonlyArra
       }
 
       for (const item of st.webSearchItems) {
-        if (!item.emitted) out.push(...finalizeWebSearch(st, item, toolStatus, nextSeq));
+        if (!item.emitted)
+          out.push(
+            ...finalizeWebSearch(
+              st,
+              item,
+              webSearchStatus(st.stopReason, toolStatus, item.results !== undefined),
+              nextSeq,
+            ),
+          );
       }
 
       const { eventType, status: responseStatus, details } = terminalState(st.stopReason);
@@ -1277,6 +1312,8 @@ const convertStreamLine = (context: ResponseContext, line: string): ReadonlyArra
       const completed: JsonObject = { type: eventType, sequence_number: nextSeq(), response };
 
       if (details !== undefined) response.incomplete_details = details.details;
+
+      if (isPauseTurn(st.stopReason)) response.end_turn = false;
       echoRequestFields(response, request);
 
       const output: Json[] = [];
@@ -1597,10 +1634,21 @@ export const convertClaudeResponseToOpenAIResponsesNonStream = (
           }
 
           case "web_search_tool_result": {
-            const item = webSearchByToolId.get(str(get(cb, "tool_use_id")));
+            const toolUseId = str(get(cb, "tool_use_id"));
+            const item = webSearchByToolId.get(toolUseId);
 
-            if (item !== undefined)
+            if (item !== undefined) {
               item.results = claudeWebSearchResultsToResponses(get(cb, "content"));
+            } else if (toolUseId !== "") {
+              // Continuation after pause_turn: the search started in the previous response; keep its result under
+              // the same id.
+              const continued = newOutputItem("web_search_call", idx);
+              continued.id = responsesWebSearchCallID(toolUseId);
+              continued.callId = toolUseId;
+              continued.results = claudeWebSearchResultsToResponses(get(cb, "content"));
+              webSearchByToolId.set(toolUseId, continued);
+            }
+
             break;
           }
 
@@ -1694,6 +1742,8 @@ export const convertClaudeResponseToOpenAIResponsesNonStream = (
   out.status = responseStatus;
 
   if (details !== undefined) out.incomplete_details = details.details;
+
+  if (isPauseTurn(stopReason)) out.end_turn = false;
   echoRequestFields(out, reqJson);
 
   if (nativeModel !== "") out.model = nativeModel;
@@ -1724,7 +1774,7 @@ export const convertClaudeResponseToOpenAIResponsesNonStream = (
           claudeWebSearchQuery(outputItem.args),
           outputItem.results,
         );
-        item.status = itemStatus;
+        item.status = webSearchStatus(stopReason, itemStatus, outputItem.results !== undefined);
         break;
       case "message":
         item = {

@@ -7,6 +7,29 @@
 import { createHash } from "node:crypto";
 import { stableStringify, type Json, type JsonObject } from "@commissary/json";
 import { isArr, isObj } from "./gjson.ts";
+import { lookupModelInfo } from "../model-info.ts";
+
+/** Ceiling for a model the catalog does not know (Go `defaultClaudeChatMaxTokens`). */
+const DEFAULT_MAX_TOKENS = 32000;
+
+/** Ceiling for Fable when the client omits its limit: conservative even when the catalog allows more. */
+const DEFAULT_FABLE_MAX_TOKENS = 64000;
+
+/**
+ * The `max_tokens` a Claude request gets when the client set none (Go `defaultClaudeChatMaxTokensForModel`): the
+ * catalog's output limit for the model (`maxCompletionTokens`, ADR 0020, through the translator's model-info lookup
+ * rather than Go's registry), else 32000. Fable keeps its conservative ceiling. A payload `default` rule for
+ * `max_tokens` can still replace it: the executor drops it from the original body it hands the rules.
+ */
+export const defaultClaudeMaxTokensForModel = (modelName: string): number => {
+  const fable = modelName.trim().toLowerCase().includes("fable");
+  const fallback = fable ? DEFAULT_FABLE_MAX_TOKENS : DEFAULT_MAX_TOKENS;
+  const cap = lookupModelInfo(modelName, "claude")?.maxCompletionTokens ?? 0;
+
+  if (cap <= 0) return fallback;
+
+  return fable && cap >= fallback ? fallback : cap;
+};
 
 /** `SanitizeClaudeFunctionName`: `^[a-zA-Z0-9_-]{1,64}$` (non-conforming characters become `_`). */
 export const sanitizeClaudeFunctionName = (name: string): string => {

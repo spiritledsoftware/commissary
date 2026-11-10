@@ -66,6 +66,7 @@ import {
   relocateSystemForCountTokens,
 } from "./cloaking.ts";
 import { type ContinuityState, type ContinuityStore } from "./continuity.ts";
+import { withoutTranslatedDefaultMaxTokens } from "./default-max-tokens.ts";
 import { type DeviceProfileStore, deviceProfileStabilizationEnabled } from "./device-profile.ts";
 import { rebuildMidSystemEnabled, rebuildMidSystemMessagesToTopLevel } from "./mid-system.ts";
 import {
@@ -657,7 +658,7 @@ export const prepareMessagesRequest = Effect.fnUntraced(function* (input: Prepar
         fromProtocol: from,
         requestPath: options.metadata.requestPath,
         headers: options.headers,
-        original: originalTranslated.body,
+        original: withoutTranslatedDefaultMaxTokens(from, originalPayload, originalTranslated.body),
         trackedPaths: ["diagnostics"],
       },
       body,

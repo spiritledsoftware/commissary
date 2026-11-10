@@ -78,12 +78,25 @@ export const buildResponsesWebSearchCallItem = (
 };
 
 /** Inverse of `buildResponsesWebSearchCallItem`: rebuilds the Claude block pair for a replayed turn. */
-export const convertResponsesWebSearchCallToClaudeBlocks = (item: Json): JsonObject[] => {
+export const convertResponsesWebSearchCallToClaudeBlocks = (item: Json): JsonObject[] =>
+  convertResponsesWebSearchCallToClaudeBlocksWithQuery(item, "", true);
+
+/**
+ * Rebuilds the `server_tool_use` block, using `fallbackQuery` when the item carries no query, and the result block
+ * only when `withResult` is set.
+ */
+const convertResponsesWebSearchCallToClaudeBlocksWithQuery = (
+  item: Json,
+  fallbackQuery: string,
+  withResult: boolean,
+): JsonObject[] => {
   const toolUseID = claudeWebSearchToolUseID(str(get(item, "id")).trim());
 
   if (toolUseID === "") return [];
   const input: JsonObject = {};
-  const query = responsesWebSearchCallQuery(item);
+  let query = responsesWebSearchCallQuery(item);
+
+  if (query === "") query = fallbackQuery;
 
   if (query !== "") input.query = query;
 
@@ -93,6 +106,8 @@ export const convertResponsesWebSearchCallToClaudeBlocks = (item: Json): JsonObj
     name: CLAUDE_WEB_SEARCH_TOOL_NAME,
     input,
   };
+
+  if (!withResult) return [use];
 
   const result: JsonObject = {
     type: "web_search_tool_result",
@@ -106,6 +121,103 @@ export const convertResponsesWebSearchCallToClaudeBlocks = (item: Json): JsonObj
 
   return [use, result];
 };
+
+const isPausedItem = (item: Json): boolean =>
+  str(get(item, "type")) === "web_search_call" &&
+  str(get(item, "status")).trim().toLowerCase() === "in_progress" &&
+  get(item, "results") === undefined;
+
+/** A user turn or a tool output ends the assistant run a paused search can continue in. */
+const isTurnBoundary = (item: Json): boolean => {
+  let type = str(get(item, "type"));
+  const role = str(get(item, "role"));
+
+  if (type === "" && role !== "") type = "message";
+
+  switch (type) {
+    case "message":
+      return role !== "assistant";
+    case "function_call_output":
+    case "custom_tool_call_output":
+    case "tool_search_output":
+      return true;
+    default:
+      return false;
+  }
+};
+
+/**
+ * Indexes the `web_search_call` items of one request so a search paused by `pause_turn` replays faithfully
+ * (Go `responsesWebSearchHistory`, `aadb34f9`):
+ *
+ * - while the paused turn is the tail of the history, the search goes back as a `server_tool_use` without a result,
+ *   unchanged, as Anthropic requires;
+ * - when the continuation delivered the result under the same id within the same assistant run (no user turn or tool
+ *   output in between), the paused item is skipped and the continuation item emits the full pair, keeping the query
+ *   the paused item recorded.
+ *
+ * Every other `web_search_call`, repeated ids across separate turns included, keeps its one-pair-per-item replay.
+ */
+export class ResponsesWebSearchHistory {
+  /** `boundaryAfter[i]`: a user turn or a tool output follows index i. */
+  private readonly boundaryAfter: boolean[];
+  /** Paused items a later continuation item replaces. */
+  private readonly skip = new Set<number>();
+  /** The paused item's query, carried to its continuation item. */
+  private readonly pausedQuery = new Map<number, string>();
+
+  constructor(items: ReadonlyArray<Json>) {
+    this.boundaryAfter = items.map(() => false);
+    let boundary = false;
+
+    for (let index = items.length - 1; index >= 0; index--) {
+      this.boundaryAfter[index] = boundary;
+
+      // SAFETY: `index` is in bounds (loop bound); the cast only drops the `undefined` added by noUncheckedIndexedAccess.
+      if (isTurnBoundary(items[index] as Json)) boundary = true;
+    }
+
+    items.forEach((item, index) => {
+      if (!isPausedItem(item)) return;
+      const id = str(get(item, "id")).trim();
+
+      if (id === "") return;
+
+      for (let next = index + 1; next < items.length; next++) {
+        // SAFETY: `next < items.length` (loop bound); the cast only drops the `undefined` added by noUncheckedIndexedAccess.
+        const candidate = items[next] as Json;
+
+        if (isTurnBoundary(candidate)) break;
+
+        if (
+          str(get(candidate, "type")) === "web_search_call" &&
+          str(get(candidate, "id")).trim() === id
+        ) {
+          this.skip.add(index);
+          let query = responsesWebSearchCallQuery(item);
+          const previous = this.pausedQuery.get(index);
+
+          if (previous !== undefined && query === "") query = previous;
+          this.pausedQuery.set(next, query);
+          break;
+        }
+      }
+    });
+  }
+
+  /** The Claude blocks for the `web_search_call` at `index`. */
+  claudeBlocks(index: number, item: Json): JsonObject[] {
+    if (this.skip.has(index)) return [];
+    const query = this.pausedQuery.get(index) ?? "";
+    const tail = index >= this.boundaryAfter.length || this.boundaryAfter[index] !== true;
+
+    return convertResponsesWebSearchCallToClaudeBlocksWithQuery(
+      item,
+      query,
+      !(isPausedItem(item) && tail),
+    );
+  }
+}
 
 const responsesWebSearchCallQuery = (item: Json): string => {
   const query = str(get(item, "action.query")).trim();

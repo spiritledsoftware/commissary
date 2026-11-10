@@ -13,6 +13,9 @@ interface UsageTokens {
   outputTokens: number;
   cacheCreationInputTokens: number;
   cacheReadInputTokens: number;
+  /** `output_tokens_details.thinking_tokens`, a subset of the output tokens; only meaningful when reported. */
+  thinkingTokens: number;
+  hasThinkingTokens: boolean;
   hasUsage: boolean;
 }
 
@@ -39,6 +42,8 @@ const newUsage = (): UsageTokens => ({
   outputTokens: 0,
   cacheCreationInputTokens: 0,
   cacheReadInputTokens: 0,
+  thinkingTokens: 0,
+  hasThinkingTokens: false,
   hasUsage: false,
 });
 
@@ -57,6 +62,12 @@ const mergeUsage = (target: UsageTokens, usage: Json | undefined): void => {
   const read = get(usage, "cache_read_input_tokens");
 
   if (read !== undefined) target.cacheReadInputTokens = asInt(read);
+  const thinking = get(usage, "output_tokens_details.thinking_tokens");
+
+  if (thinking !== undefined) {
+    target.thinkingTokens = asInt(thinking);
+    target.hasThinkingTokens = true;
+  }
 };
 
 const setOpenAIUsage = (target: JsonObject, usage: UsageTokens): void => {
@@ -76,6 +87,10 @@ const setOpenAIUsage = (target: JsonObject, usage: UsageTokens): void => {
       cached_creation_tokens: created,
       cache_write_tokens: created,
     },
+    // Left out when upstream did not report it, so a client never sees a false 0 (an explicit 0 stays).
+    ...(usage.hasThinkingTokens
+      ? { completion_tokens_details: { reasoning_tokens: usage.thinkingTokens } }
+      : {}),
   };
 };
 
@@ -87,6 +102,7 @@ const mapStopReason = (reason: string): string => {
     case "tool_use":
       return "tool_calls";
     case "max_tokens":
+    case "model_context_window_exceeded":
       return "length";
     case "refusal":
     case "sensitive":
@@ -444,7 +460,8 @@ export const convertClaudeResponseToOpenAINonStream = (
 
     if (toolCalls.length > 0) {
       message.tool_calls = toolCalls;
-      choice.finish_reason = "tool_calls";
+      // A call cut off by the token limit or the context window stays `length`.
+      choice.finish_reason = mapStopReason(stopReason) === "length" ? "length" : "tool_calls";
     } else {
       const finish = mapStopReason(stopReason);
 

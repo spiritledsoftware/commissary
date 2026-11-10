@@ -187,17 +187,56 @@ export const enforceCacheControlLimit = (body: JsonObject, maxBlocks: number): J
   return body;
 };
 
+const isBlankText = (block: Json | undefined): boolean =>
+  isObj(block) && str(block.type) === "text" && str(block.text).trim() === "";
+
+/** Anthropic rejects `cache_control` on an empty text block and on thinking blocks (df07b1e5). */
+const contentBlockCanHostCacheControl = (block: Json | undefined): boolean => {
+  if (!isObj(block)) return false;
+
+  switch (str(block.type)) {
+    case "":
+      return true;
+    case "thinking":
+    case "redacted_thinking":
+      return false;
+    case "text":
+      return str(block.text).trim() !== "";
+    default:
+      return true;
+  }
+};
+
+/**
+ * The index of the block of a message that takes the rolling breakpoint: the last non-empty one. An assistant turn
+ * ending in a thinking block has none, because that block cannot host the marker.
+ */
+const lastCacheableMessageBlockIndex = (message: Json | undefined): number => {
+  const content = get(message, "content");
+
+  if (!isArr(content)) return -1;
+  const assistant = str(get(message, "role")) === "assistant";
+
+  for (let index = content.length - 1; index >= 0; index--) {
+    const block = content[index];
+
+    if (isBlankText(block)) continue;
+    const type = str(get(block, "type"));
+
+    if (assistant && (type === "thinking" || type === "redacted_thinking")) return -1;
+
+    if (contentBlockCanHostCacheControl(block)) return index;
+  }
+
+  return -1;
+};
+
 const messageEligibleForRollingCache = (message: Json): boolean => {
   const content = get(message, "content");
 
-  if (typeof content === "string") return true;
+  if (typeof content === "string") return content.trim() !== "";
 
-  if (!isArr(content) || content.length === 0) return false;
-
-  if (str(get(message, "role")) !== "assistant") return true;
-  const lastType = str(get(content[content.length - 1], "type"));
-
-  return lastType !== "thinking" && lastType !== "redacted_thinking";
+  return lastCacheableMessageBlockIndex(message) >= 0;
 };
 
 const injectMessagesCacheControl = (body: JsonObject): void => {
@@ -234,10 +273,10 @@ const injectMessagesCacheControl = (body: JsonObject): void => {
 
   if (isArr(content)) {
     if (content.some((item) => hasKey(item, "cache_control"))) return;
-    const last = content[content.length - 1];
+    const last = content[lastCacheableMessageBlockIndex(target)];
 
-    if (content.length > 0 && isObj(last)) last.cache_control = ephemeral();
-  } else if (typeof content === "string") {
+    if (isObj(last)) last.cache_control = ephemeral();
+  } else if (typeof content === "string" && content.trim() !== "") {
     target.content = [textBlock(content, ephemeral())];
   }
 };
@@ -259,12 +298,22 @@ const injectToolsCacheControl = (body: JsonObject): void => {
   if (lastEligible >= 0 && isObj(lastTool)) lastTool.cache_control = ephemeral();
 };
 
+const systemBlockCanHostCacheControl = (item: Json | undefined): boolean => {
+  if (!isObj(item)) return false;
+  const type = str(item.type);
+
+  return (type === "" || type === "text") && str(item.text).trim() !== "";
+};
+
+const lastCacheableSystemIndex = (system: ReadonlyArray<Json>): number =>
+  system.findLastIndex(systemBlockCanHostCacheControl);
+
 const injectSystemCacheControl = (body: JsonObject): void => {
   const system = body.system;
 
   if (isArr(system)) {
-    if (system.length === 0 || system.some((item) => hasKey(item, "cache_control"))) return;
-    const last = system[system.length - 1];
+    if (system.some((item) => hasKey(item, "cache_control"))) return;
+    const last = system[lastCacheableSystemIndex(system)];
 
     if (isObj(last)) last.cache_control = ephemeral();
   } else if (typeof system === "string" && system.trim() !== "") {
@@ -275,7 +324,7 @@ const injectSystemCacheControl = (body: JsonObject): void => {
 const hasCacheableSystem = (body: JsonObject): boolean => {
   const system = body.system;
 
-  if (isArr(system)) return system.length > 0;
+  if (isArr(system)) return lastCacheableSystemIndex(system) >= 0;
 
   return typeof system === "string" && system.trim() !== "";
 };
