@@ -110,7 +110,14 @@ export {
   sanitizedFunctionNameMap,
 } from "./translator/common/tool-names.ts";
 
-export { sanitizeGeminiRequestThoughtSignatures } from "./translator/gemini/common/signature.ts";
+export {
+  compatibleGeminiSignature,
+  isGeminiThoughtSignatureBypass,
+  isGeminiVertexBareTinkSignature,
+  sanitizeGeminiRequestThoughtSignatures,
+  sanitizeNonVertexGeminiRequestThoughtSignatures,
+  signaturePayloadWithoutProviderPrefix,
+} from "./translator/gemini/common/signature.ts";
 
 export { isGeminiThoughtPart } from "./translator/common/gemini-parts.ts";
 

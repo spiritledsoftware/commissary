@@ -1612,6 +1612,15 @@ Deviations from Go (all deliberate, documented in code headers):
     Part.data oneof 400); Antigravity discards excess `functionResponse` parts per turn, matching by call id, then name, then order.
   - _Signatures_: Gemini -> OpenAI chat maps a functionCall `thoughtSignature` to `extra_content.google.thought_signature` and back;
     the Claude -> Gemini _response_ omits a Claude thinking signature Gemini cannot replay instead of sending the bypass sentinel.
+  - _Vertex bare-Tink (C9, Go `58a4d04f`, `1398f273`, `a8582fba`)_: Vertex emits the Tink output directly as the whole
+    `thoughtSignature` (prefix `0x01`, key id `8f3d6b5f`, no protobuf wrapper) and is the only endpoint that accepts it back; the
+    Gemini API and Antigravity answer 400 "Corrupted thought signature". The executor, not the signature, knows its endpoint, so
+    `gemini` and `antigravity` call `sanitizeNonVertexGeminiRequestThoughtSignatures` (bare-Tink -> the bypass sentinel on the
+    first call of a group, dropped elsewhere), `vertex` the preserving sanitiser, and the translators always the preserving one.
+    Native Interactions drops a bare-Tink `thought` step except on Vertex (`allowVertexBareTink`), and keeps a `thought` step
+    only with a replayable Gemini signature (Go `a68c7d8e` ported ahead of its Meta and router-suffix parts).
+  - _Parallel groups (C9, Go `e5434f65`)_: a text part (an empty signature carrier too) ends a parallel functionCall group, so the
+    next call is signed (the sentinel when it has no signature) instead of 400ing; a thought part does not end it.
   - The committed goldens that predate these changes are covered by ported-ahead edits (`test/support/translator-ported-ahead.ts`)
     until F2 regenerates the fixtures.
 - **Gemini schema cleaning (C7, Go `154d5144`, `a43026d7`, `e9ba5c50`, `9126772d`, `b2fda98e`, `29150a22`, `a0fd8448`, `5efe9758`, `c558d320`, `ec06c3cb`)**
@@ -2974,7 +2983,7 @@ Ported from `antigravity_executor*.go`, `internal/translator/antigravity/*`, `in
   namespaced by `metadata.callerScope`.
 - **Signatures** (`translation/signature/`): `claude.ts` ports the E/R/Q/CAIS validation including the strict protobuf-tree mode
   (`signature-bypass-strict`, default off) and `compatibleAntigravityClaudeThinkingSignature`; `provider.ts` the provider detection and
-  `decideSignatureCompatibility` decision table for every target (claude, gemini, gpt, kimi, swe, grok); the Gemini envelope checks and replay sanitiser live in `gemini.ts` (re-exported by `translator/gemini/common/signature.ts`). `go run ./tools/fixturegen/signature` drives the real Go package over a corpus of
+  `decideSignatureCompatibility` decision table for every target (claude, gemini, gpt, kimi, swe, grok); the Gemini envelope checks and replay sanitiser live in `gemini.ts` (re-exported by `translator/gemini/common/signature.ts`). Cloud Code rejects Vertex bare-Tink signatures, so the executor sanitises Gemini models with the non-Vertex variant (bare-Tink becomes the bypass sentinel). CAQS signatures are accepted on any channel id (the channel rotates, 18 -> 19). `go run ./tools/fixturegen/signature` drives the real Go package over a corpus of
   synthetic envelopes (`packages/translation/test/fixtures/signature.json`, its `test/signature-fixtures.test.ts`).
 - **Signature cache** (`cache.ts`, `store.ts`): translators are synchronous, so the cache they read is a bounded per-isolate map with the Go
   semantics (3 h sliding TTL, 50 char minimum, gpt/claude/gemini buckets, Gemini sentinel on a miss). It is installed around the synchronous
@@ -3046,6 +3055,14 @@ test in `executor/claude/sanitize.ts`, Devin's approximation) are gone: the Code
 `go run ./tools/fixturegen/signature` (`packages/translation/test/fixtures/signature.json`) records detection, decisions (incl. reasons),
 Grok/GPT/recognised checks, Gemini replay, ~500 sanitiser runs over synthetic histories and Gemini validation/pairing cases;
 `test/signature-fixtures.test.ts` compares them with the port (key order included).
+
+Gemini envelopes are the protobuf field-2 wrapper and Vertex's unwrapped "bare-Tink": a payload of at least 21 bytes that starts
+with `0x01` and the key id `8f3d6b5f`. Without a wrapper the ciphertext looks random, so the prefix byte alone would claim about
+1/256 of xAI `encrypted_content` and Kimi signatures; the pinned key id (a code constant) makes that 40 fixed bits, and a rotated
+key falls back to the bypass sentinel until its id is added. `A` is among the self-describing first characters (`ACEQRg`) the
+Grok and Kimi validators use to run the foreign-envelope probes. Whether bare-Tink is replayable is the executor's choice of
+sanitiser (`sanitizeGeminiRequestThoughtSignatures` preserves it, `sanitizeNonVertexGeminiRequestThoughtSignatures` replaces it),
+not a provider family. Antigravity CAQS validation checks the envelope schema, not the channel id.
 
 ## Codex client rewriting and compat variants (`models/executor/helps/{codex-multi-agent-v2,translate}.ts`)
 
