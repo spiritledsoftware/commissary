@@ -361,10 +361,15 @@ const filterModalities = (modalities: ReadonlyArray<string>): string[] => {
   return out;
 };
 
-const setModalities = (entry: Entry, modalities: string[]): void => {
+/**
+ * `originalDetail` is true for the provider/alias constraints (`applyCodexClientModelCapabilities`, template models; a
+ * non-Codex route is reset by `nullRequiredOptions`) and false for a model without a template
+ * (`applyCodexClientInputModalitiesMetadata`, which never advertises original image detail).
+ */
+const setModalities = (entry: Entry, modalities: string[], originalDetail: boolean): void => {
   entry["input_modalities"] = modalities;
 
-  if (modalities.includes("image")) entry["supports_image_detail_original"] = true;
+  if (modalities.includes("image")) entry["supports_image_detail_original"] = originalDetail;
   else delete entry["supports_image_detail_original"];
 };
 
@@ -377,7 +382,7 @@ const applyInputModalitiesMetadata = (
   const filtered = filterModalities(modalities);
 
   if (filtered.length === 0) return;
-  setModalities(entry, filtered);
+  setModalities(entry, filtered, false);
 };
 
 /** `intersectStringSlices`: case-insensitive, first spelling and order of `a` win. */
@@ -461,7 +466,7 @@ const applyModelCapabilities = (
     modalities = [...(info.supportedInputModalities ?? [])];
   }
 
-  if (modalities !== undefined) setModalities(entry, filterModalities(modalities));
+  if (modalities !== undefined) setModalities(entry, filterModalities(modalities), true);
 
   let thinking: ThinkingSupport | undefined;
   let constrained = false;
@@ -533,8 +538,14 @@ const isPureCodexProvider = (input: CodexClientModelsInput, id: string): boolean
   );
 };
 
+/** `nullCodexClientRequiredOptions`: capabilities a non-Codex model must not advertise (the keys must stay present). */
 const nullRequiredOptions = (entry: Entry): void => {
   entry["apply_patch_tool_type"] = null;
+  entry["tool_mode"] = "direct";
+  entry["use_responses_lite"] = false;
+  entry["supports_reasoning_effort_updates"] = false;
+
+  if ("supports_image_detail_original" in entry) entry["supports_image_detail_original"] = false;
   entry["upgrade"] = null;
   entry["availability_nux"] = null;
 };
