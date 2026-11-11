@@ -812,6 +812,22 @@ Core contracts every provider slice implements (Go references in each module hea
 - **Multi-agent v2, orphan delegation, `is-compat`** (slice #26, see "Codex client rewriting and compat variants"): the executor
   optimises collaboration tools/namespace (`optimizeCodexMultiAgentV2RequestForAuth`, restored in stream, non-stream and WebSocket
   events) and compat models use the `claude -> codex` compat transform.
+- **Transient capacity** (CLIProxyAPI `9a35fa12`, `errors.ts` + `credentials/cooldown/mark-result.ts`): a `turn_rate_limit_exceeded`
+  429 (or a `rate_limit_error` that says "at capacity" with no other code) and the model-at-capacity wording are
+  **transient model-scoped capacity**: status 429, `code: transient_rate_limit` (`ErrorCode.transientRateLimit`), the nested
+  `body.error` layout read too, and the `Retry-After` header (behind a `usage_limit_reached` body reset) as the hint. `markResult`
+  cools only the reporting model until the hint: no quota state, no quota backoff, an explicit zero hint means no cooldown, a live
+  genuine quota deadline is never shortened, and without a model key it degrades to a credential-level transient cooldown. A local
+  `Retry-After` of the cooldown outranks the upstream one the `passthrough-headers` option forwards. Not ported: Go's trusted-deadline
+  error wrapper for terminal clients and Home aggregation (Commissary's `withRetryAfter` already writes the conductor's value).
+- **Split SSE events** (CLIProxyAPI `7795de19`, `sse-assembler.ts`): a data line that opens a JSON object or array without
+  closing it collects the following data lines until the JSON closes (a blank line, the end of the stream or the line limit also end
+  it), and is delivered compacted on one line, before the reader and in the non-stream aggregation; complete, empty and `[DONE]`
+  lines pass as read. Deviations: no invalid-event warning, and the bootstrap budgets count an assembled event as one frame of its
+  joined size, not its physical lines.
+- **Replayed `web_search_call` history** (CLIProxyAPI `e7d4c731`, `ensureWebSearchToolForHistory`): input items of that type without a
+  `web_search` / `web_search_preview*` tool get `{"type":"web_search"}` appended (on `/responses/compact` too); a Responses-Lite request
+  has the replayed items dropped instead. The compaction summary request is skipped, like the image tool.
 - **Stream bootstrap buffering** (`upstream.codex.stream-bootstrap-buffering` / `-timeout`, `bootstrap.ts` +
   `stream.ts`/`websocket.ts`): frames that carry nothing observable (handshake preamble, keepalives, empty `*.added`
   frames; a closed allow-list like Go's `isCodexBootstrapBufferableEvent`) are held until the first real event, within
