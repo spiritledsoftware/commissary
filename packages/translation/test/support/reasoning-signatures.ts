@@ -34,3 +34,20 @@ export const metaSignatureBytes = (
 
 /** A Meta Muse reasoning `encrypted_content` with a `payloadLen` byte payload bucket. */
 export const metaSignature = (payloadLen: number): string => rawUrl(metaSignatureBytes(payloadLen));
+
+/** An OpenRouter-style router suffix on `signature`: one `.` and `length` alphanumeric characters. */
+export const routerSuffixed = (signature: string, length = 67): string =>
+  `${signature}.${"Ab3".repeat(Math.ceil(length / 3)).slice(0, length)}`;
+
+/** Deterministic high-entropy `length` bytes as unpadded standard base64: what an xAI `encrypted_content` looks like. */
+export const grokCiphertext = (seed: number, length = 150): string => {
+  let state = seed >>> 0 || 1;
+  const bytes: number[] = [];
+
+  while (bytes.length < length) {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    bytes.push(state >>> 24);
+  }
+
+  return btoa(String.fromCharCode(...bytes)).replace(/=+$/, "");
+};

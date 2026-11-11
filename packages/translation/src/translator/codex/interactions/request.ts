@@ -748,6 +748,8 @@ const copyTopLevel = (out: Json, root: Json): Json => {
   return out;
 };
 
+const REASONING_ENCRYPTED_CONTENT = "reasoning.encrypted_content";
+
 /**
  * `ensureInteractionsCodexEncryptedContentInclude`: the request asks the upstream for encrypted reasoning content so a
  * signature can come back for replay.
@@ -761,8 +763,6 @@ const ensureEncryptedContentInclude = (out: Json): Json => {
 
   return set(out, "include.-1", REASONING_ENCRYPTED_CONTENT);
 };
-
-const REASONING_ENCRYPTED_CONTENT = "reasoning.encrypted_content";
 
 /** `ConvertInteractionsRequestToCodex`. Throws `UnsupportedPartError` when a user turn is left empty. */
 export const convertInteractionsRequestToCodex = (

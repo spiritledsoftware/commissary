@@ -800,7 +800,6 @@ Core contracts every provider slice implements (Go references in each module hea
   as the upstream issued it, router suffix included; the reasoning sanitiser runs _after_ the replay is applied (Go `a68c7d8e`), so a
   cached signature meets the same host policy as a client-sent one: kept as issued on `openrouter.ai`, stripped to the native
   envelope on every other upstream. Already-present reasoning is matched by its canonical key (no suffix, no cache prefix).
-  Difference from the #376 ticket text ("strip before storing"): Go's tested behaviour stores it as issued and strips at send time.
 - **Reasoning signatures** (`helps/responses-signature.ts`; Go `7a0b7563`, `674dbe8f`, `cc5682c5`, `be9fbd94`, `a68c7d8e`): which
   `encrypted_content` replays to which upstream is decided by the _target family_ and the _upstream host_. The target model is the
   upstream model after alias, prefix and suffix resolution, else the client-requested model when that names Meta, Grok or GPT (an
@@ -1802,7 +1801,7 @@ claude/gemini/openai-response -> openai, interactions <-> openai (Chat Completio
   forwarder of the client handlers, because Meta is the only upstream that sends it; the no-token TTFT fallback and the
   TTFT of non-stream calls are the response-header time, not the first body byte (as for Codex and xAI).
 - **Reasoning signatures on `/responses/compact`** (Go `674dbe8f`, `a68c7d8e`): the route is `is-compat` (reasoning text, ids and blobs of
-  unknown provenance replay to the third-party upstream; before, Commissary sanitised it like official Codex). The signature target is
+  unknown provenance replay to the third-party upstream). The signature target is
   the upstream model, falling back to the requested Meta, Grok or GPT model; a router suffix is kept on `openrouter.ai` and
   `*.openrouter.ai` and stripped to the native envelope on every other host; a Meta target takes Meta envelopes only (see "Codex
   provider", "Reasoning signatures").
@@ -2589,7 +2588,7 @@ helpers; `oauth_scope_executor.go` is `executor/helps/oauth-scope.ts`.
   conductor's `ensureFresh` (see Token refresh); the executor only reads the minted key.
   The target model is `muse-` + the base model (or the Muse model an alias names). The native Meta host (`*.meta.ai`, an empty or
   unparsable base URL) replays native Muse envelopes only: GPT, other providers', unknown-format and router-suffixed values are
-  stripped, fail-closed (an unknown blob used to replay). A third-party host configured under the Meta key may emit and consume
+  stripped, fail-closed. A third-party host configured under the Meta key may emit and consume
   router-suffixed envelopes: kept on `openrouter.ai`, stripped to native elsewhere.
 - **Devin** (`devin/`): `protobuf.ts` (varint/bytes/fixed codec), `wire.ts` (`GetChatMessageRequest`, frame decoding, trailer
   mapping, system prompt sanitising), `connect.ts` (streaming 5-byte frame parser, gzip via `DecompressionStream`),
@@ -2599,10 +2598,9 @@ helpers; `oauth_scope_executor.go` is `executor/helps/oauth-scope.ts`.
   deferred thought stops, 128 tool call cap, EOS trailer required) and `executor.ts`. Non-Interactions clients need the
   `client -> interactions` translators registered in the translator registry (`gemini` and `interactions` exist; `openai`/
   `openai-response` belong to the OpenAI-compatibility slice; `claude -> interactions` is what Claude Code needs to use Devin, see
-  _Claude clients on Interactions providers_); without one the body is parsed as-is (`messages` fallback). A Meta Muse envelope is never
-  supplemented as a sealed signature (it yields none), and a `cpa-codex-gemini-carrier-v1:` carrier is unwrapped to its inner
-  signature (Go `7a0b7563`, `a68c7d8e`). The response
-  passes through untranslated.
+  _Claude clients on Interactions providers_); without one the body is parsed as-is (`messages` fallback) and the response
+  passes through untranslated. A Meta Muse envelope is never supplemented as a sealed signature (it yields none), and a
+  `cpa-codex-gemini-carrier-v1:` carrier is unwrapped to its inner signature (Go `7a0b7563`, `a68c7d8e`).
 - **Compaction**: Kimi's and Meta's Responses paths and Devin compact locally, `compaction_trigger` and `/responses/compact` alike,
   with the route's own turn (matrix in the Claude section, "Responses compaction"). A D3 `sealed.v1.` reasoning item is not a
   `compaction` item and passes through untouched, so a Devin thought step survives next to a capsule.

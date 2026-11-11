@@ -217,19 +217,21 @@ export const convertCodexResponseToGemini = (
     return outputs;
   };
 
-  /** Puts the held reasoning signature on `part` (as the carrier) and clears it. */
-  const withPendingSignature = (part: Json): Json => {
-    if (params.pendingThoughtSignature === "") return part;
-
-    const carried = set(
-      part,
-      "thoughtSignature",
-      encodeGeminiCodexThoughtSignature(params.pendingThoughtSignature),
-    );
-
+  /** The held reasoning signature (`""` when none), which is cleared: a signature is spent on one part. */
+  const takePendingSignature = (): string => {
+    const signature = params.pendingThoughtSignature;
     params.pendingThoughtSignature = "";
 
-    return carried;
+    return signature;
+  };
+
+  /** Puts the held reasoning signature on `part` (as the carrier) and clears it. */
+  const withPendingSignature = (part: Json): Json => {
+    const signature = takePendingSignature();
+
+    return signature === ""
+      ? part
+      : set(part, "thoughtSignature", encodeGeminiCodexThoughtSignature(signature));
   };
 
   const emitImage = (itemId: string, b64: string, outputFormat: string): ReadonlyArray<string> => {
@@ -284,8 +286,7 @@ export const convertCodexResponseToGemini = (
 
       if (params.pendingThoughtSignature !== "" && signature !== "") {
         // A previous reasoning step never got a visible carrier part; flush it as an empty thought part.
-        emittedParts.push(signatureCarrierPart(params.pendingThoughtSignature));
-        params.pendingThoughtSignature = "";
+        emittedParts.push(signatureCarrierPart(takePendingSignature()));
       }
 
       for (const text of thoughtTexts) emittedParts.push({ thought: true, text });
@@ -335,10 +336,10 @@ export const convertCodexResponseToGemini = (
   ) {
     params.hasReasoningDelta = false;
 
-    if (params.pendingThoughtSignature === "") return [];
-    const carrier = signatureCarrierPart(params.pendingThoughtSignature);
-    params.pendingThoughtSignature = "";
-    template = set(template, "candidates.0.content.parts", [carrier]);
+    const pending = takePendingSignature();
+
+    if (pending === "") return [];
+    template = set(template, "candidates.0.content.parts", [signatureCarrierPart(pending)]);
 
     return flushStorageOutputs(JSON.stringify(template));
   } else if (
@@ -351,11 +352,9 @@ export const convertCodexResponseToGemini = (
     if (itemId !== "") params.streamedReasoningItems.add(itemId);
     const emittedParts: Json[] = [];
 
-    if (params.pendingThoughtSignature !== "") {
-      emittedParts.push(signatureCarrierPart(params.pendingThoughtSignature));
-      params.pendingThoughtSignature = "";
-    }
+    const pending = takePendingSignature();
 
+    if (pending !== "") emittedParts.push(signatureCarrierPart(pending));
     emittedParts.push({ thought: true, text: asString(get(root, "delta")) });
     template = set(template, "candidates.0.content.parts", emittedParts);
   } else if (type === "response.output_text.delta") {
@@ -389,10 +388,10 @@ export const convertCodexResponseToGemini = (
 
     return flushStorageOutputs(JSON.stringify(template));
   } else if (type === "response.completed" || type === "response.incomplete") {
-    if (params.pendingThoughtSignature !== "") {
-      const carrier = signatureCarrierPart(params.pendingThoughtSignature);
-      params.pendingThoughtSignature = "";
-      template = set(template, "candidates.0.content.parts", [carrier]);
+    const pending = takePendingSignature();
+
+    if (pending !== "") {
+      template = set(template, "candidates.0.content.parts", [signatureCarrierPart(pending)]);
     }
 
     const input = asInt(get(root, "response.usage.input_tokens"));

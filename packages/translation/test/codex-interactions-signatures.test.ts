@@ -5,28 +5,22 @@
 import { asString, get, isJsonArray, type Json, tryParseJson } from "@commissary/json";
 import { describe, expect, it } from "vitest";
 import { makeTranslationState, type ResponseContext } from "../src/translator/registry.ts";
+import {
+  fernetReasoningSignature,
+  metaSignature,
+  routerSuffixed,
+} from "./support/reasoning-signatures.ts";
 import { convertInteractionsRequestToCodex } from "../src/translator/codex/interactions/request.ts";
 import {
   convertCodexResponseToInteractions,
   convertCodexResponseToInteractionsNonStream,
 } from "../src/translator/codex/interactions/response.ts";
 
-/** Go `testInteractionsMetaSignature`: a shape-valid synthetic Meta envelope. */
-const META = `Q-PaDgE${"A".repeat(1419)}`;
+const META = metaSignature(1024);
 
-const ROUTED_META = `${META}.${"Ab3".repeat(23).slice(0, 67)}`;
+const ROUTED_META = routerSuffixed(META);
 
-/** Go `testInteractionsGPTSignature`: version 0x80, 89 bytes. */
-const GPT = (() => {
-  const bytes = Array.from({ length: 89 }, (_, i) => (i >= 9 ? i : 0));
-
-  bytes[0] = 0x80;
-
-  return btoa(String.fromCharCode(...bytes))
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
-})();
+const GPT = fernetReasoningSignature();
 
 const context = (model: string): ResponseContext => ({
   model,

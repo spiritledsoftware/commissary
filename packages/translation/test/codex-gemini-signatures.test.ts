@@ -6,26 +6,20 @@
 import { asString, get, isJsonArray, type Json, tryParseJson } from "@commissary/json";
 import { describe, expect, it } from "vitest";
 import { makeTranslationState, type ResponseContext } from "../src/translator/registry.ts";
+import {
+  fernetReasoningSignature,
+  metaSignature,
+  routerSuffixed,
+} from "./support/reasoning-signatures.ts";
 import { convertGeminiRequestToCodex } from "../src/translator/codex/gemini/request.ts";
 import {
   convertCodexResponseToGemini,
   convertCodexResponseToGeminiNonStream,
 } from "../src/translator/codex/gemini/response.ts";
 
-/** Go `testGeminiMetaThoughtSignature`: a shape-valid synthetic Meta envelope (45 + 1024 bytes). */
-const META = `Q-PaDgE${"A".repeat(1419)}`;
+const META = metaSignature(1024);
 
-/** Go `testGeminiGPTThoughtSignature`: version 0x80, 89 bytes. */
-const GPT = (() => {
-  const bytes = Array.from({ length: 89 }, (_, i) => (i >= 9 ? i : 0));
-
-  bytes[0] = 0x80;
-
-  return btoa(String.fromCharCode(...bytes))
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
-})();
+const GPT = fernetReasoningSignature();
 
 const carrier = (raw: string): string => btoa(`cpa-codex-gemini-carrier-v1:${raw}`);
 
@@ -155,7 +149,7 @@ describe("Gemini request -> Codex: restoring a thoughtSignature (Go 88ac14f3, a4
     },
   );
 
-  const ROUTED_META = `${META}.${"Ab3".repeat(23).slice(0, 67)}`;
+  const ROUTED_META = routerSuffixed(META);
 
   it.each([
     ["gpt cache prefixed", "gpt-5.1-codex", `gpt#${GPT}`, GPT],
@@ -373,7 +367,7 @@ describe("Codex response -> Gemini: carrying encrypted_content (Go 88ac14f3, a46
 
   it("keeps consecutive reasoning items apart so each replays with its own summary", () => {
     const ctx = context("muse-spark-1.3");
-    const second = `${META}.${"Zy9".repeat(21).slice(0, 62)}`;
+    const second = routerSuffixed(META, 62);
 
     const parts = stream(ctx, [
       { type: "response.reasoning_summary_text.delta", item_id: "rs_1", delta: "first summary" },

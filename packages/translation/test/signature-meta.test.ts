@@ -15,8 +15,8 @@ import {
 import {
   inspectMetaReasoningSignature,
   isValidMetaReasoningSignature,
-  stripRouterSuffix,
 } from "../src/signature/meta.ts";
+import { stripRouterSuffix } from "../src/signature/router-suffix.ts";
 import {
   compatibleSignatureForProvider,
   decideSignatureCompatibility,
@@ -26,23 +26,25 @@ import {
 import {
   fernetReasoningSignature,
   metaSignature,
+  grokCiphertext,
   metaSignatureBytes,
   rawUrl,
+  routerSuffixed,
 } from "./support/reasoning-signatures.ts";
 
-const SUFFIX = "Ab3".repeat(23).slice(0, 67);
+const SUFFIX = routerSuffixed("").slice(1);
 
 describe("Meta Muse reasoning envelopes (Go 7a0b7563)", () => {
   it.each([
-    [1024, 0],
-    [2048, 1],
-    [4096, 2],
-    [32768, 5],
-  ])("recognises the %i byte bucket", (payload, exponent) => {
+    [1024, 1069, 0],
+    [2048, 2093, 1],
+    [4096, 4141, 2],
+    [32768, 32813, 5],
+  ])("recognises the %i byte bucket", (payload, decodedLen, exponent) => {
     const signature = metaSignature(payload);
 
     expect(inspectMetaReasoningSignature(signature)).toEqual({
-      decodedLen: payload + 45,
+      decodedLen,
       payloadLen: payload,
       bucketExponent: exponent,
       routerSuffix: "",
@@ -217,8 +219,8 @@ describe("signature family by model name (Go 7a0b7563, 674dbe8f)", () => {
 describe("router-suffixed GPT and Grok signatures (Go be9fbd94)", () => {
   it("accepts a GPT router suffix and replays it verbatim", () => {
     const native = fernetReasoningSignature();
-    const suffix = "Ab3".repeat(27).slice(0, 79);
-    const routed = `${native}.${suffix}`;
+    const routed = routerSuffixed(native, 79);
+    const suffix = routed.slice(native.length + 1);
 
     expect(inspectGptReasoningSignature(routed)).toEqual({ routerSuffix: suffix });
     expect(inspectGptReasoningSignature(native)).toEqual({ routerSuffix: "" });
@@ -231,10 +233,9 @@ describe("router-suffixed GPT and Grok signatures (Go be9fbd94)", () => {
   });
 
   it("accepts a Grok router suffix", () => {
-    const bytes = Array.from({ length: 135 }, (_, i) => (i * 73 + 19) & 0xff);
-    const native = btoa(String.fromCharCode(...bytes)).replace(/=+$/, "");
-    const suffix = "Ab3".repeat(21).slice(0, 62);
-    const routed = `${native}.${suffix}`;
+    const native = grokCiphertext(3, 135);
+    const routed = routerSuffixed(native, 62);
+    const suffix = routed.slice(native.length + 1);
 
     expect(inspectGrokEncryptedContent(routed)).toEqual({
       rawLen: routed.length,

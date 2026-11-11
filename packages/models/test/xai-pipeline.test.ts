@@ -22,6 +22,7 @@ import {
   type XaiPickerLog,
 } from "./support/xai.ts";
 import type { Json } from "@commissary/json";
+import { routerSuffixed } from "./support/signatures.ts";
 
 const YAML = `
 upstream:
@@ -566,7 +567,7 @@ describe("request shaping", () => {
       keepsSuffix ? "keeps the suffix" : "strips the suffix to the native ciphertext",
       async () => {
         const native = grokCiphertext(11);
-        const routed = `${native}.${"Ab3".repeat(21).slice(0, 62)}`;
+        const routed = routerSuffixed(native, 62);
         const p = pipeline(() => sseResponse(TEXT_STREAM), { credentials: [credential] });
 
         await p.call(

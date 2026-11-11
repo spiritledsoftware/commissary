@@ -29,6 +29,7 @@ import {
   type HttpClientResponse,
 } from "effect/http";
 import { del, get, isJsonObject, type Json, set, tryParseJson } from "@commissary/json";
+import { setIfDifferent } from "../codex/request.ts";
 import {
   reasoningOptionsForTarget,
   resolveResponsesSignatureTargetModel,
@@ -294,9 +295,8 @@ export const makeOpenAICompatExecutor = (
       rewrite,
     );
 
-    for (const envelope of [original, translated]) {
-      if (get(envelope.body, "model") !== baseModel) set(envelope.body, "model", baseModel);
-    }
+    setIfDifferent(original.body, "model", baseModel);
+    setIfDifferent(translated.body, "model", baseModel);
 
     if (translated.error !== undefined) {
       return yield* new ExecutionError({

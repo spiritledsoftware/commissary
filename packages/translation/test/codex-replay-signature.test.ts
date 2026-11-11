@@ -8,28 +8,22 @@ import {
   resolveCodexReplayTargetModel,
 } from "../src/translator/common/codex-replay-signature.ts";
 import { convertClaudeRequestToCodex } from "../src/translator/codex/claude/request.ts";
+import {
+  fernetReasoningSignature,
+  grokCiphertext,
+  metaSignature,
+  routerSuffixed,
+} from "./support/reasoning-signatures.ts";
 
-/** Go `testCodexReplayMetaSignature`: `Q-PaDgE` pins the header, 1426 chars decode to 45 + 1024 bytes. */
-const META = `Q-PaDgE${"A".repeat(1419)}`;
+const META = metaSignature(1024);
 
-const ROUTED_META = `${META}.${"Ab3".repeat(23).slice(0, 67)}`;
+const ROUTED_META = routerSuffixed(META);
 
-/** Go `testCodexReplayGPTSignature`: version 0x80, 89 bytes. */
-const GPT = (() => {
-  const bytes = Array.from({ length: 89 }, (_, i) => (i >= 9 ? i : 0));
+const GPT = fernetReasoningSignature();
 
-  bytes[0] = 0x80;
+const ROUTED_GPT = routerSuffixed(GPT, 79);
 
-  return btoa(String.fromCharCode(...bytes))
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
-})();
-
-const ROUTED_GPT = `${GPT}.${"Ab3".repeat(27).slice(0, 79)}`;
-
-const GROK =
-  "HmlYdr2aCAqCYP/m9mr8PS6KOsdMs72FGDigmydR+Jsmuv8KX97yWPlbOwmXJgWn0CbHaCacdQD3+n5EvpgLfPNmafS3kdICBjRuDf4bzHy7uBiUhNVhqPtp/ee1y9q4imPE4LYgD1VZ4J+bp9mTeqA1+nC9Oue58CiNEMV9SVaGenCD+aBnVuSTzQhD32Y+68i6HLJW0Dx6ifaRfb8hxYtA/sPM+/FTvAMW11nRho5a2BBSkpnzfqqAz/e/vGJ77/bygpXM823QA9wL9i0X";
+const GROK = grokCiphertext(7);
 
 describe("codexReplaySignatureForTarget (Go common.CodexReplaySignatureForTarget)", () => {
   it.each([

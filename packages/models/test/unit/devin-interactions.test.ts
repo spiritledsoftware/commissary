@@ -7,6 +7,7 @@ import {
   parseSignatureBytes,
 } from "../../src/executor/devin/interactions.ts";
 import { json } from "../support/executor-run.ts";
+import { metaSignature, routerSuffixed } from "../support/signatures.ts";
 import type { Json } from "@commissary/json";
 
 const parse = (payload: Json, original?: Json) =>
@@ -235,13 +236,13 @@ describe("signatures and ids", () => {
   // Go 7a0b7563, a68c7d8e: a Meta Muse envelope is positively foreign to the Devin backend and never supplemented as a
   // sealed signature; the Gemini Codex carrier (cpa-codex-gemini-carrier-v1:) is unwrapped to its inner signature.
   describe("Meta envelopes and the Gemini Codex carrier", () => {
-    const meta = `Q-PaDgE${"A".repeat(1419)}`;
+    const meta = metaSignature();
     const carrier = (inner: string) => btoa(`cpa-codex-gemini-carrier-v1:${inner}`);
     const empty = { type: "", bytes: new Uint8Array(0) };
 
     it("never supplements a Meta envelope, bare or inside the carrier", () => {
       expect(parseSignatureBytes(meta)).toEqual(empty);
-      expect(parseSignatureBytes(`${meta}.${"Ab3".repeat(23).slice(0, 67)}`)).toEqual(empty);
+      expect(parseSignatureBytes(routerSuffixed(meta))).toEqual(empty);
       expect(parseSignatureBytes(carrier(meta))).toEqual(empty);
       // The last resort of an unrecognised blob would have called it sealed.
       expect(parseSignatureBytes("opaque-blob").type).toBe("sealed");

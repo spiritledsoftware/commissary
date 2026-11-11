@@ -49,6 +49,55 @@ describe("upstream hosts", () => {
   });
 });
 
+describe("upstream host look-alikes", () => {
+  it.each([
+    "https://evil-openrouter.ai.example/v1",
+    "https://evil-openrouter.ai/v1",
+    "https://openrouter.ai.evil.com/v1",
+    "https://openrouter.ai@evil.com/v1",
+    "https://evil.com/openrouter.ai",
+    "OPENROUTER.AI",
+    "openrouter.ai/api/v1",
+  ])("%s is not OpenRouter", (url) => {
+    expect(isOpenRouterUpstreamUrl(url)).toBe(false);
+  });
+
+  it.each([
+    "https://OPENROUTER.AI/api/v1",
+    "https://OpenRouter.ai",
+    "https://openrouter.ai:443/api/v1",
+    "https://user@openrouter.ai/api/v1",
+  ])("%s is OpenRouter", (url) => {
+    expect(isOpenRouterUpstreamUrl(url)).toBe(true);
+  });
+
+  it.each([
+    "https://api.meta.ai.evil.com/v1",
+    "https://evilmeta.ai/v1",
+    "https://meta.ai@evil.com/v1",
+    "https://evil.com/api.meta.ai",
+  ])("%s is not the native Meta host", (url) => {
+    expect(isNativeMetaUpstreamUrl(url)).toBe(false);
+  });
+
+  it("keeps the router suffix only on the real OpenRouter host", () => {
+    const routed = routerSuffixed(gptSignature(), 79);
+
+    for (const [baseUrl, kept] of [
+      ["https://openrouter.ai/api/v1", true],
+      ["https://evil-openrouter.ai.example/v1", false],
+      ["https://openrouter.ai@evil.com/v1", false],
+    ] as const) {
+      const out = sanitizeReasoningEncryptedContent(
+        body(reasoning(routed)),
+        reasoningOptionsForTarget({ isCompat: false, targetModel: "gpt-5.4", baseUrl }),
+      );
+
+      expect(encryptedOf(out, 0), baseUrl).toBe(kept ? routed : gptSignature());
+    }
+  });
+});
+
 describe("orphan ids, reasoning content and unknown blobs", () => {
   it("strips invalid encrypted_content and the orphan ids behind it when store is disabled", () => {
     const out = sanitizeReasoningEncryptedContent(

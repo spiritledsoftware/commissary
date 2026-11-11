@@ -11,8 +11,6 @@
 import { decodeBase64Std } from "./base64.ts";
 import { splitRouterSuffix } from "./router-suffix.ts";
 
-export { isValidRouterSuffix, stripRouterSuffix } from "./router-suffix.ts";
-
 const MAX_META_REASONING_SIGNATURE_LEN = 32 * 1024 * 1024;
 
 const OVERHEAD_LEN = 45;
