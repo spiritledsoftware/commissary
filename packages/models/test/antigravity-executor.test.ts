@@ -554,3 +554,66 @@ describe("antigravity executor: token counting", () => {
     expect(sent.request.contents[0].parts[0].text).toBe("hello");
   });
 });
+
+describe("antigravity executor: Responses compaction summary", () => {
+  const trigger = (extra: JsonObject = {}): JsonObject => ({
+    model: "gemini-2.5-flash",
+    input: [
+      { type: "message", role: "user", content: [{ type: "input_text", text: "fix the bug" }] },
+      { type: "compaction_trigger" },
+    ],
+    ...extra,
+  });
+
+  it("answers a summary without text with a request-scoped 502, not a 500", async () => {
+    const h = harness(() => jsonResponse(upstream([{ thought: true, text: "thinking" }])));
+    afterAll(h.dispose);
+
+    const response = await h.call("/v1/responses", postJson(trigger()));
+    expect(response.status).toBe(502);
+    expect(await response.text()).toContain("no summary text");
+    expect(h.reports.at(-1)).toMatchObject({
+      success: false,
+      httpStatus: 502,
+      error: { code: "request_scoped" },
+    });
+  });
+
+  it("answers a summary cut off by the output budget with a 502", async () => {
+    const h = harness(() =>
+      jsonResponse(
+        upstream([{ text: "half a summ" }], {
+          candidates: [
+            {
+              content: { role: "model", parts: [{ text: "half a summ" }] },
+              finishReason: "MAX_TOKENS",
+              index: 0,
+            },
+          ],
+        }),
+      ),
+    );
+
+    afterAll(h.dispose);
+    const response = await h.call("/v1/responses", postJson(trigger()));
+    expect(response.status).toBe(502);
+  });
+
+  it("does not send the client's text.format with the summary request", async () => {
+    const h = harness(() => jsonResponse(upstream([{ text: "the summary" }])));
+    afterAll(h.dispose);
+
+    const response = await h.call(
+      "/v1/responses",
+      postJson(
+        trigger({
+          text: { format: { type: "json_schema", name: "plan", schema: { type: "object" } } },
+        }),
+      ),
+    );
+
+    expect(response.status).toBe(200);
+    expect(h.calls[0]?.body).not.toContain("responseSchema");
+    expect(h.calls[0]?.body).not.toContain("application/json");
+  });
+});

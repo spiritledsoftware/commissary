@@ -4,7 +4,14 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Config } from "../src/config/schema.ts";
 import { normalizeCchInput } from "../src/executor/claude/signing.ts";
+import { makeClaudeExecutor } from "../src/executor/claude/executor.ts";
 import { xxh64 } from "../src/executor/claude/xxhash64.ts";
+import {
+  credential as executorCredential,
+  harness as executorHarness,
+  options as executorOptions,
+  runFail,
+} from "./support/executor-run.ts";
 import { asString, type JsonObject } from "@commissary/json";
 import { setModelInfoLookup } from "@commissary/translation";
 import { Effect, Layer } from "effect";
@@ -1734,5 +1741,97 @@ describe("Top-level cache_control", () => {
     const body = JSON.parse(p.calls[0]!.body) as JsonObject;
     expect(body.cache_control).toEqual({ type: "ephemeral" });
     expect(count(body)).toBe(1);
+  });
+});
+
+describe("Responses compaction on a Claude route", () => {
+  const trigger = (extra: JsonObject = {}): JsonObject => ({
+    model: "sonnet",
+    input: [
+      { type: "message", role: "user", content: [{ type: "input_text", text: "fix the bug" }] },
+      { type: "compaction_trigger" },
+    ],
+    ...extra,
+  });
+
+  it("answers a summary without text with a 502, not a 500", async () => {
+    const p = makePipeline({
+      config: providerKeyConfig,
+      respond: () => jsonResponse(message({ content: [] })),
+    });
+
+    afterAll(p.dispose);
+
+    const response = await p.call("/v1/responses", postJson(trigger()));
+    const text = await response.text();
+    expect(text).toContain("no summary text");
+    expect(response.status).toBe(502);
+    expect(p.records.at(-1)?.fail?.statusCode).toBe(502);
+    expect(p.calls).toHaveLength(1);
+  });
+
+  it("fails a summary without text with a request-scoped 502 (no cooldown, no failover)", async () => {
+    const h = await executorHarness(
+      executorCredential("claude", { kind: "apikey", attributes: { api_key: "sk-ant-api03-x" } }),
+      () => jsonResponse(message({ content: [] })),
+    );
+
+    const error = await runFail(
+      makeClaudeExecutor().execute(
+        h.context,
+        { model: "claude-sonnet-4-5", payload: trigger({ model: "claude-sonnet-4-5" }) },
+        executorOptions({
+          sourceFormat: "openai-response",
+          metadata: { ...executorOptions().metadata, requestPath: "/v1/responses" },
+        }),
+      ),
+      h.layers,
+    );
+
+    expect(error).toMatchObject({ status: 502, requestScoped: true });
+    expect(error.message).toContain("no summary text");
+  });
+
+  it("answers a summary cut off by max_tokens with a 502", async () => {
+    const p = makePipeline({
+      config: providerKeyConfig,
+      respond: () => jsonResponse(message({ stop_reason: "max_tokens" })),
+    });
+
+    afterAll(p.dispose);
+
+    const response = await p.call("/v1/responses", postJson(trigger()));
+    expect(response.status).toBe(502);
+    expect(await response.text()).toContain('want \\"completed\\"');
+  });
+
+  it("does not send the client's text.format with the summary request", async () => {
+    const p = makePipeline({ config: providerKeyConfig, respond: () => jsonResponse(message()) });
+    afterAll(p.dispose);
+
+    const response = await p.call(
+      "/v1/responses",
+      postJson(
+        trigger({
+          text: { format: { type: "json_schema", name: "plan", schema: { type: "object" } } },
+        }),
+      ),
+    );
+
+    expect(response.status).toBe(200);
+    expect(p.calls[0]?.body).not.toContain("json_schema");
+  });
+
+  it("refuses a compaction whose source continues a previous response", async () => {
+    const p = makePipeline({ config: providerKeyConfig, respond: () => jsonResponse(message()) });
+    afterAll(p.dispose);
+
+    const response = await p.call(
+      "/v1/responses",
+      postJson(trigger({ previous_response_id: "resp_1" })),
+    );
+
+    expect(response.status).toBe(400);
+    expect(p.calls).toHaveLength(0);
   });
 });

@@ -3,6 +3,8 @@
 import { Effect, Layer } from "effect";
 import { afterAll, describe, expect, it } from "vitest";
 import type { CredentialSnapshot } from "../src/executor/picker.ts";
+import { sealCompaction, unsealCompaction } from "../src/executor/helps/compaction.ts";
+import { asString, get, type Json, tryParseJson } from "@commissary/json";
 import { ModelProviders } from "../src/handlers/model-providers.ts";
 import { fixedPicker } from "./support/codex.ts";
 import {
@@ -207,5 +209,213 @@ describe("Meta via /v1/responses", () => {
     );
 
     expect(response.status).toBe(429);
+  });
+});
+
+/** The Responses answer of a summary turn, as each route's upstream sends it. */
+const summaryResponse = (): Json => ({
+  id: "resp_summary",
+  object: "response",
+  status: "completed",
+  model: "m",
+  output: [
+    {
+      id: "msg_1",
+      type: "message",
+      role: "assistant",
+      content: [{ type: "output_text", text: "the summary" }],
+    },
+  ],
+  usage: { input_tokens: 9, output_tokens: 3, total_tokens: 12 },
+});
+
+const incompleteSummary = (): Json => ({
+  ...(summaryResponse() as Record<string, Json>),
+  status: "incomplete",
+  incomplete_details: { reason: "max_output_tokens" },
+});
+
+const compactionRoutes = [
+  {
+    name: "Kimi",
+    credential: kimi,
+    provider: "kimi",
+    model: "kimi-k2.8",
+    modelName: "kimi",
+    url: "https://api.kimi.com/coding/v1/responses",
+    respond: () => jsonResponse(summaryResponse()),
+    respondIncomplete: () => jsonResponse(incompleteSummary()),
+  },
+  {
+    name: "Meta",
+    credential: meta,
+    provider: "meta",
+    model: "muse-spark",
+    modelName: "muse",
+    url: "https://meta.test/v1/responses",
+    respond: () =>
+      sseResponse([
+        `data: ${JSON.stringify({ type: "response.completed", response: summaryResponse() })}\n\n`,
+      ]),
+    respondIncomplete: () =>
+      sseResponse([
+        `data: ${JSON.stringify({ type: "response.incomplete", response: incompleteSummary() })}\n\n`,
+      ]),
+  },
+];
+
+describe.each(compactionRoutes)("Responses compaction on $name", (route) => {
+  const capsule = async () => ({
+    type: "compaction",
+    id: "cmp_ag_compact_1",
+    encrypted_content: await sealCompaction("earlier work", route.model),
+  });
+
+  const foreign = { type: "compaction", id: "cmp_native", encrypted_content: "gAAAA-native" };
+  const userMessage = { type: "message", role: "user", content: "continue" };
+
+  const pipeline = async () => {
+    const p = makePipeline({
+      config: await loadConfig("requests: {}"),
+      credentialPicker: fixedPicker([route.credential]),
+      modelProviders: providers(route.provider),
+      respond: route.respond,
+    });
+
+    afterAll(p.dispose);
+
+    return p;
+  };
+
+  const upstreamInput = (call: { readonly body: string }): Json[] => {
+    const input = get(tryParseJson(call.body), "input");
+
+    return Array.isArray(input) ? input : [];
+  };
+
+  const capsulesIn = (text: string): string[] => [
+    ...new Set(text.match(/cpa-ag-compact-v1:[A-Za-z0-9_-]+/g) ?? []),
+  ];
+
+  const expectSummaryRequest = (call: { readonly body: string; readonly url: string }) => {
+    expect(call.url).toBe(route.url);
+    expect(JSON.parse(call.body).model).toContain(route.modelName);
+    expect(call.body).not.toContain("compaction_trigger");
+    expect(call.body).not.toContain("gAAAA-native");
+    expect(call.body).not.toContain("cpa-ag-compact-v1:");
+    expect(JSON.stringify(upstreamInput(call))).toContain("Context summary from previous turns:");
+  };
+
+  it("answers a compaction_trigger with a sealed response from one summary request", async () => {
+    const p = await pipeline();
+
+    const response = await p.call(
+      "/v1/responses",
+      postJson({
+        model: route.model,
+        stream: false,
+        input: [await capsule(), foreign, userMessage, { type: "compaction_trigger" }],
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(p.calls).toHaveLength(1);
+    expectSummaryRequest(p.calls[0]!);
+    const body: Json = await response.json();
+    expect(get(body, "object")).toBe("response.compaction");
+    expect(await unsealCompaction(asString(get(body, "output.0.encrypted_content")))).toBe(
+      "the summary",
+    );
+    expect(get(body, "usage.input_tokens")).toBe(9);
+    expect(p.records).toHaveLength(1);
+    expect(p.records[0]).toMatchObject({ provider: route.provider, failed: false });
+  });
+
+  it("answers a streaming compaction_trigger with the synthetic Responses stream", async () => {
+    const p = await pipeline();
+
+    const response = await p.call(
+      "/v1/responses",
+      postJson({
+        model: route.model,
+        stream: true,
+        input: [await capsule(), userMessage, { type: "compaction_trigger" }],
+      }),
+    );
+
+    expect(response.headers.get("content-type")).toContain("text/event-stream");
+    const text = await response.text();
+    expect(text).toContain("event: response.completed");
+    expect(await unsealCompaction(capsulesIn(text)[0] ?? "")).toBe("the summary");
+    expect(p.calls).toHaveLength(1);
+  });
+
+  it("serves /v1/responses/compact locally instead of answering 501", async () => {
+    const p = await pipeline();
+
+    const response = await p.call(
+      "/v1/responses/compact",
+      postJson({ model: route.model, input: [await capsule(), foreign, userMessage] }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(p.calls).toHaveLength(1);
+    expectSummaryRequest(p.calls[0]!);
+    const body: Json = await response.json();
+    expect(get(body, "object")).toBe("response.compaction");
+    expect(await unsealCompaction(asString(get(body, "output.0.encrypted_content")))).toBe(
+      "the summary",
+    );
+  });
+
+  it("drops foreign compaction items from an ordinary request and expands the capsules", async () => {
+    const p = await pipeline();
+
+    await p.call(
+      "/v1/responses",
+      postJson({
+        model: route.model,
+        stream: false,
+        input: [foreign, await capsule(), userMessage],
+      }),
+    );
+
+    expect(p.calls[0]!.body).not.toContain("gAAAA-native");
+    expect(p.calls[0]!.body).not.toContain("cpa-ag-compact-v1:");
+    expect(JSON.stringify(upstreamInput(p.calls[0]!))).toContain("earlier work");
+  });
+
+  it("refuses a compaction source that continues a previous response", async () => {
+    const p = await pipeline();
+
+    const response = await p.call(
+      "/v1/responses",
+      postJson({
+        model: route.model,
+        previous_response_id: "resp_1",
+        input: [userMessage, { type: "compaction_trigger" }],
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(p.calls).toHaveLength(0);
+  });
+
+  it("answers a summary that did not complete with a 502", async () => {
+    const p = makePipeline({
+      config: await loadConfig("requests: {}"),
+      credentialPicker: fixedPicker([route.credential]),
+      modelProviders: providers(route.provider),
+      respond: route.respondIncomplete,
+    });
+
+    afterAll(p.dispose);
+
+    const response = await p.call(
+      "/v1/responses",
+      postJson({ model: route.model, input: [userMessage, { type: "compaction_trigger" }] }),
+    );
+
+    expect(response.status).toBe(502);
   });
 });

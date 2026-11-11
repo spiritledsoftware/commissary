@@ -1,9 +1,9 @@
 /**
- * Claude flavour of Responses compaction: capsule expansion before translation, the summary request built from the
- * client payload, tool-block flattening of the summary turn and the Responses usage/stream patching.
+ * Claude flavour of Responses compaction: the summary request built from the client payload, tool-block flattening of
+ * the summary turn and the Responses usage/stream patching.
  *
- * Go source: internal/runtime/executor/claude_executor_compaction.go. The capsule format itself is
- * `executor/helps/compaction.ts`.
+ * Go source: internal/runtime/executor/claude_executor_compaction.go. The capsule format, its expansion before
+ * translation and the checks every local route shares are `executor/helps/compaction.ts`.
  */
 import {
   asInt,
@@ -20,61 +20,9 @@ import {
 import { parseOpenAIUsage } from "../../usage/record.ts";
 import type { ExecutorOptions, ExecutorRequest } from "../types.ts";
 import {
-  expandCompactionCapsules,
-  hasResponsesCompactionItem,
   hasResponsesCompactionTrigger,
   prepareCompactionSummaryPayload,
-  recognizedCompactionCapsule,
 } from "../helps/compaction.ts";
-
-/** `dropForeignClaudeCompactionItems`: compaction items without a CPA capsule are dropped (Go logs a warning). */
-export const dropForeignCompactionItems = (payload: Json | undefined): Json | undefined => {
-  const input = get(payload, "input");
-
-  if (payload === undefined || !isJsonArray(input)) return payload;
-
-  const kept = input.filter(
-    (item) =>
-      !(
-        asString(get(item, "type")) === "compaction" &&
-        !recognizedCompactionCapsule(asString(get(item, "encrypted_content")))
-      ),
-  );
-
-  if (kept.length === input.length) return payload;
-  const out = cloneJson(payload);
-  set(out, "input", kept);
-
-  return out;
-};
-
-const expandPayload = async (payload: Json | undefined): Promise<Json | undefined> => {
-  const filtered = dropForeignCompactionItems(payload);
-
-  if (filtered !== undefined && hasResponsesCompactionItem(filtered))
-    return expandCompactionCapsules(filtered);
-
-  return filtered;
-};
-
-/**
- * `expandClaudeResponsesCompaction`: sealed compaction items of the request and of the original request become
- * context before translation. Rejects (message = Go's `invalid compaction capsule: ...`) on an unreadable capsule.
- */
-export const expandClaudeResponsesCompaction = async (
-  request: ExecutorRequest,
-  options: ExecutorOptions,
-): Promise<{ readonly request: ExecutorRequest; readonly options: ExecutorOptions }> => {
-  const payload = await expandPayload(request.payload);
-  const original = await expandPayload(options.originalRequest);
-
-  return {
-    request:
-      payload === request.payload || payload === undefined ? request : { ...request, payload },
-    options:
-      original === options.originalRequest ? options : { ...options, originalRequest: original },
-  };
-};
 
 /** `claudeResponsesCompactionRequested`. */
 export const claudeCompactionRequested = (
@@ -84,30 +32,6 @@ export const claudeCompactionRequested = (
   options.alt === "responses/compact" ||
   hasResponsesCompactionTrigger(request.payload) ||
   hasResponsesCompactionTrigger(options.originalRequest);
-
-/** `claudeCompactionSourcePayload`. */
-export const claudeCompactionSourcePayload = (
-  request: ExecutorRequest,
-  options: ExecutorOptions,
-): Json => {
-  let payload: Json = request.payload;
-
-  const original = options.originalRequest;
-
-  if (
-    original !== undefined &&
-    !hasResponsesCompactionTrigger(payload) &&
-    hasResponsesCompactionTrigger(original)
-  ) {
-    payload = original;
-  }
-
-  if ((payload === undefined || payload === null) && options.originalRequest !== undefined) {
-    payload = options.originalRequest;
-  }
-
-  return payload;
-};
 
 /** `prepareClaudeCompactionSummaryPayload`: keeps the tool definitions Claude needs to accept `tool_use` history. */
 export const prepareClaudeCompactionSummaryPayload = (payload: Json): Json => {

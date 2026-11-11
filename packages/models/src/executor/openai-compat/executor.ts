@@ -11,7 +11,10 @@
  *
  * `CountTokens` counts locally with the model's BPE encoding (`helps/token-count.ts`).
  *
- * `/responses/compact` (non-stream) posts the Responses-format request to `{base-url}/responses/compact`.
+ * `/responses/compact` (non-stream) posts the Responses-format request to `{base-url}/responses/compact`, expanding
+ * only the capsules a local compaction minted. A `compaction_trigger` is compacted locally through the Chat Completions
+ * turn (`helps/compaction.ts`; Go d57270f4); capsules and foreign `compaction` items of a Responses request are expanded
+ * and dropped before translation and token counting.
  *
  * Text-only tool-result normalisation applies to models whose `input-modalities` exclude images
  * (`helps/openai-compat-tool-results.ts`); prompt cache keys are client-supplied, Claude Code scoped or derived from the
@@ -46,6 +49,12 @@ import { isChatTokenEvent } from "../../usage/ttft.ts";
 import { ExecutionError, headersRecord } from "../errors.ts";
 import { ensureResponsesUsageDetails } from "../codex/output.ts";
 import { claudeCodeExecutionScope } from "../codex/replay.ts";
+import {
+  executeLocalCompaction,
+  expandCompaction,
+  hasResponsesCompactionTriggerRequest,
+  localCompactionStream,
+} from "../helps/compaction.ts";
 import { applyCustomHeaders } from "../helps/custom-headers.ts";
 import {
   normalizeToolResultsTextOnly,
@@ -491,13 +500,12 @@ export const makeOpenAICompatExecutor = (
     return { headers: new Headers(response.headers), chunks } satisfies StreamResult;
   });
 
-  const execute = Effect.fnUntraced(function* (
+  /** One Chat Completions (or `/responses/compact`) exchange: what the summary turn of a local compaction runs. */
+  const executeChat = Effect.fnUntraced(function* (
     context: ExecutionContext,
     request: ExecutorRequest,
     options: ExecutorOptions,
   ) {
-    if (options.sourceFormat === EntryOnlyFormats.OpenAIImage)
-      return yield* executeImages(context, request, options);
     const prepared = yield* prepare(context, request, options, options.stream);
     const response = yield* send(context, prepared);
     const text = yield* response.text.pipe(Effect.mapError(transportError));
@@ -522,13 +530,11 @@ export const makeOpenAICompatExecutor = (
     return { payload, headers: new Headers(response.headers) } satisfies ExecutorResponse;
   });
 
-  const executeStream = Effect.fnUntraced(function* (
+  const executeChatStream = Effect.fnUntraced(function* (
     context: ExecutionContext,
     request: ExecutorRequest,
     options: ExecutorOptions,
   ) {
-    if (options.sourceFormat === EntryOnlyFormats.OpenAIImage)
-      return yield* executeImagesStream(context, request, options);
     const prepared = yield* prepare(context, request, options, true);
     const response = yield* send(context, prepared, "token-event");
     // The reader is synchronous, so frames are timed with the fiber's Clock service (TestClock in tests).
@@ -588,14 +594,91 @@ export const makeOpenAICompatExecutor = (
   });
 
   /**
+   * The Responses entry of a request (`executeWithCredentials`): the capsules a local compaction minted become context
+   * and foreign `compaction` items are dropped; `/responses/compact` goes to the operator's endpoint, so it expands only
+   * what a local compaction minted and keeps native items. A `compaction_trigger` is compacted locally with this route's
+   * own Chat Completions turn.
+   */
+  const localCompaction = (
+    context: ExecutionContext,
+    request: ExecutorRequest,
+    options: ExecutorOptions,
+  ) =>
+    executeLocalCompaction({
+      request,
+      options,
+      summaryTurn: (summaryRequest, summaryOptions) =>
+        executeChat(context, summaryRequest, summaryOptions),
+    });
+
+  const execute: ProviderExecutor["execute"] = Effect.fnUntraced(function* (
+    context: ExecutionContext,
+    requested: ExecutorRequest,
+    requestedOptions: ExecutorOptions,
+  ) {
+    if (requestedOptions.sourceFormat === EntryOnlyFormats.OpenAIImage)
+      return yield* executeImages(context, requested, requestedOptions);
+
+    if (requestedOptions.sourceFormat !== Formats.OpenAIResponse)
+      return yield* executeChat(context, requested, requestedOptions);
+    const compact = requestedOptions.alt === "responses/compact";
+
+    const { request, options } = yield* expandCompaction(
+      requested,
+      requestedOptions,
+      compact ? "recognized-only" : "drop-foreign",
+    );
+
+    if (!compact && hasResponsesCompactionTriggerRequest(request, options))
+      return yield* localCompaction(context, request, options);
+
+    return yield* executeChat(context, request, options);
+  });
+
+  const executeStream: ProviderExecutor["executeStream"] = Effect.fnUntraced(function* (
+    context: ExecutionContext,
+    requested: ExecutorRequest,
+    requestedOptions: ExecutorOptions,
+  ) {
+    if (requestedOptions.sourceFormat === EntryOnlyFormats.OpenAIImage)
+      return yield* executeImagesStream(context, requested, requestedOptions);
+
+    if (
+      requestedOptions.sourceFormat !== Formats.OpenAIResponse ||
+      requestedOptions.alt === "responses/compact"
+    )
+      return yield* executeChatStream(context, requested, requestedOptions);
+
+    const { request, options } = yield* expandCompaction(
+      requested,
+      requestedOptions,
+      "drop-foreign",
+    );
+
+    if (hasResponsesCompactionTriggerRequest(request, options)) {
+      const sealed = yield* localCompaction(context, request, options);
+
+      return yield* localCompactionStream(request, sealed);
+    }
+
+    return yield* executeChatStream(context, request, options);
+  });
+
+  /**
    * `CountTokens`: translate to Chat Completions, thinking and payload rules (no max-token or cache-key shaping, no
    * credential needed), then count locally with the model's BPE encoding.
    */
   const countTokens = Effect.fnUntraced(function* (
     context: ExecutionContext,
-    request: ExecutorRequest,
-    options: ExecutorOptions,
+    requested: ExecutorRequest,
+    requestedOptions: ExecutorOptions,
   ) {
+    const { request, options } =
+      requestedOptions.sourceFormat === Formats.OpenAIResponse &&
+      requestedOptions.alt !== "responses/compact"
+        ? yield* expandCompaction(requested, requestedOptions, "drop-foreign")
+        : { request: requested, options: requestedOptions };
+
     const thinking = yield* Thinking;
     const baseModel = parseSuffix(request.model).modelName;
     const from = options.sourceFormat;

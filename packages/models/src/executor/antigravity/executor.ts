@@ -89,10 +89,13 @@ import {
 import {
   buildCompactionResponse,
   buildCompactionStreamChunks,
-  expandCompactionCapsules,
+  checkCompactionSource,
+  compactionSummaryError,
+  compactionSummaryStatusError,
+  expandCompaction,
   extractSummaryText,
-  hasResponsesCompactionItem,
   hasResponsesCompactionTrigger,
+  markLocalCompaction,
   prepareCompactionSummaryPayload,
   responsesSummaryUsage,
   sealCompaction,
@@ -684,41 +687,6 @@ export const makeAntigravityExecutor = (
     return { payload, headers: new Headers(response.headers) } satisfies ExecutorResponse;
   });
 
-  /**
-   * Sealed compaction items of the request (and the original request, falling back to the expanded request) become
-   * developer context before anything else; an unreadable capsule is a request-scoped 400.
-   */
-  const expandCompaction = Effect.fnUntraced(function* (
-    request: ExecutorRequest,
-    options: ExecutorOptions,
-  ) {
-    if (!hasResponsesCompactionItem(request.payload)) return { request, options };
-
-    const payload = yield* Effect.tryPromise({
-      try: () => expandCompactionCapsules(request.payload),
-      catch: (error) =>
-        new ExecutionError({
-          status: 400,
-          message: error instanceof Error ? error.message : String(error),
-          requestScoped: true,
-        }),
-    });
-
-    const { originalRequest } = options;
-
-    const original =
-      originalRequest === undefined
-        ? undefined
-        : yield* Effect.promise(() =>
-            expandCompactionCapsules(originalRequest).catch(() => payload),
-          );
-
-    return {
-      request: { ...request, payload },
-      options: original === undefined ? options : { ...options, originalRequest: original },
-    };
-  });
-
   const compactionRequested = (
     request: ExecutorRequest,
     options: ExecutorOptions,
@@ -735,11 +703,16 @@ export const makeAntigravityExecutor = (
     options: ExecutorOptions,
   ) {
     const baseModel = parseSuffix(request.model).modelName;
+    markLocalCompaction(options);
 
     const source =
       request.payload === undefined && options.originalRequest !== undefined
         ? options.originalRequest
         : request.payload;
+
+    const sourceError = checkCompactionSource(source, options);
+
+    if (sourceError !== undefined) return yield* sourceError;
 
     const summaryRequest: ExecutorRequest = {
       ...request,
@@ -757,14 +730,16 @@ export const makeAntigravityExecutor = (
 
     const summary = yield* executeGenerate(context, summaryRequest, summaryOptions);
     const parsed = tryParseJson(summary.payload) ?? null;
+    const statusError = compactionSummaryStatusError(parsed);
+
+    if (statusError !== undefined) return yield* compactionSummaryError(statusError);
 
     const text = yield* Effect.try({
       try: () => extractSummaryText(parsed),
       catch: (error) =>
-        new ExecutionError({
-          status: 500,
-          message: `extract summary: ${error instanceof Error ? error.message : String(error)}`,
-        }),
+        compactionSummaryError(
+          `extract summary: ${error instanceof Error ? error.message : String(error)}`,
+        ),
     });
 
     const capsule = yield* Effect.tryPromise({
@@ -783,7 +758,7 @@ export const makeAntigravityExecutor = (
     request: ExecutorRequest,
     options: ExecutorOptions,
   ) {
-    const expanded = yield* expandCompaction(request, options);
+    const expanded = yield* expandCompaction(request, options, "drop-foreign");
 
     if (compactionRequested(expanded.request, expanded.options, true)) {
       const sealed = yield* executeCompaction(context, expanded.request, expanded.options);
@@ -816,7 +791,7 @@ export const makeAntigravityExecutor = (
       });
     }
 
-    const expanded = yield* expandCompaction(request, options);
+    const expanded = yield* expandCompaction(request, options, "drop-foreign");
 
     if (compactionRequested(expanded.request, expanded.options, false)) {
       const sealed = yield* executeCompaction(context, expanded.request, expanded.options);

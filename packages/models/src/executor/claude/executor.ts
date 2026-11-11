@@ -52,16 +52,20 @@ import { claudeCreds, isAnthropicUpstreamBase } from "./credentials.ts";
 import {
   buildCompactionResponse,
   buildCompactionStreamChunks,
+  checkCompactionSource,
+  compactionSourcePayload,
+  compactionSummaryError,
+  compactionSummaryStatusError,
+  expandCompaction,
   extractSummaryText,
+  markLocalCompaction,
   sealCompaction,
 } from "../helps/compaction.ts";
 import { ensureResponsesUsageDetails } from "../codex/output.ts";
 import { extractTranslatedReasoningEffort, parseSuffix } from "@commissary/translation/thinking";
 import {
   claudeCompactionRequested,
-  claudeCompactionSourcePayload,
   claudeCompactionUsage,
-  expandClaudeResponsesCompaction,
   patchClaudeCompactionStreamUsage,
   prepareClaudeCompactionSummaryPayload,
 } from "./compaction.ts";
@@ -459,18 +463,6 @@ export const makeClaudeExecutor = (
     return { payload: out, headers: new Headers(response.headers) } satisfies ExecutorResponse;
   });
 
-  /** `expandClaudeResponsesCompaction`: an unreadable capsule is a request-scoped 400. */
-  const expandCompaction = (request: ExecutorRequest, options: ExecutorOptions) =>
-    Effect.tryPromise({
-      try: () => expandClaudeResponsesCompaction(request, options),
-      catch: (error) =>
-        new ExecutionError({
-          status: 400,
-          message: error instanceof Error ? error.message : String(error),
-          requestScoped: true,
-        }),
-    });
-
   /**
    * `executeClaudeCompaction`: a non-stream summary turn through the normal Messages path (tool history kept or
    * flattened, `compactionSummary`), sealed into a capsule and returned as a `response.compaction` body.
@@ -481,12 +473,15 @@ export const makeClaudeExecutor = (
     options: ExecutorOptions,
   ) {
     const baseModel = parseSuffix(request.model).modelName;
+    markLocalCompaction(options);
+    const source = compactionSourcePayload(request, options);
+    const sourceError = checkCompactionSource(source, options);
+
+    if (sourceError !== undefined) return yield* sourceError;
 
     const summaryRequest: ExecutorRequest = {
       ...request,
-      payload: prepareClaudeCompactionSummaryPayload(
-        claudeCompactionSourcePayload(request, options),
-      ),
+      payload: prepareClaudeCompactionSummaryPayload(source),
     };
 
     const summaryOptions: ExecutorOptions = {
@@ -501,13 +496,17 @@ export const makeClaudeExecutor = (
     const summary = yield* executeMessages(context, summaryRequest, summaryOptions, true);
     const parsed = tryParseJson(summary.payload);
 
+    // A summary cut off by the output budget would seal a truncated history into a permanent capsule.
+    const statusError = compactionSummaryStatusError(parsed);
+
+    if (statusError !== undefined) return yield* compactionSummaryError(statusError);
+
     const text = yield* Effect.try({
       try: () => extractSummaryText(parsed ?? null),
       catch: (error) =>
-        new ExecutionError({
-          status: 500,
-          message: `extract summary: ${error instanceof Error ? error.message : String(error)}`,
-        }),
+        compactionSummaryError(
+          `extract summary: ${error instanceof Error ? error.message : String(error)}`,
+        ),
     });
 
     const capsule = yield* Effect.tryPromise({
@@ -537,7 +536,7 @@ export const makeClaudeExecutor = (
     request: ExecutorRequest,
     options: ExecutorOptions,
   ) {
-    const expanded = yield* expandCompaction(request, options);
+    const expanded = yield* expandCompaction(request, options, "drop-foreign");
 
     if (claudeCompactionRequested(expanded.request, expanded.options)) {
       return yield* executeCompaction(context, expanded.request, expanded.options);
@@ -558,10 +557,7 @@ export const makeClaudeExecutor = (
     const capsule = asString(get(parsed, "output.0.encrypted_content"));
 
     if (asString(get(parsed, "output.0.type")) !== "compaction" || capsule === "") {
-      return yield* new ExecutionError({
-        status: 500,
-        message: "extract summary: compaction item missing",
-      });
+      return yield* compactionSummaryError("extract summary: compaction item missing");
     }
 
     const usage = {
@@ -591,7 +587,7 @@ export const makeClaudeExecutor = (
     request: ExecutorRequest,
     options: ExecutorOptions,
   ) {
-    const expanded = yield* expandCompaction(request, options);
+    const expanded = yield* expandCompaction(request, options, "drop-foreign");
 
     if (claudeCompactionRequested(expanded.request, expanded.options)) {
       return yield* executeCompactionStream(context, expanded.request, expanded.options);

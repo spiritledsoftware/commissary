@@ -4,6 +4,7 @@ import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 import { makeClaudeExecutor } from "../src/executor/claude/executor.ts";
 import { makeKimiExecutor } from "../src/executor/kimi/executor.ts";
+import { sealCompaction } from "../src/executor/helps/compaction.ts";
 import { kimiDeviceId } from "../src/executor/kimi/headers.ts";
 import {
   kimiBaseUrl,
@@ -652,21 +653,9 @@ describe("Kimi responses path", () => {
     expect(h.usage.failed).toBe(false);
   });
 
-  it("answers compaction with 501 (400 when streaming) and streams SSE lines unchanged", async () => {
+  it("refuses a streaming /responses/compact with 400 and streams SSE lines unchanged", async () => {
     const h = await harness(kimiCredential(), () => new Response("data: {}\n\n"));
     const compactOptions = { ...responsesOptions(), alt: "responses/compact" };
-    expect(
-      (
-        await runFail(
-          executor.execute(
-            h.context,
-            { model: "k3", payload: json({ input: "x" }) },
-            compactOptions,
-          ),
-          h.layers,
-        )
-      ).status,
-    ).toBe(501);
 
     const streaming = await collectStream(
       executor,
@@ -1274,5 +1263,46 @@ describe("the Claude executor without a profile is unchanged", () => {
     );
     expect(h.calls[0]?.url).toBe("https://api.anthropic.com/v1/messages?beta=true");
     expect(JSON.parse(h.calls[0]?.text ?? "{}")).toMatchObject({ model: "claude-sonnet-4-5" });
+  });
+});
+
+describe("Kimi countTokens with compaction items", () => {
+  it("counts a Responses payload with its capsules expanded and foreign compaction items dropped", async () => {
+    const executor = makeKimiExecutor();
+
+    const h = await harness(
+      kimiCredential(),
+      () => new Response(JSON.stringify({ input_tokens: 42 })),
+    );
+
+    const response = await Effect.runPromise(
+      executor
+        .countTokens(
+          h.context,
+          {
+            model: "kimi-k3",
+            payload: json({
+              model: "kimi-k3",
+              input: [
+                {
+                  type: "compaction",
+                  id: "cmp_ag_compact_1",
+                  encrypted_content: await sealCompaction("earlier work", "kimi-k3"),
+                },
+                { type: "compaction", id: "cmp_native", encrypted_content: "gAAAA-native" },
+                { type: "message", role: "user", content: "hi" },
+              ],
+            }),
+          },
+          options({ sourceFormat: "openai-response" }),
+        )
+        .pipe(Effect.provide(h.layers)),
+    );
+
+    expect(JSON.parse(response.payload)).toEqual({ input_tokens: 42 });
+    const sent = h.calls[0]?.text ?? "";
+    expect(sent).toContain("earlier work");
+    expect(sent).not.toContain("cpa-ag-compact-v1:");
+    expect(sent).not.toContain("gAAAA-native");
   });
 });

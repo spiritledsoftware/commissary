@@ -5,11 +5,12 @@ import { Effect, Result } from "effect";
 import { describe, expect, it } from "vitest";
 import { resetSessionTurnIndex } from "../src/executor/devin/credentials.ts";
 import { makeDevinExecutor } from "../src/executor/devin/executor.ts";
+import { sealCompaction, unsealCompaction } from "../src/executor/helps/compaction.ts";
 import { devinPayloadView } from "../src/executor/devin/payload.ts";
 import { ProtoWriter, readFields } from "../src/executor/devin/protobuf.ts";
 import type { ExecutorRequest } from "../src/executor/types.ts";
 import { ExecutionError } from "../src/executor/errors.ts";
-import { get, type Json, tryParseJson } from "@commissary/json";
+import { asString, get, type Json, tryParseJson } from "@commissary/json";
 import {
   collectStream,
   credential,
@@ -746,5 +747,183 @@ describe("Devin tool call ids (CLIProxyAPI e9c8769a)", () => {
     for (const id of NATIVE) expect(sent).toContain(`"${id}"`);
     expect(sent).not.toContain("cpa_tid_v1_V3JpdGU6MSNhYmM");
     expect(sent).not.toContain("cpa_tid_v1_Y3BhX3RpZF92MV9ZMkZzYkY4eA");
+  });
+});
+
+describe("Devin Responses compaction (CLIProxyAPI fb77445f)", () => {
+  const SESSION = "99999999-9999-4999-8999-999999999999";
+  const model = "swe-2";
+
+  const responsesOptions = (stream = false) =>
+    options({
+      stream,
+      sourceFormat: "openai-response",
+      metadata: { ...options().metadata, requestPath: "/v1/responses" },
+    });
+
+  const textFrame = (text: string): Uint8Array =>
+    envelope(0, new ProtoWriter().bytes(3, new TextEncoder().encode(text)).toBytes());
+
+  const summaryResponse = (text = "the summary"): Response =>
+    frames(textFrame(text), usageFrame({ prompt: 9, completion: 3 }), eosTrailer());
+
+  const wire = (call: { readonly bytes: Uint8Array } | undefined): string =>
+    new TextDecoder().decode(call?.bytes);
+
+  const userMessage = (text: string) => ({
+    type: "message",
+    role: "user",
+    content: [{ type: "input_text", text }],
+  });
+
+  const capsule = async () => ({
+    type: "compaction",
+    id: "cmp_ag_compact_1",
+    encrypted_content: await sealCompaction("earlier work", model),
+  });
+
+  const foreign = { type: "compaction", id: "cmp_native", encrypted_content: "gAAAA-native" };
+
+  const reasoning = {
+    type: "reasoning",
+    id: "rs_1",
+    summary: [{ type: "summary_text", text: "hmm" }],
+    encrypted_content: "sealed.v1.xyz",
+  };
+
+  const payloadOf = async (extra: Record<string, Json> = {}): Promise<Json> => ({
+    model,
+    session_id: SESSION,
+    input: [
+      await capsule(),
+      foreign,
+      reasoning,
+      userMessage("continue"),
+      { type: "compaction_trigger" },
+    ],
+    ...extra,
+  });
+
+  const run = async (
+    options: ReturnType<typeof responsesOptions>,
+    payload: Json,
+    respond: Responder = () => summaryResponse(),
+  ) => {
+    resetSessionTurnIndex(SESSION);
+    const h = await harness(devinCredential(), respond, undefined, options.stream);
+
+    return { h, run: () => execute(executor, h, { model, payload: json(payload) }, options) };
+  };
+
+  it("answers a compaction_trigger with a sealed response from one summary request on the same model", async () => {
+    const { h, run: go } = await run(responsesOptions(), await payloadOf());
+    const response = await go();
+    expect(h.calls).toHaveLength(1);
+    const sent = wire(h.calls[0]);
+    expect(sent).toContain("Context summary from previous turns:");
+    expect(sent).toContain("earlier work");
+    expect(sent).not.toContain("gAAAA-native");
+    expect(sent).not.toContain("cpa-ag-compact-v1:");
+    expect(sent).not.toContain("compaction_trigger");
+    // The D3 sealed reasoning item is not a compaction item: its thought step survives.
+    expect(sent).toContain("sealed.v1.xyz");
+    const body = tryParseJson(response.payload);
+    expect(get(body, "object")).toBe("response.compaction");
+    expect(await unsealCompaction(asString(get(body, "output.0.encrypted_content")))).toBe(
+      "the summary",
+    );
+    expect(get(body, "usage.input_tokens")).toBe(9);
+    expect(get(body, "usage.total_tokens")).toBe(12);
+  });
+
+  it("answers a streaming compaction_trigger with the synthetic Responses stream", async () => {
+    resetSessionTurnIndex(SESSION);
+    const h = await harness(devinCredential(), () => summaryResponse(), undefined, true);
+
+    const collected = await collectStream(
+      executor,
+      h,
+      { model, payload: json(await payloadOf({ stream: true })) },
+      responsesOptions(true),
+    );
+
+    expect(collected.error).toBeUndefined();
+    expect(h.calls).toHaveLength(1);
+    const text = collected.chunks.join("");
+    expect(text).toContain("event: response.completed");
+    expect(await unsealCompaction(text.match(/cpa-ag-compact-v1:[A-Za-z0-9_-]+/)?.[0] ?? "")).toBe(
+      "the summary",
+    );
+  });
+
+  it("serves /responses/compact locally instead of answering an ordinary generation", async () => {
+    const payload: Json = {
+      model,
+      session_id: SESSION,
+      input: [await capsule(), foreign, userMessage("continue")],
+    };
+
+    const { h, run: go } = await run({ ...responsesOptions(), alt: "responses/compact" }, payload);
+    const response = await go();
+    expect(h.calls).toHaveLength(1);
+    expect(get(tryParseJson(response.payload), "object")).toBe("response.compaction");
+    expect(wire(h.calls[0])).toContain("earlier work");
+  });
+
+  it("refuses a compaction source that continues a previous response", async () => {
+    const { h, run: go } = await run(
+      responsesOptions(),
+      await payloadOf({ previous_response_id: "resp_1" }),
+    );
+
+    await expect(go()).rejects.toMatchObject({ status: 400 });
+    expect(h.calls).toHaveLength(0);
+  });
+
+  it("drops foreign compaction items from an ordinary request and expands the capsules", async () => {
+    const payload = await payloadOf();
+
+    const input = (get(payload, "input") as Json[]).filter(
+      (item) => get(item, "type") !== "compaction_trigger",
+    );
+
+    const { h, run: go } = await run(responsesOptions(), {
+      ...(payload as Record<string, Json>),
+      input,
+    });
+
+    await go();
+    const sent = wire(h.calls[0]);
+    expect(sent).not.toContain("gAAAA-native");
+    expect(sent).toContain("earlier work");
+    expect(sent).toContain("sealed.v1.xyz");
+  });
+
+  it("counts the expanded payload, not the capsule's ciphertext", async () => {
+    const h = await harness(devinCredential(), () => summaryResponse());
+
+    const count = async (input: Json[]) => {
+      const response = await Effect.runPromise(
+        executor
+          .countTokens(h.context, { model, payload: json({ model, input }) }, responsesOptions())
+          .pipe(Effect.provide(h.layers)),
+      );
+
+      return (tryParseJson(response.payload) as { input_tokens: number }).input_tokens;
+    };
+
+    const written = [
+      {
+        type: "message",
+        role: "developer",
+        content: [
+          { type: "input_text", text: "Context summary from previous turns:\nearlier work" },
+        ],
+      },
+      userMessage("hi"),
+    ];
+
+    expect(await count([await capsule(), foreign, userMessage("hi")])).toBe(await count(written));
+    expect(h.calls).toHaveLength(0);
   });
 });

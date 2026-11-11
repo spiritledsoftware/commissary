@@ -3,24 +3,37 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Config } from "../src/config/schema.ts";
 import type { CredentialSnapshot } from "../src/executor/picker.ts";
-import { codexModels, oauthCredential } from "./support/codex.ts";
+import { codexModels, oauthCredential, providerKeyCredential } from "./support/codex.ts";
 import {
+  jsonResponse,
   loadConfig,
   makePipeline,
   sseResponse,
   type UpstreamResponder,
 } from "./support/pipeline.ts";
-import { connectClient, mockUpstream, type MockUpstreamOptions } from "./support/websocket.ts";
+import {
+  connectClient,
+  mockUpstream,
+  type MockUpstreamOptions,
+  type UpstreamConnection,
+  errorOf,
+  eventually,
+  scripted,
+  settled,
+} from "./support/websocket.ts";
 import { xaiPicker, type XaiPickerLog } from "./support/xai.ts";
-import { Effect } from "effect";
+import { Effect, Layer } from "effect";
 import { codexSessionStore } from "../src/executor/websocket/session.ts";
+import { unsealCompaction } from "../src/executor/helps/compaction.ts";
+import { ModelProviders } from "../src/handlers/model-providers.ts";
+import { get, type Json } from "@commissary/json";
 
 const created = {
   type: "response.created",
   response: { id: "resp_1", model: "gpt-5.4", status: "in_progress" },
 };
 
-const done = (id = "resp_1", output: unknown[] = []) => ({
+const done = (id = "resp_1", output: Json[] = []) => ({
   type: "response.done",
   response: {
     id,
@@ -52,6 +65,7 @@ const setup = (
   upstream: MockUpstreamOptions = {},
   respond: UpstreamResponder = () => sseResponse([]),
   configOverride: Config = config,
+  modelProviders: typeof codexModels = codexModels,
 ) => {
   const log: XaiPickerLog = { picks: [], reports: [] };
   const mock = mockUpstream(upstream);
@@ -60,7 +74,7 @@ const setup = (
     config: configOverride,
     respond,
     credentialPicker: xaiPicker(credentials, log),
-    modelProviders: codexModels,
+    modelProviders,
     websocketConnector: mock.layer,
   });
 
@@ -793,6 +807,535 @@ describe("stream bootstrap buffering on the upstream WebSocket", () => {
     });
     expect((await client.nextJson())["type"]).toBe("response.created");
     await client.until("response.completed");
+    client.close();
+  });
+});
+
+describe("local compaction over the Responses WebSocket (Kimi, a credential without websockets)", () => {
+  const kimi: CredentialSnapshot = {
+    id: "kimi-1",
+    provider: "kimi",
+    kind: "oauth",
+    label: "kimi",
+    attributes: { base_url: "https://api.kimi.com/coding", domain: "kimi.com" },
+    metadata: { access_token: "kimi-token", device_id: "dev-1" },
+  };
+
+  const kimiModels = Layer.succeed(
+    ModelProviders,
+    ModelProviders.of({
+      providersFor: () => Effect.succeed(["kimi"]),
+      firstAvailableModel: Effect.succeed("kimi-k2.8"),
+    }),
+  );
+
+  const reply = (id: string) => ({
+    id,
+    object: "response",
+    status: "completed",
+    model: "kimi-for-coding",
+    output: [{ ...MESSAGE_ITEM, id: `msg_${id}`, status: "completed" }],
+    usage: { input_tokens: 9, output_tokens: 3, total_tokens: 12 },
+  });
+
+  /** A normal turn streams; the summary of a compaction is one non-stream request. */
+  const respond: UpstreamResponder = (call) => {
+    const body = JSON.parse(call.body) as { stream?: boolean };
+
+    if (body.stream !== true)
+      return jsonResponse({
+        ...reply("resp_summary"),
+        output: [
+          {
+            id: "msg_s",
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "the summary" }],
+          },
+        ],
+      });
+    const id = `resp_${call.body.length}`;
+
+    return sseResponse([
+      `data: ${JSON.stringify({ type: "response.created", response: { id, status: "in_progress" } })}\n\n`,
+      `data: ${JSON.stringify({ type: "response.completed", response: reply(id) })}\n\n`,
+    ]);
+  };
+
+  const userMessage = (text: string) => ({
+    type: "message",
+    role: "user",
+    content: [{ type: "input_text", text }],
+  });
+
+  const assistantMessage = {
+    type: "message",
+    role: "assistant",
+    content: [{ type: "output_text", text: "OK" }],
+  };
+
+  const trigger = {
+    type: "response.create",
+    model: "kimi-k2.8",
+    input: [userMessage("secret history"), assistantMessage, { type: "compaction_trigger" }],
+  };
+
+  const compact = async (s: ReturnType<typeof setup>) => {
+    const client = await s.connect();
+    client.send({ type: "response.create", model: "kimi-k2.8", input: [userMessage("hello")] });
+    await client.until("response.completed");
+    client.send(trigger);
+    const completed = await client.until("response.completed");
+
+    return { client, completed };
+  };
+
+  it("answers a compaction_trigger locally and continues from the expanded summary", async () => {
+    const s = setup([kimi], {}, respond, config, kimiModels);
+    const { client, completed } = await compact(s);
+
+    const output = (completed["response"] as { id: string; output: Array<Record<string, string>> })
+      .output;
+
+    expect(output[0]?.["type"]).toBe("compaction");
+    expect(await unsealCompaction(output[0]?.["encrypted_content"] ?? "")).toBe("the summary");
+    // One turn, then the summary request: no upstream socket, no compaction_trigger upstream.
+    expect(s.mock.dials).toHaveLength(0);
+    expect(s.calls).toHaveLength(2);
+    expect(s.calls[1]?.body).not.toContain("compaction_trigger");
+
+    const id = (completed["response"] as { id: string }).id;
+    expect(id).toMatch(/^resp_ag_compact_/);
+    client.send({
+      type: "response.create",
+      model: "kimi-k2.8",
+      previous_response_id: id,
+      input: [userMessage("next")],
+    });
+    await client.until("response.completed");
+    expect(s.calls).toHaveLength(3);
+
+    const input = (
+      JSON.parse(s.calls[2]?.body ?? "{}") as { input: Array<Record<string, unknown>> }
+    ).input;
+
+    expect(input).toHaveLength(2);
+    expect(JSON.stringify(input[0])).toContain(
+      "Context summary from previous turns:\\nthe summary",
+    );
+    expect(input[1]).toMatchObject({ role: "user" });
+    expect(s.calls[2]?.body).not.toContain("secret history");
+    expect(s.calls[2]?.body).not.toContain("previous_response_id");
+    client.close();
+  });
+
+  it("answers a synthetic previous_response_id that is not the last response with the 409 frame and keeps the socket", async () => {
+    const s = setup([kimi], {}, respond, config, kimiModels);
+    const { client } = await compact(s);
+
+    const calls = s.calls.length;
+
+    client.send({
+      type: "response.create",
+      model: "kimi-k2.8",
+      previous_response_id: "resp_ag_compact_000",
+      input: [userMessage("next")],
+    });
+
+    const frame = await client.until("error");
+    expect(frame["status"]).toBe(409);
+    expect(errorOf(frame).code).toBe("previous_response_not_found");
+    expect(s.calls).toHaveLength(calls);
+
+    // The socket is still open: the right id continues.
+    client.send({ type: "response.create", model: "kimi-k2.8", input: [userMessage("again")] });
+    await client.until("response.completed");
+    client.close();
+  });
+});
+
+/** Claude's and Antigravity's own compaction flows leave the socket in the same state as the shared helper does. */
+describe("local compaction on Claude and Antigravity routes over the Responses WebSocket", () => {
+  const claudeSse = (text: string): Response =>
+    sseResponse(
+      [
+        {
+          type: "message_start",
+          message: {
+            id: "msg_1",
+            type: "message",
+            role: "assistant",
+            model: "claude-haiku-4-5-20251001",
+            content: [],
+            usage: { input_tokens: 11, output_tokens: 1 },
+          },
+        },
+        { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+        { type: "content_block_delta", index: 0, delta: { type: "text_delta", text } },
+        { type: "content_block_stop", index: 0 },
+        {
+          type: "message_delta",
+          delta: { stop_reason: "end_turn", stop_sequence: null },
+          usage: { output_tokens: 7 },
+        },
+        { type: "message_stop" },
+      ].map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`),
+    );
+
+  const geminiBody = (text: string): Json => ({
+    response: {
+      candidates: [
+        { content: { role: "model", parts: [{ text }] }, finishReason: "STOP", index: 0 },
+      ],
+      usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 5, totalTokenCount: 15 },
+    },
+    traceId: "t1",
+  });
+
+  const routes = [
+    {
+      name: "Claude",
+      provider: "claude",
+      model: "claude-haiku-4-5-20251001",
+      credential: {
+        id: "claude-1",
+        provider: "claude",
+        kind: "apikey",
+        label: "claude",
+        attributes: { api_key: "sk-ant-api03-test", base_url: "https://claude.test" },
+        metadata: {},
+      } satisfies CredentialSnapshot,
+      summary: () =>
+        jsonResponse({
+          id: "msg_1",
+          type: "message",
+          role: "assistant",
+          model: "claude-haiku-4-5-20251001",
+          content: [{ type: "text", text: "the summary" }],
+          stop_reason: "end_turn",
+          usage: { input_tokens: 11, output_tokens: 7 },
+        }),
+      reply: () => claudeSse("ok"),
+    },
+    {
+      name: "Antigravity",
+      provider: "antigravity",
+      model: "gemini-2.5-flash",
+      credential: {
+        id: "antigravity-1.json",
+        provider: "antigravity",
+        kind: "oauth",
+        label: "ag",
+        attributes: {},
+        metadata: { access_token: "ya29.token", project_id: "proj-1", email: "dev@example.com" },
+      } satisfies CredentialSnapshot,
+      summary: () => jsonResponse(geminiBody("the summary")),
+      reply: () => sseResponse([`data: ${JSON.stringify(geminiBody("ok"))}\n\n`]),
+    },
+  ];
+
+  describe.each(routes)("$name", (route) => {
+    const message = (text: string) => ({
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text }],
+    });
+
+    it("continues from the expanded summary and not from the history it replaced", async () => {
+      const models = Layer.succeed(
+        ModelProviders,
+        ModelProviders.of({
+          providersFor: () => Effect.succeed([route.provider]),
+          firstAvailableModel: Effect.succeed(route.model),
+        }),
+      );
+
+      const s = setup(
+        [route.credential],
+        {},
+        (call) => (call.body.includes("comprehensive summary") ? route.summary() : route.reply()),
+        config,
+        models,
+      );
+
+      const client = await s.connect();
+
+      client.send({
+        type: "response.create",
+        model: route.model,
+        input: [
+          message("secret history"),
+          { type: "message", role: "assistant", content: [{ type: "output_text", text: "OK" }] },
+          { type: "compaction_trigger" },
+        ],
+      });
+
+      const compacted = (await client.until("response.completed"))["response"] as {
+        id: string;
+        output: Array<Record<string, string>>;
+      };
+
+      expect(await unsealCompaction(compacted.output[0]?.["encrypted_content"] ?? "")).toBe(
+        "the summary",
+      );
+
+      expect(s.calls).toHaveLength(1);
+
+      client.send({
+        type: "response.create",
+        model: route.model,
+        previous_response_id: compacted.id,
+        input: [message("next")],
+      });
+
+      await client.until("response.completed");
+      expect(s.calls).toHaveLength(2);
+      const continuation = s.calls[1]?.body ?? "";
+      expect(continuation).toContain("Context summary from previous turns:");
+      expect(continuation).toContain("the summary");
+      expect(continuation).toContain("next");
+      expect(continuation).not.toContain("secret history");
+      client.close();
+    });
+  });
+});
+
+describe("local compaction on an is-compat Codex credential with websockets", () => {
+  const compatConfigYaml = `
+api-keys:
+  codex:
+    - base-url: https://codex.example.test/v1
+      keys:
+        - api-key: sk-codex-1
+          models:
+            - name: gpt-5.4
+              is-compat: true
+`;
+
+  const compatCredential = () =>
+    providerKeyCredential({
+      attributes: {
+        api_key: "sk-codex-1",
+        base_url: "https://codex.example.test/v1",
+        websockets: "true",
+      },
+    });
+
+  const message = (text: string) => ({
+    type: "message",
+    role: "user",
+    content: [{ type: "input_text", text }],
+  });
+
+  const assistant = {
+    type: "message",
+    role: "assistant",
+    content: [{ type: "output_text", text: "OK" }],
+  };
+
+  const summarySse = () =>
+    sseResponse([
+      `data: ${JSON.stringify({ type: "response.created", response: { id: "resp_s", status: "in_progress" } })}\n\n`,
+      `data: ${JSON.stringify({
+        type: "response.output_item.done",
+        output_index: 0,
+        item: {
+          id: "msg_s",
+          type: "message",
+          status: "completed",
+          role: "assistant",
+          content: [{ type: "output_text", text: "the summary" }],
+        },
+      })}\n\n`,
+      `data: ${JSON.stringify({
+        type: "response.completed",
+        response: {
+          id: "resp_s",
+          status: "completed",
+          model: "gpt-5.4",
+          output: [],
+          usage: { input_tokens: 21, output_tokens: 6, total_tokens: 27 },
+        },
+      })}\n\n`,
+    ]);
+
+  /** Each frame of an upstream socket is answered with the next response id. */
+  const upstreamReplies = (ids: ReadonlyArray<string>) =>
+    scripted((_frame, index, send) => {
+      const id = ids[index] ?? `resp_extra_${index}`;
+      send({ type: "response.created", response: { id, status: "in_progress" } });
+      send(done(id, [MESSAGE_ITEM]));
+    });
+
+  const setupCompat = async (
+    onConnection: (connection: UpstreamConnection) => void,
+    respond: UpstreamResponder = () => summarySse(),
+    credential: CredentialSnapshot = compatCredential(),
+  ) => setup([credential], { onConnection }, respond, await loadConfig(compatConfigYaml));
+
+  const create = (input: Json[], extra: Record<string, Json> = {}): Json => ({
+    type: "response.create",
+    model: "gpt-5.4",
+    input,
+    ...extra,
+  });
+
+  const upstreamFrames = (s: ReturnType<typeof setup>, connection: number) =>
+    (s.mock.connections[connection]?.received ?? []).map(
+      (text) => JSON.parse(text) as Record<string, Json>,
+    );
+
+  it("compacts over HTTP, invalidates the upstream socket and continues from the summary on a new one", async () => {
+    const s = await setupCompat(upstreamReplies(["resp_1", "resp_3", "resp_4"]));
+    const client = await s.connect();
+    // (1) a normal request runs on the upstream socket.
+    client.send(create([message("secret history")]));
+    await client.until("response.completed");
+    expect(s.mock.dials).toHaveLength(1);
+
+    // (2) the trigger is compacted over HTTP and the upstream socket is invalidated.
+    client.send(create([message("secret history"), assistant, { type: "compaction_trigger" }]));
+    const compacted = await client.until("response.completed");
+    const response = compacted["response"] as { id: string; output: Array<Record<string, string>> };
+    expect(response.id).toMatch(/^resp_ag_compact_/);
+    expect(await unsealCompaction(response.output[0]?.["encrypted_content"] ?? "")).toBe(
+      "the summary",
+    );
+    expect(s.calls).toHaveLength(1);
+    expect(s.calls[0]?.url).toBe("https://codex.example.test/v1/responses");
+    expect(upstreamFrames(s, 0)).toHaveLength(1);
+    await eventually(() => s.mock.connections[0]?.closed !== undefined);
+
+    // (3) the create with the synthetic id dials a new socket: the summary, no earlier text, no previous_response_id.
+    client.send(create([message("next")], { previous_response_id: response.id }));
+    await client.until("response.completed");
+    expect(s.mock.dials).toHaveLength(2);
+    const [second] = upstreamFrames(s, 1);
+    expect(second).not.toHaveProperty("previous_response_id");
+    expect(get(second, "input.0.content.0.text")).toBe(
+      "Context summary from previous turns:\nthe summary",
+    );
+    expect(JSON.stringify(second)).not.toContain("secret history");
+    expect(JSON.stringify(second)).not.toContain("cpa-ag-compact-v1:");
+
+    // (4) a continuation passes through on the new socket.
+    client.send(create([message("more")], { previous_response_id: "resp_3" }));
+    await client.until("response.completed");
+    expect(s.mock.dials).toHaveLength(2);
+    expect(upstreamFrames(s, 1)[1]).toMatchObject({ previous_response_id: "resp_3" });
+    client.close();
+  });
+
+  it("answers a compaction source with previous_response_id with the non-closing 409 frame", async () => {
+    const s = await setupCompat(upstreamReplies(["resp_1"]));
+    const client = await s.connect();
+    client.send(create([message("hi")]));
+    await client.until("response.completed");
+
+    client.send(
+      create([message("hi"), { type: "compaction_trigger" }], {
+        previous_response_id: "resp_1",
+        event_id: "evt_7",
+      }),
+    );
+
+    const frame = await client.until("error");
+    expect(frame["status"]).toBe(409);
+    expect(errorOf(frame)).toMatchObject({
+      code: "previous_response_not_found",
+      event_id: "evt_7",
+    });
+    expect(s.calls).toHaveLength(0);
+
+    // The socket is still open and still pinned to its upstream socket.
+    client.send(create([message("again")], { previous_response_id: "resp_1" }));
+    await client.until("response.completed");
+    client.close();
+  });
+
+  it("answers a wrong synthetic previous_response_id with the planner's 409 and keeps the socket", async () => {
+    const s = await setupCompat(upstreamReplies(["resp_1", "resp_3"]));
+    const client = await s.connect();
+    client.send(create([message("hi")]));
+    await client.until("response.completed");
+    client.send(create([message("hi"), assistant, { type: "compaction_trigger" }]));
+    await client.until("response.completed");
+
+    client.send(create([message("next")], { previous_response_id: "resp_ag_compact_000" }));
+    const frame = await client.until("error");
+    expect(frame["status"]).toBe(409);
+    expect(errorOf(frame).code).toBe("previous_response_not_found");
+
+    client.send(create([message("again")]));
+    await client.until("response.completed");
+    client.close();
+  });
+
+  it("ignores a response.interrupt during a local compaction: it completes and the boundary keeps the history", async () => {
+    let release: () => void = () => undefined;
+
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    const s = await setupCompat(upstreamReplies(["resp_1", "resp_3"]), async () => {
+      await held;
+
+      return summarySse();
+    });
+
+    const client = await s.connect();
+    client.send(create([message("hi")]));
+    await client.until("response.completed");
+
+    client.send(create([message("secret history"), assistant, { type: "compaction_trigger" }]));
+    await eventually(() => s.calls.length === 1);
+    // Forwarded upstream this would be answered "no active upstream websocket" (nothing runs on the socket).
+    client.send({ type: "response.interrupt", response_id: "resp_pending" });
+    // The reader has handled the interrupt once this returns; the frames it wrote itself are in between.
+    expect(await settled(client)).toEqual([]);
+    release();
+
+    const compacted = (await client.nextJson()) as { type: string };
+    const frames: Array<Record<string, unknown>> = [compacted];
+
+    while (frames.at(-1)?.["type"] !== "response.completed") frames.push(await client.nextJson());
+
+    expect(frames.map((frame) => frame["type"])).not.toContain("error");
+    expect(frames.map((frame) => frame["type"])).not.toContain("response.incomplete");
+
+    const response = frames.at(-1)?.["response"] as {
+      id: string;
+      output: Array<Record<string, string>>;
+    };
+
+    expect(await unsealCompaction(response.output[0]?.["encrypted_content"] ?? "")).toBe(
+      "the summary",
+    );
+    expect(upstreamFrames(s, 0)).toHaveLength(1);
+    await eventually(() => s.mock.connections[0]?.closed !== undefined);
+
+    // The boundary stands on the compaction item: the continuation sends the summary, not the history.
+    client.send(create([message("next")], { previous_response_id: response.id }));
+    await client.until("response.completed");
+    expect(s.mock.dials).toHaveLength(2);
+    const [second] = upstreamFrames(s, 1);
+    expect(get(second, "input.0.content.0.text")).toBe(
+      "Context summary from previous turns:\nthe summary",
+    );
+    expect(JSON.stringify(second)).not.toContain("secret history");
+    client.close();
+  });
+
+  it("passes a compaction_trigger of a native Codex credential straight through", async () => {
+    const s = setup([wsCredential()], { onConnection: upstreamReplies(["resp_1", "resp_2"]) });
+    const client = await s.connect();
+    client.send(create([message("hi")]));
+    await client.until("response.completed");
+    client.send(create([message("hi"), assistant, { type: "compaction_trigger" }]));
+    await client.until("response.completed");
+    expect(s.calls).toHaveLength(0);
+    expect(JSON.stringify(upstreamFrames(s, 0)[1])).toContain("compaction_trigger");
     client.close();
   });
 });

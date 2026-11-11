@@ -6,7 +6,8 @@ import type { Config } from "../src/config/schema.ts";
 import { makeCodexExecutor } from "../src/executor/codex/executor.ts";
 import { codexSessionStore } from "../src/executor/websocket/session.ts";
 import type { CredentialSnapshot } from "../src/executor/picker.ts";
-import { codexModels, oauthCredential } from "./support/codex.ts";
+import { sealCompaction } from "../src/executor/helps/compaction.ts";
+import { codexModels, oauthCredential, providerKeyCredential } from "./support/codex.ts";
 import { harness, json, options } from "./support/executor-run.ts";
 import { loadConfig, makePipeline, sseResponse } from "./support/pipeline.ts";
 import {
@@ -70,13 +71,14 @@ const setup = (
   credentials: ReadonlyArray<CredentialSnapshot>,
   upstream: MockUpstreamOptions,
   configOverride: Config = steering,
+  respond: () => Response = () => sseResponse([]),
 ) => {
   const log: XaiPickerLog = { picks: [], reports: [] };
   const mock = mockUpstream(upstream);
 
   const p = makePipeline({
     config: configOverride,
-    respond: () => sseResponse([]),
+    respond,
     credentialPicker: xaiPicker(credentials, log),
     modelProviders: codexModels,
     websocketConnector: mock.layer,
@@ -533,6 +535,190 @@ describe("upstream socket loss on a steering socket (CLIProxyAPI f73e66ac)", () 
     client.send(create("two"));
     expect(await client.until("response.created")).toMatchObject({ response: { id: "resp_1" } });
     expect(s.mock.dials).toHaveLength(2);
+    client.close();
+  });
+});
+
+describe("CPA compaction capsules on a steering socket", () => {
+  const capsule = async () => ({
+    type: "compaction",
+    id: "cmp_ag_compact_1",
+    encrypted_content: await sealCompaction("earlier work", "claude-sonnet-4-5"),
+  });
+
+  const developerSummary = {
+    type: "message",
+    role: "developer",
+    content: [{ type: "input_text", text: "Context summary from previous turns:\nearlier work" }],
+  };
+
+  it("starts duplex for a native model and expands the capsules of a create and of a steer", async () => {
+    const s = setup([wsCredential()], {
+      onConnection: scripted((frame, _index, send) => {
+        if (frame["type"] === "response.create") send(created("resp_1"));
+        else
+          send(
+            '{"type":"response.steer.accepted","steer":{"id":"s1","previous_response_id":"resp_1"}}',
+          );
+      }),
+    });
+
+    const client = await s.connect();
+    client.send(
+      create("work", {
+        input: [await capsule(), { type: "message", role: "user", content: "go" }],
+      }),
+    );
+    await client.nextJson();
+    client.send({
+      type: "response.steer",
+      previous_response_id: "resp_1",
+      input: [await capsule()],
+    });
+    expect((await client.nextJson())["type"]).toBe("response.steer.accepted");
+    const sent = frames(s.mock.connections[0]);
+    expect(sent[0]?.["input"]).toEqual([
+      developerSummary,
+      { type: "message", role: "user", content: "go" },
+    ]);
+
+    expect(sent[1]).toMatchObject({ type: "response.steer", input: [developerSummary] });
+    expect(JSON.stringify(sent)).not.toContain("cpa-ag-compact-v1:");
+    client.close();
+  });
+
+  it("ends the socket when a steered capsule is corrupt", async () => {
+    const s = setup([wsCredential()], {
+      onConnection: scripted((_frame, _index, send) => send(created("resp_1"))),
+    });
+
+    const client = await s.connect();
+    client.send(create("work"));
+    await client.nextJson();
+
+    client.send({
+      type: "response.steer",
+      previous_response_id: "resp_1",
+      input: [
+        { type: "compaction", id: "cmp_ag_compact_9", encrypted_content: "cpa-ag-compact-v1:AAAA" },
+      ],
+    });
+
+    await client.closed;
+    expect(frames(s.mock.connections[0])).toHaveLength(1);
+  });
+});
+
+describe("an is-compat model never starts steering", () => {
+  const compatSteering = `
+upstream:
+  codex:
+    response-steering: true
+api-keys:
+  codex:
+    - base-url: https://codex.example.test/v1
+      keys:
+        - api-key: sk-codex-1
+          models:
+            - name: gpt-5.4
+              is-compat: true
+`;
+
+  const compatCredential = () =>
+    providerKeyCredential({
+      attributes: {
+        api_key: "sk-codex-1",
+        base_url: "https://codex.example.test/v1",
+        websockets: "true",
+      },
+    });
+
+  const summary = () =>
+    sseResponse([
+      `data: ${JSON.stringify({ type: "response.created", response: { id: "resp_s", status: "in_progress" } })}\n\n`,
+      `data: ${JSON.stringify({
+        type: "response.output_item.done",
+        output_index: 0,
+        item: {
+          id: "msg_s",
+          type: "message",
+          status: "completed",
+          role: "assistant",
+          content: [{ type: "output_text", text: "the summary" }],
+        },
+      })}\n\n`,
+      `data: ${JSON.stringify({
+        type: "response.completed",
+        response: { id: "resp_s", status: "completed", model: "gpt-5.4", output: [] },
+      })}\n\n`,
+    ]);
+
+  it("compacts a trigger locally after a normal request and keeps the socket open", async () => {
+    const s = setup(
+      [compatCredential()],
+      {
+        onConnection: scripted((_frame, index, send) => {
+          send(created(`resp_${index + 1}`));
+          send(done(`resp_${index + 1}`));
+        }),
+      },
+      await loadConfig(compatSteering),
+      summary,
+    );
+
+    const client = await s.connect();
+    client.send(create("one"));
+    await client.until("response.completed");
+
+    client.send({
+      type: "response.create",
+      model: "gpt-5.4",
+      input: [{ type: "message", role: "user", content: "one" }, { type: "compaction_trigger" }],
+    });
+
+    const compacted = await client.until("response.completed");
+    expect((compacted["response"] as { id: string }).id).toMatch(/^resp_ag_compact_/);
+    expect(s.calls).toHaveLength(1);
+    expect(s.calls[0]?.body).not.toContain("compaction_trigger");
+    expect(JSON.stringify(frames(s.mock.connections[0]))).not.toContain("compaction_trigger");
+
+    // The socket survived: a create after the compaction is answered.
+    client.send(create("two"));
+    await client.until("response.completed");
+    client.close();
+  });
+
+  it("answers a response.steer with the planner's 400 frame and keeps the socket open", async () => {
+    const s = setup(
+      [compatCredential()],
+      {
+        onConnection: scripted((_frame, index, send) => {
+          send(created(`resp_${index + 1}`));
+          send(done(`resp_${index + 1}`));
+        }),
+      },
+      await loadConfig(compatSteering),
+      summary,
+    );
+
+    const client = await s.connect();
+    client.send(create("one"));
+    await client.until("response.completed");
+
+    client.send({
+      type: "response.steer",
+      previous_response_id: "resp_1",
+      input: [{ type: "message", role: "user", content: "change course" }],
+    });
+
+    expect(await client.until("error")).toMatchObject({
+      status: 400,
+      error: { message: "unsupported websocket request type: response.steer" },
+    });
+
+    client.send(create("two", { previous_response_id: "resp_1" }));
+    await client.until("response.completed");
+    expect(JSON.stringify(frames(s.mock.connections[0]))).not.toContain("response.steer");
     client.close();
   });
 });

@@ -45,6 +45,7 @@ import { emptyUsageDetail, responseModelOf, type UsageDetail } from "../../usage
 import { isResponsesTokenEvent } from "../../usage/ttft.ts";
 import { ExecutionError } from "../errors.ts";
 import { restoreCodexMultiAgentV2Response } from "../helps/codex-multi-agent-v2.ts";
+import { expandCompaction } from "../helps/compaction.ts";
 import { finalizePayload } from "../helps/payload.ts";
 import { parseSuffix } from "@commissary/translation/thinking";
 import type { Thinking } from "../thinking.ts";
@@ -398,8 +399,28 @@ export const startCodexDuplex = (
         return true;
       });
 
-    const processSteer = (payloadValue: JsonObject): Effect.Effect<boolean> =>
+    const processSteer = (steerFrame: JsonObject): Effect.Effect<boolean> =>
       Effect.gen(function* () {
+        // A capsule in the steered input becomes developer context like anywhere else (dbb70621); a corrupt one ends the
+        // socket as a request-scoped 400.
+        const expanded = yield* Effect.result(
+          expandCompaction(
+            { ...request, payload: steerFrame },
+            { ...options, originalRequest: steerFrame },
+            "recognized-only",
+          ),
+        );
+
+        if (Result.isFailure(expanded)) {
+          yield* finish(duplexConnectionError(expanded.failure));
+
+          return false;
+        }
+
+        const payloadValue = isJsonObject(expanded.success.request.payload)
+          ? expanded.success.request.payload
+          : steerFrame;
+
         // Steering carries business input but must not inherit response.create defaults.
         const original = cloneJson(payloadValue);
 

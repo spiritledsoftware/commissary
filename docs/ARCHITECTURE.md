@@ -827,6 +827,14 @@ Core contracts every provider slice implements (Go references in each module hea
 - **`is-compat` fallback** (`codex/compat.ts`, Go `resolveCodexModelIsCompat`): the resolved model info decides; without one the
   credential's `api-keys.codex` entry (index, then key + base URL) is authoritative for its `models` list, then the generic
   API-key lookup.
+- **Compaction on `is-compat` models**: `compaction_trigger` is compacted locally (see "Responses compaction"); the
+  summary request is `executeResponses` over HTTP even on a downstream WebSocket, without the image tool. A
+  `previous_response_id` naming a local compaction response is a 400 over HTTP. Response steering never starts for
+  `is-compat` models (Go: it does): their endpoints do not speak `response.steer`, and outside duplex a trigger frame
+  reaches the local path; a `response.steer` frame then gets the planner's 400. A native model forwards
+  `compaction_trigger` and `/responses/compact` unchanged and only expands the capsules a local compaction minted
+  (`expandCodexCompaction`: the top of `prepare`, which covers HTTP, compact, WebSocket and duplex creates, plus
+  `countTokens` and the duplex steer path).
 - **Image tool usage** (`publishCodexImageToolUsage`): `response.tool_usage.image_gen` tokens become an extra usage record under the
   `image_generation` tool model (`UsageReporter.publishAdditionalModel`; the conductor publishes the extra records after the main one).
 
@@ -1028,6 +1036,20 @@ upgrade request like any other (default-deny prefixes); the principal is capture
   continuations, payload rules on that body and `type` re-forced afterwards. Downstream response ids are mapped to upstream ids
   (`-xai-<seq>` suffix for repeats; `previous_response_id` dropped and the recorded transcript prepended when the upstream target
   changed). `generate:false` warm-ups end after `response.created` with a synthesised `response.completed`.
+- **Local requests**: an executor that answers a request without the upstream socket (local compaction on any route)
+  reports it through `WebsocketExecution`; the executor also reports when it started a duplex stream, and the handler
+  no longer infers duplex from the selected credential. After a local compaction the socket is in HTTP mode, keeps a
+  WebSocket-capable credential's pin, invalidates the upstream socket and records a boundary transcript (input `[]`
+  plus the compaction item), so a continuation sends the expanded summary and the new input on a freshly dialled
+  socket. A `previous_response_id` with the `resp_ag_compact_` prefix that is not the last response gets the 409
+  frame. A local compaction is atomic (one HTTP summary, then a whole response), so a `response.interrupt` for it is never
+  forwarded upstream and is ignored: the response completes, like one that finished before the interrupt arrived (cutting
+  it short would drop the compaction item the boundary stands on; a turn that ends without the item is recorded like any
+  other). Once a request is known to be a local compaction, any interrupt is ignored, including one naming the wrong id,
+  which would otherwise get the 400 "does not target the active response". Before the executor marks it local (during
+  credential choice) an HTTP-mode interrupt is still resolved locally, and the turn is then recorded as an ordinary one.
+  Difference from Go: the report and the boundary apply to every local route, Claude's and Antigravity's own flows
+  included, not only Codex `is-compat`.
 - **Fallback to HTTP**: credentials without `websockets` (or other providers) run each turn over the ordinary HTTP executors, with the
   transcript rebuilt locally; a downstream WebSocket never needs an upstream one.
 
@@ -1475,21 +1497,50 @@ Deviations from Go (all deliberate, documented in code headers):
 - Claude empty text (C2, Go `df07b1e5`): empty or whitespace text blocks are dropped from both request translators (their
   `cache_control` moves to the block before) and never receive a `cache_control`, in the translators' helpers and in the
   executor's `ensureCacheControl` and current-date injection.
-- **Responses compaction capsules** (`helps/compaction.ts`, `claude/compaction.ts`; Go `helps/antigravity_compaction.go`,
-  `claude_executor_compaction.go`): `responses/compact` and streaming `compaction_trigger` run a non-stream summary turn (Responses payload
-  -> summary prompt appended, `tools`/`stream`/... removed; Claude keeps the tool definitions for `tool_use` history and sets
-  `tool_choice: none`, without definitions the tool blocks are flattened to text after the CCH step and before the payload rules) and seal
-  the answer into `cpa-ag-compact-v1:` + base64url(`nonce(12) || AES-256-GCM(SHA-256("CLIProxyAPI"), {"summary","model","created_at"})`)
-  with WebCrypto. The key is the fixed Go secret on purpose: capsules stay interchangeable with the Go server and between deployments (it
-  is obfuscation, not a secret). Incoming `compaction` items are expanded into developer messages before translation; Claude drops
-  foreign (non-CPA) items, an unreadable capsule is a request-scoped 400. Usage follows the Responses accounting (input = input + cache
-  creation + cache read). Verified against the real Go executors (`go run ./tools/fixturegen/compaction`,
-  `packages/models/test/compaction-fixtures.test.ts`: upstream request bodies, outputs, unsealed summaries, deterministic sealing with a fixed nonce; capsules sealed by Go open, plaintext compared structurally).
+- **Responses compaction** (`helps/compaction.ts`, `claude/compaction.ts`; Go `helps/antigravity_compaction.go`,
+  `claude_executor_compaction.go`, the `*_compaction*` paths of the Codex, OpenAI-compatible, Devin, Kimi and Meta
+  executors). Codex models and xAI compact natively; every other route either compacts locally or does not compact:
+
+  | Route               | `compaction_trigger`  | `/responses/compact`                    | Incoming `compaction` items                          |
+  | ------------------- | --------------------- | --------------------------------------- | ---------------------------------------------------- |
+  | Codex (native)      | upstream              | upstream                                | CPA capsules expanded, native items kept             |
+  | Codex `is-compat`   | local                 | upstream                                | expanded; foreign dropped (compact: recognised only) |
+  | OpenAI-compatible   | local                 | upstream `{base-url}/responses/compact` | as `is-compat`                                       |
+  | Claude, Antigravity | local                 | local                                   | expanded; foreign dropped                            |
+  | Kimi, Meta, Devin   | local                 | local                                   | expanded; foreign dropped                            |
+  | xAI                 | native (`compact.ts`) | upstream                                | unchanged                                            |
+  | Gemini, Vertex      | —                     | 501                                     | —                                                    |
+
+  Local compaction runs a non-stream summary request through the route's own Responses path (same model, payload
+  rules last) and seals the answer into `cpa-ag-compact-v1:` + base64url(`nonce(12) || AES-256-GCM(SHA-256("CLIProxyAPI"),
+  {"summary","model","created_at"})`) with WebCrypto (ADR 0018). The summary request drops `compaction_trigger`,
+  `additional_tools` and `configuration_update` items and the fields that do not apply (`tools`, `text`, `type`,
+  `event_id`, ...); Claude keeps the tool definitions with `tool_choice: none`. Capsules become developer messages before
+  translation and token counting; an unreadable capsule is a request-scoped 400. Usage follows the Responses accounting
+  (input = input + cache creation + cache read), one record per attempt under the requested model. Verified against the
+  real Go executors for Claude and Antigravity (`go run ./tools/fixturegen/compaction`, `compaction-fixtures.test.ts`).
+  The shared flow is `executeLocalCompaction` (`helps/compaction.ts`): each route hands it its own non-stream turn, not its
+  public `execute`, so the summary never meets the compaction check again (and Codex's summary never goes to the
+  WebSocket). Claude and Antigravity keep their own flows (Claude's summary is in Claude format) but share the checks and
+  the error rule. Differences from Go:
+  - Kimi, Meta and Devin serve `/responses/compact` locally (Go: 501 on Kimi/Meta; Devin ran an ordinary request). A
+    route that compacts locally does so on both entry points unless the operator chose an endpoint with
+    `/responses/compact` (Codex `is-compat`, OpenAI-compatible).
+  - A summary that is incomplete or has no text is a request-scoped 502 on every route (no cooldown, no failover:
+    another credential would usually fail the same way at the same cost). Go answers a plain 502 on the newer routes and
+    500 on Claude/Antigravity; Claude's `max_tokens` stop counts as incomplete. A summary that fails still records its
+    tokens, and a failure of the summary's upstream (5xx, 429) is classified like the route's ordinary errors, so the
+    whole compaction runs again on the next credential: nothing has reached the client before the capsule is sealed.
+  - Every local route refuses a compaction whose source carries `previous_response_id` (HTTP: 400; WebSocket: the 409
+    `previous_response_not_found` frame), not only Codex: the capsule would silently lose the history the reference held.
+    Empty conversation input is a 400 too.
+  - Antigravity follows the shared rule where Go's differs: Go expands every `compaction` item (a foreign one fails as an
+    unreadable capsule, a 400) and runs no status check on the summary; here foreign items are dropped, a corrupt capsule
+    in `originalRequest` is a 400 like one in the payload, and an incomplete summary is the 502 above.
+  - Devin's `countTokens` also expands capsules (Go's fb77445f does not, so it counted the ciphertext).
+
   The Claude and Antigravity executors also add the `output_tokens_details`/`input_tokens_details` of Responses answers
   (`EnsureResponsesUsageDetails`) that were missing on their non-stream/stream paths.
-- `responses/compact` stays 501 where Go answers 501: Gemini/Vertex (`gemini_executor.go`, `gemini_vertex_executor.go`), Meta and Kimi.
-  The OpenAI-compatibility executor posts the Responses-format request to `{base-url}/responses/compact` (no chat shaping, `stream`
-  removed, reasoning cleartext cleared).
 
 ## Gemini, Vertex and Interactions (`models/executor/gemini/`, `translation/translator/gemini/`, `models/handlers/gemini/`)
 
@@ -1618,6 +1669,10 @@ claude/gemini/openai-response -> openai, interactions <-> openai (Chat Completio
   targets do not change catalog advertising (every discovery appends to `tools[]` and moves the cached prefix); xAI keeps
   removing `tool_search`, and Devin forwards it raw (Codex format), not bridged.
 
+- **Compaction**: a Responses `compaction_trigger` is compacted locally with the route's Chat Completions turn; `/responses/compact`
+  still posts to `{base-url}/responses/compact` and expands only the capsules a local compaction minted (matrix in the Claude section,
+  "Responses compaction"). Capsules and foreign `compaction` items of a Responses request are expanded and dropped before translation
+  and in `countTokens`; a summary cut off by `finish_reason: length` is a request-scoped 502.
 - **Layout**: one directory per Go package; the helpers of Go's `translator/common` live in `translator/common/` (apply_patch
   bridge, Responses tool descriptors, tool-name fixing, user-turn-drop policy, file data, ...); `openai/common/read.ts` only adds
   OpenAI-side readers. Modules cite their Go source. The
@@ -2440,6 +2495,9 @@ helpers; `oauth_scope_executor.go` is `executor/helps/oauth-scope.ts`.
   `openai-response` belong to the OpenAI-compatibility slice; `claude -> interactions` is what Claude Code needs to use Devin, see
   _Claude clients on Interactions providers_); without one the body is parsed as-is (`messages` fallback) and the response
   passes through untranslated.
+- **Compaction**: Kimi's and Meta's Responses paths and Devin compact locally, `compaction_trigger` and `/responses/compact` alike,
+  with the route's own turn (matrix in the Claude section, "Responses compaction"). A D3 `sealed.v1.` reasoning item is not a
+  `compaction` item and passes through untouched, so a Devin thought step survives next to a capsule.
 - **Fixtures**: `go run ./tools/fixturegen/devin` runs the real Go `DevinExecutor` against an `httptest` Connect-RPC
   server (request bytes, Interactions events, aggregates, trailer/model-UID/frame/system-prompt helpers) into
   `packages/models/test/fixtures/devin.json`; `packages/models/test/devin-*.test.ts` compare the TypeScript output with it.
@@ -2940,7 +2998,7 @@ The **reasoning-replay ledger** (Gemini-family models) and the Interactions **co
 _SessionState Durable Object_.
 
 - **Compaction**: `responses/compact` (non-stream) and `compaction_trigger` run the summary turn through the normal Gemini/Claude path and
-  seal a capsule (see the Claude section); sealed items in any Responses request are expanded first. Streaming `/responses/compact` is a 400.
+  seal a capsule (see "Responses compaction" in the Claude section for the matrix and the shared checks); sealed items in any Responses request are expanded first. Streaming `/responses/compact` is a 400.
 - **Grounding redirects** (`grounding.ts`): for Claude clients with typed `web_search_*` tools and Responses clients with a web search tool
   whose translated request holds `googleSearch`, `groundingChunks[].web.uri` values of
   `https://vertexaisearch.cloud.google.com/grounding-api-redirect/*` are resolved with `HEAD` (`redirect: "manual"`, the 3xx `Location` must be

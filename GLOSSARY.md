@@ -458,9 +458,19 @@ _Avoid_: thought signature, signature (on its own)
 Putting a previous turn's reasoning back into a request, because the client did not send it back.
 _Avoid_: continuity, ledger
 
+**Native compaction**:
+Compaction a provider performs itself: it replaces a conversation's earlier history with its own opaque compaction
+item, which only that provider can read back. OpenAI's Codex models and xAI have it.
+_Avoid_: remote compaction, server-side compaction
+
+**Local compaction**:
+Compaction Commissary performs itself for a provider or endpoint without native compaction: the request's model
+summarises the earlier history and Commissary seals the summary into a compaction capsule.
+_Avoid_: synthetic compaction, remote compaction
+
 **Compaction capsule**:
-A sealed summary of earlier conversation history, which stands in for that history on providers without native
-compaction.
+The sealed summary local compaction returns in place of a provider's compaction item. It stands in for the earlier
+history on any provider, because Commissary opens it before the request goes upstream.
 _Avoid_: encrypted summary
 
 **Responses WebSocket**:

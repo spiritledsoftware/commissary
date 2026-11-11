@@ -44,7 +44,7 @@ import {
 import { ExecutionError } from "../../../executor/errors.ts";
 import { isCodexResponsesLiteRequest } from "../../../executor/codex/headers.ts";
 import { codexWebsocketsEnabled } from "../../../executor/codex/websocket.ts";
-import type { WebsocketDuplex } from "../../../executor/types.ts";
+import type { WebsocketDuplex, WebsocketReport } from "../../../executor/types.ts";
 import type { CredentialSnapshot } from "../../../executor/picker.ts";
 import {
   type AbandonedOperation,
@@ -73,12 +73,17 @@ import {
   truncateCloseReason,
 } from "./frames.ts";
 import { isCodexResponsesClient, isPrivateResponsesEvent } from "../framer.ts";
-import { stripReplayOutputOnlyFields, syntheticPrewarmPayloads } from "./normalize.ts";
+import {
+  inputContainsFullTranscript,
+  stripReplayOutputOnlyFields,
+  syntheticPrewarmPayloads,
+} from "./normalize.ts";
 import {
   commitLoss,
   commitPrewarm,
   commitTurn,
   isWebsocketProvider,
+  localBoundaryRequest,
   newSocketState,
   planTurn,
   Plan,
@@ -204,8 +209,11 @@ export const runResponsesSocket = <R>(
       let interruptSignal: Deferred.Deferred<string> | undefined;
       let closed = false;
       let hasTurnInFlight = false;
-      // The selected credential's executor owns the socket (Codex response steering): a response ends no stream.
-      let duplexStream = false;
+      // How the current attempt ran, reported by its executor (reset when a credential is selected): the executor that
+      // owns the socket (Codex response steering) ends no stream with a response, and one that answered without the
+      // upstream socket (local compaction) leaves the socket in HTTP mode.
+      let report: WebsocketReport = { local: false, duplex: false };
+      const duplexStream = (): boolean => report.duplex;
       // Advanced by an upstream loss mid-request: frames read under an older epoch predate it and are never run.
       let epoch = 0;
 
@@ -235,6 +243,14 @@ export const runResponsesSocket = <R>(
         runningId = "";
         localOpen = false;
       };
+
+      /**
+       * The executor answers this request without the upstream socket (local compaction). Such a request is atomic: the
+       * summary is one HTTP exchange and its response arrives whole, so there is nothing to interrupt, and cutting it
+       * short would drop the compaction item the transcript boundary stands on. An interrupt is never forwarded upstream
+       * either, even on a credential that owns an upstream socket.
+       */
+      const answeredLocally = (): boolean => report.local;
 
       const write = (payload: JsonObject): void => {
         if (!closed) io.send(JSON.stringify(payload));
@@ -343,6 +359,9 @@ export const runResponsesSocket = <R>(
 
         if (!hasTurnInFlight) return rejectInterrupt("no active upstream websocket");
 
+        // The client lost a race with a response that cannot be cut short; it completes (like a finished id).
+        if (answeredLocally()) return;
+
         if (upstreamRequest) {
           // Between responses of a steering socket, or while another response runs, the id targets nothing.
           if ((runningId !== "" && id !== runningId) || (runningId === "" && responsesStarted))
@@ -430,7 +449,7 @@ export const runResponsesSocket = <R>(
                 collector.recordPending(payload);
                 // In Codex duplex mode the executor owns connection termination: payload errors after response.created are
                 // recoverable events; a failing stream still arrives as an execution error and closes the socket.
-                const preserveErrorEvent = responseStarted && duplexStream;
+                const preserveErrorEvent = responseStarted && duplexStream();
 
                 if (type === "error" && !preserveErrorEvent) {
                   closeResponse("");
@@ -487,7 +506,7 @@ export const runResponsesSocket = <R>(
           } satisfies ForwardResult;
         }
 
-        if (outcome.success === "done" && duplexStream) {
+        if (outcome.success === "done" && duplexStream()) {
           // A duplex stream ends with its socket, not with an individual response.
           return {
             duplexClosed: true,
@@ -542,9 +561,10 @@ export const runResponsesSocket = <R>(
         const pinnedId = plan.pinnedId;
         const startEpoch = epoch;
         const signal = yield* Deferred.make<string>();
+        const attemptReport: WebsocketReport = { local: false, duplex: false };
+        report = attemptReport;
         interruptSignal = signal;
         hasTurnInFlight = true;
-        duplexStream = false;
         runningId = "";
         responsesStarted = false;
         // A pinned continuation runs on its Codex upstream socket; any other request resolves interrupts locally until
@@ -560,15 +580,14 @@ export const runResponsesSocket = <R>(
           websocket: {
             sessionId,
             requireUpstream: plan.requiresCurrentUpstream,
+            report: attemptReport,
             ...(duplexInput !== undefined ? { duplex: duplexInput } : {}),
           },
           ...(pinnedId !== "" ? { pinnedId } : {}),
           onSelected: (credential) => {
             selected = credential;
-            duplexStream =
-              deps.steering === true &&
-              credential.provider === "codex" &&
-              codexWebsocketsEnabled(credential);
+            attemptReport.local = false;
+            attemptReport.duplex = false;
             upstreamRequest = credential.provider === "codex" && codexWebsocketsEnabled(credential);
             localOpen = !upstreamRequest && runningId === "" && !responsesStarted;
 
@@ -609,7 +628,7 @@ export const runResponsesSocket = <R>(
          * with it follow, the input read before the loss is fenced and the credential stays pinned.
          */
         const reportTurnError = (error: ExecutionError): void => {
-          const mainEventId = !duplexStream || !responsesStarted ? eventIdOf(frame) : "";
+          const mainEventId = !duplexStream() || !responsesStarted ? eventIdOf(frame) : "";
 
           if (!lostWhileIdle) write(withEventId(buildErrorPayload(error), mainEventId));
 
@@ -644,7 +663,7 @@ export const runResponsesSocket = <R>(
           Effect.ensuring(
             Effect.sync(() => {
               // A steering socket that drops between two responses ends no request of the client's.
-              lostWhileIdle = duplexStream && responsesStarted && runningId === "";
+              lostWhileIdle = duplexStream() && responsesStarted && runningId === "";
               hasTurnInFlight = false;
               interruptSignal = undefined;
               runningId = "";
@@ -673,10 +692,20 @@ export const runResponsesSocket = <R>(
           return true;
         }
 
+        // The boundary stands on the compaction item the turn answered with: without it (a response cut short) the history
+        // would be lost, so such a turn is recorded like any other.
+        const local =
+          attemptReport.local && inputContainsFullTranscript([...result.completedOutput]);
+
         repaired.turn?.commit();
         commitTurn(state, {
           modelName: plan.modelName,
-          executedRequest: nativePassthrough ? state.lastRequest : requestJson,
+          executedRequest: local
+            ? localBoundaryRequest(requestJson)
+            : nativePassthrough
+              ? state.lastRequest
+              : requestJson,
+          local,
           selected: selectedOutcome(),
           // Upstream output is replayed as input later: its output-only fields must not travel with it (9037d543).
           completedOutput: result.completedOutput.map((item) =>

@@ -18,7 +18,15 @@ import {
   type UpstreamResponder,
 } from "./support/pipeline.ts";
 import type { CredentialSnapshot } from "../src/executor/picker.ts";
-import { get, type Json, tryParseJson } from "@commissary/json";
+import { asString, get, type Json, tryParseJson } from "@commissary/json";
+import { Effect } from "effect";
+import { makeCodexExecutor } from "../src/executor/codex/executor.ts";
+import { sealCompaction, unsealCompaction } from "../src/executor/helps/compaction.ts";
+import {
+  credential as executorCredential,
+  harness,
+  options as executorOptions,
+} from "./support/executor-run.ts";
 
 const YAML = `
 requests:
@@ -1319,5 +1327,438 @@ upstream:
     expect(
       (JSON.parse(p.calls[1]!.body) as { input: Array<Record<string, unknown>> }).input[1]?.type,
     ).toBe("function_call_output");
+  });
+});
+
+describe("CPA compaction capsules on a native Codex model", () => {
+  const capsule = async () => ({
+    type: "compaction",
+    id: "cmp_ag_compact_1",
+    encrypted_content: await sealCompaction("earlier work", "claude-sonnet-4-5"),
+  });
+
+  const nativeItem = { type: "compaction", id: "cmp_native", encrypted_content: "gAAAA-native" };
+
+  const userMessage = {
+    type: "message",
+    role: "user",
+    content: [{ type: "input_text", text: "continue" }],
+  };
+
+  const upstreamInput = (call: { readonly body: string }): Json[] => {
+    const input = get(tryParseJson(call.body), "input");
+
+    return Array.isArray(input) ? input : [];
+  };
+
+  const expectExpanded = (call: { readonly body: string }) => {
+    expect(call.body).not.toContain("cpa-ag-compact-v1:");
+    const input = upstreamInput(call);
+    expect(input[0]).toEqual({
+      type: "message",
+      role: "developer",
+      content: [{ type: "input_text", text: "Context summary from previous turns:\nearlier work" }],
+    });
+    expect(input[1]).toEqual(nativeItem);
+  };
+
+  it("expands a capsule on a non-stream request and keeps a native item verbatim", async () => {
+    const p = pipeline(() => sseResponse(TEXT_STREAM));
+
+    const response = await p.call(
+      "/v1/responses",
+      postJson({
+        model: "gpt-5.4",
+        stream: false,
+        input: [await capsule(), nativeItem, userMessage],
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expectExpanded(p.calls[0]!);
+  });
+
+  it("expands a capsule on a stream request", async () => {
+    const p = pipeline(() => sseResponse(TEXT_STREAM));
+
+    const response = await p.call(
+      "/v1/responses",
+      postJson({
+        model: "gpt-5.4",
+        stream: true,
+        input: [await capsule(), nativeItem, userMessage],
+      }),
+    );
+
+    await response.text();
+    expectExpanded(p.calls[0]!);
+  });
+
+  it("expands a capsule on /v1/responses/compact", async () => {
+    const p = pipeline(() =>
+      jsonResponse({ id: "resp_c", object: "response.compaction", output: [], usage: {} }),
+    );
+
+    const response = await p.call(
+      "/v1/responses/compact",
+      postJson({ model: "gpt-5.4", input: [await capsule(), nativeItem, userMessage] }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(p.calls[0]!.url).toBe("https://chatgpt.com/backend-api/codex/responses/compact");
+    expectExpanded(p.calls[0]!);
+  });
+
+  it("answers a corrupt capsule with a request-scoped 400 and no upstream call", async () => {
+    const p = pipeline(() => sseResponse(TEXT_STREAM));
+
+    const response = await p.call(
+      "/v1/responses",
+      postJson({
+        model: "gpt-5.4",
+        stream: false,
+        input: [
+          {
+            type: "compaction",
+            id: "cmp_ag_compact_9",
+            encrypted_content: "cpa-ag-compact-v1:AAAA",
+          },
+          userMessage,
+        ],
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain("invalid compaction capsule");
+    expect(p.calls).toHaveLength(0);
+    expect(p.log.reports.at(-1)?.result.error?.code).toBe("request_scoped");
+  });
+
+  it("forwards a native compaction_trigger unchanged", async () => {
+    const p = pipeline(() => sseResponse(TEXT_STREAM));
+
+    await p.call(
+      "/v1/responses",
+      postJson({
+        model: "gpt-5.4",
+        stream: false,
+        input: [userMessage, { type: "compaction_trigger" }],
+      }),
+    );
+
+    expect(p.calls).toHaveLength(1);
+    expect(upstreamInput(p.calls[0]!).at(-1)).toEqual({ type: "compaction_trigger" });
+  });
+
+  it("counts the expanded payload", async () => {
+    const h = await harness(
+      executorCredential("codex", { metadata: { access_token: "t" } }),
+      () => new Response("no", { status: 500 }),
+    );
+
+    const executor = makeCodexExecutor();
+
+    const count = (input: Json[]) =>
+      Effect.runPromise(
+        executor
+          .countTokens(
+            h.context,
+            { model: "gpt-5.4", payload: { model: "gpt-5.4", input } },
+            executorOptions({ sourceFormat: "openai-response" }),
+          )
+          .pipe(Effect.provide(h.layers)),
+      ).then((response) => get(tryParseJson(response.payload), "input_tokens"));
+
+    const sealed = await count([await capsule(), userMessage]);
+
+    const written = await count([
+      {
+        type: "message",
+        role: "developer",
+        content: [
+          { type: "input_text", text: "Context summary from previous turns:\nearlier work" },
+        ],
+      },
+      userMessage,
+    ]);
+
+    expect(sealed).toBe(written);
+    expect(h.calls).toHaveLength(0);
+  });
+});
+
+describe("local compaction on an is-compat Codex model", () => {
+  const compatYaml = (keys: ReadonlyArray<string> = ["sk-codex-1"]) => `
+api-keys:
+  codex:
+    - base-url: https://codex.example.test/v1
+      keys:
+${keys
+  .map(
+    (key) => `        - api-key: ${key}
+          models:
+            - name: gpt-5.4
+              is-compat: true`,
+  )
+  .join("\n")}
+requests:
+  payload:
+    override:
+      - models: [{ name: "gpt-5.4", protocol: codex }]
+        params:
+          "metadata.via": "payload-rule"
+`;
+
+  const userMessage = {
+    type: "message",
+    role: "user",
+    content: [{ type: "input_text", text: "fix the bug" }],
+  };
+
+  const assistantMessage = {
+    type: "message",
+    role: "assistant",
+    content: [{ type: "output_text", text: "OK" }],
+  };
+
+  const foreign = { type: "compaction", id: "cmp_native", encrypted_content: "gAAAA-native" };
+  const trigger = { type: "compaction_trigger" };
+
+  const summaryOutputItem = (text: string) =>
+    frame({
+      type: "response.output_item.done",
+      output_index: 0,
+      item: {
+        id: "msg_s",
+        type: "message",
+        status: "completed",
+        role: "assistant",
+        content: [{ type: "output_text", text }],
+      },
+    });
+
+  const summaryUsage = { input_tokens: 21, output_tokens: 6, total_tokens: 27 };
+
+  const summaryStream = (text = "the summary") => [
+    frame(created()),
+    summaryOutputItem(text),
+    frame({
+      type: "response.completed",
+      response: {
+        id: "resp_1",
+        status: "completed",
+        created_at: 1767225600,
+        model: "gpt-5.4",
+        output: [],
+        usage: summaryUsage,
+      },
+    }),
+  ];
+
+  const incompleteSummaryStream = () => [
+    frame(created()),
+    summaryOutputItem("half a summ"),
+    frame({
+      type: "response.incomplete",
+      response: {
+        id: "resp_1",
+        status: "incomplete",
+        created_at: 1767225600,
+        model: "gpt-5.4",
+        output: [],
+        incomplete_details: { reason: "max_output_tokens" },
+        usage: summaryUsage,
+      },
+    }),
+  ];
+
+  const compat = async (respond: UpstreamResponder, extra: Partial<Options> = {}) => {
+    const compatConfig = await loadConfig(compatYaml());
+
+    return pipeline(respond, {
+      config: compatConfig,
+      credentials: [providerKeyCredential()],
+      ...extra,
+    });
+  };
+
+  const capsuleOf = (body: Json): string => asString(get(body, "output.0.encrypted_content"));
+
+  it("answers a non-stream compaction_trigger with one HTTP summary request and a sealed response", async () => {
+    const p = await compat(() => sseResponse(summaryStream()));
+
+    const response = await p.call(
+      "/v1/responses",
+      postJson({
+        model: "gpt-5.4",
+        stream: false,
+        input: [foreign, userMessage, assistantMessage, trigger],
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(p.calls).toHaveLength(1);
+    expect(p.calls[0]!.url).toBe("https://codex.example.test/v1/responses");
+    const upstream = JSON.parse(p.calls[0]!.body) as Json;
+    expect(JSON.stringify(upstream)).not.toContain("compaction_trigger");
+    expect(JSON.stringify(upstream)).not.toContain("gAAAA-native");
+    expect(JSON.stringify(upstream)).not.toContain("image_generation");
+    expect(get(upstream, "previous_response_id")).toBeUndefined();
+    expect(get(upstream, "metadata.via")).toBe("payload-rule");
+    const input = get(upstream, "input") as Json[];
+    expect(get(input.at(-1), "content.0.text")).toContain("concise and comprehensive summary");
+    const body: Json = await response.json();
+    expect(get(body, "object")).toBe("response.compaction");
+    expect(await unsealCompaction(capsuleOf(body))).toBe("the summary");
+    expect(get(body, "usage")).toMatchObject({
+      input_tokens: 21,
+      output_tokens: 6,
+      total_tokens: 27,
+    });
+    expect(p.records).toHaveLength(1);
+    expect(p.records[0]).toMatchObject({ model: "gpt-5.4", failed: false });
+    expect(p.records[0]?.detail).toMatchObject({ inputTokens: 21, outputTokens: 6 });
+  });
+
+  it("answers a streaming compaction_trigger with the synthetic Responses stream", async () => {
+    const p = await compat(() => sseResponse(summaryStream()));
+
+    const response = await p.call(
+      "/v1/responses",
+      postJson({ model: "gpt-5.4", stream: true, input: [userMessage, assistantMessage, trigger] }),
+    );
+
+    expect(response.headers.get("content-type")).toContain("text/event-stream");
+    const text = await response.text();
+    expect(text).toContain("event: response.completed");
+    const sealed = text.match(/cpa-ag-compact-v1:[A-Za-z0-9_-]+/)?.[0] ?? "";
+    expect(await unsealCompaction(sealed)).toBe("the summary");
+    expect(p.calls).toHaveLength(1);
+    expect(JSON.stringify(JSON.parse(p.calls[0]!.body))).not.toContain("compaction_trigger");
+  });
+
+  it("drops foreign compaction items from an ordinary request and expands capsules", async () => {
+    const p = await compat(() => sseResponse(TEXT_STREAM));
+
+    await p.call(
+      "/v1/responses",
+      postJson({
+        model: "gpt-5.4",
+        stream: false,
+        input: [
+          foreign,
+          {
+            type: "compaction",
+            id: "cmp_ag_compact_1",
+            encrypted_content: await sealCompaction("earlier work", "m"),
+          },
+          userMessage,
+        ],
+      }),
+    );
+
+    expect(p.calls[0]!.body).not.toContain("gAAAA-native");
+    expect(p.calls[0]!.body).toContain("earlier work");
+    // The control for the summary request's missing image tool: an ordinary request gets it.
+    expect(p.calls[0]!.body).toContain("image_generation");
+  });
+
+  it("keeps /responses/compact upstream and forwards a native item", async () => {
+    const p = await compat(() =>
+      jsonResponse({ id: "resp_c", object: "response.compaction", output: [], usage: {} }),
+    );
+
+    await p.call(
+      "/v1/responses/compact",
+      postJson({ model: "gpt-5.4", input: [foreign, userMessage] }),
+    );
+    expect(p.calls[0]!.url).toBe("https://codex.example.test/v1/responses/compact");
+    expect(p.calls[0]!.body).toContain("gAAAA-native");
+  });
+
+  it("answers an incomplete summary with a request-scoped 502 and picks the credential again next time", async () => {
+    const p = await compat(() => sseResponse(incompleteSummaryStream()));
+
+    const first = await p.call(
+      "/v1/responses",
+      postJson({ model: "gpt-5.4", stream: false, input: [userMessage, trigger] }),
+    );
+
+    expect(first.status).toBe(502);
+    expect(p.log.reports.at(-1)?.result.error?.code).toBe("request_scoped");
+    expect(p.records).toHaveLength(1);
+    expect(p.records[0]).toMatchObject({ failed: true });
+    expect(p.records[0]?.detail).toMatchObject({ inputTokens: 21 });
+
+    await p.call(
+      "/v1/responses",
+      postJson({ model: "gpt-5.4", stream: false, input: [userMessage, trigger] }),
+    );
+    expect(p.log.picks.map((pick) => pick.excluded)).toEqual([[], []]);
+  });
+
+  it.each([
+    ["empty conversation input", { input: [trigger] }],
+    [
+      "a previous_response_id source",
+      { previous_response_id: "resp_1", input: [userMessage, trigger] },
+    ],
+  ])("refuses %s with a 400 and no upstream call", async (_name, extra) => {
+    const p = await compat(() => sseResponse(summaryStream()));
+
+    const response = await p.call(
+      "/v1/responses",
+      postJson({ model: "gpt-5.4", stream: false, ...extra }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(p.calls).toHaveLength(0);
+  });
+
+  it("refuses an ordinary request that continues a synthetic compaction response", async () => {
+    const p = await compat(() => sseResponse(TEXT_STREAM));
+
+    const response = await p.call(
+      "/v1/responses",
+      postJson({
+        model: "gpt-5.4",
+        stream: false,
+        previous_response_id: "resp_ag_compact_123",
+        input: [userMessage],
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain("local compaction response");
+    expect(p.calls).toHaveLength(0);
+  });
+
+  it("runs the whole compaction again on the next credential after a failed summary", async () => {
+    const second = providerKeyCredential({
+      id: "codex-key-2",
+      attributes: { api_key: "sk-codex-2", base_url: "https://codex.example.test/v1" },
+    });
+
+    const config = await loadConfig(compatYaml(["sk-codex-1", "sk-codex-2"]));
+
+    const p = pipeline(
+      (call) =>
+        call.headers["authorization"] === "Bearer sk-codex-1"
+          ? jsonResponse({ error: { message: "boom" } }, { status: 500 })
+          : sseResponse(summaryStream()),
+      { config, credentials: [providerKeyCredential(), second] },
+    );
+
+    const response = await p.call(
+      "/v1/responses",
+      postJson({ model: "gpt-5.4", stream: false, input: [userMessage, trigger] }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(p.calls.map((call) => call.headers["authorization"])).toEqual([
+      "Bearer sk-codex-1",
+      "Bearer sk-codex-2",
+    ]);
+    expect(await unsealCompaction(capsuleOf(await response.json()))).toBe("the summary");
   });
 });
