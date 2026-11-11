@@ -35,7 +35,7 @@ import { metered } from "./metering.ts";
 import { rewriteResponseModel, rewriteStreamChunk } from "./model-rewrite.ts";
 import { resolveModel } from "./resolve.ts";
 import { prepareSessionRouting, type SessionRouting } from "../session-routing/routing.ts";
-import { extractSessionInfo } from "./session.ts";
+import { extractSessionInfo, isGuardianRequest } from "./session.ts";
 import type { ModelsEnv } from "../env.ts";
 
 export interface ExecutionInput {
@@ -244,6 +244,7 @@ const prepare = Effect.fnUntraced(function* (input: ExecutionInput, stream: bool
               ? {}
               : { parentId: sessionInfo.parentSessionId }),
             ...(sessionInfo.isFork ? { isFork: true } : {}),
+            ...(isGuardianRequest(headers) ? { isGuardian: true } : {}),
           },
     routing,
     ...(input.disallowFreeAuth === true ? { disallowFreeAuth: true } : {}),

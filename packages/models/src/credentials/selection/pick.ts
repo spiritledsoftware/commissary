@@ -416,11 +416,19 @@ export const selectCredential = (input: SelectionInput): SelectionOutcome => {
   const isFork = session?.isFork === true;
   const isSubagent = !isFork && isSubagentSession(primaryId, parentId);
 
+  // The session's selections are recorded with the provider that served them, for guardian inheritance below.
+  const sessionKey = `${scope}::${primaryId}`;
+
   const bind = (authId: string): string[] => {
-    runtime.affinity.set(cacheKey, authId, now);
+    const candidate = find(authId);
+
+    const provider =
+      candidate === undefined ? providerLabel : executorKey(candidate.entry.credential);
+
+    runtime.affinity.setSelection(cacheKey, authId, now, sessionKey, provider);
 
     if (fallbackKey !== undefined && !isSubagent && !isFork) {
-      runtime.affinity.set(fallbackKey, authId, now);
+      runtime.affinity.setSelection(fallbackKey, authId, now, sessionKey, provider);
 
       return [cacheKey, fallbackKey];
     }
@@ -432,6 +440,30 @@ export const selectCredential = (input: SelectionInput): SelectionOutcome => {
   const bound = find(cachedId);
 
   if (bound !== undefined) return done(bound, bind(bound.id));
+
+  // A Guardian review runs another model, so it has no binding of its own; it takes the parent's newest live selection
+  // (on any model, on a provider this request may use) so the review keeps the parent's credential and prompt cache.
+  // The header decides, not the review model, which is configurable (CLIProxyAPI 2f6f2924).
+  if (
+    cachedId === undefined &&
+    isSubagent &&
+    settings.sessionAffinitySubagents &&
+    session?.isGuardian === true
+  ) {
+    const mixed = providers.size !== 1;
+    const eligible = new Set<string>();
+
+    for (const candidate of available) {
+      const provider = executorKey(candidate.entry.credential);
+
+      if (mixed || providers.has(provider)) eligible.add(provider);
+    }
+
+    const inheritedId = runtime.affinity.latestSessionAuth(`${scope}::${parentId}`, eligible, now);
+    const parent = find(inheritedId);
+
+    if (parent !== undefined) return done(parent, bind(parent.id));
+  }
 
   // A stale binding is re-picked straight away; the parent alias is only consulted without a binding.
   if (

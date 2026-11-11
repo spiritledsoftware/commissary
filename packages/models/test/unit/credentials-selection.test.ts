@@ -581,6 +581,115 @@ describe("session affinity", () => {
   });
 });
 
+// CLIProxyAPI 2f6f2924 (selector_guardian_affinity_test.go): a Guardian review runs another model, so another affinity
+// key, and would lose the parent's credential and its prompt cache; it inherits the parent's latest binding instead.
+describe("guardian reviews inherit the parent credential", () => {
+  const PARENT = "main-thread";
+
+  const REVIEW = "review-thread";
+
+  const parentRequest = { providers: ["codex"], model: "gpt-6.1-sol", session: { id: PARENT } };
+
+  const review = (extra: Record<string, unknown> = {}, sessionExtra = {}) => ({
+    providers: ["codex"],
+    model: "codex-auto-review",
+    session: { id: REVIEW, parentId: PARENT, isGuardian: true, ...sessionExtra },
+    ...extra,
+  });
+
+  const codex = (id: string) => entry(cred(id, { provider: "codex" }));
+
+  const bound = () => {
+    const h = new Harness({ ...defaultSettings, sessionAffinity: true });
+    // The parent's credential is `auth-b`, while the strategy alone would pick `auth-a` for the review.
+    expect(h.id([codex("auth-b")], parentRequest)).toBe("auth-b");
+
+    return h;
+  };
+
+  const pool = () => [codex("auth-a"), codex("auth-b")];
+
+  it("takes the parent's credential across models, where an ordinary request takes the strategy's", () => {
+    const h = bound();
+
+    expect(h.id(pool(), review())).toBe("auth-b");
+    expect(bound().id(pool(), review({}, { isGuardian: false }))).toBe("auth-a");
+  });
+
+  it("matches a custom review model too, since it keys on the request, not the model", () => {
+    expect(bound().id(pool(), review({ model: "custom-review-model" }))).toBe("auth-b");
+  });
+
+  it("uses the parent's latest binding, whatever model it was on", () => {
+    const h = new Harness({ ...defaultSettings, sessionAffinity: true });
+    expect(h.id([codex("auth-a")], { ...parentRequest, model: "older-model" })).toBe("auth-a");
+    expect(h.id([codex("auth-b")], parentRequest)).toBe("auth-b");
+
+    expect(h.id(pool(), review())).toBe("auth-b");
+  });
+
+  it("is not reordered by a TTL refresh of an older binding", () => {
+    const h = new Harness({ ...defaultSettings, sessionAffinity: true });
+    expect(h.id([codex("auth-a")], { ...parentRequest, model: "older-model" })).toBe("auth-a");
+    expect(h.id([codex("auth-b")], parentRequest)).toBe("auth-b");
+    // The older binding is used again, which refreshes it and is the parent's newest selection.
+    expect(h.id(pool(), { ...parentRequest, model: "older-model" })).toBe("auth-a");
+    h.now += 1000;
+    h.affinity.touch("::codex::main-thread::older-model", "auth-a", h.now);
+
+    expect(h.id(pool(), review())).toBe("auth-a");
+  });
+
+  it("keeps the review's own binding once it has one", () => {
+    const h = new Harness({ ...defaultSettings, sessionAffinity: true });
+    expect(h.id([codex("auth-a")], review())).toBe("auth-a");
+    expect(h.id([codex("auth-b")], parentRequest)).toBe("auth-b");
+
+    expect(h.id(pool(), review())).toBe("auth-a");
+  });
+
+  it("does not change a fork, which keeps its own parent alias", () => {
+    expect(bound().id(pool(), review({}, { isFork: true }))).toBe("auth-a");
+  });
+
+  it("falls back to the strategy without a parent, with subagent affinity off, or when the parent credential is gone", () => {
+    expect(bound().id(pool(), review({}, { parentId: undefined }))).toBe("auth-a");
+
+    const off = new Harness({
+      ...defaultSettings,
+      sessionAffinity: true,
+      sessionAffinitySubagents: false,
+    });
+
+    expect(off.id([codex("auth-b")], parentRequest)).toBe("auth-b");
+    expect(off.id(pool(), review())).toBe("auth-a");
+
+    expect(bound().id([codex("auth-a")], review())).toBe("auth-a");
+  });
+
+  it("only inherits a binding on a provider the review may use", () => {
+    const h = new Harness({ ...defaultSettings, sessionAffinity: true });
+
+    const claudeParent = { providers: ["claude"], model: "claude-sonnet", session: { id: PARENT } };
+    expect(h.id([entry(cred("auth-b", { provider: "claude" }))], claudeParent)).toBe("auth-b");
+
+    // A codex-only review ignores it; a mixed pool of both providers may take it.
+    expect(h.id([codex("auth-a")], review())).toBe("auth-a");
+    const mixed = [codex("auth-a"), entry(cred("auth-b", { provider: "claude" }))];
+    expect(h.id(mixed, review({ providers: ["codex", "claude"] }))).toBe("auth-b");
+  });
+
+  it("forgets a parent binding that expired or was dropped", () => {
+    const expired = bound();
+    expired.now += 61_000;
+    expect(expired.id(pool(), review())).toBe("auth-a");
+
+    const dropped = bound();
+    dropped.affinity.invalidateAuth("auth-b");
+    expect(dropped.id(pool(), review())).toBe("auth-a");
+  });
+});
+
 describe("codex preferences", () => {
   it("prefers websocket credentials for websocket requests and skips free plans on demand", () => {
     const h = new Harness();

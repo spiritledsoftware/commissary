@@ -113,6 +113,7 @@ export const toWirePickRequest = (request: PickRequest): WirePickRequest => ({
           callerScope: request.callerScope,
           ...(request.session.parentId === undefined ? {} : { parentId: request.session.parentId }),
           ...(request.session.isFork === true ? { isFork: true } : {}),
+          ...(request.session.isGuardian === true ? { isGuardian: true } : {}),
         },
       }),
   ...(request.lcp === undefined

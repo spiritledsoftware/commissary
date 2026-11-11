@@ -525,7 +525,12 @@ Port of `internal/thinking`, keeping the "canonical `ThinkingConfig` → central
 - **Selection** (`selection/`, pure and deterministic, clock injected): candidate set -> availability (`availability.ts`,
   incl. "never an expired OAuth token") -> highest priority tier -> strategy (`strategies.ts`: round-robin, smooth
   weighted round-robin, fill-first) -> optional session affinity (`affinity.ts`, TTL cache keyed
-  `callerScope::providers::session::model`). Model prefixes, `force-model-prefix`, exclusions, OAuth/API-key aliases,
+  `callerScope::providers::session::model`). A **Codex Guardian review** (`X-Openai-Subagent: guardian`, by the header and
+  not the configurable review model; CLIProxyAPI `2f6f2924`) has another model and so another key: with
+  `session-affinity-subagents` on, a subagent session without a binding of its own takes its parent's **newest live selection on
+  any model** (the cache keeps a per-session sequence of real selections, which TTL refreshes do not reorder) on a provider the
+  request may use, so the review keeps the parent's credential and prompt cache; ordinary subagents and forks stay as they were.
+  Model prefixes, `force-model-prefix`, exclusions, OAuth/API-key aliases,
   `force-mapping` and alias pools are resolved per credential in `routing.ts`. The caller still resolves the provider set
   (`PickRequest.providers`) from the model registry; the DO enforces the per-credential rules.
 - **Grants** (ADR 0023, _Grants_ below): `pick` takes the caller's `Reach` (`CredentialPool` option `reach(member)`,

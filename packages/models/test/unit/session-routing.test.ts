@@ -2,7 +2,7 @@
 // test/fixtures/session.json): canonical turns and fingerprints, the derived content-hash identity, the message-hash
 // fallback, identity helpers and scripted LCP matcher scenarios.
 import { describe, expect, it } from "vitest";
-import { extractSessionInfo } from "../../src/handlers/session.ts";
+import { extractSessionInfo, isGuardianRequest } from "../../src/handlers/session.ts";
 import type { Json, JsonObject } from "@commissary/json";
 import { derivedAntigravitySessionId } from "../../src/executor/antigravity/derived-session.ts";
 import { extractCanonicalTurns, prepareFingerprints } from "../../src/session-routing/canonical.ts";
@@ -236,4 +236,20 @@ describe("derived Antigravity session ids (Go parity)", () => {
       expect(derivedAntigravitySessionId(entry.derived)).toBe(entry.id);
     });
   }
+});
+
+// CLIProxyAPI 2f6f2924 (isGuardianRequest): the header decides, not the review model.
+describe("isGuardianRequest", () => {
+  it.each([
+    ["guardian", true],
+    ["  GuArDiAn  ", true],
+    ["collab_spawn", false],
+    ["", false],
+  ])("X-Openai-Subagent %j is %s", (value, expected) => {
+    expect(isGuardianRequest(new Headers({ "X-Openai-Subagent": value }))).toBe(expected);
+  });
+
+  it("is false without the header", () => {
+    expect(isGuardianRequest(new Headers())).toBe(false);
+  });
 });

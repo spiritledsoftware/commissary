@@ -14,6 +14,11 @@ export const SessionRef = Schema.Struct({
   /** Parent/fork session; subagents may inherit the parent's credential. */
   parentId: optional(Schema.String),
   isFork: optional(Schema.Boolean),
+  /**
+   * A Codex Guardian review (`X-Openai-Subagent: guardian`, CLIProxyAPI 2f6f2924): it runs another model, so it takes the
+   * parent's latest binding on any model instead of the strategy's pick.
+   */
+  isGuardian: optional(Schema.Boolean),
   /** Hash of the caller (Access principal): bindings never cross scopes. */
   callerScope: optional(Schema.String),
 });
