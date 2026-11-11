@@ -1,6 +1,6 @@
 // Bindings and variables of the state Worker: what its Durable Object classes read from the `env` they are constructed
 // with (`@commissary/state`'s `StateObjectEnv`, the Models part's `ModelsPartEnv`, the Tools part's `ToolsPartEnv`,
-// Tools' browser sessions' `BrowserSessionEnv` ), nothing else. Deployed values come from the `State` Worker's `env` in
+// Tools' browser sessions' `BrowserSessionEnv`), nothing else. Deployed values come from the `State` Worker's `env` in
 // `alchemy.run.ts`; keep both in sync. The app's test Worker (apps/app/test/worker.ts) runs these classes with the
 // app's bindings, a superset.
 type __StateObjectSettings = Omit<

@@ -107,7 +107,7 @@ app and the API Worker send each such call once more (`retryOnCodeUpdate`). Beca
 Worker with the old app and API Workers for a moment, state RPC changes are expand-then-contract
 (`docs/DEVELOPMENT.md`, "State RPC: expand, then contract").
 
-**Retired hosted agents (ADR 0048).** Commissary no longer runs hosted agents, but two things of them stay for one
+**Retired hosted agents (ADR 0048).** Commissary no longer runs hosted agents, but some things of them stay for one
 release and a follow-up removes them:
 
 - **The tombstone classes.** The API Worker still exports the Durable Object classes `AgentRun` and `AgentSchedule`
@@ -123,12 +123,15 @@ release and a follow-up removes them:
   this release would break the previous API Worker's inserts while the deploy is half done. Nothing reads or writes them
   any more, and a follow-up migration drops them. It must `DROP INDEX usage_records_org_run` before it drops
   `run_id`, because SQLite refuses to drop an indexed column.
+- **State RPC shims.** The state Worker still answers `privateAgents: false` and an `OrgRecord` whose `runRetentionDays`
+  is `null` (and keeps `Platform.setRetention`), for an app Worker from before this release that meets the new state
+  Worker during the deploy. The follow-up removes them too. The other agent-only state RPC methods and outcomes are
+  removed now (ADR 0048): an older API or app Worker fails only on its agent paths during the deploy.
 
-The state Worker cleans up what it owns once: each ControlPlane drops the Agents tables on its start (`agents`,
+The state Worker cleans up what it owns on each start, which is a no-op after the first: each ControlPlane drops the Agents tables (`agents`,
 `agent_grants`, `agent_runs`, `agent_run_purges`, `agent_triggers`, `agent_schedule_objects`; the Tools part's toolkit
-store drops `sandbox_run_calls`) and deletes the Spend limits and counters of kind `agent`, and the Platform registry drops its
-`run_retention_days` column. A run's sandbox sessions, which were kept until the run's purge, are now ordinary idle
-sessions: the Tools part's alarm deletes them at the provider and forgets them like any session whose close was never heard of, eight days after their last use (`SESSION_IDLE_MS` + `CLOSE_REPORT_MS`), at most 50 per alarm, waking again at least 60 seconds later while any is left; when the part starts and keeps a `run:` session, it sets an alarm if none is set, so these are looked at. An API key's tool scope that names the
+store drops `sandbox_run_calls`) , deletes the Spend limits and counters of kind `agent` and drops the `private_agents` column of its membership table, and the Platform registry drops its
+`run_retention_days` column. A run's sandbox sessions, which were kept until the run's purge, are cleaned up by the Tools part: its alarm deletes them at the provider once they have gone a day unused, and forgets each it deleted. It does this for sessions whose principal is `run:<id>` only, because no idle day closes one in the sandbox; the rows of every other session are forgotten eight days after their last use, as before. It deletes at most 50 per alarm. One the provider cannot be reached for is tried again after a wait that starts at 60 seconds and doubles up to a day, and is tried after the others, so it never holds them back. When the part starts and keeps a `run:` session it sets an alarm if none is set. An API key's tool scope that names the
 `agents` toolkit shows it as a missing toolkit (`tool_scope_missing`), like any removed toolkit, and a stored
 `private_agents` setting is ignored.
 

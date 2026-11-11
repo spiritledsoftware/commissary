@@ -70,4 +70,4 @@ So every provider gives the same tools and session model, and a hosted agent can
 
 ## Amendment: no hosted agents
 
-ADR 0048 removes hosted agents. The sandbox toolkit is used by clients alone: there is no agent definition that names a sandbox, no run whose one session lives as long as the run, no gated calls and no run retention. A session that a run held before the removal is an ordinary session now: the Tools part's alarm deletes it at the provider and forgets it eight days after its last use, 50 sessions at a time. The rest of this decision stands.
+ADR 0048 removes hosted agents. The sandbox toolkit is used by clients alone: there is no agent definition that names a sandbox, no run whose one session lives as long as the run, no gated calls and no run retention. A session that a run held before the removal is deleted at the provider by the Tools part's alarm once it has gone a day unused (only sessions of principal `run:<id>` get this, 50 per alarm, with retries that never hold up other sessions); every other session is handled as before. The rest of this decision stands.

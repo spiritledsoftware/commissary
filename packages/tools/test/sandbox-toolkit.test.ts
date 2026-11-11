@@ -17,6 +17,7 @@ import type { SandboxNetwork } from "@commissary/contract/tools";
 import { OrgId } from "@commissary/core";
 import { deleteOrgSandboxSessions } from "../src/org-deletion.ts";
 import { CLOSE_REPORT_MS, SESSION_IDLE_MS as IDLE_MS } from "../src/sandbox/provider.ts";
+import { PURGE_RETRY_MS } from "../src/sandbox/sessions.ts";
 import { migrateUsageDb } from "./support/usage-db.ts";
 import type { SandboxSession as TestSandboxSession } from "./worker.ts";
 
@@ -415,9 +416,8 @@ describe("the org's open sandbox sessions", () => {
     expect((await tracked(stub)).map(([id]) => id)).toEqual([idle]);
   });
 
-  it("are deleted in the sandbox and forgotten by the ControlPlane when the close of one it never heard of is overdue", async () => {
-    const org = crypto.randomUUID();
-    const stub = env.SANDBOX_CONTROL_PLANE.getByName(org);
+  it("are forgotten by the ControlPlane when the sandbox's close of one it never heard of is overdue", async () => {
+    const stub = withSandbox();
 
     await grantEveryone(stub);
     const session = await open(stub, ALICE);
@@ -428,91 +428,12 @@ describe("the org's open sandbox sessions", () => {
       await instance.tools().alarm(overdue - 60_000);
     });
     expect((await tracked(stub)).map(([id]) => id)).toEqual([session]);
-    expect(await heldBy(org, session)).not.toEqual([]);
 
     await runInDurableObject(stub, async (instance) => {
       await instance.tools().alarm(overdue + 60_000);
     });
     expect(await tracked(stub)).toEqual([]);
-    // Its object kept it (its own alarm never ran): nothing of it outlives the ControlPlane's row.
-    expect(await heldBy(org, session)).toEqual([]);
   });
-
-  it("keep a session whose deletion at the provider failed, and delete it on the next alarm", async () => {
-    const org = crypto.randomUUID();
-    const stub = env.SANDBOX_CONTROL_PLANE.getByName(org);
-
-    await grantEveryone(stub);
-    const session = await open(stub, ALICE);
-    const overdue = Date.now() + IDLE_MS + CLOSE_REPORT_MS + 60_000;
-    const sessions = await sessionClass();
-
-    sessions.failPurges = 1;
-
-    const next = await runInDurableObject(
-      stub,
-      async (instance) => await instance.tools().alarm(overdue),
-    );
-
-    expect((await tracked(stub)).map(([id]) => id)).toEqual([session]);
-    expect(await heldBy(org, session)).not.toEqual([]);
-    // It comes again soon for the one it kept.
-    expect(next).toBe(overdue + 60_000);
-
-    await runInDurableObject(stub, async (instance) => {
-      await instance.tools().alarm(overdue + 60_000);
-    });
-    expect(await tracked(stub)).toEqual([]);
-    expect(await heldBy(org, session)).toEqual([]);
-  });
-
-  it("delete at most a batch of overdue sessions per alarm, and come again soon for the rest", async () => {
-    const stub = withSandbox();
-    const now = Date.now();
-
-    // Rows of ids the provider has no object for: deleting them asks nothing of it.
-    await runInDurableObject(stub, async (_instance, state) => {
-      for (let n = 0; n < 60; n += 1)
-        state.storage.sql.exec(
-          `INSERT INTO sandbox_sessions (id, toolkit_id, member, principal, opened_at, last_used)
-           VALUES (?, 'sandbox', 'm-alice', 'user:m-alice@example.com', 0, 0)`,
-          `old_${n}`,
-        );
-    });
-
-    const next = await runInDurableObject(
-      stub,
-      async (instance) => await instance.tools().alarm(now),
-    );
-
-    expect(await tracked(stub)).toHaveLength(10);
-    expect(next).toBe(now + 60_000);
-
-    await runInDurableObject(stub, async (instance) => {
-      await instance.tools().alarm(now + 60_000);
-    });
-    expect(await tracked(stub)).toEqual([]);
-  });
-
-  it("left by a hosted agent's run get the ControlPlane an alarm when it starts without one", async () => {
-    const org = crypto.randomUUID();
-    const stub = env.SANDBOX_CONTROL_PLANE.getByName(org);
-
-    await runInDurableObject(stub, async (_instance, state) => {
-      state.storage.sql.exec(
-        `INSERT INTO sandbox_sessions (id, toolkit_id, member, principal, opened_at, last_used)
-         VALUES ('run_session', 'sandbox', '', 'run:ar_1', 0, 0)`,
-      );
-      await state.storage.deleteAlarm();
-    });
-    await evictDurableObject(stub);
-
-    // Starting again, it sets an alarm due at once, which deletes the overdue session (run here if it has not run yet).
-    await runInDurableObject(stub, () => undefined);
-    await runDurableObjectAlarm(stub);
-    expect(await tracked(stub)).toEqual([]);
-  });
-
   it("are deleted with the org, within the deletion's budget", async () => {
     const org = OrgId.make(crypto.randomUUID());
     const stub = env.SANDBOX_CONTROL_PLANE.getByName(org);
@@ -529,6 +450,127 @@ describe("the org's open sandbox sessions", () => {
     expect(await tracked(stub)).toEqual([]);
 
     for (const session of sessions) expect(await heldBy(org, session)).toEqual([]);
+  });
+});
+
+/** A session row of a retired run (`run:<id>`), last used at `lastUsed`, as one a hosted agent's run left. */
+const insertRunSession = (state: DurableObjectState, id: string, lastUsed = 0) =>
+  state.storage.sql.exec(
+    `INSERT INTO sandbox_sessions (id, toolkit_id, member, principal, opened_at, last_used)
+     VALUES (?, 'sandbox', '', 'run:ar_1', ?, ?)`,
+    id,
+    lastUsed,
+    lastUsed,
+  );
+
+/** A session id the provider reaches an object by. */
+const sessionId = () => `sbx_${crypto.randomUUID().replaceAll("-", "")}`;
+
+describe("the sessions retired runs left", () => {
+  it("are deleted in the sandbox once unused a day, and one whose deletion failed is kept and tried again later", async () => {
+    const org = crypto.randomUUID();
+    const stub = env.SANDBOX_CONTROL_PLANE.getByName(org);
+
+    await grantEveryone(stub);
+    const session = await open(stub, ALICE, undefined, "run:ar_1");
+    const now = Date.now();
+
+    // Not yet: it was used within the day.
+    await runInDurableObject(stub, async (instance) => {
+      await instance.tools().alarm(now + 60_000);
+    });
+    expect((await tracked(stub)).map(([id]) => id)).toEqual([session]);
+
+    const due = now + IDLE_MS + 60_000;
+    const sessions = await sessionClass();
+
+    sessions.failPurges = 1;
+
+    const next = await runInDurableObject(
+      stub,
+      async (instance) => await instance.tools().alarm(due),
+    );
+
+    expect((await tracked(stub)).map(([id]) => id)).toEqual([session]);
+    expect(await heldBy(org, session)).not.toEqual([]);
+    expect(next).toBe(due + PURGE_RETRY_MS);
+
+    // Before its retry, it is left alone.
+    await runInDurableObject(stub, async (instance) => {
+      await instance.tools().alarm(due + PURGE_RETRY_MS - 1);
+    });
+    expect(await heldBy(org, session)).not.toEqual([]);
+
+    await runInDurableObject(stub, async (instance) => {
+      await instance.tools().alarm(due + PURGE_RETRY_MS);
+    });
+    expect(await tracked(stub)).toEqual([]);
+    expect(await heldBy(org, session)).toEqual([]);
+  });
+
+  it("are deleted a batch per alarm, which comes again at once for the rest", async () => {
+    const stub = withSandbox();
+    const now = Date.now();
+
+    // Ids the provider has no object for: deleting them asks nothing of it.
+    await runInDurableObject(stub, (_instance, state) => {
+      for (let n = 0; n < 60; n += 1) insertRunSession(state, `old_${n}`);
+    });
+
+    const next = await runInDurableObject(
+      stub,
+      async (instance) => await instance.tools().alarm(now),
+    );
+
+    expect(await tracked(stub)).toHaveLength(10);
+    expect(next).toBeLessThanOrEqual(now);
+
+    await runInDurableObject(stub, async (instance) => {
+      await instance.tools().alarm(now);
+    });
+    expect(await tracked(stub)).toEqual([]);
+  });
+
+  it("that the sandbox cannot reach hold back none of the others", async () => {
+    const stub = withSandbox();
+    const now = Date.now();
+    const unreachable = Array.from({ length: 50 }, sessionId);
+    const other = sessionId();
+
+    await runInDurableObject(stub, (_instance, state) => {
+      for (const id of unreachable) insertRunSession(state, id, 0);
+      insertRunSession(state, other, 1);
+    });
+
+    const sessions = await sessionClass();
+
+    sessions.failPurges = unreachable.length;
+
+    await runInDurableObject(stub, async (instance) => {
+      await instance.tools().alarm(now);
+    });
+    expect(await tracked(stub)).toHaveLength(51);
+
+    // The next alarm takes the one never tried, while the failed ones wait for their retry.
+    await runInDurableObject(stub, async (instance) => {
+      await instance.tools().alarm(now + 1);
+    });
+    expect(new Set((await tracked(stub)).map(([id]) => id))).toEqual(new Set(unreachable));
+  });
+
+  it("get the ControlPlane an alarm when it starts without one", async () => {
+    const stub = withSandbox();
+
+    await runInDurableObject(stub, async (_instance, state) => {
+      insertRunSession(state, "run_session");
+      await state.storage.deleteAlarm();
+    });
+    await evictDurableObject(stub);
+
+    // Starting again, it sets an alarm due at once, which deletes the overdue session (run here if it has not run yet).
+    await runInDurableObject(stub, () => undefined);
+    await runDurableObjectAlarm(stub);
+    expect(await tracked(stub)).toEqual([]);
   });
 });
 

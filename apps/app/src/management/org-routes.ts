@@ -88,7 +88,7 @@ export const openableOrgs = (
     if (identity.platformAdmin) return yield* registry("listOrgs", (stub) => stub.listOrgs());
     const { principal } = identity;
 
-    // A management key belongs to its org alone: the org of the request, added below; .
+    // A management key belongs to its org alone: the org of the request, added below.
     const indexed: ReadonlyArray<OrgRecord> = yield* Match.value(principal).pipe(
       Match.discriminatorsExhaustive("kind")({
         mkey: () => Effect.succeed([]),
@@ -239,8 +239,8 @@ const create = Effect.gen(function* () {
   const id = newOrgId();
   const env = yield* StateEnv;
 
-  // The creator chooses whether members of the new org may connect private credentials, add private toolkits (off unless
-  // asked). The org's ControlPlane takes the choice before the org exists in the registry: a
+  // The creator chooses whether members of the new org may connect private credentials and add private toolkits
+  // (off unless asked). The org's ControlPlane takes the choice before the org exists in the registry: a
   // failure here creates nothing (a retry is safe), and an org that does exist never has a different setting than the
   // one chosen. A refused registry write leaves the unreachable ControlPlane of an id nobody holds, which has no slug
   // and is never addressed.

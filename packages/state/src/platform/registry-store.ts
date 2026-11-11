@@ -67,6 +67,15 @@ export type OrgInput = {
 
 export type OrgPatch = { readonly slug?: string; readonly name?: string };
 
+/**
+ * The periods an app Worker from before ADR 0048 sends to PlatformStore.setRetention; runDays is ignored. Removed with
+ * the tombstone classes in the follow-up release.
+ */
+export interface LegacyRetentionPeriods {
+  readonly usageDays?: number | null;
+  readonly runDays?: number | null;
+}
+
 /** Why an org write was refused; `message` is fixed text, safe to show. */
 export type OrgWriteResult =
   | { readonly ok: true; readonly org: OrgRecord }
@@ -420,10 +429,7 @@ export class PlatformStore {
    * applies `usageDays` and ignores `runDays` (agent runs are gone). Removed with the tombstone classes in the
    * follow-up release.
    */
-  setRetention(
-    id: string,
-    periods: { readonly usageDays?: number | null; readonly runDays?: number | null },
-  ): OrgWriteResult {
+  setRetention(id: string, periods: LegacyRetentionPeriods): OrgWriteResult {
     return periods.usageDays === undefined
       ? this.setUsageRetention(id, this.orgById(id)?.usageRetentionDays ?? null)
       : this.setUsageRetention(id, periods.usageDays);

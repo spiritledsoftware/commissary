@@ -286,11 +286,8 @@ const REFRESH_RECHECK_MS = 30_000;
 /** The alarm's token refreshes at once. */
 const REFRESH_CONCURRENCY = 4;
 
-/** The most sandbox sessions due to be forgotten one alarm deletes at the provider (`SandboxSessionStore.unreported`). */
-const UNREPORTED_BATCH = 50;
-
-/** How soon the alarm comes again while sandbox sessions due to be forgotten are left: more than a batch, or failed. */
-const UNREPORTED_RETRY_MS = 60_000;
+/** The most sessions of retired runs one alarm deletes at the provider (`SandboxSessionStore.runSessionsDue`). */
+const RUN_SESSION_PURGES = 50;
 
 /** Browser crawls cancelled at once when a member leaves or the org is deleted (#270). */
 const CRAWL_CANCEL_CONCURRENCY = 4;
@@ -1011,8 +1008,8 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     this.#managedApps = managedApps;
     this.#yieldBuiltInNames();
 
-    // Sessions hosted agents' runs opened (ADR 0048) are due like any other, but were left out of the part's wake-ups:
-    // an alarm makes sure the part looks at them.
+    // Sessions of retired runs (`RUN_PRINCIPALS`) were left out of the part's wake-ups: an alarm makes sure the part
+    // deletes them at the provider once they are due.
     if (this.#sandboxSessions.hasRunSessions())
       void ctx.blockConcurrencyWhile(async () => {
         if ((await ctx.storage.getAlarm()) === null) await ctx.storage.setAlarm(Date.now());
@@ -1047,13 +1044,7 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
    * wake-up go on.
    */
   async alarm(now: number): Promise<number | null> {
-    // A sandbox session whose close the part never heard of is deleted at the provider before the part forgets it, so
-    // nothing of it outlives its row (its files, if its object still keeps them); one the provider could not reach is
-    // kept, for the next alarm. Without a provider, there is nothing to delete.
-    const unreported = this.#sandboxSessions.unreported(now, UNREPORTED_BATCH);
-
-    if (this.#sandbox === undefined) this.#sandboxSessions.ended(unreported.map(({ id }) => id));
-    else await this.#purgeSandboxSessions(unreported);
+    await this.#purgeRunSessions(now);
 
     const due = this.#store.refreshesDue(now);
 
@@ -1091,22 +1082,56 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
 
   /**
    * Prunes what is due at `now`; answers the part's next wake-up, the earliest of the sessions' (upstream and sandbox),
-   * the browser crawls', the approvals' and the credentials' token refreshes (none before `refreshFrom`). Sandbox
-   * sessions due to be forgotten are the alarm's to delete first: while any is left, it comes again soon.
+   * the browser crawls', the approvals' and the credentials' token refreshes (none before `refreshFrom`).
    */
   #nextWakeUp(now: number, refreshFrom = now): number | null {
     const refresh = this.#store.nextRefreshAt();
-    const forgotten = this.#sandboxSessions.forgottenAt();
 
     const wakes = [
       this.#store.pruneSessions(now),
-      forgotten === null ? null : Math.max(forgotten, now + UNREPORTED_RETRY_MS),
+      this.#sandboxSessions.prune(now),
       this.#crawls.prune(now),
       this.#approvals.prune(now),
       refresh === null ? null : Math.max(refresh, refreshFrom),
     ].filter((at): at is number => at !== null);
 
     return wakes.length === 0 ? null : Math.min(...wakes);
+  }
+
+  /**
+   * Deletes at the provider the sessions of retired runs (`RUN_PRINCIPALS`) that are due, a batch at a time, and forgets
+   * each it deleted: no day closes one in the sandbox, so its files would otherwise outlive its row. One the provider
+   * could not reach is tried again later, after the others (`purgeFailed`). Without a provider, there is nothing to
+   * delete.
+   */
+  async #purgeRunSessions(now: number): Promise<void> {
+    const due = this.#sandboxSessions.runSessionsDue(now, RUN_SESSION_PURGES);
+    const sandbox = this.#sandbox;
+
+    if (sandbox === undefined) {
+      this.#sandboxSessions.ended(due.map(({ id }) => id));
+
+      return;
+    }
+
+    await Promise.all(
+      due.map(async ({ id }) => {
+        const purged = await Effect.runPromise(
+          sandbox.purge(this.#core.org, id).pipe(
+            Effect.as(true),
+            Effect.catchTag("SandboxError", (error) =>
+              Effect.logWarning("sandbox session not purged").pipe(
+                Effect.annotateLogs({ reason: error.reason, message: error.message }),
+                Effect.as(false),
+              ),
+            ),
+          ),
+        );
+
+        if (purged) this.#sandboxSessions.ended([id]);
+        else this.#sandboxSessions.purgeFailed(id, now);
+      }),
+    );
   }
 
   async #wake(): Promise<void> {
