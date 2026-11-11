@@ -9,6 +9,10 @@ import { Effect } from "effect";
 import type { JsonObject } from "@commissary/json";
 import { Formats } from "@commissary/translation/formats";
 import { ExecutionError } from "../errors.ts";
+import {
+  defaultGeminiReplayLedger,
+  defaultVertexReplayLedger,
+} from "../antigravity/replay/ledger.ts";
 
 import type { ExecutionContext } from "../types.ts";
 import type { GoogleTarget, GoogleVariant } from "./google.ts";
@@ -43,6 +47,7 @@ export const geminiBaseUrl = (context: ExecutionContext): string => {
 export const geminiVariant = (identifier: "gemini" | "gemini-interactions"): GoogleVariant => ({
   identifier,
   vertex: false,
+  replayLedger: defaultGeminiReplayLedger,
   resolveTarget: (context) =>
     Effect.sync((): GoogleTarget => {
       const base = geminiBaseUrl(context);
@@ -166,6 +171,7 @@ const serviceAccountToken = (context: ExecutionContext) => {
 export const vertexVariant: GoogleVariant = {
   identifier: "vertex",
   vertex: true,
+  replayLedger: defaultVertexReplayLedger,
   resolveTarget: (context: ExecutionContext) =>
     Effect.gen(function* () {
       const { providerKey, baseUrl } = vertexProviderKey(context);

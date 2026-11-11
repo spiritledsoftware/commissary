@@ -32,10 +32,8 @@ import {
   stableSessionId,
 } from "../src/executor/antigravity/envelope.ts";
 import { prepareClaudeStructuredOutput } from "../src/executor/antigravity/structured-output.ts";
-import {
-  normalizeFunctionResponseRoles,
-  usesReasoningReplay,
-} from "../src/executor/antigravity/content.ts";
+import { normalizeFunctionResponseRoles } from "../src/executor/antigravity/content.ts";
+import { usesReasoningReplay } from "../src/executor/helps/reasoning-replay.ts";
 import {
   loadAntigravityHints,
   nextFailure,

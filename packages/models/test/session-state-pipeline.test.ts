@@ -3,6 +3,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Config } from "../src/config/schema.ts";
 import { credential, makeGeminiHarness } from "./support/gemini.ts";
+import { nativeGeminiSignature } from "./support/gemini-signatures.ts";
 import { jsonResponse, loadConfig, postJson, sseResponse } from "./support/pipeline.ts";
 
 let config: Config;
@@ -317,5 +318,124 @@ describe("Antigravity Interactions continuation across invocations", () => {
     expect(
       (JSON.parse(h.calls[1]?.body ?? "{}") as Record<string, unknown>)["previous_interaction_id"],
     ).toBeUndefined();
+  });
+});
+
+// Go cc95661c: the Gemini API and Vertex executors keep the signature of a tool call in their own SessionState store, so
+// an OpenAI chat client (which never carries it) gets it back on the next turn, from a separate Worker invocation.
+describe.each([
+  [
+    "gemini",
+    "https://gl.test/v1beta/models/gemini-3-pro-preview:generateContent",
+    { api_key: "AIza-test", base_url: "https://gl.test" },
+  ],
+  [
+    "vertex",
+    "https://vx.test/v1/publishers/google/models/gemini-3-pro-preview:generateContent",
+    { api_key: "vk-1", base_url: "https://vx.test" },
+  ],
+])("%s reasoning replay across invocations", (provider, url, attributes) => {
+  const cred = credential(provider, `${provider}-replay-${crypto.randomUUID()}`, {
+    attributes,
+  });
+
+  it("re-attaches the thought signature the client dropped", async () => {
+    const signature = nativeGeminiSignature();
+
+    const h = makeGeminiHarness({
+      config,
+      credential: cred,
+      models: { "gemini-3-pro-preview": [provider] },
+      respond: (call) =>
+        jsonResponse(
+          call.body.includes("functionResponse")
+            ? {
+                candidates: [
+                  { content: { role: "model", parts: [{ text: "done" }] }, finishReason: "STOP" },
+                ],
+              }
+            : {
+                candidates: [
+                  {
+                    content: {
+                      role: "model",
+                      parts: [
+                        {
+                          functionCall: { name: "read_file", args: { path: "a.txt" } },
+                          thoughtSignature: signature,
+                        },
+                      ],
+                    },
+                    finishReason: "STOP",
+                  },
+                ],
+              },
+        ),
+    });
+
+    afterAll(h.dispose);
+
+    const user = `read the file ${crypto.randomUUID()}`;
+    const session = { "Session-Id": crypto.randomUUID() };
+
+    const tools = [
+      {
+        type: "function",
+        function: { name: "read_file", parameters: { type: "object", properties: {} } },
+      },
+    ];
+
+    const first = await h.call(
+      "/v1/chat/completions",
+      postJson(
+        { model: "gemini-3-pro-preview", tools, messages: [{ role: "user", content: user }] },
+        session,
+      ),
+    );
+
+    expect(first.status).toBe(200);
+
+    const id =
+      (
+        (await first.json()) as {
+          choices: Array<{ message: { tool_calls: Array<{ id: string }> } }>;
+        }
+      ).choices[0]?.message.tool_calls[0]?.id ?? "";
+
+    const second = await h.call(
+      "/v1/chat/completions",
+      postJson(
+        {
+          model: "gemini-3-pro-preview",
+          tools,
+          messages: [
+            { role: "user", content: user },
+            {
+              role: "assistant",
+              content: null,
+              tool_calls: [
+                {
+                  id,
+                  type: "function",
+                  function: { name: "read_file", arguments: '{"path":"a.txt"}' },
+                },
+              ],
+            },
+            { role: "tool", tool_call_id: id, content: "file contents" },
+          ],
+        },
+        session,
+      ),
+    );
+
+    expect(second.status).toBe(200);
+    expect(h.calls[1]?.url).toBe(url);
+
+    const sent = JSON.parse(h.calls[1]?.body ?? "{}") as {
+      contents: Array<{ role: string; parts: Array<Record<string, unknown>> }>;
+    };
+
+    const modelTurn = sent.contents.find((content) => content.role === "model");
+    expect(modelTurn?.parts[0]?.["thoughtSignature"]).toBe(signature);
   });
 });
