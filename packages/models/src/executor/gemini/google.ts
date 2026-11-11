@@ -56,6 +56,7 @@ import {
 } from "./antigravity-interactions.ts";
 import { makeRequestReplayCache, type RequestReplayCache } from "./replay.ts";
 import {
+  dropGeminiTrailingThoughtOnlyContent,
   ensureGeminiBoundaryUserContent,
   ensureGeminiLeadingUserContent,
   ensureGeminiTrailingUserContent,
@@ -460,6 +461,10 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
 
       sanitizeGeminiRequestThoughtSignatures(body, "contents");
     }
+
+    // Vertex rejects a request ending with a thought-only model turn even behind an empty user turn (ceb4397f).
+    if (variant.vertex && mode !== "count")
+      body = dropGeminiTrailingThoughtOnlyContent(body, "contents");
 
     if (mode === "stream") body = ensureGeminiBoundaryUserContent(body, "contents");
     else {

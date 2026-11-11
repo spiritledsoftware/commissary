@@ -617,3 +617,87 @@ describe("antigravity executor: Responses compaction summary", () => {
     expect(h.calls[0]?.body).not.toContain("application/json");
   });
 });
+
+// CLIProxyAPI a2718314 (antigravity_executor_trailing_reasoning_test.go, #6530) and 15d2148b
+// (antigravity_executor_signature_test.go, #6524): the Cloud Code upstream rejects a request that ends with a thought-only
+// model turn, or with a model-role functionResponse turn that carries nested media.
+describe("antigravity executor: trailing turns", () => {
+  const userItem = {
+    type: "message",
+    role: "user",
+    content: [{ type: "input_text", text: "Say OK." }],
+  };
+
+  const ok = upstream([{ text: "OK" }]);
+
+  const sentContents = async (input: Json[], stream: boolean, model = "gemini-2.5-flash") => {
+    resetMemoryAntigravityState();
+    const h = harness(() => (stream ? sse([ok]) : jsonResponse(ok)));
+
+    afterAll(h.dispose);
+    const response = await h.call("/v1/responses", postJson({ model, stream, input }));
+
+    expect(response.status).toBe(200);
+    await response.text();
+
+    return JSON.parse(h.calls[0]?.body ?? "{}").request.contents as Array<{
+      role: string;
+      parts: Array<Record<string, unknown>>;
+    }>;
+  };
+
+  const reasoning = {
+    type: "reasoning",
+    id: "rs_repro_0",
+    summary: [{ type: "summary_text", text: "thinking" }],
+  };
+
+  const toolRound = [
+    { type: "function_call", call_id: "call_1", name: "run", arguments: "{}" },
+    { type: "function_call_output", call_id: "call_1", output: "done" },
+  ];
+
+  it.each([true, false])("drops a trailing reasoning turn (stream: %s)", async (stream) => {
+    const contents = await sentContents([userItem, reasoning], stream);
+
+    expect(JSON.stringify(contents)).not.toContain('"thought":true');
+    expect(contents.at(-1)?.role).toBe("user");
+  });
+
+  it("drops a trailing reasoning turn after tool output and keeps the function response last", async () => {
+    const contents = await sentContents([userItem, ...toolRound, reasoning], true);
+
+    expect(JSON.stringify(contents)).not.toContain('"thought":true');
+    expect(contents.at(-1)?.parts[0]).toHaveProperty("functionResponse");
+  });
+
+  it("appends an empty user turn after a function response with an image", async () => {
+    const contents = await sentContents(
+      [
+        userItem,
+        toolRound[0] as Json,
+        {
+          type: "function_call_output",
+          call_id: "call_1",
+          output: [
+            {
+              type: "input_image",
+              image_url:
+                "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
+            },
+          ],
+        },
+      ],
+      true,
+    );
+
+    expect(contents.at(-1)).toEqual({ role: "user", parts: [{ text: "" }] });
+    expect(contents.at(-2)?.parts[0]).toHaveProperty("functionResponse.parts.0.inlineData");
+  });
+
+  it("keeps a text function response last", async () => {
+    const contents = await sentContents([userItem, ...toolRound], true);
+
+    expect(contents.at(-1)?.parts[0]).toHaveProperty("functionResponse");
+  });
+});

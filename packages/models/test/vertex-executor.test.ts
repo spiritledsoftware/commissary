@@ -393,3 +393,102 @@ describe("vertex helpers", () => {
     );
   });
 });
+
+// CLIProxyAPI ceb4397f (gemini_vertex_executor_trailing_reasoning_test.go, #6630): Vertex rejects a request that ends with a
+// thought-only model turn even when an empty user turn follows it.
+describe("vertex trailing reasoning turns", () => {
+  const hi = { role: "user", parts: [{ text: "say hi" }] };
+  const thought = { role: "model", parts: [{ text: "I should say hi briefly.", thought: true }] };
+
+  const signedThought = {
+    role: "model",
+    parts: [{ text: "I should say hi briefly.", thought: true, thoughtSignature: "sig" }],
+  };
+
+  const apiKey = credential("vertex", "vertex:apikey", { attributes: { api_key: "vk-1" } });
+
+  const serviceAccount = credential("vertex", "vertex:sa", {
+    kind: "oauth",
+    metadata: { ...saMetadata, access_token: "ya29.cached" },
+  });
+
+  const sentContents = async (
+    cred: ReturnType<typeof credential>,
+    action: string,
+    contents: Json[],
+  ): Promise<Json> => {
+    const h = harness(
+      () =>
+        action === "streamGenerateContent"
+          ? sseResponse([`data: ${JSON.stringify(GEMINI_RESPONSE)}\n\n`])
+          : jsonResponse(GEMINI_RESPONSE),
+      cred,
+    );
+
+    const response = await h.call(
+      `/v1beta/models/gemini-2.5-pro:${action}`,
+      postJson({ contents }),
+    );
+
+    await response.text();
+    await h.dispose();
+
+    return JSON.parse(h.calls[0]?.body ?? "{}").contents;
+  };
+
+  describe.each([
+    ["provider key", apiKey],
+    ["service account", serviceAccount],
+  ])("%s", (_name, cred) => {
+    it.each(["generateContent", "streamGenerateContent"])(
+      "%s drops the trailing thought-only turns",
+      async (action) => {
+        expect(await sentContents(cred, action, [hi, thought, signedThought])).toEqual([hi]);
+      },
+    );
+
+    it.each(["generateContent", "streamGenerateContent"])(
+      "%s keeps reasoning that precedes a user turn",
+      async (action) => {
+        const again = { role: "user", parts: [{ text: "again" }] };
+
+        expect(await sentContents(cred, action, [hi, thought, again])).toEqual([
+          hi,
+          thought,
+          again,
+        ]);
+      },
+    );
+
+    it("leaves a countTokens request as sent", async () => {
+      expect(await sentContents(cred, "countTokens", [hi, thought])).toEqual([hi, thought]);
+    });
+  });
+
+  it("applies payload rules after the drop, so configured contents are sent as configured", async () => {
+    const configured = [hi, thought];
+
+    const withRule = await loadConfig(`
+requests:
+  payload:
+    override:
+      - models: [{ name: "gemini-2.5-pro", protocol: gemini }]
+        params:
+          contents: ${JSON.stringify(configured)}
+`);
+
+    const h = makeGeminiHarness({
+      config: withRule,
+      respond: () => jsonResponse(GEMINI_RESPONSE),
+      credential: apiKey,
+      models,
+    });
+
+    afterAll(h.dispose);
+    await h.call(
+      "/v1beta/models/gemini-2.5-pro:generateContent",
+      postJson({ contents: [hi, thought] }),
+    );
+    expect(JSON.parse(h.calls[0]?.body ?? "{}").contents).toEqual(configured);
+  });
+});

@@ -18,6 +18,7 @@ import {
   signatureCacheEnabled,
 } from "@commissary/translation/signature";
 import {
+  dropGeminiTrailingThoughtOnlyContent,
   ensureGeminiBoundaryUserContent,
   ensureGeminiLeadingUserContent,
   ensureGeminiTrailingUserContent,
@@ -41,8 +42,14 @@ export const ensureLeadingUserContent = (modelName: string, payload: Json): Json
 export const ensureTrailingUserContent = (modelName: string, payload: Json): Json =>
   isClaude(modelName) ? payload : ensureGeminiTrailingUserContent(payload, "request.contents");
 
+/** A trailing thought-only model turn is dropped first, so the request does not rely on a synthetic empty user turn (a2718314). */
 export const ensureBoundaryUserContent = (modelName: string, payload: Json): Json =>
-  isClaude(modelName) ? payload : ensureGeminiBoundaryUserContent(payload, "request.contents");
+  isClaude(modelName)
+    ? payload
+    : ensureGeminiBoundaryUserContent(
+        dropGeminiTrailingThoughtOnlyContent(payload, "request.contents"),
+        "request.contents",
+      );
 
 interface FunctionRef {
   readonly id: string;
