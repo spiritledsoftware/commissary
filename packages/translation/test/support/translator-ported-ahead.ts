@@ -41,6 +41,9 @@ import { isJsonArray, isJsonObject, type Json, type JsonObject } from "@commissa
  * - `portedStreamOutputs` (ticket C10, Go `ede07caf`): the Interactions stream cases of Antigravity and Gemini emit
  *   `done` right after the `interaction.completed` of the usage frame (the golden emits it on the `[DONE]` line), and a
  *   bare `[DONE]` line terminates the Antigravity stream (Go used to read it as a broken JSON array).
+ * - `portedItemIdPrefix` (ticket C10, Go `b0db5448`): the Responses -> Interactions stream cases' fallback item ids carry
+ *   a per-response random prefix (`item_<uuid>_<index>`) where the golden has `item_<index>`; the prefix is stripped from
+ *   the translated chunks.
  */
 
 const ROWS: ReadonlyArray<readonly [string, number]> = [
@@ -423,6 +426,24 @@ export const portedChunkEdit = (key: string, line: number): ((chunk: string) => 
       ? `data: ${applyEdit(edit, chunk.slice(5).trim(), key)}`
       : applyEdit(edit, chunk, key);
 };
+
+const ITEM_ID_PREFIX = /item_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}_(\d+)/g;
+
+/** The translated chunk with the per-response prefix of its fallback item ids removed (C10, `b0db5448`). */
+export const portedItemIdPrefix = (chunk: string): string =>
+  chunk.replace(ITEM_ID_PREFIX, "item_$1");
+
+/** The distinct per-response prefixes of the fallback item ids in the chunks: one stream has at most one. */
+export const itemIdPrefixes = (chunks: ReadonlyArray<string>): Set<string> =>
+  new Set(
+    chunks.flatMap((chunk) =>
+      [
+        ...chunk.matchAll(
+          /item_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})_\d+/g,
+        ),
+      ].map((match) => match[1] ?? ""),
+    ),
+  );
 
 type StreamOutputs = ReadonlyArray<ReadonlyArray<string>>;
 
