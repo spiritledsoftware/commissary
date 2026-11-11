@@ -73,12 +73,10 @@ export class SandboxSessionStore {
     if (!columns.includes("computer_until"))
       sql.exec(`ALTER TABLE sandbox_sessions ADD COLUMN computer_until INTEGER`);
 
-    // The retries of the purge of the sessions retired agent runs left (ADR 0048), which is done (#451): dropped once.
-    if (columns.includes("purge_retry_at"))
-      sql.exec(`ALTER TABLE sandbox_sessions DROP COLUMN purge_retry_at`);
-
-    if (columns.includes("purge_failures"))
-      sql.exec(`ALTER TABLE sandbox_sessions DROP COLUMN purge_failures`);
+    // The retries of the purge of the sessions retired agent runs left (ADR 0048), which is gone (#451): dropped once.
+    for (const retired of ["purge_retry_at", "purge_failures"])
+      if (columns.includes(retired))
+        sql.exec(`ALTER TABLE sandbox_sessions DROP COLUMN ${retired}`);
 
     // Whether a session was opened with the computer (#241): a log from before has no column for it, and its sessions
     // may have one.

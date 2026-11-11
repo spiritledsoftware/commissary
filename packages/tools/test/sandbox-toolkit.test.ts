@@ -413,6 +413,35 @@ describe("the org's open sandbox sessions", () => {
     });
     expect(await tracked(stub)).toEqual([]);
   });
+
+  it("forget one a retired agent run left as any other, once its close is overdue (ADR 0048, #451)", async () => {
+    const stub = withSandbox();
+    const now = Date.now();
+    const overdue = now + IDLE_MS + CLOSE_REPORT_MS;
+
+    await runInDurableObject(stub, (_instance, state) =>
+      state.storage.sql.exec(
+        `INSERT INTO sandbox_sessions (id, toolkit_id, member, principal, opened_at, last_used)
+         VALUES ('run_session', 'sandbox', '', 'run:ar_1', ?, ?)`,
+        now,
+        now,
+      ),
+    );
+
+    // A day unused is not enough, as for any session: its close may still be reported.
+    const next = await runInDurableObject(
+      stub,
+      async (instance) => await instance.tools().alarm(now + IDLE_MS),
+    );
+
+    expect((await tracked(stub)).map(([id]) => id)).toEqual(["run_session"]);
+    expect(next).toBeLessThanOrEqual(overdue);
+
+    await runInDurableObject(stub, async (instance) => {
+      await instance.tools().alarm(overdue + 60_000);
+    });
+    expect(await tracked(stub)).toEqual([]);
+  });
   it("are deleted with the org, within the deletion's budget", async () => {
     const org = OrgId.make(crypto.randomUUID());
     const stub = env.SANDBOX_CONTROL_PLANE.getByName(org);
