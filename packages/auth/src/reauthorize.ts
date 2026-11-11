@@ -8,9 +8,10 @@ import type { AccessIdentity } from "./principal.ts";
 
 /**
  * Authenticates the current request again. A Worker's client gate provides it next to `AccessPrincipal` for a request
- * that may outlive its authentication, such as a Responses WebSocket: the socket asks it before every turn, so a key
- * revoked, a grant withdrawn or a person suspended after the upgrade stops working on the live socket. It runs the
- * gate's own authentication over the request's headers and fails as the gate would.
+ * that may outlive its authentication, such as a Responses WebSocket: the socket asks it before every turn
+ * (`reauthorizeClient`). An API key is verified again, so a key revoked, or a member removed or suspended, after the
+ * upgrade stops working on the live socket. An Access sign-in is bounded by its token's `exp` and re-checked for
+ * membership. It fails as the gate would.
  */
 export class RequestReauthorizer extends Context.Service<
   RequestReauthorizer,

@@ -181,6 +181,53 @@ describe("planRetry (shouldRetryAfterErrorWithAttempted steps 3-5)", () => {
       expect(pool.planRetry(query)).toEqual({ retry: true, waitMs: 120_000 });
     });
 
+    // TestIssue7017SiblingQuotaDoesNotBlockTransientZeroWait
+    it("is not blocked by a sibling model's quota", async () => {
+      const { pool } = await makePool(config(group("a", "", "{ name: m }, { name: other }")));
+      const sibling = ok(pool.pick({ providers: providers(["a"]), model: "other" }));
+
+      pool.report(sibling.lease, {
+        success: false,
+        httpStatus: 429,
+        error: { message: "quota", retryable: true, httpStatus: 429 },
+        retryAfterMs: 3_600_000,
+      });
+      const own = ok(pool.pick({ providers: providers(["a"]), model: "m" }));
+      pool.report(own.lease, transientFail(0));
+
+      const query = retryQuery({
+        status: 429,
+        attempted: [own.credential.id],
+        maxWaitMs: 60_000,
+      });
+
+      expect(pool.planRetry(query)).toEqual({ retry: true, waitMs: 0 });
+    });
+
+    // TestIssue7017ExpiredOwnQuotaDoesNotBlockTransientRetry
+    it("is not blocked by the model's own quota once that has expired", async () => {
+      const { pool, clock } = await makePool(config(group("a")));
+      const first = ok(pool.pick({ providers: providers(["a"]), model: "m" }));
+
+      pool.report(first.lease, {
+        success: false,
+        httpStatus: 429,
+        error: { message: "quota", retryable: true, httpStatus: 429 },
+        retryAfterMs: 10_000,
+      });
+      clock.advance(11_000);
+      const second = ok(pool.pick({ providers: providers(["a"]), model: "m" }));
+      pool.report(second.lease, transientFail(8000));
+
+      const query = retryQuery({
+        status: 429,
+        attempted: [second.credential.id],
+        maxWaitMs: 60_000,
+      });
+
+      expect(pool.planRetry(query)).toEqual({ retry: true, waitMs: 8000 });
+    });
+
     it("is not undone by a success dispatched before it (E2 dispatch marks)", async () => {
       const { pool } = await makePool(config(group("a")));
       const first = ok(pool.pick({ providers: providers(["a"]), model: "m" }));

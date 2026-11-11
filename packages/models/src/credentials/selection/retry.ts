@@ -194,9 +194,9 @@ const routeAvailability = (
   return best ?? { eligible: false, next: 0 };
 };
 
-/** The models whose state decides a route's availability: the routed model and every upstream of its pool. */
+/** The model the transient checks look at: the routed one only, as Go does (a pooled sibling's state is not its own). */
 const routeModels = (route: ModelRoute | undefined): string[] =>
-  route === undefined ? [""] : [route.selectionModel, ...route.upstreamModels];
+  route === undefined ? [""] : [route.selectionModel];
 
 /**
  * `hasLiveQuotaCooldown` (CLIProxyAPI 9a35fa12): a credential-wide quota whose deadline is in the future (or unknown)
@@ -229,11 +229,12 @@ const hasTransientLastError = (state: CredentialState, models: ReadonlyArray<str
   const keys = new Set(models.map(canonicalModelLookupKey));
 
   if (!keys.has("") && Object.keys(state.modelStates).length > 0) {
-    return Object.entries(state.modelStates).some(
-      ([stateModel, modelState]) =>
-        keys.has(canonicalModelLookupKey(stateModel)) &&
-        modelState.lastError?.code === ErrorCode.transientRateLimit,
+    const own = Object.entries(state.modelStates).find(([stateModel]) =>
+      keys.has(canonicalModelLookupKey(stateModel)),
     );
+
+    // A model with no state of its own falls back to the credential's last error (`hasTransientZeroWaitEligibility`).
+    if (own !== undefined) return own[1].lastError?.code === ErrorCode.transientRateLimit;
   }
 
   return state.lastError?.code === ErrorCode.transientRateLimit;

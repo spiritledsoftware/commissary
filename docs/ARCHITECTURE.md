@@ -973,8 +973,11 @@ API Worker's client gate also provides `RequestReauthorizer` (`@commissary/auth`
 upgrade again before **every client frame** (the hand-off in `socket.ts`, steering frames included; CLIProxyAPI `b9bb031d`), so
 a key revoked, or a member removed or suspended, after the upgrade stops working on the live socket: the frame is answered with an
 error frame (401/403/429, tied to its `event_id`; `refusalToExecutionError`), not run, and the socket stays open. An API key is
-verified again; an Access sign-in is **not** (its token expires while the person stays valid): only the revocable state is
-checked, that the person is still a member of the org and the org still takes Access sign-ins from clients. A **grant** withdrawn
+verified again. An Access sign-in is not verified again (no signature or JWKS check); it is **bounded by the upgrade token's own
+`exp`**: before it, the revocable state is checked (the person is still a member of the org and the org still takes Access
+sign-ins from clients); from it on, every frame is refused with a 401 "Access token expired", so the client reconnects with a
+fresh token. That keeps an identity provider's offboarding within the Access session duration. A dev-bypass sign-in has no token
+and has only the membership check. A **grant** withdrawn
 mid-socket is not this check's business: grants decide what a pick may use, so the next turn's `pick` refuses it. Deviations from
 Go: the check reads the upgrade's headers and not the frame (Commissary's gate looks at no body), is not counted against the plan's
 request ceiling again (the upgrade was), and the plugin `denied` status is N/A.

@@ -179,7 +179,7 @@ describe("authenticateClient", () => {
 
 describe("reauthorizeClient (CLIProxyAPI b9bb031d)", () => {
   it.effect(
-    "takes an Access sign-in whose token has since expired, while the person is a member",
+    "bounds an Access sign-in by its upgrade token's exp: members pass before it, a 401 follows",
     () => {
       const { directory } = staffed();
 
@@ -192,13 +192,15 @@ describe("reauthorizeClient (CLIProxyAPI b9bb031d)", () => {
           const erin = yield* signedIn(userClaims("erin@example.com"));
           const upgraded = yield* authenticateClient(erin, CLIENT_URL);
 
-          // An hour later the token's exp has passed: verifying it again would refuse the whole socket.
-          yield* TestClock.setTime(NOW_MS + 2 * 3_600_000);
-          const expired = yield* Effect.flip(authenticateClient(erin, CLIENT_URL));
-          assert.strictEqual(expired._tag, "UnauthorizedError");
+          // The token is valid for an hour. Its signature is not verified again, only the clock against its exp.
+          yield* TestClock.setTime(NOW_MS + 3_600_000 - 1000);
+          const before = yield* reauthorizeClient(erin, CLIENT_URL, upgraded);
+          assert.strictEqual(before.principalId, "user:erin@example.com");
 
-          const again = yield* reauthorizeClient(erin, CLIENT_URL, upgraded);
-          assert.strictEqual(again.principalId, "user:erin@example.com");
+          yield* TestClock.setTime(NOW_MS + 3_600_000);
+          const after = yield* Effect.flip(reauthorizeClient(erin, CLIENT_URL, upgraded));
+          assert.strictEqual(after._tag, "UnauthorizedError");
+          assert.strictEqual(after.message, "Access token expired");
         }),
       );
     },
