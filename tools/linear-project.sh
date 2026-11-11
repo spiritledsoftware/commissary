@@ -2,8 +2,8 @@
 # Puts the Linear issue that Linear's GitHub Issues sync created for a GitHub issue into the Linear project
 # LINEAR_PROJECT (docs/agents/issue-tracker.md): the sync copies GitHub issues into the team, but in no project. Waits
 # for the copy (the issue whose sync attachment, `sourceType` github, is the GitHub URL) up to WAIT_SECONDS, then sets
-# the project only when the issue has none, so a project someone already chose is kept. Retries Linear's errors until
-# the same deadline, but a rejected key, which no retry fixes. Exits 0 when nothing is left to do (set, or kept), 1
+# the project only when the issue has none, so a project someone already chose is kept. Retries Linear's errors, each
+# step up to WAIT_SECONDS, but a rejected key, which no retry fixes. Exits 0 when nothing is left to do (set, or kept), 1
 # otherwise.
 # Usage: LINEAR_API_KEY=… LINEAR_PROJECT=<project id> ISSUE_URL=https://github.com/<owner>/<repo>/issues/<n> \
 #   [WAIT_SECONDS=600] tools/linear-project.sh
@@ -102,5 +102,6 @@ if [ -n "$current" ]; then
   exit 0
 fi
 
+deadline=$((SECONDS + wait_seconds))
 until_deadline set_project
 echo "$identifier ($url) is now in project $project."
