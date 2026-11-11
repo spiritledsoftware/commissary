@@ -796,7 +796,30 @@ Core contracts every provider slice implements (Go references in each module hea
 - **Reasoning replay** (`replay.ts`): Claude-format callers get cached encrypted reasoning/tool calls re-inserted by
   anchor matching. The store is an interface; the default keeps one entry per model in the `SessionState` DO of the session
   (TTL 1 h, appends are compare-and-swap read-modify-writes, session keys are isolated per caller scope), with a per-isolate
-  memory fallback when the binding is absent and `makeInMemoryReplayStore` for tests.
+  memory fallback when the binding is absent and `makeInMemoryReplayStore` for tests. The store keeps a GPT or Meta `encrypted_content`
+  as the upstream issued it, router suffix included; the reasoning sanitiser runs _after_ the replay is applied (Go `a68c7d8e`), so a
+  cached signature meets the same host policy as a client-sent one: kept as issued on `openrouter.ai`, stripped to the native
+  envelope on every other upstream. Already-present reasoning is matched by its canonical key (no suffix, no cache prefix).
+  Difference from the #376 ticket text ("strip before storing"): Go's tested behaviour stores it as issued and strips at send time.
+- **Reasoning signatures** (`helps/responses-signature.ts`; Go `7a0b7563`, `674dbe8f`, `cc5682c5`, `be9fbd94`, `a68c7d8e`): which
+  `encrypted_content` replays to which upstream is decided by the _target family_ and the _upstream host_. The target model is the
+  upstream model after alias, prefix and suffix resolution, else the client-requested model when that names Meta, Grok or GPT (an
+  unmapped deployment alias); the request translators see it, the body goes out under the base model. A router suffix (`.slug`,
+  OpenRouter's private routing tag) is kept on `openrouter.ai` and `*.openrouter.ai` and stripped to the native envelope on
+  chatgpt.com, api.openai.com, api.x.ai and every other third-party host. GPT, foreign and unknown signatures never replay to a Meta
+  target; another family's envelope is foreign to Meta. The Claude -> Codex, Gemini -> Codex and Interactions -> Codex request
+  translators share one family-match rule (`translator/common/codex-replay-signature.ts`, Go `CodexReplaySignatureForTarget`).
+- **Gemini and Interactions clients** (`translator/codex/{gemini,interactions}/`; Go `88ac14f3`, `a4660260`, `772df04b`): a reasoning
+  item travels to the client as a _thought_. The Gemini response carries the summary as `thought` parts and `encrypted_content` as a
+  `thoughtSignature` in the `cpa-codex-gemini-carrier-v1:` carrier (the bytes are `magic + signature` in standard padded base64, which an
+  official SDK decodes and echoes losslessly; byte-identical with Go, so a conversation can move between Go and Commissary, and distinct
+  from Antigravity's Claude carrier `cpa-gemini-carrier-v1:`). Streaming holds the signature for the next visible part, never spends it
+  on an empty text delta, flushes it as an empty thought part when no visible part follows, dedupes repeated reasoning done events,
+  and queues consecutive function-call chunks in order. On the way back the carrier is unwrapped and the signature restored as a
+  reasoning item (the thought as its summary) only when its family matches the target. The Interactions response emits
+  `encrypted_content` as the thought step's `signature` (a `thought_signature` delta when streaming) with no carrier, and the request
+  restores it by the same family rule, drops every other `thought` step, asks for `reasoning.encrypted_content` in `include` and sets
+  `store: false`. Claude clients get a done-only reasoning item's text from `output_item.done` (Go `extractCodexReasoningItemText`).
 - **Handlers**: `POST /v1/responses`, `/v1/responses/compact` and `/backend-api/codex/{responses,responses/compact}` share
   `responses/routes.ts`; the Responses frame assembler (`responses/framer.ts`) buffers partial frames, filters private
   `responsesapi.*`/`codex.*` events and `response.metadata` (moderation flags; Codex clients keep both
@@ -918,6 +941,8 @@ WebSocket transports"). Reuses the Codex translators
 - **Reasoning replay** (`replay.ts`): Claude/Responses callers get cached encrypted reasoning, assistant text and tool calls of the
   previous turn re-inserted (sliding TTL 1 h). Same pattern as Codex: a store interface over the `SessionState` DO (per-isolate
   memory fallback, `makeInMemoryXaiReplayStore` for tests); session keys are isolated per Access `callerScope` (no scope, no replay).
+  A router-suffixed `encrypted_content` keeps its suffix through request preparation and is decided at send time by base URL: kept on
+  `openrouter.ai`, stripped to the native ciphertext elsewhere, api.x.ai included (Go `a68c7d8e`); replay dedupes by the suffix-free key.
 - **Errors** (`errors.ts`): 403 "bad credentials" -> 401 (conductor refresh + retry), 429 `free-usage-exhausted` -> 24 h cooldown
   hint (`retryAfterMs`), speech 404s that do not say the model is unavailable are request-scoped.
 - **Media** (`media.ts` + handlers): executor entry protocols `openai-image`/`openai-video`/`openai-speech` (whole bodies returned
@@ -1776,6 +1801,11 @@ claude/gemini/openai-response -> openai, interactions <-> openai (Chat Completio
   OS/arch); the telemetry filter lives in the Meta executor only, not also in the Responses SSE framer or WebSocket
   forwarder of the client handlers, because Meta is the only upstream that sends it; the no-token TTFT fallback and the
   TTFT of non-stream calls are the response-header time, not the first body byte (as for Codex and xAI).
+- **Reasoning signatures on `/responses/compact`** (Go `674dbe8f`, `a68c7d8e`): the route is `is-compat` (reasoning text, ids and blobs of
+  unknown provenance replay to the third-party upstream; before, Commissary sanitised it like official Codex). The signature target is
+  the upstream model, falling back to the requested Meta, Grok or GPT model; a router suffix is kept on `openrouter.ai` and
+  `*.openrouter.ai` and stripped to the native envelope on every other host; a Meta target takes Meta envelopes only (see "Codex
+  provider", "Reasoning signatures").
 - **No equivalent needed**: the Go OpenAI-compatible executor has no refresh and no reasoning replay cache (§7 of the pipeline
   research lists none for it); 401s are ordinary upstream errors for the conductor's classification.
 
@@ -2552,11 +2582,15 @@ helpers; `oauth_scope_executor.go` is `executor/helps/oauth-scope.ts`.
   name/model are constants. Thinking replay for Claude callers (`kimi/replay.ts`) reuses the matcher/accumulator of
   `claude/thinking-replay.ts` over the `SessionState` DO (own store name, TTL 1 h, isolated per caller scope).
 - **Meta** is the Codex Responses pipeline without replay/images: `meta/request.ts` (translate to `codex`, thinking, model/stream,
-  field deletions, instructions, keep-foreign reasoning sanitising via `codex/request.ts`, `search_content_types` removal,
+  field deletions, instructions, reasoning sanitising by base URL (`helps/responses-signature.ts`), `search_content_types` removal,
   payload rules with protocol `meta`), `meta/errors.ts` (`resets_at` retry, 5 min 404 cooldown, credential-scoped
   subscription quota), always-streaming upstream aggregated for non-stream callers. The shaping and the SSE response handling
   live in `helps/responses-request.ts` / `helps/responses-sse.ts`, shared with the OpenCode `responses` protocol. The lazy DCA -> API-key mint is the
   conductor's `ensureFresh` (see Token refresh); the executor only reads the minted key.
+  The target model is `muse-` + the base model (or the Muse model an alias names). The native Meta host (`*.meta.ai`, an empty or
+  unparsable base URL) replays native Muse envelopes only: GPT, other providers', unknown-format and router-suffixed values are
+  stripped, fail-closed (an unknown blob used to replay). A third-party host configured under the Meta key may emit and consume
+  router-suffixed envelopes: kept on `openrouter.ai`, stripped to native elsewhere.
 - **Devin** (`devin/`): `protobuf.ts` (varint/bytes/fixed codec), `wire.ts` (`GetChatMessageRequest`, frame decoding, trailer
   mapping, system prompt sanitising), `connect.ts` (streaming 5-byte frame parser, gzip via `DecompressionStream`),
   `interactions.ts` (client Interactions body -> prompts/tools, incl. original-request supplements), `models.ts` (UID
@@ -2565,7 +2599,9 @@ helpers; `oauth_scope_executor.go` is `executor/helps/oauth-scope.ts`.
   deferred thought stops, 128 tool call cap, EOS trailer required) and `executor.ts`. Non-Interactions clients need the
   `client -> interactions` translators registered in the translator registry (`gemini` and `interactions` exist; `openai`/
   `openai-response` belong to the OpenAI-compatibility slice; `claude -> interactions` is what Claude Code needs to use Devin, see
-  _Claude clients on Interactions providers_); without one the body is parsed as-is (`messages` fallback) and the response
+  _Claude clients on Interactions providers_); without one the body is parsed as-is (`messages` fallback). A Meta Muse envelope is never
+  supplemented as a sealed signature (it yields none), and a `cpa-codex-gemini-carrier-v1:` carrier is unwrapped to its inner
+  signature (Go `7a0b7563`, `a68c7d8e`). The response
   passes through untranslated.
 - **Compaction**: Kimi's and Meta's Responses paths and Devin compact locally, `compaction_trigger` and `/responses/compact` alike,
   with the route's own turn (matrix in the Claude section, "Responses compaction"). A D3 `sealed.v1.` reasoning item is not a
@@ -3093,6 +3129,14 @@ test in `executor/claude/sanitize.ts`, Devin's approximation) are gone: the Code
 `go run ./tools/fixturegen/signature` (`packages/translation/test/fixtures/signature.json`) records detection, decisions (incl. reasons),
 Grok/GPT/recognised checks, Gemini replay, ~500 sanitiser runs over synthetic histories and Gemini validation/pairing cases;
 `test/signature-fixtures.test.ts` compares them with the port (key order included).
+
+**Meta, router suffixes and model families** (Go `7a0b7563`, `cc5682c5`, `be9fbd94`, `674dbe8f`, `a68c7d8e`). `meta.ts` is the Meta Muse envelope: canonical
+unpadded base64url, the header `43e3da0e01` (every capture, 2026-10-15; a rotation falls back to unknown), and a decoded length of exactly
+45 + 1024 * 2^k bytes, checked on the encoded length before any decoding; there is no cache-prefix alias. GPT, Grok and Meta inspectors
+accept one optional `.` and a 1-128 character alphanumeric router suffix (`router-suffix.ts`), report it and replay the full value verbatim;
+the Grok validator also rejects Meta envelopes and the Gemini Codex carrier. `signatureProviderFromModelName` tries the last `/` or `:`
+segment first (`openai-compatible/muse-spark` is Meta, `muse-proxy/gpt-5.4` is GPT) and then the whole string; `museum` and `amuse` are
+unknown. Terms: a _carrier_ wraps one provider's signature for a protocol that cannot hold it; a _router suffix_ is OpenRouter's routing tag.
 
 Gemini envelopes are the protobuf field-2 wrapper and Vertex's unwrapped "bare-Tink": a payload of at least 21 bytes that starts
 with `0x01` and the key id `8f3d6b5f`. Without a wrapper the ciphertext looks random, so the prefix byte alone would claim about
