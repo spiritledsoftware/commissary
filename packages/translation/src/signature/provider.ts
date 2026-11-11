@@ -151,7 +151,7 @@ export const isValidKimiThinkingSignature = (raw: string): boolean => {
 
   if (splitSignatureProviderPrefix(sig) !== undefined) return false;
 
-  if (selfDescribingFirstChar(sig)) {
+  if (maybeSelfDescribingSignatureEnvelope(sig)) {
     if (sig.startsWith("gAAAA")) return false;
 
     if (isValidClaudeCaisSignature(sig)) return false;
@@ -166,8 +166,20 @@ export const isValidKimiThinkingSignature = (raw: string): boolean => {
   return decoded !== undefined && entropyRatio(decoded) >= KIMI_MIN_ENTROPY_RATIO;
 };
 
-const selfDescribingFirstChar = (sig: string): boolean =>
-  sig !== "" && "CEQRg".includes(sig.charAt(0));
+/**
+ * `selfDescribingSignatureFirstChars`: the base64 first characters a self-describing envelope can produce, by the
+ * first decoded byte: `C` Claude CAIS (0x08), `E` Claude single-layer and Gemini protobuf field 2 (0x12), `A` Gemini
+ * Vertex bare-Tink (0x01), `Q` Antigravity double-layer CAQS (0x43), `R` Claude double-layer R (0x45), `g` GPT
+ * Fernet (0x80). A replay-safe envelope missing from this set would fall through to the residual classes.
+ */
+const SELF_DESCRIBING_FIRST_CHARS = "ACEQRg";
+
+/**
+ * `maybeSelfDescribingSignatureEnvelope`: a structural pre-filter, not a classifier. False is conclusive; true only
+ * narrows the candidates.
+ */
+export const maybeSelfDescribingSignatureEnvelope = (sig: string): boolean =>
+  sig !== "" && SELF_DESCRIBING_FIRST_CHARS.includes(sig.charAt(0));
 
 /** `isRecognizedGeminiProviderSignature`. */
 const isRecognizedGeminiSignature = (raw: string): boolean =>
@@ -219,7 +231,7 @@ export const detectSignatureProvider = (
 
   if (sig.startsWith("sealed.v1.")) return "swe";
 
-  if (selfDescribingFirstChar(sig)) {
+  if (maybeSelfDescribingSignatureEnvelope(sig)) {
     if (isValidGptReasoningSignature(sig)) return "gpt";
 
     if (isValidClaudeCaisSignature(sig)) return "claude";

@@ -2,7 +2,8 @@
  * Gemini thought-signature validation, replay policy and request sanitising.
  *
  * Go source: internal/signature/gemini_sanitize.go (SanitizeGeminiRequestThoughtSignatures,
- * SanitizeGeminiSystemInstruction, GeminiReplaySignatureOrBypass), internal/signature/gemini_validation.go (InspectGeminiThoughtSignature,
+ * SanitizeNonVertexGeminiRequestThoughtSignatures, SanitizeGeminiSystemInstruction, GeminiReplaySignatureOrBypass),
+ * internal/signature/gemini_validation.go (InspectGeminiThoughtSignature, IsGeminiVertexBareTinkSignature,
  * ValidateGeminiThoughtSignatures, ValidateGeminiFunctionCallPairing), internal/signature/provider_compatibility.go
  * (SplitSignatureProviderPrefix, SignaturePayloadWithoutProviderPrefix and the Gemini row of
  * DecideSignatureCompatibility). `decideGeminiSignature` is the Gemini-target specialisation of the decision table in
@@ -11,6 +12,7 @@
  * against Go for every sample. Debug logging is not ported.
  */
 import {
+  asBool,
   asString,
   del,
   exists,
@@ -192,21 +194,62 @@ const field2Field1Value = (decoded: Uint8Array): Uint8Array | undefined => {
   return value.value;
 };
 
-/** `IsValidGeminiThoughtSignature(sig, {RequireKnownEnvelope: true})` (the bypass sentinel is not accepted here). */
-export const isKnownGeminiEnvelope = (raw: string): boolean => {
+/** `geminiBareTinkMinLen`: prefix-type byte, four-byte key id and a 16-byte authentication tag. */
+const BARE_TINK_MIN_LEN = 1 + 4 + 16;
+
+/**
+ * `geminiVertexBareTinkKeyIDs`: the Tink key ids observed on the Vertex serve path. Without a protobuf wrapper the
+ * ciphertext is indistinguishable from uniform random bytes, so the prefix byte alone would claim about 1/256 of any
+ * unenveloped payload (xAI `encrypted_content`, Kimi signatures). A rotated key is not recognised and falls back to the
+ * bypass sentinel; add the new id when it is observed (Go a8582fba).
+ */
+const VERTEX_BARE_TINK_KEY_IDS: ReadonlyArray<ReadonlyArray<number>> = [[0x8f, 0x3d, 0x6b, 0x5f]];
+
+/**
+ * `isGeminiBareTinkEnvelope`: the unwrapped Tink primitive output the Vertex serve path emits as the whole
+ * `thoughtSignature` (byte 0 = 0x01, bytes 1..4 = key id, then ciphertext).
+ */
+const isBareTinkEnvelope = (decoded: Uint8Array): boolean =>
+  decoded.length >= BARE_TINK_MIN_LEN &&
+  decoded[0] === 0x01 &&
+  VERTEX_BARE_TINK_KEY_IDS.some((keyId) => keyId.every((byte, i) => decoded[1 + i] === byte));
+
+type GeminiEnvelope = "protobuf_field_2" | "bare_tink";
+
+/** `classifyGeminiThoughtSignatureEnvelope`: the known envelope of a Gemini signature, or `undefined`. */
+const geminiEnvelopeOf = (raw: string): GeminiEnvelope | undefined => {
   const sig = raw.trim();
 
-  if (sig === "" || isGeminiThoughtSignatureBypass(sig)) return false;
+  if (sig === "" || isGeminiThoughtSignatureBypass(sig)) return undefined;
   const decoded = decodeBase64(sig);
 
-  if (decoded === undefined || decoded.length === 0) return false;
+  if (decoded === undefined || decoded.length === 0) return undefined;
 
-  if (isAsciiUuid(decoded)) return false;
+  if (isAsciiUuid(decoded)) return undefined;
   const value = field2Field1Value(decoded);
 
-  if (value === undefined) return false;
+  if (
+    value !== undefined &&
+    (isLikelyOpaquePayload(value) || isAsciiUuid(value) || isLikelyToolInvocationPayload(value))
+  ) {
+    return "protobuf_field_2";
+  }
 
-  return isLikelyOpaquePayload(value) || isAsciiUuid(value) || isLikelyToolInvocationPayload(value);
+  return isBareTinkEnvelope(decoded) ? "bare_tink" : undefined;
+};
+
+/** `IsValidGeminiThoughtSignature(sig, {RequireKnownEnvelope: true})` (the bypass sentinel is not accepted here). */
+export const isKnownGeminiEnvelope = (raw: string): boolean => geminiEnvelopeOf(raw) !== undefined;
+
+/**
+ * `IsGeminiVertexBareTinkSignature`: `raw` (with or without a cache prefix) is a Vertex bare-Tink thought signature.
+ * Only Vertex accepts it; Antigravity, AI Studio and the Gemini API answer 400 "Corrupted thought signature", so
+ * callers sending anywhere else must treat it as incompatible (Go 1398f273).
+ */
+export const isGeminiVertexBareTinkSignature = (raw: string): boolean => {
+  const sig = signaturePayloadWithoutProviderPrefix(raw);
+
+  return !isValidClaudeCaisSignature(sig) && geminiEnvelopeOf(sig) === "bare_tink";
 };
 
 type Detected = "gemini" | "gemini_bypass" | "other";
@@ -271,14 +314,38 @@ export const isGeminiSignatureModel = (modelName: string): boolean => {
 /** `sigcompat.MaxGeminiThoughtSignatureLen`. */
 export const MAX_GEMINI_SIGNATURE_LEN = MAX_GEMINI_THOUGHT_SIGNATURE_LEN;
 
-/** `GeminiReplaySignatureOrBypass`. */
-export const geminiReplaySignatureOrBypass = (raw: string): string => {
+/** `geminiSanitizeOptions`: the replay policy scoped to the upstream endpoint. */
+interface GeminiSanitizeOptions {
+  /** Vertex bare-Tink is incompatible: Antigravity and the Gemini API reject it as a corrupted signature. */
+  readonly rejectBareTink: boolean;
+}
+
+/** `geminiSanitizeDecision`: endpoint scoping on top of the family-level decision. */
+const endpointDecision = (raw: string, options: GeminiSanitizeOptions): GeminiSignatureDecision => {
   const decision = decideGeminiSignature(raw);
+
+  if (
+    !options.rejectBareTink ||
+    decision.action !== "preserve" ||
+    !isGeminiVertexBareTinkSignature(raw)
+  ) {
+    return decision;
+  }
+
+  return { action: "replace_with_gemini_bypass", normalized: "" };
+};
+
+const replayOrBypass = (raw: string, options: GeminiSanitizeOptions): string => {
+  const decision = endpointDecision(raw, options);
 
   return decision.action === "preserve" && decision.normalized !== ""
     ? decision.normalized
     : GEMINI_SKIP_THOUGHT_SIGNATURE_VALIDATOR;
 };
+
+/** `GeminiReplaySignatureOrBypass`. */
+export const geminiReplaySignatureOrBypass = (raw: string): string =>
+  replayOrBypass(raw, { rejectBareTink: false });
 
 const SIGNATURE_PATHS = [
   "thoughtSignature",
@@ -356,12 +423,31 @@ export const sanitizeGeminiSystemInstruction = (payload: Json, contentsPath: str
 /**
  * `SanitizeGeminiRequestThoughtSignatures`: applies the Gemini replay policy in place to `payload[contentsPath]`
  * (`contents` or `request.contents`). Provider signatures stay on their parts, only a missing/incompatible *first*
- * functionCall of a model turn gets the bypass sentinel, sibling calls stay unsigned and functionResponse parts never
- * carry signatures. Returns `payload`.
+ * functionCall of each parallel-call group (the start of a model turn, or after a non-thought part) gets the bypass
+ * sentinel, sibling calls stay unsigned and functionResponse parts never carry signatures. Returns `payload`.
+ *
+ * Vertex bare-Tink signatures are preserved because the target endpoint is not known here; the executors of every other
+ * Gemini endpoint also call `sanitizeNonVertexGeminiRequestThoughtSignatures` before sending.
  */
 export const sanitizeGeminiRequestThoughtSignatures = (
   payload: Json,
   contentsPath = "contents",
+): Json => sanitizeThoughtSignatures(payload, contentsPath, { rejectBareTink: false });
+
+/**
+ * `SanitizeNonVertexGeminiRequestThoughtSignatures`: the same policy for Gemini endpoints other than Vertex AI
+ * (Antigravity, the Gemini API). A Vertex bare-Tink signature is incompatible there: the first functionCall of a group
+ * gets the bypass sentinel and other parts drop it (Go 1398f273).
+ */
+export const sanitizeNonVertexGeminiRequestThoughtSignatures = (
+  payload: Json,
+  contentsPath = "contents",
+): Json => sanitizeThoughtSignatures(payload, contentsPath, { rejectBareTink: true });
+
+const sanitizeThoughtSignatures = (
+  payload: Json,
+  contentsPath: string,
+  options: GeminiSanitizeOptions,
 ): Json => {
   const path = contentsPath.trim() === "" ? "contents" : contentsPath.trim();
   sanitizeGeminiSystemInstruction(payload, path);
@@ -388,14 +474,16 @@ export const sanitizeGeminiRequestThoughtSignatures = (
       const hasFunctionCall = exists(part, "functionCall");
       const isFirstFunctionCall = hasFunctionCall && !firstFunctionCallSeen;
 
-      if (hasFunctionCall) firstFunctionCallSeen = true;
+      // A text part, even an empty signature carrier, ends the parallel group: the Gemini API rejects an unsigned
+      // functionCall after it. Thought parts do not (Go e5434f65).
+      if (hasFunctionCall || !asBool(get(part, "thought"))) firstFunctionCallSeen = hasFunctionCall;
 
       if (!hasFunctionCall && !has) continue;
 
-      const decision = decideGeminiSignature(raw);
+      const decision = endpointDecision(raw, options);
       let replay = "";
 
-      if (isFirstFunctionCall) replay = geminiReplaySignatureOrBypass(raw);
+      if (isFirstFunctionCall) replay = replayOrBypass(raw, options);
       else if (
         has &&
         decision.action === "preserve" &&
@@ -488,7 +576,7 @@ const geminiContents = (
 
 /**
  * `ValidateGeminiThoughtSignatures`: the first violation of the Gemini signature rules in a native payload (the first
- * functionCall of every model turn needs a valid signature or allowed sentinel; sibling calls may be unsigned but
+ * functionCall of every parallel-call group of a model turn needs a valid signature or allowed sentinel; sibling calls may be unsigned but
  * never carry an invalid one), or `undefined`.
  */
 export const validateGeminiThoughtSignatures = (
@@ -510,7 +598,10 @@ export const validateGeminiThoughtSignatures = (
       const hasFunctionCall = exists(part, "functionCall");
       const isFirstFunctionCall = isModelTurn && hasFunctionCall && !firstFunctionCallSeen;
 
-      if (isModelTurn && hasFunctionCall) firstFunctionCallSeen = true;
+      if (isModelTurn && (hasFunctionCall || !asBool(get(part, "thought")))) {
+        firstFunctionCallSeen = hasFunctionCall;
+      }
+
       const { raw, has } = partThoughtSignature(part);
 
       if (!hasFunctionCall && !has) continue;

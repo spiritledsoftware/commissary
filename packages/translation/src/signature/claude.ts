@@ -435,7 +435,7 @@ export const isValidClaudeCaisSignature = (raw: string): boolean => {
   }
 };
 
-/** `InspectAntigravityClaudeCAQSSignature`: the observed Google version-4 thinking channel only. */
+/** `InspectAntigravityClaudeCAQSSignature`: the Google version-4 thinking envelope, on any channel id. */
 export const inspectAntigravityClaudeCaqsSignature = (raw: string): ClaudeCaisSignatureInfo => {
   const sig = stripClaudeSignaturePrefix(raw);
 
@@ -459,9 +459,10 @@ export const inspectAntigravityClaudeCaqsSignature = (raw: string): ClaudeCaisSi
   if (decoded === undefined) throw new SignatureError("invalid Antigravity CAQS inner encoding");
   const info = inspectCaisPayload(decoded, true);
 
+  // The channel id rotates across upstream key generations (18 -> 19) and `inspectCaisPayload` already requires it
+  // to be present as a varint, so only the envelope schema is checked (Go 7517549a).
   if (
     info.envelopeVersion !== 4 ||
-    info.channelId !== 18 ||
     info.infrastructure !== 2 ||
     info.blockKind !== "thinking" ||
     !info.signatureInContainer
