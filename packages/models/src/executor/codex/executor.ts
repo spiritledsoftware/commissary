@@ -12,7 +12,7 @@
  * Stream bootstrap buffering is `stream.ts` + `bootstrap.ts`. `CountTokens` counts locally
  * (`helps/token-count.ts`).
  */
-import { Clock, Effect, Stream } from "effect";
+import { Clock, Effect, Semaphore, Stream } from "effect";
 import {
   HttpClient,
   type HttpClientError,
@@ -47,14 +47,20 @@ import {
 } from "../helps/codex-multi-agent-v2.ts";
 import { normalizeCodexToolSchemas } from "../helps/codex-tool-schema.ts";
 import { sanitizeCodexInputItemIds } from "../helps/codex-input-ids.ts";
-import { expandCompaction } from "../helps/compaction.ts";
+import {
+  compactionStreamFromResponse,
+  executeLocalCompaction,
+  expandCompaction,
+  hasResponsesCompactionTriggerRequest,
+  rejectSyntheticPreviousResponseId,
+} from "../helps/compaction.ts";
 import { finalizePayload } from "../helps/payload.ts";
 import { translateRequestForExecutor } from "../helps/translate.ts";
 import { buildResponsesUsageJson, countCodexInputTokens } from "../helps/token-count.ts";
 import { TOOL_INPUT_ERROR_MESSAGE } from "../openai-compat/stream.ts";
 import { parseSuffix } from "@commissary/translation/thinking";
 import { Thinking } from "../thinking.ts";
-import { replayRequiredError } from "../websocket/session.ts";
+import { codexSessionStore, replayRequiredError } from "../websocket/session.ts";
 import {
   type ExecutionContext,
   type ExecutorOptions,
@@ -313,9 +319,22 @@ export const makeCodexExecutor = (executorOptions: CodexExecutorOptions = {}): P
     context: ExecutionContext,
     requested: ExecutorRequest,
     requestedOptions: ExecutorOptions,
-    mode: { readonly stream: boolean; readonly compact: boolean; readonly websocket?: boolean },
+    mode: {
+      readonly stream: boolean;
+      readonly compact: boolean;
+      readonly websocket?: boolean;
+      /** The summary turn of a local compaction: no hosted tool is injected for it. */
+      readonly summary?: boolean;
+    },
   ) {
     const { request, options } = yield* expandCodexCompaction(context, requested, requestedOptions);
+
+    // A response a local compaction minted lives in no upstream (a 400 over HTTP, the 409 frame on a WebSocket).
+    const synthetic = mode.compact
+      ? undefined
+      : rejectSyntheticPreviousResponseId(request.payload, options);
+
+    if (synthetic !== undefined) return yield* synthetic;
     const thinking = yield* Thinking;
     const baseModel = parseSuffix(request.model).modelName;
     const from = options.sourceFormat;
@@ -396,7 +415,13 @@ export const makeCodexExecutor = (executorOptions: CodexExecutorOptions = {}): P
 
     let autoInjection: AutoInjection | undefined;
 
-    if (!mode.compact && context.config.multimedia["disable-image-generation"] === false) {
+    // A summary asks for text: no hosted tool is injected into it (Go `isCompactionSummary`, 61f1ad5e). A hosted tool
+    // injected after `ensureImageGenerationTool` must skip it too.
+    if (
+      !mode.compact &&
+      mode.summary !== true &&
+      context.config.multimedia["disable-image-generation"] === false
+    ) {
       const baseline = injectionBaseline(body);
 
       body = ensureImageGenerationTool(body, request.model, liteRoute(context, request, options));
@@ -605,8 +630,13 @@ export const makeCodexExecutor = (executorOptions: CodexExecutorOptions = {}): P
     context: ExecutionContext,
     request: ExecutorRequest,
     options: ExecutorOptions,
+    summary = false,
   ) {
-    const prepared = yield* prepare(context, request, options, { stream: false, compact: false });
+    const prepared = yield* prepare(context, request, options, {
+      stream: false,
+      compact: false,
+      summary,
+    });
 
     const response = yield* send(
       context,
@@ -1125,11 +1155,61 @@ export const makeCodexExecutor = (executorOptions: CodexExecutorOptions = {}): P
   // Entry points
   // -------------------------------------------------------------------------------------------------------------
 
+  /**
+   * `shouldCompactCompatResponsesTrigger`: a `compaction_trigger` for a model the operator marked `is-compat` is compacted
+   * locally (its endpoint has no native compaction); `/responses/compact` still goes to the endpoint.
+   */
+  const compactsLocally = (
+    context: ExecutionContext,
+    request: ExecutorRequest,
+    options: ExecutorOptions,
+  ): boolean =>
+    options.sourceFormat === Formats.OpenAIResponse &&
+    options.alt !== "responses/compact" &&
+    hasResponsesCompactionTriggerRequest(request, options) &&
+    resolveCodexModelIsCompat(
+      context.config,
+      context.credential,
+      request,
+      parseSuffix(request.model).modelName,
+    );
+
+  /**
+   * `executeCodexResponsesCompaction`: the summary is one HTTP `executeResponses` (never the upstream socket, even for a
+   * downstream WebSocket, and without the image tool), sealed into a capsule. The session's upstream socket is
+   * invalidated afterwards: the conversation continues from the capsule on a socket dialled for it.
+   */
+  const executeLocalCompact = Effect.fnUntraced(function* (
+    context: ExecutionContext,
+    requested: ExecutorRequest,
+    requestedOptions: ExecutorOptions,
+  ) {
+    const { request, options } = yield* expandCodexCompaction(context, requested, requestedOptions);
+
+    const sealed = yield* executeLocalCompaction({
+      request,
+      options,
+      summaryTurn: (summaryRequest, summaryOptions) =>
+        executeResponses(context, summaryRequest, summaryOptions, true),
+    });
+
+    const sessionId = options.metadata.websocket?.sessionId;
+    const session = sessionId === undefined ? undefined : codexSessionStore.peek(sessionId);
+
+    if (session !== undefined)
+      yield* Semaphore.withPermits(session.lock, 1)(codexSessionStore.invalidate(session));
+
+    return sealed;
+  });
+
   const execute: ProviderExecutor["execute"] = (context, request, options) => {
     if (options.alt === "responses/compact") return executeCompact(context, request, options);
 
     if (isCodexImageRequest(options.sourceFormat, options.metadata.requestPath))
       return executeImage(context, request, options);
+
+    if (compactsLocally(context, request, options))
+      return executeLocalCompact(context, request, options);
     const websocket = options.metadata.websocket;
 
     if (websocket !== undefined) {
@@ -1155,6 +1235,14 @@ export const makeCodexExecutor = (executorOptions: CodexExecutorOptions = {}): P
 
     if (isCodexImageRequest(options.sourceFormat, options.metadata.requestPath)) {
       return executeImageStream(context, request, options);
+    }
+
+    if (compactsLocally(context, request, options)) {
+      return executeLocalCompact(context, request, options).pipe(
+        Effect.flatMap((sealed) =>
+          compactionStreamFromResponse(parseSuffix(request.model).modelName, sealed, Date.now()),
+        ),
+      );
     }
 
     const websocket = options.metadata.websocket;

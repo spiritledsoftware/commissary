@@ -49,6 +49,8 @@ import {
   openTurn,
   type UpstreamSessionStore,
 } from "../websocket/session.ts";
+import { parseSuffix } from "@commissary/translation/thinking";
+import { resolveCodexModelIsCompat } from "./compat.ts";
 import { startCodexDuplex } from "./duplex.ts";
 import {
   codexEmptyIncompleteStreamError,
@@ -315,9 +317,17 @@ export const makeCodexWebsocketStream =
           context.usage.recordFirstPacket(yield* Clock.currentTimeMillis);
 
           // `upstream.codex.response-steering`: the executor owns the socket until the downstream one goes away.
+          // An `is-compat` endpoint does not speak `response.steer`, and a duplex stream would send its `compaction_trigger`
+          // frames upstream instead of compacting them locally.
           if (
             websocket?.duplex !== undefined &&
-            context.config.upstream.codex["response-steering"]
+            context.config.upstream.codex["response-steering"] &&
+            !resolveCodexModelIsCompat(
+              context.config,
+              context.credential,
+              request,
+              parseSuffix(request.model).modelName,
+            )
           ) {
             // The handler no longer infers this from the credential: it reads what the executor did.
             if (websocket.report !== undefined) websocket.report.duplex = true;
