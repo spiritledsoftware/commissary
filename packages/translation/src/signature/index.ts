@@ -27,9 +27,13 @@ export {
   sanitizeClaudeMessagesForClaudeUpstream,
 } from "./claude-messages.ts";
 
-export { isValidGptReasoningSignature } from "./gpt.ts";
+export { inspectGptReasoningSignature, isValidGptReasoningSignature } from "./gpt.ts";
 
-export { isValidGrokEncryptedContent } from "./grok.ts";
+export { inspectGrokEncryptedContent, isValidGrokEncryptedContent } from "./grok.ts";
+
+export { inspectMetaReasoningSignature, isValidMetaReasoningSignature } from "./meta.ts";
+
+export { isValidRouterSuffix, stripRouterSuffix } from "./router-suffix.ts";
 
 export {
   detectSignatureProvider,
