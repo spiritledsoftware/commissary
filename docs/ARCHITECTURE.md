@@ -502,10 +502,6 @@ Port of `internal/thinking`, keeping the "canonical `ThinkingConfig` → central
 - The OpenAI chat and Responses translators to Claude send a thinking level the model lists as it is (`xhigh` stays), and
   the Gemini translator turns a dynamic budget (`-1`) or level `auto` into adaptive thinking with no `effort` when the
   model allows dynamic budgets (Go `ad9e456d`).
-- The thinking golden fixtures predate `ad9e456d` for the cases of a model that cannot be turned off and for the
-  compatible applier's zero budget. `PORTED_AHEAD_OF_FIXTURES` (`packages/translation/test/support/ported-ahead.ts`)
-  asserts the new output of each of those cases; the fixture JSON is untouched and the map goes with its regeneration
-  (F2, #388).
 - Fixtures: `go run ./tools/fixturegen/thinking` → `packages/translation/test/fixtures/thinking.json` (~2.7 MB; includes the Go
   static model catalog used by the lookup). Known Go quirk not mirrored: gjson reads _unparsable_ source JSON
   leniently in `extractCodexConfig`; the Workers port only handles parsed bodies.
@@ -1718,8 +1714,6 @@ Deviations from Go (all deliberate, documented in code headers):
     only with a replayable Gemini signature (Go `a68c7d8e` ported ahead of its Meta and router-suffix parts).
   - _Parallel groups (C9, Go `e5434f65`)_: a text part (an empty signature carrier too) ends a parallel functionCall group, so the
     next call is signed (the sentinel when it has no signature) instead of 400ing; a thought part does not end it.
-  - The committed goldens that predate these changes are covered by ported-ahead edits (`test/support/translator-ported-ahead.ts`)
-    until F2 regenerates the fixtures.
 - **Gemini schema cleaning (C7, Go `154d5144`, `a43026d7`, `e9ba5c50`, `9126772d`, `b2fda98e`, `29150a22`, `a0fd8448`, `5efe9758`, `c558d320`, `ec06c3cb`)**
   (`translator/gemini/util/json-schema.ts`):
   - _Unsupported keywords_: the cleaners strip `readOnly`, `writeOnly`, `discriminator`, `contentMediaType`,
@@ -1747,9 +1741,7 @@ Deviations from Go (all deliberate, documented in code headers):
     _parameter_ schemas to the strongest branch (`cleanJsonSchemaForAntigravityClaudeTool`); the Claude request translator
     stays model-unaware and keeps the union, and function return schemas and Gemini models keep theirs.
   - _Differences from Go_: a property named `const` is never read as a `const` keyword (Go would fabricate
-    `properties.enum`); key order is preserved instead of Go's sorted marshal output. The `claude->gemini` schema-cleaning
-    goldens still carry the old `See: Loc` hint for an inlinable ref and are adjusted in
-    `test/support/translator-ported-ahead.ts` until F2 regenerates them.
+    `properties.enum`); key order is preserved instead of Go's sorted marshal output.
 - **Fixtures**: cases with generated ids/timestamps are tagged `needs: ["id-normalization"]` and run by
   translation's `test/translator-fixtures-ids.test.ts` (ids and `created_at` masked on both sides; thinking-summary
   cases apply the real summary hooks); everything else must match the Go output structurally
@@ -2692,8 +2684,7 @@ model-level cooldowns (Commissary's status cron does not touch cooldowns). Bare 
 arrive as `invalid_json_str` is held back and, after a clean EOS trailer, wrapped into `{"input": ...}` when it is a complete, well-framed patch
 (`apply-patch-recovery.ts`; truncated streams, trailer errors, mixed argument sources and malformed patches still fail with the sanitised
 502). The log-only apply_patch diagnostics of `b4f59d70` and `02ee3139` (byte counts, prefix shapes, JSON control character error classes)
-are not ported. The golden translator fixtures predate the tool description rewrite; `portedSinceGeneration` in
-`packages/translation/test/support/translator-fixtures.ts` accepts it until the fixtures are regenerated (ticket F2).
+are not ported.
 
 ## OpenCode Zen and OpenCode Go (`models/executor/opencode/`, `models/registry/opencode-*.ts`)
 
@@ -3175,8 +3166,7 @@ Deviations from Go / not ported: per-credential HTTP pools and proxies; short-co
 Interactions streams from Antigravity and Gemini (`ede07caf`, `be929f07`): `interaction.completed` and `done` follow the usage
 frame at or after the finish frame (earlier usage is only the fallback of an explicit `[DONE]`, which now terminates the stream
 in its bare form too, as in Go), the Gemini translator strips `data:` prefixes and ignores SSE control lines, and
-`cpaUsageMetadata` counts as usage. Goldens that predate it are adjusted by `portedStreamOutputs`
-(`test/support/translator-ported-ahead.ts`).
+`cpaUsageMetadata` counts as usage.
 
 ## Signature validation (`translation/signature/`)
 

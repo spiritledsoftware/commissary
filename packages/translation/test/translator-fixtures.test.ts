@@ -5,12 +5,6 @@ import { describe, expect, it } from "vitest";
 import { builtinTranslators } from "../src/translator/builtin.ts";
 import { setModelInfoLookup } from "../src/translator/model-info.ts";
 import { summaryHooks } from "../src/translator/summary-hooks.ts";
-import {
-  staleGoldenEditEntries,
-  unusedMaxTokensAheadEntries,
-  unusedParallelToolCallsAheadEntries,
-  unusedResponseAheadEntries,
-} from "./support/translator-ported-ahead.ts";
 import { catalogLookup } from "./support/thinking.ts";
 import { itTranslatorFixture, type TranslatorFixtureCase } from "./support/translator-fixtures.ts";
 
@@ -24,15 +18,6 @@ const files = import.meta.glob<{ default: ReadonlyArray<TranslatorFixtureCase> }
   },
 );
 
-/** The cases that carry generated ids: `translator-fixtures-ids.test.ts` runs them. */
-const idCaseKeys: ReadonlySet<string> = new Set(
-  Object.values(files).flatMap((module) =>
-    module.default
-      .filter((c) => (c.needs ?? []).includes("id-normalization"))
-      .map((c) => `${c.from}->${c.to} ${c.name}`),
-  ),
-);
-
 describe("translator golden fixtures", () => {
   for (const [file, module] of Object.entries(files)) {
     describe(file.replace("./fixtures/translator/", ""), () => {
@@ -43,13 +28,6 @@ describe("translator golden fixtures", () => {
       }
     });
   }
-
-  it("consumed every ported-ahead entry", () => {
-    expect(unusedMaxTokensAheadEntries()).toEqual([]);
-    expect(unusedResponseAheadEntries()).toEqual([]);
-    expect(unusedParallelToolCallsAheadEntries()).toEqual([]);
-    expect(staleGoldenEditEntries((key) => !idCaseKeys.has(key))).toEqual([]);
-  });
 
   it("found fixture files", () => {
     expect(Object.keys(files).length).toBeGreaterThan(0);
