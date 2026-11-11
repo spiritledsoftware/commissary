@@ -4,6 +4,8 @@ import { describe, expect, it } from "vitest";
 import type { Json } from "@commissary/json";
 import {
   dropGeminiTrailingThoughtOnlyContent,
+  ensureGeminiBoundaryUserContent,
+  ensureGeminiLeadingUserContent,
   ensureGeminiTrailingUserContent,
 } from "../../src/executor/gemini/content-turns.ts";
 
@@ -126,5 +128,43 @@ describe("ensureGeminiTrailingUserContent with function response media", () => {
     );
 
     expect(roles(out)).toBe("model,user");
+  });
+});
+
+describe("trailing turns with dropThoughtOnlyTail", () => {
+  const thought = { role: "model", parts: [{ text: "a", thought: true }] };
+  const empty = { role: "user", parts: [{ text: "" }] };
+
+  it("ends a thought-only conversation as a lone empty user turn, not [empty, thought, empty]", () => {
+    const options = { dropThoughtOnlyTail: true };
+
+    const boundary = ensureGeminiBoundaryUserContent({ contents: [thought] }, "contents", options);
+
+    expect((boundary as { contents: Json }).contents).toEqual([empty]);
+
+    const leadingThenTrailing = ensureGeminiTrailingUserContent(
+      ensureGeminiLeadingUserContent({ contents: [thought] }, "contents"),
+      "contents",
+      options,
+    );
+
+    expect((leadingThenTrailing as { contents: Json }).contents).toEqual([empty]);
+  });
+
+  it("keeps a thought-only tail when the option is off", () => {
+    const out = ensureGeminiBoundaryUserContent({ contents: [thought] }, "contents");
+
+    expect((out as { contents: Json }).contents).toEqual([empty, thought, empty]);
+  });
+
+  it("reads a snake_case function_response as a response the model answers", () => {
+    const answered = {
+      role: "model",
+      parts: [{ function_response: { name: "x", response: { result: "ok" } } }],
+    };
+
+    const out = ensureGeminiTrailingUserContent({ contents: [answered] }, "contents");
+
+    expect(roles(out)).toBe("model");
   });
 });

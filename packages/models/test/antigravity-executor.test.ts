@@ -633,12 +633,11 @@ describe("antigravity executor: trailing turns", () => {
   const sentContents = async (input: Json[], stream: boolean, model = "gemini-2.5-flash") => {
     resetMemoryAntigravityState();
     const h = harness(() => (stream ? sse([ok]) : jsonResponse(ok)));
-
-    afterAll(h.dispose);
     const response = await h.call("/v1/responses", postJson({ model, stream, input }));
 
     expect(response.status).toBe(200);
     await response.text();
+    await h.dispose();
 
     return JSON.parse(h.calls[0]?.body ?? "{}").request.contents as Array<{
       role: string;

@@ -5,6 +5,16 @@
  * EnsureGeminiTrailingUserContent, EnsureGeminiBoundaryUserContent, DropGeminiTrailingThoughtOnlyContent).
  */
 import { asString, exists, get, isJsonArray, type Json } from "@commissary/json";
+import { isGeminiThoughtPart } from "@commissary/translation";
+
+/** Options of the trailing and boundary turns. */
+export interface TrailingTurnOptions {
+  /**
+   * Drop trailing thought-only model turns before the trailing user turn is considered (Vertex and Antigravity reject a
+   * request that ends with one; CLIProxyAPI a2718314, ceb4397f).
+   */
+  readonly dropThoughtOnlyTail?: boolean;
+}
 
 const emptyUserTurn = (): Json => ({ role: "user", parts: [{ text: "" }] });
 
@@ -23,7 +33,10 @@ export const ensureGeminiLeadingUserContent = (body: Json, path = "contents"): J
 const contentHasFunctionResponse = (content: Json | undefined): boolean => {
   const parts = get(content, "parts");
 
-  return isJsonArray(parts) && parts.some((part) => exists(part, "functionResponse"));
+  return (
+    isJsonArray(parts) &&
+    parts.some((part) => exists(part, "functionResponse") || exists(part, "function_response"))
+  );
 };
 
 /** `contentHasFunctionResponseMedia`: a functionResponse in the turn carries nested media parts. */
@@ -52,9 +65,14 @@ const contentHasFunctionResponseMedia = (content: Json | undefined): boolean => 
 /**
  * A trailing `model`/`assistant` turn gets an empty user turn appended, unless it carries a functionResponse the model is
  * to answer. A functionResponse with nested media is the exception: Antigravity rejects it as the final turn with 400
- * INVALID_ARGUMENT (CLIProxyAPI 15d2148b, #6524).
+ * INVALID_ARGUMENT (CLIProxyAPI 15d2148b, #6524). With `dropThoughtOnlyTail` the thought-only tail goes first.
  */
-export const ensureGeminiTrailingUserContent = (body: Json, path = "contents"): Json => {
+export const ensureGeminiTrailingUserContent = (
+  body: Json,
+  path = "contents",
+  options: TrailingTurnOptions = {},
+): Json => {
+  if (options.dropThoughtOnlyTail === true) dropGeminiTrailingThoughtOnlyContent(body, path);
   const contents = get(body, path);
 
   if (!isJsonArray(contents) || contents.length === 0) return body;
@@ -79,7 +97,7 @@ const isThoughtOnlyModelTurn = (content: Json | undefined): boolean => {
 
   return parts.every(
     (part) =>
-      get(part, "thought") === true &&
+      isGeminiThoughtPart(part) &&
       !exists(part, "functionCall") &&
       !exists(part, "functionResponse"),
   );
@@ -101,5 +119,14 @@ export const dropGeminiTrailingThoughtOnlyContent = (body: Json, path = "content
   return body;
 };
 
-export const ensureGeminiBoundaryUserContent = (body: Json, path = "contents"): Json =>
-  ensureGeminiTrailingUserContent(ensureGeminiLeadingUserContent(body, path), path);
+/**
+ * Leading, then trailing user turn. The thought-only tail is dropped after the leading turn is added (as Go does for
+ * Vertex `generateContent`), so a conversation of thought-only model turns ends as `[emptyUser]` rather than the
+ * rejected `[emptyUser, thought, emptyUser]`; Go's stream and Antigravity paths drop first and still send that shape.
+ */
+export const ensureGeminiBoundaryUserContent = (
+  body: Json,
+  path = "contents",
+  options: TrailingTurnOptions = {},
+): Json =>
+  ensureGeminiTrailingUserContent(ensureGeminiLeadingUserContent(body, path), path, options);

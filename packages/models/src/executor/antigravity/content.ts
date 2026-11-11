@@ -18,7 +18,6 @@ import {
   signatureCacheEnabled,
 } from "@commissary/translation/signature";
 import {
-  dropGeminiTrailingThoughtOnlyContent,
   ensureGeminiBoundaryUserContent,
   ensureGeminiLeadingUserContent,
   ensureGeminiTrailingUserContent,
@@ -46,10 +45,7 @@ export const ensureTrailingUserContent = (modelName: string, payload: Json): Jso
 export const ensureBoundaryUserContent = (modelName: string, payload: Json): Json =>
   isClaude(modelName)
     ? payload
-    : ensureGeminiBoundaryUserContent(
-        dropGeminiTrailingThoughtOnlyContent(payload, "request.contents"),
-        "request.contents",
-      );
+    : ensureGeminiBoundaryUserContent(payload, "request.contents", { dropThoughtOnlyTail: true });
 
 interface FunctionRef {
   readonly id: string;

@@ -460,6 +460,15 @@ describe("vertex trailing reasoning turns", () => {
       },
     );
 
+    it.each(["generateContent", "streamGenerateContent"])(
+      "%s sends a lone empty user turn for a thought-only conversation",
+      async (action) => {
+        expect(await sentContents(cred, action, [thought])).toEqual([
+          { role: "user", parts: [{ text: "" }] },
+        ]);
+      },
+    );
+
     it("leaves a countTokens request as sent", async () => {
       expect(await sentContents(cred, "countTokens", [hi, thought])).toEqual([hi, thought]);
     });
