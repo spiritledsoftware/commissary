@@ -516,13 +516,10 @@ const convertRequest = (
           emittedToolResults.add(rawID);
         }
 
-        let output = get(item, "output");
+        let outputItem = item;
 
-        if (rawID !== "") {
-          const lastItem = lastToolResult.get(rawID);
-
-          if (lastItem !== undefined) output = get(lastItem, "output");
-        }
+        if (rawID !== "") outputItem = lastToolResult.get(rawID) ?? item;
+        const output = get(outputItem, "output");
 
         // Outputs without a paired tool_use in this input would be orphan tool_results, which Claude rejects.
         if (rawID === "" || !emittedRawToolUses.has(rawID)) {
@@ -535,6 +532,12 @@ const convertRequest = (
           tool_use_id: sanitizeClaudeToolId(rawID),
           content: "",
         };
+
+        // Responses reports an unfinished tool output as status "incomplete"; Claude's only in-band equivalent is
+        // is_error on the tool_result (upstream 59930ba3).
+        if (str(get(outputItem, "status")).trim().toLowerCase() === "incomplete") {
+          toolResult.is_error = true;
+        }
 
         applyToolResultContent(toolResult, output);
         appendParts("user", [toolResult]);
