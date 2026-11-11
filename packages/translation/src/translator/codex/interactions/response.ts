@@ -32,8 +32,14 @@ interface StreamState {
   model: string;
   createdAt: number;
   hasOutputText: boolean;
+  /** Whether a summary delta streamed for the open thought step, so a done event does not repeat it. */
+  hasThoughtSummary: boolean;
+  /** Reasoning item ids whose summary streamed, keyed so a done-only item after a streamed one still emits its own. */
+  readonly streamedSummaryItems: Set<string>;
   functionCallName: string;
   functionCallId: string;
+  /** Repeated reasoning `output_item.done` events (item id + signature): one signature is one `thought_signature`. */
+  readonly seenReasoningSignatures: Set<string>;
 }
 
 const nowSeconds = (): number => Math.floor(Date.now() / 1000);
@@ -236,6 +242,8 @@ const appendDone = (out: string[], st: StreamState): string[] => {
 const appendStepStop = (out: string[], st: StreamState): string[] => {
   if (!st.activeStepOpen) return out;
   out.push(emit("step.stop", { index: st.activeStepIndex, event_type: "step.stop" }));
+
+  if (st.activeStepType === "thought") st.hasThoughtSummary = false;
   st.activeStepOpen = false;
   st.activeStepType = "";
 
@@ -252,6 +260,8 @@ const appendStepStart = (
   st.stepIndex++;
   st.activeStepOpen = true;
   st.activeStepType = stepType;
+
+  if (stepType === "thought") st.hasThoughtSummary = false;
 
   let stepStart: Json = {
     index: st.activeStepIndex,
@@ -304,6 +314,13 @@ const thoughtDelta = (st: StreamState, text: string): string =>
     event_type: "step.delta",
   });
 
+const signatureDelta = (st: StreamState, signature: string): string =>
+  emit("step.delta", {
+    index: st.activeStepIndex,
+    delta: { signature, type: "thought_signature" },
+    event_type: "step.delta",
+  });
+
 const argumentsDelta = (st: StreamState, args: string): string =>
   emit("step.delta", {
     index: st.activeStepIndex,
@@ -334,11 +351,34 @@ const appendItemDone = (st: StreamState, item: Json | undefined): string[] => {
 
     case "reasoning": {
       const text = reasoningText(item);
+      const signature = asString(get(item, "encrypted_content")).trim();
 
-      if (text !== "") {
+      if (signature !== "") {
+        const key = `${asString(get(item, "id"))}\u0000${signature}`;
+
+        if (st.seenReasoningSignatures.has(key)) return appendStepStop(out, st);
+        st.seenReasoningSignatures.add(key);
+      }
+
+      const itemId = asString(get(item, "id")).trim();
+      let hadStreamedSummary = st.hasThoughtSummary;
+
+      if (itemId !== "" && st.streamedSummaryItems.size > 0) {
+        hadStreamedSummary = st.streamedSummaryItems.has(itemId);
+      }
+
+      if (text !== "" && !hadStreamedSummary) {
         out = ensureStep(out, st, "thought", item);
         out.push(thoughtDelta(st, text));
       }
+
+      if (signature !== "") {
+        out = ensureStep(out, st, "thought", item);
+        out.push(signatureDelta(st, signature));
+      }
+
+      // Completing a reasoning item resets the summary flag so a later done-only item is not suppressed.
+      st.hasThoughtSummary = false;
 
       return appendStepStop(out, st);
     }
@@ -395,8 +435,11 @@ export const convertCodexResponseToInteractions = (
       model: context.model,
       createdAt: 0,
       hasOutputText: false,
+      hasThoughtSummary: false,
+      streamedSummaryItems: new Set(),
       functionCallName: "",
       functionCallId: "",
+      seenReasoningSignatures: new Set(),
     };
 
     context.state.value = initial;
@@ -456,6 +499,10 @@ export const convertCodexResponseToInteractions = (
       let out = appendCreated([], st, get(root, "response"));
       out = ensureStep(out, st, "thought", undefined);
       out.push(thoughtDelta(st, asString(get(root, "delta"))));
+      const itemId = asString(get(root, "item_id")).trim();
+
+      if (itemId !== "") st.streamedSummaryItems.add(itemId);
+      st.hasThoughtSummary = true;
 
       return out;
     }
@@ -548,8 +595,15 @@ export const convertCodexResponseToInteractionsNonStream = (
 
         case "reasoning": {
           const text = reasoningText(item);
+          const signature = asString(get(item, "encrypted_content")).trim();
 
-          if (text !== "") steps.push({ type: "thought", content: [{ type: "text", text }] });
+          if (text === "" && signature === "") break;
+          let step: Json = { type: "thought" };
+
+          if (signature !== "") step = set(step, "signature", signature);
+
+          if (text !== "") step = set(step, "content", [{ type: "text", text }]);
+          steps.push(step);
           break;
         }
 

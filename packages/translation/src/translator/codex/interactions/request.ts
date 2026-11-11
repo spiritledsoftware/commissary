@@ -19,6 +19,10 @@ import {
 } from "@commissary/json";
 import { convertBudgetToLevel } from "../../../thinking/convert.ts";
 import {
+  codexReplaySignatureForTarget,
+  resolveCodexReplayTargetModel,
+} from "../../common/codex-replay-signature.ts";
+import {
   interactionsAttachmentType,
   isInteractionsInstructionStep,
   UserRun,
@@ -474,7 +478,55 @@ const contentText = (content: Json | undefined): string => {
   return "";
 };
 
-const appendStep = (items: Json[], step: Json, role: string, run: UserRun): void => {
+/** What a thought step needs to be restored as a reasoning item: the signature family's target and the dedup set. */
+interface ThoughtTarget {
+  readonly model: string;
+  /** Normalised signatures already written as `encrypted_content` in this request: a repeated echo replays once. */
+  readonly emitted: Set<string>;
+}
+
+/** `interactionsThoughtStepSignature`: a thought step's signature under any spelling seen on the wire. */
+const thoughtStepSignature = (step: Json): string => {
+  for (const path of ["signature", "thought_signature", "thoughtSignature"]) {
+    const signature = asString(get(step, path)).trim();
+
+    if (signature !== "") return signature;
+  }
+
+  return "";
+};
+
+/**
+ * `appendInteractionsThoughtToCodex`: a client-echoed signature that `codexReplaySignatureForTarget` accepts for the
+ * target model is restored as a Responses reasoning `encrypted_content`, with the thought text as its summary. The step
+ * id is not copied: replay is stateless and the executor strips orphan ids. Every other thought step is dropped: a
+ * reasoning item without accepted encrypted_content carries nothing replayable, and the legacy text shape is rejected by
+ * the native Meta upstream (no summary) and by routers (content must be an array).
+ */
+const appendThought = (items: Json[], step: Json, target: ThoughtTarget): void => {
+  let text = contentText(get(step, "content"));
+
+  if (text === "") text = asString(get(step, "text"));
+  const raw = thoughtStepSignature(step);
+
+  if (raw === "") return;
+  const normalized = codexReplaySignatureForTarget(target.model, raw);
+
+  if (normalized === undefined || target.emitted.has(normalized)) return;
+  target.emitted.add(normalized);
+  const item: JsonObject = { type: "reasoning", encrypted_content: normalized, summary: [] };
+
+  if (text !== "") item["summary"] = [{ type: "summary_text", text }];
+  items.push(item);
+};
+
+const appendStep = (
+  items: Json[],
+  step: Json,
+  role: string,
+  run: UserRun,
+  target: ThoughtTarget,
+): void => {
   if (typeof step === "string") {
     appendRoleText(items, role, step, run);
 
@@ -486,7 +538,7 @@ const appendStep = (items: Json[], step: Json, role: string, run: UserRun): void
   if (isJsonArray(nested)) {
     const nestedRole = stepRole(step, role);
 
-    for (const child of nested) appendStep(items, child, nestedRole, run);
+    for (const child of nested) appendStep(items, child, nestedRole, run, target);
 
     return;
   }
@@ -542,16 +594,7 @@ const appendStep = (items: Json[], step: Json, role: string, run: UserRun): void
     case "thought":
     case "reasoning": {
       run.end();
-      let text = contentText(get(step, "content"));
-
-      if (text === "") text = asString(get(step, "text"));
-      const item: JsonObject = { type: "reasoning" };
-
-      if (text !== "") item["content"] = text;
-      const id = get(step, "id");
-
-      if (id !== undefined) item["id"] = asString(id);
-      items.push(item);
+      appendThought(items, step, target);
 
       return;
     }
@@ -571,7 +614,11 @@ const appendStep = (items: Json[], step: Json, role: string, run: UserRun): void
 };
 
 /** `appendInteractionsInputToCodex`: returns the refusal for an emptied user turn, if any. */
-const appendInput = (items: Json[], input: Json | undefined): UserRun | undefined => {
+const appendInput = (
+  items: Json[],
+  input: Json | undefined,
+  signatureTargetModel: string,
+): UserRun | undefined => {
   if (input === undefined) return undefined;
 
   if (typeof input === "string") {
@@ -581,16 +628,17 @@ const appendInput = (items: Json[], input: Json | undefined): UserRun | undefine
   }
 
   const run = new UserRun();
+  const target: ThoughtTarget = { model: signatureTargetModel, emitted: new Set() };
 
   if (isJsonArray(input)) {
-    for (const step of input) appendStep(items, step, "user", run);
+    for (const step of input) appendStep(items, step, "user", run, target);
   } else if (isJsonArray(get(input, "steps"))) {
     const role = stepRole(input, "user");
     const steps = get(input, "steps");
 
-    for (const step of isJsonArray(steps) ? steps : []) appendStep(items, step, role, run);
+    for (const step of isJsonArray(steps) ? steps : []) appendStep(items, step, role, run, target);
   } else {
-    appendStep(items, input, "user", run);
+    appendStep(items, input, "user", run, target);
   }
 
   run.end();
@@ -700,24 +748,46 @@ const copyTopLevel = (out: Json, root: Json): Json => {
   return out;
 };
 
+/**
+ * `ensureInteractionsCodexEncryptedContentInclude`: the request asks the upstream for encrypted reasoning content so a
+ * signature can come back for replay.
+ */
+const ensureEncryptedContentInclude = (out: Json): Json => {
+  const include = get(out, "include");
+
+  if (include === undefined) return set(out, "include", [REASONING_ENCRYPTED_CONTENT]);
+
+  if (!isJsonArray(include) || include.includes(REASONING_ENCRYPTED_CONTENT)) return out;
+
+  return set(out, "include.-1", REASONING_ENCRYPTED_CONTENT);
+};
+
+const REASONING_ENCRYPTED_CONTENT = "reasoning.encrypted_content";
+
 /** `ConvertInteractionsRequestToCodex`. Throws `UnsupportedPartError` when a user turn is left empty. */
 export const convertInteractionsRequestToCodex = (
   modelName: string,
   request: Json,
   stream: boolean,
 ): Json => {
-  let out: Json = { model: "", instructions: "", input: [] };
+  let out: Json = { model: "", instructions: "", store: false, input: [] };
   out = set(out, "model", modelName);
 
   if (stream || asBool(get(request, "stream"))) out = set(out, "stream", true);
   out = copySystem(out, request);
   out = copyGenerationConfig(out, request);
   const items: Json[] = [];
-  const run = appendInput(items, get(request, "input"));
+
+  const run = appendInput(
+    items,
+    get(request, "input"),
+    resolveCodexReplayTargetModel(modelName, request),
+  );
 
   if (items.length > 0) out = set(out, "input", items);
   out = copyTools(out, request);
   out = copyTopLevel(out, request);
+  out = ensureEncryptedContentInclude(out);
   const err = run?.err(out);
 
   if (err !== undefined) throw err;
