@@ -52,7 +52,7 @@ The `bun install` command materializes these read-only references in `.repos/`.
 
 ### Issue tracker
 
-Issues live in this repo's GitHub Issues, managed with the `gh` CLI (it reads the repo from `git remote`). See `docs/agents/issue-tracker.md`.
+Issues live in Linear (team SPI, project Commissary); GitHub Issues are the public intake and sync one-way into it. Reach Linear through Executor's Linear app, falling back to the `linear` CLI. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
