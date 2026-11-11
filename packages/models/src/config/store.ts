@@ -1,7 +1,7 @@
 /**
  * An org's config entries inside its ControlPlane Durable Object (SQLite; ADR 0025). New in the Workers port.
  *
- * Every setting, key group, provider key, model alias, model exclusion and payload rule is a row of its own kind's table
+ * Every setting, key group, provider key, model alias, model exclusion, model write-in and payload rule is a row of its own kind's table
  * (`entries.ts`), with an id, a revision, `updated_at` and the principal that wrote it (`updated_by`). Provider keys leave
  * room for an owner (`owner`, `NULL` = the org); private provider keys come with credential ownership.
  *
@@ -145,6 +145,7 @@ export interface EntryRevisions {
   readonly groups: Readonly<Record<string, number>>;
   readonly aliases: Readonly<Record<string, number>>;
   readonly exclusions: Readonly<Record<string, number>>;
+  readonly writeIns: Readonly<Record<string, number>>;
 }
 
 /** What the management routes read (`configEntries` over RPC): the assembled config and every entry's revision. */
@@ -180,8 +181,8 @@ export interface KeyGroupChange {
   readonly group: JsonObject | null;
 }
 
-/** The channel rule kinds: `oauth.model-alias` and `oauth.excluded-models`, one entry per channel. */
-export type ChannelRuleKind = "aliases" | "exclusions";
+/** The channel rule kinds: `oauth.model-alias`, `oauth.excluded-models` and `models.write-ins`, one entry per channel. */
+export type ChannelRuleKind = "aliases" | "exclusions" | "writeIns";
 
 export type ImportResult =
   | {
@@ -206,6 +207,7 @@ const TABLES = {
   keys: "config_provider_keys",
   aliases: "config_model_aliases",
   exclusions: "config_model_exclusions",
+  writeIns: "config_model_write_ins",
   payload: "config_payload_rules",
 } as const;
 
@@ -238,6 +240,7 @@ const SCHEMA = [
    )`,
   `CREATE TABLE IF NOT EXISTS config_model_aliases (id TEXT PRIMARY KEY, value TEXT NOT NULL, ${ENTRY_COLUMNS})`,
   `CREATE TABLE IF NOT EXISTS config_model_exclusions (id TEXT PRIMARY KEY, value TEXT NOT NULL, ${ENTRY_COLUMNS})`,
+  `CREATE TABLE IF NOT EXISTS config_model_write_ins (id TEXT PRIMARY KEY, value TEXT NOT NULL, ${ENTRY_COLUMNS})`,
   `CREATE TABLE IF NOT EXISTS config_payload_rules (
      id TEXT PRIMARY KEY, kind TEXT NOT NULL, position INTEGER NOT NULL, value TEXT NOT NULL, ${ENTRY_COLUMNS}
    )`,
@@ -458,6 +461,7 @@ export class ConfigStore {
         groups: revisions(TABLES.groups),
         aliases: revisions(TABLES.aliases),
         exclusions: revisions(TABLES.exclusions),
+        writeIns: revisions(TABLES.writeIns),
       },
     };
   }
@@ -511,7 +515,7 @@ export class ConfigStore {
     });
   }
 
-  /** Writes one channel rule (`aliases` or `exclusions` of `channel`); `value` `null` deletes it. */
+  /** Writes one channel rule (the `aliases`, `exclusions` or `writeIns` of `channel`); `value` `null` deletes it. */
   writeChannelRule(
     kind: ChannelRuleKind,
     channel: string,
@@ -519,7 +523,7 @@ export class ConfigStore {
     value: Json | null,
     by: string,
   ): WriteResult<{ readonly revision: number }> {
-    const table = kind === "aliases" ? TABLES.aliases : TABLES.exclusions;
+    const table = TABLES[kind];
 
     return this.#write((next) => {
       const current = this.#revisionOf(table, channel);
@@ -1126,6 +1130,7 @@ export class ConfigStore {
       keys,
       aliases: channels(TABLES.aliases),
       exclusions: channels(TABLES.exclusions),
+      writeIns: channels(TABLES.writeIns),
       payload,
     };
   }
@@ -1164,6 +1169,9 @@ export class ConfigStore {
 
     for (const { id, value } of rows.exclusions)
       this.#upsertValue(TABLES.exclusions, id, value, revision, by);
+
+    for (const { id, value } of rows.writeIns)
+      this.#upsertValue(TABLES.writeIns, id, value, revision, by);
 
     for (const rule of rows.payload)
       this.#sql.exec(

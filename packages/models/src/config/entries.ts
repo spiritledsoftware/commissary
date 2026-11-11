@@ -9,8 +9,8 @@
  *   A setting at its default is not stored.
  * - **key groups** and **provider keys**: a group is its endpoint and shared settings, each key an entry of its own whose id
  *   is its credential id (`credentials/key-ids.ts`); both carry a position that orders them.
- * - **model aliases** and **model exclusions**: one entry per channel (`oauth.model-alias.<channel>`,
- *   `oauth.excluded-models.<channel>`).
+ * - **model aliases**, **model exclusions** and **model write-ins**: one entry per channel (`oauth.model-alias.<channel>`,
+ *   `oauth.excluded-models.<channel>`, `models.write-ins.<provider>`).
  * - **payload rules**: one entry per rule of `requests.payload`, by kind and position.
  *
  * The not-applied keys (`not-applied.ts`) belong to no entry: a Go config document names them on import and they are
@@ -101,8 +101,16 @@ export interface EntryRows {
   readonly keys: ReadonlyArray<KeyRow>;
   readonly aliases: ReadonlyArray<ChannelRow>;
   readonly exclusions: ReadonlyArray<ChannelRow>;
+  readonly writeIns: ReadonlyArray<ChannelRow>;
   readonly payload: ReadonlyArray<PayloadRow>;
 }
+
+/** Where each channel rule kind's map lives in the config document. */
+export const CHANNEL_RULE_PATHS = {
+  aliases: "oauth.model-alias",
+  exclusions: "oauth.excluded-models",
+  writeIns: "models.write-ins",
+} as const;
 
 /** Key settings that are not-applied keys: dropped from a provider key entry (`not-applied.ts`). */
 const NOT_APPLIED_KEY_FIELDS = ["experimental-cch-signing"];
@@ -193,10 +201,8 @@ export const entriesOfConfig = (config: Config, payloadId: () => string): EntryR
     }
   }
 
-  const oauth = objectOf(document.oauth);
-
-  const channels = (map: Json | undefined): ChannelRow[] =>
-    Object.entries(objectOf(map)).map(([id, value]) => ({ id, value }));
+  const channels = (path: string): ChannelRow[] =>
+    Object.entries(objectOf(atPath(document, path))).map(([id, value]) => ({ id, value }));
 
   const payloadDocument = objectOf(objectOf(document.requests).payload);
 
@@ -213,8 +219,9 @@ export const entriesOfConfig = (config: Config, payloadId: () => string): EntryR
     settings,
     groups,
     keys,
-    aliases: channels(oauth["model-alias"]),
-    exclusions: channels(oauth["excluded-models"]),
+    aliases: channels(CHANNEL_RULE_PATHS.aliases),
+    exclusions: channels(CHANNEL_RULE_PATHS.exclusions),
+    writeIns: channels(CHANNEL_RULE_PATHS.writeIns),
     payload,
   };
 };
@@ -263,10 +270,10 @@ export const documentOfEntries = (rows: EntryRows): JsonObject => {
     return map;
   };
 
-  if (rows.aliases.length > 0) writePath(document, "oauth.model-alias", channelMap(rows.aliases));
-
-  if (rows.exclusions.length > 0)
-    writePath(document, "oauth.excluded-models", channelMap(rows.exclusions));
+  for (const kind of ["aliases", "exclusions", "writeIns"] as const) {
+    if (rows[kind].length > 0)
+      writePath(document, CHANNEL_RULE_PATHS[kind], channelMap(rows[kind]));
+  }
 
   if (rows.payload.length > 0) {
     const payload: JsonObject = {};

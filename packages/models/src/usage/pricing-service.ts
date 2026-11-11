@@ -5,6 +5,8 @@
  * The cost is looked up once, in the detached write of the record (`d1-sink.ts`), so a request never waits for it, and
  * it is stored with the record: a price changed later (an override edited, the catalog refreshed) never moves it.
  *
+ * A model the org wrote in (`models.write-ins`) without a price of its own is priced as the model it is like.
+ *
  * Catalog prices come from the active catalog first, then from the models.dev snapshot compiled into the Worker: a
  * catalog stored in KV before models.dev costs were kept has no prices, and the bundled snapshot prices the models it
  * lists until the next refresh replaces the stored copy. Models models.dev does not list are priced from the bundled
@@ -68,6 +70,7 @@ export class UsagePricing extends Context.Service<
             docs: [catalogs.modelsDev, embeddedModelsDev()],
             overrides: snapshot?.priceOverrides ?? [],
             additions: catalogAdditions(),
+            writeIns: snapshot?.config.models["write-ins"] ?? {},
           };
 
           return sources;

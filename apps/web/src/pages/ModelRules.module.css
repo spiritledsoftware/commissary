@@ -176,6 +176,22 @@
   width: 9rem;
 }
 
+.writeIns > thead th:nth-child(1) {
+  width: 55%;
+}
+
+.writeIns > thead th:nth-child(3) {
+  width: 5.5rem;
+}
+
+/* A write-in the catalog has caught up with: the one line under a write-in that asks for something. */
+.caughtUp {
+  display: block;
+  margin-top: var(--space-1);
+  font-size: var(--text-xs);
+  font-weight: 650;
+}
+
 .table .number {
   text-align: right;
   white-space: nowrap;
@@ -305,6 +321,27 @@
   margin-top: calc(-1 * var(--space-2));
 }
 
+/* Write in a model: its id, the model it is like, a display name and the buttons; the preview beneath. */
+.writeInForm {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--space-2) var(--space-4);
+}
+
+.writeInForm input {
+  width: 100%;
+}
+
+.writeInForm > .preview {
+  grid-column: 1 / -1;
+  max-width: 75ch;
+}
+
+.writeInForm > .preview:empty {
+  margin-top: calc(-1 * var(--space-2));
+}
+
 /* Exclude a pattern: the field with its live match line, and the button. */
 .patternForm {
   display: grid;
@@ -326,6 +363,7 @@
 /* The native suggestion arrow of the name fields: the suggestions still open as one types. Chromium's own rule for
    an input with a list is !important, so only an !important one hides it. */
 .aliasForm input::-webkit-calendar-picker-indicator,
+.writeInForm input::-webkit-calendar-picker-indicator,
 .patternForm input::-webkit-calendar-picker-indicator {
   display: none !important;
 }
@@ -354,6 +392,7 @@
 
 @container (max-width: 43rem) {
   .aliasForm,
+  .writeInForm,
   .patternForm {
     grid-template-columns: minmax(0, 1fr);
   }

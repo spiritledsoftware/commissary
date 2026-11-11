@@ -319,7 +319,7 @@ The model name the provider receives for an attempt.
 _Avoid_: provider's name, route model
 
 **Model rule**:
-An org-defined alias, exclusion or prefix that shapes which model ids a credential serves.
+An org-defined alias, exclusion, write-in or prefix that shapes which model ids a credential serves.
 _Avoid_: mapping, routing rule
 
 **Model alias**:
@@ -354,6 +354,12 @@ _Avoid_: catalogue, static models
 A model, or a fact about a model, that Commissary records itself because models.dev lacks it. It fills gaps and never
 overrides a value models.dev has.
 _Avoid_: overlay, patch, overrides
+
+**Model write-in**:
+A model an org adds to a provider's model catalog for its own credentials, such as one released before the model catalog
+lists it, optionally like a model the catalog knows. Once the model catalog lists it, the catalog's model counts and
+the write-in changes nothing.
+_Avoid_: custom model, extra model, catalog addition (that is Commissary's own)
 
 **Model route**:
 One credential's way of serving one model id, together with whether it can serve it right now.

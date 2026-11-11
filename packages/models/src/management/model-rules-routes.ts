@@ -1,9 +1,10 @@
 /**
- * `PUT|DELETE /v9/management/model-rules/aliases/:channel` and `/model-rules/exclusions/:channel` (`RoutingGroup` in
- * @commissary/contract/routing): the Models page's channel rule edits. Workers addition, no Go counterpart (Go's panel
- * writes `oauth.model-alias` and `oauth.excluded-models` through `/config` paths).
+ * `PUT|DELETE /v9/management/model-rules/aliases/:channel`, `/model-rules/exclusions/:channel` and
+ * `/model-rules/write-ins/:channel` (`RoutingGroup` in @commissary/contract/routing): the Models page's channel rule
+ * edits. Workers addition, no Go counterpart (Go's panel writes `oauth.model-alias` and `oauth.excluded-models` through
+ * `/config` paths; Go has no write-ins).
  *
- * Each channel's aliases and exclusions are a config entry (ADR 0025). An edit replaces the channel's whole list (`PUT`)
+ * Each channel's aliases, exclusions and write-ins are a config entry (ADR 0025). An edit replaces the channel's whole list (`PUT`)
  * or removes it (`DELETE`, `404 not_found` when the channel has none), and names the revision it was based on in
  * `If-Match` (`"12"`, `W/"12"` or `12`; 0 for a channel without rules): a channel changed since answers
  * `409 conflict` and nothing is stored; a missing or malformed header is `400 invalid_if_match`. The channel is the
@@ -14,18 +15,53 @@ import { Effect } from "effect";
 import { HttpRouter } from "effect/http";
 import { AccessPrincipal } from "@commissary/auth";
 import { decodeConfig } from "../config/codec.ts";
+import { CHANNEL_RULE_PATHS } from "../config/entries.ts";
+import type { Config, ModelWriteIn, OAuthModelAlias } from "../config/schema.ts";
 import type { ChannelRuleKind, WriteResult } from "../config/store.ts";
-import { isJsonArray, type Json } from "@commissary/json";
+import { isJsonArray, type Json, type JsonObject, setOwn } from "@commissary/json";
 import { handled, ifMatch, jsonReply, replyError } from "@commissary/core";
 import { bodyJson } from "@commissary/state";
 import { modelsControlPlane } from "../env.ts";
 
 const BASE = "/v9/management/model-rules";
 
-/** The config key of each kind's channel map. */
-const CONFIG_KEYS: Readonly<Record<ChannelRuleKind, "model-alias" | "excluded-models">> = {
-  aliases: "model-alias",
-  exclusions: "excluded-models",
+/** Each kind's path segment in the routes. */
+const ROUTE_SEGMENTS: Readonly<Record<ChannelRuleKind, string>> = {
+  aliases: "aliases",
+  exclusions: "exclusions",
+  writeIns: "write-ins",
+};
+
+/** One channel's list of any kind, as the config schema decodes it. */
+type ChannelList =
+  | ReadonlyArray<OAuthModelAlias>
+  | ReadonlyArray<string>
+  | ReadonlyArray<ModelWriteIn>;
+
+/** The kind's list for `channel` in the decoded config; `undefined` when it has none. */
+const channelListOf = (
+  kind: ChannelRuleKind,
+  config: Config,
+  channel: string,
+): ChannelList | undefined => {
+  const own = <V>(map: Readonly<Record<string, V>>): V | undefined =>
+    Object.hasOwn(map, channel) ? map[channel] : undefined;
+
+  if (kind === "aliases") return own(config.oauth["model-alias"]);
+
+  if (kind === "exclusions") return own(config.oauth["excluded-models"]);
+
+  return own(config.models["write-ins"]);
+};
+
+/** A config document holding only `list` under `channel` in the kind's map. */
+const documentWith = (kind: ChannelRuleKind, channel: string, list: Json): JsonObject => {
+  const map: JsonObject = {};
+  setOwn(map, channel, list);
+
+  return CHANNEL_RULE_PATHS[kind]
+    .split(".")
+    .reduceRight<JsonObject>((inner, segment) => ({ [segment]: inner }), map);
 };
 
 /** The `:channel` parameter as the config keys it (trimmed, lower-case); empty is `400 invalid_channel`. */
@@ -46,7 +82,7 @@ const channelParam = Effect.gen(function* () {
 
 /** `list` as the config normaliser keeps it under `channel` (`undefined`: nothing would be kept). */
 const normalised = (kind: ChannelRuleKind, channel: string, list: Json) =>
-  decodeConfig({ oauth: { [CONFIG_KEYS[kind]]: { [channel]: list } } }).pipe(
+  decodeConfig(documentWith(kind, channel, list)).pipe(
     Effect.mapError((error) =>
       replyError(422, "invalid_config", {
         message: error.message,
@@ -54,10 +90,12 @@ const normalised = (kind: ChannelRuleKind, channel: string, list: Json) =>
       }),
     ),
     Effect.map((config): Json | undefined => {
-      const kept: unknown = config.oauth[CONFIG_KEYS[kind]][channel];
+      const kept = channelListOf(kind, config, channel);
 
-      // SAFETY: the config schema's channel lists are plain JSON values (aliases or pattern strings).
-      return Array.isArray(kept) && kept.length > 0 ? (structuredClone(kept) as Json) : undefined;
+      if (kept === undefined || kept.length === 0) return undefined;
+      const copy: Json = structuredClone([...kept]);
+
+      return copy;
     }),
   );
 
@@ -110,7 +148,7 @@ const remove = (kind: ChannelRuleKind) =>
     return yield* written(result);
   });
 
-export const modelRuleRoutes = (["aliases", "exclusions"] as const).flatMap((kind) => [
-  HttpRouter.route("PUT", `${BASE}/${kind}/:channel`, handled(put(kind))),
-  HttpRouter.route("DELETE", `${BASE}/${kind}/:channel`, handled(remove(kind))),
+export const modelRuleRoutes = (["aliases", "exclusions", "writeIns"] as const).flatMap((kind) => [
+  HttpRouter.route("PUT", `${BASE}/${ROUTE_SEGMENTS[kind]}/:channel`, handled(put(kind))),
+  HttpRouter.route("DELETE", `${BASE}/${ROUTE_SEGMENTS[kind]}/:channel`, handled(remove(kind))),
 ]);
