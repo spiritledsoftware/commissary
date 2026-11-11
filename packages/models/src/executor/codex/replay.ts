@@ -25,7 +25,14 @@ import {
   set,
   tryParseJson,
 } from "@commissary/json";
-import { isValidGptReasoningSignature } from "@commissary/translation/signature";
+import {
+  isValidGptReasoningSignature,
+  isValidMetaReasoningSignature,
+} from "@commissary/translation/signature";
+import {
+  canonicalReasoningSignatureKey,
+  isReplayableReasoningSignature,
+} from "../helps/responses-signature.ts";
 import { sanitizeClaudeToolId, shortenCodexCallIdIfNeeded } from "@commissary/translation";
 import {
   type BackendResolver,
@@ -121,13 +128,12 @@ const normalizeItem = (item: Json): Json | undefined => {
     case "reasoning": {
       const encrypted = get(item, "encrypted_content");
 
-      if (
-        typeof encrypted !== "string" ||
-        encrypted !== encrypted.trim() ||
-        !isValidGptReasoningSignature(encrypted)
-      ) {
+      if (typeof encrypted !== "string" || encrypted !== encrypted.trim()) return undefined;
+
+      // A GPT or Meta envelope is stored as issued, router suffix included: the request that replays it runs the
+      // reasoning sanitiser afterwards, which keeps the suffix on OpenRouter and strips it for every other upstream.
+      if (!isValidGptReasoningSignature(encrypted) && !isValidMetaReasoningSignature(encrypted))
         return undefined;
-      }
 
       return { type: "reasoning", summary: [], content: null, encrypted_content: encrypted };
     }
@@ -666,7 +672,7 @@ const inputHasValidReasoning = (inputItems: readonly Json[]): boolean =>
     if (asString(get(item, "type")).trim() !== "reasoning") return false;
     const encrypted = get(item, "encrypted_content");
 
-    return typeof encrypted === "string" && isValidGptReasoningSignature(encrypted);
+    return typeof encrypted === "string" && isReplayableReasoningSignature(encrypted);
   });
 
 /** `filterCodexReasoningReplayItemsForInput` (unmarked legacy turns). */
@@ -728,7 +734,7 @@ const filterTurnItems = (inputItems: readonly Json[], items: readonly Json[]): J
     const type = asString(get(item, "type")).trim();
 
     if (type === "reasoning") {
-      const encrypted = asString(get(item, "encrypted_content")).trim();
+      const encrypted = canonicalReasoningSignatureKey(asString(get(item, "encrypted_content")));
 
       if (encrypted !== "") existingReasoning.add(encrypted);
     } else if (type === "function_call_output" || type === "custom_tool_call_output") {
@@ -743,7 +749,12 @@ const filterTurnItems = (inputItems: readonly Json[], items: readonly Json[]): J
   for (const item of items) {
     switch (asString(get(item, "type")).trim()) {
       case "reasoning":
-        if (existingReasoning.has(asString(get(item, "encrypted_content")).trim())) continue;
+        if (
+          existingReasoning.has(
+            canonicalReasoningSignatureKey(asString(get(item, "encrypted_content"))),
+          )
+        )
+          continue;
         break;
       case "function_call":
       case "custom_tool_call": {

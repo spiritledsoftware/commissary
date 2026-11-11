@@ -18,11 +18,11 @@ import { cloneJson, del, get, type Json } from "@commissary/json";
 import { Formats } from "@commissary/translation/formats";
 import type { TranslatorRegistry } from "@commissary/translation";
 import { ExecutionError } from "../errors.ts";
+import { normalizeCodexInstructions, setIfDifferent } from "../codex/request.ts";
 import {
-  normalizeCodexInstructions,
+  type ReasoningSanitizeOptions,
   sanitizeReasoningEncryptedContent,
-  setIfDifferent,
-} from "../codex/request.ts";
+} from "./responses-signature.ts";
 import { ApplyPatchResponsesState, normalizeApplyPatchResponses } from "./apply-patch-responses.ts";
 import { finalizePayload } from "./payload.ts";
 import { parseSuffix } from "@commissary/translation/thinking";
@@ -54,6 +54,17 @@ export interface ResponsesShaping {
   readonly payloadProtocol: string;
   /** Provider tool preparation, run after the reasoning sanitising (Meta: web_search sanitising, muse namespace). */
   readonly prepareTools?: (body: Json) => Json;
+  /**
+   * The model whose signature family the request translators and the reasoning sanitiser see (Meta: `muse-` + the base
+   * model unless an alias names another Meta model). Default: the base model.
+   */
+  readonly signatureTargetModel?: (
+    baseModel: string,
+    request: ExecutorRequest,
+    options: ExecutorOptions,
+  ) => string;
+  /** The reasoning-signature policy of the upstream. Default: replay blobs of unknown provenance as they are. */
+  readonly reasoning?: (context: ExecutionContext) => ReasoningSanitizeOptions;
 }
 
 export const prepareResponsesRequest = Effect.fnUntraced(function* (
@@ -70,12 +81,14 @@ export const prepareResponsesRequest = Effect.fnUntraced(function* (
   const from = options.sourceFormat;
   const to = Formats.Codex;
 
+  const signatureTarget = shaping.signatureTargetModel?.(baseModel, request, options) ?? baseModel;
+
   const translate = (payload: Json) =>
     translateRequestForExecutor(
       registry,
       from,
       to,
-      { format: from, model: baseModel, stream, body: payload },
+      { format: from, model: signatureTarget, stream, body: payload },
       thinking.summary,
       { headers: options.headers, config: context.config, isCompat: modelIsCompat(request) },
     );
@@ -90,10 +103,14 @@ export const prepareResponsesRequest = Effect.fnUntraced(function* (
     });
   }
 
-  const original =
+  // The translators saw the signature target; the body is sent under the base model.
+  const original = setIfDifferent(
     options.originalRequest === undefined || options.originalRequest === request.payload
       ? cloneJson(translated.body)
-      : translate(options.originalRequest).body;
+      : translate(options.originalRequest).body,
+    "model",
+    baseModel,
+  );
 
   let body = yield* thinking.apply({
     body: translated.body,
@@ -138,7 +155,10 @@ export const prepareResponsesRequest = Effect.fnUntraced(function* (
   }
 
   body = normalizeCodexInstructions(body, false);
-  body = sanitizeReasoningEncryptedContent(body, true);
+  body = sanitizeReasoningEncryptedContent(
+    body,
+    shaping.reasoning?.(context) ?? { keepForeign: true },
+  );
 
   if (shaping.prepareTools !== undefined) body = shaping.prepareTools(body);
   const translatedForResponse = cloneJson(body);

@@ -42,9 +42,12 @@ export { inspectMetaReasoningSignature, isValidMetaReasoningSignature } from "./
 export { isValidRouterSuffix, stripRouterSuffix } from "./router-suffix.ts";
 
 export {
+  compatibleSignatureForProvider,
   detectSignatureProvider,
   type SignatureProvider,
+  signaturePayloadWithoutProviderPrefix,
   signatureProviderFromModelName,
+  splitSignatureProviderPrefix,
 } from "./provider.ts";
 
 export {

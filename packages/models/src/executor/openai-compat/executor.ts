@@ -29,7 +29,11 @@ import {
   type HttpClientResponse,
 } from "effect/http";
 import { del, get, isJsonObject, type Json, set, tryParseJson } from "@commissary/json";
-import { sanitizeReasoningEncryptedContent } from "../codex/request.ts";
+import {
+  reasoningOptionsForTarget,
+  resolveResponsesSignatureTargetModel,
+  sanitizeReasoningEncryptedContent,
+} from "../helps/responses-signature.ts";
 import { splitLines } from "@commissary/translation/sse";
 import {
   builtinTranslators,
@@ -263,11 +267,20 @@ export const makeOpenAICompatExecutor = (
       isCompat: modelIsCompat(request),
     };
 
+    // The translators see the model whose signature family decides which reasoning replays (an unmapped deployment alias
+    // takes the requested Meta, Grok or GPT model); the body is sent under the base model (Go a68c7d8e).
+    const signatureTarget = resolveResponsesSignatureTargetModel(baseModel, request, options);
+
     const original = translateRequestForExecutor(
       registry,
       from,
       to,
-      { format: from, model: baseModel, stream, body: options.originalRequest ?? request.payload },
+      {
+        format: from,
+        model: signatureTarget,
+        stream,
+        body: options.originalRequest ?? request.payload,
+      },
       thinking.summary,
       rewrite,
     );
@@ -276,10 +289,14 @@ export const makeOpenAICompatExecutor = (
       registry,
       from,
       to,
-      { format: from, model: baseModel, stream, body: request.payload },
+      { format: from, model: signatureTarget, stream, body: request.payload },
       thinking.summary,
       rewrite,
     );
+
+    for (const envelope of [original, translated]) {
+      if (get(envelope.body, "model") !== baseModel) set(envelope.body, "model", baseModel);
+    }
 
     if (translated.error !== undefined) {
       return yield* new ExecutionError({
@@ -317,7 +334,16 @@ export const makeOpenAICompatExecutor = (
       );
       body = applyPromptCacheKey(provider, context, request, options, baseModel, body);
     } else {
-      body = sanitizeReasoningEncryptedContent(del(body, "stream"));
+      // A third-party Responses upstream replays the reasoning it issued: its text, ids and blobs of unknown provenance
+      // stay; a router suffix survives on OpenRouter only (Go 674dbe8f, a68c7d8e).
+      body = sanitizeReasoningEncryptedContent(
+        del(body, "stream"),
+        reasoningOptionsForTarget({
+          isCompat: true,
+          targetModel: signatureTarget,
+          baseUrl: baseURL,
+        }),
+      );
     }
 
     if (stream) {

@@ -1,6 +1,11 @@
 // Meta (Muse) executor against a mocked `/responses` upstream: request shaping, SSE aggregation, error rules and
 // credential resolution.
-import { claudeSignature } from "./support/signatures.ts";
+import {
+  claudeSignature,
+  gptSignature,
+  metaSignature,
+  routerSuffixed,
+} from "./support/signatures.ts";
 import { Clock, Effect, Stream } from "effect";
 import { describe, expect, it } from "vitest";
 import { metaCreds, requireMetaToken } from "../src/executor/meta/credentials.ts";
@@ -214,7 +219,7 @@ describe("Meta executor", () => {
                 type: "reasoning",
                 id: "rs_foreign",
                 summary: [],
-                encrypted_content: "opaque-muse-state",
+                encrypted_content: metaSignature(),
               },
               {
                 type: "reasoning",
@@ -276,9 +281,9 @@ describe("Meta executor", () => {
       { type: "namespace", name: "muse" },
     ]);
     expect((body["tools"] as Item[])[0]).toEqual({ type: "web_search" });
-    // Foreign reasoning blobs are replayed; recognisable other-provider signatures are dropped.
+    // A recognised Meta envelope is replayed; other providers' signatures are dropped (Go 7a0b7563).
     const reasoning = body.input.filter((item) => item["type"] === "reasoning");
-    expect(reasoning.some((item) => item["encrypted_content"] === "opaque-muse-state")).toBe(true);
+    expect(reasoning.some((item) => item["encrypted_content"] === metaSignature())).toBe(true);
     expect(
       reasoning.some((item) => item["id"] === "rs_claude" && "encrypted_content" in item),
     ).toBe(false);
@@ -1095,5 +1100,78 @@ describe("apply_patch bridge", () => {
 
     expect(error.status).toBe(502);
     expect(error.message).not.toContain("secret text");
+  });
+});
+
+// Go 7a0b7563, 674dbe8f, cc5682c5, a68c7d8e: the native Meta host replays native envelopes only; a router serving a Muse
+// model keeps OpenRouter's suffix on openrouter.ai and gets the native envelope elsewhere. The target is `muse-` + the
+// base model, so a GPT envelope never replays to Meta whatever the alias is called.
+describe("Meta executor reasoning signatures by upstream host", () => {
+  const reasoning = (encrypted: string) => ({
+    type: "reasoning",
+    summary: [],
+    encrypted_content: encrypted,
+  });
+
+  const sent = async (baseUrl: string, signatures: ReadonlyArray<string>) => {
+    const h = await harness(
+      credential("meta", {
+        kind: "apikey",
+        attributes: { api_key: "meta-key-1", base_url: baseUrl },
+      }),
+      () => sse([completed([message("hello")])]),
+    );
+
+    await execute(
+      executor,
+      h,
+      {
+        model: "muse-spark",
+        payload: json(
+          responsesRequest({
+            stream: false,
+            input: [
+              { type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] },
+              ...signatures.map(reasoning),
+            ],
+          }),
+        ),
+      },
+      responsesOptions(),
+    );
+
+    const body = JSON.parse(h.calls[0]?.text ?? "{}") as { input: Array<Record<string, unknown>> };
+
+    return body.input.slice(1).map((item) => item["encrypted_content"]);
+  };
+
+  const routed = routerSuffixed(metaSignature());
+  const inputs = [metaSignature(), routed, gptSignature(), "opaque-blob"];
+
+  it("keeps only the native envelope on the native Meta host", async () => {
+    expect(await sent("https://api.meta.ai/v1", inputs)).toEqual([
+      metaSignature(),
+      undefined,
+      undefined,
+      undefined,
+    ]);
+  });
+
+  it("keeps the routed envelope on an openrouter.ai base URL", async () => {
+    expect(await sent("https://openrouter.ai/api/v1", inputs)).toEqual([
+      metaSignature(),
+      routed,
+      undefined,
+      undefined,
+    ]);
+  });
+
+  it("strips the suffix on another third-party host", async () => {
+    expect(await sent("https://proxy.test/v1", inputs)).toEqual([
+      metaSignature(),
+      metaSignature(),
+      undefined,
+      undefined,
+    ]);
   });
 });

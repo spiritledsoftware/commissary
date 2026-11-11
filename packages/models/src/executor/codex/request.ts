@@ -3,24 +3,10 @@
  *
  * Go source: internal/runtime/executor/codex_executor_request.go (normalizeCodexInstructions,
  * ensureImageGenerationTool, ensureWebSearchToolForHistory, normalizeCodexParallelToolCalls, cacheHelper prompt cache identity),
- * openai_responses_signature.go (sanitizeOpenAIResponsesReasoningEncryptedContent, non-compat variant),
  * helps/derived_session.go (ProviderSessionUUID), helps/claude_code_session.go (ClaudeCodePromptCache).
  * All functions mutate the parsed body in place and return it.
  */
-import {
-  asBool,
-  asString,
-  del,
-  get,
-  isJsonArray,
-  isJsonObject,
-  type Json,
-  set,
-} from "@commissary/json";
-import {
-  isValidGptReasoningSignature,
-  detectSignatureProvider,
-} from "@commissary/translation/signature";
+import { asString, del, get, isJsonArray, type Json, set } from "@commissary/json";
 import { uuidV5Oid } from "../helps/uuid.ts";
 import type { CredentialSnapshot } from "../picker.ts";
 import { parseSuffix } from "@commissary/translation/thinking";
@@ -182,69 +168,6 @@ export const normalizeParallelToolCalls = (body: Json, headers: Headers): Json =
   const tools = get(body, "tools");
 
   return isJsonArray(tools) && tools.length > 0 ? body : del(body, "parallel_tool_calls");
-};
-
-const summaryIsEmpty = (summary: Json | undefined): boolean =>
-  summary === undefined || summary === null || (isJsonArray(summary) && summary.length === 0);
-
-/**
- * `sanitizeOpenAIResponsesReasoningEncryptedContent`: reasoning `content` is cleared (cleartext is
- * promoted into an empty `summary`), invalid or foreign `encrypted_content` is dropped and, with `store` disabled,
- * orphan reasoning ids are removed so the backend does not look them up. With `keepForeign` (Meta) blobs of unknown
- * provenance are replayed as they are; only recognisably other providers' signatures are dropped. `isCompat`
- * (`is-compat` models such as DeepSeek) keeps the reasoning `content` and the ids, which those models replay.
- */
-export const sanitizeReasoningEncryptedContent = (
-  body: Json,
-  keepForeign = false,
-  isCompat = false,
-): Json => {
-  const input = get(body, "input");
-
-  if (!isJsonArray(input)) return body;
-  const stripOrphanIds = !asBool(get(body, "store"));
-
-  for (const item of input) {
-    if (!isJsonObject(item) || asString(item["type"]).trim() !== "reasoning") continue;
-    const content = item["content"];
-
-    if (!isCompat && isJsonArray(content) && content.length > 0) {
-      if (summaryIsEmpty(item["summary"])) {
-        const parts: Json[] = [];
-
-        for (const part of content) {
-          if (asString(get(part, "type")).trim() !== "reasoning_text") continue;
-          const text = asString(get(part, "text"));
-
-          if (text !== "") parts.push({ type: "summary_text", text });
-        }
-
-        if (parts.length > 0) item["summary"] = parts;
-      }
-
-      item["content"] = [];
-    }
-
-    if (!("encrypted_content" in item)) {
-      if (!isCompat && stripOrphanIds && "id" in item) delete item["id"];
-      continue;
-    }
-
-    const encrypted = item["encrypted_content"];
-
-    const valid =
-      typeof encrypted === "string" &&
-      encrypted === encrypted.trim() &&
-      (isValidGptReasoningSignature(encrypted) ||
-        (keepForeign && encrypted !== "" && detectSignatureProvider(encrypted) === "unknown"));
-
-    if (valid) continue;
-    delete item["encrypted_content"];
-
-    if (!isCompat && stripOrphanIds && "id" in item) delete item["id"];
-  }
-
-  return body;
 };
 
 /** `helps.ProviderSessionUUID("codex", metadata)` for a derived session identity. */
