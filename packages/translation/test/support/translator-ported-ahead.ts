@@ -13,6 +13,9 @@ import { isJsonArray, isJsonObject, type Json, type JsonObject } from "@commissa
  *   keep their golden output); `nonStream` replaces the whole body. `message_delta` waits for the trailing usage-only
  *   chunk or `[DONE]` instead of firing on the chunk that carries `finish_reason`, and a top-level `reasoning_content`
  *   block precedes the text block.
+ * - `portedResponse` (ticket C8, Go `55c05f70`): the Gemini -> Claude response cases whose thinking signature (`sigG`) is
+ *   not a Gemini-replayable one: the stream lines that carried only the signature emit nothing, and the non-stream body
+ *   loses the `skip_thought_signature_validator` it used to carry.
  * - `portedChunkEdit` (ticket C6, Go `3f5d3a16`, `c5251b57`, `dfe0a0ef`): small edits to the golden stream chunks of the
  *   Gemini/Antigravity -> OpenAI Chat cases: Antigravity drops `delta.tool_calls: null`, a usage-only chunk keeps the
  *   stream's response id, and the parts of one chunk concatenate instead of the last overwriting the earlier ones.
@@ -133,7 +136,52 @@ const AFTER_PARALLEL_TOOLS: ReadonlyArray<string> = [
   sse("content_block_stop", { type: "content_block_stop", index: 3 }),
 ];
 
+const geminiNonStreamWithoutBypassSignature = JSON.stringify({
+  candidates: [
+    {
+      content: {
+        role: "model",
+        parts: [
+          { thought: true, text: "Let me think" },
+          { text: "Hello <b>" },
+          { functionCall: { name: "get_weather", args: { city: "Paris" }, id: "toolu_7" } },
+          { functionCall: { name: "noargs", args: {}, id: "toolu_8" } },
+        ],
+      },
+      finishReason: "STOP",
+    },
+  ],
+  usageMetadata: {
+    promptTokenCount: 20,
+    candidatesTokenCount: 30,
+    totalTokenCount: 50,
+    cachedContentTokenCount: 10,
+    thoughtsTokenCount: 12,
+    trafficType: "PROVISIONED_THROUGHPUT",
+  },
+  modelVersion: "claude-sonnet-4-5-20250929",
+  createTime: "2026-10-09T09:35:00-04:00",
+  responseId: "msg_01G",
+});
+
 const RESPONSE_ROWS: ReadonlyArray<readonly [string, PortedResponse]> = [
+  [
+    // C8, Go `55c05f70`: a Claude signature Gemini cannot replay is omitted, not sent as the bypass sentinel.
+    "gemini->claude response: streamed thinking, text and tool calls",
+    {
+      stream: new Map([
+        [2, []],
+        [4, []],
+      ]),
+    },
+  ],
+  ...[
+    "gemini->claude response: non-stream consolidates parts from the event stream",
+    "gemini->claude response: non-stream without usage",
+  ].map((key): readonly [string, PortedResponse] => [
+    key,
+    { nonStream: geminiNonStreamWithoutBypassSignature },
+  ]),
   [
     "claude->openai stream: tool calls with interleaved text, parallel calls and tool-name casing restored",
     {
