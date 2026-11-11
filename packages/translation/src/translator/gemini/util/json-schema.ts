@@ -218,7 +218,12 @@ const findPathsByFields = (doc: Doc, fields: ReadonlyArray<string>): Map<string,
     for (const [key, child] of entries) {
       const childPath = path === "" ? escapeKey(key) : `${path}.${escapeKey(key)}`;
 
-      if (wanted.has(key)) out.set(key, [...(out.get(key) ?? []), childPath]);
+      if (wanted.has(key)) {
+        const found = out.get(key);
+
+        if (found === undefined) out.set(key, [childPath]);
+        else found.push(childPath);
+      }
 
       // Literal values are client data; schema-looking keys inside them are not keywords.
       if (isLiteralValueKeyword(key) && !isPropertyDefinition(path)) continue;
@@ -804,11 +809,15 @@ const mergeAllOf = (doc: Doc): void => {
             if (!isJsonArray(value)) break;
             const reqPath = joinPath(parentPath, "required");
             const current = strings(doc, reqPath);
+            const seen = new Set(current);
 
             for (const required of value) {
               const name = asString(required);
 
-              if (!current.includes(name)) current.push(name);
+              if (!seen.has(name)) {
+                seen.add(name);
+                current.push(name);
+              }
             }
 
             setAt(doc, reqPath, current);
@@ -1079,7 +1088,7 @@ const flattenAnyOfOneOf = (doc: Doc, options: FlattenUnionsOptions): void => {
 const flattenTypeArrays = (doc: Doc, preserveNativeNullable: boolean): void => {
   const paths = findPaths(doc, "type");
   sortByDepth(paths);
-  const nullableFields = new Map<string, string[]>();
+  const nullableFields = new Map<string, Set<string>>();
 
   for (const p of paths) {
     const res = getAt(doc, p);
@@ -1133,7 +1142,10 @@ const flattenTypeArrays = (doc: Doc, preserveNativeNullable: boolean): void => {
         const fieldEscaped = parts[parts.length - 2] as string;
         const fieldName = unescapeKey(fieldEscaped);
         const objectPath = parts.slice(0, parts.length - 3).join(".");
-        nullableFields.set(objectPath, [...(nullableFields.get(objectPath) ?? []), fieldName]);
+        const fields = nullableFields.get(objectPath);
+
+        if (fields === undefined) nullableFields.set(objectPath, new Set([fieldName]));
+        else fields.add(fieldName);
         appendHint(doc, joinPath(objectPath, `properties.${fieldEscaped}`), "(nullable)");
       }
     }
@@ -1144,7 +1156,7 @@ const flattenTypeArrays = (doc: Doc, preserveNativeNullable: boolean): void => {
     const req = getAt(doc, reqPath);
 
     if (!isJsonArray(req)) continue;
-    const filtered = req.map(asString).filter((name) => !fields.includes(name));
+    const filtered = req.map(asString).filter((name) => !fields.has(name));
 
     if (filtered.length === 0) delAt(doc, reqPath);
     else setAt(doc, reqPath, filtered);
