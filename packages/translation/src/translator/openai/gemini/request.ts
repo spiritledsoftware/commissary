@@ -14,6 +14,12 @@ import {
   type JsonObject,
 } from "@commissary/json";
 import { convertBudgetToLevel } from "../../../thinking/convert.ts";
+import {
+  firstNonEmptyStringAt,
+  geminiPartFunctionCall,
+  geminiPartFunctionResponse,
+  normalizeGeminiTurnRole,
+} from "../../common/gemini-parts.ts";
 import { normalizeJsonSchemaNumericConstraints } from "../../common/schema.ts";
 import { getStr, isArr, isObj, raw, str } from "../common/read.ts";
 
@@ -29,6 +35,16 @@ const deterministicToolCallId = (
   payload: string,
 ): string =>
   `call_${createHash("sha256").update(`${kind}|${msgIdx}|${partIdx}|${name}|${payload}`).digest("hex").slice(0, 24)}`;
+
+/** `geminiFunctionCallThoughtSignature`: the signature of a functionCall part, wherever the client put it. */
+const geminiFunctionCallThoughtSignature = (part: Json | undefined): string =>
+  firstNonEmptyStringAt(part, [
+    "thoughtSignature",
+    "thought_signature",
+    "functionCall.thoughtSignature",
+    "functionCall.thought_signature",
+    "extra_content.google.thought_signature",
+  ]);
 
 const explicitGeminiToolId = (node: Json | undefined): string => {
   const id = getStr(node, "id").trim();
@@ -258,12 +274,12 @@ export const convertGeminiRequestToOpenAI = (
 
   if (isArr(contents)) {
     let msgIdx = 0;
+    let previousRole = "";
 
     for (const content of contents) {
-      let role = getStr(content, "role");
       const parts = get(content, "parts");
-
-      if (role === "model") role = "assistant";
+      const role = normalizeGeminiTurnRole(getStr(content, "role"), parts, previousRole);
+      previousRole = role;
 
       const msg: JsonObject = { role, content: "" };
       let text = "";
@@ -271,6 +287,7 @@ export const convertGeminiRequestToOpenAI = (
       let onlyTextContent = true;
       const toolCallItems: Json[] = [];
       let droppedThought = false;
+      let hasFunctionResponse = false;
 
       if (isArr(parts)) {
         let partIdx = 0;
@@ -306,7 +323,7 @@ export const convertGeminiRequestToOpenAI = (
             contentItems.push(file);
           }
 
-          const functionCall = get(part, "functionCall");
+          const functionCall = geminiPartFunctionCall(part);
 
           if (functionCall !== undefined) {
             const funcName = getStr(functionCall, "name");
@@ -325,14 +342,21 @@ export const convertGeminiRequestToOpenAI = (
             const queue = toolCallIdsByName.get(funcName) ?? [];
             queue.push(toolCallId);
             toolCallIdsByName.set(funcName, queue);
-            toolCallItems.push({
+
+            const toolCall: JsonObject = {
               id: toolCallId,
               type: "function",
               function: { name: funcName, arguments: argsRaw !== "" ? argsRaw : "{}" },
-            });
+            };
+
+            const thoughtSignature = geminiFunctionCallThoughtSignature(part);
+
+            if (thoughtSignature !== "")
+              toolCall.extra_content = { google: { thought_signature: thoughtSignature } };
+            toolCallItems.push(toolCall);
           }
 
-          const functionResponse = get(part, "functionResponse");
+          const functionResponse = geminiPartFunctionResponse(part);
 
           if (functionResponse !== undefined) {
             const funcName = getStr(functionResponse, "name");
@@ -371,6 +395,7 @@ export const convertGeminiRequestToOpenAI = (
             }
 
             messageItems.push(toolMsg);
+            hasFunctionResponse = true;
           }
         }
       }
@@ -379,7 +404,11 @@ export const convertGeminiRequestToOpenAI = (
 
       if (toolCallItems.length > 0) msg.tool_calls = toolCallItems;
 
-      if (droppedThought && contentItems.length === 0 && toolCallItems.length === 0) {
+      if (
+        (droppedThought || hasFunctionResponse) &&
+        contentItems.length === 0 &&
+        toolCallItems.length === 0
+      ) {
         msgIdx++;
         continue;
       }

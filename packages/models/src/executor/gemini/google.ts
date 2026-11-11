@@ -461,11 +461,14 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
       sanitizeGeminiRequestThoughtSignatures(body, "contents");
     }
 
-    if (mode === "stream") body = ensureGeminiBoundaryUserContent(body, "contents");
+    // Vertex rejects a request ending with a thought-only model turn even behind an empty user turn (ceb4397f).
+    const turns = { dropThoughtOnlyTail: variant.vertex };
+
+    if (mode === "stream") body = ensureGeminiBoundaryUserContent(body, "contents", turns);
     else {
       body = ensureGeminiLeadingUserContent(body, "contents");
 
-      if (mode === "generate") body = ensureGeminiTrailingUserContent(body, "contents");
+      if (mode === "generate") body = ensureGeminiTrailingUserContent(body, "contents", turns);
     }
 
     del(body, "session_id");

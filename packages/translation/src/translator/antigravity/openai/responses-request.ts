@@ -52,6 +52,25 @@ const supportsNativeWebSearch = (model: string, envelope: RequestEnvelope): bool
   return local.supportsWebSearch === true;
 };
 
+/**
+ * `stripAntigravityServerSideToolInvocations`: removes the `includeServerSideToolInvocations` the shared Gemini Responses
+ * translator sets (Antigravity does not support it), and the `toolConfig` it leaves empty (CLIProxyAPI 45501610).
+ */
+const stripServerSideToolInvocations = (payload: Json): Json => {
+  for (const toolConfigPath of ["toolConfig", "request.toolConfig"]) {
+    const flagPath = `${toolConfigPath}.includeServerSideToolInvocations`;
+
+    if (get(payload, flagPath) === undefined) continue;
+    del(payload, flagPath);
+    const toolConfig = get(payload, toolConfigPath);
+
+    if (isJsonObject(toolConfig) && Object.keys(toolConfig).length === 0)
+      del(payload, toolConfigPath);
+  }
+
+  return payload;
+};
+
 /** `stripAntigravityResponsesGoogleSearch`. */
 const stripGoogleSearch = (payload: Json): Json => {
   for (const path of ["tools", "request.tools"]) {
@@ -66,7 +85,7 @@ const stripGoogleSearch = (payload: Json): Json => {
     else set(payload, path, filtered);
   }
 
-  return payload;
+  return stripServerSideToolInvocations(payload);
 };
 
 /** `enableAntigravityResponsesThinkingSummary`: an effort without a summary choice enables summaries. */
@@ -260,7 +279,13 @@ export const convertOpenAIResponsesRequestEnvelopeToAntigravity = (
   if (webSearch) {
     const includedDomains = extractResponsesWebSearchAllowedDomains(input);
     const converted = toGemini(model, input, stream);
-    const gemini = rewriteReasoningForClaude(model, input, converted.body);
+
+    const gemini = rewriteReasoningForClaude(
+      model,
+      input,
+      stripServerSideToolInvocations(converted.body),
+    );
+
     const out = convertGeminiRequestToAntigravity(model, gemini, stream);
     set(out, "requestType", "web_search");
     ensureWebSearchTool(out, includedDomains);

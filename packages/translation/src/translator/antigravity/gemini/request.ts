@@ -22,7 +22,10 @@ import { normalizeJsonSchemaNumericConstraints } from "../../common/schema.ts";
 import { TranslationError } from "../../registry.ts";
 import { contentHasGeminiFunctionResponse } from "../../gemini/common/contents.ts";
 import { attachDefaultSafetySettings } from "../../gemini/common/safety.ts";
-import { sanitizeGeminiRequestThoughtSignatures } from "../../gemini/common/signature.ts";
+import {
+  sanitizeGeminiRequestThoughtSignatures,
+  sanitizeGeminiSystemInstruction,
+} from "../../gemini/common/signature.ts";
 import { mapSanitizedFunctionName, sanitizedFunctionNameMap } from "../../common/tool-names.ts";
 
 const DECLARATION_KEYS = ["functionDeclarations", "function_declarations"] as const;
@@ -36,8 +39,71 @@ const FUNCTION_NAME_FIELDS = [
 
 interface FunctionCallGroup {
   readonly responsesNeeded: number;
+  /** Ordered function call ids, matched against the responses when a turn carries extras. */
+  readonly callIds: string[];
   readonly callNames: string[];
 }
+
+interface GroupResponses {
+  readonly selected: Json[];
+  readonly remaining: Json[];
+}
+
+/**
+ * `selectGroupResponses`: the `responsesNeeded` responses of a group out of those collected, and the rest. With extras
+ * (more responses than calls) a response is taken by its call id, then by its call name (or an empty name), then in
+ * order, so an orphan response does not displace the one a call is waiting for (CLIProxyAPI 234217d0).
+ */
+const selectGroupResponses = (collected: Json[], group: FunctionCallGroup): GroupResponses => {
+  const needed = group.responsesNeeded;
+
+  if (collected.length <= needed) return { selected: collected, remaining: [] };
+
+  if (!group.callIds.some((id) => id !== ""))
+    return { selected: collected.slice(0, needed), remaining: collected.slice(needed) };
+
+  const used = collected.map(() => false);
+  const selected: Array<Json | undefined> = Array.from({ length: needed }, () => undefined);
+
+  const take = (slot: number, matches: (response: Json) => boolean): void => {
+    if (selected[slot] !== undefined) return;
+
+    const index = collected.findIndex(
+      // SAFETY: `findIndex` visits indexes of `collected`, so `used[index]` exists.
+      (response, i) => !(used[i] as boolean) && matches(response),
+    );
+
+    if (index < 0) return;
+    used[index] = true;
+    selected[slot] = collected[index];
+  };
+
+  for (let slot = 0; slot < needed; slot++) {
+    const callId = group.callIds[slot] ?? "";
+
+    if (callId !== "")
+      take(slot, (response) => asString(get(response, "functionResponse.id")) === callId);
+  }
+
+  for (let slot = 0; slot < needed; slot++) {
+    const callName = group.callNames[slot] ?? "";
+
+    if (callName === "") continue;
+
+    take(slot, (response) => {
+      const name = asString(get(response, "functionResponse.name"));
+
+      return name === callName || name === "";
+    });
+  }
+
+  for (let slot = 0; slot < needed; slot++) take(slot, () => true);
+
+  return {
+    selected: selected.filter((response) => response !== undefined),
+    remaining: collected.filter((_, index) => !used[index]),
+  };
+};
 
 const clone = <T extends Json>(value: T): T => structuredClone(value);
 
@@ -179,10 +245,14 @@ const fixCliToolResponse = (root: Json): void => {
       ) {
         // SAFETY: the loop condition checked pendingGroups.length > 0.
         const group = pendingGroups.shift() as FunctionCallGroup;
-        const groupResponses = collected.slice(0, group.responsesNeeded);
-        collected = collected.slice(group.responsesNeeded);
-        appendResponses(groupResponses, group.callNames);
+        const { selected, remaining } = selectGroupResponses(collected, group);
+        collected = remaining;
+        appendResponses(selected, group.callNames);
       }
+
+      // Responses left over in this turn have no preceding functionCall group to match and must not leak into later
+      // model turns.
+      if (pendingGroups.length === 0) collected = [];
 
       continue;
     }
@@ -190,15 +260,20 @@ const fixCliToolResponse = (root: Json): void => {
     if (!isJsonObject(value)) continue;
 
     if (asString(get(value, "role")) === "model") {
+      const callIds: string[] = [];
       const callNames: string[] = [];
       const list = isJsonArray(parts) ? parts : isJsonObject(parts) ? Object.values(parts) : [];
 
-      for (const part of list)
-        if (exists(part, "functionCall")) callNames.push(asString(get(part, "functionCall.name")));
+      for (const part of list) {
+        if (!exists(part, "functionCall")) continue;
+        callIds.push(asString(get(part, "functionCall.id")));
+        callNames.push(asString(get(part, "functionCall.name")));
+      }
+
       out.push(value);
 
       if (callNames.length > 0)
-        pendingGroups.push({ responsesNeeded: callNames.length, callNames });
+        pendingGroups.push({ responsesNeeded: callNames.length, callIds, callNames });
     } else {
       out.push(value);
     }
@@ -458,6 +533,7 @@ const hasSignatureKeyAnywhere = (value: Json): boolean => {
 
 /** `SanitizeAntigravityClaudeGeminiRequestSignatures`: Claude-target replay rules for Gemini-format parts. */
 export const sanitizeAntigravityClaudeGeminiRequestSignatures = (root: Json): Json => {
+  sanitizeGeminiSystemInstruction(root, "request.contents");
   const contents = get(root, "request.contents");
 
   if (!isJsonArray(contents)) return root;
@@ -578,6 +654,9 @@ export const convertGeminiRequestToAntigravity = (
     set(root, "request.systemInstruction", systemInstruction);
     del(root, "request.system_instruction");
   }
+
+  // Cloud Code Assist fails Part.data oneof deserialisation on an empty part object (CLIProxyAPI f42f5871).
+  sanitizeGeminiSystemInstruction(root, "request.contents");
 
   normalizeResponseSchema(root);
   normalizeRoles(root);

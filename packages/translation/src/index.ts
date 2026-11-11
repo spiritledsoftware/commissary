@@ -112,6 +112,8 @@ export {
 
 export { sanitizeGeminiRequestThoughtSignatures } from "./translator/gemini/common/signature.ts";
 
+export { isGeminiThoughtPart } from "./translator/common/gemini-parts.ts";
+
 export { renameKey } from "./translator/gemini/gemini/gemini.ts";
 
 export {

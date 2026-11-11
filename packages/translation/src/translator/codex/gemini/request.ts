@@ -16,6 +16,11 @@ import {
   set,
 } from "@commissary/json";
 import { convertBudgetToLevel } from "../../../thinking/convert.ts";
+import {
+  geminiPartFunctionCall,
+  geminiPartFunctionResponse,
+  normalizeGeminiTurnRole,
+} from "../../common/gemini-parts.ts";
 import { normalizeJsonSchemaNumericConstraints } from "../../common/schema.ts";
 import { buildShortNameMap, shortenNameIfNeeded } from "../claude/request.ts";
 
@@ -266,13 +271,14 @@ export const convertGeminiRequestToCodex = (
   const contents = get(request, "contents");
 
   if (isJsonArray(contents)) {
-    for (const item of contents) {
-      let role = asString(get(item, "role"));
+    let previousRole = "";
 
-      if (role === "model") role = "assistant";
+    for (const item of contents) {
       const parts = get(item, "parts");
 
       if (!isJsonArray(parts)) continue;
+      const role = normalizeGeminiTurnRole(asString(get(item, "role")), parts, previousRole);
+      previousRole = role;
 
       for (const p of parts) {
         if (isGeminiThoughtPart(p)) continue;
@@ -302,7 +308,7 @@ export const convertGeminiRequestToCodex = (
           continue;
         }
 
-        const fc = get(p, "functionCall");
+        const fc = geminiPartFunctionCall(p);
 
         if (fc !== undefined) {
           const fn: JsonObject = { type: "function_call" };
@@ -326,7 +332,7 @@ export const convertGeminiRequestToCodex = (
           continue;
         }
 
-        const fr = get(p, "functionResponse");
+        const fr = geminiPartFunctionResponse(p);
 
         if (fr !== undefined) {
           const fno: JsonObject = { type: "function_call_output" };

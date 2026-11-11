@@ -13,15 +13,26 @@ import { isJsonArray, isJsonObject, type Json, type JsonObject } from "@commissa
  *   keep their golden output); `nonStream` replaces the whole body. `message_delta` waits for the trailing usage-only
  *   chunk or `[DONE]` instead of firing on the chunk that carries `finish_reason`, and a top-level `reasoning_content`
  *   block precedes the text block.
+ * - `portedResponse` (ticket C8, Go `55c05f70`): the Gemini -> Claude response cases whose thinking signature (`sigG`) is
+ *   not a Gemini-replayable one: the stream lines that carried only the signature emit nothing, and the non-stream body
+ *   loses the `skip_thought_signature_validator` it used to carry.
  * - `portedChunkEdit` (ticket C6, Go `3f5d3a16`, `c5251b57`, `dfe0a0ef`): small edits to the golden stream chunks of the
  *   Gemini/Antigravity -> OpenAI Chat cases: Antigravity drops `delta.tool_calls: null`, a usage-only chunk keeps the
  *   stream's response id, and the parts of one chunk concatenate instead of the last overwriting the earlier ones.
  * - `portedRequestEdit` (ticket C6, Go `80aa2b1d`): the OpenAI -> Antigravity request of `tool_choice: "none"` keeps its
  *   `request.tools` (the fixture still drops them). (Ticket C7, Go `c558d320`): the Claude -> Gemini schema-cleaning
  *   cases inline the local `$ref` of a tool property instead of degrading it to a `See: Loc` hint.
+ * - `portedRequestEdit` (ticket C8, Go `be864305`): the three `claude->gemini` cases that send the schema-cleaning request
+ *   (its request, stream and non-stream cases) also expect the tool_result image nested in `functionResponse.parts` (the
+ *   fixture still has the sibling `inline_data` part).
  * - `portedParallelToolCalls` (ticket B2, Go `99d1698f`): the `parallel_tool_calls` a Codex-bound request case must now
  *   produce. An explicit `false` from the client survives instead of being forced to `true`; Go changed this case's
  *   input to `null` to keep covering the forced default, while the fixture still sends `false`.
+ * - `portedRequestEdit` (ticket C8, Go `45501610`): the Gemini requests of the cases that mix built-in tools with function
+ *   declarations (OpenAI Chat `google_search`; Responses `web_search`) carry `toolConfig.includeServerSideToolInvocations`.
+ *   (Ticket C8, Go `c888ff72`): the Gemini -> OpenAI Chat request of a functionResponse-only turn drops the empty user
+ *   message the fixture still keeps behind the tool messages. (Ticket C8, Go `00b76771`): the Responses -> OpenAI Chat
+ *   request keeps the `developer` role of the "dev note" message, which the fixture still sends as `user`.
  */
 
 const ROWS: ReadonlyArray<readonly [string, number]> = [
@@ -128,7 +139,52 @@ const AFTER_PARALLEL_TOOLS: ReadonlyArray<string> = [
   sse("content_block_stop", { type: "content_block_stop", index: 3 }),
 ];
 
+const geminiNonStreamWithoutBypassSignature = JSON.stringify({
+  candidates: [
+    {
+      content: {
+        role: "model",
+        parts: [
+          { thought: true, text: "Let me think" },
+          { text: "Hello <b>" },
+          { functionCall: { name: "get_weather", args: { city: "Paris" }, id: "toolu_7" } },
+          { functionCall: { name: "noargs", args: {}, id: "toolu_8" } },
+        ],
+      },
+      finishReason: "STOP",
+    },
+  ],
+  usageMetadata: {
+    promptTokenCount: 20,
+    candidatesTokenCount: 30,
+    totalTokenCount: 50,
+    cachedContentTokenCount: 10,
+    thoughtsTokenCount: 12,
+    trafficType: "PROVISIONED_THROUGHPUT",
+  },
+  modelVersion: "claude-sonnet-4-5-20250929",
+  createTime: "2026-10-09T09:35:00-04:00",
+  responseId: "msg_01G",
+});
+
 const RESPONSE_ROWS: ReadonlyArray<readonly [string, PortedResponse]> = [
+  [
+    // C8, Go `55c05f70`: a Claude signature Gemini cannot replay is omitted, not sent as the bypass sentinel.
+    "gemini->claude response: streamed thinking, text and tool calls",
+    {
+      stream: new Map([
+        [2, []],
+        [4, []],
+      ]),
+    },
+  ],
+  ...[
+    "gemini->claude response: non-stream consolidates parts from the event stream",
+    "gemini->claude response: non-stream without usage",
+  ].map((key): readonly [string, PortedResponse] => [
+    key,
+    { nonStream: geminiNonStreamWithoutBypassSignature },
+  ]),
   [
     "claude->openai stream: tool calls with interleaved text, parallel calls and tool-name casing restored",
     {
@@ -359,12 +415,110 @@ const inlinedLocRef: GoldenEdit = setPath(
   { type: "object", properties: { lat: { type: "number" } } },
 );
 
+/**
+ * A Claude tool_result image nests in its functionResponse as `parts[].inlineData` (camelCase) instead of following it as a
+ * sibling `inline_data` part (C8, `be864305`).
+ */
+const nestToolResultImages: GoldenEdit = (golden) => {
+  const contents = golden["contents"];
+
+  if (!isJsonArray(contents)) return;
+
+  for (const content of contents) {
+    const parts = isJsonObject(content) ? content["parts"] : undefined;
+
+    if (!isJsonArray(parts)) continue;
+    const kept: Json[] = [];
+
+    for (const part of parts) {
+      const previous = kept.at(-1);
+      const response = isJsonObject(previous) ? previous["functionResponse"] : undefined;
+      const inline = isJsonObject(part) ? part["inline_data"] : undefined;
+
+      if (isJsonObject(response) && isJsonObject(inline)) {
+        const nested = isJsonArray(response["parts"]) ? response["parts"] : [];
+        response["parts"] = [
+          ...nested,
+          { inlineData: { mimeType: inline["mime_type"] ?? "", data: inline["data"] ?? "" } },
+        ];
+      } else kept.push(part);
+    }
+
+    // SAFETY: `content` is a JSON object here: `parts` was read from it above.
+    (content as JsonObject)["parts"] = kept;
+  }
+};
+
+/** Mixed built-in and function tools now declare `toolConfig.includeServerSideToolInvocations` (C8, `45501610`). */
+const serverSideToolInvocations: GoldenEdit = (golden) => {
+  const toolConfig = golden["toolConfig"];
+
+  if (isJsonObject(toolConfig)) toolConfig["includeServerSideToolInvocations"] = true;
+  else golden["toolConfig"] = { includeServerSideToolInvocations: true };
+};
+
+/** A functionResponse-only Gemini turn no longer leaves an empty `{role, content: ""}` message behind its tool messages (C8, `c888ff72`). */
+const dropEmptyMessageAfterToolMessages: GoldenEdit = (golden) => {
+  const messages = golden["messages"];
+
+  if (!isJsonArray(messages)) return;
+
+  golden["messages"] = messages.filter(
+    (message, index) =>
+      !(
+        isJsonObject(message) &&
+        message["content"] === "" &&
+        message["role"] === "user" &&
+        index > 0 &&
+        isJsonObject(messages[index - 1]) &&
+        (messages[index - 1] as JsonObject)["role"] === "tool"
+      ),
+  );
+};
+
+/** The Responses `developer` message keeps its role in the Chat request instead of becoming `user` (C8, `00b76771`). */
+const keepDeveloperRole: GoldenEdit = (golden) => {
+  const messages = golden["messages"];
+
+  if (!isJsonArray(messages)) return;
+
+  for (const message of messages) {
+    const content = isJsonObject(message) ? message["content"] : undefined;
+    const first = isJsonArray(content) ? content[0] : undefined;
+
+    if (isJsonObject(message) && isJsonObject(first) && first["text"] === "dev note")
+      message["role"] = "developer";
+  }
+};
+
 const REQUEST_EDITS: ReadonlyMap<string, GoldenEdit> = new Map([
+  [
+    "openai-response->openai request: full Codex-style request (tools, namespaces, custom, shell, history, formats)",
+    keepDeveloperRole,
+  ],
+  [
+    "gemini->openai request: system, generation config, parts, tools and tool results",
+    dropEmptyMessageAfterToolMessages,
+  ],
+  ...[
+    "openai->gemini request: multimodal user turn, tool round trip, reasoning, structured output, modalities, builtin tools",
+    "openai->gemini stream: reasoning, text, tool calls, image output and final usage",
+    "openai->gemini non-stream: reasoning, text, tool call, image and a second candidate",
+    "openai-response->gemini request: tools and tool_choice absent",
+    'openai-response->gemini request: tools and tool_choice "auto"',
+    'openai-response->gemini request: tools and tool_choice "required"',
+  ].map((key): readonly [string, GoldenEdit] => [key, serverSideToolInvocations]),
   ...[
     "request: system, multimodal user turn, tool round trip, schema cleaning, strict tool choice, thinking budget",
     "stream: thinking with signature, text, two tool calls, usage and finish",
     "non-stream: thinking, text, tool calls, cached usage",
-  ].map((name): readonly [string, GoldenEdit] => [`claude->gemini ${name}`, inlinedLocRef]),
+  ].map((name): readonly [string, GoldenEdit] => [
+    `claude->gemini ${name}`,
+    (golden) => {
+      inlinedLocRef(golden);
+      nestToolResultImages(golden);
+    },
+  ]),
   [
     "openai->antigravity request: tool_choice none removes tools; thinking config keys normalised",
     setPath(

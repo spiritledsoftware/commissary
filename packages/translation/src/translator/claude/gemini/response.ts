@@ -4,9 +4,33 @@
  * Go source: internal/translator/claude/gemini/claude_gemini_response.go.
  */
 import { asInt, get, type Json, type JsonObject, tryParseJson } from "@commissary/json";
-import { geminiReplaySignatureOrBypass } from "../../../signature/gemini.ts";
+import { decodeBase64Raw, decodeBase64Std, encodeBase64Std } from "../../../signature/base64.ts";
+import {
+  geminiReplaySignatureOrBypass,
+  isGeminiThoughtSignatureBypass,
+} from "../../../signature/gemini.ts";
 import { exists, isObj, str } from "../../common/gjson.ts";
 import type { ResponseContext, ResponseTransform } from "../../registry.ts";
+
+/**
+ * `geminiCompatibleThoughtSignaturePart`: a thought part whose `thoughtSignature` is valid standard base64, or
+ * `undefined` for a signature Gemini cannot replay. The function-call bypass sentinel is not a valid byte field of a
+ * thought part, so an incompatible signature is omitted instead (CLIProxyAPI 55c05f70).
+ */
+const compatibleThoughtSignaturePart = (rawSignature: string): JsonObject | undefined => {
+  let signature = geminiReplaySignatureOrBypass(rawSignature);
+
+  if (isGeminiThoughtSignatureBypass(signature)) return undefined;
+
+  if (decodeBase64Std(signature) === undefined) {
+    const decoded = decodeBase64Raw(signature);
+
+    if (decoded === undefined) return undefined;
+    signature = encodeBase64Std(decoded);
+  }
+
+  return { thought: true, thoughtSignature: signature };
+};
 
 /** Go `ConvertAnthropicResponseToGeminiParams`. */
 interface Params {
@@ -151,12 +175,13 @@ export const convertClaudeResponseToGemini = (
           const sig = get(block, "signature");
 
           if (exists(sig) && str(sig) !== "") {
-            parts.push({
-              thought: true,
-              thoughtSignature: geminiReplaySignatureOrBypass(str(sig)),
-            });
+            const thinkingPart = compatibleThoughtSignaturePart(str(sig));
 
-            return [JSON.stringify(out)];
+            if (thinkingPart !== undefined) {
+              parts.push(thinkingPart);
+
+              return [JSON.stringify(out)];
+            }
           }
         }
       }
@@ -187,10 +212,10 @@ export const convertClaudeResponseToGemini = (
             const sig = get(delta, "signature");
 
             if (exists(sig) && str(sig) !== "") {
-              parts.push({
-                thought: true,
-                thoughtSignature: geminiReplaySignatureOrBypass(str(sig)),
-              });
+              const thinkingPart = compatibleThoughtSignaturePart(str(sig));
+
+              if (thinkingPart === undefined) return [];
+              parts.push(thinkingPart);
             }
 
             break;
@@ -315,10 +340,9 @@ export const convertClaudeResponseToGeminiNonStream = (
           const sig = get(block, "signature");
 
           if (exists(sig) && str(sig) !== "") {
-            allParts.push({
-              thought: true,
-              thoughtSignature: geminiReplaySignatureOrBypass(str(sig)),
-            });
+            const thinkingPart = compatibleThoughtSignaturePart(str(sig));
+
+            if (thinkingPart !== undefined) allParts.push(thinkingPart);
           }
         }
 
@@ -349,10 +373,9 @@ export const convertClaudeResponseToGeminiNonStream = (
             const sig = get(delta, "signature");
 
             if (exists(sig) && str(sig) !== "") {
-              allParts.push({
-                thought: true,
-                thoughtSignature: geminiReplaySignatureOrBypass(str(sig)),
-              });
+              const thinkingPart = compatibleThoughtSignaturePart(str(sig));
+
+              if (thinkingPart !== undefined) allParts.push(thinkingPart);
             }
 
             break;

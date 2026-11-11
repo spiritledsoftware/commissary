@@ -498,6 +498,16 @@ export const convertOpenAIRequestToGemini = (
       if (functionDeclarations.length > 0) toolItems.push({ functionDeclarations });
       toolItems.push(...googleSearchNodes, ...codeExecutionNodes, ...urlContextNodes);
       out["tools"] = toolItems;
+
+      // Gemini rejects built-in tools combined with functionDeclarations unless server-side tool invocations are
+      // declared (CLIProxyAPI 45501610).
+      if (
+        functionDeclarations.length > 0 &&
+        (googleSearchNodes.length > 0 ||
+          codeExecutionNodes.length > 0 ||
+          urlContextNodes.length > 0)
+      )
+        set(out, "toolConfig.includeServerSideToolInvocations", true);
     }
   }
 

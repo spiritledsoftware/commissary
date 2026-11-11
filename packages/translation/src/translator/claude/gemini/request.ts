@@ -17,11 +17,35 @@ import { deriveClaudeUserID } from "../../common/claude-user-id.ts";
 import { normalizeJsonSchemaNumericConstraints } from "../../common/schema.ts";
 import { sanitizeClaudeFunctionName } from "../../common/claude-util.ts";
 import { exists, isArr, isObj, str, trimmed } from "../../common/gjson.ts";
-import { isGeminiThoughtPart } from "../../common/gemini-parts.ts";
+import {
+  geminiPartFunctionCall,
+  geminiPartFunctionResponse,
+  geminiPartsHaveFunctionCall,
+  geminiPartsHaveFunctionResponse,
+  isGeminiThoughtPart,
+  normalizeGeminiTurnRole,
+} from "../../common/gemini-parts.ts";
 import { UserTurnDrops } from "../../common/parts.ts";
 
 const first = (...values: Array<Json | undefined>): Json | undefined =>
   values.find((value) => value !== undefined);
+
+/**
+ * `orderGeminiClaudeToolResults`: tool results come before other user content, including when adjacent Gemini user
+ * turns were merged into one Claude turn (CLIProxyAPI 55c05f70). Edits the messages in place.
+ */
+const orderToolResults = (messages: JsonObject[]): void => {
+  for (const message of messages) {
+    const content = message.content;
+
+    if (message.role !== "user" || !Array.isArray(content)) continue;
+    const results = content.filter((part) => get(part, "type") === "tool_result");
+    const other = content.filter((part) => get(part, "type") !== "tool_result");
+    const merged = [...results, ...other];
+
+    if (merged.some((part, index) => part !== content[index])) message.content = merged;
+  }
+};
 
 /** `ConvertGeminiRequestToClaude`. */
 export const convertGeminiRequestToClaude = (
@@ -202,16 +226,33 @@ export const convertGeminiRequestToClaude = (
   const contents = get(root, "contents");
 
   if (isArr(contents)) {
+    let previousRole = "";
+
     for (const content of contents) {
-      let role = str(get(content, "role"));
-
-      if (role === "model") role = "assistant";
-
-      if (role === "function" || role === "tool") role = "user";
-
-      const contentItems: JsonObject[] = [];
-      let sendable = 0;
       const parts = get(content, "parts");
+      let role = normalizeGeminiTurnRole(str(get(content, "role")), parts, previousRole);
+      // Some Gemini clients label tool results as model turns; Claude requires user turns.
+      const hasFunctionResponse = geminiPartsHaveFunctionResponse(parts);
+
+      if (hasFunctionResponse && !geminiPartsHaveFunctionCall(parts)) role = "user";
+
+      let contentItems: JsonObject[] = [];
+      let sendable = 0;
+
+      const flushContent = (): void => {
+        if (role !== "assistant") drops.endTurn(sendable);
+
+        if (contentItems.length > 0) accumulator.append({ role, content: contentItems });
+        contentItems = [];
+        sendable = 0;
+      };
+
+      // Split mixed function calls and results without losing their order or ids.
+      const switchRole = (nextRole: string): void => {
+        if (role === nextRole) return;
+        flushContent();
+        role = nextRole;
+      };
 
       if (isArr(parts)) {
         for (const part of parts) {
@@ -226,9 +267,10 @@ export const convertGeminiRequestToClaude = (
             continue;
           }
 
-          const fc = get(part, "functionCall");
+          const fc = geminiPartFunctionCall(part);
 
-          if (exists(fc) && role === "assistant") {
+          if (exists(fc) && (role === "assistant" || hasFunctionResponse)) {
+            switchRole("assistant");
             let toolId = toolIdOf(fc);
 
             if (toolId === "") toolId = nextToolId();
@@ -245,9 +287,10 @@ export const convertGeminiRequestToClaude = (
             continue;
           }
 
-          const fr = get(part, "functionResponse");
+          const fr = geminiPartFunctionResponse(part);
 
           if (exists(fr)) {
+            switchRole("user");
             let toolId: string;
             const customId = toolIdOf(fr);
 
@@ -313,13 +356,14 @@ export const convertGeminiRequestToClaude = (
         }
       }
 
-      if (role !== "assistant") drops.endTurn(sendable);
-
-      if (contentItems.length > 0) accumulator.append({ role, content: contentItems });
+      flushContent();
+      previousRole = role;
     }
   }
 
-  out.messages = accumulator.messages();
+  const messages = accumulator.messages();
+  orderToolResults(messages);
+  out.messages = messages;
 
   const tools = get(root, "tools");
 
