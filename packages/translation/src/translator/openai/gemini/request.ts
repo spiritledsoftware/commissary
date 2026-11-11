@@ -15,6 +15,7 @@ import {
 } from "@commissary/json";
 import { convertBudgetToLevel } from "../../../thinking/convert.ts";
 import {
+  firstNonEmptyStringAt,
   geminiPartFunctionCall,
   geminiPartFunctionResponse,
   normalizeGeminiTurnRole,
@@ -36,21 +37,14 @@ const deterministicToolCallId = (
   `call_${createHash("sha256").update(`${kind}|${msgIdx}|${partIdx}|${name}|${payload}`).digest("hex").slice(0, 24)}`;
 
 /** `geminiFunctionCallThoughtSignature`: the signature of a functionCall part, wherever the client put it. */
-const geminiFunctionCallThoughtSignature = (part: Json | undefined): string => {
-  for (const path of [
+const geminiFunctionCallThoughtSignature = (part: Json | undefined): string =>
+  firstNonEmptyStringAt(part, [
     "thoughtSignature",
     "thought_signature",
     "functionCall.thoughtSignature",
     "functionCall.thought_signature",
     "extra_content.google.thought_signature",
-  ]) {
-    const signature = get(part, path);
-
-    if (signature !== undefined && str(signature) !== "") return str(signature);
-  }
-
-  return "";
-};
+  ]);
 
 const explicitGeminiToolId = (node: Json | undefined): string => {
   const id = getStr(node, "id").trim();

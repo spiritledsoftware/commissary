@@ -13,6 +13,7 @@ import {
   setOwn,
 } from "@commissary/json";
 import type { ResponseContext, ResponseTransform } from "../../registry.ts";
+import { firstNonEmptyStringAt } from "../../common/gemini-parts.ts";
 import { getStr, isArr, str } from "../common/read.ts";
 
 interface ToolCallAccumulator {
@@ -23,20 +24,13 @@ interface ToolCallAccumulator {
 }
 
 /** `openAIToolCallThoughtSignature`: the Gemini thought signature an OpenAI-compatible upstream attached to a tool call. */
-const openAIToolCallThoughtSignature = (toolCall: Json | undefined): string => {
-  for (const path of [
+const openAIToolCallThoughtSignature = (toolCall: Json | undefined): string =>
+  firstNonEmptyStringAt(toolCall, [
     "extra_content.google.thought_signature",
     "function.extra_content.google.thought_signature",
     "thoughtSignature",
     "thought_signature",
-  ]) {
-    const signature = get(toolCall, path);
-
-    if (signature !== undefined && str(signature) !== "") return str(signature);
-  }
-
-  return "";
-};
+  ]);
 
 /** Port of `ConvertOpenAIResponseToGeminiParams`. */
 interface GeminiStreamParams {
@@ -540,7 +534,7 @@ export const convertOpenAIResponseToGemini = (
       candidate.finishReason = mapOpenAIFinishReasonToGemini(finishReason);
 
       if (param.toolCallsAccumulator.size > 0) {
-        // Go iterates a map here (random order); the port emits calls in ascending index order.
+        // Calls are emitted in ascending index order, as Go does since 38706390 (it sorted the map's keys).
         const parts: Json[] = [];
 
         for (const [, accumulator] of [...param.toolCallsAccumulator.entries()].sort(

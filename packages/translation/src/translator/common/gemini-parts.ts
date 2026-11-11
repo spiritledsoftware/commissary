@@ -10,6 +10,17 @@ import { asBool, exists, get, isJsonArray, type Json } from "@commissary/json";
 export const isGeminiThoughtPart = (part: Json | undefined): boolean =>
   asBool(get(part, "thought"));
 
+/** The first non-empty string found at one of `paths` of `node`, or `""` (thought signatures sit at several spellings). */
+export const firstNonEmptyStringAt = (node: Json | undefined, paths: readonly string[]): string => {
+  for (const path of paths) {
+    const value = get(node, path);
+
+    if (typeof value === "string" && value !== "") return value;
+  }
+
+  return "";
+};
+
 /** `GeminiPartFunctionCall`: the `functionCall` or snake_case `function_call` object of a part. */
 export const geminiPartFunctionCall = (part: Json | undefined): Json | undefined =>
   get(part, "functionCall") ?? get(part, "function_call");

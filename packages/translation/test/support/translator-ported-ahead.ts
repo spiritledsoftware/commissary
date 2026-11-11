@@ -22,8 +22,9 @@ import { isJsonArray, isJsonObject, type Json, type JsonObject } from "@commissa
  * - `portedRequestEdit` (ticket C6, Go `80aa2b1d`): the OpenAI -> Antigravity request of `tool_choice: "none"` keeps its
  *   `request.tools` (the fixture still drops them). (Ticket C7, Go `c558d320`): the Claude -> Gemini schema-cleaning
  *   cases inline the local `$ref` of a tool property instead of degrading it to a `See: Loc` hint.
- * - `portedRequestEdit` (ticket C8, Go `be864305`): the Claude -> Gemini schema-cleaning cases also expect the tool_result image
- *   nested in `functionResponse.parts` (the fixture still has the sibling `inline_data` part).
+ * - `portedRequestEdit` (ticket C8, Go `be864305`): the three `claude->gemini` cases that send the schema-cleaning request
+ *   (its request, stream and non-stream cases) also expect the tool_result image nested in `functionResponse.parts` (the
+ *   fixture still has the sibling `inline_data` part).
  * - `portedParallelToolCalls` (ticket B2, Go `99d1698f`): the `parallel_tool_calls` a Codex-bound request case must now
  *   produce. An explicit `false` from the client survives instead of being forced to `true`; Go changed this case's
  *   input to `null` to keep covering the forced default, while the fixture still sends `false`.
