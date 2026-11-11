@@ -1589,6 +1589,24 @@ Deviations from Go (all deliberate, documented in code headers):
   of gjson paths, and `{}` normalisation applies only to schemas that forbid additional properties. The Go streaming
   `partialArgs` conversion (`64316127`, Vertex `streamFunctionCallArguments`) is not ported: nothing in Commissary asks
   Vertex to stream function-call arguments.
+- **Gemini requests (C8, Go `45501610`, `a2718314`, `ceb4397f`, `15d2148b`, `c888ff72`, `3ac38498`, `00b76771`, `55c05f70`, `81de4b9c`,
+  `be864305`, `068fe153`, `4c46f0aa`, `f42f5871`, `234217d0`, `38706390`)**: built-in tools (`google_search`, `code_execution`,
+  `url_context`, Responses `web_search`) mixed with function declarations set `toolConfig.includeServerSideToolInvocations` (Gemini
+  400s without it); the Antigravity Responses translator strips it and the `toolConfig` it leaves empty. Vertex and Antigravity drop
+  trailing thought-only model turns before the boundary turns (`dropGeminiTrailingThoughtOnlyContent`, `executor/gemini/content-turns.ts`;
+  not for `countTokens`), and a final model-role `functionResponse` turn that carries nested media gets an empty user turn after it
+  (Antigravity rejects it as the last turn). Gemini ingress translators (OpenAI, Claude, Codex) normalise `contents[].role` through one
+  helper (`normalizeGeminiTurnRole`: `function`/`tool` are user, an omitted or unknown role comes from the turn's function parts or
+  alternates) and read snake_case `function_call`/`function_response` parts; Claude puts tool results in user turns, splits a turn that
+  mixes calls and results by role and keeps results ahead of other user content. Responses -> Gemini keeps parallel tool outputs in
+  one turn across developer/system notices; Responses -> Chat keeps the `developer` role. Claude -> Gemini/Antigravity carry
+  `is_error: true` as `functionResponse.response.error` (only the boolean `true`) and Claude -> Gemini nests tool_result images in
+  `functionResponse.parts` as `inlineData`. `{}` parts of `systemInstruction` are removed for every sanitised Gemini request (the
+  Part.data oneof 400), and Antigravity discards excess `functionResponse` parts per turn, matching by call id, then name, then
+  order. Gemini -> OpenAI chat maps a functionCall `thoughtSignature` to `extra_content.google.thought_signature` and back. A Claude
+  thinking signature Gemini cannot replay is omitted from Claude -> Gemini responses instead of becoming the bypass sentinel. The
+  committed goldens that predate these changes are covered by ported-ahead edits (`test/support/translator-ported-ahead.ts`) until
+  F2 regenerates the fixtures.
 - **Gemini schema cleaning (C7, Go `154d5144`, `a43026d7`, `e9ba5c50`, `9126772d`, `b2fda98e`, `29150a22`, `a0fd8448`, `5efe9758`, `c558d320`, `ec06c3cb`)**
   (`translator/gemini/util/json-schema.ts`):
   - _Unsupported keywords_: the cleaners strip `readOnly`, `writeOnly`, `discriminator`, `contentMediaType`,
