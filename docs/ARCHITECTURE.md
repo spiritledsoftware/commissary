@@ -947,7 +947,13 @@ WebSocket transports"). Reuses the Codex translators
 
 Port of `openai_responses_websocket*.go` (inbound `GET /v1/responses` and `GET /backend-api/codex/responses` with
 `Upgrade: websocket`), `codex_websockets_*.go` and `xai_websockets_executor.go`. The Access gate authenticates the
-upgrade request like any other (default-deny prefixes); the principal is captured for the socket's lifetime.
+upgrade request like any other (default-deny prefixes); the principal is captured for the socket's lifetime, but the
+API Worker's client gate also provides `RequestReauthorizer` (`@commissary/auth`), which runs `authenticateClient` again over
+the upgrade's headers before **every client frame** (the hand-off in `socket.ts`, steering frames included; CLIProxyAPI
+`b9bb031d`), so a key revoked, a grant withdrawn or a person suspended after the upgrade stops working on the live socket: the
+frame is answered with an error frame (401/403/429, tied to its `event_id`), not run, and the socket stays open. Deviations
+from Go: the check reads the upgrade's headers and not the frame (Commissary's gate looks at no body), is not counted against the
+plan's request ceiling again (the upgrade was), and the plugin `denied` status is N/A.
 
 - **Where the socket lives (decision)**: in the Worker invocation that accepts it (`WebSocketPair` + `server.accept()`,
   `routes.ts`), **not** in a `SessionState` Durable Object. Per-socket state (previous request/response chaining, pending tool

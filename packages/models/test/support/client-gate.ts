@@ -10,6 +10,9 @@ import {
   AccessJwks,
   AccessPrincipal,
   authenticateClient,
+  type AuthConfig,
+  type AuthDirectory,
+  RequestReauthorizer,
 } from "@commissary/auth";
 import { CurrentOrg } from "@commissary/core";
 
@@ -81,6 +84,8 @@ const ClientGate = HttpRouter.middleware<{ provides: AccessPrincipal }>()(
         if (isPublic(request.originalUrl))
           return yield* Effect.provideService(app, AccessPrincipal, PUBLIC_ROUTE_IDENTITY);
 
+        const ambient = yield* Effect.context<AuthConfig | AuthDirectory | CurrentOrg>();
+
         const authenticated = yield* Effect.result(
           authenticateClient(request.headers, request.originalUrl).pipe(
             Effect.provideService(AccessJwks, jwks),
@@ -91,6 +96,13 @@ const ClientGate = HttpRouter.middleware<{ provides: AccessPrincipal }>()(
 
         return yield* app.pipe(
           Effect.provideService(AccessPrincipal, authenticated.success),
+          Effect.provideService(
+            RequestReauthorizer,
+            authenticateClient(request.headers, request.originalUrl).pipe(
+              Effect.provideService(AccessJwks, jwks),
+              Effect.provideContext(ambient),
+            ),
+          ),
           Effect.provideService(CurrentOrg, authenticated.success.org),
         );
       });

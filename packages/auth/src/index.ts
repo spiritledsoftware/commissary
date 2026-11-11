@@ -43,6 +43,8 @@ export * from "./principal.ts";
 
 export * from "./refusal.ts";
 
+export * from "./reauthorize.ts";
+
 export * from "./roles.ts";
 
 export type { SignInService } from "./sign-in-service.ts";

@@ -24,10 +24,13 @@ import {
   AccessJwks,
   AccessPrincipal,
   authenticateClient,
+  type AuthConfig,
+  type AuthDirectory,
   crossSiteRejection,
   PUBLIC_ROUTE_IDENTITY,
   authenticateRun,
   refusalResponse,
+  RequestReauthorizer,
 } from "@commissary/auth";
 import { runPrincipal } from "@commissary/agents/api";
 import { limitClientRate } from "@commissary/billing/api";
@@ -128,6 +131,7 @@ export const ClientGate = HttpRouter.middleware<{ provides: AccessPrincipal }>()
           );
 
         const headers = swapped.success;
+        const ambient = yield* Effect.context<AuthConfig | AuthDirectory | CurrentOrg>();
 
         const authenticated = yield* Effect.result(
           authenticateClient(headers, request.originalUrl).pipe(
@@ -145,8 +149,16 @@ export const ClientGate = HttpRouter.middleware<{ provides: AccessPrincipal }>()
             : refusal;
         }
 
+        // A request that outlives its authentication (a Responses WebSocket) authenticates again per turn, as this
+        // gate does, but not against the ceiling: the upgrade was counted.
+        const reauthorize = authenticateClient(headers, request.originalUrl).pipe(
+          Effect.provideService(AccessJwks, jwks),
+          Effect.provideContext(ambient),
+        );
+
         return yield* app.pipe(
           Effect.provideService(AccessPrincipal, authenticated.success),
+          Effect.provideService(RequestReauthorizer, reauthorize),
           Effect.provideService(CurrentOrg, authenticated.success.org),
         );
       });

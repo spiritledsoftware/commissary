@@ -61,31 +61,48 @@ export const refusalResponse = (
     { status, contentType: JSON_CONTENT_TYPE },
   );
 
+/** What a failed authentication tells the client: a status, a message and, when rate limited, a retry delay. */
+export interface AccessRefusal {
+  readonly status: number;
+  readonly message: string;
+  readonly retryAfterSeconds?: number;
+}
+
+/** Maps an authentication failure to its refusal; server-side failures are logged without details a client could use. */
+export const accessRefusal = (error: AccessError): Effect.Effect<AccessRefusal> =>
+  Match.value(error).pipe(
+    Match.tag("UnauthorizedError", (denied) =>
+      Effect.succeed<AccessRefusal>({ status: 401, message: denied.message }),
+    ),
+    Match.tag("ForbiddenError", (denied) =>
+      Effect.succeed<AccessRefusal>({ status: 403, message: denied.message }),
+    ),
+    Match.tag("NotFoundError", (missing) =>
+      Effect.succeed<AccessRefusal>({ status: 404, message: missing.message }),
+    ),
+    Match.tag("RateLimitedError", (limited) =>
+      Effect.succeed<AccessRefusal>({
+        status: 429,
+        message: limited.message,
+        retryAfterSeconds: limited.retryAfterSeconds,
+      }),
+    ),
+    Match.orElse((failure) =>
+      Effect.logError(`authentication middleware error: ${failure._tag}: ${failure.message}`).pipe(
+        Effect.as<AccessRefusal>({ status: 500, message: "Authentication service error" }),
+      ),
+    ),
+  );
+
 /** Maps an authentication failure to a response; server-side failures are logged without details a client could use. */
 export const accessErrorResponse = (
   error: AccessError,
   dialect: RefusalDialect = "flat",
-): Effect.Effect<HttpServerResponse.HttpServerResponse> => {
-  const errorResponse = (status: number, message: string) =>
-    refusalResponse(status, message, dialect);
+): Effect.Effect<HttpServerResponse.HttpServerResponse> =>
+  Effect.map(accessRefusal(error), (refusal) => {
+    const response = refusalResponse(refusal.status, refusal.message, dialect);
 
-  return Match.value(error).pipe(
-    Match.tag("UnauthorizedError", (denied) => Effect.succeed(errorResponse(401, denied.message))),
-    Match.tag("ForbiddenError", (denied) => Effect.succeed(errorResponse(403, denied.message))),
-    Match.tag("NotFoundError", (missing) => Effect.succeed(errorResponse(404, missing.message))),
-    Match.tag("RateLimitedError", (limited) =>
-      Effect.succeed(
-        HttpServerResponse.setHeader(
-          errorResponse(429, limited.message),
-          "retry-after",
-          String(limited.retryAfterSeconds),
-        ),
-      ),
-    ),
-    Match.orElse((failure) =>
-      Effect.logError(`authentication middleware error: ${failure._tag}: ${failure.message}`).pipe(
-        Effect.as(errorResponse(500, "Authentication service error")),
-      ),
-    ),
-  );
-};
+    return refusal.retryAfterSeconds === undefined
+      ? response
+      : HttpServerResponse.setHeader(response, "retry-after", String(refusal.retryAfterSeconds));
+  });
