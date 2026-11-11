@@ -1045,7 +1045,10 @@ upgrade request like any other (default-deny prefixes); the principal is capture
   frame. A local compaction is atomic (one HTTP summary, then a whole response), so a `response.interrupt` for it is never
   forwarded upstream and is ignored: the response completes, like one that finished before the interrupt arrived (cutting
   it short would drop the compaction item the boundary stands on; a turn that ends without the item is recorded like any
-  other). Difference from Go: the report and the boundary apply to every local route, Claude's and Antigravity's own flows
+  other). Once a request is known to be a local compaction, any interrupt is ignored, including one naming the wrong id,
+  which would otherwise get the 400 "does not target the active response". Before the executor marks it local (during
+  credential choice) an HTTP-mode interrupt is still resolved locally, and the turn is then recorded as an ordinary one.
+  Difference from Go: the report and the boundary apply to every local route, Claude's and Antigravity's own flows
   included, not only Codex `is-compat`.
 - **Fallback to HTTP**: credentials without `websockets` (or other providers) run each turn over the ordinary HTTP executors, with the
   transcript rebuilt locally; a downstream WebSocket never needs an upstream one.
