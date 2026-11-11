@@ -341,6 +341,10 @@ export const applyThinking = (
     }
 
     if (!hasThinkingConfig(config)) config = extractThinkingConfig(body, providerFormat);
+
+    // A body still in the source format carries its thinking in the source's fields (Go `c9af5290`).
+    if (!hasThinkingConfig(config) && fromFormat !== providerFormat)
+      config = extractThinkingConfig(body, fromFormat);
   }
 
   if (!hasThinkingConfig(config)) {

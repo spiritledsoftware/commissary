@@ -32,9 +32,14 @@ const STRIP_PATHS: ReadonlyMap<string, readonly string[]> = new Map([
   ["xai", ["reasoning"]],
 ]);
 
-/** Removes the provider's thinking fields; unknown providers and unparsable bodies are returned unchanged. */
-export const stripThinkingConfig = (body: Json | undefined, provider: string): Json | undefined => {
+/**
+ * Removes the provider's thinking fields; unknown providers and unparsable bodies are returned unchanged. The provider
+ * name is matched case-insensitively and `openai-response` strips like `codex` (Go `6e6afab9`).
+ */
+export const stripThinkingConfig = (body: Json | undefined, format: string): Json | undefined => {
   if (body === undefined) return body;
+  const normalized = format.trim().toLowerCase();
+  const provider = normalized === "openai-response" ? "codex" : normalized;
   const paths = STRIP_PATHS.get(provider);
 
   if (paths === undefined) return body;

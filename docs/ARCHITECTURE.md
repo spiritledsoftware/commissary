@@ -502,9 +502,18 @@ Port of `internal/thinking`, keeping the "canonical `ThinkingConfig` → central
 - The OpenAI chat and Responses translators to Claude send a thinking level the model lists as it is (`xhigh` stays), and
   the Gemini translator turns a dynamic budget (`-1`) or level `auto` into adaptive thinking with no `effort` when the
   model allows dynamic budgets (Go `ad9e456d`).
+- When the target-format body carries no thinking config and the body is in another format, the source format's
+  fields are read too (Go `c9af5290`), e.g. a Gemini `thinkingBudget` bound for Antigravity.
+- **Differences from Go `c9af5290`** (#447): Go answers 400 where Commissary stays lenient. An unrecognised model
+  suffix (`model(bogus)`) is ignored (no thinking config from it) instead of being validated as a level
+  (`UNKNOWN_LEVEL`/`LEVEL_NOT_SUPPORTED`), and an unsupported level on a model whose `type` is not a provider family
+  (OpenAI-compatible models) is clamped to a supported level, as across families, instead of being rejected
+  (`LEVEL_NOT_SUPPORTED`). The thinking golden test masks those cases by that predicate.
+- `stripThinkingConfig` matches the provider name case-insensitively and strips `openai-response` like `codex` (Go `6e6afab9`).
 - Fixtures: `go run ./tools/fixturegen/thinking` → `packages/translation/test/fixtures/thinking.json` (~2.7 MB; includes the Go
   static model catalog used by the lookup). Known Go quirk not mirrored: gjson reads _unparsable_ source JSON
-  leniently in `extractCodexConfig`; the Workers port only handles parsed bodies.
+  leniently in `extractCodexConfig`; the Workers port only handles parsed bodies, so the applier cases whose body and
+  Go output are both unparsable are not compared.
 
 ## Credentials and selection (ControlPlane)
 

@@ -38,11 +38,46 @@ import {
   parseBody,
   resolveApplierModel,
 } from "./support/thinking.ts";
+import { parseSuffixToConfig } from "../src/thinking/suffix.ts";
+import { hasThinkingConfig } from "../src/thinking/types.ts";
 
 // Golden cases generated from the real Go internal/thinking by `go run ./tools/fixturegen/thinking`.
 
 const resolveModelInfo = (c: ApplyFixture): ModelSpec | null | undefined =>
   c.modelRef !== undefined ? fixture.synthetic[c.modelRef] : c.modelInfo;
+
+/*
+ * Kept differences from Go (#447, docs/ARCHITECTURE.md "Thinking pipeline"). Go `c9af5290` rejects with a 400 what
+ * Commissary still handles quietly:
+ * - an unrecognised model suffix (`model(bogus)`): Go validates it as a level (UNKNOWN_LEVEL / LEVEL_NOT_SUPPORTED);
+ *   Commissary ignores it and applies the body's own thinking config, so the expected body stands without the error;
+ * - an unsupported level on a model whose `type` is not a provider family (OpenAI-compatible models): Go no longer counts
+ *   it as a cross-family request and rejects the level (LEVEL_NOT_SUPPORTED); Commissary clamps it to a supported level.
+ */
+const GO_FAMILIES = new Set(
+  "gemini antigravity claude openai openai-response codex kimi kimi-ai kimi.ai kimi.com xai interactions devin".split(
+    " ",
+  ),
+);
+
+const SUFFIX_LEVEL_ERRORS = new Set(["UNKNOWN_LEVEL", "LEVEL_NOT_SUPPORTED"]);
+
+/** Whether the model name carries a suffix that is not a thinking configuration (kept: ignored, not a 400). */
+const unrecognisedSuffix = (model: string): boolean => {
+  const suffix = parseSuffix(model);
+
+  return suffix.hasSuffix && !hasThinkingConfig(parseSuffixToConfig(suffix.rawSuffix));
+};
+
+/** Whether Go's LEVEL_NOT_SUPPORTED comes from a model outside the provider families (kept: clamped, not a 400). */
+const clampedOutsideFamilies = (
+  model: ModelSpec | null | undefined,
+  goError: string | undefined,
+): boolean =>
+  goError === "LEVEL_NOT_SUPPORTED" &&
+  model?.type !== undefined &&
+  model.type !== "" &&
+  !GO_FAMILIES.has(model.type.toLowerCase());
 
 describe("thinking golden fixtures", () => {
   it("covers every applier, validation branch and entry point with enough cases", () => {
@@ -163,6 +198,10 @@ describe("thinking golden fixtures", () => {
 
           const expected = c.e ?? c.o;
 
+          // Kept difference (#447): Commissary clamps the level instead of rejecting it.
+          if (result.error === undefined && clampedOutsideFamilies(model, expected?.split(":")[0]))
+            return undefined;
+
           return actual === expected
             ? undefined
             : `${c.c} ${c.f}->${c.t} suffix=${c.s === true}: ${actual} != ${expected}`;
@@ -203,6 +242,18 @@ describe("thinking golden fixtures", () => {
 
       if (actual === expected) return undefined;
 
+      // Kept differences (#447): an unrecognised suffix yields no thinking config and no error (the rest of the request
+      // is handled as before, where Go stops at its error), a level outside the provider families is clamped.
+      if (
+        result.error === undefined &&
+        unrecognisedSuffix(c.model) &&
+        SUFFIX_LEVEL_ERRORS.has(c.error?.code ?? "")
+      )
+        return undefined;
+
+      if (result.error === undefined && clampedOutsideFamilies(resolveModelInfo(c), c.error?.code))
+        return undefined;
+
       return `${c.name ?? `${c.variant} ${c.to} ${c.model} from=${c.from}`}\n  in:  ${c.body}\n  got: ${actual}\n  want:${expected}`;
     };
 
@@ -232,6 +283,14 @@ describe("thinking golden fixtures", () => {
         expect(applier, name).toBeDefined();
 
         const failures = collectMismatches(cases, (c) => {
+          // Commissary's appliers take parsed JSON: Go returns an unparsable body unchanged, which has no parsed form
+          // (docs/ARCHITECTURE.md "Thinking pipeline", unparsable bodies).
+          if (
+            parseBody(c.body) === undefined &&
+            parseBody(c.same === true ? c.body : (c.out ?? "")) === undefined
+          )
+            return undefined;
+
           const out = applier?.apply(
             parseBody(c.body),
             decodeFullConfig(c.config),
