@@ -113,6 +113,33 @@ const itemIdPrefixes = (chunks: ReadonlyArray<string>): Set<string> =>
   );
 
 /**
+ * Request differences from Go that Commissary keeps on purpose (docs/ARCHITECTURE.md), applied to the golden request:
+ * - Codex-bound requests from Chat, Responses, Claude and Gemini do not forward `max_output_tokens` (Go `01b24f1f` does;
+ *   forwarding is #395, "Codex request hygiene"); Interactions already carried it.
+ * - A Chat request with no messages still sends `input: []` to Codex; Go has omitted the empty list since its JSON
+ *   library migration (`6e6afab9`).
+ */
+const keptRequestDifferences = (
+  c: TranslatorFixtureCase,
+  expected: Json | undefined,
+): Json | undefined => {
+  if (
+    c.to !== "codex" ||
+    typeof expected !== "object" ||
+    expected === null ||
+    Array.isArray(expected)
+  )
+    return expected;
+  const kept = { ...expected };
+
+  if (c.from !== "interactions") delete kept["max_output_tokens"];
+
+  if (c.from === "openai" && kept["input"] === undefined) kept["input"] = [];
+
+  return kept;
+};
+
+/**
  * Runs one case: `translateRequest` translates the request (the registry, or the Worker's executor-level rewrites),
  * the built-in translators the responses and token counts.
  */
@@ -130,7 +157,9 @@ const checkTranslatorFixture = (
   const envelope = translateRequest(c, requestEnvelope);
 
   expect(envelope.error?.message).toBe(c.requestError);
-  expect(expandEmbeddedJson(envelope.body)).toEqual(parseJson(c.translatedRequest));
+  expect(expandEmbeddedJson(envelope.body)).toEqual(
+    keptRequestDifferences(c, parseJson(c.translatedRequest)),
+  );
 
   if (c.responseLines !== undefined) {
     const context = {

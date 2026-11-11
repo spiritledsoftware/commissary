@@ -743,7 +743,7 @@ Core contracts every provider slice implements (Go references in each module hea
   canonical `reasoning_effort`, assistant tool-call turns get a `" "` `reasoning_content` placeholder (DeepSeek-style
   upstreams reject them without one) or lose a blank one; payload rules run afterwards and can override or filter it. The
   compat request translator adds the same placeholder from the Claude body and the model suffixes.
-- **Codex request hygiene** (B2, Go `bfac8586`, `606e667a`, `57d005fe`, `99d1698f`, `b0debb35`, `05e668cf`), with three differences from Go:
+- **Codex request hygiene** (B2, Go `bfac8586`, `606e667a`, `57d005fe`, `99d1698f`, `b0debb35`, `05e668cf`), with these differences from Go:
   - _Output budget floor_: `normalizeCodexOutputBudget` (`executor/codex/request.ts`) raises an integer `max_output_tokens` of 1..15 to 16 on the
     translated body in `prepare` (HTTP and WebSocket), before the payload rules, and not for `/responses/compact` (Go skips it too). Of the
     Codex translators only Interactions carries the field into the body (Responses and Chat drop it, Claude never sets it; forwarding is #395), so
@@ -758,6 +758,8 @@ Core contracts every provider slice implements (Go references in each module hea
     `codex-prepare.ts` (HTTP Responses and Compact only, after the orphan delegation rewrite; WebSocket frames skip it as in Go, but their Codex
     translation still applies it). The text of a non-array output that has
     no text is the re-serialised JSON, where Go keeps the client's raw bytes.
+  - _Empty Chat input_: a Chat Completions request with no messages still reaches Codex with `input: []`; Go has omitted
+    the empty list since its JSON library migration (`6e6afab9`), a side effect rather than a fix, so the field stays.
 - **Sessions**: `handlers/session.ts` ports `session.ExtractSessionInfo` (headers, Claude `metadata.user_id`, body fields)
   and feeds `PickRequest.session` together with the Access `callerScope`. Requests without an explicit marker are bound by
   content (`models/session-routing/`, `routing.ts` = `prepareSessionRouting`, only when `routing.session-affinity` is on):

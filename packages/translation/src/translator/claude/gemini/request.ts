@@ -499,14 +499,17 @@ const setAt = (root: JsonObject, path: Path, value: Json): void => {
 
 /**
  * `lowercaseClaudeToolSchemaTypes`: every `type` key (any depth) is lower-cased. Non-string values are rewritten
- * as lower-cased JSON text, exactly like the Go path-based rewrite (including its effect on nested paths).
+ * as lower-cased JSON text, exactly like the Go path-based rewrite. Each value is read from the tool as it was before
+ * the rewrite (Go reads the original bytes since `6e6afab9`), so a property named `type` keeps its own lower-cased
+ * `type` instead of losing it to the rewrite of its parent.
  */
 const lowercaseSchemaTypes = (tool: JsonObject): void => {
   const paths: Path[] = [];
   collectTypePaths(tool, [], paths);
+  const original = structuredClone(tool);
 
   for (const path of paths) {
-    const value = getAt(tool, path);
+    const value = getAt(original, path);
     const lowered = str(value).toLowerCase();
 
     if (typeof value === "string" && lowered === value) continue;
