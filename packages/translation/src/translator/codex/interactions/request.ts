@@ -27,7 +27,7 @@ import {
   isInteractionsInstructionStep,
   UserRun,
 } from "../../common/parts.ts";
-import { shortenNameIfNeeded } from "../claude/request.ts";
+import { shortenNamePlain } from "../claude/request.ts";
 
 const GENERATION_COPY_PATHS: ReadonlyArray<readonly [string, string]> = [
   ["max_output_tokens", "max_output_tokens"],
@@ -551,7 +551,7 @@ const appendStep = (
       const item: JsonObject = { type: "function_call" };
       const name = get(step, "name");
 
-      if (name !== undefined) item["name"] = shortenNameIfNeeded(asString(name));
+      if (name !== undefined) item["name"] = shortenNamePlain(asString(name));
       const id = callId(step);
 
       if (id !== "") item["call_id"] = id;
@@ -664,7 +664,7 @@ const toolFromDeclaration = (declaration: Json): JsonObject => {
   const description = get(declaration, "description");
 
   if (description !== undefined) tool["description"] = asString(description);
-  tool["name"] = shortenNameIfNeeded(asString(get(declaration, "name")));
+  tool["name"] = shortenNamePlain(asString(get(declaration, "name")));
 
   const params =
     get(declaration, "parameters") ??

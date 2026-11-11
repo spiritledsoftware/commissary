@@ -45,8 +45,14 @@ import {
 
 const NAME_LIMIT = 64;
 
-/** `shortenNameIfNeeded` (Claude variant: no character sanitising). */
-export const shortenNameIfNeeded = (name: string): string => {
+/** Gateway tool ids `[mcp_]<server words>-<hex id...>_<tool>`. */
+const GATEWAY_TOOL_NAME = /^(?:mcp_)?([a-z][a-z0-9-]*?)-[0-9a-f]{6,}(?:-[0-9a-f]+)*_(.+)$/;
+
+/**
+ * `shortenNameIfNeeded` before upstream 08437a67 (no character sanitising): plain truncation. The Gemini and Interactions
+ * -> Codex translators keep it, as in Go, where only the Claude translator got the readable shortening.
+ */
+export const shortenNamePlain = (name: string): string => {
   if (name.length <= NAME_LIMIT) return name;
 
   if (name.startsWith("mcp__")) {
@@ -62,8 +68,34 @@ export const shortenNameIfNeeded = (name: string): string => {
   return name.slice(0, NAME_LIMIT);
 };
 
+/** `shortenNameIfNeeded` (Claude variant: no character sanitising; gateway MCP names stay readable, 08437a67). */
+export const shortenNameIfNeeded = (name: string): string => {
+  if (name.length <= NAME_LIMIT || !name.startsWith("mcp__")) return shortenNamePlain(name);
+  const index = name.lastIndexOf("__");
+
+  if (index <= 0) return shortenNamePlain(name);
+  const rest = name.slice(index + 2);
+
+  // Plain truncation keeps only the shared server prefix, so every tool of a long-named server collapses to the same
+  // 64 characters. Keep the server's words and the tool's own name instead.
+  if (`mcp__${rest}`.length > NAME_LIMIT) {
+    const match = GATEWAY_TOOL_NAME.exec(rest);
+
+    if (match !== null) {
+      const readable = `mcp__${match[1]}_${match[2]}`;
+
+      if (readable.length <= NAME_LIMIT) return readable;
+    }
+  }
+
+  return shortenNamePlain(name);
+};
+
 /** `buildShortNameMap`: unique names within the limit. */
-export const buildShortNameMap = (names: readonly string[]): Map<string, string> => {
+export const buildShortNameMap = (
+  names: readonly string[],
+  shorten: (name: string) => string = shortenNameIfNeeded,
+): Map<string, string> => {
   const used = new Set<string>();
   const map = new Map<string, string>();
 
@@ -81,7 +113,7 @@ export const buildShortNameMap = (names: readonly string[]): Map<string, string>
 
   for (const name of names) {
     if (map.has(name)) continue;
-    const unique = makeUnique(shortenNameIfNeeded(name));
+    const unique = makeUnique(shorten(name));
     used.add(unique);
     map.set(name, unique);
   }
