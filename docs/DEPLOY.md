@@ -84,8 +84,7 @@ auth Worker, the app Worker.
    `/backend-api/codex`, `/chat/completions`, `/completions`, `/responses`, the MCP endpoint `/mcp`, toolkits' CIMD
    document `/oauth/toolkits/client.json`), `/healthz` and the cron trigger, under no Access
    application of its own: clients send API keys. It binds the Durable Objects by script name too, and the per-org rate limit
-   on Commissary Cloud. It defines no working Durable Object of its own, only two retired classes it still exports,
-   `AgentRun` and `AgentSchedule` (below, "Retired hosted agents"). Where it answers:
+   on Commissary Cloud. It defines no Durable Object of its own. Where it answers:
    - on the API host when there is one ([API host](#api-host)), as its custom domain;
    - else on the app host, through **zone routes** `<app host>/v1*`, `/openai/v1*`, `/backend-api/codex*`,
      `/chat/completions*`, `/completions*`, `/responses*`
@@ -118,8 +117,8 @@ a stage must deploy them **in order**: the release that removed the area (#450) 
   (`privateAgents: false`, `OrgRecord.runRetentionDays: null`, `Platform.setRetention`) to an app Worker from before it.
   Its other agent-only state RPC methods and outcomes went at once: an older API or app Worker failed only on its agent
   paths during the deploy.
-- **#449** removed the rest. The API Worker no longer defines or binds the two classes, so Alchemy emits
-  `deleted_classes` and Cloudflare deletes their namespaces with every old run's and schedule's data (ADR 0027).
+- **#449** removed the rest. The API Worker no longer defines or binds the two classes, so Alchemy marks their exports
+  deleted and Cloudflare deletes their namespaces with every old run's and schedule's data (ADR 0027).
   Migration `0016_usage_drop_agent_runs.sql` drops the index `usage_records_org_run` and then the three columns. The
   state RPC no longer answers the retired values. A stage that deploys #449 without #450 having deployed first fails:
   its app Worker would still bind the classes.

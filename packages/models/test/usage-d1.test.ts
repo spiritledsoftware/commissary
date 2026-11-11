@@ -40,6 +40,8 @@ import toolCallsMigration from "../../../migrations/usage/0010_usage_tool_calls.
 import agentRunsMigration from "../../../migrations/usage/0011_usage_agent_runs.sql?raw";
 import browserTimeMigration from "../../../migrations/usage/0012_usage_browser_time.sql?raw";
 import computerTimeMigration from "../../../migrations/usage/0014_usage_computer_time.sql?raw";
+import runIndexMigration from "../../../migrations/usage/0015_usage_run_index.sql?raw";
+import dropAgentRunsMigration from "../../../migrations/usage/0016_usage_drop_agent_runs.sql?raw";
 import { platformOf } from "@commissary/state";
 import { insertSessionRecord, insertToolCallRecord } from "@commissary/tools/testing";
 import { envContext } from "./support/context.ts";
@@ -164,6 +166,49 @@ describe("migration 0009 (drop hosted auth)", () => {
       await db.prepare(statement).run();
 
     expect(await authObjects()).toEqual([]);
+  });
+});
+
+describe("migration 0016 (drop agent runs)", () => {
+  const columns = async () =>
+    (
+      await db.prepare("PRAGMA table_info(usage_records)").all<{ readonly name: string }>()
+    ).results.map((column) => column.name);
+
+  const runIndex = async () =>
+    (
+      await db
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'usage_records_org_run'",
+        )
+        .all<{ readonly name: string }>()
+    ).results;
+
+  it("drops the hosted agents' columns and their index, and keeps the records", async () => {
+    // A database as the removal's release left it: the columns, the index and a record of a run.
+    for (const statement of [
+      ...statementsOf(agentRunsMigration),
+      ...statementsOf(runIndexMigration),
+    ])
+      await db.prepare(statement).run();
+
+    await insertUsageRecord(db, sampleRecord({ requestId: "ran" }));
+    await db
+      .prepare(
+        "UPDATE usage_records SET agent_id = 'ag_1', run_id = 'run_1', starter = 'member:m1'",
+      )
+      .run();
+    expect(await columns()).toEqual(expect.arrayContaining(["agent_id", "run_id", "starter"]));
+    expect(await runIndex()).toHaveLength(1);
+
+    for (const statement of statementsOf(dropAgentRunsMigration)) await db.prepare(statement).run();
+
+    expect(await columns()).not.toContain("agent_id");
+    expect(await columns()).not.toContain("run_id");
+    expect(await columns()).not.toContain("starter");
+    expect(await runIndex()).toEqual([]);
+    expect((await rows()).map((row) => row.request_id)).toEqual(["ran"]);
+    expect((await listUsageRecords(db, GLOBAL_ORG, {}, authIndexOf)).rows).toHaveLength(1);
   });
 });
 

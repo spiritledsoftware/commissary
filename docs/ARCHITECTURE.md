@@ -5428,7 +5428,7 @@ triggers and an agents toolkit (ADR 0040). It was removed whole (ADR 0048): Comm
 two releases (`docs/DEPLOY.md`, "Retired hosted agents", has the deploy side). The first removed the area and kept two
 tombstone Durable Object classes (`AgentRun`, `AgentSchedule`), three unused usage columns and a few state RPC shims for
 an older app Worker; the second (#449) removed them: the API Worker no longer defines the classes, so Alchemy deleted
-their namespaces with the old runs' data (`deleted_classes`), and migration `0016_usage_drop_agent_runs.sql` dropped the
+their namespaces with the old runs' data (it marks their exports deleted), and migration `0016_usage_drop_agent_runs.sql` dropped the
 columns (_Usage accounting and observability_, "Dropped columns"). What stays:
 
 - **The state Worker's cleanup.** A ControlPlane drops the Agents tables on each start, a no-op after the first (`agents`,
