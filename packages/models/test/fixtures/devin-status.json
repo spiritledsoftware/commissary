@@ -19,7 +19,7 @@
    },
    "attributes": {
     "api_key": "devin-session-token$abc",
-    "base_url": "http://127.0.0.1:41287",
+    "base_url": "http://127.0.0.1:40045",
     "device_seed": "seed-1",
     "email": "ada@example.com",
     "keep": "yes",
@@ -55,7 +55,7 @@
    },
    "attributes": {
     "api_key": "devin-session-token$abc",
-    "base_url": "http://127.0.0.1:44265",
+    "base_url": "http://127.0.0.1:35615",
     "device_seed": "seed-1",
     "email": "free@example.com",
     "keep": "yes",
@@ -80,7 +80,7 @@
    },
    "attributes": {
     "api_key": "devin-session-token$abc",
-    "base_url": "http://127.0.0.1:41589",
+    "base_url": "http://127.0.0.1:33227",
     "device_seed": "seed-1",
     "keep": "yes"
    },
@@ -98,7 +98,7 @@
    },
    "attributes": {
     "api_key": "devin-session-token$abc",
-    "base_url": "http://127.0.0.1:45311",
+    "base_url": "http://127.0.0.1:36481",
     "device_seed": "seed-1",
     "keep": "yes"
    },

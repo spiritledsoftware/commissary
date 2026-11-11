@@ -68,7 +68,7 @@
     "event: step.stop\ndata: {\"index\":1,\"event_type\":\"step.stop\"}\n\n"
    ],
    [
-    "event: interaction.completed\ndata: {\"interaction\":{\"id\":\"resp_1\",\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"total_input_tokens\":5,\"output_tokens\":7,\"total_output_tokens\":7,\"total_tokens\":12,\"cached_tokens\":2,\"total_cached_tokens\":2,\"reasoning_tokens\":3,\"total_thought_tokens\":3},\"created\":\"2026-10-09T13:08:36Z\",\"updated\":\"2026-10-09T13:08:36Z\",\"service_tier\":\"standard\",\"object\":\"interaction\",\"model\":\"gpt-5\"},\"event_type\":\"interaction.completed\"}\n\n",
+    "event: interaction.completed\ndata: {\"interaction\":{\"id\":\"resp_1\",\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"total_input_tokens\":5,\"output_tokens\":7,\"total_output_tokens\":7,\"total_tokens\":12,\"cached_tokens\":2,\"total_cached_tokens\":2,\"reasoning_tokens\":3,\"total_thought_tokens\":3},\"created\":\"2026-11-11T12:11:40Z\",\"updated\":\"2026-11-11T12:11:40Z\",\"service_tier\":\"standard\",\"object\":\"interaction\",\"model\":\"gpt-5\"},\"event_type\":\"interaction.completed\"}\n\n",
     "event: done\ndata: [DONE]\n\n"
    ],
    []
@@ -252,7 +252,7 @@
     "event: step.stop\ndata: {\"index\":1,\"event_type\":\"step.stop\"}\n\n"
    ],
    [
-    "event: interaction.completed\ndata: {\"interaction\":{\"id\":\"resp_2\",\"status\":\"incomplete\",\"usage\":{\"input_tokens\":1,\"total_input_tokens\":1,\"output_tokens\":2,\"total_output_tokens\":2},\"created\":\"2026-10-09T13:08:36Z\",\"updated\":\"2026-10-09T13:08:36Z\",\"service_tier\":\"standard\",\"object\":\"interaction\",\"model\":\"gpt-5\"},\"event_type\":\"interaction.completed\"}\n\n",
+    "event: interaction.completed\ndata: {\"interaction\":{\"id\":\"resp_2\",\"status\":\"incomplete\",\"usage\":{\"input_tokens\":1,\"total_input_tokens\":1,\"output_tokens\":2,\"total_output_tokens\":2},\"created\":\"2026-11-11T12:11:40Z\",\"updated\":\"2026-11-11T12:11:40Z\",\"service_tier\":\"standard\",\"object\":\"interaction\",\"model\":\"gpt-5\"},\"event_type\":\"interaction.completed\"}\n\n",
     "event: done\ndata: [DONE]\n\n"
    ],
    [],
@@ -380,7 +380,7 @@
    ],
    [
     "event: step.stop\ndata: {\"index\":1,\"event_type\":\"step.stop\"}\n\n",
-    "event: interaction.completed\ndata: {\"interaction\":{\"id\":\"resp_fb\",\"status\":\"completed\",\"usage\":{},\"created\":\"2026-10-09T13:08:36Z\",\"updated\":\"2026-10-09T13:08:36Z\",\"service_tier\":\"standard\",\"object\":\"interaction\",\"model\":\"gpt-5\"},\"event_type\":\"interaction.completed\"}\n\n",
+    "event: interaction.completed\ndata: {\"interaction\":{\"id\":\"resp_fb\",\"status\":\"completed\",\"usage\":{},\"created\":\"2026-11-11T12:11:40Z\",\"updated\":\"2026-11-11T12:11:40Z\",\"service_tier\":\"standard\",\"object\":\"interaction\",\"model\":\"gpt-5\"},\"event_type\":\"interaction.completed\"}\n\n",
     "event: done\ndata: [DONE]\n\n"
    ],
    [],
@@ -458,7 +458,7 @@
     "event: step.stop\ndata: {\"index\":0,\"event_type\":\"step.stop\"}\n\n"
    ],
    [
-    "event: interaction.completed\ndata: {\"interaction\":{\"id\":\"resp_ag\",\"status\":\"completed\",\"usage\":{},\"created\":\"2026-10-09T13:08:36Z\",\"updated\":\"2026-10-09T13:08:36Z\",\"service_tier\":\"standard\",\"object\":\"interaction\",\"model\":\"antigravity-agent\"},\"event_type\":\"interaction.completed\"}\n\n",
+    "event: interaction.completed\ndata: {\"interaction\":{\"id\":\"resp_ag\",\"status\":\"completed\",\"usage\":{},\"created\":\"2026-11-11T12:11:40Z\",\"updated\":\"2026-11-11T12:11:40Z\",\"service_tier\":\"standard\",\"object\":\"interaction\",\"model\":\"antigravity-agent\"},\"event_type\":\"interaction.completed\"}\n\n",
     "event: done\ndata: [DONE]\n\n"
    ]
   ]
@@ -491,7 +491,7 @@
     "event: step.stop\ndata: {\"index\":0,\"event_type\":\"step.stop\"}\n\n"
    ],
    [
-    "event: interaction.completed\ndata: {\"interaction\":{\"id\":\"resp_late\",\"status\":\"completed\",\"usage\":{},\"created\":\"2026-10-09T13:08:36Z\",\"updated\":\"2026-10-09T13:08:36Z\",\"service_tier\":\"standard\",\"object\":\"interaction\",\"model\":\"gpt-5\"},\"event_type\":\"interaction.completed\"}\n\n",
+    "event: interaction.completed\ndata: {\"interaction\":{\"id\":\"resp_late\",\"status\":\"completed\",\"usage\":{},\"created\":\"2026-11-11T12:11:40Z\",\"updated\":\"2026-11-11T12:11:40Z\",\"service_tier\":\"standard\",\"object\":\"interaction\",\"model\":\"gpt-5\"},\"event_type\":\"interaction.completed\"}\n\n",
     "event: done\ndata: [DONE]\n\n"
    ]
   ]

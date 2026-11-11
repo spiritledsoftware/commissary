@@ -671,6 +671,6 @@
   },
   "translatedRequest": "{\"model\":\"gemini-2.5-pro\",\"input\":[{\"type\":\"user_input\",\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}],\"stream\":false}",
   "responseBodyText": "{\"steps\":[{\"type\":\"model_output\",\"content\":\"plain\"}]}",
-  "nonStreamOutput": "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"plain\"}],\"role\":\"model\"},\"index\":0,\"finishReason\":\"STOP\"}],\"modelVersion\":\"gemini-2.5-pro\",\"responseId\":\"response_1791552900743704967\"}"
+  "nonStreamOutput": "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"plain\"}],\"role\":\"model\"},\"index\":0,\"finishReason\":\"STOP\"}],\"modelVersion\":\"gemini-2.5-pro\",\"responseId\":\"response_1794399100568825000\"}"
  }
 ]

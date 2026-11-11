@@ -455,8 +455,8 @@
   "translatedRequest": "{\"model\":\"gemini-2.5-pro\",\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"What is the weather in Paris?\"}]},{\"role\":\"user\",\"parts\":[{\"inlineData\":{\"mimeType\":\"image/png\",\"data\":\"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==\"}}]},{\"role\":\"user\",\"parts\":[{\"fileData\":{\"mimeType\":\"application/pdf\",\"fileUri\":\"gs://bucket/doc.pdf\"}}]},{\"role\":\"model\",\"parts\":[{\"text\":\"I should call the tool\",\"thought\":true},{\"functionCall\":{\"name\":\"get_weather\",\"args\":{\"city\":\"Paris\"},\"id\":\"call_1\"},\"thoughtSignature\":\"EhgKFgEMOdbHY2lwaGVyLXRleHQtYnl0ZXM=\"}]},{\"role\":\"user\",\"parts\":[{\"functionResponse\":{\"name\":\"get_weather\",\"response\":{\"temp\":21},\"id\":\"call_1\"}},{\"functionResponse\":{\"name\":\"other\",\"response\":\"{\\\"ok\\\":true}\",\"id\":\"call_2\"}}]},{\"role\":\"model\",\"parts\":[{\"text\":\"It is 21C.\"}]},{\"role\":\"user\",\"parts\":[{\"text\":\"Thanks, and tomorrow?\"}]}],\"systemInstruction\":{\"parts\":[{\"text\":\"You are a weather assistant.\"}]},\"generationConfig\":{\"temperature\":0.4,\"topP\":0.9,\"maxOutputTokens\":512,\"stopSequences\":[\"END\"],\"thinkingConfig\":{\"thinkingLevel\":\"high\",\"includeThoughts\":true},\"responseModalities\":[\"TEXT\",\"IMAGE\"]},\"tools\":[{\"functionDeclarations\":[{\"description\":\"Weather lookup\",\"name\":\"get_weather\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}]},{\"googleSearch\":{}},{\"codeExecution\":{}},{\"urlContext\":{\"max\":2}}],\"toolConfig\":{\"functionCallingConfig\":{\"mode\":\"ANY\",\"allowedFunctionNames\":[\"get_weather\"]}},\"service_tier\":\"priority\"}",
   "streamOutputs": [
    [
-    "event: interaction.created\ndata: {\"interaction\":{\"id\":\"interaction_1791552900747560887\",\"status\":\"in_progress\",\"object\":\"interaction\",\"model\":\"gemini-2.5-pro\"},\"event_type\":\"interaction.created\"}\n\n",
-    "event: interaction.status_update\ndata: {\"interaction_id\":\"interaction_1791552900747560887\",\"status\":\"in_progress\",\"event_type\":\"interaction.status_update\"}\n\n",
+    "event: interaction.created\ndata: {\"interaction\":{\"id\":\"interaction_1794399100571339000\",\"status\":\"in_progress\",\"object\":\"interaction\",\"model\":\"gemini-2.5-pro\"},\"event_type\":\"interaction.created\"}\n\n",
+    "event: interaction.status_update\ndata: {\"interaction_id\":\"interaction_1794399100571339000\",\"status\":\"in_progress\",\"event_type\":\"interaction.status_update\"}\n\n",
     "event: step.start\ndata: {\"index\":0,\"step\":{\"type\":\"thought\"},\"event_type\":\"step.start\"}\n\n",
     "event: step.delta\ndata: {\"index\":0,\"delta\":{\"content\":{\"text\":\"Thinking\",\"type\":\"text\"},\"type\":\"thought_summary\"},\"event_type\":\"step.delta\"}\n\n",
     "event: step.delta\ndata: {\"index\":0,\"delta\":{\"signature\":\"EhgKFgEMOdbHY2lwaGVyLXRleHQtYnl0ZXM=\",\"type\":\"thought_signature\"},\"event_type\":\"step.delta\"}\n\n"
@@ -482,11 +482,10 @@
     "event: step.stop\ndata: {\"index\":4,\"event_type\":\"step.stop\"}\n\n"
    ],
    [
-    "event: interaction.completed\ndata: {\"interaction\":{\"id\":\"interaction_1791552900747560887\",\"status\":\"completed\",\"usage\":{\"total_tokens\":14,\"total_input_tokens\":5,\"input_tokens_by_modality\":[{\"modality\":\"text\",\"tokens\":5}],\"total_cached_tokens\":1,\"total_output_tokens\":7,\"total_tool_use_tokens\":0,\"total_thought_tokens\":2},\"created\":\"2026-10-09T13:35:00Z\",\"updated\":\"2026-10-09T13:35:00Z\",\"service_tier\":\"standard\",\"object\":\"interaction\",\"model\":\"gemini-2.5-pro\"},\"event_type\":\"interaction.completed\"}\n\n"
-   ],
-   [
+    "event: interaction.completed\ndata: {\"interaction\":{\"id\":\"interaction_1794399100571339000\",\"status\":\"completed\",\"usage\":{\"total_tokens\":14,\"total_input_tokens\":5,\"input_tokens_by_modality\":[{\"modality\":\"text\",\"tokens\":5}],\"total_cached_tokens\":1,\"total_output_tokens\":7,\"total_tool_use_tokens\":0,\"total_thought_tokens\":2},\"created\":\"2026-11-11T12:11:40Z\",\"updated\":\"2026-11-11T12:11:40Z\",\"service_tier\":\"standard\",\"object\":\"interaction\",\"model\":\"gemini-2.5-pro\"},\"event_type\":\"interaction.completed\"}\n\n",
     "event: done\ndata: [DONE]\n\n"
-   ]
+   ],
+   []
   ]
  },
  {
@@ -510,14 +509,14 @@
   "translatedRequest": "{\"model\":\"gemini-2.5-pro\",\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"x\"}]}]}",
   "streamOutputs": [
    [
-    "event: interaction.created\ndata: {\"interaction\":{\"id\":\"interaction_1791552900747663706\",\"status\":\"in_progress\",\"object\":\"interaction\",\"model\":\"gemini-2.5-pro\"},\"event_type\":\"interaction.created\"}\n\n",
-    "event: interaction.status_update\ndata: {\"interaction_id\":\"interaction_1791552900747663706\",\"status\":\"in_progress\",\"event_type\":\"interaction.status_update\"}\n\n",
+    "event: interaction.created\ndata: {\"interaction\":{\"id\":\"interaction_1794399100571373000\",\"status\":\"in_progress\",\"object\":\"interaction\",\"model\":\"gemini-2.5-pro\"},\"event_type\":\"interaction.created\"}\n\n",
+    "event: interaction.status_update\ndata: {\"interaction_id\":\"interaction_1794399100571373000\",\"status\":\"in_progress\",\"event_type\":\"interaction.status_update\"}\n\n",
     "event: step.start\ndata: {\"index\":0,\"step\":{\"type\":\"model_output\"},\"event_type\":\"step.start\"}\n\n",
     "event: step.delta\ndata: {\"index\":0,\"delta\":{\"text\":\"a\",\"type\":\"text\"},\"event_type\":\"step.delta\"}\n\n"
    ],
    [
     "event: step.stop\ndata: {\"index\":0,\"event_type\":\"step.stop\"}\n\n",
-    "event: interaction.completed\ndata: {\"interaction\":{\"id\":\"interaction_1791552900747663706\",\"status\":\"completed\",\"usage\":{},\"created\":\"2026-10-09T13:35:00Z\",\"updated\":\"2026-10-09T13:35:00Z\",\"service_tier\":\"standard\",\"object\":\"interaction\",\"model\":\"gemini-2.5-pro\"},\"event_type\":\"interaction.completed\"}\n\n",
+    "event: interaction.completed\ndata: {\"interaction\":{\"id\":\"interaction_1794399100571373000\",\"status\":\"completed\",\"usage\":{},\"created\":\"2026-11-11T12:11:40Z\",\"updated\":\"2026-11-11T12:11:40Z\",\"service_tier\":\"standard\",\"object\":\"interaction\",\"model\":\"gemini-2.5-pro\"},\"event_type\":\"interaction.completed\"}\n\n",
     "event: done\ndata: [DONE]\n\n"
    ],
    []
@@ -728,6 +727,6 @@
   },
   "translatedRequest": "{\"model\":\"gemini-2.5-pro\",\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"x\"}]}]}",
   "responseBodyText": "{\"candidates\":[{\"content\":{\"parts\":[]}}]}",
-  "nonStreamOutput": "{\"id\":\"interaction_1791552900747893510\",\"object\":\"interaction\",\"status\":\"completed\",\"model\":\"gemini-2.5-pro\",\"steps\":[]}"
+  "nonStreamOutput": "{\"id\":\"interaction_1794399100571442000\",\"object\":\"interaction\",\"status\":\"completed\",\"model\":\"gemini-2.5-pro\",\"steps\":[]}"
  }
 ]

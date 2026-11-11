@@ -1960,7 +1960,7 @@
   "translatedRequest": "{\"model\":\"gemini-3.1-flash-lite\",\"input\":[{\"type\":\"user_input\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}],\"stream\":true}",
   "streamOutputs": [
    [
-    "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1791555047506818645\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"gemini-3.1-flash-lite\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\n\n",
+    "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1794399100558434000\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"gemini-3.1-flash-lite\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\n\n",
     "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_2\",\"name\":\"late\",\"input\":{}}}\n\n\n",
     "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"a\\\":\"}}\n\n\n"
    ],
@@ -2098,7 +2098,7 @@
   "translatedRequest": "{\"model\":\"gemini-3.1-flash-lite\",\"input\":[{\"type\":\"user_input\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}],\"stream\":true}",
   "streamOutputs": [
    [
-    "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1791555047506954746\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"gemini-3.1-flash-lite\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\n\n",
+    "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1794399100558477000\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"gemini-3.1-flash-lite\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\n\n",
     "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n\n",
     "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"t\"}}\n\n\n"
    ],
@@ -2192,7 +2192,7 @@
   "translatedRequest": "{\"model\":\"gemini-3.1-flash-lite\",\"input\":[{\"type\":\"user_input\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}],\"stream\":true}",
   "streamOutputs": [
    [
-    "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1791555047507039196\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"gemini-3.1-flash-lite\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\n\n",
+    "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1794399100558503000\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"gemini-3.1-flash-lite\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\n\n",
     "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n\n"
    ],
    [
@@ -2223,7 +2223,7 @@
   "translatedRequest": "{\"model\":\"gemini-3.1-flash-lite\",\"input\":[{\"type\":\"user_input\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}],\"stream\":true}",
   "streamOutputs": [
    [
-    "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1791555047507060061\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"gemini-3.1-flash-lite\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\n\n",
+    "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1794399100558510000\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"gemini-3.1-flash-lite\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\n\n",
     "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n\n"
    ],
    [
@@ -2257,7 +2257,7 @@
   "translatedRequest": "{\"model\":\"gemini-3.1-flash-lite\",\"input\":[{\"type\":\"user_input\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}],\"stream\":true}",
   "streamOutputs": [
    [
-    "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1791555047507096934\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"gemini-3.1-flash-lite\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\n\n",
+    "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1794399100558520000\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"gemini-3.1-flash-lite\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\n\n",
     "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n\n"
    ],
    [
@@ -2291,7 +2291,7 @@
   "translatedRequest": "{\"model\":\"gemini-3.1-flash-lite\",\"input\":[{\"type\":\"user_input\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}],\"stream\":true}",
   "streamOutputs": [
    [
-    "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1791555047507120654\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"gemini-3.1-flash-lite\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\n\n",
+    "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1794399100558528000\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"gemini-3.1-flash-lite\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\n\n",
     "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n\n"
    ],
    [
@@ -2325,7 +2325,7 @@
   "translatedRequest": "{\"model\":\"gemini-3.1-flash-lite\",\"input\":[{\"type\":\"user_input\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}],\"stream\":true}",
   "streamOutputs": [
    [
-    "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1791555047507141442\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"gemini-3.1-flash-lite\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\n\n",
+    "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1794399100558536000\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"gemini-3.1-flash-lite\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\n\n",
     "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n\n"
    ],
    [
@@ -2359,7 +2359,7 @@
   "translatedRequest": "{\"model\":\"gemini-3.1-flash-lite\",\"input\":[{\"type\":\"user_input\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}],\"stream\":true}",
   "streamOutputs": [
    [
-    "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1791555047507162767\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"gemini-3.1-flash-lite\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\n\n",
+    "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1794399100558545000\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"gemini-3.1-flash-lite\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\n\n",
     "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n\n"
    ],
    [
@@ -2393,7 +2393,7 @@
   "translatedRequest": "{\"model\":\"gemini-3.1-flash-lite\",\"input\":[{\"type\":\"user_input\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}],\"stream\":true}",
   "streamOutputs": [
    [
-    "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1791555047507181805\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"gemini-3.1-flash-lite\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\n\n",
+    "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1794399100558553000\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"gemini-3.1-flash-lite\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\n\n",
     "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n\n"
    ],
    [
@@ -2427,7 +2427,7 @@
   "translatedRequest": "{\"model\":\"gemini-3.1-flash-lite\",\"input\":[{\"type\":\"user_input\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}],\"stream\":true}",
   "streamOutputs": [
    [
-    "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1791555047507199636\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"gemini-3.1-flash-lite\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\n\n",
+    "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1794399100558561000\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"gemini-3.1-flash-lite\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\n\n",
     "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n\n"
    ],
    [
@@ -2459,7 +2459,7 @@
   "translatedRequest": "{\"model\":\"gemini-3.1-flash-lite\",\"input\":[{\"type\":\"user_input\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}],\"stream\":true}",
   "streamOutputs": [
    [
-    "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1791555047507217025\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"gemini-3.1-flash-lite\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\n\n",
+    "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1794399100558569000\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"gemini-3.1-flash-lite\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\n\n",
     "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"input_tokens\":4,\"output_tokens\":2}}\n\n\n"
    ]
   ]
@@ -2488,7 +2488,7 @@
   "translatedRequest": "{\"model\":\"gemini-3.1-flash-lite\",\"input\":[{\"type\":\"user_input\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}],\"stream\":true}",
   "streamOutputs": [
    [
-    "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1791555047507240728\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"gemini-3.1-flash-lite\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\n\n",
+    "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1794399100558576000\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"gemini-3.1-flash-lite\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\n\n",
     "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n\n"
    ],
    [
@@ -2532,7 +2532,7 @@
   "streamOutputs": [
    [],
    [
-    "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1791555047507274043\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"gemini-3.1-flash-lite\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\n\n",
+    "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1794399100558587000\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"gemini-3.1-flash-lite\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\n\n",
     "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n\n",
     "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"x\"}}\n\n\n"
    ],
@@ -2570,7 +2570,7 @@
   "translatedRequest": "{\"model\":\"requested-model\",\"input\":[{\"type\":\"user_input\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}],\"stream\":true}",
   "streamOutputs": [
    [
-    "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1791555047507300434\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"requested-model\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\n\n"
+    "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1794399100558597000\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"requested-model\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\n\n"
    ],
    [],
    [
@@ -2923,7 +2923,7 @@
   "responseBody": {},
   "translatedRequest": "{\"model\":\"gemini-3.1-flash-lite\",\"input\":[{\"type\":\"user_input\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}]}",
   "responseBodyText": "{}",
-  "nonStreamOutput": "{\"id\":\"msg_1791555047507608745\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"gemini-3.1-flash-lite\",\"content\":[],\"stop_reason\":\"end_turn\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}"
+  "nonStreamOutput": "{\"id\":\"msg_1794399100558692000\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"gemini-3.1-flash-lite\",\"content\":[],\"stop_reason\":\"end_turn\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}"
  },
  {
   "name": "non-stream: blank id falls back to the nested id and root id",
@@ -2998,7 +2998,7 @@
   "responseBody": "not json at all",
   "translatedRequest": "{\"model\":\"gemini-3.1-flash-lite\",\"input\":[{\"type\":\"user_input\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}]}",
   "responseBodyText": "not json at all",
-  "nonStreamOutput": "{\"id\":\"msg_1791555047507663400\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"gemini-3.1-flash-lite\",\"content\":[],\"stop_reason\":\"end_turn\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}"
+  "nonStreamOutput": "{\"id\":\"msg_1794399100558710000\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"gemini-3.1-flash-lite\",\"content\":[],\"stop_reason\":\"end_turn\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}"
  },
  {
   "name": "non-stream: empty body",
@@ -3016,7 +3016,7 @@
   },
   "responseBody": "",
   "translatedRequest": "{\"model\":\"gemini-3.1-flash-lite\",\"input\":[{\"type\":\"user_input\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}]}",
-  "nonStreamOutput": "{\"id\":\"msg_1791555047507672835\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"gemini-3.1-flash-lite\",\"content\":[],\"stop_reason\":\"end_turn\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}"
+  "nonStreamOutput": "{\"id\":\"msg_1794399100558714000\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"gemini-3.1-flash-lite\",\"content\":[],\"stop_reason\":\"end_turn\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}"
  },
  {
   "name": "non-stream: usage cache hit",

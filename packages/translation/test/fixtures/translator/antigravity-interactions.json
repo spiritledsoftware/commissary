@@ -301,8 +301,8 @@
   "translatedRequest": "{\"project\":\"\",\"request\":{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"hi\"}]}],\"stream\":true,\"tools\":[{\"functionDeclarations\":[{\"name\":\"get_weather\",\"parametersJsonSchema\":{\"type\":\"object\",\"properties\":{}}}]}],\"safetySettings\":[{\"category\":\"HARM_CATEGORY_HARASSMENT\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_HATE_SPEECH\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_SEXUALLY_EXPLICIT\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_DANGEROUS_CONTENT\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_CIVIC_INTEGRITY\",\"threshold\":\"BLOCK_NONE\"}]},\"model\":\"gemini-3-pro-high\"}",
   "streamOutputs": [
    [
-    "event: interaction.created\ndata: {\"interaction\":{\"id\":\"interaction_1791558145753669934\",\"status\":\"in_progress\",\"object\":\"interaction\",\"model\":\"gemini-3-pro-high\"},\"event_type\":\"interaction.created\"}\n\n",
-    "event: interaction.status_update\ndata: {\"interaction_id\":\"interaction_1791558145753669934\",\"status\":\"in_progress\",\"event_type\":\"interaction.status_update\"}\n\n",
+    "event: interaction.created\ndata: {\"interaction\":{\"id\":\"interaction_1794399100552237000\",\"status\":\"in_progress\",\"object\":\"interaction\",\"model\":\"gemini-3-pro-high\"},\"event_type\":\"interaction.created\"}\n\n",
+    "event: interaction.status_update\ndata: {\"interaction_id\":\"interaction_1794399100552237000\",\"status\":\"in_progress\",\"event_type\":\"interaction.status_update\"}\n\n",
     "event: step.start\ndata: {\"index\":0,\"step\":{\"type\":\"thought\"},\"event_type\":\"step.start\"}\n\n",
     "event: step.delta\ndata: {\"index\":0,\"delta\":{\"content\":{\"text\":\"think\",\"type\":\"text\"},\"type\":\"thought_summary\"},\"event_type\":\"step.delta\"}\n\n",
     "event: step.delta\ndata: {\"index\":0,\"delta\":{\"signature\":\"EisKKQEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"type\":\"thought_signature\"},\"event_type\":\"step.delta\"}\n\n"
@@ -329,7 +329,8 @@
     "event: step.start\ndata: {\"index\":5,\"step\":{\"type\":\"model_output\"},\"event_type\":\"step.start\"}\n\n",
     "event: step.delta\ndata: {\"index\":5,\"delta\":{\"text\":\"!\",\"type\":\"text\"},\"event_type\":\"step.delta\"}\n\n",
     "event: step.stop\ndata: {\"index\":5,\"event_type\":\"step.stop\"}\n\n",
-    "event: interaction.completed\ndata: {\"interaction\":{\"id\":\"interaction_1791558145753669934\",\"status\":\"completed\",\"usage\":{\"total_tokens\":8,\"total_input_tokens\":3,\"input_tokens_by_modality\":[{\"modality\":\"text\",\"tokens\":3}],\"total_cached_tokens\":1,\"total_output_tokens\":4,\"total_tool_use_tokens\":0,\"total_thought_tokens\":1},\"created\":\"2026-10-09T15:02:25Z\",\"updated\":\"2026-10-09T15:02:25Z\",\"service_tier\":\"standard\",\"object\":\"interaction\",\"model\":\"gemini-3-pro-high\"},\"event_type\":\"interaction.completed\"}\n\n"
+    "event: interaction.completed\ndata: {\"interaction\":{\"id\":\"interaction_1794399100552237000\",\"status\":\"completed\",\"usage\":{\"total_tokens\":8,\"total_input_tokens\":3,\"input_tokens_by_modality\":[{\"modality\":\"text\",\"tokens\":3}],\"total_cached_tokens\":1,\"total_output_tokens\":4,\"total_tool_use_tokens\":0,\"total_thought_tokens\":1},\"created\":\"2026-11-11T12:11:40Z\",\"updated\":\"2026-11-11T12:11:40Z\",\"service_tier\":\"standard\",\"object\":\"interaction\",\"model\":\"gemini-3-pro-high\"},\"event_type\":\"interaction.completed\"}\n\n",
+    "event: done\ndata: [DONE]\n\n"
    ],
    []
   ]
@@ -360,15 +361,19 @@
   "translatedRequest": "{\"project\":\"\",\"request\":{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"hi\"}]}],\"stream\":true,\"tools\":[{\"functionDeclarations\":[{\"name\":\"get_weather\",\"parametersJsonSchema\":{\"type\":\"object\",\"properties\":{}}}]}],\"safetySettings\":[{\"category\":\"HARM_CATEGORY_HARASSMENT\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_HATE_SPEECH\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_SEXUALLY_EXPLICIT\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_DANGEROUS_CONTENT\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_CIVIC_INTEGRITY\",\"threshold\":\"BLOCK_NONE\"}]},\"model\":\"gemini-3-pro-high\"}",
   "streamOutputs": [
    [
-    "event: interaction.created\ndata: {\"interaction\":{\"id\":\"interaction_1791558145753897588\",\"status\":\"in_progress\",\"object\":\"interaction\",\"model\":\"gemini-3-pro-high\"},\"event_type\":\"interaction.created\"}\n\n",
-    "event: interaction.status_update\ndata: {\"interaction_id\":\"interaction_1791558145753897588\",\"status\":\"in_progress\",\"event_type\":\"interaction.status_update\"}\n\n",
+    "event: interaction.created\ndata: {\"interaction\":{\"id\":\"interaction_1794399100552309000\",\"status\":\"in_progress\",\"object\":\"interaction\",\"model\":\"gemini-3-pro-high\"},\"event_type\":\"interaction.created\"}\n\n",
+    "event: interaction.status_update\ndata: {\"interaction_id\":\"interaction_1794399100552309000\",\"status\":\"in_progress\",\"event_type\":\"interaction.status_update\"}\n\n",
     "event: step.start\ndata: {\"index\":0,\"step\":{\"type\":\"model_output\"},\"event_type\":\"step.start\"}\n\n",
     "event: step.delta\ndata: {\"index\":0,\"delta\":{\"text\":\"Hel\",\"type\":\"text\"},\"event_type\":\"step.delta\"}\n\n",
     "event: step.delta\ndata: {\"index\":0,\"delta\":{\"text\":\"lo\",\"type\":\"text\"},\"event_type\":\"step.delta\"}\n\n",
     "event: step.delta\ndata: {\"index\":0,\"delta\":{\"text\":\"Hel\",\"type\":\"text\"},\"event_type\":\"step.delta\"}\n\n",
     "event: step.delta\ndata: {\"index\":0,\"delta\":{\"text\":\"lo\",\"type\":\"text\"},\"event_type\":\"step.delta\"}\n\n"
    ],
-   [],
+   [
+    "event: step.stop\ndata: {\"index\":0,\"event_type\":\"step.stop\"}\n\n",
+    "event: interaction.completed\ndata: {\"interaction\":{\"id\":\"interaction_1794399100552309000\",\"status\":\"completed\",\"usage\":{},\"created\":\"2026-11-11T12:11:40Z\",\"updated\":\"2026-11-11T12:11:40Z\",\"service_tier\":\"standard\",\"object\":\"interaction\",\"model\":\"gemini-3-pro-high\"},\"event_type\":\"interaction.completed\"}\n\n",
+    "event: done\ndata: [DONE]\n\n"
+   ],
    []
   ]
  },
@@ -398,15 +403,15 @@
   "translatedRequest": "{\"project\":\"\",\"request\":{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"hi\"}]}],\"stream\":true,\"tools\":[{\"functionDeclarations\":[{\"name\":\"get_weather\",\"parametersJsonSchema\":{\"type\":\"object\",\"properties\":{}}}]}],\"safetySettings\":[{\"category\":\"HARM_CATEGORY_HARASSMENT\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_HATE_SPEECH\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_SEXUALLY_EXPLICIT\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_DANGEROUS_CONTENT\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_CIVIC_INTEGRITY\",\"threshold\":\"BLOCK_NONE\"}]},\"model\":\"gemini-3-pro-high\"}",
   "streamOutputs": [
    [
-    "event: interaction.created\ndata: {\"interaction\":{\"id\":\"interaction_1791558145753961560\",\"status\":\"in_progress\",\"object\":\"interaction\",\"model\":\"gemini-3-pro-high\"},\"event_type\":\"interaction.created\"}\n\n",
-    "event: interaction.status_update\ndata: {\"interaction_id\":\"interaction_1791558145753961560\",\"status\":\"in_progress\",\"event_type\":\"interaction.status_update\"}\n\n",
+    "event: interaction.created\ndata: {\"interaction\":{\"id\":\"interaction_1794399100552335000\",\"status\":\"in_progress\",\"object\":\"interaction\",\"model\":\"gemini-3-pro-high\"},\"event_type\":\"interaction.created\"}\n\n",
+    "event: interaction.status_update\ndata: {\"interaction_id\":\"interaction_1794399100552335000\",\"status\":\"in_progress\",\"event_type\":\"interaction.status_update\"}\n\n",
     "event: step.start\ndata: {\"index\":0,\"step\":{\"type\":\"model_output\"},\"event_type\":\"step.start\"}\n\n",
     "event: step.delta\ndata: {\"index\":0,\"delta\":{\"text\":\"Hel\",\"type\":\"text\"},\"event_type\":\"step.delta\"}\n\n",
     "event: step.delta\ndata: {\"index\":0,\"delta\":{\"text\":\"lo\",\"type\":\"text\"},\"event_type\":\"step.delta\"}\n\n"
    ],
    [
     "event: step.stop\ndata: {\"index\":0,\"event_type\":\"step.stop\"}\n\n",
-    "event: interaction.completed\ndata: {\"interaction\":{\"id\":\"interaction_1791558145753961560\",\"status\":\"completed\",\"usage\":{},\"created\":\"2026-10-09T15:02:25Z\",\"updated\":\"2026-10-09T15:02:25Z\",\"service_tier\":\"standard\",\"object\":\"interaction\",\"model\":\"gemini-3-pro-high\"},\"event_type\":\"interaction.completed\"}\n\n",
+    "event: interaction.completed\ndata: {\"interaction\":{\"id\":\"interaction_1794399100552335000\",\"status\":\"completed\",\"usage\":{},\"created\":\"2026-11-11T12:11:40Z\",\"updated\":\"2026-11-11T12:11:40Z\",\"service_tier\":\"standard\",\"object\":\"interaction\",\"model\":\"gemini-3-pro-high\"},\"event_type\":\"interaction.completed\"}\n\n",
     "event: done\ndata: [DONE]\n\n"
    ],
    []

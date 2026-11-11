@@ -179,7 +179,7 @@
    }
   },
   "translatedRequest": "{\"model\":\"m\",\"messages\":[]}",
-  "tokenCountOutput": "{ \"usage\": { \"prompt_tokens\": 42, \"completion_tokens\": 0, \"total_tokens\": 42 } }"
+  "tokenCountOutput": "{\n      \"usage\": { \"prompt_tokens\": 42, \"completion_tokens\": 0, \"total_tokens\": 42 }\n    }"
  },
  {
   "name": "request: explicit reasoning visibility controls are preserved",
