@@ -105,6 +105,9 @@ export const errorResponse = (
 
   if (options.passthroughHeaders && error.headers !== undefined) {
     for (const [name, value] of Object.entries(error.headers)) {
+      // A trusted local cooldown deadline outranks the raw upstream Retry-After (CLIProxyAPI 9a35fa12).
+      if (retryAfter !== undefined && name.toLowerCase() === "retry-after") continue;
+
       if (!isCPAReservedResponseHeader(name)) headers[name.toLowerCase()] = value;
     }
   }

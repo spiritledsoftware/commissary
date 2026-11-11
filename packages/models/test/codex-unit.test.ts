@@ -513,6 +513,83 @@ describe("helpers", () => {
     );
   });
 
+  // CLIProxyAPI 9a35fa12 (codex_turn_rate_limit_issue7017_test.go)
+  describe("turn_rate_limit_exceeded is transient model capacity", () => {
+    const now = Date.parse("2026-01-01T00:00:00Z");
+
+    const body =
+      '{"error":{"type":"rate_limit_error","code":"turn_rate_limit_exceeded","message":"Codex is at capacity, please try again later"}}';
+
+    const options = { modelLevelCooling: false, nowMs: now };
+
+    it("honours the Retry-After header and is not credential scoped", () => {
+      const error = newCodexStatusError(429, body, {
+        ...options,
+        headers: { "retry-after": "256" },
+      });
+
+      expect(error).toMatchObject({
+        status: 429,
+        code: "transient_rate_limit",
+        retryAfterMs: 256_000,
+      });
+      expect(error.credentialScoped).toBeUndefined();
+    });
+
+    it("keeps an explicit zero hint and ignores an invalid header", () => {
+      expect(
+        newCodexStatusError(429, body, { ...options, headers: { "retry-after": "0" } })
+          .retryAfterMs,
+      ).toBe(0);
+      expect(
+        newCodexStatusError(429, body, { ...options, headers: { "retry-after": "soon" } })
+          .retryAfterMs,
+      ).toBeUndefined();
+      expect(newCodexStatusError(429, body, options)).toMatchObject({
+        code: "transient_rate_limit",
+      });
+    });
+
+    it("reads the nested body.error layout and forces 429", () => {
+      const nested = '{"body":{"error":{"code":"turn_rate_limit_exceeded","message":"x"}}}';
+
+      expect(newCodexStatusError(500, nested, options)).toMatchObject({
+        status: 429,
+        code: "transient_rate_limit",
+      });
+    });
+
+    it("accepts a rate_limit_error that says it is at capacity, but not a generic rate limit", () => {
+      const noCode = '{"error":{"type":"rate_limit_error","message":"Codex is at capacity"}}';
+
+      const generic =
+        '{"error":{"type":"rate_limit_error","code":"rate_limit_exceeded","message":"Codex is at capacity"}}';
+
+      expect(newCodexStatusError(429, noCode, options).code).toBe("transient_rate_limit");
+      expect(newCodexStatusError(429, generic, options).code).toBeUndefined();
+    });
+
+    it("keeps usage_limit_reached on the quota path, its reset beating the header", () => {
+      const usage =
+        '{"body":{"error":{"type":"usage_limit_reached","code":"turn_rate_limit_exceeded","message":"usage","resets_in_seconds":3600}}}';
+
+      const error = newCodexStatusError(429, usage, {
+        modelLevelCooling: false,
+        nowMs: now,
+        headers: { "retry-after": "30" },
+      });
+
+      expect(error).toMatchObject({ status: 429, retryAfterMs: 3_600_000, credentialScoped: true });
+      expect(error.code).toBeUndefined();
+    });
+
+    it("a model-at-capacity rejection is transient too", () => {
+      expect(
+        newCodexStatusError(503, '{"error":{"message":"Selected model is at capacity"}}', options),
+      ).toMatchObject({ status: 429, code: "transient_rate_limit" });
+    });
+  });
+
   it("classifies status errors, capacity errors and terminal failures", () => {
     const now = Date.parse("2026-01-01T00:00:00Z");
 

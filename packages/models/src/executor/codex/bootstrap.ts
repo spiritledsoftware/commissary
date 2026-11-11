@@ -12,7 +12,7 @@
  */
 import { asString, get, isJsonArray, type Json, tryParseJson } from "@commissary/json";
 import type { ExecutionError } from "../errors.ts";
-import { isCodexModelCapacityError, newCodexStatusError } from "./errors.ts";
+import { isCodexTransientCapacityError, newCodexStatusError } from "./errors.ts";
 
 /** Upstream lines held back at most (the SSE executor charges one unit per line). */
 export const BOOTSTRAP_MAX_BUFFERED_FRAMES = 48;
@@ -175,7 +175,7 @@ export const isBootstrapBufferableEvent = (
  * to serve (capacity, overload, rate limit, retryable server error).
  */
 export const isOverloadBootstrapFailure = (bodyText: string): boolean => {
-  if (isCodexModelCapacityError(bodyText)) return true;
+  if (isCodexTransientCapacityError(bodyText)) return true;
   const body = tryParseJson(bodyText);
   const lower = (path: string) => asString(get(body, path)).trim().toLowerCase();
   const errorType = lower("error.type");

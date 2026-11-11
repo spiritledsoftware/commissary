@@ -143,6 +143,45 @@ export const recoverableRetryAfter = (
   return now + (transientSeconds === 0 ? TRANSIENT_ERROR_COOLDOWN_MS : transientSeconds * 1000);
 };
 
+/** A transient capacity 429 that is not credential scoped (`isTransientRateLimitError`). */
+const isTransientRateLimit = (
+  error: { readonly code?: string | undefined } | undefined,
+  status: number,
+  result: Pick<ReportResult, "credentialScoped">,
+): boolean =>
+  error?.code === ErrorCode.transientRateLimit &&
+  status === 429 &&
+  result.credentialScoped !== true;
+
+/**
+ * `transientRateLimitRetryAfter`: the model-scoped cooldown of a transient capacity 429. An explicit zero hint means the
+ * upstream accepts an immediate retry; only a missing hint falls back to the transient default. A live quota deadline
+ * is never shortened.
+ */
+const transientRateLimitRetryAfter = (
+  now: number,
+  retryAfterMs: number | undefined,
+  disableCooling: boolean,
+  settings: CooldownSettings,
+  quota: Pick<QuotaState, "exceeded" | "nextRecoverAt">,
+): number => {
+  let next =
+    retryAfterMs === 0
+      ? 0
+      : recoverableRetryAfter(
+          now,
+          retryAfterMs,
+          disableCooling,
+          settings.transientErrorCooldownSeconds,
+        );
+
+  if (next !== 0 && quota.exceeded && quota.nextRecoverAt > next) next = quota.nextRecoverAt;
+
+  if (next === 0 && quota.exceeded && quota.nextRecoverAt > now) next = quota.nextRecoverAt;
+
+  return next;
+};
+
 // --- settings -------------------------------------------------------------------------------------------------------
 
 const parseBoolAny = (value: Json | undefined): boolean | undefined => {
@@ -354,6 +393,7 @@ const applyCredentialFailure = (
   now: number,
   disableCooling: boolean,
   settings: CooldownSettings,
+  credentialScoped: boolean,
 ): void => {
   const previous = state.nextRetryAfter;
 
@@ -370,7 +410,17 @@ const applyCredentialFailure = (
 
   const status = classified.status;
 
-  if (isCloudflareChallengeError(classified)) {
+  if (isTransientRateLimit(error, status, { credentialScoped })) {
+    // Without a model key a transient capacity rejection degrades to an auth-level transient cooldown, never quota.
+    state.nextRetryAfter = transientRateLimitRetryAfter(
+      now,
+      retryAfterMs,
+      disableCooling,
+      settings,
+      state.quota,
+    );
+    state.unavailable = state.nextRetryAfter !== 0;
+  } else if (isCloudflareChallengeError(classified)) {
     state.statusMessage = "cloudflare challenge";
     const [next, level] = nextCloudflareCooldown(state.quota.backoffLevel, disableCooling, now);
     applyCooldownFields(state.quota, {
@@ -677,6 +727,17 @@ export const markResultDetailed = (input: MarkInput): MarkOutcome => {
             nextRecoverAt: next,
             backoffLevel: level,
           });
+        } else if (isTransientRateLimit(failure, status, result)) {
+          // Transient per-turn capacity rejection: cool only the reporting model until the provider hint. No quota
+          // state is written and the quota backoff never moves; a still-live genuine quota deadline keeps blocking.
+          model.nextRetryAfter = transientRateLimitRetryAfter(
+            now,
+            retryAfterMs,
+            disableCooling,
+            settings,
+            model.quota,
+          );
+          model.unavailable = model.nextRetryAfter !== 0;
         } else if (
           isInvalidGrantError(classified) ||
           isCreditBalanceTooLow(status, classified.message)
@@ -778,6 +839,7 @@ export const markResultDetailed = (input: MarkInput): MarkOutcome => {
         now,
         disableCooling,
         settings,
+        result.credentialScoped === true,
       );
       cooledCredential = !shouldSkipCredentialCooldown(classified);
     }
