@@ -608,11 +608,11 @@ export const convertOpenAIResponsesRequestToOpenAIChatCompletions = (
       switch (itemType) {
         case "message":
         case "": {
-          let role = getStr(item, "role");
-          // Only a real user turn can be refused; developer text is sent as user text but is not the user's turn.
+          const role = getStr(item, "role");
+          // Chat Completions supports developer messages: keep their role and position so mid-session instructions
+          // retain their authority (CLIProxyAPI 00b76771). Only real user turns take part in the unsupported-content
+          // refusal.
           const isUserTurn = role === "user";
-
-          if (role === "developer") role = "user";
           mergeableAssistantIndex = -1;
 
           if (role !== "assistant") {

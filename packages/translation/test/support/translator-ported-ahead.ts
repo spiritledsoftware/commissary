@@ -25,7 +25,8 @@ import { isJsonArray, isJsonObject, type Json, type JsonObject } from "@commissa
  * - `portedRequestEdit` (ticket C8, Go `45501610`): the Gemini requests of the cases that mix built-in tools with function
  *   declarations (OpenAI Chat `google_search`; Responses `web_search`) carry `toolConfig.includeServerSideToolInvocations`.
  *   (Ticket C8, Go `c888ff72`): the Gemini -> OpenAI Chat request of a functionResponse-only turn drops the empty user
- *   message the fixture still keeps behind the tool messages.
+ *   message the fixture still keeps behind the tool messages. (Ticket C8, Go `00b76771`): the Responses -> OpenAI Chat
+ *   request keeps the `developer` role of the "dev note" message, which the fixture still sends as `user`.
  */
 
 const ROWS: ReadonlyArray<readonly [string, number]> = [
@@ -390,7 +391,26 @@ const dropEmptyMessageAfterToolMessages: GoldenEdit = (golden) => {
   );
 };
 
+/** The Responses `developer` message keeps its role in the Chat request instead of becoming `user` (C8, `00b76771`). */
+const keepDeveloperRole: GoldenEdit = (golden) => {
+  const messages = golden["messages"];
+
+  if (!isJsonArray(messages)) return;
+
+  for (const message of messages) {
+    const content = isJsonObject(message) ? message["content"] : undefined;
+    const first = isJsonArray(content) ? content[0] : undefined;
+
+    if (isJsonObject(message) && isJsonObject(first) && first["text"] === "dev note")
+      message["role"] = "developer";
+  }
+};
+
 const REQUEST_EDITS: ReadonlyMap<string, GoldenEdit> = new Map([
+  [
+    "openai-response->openai request: full Codex-style request (tools, namespaces, custom, shell, history, formats)",
+    keepDeveloperRole,
+  ],
   [
     "gemini->openai request: system, generation config, parts, tools and tool results",
     dropEmptyMessageAfterToolMessages,

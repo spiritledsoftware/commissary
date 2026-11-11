@@ -289,6 +289,52 @@ describe("Responses client -> OpenAI-compatible upstream", () => {
     expect(at(body, "output.#.type")).toEqual(["message", "function_call"]);
   });
 
+  // CLIProxyAPI 00b76771 (openai_compat_executor_roles_test.go): developer messages keep their role and position.
+  it.each([false, true])(
+    "keeps the roles and order of developer messages (stream: %s)",
+    async (stream) => {
+      const p = pipeline(() => (stream ? sseResponse(STREAM) : jsonResponse(COMPLETION)));
+      afterAll(p.dispose);
+
+      const response = await p.call(
+        "/v1/responses",
+        postJson({
+          model: "alias-model",
+          stream,
+          instructions: "base instructions",
+          input: [
+            { role: "developer", content: "mode: plan" },
+            { role: "user", content: "mode: default is only user text" },
+            { role: "developer", content: [{ type: "input_text", text: "mode: default" }] },
+            { type: "function_call", call_id: "call_1", name: "lookup", arguments: "{}" },
+            { type: "function_call_output", call_id: "call_1", output: "read-only result" },
+            { role: "developer", content: "mode: plan" },
+            { role: "user", content: "continue" },
+          ],
+          tools: [
+            { type: "function", name: "lookup", parameters: { type: "object", properties: {} } },
+          ],
+        }),
+      );
+
+      expect(response.status).toBe(200);
+      await response.text();
+      const upstream: Json = JSON.parse(p.calls[0]!.body);
+      expect(at(upstream, "messages.#.role")).toEqual([
+        "system",
+        "developer",
+        "user",
+        "developer",
+        "assistant",
+        "tool",
+        "developer",
+        "user",
+      ]);
+      expect(at(upstream, "messages.4.tool_calls.0.id")).toBe("call_1");
+      expect(at(upstream, "messages.5.tool_call_id")).toBe("call_1");
+    },
+  );
+
   it("translates /v1/responses streams and ends them with response.completed", async () => {
     const p = pipeline(() => sseResponse(STREAM));
     afterAll(p.dispose);
