@@ -27,7 +27,8 @@ import { uuidV5Oid } from "../src/executor/helps/uuid.ts";
 import type { ExecutionContext, ExecutorOptions } from "../src/executor/types.ts";
 import { Thinking } from "../src/executor/thinking.ts";
 import { responsesFramer } from "../src/handlers/responses/framer.ts";
-import { get, type Json } from "@commissary/json";
+import { get, type Json, tryParseJson } from "@commissary/json";
+import { parseCodexWebsocketError } from "../src/executor/codex/websocket.ts";
 import { builtinTranslators, makeTranslationState } from "@commissary/translation";
 import { UsageReporter } from "../src/usage/reporter.ts";
 import { oauthCredential } from "./support/codex.ts";
@@ -306,9 +307,10 @@ describe("tool schema normalisation", () => {
       headers: new Headers({ "user-agent": "codex-tui/1" }),
     };
 
-    const forOpenAI = finalizePayload(config, "openai-compatible-x", request, make());
+    const noUsage = { setServiceTierFromBody: () => undefined };
+    const forOpenAI = finalizePayload(config, "openai-compatible-x", request, make(), noUsage);
     expect(JSON.stringify(forOpenAI)).toContain('"integer"');
-    const forCodex = finalizePayload(config, "codex", request, make());
+    const forCodex = finalizePayload(config, "codex", request, make(), noUsage);
     expect(JSON.stringify(forCodex)).toContain('"number"');
   });
 });
@@ -581,6 +583,46 @@ describe("helpers", () => {
 
       expect(error).toMatchObject({ status: 429, retryAfterMs: 3_600_000, credentialScoped: true });
       expect(error.code).toBeUndefined();
+    });
+
+    describe("on an upstream WebSocket error frame (TestIssue7017TurnRateLimitWebsocket)", () => {
+      const frame = (extra: string) =>
+        tryParseJson(
+          `{"type":"error","status":429,${extra}"error":{"type":"rate_limit_error","code":"turn_rate_limit_exceeded","message":"Codex is at capacity, please try again later"}}`,
+        );
+
+      it("reads the frame's Retry-After header", () => {
+        const parsed = parseCodexWebsocketError(frame('"headers":{"Retry-After":"120"},'), options);
+
+        expect(parsed?.error).toMatchObject({
+          status: 429,
+          code: "transient_rate_limit",
+          retryAfterMs: 120_000,
+        });
+        expect(parsed?.error.credentialScoped).toBeUndefined();
+      });
+
+      it("is transient without a hint, also in the nested body layout", () => {
+        expect(parseCodexWebsocketError(frame(""), options)?.error).toMatchObject({
+          code: "transient_rate_limit",
+        });
+
+        const nested = tryParseJson(
+          '{"type":"error","status":429,"body":{"error":{"code":"turn_rate_limit_exceeded","message":"x"}}}',
+        );
+
+        const error = parseCodexWebsocketError(nested, options)?.error;
+        expect(error).toMatchObject({ code: "transient_rate_limit" });
+        expect(error?.retryAfterMs).toBeUndefined();
+      });
+
+      it("keeps the connection-limit immediate retry ahead of the header", () => {
+        const limit = tryParseJson(
+          '{"type":"error","status":429,"headers":{"Retry-After":"9"},"error":{"code":"websocket_connection_limit_reached","message":"x"}}',
+        );
+
+        expect(parseCodexWebsocketError(limit, options)?.error.retryAfterMs).toBe(0);
+      });
     });
 
     it("a model-at-capacity rejection is transient too", () => {

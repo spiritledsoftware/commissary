@@ -117,6 +117,81 @@ describe("planRetry (shouldRetryAfterErrorWithAttempted steps 3-5)", () => {
     expect(pool.planRetry({ ...query, attempted: [] })).toEqual({ retry: true, waitMs: 0 });
   });
 
+  // CLIProxyAPI 9a35fa12 (ExplicitZeroHintRetriesImmediately, PositiveTransientHintSkipsQuotaFloor)
+  describe("a transient capacity 429", () => {
+    const transientFail = (retryAfterMs?: number) => ({
+      success: false,
+      httpStatus: 429,
+      error: {
+        code: "transient_rate_limit",
+        message: "at capacity",
+        retryable: false,
+        httpStatus: 429,
+      },
+      ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+    });
+
+    it("retries at once on an explicit zero hint, where a quota 429 would wait the 10 s floor", async () => {
+      const { pool } = await makePool(config(group("a")));
+      const picked = ok(pool.pick({ providers: providers(["a"]), model: "m" }));
+      pool.report(picked.lease, transientFail(0));
+
+      const query = retryQuery({
+        status: 429,
+        attempted: [picked.credential.id],
+        maxWaitMs: 60_000,
+      });
+
+      expect(pool.planRetry(query)).toEqual({ retry: true, waitMs: 0 });
+    });
+
+    it("waits its own remaining cooldown, without the quota floor", async () => {
+      const { pool } = await makePool(config(group("a")));
+      const picked = ok(pool.pick({ providers: providers(["a"]), model: "m" }));
+      pool.report(picked.lease, transientFail(3000));
+
+      const query = retryQuery({
+        status: 429,
+        attempted: [picked.credential.id],
+        maxWaitMs: 60_000,
+      });
+
+      expect(pool.planRetry(query)).toEqual({ retry: true, waitMs: 3000 });
+    });
+
+    it("keeps waiting for a genuine quota deadline that is still live", async () => {
+      const { pool } = await makePool(config(group("a")));
+      const quota = ok(pool.pick({ providers: providers(["a"]), model: "m" }));
+      const transient = ok(pool.pick({ providers: providers(["a"]), model: "m" }));
+
+      pool.report(quota.lease, {
+        success: false,
+        httpStatus: 429,
+        error: { message: "quota", retryable: true, httpStatus: 429 },
+        retryAfterMs: 120_000,
+      });
+      pool.report(transient.lease, transientFail(0));
+
+      const query = retryQuery({
+        status: 429,
+        attempted: [quota.credential.id],
+        maxWaitMs: 300_000,
+      });
+
+      expect(pool.planRetry(query)).toEqual({ retry: true, waitMs: 120_000 });
+    });
+
+    it("is not undone by a success dispatched before it (E2 dispatch marks)", async () => {
+      const { pool } = await makePool(config(group("a")));
+      const first = ok(pool.pick({ providers: providers(["a"]), model: "m" }));
+      const second = ok(pool.pick({ providers: providers(["a"]), model: "m" }));
+      pool.report(first.lease, transientFail(60_000));
+      pool.report(second.lease, { success: true });
+
+      expect(pool.pick({ providers: providers(["a"]), model: "m" }).ok).toBe(false);
+    });
+  });
+
   it("declines when the recovery is longer than max-retry-interval and reports it for Retry-After", async () => {
     const { pool } = await makePool(config(group("a")));
     const picked = ok(pool.pick({ providers: providers(["a"]), model: "m" }));

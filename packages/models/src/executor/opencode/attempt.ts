@@ -169,9 +169,8 @@ export const finalizeForOpenCode = (
       original,
     },
     body,
+    shaping.context.usage,
   );
-
-  shaping.context.usage.setServiceTierFromBody(final);
 
   return final;
 };

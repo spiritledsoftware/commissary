@@ -10,7 +10,7 @@ import { Schema } from "effect";
 import type { Json } from "@commissary/json";
 import type { SpendGate } from "@commissary/state/spend";
 import type { Reach } from "../../grants/reach.ts";
-import { isCredentialRetryRoundStatus } from "../cooldown/classify.ts";
+import { ErrorCode, isCredentialRetryRoundStatus } from "../cooldown/classify.ts";
 import { MIN_QUOTA_COOLDOWN_MS } from "../cooldown/mark-result.ts";
 import {
   AuthKind,
@@ -194,6 +194,51 @@ const routeAvailability = (
   return best ?? { eligible: false, next: 0 };
 };
 
+/** The models whose state decides a route's availability: the routed model and every upstream of its pool. */
+const routeModels = (route: ModelRoute | undefined): string[] =>
+  route === undefined ? [""] : [route.selectionModel, ...route.upstreamModels];
+
+/**
+ * `hasLiveQuotaCooldown` (CLIProxyAPI 9a35fa12): a credential-wide quota whose deadline is in the future (or unknown)
+ * gates every model, and so does the model's own live quota. A sibling model's quota or an expired marker is history.
+ */
+const hasLiveQuotaCooldown = (
+  state: CredentialState,
+  models: ReadonlyArray<string>,
+  now: number,
+): boolean => {
+  const live = (quota: { readonly exceeded: boolean; readonly nextRecoverAt: number }): boolean =>
+    quota.exceeded && (quota.nextRecoverAt === 0 || quota.nextRecoverAt > now);
+
+  if (state.quota.reason === "credential_quota" && live(state.quota)) return true;
+  const keys = new Set(models.map(canonicalModelLookupKey));
+
+  if (keys.has("")) return live(state.quota);
+
+  return Object.entries(state.modelStates).some(
+    ([stateModel, modelState]) =>
+      keys.has(canonicalModelLookupKey(stateModel)) && live(modelState.quota),
+  );
+};
+
+/**
+ * `hasTransientZeroWaitEligibility`: the credential's last failure for the model was a transient capacity rejection,
+ * which carries no quota wait floor.
+ */
+const hasTransientLastError = (state: CredentialState, models: ReadonlyArray<string>): boolean => {
+  const keys = new Set(models.map(canonicalModelLookupKey));
+
+  if (!keys.has("") && Object.keys(state.modelStates).length > 0) {
+    return Object.entries(state.modelStates).some(
+      ([stateModel, modelState]) =>
+        keys.has(canonicalModelLookupKey(stateModel)) &&
+        modelState.lastError?.code === ErrorCode.transientRateLimit,
+    );
+  }
+
+  return state.lastError?.code === ErrorCode.transientRateLimit;
+};
+
 export interface RetryPlanInput {
   readonly credentials: ReadonlyArray<CredentialEntry>;
   readonly query: RetryQuery;
@@ -271,7 +316,20 @@ export const planRetry = (input: RetryPlanInput): RetryPlan => {
 
     const wasAttempted = attempted.has(credential.id);
 
-    if (!wasAttempted || input.coolingDisabled(credential) || query.status !== 429) {
+    // A transient capacity rejection cools only until its provider hint, so an attempted credential whose last failure
+    // was transient, with no live quota deadline for the model, waits for its actual remaining cooldown (an explicit
+    // zero hint included) instead of gaining the quota floor.
+    const models = routeModels(route);
+
+    const transientZeroWait =
+      !hasLiveQuotaCooldown(state, models, now) && hasTransientLastError(state, models);
+
+    if (
+      !wasAttempted ||
+      input.coolingDisabled(credential) ||
+      query.status !== 429 ||
+      transientZeroWait
+    ) {
       if (next === 0) {
         // Something is available right now.
         return { retry: true, waitMs: 0 };

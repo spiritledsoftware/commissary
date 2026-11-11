@@ -247,9 +247,8 @@ export const makeKimiExecutor = (executorOptions: KimiExecutorOptions = {}): Pro
         original,
       },
       body,
+      context.usage,
     );
-
-    context.usage.setServiceTierFromBody(body);
 
     return { url: kimiChatUrl(context.credential), body, translated: translatedForResponse, to };
   });
@@ -410,9 +409,8 @@ export const makeKimiExecutor = (executorOptions: KimiExecutorOptions = {}): Pro
         original: request.payload,
       },
       body,
+      context.usage,
     );
-
-    context.usage.setServiceTierFromBody(body);
 
     return { url: kimiResponsesUrl(context.credential), body, translated };
   });

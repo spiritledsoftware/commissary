@@ -969,12 +969,15 @@ WebSocket transports"). Reuses the Codex translators
 Port of `openai_responses_websocket*.go` (inbound `GET /v1/responses` and `GET /backend-api/codex/responses` with
 `Upgrade: websocket`), `codex_websockets_*.go` and `xai_websockets_executor.go`. The Access gate authenticates the
 upgrade request like any other (default-deny prefixes); the principal is captured for the socket's lifetime, but the
-API Worker's client gate also provides `RequestReauthorizer` (`@commissary/auth`), which runs `authenticateClient` again over
-the upgrade's headers before **every client frame** (the hand-off in `socket.ts`, steering frames included; CLIProxyAPI
-`b9bb031d`), so a key revoked, a grant withdrawn or a person suspended after the upgrade stops working on the live socket: the
-frame is answered with an error frame (401/403/429, tied to its `event_id`), not run, and the socket stays open. Deviations
-from Go: the check reads the upgrade's headers and not the frame (Commissary's gate looks at no body), is not counted against the
-plan's request ceiling again (the upgrade was), and the plugin `denied` status is N/A.
+API Worker's client gate also provides `RequestReauthorizer` (`@commissary/auth`, `reauthorizeClient`), which authenticates the
+upgrade again before **every client frame** (the hand-off in `socket.ts`, steering frames included; CLIProxyAPI `b9bb031d`), so
+a key revoked, or a member removed or suspended, after the upgrade stops working on the live socket: the frame is answered with an
+error frame (401/403/429, tied to its `event_id`; `refusalToExecutionError`), not run, and the socket stays open. An API key is
+verified again; an Access sign-in is **not** (its token expires while the person stays valid): only the revocable state is
+checked, that the person is still a member of the org and the org still takes Access sign-ins from clients. A **grant** withdrawn
+mid-socket is not this check's business: grants decide what a pick may use, so the next turn's `pick` refuses it. Deviations from
+Go: the check reads the upgrade's headers and not the frame (Commissary's gate looks at no body), is not counted against the plan's
+request ceiling again (the upgrade was), and the plugin `denied` status is N/A.
 
 - **Where the socket lives (decision)**: in the Worker invocation that accepts it (`WebSocketPair` + `server.accept()`,
   `routes.ts`), **not** in a `SessionState` Durable Object. Per-socket state (previous request/response chaining, pending tool
@@ -3522,7 +3525,7 @@ time and computer time, counts and decides.
   cross-request locks, which workerd forbids). `ACCESS_DEV_BYPASS` only applies when the request host is loopback (i.e.
   `alchemy dev`) and is refused (warning logged once per isolate) whenever `ACCESS_TEAM_DOMAIN` or `ACCESS_AUD` is set.
 - **`@commissary/auth`** (`packages/auth`, #132): request-side authentication with two entry points,
-  `authenticateClient(headers, url)` (the client API) and `authenticateManagement(headers, url, {needs, slug})` (the
+  `authenticateClient(headers, url)` (the client API; `reauthorizeClient` authenticates it again while it runs, for a Responses WebSocket) and `authenticateManagement(headers, url, {needs, slug})` (the
   management API and the panel), each picking the Access gate (`auth/access-gate.ts`) or Commissary Cloud's
   (`auth/hosted-gate.ts`); the API Worker calls the first, the app Worker the second. Each Worker owns its routes and passes in what a path needs: the app Worker the zone (`management/zones.ts`
   `classifyPath`: public, management, or the client API it refuses), the role (`management/policy.ts`), the addressed org's slug and, for the cross-site

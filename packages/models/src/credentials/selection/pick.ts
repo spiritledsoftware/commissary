@@ -128,6 +128,26 @@ const highestPriority = (candidates: ReadonlyArray<Candidate>): Candidate[] => {
   return candidates.filter((candidate) => candidate.priority === best);
 };
 
+/**
+ * `latestSessionAuth`'s provider filter for a guardian review (CLIProxyAPI 2f6f2924): the executor keys of the candidates
+ * on the one provider the request names, or on any of them when it names several (a mixed pool).
+ */
+const eligibleProviders = (
+  requested: ReadonlySet<string>,
+  candidates: ReadonlyArray<Candidate>,
+): Set<string> => {
+  const mixed = requested.size !== 1;
+  const eligible = new Set<string>();
+
+  for (const candidate of candidates) {
+    const provider = executorKey(candidate.entry.credential);
+
+    if (mixed || requested.has(provider)) eligible.add(provider);
+  }
+
+  return eligible;
+};
+
 /** Selects one credential for `request`, or explains why none is selectable. */
 export const selectCredential = (input: SelectionInput): SelectionOutcome => {
   const { request, settings, runtime, now } = input;
@@ -450,16 +470,12 @@ export const selectCredential = (input: SelectionInput): SelectionOutcome => {
     settings.sessionAffinitySubagents &&
     session?.isGuardian === true
   ) {
-    const mixed = providers.size !== 1;
-    const eligible = new Set<string>();
+    const inheritedId = runtime.affinity.latestSessionAuth(
+      `${scope}::${parentId}`,
+      eligibleProviders(providers, available),
+      now,
+    );
 
-    for (const candidate of available) {
-      const provider = executorKey(candidate.entry.credential);
-
-      if (mixed || providers.has(provider)) eligible.add(provider);
-    }
-
-    const inheritedId = runtime.affinity.latestSessionAuth(`${scope}::${parentId}`, eligible, now);
     const parent = find(inheritedId);
 
     if (parent !== undefined) return done(parent, bind(parent.id));

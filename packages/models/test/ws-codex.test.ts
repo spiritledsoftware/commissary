@@ -27,6 +27,8 @@ import { codexSessionStore } from "../src/executor/websocket/session.ts";
 import { unsealCompaction } from "../src/executor/helps/compaction.ts";
 import { ModelProviders } from "../src/handlers/model-providers.ts";
 import { get, type Json } from "@commissary/json";
+import { RateLimitedError, UnauthorizedError } from "@commissary/core";
+import { reauthorization } from "./support/client-gate.ts";
 
 const created = {
   type: "response.created",
@@ -85,6 +87,62 @@ const setup = (
 
   return { ...p, log, mock, connect };
 };
+
+// CLIProxyAPI b9bb031d: every frame of a live socket is authorised again; a refusal answers the frame, the socket stays.
+describe("Responses WebSocket re-authorisation", () => {
+  const frame = {
+    type: "response.create",
+    model: "gpt-5.4",
+    input: [{ type: "message", role: "user", content: "hi" }],
+  };
+
+  it("answers a frame refused after the upgrade with an error frame, runs nothing and keeps the socket", async () => {
+    const s = setup([wsCredential()], {
+      onConnection: (connection) => {
+        void (async () => {
+          await connection.next();
+          connection.server.send(JSON.stringify(created));
+          connection.server.send(JSON.stringify(done()));
+        })();
+      },
+    });
+
+    const client = await s.connect();
+
+    try {
+      // The upgrade passed; the key is revoked (or the person suspended) while the socket is open.
+      reauthorization.failure = new UnauthorizedError({ message: "Invalid API key" });
+      client.send({ ...frame, event_id: "evt_1" });
+
+      expect(await client.nextJson()).toMatchObject({
+        type: "error",
+        status: 401,
+        error: { message: "Invalid API key", event_id: "evt_1" },
+      });
+      expect(s.mock.dials).toHaveLength(0);
+
+      // A rate-limited refusal carries its Retry-After; the next frame passes once the check does.
+      reauthorization.failure = new RateLimitedError({
+        message: "slow down",
+        retryAfterSeconds: 7,
+      });
+      client.send(frame);
+      expect(await client.nextJson()).toMatchObject({
+        type: "error",
+        status: 429,
+        headers: { "Retry-After": "7" },
+      });
+
+      reauthorization.failure = undefined;
+      client.send(frame);
+      expect((await client.nextJson())["type"]).toBe("response.created");
+      expect(s.mock.dials).toHaveLength(1);
+    } finally {
+      reauthorization.failure = undefined;
+      client.close();
+    }
+  });
+});
 
 describe("Responses WebSocket over an upstream WebSocket (Codex)", () => {
   it("frames response.create for the upstream and forwards events to the client", async () => {

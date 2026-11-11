@@ -15,7 +15,12 @@
  */
 import { type Cause, Effect, Option, Queue, Result, type Scope } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
-import { accessRefusal, AccessPrincipal, RequestReauthorizer } from "@commissary/auth";
+import {
+  type AccessRefusal,
+  accessRefusal,
+  AccessPrincipal,
+  RequestReauthorizer,
+} from "@commissary/auth";
 import { invalidRequestBody } from "../../../http/errors.ts";
 import { ExecutionError } from "../../../executor/errors.ts";
 import { executeStream, type ExecutionInput, hasAlternativeTarget } from "../../execute.ts";
@@ -38,6 +43,16 @@ const frameText = (data: string | ArrayBuffer | ArrayBufferView): string | undef
 
   return undefined;
 };
+
+/** What a refused frame is answered with: the refusal's status and message, and its `Retry-After` when rate limited. */
+export const refusalToExecutionError = (refusal: AccessRefusal): ExecutionError =>
+  new ExecutionError({
+    status: refusal.status,
+    message: refusal.message,
+    ...(refusal.retryAfterSeconds === undefined
+      ? {}
+      : { safeHeaders: { "retry-after": String(refusal.retryAfterSeconds) } }),
+  });
 
 /** Accepts the upgrade and starts the socket fiber. Requires the per-request services of the turn (see header). */
 export const handleResponsesSocket = Effect.gen(function* () {
@@ -98,19 +113,7 @@ export const handleResponsesSocket = Effect.gen(function* () {
               Effect.flatMap((result) =>
                 Result.isSuccess(result)
                   ? Effect.succeed(undefined)
-                  : Effect.map(
-                      accessRefusal(result.failure),
-                      (refusal) =>
-                        new ExecutionError({
-                          status: refusal.status,
-                          message: refusal.message,
-                          ...(refusal.retryAfterSeconds === undefined
-                            ? {}
-                            : {
-                                safeHeaders: { "retry-after": String(refusal.retryAfterSeconds) },
-                              }),
-                        }),
-                    ),
+                  : Effect.map(accessRefusal(result.failure), refusalToExecutionError),
               ),
             ),
           }

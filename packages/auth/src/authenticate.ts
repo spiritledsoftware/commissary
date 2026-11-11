@@ -15,7 +15,7 @@ import { accessGate } from "./access-gate.ts";
 import type { AccessJwks } from "./access/jwks.ts";
 import { AuthConfig } from "./config.ts";
 import type { AuthDirectory } from "./directory.ts";
-import type { AccessError, ManagementRoute } from "./gate.ts";
+import { type AccessError, admitted, type ManagementRoute } from "./gate.ts";
 import { hostedClientGate, hostedManagementGate, type SignInSessions } from "./hosted-gate.ts";
 import { isHosted } from "./mode.ts";
 import { type AccessIdentity, type RunPrincipal, runIdentity } from "./principal.ts";
@@ -37,6 +37,33 @@ export const authenticateClient = (
     return isHosted(yield* AuthConfig)
       ? yield* hostedClientGate(headers, requestUrl)
       : yield* accessGate(headers, requestUrl, undefined);
+  });
+
+/**
+ * Authenticates a client API request again after it was admitted as `upgraded`, while it is still running (a Responses
+ * WebSocket, CLIProxyAPI b9bb031d). An API key is verified again, so a revoked key, a withdrawn membership or a
+ * suspended person stops at once. An Access sign-in is not: its token was verified at the upgrade, and a token that has
+ * since expired (or whose signing key rotated) says nothing about the person, so only the revocable state is checked
+ * again: the person is still a member of the org, which still takes Access sign-ins from clients.
+ */
+export const reauthorizeClient = (
+  headers: Readonly<Record<string, string | undefined>>,
+  requestUrl: string,
+  upgraded: AccessIdentity,
+): Effect.Effect<
+  AccessIdentity,
+  AccessError,
+  AuthConfig | AuthDirectory | CurrentOrg | AccessJwks
+> =>
+  Effect.gen(function* () {
+    const { principal } = upgraded;
+
+    if ((principal.kind === "user" || principal.kind === "service") && !isHosted(yield* AuthConfig))
+      return yield* admitted(principal, upgraded.org, upgraded.platformAdmin, "member", {
+        credentialSent: true,
+      });
+
+    return yield* authenticateClient(headers, requestUrl);
   });
 
 /**

@@ -33,7 +33,9 @@ import {
 import { statusText } from "../../http/status.ts";
 import { responseModelOf } from "../../usage/record.ts";
 import { isResponsesTokenEvent } from "../../usage/ttft.ts";
+import { ErrorCode } from "../../credentials/cooldown/classify.ts";
 import { ExecutionError } from "../errors.ts";
+import { parseRetryAfterMs } from "../helps/retry-after.ts";
 import type { Thinking } from "../thinking.ts";
 import type {
   ExecutionContext,
@@ -54,6 +56,7 @@ import { startCodexDuplex } from "./duplex.ts";
 import {
   codexEmptyIncompleteStreamError,
   codexTerminalFailure,
+  isCodexTransientCapacityError,
   isCodexUsageLimitError,
   isThinkingSignatureInvalid,
   newCodexStatusError,
@@ -228,11 +231,18 @@ export const parseCodexWebsocketError = (
 
   const headers = websocketErrorHeaders(event);
 
+  // Hint precedence: the quota body reset, then the connection-limit immediate retry, then the generic `Retry-After`
+  // header of the frame (CLIProxyAPI 9a35fa12).
+  if (retryAfterMs === undefined && status === 429)
+    retryAfterMs = parseRetryAfterMs(headers?.["retry-after"] ?? null, options.nowMs);
+  const transient = !usageLimit && status === 429 && isCodexTransientCapacityError(body);
+
   return {
     body,
     error: new ExecutionError({
       status,
       message: body,
+      ...(transient ? { code: ErrorCode.transientRateLimit } : {}),
       ...(usageLimit && !options.modelLevelCooling ? { credentialScoped: true } : {}),
       ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
       ...(headers !== undefined ? { headers } : {}),

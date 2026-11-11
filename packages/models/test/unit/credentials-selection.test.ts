@@ -679,6 +679,26 @@ describe("guardian reviews inherit the parent credential", () => {
     expect(h.id(mixed, review({ providers: ["codex", "claude"] }))).toBe("auth-b");
   });
 
+  it("never inherits across callers that share a session id", () => {
+    const h = new Harness({ ...defaultSettings, sessionAffinity: true });
+
+    const scoped = (callerScope: string, extra = {}) => ({
+      ...review(),
+      session: { id: REVIEW, parentId: PARENT, isGuardian: true, callerScope, ...extra },
+    });
+
+    expect(
+      h.id([codex("auth-b")], {
+        ...parentRequest,
+        session: { id: PARENT, callerScope: "alice" },
+      }),
+    ).toBe("auth-b");
+
+    // Bob's review names the same parent thread id, but alice's binding is not his.
+    expect(h.id(pool(), scoped("bob"))).toBe("auth-a");
+    expect(h.id(pool(), scoped("alice"))).toBe("auth-b");
+  });
+
   it("forgets a parent binding that expired or was dropped", () => {
     const expired = bound();
     expired.now += 61_000;

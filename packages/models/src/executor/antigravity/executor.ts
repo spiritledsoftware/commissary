@@ -506,9 +506,8 @@ export const makeAntigravityExecutor = (
         original: originalTranslatedBody,
       },
       body,
+      context.usage,
     );
-
-    context.usage.setServiceTierFromBody(finalBody);
 
     return {
       url,
@@ -1018,6 +1017,7 @@ export const makeAntigravityExecutor = (
         original: originalTranslated,
       },
       body,
+      context.usage,
     );
 
     const prepared: PreparedRequest = {

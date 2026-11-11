@@ -82,7 +82,7 @@ export const isCodexModelCapacityError = (bodyText: string): boolean => {
 };
 
 /** The trimmed string at each of `paths` (the layouts the Codex upstream uses; blank when absent). */
-const firstOf = (parsed: Json | undefined, paths: readonly string[]): string[] =>
+const trimmedValuesAt = (parsed: Json | undefined, paths: readonly string[]): string[] =>
   paths.map((path) => str(parsed, path));
 
 /**
@@ -93,20 +93,23 @@ const firstOf = (parsed: Json | undefined, paths: readonly string[]): string[] =
 export const isCodexTurnRateLimitError = (bodyText: string): boolean => {
   if (bodyText === "") return false;
   const parsed = tryParseJson(bodyText);
-  const codes = firstOf(parsed, ["error.code", "code", "body.error.code"]).filter((c) => c !== "");
+
+  const codes = trimmedValuesAt(parsed, ["error.code", "code", "body.error.code"]).filter(
+    (c) => c !== "",
+  );
 
   if (codes.some((code) => code.toLowerCase() === "turn_rate_limit_exceeded")) return true;
 
   if (codes.length > 0) return false;
 
-  const rateLimitTyped = firstOf(parsed, ["error.type", "type", "body.error.type"]).some(
+  const rateLimitTyped = trimmedValuesAt(parsed, ["error.type", "type", "body.error.type"]).some(
     (type) => type.toLowerCase() === "rate_limit_error",
   );
 
   if (!rateLimitTyped) return false;
 
-  return firstOf(parsed, ["error.message", "message", "body.error.message"]).some((message) =>
-    message.toLowerCase().includes("at capacity"),
+  return trimmedValuesAt(parsed, ["error.message", "message", "body.error.message"]).some(
+    (message) => message.toLowerCase().includes("at capacity"),
   );
 };
 
@@ -115,9 +118,11 @@ export const isCodexTurnRateLimitError = (bodyText: string): boolean => {
  * wording and the per-turn admission rejection). An explicit other error code keeps its handling.
  */
 export const isCodexTransientCapacityError = (bodyText: string): boolean => {
-  const code = firstOf(tryParseJson(bodyText), ["error.code", "code", "body.error.code"]).find(
-    (candidate) => candidate !== "",
-  );
+  const code = trimmedValuesAt(tryParseJson(bodyText), [
+    "error.code",
+    "code",
+    "body.error.code",
+  ]).find((candidate) => candidate !== "");
 
   if (
     code !== undefined &&

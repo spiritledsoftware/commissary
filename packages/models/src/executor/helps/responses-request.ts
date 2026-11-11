@@ -156,9 +156,8 @@ export const prepareResponsesRequest = Effect.fnUntraced(function* (
       original,
     },
     body,
+    context.usage,
   );
-
-  context.usage.setServiceTierFromBody(body);
 
   const effective = get(body, "model");
 

@@ -440,6 +440,7 @@ export const startCodexDuplex = (
             original,
           },
           payloadValue,
+          context.usage,
         );
 
         const body = set(finalized, "type", "response.steer");

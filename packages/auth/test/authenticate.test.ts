@@ -14,6 +14,7 @@ import {
   type AuthDirectory,
   authenticateClient,
   authenticateManagement,
+  reauthorizeClient,
   ensureSignedUp,
   NOT_SIGNED_IN,
   resetApiKeyCaches,
@@ -171,6 +172,84 @@ describe("authenticateClient", () => {
 
         assert.strictEqual(identity.org, GLOBAL_ORG);
         assert.strictEqual(identity.principalId, "user:erin@example.com");
+      }),
+    );
+  });
+});
+
+describe("reauthorizeClient (CLIProxyAPI b9bb031d)", () => {
+  it.effect(
+    "takes an Access sign-in whose token has since expired, while the person is a member",
+    () => {
+      const { directory } = staffed();
+
+      directory.addMember(GLOBAL_ORG, "erin@example.com", "member");
+      directory.setOrg(GLOBAL_ORG, { accessClients: true });
+
+      return run(
+        directory,
+        Effect.gen(function* () {
+          const erin = yield* signedIn(userClaims("erin@example.com"));
+          const upgraded = yield* authenticateClient(erin, CLIENT_URL);
+
+          // An hour later the token's exp has passed: verifying it again would refuse the whole socket.
+          yield* TestClock.setTime(NOW_MS + 2 * 3_600_000);
+          const expired = yield* Effect.flip(authenticateClient(erin, CLIENT_URL));
+          assert.strictEqual(expired._tag, "UnauthorizedError");
+
+          const again = yield* reauthorizeClient(erin, CLIENT_URL, upgraded);
+          assert.strictEqual(again.principalId, "user:erin@example.com");
+        }),
+      );
+    },
+  );
+
+  it.effect(
+    "refuses an Access sign-in once the person left the org or the org stopped taking sign-ins",
+    () => {
+      const { directory } = staffed();
+
+      directory.addMember(GLOBAL_ORG, "erin@example.com", "member");
+      directory.setOrg(GLOBAL_ORG, { accessClients: true });
+
+      return run(
+        directory,
+        Effect.gen(function* () {
+          const erin = yield* signedIn(userClaims("erin@example.com"));
+          const upgraded = yield* authenticateClient(erin, CLIENT_URL);
+
+          directory.setOrg(GLOBAL_ORG, { accessClients: false });
+          const off = yield* Effect.flip(reauthorizeClient(erin, CLIENT_URL, upgraded));
+          assert.strictEqual(off._tag, "UnauthorizedError");
+
+          directory.setOrg(GLOBAL_ORG, { accessClients: true });
+          directory.removeMember(GLOBAL_ORG, "erin@example.com");
+          const removed = yield* Effect.flip(reauthorizeClient(erin, CLIENT_URL, upgraded));
+          assert.strictEqual(removed._tag, "ForbiddenError");
+        }),
+      );
+    },
+  );
+
+  it.effect("verifies an API key again, so a revoked key is refused", () => {
+    const { directory, acme } = staffed();
+    const text = directory.issueApiKey(acme, "dan@example.com");
+
+    return run(
+      directory,
+      Effect.gen(function* () {
+        const upgraded = yield* authenticateClient({ "x-api-key": text }, CLIENT_URL);
+        yield* reauthorizeClient({ "x-api-key": text }, CLIENT_URL, upgraded);
+
+        directory.revokeKey(acme, text);
+        // Past the verified-key cache window.
+        yield* TestClock.setTime(NOW_MS + 10 * 60_000);
+
+        const refused = yield* Effect.flip(
+          reauthorizeClient({ "x-api-key": text }, CLIENT_URL, upgraded),
+        );
+
+        assert.strictEqual(refused.message, "Invalid API key");
       }),
     );
   });
