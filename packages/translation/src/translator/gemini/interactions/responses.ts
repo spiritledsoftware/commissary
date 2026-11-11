@@ -33,6 +33,7 @@ import {
   interactionsThoughtSignature,
   interactionsUsage,
   setInteractionsStreamUsageFromGemini,
+  geminiUsageNode,
   setInteractionsUsageFromGemini,
 } from "./common.ts";
 
@@ -50,6 +51,9 @@ interface StreamState {
   completed: boolean;
   done: boolean;
   activeStepOpen: boolean;
+  /** The latest frame carrying usage (the fallback for an explicit `[DONE]`). */
+  pendingUsage: Json | undefined;
+  usageAfterSeen: boolean;
   id: string;
   stepId: string;
   activeStepType: string;
@@ -244,7 +248,7 @@ const appendGeminiPartToStream = (out: string[], st: StreamState, part: Json): v
 };
 
 const hasGeminiStreamUsage = (root: Json): boolean => {
-  const usage = get(root, "usageMetadata") ?? get(root, "usage_metadata");
+  const usage = geminiUsageNode(root);
 
   if (usage === undefined) return false;
 
@@ -268,6 +272,20 @@ export const convertGeminiResponseToInteractions = (
   line: string,
 ): ReadonlyArray<string> => {
   const modelName = context.model;
+  // Vertex stream paths pass SSE lines, while the Gemini executor passes bare payloads (upstream be929f07).
+  let payload = line.trim();
+
+  if (payload.startsWith("data:")) payload = payload.slice(5).trim();
+
+  if (
+    payload === "" ||
+    payload.startsWith(":") ||
+    payload.startsWith("event:") ||
+    payload.startsWith("id:") ||
+    payload.startsWith("retry:")
+  ) {
+    return [];
+  }
 
   if (context.state.value === undefined) {
     context.state.value = {
@@ -276,6 +294,8 @@ export const convertGeminiResponseToInteractions = (
       completed: false,
       done: false,
       activeStepOpen: false,
+      pendingUsage: undefined,
+      usageAfterSeen: false,
       id: `interaction_${nanos()}`,
       stepId: "",
       activeStepType: "",
@@ -288,16 +308,16 @@ export const convertGeminiResponseToInteractions = (
   const st = context.state.value as StreamState;
   const out: string[] = [];
 
-  if (line.trim() === "[DONE]") {
+  if (payload === "[DONE]") {
     if (!st.completed) {
       appendStepStop(out, st);
-      appendCompleted(out, st, modelName, undefined);
+      appendCompleted(out, st, modelName, st.pendingUsage);
     }
 
     return appendDone(out, st);
   }
 
-  const root = tryParseJson(line);
+  const root = tryParseJson(payload);
 
   if (!st.started) {
     appendCreated(out, st, modelName);
@@ -308,15 +328,29 @@ export const convertGeminiResponseToInteractions = (
   const parts = get(root, "candidates.0.content.parts");
 
   if (isJsonArray(parts)) for (const part of parts) appendGeminiPartToStream(out, st, part);
-  const hasFinish = exists(root, "candidates.0.finishReason");
-  const hasUsage = root !== undefined && hasGeminiStreamUsage(root);
+  const finishReason = get(root, "candidates.0.finishReason");
+  const hasFinish = finishReason !== undefined && asString(finishReason).trim() !== "";
+  const frameHasUsage = root !== undefined && hasGeminiStreamUsage(root);
+
+  if (root !== undefined && frameHasUsage) {
+    st.pendingUsage = root;
+
+    if (st.finished) st.usageAfterSeen = true;
+  }
 
   if (hasFinish && !st.finished) {
     appendStepStop(out, st);
     st.finished = true;
+
+    if (frameHasUsage) st.usageAfterSeen = true;
   }
 
-  if (hasUsage && st.finished && !st.completed) appendCompleted(out, st, modelName, root);
+  // Complete only on usage observed at or after the finish frame; usage cached from earlier content frames is the
+  // fallback for an explicit `[DONE]`, not a completion trigger (a later frame may carry the final usage).
+  if (st.usageAfterSeen && st.finished && !st.completed) {
+    appendCompleted(out, st, modelName, st.pendingUsage);
+    appendDone(out, st);
+  }
 
   return out;
 };
