@@ -299,9 +299,11 @@ const buildFunctionResponse = (
   functionResponse["id"] = toolCallId;
   functionResponse["name"] = mapSanitizedFunctionName(nameMap, funcName);
   const result = get(content, "content");
+  // A failed tool result keeps its failure: Gemini reads `response.error` as the function's error (CLIProxyAPI 068fe153).
+  const resultPath = get(content, "is_error") === true ? "response.error" : "response.result";
 
   if (typeof result === "string") {
-    set(functionResponse, "response.result", result);
+    set(functionResponse, resultPath, result);
   } else if (isJsonArray(result)) {
     const nonImage: Json[] = [];
     const images: JsonObject[] = [];
@@ -320,14 +322,10 @@ const buildFunctionResponse = (
     }
 
     if (nonImage.length === 1)
-      setGeminiFunctionResponseRaw(
-        functionResponse,
-        "response.result",
-        JSON.stringify(nonImage[0]),
-      );
+      setGeminiFunctionResponseRaw(functionResponse, resultPath, JSON.stringify(nonImage[0]));
     else if (nonImage.length > 1)
-      setGeminiFunctionResponseRaw(functionResponse, "response.result", JSON.stringify(nonImage));
-    else set(functionResponse, "response.result", "");
+      setGeminiFunctionResponseRaw(functionResponse, resultPath, JSON.stringify(nonImage));
+    else set(functionResponse, resultPath, "");
 
     // Image data goes inside functionResponse.parts instead of sibling parts to keep base64 out of the text context.
     if (images.length > 0) set(functionResponse, "parts", images);
@@ -335,15 +333,15 @@ const buildFunctionResponse = (
     if (asString(result["type"]) === "image" && asString(get(result, "source.type")) === "base64") {
       // SAFETY: the surrounding check confirmed `source.type` is "base64", so `source` exists.
       set(functionResponse, "parts", [inlineDataPartOf(get(result, "source") as Json)]);
-      set(functionResponse, "response.result", "");
+      set(functionResponse, resultPath, "");
     } else {
-      setGeminiFunctionResponseResult(functionResponse, "response.result", result);
+      setGeminiFunctionResponseResult(functionResponse, resultPath, result);
     }
   } else if (result !== undefined) {
-    setGeminiFunctionResponseResult(functionResponse, "response.result", result);
+    setGeminiFunctionResponseResult(functionResponse, resultPath, result);
   } else {
     // Content missing entirely.
-    set(functionResponse, "response.result", "");
+    set(functionResponse, resultPath, "");
   }
 
   return functionResponse;

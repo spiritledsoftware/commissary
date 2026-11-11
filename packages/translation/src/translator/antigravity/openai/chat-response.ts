@@ -240,7 +240,7 @@ export const convertAntigravityResponseToOpenAI = (
           (call["function"] as JsonObject)["arguments"] = asString(args);
         delta["role"] = "assistant";
         // SAFETY: `delta.tool_calls` is an array: it was already one or was set to `[]` above.
-        (delta["tool_calls"] as Json[]).push(call);
+        delta["tool_calls"].push(call);
       } else if (inlineData !== undefined) {
         const data = asString(get(inlineData, "data"));
 
