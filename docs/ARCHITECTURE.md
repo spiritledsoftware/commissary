@@ -1499,6 +1499,20 @@ Deviations from Go (all deliberate, documented in code headers):
   or else the local date; a stored pin always wins over a later caller date. A leading string-form caller reminder is stripped
   before the billing fingerprint and the prompt id are computed (array-form reminders are replaced by the injection). Requests
   at the `minimal` level, probes, helpers and requests without a caller session (their session id is random) take no part.
+- **Web search result cache** (`claude/web-search-results.ts`, store `claude-web-search-results`; Go `RecordClaudeWebSearchResults`,
+  `claudeWebSearchResultCacheScope`, CLIProxyAPI `9d453bc0`, `cddc9bb8`, `9acf81d3`): a Responses client replays a
+  `web_search_call` without the `encrypted_content` of its results, which Anthropic requires, so the replayed
+  `web_search_tool_result` would be empty. The executor records the `web_search_tool_result` blocks of every response it
+  translates for a Responses client that names its session (stream and not), keyed by org, caller scope, session, upstream
+  credential (a hash of its id, so a result only returns to the credential that produced it) and `server_tool_use` id; 24 h
+  TTL, sliding on a hit. Before translating, the pipeline reads the entries of the replayed searches that arrive without results
+  (`responsesWebSearchCallsWithoutResults`) and hands them to the Responses -> Claude translator (`webSearchResults` request
+  option), which restores the block and, for an assistant turn whose search still has no result, drops its
+  `web_search_result_location` citations (they would point at nothing; the turn ends at the next user message). Deliberate
+  differences from Go: no `client.codex.web-search-result-cache` switch (Go: off by default; here the cache serves every
+  Responses client with a session and costs one `SessionState` round trip only when a replayed search lacks results); the store
+  is `SessionState`, not a process LRU, so there is no `limit`; the lookup is read before translating instead of patching the
+  translated body, so a Claude-format client's own unbacked citations are not stripped (Go strips every source's).
 - **Mid-session Responses system items** (Go `27762819`): for a Responses client, a text-only system or developer message item
   after the conversation started stays in place as a `role: "system"` turn right after the next user message (so the prompt
   prefix of earlier turns stays stable) instead of joining the top-level `system`. The executor decides it per attempt
@@ -3111,9 +3125,14 @@ _SessionState Durable Object_.
   https) before translation, in non-stream, aggregated and streamed payloads; any failure keeps the redirect URL. Verified by
   `packages/models/test/antigravity-grounding.test.ts` (Go `antigravity_grounding_urls_test.go` scenario plus executor wiring).
 
-Deviations from Go / not ported: per-credential HTTP pools and proxies; a bare `[DONE]` line yields nothing in the
-Interactions response translator (as in Go), so the Interactions stream ends with `interaction.completed` only; short-cooldown
-state and signature persistence are KV (eventually consistent), not the Go home KV.
+Deviations from Go / not ported: per-credential HTTP pools and proxies; short-cooldown state and signature persistence are KV
+(eventually consistent), not the Go home KV.
+
+Interactions streams from Antigravity and Gemini (`ede07caf`, `be929f07`): `interaction.completed` and `done` follow the usage
+frame at or after the finish frame (earlier usage is only the fallback of an explicit `[DONE]`, which now terminates the stream
+in its bare form too, as in Go), the Gemini translator strips `data:` prefixes and ignores SSE control lines, and
+`cpaUsageMetadata` counts as usage. Goldens that predate it are adjusted by `portedStreamOutputs`
+(`test/support/translator-ported-ahead.ts`).
 
 ## Signature validation (`translation/signature/`)
 

@@ -16,6 +16,11 @@ import { nextSessionTurnIndex, resetSessionTurnIndex } from "../src/executor/dev
 import { makeRequestReplayCache } from "../src/executor/gemini/replay.ts";
 import { makeSessionStateKimiReplayStore } from "../src/executor/kimi/replay.ts";
 import { makeSessionStateXaiReplayStore } from "../src/executor/xai/replay.ts";
+import {
+  makeSessionStateWebSearchResultStore,
+  webSearchCredentialScope,
+} from "../src/executor/claude/web-search-results.ts";
+import { credential } from "./support/executor-run.ts";
 import { CurrentOrg, GLOBAL_ORG, newOrgId, type OrgId } from "@commissary/core";
 import {
   addressName,
@@ -491,6 +496,95 @@ describe("Claude session date pin over SessionState", () => {
 
       const store = makeSessionStateDatePinStore(fixedBackend(failing));
       assert.strictEqual(yield* store.resolve("alice", "s", "2026-01-01"), "2026-01-01");
+    }),
+  );
+});
+
+describe("Claude web search results over SessionState", () => {
+  const scope = (callerScope: string, session: string, credentialId = "cred-a") => ({
+    callerScope,
+    session,
+    credential: webSearchCredentialScope(credential("claude", { id: credentialId })),
+  });
+
+  const results = [
+    { id: "srvtoolu_1", content: [{ type: "web_search_result", url: "https://a" }] },
+  ];
+
+  it.effect(
+    "serves a session's results to another invocation, per caller scope and credential",
+    () =>
+      Effect.gen(function* () {
+        yield* startClock;
+        const session = unique("session");
+        yield* invocation(
+          makeSessionStateWebSearchResultStore().save(scope("alice", session), results),
+        );
+
+        const load = (s: ReturnType<typeof scope>) =>
+          invocation(makeSessionStateWebSearchResultStore().load(s, ["srvtoolu_1", "srvtoolu_2"]));
+
+        assert.deepStrictEqual([...(yield* load(scope("alice", session))).keys()], ["srvtoolu_1"]);
+        assert.strictEqual((yield* load(scope("bob", session))).size, 0);
+        assert.strictEqual((yield* load(scope("alice", session, "cred-b"))).size, 0);
+        assert.strictEqual((yield* load(scope("alice", unique("other")))).size, 0);
+      }),
+  );
+
+  it.effect("does not cross orgs", () =>
+    Effect.gen(function* () {
+      yield* startClock;
+      const session = unique("session");
+      const other: OrgId = newOrgId();
+
+      yield* invocation(
+        makeSessionStateWebSearchResultStore().save(scope("alice", session), results),
+      );
+
+      const found = yield* makeSessionStateWebSearchResultStore()
+        .load(scope("alice", session), ["srvtoolu_1"])
+        .pipe(
+          Effect.provideContext(envContext(workerEnv)),
+          Effect.provideService(CurrentOrg, other),
+        );
+
+      assert.strictEqual(found.size, 0);
+    }),
+  );
+
+  it.effect("expires after 24 h and a hit slides the expiry", () =>
+    Effect.gen(function* () {
+      yield* startClock;
+      const session = unique("session");
+      const store = makeSessionStateWebSearchResultStore();
+      yield* invocation(store.save(scope("alice", session), results));
+      yield* TestClock.adjust(20 * 60 * MINUTE);
+      assert.strictEqual(
+        (yield* invocation(store.load(scope("alice", session), ["srvtoolu_1"]))).size,
+        1,
+      );
+      yield* TestClock.adjust(20 * 60 * MINUTE);
+      assert.strictEqual(
+        (yield* invocation(store.load(scope("alice", session), ["srvtoolu_1"]))).size,
+        1,
+      );
+      yield* TestClock.adjust(25 * 60 * MINUTE);
+      assert.strictEqual(
+        (yield* invocation(store.load(scope("alice", session), ["srvtoolu_1"]))).size,
+        0,
+      );
+    }),
+  );
+
+  it.effect("treats a backend failure as a miss", () =>
+    Effect.gen(function* () {
+      const failing: SessionStateBackend = {
+        run: () => Effect.fail(new SessionStateError({ message: "unreachable" })),
+      };
+
+      const store = makeSessionStateWebSearchResultStore(fixedBackend(failing));
+      yield* store.save(scope("alice", "s"), results);
+      assert.strictEqual((yield* store.load(scope("alice", "s"), ["srvtoolu_1"])).size, 0);
     }),
   );
 });

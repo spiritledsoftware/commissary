@@ -103,6 +103,11 @@ import {
   type ThinkingReplayStore,
 } from "./thinking-replay.ts";
 import { mergeUsage, parseClaudeStreamUsage, parseClaudeUsage } from "./usage.ts";
+import {
+  makeSessionStateWebSearchResultStore,
+  type WebSearchResultStore,
+  WebSearchResultCollector,
+} from "./web-search-results.ts";
 import type { UsageDetail } from "../../usage/record.ts";
 import { countClaudeInputTokens } from "@commissary/translation/tokenizer";
 
@@ -111,6 +116,8 @@ const defaultContinuity = makeSessionStateContinuityStore();
 const defaultDatePin = makeSessionStateDatePinStore();
 
 const defaultReplay = makeSessionStateReplayStore();
+
+const defaultWebSearchResults = makeSessionStateWebSearchResultStore();
 
 const defaultDeviceProfiles = makeSessionStateDeviceProfileStore();
 
@@ -122,6 +129,8 @@ export interface ClaudeExecutorOptions {
   /** The session date pin (`date-pin.ts`). */
   readonly datePin?: DatePinStore;
   readonly replay?: ThinkingReplayStore;
+  /** The web search result cache (`web-search-results.ts`). */
+  readonly webSearchResults?: WebSearchResultStore;
   readonly deviceProfiles?: DeviceProfileStore;
   readonly toolAliases?: ToolAliasStore;
   /** Injected clock for date reminders (tests). */
@@ -226,6 +235,7 @@ export const makeClaudeExecutor = (
     continuity: executorOptions.continuity ?? defaultContinuity,
     datePin: executorOptions.datePin ?? defaultDatePin,
     replay: executorOptions.replay ?? defaultReplay,
+    webSearchResults: executorOptions.webSearchResults ?? defaultWebSearchResults,
     deviceProfiles: executorOptions.deviceProfiles ?? defaultDeviceProfiles,
     toolAliases: executorOptions.toolAliases ?? defaultToolAliases,
     now: executorOptions.now ?? (() => new Date()),
@@ -302,6 +312,15 @@ export const makeClaudeExecutor = (
     ).pipe(Effect.asVoid);
   };
 
+  /** `RecordClaudeWebSearchResults`: what the response delivered, kept for the session's next replayed turn. */
+  const recordWebSearchResults = (
+    prepared: PreparedClaudeRequest,
+    collector: WebSearchResultCollector,
+  ): Effect.Effect<void> =>
+    prepared.webSearchScope === undefined
+      ? Effect.void
+      : services.webSearchResults.save(prepared.webSearchScope, collector.results);
+
   /** `commitClaudeContinuity` + `rememberClaudeOAuthToolAliases`: what a completed response records. */
   const commitContinuity = (
     prepared: PreparedClaudeRequest,
@@ -355,6 +374,7 @@ export const makeClaudeExecutor = (
     const requestId = response.headers["request-id"] ?? "";
     let usage: UsageDetail | undefined;
     let replayContent: Json | undefined;
+    const webSearch = new WebSearchResultCollector();
 
     if (upstreamStream) {
       const invalid = validateClaudeStreamingResponse(data);
@@ -378,6 +398,7 @@ export const makeClaudeExecutor = (
         try: () =>
           lines.map((line) => {
             reader.accumulator.observe(line);
+            webSearch.observeLine(line);
             const parsed = parseClaudeStreamUsage(line);
 
             if (parsed !== undefined) usage = mergeUsage(usage, parsed);
@@ -420,6 +441,7 @@ export const makeClaudeExecutor = (
       replayContent = reader.accumulator.content();
     } else {
       const parsed = tryParseJson(data);
+      webSearch.observeMessage(parsed);
       context.usage.observeResponseModel(responseModelOf(parsed));
       yield* commitContinuity(
         prepared,
@@ -447,6 +469,7 @@ export const makeClaudeExecutor = (
     }
 
     yield* finishReplay(prepared, replayContent);
+    yield* recordWebSearchResults(prepared, webSearch);
 
     let out = registry.translateNonStream(
       responseFormat,
@@ -654,12 +677,21 @@ export const makeClaudeExecutor = (
         Effect.sync(() => context.usage.fail(error.status, error.message)),
       ),
       Stream.onExit((exit) =>
-        Exit.isSuccess(exit) && reader.completed
-          ? Effect.andThen(
-              commitContinuity(prepared, reader.messageId, requestId, options.metadata.callerScope),
-              finishReplay(prepared, reader.accumulator.content()),
-            )
-          : finishReplay(prepared, undefined),
+        Effect.andThen(
+          // Go records each result as its line arrives, so a stream that fails later keeps what it delivered.
+          recordWebSearchResults(prepared, reader.webSearch),
+          Exit.isSuccess(exit) && reader.completed
+            ? Effect.andThen(
+                commitContinuity(
+                  prepared,
+                  reader.messageId,
+                  requestId,
+                  options.metadata.callerScope,
+                ),
+                finishReplay(prepared, reader.accumulator.content()),
+              )
+            : finishReplay(prepared, undefined),
+        ),
       ),
     );
 

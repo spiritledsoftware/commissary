@@ -21,6 +21,7 @@ import { cloneJson, get, isJsonObject, type Json, type JsonObject } from "@commi
 import {
   isArr,
   isObj,
+  responsesWebSearchCallsWithoutResults,
   str,
   lookupModelInfo,
   withModelInfoLookup,
@@ -111,6 +112,11 @@ import {
   type ThinkingReplayStore,
 } from "./thinking-replay.ts";
 import { TokenCountValidationError, validateTokenCountRequest } from "./tokens.ts";
+import {
+  type WebSearchResultScope,
+  type WebSearchResultStore,
+  webSearchCredentialScope,
+} from "./web-search-results.ts";
 
 const DEFAULT_MODEL_MAX_TOKENS = 1024;
 
@@ -120,6 +126,8 @@ export interface PipelineServices {
   /** The session date pin: the cloaked `currentDate`, kept for 7 days across credential switches and idle gaps. */
   readonly datePin: DatePinStore;
   readonly replay: ThinkingReplayStore;
+  /** Cached web search results of Responses sessions (`web-search-results.ts`). */
+  readonly webSearchResults: WebSearchResultStore;
   /** Stabilised Claude Code device profiles (`stabilize-device-profile`). */
   readonly deviceProfiles: DeviceProfileStore;
   /** MCP tool aliases of Thread turns (`thread.type = "continue"` without tools). */
@@ -162,6 +170,8 @@ export interface PreparedClaudeRequest {
   readonly continuity: ContinuityState | undefined;
   readonly promptId: string;
   readonly replay: ReplayScope | undefined;
+  /** Where this request's web search results are cached (a Responses client that names its session), if anywhere. */
+  readonly webSearchScope: WebSearchResultScope | undefined;
   /** Thread request (`thread.type` set): the alias keys to save once the upstream message id is known. */
   readonly threadAliasKeys: ((messageId: string) => string[]) | undefined;
 }
@@ -359,6 +369,34 @@ const keepSystemItemsInPlace = (
   );
 };
 
+/**
+ * Go `claudeWebSearchResultCacheScope`: only a Responses client that names its session is served (its history drops the
+ * search results), and results never cross credentials (cddc9bb8).
+ */
+const webSearchScopeOf = (input: PrepareInput): WebSearchResultScope | undefined => {
+  const session = (input.options.metadata.sessionId ?? "").trim();
+
+  return input.options.sourceFormat === Formats.OpenAIResponse && session !== ""
+    ? {
+        callerScope: input.options.metadata.callerScope,
+        session,
+        credential: webSearchCredentialScope(input.credential),
+      }
+    : undefined;
+};
+
+/** The cached results of the replayed `web_search_call` items that arrive without any. */
+const loadWebSearchResults = (
+  input: PrepareInput,
+  scope: WebSearchResultScope | undefined,
+): Effect.Effect<ReadonlyMap<string, Json> | undefined> =>
+  scope === undefined
+    ? Effect.succeed(undefined)
+    : input.services.webSearchResults.load(
+        scope,
+        responsesWebSearchCallsWithoutResults(input.request.payload),
+      );
+
 const commonContext = (input: PrepareInput, path: string, countTokens: boolean): Common => {
   const { config, credential, request, options } = input;
   const baseModel = parseSuffix(request.model).modelName;
@@ -495,6 +533,9 @@ export const prepareMessagesRequest = Effect.fnUntraced(function* (input: Prepar
     };
   }
 
+  const webSearchScope = webSearchScopeOf(input);
+  const webSearchResults = yield* loadWebSearchResults(input, webSearchScope);
+
   const translate = (body: Json) =>
     withModelInfoLookup(request.modelLookup, () =>
       translateRequestForExecutor(
@@ -509,6 +550,7 @@ export const prepareMessagesRequest = Effect.fnUntraced(function* (input: Prepar
           isCompat,
           topLevelSystemItems: !c.keepSystemItemsInPlace,
           nativeToolSearch,
+          webSearchResults,
         },
       ),
     );
@@ -788,6 +830,7 @@ export const prepareMessagesRequest = Effect.fnUntraced(function* (input: Prepar
       continuity: rules.touched.has("diagnostics") ? undefined : continuity,
       promptId: cloak.promptId,
       replay,
+      webSearchScope,
       threadAliasKeys:
         str(get(translatedRequest, "thread.type")) === ""
           ? undefined
@@ -819,6 +862,7 @@ export const prepareCountTokensRequest = Effect.fnUntraced(function* (input: Pre
   const to = Formats.Claude;
   const isCompat = modelIsCompat(config, credential, request);
   const stream = from !== to;
+  const webSearchResults = yield* loadWebSearchResults(input, webSearchScopeOf(input));
 
   const translate = (body: Json) =>
     withModelInfoLookup(request.modelLookup, () =>
@@ -834,6 +878,7 @@ export const prepareCountTokensRequest = Effect.fnUntraced(function* (input: Pre
           isCompat,
           topLevelSystemItems: !c.keepSystemItemsInPlace,
           nativeToolSearch,
+          webSearchResults,
         },
       ),
     );
@@ -999,6 +1044,7 @@ export const prepareLocalCountBody = Effect.fnUntraced(function* (input: Prepare
   const from = options.sourceFormat;
   const to = Formats.Claude;
   const isCompat = modelIsCompat(config, credential, request);
+  const webSearchResults = yield* loadWebSearchResults(input, webSearchScopeOf(input));
 
   const translate = (body: Json) =>
     withModelInfoLookup(request.modelLookup, () =>
@@ -1010,7 +1056,14 @@ export const prepareLocalCountBody = Effect.fnUntraced(function* (input: Prepare
         thinking.summary,
         // Local estimation sends nothing upstream, so in-place turns gain no cache benefit: keep the top-level shape its
         // request validation accepts (Go `CountTokens`).
-        { headers: options.headers, config, isCompat, topLevelSystemItems: true, nativeToolSearch },
+        {
+          headers: options.headers,
+          config,
+          isCompat,
+          topLevelSystemItems: true,
+          nativeToolSearch,
+          webSearchResults,
+        },
       ),
     );
 

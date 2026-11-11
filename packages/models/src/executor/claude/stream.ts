@@ -16,6 +16,7 @@ import { AliasRestoreError, restoreToolNamesInStreamLine } from "./mcp-alias.ts"
 import { ClaudeEventObserver } from "./sse-events.ts";
 import { ReplayStreamAccumulator } from "./thinking-replay.ts";
 import { mergeUsage, parseClaudeStreamUsage } from "./usage.ts";
+import { WebSearchResultCollector } from "./web-search-results.ts";
 
 /** Go `helps.ApplyPatchUpstreamErrorMessage` (retained tool-input translation failure). */
 export const TOOL_INPUT_ERROR_MESSAGE =
@@ -42,6 +43,8 @@ export class ClaudeStreamReader {
   readonly #event: string[] = [];
   readonly #events = new ClaudeEventObserver();
   readonly accumulator = new ReplayStreamAccumulator();
+  /** The `web_search_tool_result` blocks the stream delivered (cached once the stream ends). */
+  readonly webSearch = new WebSearchResultCollector();
   #usage: UsageDetail | undefined;
   #done = false;
   messageId = "";
@@ -80,6 +83,7 @@ export class ClaudeStreamReader {
     }
 
     this.accumulator.observe(line);
+    this.webSearch.observeLine(line);
   }
 
   /** Go `observeClaudeSSEEvent`: an upstream `error` event becomes a 502 carrying its payload. */
