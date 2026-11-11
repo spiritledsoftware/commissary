@@ -79,7 +79,13 @@ const DEFAULTS: SettingsValues = {
     xai: { "inject-x-search": false },
     opencode: { "disable-cloaking": false },
   },
-  client: { codex: { "enable-apply-patch": false, "optimize-multi-agent-v2": false } },
+  client: {
+    codex: {
+      "enable-apply-patch": false,
+      "optimize-multi-agent-v2": false,
+      "web-search-result-cache": { enabled: false },
+    },
+  },
   oauth: {
     "auth-auto-refresh-workers": 0,
     providers: {

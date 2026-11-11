@@ -376,6 +376,9 @@ const keepSystemItemsInPlace = (
 const webSearchScopeOf = (input: PrepareInput): WebSearchResultScope | undefined => {
   const session = (input.options.metadata.sessionId ?? "").trim();
 
+  // Opt-in (`client.codex.web-search-result-cache.enabled`, ADR 0027): off records and restores nothing.
+  if (!input.config.client.codex["web-search-result-cache"].enabled) return undefined;
+
   return input.options.sourceFormat === Formats.OpenAIResponse && session !== ""
     ? {
         callerScope: input.options.metadata.callerScope,
@@ -389,12 +392,14 @@ const webSearchScopeOf = (input: PrepareInput): WebSearchResultScope | undefined
 const loadWebSearchResults = (
   input: PrepareInput,
   scope: WebSearchResultScope | undefined,
+  slide = true,
 ): Effect.Effect<ReadonlyMap<string, Json> | undefined> =>
   scope === undefined
     ? Effect.succeed(undefined)
     : input.services.webSearchResults.load(
         scope,
         responsesWebSearchCallsWithoutResults(input.request.payload),
+        slide,
       );
 
 const commonContext = (input: PrepareInput, path: string, countTokens: boolean): Common => {
@@ -862,7 +867,7 @@ export const prepareCountTokensRequest = Effect.fnUntraced(function* (input: Pre
   const to = Formats.Claude;
   const isCompat = modelIsCompat(config, credential, request);
   const stream = from !== to;
-  const webSearchResults = yield* loadWebSearchResults(input, webSearchScopeOf(input));
+  const webSearchResults = yield* loadWebSearchResults(input, webSearchScopeOf(input), false);
 
   const translate = (body: Json) =>
     withModelInfoLookup(request.modelLookup, () =>
@@ -1044,7 +1049,7 @@ export const prepareLocalCountBody = Effect.fnUntraced(function* (input: Prepare
   const from = options.sourceFormat;
   const to = Formats.Claude;
   const isCompat = modelIsCompat(config, credential, request);
-  const webSearchResults = yield* loadWebSearchResults(input, webSearchScopeOf(input));
+  const webSearchResults = yield* loadWebSearchResults(input, webSearchScopeOf(input), false);
 
   const translate = (body: Json) =>
     withModelInfoLookup(request.modelLookup, () =>

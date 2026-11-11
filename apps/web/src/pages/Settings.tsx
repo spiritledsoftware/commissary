@@ -265,6 +265,7 @@ const Body = ({
               {field("upstream.codex.response-steering")}
               {field("client.codex.enable-apply-patch")}
               {field("client.codex.optimize-multi-agent-v2")}
+              {field("client.codex.web-search-result-cache.enabled")}
               <div className={styles["pair"]}>
                 {field("oauth.providers.codex.header-defaults.user-agent")}
                 {field("oauth.providers.codex.header-defaults.beta-features")}

@@ -8,11 +8,12 @@
  * cddc9bb8. A Responses `web_search_call` item carries its results without the `encrypted_content` Anthropic requires
  * once a client drops them, so the replayed `web_search_tool_result` would be empty (and its citations unbacked).
  *
+ * Opt-in like Go: `client.codex.web-search-result-cache.enabled`, default off (ADR 0027); `pipeline.ts` builds no scope
+ * while it is off, so nothing here runs.
+ *
  * Differences from Go (ARCHITECTURE.md, "Claude provider"):
  *  - The store is the `claude-web-search-results` store of `SessionState` (org + caller scope + session), like the date pin;
- *    no process-wide LRU and no `limit` setting (the instance bounds its entries).
- *  - There is no `client.codex.web-search-result-cache` switch: the cache serves every Responses client that names its
- *    session (Go default: off).
+ *    no process-wide LRU and no `limit` or `ttl` setting (the instance bounds its entries).
  *  - The lookup is read before translating (`responsesWebSearchCallsWithoutResults`) and handed to the Responses -> Claude
  *    translator, which restores the block and drops the citations it could not back; Go restores into the translated body.
  */
@@ -28,7 +29,7 @@ import {
   type SessionAddress,
   type StateOp,
 } from "@commissary/state";
-import { str } from "@commissary/translation";
+import { claudeWebSearchContentEmpty, str } from "@commissary/translation";
 import type { CredentialSnapshot } from "../picker.ts";
 
 const STORE_NAME = "claude-web-search-results";
@@ -55,10 +56,14 @@ export interface WebSearchResult {
 }
 
 export interface WebSearchResultStore {
-  /** The cached content of each id found (a hit slides its expiry); failures are misses. */
+  /**
+   * The cached content of each id found; failures are misses. `slide` (default true) moves the expiry of a hit to 24 h
+   * from now: a token count is not a turn, so it reads without sliding.
+   */
   readonly load: (
     scope: WebSearchResultScope,
     ids: ReadonlyArray<string>,
+    slide?: boolean,
   ) => Effect.Effect<ReadonlyMap<string, Json>>;
   readonly save: (
     scope: WebSearchResultScope,
@@ -83,7 +88,7 @@ const addressOf = (scope: WebSearchResultScope): SessionAddress => ({
 export const makeSessionStateWebSearchResultStore = (
   backend: BackendResolver = resolveBackend(),
 ): WebSearchResultStore => ({
-  load: (scope, ids) =>
+  load: (scope, ids, slide = true) =>
     ids.length === 0
       ? Effect.succeed(new Map<string, Json>())
       : bestEffort(
@@ -95,7 +100,7 @@ export const makeSessionStateWebSearchResultStore = (
             const ops: StateOp[] = ids.map((id) => ({
               op: "get",
               key: entryKey(scope, id),
-              extendTtlMs: TTL_MS,
+              ...(slide ? { extendTtlMs: TTL_MS } : {}),
             }));
 
             const results = yield* state.run(addressOf(scope), ops);
@@ -107,7 +112,8 @@ export const makeSessionStateWebSearchResultStore = (
               if (result?.status !== "ok" || result.value === undefined) return;
               const content = tryParseJson(result.value);
 
-              if (content !== undefined && !contentIsEmpty(content)) found.set(id, content);
+              if (content !== undefined && !claudeWebSearchContentEmpty(content))
+                found.set(id, content);
             });
 
             return found;
@@ -139,17 +145,13 @@ export const makeSessionStateWebSearchResultStore = (
 export const makeMemoryWebSearchResultStore = (now?: () => number): WebSearchResultStore =>
   makeSessionStateWebSearchResultStore(fixedBackend(makeMemoryBackend(now)));
 
-/** `claudeWebSearchResultContentEmpty`. */
-const contentIsEmpty = (content: Json | undefined): boolean =>
-  content === undefined || content === null || (isJsonArray(content) && content.length === 0);
-
 /** The `web_search_tool_result` of a Claude content block, when it carries content. */
 const resultOfBlock = (block: Json | undefined): WebSearchResult | undefined => {
   if (str(get(block, "type")) !== "web_search_tool_result") return undefined;
   const content = get(block, "content");
   const id = str(get(block, "tool_use_id")).trim();
 
-  return id === "" || content === undefined || contentIsEmpty(content)
+  return id === "" || content === undefined || claudeWebSearchContentEmpty(content)
     ? undefined
     : { id, content };
 };

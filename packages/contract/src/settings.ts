@@ -143,6 +143,8 @@ export const SETTINGS_TREE = {
     codex: {
       "enable-apply-patch": Schema.Boolean,
       "optimize-multi-agent-v2": Schema.Boolean,
+      /** Cache Claude web search results per session for 24 h (off by default: ADR 0027). */
+      "web-search-result-cache": { enabled: Schema.Boolean },
     },
   },
   oauth: {

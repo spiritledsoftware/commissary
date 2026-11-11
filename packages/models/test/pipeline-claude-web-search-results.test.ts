@@ -2,10 +2,14 @@
 // claude_executor_web_search_results_test.go, helps/claude_web_search_results_test.go; upstream 9d453bc0, cddc9bb8,
 // 9acf81d3): a Responses client replays its history without the `web_search_tool_result` content, and the executor
 // restores what the session's earlier response delivered, per upstream credential.
+import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 import { asString, get, type Json, type JsonObject, tryParseJson } from "@commissary/json";
 import { makeClaudeExecutor } from "../src/executor/claude/executor.ts";
-import { makeMemoryWebSearchResultStore } from "../src/executor/claude/web-search-results.ts";
+import {
+  makeMemoryWebSearchResultStore,
+  type WebSearchResultStore,
+} from "../src/executor/claude/web-search-results.ts";
 import type { CredentialSnapshot } from "../src/executor/picker.ts";
 import { collectStream, credential, execute, harness, options } from "./support/executor-run.ts";
 
@@ -136,6 +140,53 @@ const responsesOptions = (session: string | undefined, stream: boolean) =>
     },
   });
 
+/** The cache is opt-in (ADR 0027). */
+const ENABLED = "client:\n  codex:\n    web-search-result-cache:\n      enabled: true\n";
+
+/** A memory store that counts its calls and remembers whether each read slid the expiry. */
+const spyStore = () => {
+  const memory = makeMemoryWebSearchResultStore();
+  const spy = { calls: 0, slides: [] as Array<boolean | undefined> };
+
+  const store: WebSearchResultStore = {
+    load: (scope, ids, slide) => {
+      spy.calls++;
+      spy.slides.push(slide);
+
+      return memory.load(scope, ids, slide);
+    },
+    save: (scope, results) => {
+      spy.calls++;
+
+      return memory.save(scope, results);
+    },
+  };
+
+  return { store, spy };
+};
+
+/** The search result and citations of the assistant turn in an upstream request body. */
+const sentOf = (text: string): Sent => {
+  const messages = get(tryParseJson(text), "messages");
+
+  const blocks = (Array.isArray(messages) ? messages : []).flatMap((message) => {
+    const content = get(message, "content");
+
+    return get(message, "role") === "assistant" && Array.isArray(content) ? content : [];
+  });
+
+  return {
+    content: get(
+      blocks.find((block) => get(block, "type") === "web_search_tool_result"),
+      "content",
+    ),
+    citations: get(
+      blocks.find((block) => get(block, "type") === "text"),
+      "citations",
+    ),
+  };
+};
+
 interface Sent {
   readonly content: Json | undefined;
   readonly citations: Json | undefined;
@@ -145,37 +196,21 @@ interface Sent {
 const runTurns = async (
   stream: boolean,
   turns: ReadonlyArray<{ cred: CredentialSnapshot; session?: string; payload: JsonObject }>,
+  { enabled = true, store = makeMemoryWebSearchResultStore() } = {},
 ): Promise<Sent> => {
-  const executor = makeClaudeExecutor({ webSearchResults: makeMemoryWebSearchResultStore() });
+  const executor = makeClaudeExecutor({ webSearchResults: store });
+  const yaml = enabled ? ENABLED : undefined;
   let sent: Sent = { content: undefined, citations: undefined };
 
   for (const turn of turns) {
-    const h = await harness(turn.cred, searchTurn, undefined, true);
+    const h = await harness(turn.cred, searchTurn, yaml, true);
     const request = { model: "claude-opus-5-5", payload: turn.payload };
     const opts = responsesOptions(turn.session, stream);
 
     if (stream) await collectStream(executor, h, request, opts);
     else await execute(executor, h, request, opts);
 
-    const body = tryParseJson(h.calls[0]?.text ?? "");
-    const messages = get(body, "messages");
-
-    const blocks = (Array.isArray(messages) ? messages : []).flatMap((message) => {
-      const content = get(message, "content");
-
-      return get(message, "role") === "assistant" && Array.isArray(content) ? content : [];
-    });
-
-    sent = {
-      content: get(
-        blocks.find((block) => get(block, "type") === "web_search_tool_result"),
-        "content",
-      ),
-      citations: get(
-        blocks.find((block) => get(block, "type") === "text"),
-        "citations",
-      ),
-    };
+    sent = sentOf(h.calls[0]?.text ?? "");
   }
 
   return sent;
@@ -223,5 +258,79 @@ describe.each([
 
     expect(sent.content).toEqual([]);
     expect(sent.citations).toBeUndefined();
+  });
+});
+
+describe("the cache is off by default (ADR 0027)", () => {
+  const turns = [
+    { cred: cred("a"), session: "s1", payload: firstTurn },
+    { cred: cred("a"), session: "s1", payload: replay },
+  ];
+
+  it("never touches the store and restores nothing", async () => {
+    const { store, spy } = spyStore();
+    const sent = await runTurns(true, turns, { enabled: false, store });
+
+    expect(spy.calls).toBe(0);
+    expect(sent.content).toEqual([]);
+    expect(sent.citations).toBeUndefined();
+  });
+
+  it("uses the store once enabled", async () => {
+    const { store, spy } = spyStore();
+    const sent = await runTurns(true, turns, { store });
+
+    expect(spy.calls).toBeGreaterThan(0);
+    expect(sent.content).toEqual(RESULTS);
+  });
+});
+
+describe("count_tokens (9d453bc0)", () => {
+  /** Turn 1 through the executor records; the count_tokens call replays the history. */
+  const count = async (countCred: CredentialSnapshot) => {
+    const { store, spy } = spyStore();
+    const executor = makeClaudeExecutor({ webSearchResults: store });
+    const first = await harness(cred("a"), searchTurn, ENABLED, true);
+
+    await execute(
+      executor,
+      first,
+      { model: "claude-opus-5-5", payload: firstTurn },
+      responsesOptions("s1", false),
+    );
+
+    const h = await harness(countCred, () => Response.json({ input_tokens: 7 }), ENABLED);
+
+    await Effect.runPromise(
+      executor
+        .countTokens(
+          h.context,
+          { model: "claude-opus-5-5", payload: replay },
+          responsesOptions("s1", false),
+        )
+        .pipe(Effect.provide(h.layers)),
+    );
+
+    return { sent: sentOf(h.calls[0]?.text ?? ""), spy };
+  };
+
+  it("restores the results of the session and keeps the citations", async () => {
+    const { sent } = await count(cred("a"));
+
+    expect(sent.content).toEqual(RESULTS);
+    expect(asString(get(sent.citations, "0.encrypted_index"))).toBe("IDX_A");
+  });
+
+  it("restores nothing for another credential", async () => {
+    const { sent } = await count(cred("b"));
+
+    expect(sent.content).toEqual([]);
+    expect(sent.citations).toBeUndefined();
+  });
+
+  it("reads without sliding the expiry", async () => {
+    const { spy } = await count(cred("a"));
+
+    expect(spy.slides.at(-1)).toBe(false);
   });
 });

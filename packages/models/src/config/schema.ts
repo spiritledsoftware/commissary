@@ -285,6 +285,11 @@ export const Config = Schema.Struct({
     codex: section({
       "enable-apply-patch": flag(false),
       "optimize-multi-agent-v2": flag(false),
+      /**
+       * Keep a Responses session's Claude web search results for 24 h (SessionState), so a replayed history that lost
+       * them still sends Anthropic its `encrypted_content`. Off: nothing is recorded or restored (ADR 0027).
+       */
+      "web-search-result-cache": section({ enabled: flag(false) }),
     }),
   }),
   upstream,

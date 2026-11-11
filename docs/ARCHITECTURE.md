@@ -1508,11 +1508,12 @@ Deviations from Go (all deliberate, documented in code headers):
   TTL, sliding on a hit. Before translating, the pipeline reads the entries of the replayed searches that arrive without results
   (`responsesWebSearchCallsWithoutResults`) and hands them to the Responses -> Claude translator (`webSearchResults` request
   option), which restores the block and, for an assistant turn whose search still has no result, drops its
-  `web_search_result_location` citations (they would point at nothing; the turn ends at the next user message). Deliberate
-  differences from Go: no `client.codex.web-search-result-cache` switch (Go: off by default; here the cache serves every
-  Responses client with a session and costs one `SessionState` round trip only when a replayed search lacks results); the store
-  is `SessionState`, not a process LRU, so there is no `limit`; the lookup is read before translating instead of patching the
-  translated body, so a Claude-format client's own unbacked citations are not stripped (Go strips every source's).
+  `web_search_result_location` citations (they would point at nothing; the turn ends at the next user message). Opt-in
+  like Go, by `client.codex.web-search-result-cache.enabled` (default `false`, in `SETTINGS_TREE` and the Settings page): off, the
+  executor records and restores nothing and never touches the store (ADR 0027, "Zero data retention"). Deliberate differences
+  from Go: the store is `SessionState`, not a process LRU, so there is no `limit` or `ttl` setting; the lookup is read before
+  translating instead of patching the translated body, so a Claude-format client's own unbacked citations are not stripped
+  (Go strips every source's).
 - **Mid-session Responses system items** (Go `27762819`): for a Responses client, a text-only system or developer message item
   after the conversation started stays in place as a `role: "system"` turn right after the next user message (so the prompt
   prefix of earlier turns stays stable) instead of joining the top-level `system`. The executor decides it per attempt
@@ -2896,6 +2897,9 @@ served by Zen defines a model alias; Commissary does not map ids across provider
 
 ADR 0027: deleting something deletes it at once, and Commissary keeps no content it does not need. The pieces:
 
+- **Claude web search results** (opt-in `client.codex.web-search-result-cache.enabled`, default off): while enabled, the
+  `claude-web-search-results` `SessionState` store keeps a session's search results for 24 h (sliding on a hit), and the Durable
+  Object registers with its org like every `SessionState` instance, so org deletion wipes it.
 - **Retention** per org, `usage_retention_days` in the Platform registry (see "Usage accounting"), and
   `run_retention_days` for agent runs (see "Agent runs"). **Usage failures** keep status, type and code, not the body
   (same section).

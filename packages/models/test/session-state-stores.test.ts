@@ -51,6 +51,8 @@ const unique = (name: string): string => `${name}-${crypto.randomUUID()}`;
 
 const MINUTE = 60_000;
 
+const HOUR = 60 * MINUTE;
+
 /** Counts backend round trips. */
 const counting = (inner: SessionStateBackend) => {
   let count = 0;
@@ -558,17 +560,17 @@ describe("Claude web search results over SessionState", () => {
       const session = unique("session");
       const store = makeSessionStateWebSearchResultStore();
       yield* invocation(store.save(scope("alice", session), results));
-      yield* TestClock.adjust(20 * 60 * MINUTE);
+      yield* TestClock.adjust(20 * HOUR);
       assert.strictEqual(
         (yield* invocation(store.load(scope("alice", session), ["srvtoolu_1"]))).size,
         1,
       );
-      yield* TestClock.adjust(20 * 60 * MINUTE);
+      yield* TestClock.adjust(20 * HOUR);
       assert.strictEqual(
         (yield* invocation(store.load(scope("alice", session), ["srvtoolu_1"]))).size,
         1,
       );
-      yield* TestClock.adjust(25 * 60 * MINUTE);
+      yield* TestClock.adjust(25 * HOUR);
       assert.strictEqual(
         (yield* invocation(store.load(scope("alice", session), ["srvtoolu_1"]))).size,
         0,
