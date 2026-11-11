@@ -1,7 +1,9 @@
 # Puts each new GitHub issue's Linear copy into the Linear project Commissary (tools/linear-project.sh). Linear's GitHub
 # Issues sync copies the issue into the team SPI but into no project, and agents read issues by project
-# (docs/agents/issue-tracker.md). A dispatch takes an issue number, to retry one or to file one opened before this.
-# Needs the repository secret LINEAR_API_KEY: a Linear API key that may edit SPI's issues.
+# (docs/agents/issue-tracker.md). A dispatch takes an issue number, to retry one whose run failed; `upstream-drift`
+# dispatches it for the issue it opens, as an issue opened with GITHUB_TOKEN starts no workflow. An issue opened before
+# the sync existed has no copy to move. Needs the repository secret LINEAR_API_KEY: a Linear API key that may edit
+# SPI's issues.
 name: linear project
 
 on:
@@ -22,10 +24,12 @@ concurrency:
 jobs:
   project:
     name: project
+    # Forks have neither the secret nor the Linear project.
+    if: github.repository == 'spiritledsoftware/commissary'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
-      contents: read # the script
+      contents: read # sparse checkout of the script
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

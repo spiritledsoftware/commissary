@@ -512,6 +512,11 @@ the required checks still pass, so run `bun run format` before committing Markdo
 Actions are pinned by commit SHA (Dependabot updates them weekly, `.github/dependabot.yml`), jobs get only the
 permissions they need, and deploy jobs use no dependency cache.
 
+`.github/workflows/linear-project.yml` (`linear project`) runs for each new GitHub issue: Linear's GitHub Issues sync
+copies it into the Linear team SPI but into no project, and the workflow puts the copy into the project Commissary
+(`tools/linear-project.sh`; docs/agents/issue-tracker.md). It reads the repository secret `LINEAR_API_KEY`
+([DEPLOY.md](DEPLOY.md)); dispatch it with an issue number to retry one.
+
 ## Lint and format
 
 `bun run lint` runs oxlint, `oxfmt --check` and `tools/check-computerd.sh` (the computer image's computerd and

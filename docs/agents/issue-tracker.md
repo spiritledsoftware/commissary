@@ -2,7 +2,7 @@
 
 Issues and specs for this repo live in **Linear**: workspace `spiritledsoftware`, team **SPI** (Spirit-Led Software), project **Commissary**. The team also holds other repos' projects (cloudpid, lspctl, Neopane, …), so create every issue for this repo in project `Commissary`, and scope every read to it.
 
-**GitHub Issues are the public intake.** Outside users open issues on GitHub. A one-way sync (GitHub → Linear) copies each new one into team SPI, carrying its GitHub URL as an attachment. Comments sync both ways, and closing it in Linear closes it on GitHub. The sync puts the copy in no project; the workflow `linear project` (`.github/workflows/linear-project.yml`, `tools/linear-project.sh`) moves it into Commissary once it appears. Dispatch that workflow with an issue number to retry one or to file an older one. Work every issue in Linear and refer to it by its Linear identifier (`SPI-123`). Never create issues with `gh issue create`. A GitHub number (`#451`) resolves to the Linear issue that carries its URL (**Read an issue** below).
+**GitHub Issues are the public intake.** Outside users open issues on GitHub. A one-way sync (GitHub → Linear) copies each new one into team SPI, carrying its GitHub URL as an attachment. Comments sync both ways, and closing it in Linear closes it on GitHub. The sync puts the copy in no project; the workflow `linear project` (`.github/workflows/linear-project.yml`, `tools/linear-project.sh`) moves it into Commissary once it appears. Dispatch that workflow with an issue number to retry one whose run failed (an issue opened before the sync existed has no copy to move). Work every issue in Linear and refer to it by its Linear identifier (`SPI-123`). Never create issues with `gh issue create` (CI's `upstream-drift` workflow does, by design: its report is a GitHub issue). A GitHub number (`#451`) resolves to the Linear issue that carries its URL (**Read an issue** below).
 
 ## How to reach Linear
 
@@ -41,7 +41,7 @@ Label ids are in `docs/agents/triage-labels.md`. For any other label: `tools.lin
   - CLI: `linear issue view SPI-123 --json`.
   - From a GitHub number: Executor `tools.linear.query_attachmentsForURL`, `arguments: { url: "https://github.com/spiritledsoftware/commissary/issues/<n>" }`, `select: "nodes { issue { identifier } }"`. The CLI uses the same query through `linear api`.
 - **List issues**:
-  - Executor: `tools.linear.query_issues`, `arguments: { first: 100, filter: { project: { id: { eq: "<Commissary>" } }, state: { type: { nin: ["completed", "canceled"] } }, labels: { name: { eq: "<label>" } } } }`.
+  - Executor: `tools.linear.query_issues`, `arguments: { first: 100, filter: { project: { id: { eq: "<Commissary>" } }, state: { type: { nin: ["completed", "canceled"] } }, labels: { name: { eq: "<label>" } } } }`, `select: "nodes { identifier title state { name } labels { nodes { name } } assignee { name } }"`.
   - CLI: `linear issue query --team SPI --project Commissary [--label <name>] [--state backlog --state unstarted --state started] --json`.
 - **Make an issue a sub-issue of a parent**:
   - Executor: `parentId: "SPI-1"` at creation, or `tools.linear.mutation_issueUpdate` with `arguments: { id, input: { parentId } }`.
@@ -49,6 +49,7 @@ Label ids are in `docs/agents/triage-labels.md`. For any other label: `tools.lin
 - **Comment on an issue**:
   - Executor: `tools.linear.mutation_commentCreate`, `arguments: { input: { issueId: "SPI-123", body } }`.
   - CLI: `linear issue comment add SPI-123 --body-file comment.md`.
+  - A plain comment stays in Linear. To reach the reporter of a synced GitHub issue (a `needs-info` question, a won't-fix reason), reply in its **synced thread**: the root comment whose body starts "This comment thread is synced to a corresponding GitHub issue" (read the issue's `comments { nodes { id body parent { id } } }`, or `linear issue comment list SPI-123 --json`). Executor: add `parentId: "<root comment id>"`; CLI: `--reply-to <root comment id>`. A reply there shows on GitHub.
 - **Apply / remove labels**:
   - Executor: `tools.linear.mutation_issueAddLabel` / `mutation_issueRemoveLabel`, `arguments: { id: "SPI-123", labelId }`.
   - CLI: `linear issue update SPI-123 --add-label <name>` / `--remove-label <name>`.
@@ -82,8 +83,8 @@ Used by `/wayfinder`. The **map** is a single issue with **child** issues as tic
   - CLI: `linear issue relation add <child> blocked-by <blocker>`.
   - A ticket is unblocked when every blocker is completed or canceled.
 - **Frontier query**: one query lists every child with its state, labels, assignee and blockers.
-  - Executor: `tools.linear.query_issue` with `arguments: { id: "<map>" }`.
-  - CLI: `linear api --variable id=<map>` with `query($id: String!) { issue(id: $id) { … } }` on stdin.
+  - Executor: `tools.linear.query_issue` with `arguments: { id: "<map>" }` and the block below as its `select`.
+  - CLI: `linear api --variable id=<map>` with `query($id: String!) { issue(id: $id) { … } }` on stdin, the block below in place of `…`.
 
   ```graphql
   children(first: 250) { nodes { identifier title state { type } labels { nodes { name } } assignee { name }

@@ -507,6 +507,10 @@ It manages:
 Raw secrets never leave Alchemy: Cloudflare returns them once, they go to the encrypted state store and are encrypted
 again for GitHub.
 
+One repository secret is not the stack's and deploys nothing: `LINEAR_API_KEY`, a Linear API key that may edit the
+team SPI's issues, for the `linear project` workflow (DEVELOPMENT.md, "CI and deployment"). Set it by hand
+(`gh secret set LINEAR_API_KEY`); without it that workflow fails and nothing else changes.
+
 ### 1. An `admin` profile (once)
 
 Creating API tokens needs more than the everyday OAuth login, so the stack deploys with a separate Alchemy profile:

@@ -21,6 +21,7 @@ jobs:
     permissions:
       contents: read
       issues: write # the drift issue
+      actions: write # dispatches `linear project` for a new drift issue
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -54,7 +55,9 @@ jobs:
             if [ -n "$number" ]; then
               gh issue edit "$number" --body-file "$RUNNER_TEMP/report.md"
             else
-              gh issue create --title "$title" --label upstream-drift --body-file "$RUNNER_TEMP/report.md"
+              created="$(gh issue create --title "$title" --label upstream-drift --body-file "$RUNNER_TEMP/report.md")"
+              # An issue opened with GITHUB_TOKEN starts no workflow: put its Linear copy into the project from here.
+              gh workflow run linear-project.yml -f issue="${created##*/}"
             fi
           elif [ -n "$number" ]; then
             gh issue close "$number" --comment "$(cat "$RUNNER_TEMP/report.md")"
