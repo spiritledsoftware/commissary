@@ -3,6 +3,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Config } from "../src/config/schema.ts";
 import { credential, makeGeminiHarness } from "./support/gemini.ts";
+import { nativeGeminiSignature, vertexBareTink } from "./support/gemini-signatures.ts";
 import {
   jsonResponse,
   loadConfig,
@@ -167,5 +168,54 @@ describe("POST /v1beta/interactions", () => {
     const upstream = JSON.parse(h.calls[0]?.body ?? "{}");
     expect(upstream.agent).toBe("deep-research-pro");
     expect(h.calls[0]?.url).toBe("https://gl.test/v1beta/interactions");
+  });
+});
+
+// CLIProxyAPI a8582fba (helps/gemini_interactions_test.go): the public Interactions endpoint rejects a Vertex bare-Tink
+// thought signature, so the thought step is dropped like any other incompatible one; Vertex keeps it
+// (vertex-executor.test.ts).
+describe("native Interactions thought steps", () => {
+  const userInput = { type: "user_input", content: [{ type: "text", text: "hi" }] };
+
+  const sentInput = async (steps: Json[]): Promise<Json> => {
+    const h = harness(() => jsonResponse(INTERACTION));
+
+    const response = await h.call(
+      "/v1beta/interactions",
+      postJson({ model: "gemini-2.5-pro", input: [userInput, ...steps] }),
+    );
+
+    expect(response.status).toBe(200);
+    await response.text();
+    await h.dispose();
+
+    return JSON.parse(h.calls[0]?.body ?? "{}").input;
+  };
+
+  it("drops a Vertex bare-Tink thought step", async () => {
+    expect(await sentInput([{ type: "thought", signature: vertexBareTink() }])).toEqual([
+      userInput,
+    ]);
+  });
+
+  it("keeps a native Gemini thought step and strips the fields the API rejects", async () => {
+    const signature = nativeGeminiSignature();
+
+    expect(
+      await sentInput([
+        { type: "thought", signature, id: "t1", text: "visible", content: [] },
+        { type: "thought", thought_signature: signature },
+      ]),
+    ).toEqual([userInput, { type: "thought", signature }, { type: "thought", signature }]);
+  });
+
+  it("drops thought steps without a valid Gemini signature", async () => {
+    expect(
+      await sentInput([
+        { type: "thought" },
+        { type: "thought", signature: "skip_thought_signature_validator" },
+        { type: "thought", signature: "not-a-signature" },
+      ]),
+    ).toEqual([userInput]);
   });
 });

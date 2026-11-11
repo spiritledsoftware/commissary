@@ -14,6 +14,7 @@ import {
   vertexInteractionsUrl,
 } from "../src/executor/gemini/targets.ts";
 import { credential, makeGeminiHarness } from "./support/gemini.ts";
+import { sentModelParts, signedToolRound, vertexBareTink } from "./support/gemini-signatures.ts";
 import {
   jsonResponse,
   loadConfig,
@@ -499,5 +500,90 @@ requests:
       postJson({ contents: [hi, thought] }),
     );
     expect(JSON.parse(h.calls[0]?.body ?? "{}").contents).toEqual(configured);
+  });
+});
+
+// CLIProxyAPI 1398f273 and a8582fba: Vertex is the one Gemini endpoint that accepts its own bare-Tink thought
+// signatures, in generateContent and in native Interactions.
+describe("vertex bare-Tink thought signatures", () => {
+  const apiKey = credential("vertex", "vertex:apikey", { attributes: { api_key: "vk-1" } });
+  const SENTINEL = "skip_thought_signature_validator";
+
+  it.each(["generateContent", "streamGenerateContent", "countTokens"])(
+    "%s keeps the bare-Tink signature on every part",
+    async (action) => {
+      const h = harness(
+        () =>
+          action === "streamGenerateContent"
+            ? sseResponse([`data: ${JSON.stringify(GEMINI_RESPONSE)}\n\n`])
+            : jsonResponse(action === "countTokens" ? { totalTokens: 3 } : GEMINI_RESPONSE),
+        apiKey,
+      );
+
+      afterAll(h.dispose);
+      const signature = vertexBareTink();
+
+      const response = await h.call(
+        `/v1beta/models/gemini-2.5-pro:${action}`,
+        postJson({ contents: signedToolRound(signature) }),
+      );
+
+      expect(response.status).toBe(200);
+      await response.text();
+      const parts = sentModelParts(h.calls[0]?.body);
+
+      expect(parts[0]?.["thoughtSignature"]).toBe(signature);
+      expect(parts[1]?.["thoughtSignature"]).toBe(signature);
+    },
+  );
+
+  it("still signs a call that has no signature with the bypass sentinel", async () => {
+    const h = harness(() => jsonResponse(GEMINI_RESPONSE), apiKey);
+    afterAll(h.dispose);
+
+    const response = await h.call(
+      "/v1beta/models/gemini-2.5-pro:generateContent",
+      postJson({ contents: signedToolRound(undefined) }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(sentModelParts(h.calls[0]?.body)[1]?.["thoughtSignature"]).toBe(SENTINEL);
+  });
+
+  describe("native Interactions", () => {
+    const interactionsKey = credential("vertex", "vertex:interactions", {
+      attributes: { api_key: "vk-1", base_url: "https://vx.test", interactions: "true" },
+    });
+
+    const INTERACTION = {
+      id: "int_1",
+      status: "completed",
+      steps: [{ type: "model_output", content: [{ type: "text", text: "hi" }] }],
+      usage: { total_input_tokens: 3, total_output_tokens: 1, total_tokens: 4 },
+    };
+
+    it("keeps a bare-Tink thought step", async () => {
+      const h = harness(() => jsonResponse(INTERACTION), interactionsKey);
+      afterAll(h.dispose);
+      const signature = vertexBareTink();
+
+      const response = await h.call(
+        "/v1beta/interactions",
+        postJson({
+          model: "gemini-2.5-pro",
+          input: [
+            { type: "user_input", content: [{ type: "text", text: "hi" }] },
+            { type: "thought", signature },
+          ],
+        }),
+      );
+
+      expect(response.status).toBe(200);
+      expect(h.calls[0]?.url).toBe("https://vx.test/v1beta1/interactions");
+      const steps = JSON.parse(h.calls[0]?.body ?? "{}").input;
+
+      expect(steps).toHaveLength(2);
+      expect(steps[1]).toEqual({ type: "thought", signature });
+    });
   });
 });

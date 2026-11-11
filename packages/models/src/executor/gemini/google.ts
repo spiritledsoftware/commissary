@@ -28,6 +28,7 @@ import {
   type ResponseContext,
   type TranslatorRegistry,
   sanitizeGeminiRequestThoughtSignatures,
+  sanitizeNonVertexGeminiRequestThoughtSignatures,
   withModelInfoLookup,
   withReplayCache,
   textSignatureKeys,
@@ -458,7 +459,10 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
         del(body, "safetySettings");
       }
 
-      sanitizeGeminiRequestThoughtSignatures(body, "contents");
+      // Only Vertex accepts its own bare-Tink thought signatures; the Gemini API answers 400 "Corrupted thought
+      // signature" (Go 1398f273).
+      if (variant.vertex) sanitizeGeminiRequestThoughtSignatures(body, "contents");
+      else sanitizeNonVertexGeminiRequestThoughtSignatures(body, "contents");
     }
 
     // Vertex rejects a request ending with a thought-only model turn even behind an empty user turn (ceb4397f).
@@ -543,7 +547,7 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
       provider: "gemini",
       source: request.payload,
     });
-    body = sanitizeGeminiInteractionsUnsupportedInputIds(body);
+    body = sanitizeGeminiInteractionsUnsupportedInputIds(body, variant.vertex);
 
     const continuation = yield* prepareAntigravityInteractions(
       continuations,

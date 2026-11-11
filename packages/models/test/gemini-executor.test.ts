@@ -4,6 +4,12 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Config } from "../src/config/schema.ts";
 import { credential, makeGeminiHarness } from "./support/gemini.ts";
 import {
+  nativeGeminiSignature,
+  sentModelParts,
+  signedToolRound,
+  vertexBareTink,
+} from "./support/gemini-signatures.ts";
+import {
   jsonResponse,
   loadConfig,
   postJson,
@@ -585,5 +591,53 @@ describe("OpenAI Responses client -> Gemini credential", () => {
       expect(text).toContain("message_stop");
       expect(records[0]).toMatchObject({ failed: false });
     });
+  });
+});
+
+// CLIProxyAPI 1398f273 (gemini_vertex_bare_tink_signature_test.go): the Gemini API rejects a Vertex bare-Tink thought
+// signature as corrupted, so it never replays there; Vertex keeps it (see vertex-executor.test.ts).
+describe("Vertex bare-Tink thought signatures on the Gemini API", () => {
+  const SENTINEL = "skip_thought_signature_validator";
+
+  it.each(["generateContent", "streamGenerateContent", "countTokens"])(
+    "%s sends the bypass sentinel for the first functionCall and drops the text part's signature",
+    async (action) => {
+      const h = harness(() =>
+        action === "streamGenerateContent"
+          ? sseResponse([`data: ${JSON.stringify(GEMINI_RESPONSE)}\n\n`])
+          : jsonResponse(action === "countTokens" ? { totalTokens: 3 } : GEMINI_RESPONSE),
+      );
+
+      afterAll(h.dispose);
+
+      const response = await h.call(
+        `/v1beta/models/gemini-2.5-pro:${action}`,
+        postJson({ contents: signedToolRound(vertexBareTink()) }),
+      );
+
+      expect(response.status).toBe(200);
+      await response.text();
+      const parts = sentModelParts(h.calls[0]?.body);
+
+      expect(parts[0]?.["thoughtSignature"]).toBeUndefined();
+      expect(parts[1]?.["thoughtSignature"]).toBe(SENTINEL);
+    },
+  );
+
+  it("keeps a native Gemini signature", async () => {
+    const h = harness(() => jsonResponse(GEMINI_RESPONSE));
+    afterAll(h.dispose);
+    const native = nativeGeminiSignature();
+
+    const response = await h.call(
+      "/v1beta/models/gemini-2.5-pro:generateContent",
+      postJson({ contents: signedToolRound(native) }),
+    );
+
+    expect(response.status).toBe(200);
+    const parts = sentModelParts(h.calls[0]?.body);
+
+    expect(parts[0]?.["thoughtSignature"]).toBe(native);
+    expect(parts[1]?.["thoughtSignature"]).toBe(native);
   });
 });

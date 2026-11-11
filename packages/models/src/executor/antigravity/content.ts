@@ -11,7 +11,7 @@ import {
   stripEmptySignatureThinkingBlocks,
   stripInvalidBypassSignatureThinkingBlocks,
   stripInvalidGeminiSignatureThinkingBlocks,
-  sanitizeGeminiRequestThoughtSignatures,
+  sanitizeNonVertexGeminiRequestThoughtSignatures,
 } from "@commissary/translation";
 import {
   signatureBypassStrictMode,
@@ -203,10 +203,13 @@ export const normalizeFunctionResponseRoles = (payload: Json): Json => {
   return payload;
 };
 
-/** `sanitizeAntigravityGeminiRequestSignatures`: Gemini-family models only. */
+/**
+ * `sanitizeAntigravityGeminiRequestSignatures`: Gemini-family models only. Cloud Code rejects a Vertex bare-Tink
+ * signature as corrupted, so it takes the non-Vertex policy (Go 1398f273).
+ */
 export const sanitizeGeminiRequestSignatures = (modelName: string, payload: Json): Json => {
   if (!usesReasoningReplay(modelName)) return payload;
-  sanitizeGeminiRequestThoughtSignatures(payload, "request.contents");
+  sanitizeNonVertexGeminiRequestThoughtSignatures(payload, "request.contents");
 
   return normalizeFunctionResponseRoles(payload);
 };

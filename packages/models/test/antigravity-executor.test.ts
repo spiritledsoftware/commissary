@@ -6,6 +6,11 @@ import { resetMemoryAntigravityState } from "../src/executor/antigravity/state.t
 import type { Json, JsonObject } from "@commissary/json";
 import { credential, makeGeminiHarness } from "./support/gemini.ts";
 import {
+  nativeGeminiSignature,
+  signedToolRound,
+  vertexBareTink,
+} from "./support/gemini-signatures.ts";
+import {
   jsonResponse,
   loadConfig,
   postJson,
@@ -698,5 +703,42 @@ describe("antigravity executor: trailing turns", () => {
     const contents = await sentContents([userItem, ...toolRound], true);
 
     expect(contents.at(-1)?.parts[0]).toHaveProperty("functionResponse");
+  });
+});
+
+// CLIProxyAPI 1398f273 (antigravity_executor_signature_test.go): Cloud Code answers 400 "Corrupted thought signature"
+// to a Vertex bare-Tink signature, so history issued by Vertex gets the bypass sentinel there.
+describe("antigravity executor: Vertex bare-Tink thought signatures", () => {
+  const sentParts = async (signature: string) => {
+    resetMemoryAntigravityState();
+    const h = harness(() => jsonResponse(upstream([{ text: "OK" }])));
+
+    const response = await h.call(
+      "/v1beta/models/gemini-3-pro-high:generateContent",
+      postJson({ contents: signedToolRound(signature) }),
+    );
+
+    expect(response.status).toBe(200);
+    await response.text();
+    await h.dispose();
+
+    return JSON.parse(h.calls[0]?.body ?? "{}").request.contents[1].parts as Array<
+      Record<string, unknown>
+    >;
+  };
+
+  it("sends the bypass sentinel for the first functionCall and drops the text part's signature", async () => {
+    const parts = await sentParts(vertexBareTink());
+
+    expect(parts[0]?.["thoughtSignature"]).toBeUndefined();
+    expect(parts[1]?.["thoughtSignature"]).toBe("skip_thought_signature_validator");
+  });
+
+  it("keeps a native Gemini signature", async () => {
+    const native = nativeGeminiSignature();
+    const parts = await sentParts(native);
+
+    expect(parts[0]?.["thoughtSignature"]).toBe(native);
+    expect(parts[1]?.["thoughtSignature"]).toBe(native);
   });
 });

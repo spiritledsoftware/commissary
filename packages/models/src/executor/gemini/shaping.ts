@@ -9,6 +9,12 @@
 import { Buffer } from "node:buffer";
 import { deflateSync } from "node:zlib";
 import { asInt, asString, del, exists, get, isJsonArray, type Json, set } from "@commissary/json";
+import {
+  compatibleGeminiSignature,
+  isGeminiThoughtSignatureBypass,
+  isGeminiVertexBareTinkSignature,
+  signaturePayloadWithoutProviderPrefix,
+} from "@commissary/translation";
 import { lookupModelInfo } from "./model-info.ts";
 
 // --- white image (fixGeminiImageAspectRatio) ---------------------------------------------------------------------------
@@ -160,31 +166,83 @@ export const stripVertexOpenAIResponsesToolCallIds = (body: Json, sourceFormat: 
   return body;
 };
 
+/** The fields a `thought` step may not carry: the Interactions API takes the signature in `signature` alone. */
+const THOUGHT_STEP_UNSUPPORTED_FIELDS = [
+  "id",
+  "content",
+  "text",
+  "thought_signature",
+  "thoughtSignature",
+] as const;
+
+/** The thought step's signature, from `signature`, else `thought_signature`, else `thoughtSignature`. */
+const thoughtStepSignature = (item: Json): string => {
+  for (const key of ["signature", "thought_signature", "thoughtSignature"]) {
+    const value = asString(get(item, key)).trim();
+
+    if (value !== "") return value;
+  }
+
+  return "";
+};
+
 /**
  * `SanitizeGeminiInteractionsUnsupportedInputIDs`: `function_call` steps carry `id` (never `call_id`), every other step
- * and content part carries no `id`.
+ * and content part carries no `id`. A `thought` step is kept only with a replayable Gemini signature (the Interactions
+ * API rejects one without, or with a foreign, corrupt or bypass-sentinel signature), normalised into `signature`.
+ *
+ * `allowVertexBareTink` must be true only for the Vertex AI Interactions endpoint: the public endpoint rejects a Vertex
+ * bare-Tink signature, so that thought step is dropped like any other incompatible one (Go a8582fba).
  */
-export const sanitizeGeminiInteractionsUnsupportedInputIds = (body: Json): Json => {
+export const sanitizeGeminiInteractionsUnsupportedInputIds = (
+  body: Json,
+  allowVertexBareTink: boolean,
+): Json => {
   const input = get(body, "input");
 
   if (!isJsonArray(input)) return body;
-  input.forEach((item, i) => {
+  const kept: Json[] = [];
+
+  for (const item of input) {
+    if (asString(get(item, "type")) === "thought") {
+      const raw = thoughtStepSignature(item);
+      let normalized = compatibleGeminiSignature(raw) ?? "";
+
+      if (!allowVertexBareTink && isGeminiVertexBareTinkSignature(normalized)) normalized = "";
+
+      if (
+        normalized === "" ||
+        isGeminiThoughtSignatureBypass(signaturePayloadWithoutProviderPrefix(normalized))
+      ) {
+        continue;
+      }
+
+      if (normalized !== asString(get(item, "signature"))) set(item, "signature", normalized);
+
+      for (const field of THOUGHT_STEP_UNSUPPORTED_FIELDS) del(item, field);
+      kept.push(item);
+      continue;
+    }
+
     if (asString(get(item, "type")) === "function_call") {
       if (!exists(item, "id") && exists(item, "call_id"))
-        set(body, `input.${i}.id`, asString(get(item, "call_id")));
+        set(item, "id", asString(get(item, "call_id")));
 
-      if (exists(item, "call_id")) del(body, `input.${i}.call_id`);
+      if (exists(item, "call_id")) del(item, "call_id");
     } else if (exists(item, "id")) {
-      del(body, `input.${i}.id`);
+      del(item, "id");
     }
 
     const content = get(item, "content");
 
-    if (!isJsonArray(content)) return;
-    content.forEach((part, j) => {
-      if (exists(part, "id")) del(body, `input.${i}.content.${j}.id`);
-    });
-  });
+    if (isJsonArray(content)) {
+      for (const part of content) if (exists(part, "id")) del(part, "id");
+    }
+
+    kept.push(item);
+  }
+
+  if (kept.length !== input.length) set(body, "input", kept);
 
   return body;
 };
