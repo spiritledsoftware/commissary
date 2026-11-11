@@ -104,7 +104,8 @@ import { resolveGroundingUrlsInPayload, shouldResolveGroundingUrls } from "./gro
 import { creditsRecordFresh } from "./state.ts";
 import { creditsEnabled, injectEnabledCreditTypes, probeCredits } from "./credits.ts";
 import { NO_REPLAY_SCOPE, type ReplayAccumulator, type ReplayScope } from "./replay/accumulator.ts";
-import { defaultReplayLedger, type ReplayLedger } from "./replay/ledger.ts";
+import { defaultReplayLedger, type ReplayLedger } from "../helps/reasoning-replay-ledger.ts";
+import { chunksHaveTerminalCommitEvent } from "./replay/terminal.ts";
 import {
   clearReplayOnInvalidSignature,
   makeAccumulator,
@@ -872,13 +873,14 @@ export const makeAntigravityExecutor = (
               const chunks = translate(payload);
               context.usage.observeTokenEvent(Date.now(), isGeminiTokenEvent(payload));
 
-              // Responses clients: publish the ledger before the translated completion reaches them, so the next turn
-              // finds it (split usage/signature frames may still extend the chain until `response.completed`).
+              // Publish the ledger before any client-visible terminal event (`response.completed`, a chat `finish_reason`,
+              // `message_stop`, ...) reaches the client, so the next turn finds it (Go cc95661c, `antigravityStreamChunks
+              // HaveTerminalCommitEvent`). As in Go this is the `finishReason` frame: a signature or call frame that
+              // arrives after it is not captured (a stream that keeps sending after its finish reason is not expected).
               const commit =
                 prepared.replay?.terminal === true &&
                 !prepared.replay.committed &&
-                responseFormat === Formats.OpenAIResponse &&
-                chunks.some(isResponseCompleted)
+                chunksHaveTerminalCommitEvent(chunks)
                   ? prepared.replay.commit(ledger)
                   : Effect.void;
 
@@ -981,6 +983,11 @@ export const makeAntigravityExecutor = (
     // The schema is counted as the prompt it is sent as (CLIProxyAPI 1d45a5f3).
     prepareClaudeStructuredOutput(baseModel, body);
     body = sanitizeGeminiRequestSignatures(baseModel, body);
+    // The reasoning replay of the counted request: the ledger is peeked, never reserved or invalidated (Go
+    // `prepareAntigravityGeminiCountTokensReasoningReplayPayloadDoc`).
+    body = (yield* prepareReplayPayload(ledger, baseModel, request, options, body, {
+      reserve: false,
+    })).payload;
     body = ensureLeadingUserContent(baseModel, body);
 
     for (const path of [
@@ -1041,14 +1048,6 @@ export const makeAntigravityExecutor = (
 
   return { identifier: ANTIGRAVITY_IDENTIFIER, execute, executeStream, countTokens };
 };
-
-/** Whether a translated Responses chunk carries the `response.completed` event. */
-const isResponseCompleted = (chunk: string): boolean =>
-  chunk.split("\n").some((line) => {
-    const payload = jsonPayloadOf(line);
-
-    return payload !== undefined && get(tryParseJson(payload), "type") === "response.completed";
-  });
 
 /** `JSONPayload`: the JSON object of an SSE `data:` line or raw JSON line. */
 const jsonPayloadOf = (line: string): string | undefined => {

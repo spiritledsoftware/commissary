@@ -4,7 +4,7 @@
  * Go source: internal/runtime/executor/antigravity_executor.go (`sanitizeAntigravityGeminiRequestSignatures`,
  * `normalizeAntigravityGeminiFunctionResponseRoles`, `repairAntigravityGeminiFunctionResponseNames`,
  * `ensureAntigravityGeminiBoundaryUserContent`, `validateAntigravityRequestSignatures`) and
- * antigravity_reasoning_replay.go (`antigravityUsesReasoningReplayCache`).
+ * antigravity_reasoning_replay.go (the gate is `helps/reasoning-replay.ts`).
  */
 import { asString, exists, get, isJsonArray, isJsonObject, type Json, set } from "@commissary/json";
 import {
@@ -22,15 +22,7 @@ import {
   ensureGeminiLeadingUserContent,
   ensureGeminiTrailingUserContent,
 } from "../gemini/content-turns.ts";
-
-/** `antigravityUsesReasoningReplayCache`: Gemini-family models that need thought signatures replayed. */
-export const usesReasoningReplay = (modelName: string): boolean => {
-  const lower = modelName.toLowerCase();
-
-  if (lower.includes("claude")) return false;
-
-  return lower.includes("gemini") || lower.includes("flash") || lower.includes("agent");
-};
+import { usesReasoningReplay } from "../helps/reasoning-replay.ts";
 
 const isClaude = (modelName: string): boolean => modelName.toLowerCase().includes("claude");
 

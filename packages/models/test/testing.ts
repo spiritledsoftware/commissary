@@ -36,6 +36,12 @@ export { asBeforeEncryption } from "./support/secrets.ts";
 
 export { USD } from "@commissary/state/testing";
 
+// The SessionState stores of the Gemini API and Vertex reasoning-replay ledgers (the org suites write and wipe them).
+export {
+  GEMINI_REPLAY_STORE,
+  VERTEX_REPLAY_STORE,
+} from "../src/executor/helps/reasoning-replay-ledger.ts";
+
 export { HELD, spendingOrg, spendRows } from "./support/spending-org.ts";
 
 export { resetUsageDb, sampleRecord, statementsOf } from "./support/usage.ts";

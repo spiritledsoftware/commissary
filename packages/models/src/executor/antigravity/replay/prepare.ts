@@ -5,15 +5,21 @@
  * function response role normalisation -> degrade unresolved reserved tool ids -> repair unsigned first function
  * calls -> pairing validation (a replay that breaks pairing is dropped and the ledger entry invalidated).
  * Replay state is an optimisation: backend failures degrade to "no replay this turn", never to a failed request.
+ *
+ * The Gemini API and Vertex executors use it on a top-level `contents` body wrapped in a `request` envelope
+ * (`replayEnvelope`; Go cc95661c): they read their own store, skip native Gemini and Interactions clients (the signatures
+ * of those travel with them, Go f36b195e) and, for token counting, only peek.
  */
 import { Effect } from "effect";
-import type { Json } from "@commissary/json";
+import { get, type Json, type JsonObject } from "@commissary/json";
 import { ExecutionError } from "../../errors.ts";
-import type { ExecutorOptions, ExecutorRequest } from "../../types.ts";
-import { normalizeFunctionResponseRoles, usesReasoningReplay } from "../content.ts";
+import { Formats } from "@commissary/translation/formats";
+import { type ExecutorOptions, type ExecutorRequest, responseFormatOf } from "../../types.ts";
+import { normalizeFunctionResponseRoles } from "../content.ts";
+import { usesReasoningReplay } from "../../helps/reasoning-replay.ts";
 import { ReplayAccumulator, type ReplayScope, replayScopeValid } from "./accumulator.ts";
 import { applyReplayItems, replayToolSchemasFromRequests, type ToolSchemas } from "./apply.ts";
-import { UNLOADED_SNAPSHOT, type ReplayLedger } from "./ledger.ts";
+import { UNLOADED_SNAPSHOT, type ReplayLedger } from "../../helps/reasoning-replay-ledger.ts";
 import {
   degradeToolProvenanceIds,
   payloadHasToolProvenanceId,
@@ -21,6 +27,56 @@ import {
   validateFunctionCallPairing,
 } from "./provenance.ts";
 import { replaySessionKey } from "./scope.ts";
+
+export interface ReplayPrepareMode {
+  /** False for token counting: the ledger is peeked, and nothing is invalidated. Default true. */
+  readonly reserve?: boolean;
+  /** Whether model-role functionResponse turns are normalised (the Antigravity envelope does, top-level bodies do not). */
+  readonly normalizeRoles?: boolean;
+  /** Names the executor in the message of an invalid-history error. Default `antigravity executor`. */
+  readonly executor?: string;
+}
+
+/** Formats whose clients keep their own thought signatures (`antigravityFormatCarriesNativeThoughtSignatures`). */
+const carriesNativeSignatures = (format: string): boolean =>
+  format === Formats.Gemini || format === Formats.Interactions;
+
+/**
+ * `antigravityRequestIsSymmetricForReasoningReplay` (Go f36b195e): a request that comes in and goes out as Gemini or
+ * Interactions needs no ledger, unless its history holds Claude tool-provenance ids to resolve.
+ */
+const isSymmetric = (options: ExecutorOptions): boolean =>
+  options.sourceFormat !== "" &&
+  carriesNativeSignatures(options.sourceFormat) &&
+  carriesNativeSignatures(responseFormatOf(options));
+
+/**
+ * `antigravityReplayRequestEnvelopeFromDoc`: the `request` envelope of a top-level Gemini body (system instruction,
+ * tools, tool config and contents, plus its session ids), the shape every replay module reads.
+ */
+export const replayEnvelope = (body: Json): Json | undefined => {
+  if (get(body, "request.contents") !== undefined) return body;
+  const contents = get(body, "contents");
+
+  if (contents === undefined) return undefined;
+  const request: JsonObject = {};
+
+  for (const key of ["systemInstruction", "tools", "toolConfig", "contents"]) {
+    const value = get(body, key);
+
+    if (value !== undefined) request[key] = value;
+  }
+
+  const envelope: JsonObject = { request };
+
+  for (const key of ["sessionId", "session_id"]) {
+    const value = get(body, key);
+
+    if (value !== undefined) envelope[key] = value;
+  }
+
+  return envelope;
+};
 
 export interface PreparedReplay {
   /** The payload to send (a new value; the input is never mutated). */
@@ -37,7 +93,11 @@ export const prepareReplayPayload = Effect.fnUntraced(function* (
   request: ExecutorRequest,
   options: ExecutorOptions,
   payload: Json,
+  mode: ReplayPrepareMode = {},
 ) {
+  const reserve = mode.reserve !== false;
+  const normalizeRoles = mode.normalizeRoles !== false;
+
   if (!usesReasoningReplay(modelName)) return { payload, scope: NO_SCOPE } satisfies PreparedReplay;
 
   // `applyAntigravityReasoningReplayCache`
@@ -55,7 +115,7 @@ export const prepareReplayPayload = Effect.fnUntraced(function* (
 
   let scope: ReplayScope = {
     modelName: modelName.trim(),
-    sessionKey,
+    sessionKey: isSymmetric(options) && !payloadHasToolProvenanceId(payload) ? "" : sessionKey,
     snapshot: UNLOADED_SNAPSHOT,
     openAIChat: options.sourceFormat === "openai",
   };
@@ -64,7 +124,10 @@ export const prepareReplayPayload = Effect.fnUntraced(function* (
   let replayApplied = false;
 
   if (replayScopeValid(scope)) {
-    const read = yield* ledger.get(scope.modelName, scope.sessionKey);
+    const read = yield* reserve
+      ? ledger.get(scope.modelName, scope.sessionKey)
+      : ledger.peek(scope.modelName, scope.sessionKey);
+
     scope = { ...scope, snapshot: read.snapshot };
 
     if (read.items !== undefined && read.items.length > 0) {
@@ -79,13 +142,14 @@ export const prepareReplayPayload = Effect.fnUntraced(function* (
     }
   }
 
-  updated = normalizeFunctionResponseRoles(updated);
+  if (normalizeRoles) updated = normalizeFunctionResponseRoles(updated);
 
   if (payloadHasToolProvenanceId(updated)) {
     // The ledger could not resolve every tool id (session lane changed, entry expired, a turn never committed):
     // degrade those calls to synthetic ids instead of killing the conversation.
     degradeToolProvenanceIds(updated);
-    updated = normalizeFunctionResponseRoles(updated);
+
+    if (normalizeRoles) updated = normalizeFunctionResponseRoles(updated);
   }
 
   // An identity-only restore drops the cached signature, which can leave a model turn's first call unsigned.
@@ -96,10 +160,12 @@ export const prepareReplayPayload = Effect.fnUntraced(function* (
     const originalPairingValid = validateFunctionCallPairing(payload) === undefined;
 
     if (replayApplied && originalPairingValid && replayScopeValid(scope)) {
-      // Replay broke the call/response pairing: invalidate the entry and degrade to the original payload.
-      yield* ledger.deleteIfUnchanged(scope.modelName, scope.sessionKey, scope.snapshot);
+      // Replay broke the call/response pairing: invalidate the entry (not while only counting) and degrade to the
+      // original payload.
+      if (reserve)
+        yield* ledger.deleteIfUnchanged(scope.modelName, scope.sessionKey, scope.snapshot);
       yield* Effect.logWarning(
-        "antigravity executor: reasoning replay broke Gemini function call pairing; degrading",
+        `${mode.executor ?? "antigravity executor"}: reasoning replay broke Gemini function call pairing; degrading`,
       );
 
       return { payload, scope } satisfies PreparedReplay;
@@ -107,7 +173,7 @@ export const prepareReplayPayload = Effect.fnUntraced(function* (
 
     return yield* new ExecutionError({
       status: 400,
-      message: `antigravity executor: invalid Gemini function call history: ${pairingError}`,
+      message: `${mode.executor ?? "antigravity executor"}: invalid Gemini function call history: ${pairingError}`,
       requestScoped: true,
     });
   }

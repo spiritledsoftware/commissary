@@ -1,14 +1,27 @@
 /**
- * Antigravity reasoning replay ledger over the `SessionState` Durable Object.
+ * Reasoning replay ledger over the `SessionState` Durable Object: Antigravity's, and (Go cc95661c) the Gemini API's and
+ * Vertex's, each in its own store (the store name is a parameter).
  *
  * Go source: internal/cache/antigravity_reasoning_replay_cache.go (normalisation, TTL 1 h, snapshot-guarded replace
  * and delete, tombstones). The Go local mode keeps a revision per entry and fences a miss with a tombstone; here the
  * Durable Object generation is the snapshot (`0` = absent), and a delete writes a tombstone entry with a fresh
  * generation so a stale writer that read the older state cannot publish over the delete. Entry bounds (4096 items,
  * 16 MiB) are the Go ones; the 10240-entry cap is replaced by the per-session instance and the TTL sweep.
+ *
+ * Retention (ADR 0027): an entry holds only function calls and thought signatures, expires 1 h after its last read or write
+ * and, unlike Go, never lives longer than {@link REPLAY_MAX_AGE_MS} from its first write however active the session is: a
+ * read past that age is a miss, and wipes the entry. The org deletion removes the instances at once (they register with the
+ * org's ControlPlane by name).
  */
-import { Effect } from "effect";
-import { asString, get, isJsonArray, type Json, type JsonObject } from "@commissary/json";
+import { Clock, Effect } from "effect";
+import {
+  asString,
+  get,
+  isJsonArray,
+  type Json,
+  type JsonObject,
+  tryParseJson,
+} from "@commissary/json";
 import {
   type BackendResolver,
   bestEffort,
@@ -20,13 +33,21 @@ import {
 
 export const REPLAY_TTL_MS = 60 * 60 * 1000;
 
+/** Absolute cap on an entry's life, from its first write (the TTL slides; this does not): well inside ADR 0027's seven days. */
+export const REPLAY_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
 export const REPLAY_MAX_ITEMS_PER_ENTRY = 4096;
 
 export const REPLAY_MAX_BYTES_PER_ENTRY = 16 << 20;
 
 const MIN_THOUGHT_SIGNATURE_LEN = 16;
 
-const STORE_NAME = "antigravity-replay";
+/** The SessionState store of each target (a session served by another target starts without replay state). */
+export const ANTIGRAVITY_REPLAY_STORE = "antigravity-replay";
+
+export const GEMINI_REPLAY_STORE = "gemini-reasoning-replay";
+
+export const VERTEX_REPLAY_STORE = "vertex-reasoning-replay";
 
 const MAX_MODELS_PER_SESSION = 64;
 
@@ -40,6 +61,8 @@ export interface LedgerSnapshot {
   readonly loaded: boolean;
   /** Generation of the entry or tombstone that was read (0 = absent). */
   readonly generation: number;
+  /** When the entry that was read was first written: the origin of its absolute age, kept by every replace. */
+  readonly firstWriteAt?: number;
 }
 
 export const UNLOADED_SNAPSHOT: LedgerSnapshot = { loaded: false, generation: 0 };
@@ -53,6 +76,8 @@ export interface LedgerRead {
 export interface ReplayLedger {
   /** `GetAntigravityReasoningReplayItemsWithSnapshotRequired` (a hit slides the TTL). */
   readonly get: (modelName: string, sessionKey: string) => Effect.Effect<LedgerRead>;
+  /** `PeekAntigravityReasoningReplayItemsWithSnapshotRequired`: the same read without sliding the TTL (token counting). */
+  readonly peek: (modelName: string, sessionKey: string) => Effect.Effect<LedgerRead>;
   /** `ReplaceAntigravityReasoningReplayItemsIfUnchanged`: false when another request changed the state. */
   readonly replaceIfUnchanged: (
     modelName: string,
@@ -179,24 +204,29 @@ export const normalizeReplayItems = (items: ReadonlyArray<Json>): Json[] | undef
   return normalized.length > 0 ? normalized : undefined;
 };
 
-const addressOf = (sessionKey: string): SessionAddress => ({
-  store: STORE_NAME,
+const addressOf = (store: string, sessionKey: string): SessionAddress => ({
+  store,
   scope: "",
   session: sessionKey.trim(),
 });
 
-const parseEntry = (text: string | undefined): Json[] | undefined => {
-  if (text === undefined) return undefined;
+interface StoredEntry {
+  readonly items: Json[];
+  /** Absent on an entry written before the age cap existed: its age starts at its next write. */
+  readonly firstWriteAt: number | undefined;
+}
 
-  try {
-    const parsed: unknown = JSON.parse(text);
+/** `{"firstWriteAt", "items"}`, or the bare item array older entries are. */
+const parseEntry = (text: string | undefined): StoredEntry | undefined => {
+  const parsed = text === undefined ? undefined : tryParseJson(text);
 
-    if (!isJsonArray(parsed)) return undefined;
+  if (isJsonArray(parsed)) return { items: parsed, firstWriteAt: undefined };
+  const items = get(parsed, "items");
 
-    return parsed;
-  } catch {
-    return undefined;
-  }
+  if (!isJsonArray(items)) return undefined;
+  const first = get(parsed, "firstWriteAt");
+
+  return { items, firstWriteAt: typeof first === "number" ? first : undefined };
 };
 
 const cacheKey = (modelName: string, sessionKey: string): string =>
@@ -204,26 +234,38 @@ const cacheKey = (modelName: string, sessionKey: string): string =>
 
 export const makeSessionStateReplayLedger = (
   backend: BackendResolver = resolveBackend(),
-): ReplayLedger => ({
-  get: (modelName, sessionKey) => {
+  storeName: string = ANTIGRAVITY_REPLAY_STORE,
+): ReplayLedger => {
+  const read = (
+    modelName: string,
+    sessionKey: string,
+    slide: boolean,
+  ): Effect.Effect<LedgerRead> => {
     const key = cacheKey(modelName, sessionKey);
 
     if (key === "") return Effect.succeed({ items: undefined, snapshot: UNLOADED_SNAPSHOT });
 
     return bestEffort(
-      "antigravity replay get",
+      `${storeName} get`,
       { items: undefined, snapshot: UNLOADED_SNAPSHOT } satisfies LedgerRead,
       Effect.gen(function* () {
         const state = yield* backend;
 
-        const [result] = yield* state.run(addressOf(sessionKey), [
-          { op: "get", key, extendTtlMs: REPLAY_TTL_MS },
+        const [result] = yield* state.run(addressOf(storeName, sessionKey), [
+          { op: "get", key, ...(slide ? { extendTtlMs: REPLAY_TTL_MS } : {}) },
         ]);
 
         if (result?.status !== "ok")
           return { items: undefined, snapshot: UNLOADED_SNAPSHOT } satisfies LedgerRead;
-        const snapshot: LedgerSnapshot = { loaded: true, generation: result.generation };
-        const stored = parseEntry(result.value);
+        const entry = parseEntry(result.value);
+
+        const snapshot: LedgerSnapshot = {
+          loaded: true,
+          generation: result.generation,
+          ...(entry?.firstWriteAt === undefined ? {} : { firstWriteAt: entry.firstWriteAt }),
+        };
+
+        const stored = entry?.items;
 
         if (
           stored === undefined ||
@@ -231,6 +273,33 @@ export const makeSessionStateReplayLedger = (
           stored.length > REPLAY_MAX_ITEMS_PER_ENTRY
         ) {
           return { items: undefined, snapshot } satisfies LedgerRead;
+        }
+
+        // The absolute cap: an entry past it is not replayed, and a reading request wipes it rather than slide it further.
+        const now = yield* Clock.currentTimeMillis;
+
+        if (entry?.firstWriteAt !== undefined && now - entry.firstWriteAt >= REPLAY_MAX_AGE_MS) {
+          if (!slide) return { items: undefined, snapshot } satisfies LedgerRead;
+
+          const [wiped] = yield* state.run(addressOf(storeName, sessionKey), [
+            {
+              op: "put",
+              key,
+              value: TOMBSTONE,
+              ttlMs: REPLAY_TTL_MS,
+              maxEntries: MAX_MODELS_PER_SESSION,
+              ifGeneration: result.generation,
+            },
+          ]);
+
+          // Wiped: the request holds the tombstone's generation (no age), so its commit stamps `now` and a concurrent
+          // writer's fresh entry cannot be overwritten or tombstoned by it. A concurrent writer won the wipe: its state
+          // stands, and the stale snapshot makes this request's writes fail their guard.
+          return {
+            items: undefined,
+            snapshot:
+              wiped?.status === "ok" ? { loaded: true, generation: wiped.generation } : snapshot,
+          } satisfies LedgerRead;
         }
 
         const normalized = normalizeReplayItems(stored);
@@ -244,61 +313,70 @@ export const makeSessionStateReplayLedger = (
         } satisfies LedgerRead;
       }),
     );
-  },
-  replaceIfUnchanged: (modelName, sessionKey, snapshot, items) => {
-    const key = cacheKey(modelName, sessionKey);
-    const normalized = key === "" ? undefined : normalizeReplayItems(items);
+  };
 
-    if (normalized === undefined) return Effect.succeed(false);
+  return {
+    get: (modelName, sessionKey) => read(modelName, sessionKey, true),
+    peek: (modelName, sessionKey) => read(modelName, sessionKey, false),
+    replaceIfUnchanged: (modelName, sessionKey, snapshot, items) => {
+      const key = cacheKey(modelName, sessionKey);
+      const normalized = key === "" ? undefined : normalizeReplayItems(items);
 
-    return bestEffort(
-      "antigravity replay replace",
-      false,
-      Effect.gen(function* () {
-        const state = yield* backend;
+      if (normalized === undefined) return Effect.succeed(false);
 
-        const [result] = yield* state.run(addressOf(sessionKey), [
-          {
-            op: "put",
-            key,
-            value: JSON.stringify(normalized),
-            ttlMs: REPLAY_TTL_MS,
-            maxEntries: MAX_MODELS_PER_SESSION,
-            ...(snapshot.loaded ? { ifGeneration: snapshot.generation } : {}),
-          },
-        ]);
+      return bestEffort(
+        `${storeName} replace`,
+        false,
+        Effect.gen(function* () {
+          const state = yield* backend;
+          const now = yield* Clock.currentTimeMillis;
 
-        return result?.status === "ok";
-      }),
-    );
-  },
-  deleteIfUnchanged: (modelName, sessionKey, snapshot) => {
-    const key = cacheKey(modelName, sessionKey);
+          const [result] = yield* state.run(addressOf(storeName, sessionKey), [
+            {
+              op: "put",
+              key,
+              value: JSON.stringify({
+                firstWriteAt: snapshot.firstWriteAt ?? now,
+                items: normalized,
+              }),
+              ttlMs: REPLAY_TTL_MS,
+              maxEntries: MAX_MODELS_PER_SESSION,
+              ...(snapshot.loaded ? { ifGeneration: snapshot.generation } : {}),
+            },
+          ]);
 
-    if (key === "") return Effect.succeed(false);
+          return result?.status === "ok";
+        }),
+      );
+    },
+    deleteIfUnchanged: (modelName, sessionKey, snapshot) => {
+      const key = cacheKey(modelName, sessionKey);
 
-    return bestEffort(
-      "antigravity replay delete",
-      false,
-      Effect.gen(function* () {
-        const state = yield* backend;
+      if (key === "") return Effect.succeed(false);
 
-        const [result] = yield* state.run(addressOf(sessionKey), [
-          {
-            op: "put",
-            key,
-            value: TOMBSTONE,
-            ttlMs: REPLAY_TTL_MS,
-            maxEntries: MAX_MODELS_PER_SESSION,
-            ...(snapshot.loaded ? { ifGeneration: snapshot.generation } : {}),
-          },
-        ]);
+      return bestEffort(
+        `${storeName} delete`,
+        false,
+        Effect.gen(function* () {
+          const state = yield* backend;
 
-        return result?.status === "ok";
-      }),
-    );
-  },
-});
+          const [result] = yield* state.run(addressOf(storeName, sessionKey), [
+            {
+              op: "put",
+              key,
+              value: TOMBSTONE,
+              ttlMs: REPLAY_TTL_MS,
+              maxEntries: MAX_MODELS_PER_SESSION,
+              ...(snapshot.loaded ? { ifGeneration: snapshot.generation } : {}),
+            },
+          ]);
+
+          return result?.status === "ok";
+        }),
+      );
+    },
+  };
+};
 
 /** In-memory ledger for tests (`now` is injectable). */
 export const makeInMemoryReplayLedger = (now?: () => number): ReplayLedger =>
@@ -306,3 +384,14 @@ export const makeInMemoryReplayLedger = (now?: () => number): ReplayLedger =>
 
 /** Default ledger: the `SessionState` Durable Object when bound, else per isolate. */
 export const defaultReplayLedger: ReplayLedger = makeSessionStateReplayLedger();
+
+/** The Gemini API and Vertex ledgers: one store per target, the same entry layout (Go shares one key space). */
+export const defaultGeminiReplayLedger: ReplayLedger = makeSessionStateReplayLedger(
+  resolveBackend(),
+  GEMINI_REPLAY_STORE,
+);
+
+export const defaultVertexReplayLedger: ReplayLedger = makeSessionStateReplayLedger(
+  resolveBackend(),
+  VERTEX_REPLAY_STORE,
+);

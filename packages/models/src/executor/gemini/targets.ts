@@ -9,17 +9,20 @@ import { Effect } from "effect";
 import type { JsonObject } from "@commissary/json";
 import { Formats } from "@commissary/translation/formats";
 import { ExecutionError } from "../errors.ts";
+import {
+  defaultGeminiReplayLedger,
+  defaultVertexReplayLedger,
+} from "../helps/reasoning-replay-ledger.ts";
 
 import type { ExecutionContext } from "../types.ts";
 import type { GoogleTarget, GoogleVariant } from "./google.ts";
+import { GEMINI_ENDPOINT, VERTEX_DEFAULT_BASE_URL } from "./endpoints.ts";
 
-export const GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com";
+export { GEMINI_ENDPOINT, VERTEX_DEFAULT_BASE_URL };
 
 export const GEMINI_API_VERSION = "v1beta";
 
 export const VERTEX_API_VERSION = "v1";
-
-export const VERTEX_DEFAULT_BASE_URL = "https://aiplatform.googleapis.com";
 
 const trimSlash = (value: string): string => value.replace(/\/+$/, "");
 
@@ -43,6 +46,7 @@ export const geminiBaseUrl = (context: ExecutionContext): string => {
 export const geminiVariant = (identifier: "gemini" | "gemini-interactions"): GoogleVariant => ({
   identifier,
   vertex: false,
+  replayLedger: defaultGeminiReplayLedger,
   resolveTarget: (context) =>
     Effect.sync((): GoogleTarget => {
       const base = geminiBaseUrl(context);
@@ -166,6 +170,7 @@ const serviceAccountToken = (context: ExecutionContext) => {
 export const vertexVariant: GoogleVariant = {
   identifier: "vertex",
   vertex: true,
+  replayLedger: defaultVertexReplayLedger,
   resolveTarget: (context: ExecutionContext) =>
     Effect.gen(function* () {
       const { providerKey, baseUrl } = vertexProviderKey(context);

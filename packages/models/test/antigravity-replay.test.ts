@@ -16,7 +16,7 @@ import {
   normalizeReplayItems,
   REPLAY_MAX_ITEMS_PER_ENTRY,
   UNLOADED_SNAPSHOT,
-} from "../src/executor/antigravity/replay/ledger.ts";
+} from "../src/executor/helps/reasoning-replay-ledger.ts";
 import {
   clearReplayOnInvalidSignature,
   prepareReplayPayload,

@@ -35,6 +35,7 @@ import {
   makeKvSignatureStore,
   makeMemoryAntigravityState,
   ModelRegistry,
+  GEMINI_REPLAY_STORE,
   ModelRegistryLive,
   orgAuthIndexer,
   orgSignatureCache,
@@ -42,6 +43,7 @@ import {
   sampleRecord,
   saveVideoBinding,
   summarizeUsage,
+  VERTEX_REPLAY_STORE,
 } from "@commissary/models/testing";
 import { type EnvServices, envContext } from "../src/worker-env.ts";
 import {
@@ -429,6 +431,32 @@ const oauthGrants = () => {
 };
 
 /** Every store of org data; adding a store is adding a line. */
+/** The write and read of one SessionState store, in the org the case names (the Codex replay store's pattern). */
+const sessionStateStore = (store: string): Omit<StoreCase, "store"> => ({
+  write: async (org, name, value) => {
+    const address = { store, scope: "", session: name };
+
+    await inOrg(
+      org,
+      Effect.flatMap(resolveBackend(), (backend) =>
+        backend.run(address, [{ op: "put", key: "k", value, ttlMs: 60_000 }]),
+      ),
+    );
+  },
+  read: async (org, name) => {
+    const address = { store, scope: "", session: name };
+
+    const [result] = await inOrg(
+      org,
+      Effect.flatMap(resolveBackend(), (backend) =>
+        backend.run(address, [{ op: "get", key: "k" }]),
+      ),
+    );
+
+    return result?.status === "ok" ? result.value : undefined;
+  },
+});
+
 const STORES: ReadonlyArray<StoreCase> = [
   // KV through `OrgKv`.
   storeCase("kv: OrgKv", {
@@ -471,31 +499,10 @@ const STORES: ReadonlyArray<StoreCase> = [
     read: async (org, name) => (await oauthGrants().keyIds(org.id, name)).at(0),
   }),
 
-  // SessionState.
-  storeCase("session state", {
-    write: async (org, name, value) => {
-      const address = { store: "codex-replay", scope: "", session: name };
-
-      await inOrg(
-        org,
-        Effect.flatMap(resolveBackend(), (backend) =>
-          backend.run(address, [{ op: "put", key: "k", value, ttlMs: 60_000 }]),
-        ),
-      );
-    },
-    read: async (org, name) => {
-      const address = { store: "codex-replay", scope: "", session: name };
-
-      const [result] = await inOrg(
-        org,
-        Effect.flatMap(resolveBackend(), (backend) =>
-          backend.run(address, [{ op: "get", key: "k" }]),
-        ),
-      );
-
-      return result?.status === "ok" ? result.value : undefined;
-    },
-  }),
+  // SessionState: the Codex replay store, and the Gemini API and Vertex reasoning-replay ledgers (#376), one case per store.
+  storeCase("session state", sessionStateStore("codex-replay")),
+  storeCase("session state: Gemini API reasoning replay", sessionStateStore(GEMINI_REPLAY_STORE)),
+  storeCase("session state: Vertex reasoning replay", sessionStateStore(VERTEX_REPLAY_STORE)),
 
   // Worker caches: the per-isolate ones that hold org data.
   storeCase("worker cache: signatures", {

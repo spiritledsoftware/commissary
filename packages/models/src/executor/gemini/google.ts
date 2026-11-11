@@ -68,8 +68,16 @@ import {
   interactionsSseDone,
   interactionsSsePayload,
   sanitizeGeminiInteractionsUnsupportedInputIds,
-  stripVertexOpenAIResponsesToolCallIds,
 } from "./shaping.ts";
+import {
+  NO_REPLAY_SCOPE,
+  type ReplayAccumulator,
+  type ReplayScope,
+} from "../antigravity/replay/accumulator.ts";
+import { applyReasoningReplay } from "./reasoning-replay.ts";
+import type { ReplayLedger } from "../helps/reasoning-replay-ledger.ts";
+import { clearReplayOnInvalidSignature } from "../antigravity/replay/prepare.ts";
+import { chunksHaveTerminalCommitEvent } from "../antigravity/replay/terminal.ts";
 import {
   filterSseUsageMetadata,
   jsonPayload,
@@ -106,6 +114,11 @@ export interface GoogleVariant {
   readonly translators?: TranslatorRegistry;
   /** Antigravity Interactions continuation sessions (defaults to the `SessionState` Durable Object). */
   readonly continuations?: ContinuationStore;
+  /**
+   * The reasoning-replay ledger of this target (Go cc95661c): the signatures and native function calls of earlier turns,
+   * for Gemini models that need them back (see `helps/reasoning-replay.ts`). Without one nothing is replayed (OpenCode Zen).
+   */
+  readonly replayLedger?: ReplayLedger;
 }
 
 const transportError = (error: HttpClientError.HttpClientError) =>
@@ -139,6 +152,9 @@ interface PreparedRequest {
   readonly providerFormat: string;
   /** Antigravity Interactions continuation state of the request (native Interactions only). */
   readonly continuation?: InteractionsState;
+  /** The ledger scope of a generate or stream request (with the snapshot read) and its response accumulator. */
+  readonly replayScope: ReplayScope;
+  readonly replay?: ReplayAccumulator | undefined;
 }
 
 /** Everything `prepare*` needs about the attempt. */
@@ -322,6 +338,16 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
       const text = yield* response.text.pipe(Effect.orElseSucceed(() => ""));
       context.usage.fail(response.status, text);
 
+      // An upstream 400 about the signatures drops the ledger entry: the next turn starts with the sentinel.
+      if (variant.replayLedger !== undefined) {
+        yield* clearReplayOnInvalidSignature(
+          variant.replayLedger,
+          prepared.replayScope,
+          response.status,
+          text,
+        );
+      }
+
       return yield* toExecutionError(response.status, text, new Headers(response.headers));
     }
 
@@ -454,8 +480,7 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
       body = fixGeminiImageAspectRatio(baseModel, body);
       body = set(body, "model", baseModel);
 
-      if (variant.vertex) body = stripVertexOpenAIResponsesToolCallIds(body, from);
-      else body = capGeminiMaxOutputTokens(body, baseModel);
+      if (!variant.vertex) body = capGeminiMaxOutputTokens(body, baseModel);
 
       if (mode === "count") {
         del(body, "tools");
@@ -477,6 +502,17 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
       body = ensureGeminiLeadingUserContent(body, "contents");
 
       if (mode === "generate") body = ensureGeminiTrailingUserContent(body, "contents", turns);
+    }
+
+    let replayScope: ReplayScope = NO_REPLAY_SCOPE;
+    let replay: ReplayAccumulator | undefined;
+
+    if (!imagen) {
+      const applied = yield* applyReasoningReplay(variant, request, options, baseModel, body, mode);
+
+      body = applied.body;
+      replayScope = applied.scope;
+      replay = applied.accumulator;
     }
 
     del(body, "session_id");
@@ -509,6 +545,8 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
       to,
       imagen,
       providerFormat: to,
+      replayScope,
+      replay,
     } satisfies PreparedRequest;
   });
 
@@ -578,6 +616,8 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
       imagen: false,
       providerFormat,
       continuation: continuation.state,
+      // Native Interactions clients carry their signatures in thought steps: no ledger (Go gemini_executor.go).
+      replayScope: NO_REPLAY_SCOPE,
     } satisfies PreparedRequest;
   });
 
@@ -620,6 +660,14 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
 
     const response = yield* send(context, prepared);
     let text = yield* response.text.pipe(Effect.mapError(transportError));
+
+    // `cacheAntigravityReasoningReplayFromResponse`: the turn is published before the client sees its answer.
+    if (prepared.replay !== undefined && variant.replayLedger !== undefined) {
+      const completed = tryParseJson(text);
+
+      if (completed !== undefined) prepared.replay.observeCompleted(completed);
+      yield* prepared.replay.commit(variant.replayLedger);
+    }
 
     if (prepared.imagen) {
       text = convertImagenToGeminiResponse(
@@ -735,8 +783,31 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
       return chunks;
     };
 
+    const ledger = variant.replayLedger;
+    const replay = prepared.replay;
+
+    // The ledger is committed before the terminal event reaches the client (the next turn reads it), never in the
+    // background, and only for a stream that ended cleanly with a finish reason.
+    const commitFor = (chunks: ReadonlyArray<string>, atEnd: boolean) =>
+      replay !== undefined &&
+      ledger !== undefined &&
+      replay.terminal &&
+      !replay.committed &&
+      streamError === undefined &&
+      failToolInput.toolInputError === undefined &&
+      (atEnd || chunksHaveTerminalCommitEvent(chunks))
+        ? replay.commit(ledger)
+        : Effect.void;
+
     const translated = (payload: string) =>
-      Stream.unwrap(translate(payload).pipe(Effect.map(captureError), Effect.map(check)));
+      Stream.unwrap(
+        translate(payload).pipe(
+          Effect.map(captureError),
+          Effect.flatMap((chunks) =>
+            commitFor(chunks, payload === "[DONE]").pipe(Effect.as(check(chunks))),
+          ),
+        ),
+      );
 
     const lines = splitLines(response.stream).pipe(Stream.mapError(transportError));
     let sawFinish = false;
@@ -744,6 +815,7 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
     return Stream.concat(
       lines.pipe(
         Stream.flatMap((line) => {
+          replay?.observeLine(line);
           context.usage.observeResponseModel(
             responseModelOf(tryParseJson(jsonPayload(line) ?? "")),
           );

@@ -20,7 +20,13 @@ import {
 import { Effect } from "effect";
 import { type ModelsBindings, ModelsEnv } from "@commissary/models/api";
 import { orgDeletionStep } from "@commissary/models/management";
-import { insertUsageRecord, resetUsageDb, sampleRecord } from "@commissary/models/testing";
+import {
+  GEMINI_REPLAY_STORE,
+  insertUsageRecord,
+  resetUsageDb,
+  sampleRecord,
+  VERTEX_REPLAY_STORE,
+} from "@commissary/models/testing";
 import { fakeMcpServer, serveFakeMcpServers } from "@commissary/tools/testing";
 
 // Toolkits' lists are built from a fake MCP server.
@@ -149,17 +155,22 @@ const newOrg = async (): Promise<Org> => {
   return org;
 };
 
-const sessionName = (org: Org) =>
-  addressName({ store: orgScopedName(org.id, "replay"), scope: "s", session: "1" });
+/** The replay stores whose instances the org's deletion must find: Codex's and the Gemini API and Vertex ledgers (#376). */
+const SESSION_STORES = ["replay", GEMINI_REPLAY_STORE, VERTEX_REPLAY_STORE] as const;
+
+const sessionName = (org: Org, store: string = "replay") =>
+  addressName({ store: orgScopedName(org.id, store), scope: "s", session: "1" });
 
 const writeSession = async (org: Org) => {
-  await env.SESSION_STATE.getByName(sessionName(org)).run([
-    { op: "put", key: "k", value: "v", ttlMs: 3_600_000 },
-  ]);
+  for (const store of SESSION_STORES) {
+    await env.SESSION_STATE.getByName(sessionName(org, store)).run([
+      { op: "put", key: "k", value: "v", ttlMs: 3_600_000 },
+    ]);
+  }
 };
 
-const sessionValue = async (org: Org) =>
-  (await env.SESSION_STATE.getByName(sessionName(org)).run([{ op: "get", key: "k" }]))[0];
+const sessionValue = async (org: Org, store: string = "replay") =>
+  (await env.SESSION_STATE.getByName(sessionName(org, store)).run([{ op: "get", key: "k" }]))[0];
 
 const usageRows = async (org: Org) =>
   (
@@ -202,6 +213,11 @@ describe("deleting an org", () => {
     expect(await usageRows(org)).toBe(2);
     expect(await kvKeys(org)).toHaveLength(2);
     expect(await sessionValue(org)).toMatchObject({ status: "ok", value: "v" });
+
+    for (const store of SESSION_STORES) {
+      expect(await sessionValue(org, store), store).toMatchObject({ status: "ok", value: "v" });
+    }
+
     expect(Object.keys(await storedRows(org))).toEqual(
       expect.arrayContaining([
         "credentials",
@@ -226,6 +242,11 @@ describe("deleting an org", () => {
     expect(await usageRows(org)).toBe(0);
     expect(await kvKeys(org)).toEqual([]);
     expect(await sessionValue(org)).toMatchObject({ status: "ok", generation: 0 });
+
+    for (const store of SESSION_STORES) {
+      expect(await sessionValue(org, store), store).toMatchObject({ status: "ok", generation: 0 });
+    }
+
     expect(await storedRows(org)).toEqual({});
     expect(await registry.platform.getOrgById(org.id)).toBeUndefined();
     expect(await registry.platform.getOrgBySlug(org.slug)).toBeUndefined();
