@@ -1063,6 +1063,119 @@ ${params}
   });
 });
 
+// CLIProxyAPI e7d4c731: replayed web_search_call history needs a web_search declaration, else Codex fails with
+// "response protection is unavailable"; Responses-Lite requests drop the replayed items instead.
+describe("replayed web_search_call history", () => {
+  const SEARCH_CALL = {
+    id: "ws_1",
+    type: "web_search_call",
+    status: "completed",
+    action: { type: "search", query: "q" },
+  };
+
+  const USER = { type: "message", role: "user", content: [{ type: "input_text", text: "go" }] };
+
+  const upstream = (p: { readonly calls: ReadonlyArray<{ readonly body: string }> }): Json =>
+    tryParseJson(p.calls[0]!.body) as Json;
+
+  /** The declared web search tools (the default config also injects `image_generation` on this model). */
+  const searchTools = (body: Json): Json[] => {
+    const tools = get(body, "tools");
+
+    return Array.isArray(tools)
+      ? tools.filter((tool) => asString(get(tool, "type")).startsWith("web_search"))
+      : [];
+  };
+
+  const run = async (body: Json, headers: Record<string, string> = {}, path = "/v1/responses") => {
+    const p = pipeline(() =>
+      path.endsWith("/compact")
+        ? jsonResponse({ id: "resp_c", object: "response.compaction", output: [], usage: {} })
+        : sseResponse(TEXT_STREAM),
+    );
+
+    const response = await p.call(path, postJson(body, headers));
+
+    expect(response.status).toBe(200);
+
+    return upstream(p);
+  };
+
+  it("declares a web_search tool when the history replays a search call and none is declared", async () => {
+    const body = await run({ model: "gpt-5.4", input: [USER, SEARCH_CALL] });
+
+    expect(searchTools(body)).toEqual([{ type: "web_search" }]);
+    expect(get(body, "input.1.type")).toBe("web_search_call");
+  });
+
+  it("appends the declaration to other tools", async () => {
+    const fn = { type: "function", name: "lookup", parameters: { type: "object" } };
+    const body = await run({ model: "gpt-5.4", input: [USER, SEARCH_CALL], tools: [fn] });
+
+    expect(get(body, "tools")).toContainEqual(fn);
+    expect(searchTools(body)).toEqual([{ type: "web_search" }]);
+  });
+
+  it.each(["web_search", "web_search_preview", "web_search_preview_2025_03_11"])(
+    "keeps an existing %s declaration without duplicating it",
+    async (type) => {
+      const tool = { type, external_web_access: true };
+      const body = await run({ model: "gpt-5.4", input: [USER, SEARCH_CALL], tools: [tool] });
+
+      // The Responses -> Codex translator renames the preview types, so only the count is the same for all three.
+      expect(searchTools(body)).toHaveLength(1);
+      expect(searchTools(body)[0]).toMatchObject({ external_web_access: true });
+    },
+  );
+
+  it("leaves a request with no replayed search call alone", async () => {
+    const body = await run({ model: "gpt-5.4", input: [USER] });
+
+    expect(searchTools(body)).toEqual([]);
+  });
+
+  it("injects on /responses/compact too", async () => {
+    const body = await run(
+      { model: "gpt-5.4", input: [USER, SEARCH_CALL] },
+      {},
+      "/v1/responses/compact",
+    );
+
+    expect(get(body, "tools")).toEqual([{ type: "web_search" }]);
+  });
+
+  it("strips the replayed items on a Responses-Lite request instead of declaring the tool", async () => {
+    const body = await run(
+      { model: "gpt-5.4", input: [USER, SEARCH_CALL, USER] },
+      { "X-OpenAI-Internal-Codex-Responses-Lite": "true" },
+    );
+
+    expect(JSON.stringify(get(body, "input"))).not.toContain("web_search_call");
+    expect(get(body, "input")).toHaveLength(2);
+    expect(searchTools(body)).toEqual([]);
+  });
+
+  it("runs before the payload rules, which keep the last word", async () => {
+    const p = pipeline(() => sseResponse(TEXT_STREAM), {
+      config: await loadConfig(`
+requests:
+  payload:
+    filter:
+      - models: [{ name: "gpt-5.4", protocol: codex }]
+        params: ["tools"]
+`),
+    });
+
+    const response = await p.call(
+      "/v1/responses",
+      postJson({ model: "gpt-5.4", input: [USER, SEARCH_CALL] }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(get(upstream(p), "tools")).toBeUndefined();
+  });
+});
+
 describe("lite routing from credential and model headers", () => {
   const LITE = "header:X-OpenAI-Internal-Codex-Responses-Lite";
 
@@ -1648,6 +1761,29 @@ requests:
     expect(p.records).toHaveLength(1);
     expect(p.records[0]).toMatchObject({ model: "gpt-5.4", failed: false });
     expect(p.records[0]?.detail).toMatchObject({ inputTokens: 21, outputTokens: 6 });
+  });
+
+  it("declares no web_search tool on the summary request even when the history replays a search call", async () => {
+    const p = await compat(() => sseResponse(summaryStream()));
+
+    const searchCall = {
+      id: "ws_1",
+      type: "web_search_call",
+      status: "completed",
+      action: { type: "search", query: "q" },
+    };
+
+    const response = await p.call(
+      "/v1/responses",
+      postJson({
+        model: "gpt-5.4",
+        stream: false,
+        input: [userMessage, searchCall, assistantMessage, trigger],
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(JSON.parse(p.calls[0]!.body)).not.toHaveProperty("tools");
   });
 
   it("answers a streaming compaction_trigger with the synthetic Responses stream", async () => {

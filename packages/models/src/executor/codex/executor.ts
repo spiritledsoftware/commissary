@@ -118,6 +118,7 @@ import {
 } from "./output.ts";
 import {
   ensureImageGenerationTool,
+  ensureWebSearchToolForHistory,
   normalizeCodexInstructions,
   normalizeCodexOutputBudget,
   normalizeParallelToolCalls,
@@ -403,6 +404,11 @@ export const makeCodexExecutor = (executorOptions: CodexExecutorOptions = {}): P
     }
 
     body = normalizeCodexInstructions(body, nativeOutput);
+
+    // Replayed `web_search_call` history needs a declaration (or, on Responses-Lite, no search items). A summary asks
+    // for text and keeps its own contract, like the image tool below.
+    if (mode.summary !== true)
+      body = ensureWebSearchToolForHistory(body, liteRoute(context, request, options));
 
     let autoInjection: AutoInjection | undefined;
 
