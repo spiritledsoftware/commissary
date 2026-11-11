@@ -232,6 +232,33 @@ describe("signatures and ids", () => {
     expect(parseSignatureBytes("  ").bytes).toHaveLength(0);
   });
 
+  // Go 7a0b7563, a68c7d8e: a Meta Muse envelope is positively foreign to the Devin backend and never supplemented as a
+  // sealed signature; the Gemini Codex carrier (cpa-codex-gemini-carrier-v1:) is unwrapped to its inner signature.
+  describe("Meta envelopes and the Gemini Codex carrier", () => {
+    const meta = `Q-PaDgE${"A".repeat(1419)}`;
+    const carrier = (inner: string) => btoa(`cpa-codex-gemini-carrier-v1:${inner}`);
+    const empty = { type: "", bytes: new Uint8Array(0) };
+
+    it("never supplements a Meta envelope, bare or inside the carrier", () => {
+      expect(parseSignatureBytes(meta)).toEqual(empty);
+      expect(parseSignatureBytes(`${meta}.${"Ab3".repeat(23).slice(0, 67)}`)).toEqual(empty);
+      expect(parseSignatureBytes(carrier(meta))).toEqual(empty);
+      // The last resort of an unrecognised blob would have called it sealed.
+      expect(parseSignatureBytes("opaque-blob").type).toBe("sealed");
+    });
+
+    it("unwraps a carrier around a sealed signature", () => {
+      const parsed = parseSignatureBytes(carrier("  sealed.v1.inner "));
+
+      expect(parsed.type).toBe("sealed");
+      expect(text(parsed.bytes)).toBe("sealed.v1.inner");
+    });
+
+    it("drops a carrier around something no Devin family owns", () => {
+      expect(parseSignatureBytes(carrier("opaque-blob"))).toEqual(empty);
+    });
+  });
+
   it("maps non-UUID session strings to a deterministic UUID v5", () => {
     const id = "123e4567-e89b-42d3-a456-426614174000";
     expect(normalizeDevinUuid(id)).toBe(id);
