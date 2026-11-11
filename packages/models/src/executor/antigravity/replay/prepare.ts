@@ -19,7 +19,7 @@ import { normalizeFunctionResponseRoles } from "../content.ts";
 import { usesReasoningReplay } from "../../helps/reasoning-replay.ts";
 import { ReplayAccumulator, type ReplayScope, replayScopeValid } from "./accumulator.ts";
 import { applyReplayItems, replayToolSchemasFromRequests, type ToolSchemas } from "./apply.ts";
-import { UNLOADED_SNAPSHOT, type ReplayLedger } from "./ledger.ts";
+import { UNLOADED_SNAPSHOT, type ReplayLedger } from "../../helps/reasoning-replay-ledger.ts";
 import {
   degradeToolProvenanceIds,
   payloadHasToolProvenanceId,
@@ -165,7 +165,7 @@ export const prepareReplayPayload = Effect.fnUntraced(function* (
       if (reserve)
         yield* ledger.deleteIfUnchanged(scope.modelName, scope.sessionKey, scope.snapshot);
       yield* Effect.logWarning(
-        "antigravity executor: reasoning replay broke Gemini function call pairing; degrading",
+        `${mode.executor ?? "antigravity executor"}: reasoning replay broke Gemini function call pairing; degrading`,
       );
 
       return { payload, scope } satisfies PreparedReplay;

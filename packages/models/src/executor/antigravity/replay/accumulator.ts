@@ -34,7 +34,7 @@ import {
   REPLAY_MAX_BYTES_PER_ENTRY,
   REPLAY_MAX_ITEMS_PER_ENTRY,
   type ReplayLedger,
-} from "./ledger.ts";
+} from "../../helps/reasoning-replay-ledger.ts";
 
 /** The cache scope of a request: model, session key and the snapshot the request read. */
 export interface ReplayScope {

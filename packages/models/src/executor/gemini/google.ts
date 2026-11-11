@@ -68,20 +68,15 @@ import {
   interactionsSseDone,
   interactionsSsePayload,
   sanitizeGeminiInteractionsUnsupportedInputIds,
-  stripVertexOpenAIResponsesToolCallIds,
 } from "./shaping.ts";
 import {
   NO_REPLAY_SCOPE,
   type ReplayAccumulator,
   type ReplayScope,
 } from "../antigravity/replay/accumulator.ts";
-import type { ReplayLedger } from "../antigravity/replay/ledger.ts";
-import {
-  clearReplayOnInvalidSignature,
-  makeAccumulator,
-  prepareReplayPayload,
-  replayEnvelope,
-} from "../antigravity/replay/prepare.ts";
+import { applyReasoningReplay } from "./reasoning-replay.ts";
+import type { ReplayLedger } from "../helps/reasoning-replay-ledger.ts";
+import { clearReplayOnInvalidSignature } from "../antigravity/replay/prepare.ts";
 import { chunksHaveTerminalCommitEvent } from "../antigravity/replay/terminal.ts";
 import {
   filterSseUsageMetadata,
@@ -513,42 +508,11 @@ export const makeGoogleExecutor = (variant: GoogleVariant): ProviderExecutor => 
     let replay: ReplayAccumulator | undefined;
 
     if (!imagen) {
-      // Reasoning replay: the signatures and native calls of earlier turns, read from this target's ledger (peeked while
-      // counting tokens). Vertex ids are stripped after it, which needs the reserved tool ids to resolve them.
-      if (variant.replayLedger !== undefined) {
-        const envelope = replayEnvelope(body);
-        const reserve = mode !== "count";
+      const applied = yield* applyReasoningReplay(variant, request, options, baseModel, body, mode);
 
-        if (envelope !== undefined) {
-          const prepared = yield* prepareReplayPayload(
-            variant.replayLedger,
-            baseModel,
-            request,
-            options,
-            envelope,
-            { reserve, normalizeRoles: false, executor: `${variant.identifier} executor` },
-          );
-
-          const contents = get(prepared.payload, "request.contents");
-
-          if (
-            contents !== undefined &&
-            JSON.stringify(contents) !== JSON.stringify(get(body, "contents"))
-          ) {
-            body = set(body, "contents", contents);
-
-            // A replayed signature is a Vertex one on the Gemini API only if another target issued it.
-            if (!variant.vertex) sanitizeNonVertexGeminiRequestThoughtSignatures(body, "contents");
-          }
-
-          if (reserve) {
-            replayScope = prepared.scope;
-            replay = makeAccumulator(prepared.scope, replayEnvelope(body) ?? envelope);
-          }
-        }
-      }
-
-      if (variant.vertex) body = stripVertexOpenAIResponsesToolCallIds(body, from);
+      body = applied.body;
+      replayScope = applied.scope;
+      replay = applied.accumulator;
     }
 
     del(body, "session_id");

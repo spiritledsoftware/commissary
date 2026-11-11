@@ -7,9 +7,21 @@
  * Durable Object generation is the snapshot (`0` = absent), and a delete writes a tombstone entry with a fresh
  * generation so a stale writer that read the older state cannot publish over the delete. Entry bounds (4096 items,
  * 16 MiB) are the Go ones; the 10240-entry cap is replaced by the per-session instance and the TTL sweep.
+ *
+ * Retention (ADR 0027): an entry holds only function calls and thought signatures, expires 1 h after its last read or write
+ * and, unlike Go, never lives longer than {@link REPLAY_MAX_AGE_MS} from its first write however active the session is: a
+ * read past that age is a miss, and wipes the entry. The org deletion removes the instances at once (they register with the
+ * org's ControlPlane by name).
  */
-import { Effect } from "effect";
-import { asString, get, isJsonArray, type Json, type JsonObject } from "@commissary/json";
+import { Clock, Effect } from "effect";
+import {
+  asString,
+  get,
+  isJsonArray,
+  type Json,
+  type JsonObject,
+  tryParseJson,
+} from "@commissary/json";
 import {
   type BackendResolver,
   bestEffort,
@@ -20,6 +32,9 @@ import {
 } from "@commissary/state";
 
 export const REPLAY_TTL_MS = 60 * 60 * 1000;
+
+/** Absolute cap on an entry's life, from its first write (the TTL slides; this does not): well inside ADR 0027's seven days. */
+export const REPLAY_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 export const REPLAY_MAX_ITEMS_PER_ENTRY = 4096;
 
@@ -46,6 +61,8 @@ export interface LedgerSnapshot {
   readonly loaded: boolean;
   /** Generation of the entry or tombstone that was read (0 = absent). */
   readonly generation: number;
+  /** When the entry that was read was first written: the origin of its absolute age, kept by every replace. */
+  readonly firstWriteAt?: number;
 }
 
 export const UNLOADED_SNAPSHOT: LedgerSnapshot = { loaded: false, generation: 0 };
@@ -193,18 +210,23 @@ const addressOf = (store: string, sessionKey: string): SessionAddress => ({
   session: sessionKey.trim(),
 });
 
-const parseEntry = (text: string | undefined): Json[] | undefined => {
-  if (text === undefined) return undefined;
+interface StoredEntry {
+  readonly items: Json[];
+  /** Absent on an entry written before the age cap existed: its age starts at its next write. */
+  readonly firstWriteAt: number | undefined;
+}
 
-  try {
-    const parsed: unknown = JSON.parse(text);
+/** `{"firstWriteAt", "items"}`, or the bare item array older entries are. */
+const parseEntry = (text: string | undefined): StoredEntry | undefined => {
+  const parsed = text === undefined ? undefined : tryParseJson(text);
 
-    if (!isJsonArray(parsed)) return undefined;
+  if (isJsonArray(parsed)) return { items: parsed, firstWriteAt: undefined };
+  const items = get(parsed, "items");
 
-    return parsed;
-  } catch {
-    return undefined;
-  }
+  if (!isJsonArray(items)) return undefined;
+  const first = get(parsed, "firstWriteAt");
+
+  return { items, firstWriteAt: typeof first === "number" ? first : undefined };
 };
 
 const cacheKey = (modelName: string, sessionKey: string): string =>
@@ -235,8 +257,15 @@ export const makeSessionStateReplayLedger = (
 
         if (result?.status !== "ok")
           return { items: undefined, snapshot: UNLOADED_SNAPSHOT } satisfies LedgerRead;
-        const snapshot: LedgerSnapshot = { loaded: true, generation: result.generation };
-        const stored = parseEntry(result.value);
+        const entry = parseEntry(result.value);
+
+        const snapshot: LedgerSnapshot = {
+          loaded: true,
+          generation: result.generation,
+          ...(entry?.firstWriteAt === undefined ? {} : { firstWriteAt: entry.firstWriteAt }),
+        };
+
+        const stored = entry?.items;
 
         if (
           stored === undefined ||
@@ -244,6 +273,30 @@ export const makeSessionStateReplayLedger = (
           stored.length > REPLAY_MAX_ITEMS_PER_ENTRY
         ) {
           return { items: undefined, snapshot } satisfies LedgerRead;
+        }
+
+        // The absolute cap: an entry past it is not replayed, and a reading request wipes it rather than slide it further.
+        const now = yield* Clock.currentTimeMillis;
+
+        if (entry?.firstWriteAt !== undefined && now - entry.firstWriteAt >= REPLAY_MAX_AGE_MS) {
+          if (!slide) return { items: undefined, snapshot } satisfies LedgerRead;
+
+          const [wiped] = yield* state.run(addressOf(storeName, sessionKey), [
+            {
+              op: "put",
+              key,
+              value: TOMBSTONE,
+              ttlMs: REPLAY_TTL_MS,
+              maxEntries: MAX_MODELS_PER_SESSION,
+              ifGeneration: result.generation,
+            },
+          ]);
+
+          // Wiped: this request writes its own entry, born now. A concurrent writer won the wipe: its state stands.
+          return {
+            items: undefined,
+            snapshot: wiped?.status === "ok" ? UNLOADED_SNAPSHOT : snapshot,
+          } satisfies LedgerRead;
         }
 
         const normalized = normalizeReplayItems(stored);
@@ -273,12 +326,16 @@ export const makeSessionStateReplayLedger = (
         false,
         Effect.gen(function* () {
           const state = yield* backend;
+          const now = yield* Clock.currentTimeMillis;
 
           const [result] = yield* state.run(addressOf(storeName, sessionKey), [
             {
               op: "put",
               key,
-              value: JSON.stringify(normalized),
+              value: JSON.stringify({
+                firstWriteAt: snapshot.firstWriteAt ?? now,
+                items: normalized,
+              }),
               ttlMs: REPLAY_TTL_MS,
               maxEntries: MAX_MODELS_PER_SESSION,
               ...(snapshot.loaded ? { ifGeneration: snapshot.generation } : {}),

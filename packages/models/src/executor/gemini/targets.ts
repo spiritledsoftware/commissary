@@ -12,7 +12,7 @@ import { ExecutionError } from "../errors.ts";
 import {
   defaultGeminiReplayLedger,
   defaultVertexReplayLedger,
-} from "../antigravity/replay/ledger.ts";
+} from "../helps/reasoning-replay-ledger.ts";
 
 import type { ExecutionContext } from "../types.ts";
 import type { GoogleTarget, GoogleVariant } from "./google.ts";
