@@ -12,6 +12,7 @@ import {
   isJsonObject,
   type Json,
   type JsonObject,
+  set,
   tryParseJson,
 } from "@commissary/json";
 import {
@@ -27,7 +28,7 @@ import {
   claudeMessageSystemReminderText,
   isClaudeCodeAttributionSystemText,
 } from "../../common/claude-messages.ts";
-import { convertClaudeToolResultContent, sanitizeFunctionName } from "../util/claude.ts";
+import { convertClaudeToolResult, sanitizeFunctionName } from "../util/claude.ts";
 import { cleanJsonSchemaForGeminiJsonSchema } from "../util/json-schema.ts";
 import { lookupModelInfo } from "../../model-info.ts";
 
@@ -175,25 +176,21 @@ const convert = (modelName: string, request: Json, preserveEmptyThinkingBlocks: 
 
               if (funcName === "") funcName = toolCallId;
               funcName = sanitizeFunctionName(funcName);
-              const toolResult = convertClaudeToolResultContent(get(block, "content"));
+              const toolResult = convertClaudeToolResult(block);
 
               const part: JsonObject = {
-                functionResponse: { name: "", response: { result: "" }, id: toolCallId },
+                functionResponse: { name: funcName, response: {}, id: toolCallId },
               };
 
-              // SAFETY: `part` was built just above with `functionResponse` set to an object literal.
-              (part["functionResponse"] as JsonObject)["name"] = funcName;
+              // A failed tool result keeps its failure: Gemini reads `response.error` as the function's error.
+              const resultPath = toolResult.isError
+                ? "functionResponse.response.error"
+                : "functionResponse.response.result";
 
               if (toolResult.resultIsRaw) {
-                setGeminiFunctionResponseResult(
-                  part,
-                  "functionResponse.response.result",
-                  toolResult.result,
-                );
+                setGeminiFunctionResponseResult(part, resultPath, toolResult.result);
               } else {
-                // SAFETY: `part.functionResponse.response` is the `{ result: "" }` object literal built above.
-                ((part["functionResponse"] as JsonObject)["response"] as JsonObject)["result"] =
-                  toolResult.result;
+                set(part, resultPath, toolResult.result);
               }
 
               partItems.push(part);

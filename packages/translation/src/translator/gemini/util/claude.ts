@@ -2,7 +2,7 @@
  * Claude-side helpers used by the Gemini translators.
  *
  * Go source: internal/util/util.go
- * (SanitizeFunctionName), internal/util/claude_tool_result.go (ConvertClaudeToolResultContent). The shared
+ * (SanitizeFunctionName), internal/util/claude_tool_result.go (ConvertClaudeToolResult, ConvertClaudeToolResultContent). The shared
  * `translator/common` helpers (system reminders, tool-result alignment) live in `translator/common/claude-messages.ts`.
  */
 import { asString, get, isJsonArray, isJsonObject, type Json } from "@commissary/json";
@@ -27,12 +27,17 @@ export interface ClaudeToolResultImage {
   readonly data: string;
 }
 
-export interface ClaudeToolResult {
-  /** Value for `functionResponse.response.result`. */
+export interface ClaudeToolResultContent {
+  /** Value for `functionResponse.response.result`, or `.error` for a failed tool result. */
   readonly result: Json;
   /** `true` when `result` is structured JSON (set as value); `false` for a plain string. */
   readonly resultIsRaw: boolean;
   readonly images: ClaudeToolResultImage[];
+}
+
+export interface ClaudeToolResult extends ClaudeToolResultContent {
+  /** An explicit `tool_result.is_error: true` failure flag (only the boolean `true` counts). */
+  readonly isError: boolean;
 }
 
 const isClaudeBase64Image = (block: Json | undefined): boolean =>
@@ -44,8 +49,16 @@ const claudeImageFromBlock = (block: Json): ClaudeToolResultImage | undefined =>
   return data === "" ? undefined : { mimeType: asString(get(block, "source.media_type")), data };
 };
 
+/** `ConvertClaudeToolResult`: a complete `tool_result` block, keeping its success/failure semantics (CLIProxyAPI 81de4b9c). */
+export const convertClaudeToolResult = (block: Json | undefined): ClaudeToolResult => ({
+  ...convertClaudeToolResultContent(get(block, "content")),
+  isError: get(block, "is_error") === true,
+});
+
 /** `ConvertClaudeToolResultContent`: string / structured content plus separated base64 images. */
-export const convertClaudeToolResultContent = (content: Json | undefined): ClaudeToolResult => {
+export const convertClaudeToolResultContent = (
+  content: Json | undefined,
+): ClaudeToolResultContent => {
   if (typeof content === "string") return { result: content, resultIsRaw: false, images: [] };
 
   if (isJsonArray(content)) {
