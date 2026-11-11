@@ -136,6 +136,15 @@ claude-api-key:
   });
 });
 
+/**
+ * Attributes where Commissary deliberately differs from the Go synthesizer, by fixture case. Go lets a non-empty
+ * per-file `excluded_models` replace the channel's `oauth-excluded-models` (Go `b015f208`); Commissary keeps the
+ * union of both (docs/ARCHITECTURE.md, "Per-file exclusions").
+ */
+const KEPT_DIFFERENCES: ReadonlyMap<string, Readonly<Record<string, string>>> = new Map([
+  ["global exclusions and per-file", { excluded_models: "gemini-3-*,other,own-model" }],
+]);
+
 describe("auth files -> credentials (parity with the Go file synthesizer)", () => {
   for (const fixture of fixtures.files) {
     it(fixture.name, () => {
@@ -178,7 +187,10 @@ describe("auth files -> credentials (parity with the Go file synthesizer)", () =
       expect(credential.disabled).toBe(go.disabled);
       const dropped = ["source", "path", "excluded_models_hash", "model_aliases"];
       const attributes = withoutHeaders(credential.attributes, ["email", ...dropped]);
-      expect(attributes).toEqual(withoutHeaders(go.attributes, dropped));
+      expect(attributes).toEqual({
+        ...withoutHeaders(go.attributes, dropped),
+        ...KEPT_DIFFERENCES.get(fixture.name),
+      });
       expect(credential.headers).toEqual(goHeaders(go.attributes));
       expect(parsed.metadata).toEqual(go.metadata);
       const aliases = go.attributes.model_aliases;

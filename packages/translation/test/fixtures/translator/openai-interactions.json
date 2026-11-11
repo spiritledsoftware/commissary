@@ -177,34 +177,34 @@
   "translatedRequest": "{\"model\":\"gemini-2.5-pro\",\"input\":[{\"type\":\"user_input\",\"content\":[{\"type\":\"text\",\"text\":\"look\"},{\"type\":\"image\",\"mime_type\":\"image/png\",\"data\":\"iVBORw0KGgo=\"},{\"type\":\"image\",\"image_url\":\"https://e.com/a.png\"},{\"type\":\"audio\",\"data\":\"UklGRg==\",\"mime_type\":\"audio/wav\"},{\"type\":\"document\",\"filename\":\"a.pdf\",\"mime_type\":\"application/pdf\",\"data\":\"JVBERi0=\"},{\"type\":\"document\",\"filename\":\"f.txt\",\"file_url\":\"https://e.com/f.txt\"}]},{\"type\":\"thought\",\"content\":[{\"type\":\"text\",\"text\":\"hmm\"}]},{\"type\":\"model_output\",\"content\":[{\"type\":\"text\",\"text\":\"calling\"}]},{\"type\":\"function_call\",\"name\":\"get_weather\",\"arguments\":{\"city\":\"Paris\"},\"id\":\"call_1\"},{\"type\":\"function_call\",\"name\":\"noargs\",\"arguments\":{},\"id\":\"call_2\"},{\"type\":\"function_result\",\"result\":\"22C\",\"call_id\":\"call_1\",\"name\":\"get_weather\"},{\"type\":\"function_result\",\"result\":[{\"type\":\"text\",\"text\":\"x\"}],\"call_id\":\"call_2\",\"name\":\"noargs\"},{\"type\":\"user_input\",\"content\":[{\"type\":\"text\",\"text\":\"thanks\"}]}],\"stream\":true,\"previous_interaction_id\":\"int_0\",\"environment_id\":\"env\",\"agent_config\":{\"a\":1},\"system_instruction\":\"sys one\\ndev two\",\"generation_config\":{\"max_output_tokens\":200,\"temperature\":0.2,\"top_p\":0.8,\"presence_penalty\":0.1,\"frequency_penalty\":0.2,\"candidate_count\":2,\"stop_sequences\":[\"END\"],\"tool_choice\":\"required\"},\"response_format\":{\"type\":\"json_object\"},\"response_modalities\":[\"text\",\"image\"],\"service_tier\":\"auto\",\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Weather\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}}}}]}",
   "streamOutputs": [
    [
-    "{\"id\":\"int_1\",\"object\":\"chat.completion.chunk\",\"created\":1791551316,\"model\":\"gemini-2.5-pro\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}],\"environment_id\":\"env_9\"}"
+    "{\"id\":\"int_1\",\"object\":\"chat.completion.chunk\",\"created\":1794399100,\"model\":\"gemini-2.5-pro\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}],\"environment_id\":\"env_9\"}"
    ],
    [],
    [],
    [
-    "{\"id\":\"int_1\",\"object\":\"chat.completion.chunk\",\"created\":1791551316,\"model\":\"gemini-2.5-pro\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"thinking\"},\"finish_reason\":null}],\"environment_id\":\"env_9\"}"
+    "{\"id\":\"int_1\",\"object\":\"chat.completion.chunk\",\"created\":1794399100,\"model\":\"gemini-2.5-pro\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"thinking\"},\"finish_reason\":null}],\"environment_id\":\"env_9\"}"
    ],
    [],
    [],
    [
-    "{\"id\":\"int_1\",\"object\":\"chat.completion.chunk\",\"created\":1791551316,\"model\":\"gemini-2.5-pro\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}],\"environment_id\":\"env_9\"}"
+    "{\"id\":\"int_1\",\"object\":\"chat.completion.chunk\",\"created\":1794399100,\"model\":\"gemini-2.5-pro\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}],\"environment_id\":\"env_9\"}"
    ],
    [
-    "{\"id\":\"int_1\",\"object\":\"chat.completion.chunk\",\"created\":1791551316,\"model\":\"gemini-2.5-pro\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\" world\"},\"finish_reason\":null}],\"environment_id\":\"env_9\"}"
-   ],
-   [],
-   [
-    "{\"id\":\"int_1\",\"object\":\"chat.completion.chunk\",\"created\":1791551316,\"model\":\"gemini-2.5-pro\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"fc_1\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"\"}}]},\"finish_reason\":null}],\"environment_id\":\"env_9\"}"
-   ],
-   [
-    "{\"id\":\"int_1\",\"object\":\"chat.completion.chunk\",\"created\":1791551316,\"model\":\"gemini-2.5-pro\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"city\\\":\"}}]},\"finish_reason\":null}],\"environment_id\":\"env_9\"}"
-   ],
-   [
-    "{\"id\":\"int_1\",\"object\":\"chat.completion.chunk\",\"created\":1791551316,\"model\":\"gemini-2.5-pro\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"Paris\\\"}\"}}]},\"finish_reason\":null}],\"environment_id\":\"env_9\"}"
+    "{\"id\":\"int_1\",\"object\":\"chat.completion.chunk\",\"created\":1794399100,\"model\":\"gemini-2.5-pro\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\" world\"},\"finish_reason\":null}],\"environment_id\":\"env_9\"}"
    ],
    [],
    [
-    "{\"id\":\"int_1\",\"object\":\"chat.completion.chunk\",\"created\":1791551316,\"model\":\"gemini-2.5-pro\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"environment_id\":\"env_9\",\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":4,\"total_tokens\":14,\"prompt_tokens_details\":{\"cached_tokens\":2},\"completion_tokens_details\":{\"reasoning_tokens\":1}}}"
+    "{\"id\":\"int_1\",\"object\":\"chat.completion.chunk\",\"created\":1794399100,\"model\":\"gemini-2.5-pro\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"fc_1\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"\"}}]},\"finish_reason\":null}],\"environment_id\":\"env_9\"}"
+   ],
+   [
+    "{\"id\":\"int_1\",\"object\":\"chat.completion.chunk\",\"created\":1794399100,\"model\":\"gemini-2.5-pro\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"city\\\":\"}}]},\"finish_reason\":null}],\"environment_id\":\"env_9\"}"
+   ],
+   [
+    "{\"id\":\"int_1\",\"object\":\"chat.completion.chunk\",\"created\":1794399100,\"model\":\"gemini-2.5-pro\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"Paris\\\"}\"}}]},\"finish_reason\":null}],\"environment_id\":\"env_9\"}"
+   ],
+   [],
+   [
+    "{\"id\":\"int_1\",\"object\":\"chat.completion.chunk\",\"created\":1794399100,\"model\":\"gemini-2.5-pro\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"environment_id\":\"env_9\",\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":4,\"total_tokens\":14,\"prompt_tokens_details\":{\"cached_tokens\":2},\"completion_tokens_details\":{\"reasoning_tokens\":1}}}"
    ],
    []
   ]
@@ -290,16 +290,16 @@
   "translatedRequest": "{\"model\":\"antigravity-agent\",\"input\":[{\"type\":\"user_input\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]},{\"type\":\"function_call\",\"name\":\"external_read_file\",\"arguments\":{\"p\":1},\"id\":\"c1\"},{\"type\":\"function_result\",\"result\":\"data\",\"call_id\":\"c1\",\"name\":\"external_read_file\"}],\"agent_config\":{\"max_total_tokens\":50},\"generation_config\":{\"tool_choice\":{\"type\":\"function\",\"function\":{\"name\":\"external_write_file\"}}},\"tools\":[{\"type\":\"function\",\"name\":\"external_read_file\",\"parameters\":{\"type\":\"object\"}}]}",
   "streamOutputs": [
    [
-    "{\"id\":\"int_a\",\"object\":\"chat.completion.chunk\",\"created\":1791551316,\"model\":\"antigravity-agent\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}"
+    "{\"id\":\"int_a\",\"object\":\"chat.completion.chunk\",\"created\":1794399100,\"model\":\"antigravity-agent\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}"
    ],
    [
-    "{\"id\":\"int_a\",\"object\":\"chat.completion.chunk\",\"created\":1791551316,\"model\":\"antigravity-agent\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"fc\",\"type\":\"function\",\"function\":{\"name\":\"read_file\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}"
+    "{\"id\":\"int_a\",\"object\":\"chat.completion.chunk\",\"created\":1794399100,\"model\":\"antigravity-agent\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"fc\",\"type\":\"function\",\"function\":{\"name\":\"read_file\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}"
    ],
    [
-    "{\"id\":\"int_a\",\"object\":\"chat.completion.chunk\",\"created\":1791551316,\"model\":\"antigravity-agent\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}"
+    "{\"id\":\"int_a\",\"object\":\"chat.completion.chunk\",\"created\":1794399100,\"model\":\"antigravity-agent\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}"
    ],
    [
-    "{\"id\":\"int_a\",\"object\":\"chat.completion.chunk\",\"created\":1791551316,\"model\":\"antigravity-agent\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}"
+    "{\"id\":\"int_a\",\"object\":\"chat.completion.chunk\",\"created\":1794399100,\"model\":\"antigravity-agent\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}"
    ]
   ]
  },
@@ -401,14 +401,14 @@
   "translatedRequest": "{\"model\":\"gemini-2.5-pro\",\"input\":[{\"type\":\"user_input\",\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}],\"stream\":true}",
   "streamOutputs": [
    [
-    "{\"id\":\"int_2\",\"object\":\"chat.completion.chunk\",\"created\":1791551316,\"model\":\"gemini-2.5-pro\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}"
+    "{\"id\":\"int_2\",\"object\":\"chat.completion.chunk\",\"created\":1794399100,\"model\":\"gemini-2.5-pro\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}"
    ],
    [],
    [
-    "{\"id\":\"int_2\",\"object\":\"chat.completion.chunk\",\"created\":1791551316,\"model\":\"gemini-2.5-pro\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"cut\"},\"finish_reason\":null}]}"
+    "{\"id\":\"int_2\",\"object\":\"chat.completion.chunk\",\"created\":1794399100,\"model\":\"gemini-2.5-pro\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"cut\"},\"finish_reason\":null}]}"
    ],
    [
-    "{\"id\":\"int_2\",\"object\":\"chat.completion.chunk\",\"created\":1791551316,\"model\":\"gemini-2.5-pro\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"length\"}]}"
+    "{\"id\":\"int_2\",\"object\":\"chat.completion.chunk\",\"created\":1794399100,\"model\":\"gemini-2.5-pro\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"length\"}]}"
    ],
    [
     "{\"error\":{\"message\":\"boom\",\"type\":\"server_error\",\"code\":\"E1\"}}"
@@ -481,7 +481,7 @@
   },
   "translatedRequest": "{\"model\":\"gemini-2.5-pro\",\"input\":[{\"type\":\"user_input\",\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}]}",
   "responseBodyText": "{\"interaction\":{\"id\":\"int_3\",\"model\":\"gemini-2.5-pro\",\"status\":\"completed\",\"environment_id\":\"env\",\"steps\":[{\"type\":\"thought\",\"content\":[{\"type\":\"text\",\"text\":\"why\"}]},{\"type\":\"model_output\",\"content\":[{\"type\":\"text\",\"text\":\"Because\"},{\"type\":\"text\",\"text\":\" so\"}]},{\"type\":\"function_call\",\"id\":\"fc\",\"name\":\"f\",\"arguments\":{\"a\":1}}],\"usage\":{\"total_input_tokens\":3,\"total_output_tokens\":4,\"total_tokens\":7}}}",
-  "nonStreamOutput": "{\"id\":\"int_3\",\"object\":\"chat.completion\",\"created\":1791551316,\"model\":\"gemini-2.5-pro\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":null,\"reasoning_content\":\"why\",\"tool_calls\":[{\"id\":\"fc\",\"type\":\"function\",\"function\":{\"name\":\"f\",\"arguments\":\"{\\\"a\\\":1}\"}}]},\"finish_reason\":\"tool_calls\"}],\"environment_id\":\"env\",\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":4,\"total_tokens\":7}}"
+  "nonStreamOutput": "{\"id\":\"int_3\",\"object\":\"chat.completion\",\"created\":1794399100,\"model\":\"gemini-2.5-pro\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":null,\"reasoning_content\":\"why\",\"tool_calls\":[{\"id\":\"fc\",\"type\":\"function\",\"function\":{\"name\":\"f\",\"arguments\":\"{\\\"a\\\":1}\"}}]},\"finish_reason\":\"tool_calls\"}],\"environment_id\":\"env\",\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":4,\"total_tokens\":7}}"
  },
  {
   "name": "non-stream: flat interaction incomplete",
@@ -515,6 +515,6 @@
   },
   "translatedRequest": "{\"model\":\"gemini-2.5-pro\",\"input\":[{\"type\":\"user_input\",\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}]}",
   "responseBodyText": "{\"id\":\"int_4\",\"model\":\"gemini-2.5-pro\",\"status\":\"incomplete\",\"steps\":[{\"type\":\"model_output\",\"content\":\"plain string content\"}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}",
-  "nonStreamOutput": "{\"id\":\"int_4\",\"object\":\"chat.completion\",\"created\":1791551316,\"model\":\"gemini-2.5-pro\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"plain string content\"},\"finish_reason\":\"length\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1}}"
+  "nonStreamOutput": "{\"id\":\"int_4\",\"object\":\"chat.completion\",\"created\":1794399100,\"model\":\"gemini-2.5-pro\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"plain string content\"},\"finish_reason\":\"length\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1}}"
  }
 ]

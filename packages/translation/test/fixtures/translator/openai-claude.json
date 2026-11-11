@@ -237,7 +237,7 @@
     }
    ]
   },
-  "translatedRequest": "{\"model\":\"claude-sonnet-4-5-20250929\",\"max_tokens\":32000,\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Look at this\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==\"}},{\"type\":\"image\",\"source\":{\"type\":\"url\",\"url\":\"https://example.com/cat.jpg\"}},{\"type\":\"document\",\"source\":{\"type\":\"base64\",\"media_type\":\"application/pdf\",\"data\":\"JVBERi0=\"}}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"I see.\",\"cache_control\":{\"type\":\"ephemeral\"}}]}],\"metadata\":{\"user_id\":\"4ef616730bcc7dfbe10a9173cc5254b045f41ebf72afe84f97ed374f7ab92189\"},\"stream\":false,\"system\":[{\"type\":\"text\",\"text\":\"Cached system\",\"cache_control\":{\"type\":\"ephemeral\"}}]}"
+  "translatedRequest": "{\"model\":\"claude-sonnet-4-5-20250929\",\"max_tokens\":64000,\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Look at this\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==\"}},{\"type\":\"image\",\"source\":{\"type\":\"url\",\"url\":\"https://example.com/cat.jpg\"}},{\"type\":\"document\",\"source\":{\"type\":\"base64\",\"media_type\":\"application/pdf\",\"data\":\"JVBERi0=\"}}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"I see.\",\"cache_control\":{\"type\":\"ephemeral\"}}]}],\"metadata\":{\"user_id\":\"4ef616730bcc7dfbe10a9173cc5254b045f41ebf72afe84f97ed374f7ab92189\"},\"stream\":false,\"system\":[{\"type\":\"text\",\"text\":\"Cached system\",\"cache_control\":{\"type\":\"ephemeral\"}}]}"
  },
  {
   "name": "request: user turn with only an unsupported file is refused",
@@ -261,7 +261,7 @@
     }
    ]
   },
-  "translatedRequest": "{\"model\":\"claude-sonnet-4-5-20250929\",\"max_tokens\":32000,\"messages\":[],\"metadata\":{\"user_id\":\"801295ffbcd6d4d71445af776fc9c88a0aa48a86ef817314e30bd4e10c1b2987\"},\"stream\":false}",
+  "translatedRequest": "{\"model\":\"claude-sonnet-4-5-20250929\",\"max_tokens\":64000,\"messages\":[],\"metadata\":{\"user_id\":\"801295ffbcd6d4d71445af776fc9c88a0aa48a86ef817314e30bd4e10c1b2987\"},\"stream\":false}",
   "requestError": "unsupported content part: file"
  },
  {
@@ -280,7 +280,7 @@
     }
    ]
   },
-  "translatedRequest": "{\"model\":\"claude-sonnet-4-5-20250929\",\"max_tokens\":32000,\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"think\"}]}],\"metadata\":{\"user_id\":\"a5fd9666e1793b3567b1327df203bc9bd219f9b13b3b62fdb876526180c7c625\"},\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":24576},\"stream\":false}"
+  "translatedRequest": "{\"model\":\"claude-sonnet-4-5-20250929\",\"max_tokens\":64000,\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"think\"}]}],\"metadata\":{\"user_id\":\"a5fd9666e1793b3567b1327df203bc9bd219f9b13b3b62fdb876526180c7c625\"},\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":24576},\"stream\":false}"
  },
  {
   "name": "request: reasoning effort on an adaptive model",
@@ -298,7 +298,7 @@
     }
    ]
   },
-  "translatedRequest": "{\"model\":\"claude-opus-4-6\",\"max_tokens\":32000,\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"think\"}]}],\"metadata\":{\"user_id\":\"a5fd9666e1793b3567b1327df203bc9bd219f9b13b3b62fdb876526180c7c625\"},\"thinking\":{\"type\":\"adaptive\"},\"output_config\":{\"effort\":\"max\"},\"stream\":false}"
+  "translatedRequest": "{\"model\":\"claude-opus-4-6\",\"max_tokens\":128000,\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"think\"}]}],\"metadata\":{\"user_id\":\"a5fd9666e1793b3567b1327df203bc9bd219f9b13b3b62fdb876526180c7c625\"},\"thinking\":{\"type\":\"adaptive\"},\"output_config\":{\"effort\":\"max\"},\"stream\":false}"
  },
  {
   "name": "request: reasoning effort none and auto",
@@ -316,7 +316,7 @@
     }
    ]
   },
-  "translatedRequest": "{\"model\":\"claude-opus-4-6\",\"max_tokens\":32000,\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}],\"metadata\":{\"user_id\":\"b7a49f4444f6ab9fb22d0c6593d65329fc15dc7d325b5d2f58b298b3077b7387\"},\"thinking\":{\"type\":\"disabled\"},\"stream\":false}"
+  "translatedRequest": "{\"model\":\"claude-opus-4-6\",\"max_tokens\":128000,\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}],\"metadata\":{\"user_id\":\"b7a49f4444f6ab9fb22d0c6593d65329fc15dc7d325b5d2f58b298b3077b7387\"},\"thinking\":{\"type\":\"disabled\"},\"stream\":false}"
  },
  {
   "name": "request: reasoning effort auto",
@@ -334,7 +334,7 @@
     }
    ]
   },
-  "translatedRequest": "{\"model\":\"claude-opus-4-6\",\"max_tokens\":32000,\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}],\"metadata\":{\"user_id\":\"b7a49f4444f6ab9fb22d0c6593d65329fc15dc7d325b5d2f58b298b3077b7387\"},\"thinking\":{\"type\":\"adaptive\"},\"stream\":false}"
+  "translatedRequest": "{\"model\":\"claude-opus-4-6\",\"max_tokens\":128000,\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}],\"metadata\":{\"user_id\":\"b7a49f4444f6ab9fb22d0c6593d65329fc15dc7d325b5d2f58b298b3077b7387\"},\"thinking\":{\"type\":\"adaptive\"},\"stream\":false}"
  },
  {
   "name": "request: allowed_tools choice filters tools",
@@ -382,7 +382,7 @@
     }
    }
   },
-  "translatedRequest": "{\"model\":\"claude-sonnet-4-5-20250929\",\"max_tokens\":32000,\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}],\"metadata\":{\"user_id\":\"b7a49f4444f6ab9fb22d0c6593d65329fc15dc7d325b5d2f58b298b3077b7387\"},\"stream\":false,\"tools\":[{\"name\":\"a_b\",\"description\":\"\",\"input_schema\":{\"properties\":{},\"type\":\"object\"}}],\"tool_choice\":{\"type\":\"any\"}}"
+  "translatedRequest": "{\"model\":\"claude-sonnet-4-5-20250929\",\"max_tokens\":64000,\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}],\"metadata\":{\"user_id\":\"b7a49f4444f6ab9fb22d0c6593d65329fc15dc7d325b5d2f58b298b3077b7387\"},\"stream\":false,\"tools\":[{\"name\":\"a_b\",\"description\":\"\",\"input_schema\":{\"properties\":{},\"type\":\"object\"}}],\"tool_choice\":{\"type\":\"any\"}}"
  },
  {
   "name": "request: function tool choice and response_format json_schema",
@@ -434,7 +434,7 @@
     }
    }
   },
-  "translatedRequest": "{\"model\":\"claude-sonnet-4-5-20250929\",\"max_tokens\":32000,\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"\"}]}],\"metadata\":{\"user_id\":\"801295ffbcd6d4d71445af776fc9c88a0aa48a86ef817314e30bd4e10c1b2987\"},\"stream\":false,\"system\":[{\"type\":\"text\",\"text\":\"sys\"},{\"type\":\"text\",\"text\":\"You must format your entire response as valid JSON that conforms strictly to the following JSON schema:\\nSchema Name: Out\\nSchema Description: d\\nJSON Schema:\\n{\\\"type\\\":\\\"object\\\",\\\"properties\\\":{\\\"a\\\":{\\\"type\\\":\\\"string\\\"}}}\\nDo not include any explanations, markdown code blocks (such as ```json), or any text outside of the JSON object.\"}],\"tools\":[{\"name\":\"f\",\"description\":\"\",\"input_schema\":{\"properties\":{},\"type\":\"object\"},\"cache_control\":{\"type\":\"ephemeral\"}}],\"tool_choice\":{\"type\":\"tool\",\"name\":\"f\"}}"
+  "translatedRequest": "{\"model\":\"claude-sonnet-4-5-20250929\",\"max_tokens\":64000,\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"\"}]}],\"metadata\":{\"user_id\":\"801295ffbcd6d4d71445af776fc9c88a0aa48a86ef817314e30bd4e10c1b2987\"},\"stream\":false,\"system\":[{\"type\":\"text\",\"text\":\"sys\"},{\"type\":\"text\",\"text\":\"You must format your entire response as valid JSON that conforms strictly to the following JSON schema:\\nSchema Name: Out\\nSchema Description: d\\nJSON Schema:\\n{\\\"type\\\":\\\"object\\\",\\\"properties\\\":{\\\"a\\\":{\\\"type\\\":\\\"string\\\"}}}\\nDo not include any explanations, markdown code blocks (such as ```json), or any text outside of the JSON object.\"}],\"tools\":[{\"name\":\"f\",\"description\":\"\",\"input_schema\":{\"properties\":{},\"type\":\"object\"},\"cache_control\":{\"type\":\"ephemeral\"}}],\"tool_choice\":{\"type\":\"tool\",\"name\":\"f\"}}"
  },
  {
   "name": "request: json_object format and none tool choice",
@@ -463,7 +463,7 @@
    ],
    "tool_choice": "none"
   },
-  "translatedRequest": "{\"model\":\"claude-sonnet-4-5-20250929\",\"max_tokens\":32000,\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}],\"metadata\":{\"user_id\":\"b7a49f4444f6ab9fb22d0c6593d65329fc15dc7d325b5d2f58b298b3077b7387\"},\"stream\":false,\"system\":[{\"type\":\"text\",\"text\":\"You must format your entire response as a valid JSON object. Do not include any explanations, markdown code blocks (such as ```json), or any text outside of the JSON object.\"}],\"tools\":[{\"name\":\"f\",\"description\":\"\",\"input_schema\":{\"type\":\"object\",\"properties\":{}}}],\"tool_choice\":{\"type\":\"none\"}}"
+  "translatedRequest": "{\"model\":\"claude-sonnet-4-5-20250929\",\"max_tokens\":64000,\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}],\"metadata\":{\"user_id\":\"b7a49f4444f6ab9fb22d0c6593d65329fc15dc7d325b5d2f58b298b3077b7387\"},\"stream\":false,\"system\":[{\"type\":\"text\",\"text\":\"You must format your entire response as a valid JSON object. Do not include any explanations, markdown code blocks (such as ```json), or any text outside of the JSON object.\"}],\"tools\":[{\"name\":\"f\",\"description\":\"\",\"input_schema\":{\"type\":\"object\",\"properties\":{}}}],\"tool_choice\":{\"type\":\"none\"}}"
  },
  {
   "name": "response: streamed thinking, text and tool calls",
@@ -507,45 +507,45 @@
    "data: {\"type\":\"unknown_event\"}",
    "data: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}"
   ],
-  "translatedRequest": "{\"model\":\"claude-sonnet-4-5-20250929\",\"max_tokens\":32000,\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"weather\"}]}],\"metadata\":{\"user_id\":\"3051cc5ee9c582d849d64d7cb5b48cb22f4ba5bcae885ebb6bea70cd4eaf9b28\"},\"stream\":true}",
+  "translatedRequest": "{\"model\":\"claude-sonnet-4-5-20250929\",\"max_tokens\":64000,\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"weather\"}]}],\"metadata\":{\"user_id\":\"3051cc5ee9c582d849d64d7cb5b48cb22f4ba5bcae885ebb6bea70cd4eaf9b28\"},\"stream\":true}",
   "streamOutputs": [
    [],
    [
-    "{\"id\":\"msg_01ABC\",\"object\":\"chat.completion.chunk\",\"created\":1791552900,\"model\":\"claude-sonnet-4-5-20250929\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}"
+    "{\"id\":\"msg_01ABC\",\"object\":\"chat.completion.chunk\",\"created\":1794399100,\"model\":\"claude-sonnet-4-5-20250929\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}"
    ],
    [],
    [],
    [
-    "{\"id\":\"msg_01ABC\",\"object\":\"chat.completion.chunk\",\"created\":1791552900,\"model\":\"claude-sonnet-4-5-20250929\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"Let me think.\"},\"finish_reason\":null}]}"
+    "{\"id\":\"msg_01ABC\",\"object\":\"chat.completion.chunk\",\"created\":1794399100,\"model\":\"claude-sonnet-4-5-20250929\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"Let me think.\"},\"finish_reason\":null}]}"
    ],
    [],
    [],
    [],
    [
-    "{\"id\":\"msg_01ABC\",\"object\":\"chat.completion.chunk\",\"created\":1791552900,\"model\":\"claude-sonnet-4-5-20250929\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}"
+    "{\"id\":\"msg_01ABC\",\"object\":\"chat.completion.chunk\",\"created\":1794399100,\"model\":\"claude-sonnet-4-5-20250929\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}"
    ],
    [
-    "{\"id\":\"msg_01ABC\",\"object\":\"chat.completion.chunk\",\"created\":1791552900,\"model\":\"claude-sonnet-4-5-20250929\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\" \u003cworld\u003e \u0026 more\"},\"finish_reason\":null}]}"
-   ],
-   [],
-   [],
-   [],
-   [],
-   [],
-   [
-    "{\"id\":\"msg_01ABC\",\"object\":\"chat.completion.chunk\",\"created\":1791552900,\"model\":\"claude-sonnet-4-5-20250929\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"toolu_01XYZ\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\"}}]},\"finish_reason\":null}]}"
-   ],
-   [],
-   [
-    "{\"id\":\"msg_01ABC\",\"object\":\"chat.completion.chunk\",\"created\":1791552900,\"model\":\"claude-sonnet-4-5-20250929\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"toolu_02\",\"type\":\"function\",\"function\":{\"name\":\"noargs\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}"
+    "{\"id\":\"msg_01ABC\",\"object\":\"chat.completion.chunk\",\"created\":1794399100,\"model\":\"claude-sonnet-4-5-20250929\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\" \u003cworld\u003e \u0026 more\"},\"finish_reason\":null}]}"
    ],
    [],
    [],
+   [],
+   [],
+   [],
    [
-    "{\"id\":\"msg_01ABC\",\"object\":\"chat.completion.chunk\",\"created\":1791552900,\"model\":\"claude-sonnet-4-5-20250929\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":40,\"completion_tokens\":42,\"total_tokens\":82,\"prompt_tokens_details\":{\"cached_tokens\":5,\"cached_creation_tokens\":10,\"cache_write_tokens\":10}}}"
+    "{\"id\":\"msg_01ABC\",\"object\":\"chat.completion.chunk\",\"created\":1794399100,\"model\":\"claude-sonnet-4-5-20250929\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"toolu_01XYZ\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\"}}]},\"finish_reason\":null}]}"
+   ],
+   [],
+   [
+    "{\"id\":\"msg_01ABC\",\"object\":\"chat.completion.chunk\",\"created\":1794399100,\"model\":\"claude-sonnet-4-5-20250929\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"toolu_02\",\"type\":\"function\",\"function\":{\"name\":\"noargs\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}"
+   ],
+   [],
+   [],
+   [
+    "{\"id\":\"msg_01ABC\",\"object\":\"chat.completion.chunk\",\"created\":1794399100,\"model\":\"claude-sonnet-4-5-20250929\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":40,\"completion_tokens\":42,\"total_tokens\":82,\"prompt_tokens_details\":{\"cached_tokens\":5,\"cached_creation_tokens\":10,\"cache_write_tokens\":10}}}"
    ],
    [
-    "{\"id\":\"msg_01ABC\",\"object\":\"chat.completion.chunk\",\"created\":1791552900,\"model\":\"claude-sonnet-4-5-20250929\",\"choices\":[],\"usage\":{\"prompt_tokens\":40,\"completion_tokens\":42,\"total_tokens\":82,\"prompt_tokens_details\":{\"cached_tokens\":5,\"cached_creation_tokens\":10,\"cache_write_tokens\":10}}}"
+    "{\"id\":\"msg_01ABC\",\"object\":\"chat.completion.chunk\",\"created\":1794399100,\"model\":\"claude-sonnet-4-5-20250929\",\"choices\":[],\"usage\":{\"prompt_tokens\":40,\"completion_tokens\":42,\"total_tokens\":82,\"prompt_tokens_details\":{\"cached_tokens\":5,\"cached_creation_tokens\":10,\"cache_write_tokens\":10}}}"
    ],
    [],
    [
@@ -607,9 +607,9 @@
     "output_tokens": 42
    }
   },
-  "translatedRequest": "{\"model\":\"claude-sonnet-4-5-20250929\",\"max_tokens\":32000,\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"weather\"}]}],\"metadata\":{\"user_id\":\"3051cc5ee9c582d849d64d7cb5b48cb22f4ba5bcae885ebb6bea70cd4eaf9b28\"},\"stream\":false}",
+  "translatedRequest": "{\"model\":\"claude-sonnet-4-5-20250929\",\"max_tokens\":64000,\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"weather\"}]}],\"metadata\":{\"user_id\":\"3051cc5ee9c582d849d64d7cb5b48cb22f4ba5bcae885ebb6bea70cd4eaf9b28\"},\"stream\":false}",
   "responseBodyText": "{\"id\":\"msg_01ABC\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-sonnet-4-5-20250929\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"Reasoning here\",\"signature\":\"sigABC\"},{\"type\":\"text\",\"text\":\"It is sunny.\"},{\"type\":\"tool_use\",\"id\":\"toolu_01XYZ\",\"name\":\"get_weather\",\"input\":{\"city\":\"Paris\"}},{\"type\":\"tool_use\",\"id\":\"toolu_02\",\"name\":\"noargs\",\"input\":{}}],\"stop_reason\":\"tool_use\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":25,\"cache_creation_input_tokens\":10,\"cache_read_input_tokens\":5,\"output_tokens\":42}}",
-  "nonStreamOutput": "{\"id\":\"msg_01ABC\",\"object\":\"chat.completion\",\"created\":1791552900,\"model\":\"claude-sonnet-4-5-20250929\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"It is sunny.\",\"reasoning_content\":\"Reasoning here\",\"tool_calls\":[{\"id\":\"toolu_01XYZ\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\"}},{\"id\":\"toolu_02\",\"type\":\"function\",\"function\":{\"name\":\"noargs\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":40,\"completion_tokens\":42,\"total_tokens\":82,\"prompt_tokens_details\":{\"cached_tokens\":5,\"cached_creation_tokens\":10,\"cache_write_tokens\":10}}}"
+  "nonStreamOutput": "{\"id\":\"msg_01ABC\",\"object\":\"chat.completion\",\"created\":1794399100,\"model\":\"claude-sonnet-4-5-20250929\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"It is sunny.\",\"reasoning_content\":\"Reasoning here\",\"tool_calls\":[{\"id\":\"toolu_01XYZ\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\"}},{\"id\":\"toolu_02\",\"type\":\"function\",\"function\":{\"name\":\"noargs\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":40,\"completion_tokens\":42,\"total_tokens\":82,\"prompt_tokens_details\":{\"cached_tokens\":5,\"cached_creation_tokens\":10,\"cache_write_tokens\":10}}}"
  },
  {
   "name": "response: non-stream max_tokens",
@@ -644,9 +644,9 @@
     "output_tokens": 9
    }
   },
-  "translatedRequest": "{\"model\":\"claude-sonnet-4-5-20250929\",\"max_tokens\":32000,\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}],\"metadata\":{\"user_id\":\"b7a49f4444f6ab9fb22d0c6593d65329fc15dc7d325b5d2f58b298b3077b7387\"},\"stream\":false}",
+  "translatedRequest": "{\"model\":\"claude-sonnet-4-5-20250929\",\"max_tokens\":64000,\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}],\"metadata\":{\"user_id\":\"b7a49f4444f6ab9fb22d0c6593d65329fc15dc7d325b5d2f58b298b3077b7387\"},\"stream\":false}",
   "responseBodyText": "{\"id\":\"msg_02\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-sonnet-4-5-20250929\",\"content\":[{\"type\":\"text\",\"text\":\"cut off\"}],\"stop_reason\":\"max_tokens\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":3,\"output_tokens\":9}}",
-  "nonStreamOutput": "{\"id\":\"msg_02\",\"object\":\"chat.completion\",\"created\":1791552900,\"model\":\"claude-sonnet-4-5-20250929\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"cut off\"},\"finish_reason\":\"length\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":9,\"total_tokens\":12,\"prompt_tokens_details\":{\"cached_tokens\":0,\"cached_creation_tokens\":0,\"cache_write_tokens\":0}}}"
+  "nonStreamOutput": "{\"id\":\"msg_02\",\"object\":\"chat.completion\",\"created\":1794399100,\"model\":\"claude-sonnet-4-5-20250929\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"cut off\"},\"finish_reason\":\"length\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":9,\"total_tokens\":12,\"prompt_tokens_details\":{\"cached_tokens\":0,\"cached_creation_tokens\":0,\"cache_write_tokens\":0}}}"
  },
  {
   "name": "response: non-stream refusal",
@@ -677,8 +677,8 @@
    "stop_reason": "refusal",
    "stop_sequence": null
   },
-  "translatedRequest": "{\"model\":\"claude-sonnet-4-5-20250929\",\"max_tokens\":32000,\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}],\"metadata\":{\"user_id\":\"b7a49f4444f6ab9fb22d0c6593d65329fc15dc7d325b5d2f58b298b3077b7387\"},\"stream\":false}",
+  "translatedRequest": "{\"model\":\"claude-sonnet-4-5-20250929\",\"max_tokens\":64000,\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}],\"metadata\":{\"user_id\":\"b7a49f4444f6ab9fb22d0c6593d65329fc15dc7d325b5d2f58b298b3077b7387\"},\"stream\":false}",
   "responseBodyText": "{\"id\":\"msg_03\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-sonnet-4-5-20250929\",\"content\":[{\"type\":\"text\",\"text\":\"no\"}],\"stop_reason\":\"refusal\",\"stop_sequence\":null}",
-  "nonStreamOutput": "{\"id\":\"msg_03\",\"object\":\"chat.completion\",\"created\":1791552900,\"model\":\"claude-sonnet-4-5-20250929\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"no\"},\"finish_reason\":\"content_filter\"}],\"usage\":{\"prompt_tokens\":0,\"completion_tokens\":0,\"total_tokens\":0,\"prompt_tokens_details\":{\"cached_tokens\":0,\"cached_creation_tokens\":0,\"cache_write_tokens\":0}}}"
+  "nonStreamOutput": "{\"id\":\"msg_03\",\"object\":\"chat.completion\",\"created\":1794399100,\"model\":\"claude-sonnet-4-5-20250929\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"no\"},\"finish_reason\":\"content_filter\"}],\"usage\":{\"prompt_tokens\":0,\"completion_tokens\":0,\"total_tokens\":0,\"prompt_tokens_details\":{\"cached_tokens\":0,\"cached_creation_tokens\":0,\"cache_write_tokens\":0}}}"
  }
 ]

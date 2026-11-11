@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Json } from "@commissary/json";
+import { isJsonObject, type Json } from "@commissary/json";
 import {
   applySummaryConfig,
   applySummaryConfigForModel,
@@ -38,12 +38,84 @@ import {
   parseBody,
   resolveApplierModel,
 } from "./support/thinking.ts";
-import { aheadOfFixture, unusedAheadOfFixtureEntries } from "./support/ported-ahead.ts";
+import { extractThinkingConfig } from "../src/thinking/extract.ts";
 
 // Golden cases generated from the real Go internal/thinking by `go run ./tools/fixturegen/thinking`.
 
 const resolveModelInfo = (c: ApplyFixture): ModelSpec | null | undefined =>
   c.modelRef !== undefined ? fixture.synthetic[c.modelRef] : c.modelInfo;
+
+/*
+ * Kept differences from Go (#447, docs/ARCHITECTURE.md "Thinking pipeline"). Go `c9af5290` rejects with a 400 what
+ * Commissary still handles quietly:
+ * - an unrecognised model suffix (`model(bogus)`): Go validates it as a level (UNKNOWN_LEVEL / LEVEL_NOT_SUPPORTED) and
+ *   returns the body it had with the error; Commissary ignores the suffix, so it returns that body without the error;
+ * - an unsupported level on a model whose `type` is not a provider family (OpenAI-compatible models): Go no longer counts
+ *   it as a cross-family request and rejects the level (LEVEL_NOT_SUPPORTED); Commissary clamps it to a level the model
+ *   lists.
+ */
+
+/** Go `isKnownProviderFamily` (internal/thinking/validate.go, `c9af5290`). */
+const GO_FAMILIES: ReadonlySet<string> = new Set([
+  "gemini",
+  "antigravity",
+  "claude",
+  "openai",
+  "openai-response",
+  "codex",
+  "kimi",
+  "kimi-ai",
+  "kimi.ai",
+  "kimi.com",
+  "xai",
+  "interactions",
+  "devin",
+]);
+
+const SUFFIX_LEVEL_ERRORS: ReadonlySet<string> = new Set(["UNKNOWN_LEVEL", "LEVEL_NOT_SUPPORTED"]);
+
+/** The suffixes Go reads as a thinking config (internal/thinking/suffix.go): special values, levels, integers. */
+const RECOGNISED_SUFFIX = /^(?:none|auto|-1|minimal|low|medium|high|xhigh|max|\+?\d+)$/i;
+
+/** Whether the model name ends in a non-empty suffix that is not a thinking config (kept: ignored, not a 400). */
+const unrecognisedSuffix = (model: string): boolean => {
+  const raw = /\(([^()]*)\)$/.exec(model)?.[1]?.trim();
+
+  return raw !== undefined && raw !== "" && !RECOGNISED_SUFFIX.test(raw);
+};
+
+/** Whether Go's LEVEL_NOT_SUPPORTED comes from a model outside the provider families (kept: clamped, not a 400). */
+const clampedOutsideFamilies = (
+  model: ModelSpec | null | undefined,
+  goError: string | undefined,
+): boolean =>
+  goError === "LEVEL_NOT_SUPPORTED" &&
+  model?.type !== undefined &&
+  model.type !== "" &&
+  !GO_FAMILIES.has(model.type.toLowerCase());
+
+/** Whether `level` is one the model lists: the clamp must land on a supported level. */
+const supportedLevel = (model: ModelSpec | null | undefined, level: string): boolean =>
+  model?.thinking?.levels?.includes(level) === true;
+
+/**
+ * Go's body for a Responses target, with the deprecated `reasoning.generate_summary` renamed `summary` in place: with
+ * the suffix ignored Commissary goes on to normalise the summary, where Go stops at its suffix error first.
+ */
+const summaryNormalised = (body: string): string => {
+  const parsed = parseBody(body);
+  const reasoning = isJsonObject(parsed) ? parsed["reasoning"] : undefined;
+
+  if (!isJsonObject(parsed) || !isJsonObject(reasoning)) return expectedKey(body);
+  parsed["reasoning"] = Object.fromEntries(
+    Object.entries(reasoning).map(([key, value]) => [
+      key === "generate_summary" ? "summary" : key,
+      value,
+    ]),
+  );
+
+  return bodyKey(parsed);
+};
 
 describe("thinking golden fixtures", () => {
   it("covers every applier, validation branch and entry point with enough cases", () => {
@@ -164,9 +236,16 @@ describe("thinking golden fixtures", () => {
 
           const expected = c.e ?? c.o;
 
-          const key = `validate #${index} ${model?.id ?? "<none>"} ${c.c} ${c.f}->${c.t} suffix=${c.s === true}`;
+          // Kept difference (#447): Commissary clamps the level to one the model lists instead of rejecting it.
+          if (
+            result.error === undefined &&
+            clampedOutsideFamilies(model, expected?.split(":")[0]) &&
+            result.config.mode === "level" &&
+            supportedLevel(model, result.config.level)
+          )
+            return undefined;
 
-          return aheadOfFixture(key, actual, expected ?? "")
+          return actual === expected
             ? undefined
             : `${c.c} ${c.f}->${c.t} suffix=${c.s === true}: ${actual} != ${expected}`;
         });
@@ -204,12 +283,34 @@ describe("thinking golden fixtures", () => {
       const actual = `${bodyKey(result.body)} ${result.error?.code ?? ""} ${result.error?.message ?? ""}`;
       const expected = `${expectedKey(expectedBody)} ${c.error?.code ?? ""} ${c.error?.message ?? ""}`;
 
+      if (actual === expected) return undefined;
+
+      // Kept difference (#447): an unrecognised suffix is ignored, so Commissary returns Go's body without the error. On a
+      // Responses target Commissary then also normalises `generate_summary`, which Go never reaches (summaryNormalised).
       if (
-        aheadOfFixture(
-          `apply ${c.variant} ${c.to} ${c.model} from=${c.from} model=${c.modelRef ?? c.modelInfo?.id ?? ""} source=${c.source ?? ""} summary=${JSON.stringify(c.summary ?? null)} ${c.body}`,
-          actual,
-          expected,
-        )
+        result.error === undefined &&
+        unrecognisedSuffix(c.model) &&
+        SUFFIX_LEVEL_ERRORS.has(c.error?.code ?? "")
+      ) {
+        const got = bodyKey(result.body);
+        const responsesTarget = c.to === "codex" || c.to === "openai-response";
+
+        if (got === expectedKey(expectedBody)) return undefined;
+
+        if (responsesTarget && got === summaryNormalised(expectedBody)) return undefined;
+      }
+
+      // Kept difference (#447): a level outside the provider families is clamped to one the model lists.
+      const clamped = extractThinkingConfig(
+        result.body,
+        c.to === "openai-response" ? "codex" : c.to,
+      );
+
+      if (
+        result.error === undefined &&
+        clampedOutsideFamilies(resolveModelInfo(c), c.error?.code) &&
+        clamped.mode === "level" &&
+        supportedLevel(resolveModelInfo(c), clamped.level)
       )
         return undefined;
 
@@ -242,6 +343,14 @@ describe("thinking golden fixtures", () => {
         expect(applier, name).toBeDefined();
 
         const failures = collectMismatches(cases, (c) => {
+          // Commissary's appliers take parsed JSON: Go returns an unparsable body unchanged, which has no parsed form
+          // (docs/ARCHITECTURE.md "Thinking pipeline", unparsable bodies).
+          if (
+            parseBody(c.body) === undefined &&
+            parseBody(c.same === true ? c.body : (c.out ?? "")) === undefined
+          )
+            return undefined;
+
           const out = applier?.apply(
             parseBody(c.body),
             decodeFullConfig(c.config),
@@ -250,9 +359,7 @@ describe("thinking golden fixtures", () => {
 
           const expected = expectedKey(c.same === true ? c.body : (c.out ?? ""));
 
-          const key = `applier ${name} model=${c.model ?? ""} ${c.config} ${c.body}`;
-
-          return aheadOfFixture(key, bodyKey(out), expected)
+          return bodyKey(out) === expected
             ? undefined
             : `${name} model=${c.model ?? ""} ${c.config} ${c.body}: ${bodyKey(out)} != ${expected}`;
         });
@@ -344,10 +451,5 @@ describe("thinking golden fixtures", () => {
     });
 
     expect(failures).toEqual([]);
-  });
-
-  // Runs last: the ported-ahead entries exist only while a golden case needs them (F2 deletes them with the module).
-  it("every ported-ahead entry is used by a golden case", () => {
-    expect(unusedAheadOfFixtureEntries()).toEqual([]);
   });
 });

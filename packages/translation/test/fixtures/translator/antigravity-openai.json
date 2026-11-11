@@ -216,7 +216,7 @@
    },
    "max_tokens": 55
   },
-  "translatedRequest": "{\"project\":\"\",\"request\":{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"hi\"}]}],\"generationConfig\":{\"maxOutputTokens\":55,\"thinkingConfig\":{\"includeThoughts\":true,\"thinkingLevel\":\"low\",\"thinkingBudget\":1024}},\"toolConfig\":{\"functionCallingConfig\":{\"mode\":\"NONE\"}},\"safetySettings\":[{\"category\":\"HARM_CATEGORY_HARASSMENT\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_HATE_SPEECH\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_SEXUALLY_EXPLICIT\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_DANGEROUS_CONTENT\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_CIVIC_INTEGRITY\",\"threshold\":\"BLOCK_NONE\"}]},\"model\":\"gemini-2.5-flash\"}"
+  "translatedRequest": "{\"project\":\"\",\"request\":{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"hi\"}]}],\"generationConfig\":{\"maxOutputTokens\":55,\"thinkingConfig\":{\"includeThoughts\":true,\"thinkingLevel\":\"low\",\"thinkingBudget\":1024}},\"tools\":[{\"functionDeclarations\":[{\"name\":\"t\",\"parametersJsonSchema\":{\"type\":\"object\"}}]}],\"toolConfig\":{\"functionCallingConfig\":{\"mode\":\"NONE\"}},\"safetySettings\":[{\"category\":\"HARM_CATEGORY_HARASSMENT\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_HATE_SPEECH\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_SEXUALLY_EXPLICIT\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_DANGEROUS_CONTENT\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_CIVIC_INTEGRITY\",\"threshold\":\"BLOCK_NONE\"}]},\"model\":\"gemini-2.5-flash\"}"
  },
  {
   "name": "request: reasoning_effort auto, system only conversation, response_format json_object",
@@ -373,16 +373,16 @@
   "translatedRequest": "{\"project\":\"\",\"request\":{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"hi\"}]}],\"tools\":[{\"functionDeclarations\":[{\"name\":\"get_weather\",\"parametersJsonSchema\":{\"type\":\"object\"}}]}],\"safetySettings\":[{\"category\":\"HARM_CATEGORY_HARASSMENT\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_HATE_SPEECH\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_SEXUALLY_EXPLICIT\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_DANGEROUS_CONTENT\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_CIVIC_INTEGRITY\",\"threshold\":\"BLOCK_NONE\"}]},\"model\":\"gemini-3-pro-high\"}",
   "streamOutputs": [
    [
-    "{\"id\":\"rid\",\"object\":\"chat.completion.chunk\",\"created\":1755226323,\"model\":\"gemini-3\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null,\"reasoning_content\":\"think\",\"tool_calls\":null},\"finish_reason\":null,\"native_finish_reason\":null}]}"
+    "{\"id\":\"rid\",\"object\":\"chat.completion.chunk\",\"created\":1755226323,\"model\":\"gemini-3\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null,\"reasoning_content\":\"think\"},\"finish_reason\":null,\"native_finish_reason\":null}]}"
    ],
    [
-    "{\"id\":\"rid\",\"object\":\"chat.completion.chunk\",\"created\":1755226323,\"model\":\"model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Hello\",\"reasoning_content\":null,\"tool_calls\":null,\"images\":[{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/png;base64,IMG\"},\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}"
+    "{\"id\":\"rid\",\"object\":\"chat.completion.chunk\",\"created\":1755226323,\"model\":\"model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Hello\",\"reasoning_content\":null,\"images\":[{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/png;base64,IMG\"},\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}"
    ],
    [
-    "{\"id\":\"\",\"object\":\"chat.completion.chunk\",\"created\":1755226323,\"model\":\"model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null,\"reasoning_content\":null,\"tool_calls\":[{\"id\": \"get weather-1791558145757157392-1\",\"index\": 0,\"type\": \"function\",\"function\": {\"name\": \"get weather\",\"arguments\": \"{\\\"city\\\":\\\"Paris\\\"}\"}},{\"id\": \"noop-1791558145757174158-2\",\"index\": 1,\"type\": \"function\",\"function\": {\"name\": \"noop\",\"arguments\": \"{}\"}}]},\"finish_reason\":null,\"native_finish_reason\":null}]}"
+    "{\"id\":\"\",\"object\":\"chat.completion.chunk\",\"created\":1755226323,\"model\":\"model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null,\"reasoning_content\":null,\"tool_calls\":[{\"id\": \"get weather-1794399100555094000-1\",\"index\": 0,\"type\": \"function\",\"function\": {\"name\": \"get weather\",\"arguments\": \"{\\\"city\\\":\\\"Paris\\\"}\"}},{\"id\": \"noop-1794399100555098000-2\",\"index\": 1,\"type\": \"function\",\"function\": {\"name\": \"noop\",\"arguments\": \"{}\"}}]},\"finish_reason\":null,\"native_finish_reason\":null}]}"
    ],
    [
-    "{\"id\":\"\",\"object\":\"chat.completion.chunk\",\"created\":1755226323,\"model\":\"model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\".\",\"reasoning_content\":null,\"tool_calls\":null},\"finish_reason\":\"tool_calls\",\"native_finish_reason\":\"stop\"}],\"usage\":{\"completion_tokens\":8,\"total_tokens\":18,\"prompt_tokens\":10,\"completion_tokens_details\":{\"reasoning_tokens\":3},\"prompt_tokens_details\":{\"cached_tokens\":4}}}"
+    "{\"id\":\"\",\"object\":\"chat.completion.chunk\",\"created\":1755226323,\"model\":\"model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\".\",\"reasoning_content\":null},\"finish_reason\":\"tool_calls\",\"native_finish_reason\":\"stop\"}],\"usage\":{\"completion_tokens\":8,\"total_tokens\":18,\"prompt_tokens\":10,\"completion_tokens_details\":{\"reasoning_tokens\":3},\"prompt_tokens_details\":{\"cached_tokens\":4}}}"
    ],
    []
   ]
@@ -421,10 +421,10 @@
   "translatedRequest": "{\"project\":\"\",\"request\":{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"hi\"}]}],\"tools\":[{\"functionDeclarations\":[{\"name\":\"get_weather\",\"parametersJsonSchema\":{\"type\":\"object\"}}]}],\"safetySettings\":[{\"category\":\"HARM_CATEGORY_HARASSMENT\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_HATE_SPEECH\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_SEXUALLY_EXPLICIT\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_DANGEROUS_CONTENT\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_CIVIC_INTEGRITY\",\"threshold\":\"BLOCK_NONE\"}]},\"model\":\"gemini-3-pro-high\"}",
   "streamOutputs": [
    [
-    "{\"id\":\"rid\",\"object\":\"chat.completion.chunk\",\"created\":1755226323,\"model\":\"gemini-3\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null,\"reasoning_content\":\"think\",\"tool_calls\":null},\"finish_reason\":null,\"native_finish_reason\":null}]}"
+    "{\"id\":\"rid\",\"object\":\"chat.completion.chunk\",\"created\":1755226323,\"model\":\"gemini-3\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null,\"reasoning_content\":\"think\"},\"finish_reason\":null,\"native_finish_reason\":null}]}"
    ],
    [
-    "{\"id\":\"rid\",\"object\":\"chat.completion.chunk\",\"created\":1755226323,\"model\":\"model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Hello\",\"reasoning_content\":null,\"tool_calls\":null,\"images\":[{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/png;base64,IMG\"},\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}"
+    "{\"id\":\"rid\",\"object\":\"chat.completion.chunk\",\"created\":1755226323,\"model\":\"model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Hello\",\"reasoning_content\":null,\"images\":[{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/png;base64,IMG\"},\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}"
    ],
    [
     "{\"id\":\"rid\",\"object\":\"chat.completion.chunk\",\"created\":1755226323,\"model\":\"gemini-3\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\",\"native_finish_reason\":\"stop\"}],\"usage\":{\"completion_tokens\":0,\"prompt_tokens\":1}}"
@@ -465,10 +465,10 @@
   "translatedRequest": "{\"project\":\"\",\"request\":{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"hi\"}]}],\"tools\":[{\"functionDeclarations\":[{\"name\":\"get_weather\",\"parametersJsonSchema\":{\"type\":\"object\"}}]}],\"safetySettings\":[{\"category\":\"HARM_CATEGORY_HARASSMENT\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_HATE_SPEECH\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_SEXUALLY_EXPLICIT\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_DANGEROUS_CONTENT\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_CIVIC_INTEGRITY\",\"threshold\":\"BLOCK_NONE\"}]},\"model\":\"gemini-3-pro-high\"}",
   "streamOutputs": [
    [
-    "{\"id\":\"\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":null,\"content\":null,\"reasoning_content\":null,\"tool_calls\":null},\"finish_reason\":null,\"native_finish_reason\":null}]}"
+    "{\"id\":\"\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":null,\"content\":null,\"reasoning_content\":null},\"finish_reason\":null,\"native_finish_reason\":null}]}"
    ],
    [
-    "{\"id\":\"\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"x\",\"reasoning_content\":null,\"tool_calls\":null},\"finish_reason\":\"max_tokens\",\"native_finish_reason\":\"max_tokens\"}],\"usage\":{\"completion_tokens\":1,\"total_tokens\":2,\"prompt_tokens\":1}}"
+    "{\"id\":\"\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"x\",\"reasoning_content\":null},\"finish_reason\":\"max_tokens\",\"native_finish_reason\":\"max_tokens\"}],\"usage\":{\"completion_tokens\":1,\"total_tokens\":2,\"prompt_tokens\":1}}"
    ],
    []
   ]
@@ -574,7 +574,7 @@
   },
   "translatedRequest": "{\"project\":\"\",\"request\":{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"hi\"}]}],\"tools\":[{\"functionDeclarations\":[{\"name\":\"get_weather\",\"parametersJsonSchema\":{\"type\":\"object\"}}]}],\"safetySettings\":[{\"category\":\"HARM_CATEGORY_HARASSMENT\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_HATE_SPEECH\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_SEXUALLY_EXPLICIT\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_DANGEROUS_CONTENT\",\"threshold\":\"OFF\"},{\"category\":\"HARM_CATEGORY_CIVIC_INTEGRITY\",\"threshold\":\"BLOCK_NONE\"}]},\"model\":\"gemini-3-pro-high\"}",
   "responseBodyText": "{\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"why\",\"thought\":true},{\"text\":\"answer\"},{\"functionCall\":{\"name\":\"get_weather\",\"args\":{\"city\":\"x\"}}}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":3,\"candidatesTokenCount\":4,\"totalTokenCount\":7},\"modelVersion\":\"v\",\"responseId\":\"r\",\"createTime\":\"2025-01-01T00:00:00Z\"},\"traceId\":\"t\"}",
-  "nonStreamOutput": "{\"id\":\"r\",\"object\":\"chat.completion\",\"created\":1735689600,\"model\":\"v\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"answer\",\"reasoning_content\":\"why\",\"tool_calls\":[{\"id\":\"get weather-1791558145757642038-1\",\"type\":\"function\",\"function\":{\"name\":\"get weather\",\"arguments\":\"{\\\"city\\\":\\\"x\\\"}\"}}]},\"finish_reason\":\"tool_calls\",\"native_finish_reason\":\"tool_calls\"}],\"usage\":{\"completion_tokens\":4,\"total_tokens\":7,\"prompt_tokens\":3}}"
+  "nonStreamOutput": "{\"id\":\"r\",\"object\":\"chat.completion\",\"created\":1735689600,\"model\":\"v\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"answer\",\"reasoning_content\":\"why\",\"tool_calls\":[{\"id\":\"get weather-1794399100555407000-1\",\"type\":\"function\",\"function\":{\"name\":\"get weather\",\"arguments\":\"{\\\"city\\\":\\\"x\\\"}\"}}]},\"finish_reason\":\"tool_calls\",\"native_finish_reason\":\"tool_calls\"}],\"usage\":{\"completion_tokens\":4,\"total_tokens\":7,\"prompt_tokens\":3}}"
  },
  {
   "name": "non-stream: body without response is empty",

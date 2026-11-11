@@ -665,9 +665,8 @@ export const makeAntigravityExecutor = (
       return { payload, headers: new Headers(response.headers) } satisfies ExecutorResponse;
     }
 
-    // Claude, Gemini 3 Pro and image models only stream upstream: the SSE is merged into one response.
-    const filter = new UsageFilter();
-
+    // Claude, Gemini 3 Pro and image models only stream upstream: the SSE is merged into one response. The chunks keep
+    // their usage (no `UsageFilter`), so a stream without a terminal usage chunk still reports usage (Go `d5eb4ca1`).
     const lines = yield* splitLines(response.stream).pipe(
       Stream.mapError(transportError),
       Stream.runCollect,
@@ -677,7 +676,7 @@ export const makeAntigravityExecutor = (
 
     for (const line of lines) {
       prepared.replay?.observeLine(line);
-      const payload = jsonPayloadOf(filter.filter(line));
+      const payload = jsonPayloadOf(line);
 
       if (payload !== undefined) payloads.push(payload);
     }

@@ -586,6 +586,9 @@ describe("content fixes", () => {
   });
 });
 
+/** One streamed Antigravity response with a single text part. */
+const text = (value: string) => ({ candidates: [{ content: { parts: [{ text: value }] } }] });
+
 describe("SSE handling", () => {
   const data = (value: Json) => `data: ${JSON.stringify(value)}`;
 
@@ -673,6 +676,29 @@ describe("SSE handling", () => {
     expect(get(merged, "response.candidates.0.finishReason")).toBe("STOP");
     expect(get(merged, "response.usageMetadata.promptTokenCount")).toBe(1);
     expect(get(convertStreamToNonStream([]), "response.usageMetadata.totalTokenCount")).toBe(0);
+  });
+
+  it("keeps the usage of a stream without a terminal usage chunk (Go d5eb4ca1)", () => {
+    const nonTerminal = convertStreamToNonStream([
+      JSON.stringify({ response: { ...text("a"), usageMetadata: { totalTokenCount: 30 } } }),
+    ]);
+
+    expect(get(nonTerminal, "response.usageMetadata.totalTokenCount")).toBe(30);
+
+    const renamed = convertStreamToNonStream([
+      JSON.stringify({ response: { ...text("a"), cpaUsageMetadata: { totalTokenCount: 7 } } }),
+      JSON.stringify({ response: { ...text("b"), cpaUsageMetadata: { totalTokenCount: 9 } } }),
+    ]);
+
+    expect(get(renamed, "response.usageMetadata.totalTokenCount")).toBe(7);
+    expect(get(renamed, "response.cpaUsageMetadata")).toBeUndefined();
+
+    const terminalWins = convertStreamToNonStream([
+      JSON.stringify({ response: { ...text("a"), cpaUsageMetadata: { totalTokenCount: 7 } } }),
+      JSON.stringify({ response: { ...text("b"), usageMetadata: { totalTokenCount: 12 } } }),
+    ]);
+
+    expect(get(terminalWins, "response.usageMetadata.totalTokenCount")).toBe(12);
   });
 });
 

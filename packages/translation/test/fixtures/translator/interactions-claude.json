@@ -559,7 +559,7 @@
     "event: step.stop\ndata: {\"index\":4,\"event_type\":\"step.stop\"}\n\n"
    ],
    [
-    "event: interaction.completed\ndata: {\"interaction\":{\"id\":\"msg_01I\",\"status\":\"completed\",\"usage\":{\"input_tokens\":20,\"total_input_tokens\":20,\"output_tokens\":30,\"total_output_tokens\":30,\"total_tokens\":50,\"cached_tokens\":5,\"total_cached_tokens\":5,\"reasoning_tokens\":12,\"total_thought_tokens\":12},\"created\":\"2026-10-09T13:35:00Z\",\"updated\":\"2026-10-09T13:35:00Z\",\"service_tier\":\"standard\",\"object\":\"interaction\",\"model\":\"claude-sonnet-4-5-20250929\"},\"event_type\":\"interaction.completed\"}\n\n"
+    "event: interaction.completed\ndata: {\"interaction\":{\"id\":\"msg_01I\",\"status\":\"completed\",\"usage\":{\"input_tokens\":20,\"total_input_tokens\":20,\"output_tokens\":30,\"total_output_tokens\":30,\"total_tokens\":50,\"cached_tokens\":5,\"total_cached_tokens\":5,\"reasoning_tokens\":12,\"total_thought_tokens\":12},\"created\":\"2026-11-11T12:11:40Z\",\"updated\":\"2026-11-11T12:11:40Z\",\"service_tier\":\"standard\",\"object\":\"interaction\",\"model\":\"claude-sonnet-4-5-20250929\"},\"event_type\":\"interaction.completed\"}\n\n"
    ],
    [],
    [],
@@ -585,9 +585,9 @@
   "translatedRequest": "{\"model\":\"claude-sonnet-4-5-20250929\",\"max_tokens\":32000,\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}],\"stream\":true}",
   "streamOutputs": [
    [
-    "event: interaction.created\ndata: {\"interaction\":{\"id\":\"interaction_1791552900745348681\",\"status\":\"in_progress\",\"object\":\"interaction\",\"model\":\"claude-sonnet-4-5-20250929\"},\"event_type\":\"interaction.created\"}\n\n",
-    "event: interaction.status_update\ndata: {\"interaction_id\":\"interaction_1791552900745348681\",\"status\":\"in_progress\",\"event_type\":\"interaction.status_update\"}\n\n",
-    "event: interaction.completed\ndata: {\"interaction\":{\"id\":\"interaction_1791552900745348681\",\"status\":\"completed\",\"usage\":{},\"created\":\"2026-10-09T13:35:00Z\",\"updated\":\"2026-10-09T13:35:00Z\",\"service_tier\":\"standard\",\"object\":\"interaction\",\"model\":\"claude-sonnet-4-5-20250929\"},\"event_type\":\"interaction.completed\"}\n\n"
+    "event: interaction.created\ndata: {\"interaction\":{\"id\":\"interaction_1794399100570664000\",\"status\":\"in_progress\",\"object\":\"interaction\",\"model\":\"claude-sonnet-4-5-20250929\"},\"event_type\":\"interaction.created\"}\n\n",
+    "event: interaction.status_update\ndata: {\"interaction_id\":\"interaction_1794399100570664000\",\"status\":\"in_progress\",\"event_type\":\"interaction.status_update\"}\n\n",
+    "event: interaction.completed\ndata: {\"interaction\":{\"id\":\"interaction_1794399100570664000\",\"status\":\"completed\",\"usage\":{},\"created\":\"2026-11-11T12:11:40Z\",\"updated\":\"2026-11-11T12:11:40Z\",\"service_tier\":\"standard\",\"object\":\"interaction\",\"model\":\"claude-sonnet-4-5-20250929\"},\"event_type\":\"interaction.completed\"}\n\n"
    ],
    [
     "event: done\ndata: [DONE]\n\n"
@@ -683,6 +683,6 @@
   },
   "translatedRequest": "{\"model\":\"claude-sonnet-4-5-20250929\",\"max_tokens\":32000,\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}]}",
   "responseBodyText": "{\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}",
-  "nonStreamOutput": "{\"id\":\"interaction_1791552900745617016\",\"object\":\"interaction\",\"status\":\"completed\",\"model\":\"claude-sonnet-4-5-20250929\",\"steps\":[{\"type\":\"model_output\",\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}]}"
+  "nonStreamOutput": "{\"id\":\"interaction_1794399100570729000\",\"object\":\"interaction\",\"status\":\"completed\",\"model\":\"claude-sonnet-4-5-20250929\",\"steps\":[{\"type\":\"model_output\",\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}]}"
  }
 ]

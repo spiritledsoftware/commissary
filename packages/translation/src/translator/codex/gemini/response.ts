@@ -406,6 +406,9 @@ export const convertCodexResponseToGemini = (
         "candidates.0.finishReason",
         incompleteFinishReason(asString(get(root, "response.incomplete_details.reason"))),
       );
+    } else {
+      // A normal completion ends the Gemini stream with STOP (Go `bdde391d`).
+      template = set(template, "candidates.0.finishReason", "STOP");
     }
   } else {
     return [];

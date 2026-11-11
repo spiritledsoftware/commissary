@@ -68,7 +68,7 @@
    ],
    [],
    [
-    "event: interaction.completed\ndata: {\"interaction\":{\"id\":\"chatcmpl-1\",\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"total_input_tokens\":10,\"output_tokens\":3,\"total_output_tokens\":3,\"total_tokens\":13,\"cached_tokens\":2,\"total_cached_tokens\":2,\"reasoning_tokens\":1,\"total_thought_tokens\":1},\"created\":\"2026-10-09T13:08:36Z\",\"updated\":\"2026-10-09T13:08:36Z\",\"service_tier\":\"standard\",\"object\":\"interaction\",\"model\":\"gemini-2.5-pro\"},\"event_type\":\"interaction.completed\"}\n\n"
+    "event: interaction.completed\ndata: {\"interaction\":{\"id\":\"chatcmpl-1\",\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"total_input_tokens\":10,\"output_tokens\":3,\"total_output_tokens\":3,\"total_tokens\":13,\"cached_tokens\":2,\"total_cached_tokens\":2,\"reasoning_tokens\":1,\"total_thought_tokens\":1},\"created\":\"2026-11-11T12:11:40Z\",\"updated\":\"2026-11-11T12:11:40Z\",\"service_tier\":\"standard\",\"object\":\"interaction\",\"model\":\"gemini-2.5-pro\"},\"event_type\":\"interaction.completed\"}\n\n"
    ],
    [
     "event: done\ndata: [DONE]\n\n"
@@ -224,7 +224,7 @@
     "event: step.stop\ndata: {\"index\":1,\"event_type\":\"step.stop\"}\n\n"
    ],
    [
-    "event: interaction.completed\ndata: {\"interaction\":{\"id\":\"chatcmpl-2\",\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"total_input_tokens\":1,\"output_tokens\":2,\"total_output_tokens\":2,\"total_tokens\":3},\"created\":\"2026-10-09T13:08:36Z\",\"updated\":\"2026-10-09T13:08:36Z\",\"service_tier\":\"standard\",\"object\":\"interaction\",\"model\":\"gemini-2.5-pro\"},\"event_type\":\"interaction.completed\"}\n\n",
+    "event: interaction.completed\ndata: {\"interaction\":{\"id\":\"chatcmpl-2\",\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"total_input_tokens\":1,\"output_tokens\":2,\"total_output_tokens\":2,\"total_tokens\":3},\"created\":\"2026-11-11T12:11:40Z\",\"updated\":\"2026-11-11T12:11:40Z\",\"service_tier\":\"standard\",\"object\":\"interaction\",\"model\":\"gemini-2.5-pro\"},\"event_type\":\"interaction.completed\"}\n\n",
     "event: done\ndata: [DONE]\n\n"
    ]
   ]
@@ -345,7 +345,7 @@
     "event: step.stop\ndata: {\"index\":0,\"event_type\":\"step.stop\"}\n\n"
    ],
    [
-    "event: interaction.completed\ndata: {\"interaction\":{\"id\":\"c9\",\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"total_input_tokens\":1,\"output_tokens\":1,\"total_output_tokens\":1},\"created\":\"2026-10-09T13:08:36Z\",\"updated\":\"2026-10-09T13:08:36Z\",\"service_tier\":\"standard\",\"object\":\"interaction\",\"model\":\"gemini-2.5-pro\"},\"event_type\":\"interaction.completed\"}\n\n"
+    "event: interaction.completed\ndata: {\"interaction\":{\"id\":\"c9\",\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"total_input_tokens\":1,\"output_tokens\":1,\"total_output_tokens\":1},\"created\":\"2026-11-11T12:11:40Z\",\"updated\":\"2026-11-11T12:11:40Z\",\"service_tier\":\"standard\",\"object\":\"interaction\",\"model\":\"gemini-2.5-pro\"},\"event_type\":\"interaction.completed\"}\n\n"
    ],
    [
     "event: done\ndata: [DONE]\n\n"
@@ -373,7 +373,7 @@
    [
     "event: interaction.created\ndata: {\"interaction\":{\"id\":\"c10\",\"status\":\"in_progress\",\"object\":\"interaction\",\"model\":\"gemini-2.5-pro\"},\"event_type\":\"interaction.created\"}\n\n",
     "event: interaction.status_update\ndata: {\"interaction_id\":\"c10\",\"status\":\"in_progress\",\"event_type\":\"interaction.status_update\"}\n\n",
-    "event: interaction.completed\ndata: {\"interaction\":{\"id\":\"c10\",\"status\":\"completed\",\"usage\":{\"input_tokens\":2,\"total_input_tokens\":2,\"output_tokens\":1,\"total_output_tokens\":1,\"total_tokens\":3},\"created\":\"2026-10-09T13:08:36Z\",\"updated\":\"2026-10-09T13:08:36Z\",\"service_tier\":\"standard\",\"object\":\"interaction\",\"model\":\"gemini-2.5-pro\"},\"event_type\":\"interaction.completed\"}\n\n"
+    "event: interaction.completed\ndata: {\"interaction\":{\"id\":\"c10\",\"status\":\"completed\",\"usage\":{\"input_tokens\":2,\"total_input_tokens\":2,\"output_tokens\":1,\"total_output_tokens\":1,\"total_tokens\":3},\"created\":\"2026-11-11T12:11:40Z\",\"updated\":\"2026-11-11T12:11:40Z\",\"service_tier\":\"standard\",\"object\":\"interaction\",\"model\":\"gemini-2.5-pro\"},\"event_type\":\"interaction.completed\"}\n\n"
    ],
    [
     "event: done\ndata: [DONE]\n\n"

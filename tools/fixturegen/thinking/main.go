@@ -35,6 +35,7 @@ type thinkSpec struct {
 	ZeroAllowed    bool     `json:"zeroAllowed,omitempty"`
 	DynamicAllowed bool     `json:"dynamicAllowed,omitempty"`
 	Levels         []string `json:"levels,omitempty"`
+	DisableType    string   `json:"disableType,omitempty"`
 }
 
 type modelSpec struct {
@@ -75,6 +76,7 @@ func (m *modelSpec) info() *registry.ModelInfo {
 			ZeroAllowed:    m.Thinking.ZeroAllowed,
 			DynamicAllowed: m.Thinking.DynamicAllowed,
 			Levels:         append([]string(nil), m.Thinking.Levels...),
+			DisableType:    m.Thinking.DisableType,
 		}
 	}
 	return info
@@ -99,6 +101,7 @@ func specFromInfo(info *registry.ModelInfo) *modelSpec {
 			ZeroAllowed:    info.Thinking.ZeroAllowed,
 			DynamicAllowed: info.Thinking.DynamicAllowed,
 			Levels:         info.Thinking.Levels,
+			DisableType:    info.Thinking.DisableType,
 		}
 	}
 	return spec

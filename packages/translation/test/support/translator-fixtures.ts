@@ -4,18 +4,9 @@
  * (Go's key order and HTML escaping are not part of the contract); SSE framing and non-JSON text stay exact.
  */
 import { expect, it } from "vitest";
-import type { Json } from "@commissary/json";
+import { isJsonObject, type Json } from "@commissary/json";
 import { builtinTranslators } from "../../src/translator/builtin.ts";
 import { makeTranslationState, type RequestEnvelope } from "../../src/translator/registry.ts";
-import {
-  portedChunkEdit,
-  itemIdPrefixes,
-  portedItemIdPrefix,
-  portedMaxTokens,
-  portedParallelToolCalls,
-  portedRequestEdit,
-  portedResponse,
-} from "./translator-ported-ahead.ts";
 import { expandEmbeddedJson } from "./structural.ts";
 
 export interface TranslatorFixtureCase {
@@ -106,16 +97,50 @@ const normalizeChunk = (text: string): Json => {
   });
 };
 
+const ITEM_ID_PREFIX = /item_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})_(\d+)/g;
+
 /**
- * Upstream changes ported since the committed fixtures were generated (ticket F2 regenerates them and removes this).
- * CLIProxyAPI e25b7daf rewrites the exec_command phrase of every Devin-bound tool description, not only of tools named
- * `exec_command`; the fixtures still hold the older Go output for other tool names.
+ * The fallback item ids of the Interactions provider carry a random per-response prefix (`item_<uuid>_<index>`): masked
+ * on both sides, so the ids compare by their index.
  */
-const portedSinceGeneration = (translatedRequest: string): string =>
-  translatedRequest.replaceAll(
-    "returning output or a session ID for ongoing interaction",
-    "returning output or an session ID for ongoing interaction",
+const maskItemIdPrefix = (chunk: string): string =>
+  chunk.replace(ITEM_ID_PREFIX, "item_<prefix>_$2");
+
+/** The distinct per-response prefixes of the fallback item ids in the chunks. */
+const itemIdPrefixes = (chunks: ReadonlyArray<string>): Set<string> =>
+  new Set(
+    chunks.flatMap((chunk) => [...chunk.matchAll(ITEM_ID_PREFIX)].map((match) => match[1] ?? "")),
   );
+
+/**
+ * Request differences from Go that Commissary keeps on purpose (docs/ARCHITECTURE.md), applied to the golden request:
+ * - Codex-bound requests from Chat, Responses, Claude and Gemini do not forward `max_output_tokens` (Go `01b24f1f` does;
+ *   forwarding is #395, "Codex request hygiene"); Interactions already carried it.
+ * - A Chat request with no messages still sends `input: []` to Codex; Go has omitted the empty list since its JSON
+ *   library migration (`6e6afab9`).
+ */
+const keptRequestDifferences = (
+  c: TranslatorFixtureCase,
+  expected: Json | undefined,
+): Json | undefined => {
+  if (
+    c.to !== "codex" ||
+    typeof expected !== "object" ||
+    expected === null ||
+    Array.isArray(expected)
+  )
+    return expected;
+  const kept = { ...expected };
+
+  if (c.from !== "interactions") delete kept["max_output_tokens"];
+
+  const messages = isJsonObject(c.request) ? c.request["messages"] : undefined;
+  const noMessages = messages === undefined || (Array.isArray(messages) && messages.length === 0);
+
+  if (c.from === "openai" && noMessages && kept["input"] === undefined) kept["input"] = [];
+
+  return kept;
+};
 
 /**
  * Runs one case: `translateRequest` translates the request (the registry, or the Worker's executor-level rewrites),
@@ -135,32 +160,9 @@ const checkTranslatorFixture = (
   const envelope = translateRequest(c, requestEnvelope);
 
   expect(envelope.error?.message).toBe(c.requestError);
-  const expected = parseJson(portedSinceGeneration(c.translatedRequest));
-
-  if (typeof expected === "object" && expected !== null && !Array.isArray(expected))
-    portedRequestEdit(`${c.from}->${c.to} ${c.name}`, expected);
-  const maxTokens = portedMaxTokens(`${c.from}->${c.to} ${c.name}`);
-
-  // A case whose golden predates a ported change expects the new `max_tokens` (see translator-ported-ahead.ts).
-  if (
-    maxTokens !== undefined &&
-    typeof expected === "object" &&
-    expected !== null &&
-    !Array.isArray(expected)
-  )
-    expected.max_tokens = maxTokens;
-
-  const parallel = portedParallelToolCalls(`${c.from}->${c.to} ${c.name}`);
-
-  if (
-    parallel !== undefined &&
-    typeof expected === "object" &&
-    expected !== null &&
-    !Array.isArray(expected)
-  )
-    expected.parallel_tool_calls = parallel;
-
-  expect(expandEmbeddedJson(envelope.body)).toEqual(expected);
+  expect(expandEmbeddedJson(envelope.body)).toEqual(
+    keptRequestDifferences(c, parseJson(c.translatedRequest)),
+  );
 
   if (c.responseLines !== undefined) {
     const context = {
@@ -172,30 +174,24 @@ const checkTranslatorFixture = (
       ...(c.alt !== undefined ? { alt: c.alt } : {}),
     };
 
-    // The generated item ids of the Interactions provider carry a per-response prefix (translator-ported-ahead.ts).
-    const stripPrefix = c.to === "interactions" ? portedItemIdPrefix : (chunk: string) => chunk;
-
     const raw = c.responseLines.map((line) =>
       builtinTranslators.translateStream(c.from, c.to, context, line),
     );
 
-    const outputs = raw.map((chunks) => chunks.map((chunk) => normalizeChunk(stripPrefix(chunk))));
-
-    // One stream, one prefix: every fallback id of a response shares it, and none is left without one.
+    // One stream, one prefix: every fallback id of a response shares it, as in the golden.
     if (c.to === "interactions") {
-      const prefixes = itemIdPrefixes(raw.flat());
-      const fallbackIds = JSON.stringify(c.streamOutputs ?? []).match(/item_\d+/g) ?? [];
+      const golden = itemIdPrefixes((c.streamOutputs ?? []).flat());
 
-      expect(prefixes.size).toBe(fallbackIds.length > 0 ? 1 : 0);
+      expect(golden.size).toBeLessThanOrEqual(1);
+      expect(itemIdPrefixes(raw.flat()).size).toBe(golden.size);
     }
 
-    // A case whose golden predates the C3 response fixes expects the new events on the lines they moved to.
-    const ahead = portedResponse(`${c.from}->${c.to} ${c.name}`)?.stream;
+    const outputs = raw.map((chunks) =>
+      chunks.map((chunk) => normalizeChunk(maskItemIdPrefix(chunk))),
+    );
 
-    const expectedOutputs = (c.streamOutputs ?? []).map((chunks, index) =>
-      (ahead?.get(index) ?? chunks.map(portedChunkEdit(`${c.from}->${c.to} ${c.name}`, index))).map(
-        normalizeChunk,
-      ),
+    const expectedOutputs = (c.streamOutputs ?? []).map((chunks) =>
+      chunks.map((chunk) => normalizeChunk(maskItemIdPrefix(chunk))),
     );
 
     expect(outputs).toEqual(expectedOutputs);
@@ -212,11 +208,8 @@ const checkTranslatorFixture = (
 
     const out = builtinTranslators.translateNonStream(c.from, c.to, context, c.responseBodyText);
 
-    const expectedBody =
-      portedResponse(`${c.from}->${c.to} ${c.name}`)?.nonStream ?? c.nonStreamOutput;
-
     expect(out === undefined ? undefined : normalizeChunk(out)).toEqual(
-      expectedBody === undefined ? undefined : normalizeChunk(expectedBody),
+      c.nonStreamOutput === undefined ? undefined : normalizeChunk(c.nonStreamOutput),
     );
   }
 

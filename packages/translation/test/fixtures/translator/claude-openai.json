@@ -923,11 +923,12 @@
     "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":2}\n\n",
     "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":3,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
     "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":3,\"delta\":{\"type\":\"text_delta\",\"text\":\" now\"}}\n\n",
-    "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":3}\n\n",
+    "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":3}\n\n"
+   ],
+   [
     "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\",\"stop_sequence\":null},\"usage\":{\"input_tokens\":5,\"output_tokens\":7,\"cache_read_input_tokens\":2,\"cache_creation_input_tokens\":3}}\n\n",
     "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
-   ],
-   []
+   ]
   ]
  },
  {
@@ -1013,13 +1014,14 @@
     "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
     "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
     "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"x\"}}\n\n",
-    "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\n",
-    "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}\n\n",
-    "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+    "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\n"
    ],
    [],
    [],
-   []
+   [
+    "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}\n\n",
+    "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+   ]
   ]
  },
  {
@@ -1163,11 +1165,12 @@
     "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"c8\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"m\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\n",
     "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
     "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"x\"}}\n\n",
-    "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
-    "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}\n\n",
+    "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"
+   ],
+   [
+    "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"input_tokens\":3,\"output_tokens\":2}}\n\n",
     "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
    ],
-   [],
    []
   ]
  },
@@ -1238,7 +1241,7 @@
   },
   "translatedRequest": "{\"model\":\"gpt-4o\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":false,\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"description\":\"\",\"parameters\":{\"properties\":{},\"type\":\"object\"}}}]}",
   "responseBodyText": "{\"id\":\"chatcmpl-9\",\"object\":\"chat.completion\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"The answer\",\"reasoning_content\":\"because\",\"tool_calls\":[{\"id\":\"call:1\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\"}},{\"id\":\"call_2\",\"type\":\"function\",\"function\":{\"name\":\"noop\",\"arguments\":\"not json\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":30,\"completion_tokens\":9,\"prompt_tokens_details\":{\"cached_tokens\":10,\"cache_write_tokens\":5}}}",
-  "nonStreamOutput": "{\"id\":\"chatcmpl-9\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"gpt-4o\",\"content\":[{\"type\":\"text\",\"text\":\"The answer\"},{\"type\":\"thinking\",\"thinking\":\"because\"},{\"type\":\"tool_use\",\"id\":\"call_1\",\"name\":\"get_weather\",\"input\":{\"city\":\"Paris\"}},{\"type\":\"tool_use\",\"id\":\"call_2\",\"name\":\"noop\",\"input\":{}}],\"stop_reason\":\"tool_use\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":15,\"output_tokens\":9,\"cache_read_input_tokens\":10,\"cache_creation_input_tokens\":5}}"
+  "nonStreamOutput": "{\"id\":\"chatcmpl-9\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"gpt-4o\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"because\"},{\"type\":\"text\",\"text\":\"The answer\"},{\"type\":\"tool_use\",\"id\":\"call_1\",\"name\":\"get_weather\",\"input\":{\"city\":\"Paris\"}},{\"type\":\"tool_use\",\"id\":\"call_2\",\"name\":\"noop\",\"input\":{}}],\"stop_reason\":\"tool_use\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":15,\"output_tokens\":9,\"cache_read_input_tokens\":10,\"cache_creation_input_tokens\":5}}"
  },
  {
   "name": "non-stream: array content parts",

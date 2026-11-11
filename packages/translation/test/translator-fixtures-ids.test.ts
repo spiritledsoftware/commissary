@@ -3,15 +3,9 @@
 // both sides before comparing) and cases that depend on the thinking summary hooks (`needs: ["thinking-summary"]`,
 // the real hooks are applied here). Everything else must match the Go output exactly.
 import { describe, expect, it } from "vitest";
-import { isJsonObject, type Json } from "@commissary/json";
+import type { Json } from "@commissary/json";
 import { builtinTranslators } from "../src/translator/builtin.ts";
 import { makeTranslationState, type SummaryHooks } from "../src/translator/registry.ts";
-import {
-  portedChunkEdit,
-  portedRequestEdit,
-  portedStreamOutputs,
-  staleGoldenEditEntries,
-} from "./support/translator-ported-ahead.ts";
 import {
   applySummaryConfigForModel,
   extractTranslatedSummaryConfig,
@@ -110,11 +104,7 @@ describe("translator golden fixtures with generated ids", () => {
           );
 
           expect(envelope.error?.message).toBe(c.requestError);
-          const expected = parseJson(c.translatedRequest);
-
-          // A golden that predates the C7 schema cleaning expects the edited request (translator-ported-ahead.ts).
-          if (isJsonObject(expected)) portedRequestEdit(`${c.from}->${c.to} ${c.name}`, expected);
-          expect(envelope.body).toEqual(expected);
+          expect(envelope.body).toEqual(parseJson(c.translatedRequest));
 
           const context = () => ({
             model: c.model,
@@ -131,13 +121,7 @@ describe("translator golden fixtures with generated ids", () => {
               builtinTranslators.translateStream(c.from, c.to, state, line).map(normalize),
             );
 
-            // A golden that predates the C6 response fixes expects the edited chunks (translator-ported-ahead.ts).
-            expect(outputs).toEqual(
-              portedStreamOutputs(`${c.from}->${c.to} ${c.name}`, c.streamOutputs ?? []).map(
-                (chunks, index) =>
-                  chunks.map(portedChunkEdit(`${c.from}->${c.to} ${c.name}`, index)).map(normalize),
-              ),
-            );
+            expect(outputs).toEqual((c.streamOutputs ?? []).map((chunks) => chunks.map(normalize)));
           }
 
           if (c.responseBodyText !== undefined) {
@@ -156,16 +140,4 @@ describe("translator golden fixtures with generated ids", () => {
       }
     });
   }
-
-  it("changed a golden with every ported-ahead edit of the generated-id cases", () => {
-    const idCaseKeys = new Set(
-      Object.values(files).flatMap((module) =>
-        module.default
-          .filter((c) => (c.needs ?? []).includes("id-normalization"))
-          .map((c) => `${c.from}->${c.to} ${c.name}`),
-      ),
-    );
-
-    expect(staleGoldenEditEntries((key) => idCaseKeys.has(key))).toEqual([]);
-  });
 });

@@ -502,13 +502,18 @@ Port of `internal/thinking`, keeping the "canonical `ThinkingConfig` → central
 - The OpenAI chat and Responses translators to Claude send a thinking level the model lists as it is (`xhigh` stays), and
   the Gemini translator turns a dynamic budget (`-1`) or level `auto` into adaptive thinking with no `effort` when the
   model allows dynamic budgets (Go `ad9e456d`).
-- The thinking golden fixtures predate `ad9e456d` for the cases of a model that cannot be turned off and for the
-  compatible applier's zero budget. `PORTED_AHEAD_OF_FIXTURES` (`packages/translation/test/support/ported-ahead.ts`)
-  asserts the new output of each of those cases; the fixture JSON is untouched and the map goes with its regeneration
-  (F2, #388).
+- When the target-format body carries no thinking config and the body is in another format, the source format's
+  fields are read too (Go `c9af5290`), e.g. a Gemini `thinkingBudget` bound for Antigravity.
+- **Differences from Go `c9af5290`** (#447): Go answers 400 where Commissary stays lenient. An unrecognised model
+  suffix (`model(bogus)`) is ignored (no thinking config from it) instead of being validated as a level
+  (`UNKNOWN_LEVEL`/`LEVEL_NOT_SUPPORTED`), and an unsupported level on a model whose `type` is not a provider family
+  (OpenAI-compatible models) is clamped to a supported level, as across families, instead of being rejected
+  (`LEVEL_NOT_SUPPORTED`). The thinking golden test masks those cases by that predicate.
+- `stripThinkingConfig` matches the provider name case-insensitively and strips `openai-response` like `codex` (Go `6e6afab9`).
 - Fixtures: `go run ./tools/fixturegen/thinking` → `packages/translation/test/fixtures/thinking.json` (~2.7 MB; includes the Go
   static model catalog used by the lookup). Known Go quirk not mirrored: gjson reads _unparsable_ source JSON
-  leniently in `extractCodexConfig`; the Workers port only handles parsed bodies.
+  leniently in `extractCodexConfig`; the Workers port only handles parsed bodies, so the applier cases whose body and
+  Go output are both unparsable are not compared.
 
 ## Credentials and selection (ControlPlane)
 
@@ -523,6 +528,8 @@ Port of `internal/thinking`, keeping the "canonical `ThinkingConfig` → central
   `derive.ts` turns a stored file into the immutable `Credential` (priority, weight, prefix, headers, exclusions,
   aliases, plan/domain attributes); global exclusions and aliases are applied at selection time, so config edits take
   effect immediately. Config credentials are never stored; their runtime state is pruned when their id disappears.
+- **Per-file exclusions**: a file's own `excluded_models` adds to its channel's `oauth-excluded-models` (the credential's
+  `excluded_models` attribute is the union); Go (`b015f208`) lets a non-empty per-file list replace the channel's.
 - **Selection** (`selection/`, pure and deterministic, clock injected): candidate set -> availability (`availability.ts`,
   incl. "never an expired OAuth token") -> highest priority tier -> strategy (`strategies.ts`: round-robin, smooth
   weighted round-robin, fill-first) -> optional session affinity (`affinity.ts`, TTL cache keyed
@@ -738,7 +745,7 @@ Core contracts every provider slice implements (Go references in each module hea
   canonical `reasoning_effort`, assistant tool-call turns get a `" "` `reasoning_content` placeholder (DeepSeek-style
   upstreams reject them without one) or lose a blank one; payload rules run afterwards and can override or filter it. The
   compat request translator adds the same placeholder from the Claude body and the model suffixes.
-- **Codex request hygiene** (B2, Go `bfac8586`, `606e667a`, `57d005fe`, `99d1698f`, `b0debb35`, `05e668cf`), with three differences from Go:
+- **Codex request hygiene** (B2, Go `bfac8586`, `606e667a`, `57d005fe`, `99d1698f`, `b0debb35`, `05e668cf`), with these differences from Go:
   - _Output budget floor_: `normalizeCodexOutputBudget` (`executor/codex/request.ts`) raises an integer `max_output_tokens` of 1..15 to 16 on the
     translated body in `prepare` (HTTP and WebSocket), before the payload rules, and not for `/responses/compact` (Go skips it too). Of the
     Codex translators only Interactions carries the field into the body (Responses and Chat drop it, Claude never sets it; forwarding is #395), so
@@ -753,6 +760,8 @@ Core contracts every provider slice implements (Go references in each module hea
     `codex-prepare.ts` (HTTP Responses and Compact only, after the orphan delegation rewrite; WebSocket frames skip it as in Go, but their Codex
     translation still applies it). The text of a non-array output that has
     no text is the re-serialised JSON, where Go keeps the client's raw bytes.
+  - _Empty Chat input_: a Chat Completions request with no messages still reaches Codex with `input: []`; Go has omitted
+    the empty list since its JSON library migration (`6e6afab9`), a side effect rather than a fix, so the field stays.
 - **Sessions**: `handlers/session.ts` ports `session.ExtractSessionInfo` (headers, Claude `metadata.user_id`, body fields)
   and feeds `PickRequest.session` together with the Access `callerScope`. Requests without an explicit marker are bound by
   content (`models/session-routing/`, `routing.ts` = `prepareSessionRouting`, only when `routing.session-affinity` is on):
@@ -1272,6 +1281,8 @@ models and Home.
 unparseable versions), modalities, priorities, Devin display names, `client.codex.optimize-multi-agent-v2` (`multi_agent_version`),
 `client.codex.enable-apply-patch` (`apply_patch_tool_type: freeform` only when every provider of the exact public model has an
 executor, `supportsApplyPatchProviders`) and `cpa_capabilities.web_search` for `client_version=cpa`. The body is plain `JSON.stringify` output.
+Difference from Go: `grok-imagine-video-1.5-lite` is hidden (`visibility: hide`) like the other Grok Imagine video models;
+Go's `isCodexClientImageOrVideoModel` leaves it out and lists it as a chat model (the listing test masks that one field).
 Fixtures: the real Go `OpenAIModels` handler over the registry scenarios (`codexClient` section of `packages/models/test/fixtures/registry.json`:
 per-entry and whole-body hashes of Go's sorted compact bytes, which the test reproduces itself before hashing).
 
@@ -1715,11 +1726,10 @@ Deviations from Go (all deliberate, documented in code headers):
     `gemini` and `antigravity` call `sanitizeNonVertexGeminiRequestThoughtSignatures` (bare-Tink -> the bypass sentinel on the
     first call of a group, dropped elsewhere), `vertex` the preserving sanitiser, and the translators always the preserving one.
     Native Interactions drops a bare-Tink `thought` step except on Vertex (`allowVertexBareTink`), and keeps a `thought` step
-    only with a replayable Gemini signature (Go `a68c7d8e` ported ahead of its Meta and router-suffix parts).
+    only with a replayable Gemini signature (Go `a68c7d8e`; its Meta and router-suffix parts are under _Signature validation_,
+    "Meta, router suffixes and model families").
   - _Parallel groups (C9, Go `e5434f65`)_: a text part (an empty signature carrier too) ends a parallel functionCall group, so the
     next call is signed (the sentinel when it has no signature) instead of 400ing; a thought part does not end it.
-  - The committed goldens that predate these changes are covered by ported-ahead edits (`test/support/translator-ported-ahead.ts`)
-    until F2 regenerates the fixtures.
 - **Gemini schema cleaning (C7, Go `154d5144`, `a43026d7`, `e9ba5c50`, `9126772d`, `b2fda98e`, `29150a22`, `a0fd8448`, `5efe9758`, `c558d320`, `ec06c3cb`)**
   (`translator/gemini/util/json-schema.ts`):
   - _Unsupported keywords_: the cleaners strip `readOnly`, `writeOnly`, `discriminator`, `contentMediaType`,
@@ -1747,9 +1757,7 @@ Deviations from Go (all deliberate, documented in code headers):
     _parameter_ schemas to the strongest branch (`cleanJsonSchemaForAntigravityClaudeTool`); the Claude request translator
     stays model-unaware and keeps the union, and function return schemas and Gemini models keep theirs.
   - _Differences from Go_: a property named `const` is never read as a `const` keyword (Go would fabricate
-    `properties.enum`); key order is preserved instead of Go's sorted marshal output. The `claude->gemini` schema-cleaning
-    goldens still carry the old `See: Loc` hint for an inlinable ref and are adjusted in
-    `test/support/translator-ported-ahead.ts` until F2 regenerates them.
+    `properties.enum`); key order is preserved instead of Go's sorted marshal output.
 - **Fixtures**: cases with generated ids/timestamps are tagged `needs: ["id-normalization"]` and run by
   translation's `test/translator-fixtures-ids.test.ts` (ids and `created_at` masked on both sides; thinking-summary
   cases apply the real summary hooks); everything else must match the Go output structurally
@@ -1841,8 +1849,7 @@ claude/gemini/openai-response -> openai, interactions <-> openai (Chat Completio
 - **Meta subscription telemetry** (`executor/meta/subscription-usage.ts`): `response.subscription_usage` frames are dropped
   from streams and aggregated answers by a line filter the shared Responses SSE code applies; an `event:` line is held
   until its data line passes the upstream error check.
-- **Meta deviations from Go**: local `countTokens` does not count the appended namespace (the golden token fixtures
-  predate it; revisit with the fixture regeneration); the UA platform is the captured `linux-x86_64` (a Worker has no host
+- **Meta deviations from Go**: the UA platform is the captured `linux-x86_64` (a Worker has no host
   OS/arch); the telemetry filter lives in the Meta executor only, not also in the Responses SSE framer or WebSocket
   forwarder of the client handlers, because Meta is the only upstream that sends it; the no-token TTFT fallback and the
   TTFT of non-stream calls are the response-header time, not the first body byte (as for Codex and xAI).
@@ -2692,8 +2699,7 @@ model-level cooldowns (Commissary's status cron does not touch cooldowns). Bare 
 arrive as `invalid_json_str` is held back and, after a clean EOS trailer, wrapped into `{"input": ...}` when it is a complete, well-framed patch
 (`apply-patch-recovery.ts`; truncated streams, trailer errors, mixed argument sources and malformed patches still fail with the sanitised
 502). The log-only apply_patch diagnostics of `b4f59d70` and `02ee3139` (byte counts, prefix shapes, JSON control character error classes)
-are not ported. The golden translator fixtures predate the tool description rewrite; `portedSinceGeneration` in
-`packages/translation/test/support/translator-fixtures.ts` accepts it until the fixtures are regenerated (ticket F2).
+are not ported.
 
 ## OpenCode Zen and OpenCode Go (`models/executor/opencode/`, `models/registry/opencode-*.ts`)
 
@@ -3175,8 +3181,7 @@ Deviations from Go / not ported: per-credential HTTP pools and proxies; short-co
 Interactions streams from Antigravity and Gemini (`ede07caf`, `be929f07`): `interaction.completed` and `done` follow the usage
 frame at or after the finish frame (earlier usage is only the fallback of an explicit `[DONE]`, which now terminates the stream
 in its bare form too, as in Go), the Gemini translator strips `data:` prefixes and ignores SSE control lines, and
-`cpaUsageMetadata` counts as usage. Goldens that predate it are adjusted by `portedStreamOutputs`
-(`test/support/translator-ported-ahead.ts`).
+`cpaUsageMetadata` counts as usage.
 
 ## Signature validation (`translation/signature/`)
 

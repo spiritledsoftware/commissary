@@ -31,7 +31,7 @@
    ],
    "stream": false
   },
-  "translatedRequest": "{\"model\":\"gpt-5.4\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Say hi\"}]}],\"service_tier\":\"priority\",\"store\":false,\"parallel_tool_calls\":true,\"include\":[\"reasoning.encrypted_content\",\"web_search_call.action.sources\"],\"stream\":true}"
+  "translatedRequest": "{\"model\":\"gpt-5.4\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Say hi\"}]}],\"max_output_tokens\":100,\"service_tier\":\"priority\",\"store\":false,\"parallel_tool_calls\":false,\"include\":[\"reasoning.encrypted_content\",\"web_search_call.action.sources\"],\"stream\":true}"
  },
  {
   "name": "request: array input with breakpoints, web_search_preview tools and blank function arguments",
