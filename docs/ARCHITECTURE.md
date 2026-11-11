@@ -1042,8 +1042,11 @@ upgrade request like any other (default-deny prefixes); the principal is capture
   WebSocket-capable credential's pin, invalidates the upstream socket and records a boundary transcript (input `[]`
   plus the compaction item), so a continuation sends the expanded summary and the new input on a freshly dialled
   socket. A `previous_response_id` with the `resp_ag_compact_` prefix that is not the last response gets the 409
-  frame; an interrupt during a local request is resolved locally. Difference from Go: the report and the boundary
-  apply to every local route, not only Codex `is-compat`.
+  frame. A local compaction is atomic (one HTTP summary, then a whole response), so a `response.interrupt` for it is never
+  forwarded upstream and is ignored: the response completes, like one that finished before the interrupt arrived (cutting
+  it short would drop the compaction item the boundary stands on; a turn that ends without the item is recorded like any
+  other). Difference from Go: the report and the boundary apply to every local route, Claude's and Antigravity's own flows
+  included, not only Codex `is-compat`.
 - **Fallback to HTTP**: credentials without `websockets` (or other providers) run each turn over the ordinary HTTP executors, with the
   transcript rebuilt locally; a downstream WebSocket never needs an upstream one.
 
@@ -1528,6 +1531,9 @@ Deviations from Go (all deliberate, documented in code headers):
   - Every local route refuses a compaction whose source carries `previous_response_id` (HTTP: 400; WebSocket: the 409
     `previous_response_not_found` frame), not only Codex: the capsule would silently lose the history the reference held.
     Empty conversation input is a 400 too.
+  - Antigravity follows the shared rule where Go's differs: Go expands every `compaction` item (a foreign one fails as an
+    unreadable capsule, a 400) and runs no status check on the summary; here foreign items are dropped, a corrupt capsule
+    in `originalRequest` is a 400 like one in the payload, and an incomplete summary is the 502 above.
   - Devin's `countTokens` also expands capsules (Go's fb77445f does not, so it counted the ciphertext).
 
   The Claude and Antigravity executors also add the `output_tokens_details`/`input_tokens_details` of Responses answers
