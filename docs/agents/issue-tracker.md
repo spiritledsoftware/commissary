@@ -2,7 +2,7 @@
 
 Issues and specs for this repo live in **Linear**: workspace `spiritledsoftware`, team **SPI** (Spirit-Led Software), project **Commissary**. The team also holds other repos' projects (cloudpid, lspctl, Neopane, …), so create every issue for this repo in project `Commissary`, and scope every read to it.
 
-**GitHub Issues are the public intake.** Outside users open issues on GitHub. A one-way sync (GitHub → Linear) copies each new one into SPI / Commissary, carrying its GitHub URL as an attachment. Comments sync both ways, and closing it in Linear closes it on GitHub. Work every issue in Linear and refer to it by its Linear identifier (`SPI-123`). Never create issues with `gh issue create`. A GitHub number (`#451`) resolves to the Linear issue that carries its URL (**Read an issue** below).
+**GitHub Issues are the public intake.** Outside users open issues on GitHub. A one-way sync (GitHub → Linear) copies each new one into team SPI, carrying its GitHub URL as an attachment. Comments sync both ways, and closing it in Linear closes it on GitHub. The sync puts the copy in no project; the workflow `linear project` (`.github/workflows/linear-project.yml`, `tools/linear-project.sh`) moves it into Commissary once it appears. Dispatch that workflow with an issue number to retry one or to file an older one. Work every issue in Linear and refer to it by its Linear identifier (`SPI-123`). Never create issues with `gh issue create`. A GitHub number (`#451`) resolves to the Linear issue that carries its URL (**Read an issue** below).
 
 ## How to reach Linear
 
