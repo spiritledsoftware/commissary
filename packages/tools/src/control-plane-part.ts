@@ -286,9 +286,6 @@ const REFRESH_RECHECK_MS = 30_000;
 /** The alarm's token refreshes at once. */
 const REFRESH_CONCURRENCY = 4;
 
-/** The most sessions of retired runs one alarm deletes at the provider (`SandboxSessionStore.runSessionsDue`). */
-const RUN_SESSION_PURGES = 50;
-
 /** Browser crawls cancelled at once when a member leaves or the org is deleted (#270). */
 const CRAWL_CANCEL_CONCURRENCY = 4;
 
@@ -1007,13 +1004,6 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     this.#browserSessions = providers.browserSessions;
     this.#managedApps = managedApps;
     this.#yieldBuiltInNames();
-
-    // Sessions of retired runs (`RUN_PRINCIPALS`) were left out of the part's wake-ups: an alarm makes sure the part
-    // deletes them at the provider once they are due.
-    if (this.#sandboxSessions.hasRunSessions())
-      void ctx.blockConcurrencyWhile(async () => {
-        if ((await ctx.storage.getAlarm()) === null) await ctx.storage.setAlarm(Date.now());
-      });
   }
 
   // --- the org-wide base's calls (`ControlPlanePart`, `@commissary/state`) ------------------------------------
@@ -1044,8 +1034,6 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
    * wake-up go on.
    */
   async alarm(now: number): Promise<number | null> {
-    await this.#purgeRunSessions(now);
-
     const due = this.#store.refreshesDue(now);
 
     await Effect.runPromise(
@@ -1096,42 +1084,6 @@ export class ToolsPart extends RpcTarget implements ControlPlanePart {
     ].filter((at): at is number => at !== null);
 
     return wakes.length === 0 ? null : Math.min(...wakes);
-  }
-
-  /**
-   * Deletes at the provider the sessions of retired runs (`RUN_PRINCIPALS`) that are due, a batch at a time, and forgets
-   * each it deleted: no day closes one in the sandbox, so its files would otherwise outlive its row. One the provider
-   * could not reach is tried again later, after the others (`purgeFailed`). Without a provider, there is nothing to
-   * delete.
-   */
-  async #purgeRunSessions(now: number): Promise<void> {
-    const due = this.#sandboxSessions.runSessionsDue(now, RUN_SESSION_PURGES);
-    const sandbox = this.#sandbox;
-
-    if (sandbox === undefined) {
-      this.#sandboxSessions.ended(due.map(({ id }) => id));
-
-      return;
-    }
-
-    await Promise.all(
-      due.map(async ({ id }) => {
-        const purged = await Effect.runPromise(
-          sandbox.purge(this.#core.org, id).pipe(
-            Effect.as(true),
-            Effect.catchTag("SandboxError", (error) =>
-              Effect.logWarning("sandbox session not purged").pipe(
-                Effect.annotateLogs({ reason: error.reason, message: error.message }),
-                Effect.as(false),
-              ),
-            ),
-          ),
-        );
-
-        if (purged) this.#sandboxSessions.ended([id]);
-        else this.#sandboxSessions.purgeFailed(id, now);
-      }),
-    );
   }
 
   async #wake(): Promise<void> {

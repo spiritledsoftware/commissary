@@ -13,19 +13,6 @@
  */
 import { CLOSE_REPORT_MS, SESSION_IDLE_MS } from "./provider.ts";
 
-/**
- * The principal ids of hosted agents' runs (`run:<id>`), which Commissary no longer has (ADR 0048), as a `LIKE`
- * pattern. A run's own session waited for its run to be deleted, so no day closes it in the sandbox: the Tools part
- * deletes it at the provider once it went a day unused ({@link SandboxSessionStore.runSessionsDue}).
- */
-export const RUN_PRINCIPALS = "run:%";
-
-/** The rows of every other session, which the provider closes itself after a day without use. */
-const NOT_RUN = `principal NOT LIKE '${RUN_PRINCIPALS}'`;
-
-/** The first wait before a failed deletion of a retired run's session at the provider is tried again; it doubles. */
-export const PURGE_RETRY_MS = 60_000;
-
 /** One open sandbox session. */
 export interface TrackedSession {
   readonly id: string;
@@ -86,12 +73,12 @@ export class SandboxSessionStore {
     if (!columns.includes("computer_until"))
       sql.exec(`ALTER TABLE sandbox_sessions ADD COLUMN computer_until INTEGER`);
 
-    // When a failed deletion of a retired run's session at the provider is tried again, and how often it failed.
-    if (!columns.includes("purge_retry_at"))
-      sql.exec(`ALTER TABLE sandbox_sessions ADD COLUMN purge_retry_at INTEGER`);
+    // The retries of the purge of the sessions retired agent runs left (ADR 0048), which is done (#451): dropped once.
+    if (columns.includes("purge_retry_at"))
+      sql.exec(`ALTER TABLE sandbox_sessions DROP COLUMN purge_retry_at`);
 
-    if (!columns.includes("purge_failures"))
-      sql.exec(`ALTER TABLE sandbox_sessions ADD COLUMN purge_failures INTEGER`);
+    if (columns.includes("purge_failures"))
+      sql.exec(`ALTER TABLE sandbox_sessions DROP COLUMN purge_failures`);
 
     // Whether a session was opened with the computer (#241): a log from before has no column for it, and its sessions
     // may have one.
@@ -254,76 +241,16 @@ export class SandboxSessionStore {
   }
 
   /**
-   * Forgets the sessions the provider ended for want of use whose close was not reported by `now` (#224), but those of
-   * retired runs ({@link RUN_PRINCIPALS}), which the Tools part deletes at the provider first ({@link runSessionsDue});
-   * answers when the next of either is due.
+   * Forgets the sessions the provider ended for want of use whose close was not reported by `now` (#224); answers when
+   * the next one is forgotten.
    */
   prune(now: number): number | null {
-    this.#sql.exec(
-      `DELETE FROM sandbox_sessions WHERE last_used <= ? AND ${NOT_RUN}`,
-      now - FORGOTTEN_AFTER_MS,
-    );
+    this.#sql.exec(`DELETE FROM sandbox_sessions WHERE last_used <= ?`, now - FORGOTTEN_AFTER_MS);
 
-    const next = this.#sql
-      .exec<{ forgotten: number | null; purged: number | null }>(
-        `SELECT MIN(CASE WHEN ${NOT_RUN} THEN last_used END) AS forgotten,
-                MIN(CASE WHEN ${NOT_RUN} THEN NULL ELSE MAX(last_used + ?, COALESCE(purge_retry_at, 0)) END) AS purged
-         FROM sandbox_sessions`,
-        SESSION_IDLE_MS,
-      )
-      .toArray()[0];
+    const first = this.#sql
+      .exec<{ first: number | null }>(`SELECT MIN(last_used) AS first FROM sandbox_sessions`)
+      .toArray()[0]?.first;
 
-    const forgotten = next?.forgotten ?? null;
-
-    const wakes = [
-      forgotten === null ? null : forgotten + FORGOTTEN_AFTER_MS,
-      next?.purged ?? null,
-    ].filter((at): at is number => at !== null);
-
-    return wakes.length === 0 ? null : Math.min(...wakes);
-  }
-
-  /** Whether the part keeps a session of a retired run ({@link RUN_PRINCIPALS}). */
-  hasRunSessions(): boolean {
-    return (
-      this.#sql.exec(`SELECT 1 FROM sandbox_sessions WHERE NOT (${NOT_RUN}) LIMIT 1`).toArray()
-        .length > 0
-    );
-  }
-
-  /**
-   * The sessions of retired runs ({@link RUN_PRINCIPALS}) due to be deleted at the provider at `now`, at most `limit`:
-   * those unused for a day, whose last failed deletion, if any, is due to be tried again. Never tried first, then the
-   * longest due, so sessions the provider cannot reach do not hold the others back.
-   */
-  runSessionsDue(now: number, limit: number): ReadonlyArray<TrackedSession> {
-    return this.#sql
-      .exec<SessionRow>(
-        `SELECT * FROM sandbox_sessions
-         WHERE NOT (${NOT_RUN}) AND last_used <= ? AND (purge_retry_at IS NULL OR purge_retry_at <= ?)
-         ORDER BY purge_retry_at IS NOT NULL, purge_retry_at, last_used, id LIMIT ?`,
-        now - SESSION_IDLE_MS,
-        now,
-        limit,
-      )
-      .toArray()
-      .map(sessionOf);
-  }
-
-  /**
-   * Notes that deleting the session `id` at the provider failed at `now`: it is tried again after a wait that doubles
-   * with each failure, from {@link PURGE_RETRY_MS} up to a day.
-   */
-  purgeFailed(id: string, now: number): void {
-    this.#sql.exec(
-      `UPDATE sandbox_sessions
-       SET purge_failures = COALESCE(purge_failures, 0) + 1,
-           purge_retry_at = ? + MIN(? * (1 << MIN(COALESCE(purge_failures, 0), 20)), ?)
-       WHERE id = ?`,
-      now,
-      PURGE_RETRY_MS,
-      SESSION_IDLE_MS,
-      id,
-    );
+    return first === null || first === undefined ? null : first + FORGOTTEN_AFTER_MS;
   }
 }

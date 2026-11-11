@@ -5,21 +5,15 @@
 // its network stays within the org's ceiling, and every request it makes goes through the egress entrypoint, which also
 // applies the outbound guard (also on a redirect; and `git` has no way out of its own). A fake second provider serves
 // the same tools.
-import {
-  env,
-  evictDurableObject,
-  runDurableObjectAlarm,
-  runInDurableObject,
-} from "cloudflare:test";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Schema } from "effect";
 import type { SandboxNetwork } from "@commissary/contract/tools";
 import { OrgId } from "@commissary/core";
 import { deleteOrgSandboxSessions } from "../src/org-deletion.ts";
 import { CLOSE_REPORT_MS, SESSION_IDLE_MS as IDLE_MS } from "../src/sandbox/provider.ts";
-import { PURGE_RETRY_MS } from "../src/sandbox/sessions.ts";
+import { SandboxSessionStore } from "../src/sandbox/sessions.ts";
 import { migrateUsageDb } from "./support/usage-db.ts";
-import type { SandboxSession as TestSandboxSession } from "./worker.ts";
 
 const POLICY = { ownHosts: ["app.example.com"], localDevelopment: false };
 
@@ -32,21 +26,6 @@ const BOB = { member: "m-bob", admin: false };
 type Viewer = typeof ALICE;
 
 const withSandbox = () => env.SANDBOX_CONTROL_PLANE.getByName(crypto.randomUUID());
-
-/**
- * The test Worker's `SandboxSession` class (test/worker.ts) as loaded in the objects' isolate, reached through an
- * instance's constructor, whose statics make its next purges fail.
- */
-const sessionClass = async (): Promise<typeof TestSandboxSession> =>
-  await runInDurableObject(
-    env.SANDBOX_SESSION.getByName(`test:${crypto.randomUUID()}`),
-    // SAFETY: the test Worker binds `SANDBOX_SESSION` to its own `SandboxSession` (test/worker.ts).
-    (instance) => instance.constructor as typeof TestSandboxSession,
-  );
-
-afterEach(async () => {
-  (await sessionClass()).failPurges = 0;
-});
 
 const withOtherProvider = () => env.OTHER_SANDBOX_CONTROL_PLANE.getByName(crypto.randomUUID());
 
@@ -453,127 +432,6 @@ describe("the org's open sandbox sessions", () => {
   });
 });
 
-/** A session row of a retired run (`run:<id>`), last used at `lastUsed`, as one a hosted agent's run left. */
-const insertRunSession = (state: DurableObjectState, id: string, lastUsed = 0) =>
-  state.storage.sql.exec(
-    `INSERT INTO sandbox_sessions (id, toolkit_id, member, principal, opened_at, last_used)
-     VALUES (?, 'sandbox', '', 'run:ar_1', ?, ?)`,
-    id,
-    lastUsed,
-    lastUsed,
-  );
-
-/** A session id the provider reaches an object by. */
-const sessionId = () => `sbx_${crypto.randomUUID().replaceAll("-", "")}`;
-
-describe("the sessions retired runs left", () => {
-  it("are deleted in the sandbox once unused a day, and one whose deletion failed is kept and tried again later", async () => {
-    const org = crypto.randomUUID();
-    const stub = env.SANDBOX_CONTROL_PLANE.getByName(org);
-
-    await grantEveryone(stub);
-    const session = await open(stub, ALICE, undefined, "run:ar_1");
-    const now = Date.now();
-
-    // Not yet: it was used within the day.
-    await runInDurableObject(stub, async (instance) => {
-      await instance.tools().alarm(now + 60_000);
-    });
-    expect((await tracked(stub)).map(([id]) => id)).toEqual([session]);
-
-    const due = now + IDLE_MS + 60_000;
-    const sessions = await sessionClass();
-
-    sessions.failPurges = 1;
-
-    const next = await runInDurableObject(
-      stub,
-      async (instance) => await instance.tools().alarm(due),
-    );
-
-    expect((await tracked(stub)).map(([id]) => id)).toEqual([session]);
-    expect(await heldBy(org, session)).not.toEqual([]);
-    expect(next).toBe(due + PURGE_RETRY_MS);
-
-    // Before its retry, it is left alone.
-    await runInDurableObject(stub, async (instance) => {
-      await instance.tools().alarm(due + PURGE_RETRY_MS - 1);
-    });
-    expect(await heldBy(org, session)).not.toEqual([]);
-
-    await runInDurableObject(stub, async (instance) => {
-      await instance.tools().alarm(due + PURGE_RETRY_MS);
-    });
-    expect(await tracked(stub)).toEqual([]);
-    expect(await heldBy(org, session)).toEqual([]);
-  });
-
-  it("are deleted a batch per alarm, which comes again at once for the rest", async () => {
-    const stub = withSandbox();
-    const now = Date.now();
-
-    // Ids the provider has no object for: deleting them asks nothing of it.
-    await runInDurableObject(stub, (_instance, state) => {
-      for (let n = 0; n < 60; n += 1) insertRunSession(state, `old_${n}`);
-    });
-
-    const next = await runInDurableObject(
-      stub,
-      async (instance) => await instance.tools().alarm(now),
-    );
-
-    expect(await tracked(stub)).toHaveLength(10);
-    expect(next).toBeLessThanOrEqual(now);
-
-    await runInDurableObject(stub, async (instance) => {
-      await instance.tools().alarm(now);
-    });
-    expect(await tracked(stub)).toEqual([]);
-  });
-
-  it("that the sandbox cannot reach hold back none of the others", async () => {
-    const stub = withSandbox();
-    const now = Date.now();
-    const unreachable = Array.from({ length: 50 }, sessionId);
-    const other = sessionId();
-
-    await runInDurableObject(stub, (_instance, state) => {
-      for (const id of unreachable) insertRunSession(state, id, 0);
-      insertRunSession(state, other, 1);
-    });
-
-    const sessions = await sessionClass();
-
-    sessions.failPurges = unreachable.length;
-
-    await runInDurableObject(stub, async (instance) => {
-      await instance.tools().alarm(now);
-    });
-    expect(await tracked(stub)).toHaveLength(51);
-
-    // The next alarm takes the one never tried, while the failed ones wait for their retry.
-    await runInDurableObject(stub, async (instance) => {
-      await instance.tools().alarm(now + 1);
-    });
-    expect(new Set((await tracked(stub)).map(([id]) => id))).toEqual(new Set(unreachable));
-  });
-
-  it("get the ControlPlane an alarm when it starts without one", async () => {
-    const stub = withSandbox();
-
-    await runInDurableObject(stub, async (_instance, state) => {
-      insertRunSession(state, "run_session");
-      await state.storage.deleteAlarm();
-    });
-    await evictDurableObject(stub);
-
-    // Starting again, it sets an alarm due at once, which deletes the overdue session (run here if it has not run yet).
-    await runInDurableObject(stub, () => undefined);
-    await runDurableObjectAlarm(stub);
-    expect(await tracked(stub)).toEqual([]);
-  });
-});
-
 /** A `curl` of `url` in `session`, as Alice. */
 const curl = async (stub: Stub, session: string, url: string) =>
   await call(stub, ALICE, "sandbox_bash", { session, command: `curl -sS ${url}` });
@@ -808,5 +666,39 @@ describe("another sandbox provider", () => {
     );
     await call(stub, ALICE, "sandbox_close", { session });
     expect(textOf(await call(stub, ALICE, "sandbox_list", { session }))).toContain("is closed");
+  });
+});
+
+describe("the purge of the sessions retired agent runs left (ADR 0048, #451)", () => {
+  const columns = async (stub: Stub) =>
+    await runInDurableObject(stub, (_instance, state) =>
+      state.storage.sql
+        .exec<{ name: string }>("PRAGMA table_info(sandbox_sessions)")
+        .toArray()
+        .map((column) => column.name),
+    );
+
+  it("is gone: the store drops its columns as it starts, and keeps the sessions", async () => {
+    const stub = withSandbox();
+
+    await grantEveryone(stub);
+    await open(stub, ALICE);
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec("ALTER TABLE sandbox_sessions ADD COLUMN purge_retry_at INTEGER");
+      state.storage.sql.exec("ALTER TABLE sandbox_sessions ADD COLUMN purge_failures INTEGER");
+    });
+    expect(await columns(stub)).toEqual(
+      expect.arrayContaining(["purge_retry_at", "purge_failures"]),
+    );
+
+    // What the part's next start does: it builds its store over the same tables.
+    await runInDurableObject(
+      stub,
+      (_instance, state) => new SandboxSessionStore(state.storage.sql),
+    );
+
+    expect(await columns(stub)).not.toContain("purge_retry_at");
+    expect(await columns(stub)).not.toContain("purge_failures");
+    expect(await tracked(stub)).toHaveLength(1);
   });
 });

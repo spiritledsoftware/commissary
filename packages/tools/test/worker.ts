@@ -98,15 +98,13 @@ export { SandboxEgress, WorkspaceProxy, WorkspaceServiceProxy } from "../src/sta
  * the time from (`clock`, a `TestClock` it also gives the part) and makes the next usage record writes or reports fail
  * (`failRecords`, `failReports`), through an instance's constructor in the objects' isolate (computer-time.test.ts).
  * With `before224` set, every object answers as one from before #224 would: it takes no metering, so it meters
- * nothing and answers no computer time, and has no `stopForLimit`. `failPurges` makes the next purges fail, as an object
- * the ControlPlane could not reach (sandbox-toolkit.test.ts).
+ * nothing and answers no computer time, and has no `stopForLimit`.
  */
 export class SandboxSession extends FakeComputerSandboxSession {
   static clock: Clock.Clock | undefined;
   static failRecords = 0;
   static failReports = 0;
   static before224 = false;
-  static failPurges = 0;
 
   constructor(ctx: DurableObjectState, sessionEnv: SandboxSessionEnv) {
     super(ctx, sessionEnv);
@@ -175,16 +173,6 @@ export class SandboxSession extends FakeComputerSandboxSession {
 
   override close(...[caller, metering]: Parameters<FakeComputerSandboxSession["close"]>) {
     return super.close(caller, SandboxSession.#taken(metering));
-  }
-
-  override async purge(...args: Parameters<FakeComputerSandboxSession["purge"]>) {
-    if (SandboxSession.failPurges > 0) {
-      SandboxSession.failPurges -= 1;
-
-      throw new Error("the sandbox session could not be reached");
-    }
-
-    return await super.purge(...args);
   }
 
   override async stopForLimit(...args: Parameters<FakeComputerSandboxSession["stopForLimit"]>) {

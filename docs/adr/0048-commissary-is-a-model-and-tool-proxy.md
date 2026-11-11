@@ -1,5 +1,5 @@
 ---
-status: accepted, supersedes ADR-0040, amended below (the follow-up release, #449)
+status: accepted, supersedes ADR-0040, amended below (the follow-up release, #449; the purge of the runs' sandbox sessions, #451)
 ---
 
 # Commissary is a model and tool proxy
@@ -28,7 +28,7 @@ The removal ships in one release (as this section says) and a follow-up release 
 - **State the state Worker owns** is cleaned up on each start, a no-op after the first: each ControlPlane runs `DROP TABLE IF EXISTS` for the Agents tables, deletes the Spend limits and counters of kind `agent`, and drops the `private_agents` column of its membership table; the Platform registry drops its `run_retention_days` column. No data is exported first.
 - **Shims for one release.** The state RPC still answers `privateAgents: false` for an app Worker from before this release, and `OrgRecord.runRetentionDays` is `null` and `Platform.setRetention` stays, for the same reason. The follow-up removes them with the tombstone classes. The columns `purge_retry_at` and `purge_failures` the Tools part added to `sandbox_sessions` for the retired runs' sessions go later, with their purge (#451).
 - **An exception to "State RPC: expand, then contract"** (`docs/DEVELOPMENT.md`). The state RPC methods and outcomes that only the Agents area used (the `agents()` part, `ToolsPart`'s run methods, the `delegated` and gated outcomes, the run fields of `ToolCall`) are removed in this release, not in two, because their only callers are the removed area. An older API or app Worker that meets the new state Worker during the deploy fails only on its agent paths. A non-agent result that an older caller still requires keeps a shim for one release, as above.
-- **Stored values that mention agents** are harmless: an API key's tool scope naming the agents toolkit shows as a missing toolkit (`tool_scope_missing`), like any removed toolkit, and an older caller's `private_agents` setting is ignored (its column is dropped, above). A run's sandbox sessions are deleted by the Tools part's alarm: only those of principal `run:<id>`, once a day unused, 50 per alarm, with retries that never hold up the others; ordinary sessions are forgotten as before.
+- **Stored values that mention agents** are harmless: an API key's tool scope naming the agents toolkit shows as a missing toolkit (`tool_scope_missing`), like any removed toolkit, and an older caller's `private_agents` setting is ignored (its column is dropped, above). A run's sandbox sessions are deleted by the Tools part's alarm: only those of principal `run:<id>`, once a day unused, 50 per alarm, with retries that never hold up the others; ordinary sessions are forgotten as before (until #451, amended below).
 
 ## Considered Options
 
@@ -46,3 +46,7 @@ The removal ships in one release (as this section says) and a follow-up release 
 ## Amendment: the follow-up release (#449)
 
 The release after the removal deletes what it kept: the API Worker no longer defines `AgentRun` and `AgentSchedule`, so the deploy deletes their namespaces and the old runs' data; migration `0016_usage_drop_agent_runs.sql` drops the index `usage_records_org_run` and the columns `agent_id`, `run_id` and `starter`; and the state RPC no longer answers `privateAgents`, `OrgRecord.runRetentionDays` or `Platform.setRetention`. A stage must deploy the removal before this release. The purge of the sandbox sessions retired runs left stays until none is left (#451); the cleanup on each start stays, as it costs nothing once done.
+
+## Amendment: the purge of the runs' sandbox sessions is removed (#451)
+
+The Tools part no longer deletes the sandbox sessions hosted agents' runs held: its purge, and the columns `purge_retry_at` and `purge_failures` it kept on `sandbox_sessions`, are gone (the part drops the columns as it starts). A run's session still listed is forgotten eight days after its last use, like any session; its files stay at the provider only if the purge never reached it.
