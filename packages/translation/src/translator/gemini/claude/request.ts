@@ -193,10 +193,14 @@ const convert = (modelName: string, request: Json, preserveEmptyThinkingBlocks: 
                 set(part, resultPath, toolResult.result);
               }
 
-              partItems.push(part);
-
+              // Images belong to their own functionResponse (CLIProxyAPI be864305): sibling parts would detach
+              // from it when several tool results share a turn.
               for (const image of toolResult.images)
-                partItems.push(inlinePart(image.mimeType, image.data));
+                set(part, "functionResponse.parts.-1", {
+                  inlineData: { mimeType: image.mimeType, data: image.data },
+                });
+
+              partItems.push(part);
               break;
             }
 

@@ -116,14 +116,114 @@ describe("Claude tool_result errors", () => {
         expect(get(functionResponse, "response")).toEqual(response);
         const parts = get(out, "contents.1.parts") as Json[];
 
-        if (image) {
-          expect(parts).toHaveLength(2);
-          expect(get(parts[1], "inline_data")).toEqual({
-            mime_type: "image/png",
+        expect(parts).toHaveLength(1);
+
+        if (image)
+          expect(get(functionResponse, "parts.0.inlineData")).toEqual({
+            mimeType: "image/png",
             data: "aGVsbG8=",
           });
-        } else expect(parts).toHaveLength(1);
+        else expect(get(functionResponse, "parts")).toBeUndefined();
       }
     });
+  });
+});
+
+describe("Claude tool_result images nest in functionResponse.parts", () => {
+  const MODEL = "gemini-3.8-flash-high";
+
+  const image = (mediaType: string, data: string): Json => ({
+    type: "image",
+    source: { type: "base64", media_type: mediaType, data },
+  });
+
+  it("nests an image-only tool_result", () => {
+    const out = convertClaudeRequestToGemini(
+      MODEL,
+      {
+        model: MODEL,
+        messages: [
+          {
+            role: "assistant",
+            content: [
+              {
+                type: "tool_use",
+                id: "toolu_read_img",
+                name: "Read",
+                input: { file_path: "/tmp/photo.png" },
+              },
+            ],
+          },
+          {
+            role: "user",
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: "toolu_read_img",
+                content: [image("image/png", "iVBORw0KGgoAAAANSUhEUg==")],
+              },
+            ],
+          },
+        ],
+      },
+      false,
+    );
+
+    const parts = get(out, "contents.1.parts") as Json[];
+
+    expect(parts).toHaveLength(1);
+    expect(get(parts[0], "functionResponse.name")).toBe("Read");
+    expect(get(parts[0], "functionResponse.response.result")).toBe("");
+    expect(get(parts[0], "functionResponse.parts.0.inlineData")).toEqual({
+      mimeType: "image/png",
+      data: "iVBORw0KGgoAAAANSUhEUg==",
+    });
+  });
+
+  it("keeps several images and parallel tool_results bound to their own functionResponse", () => {
+    const out = convertClaudeRequestToGemini(
+      MODEL,
+      {
+        model: MODEL,
+        messages: [
+          {
+            role: "assistant",
+            content: [
+              { type: "tool_use", id: "call_a", name: "Read", input: { file_path: "/tmp/a.png" } },
+              { type: "tool_use", id: "call_b", name: "Read", input: { file_path: "/tmp/b.jpg" } },
+            ],
+          },
+          {
+            role: "user",
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: "call_b",
+                content: [image("image/jpeg", "DATA_B1"), image("image/webp", "DATA_B2")],
+              },
+              {
+                type: "tool_result",
+                tool_use_id: "call_a",
+                content: [image("image/png", "DATA_A1")],
+              },
+            ],
+          },
+        ],
+      },
+      false,
+    );
+
+    const parts = get(out, "contents.1.parts") as Json[];
+
+    expect(parts).toHaveLength(2);
+    expect(get(parts[0], "functionResponse.id")).toBe("call_a");
+    expect(get(parts[0], "functionResponse.parts")).toEqual([
+      { inlineData: { mimeType: "image/png", data: "DATA_A1" } },
+    ]);
+    expect(get(parts[1], "functionResponse.id")).toBe("call_b");
+    expect(get(parts[1], "functionResponse.parts")).toEqual([
+      { inlineData: { mimeType: "image/jpeg", data: "DATA_B1" } },
+      { inlineData: { mimeType: "image/webp", data: "DATA_B2" } },
+    ]);
   });
 });

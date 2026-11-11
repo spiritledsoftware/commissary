@@ -22,6 +22,8 @@ import { isJsonArray, isJsonObject, type Json, type JsonObject } from "@commissa
  * - `portedRequestEdit` (ticket C6, Go `80aa2b1d`): the OpenAI -> Antigravity request of `tool_choice: "none"` keeps its
  *   `request.tools` (the fixture still drops them). (Ticket C7, Go `c558d320`): the Claude -> Gemini schema-cleaning
  *   cases inline the local `$ref` of a tool property instead of degrading it to a `See: Loc` hint.
+ * - `portedRequestEdit` (ticket C8, Go `be864305`): the Claude -> Gemini schema-cleaning cases also expect the tool_result image
+ *   nested in `functionResponse.parts` (the fixture still has the sibling `inline_data` part).
  * - `portedParallelToolCalls` (ticket B2, Go `99d1698f`): the `parallel_tool_calls` a Codex-bound request case must now
  *   produce. An explicit `false` from the client survives instead of being forced to `true`; Go changed this case's
  *   input to `null` to keep covering the forced default, while the fixture still sends `false`.
@@ -412,6 +414,40 @@ const inlinedLocRef: GoldenEdit = setPath(
   { type: "object", properties: { lat: { type: "number" } } },
 );
 
+/**
+ * A Claude tool_result image nests in its functionResponse as `parts[].inlineData` (camelCase) instead of following it as a
+ * sibling `inline_data` part (C8, `be864305`).
+ */
+const nestToolResultImages: GoldenEdit = (golden) => {
+  const contents = golden["contents"];
+
+  if (!isJsonArray(contents)) return;
+
+  for (const content of contents) {
+    const parts = isJsonObject(content) ? content["parts"] : undefined;
+
+    if (!isJsonArray(parts)) continue;
+    const kept: Json[] = [];
+
+    for (const part of parts) {
+      const previous = kept.at(-1);
+      const response = isJsonObject(previous) ? previous["functionResponse"] : undefined;
+      const inline = isJsonObject(part) ? part["inline_data"] : undefined;
+
+      if (isJsonObject(response) && isJsonObject(inline)) {
+        const nested = isJsonArray(response["parts"]) ? response["parts"] : [];
+        response["parts"] = [
+          ...nested,
+          { inlineData: { mimeType: inline["mime_type"] ?? "", data: inline["data"] ?? "" } },
+        ];
+      } else kept.push(part);
+    }
+
+    // SAFETY: `content` is a JSON object here: `parts` was read from it above.
+    (content as JsonObject)["parts"] = kept;
+  }
+};
+
 /** Mixed built-in and function tools now declare `toolConfig.includeServerSideToolInvocations` (C8, `45501610`). */
 const serverSideToolInvocations: GoldenEdit = (golden) => {
   const toolConfig = golden["toolConfig"];
@@ -475,7 +511,13 @@ const REQUEST_EDITS: ReadonlyMap<string, GoldenEdit> = new Map([
     "request: system, multimodal user turn, tool round trip, schema cleaning, strict tool choice, thinking budget",
     "stream: thinking with signature, text, two tool calls, usage and finish",
     "non-stream: thinking, text, tool calls, cached usage",
-  ].map((name): readonly [string, GoldenEdit] => [`claude->gemini ${name}`, inlinedLocRef]),
+  ].map((name): readonly [string, GoldenEdit] => [
+    `claude->gemini ${name}`,
+    (golden) => {
+      inlinedLocRef(golden);
+      nestToolResultImages(golden);
+    },
+  ]),
   [
     "openai->antigravity request: tool_choice none removes tools; thinking config keys normalised",
     setPath(
