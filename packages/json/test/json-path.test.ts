@@ -9,6 +9,7 @@ import {
   exists,
   get,
   type Json,
+  type JsonObject,
   JsonPathError,
   parseJsonOrText,
   set,
@@ -120,6 +121,84 @@ describe("path engine behaviours", () => {
     expect(wildcardMatch("abcabd", "*abc")).toBe(false);
     expect(wildcardMatch("", "*")).toBe(true);
     expect(wildcardMatch("", "?")).toBe(false);
+  });
+});
+
+/** Wraps `target` so the test can count how often its own keys are listed. */
+const countingKeys = (target: JsonObject) => {
+  const counter = { enumerations: 0 };
+
+  const proxy = new Proxy(target, {
+    ownKeys: (t) => {
+      counter.enumerations++;
+
+      return Reflect.ownKeys(t);
+    },
+  });
+
+  return { proxy, counter };
+};
+
+const wide = (): JsonObject => {
+  const properties: JsonObject = {};
+
+  for (let i = 0; i < 2000; i++) properties[`p${i}`] = { type: "string" };
+
+  return properties;
+};
+
+describe("plain key segments", () => {
+  it("a plain key segment does not enumerate its siblings", () => {
+    const { proxy, counter } = countingKeys(wide());
+
+    expect(get({ properties: proxy }, "properties.p1999.type")).toBe("string");
+    expect(get({ properties: proxy }, "properties.missing")).toBeUndefined();
+    expect(counter.enumerations).toBe(0);
+  });
+
+  it("a wildcard segment still matches by scanning keys", () => {
+    const { proxy, counter } = countingKeys(wide());
+
+    expect(get({ properties: proxy }, "properties.p19?9.type")).toBe("string");
+    expect(counter.enumerations).toBeGreaterThan(0);
+  });
+
+  it("resolves escaped and unusual keys literally", () => {
+    const root = parse(
+      '{"a.b":1,"a*b":2,"a?b":3,"0":4,"":{"x":5},"@x":6,"#":7,"__proto__":{"y":8}}',
+    );
+
+    expect(get(root, "a\\.b")).toBe(1);
+    expect(get(root, "a\\*b")).toBe(2);
+    expect(get(root, "a\\?b")).toBe(3);
+    expect(get(root, "0")).toBe(4);
+    expect(get(root, ".x")).toBe(5);
+    expect(get(root, "@x")).toBe(6);
+    expect(get(root, "#")).toBe(7);
+    expect(get(root, "__proto__.y")).toBe(8);
+  });
+
+  it("does not read inherited properties", () => {
+    const root = parse('{"a":{}}');
+
+    for (const name of ["toString", "constructor", "hasOwnProperty", "__proto__"]) {
+      expect(get(root, name)).toBeUndefined();
+      expect(get(root, `a.${name}`)).toBeUndefined();
+    }
+  });
+
+  it("pipes from a plain key and stops at a scalar with path left", () => {
+    const root = parse('{"a":{"b":[1,2,3]},"s":"text"}');
+
+    expect(get(root, "a|b")).toEqual([1, 2, 3]);
+    expect(get(root, "a.b|#")).toBe(3);
+    expect(get(root, "s.length")).toBeUndefined();
+  });
+
+  it("a wildcard keeps scanning past a match that cannot hold the rest of the path", () => {
+    const root = parse('{"ab":1,"ac":{"x":2}}');
+
+    expect(get(root, "a*.x")).toBe(2);
   });
 });
 

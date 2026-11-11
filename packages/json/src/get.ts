@@ -728,27 +728,35 @@ const execModifier = (root: Json, path: string): { value: Json; rest: string } |
 // Evaluation (gjson.go parseObject / parseArray)
 // ---------------------------------------------------------------------------------------------------------------
 
+/** Reads the rest of `rp` from the value matched for its part. */
+const getMatched = (value: Json, rp: ObjectPath): Hit | undefined => {
+  if (!rp.more) return { value: rp.piped ? get(value, rp.pipe) : value };
+
+  if (isJsonObject(value)) return getObject(value, rp.path);
+
+  if (isJsonArray(value)) return getArray(value, rp.path);
+
+  return undefined;
+};
+
 const getObject = (object: JsonObject, path: string): Hit | undefined => {
   const rp = parseObjectPath(path);
 
+  // gjson scans the keys for the first match and keeps scanning when the rest of the path misses below it. A plain
+  // part names at most one own key of a JS object, so a direct lookup gives the same result without making every
+  // lookup cost as much as the object has keys. Wildcards still scan.
+  if (!rp.wild) {
+    const value = Object.hasOwn(object, rp.part) ? object[rp.part] : undefined;
+
+    return value === undefined ? undefined : getMatched(value, rp);
+  }
+
   for (const key of Object.keys(object)) {
-    const matched = rp.wild ? wildcardMatch(key, rp.part) : key === rp.part;
-
-    if (!matched) continue;
+    if (!wildcardMatch(key, rp.part)) continue;
     // SAFETY: key comes from Object.keys(object), so it is an own key of object.
-    const value = object[key] as Json;
+    const hit = getMatched(object[key] as Json, rp);
 
-    if (!rp.more) return { value: rp.piped ? get(value, rp.pipe) : value };
-
-    if (isJsonObject(value)) {
-      const hit = getObject(value, rp.path);
-
-      if (hit !== undefined) return hit;
-    } else if (isJsonArray(value)) {
-      const hit = getArray(value, rp.path);
-
-      if (hit !== undefined) return hit;
-    }
+    if (hit !== undefined) return hit;
   }
 
   return undefined;
