@@ -20,7 +20,13 @@ import {
 import { Effect } from "effect";
 import { type ModelsBindings, ModelsEnv } from "@commissary/models/api";
 import { orgDeletionStep } from "@commissary/models/management";
-import { insertUsageRecord, resetUsageDb, sampleRecord } from "@commissary/models/testing";
+import {
+  GEMINI_REPLAY_STORE,
+  insertUsageRecord,
+  resetUsageDb,
+  sampleRecord,
+  VERTEX_REPLAY_STORE,
+} from "@commissary/models/testing";
 import { fakeMcpServer, serveFakeMcpServers } from "@commissary/tools/testing";
 
 // Toolkits' lists are built from a fake MCP server.
@@ -150,7 +156,7 @@ const newOrg = async (): Promise<Org> => {
 };
 
 /** The replay stores whose instances the org's deletion must find: Codex's and the Gemini API and Vertex ledgers (#376). */
-const SESSION_STORES = ["replay", "gemini-reasoning-replay", "vertex-reasoning-replay"] as const;
+const SESSION_STORES = ["replay", GEMINI_REPLAY_STORE, VERTEX_REPLAY_STORE] as const;
 
 const sessionName = (org: Org, store: string = "replay") =>
   addressName({ store: orgScopedName(org.id, store), scope: "s", session: "1" });
