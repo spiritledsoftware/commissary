@@ -229,24 +229,37 @@ const summaryResponse = (): Json => ({
   usage: { input_tokens: 9, output_tokens: 3, total_tokens: 12 },
 });
 
+const incompleteSummary = (): Json => ({
+  ...(summaryResponse() as Record<string, Json>),
+  status: "incomplete",
+  incomplete_details: { reason: "max_output_tokens" },
+});
+
 const compactionRoutes = [
   {
     name: "Kimi",
     credential: kimi,
     provider: "kimi",
     model: "kimi-k2.8",
+    modelName: "kimi",
     url: "https://api.kimi.com/coding/v1/responses",
     respond: () => jsonResponse(summaryResponse()),
+    respondIncomplete: () => jsonResponse(incompleteSummary()),
   },
   {
     name: "Meta",
     credential: meta,
     provider: "meta",
     model: "muse-spark",
+    modelName: "muse",
     url: "https://meta.test/v1/responses",
     respond: () =>
       sseResponse([
         `data: ${JSON.stringify({ type: "response.completed", response: summaryResponse() })}\n\n`,
+      ]),
+    respondIncomplete: () =>
+      sseResponse([
+        `data: ${JSON.stringify({ type: "response.incomplete", response: incompleteSummary() })}\n\n`,
       ]),
   },
 ];
@@ -286,7 +299,7 @@ describe.each(compactionRoutes)("Responses compaction on $name", (route) => {
 
   const expectSummaryRequest = (call: { readonly body: string; readonly url: string }) => {
     expect(call.url).toBe(route.url);
-    expect(JSON.parse(call.body).model).toContain(route.provider === "kimi" ? "kimi" : "muse");
+    expect(JSON.parse(call.body).model).toContain(route.modelName);
     expect(call.body).not.toContain("compaction_trigger");
     expect(call.body).not.toContain("gAAAA-native");
     expect(call.body).not.toContain("cpa-ag-compact-v1:");
@@ -389,22 +402,11 @@ describe.each(compactionRoutes)("Responses compaction on $name", (route) => {
   });
 
   it("answers a summary that did not complete with a 502", async () => {
-    const incomplete: Json = {
-      ...(summaryResponse() as Record<string, Json>),
-      status: "incomplete",
-      incomplete_details: { reason: "max_output_tokens" },
-    };
-
     const p = makePipeline({
       config: await loadConfig("requests: {}"),
       credentialPicker: fixedPicker([route.credential]),
       modelProviders: providers(route.provider),
-      respond: () =>
-        route.provider === "kimi"
-          ? jsonResponse(incomplete)
-          : sseResponse([
-              `data: ${JSON.stringify({ type: "response.incomplete", response: incomplete })}\n\n`,
-            ]),
+      respond: route.respondIncomplete,
     });
 
     afterAll(p.dispose);

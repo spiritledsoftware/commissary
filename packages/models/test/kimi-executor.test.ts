@@ -1299,7 +1299,7 @@ describe("Kimi countTokens with compaction items", () => {
         .pipe(Effect.provide(h.layers)),
     );
 
-    expect(JSON.parse(response.payload)).toBeDefined();
+    expect(JSON.parse(response.payload)).toEqual({ input_tokens: 42 });
     const sent = h.calls[0]?.text ?? "";
     expect(sent).toContain("earlier work");
     expect(sent).not.toContain("cpa-ag-compact-v1:");

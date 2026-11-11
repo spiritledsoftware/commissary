@@ -857,14 +857,12 @@ describe("Devin Responses compaction (CLIProxyAPI fb77445f)", () => {
   });
 
   it("serves /responses/compact locally instead of answering an ordinary generation", async () => {
-    const payload = await payloadOf();
-    delete (payload as Record<string, Json>)["input"];
+    const payload: Json = {
+      model,
+      session_id: SESSION,
+      input: [await capsule(), foreign, userMessage("continue")],
+    };
 
-    (payload as Record<string, Json>)["input"] = [
-      await capsule(),
-      foreign,
-      userMessage("continue"),
-    ];
     const { h, run: go } = await run({ ...responsesOptions(), alt: "responses/compact" }, payload);
     const response = await go();
     expect(h.calls).toHaveLength(1);

@@ -48,10 +48,10 @@ import {
 import { normalizeCodexToolSchemas } from "../helps/codex-tool-schema.ts";
 import { sanitizeCodexInputItemIds } from "../helps/codex-input-ids.ts";
 import {
-  compactionStreamFromResponse,
   executeLocalCompaction,
   expandCompaction,
   hasResponsesCompactionTriggerRequest,
+  localCompactionStream,
   rejectSyntheticPreviousResponseId,
 } from "../helps/compaction.ts";
 import { finalizePayload } from "../helps/payload.ts";
@@ -134,7 +134,7 @@ import {
   replayScopeFromRequest,
 } from "./replay.ts";
 import { modelOverrideHeaders } from "../helps/model-headers.ts";
-import { configuredUpstreamNames, resolveCodexModelIsCompat } from "./compat.ts";
+import { configuredUpstreamNames, isCompatModel } from "./compat.ts";
 import { bootstrapTimeoutMs, isGrokClientHeaders } from "./bootstrap.ts";
 import { CodexStreamReader } from "./stream.ts";
 import {
@@ -225,7 +225,7 @@ export const makeCodexExecutor = (executorOptions: CodexExecutorOptions = {}): P
     const rewrite = {
       headers: options.headers,
       config: context.config,
-      isCompat: resolveCodexModelIsCompat(context.config, context.credential, request, baseModel),
+      isCompat: isCompatModel(context, request),
     };
 
     const translated = translateRequestForExecutor(
@@ -302,12 +302,7 @@ export const makeCodexExecutor = (executorOptions: CodexExecutorOptions = {}): P
     expandCompaction(
       request,
       options,
-      resolveCodexModelIsCompat(
-        context.config,
-        context.credential,
-        request,
-        parseSuffix(request.model).modelName,
-      ) &&
+      isCompatModel(context, request) &&
         options.sourceFormat === Formats.OpenAIResponse &&
         options.alt !== "responses/compact"
         ? "drop-foreign"
@@ -361,12 +356,7 @@ export const makeCodexExecutor = (executorOptions: CodexExecutorOptions = {}): P
       responseFormat,
     );
 
-    const isCompat = resolveCodexModelIsCompat(
-      context.config,
-      context.credential,
-      request,
-      baseModel,
-    );
+    const isCompat = isCompatModel(context, request);
 
     let body = yield* thinking.apply({
       // The compaction endpoint is not Codex's /responses and has no floor (Go skips it too).
@@ -1167,12 +1157,7 @@ export const makeCodexExecutor = (executorOptions: CodexExecutorOptions = {}): P
     options.sourceFormat === Formats.OpenAIResponse &&
     options.alt !== "responses/compact" &&
     hasResponsesCompactionTriggerRequest(request, options) &&
-    resolveCodexModelIsCompat(
-      context.config,
-      context.credential,
-      request,
-      parseSuffix(request.model).modelName,
-    );
+    isCompatModel(context, request);
 
   /**
    * `executeCodexResponsesCompaction`: the summary is one HTTP `executeResponses` (never the upstream socket, even for a
@@ -1239,9 +1224,7 @@ export const makeCodexExecutor = (executorOptions: CodexExecutorOptions = {}): P
 
     if (compactsLocally(context, request, options)) {
       return executeLocalCompact(context, request, options).pipe(
-        Effect.flatMap((sealed) =>
-          compactionStreamFromResponse(parseSuffix(request.model).modelName, sealed, Date.now()),
-        ),
+        Effect.flatMap((sealed) => localCompactionStream(request, sealed)),
       );
     }
 

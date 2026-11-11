@@ -3,8 +3,9 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Config } from "../src/config/schema.ts";
 import type { CredentialSnapshot } from "../src/executor/picker.ts";
-import { codexModels, oauthCredential } from "./support/codex.ts";
+import { codexModels, oauthCredential, providerKeyCredential } from "./support/codex.ts";
 import {
+  jsonResponse,
   loadConfig,
   makePipeline,
   sseResponse,
@@ -25,8 +26,6 @@ import { Effect, Layer } from "effect";
 import { codexSessionStore } from "../src/executor/websocket/session.ts";
 import { unsealCompaction } from "../src/executor/helps/compaction.ts";
 import { ModelProviders } from "../src/handlers/model-providers.ts";
-import { jsonResponse } from "./support/pipeline.ts";
-import { providerKeyCredential } from "./support/codex.ts";
 import { get, type Json } from "@commissary/json";
 
 const created = {
@@ -955,6 +954,152 @@ describe("local compaction over the Responses WebSocket (Kimi, a credential with
   });
 });
 
+/** Claude's and Antigravity's own compaction flows leave the socket in the same state as the shared helper does. */
+describe("local compaction on Claude and Antigravity routes over the Responses WebSocket", () => {
+  const claudeSse = (text: string): Response =>
+    sseResponse(
+      [
+        {
+          type: "message_start",
+          message: {
+            id: "msg_1",
+            type: "message",
+            role: "assistant",
+            model: "claude-haiku-4-5-20251001",
+            content: [],
+            usage: { input_tokens: 11, output_tokens: 1 },
+          },
+        },
+        { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+        { type: "content_block_delta", index: 0, delta: { type: "text_delta", text } },
+        { type: "content_block_stop", index: 0 },
+        {
+          type: "message_delta",
+          delta: { stop_reason: "end_turn", stop_sequence: null },
+          usage: { output_tokens: 7 },
+        },
+        { type: "message_stop" },
+      ].map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`),
+    );
+
+  const geminiBody = (text: string): Json => ({
+    response: {
+      candidates: [
+        { content: { role: "model", parts: [{ text }] }, finishReason: "STOP", index: 0 },
+      ],
+      usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 5, totalTokenCount: 15 },
+    },
+    traceId: "t1",
+  });
+
+  const routes = [
+    {
+      name: "Claude",
+      provider: "claude",
+      model: "claude-haiku-4-5-20251001",
+      credential: {
+        id: "claude-1",
+        provider: "claude",
+        kind: "apikey",
+        label: "claude",
+        attributes: { api_key: "sk-ant-api03-test", base_url: "https://claude.test" },
+        metadata: {},
+      } satisfies CredentialSnapshot,
+      summary: () =>
+        jsonResponse({
+          id: "msg_1",
+          type: "message",
+          role: "assistant",
+          model: "claude-haiku-4-5-20251001",
+          content: [{ type: "text", text: "the summary" }],
+          stop_reason: "end_turn",
+          usage: { input_tokens: 11, output_tokens: 7 },
+        }),
+      reply: () => claudeSse("ok"),
+    },
+    {
+      name: "Antigravity",
+      provider: "antigravity",
+      model: "gemini-2.5-flash",
+      credential: {
+        id: "antigravity-1.json",
+        provider: "antigravity",
+        kind: "oauth",
+        label: "ag",
+        attributes: {},
+        metadata: { access_token: "ya29.token", project_id: "proj-1", email: "dev@example.com" },
+      } satisfies CredentialSnapshot,
+      summary: () => jsonResponse(geminiBody("the summary")),
+      reply: () => sseResponse([`data: ${JSON.stringify(geminiBody("ok"))}\n\n`]),
+    },
+  ];
+
+  describe.each(routes)("$name", (route) => {
+    const message = (text: string) => ({
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text }],
+    });
+
+    it("continues from the expanded summary and not from the history it replaced", async () => {
+      const models = Layer.succeed(
+        ModelProviders,
+        ModelProviders.of({
+          providersFor: () => Effect.succeed([route.provider]),
+          firstAvailableModel: Effect.succeed(route.model),
+        }),
+      );
+
+      const s = setup(
+        [route.credential],
+        {},
+        (call) => (call.body.includes("comprehensive summary") ? route.summary() : route.reply()),
+        config,
+        models,
+      );
+
+      const client = await s.connect();
+
+      client.send({
+        type: "response.create",
+        model: route.model,
+        input: [
+          message("secret history"),
+          { type: "message", role: "assistant", content: [{ type: "output_text", text: "OK" }] },
+          { type: "compaction_trigger" },
+        ],
+      });
+
+      const compacted = (await client.until("response.completed"))["response"] as {
+        id: string;
+        output: Array<Record<string, string>>;
+      };
+
+      expect(await unsealCompaction(compacted.output[0]?.["encrypted_content"] ?? "")).toBe(
+        "the summary",
+      );
+
+      expect(s.calls).toHaveLength(1);
+
+      client.send({
+        type: "response.create",
+        model: route.model,
+        previous_response_id: compacted.id,
+        input: [message("next")],
+      });
+
+      await client.until("response.completed");
+      expect(s.calls).toHaveLength(2);
+      const continuation = s.calls[1]?.body ?? "";
+      expect(continuation).toContain("Context summary from previous turns:");
+      expect(continuation).toContain("the summary");
+      expect(continuation).toContain("next");
+      expect(continuation).not.toContain("secret history");
+      client.close();
+    });
+  });
+});
+
 describe("local compaction on an is-compat Codex credential with websockets", () => {
   const compatConfigYaml = `
 api-keys:
@@ -1126,14 +1271,14 @@ api-keys:
     client.close();
   });
 
-  it("resolves a response.interrupt during a local compaction locally, never upstream", async () => {
+  it("ignores a response.interrupt during a local compaction: it completes and the boundary keeps the history", async () => {
     let release: () => void = () => undefined;
 
     const held = new Promise<void>((resolve) => {
       release = resolve;
     });
 
-    const s = await setupCompat(upstreamReplies(["resp_1"]), async () => {
+    const s = await setupCompat(upstreamReplies(["resp_1", "resp_3"]), async () => {
       await held;
 
       return summarySse();
@@ -1143,20 +1288,42 @@ api-keys:
     client.send(create([message("hi")]));
     await client.until("response.completed");
 
-    client.send(create([message("hi"), assistant, { type: "compaction_trigger" }]));
+    client.send(create([message("secret history"), assistant, { type: "compaction_trigger" }]));
     await eventually(() => s.calls.length === 1);
     // Forwarded upstream this would be answered "no active upstream websocket" (nothing runs on the socket).
     client.send({ type: "response.interrupt", response_id: "resp_pending" });
     // The reader has handled the interrupt once this returns; the frames it wrote itself are in between.
     expect(await settled(client)).toEqual([]);
     release();
-    const types: unknown[] = [];
 
-    while (!types.includes("response.completed") && !types.includes("response.incomplete"))
-      types.push((await client.nextJson())["type"]);
+    const compacted = (await client.nextJson()) as { type: string };
+    const frames: Array<Record<string, unknown>> = [compacted];
 
-    expect(types).not.toContain("error");
+    while (frames.at(-1)?.["type"] !== "response.completed") frames.push(await client.nextJson());
+
+    expect(frames.map((frame) => frame["type"])).not.toContain("error");
+    expect(frames.map((frame) => frame["type"])).not.toContain("response.incomplete");
+
+    const response = frames.at(-1)?.["response"] as {
+      id: string;
+      output: Array<Record<string, string>>;
+    };
+
+    expect(await unsealCompaction(response.output[0]?.["encrypted_content"] ?? "")).toBe(
+      "the summary",
+    );
     expect(upstreamFrames(s, 0)).toHaveLength(1);
+    await eventually(() => s.mock.connections[0]?.closed !== undefined);
+
+    // The boundary stands on the compaction item: the continuation sends the summary, not the history.
+    client.send(create([message("next")], { previous_response_id: response.id }));
+    await client.until("response.completed");
+    expect(s.mock.dials).toHaveLength(2);
+    const [second] = upstreamFrames(s, 1);
+    expect(get(second, "input.0.content.0.text")).toBe(
+      "Context summary from previous turns:\nthe summary",
+    );
+    expect(JSON.stringify(second)).not.toContain("secret history");
     client.close();
   });
 

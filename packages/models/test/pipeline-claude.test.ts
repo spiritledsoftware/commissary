@@ -4,7 +4,14 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Config } from "../src/config/schema.ts";
 import { normalizeCchInput } from "../src/executor/claude/signing.ts";
+import { makeClaudeExecutor } from "../src/executor/claude/executor.ts";
 import { xxh64 } from "../src/executor/claude/xxhash64.ts";
+import {
+  credential as executorCredential,
+  harness as executorHarness,
+  options as executorOptions,
+  runFail,
+} from "./support/executor-run.ts";
 import { asString, type JsonObject } from "@commissary/json";
 import { setModelInfoLookup } from "@commissary/translation";
 import { Effect, Layer } from "effect";
@@ -1761,6 +1768,28 @@ describe("Responses compaction on a Claude route", () => {
     expect(response.status).toBe(502);
     expect(p.records.at(-1)?.fail?.statusCode).toBe(502);
     expect(p.calls).toHaveLength(1);
+  });
+
+  it("fails a summary without text with a request-scoped 502 (no cooldown, no failover)", async () => {
+    const h = await executorHarness(
+      executorCredential("claude", { kind: "apikey", attributes: { api_key: "sk-ant-api03-x" } }),
+      () => jsonResponse(message({ content: [] })),
+    );
+
+    const error = await runFail(
+      makeClaudeExecutor().execute(
+        h.context,
+        { model: "claude-sonnet-4-5", payload: trigger({ model: "claude-sonnet-4-5" }) },
+        executorOptions({
+          sourceFormat: "openai-response",
+          metadata: { ...executorOptions().metadata, requestPath: "/v1/responses" },
+        }),
+      ),
+      h.layers,
+    );
+
+    expect(error).toMatchObject({ status: 502, requestScoped: true });
+    expect(error.message).toContain("no summary text");
   });
 
   it("answers a summary cut off by max_tokens with a 502", async () => {

@@ -8,9 +8,7 @@ import {
   buildCompactionResponse,
   buildCompactionStreamChunks,
   compactionSummaryStatusError,
-  dropForeignCompactionItems,
-  expandRecognizedResponsesCompactionCapsules,
-  expandResponsesCompactionCapsules,
+  expandCompaction,
   extractSummaryText,
   prepareCompactionSummaryPayload,
   recognizedCompactionResponseId,
@@ -69,12 +67,16 @@ describe("prepareCompactionSummaryPayload", () => {
       input: [userMessage],
     });
 
-    expect(out).toEqual({
-      model: "m",
-      instructions: "keep",
-      stream: false,
-      input: [userMessage, expect.anything()],
-    });
+    expect(Object.keys(out as JsonObject).toSorted()).toEqual([
+      "input",
+      "instructions",
+      "model",
+      "stream",
+    ]);
+
+    expect(get(out, "stream")).toBe(false);
+    expect(input(out)[0]).toEqual(userMessage);
+    expect(input(out)).toHaveLength(2);
   });
 });
 
@@ -95,6 +97,13 @@ const optionsOf = (originalRequest: Json | undefined): ExecutorOptions => ({
     callerScope: "",
   },
 });
+
+/** The entry-point expansion, as a promise: a failure rejects with the `ExecutionError`. */
+const expand = (
+  request: ExecutorRequest,
+  options: ExecutorOptions,
+  mode: "drop-foreign" | "recognized-only",
+) => Effect.runPromise(expandCompaction(request, options, mode));
 
 const messageText = (item: Json | undefined): string => asString(get(item, "content.0.text"));
 
@@ -117,7 +126,7 @@ describe("capsule expansion", () => {
   it("opens a capsule into a developer message, drops a foreign item and leaves a reasoning item alone", async () => {
     const payload: Json = { input: [foreign, await sealed("earlier work"), reasoning] };
     const original = JSON.stringify(reasoning);
-    const out = await expandResponsesCompactionCapsules(requestOf(payload), optionsOf(undefined));
+    const out = await expand(requestOf(payload), optionsOf(undefined), "drop-foreign");
     const items = input(out.request.payload);
     expect(items).toHaveLength(2);
     expect(get(items[0], "role")).toBe("developer");
@@ -128,10 +137,7 @@ describe("capsule expansion", () => {
   it("keeps native compaction items when only recognised capsules are expanded", async () => {
     const payload: Json = { input: [foreign, await sealed("earlier work")] };
 
-    const out = await expandRecognizedResponsesCompactionCapsules(
-      requestOf(payload),
-      optionsOf(undefined),
-    );
+    const out = await expand(requestOf(payload), optionsOf(undefined), "recognized-only");
 
     const items = input(out.request.payload);
     expect(items[0]).toEqual(foreign);
@@ -142,10 +148,7 @@ describe("capsule expansion", () => {
     const item = await sealed("spaced");
     const padded = { ...item, encrypted_content: `  ${item.encrypted_content}\n` };
 
-    const out = await expandResponsesCompactionCapsules(
-      requestOf({ input: [padded] }),
-      optionsOf(undefined),
-    );
+    const out = await expand(requestOf({ input: [padded] }), optionsOf(undefined), "drop-foreign");
 
     expect(messageText(input(out.request.payload)[0])).toContain("spaced");
   });
@@ -154,17 +157,18 @@ describe("capsule expansion", () => {
     const bad = { type: "compaction", id: "cmp_ag_compact_9", encrypted_content: "not a capsule" };
 
     await expect(
-      expandRecognizedResponsesCompactionCapsules(
-        requestOf({ input: [bad] }),
-        optionsOf(undefined),
-      ),
-    ).rejects.toThrow(/^invalid compaction capsule: /);
+      expand(requestOf({ input: [bad] }), optionsOf(undefined), "recognized-only"),
+    ).rejects.toMatchObject({
+      status: 400,
+      requestScoped: true,
+      message: expect.stringMatching(/^invalid compaction capsule: /),
+    });
   });
 
   it("keeps payload and originalRequest one object when they were one", async () => {
     const payload: Json = { input: [await sealed("one")] };
 
-    const out = await expandResponsesCompactionCapsules(requestOf(payload), optionsOf(payload));
+    const out = await expand(requestOf(payload), optionsOf(payload), "drop-foreign");
     expect(out.options.originalRequest).toBe(out.request.payload);
     expect(messageText(input(out.request.payload)[0])).toContain("one");
   });
@@ -173,7 +177,7 @@ describe("capsule expansion", () => {
     const payload: Json = { input: [await sealed("payload side")] };
     const original: Json = { input: [await sealed("original side"), foreign] };
 
-    const out = await expandResponsesCompactionCapsules(requestOf(payload), optionsOf(original));
+    const out = await expand(requestOf(payload), optionsOf(original), "drop-foreign");
     expect(messageText(input(out.request.payload)[0])).toContain("payload side");
     const originalItems = input(out.options.originalRequest ?? null);
     expect(originalItems).toHaveLength(1);
@@ -183,10 +187,9 @@ describe("capsule expansion", () => {
   it("returns the request untouched when there is nothing to expand", async () => {
     const request = requestOf({ input: [{ type: "message", role: "user", content: "hi" }] });
     const options = optionsOf(undefined);
-    const out = await expandResponsesCompactionCapsules(request, options);
+    const out = await expand(request, options, "drop-foreign");
     expect(out.request).toBe(request);
     expect(out.options).toBe(options);
-    expect(dropForeignCompactionItems(request.payload)).toBe(request.payload);
   });
 });
 
@@ -203,18 +206,50 @@ describe("compactionSummaryStatusError", () => {
   });
 
   it.each([
-    ["incomplete", { status: "incomplete" }],
-    ["failed", { status: "failed" }],
-    ["a missing status", {}],
-    ["incomplete_details", completed({ incomplete_details: { reason: "max_output_tokens" } })],
-    ["an error", completed({ error: { message: "boom" } })],
+    [
+      "incomplete",
+      { status: "incomplete" },
+      'compaction summary response status is "incomplete", want "completed"',
+    ],
+    [
+      "failed",
+      { status: "failed" },
+      'compaction summary response status is "failed", want "completed"',
+    ],
+    ["a missing status", {}, 'compaction summary response status is "missing", want "completed"'],
+    [
+      "incomplete_details",
+      completed({ incomplete_details: { reason: "max_output_tokens" } }),
+      "compaction summary response contains incomplete_details",
+    ],
+    [
+      "an error",
+      completed({ error: { message: "boom" } }),
+      "compaction summary response contains error",
+    ],
     [
       "an output item that is not completed",
       completed({ output: [{ type: "message", status: "in_progress" }] }),
+      'compaction summary output item status is "in_progress", want "completed"',
     ],
-    ["a terminal failure event", completed({ type: "response.failed" })],
-  ])("fails %s", (_name, body) => {
-    expect(compactionSummaryStatusError(body as Json)).toEqual(expect.any(String));
+    [
+      "a terminal failure event",
+      completed({ type: "response.failed" }),
+      'compaction summary response terminal event is "response.failed"',
+    ],
+    [
+      "a Claude message cut off by max_tokens",
+      { type: "message", stop_reason: "max_tokens", content: [] },
+      'compaction summary response status is "incomplete", want "completed"',
+    ],
+  ])("fails %s", (_name, body, message) => {
+    expect(compactionSummaryStatusError(body as Json)).toBe(message);
+  });
+
+  it("passes a Claude message that ended its turn", () => {
+    expect(
+      compactionSummaryStatusError({ type: "message", stop_reason: "end_turn", content: [] }),
+    ).toBeUndefined();
   });
 
   it("accepts null incomplete_details and error", () => {

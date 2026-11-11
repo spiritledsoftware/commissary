@@ -577,7 +577,11 @@ describe("CPA compaction capsules on a steering socket", () => {
     });
     expect((await client.nextJson())["type"]).toBe("response.steer.accepted");
     const sent = frames(s.mock.connections[0]);
-    expect(sent[0]?.["input"]).toEqual([developerSummary, expect.anything()]);
+    expect(sent[0]?.["input"]).toEqual([
+      developerSummary,
+      { type: "message", role: "user", content: "go" },
+    ]);
+
     expect(sent[1]).toMatchObject({ type: "response.steer", input: [developerSummary] });
     expect(JSON.stringify(sent)).not.toContain("cpa-ag-compact-v1:");
     client.close();

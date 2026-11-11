@@ -50,10 +50,10 @@ import { ExecutionError, headersRecord } from "../errors.ts";
 import { ensureResponsesUsageDetails } from "../codex/output.ts";
 import { claudeCodeExecutionScope } from "../codex/replay.ts";
 import {
-  compactionStreamFromResponse,
   executeLocalCompaction,
   expandCompaction,
   hasResponsesCompactionTriggerRequest,
+  localCompactionStream,
 } from "../helps/compaction.ts";
 import { applyCustomHeaders } from "../helps/custom-headers.ts";
 import {
@@ -658,11 +658,7 @@ export const makeOpenAICompatExecutor = (
     if (hasResponsesCompactionTriggerRequest(request, options)) {
       const sealed = yield* localCompaction(context, request, options);
 
-      return yield* compactionStreamFromResponse(
-        parseSuffix(request.model).modelName,
-        sealed,
-        Date.now(),
-      );
+      return yield* localCompactionStream(request, sealed);
     }
 
     return yield* executeChatStream(context, request, options);

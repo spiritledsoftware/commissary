@@ -95,6 +95,7 @@ import {
   expandCompaction,
   extractSummaryText,
   hasResponsesCompactionTrigger,
+  markLocalCompaction,
   prepareCompactionSummaryPayload,
   responsesSummaryUsage,
   sealCompaction,
@@ -702,6 +703,7 @@ export const makeAntigravityExecutor = (
     options: ExecutorOptions,
   ) {
     const baseModel = parseSuffix(request.model).modelName;
+    markLocalCompaction(options);
 
     const source =
       request.payload === undefined && options.originalRequest !== undefined

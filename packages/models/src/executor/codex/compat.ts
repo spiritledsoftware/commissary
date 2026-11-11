@@ -7,7 +7,7 @@
 import type { Config, ModelEntry } from "../../config/schema.ts";
 import { parseSuffix } from "@commissary/translation/thinking";
 import type { CredentialSnapshot } from "../picker.ts";
-import type { ExecutorRequest } from "../types.ts";
+import type { ExecutionContext, ExecutorRequest } from "../types.ts";
 
 interface FlatEntry {
   readonly providerKey: string;
@@ -151,3 +151,15 @@ export const resolveCodexModelIsCompat = (
     configModelIsCompat(config, credential, request.model)
   );
 };
+
+/** `resolveCodexModelIsCompat` of an attempt's request: the model it names, without its `(thinking)` suffix. */
+export const isCompatModel = (
+  context: Pick<ExecutionContext, "config" | "credential">,
+  request: Pick<ExecutorRequest, "model" | "modelInfo">,
+): boolean =>
+  resolveCodexModelIsCompat(
+    context.config,
+    context.credential,
+    request,
+    parseSuffix(request.model).modelName,
+  );

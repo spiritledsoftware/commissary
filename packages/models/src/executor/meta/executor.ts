@@ -24,13 +24,11 @@ import {
 import { asString, get } from "@commissary/json";
 import { builtinTranslators, type TranslatorRegistry } from "@commissary/translation";
 import { Formats } from "@commissary/translation/formats";
-import { parseSuffix } from "@commissary/translation/thinking";
 import { ExecutionError } from "../errors.ts";
 import {
-  compactionStreamFromResponse,
-  executeLocalCompaction,
+  dispatchLocalCompaction,
+  dispatchLocalCompactionStream,
   expandCompaction,
-  hasResponsesCompactionTriggerRequest,
 } from "../helps/compaction.ts";
 import { applyCustomHeaders } from "../helps/custom-headers.ts";
 import {
@@ -207,75 +205,26 @@ export const makeMetaExecutor = (executorOptions: MetaExecutorOptions = {}): Pro
    * are dropped. A `compaction_trigger` or `/responses/compact` is compacted locally with Muse's own turn (Go answers
    * 501 to `/responses/compact`; here a route that compacts locally does so on both entry points).
    */
-  const localCompaction = (
+  const compactionRoute = (
     context: ExecutionContext,
     request: ExecutorRequest,
     options: ExecutorOptions,
-  ) =>
-    executeLocalCompaction({
-      request,
-      options,
-      summaryTurn: (summaryRequest, summaryOptions) =>
-        executeTurn(context, summaryRequest, summaryOptions),
-    });
-
-  const execute = Effect.fnUntraced(function* (
-    context: ExecutionContext,
-    requested: ExecutorRequest,
-    requestedOptions: ExecutorOptions,
-  ) {
-    if (requestedOptions.sourceFormat !== Formats.OpenAIResponse)
-      return yield* executeTurn(context, requested, requestedOptions);
-
-    const { request, options } = yield* expandCompaction(
-      requested,
-      requestedOptions,
-      "drop-foreign",
-    );
-
-    if (
-      options.alt === "responses/compact" ||
-      hasResponsesCompactionTriggerRequest(request, options)
-    )
-      return yield* localCompaction(context, request, options);
-
-    return yield* executeTurn(context, request, options);
+  ) => ({
+    request,
+    options,
+    turn: (turnRequest: ExecutorRequest, turnOptions: ExecutorOptions) =>
+      executeTurn(context, turnRequest, turnOptions),
+    streamTurn: (turnRequest: ExecutorRequest, turnOptions: ExecutorOptions) =>
+      executeStreamTurn(context, turnRequest, turnOptions),
+    summaryTurn: (summaryRequest: ExecutorRequest, summaryOptions: ExecutorOptions) =>
+      executeTurn(context, summaryRequest, summaryOptions),
   });
 
-  const executeStream = Effect.fnUntraced(function* (
-    context: ExecutionContext,
-    requested: ExecutorRequest,
-    requestedOptions: ExecutorOptions,
-  ) {
-    if (requestedOptions.sourceFormat !== Formats.OpenAIResponse)
-      return yield* executeStreamTurn(context, requested, requestedOptions);
+  const execute: ProviderExecutor["execute"] = (context, request, options) =>
+    dispatchLocalCompaction(compactionRoute(context, request, options));
 
-    if (requestedOptions.alt === "responses/compact") {
-      return yield* new ExecutionError({
-        status: 400,
-        message: "streaming not supported for /responses/compact",
-        requestScoped: true,
-      });
-    }
-
-    const { request, options } = yield* expandCompaction(
-      requested,
-      requestedOptions,
-      "drop-foreign",
-    );
-
-    if (hasResponsesCompactionTriggerRequest(request, options)) {
-      const sealed = yield* localCompaction(context, request, options);
-
-      return yield* compactionStreamFromResponse(
-        parseSuffix(request.model).modelName,
-        sealed,
-        Date.now(),
-      );
-    }
-
-    return yield* executeStreamTurn(context, request, options);
-  });
+  const executeStream: ProviderExecutor["executeStream"] = (context, request, options) =>
+    dispatchLocalCompactionStream(compactionRoute(context, request, options));
 
   /** `CountTokens`: the Responses body that would be sent upstream, counted locally with `o200k_base`. */
   const countTokens: ProviderExecutor["countTokens"] = Effect.fnUntraced(function* (

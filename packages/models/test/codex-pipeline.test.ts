@@ -1524,8 +1524,7 @@ requests:
   const foreign = { type: "compaction", id: "cmp_native", encrypted_content: "gAAAA-native" };
   const trigger = { type: "compaction_trigger" };
 
-  const summaryStream = (text = "the summary", status = "completed") => [
-    frame(created()),
+  const summaryOutputItem = (text: string) =>
     frame({
       type: "response.output_item.done",
       output_index: 0,
@@ -1536,17 +1535,39 @@ requests:
         role: "assistant",
         content: [{ type: "output_text", text }],
       },
-    }),
+    });
+
+  const summaryUsage = { input_tokens: 21, output_tokens: 6, total_tokens: 27 };
+
+  const summaryStream = (text = "the summary") => [
+    frame(created()),
+    summaryOutputItem(text),
     frame({
-      type: status === "completed" ? "response.completed" : "response.incomplete",
+      type: "response.completed",
       response: {
         id: "resp_1",
-        status,
+        status: "completed",
         created_at: 1767225600,
         model: "gpt-5.4",
         output: [],
-        ...(status === "completed" ? {} : { incomplete_details: { reason: "max_output_tokens" } }),
-        usage: { input_tokens: 21, output_tokens: 6, total_tokens: 27 },
+        usage: summaryUsage,
+      },
+    }),
+  ];
+
+  const incompleteSummaryStream = () => [
+    frame(created()),
+    summaryOutputItem("half a summ"),
+    frame({
+      type: "response.incomplete",
+      response: {
+        id: "resp_1",
+        status: "incomplete",
+        created_at: 1767225600,
+        model: "gpt-5.4",
+        output: [],
+        incomplete_details: { reason: "max_output_tokens" },
+        usage: summaryUsage,
       },
     }),
   ];
@@ -1656,7 +1677,7 @@ requests:
   });
 
   it("answers an incomplete summary with a request-scoped 502 and picks the credential again next time", async () => {
-    const p = await compat(() => sseResponse(summaryStream("half a summ", "incomplete")));
+    const p = await compat(() => sseResponse(incompleteSummaryStream()));
 
     const first = await p.call(
       "/v1/responses",

@@ -73,7 +73,11 @@ import {
   truncateCloseReason,
 } from "./frames.ts";
 import { isCodexResponsesClient, isPrivateResponsesEvent } from "../framer.ts";
-import { stripReplayOutputOnlyFields, syntheticPrewarmPayloads } from "./normalize.ts";
+import {
+  inputContainsFullTranscript,
+  stripReplayOutputOnlyFields,
+  syntheticPrewarmPayloads,
+} from "./normalize.ts";
 import {
   commitLoss,
   commitPrewarm,
@@ -222,8 +226,6 @@ export const runResponsesSocket = <R>(
       let upstreamRequest = false;
       /** A request over HTTP may still resolve an interrupt locally (closed by its terminal event). */
       let localOpen = false;
-      /** The running request's response ended (terminal event, local interrupt, stopping error). */
-      let turnClosed = false;
       const finished: string[] = [];
 
       const rememberFinished = (id: string): void => {
@@ -240,12 +242,13 @@ export const runResponsesSocket = <R>(
         rememberFinished(id !== "" ? id : runningId);
         runningId = "";
         localOpen = false;
-        turnClosed = true;
       };
 
       /**
-       * A request the executor answered without the upstream socket (local compaction) resolves interrupts locally like a
-       * request over HTTP, even on a credential that owns an upstream socket (which they are never forwarded to).
+       * The executor answers this request without the upstream socket (local compaction). Such a request is atomic: the
+       * summary is one HTTP exchange and its response arrives whole, so there is nothing to interrupt, and cutting it
+       * short would drop the compaction item the transcript boundary stands on. An interrupt is never forwarded upstream
+       * either, even on a credential that owns an upstream socket.
        */
       const answeredLocally = (): boolean => report.local;
 
@@ -356,7 +359,10 @@ export const runResponsesSocket = <R>(
 
         if (!hasTurnInFlight) return rejectInterrupt("no active upstream websocket");
 
-        if (upstreamRequest && !answeredLocally()) {
+        // The client lost a race with a response that cannot be cut short; it completes (like a finished id).
+        if (answeredLocally()) return;
+
+        if (upstreamRequest) {
           // Between responses of a steering socket, or while another response runs, the id targets nothing.
           if ((runningId !== "" && id !== runningId) || (runningId === "" && responsesStarted))
             return rejectInterrupt(
@@ -369,8 +375,7 @@ export const runResponsesSocket = <R>(
           return rejectInterrupt(noUpstreamSocketMessage());
         }
 
-        if (!localOpen && !(answeredLocally() && !turnClosed))
-          return rejectInterrupt("no active upstream websocket");
+        if (!localOpen) return rejectInterrupt("no active upstream websocket");
 
         if (runningId !== "" && id !== runningId)
           return rejectInterrupt("response.interrupt does not target the active response");
@@ -560,7 +565,6 @@ export const runResponsesSocket = <R>(
         report = attemptReport;
         interruptSignal = signal;
         hasTurnInFlight = true;
-        turnClosed = false;
         runningId = "";
         responsesStarted = false;
         // A pinned continuation runs on its Codex upstream socket; any other request resolves interrupts locally until
@@ -688,15 +692,20 @@ export const runResponsesSocket = <R>(
           return true;
         }
 
+        // The boundary stands on the compaction item the turn answered with: without it (a response cut short) the history
+        // would be lost, so such a turn is recorded like any other.
+        const local =
+          attemptReport.local && inputContainsFullTranscript([...result.completedOutput]);
+
         repaired.turn?.commit();
         commitTurn(state, {
           modelName: plan.modelName,
-          executedRequest: attemptReport.local
+          executedRequest: local
             ? localBoundaryRequest(requestJson)
             : nativePassthrough
               ? state.lastRequest
               : requestJson,
-          local: attemptReport.local,
+          local,
           selected: selectedOutcome(),
           // Upstream output is replayed as input later: its output-only fields must not travel with it (9037d543).
           completedOutput: result.completedOutput.map((item) =>

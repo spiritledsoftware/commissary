@@ -44,10 +44,9 @@ import {
   normalizeApplyPatchResponses,
 } from "../helps/apply-patch-responses.ts";
 import {
-  compactionStreamFromResponse,
-  executeLocalCompaction,
+  dispatchLocalCompaction,
+  dispatchLocalCompactionStream,
   expandCompaction,
-  hasResponsesCompactionTriggerRequest,
 } from "../helps/compaction.ts";
 import { finalizePayload } from "../helps/payload.ts";
 import { TOOL_INPUT_ERROR_MESSAGE } from "../openai-compat/stream.ts";
@@ -575,69 +574,32 @@ export const makeKimiExecutor = (executorOptions: KimiExecutorOptions = {}): Pro
    * `compaction_trigger` or `/responses/compact` is compacted locally with Kimi's own Responses turn (Go answers 501 to
    * `/responses/compact`; here a route that compacts locally does so on both entry points).
    */
-  const localCompaction = (
+  const compactionRoute = (
     context: ExecutionContext,
     request: ExecutorRequest,
     options: ExecutorOptions,
-  ) =>
-    executeLocalCompaction({
-      request,
-      options,
-      summaryTurn: (summaryRequest, summaryOptions) =>
-        executeResponsesTurn(context, summaryRequest, summaryOptions),
-    });
-
-  const executeResponses = Effect.fnUntraced(function* (
-    context: ExecutionContext,
-    requested: ExecutorRequest,
-    requestedOptions: ExecutorOptions,
-  ) {
-    const { request, options } = yield* expandCompaction(
-      requested,
-      requestedOptions,
-      "drop-foreign",
-    );
-
-    if (
-      options.alt === "responses/compact" ||
-      hasResponsesCompactionTriggerRequest(request, options)
-    )
-      return yield* localCompaction(context, request, options);
-
-    return yield* executeResponsesTurn(context, request, options);
+  ) => ({
+    request,
+    options,
+    turn: (turnRequest: ExecutorRequest, turnOptions: ExecutorOptions) =>
+      executeResponsesTurn(context, turnRequest, turnOptions),
+    streamTurn: (turnRequest: ExecutorRequest, turnOptions: ExecutorOptions) =>
+      executeResponsesStreamTurn(context, turnRequest, turnOptions),
+    summaryTurn: (summaryRequest: ExecutorRequest, summaryOptions: ExecutorOptions) =>
+      executeResponsesTurn(context, summaryRequest, summaryOptions),
   });
 
-  const executeResponsesStream = Effect.fnUntraced(function* (
+  const executeResponses = (
     context: ExecutionContext,
-    requested: ExecutorRequest,
-    requestedOptions: ExecutorOptions,
-  ) {
-    if (requestedOptions.alt === "responses/compact") {
-      return yield* new ExecutionError({
-        status: 400,
-        message: "streaming not supported for /responses/compact",
-        requestScoped: true,
-      });
-    }
+    request: ExecutorRequest,
+    options: ExecutorOptions,
+  ) => dispatchLocalCompaction(compactionRoute(context, request, options));
 
-    const { request, options } = yield* expandCompaction(
-      requested,
-      requestedOptions,
-      "drop-foreign",
-    );
-
-    if (hasResponsesCompactionTriggerRequest(request, options)) {
-      const sealed = yield* localCompaction(context, request, options);
-
-      return yield* compactionStreamFromResponse(
-        parseSuffix(request.model).modelName,
-        sealed,
-        Date.now(),
-      );
-    }
-
-    return yield* executeResponsesStreamTurn(context, request, options);
-  });
+  const executeResponsesStream = (
+    context: ExecutionContext,
+    request: ExecutorRequest,
+    options: ExecutorOptions,
+  ) => dispatchLocalCompactionStream(compactionRoute(context, request, options));
 
   // -------------------------------------------------------------------------------------------------------------
   // Claude Messages (embedded Claude executor)

@@ -78,10 +78,6 @@ const inputItems = (payload: Json | undefined): ReadonlyArray<Json> => {
 export const hasResponsesCompactionTrigger = (payload: Json | undefined): boolean =>
   inputItems(payload).some((item) => asString(get(item, "type")) === "compaction_trigger");
 
-/** `HasResponsesCompactionItem`: `input` contains a `compaction` item. */
-export const hasResponsesCompactionItem = (payload: Json | undefined): boolean =>
-  inputItems(payload).some((item) => asString(get(item, "type")) === "compaction");
-
 /** Input items that steer the client, not the conversation: a summary request never carries them (d576416a, d57270f4). */
 const CONTROL_ITEM_TYPES: ReadonlySet<string> = new Set([
   "compaction_trigger",
@@ -310,17 +306,10 @@ export const expandCompactionCapsules = (payload: Json): Promise<Json> =>
   expandSelectedCapsules(payload, () => true);
 
 /**
- * `ExpandRecognizedAntigravityCompactionCapsules`: like {@link expandCompactionCapsules}, but a `compaction` item no local
- * compaction minted (OpenAI's own, a foreign provider's) stays as it is.
- */
-export const expandRecognizedCompactionCapsules = (payload: Json): Promise<Json> =>
-  expandSelectedCapsules(payload, recognizedCompactionItem);
-
-/**
  * `DropForeignResponsesCompactionItems`: `compaction` items no local compaction minted cannot be read by another
  * provider and are dropped (Go logs a warning). Returns the payload itself when nothing was dropped.
  */
-export const dropForeignCompactionItems = (payload: Json): Json => {
+const dropForeignCompactionItems = (payload: Json): Json => {
   const input = get(payload, "input");
 
   if (!isJsonArray(input)) return payload;
@@ -364,31 +353,12 @@ const transformRequestPair = async (
 };
 
 /**
- * `ExpandResponsesCompactionCapsules`: foreign `compaction` items are dropped and the capsules of the request and of
- * the original request become developer context (before translation and token counting). Rejects with
- * `invalid compaction capsule: ...` on an unreadable capsule.
- */
-export const expandResponsesCompactionCapsules = (
-  request: ExecutorRequest,
-  options: ExecutorOptions,
-): Promise<ExpandedRequest> =>
-  transformRequestPair(request, options, (payload) =>
-    expandCompactionCapsules(dropForeignCompactionItems(payload)),
-  );
-
-/**
- * `ExpandRecognizedResponsesCompactionCapsules`: only the capsules a local compaction minted are expanded; a native
- * `compaction` item (Codex's, going to OpenAI) stays.
- */
-export const expandRecognizedResponsesCompactionCapsules = (
-  request: ExecutorRequest,
-  options: ExecutorOptions,
-): Promise<ExpandedRequest> =>
-  transformRequestPair(request, options, expandRecognizedCompactionCapsules);
-
-/**
- * The capsule expansion of an executor entry point. `drop-foreign` is for a route that cannot read a foreign
- * `compaction` item; `recognized-only` for one that forwards native items (Codex, a `/responses/compact` endpoint).
+ * The capsule expansion of an executor entry point (`ExpandResponsesCompactionCapsules`,
+ * `ExpandRecognizedResponsesCompactionCapsules`): the capsules of the request and of the original request become
+ * developer context before translation and token counting, and an unreadable one is a request-scoped 400
+ * (`invalid compaction capsule: ...`). `drop-foreign` is for a route that cannot read a foreign `compaction` item, which it
+ * drops; `recognized-only` for one that forwards native items (Codex, a `/responses/compact` endpoint) and expands only
+ * the capsules a local compaction minted.
  */
 export const expandCompaction = (
   request: ExecutorRequest,
@@ -397,9 +367,11 @@ export const expandCompaction = (
 ): Effect.Effect<ExpandedRequest, ExecutionError> =>
   Effect.tryPromise({
     try: () =>
-      mode === "drop-foreign"
-        ? expandResponsesCompactionCapsules(request, options)
-        : expandRecognizedResponsesCompactionCapsules(request, options),
+      transformRequestPair(request, options, (payload) =>
+        mode === "drop-foreign"
+          ? expandCompactionCapsules(dropForeignCompactionItems(payload))
+          : expandSelectedCapsules(payload, recognizedCompactionItem),
+      ),
     // An unreadable capsule is the client's fault: a request-scoped 400 (no cooldown, no failover).
     catch: (error) =>
       new ExecutionError({
@@ -755,12 +727,17 @@ export const rejectSyntheticPreviousResponseId = (
 
 /**
  * `ValidateResponsesCompactionSummaryStatus`: the failure message of a summary that did not finish with status
- * `completed`, `undefined` when it did.
+ * `completed`, `undefined` when it did. A Claude message (`type: "message"`) has no `status`: it counts as completed
+ * unless its `stop_reason` is `max_tokens`, which is an incomplete summary.
  */
 export const compactionSummaryStatusError = (summary: Json | undefined): string | undefined => {
   let status = asString(get(summary, "status")).trim().toLowerCase();
 
   if (status === "") status = asString(get(summary, "response.status")).trim().toLowerCase();
+  const stopReason = asString(get(summary, "stop_reason"));
+
+  if (stopReason === "max_tokens") status = "incomplete";
+  else if (status === "" && asString(get(summary, "type")) === "message") status = "completed";
 
   if (status !== "completed")
     return `compaction summary response status is "${status === "" ? "missing" : status}", want "completed"`;
@@ -890,6 +867,17 @@ export interface LocalCompactionInput<R> {
 }
 
 /**
+ * `MarkLocalWebsocketTurn`: reports on a downstream WebSocket that the request is answered without the upstream socket
+ * (every local compaction, Claude's and Antigravity's own flows included), so the handler keeps the socket in HTTP mode
+ * and records the boundary transcript.
+ */
+export const markLocalCompaction = (options: ExecutorOptions): void => {
+  const report = options.metadata.websocket?.report;
+
+  if (report !== undefined) report.local = true;
+};
+
+/**
  * Local compaction (`executeCodexResponsesCompaction`, `executeOpenAICompatResponsesCompaction`, ...): the request's own
  * model summarises the history and the summary is sealed into a capsule. The answer is the `response.compaction` body;
  * {@link compactionStreamFromResponse} turns it into a stream.
@@ -902,9 +890,7 @@ export const executeLocalCompaction = <R>(
 ): Effect.Effect<ExecutorResponse, ExecutionError, R> =>
   Effect.gen(function* () {
     const { request, options } = input;
-    const report = options.metadata.websocket?.report;
-
-    if (report !== undefined) report.local = true;
+    markLocalCompaction(options);
     const source = compactionSourcePayload(request, options);
     const sourceError = checkCompactionSource(source, options);
 
@@ -929,4 +915,89 @@ export const executeLocalCompaction = <R>(
     const body = yield* sealCompactionSummary(baseModel, summary.payload, Date.now());
 
     return { payload: JSON.stringify(body), headers: summary.headers } satisfies ExecutorResponse;
+  });
+
+/**
+ * `BuildResponsesCompactionStreamChunksFromResponse` for a route's sealed answer: the `response.compaction` body as the
+ * synthetic Responses stream of a streaming client.
+ */
+export const localCompactionStream = (
+  request: ExecutorRequest,
+  sealed: ExecutorResponse,
+): Effect.Effect<StreamResult, ExecutionError> =>
+  compactionStreamFromResponse(parseSuffix(request.model).modelName, sealed, Date.now());
+
+/** What a route that compacts on both entry points hands the dispatch. */
+export interface LocalCompactionRoute<R> extends LocalCompactionInput<R> {
+  /** The route's ordinary non-stream turn, for every request that is not a compaction. */
+  readonly turn: (
+    request: ExecutorRequest,
+    options: ExecutorOptions,
+  ) => Effect.Effect<ExecutorResponse, ExecutionError, R>;
+  /** The route's ordinary streaming turn. */
+  readonly streamTurn: (
+    request: ExecutorRequest,
+    options: ExecutorOptions,
+  ) => Effect.Effect<StreamResult, ExecutionError, R>;
+}
+
+/**
+ * `execute` of Kimi, Meta and Devin: a Responses request has its capsules expanded and its foreign `compaction` items
+ * dropped, and a `compaction_trigger` or `/responses/compact` is compacted locally (Go answers 501 to the latter on
+ * Kimi and Meta); anything else is the route's own turn.
+ */
+export const dispatchLocalCompaction = <R>(
+  route: LocalCompactionRoute<R>,
+): Effect.Effect<ExecutorResponse, ExecutionError, R> =>
+  Effect.gen(function* () {
+    if (route.options.sourceFormat !== Formats.OpenAIResponse)
+      return yield* route.turn(route.request, route.options);
+
+    const { request, options } = yield* expandCompaction(
+      route.request,
+      route.options,
+      "drop-foreign",
+    );
+
+    if (
+      options.alt === "responses/compact" ||
+      hasResponsesCompactionTriggerRequest(request, options)
+    )
+      return yield* executeLocalCompaction({ ...route, request, options });
+
+    return yield* route.turn(request, options);
+  });
+
+/**
+ * `executeStream` of Kimi, Meta and Devin: like {@link dispatchLocalCompaction}; a streaming `/responses/compact` stays the
+ * 400 it is everywhere, and a `compaction_trigger` answers with the synthetic stream.
+ */
+export const dispatchLocalCompactionStream = <R>(
+  route: LocalCompactionRoute<R>,
+): Effect.Effect<StreamResult, ExecutionError, R> =>
+  Effect.gen(function* () {
+    if (route.options.sourceFormat !== Formats.OpenAIResponse)
+      return yield* route.streamTurn(route.request, route.options);
+
+    if (route.options.alt === "responses/compact") {
+      return yield* new ExecutionError({
+        status: 400,
+        message: "streaming not supported for /responses/compact",
+        requestScoped: true,
+      });
+    }
+
+    const { request, options } = yield* expandCompaction(
+      route.request,
+      route.options,
+      "drop-foreign",
+    );
+
+    if (hasResponsesCompactionTriggerRequest(request, options)) {
+      const sealed = yield* executeLocalCompaction({ ...route, request, options });
+
+      return yield* localCompactionStream(request, sealed);
+    }
+
+    return yield* route.streamTurn(request, options);
   });

@@ -55,8 +55,10 @@ import {
   checkCompactionSource,
   compactionSourcePayload,
   compactionSummaryError,
+  compactionSummaryStatusError,
   expandCompaction,
   extractSummaryText,
+  markLocalCompaction,
   sealCompaction,
 } from "../helps/compaction.ts";
 import { ensureResponsesUsageDetails } from "../codex/output.ts";
@@ -471,6 +473,7 @@ export const makeClaudeExecutor = (
     options: ExecutorOptions,
   ) {
     const baseModel = parseSuffix(request.model).modelName;
+    markLocalCompaction(options);
     const source = compactionSourcePayload(request, options);
     const sourceError = checkCompactionSource(source, options);
 
@@ -494,11 +497,9 @@ export const makeClaudeExecutor = (
     const parsed = tryParseJson(summary.payload);
 
     // A summary cut off by the output budget would seal a truncated history into a permanent capsule.
-    if (asString(get(parsed, "stop_reason")) === "max_tokens") {
-      return yield* compactionSummaryError(
-        'compaction summary response status is "incomplete", want "completed"',
-      );
-    }
+    const statusError = compactionSummaryStatusError(parsed);
+
+    if (statusError !== undefined) return yield* compactionSummaryError(statusError);
 
     const text = yield* Effect.try({
       try: () => extractSummaryText(parsed ?? null),
