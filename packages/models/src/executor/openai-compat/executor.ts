@@ -344,6 +344,8 @@ export const makeOpenAICompatExecutor = (
       body,
     );
 
+    context.usage.setServiceTierFromBody(body);
+
     const headers = upstreamHeaders(context, options, providerKey, stream, true);
 
     const url =
@@ -396,6 +398,8 @@ export const makeOpenAICompatExecutor = (
       },
       body,
     );
+
+    context.usage.setServiceTierFromBody(body);
     const multipart = wantsMultipartEdit(endpoint, options.headers.get("content-type") ?? "");
     const headers = upstreamHeaders(context, options, providerKey, stream, !multipart);
 

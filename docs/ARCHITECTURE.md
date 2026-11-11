@@ -2345,6 +2345,11 @@ once; a 401 retry keeps the rejected attempt's failed record, a failed-over cred
   payload rules (`extractTranslatedReasoningEffort`). The last mid-conversation effort directive (a `role: system` turn
   carrying `output_config.effort`) wins over the top-level value that clients keep fixed for prompt caching, and
   `disabled` and `between_tools` record `none` (Go `fb30a9e8`); a thinking suffix still wins.
+- **`service_tier`** (CLIProxyAPI `07b5a7a1`): the record reports the tier of the **outbound** body, read after the payload rules
+  (`UsageReporter.setServiceTierFromBody`: `service_tier`, `request.service_tier` or `interaction.service_tier`), so a rule that
+  sets or overrides it shows. A body without one leaves the client's tier. Go keeps both in separate fields
+  (`ServiceTier`, `EffectiveServiceTier`); here the one `service_tier` column holds the effective tier (no migration), and the
+  tier the upstream answered with stays in `response_service_tier`. Every executor records it right after its `finalizePayload`.
 - **TTFT** (`ttft.ts` + reporter): `markFirstByte` (non-stream: effective TTFT), `recordFirstPacket` /
   `observeTokenEvent(now, isToken)` (streams: first substantive token event, first packet as fallback). Codex streams use
   `isResponsesTokenEvent`; OpenAI-compatible and Claude executors still mark the first response byte (hook the matching

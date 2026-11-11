@@ -508,6 +508,8 @@ export const makeAntigravityExecutor = (
       body,
     );
 
+    context.usage.setServiceTierFromBody(finalBody);
+
     return {
       url,
       headers: headersFor(attempt, agent),

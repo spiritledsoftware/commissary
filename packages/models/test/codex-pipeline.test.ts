@@ -553,6 +553,51 @@ describe("upstream error classification", () => {
   });
 });
 
+// CLIProxyAPI 07b5a7a1: the usage record reports the service tier that went out, after the payload rules.
+describe("the recorded service tier", () => {
+  const rules = (params: string) => `
+requests:
+  payload:
+    override:
+      - models: [{ name: "gpt-5.4", protocol: codex }]
+        params:
+${params}
+`;
+
+  const tierOf = async (yaml: string, body: Json) => {
+    const p = pipeline(() => sseResponse(TEXT_STREAM), { config: await loadConfig(yaml) });
+
+    const response = await p.call("/v1/responses", postJson(body));
+
+    expect(response.status).toBe(200);
+
+    return {
+      sent: get(tryParseJson(p.calls[0]!.body), "service_tier"),
+      recorded: p.records[0]?.serviceTier,
+    };
+  };
+
+  it("is the one a payload rule set, not the client's", async () => {
+    expect(
+      await tierOf(rules('          "service_tier": "priority"'), {
+        model: "gpt-5.4",
+        input: "hi",
+        service_tier: "flex",
+      }),
+    ).toEqual({ sent: "priority", recorded: "priority" });
+  });
+
+  it("is the client's when no rule touches it", async () => {
+    expect(
+      await tierOf(rules('          "metadata.via": "rule"'), {
+        model: "gpt-5.4",
+        input: "hi",
+        service_tier: "flex",
+      }),
+    ).toMatchObject({ recorded: "flex" });
+  });
+});
+
 // CLIProxyAPI 7795de19 (issue 6575): one event's JSON split across several `data:` lines.
 describe("an event split across data lines", () => {
   const completedJson = JSON.stringify(completed([MESSAGE_ITEM]));

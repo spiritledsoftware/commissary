@@ -326,6 +326,7 @@ export const makeClaudeExecutor = (
   const recordReasoningEffort = (context: ExecutionContext, body: Json): void => {
     const effort = extractTranslatedReasoningEffort(body, "claude");
     context.usage.setReasoningEffort(effort !== "" ? effort : undefined);
+    context.usage.setServiceTierFromBody(body);
   };
 
   const executeMessages = Effect.fnUntraced(function* (

@@ -13,6 +13,18 @@ import type { UsageDetail, UsageRecord } from "./record.ts";
 import { emptyUsageDetail, hasNonZeroTokenUsage } from "./record.ts";
 import type { UsageRun } from "@commissary/auth";
 import type { OrgId } from "@commissary/core";
+import { get, type Json } from "@commissary/json";
+
+/** `extractEffectiveServiceTier`: the first non-empty string `service_tier` of the body, its `request` or `interaction`. */
+export const effectiveServiceTier = (body: Json | undefined): string | undefined => {
+  for (const path of ["service_tier", "request.service_tier", "interaction.service_tier"]) {
+    const tier = get(body, path);
+
+    if (typeof tier === "string" && tier.trim() !== "") return tier.trim();
+  }
+
+  return undefined;
+};
 
 export interface UsageReporterInit {
   readonly requestId: string;
@@ -53,12 +65,14 @@ export class UsageReporter {
   #ttftAt: number | undefined;
   #firstPacketAt: number | undefined;
   #reasoningEffort: string | undefined;
+  #serviceTier: string;
   #finished = false;
   /** Usage of extra models the attempt consumed (`PublishAdditionalModel`, e.g. the Codex image tool). */
   readonly #additional: Array<{ readonly model: string; readonly detail: UsageDetail }> = [];
 
   constructor(readonly init: UsageReporterInit) {
     this.#reasoningEffort = init.reasoningEffort;
+    this.#serviceTier = init.serviceTier;
   }
 
   /**
@@ -150,7 +164,7 @@ export class UsageReporter {
       failed: false,
       detail,
       ...(this.#reasoningEffort !== undefined ? { reasoningEffort: this.#reasoningEffort } : {}),
-      serviceTier: init.serviceTier,
+      serviceTier: this.#serviceTier,
     }));
   }
 
@@ -180,6 +194,16 @@ export class UsageReporter {
   /** The reasoning effort actually sent upstream (after translation/thinking). */
   setReasoningEffort(effort: string | undefined): void {
     if (effort !== undefined && effort !== "") this.#reasoningEffort = effort;
+  }
+
+  /**
+   * The service tier of the outbound body (`SetTranslatedRequestMetadata`, CLIProxyAPI 07b5a7a1), read after the payload
+   * rules: the record reports it instead of the client's. A body without one leaves the client's tier.
+   */
+  setServiceTierFromBody(body: Json | undefined): void {
+    const tier = effectiveServiceTier(body);
+
+    if (tier !== undefined) this.#serviceTier = tier;
   }
 
   get failed(): boolean {
@@ -227,7 +251,7 @@ export class UsageReporter {
       detail,
       ...(this.#responseModel !== undefined ? { responseModel: this.#responseModel } : {}),
       ...(this.#reasoningEffort !== undefined ? { reasoningEffort: this.#reasoningEffort } : {}),
-      serviceTier: init.serviceTier,
+      serviceTier: this.#serviceTier,
       ...(init.sessionId === undefined ? {} : { sessionId: init.sessionId }),
       ...(init.parentSessionId === undefined ? {} : { parentSessionId: init.parentSessionId }),
       ...(init.baseUrl === undefined ? {} : { baseUrl: init.baseUrl }),

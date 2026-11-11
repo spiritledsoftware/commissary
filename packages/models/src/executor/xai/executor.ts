@@ -238,6 +238,7 @@ const finalizePrepared = (
   );
   const effort = asString(get(prepared.body, "reasoning.effort"));
   context.usage.setReasoningEffort(effort !== "" ? effort : undefined);
+  context.usage.setServiceTierFromBody(prepared.body);
 };
 
 const mediaFinalize = (

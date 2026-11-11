@@ -78,6 +78,43 @@ const pipeline = (
     ...(overrides.thinking !== undefined ? { thinking: overrides.thinking } : {}),
   });
 
+// CLIProxyAPI 07b5a7a1: the usage record reports the service tier that went out, after the payload rules.
+describe("the recorded service tier", () => {
+  const send = async (yaml: string, tier: string) => {
+    const p = pipeline(() => jsonResponse(COMPLETION), { config: await loadConfig(yaml) });
+    afterAll(p.dispose);
+
+    const response = await p.call(
+      "/v1/chat/completions",
+      postJson({
+        model: "team/alias-model",
+        messages: [{ role: "user", content: "hi" }],
+        service_tier: tier,
+      }),
+    );
+
+    expect(response.status).toBe(200);
+
+    return {
+      sent: (JSON.parse(p.calls[0]!.body) as { service_tier?: string }).service_tier,
+      recorded: p.records[0]?.serviceTier,
+    };
+  };
+
+  it("is the one a payload rule set, not the client's", async () => {
+    const yaml = YAML.replace(
+      'params: { "metadata.via": "payload-rule" }',
+      'params: { "metadata.via": "payload-rule", "service_tier": "priority" }',
+    );
+
+    expect(await send(yaml, "flex")).toEqual({ sent: "priority", recorded: "priority" });
+  });
+
+  it("is the client's when no rule touches it", async () => {
+    expect(await send(YAML, "flex")).toEqual({ sent: "flex", recorded: "flex" });
+  });
+});
+
 describe("POST /v1/chat/completions (non-stream)", () => {
   it("translates, resolves the alias and forwards to the upstream with credentials", async () => {
     const p = pipeline(() => jsonResponse(COMPLETION));

@@ -233,6 +233,7 @@ export const makeXaiWebsocketStream =
       const frame = JSON.stringify(frameBody);
       const effort = asString(get(frameBody, "reasoning.effort"));
       context.usage.setReasoningEffort(effort !== "" ? effort : undefined);
+      context.usage.setServiceTierFromBody(frameBody);
 
       const headers = buildXaiWebsocketHeaders({
         credential: context.credential,

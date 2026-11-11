@@ -478,6 +478,7 @@ export const makeCodexExecutor = (executorOptions: CodexExecutorOptions = {}): P
 
     const effort = asString(get(body, "reasoning.effort"));
     context.usage.setReasoningEffort(effort !== "" ? effort : undefined);
+    context.usage.setServiceTierFromBody(body);
 
     // The WebSocket transport dials with the handshake headers (no content type, beta header): built once here.
     const headers =
