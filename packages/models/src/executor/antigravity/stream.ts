@@ -218,9 +218,17 @@ export const convertStreamToNonStream = (lines: ReadonlyArray<string>): Json => 
     const id = asString(get(node, "responseId"));
 
     if (id !== "") responseId = id;
-    const nodeUsage = get(node, "usageMetadata") ?? get(root, "usageMetadata");
+    // The last `usageMetadata` wins; a renamed non-terminal one (`cpaUsageMetadata`) only fills a gap (Go `d5eb4ca1`).
+    const nodeUsage = get(node, "usageMetadata");
+    const renamedUsage = get(node, "cpaUsageMetadata");
 
     if (nodeUsage !== undefined) usage = structuredClone(nodeUsage);
+    else if (renamedUsage !== undefined && usage === undefined)
+      usage = structuredClone(renamedUsage);
+
+    const rootUsage = get(root, "usageMetadata");
+
+    if (usage === undefined && rootUsage !== undefined) usage = structuredClone(rootUsage);
 
     const nodeParts = get(node, "candidates.0.content.parts");
 
@@ -282,6 +290,8 @@ export const convertStreamToNonStream = (lines: ReadonlyArray<string>): Json => 
     set(template, "usageMetadata.candidatesTokenCount", 0);
     set(template, "usageMetadata.totalTokenCount", 0);
   }
+
+  if (isJsonObject(template)) delete template["cpaUsageMetadata"];
 
   const output: JsonObject = { response: template, traceId: "" };
 
