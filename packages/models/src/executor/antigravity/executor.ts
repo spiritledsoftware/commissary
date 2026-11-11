@@ -875,7 +875,8 @@ export const makeAntigravityExecutor = (
 
               // Publish the ledger before any client-visible terminal event (`response.completed`, a chat `finish_reason`,
               // `message_stop`, ...) reaches the client, so the next turn finds it (Go cc95661c, `antigravityStreamChunks
-              // HaveTerminalCommitEvent`).
+              // HaveTerminalCommitEvent`). As in Go this is the `finishReason` frame: a signature or call frame that
+              // arrives after it is not captured (a stream that keeps sending after its finish reason is not expected).
               const commit =
                 prepared.replay?.terminal === true &&
                 !prepared.replay.committed &&

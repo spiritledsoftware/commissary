@@ -1667,7 +1667,8 @@ Deviations from Go (all deliberate, documented in code headers):
   ledger). A backend failure is a miss. What it stores is function calls and thought signatures only (no prompt or response text),
   per session and model, 1 h after the last read or write (a read slides it); unlike Go it also has an absolute age: no entry lives
   longer than 24 h from its first write however active the session is (a read past that wipes it and the turn writes a fresh
-  entry), so retention stays well inside ADR 0027's seven days. The org deletion removes the instances at once (they register with
+  entry), so retention stays well inside ADR 0027's seven days. During a rollout an older app Worker reads a new-format entry as a
+  miss and its commit rewrites it in the old format, which resets the 24 h clock once; this is transient. The org deletion removes the instances at once (they register with
   the org's ControlPlane by name, and the isolation suite has a case per store). Round trips per eligible request: 2 for a Claude or OpenAI chat client (read, commit), 3
   for Responses (the text-signature prefetch, the ledger read and commit, plus one write per chunk that stored a text
   signature), 0 for Gemini and Interactions clients, 1 for token counting, +1 on a signature 400.

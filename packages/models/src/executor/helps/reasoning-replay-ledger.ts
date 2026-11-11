@@ -292,10 +292,13 @@ export const makeSessionStateReplayLedger = (
             },
           ]);
 
-          // Wiped: this request writes its own entry, born now. A concurrent writer won the wipe: its state stands.
+          // Wiped: the request holds the tombstone's generation (no age), so its commit stamps `now` and a concurrent
+          // writer's fresh entry cannot be overwritten or tombstoned by it. A concurrent writer won the wipe: its state
+          // stands, and the stale snapshot makes this request's writes fail their guard.
           return {
             items: undefined,
-            snapshot: wiped?.status === "ok" ? UNLOADED_SNAPSHOT : snapshot,
+            snapshot:
+              wiped?.status === "ok" ? { loaded: true, generation: wiped.generation } : snapshot,
           } satisfies LedgerRead;
         }
 

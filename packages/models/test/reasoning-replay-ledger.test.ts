@@ -42,6 +42,7 @@ it.effect("never replays an entry past its absolute age, however active the sess
     let hits = 0;
 
     let capped = false;
+    let afterWipe = UNLOADED_SNAPSHOT;
 
     // At most 40 turns: a ledger without the cap would still be answering after them.
     for (let turn = 0; turn < 40 && !capped; turn++) {
@@ -53,7 +54,10 @@ it.effect("never replays an entry past its absolute age, however active the sess
         // The cap, not the TTL, ended it: wiped on this read, and this request writes its own entry.
         expect(elapsed).toBeGreaterThanOrEqual(REPLAY_MAX_AGE_MS);
         expect(elapsed).toBeLessThan(REPLAY_MAX_AGE_MS + STEP_MS);
-        expect(read.snapshot).toEqual(UNLOADED_SNAPSHOT);
+        // The request holds the tombstone's generation, with no age: its writes are guarded and its commit stamps `now`.
+        expect(read.snapshot.loaded).toBe(true);
+        expect(read.snapshot.firstWriteAt).toBeUndefined();
+        afterWipe = read.snapshot;
         capped = true;
         continue;
       }
@@ -69,10 +73,51 @@ it.effect("never replays an entry past its absolute age, however active the sess
     expect((yield* ledger.peek(MODEL, "s")).items).toBeUndefined();
 
     // A new entry is born now and starts a new age.
-    expect(yield* ledger.replaceIfUnchanged(MODEL, "s", UNLOADED_SNAPSHOT, [item])).toBe(true);
+    expect(yield* ledger.replaceIfUnchanged(MODEL, "s", afterWipe, [item])).toBe(true);
     yield* TestClock.adjust(STEP_MS);
-    expect((yield* ledger.get(MODEL, "s")).items).toEqual([item]);
+
+    const reborn = yield* ledger.get(MODEL, "s");
+
+    expect(reborn.items).toEqual([item]);
+    expect(reborn.snapshot.firstWriteAt).toBe(10_000_000 + elapsed);
   }),
+);
+
+it.effect(
+  "guards the writes of a request that wiped an aged entry against a concurrent turn's fresh one",
+  () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(10_000_000);
+      const backend = makeMemoryBackend();
+      const ledger = makeSessionStateReplayLedger(fixedBackend(backend), ANTIGRAVITY_REPLAY_STORE);
+      const fresh = { ...item, thoughtSignature: "CiQBsignature-of-the-concurrent-turn-0002" };
+
+      // An entry born one cap ago and still alive (the session kept reading it).
+      yield* backend.run({ store: ANTIGRAVITY_REPLAY_STORE, scope: "", session: "race" }, [
+        {
+          op: "put",
+          key: MODEL,
+          value: JSON.stringify({ firstWriteAt: 10_000_000 - REPLAY_MAX_AGE_MS, items: [item] }),
+          ttlMs: REPLAY_TTL_MS,
+        },
+      ]);
+
+      // Turn A reads it past the cap: a miss that wipes it.
+      const a = yield* ledger.get(MODEL, "race");
+
+      expect(a.items).toBeUndefined();
+
+      // Turn B reads the tombstone and commits its fresh entry first.
+      const b = yield* ledger.get(MODEL, "race");
+
+      expect(b.items).toBeUndefined();
+      expect(yield* ledger.replaceIfUnchanged(MODEL, "race", b.snapshot, [fresh])).toBe(true);
+
+      // Neither A's commit nor A's signature-400 clear may touch B's entry.
+      expect(yield* ledger.replaceIfUnchanged(MODEL, "race", a.snapshot, [item])).toBe(false);
+      expect(yield* ledger.deleteIfUnchanged(MODEL, "race", a.snapshot)).toBe(false);
+      expect((yield* ledger.peek(MODEL, "race")).items).toEqual([fresh]);
+    }),
 );
 
 it.effect("still lets an entry expire after an hour without a read", () =>
