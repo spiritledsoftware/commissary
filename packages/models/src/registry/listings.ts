@@ -68,24 +68,35 @@ export const claudeEntry = (model: ModelInfo): JsonObject => ({
     : DEFAULT_CLAUDE_MAX_OUTPUT_TOKENS,
 });
 
-/** `convertModelToMap(..., "gemini")` (before the handler's normalisation). */
-export const geminiEntry = (model: ModelInfo): JsonObject => ({
-  name: nonEmpty(model.name) ? model.name : model.id,
-  ...(nonEmpty(model.version) ? { version: model.version } : {}),
-  ...(nonEmpty(model.displayName) ? { displayName: model.displayName } : {}),
-  ...(nonEmpty(model.description) ? { description: model.description } : {}),
-  ...(positive(model.inputTokenLimit) ? { inputTokenLimit: model.inputTokenLimit } : {}),
-  ...(positive(model.outputTokenLimit) ? { outputTokenLimit: model.outputTokenLimit } : {}),
-  ...((model.supportedGenerationMethods ?? []).length > 0
-    ? { supportedGenerationMethods: [...(model.supportedGenerationMethods ?? [])] }
-    : {}),
-  ...((model.supportedInputModalities ?? []).length > 0
-    ? { supportedInputModalities: [...(model.supportedInputModalities ?? [])] }
-    : {}),
-  ...((model.supportedOutputModalities ?? []).length > 0
-    ? { supportedOutputModalities: [...(model.supportedOutputModalities ?? [])] }
-    : {}),
-});
+/**
+ * `convertModelToMap(..., "gemini")` (before the handler's normalisation). The token limits fall back to the generic
+ * context and completion limits (Go `83cb1b95`).
+ */
+export const geminiEntry = (model: ModelInfo): JsonObject => {
+  const input = positive(model.inputTokenLimit) ? model.inputTokenLimit : model.contextLength;
+
+  const output = positive(model.outputTokenLimit)
+    ? model.outputTokenLimit
+    : model.maxCompletionTokens;
+
+  return {
+    name: nonEmpty(model.name) ? model.name : model.id,
+    ...(nonEmpty(model.version) ? { version: model.version } : {}),
+    ...(nonEmpty(model.displayName) ? { displayName: model.displayName } : {}),
+    ...(nonEmpty(model.description) ? { description: model.description } : {}),
+    ...(positive(input) ? { inputTokenLimit: input } : {}),
+    ...(positive(output) ? { outputTokenLimit: output } : {}),
+    ...((model.supportedGenerationMethods ?? []).length > 0
+      ? { supportedGenerationMethods: [...(model.supportedGenerationMethods ?? [])] }
+      : {}),
+    ...((model.supportedInputModalities ?? []).length > 0
+      ? { supportedInputModalities: [...(model.supportedInputModalities ?? [])] }
+      : {}),
+    ...((model.supportedOutputModalities ?? []).length > 0
+      ? { supportedOutputModalities: [...(model.supportedOutputModalities ?? [])] }
+      : {}),
+  };
+};
 
 // --- Claude --------------------------------------------------------------------------------------------------------
 
